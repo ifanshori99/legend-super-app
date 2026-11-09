@@ -2,6 +2,24 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Serah terima CTO (2026-11-09 sore, sesi G6ifq compact 5x)
+
+Thread berjalan:
+- G9syc merge train (brief 114). Batch 1 sudah di m1 (0f7e4ff6). Batch 2 dan 3 di `integ/m1-batch2`, `integ/m1-batch3`. Tambahan yang sudah dikirim ke G9syc: ws/fix-receipt-codex df2d2bf2 (konflik app.ts dengan ws/fix-codex-procurement: ambil versi receipt), ws/hpp-pos 454e2403, ws/fix-9fhs 9150d968 (0103/0104 bentrok dengan hpp-pos: generate ulang yang kedua).
+- G7j2u edge fix (ddoy, 12ku, aor4). Laporan SHA diteruskan ke G9syc dan antrean Codex.
+- G8zuf DOIT refund adapter (legend-0ogy). Sama.
+- G4z9u refund parsial pesanan berpromo (brief 115, keputusan founder sudah final). Tingkat K.
+
+Antrean Codex jendela 15:34 (board B3): 107, 109, 110 (+hardening b9d7e40b..d2710c47), 111 (5 run), 112 (A, B, C ws03-pay d06b163c..b99fb741), 113 (3 run), re-check refund cc3e778c..bcd745e6 + 84a89e35, PPh21 10051952..3b35c047, receipt dab1d592..df2d2bf2, HPP 7764a6a6, 9fhs dab1d592..9150d968, lalu edge fix dan DOIT setelah dilaporkan. Maks 3 bersamaan, maks 2 run per akun per jendela.
+
+Kartu "next" menunggu batch 3 masuk m1: B30 AI custom provider (legend-dwrr; founder: OpenAI-compatible api key + base url + model, plus OAuth ChatGPT/Codex dengan pilihan model default), B31 kej3 jurnal penjualan QR.
+
+Menunggu founder: arti "harga nett" (legend-g7bg, rekomendasi A: termasuk pajak dan service), fallback struk saat mini PC edge mati (board needs-you), form OpenAI Sign in with ChatGPT (B29). Vendor Wi-Fi ditunda founder. legend-07eg payroll run menunggu review UI HRIS (legend-5c0a).
+
+Catatan rilis: deploy cloud sebelum edge (edge baru kirim `receiptSequences=1`, cloud lama jawab 400). Outlet pindah ke edge: terminal yang pernah jual di cloud wajib enroll ulang. Bead baru: legend-ol6v, legend-zsdd (release-gate), legend-19gb, legend-3owf, legend-niq9.
+
+Retro tiap 2 jam lewat cron (:17), brief `~/.agents/team/retro-brief.md`. Cron Codex queue dan retro milik sesi lama: buat ulang di sesi baru.
+
 ## Workflow v3.3 diterapkan (2026-11-08 21:05)
 
 Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review Claude digabung ke sini (`--no-ff`, renumber migration via drizzle-kit). Gabung `milestone/m1` → `main` = gerbang rilis: tunggu semua antrean Codex tingkat K selesai + temuan nyata dibetulkan + klik founder.
