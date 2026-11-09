@@ -469,7 +469,20 @@ function timeOf(bound: Bound) {
             AND b.id = ${ulidToUuid(bound.orderId)}::uuid)`;
 }
 
-/** Completed refunds that count at `bound` (refund bound: up to itself). */
+/**
+ * Completed refunds that count at `bound` (refund bound: up to itself).
+ * (completed_at, id) is a strict total order over completed refunds, and the
+ * rows are read, never their journals (legend-41li5). On one intent
+ * completed_at never ties and follows commit order: the completion takes the
+ * intent lock and a time after its latest fact (lockIntentsForFact), so the
+ * intent and fund checks depend on the stored rows only, not on delivery
+ * order. Across intents (the DP session check) a completion locks only its
+ * own intent: times may tie (the id breaks it) and a refund stamped earlier
+ * may commit after a later one was judged, so that check can see fewer
+ * refunds than the final rows. The request-time cap (depositInUseOfIntent,
+ * locking every DP intent of the session) keeps that from paying out more
+ * than the session held; legend-88pky tracks closing it here too.
+ */
 function refundsAt(bound: Bound) {
   const done = and(
     eq(paymentRefunds.status, "completed"),
