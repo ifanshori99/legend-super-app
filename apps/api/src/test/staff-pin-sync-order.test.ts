@@ -238,8 +238,9 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     await asEdge(() => setPin(userId, PIN_B, new Date(now - 10 * MINUTE)));
     const edgeSet = await pinRow(userId);
     const event = await edgeEventOf(userId);
-    const material = (event.payload as { material: { setAt: string; pinHash: string } })
-      .material;
+    const material = (
+      event.payload as { material: { setAt: string; pinHash: string } }
+    ).material;
 
     // The older cloud row (the attempt bump on pin A) arrives afterwards.
     await applyStaffPinRecords(edgeContext, [bump]);
@@ -284,13 +285,15 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     const { records } = await pullUntil([userId]);
     const recordA = records.find((row) => row.userId === userId)!;
     await setPin(userId, PIN_B, new Date(Date.now() - 20 * MINUTE));
-    const recordB = (
-      await pullUntil([userId], undefined)
-    ).records.find((row) => row.userId === userId)!;
+    const recordB = (await pullUntil([userId], undefined)).records.find(
+      (row) => row.userId === userId,
+    )!;
     expect(recordB.pinHash).not.toBe(recordA.pinHash);
 
     await deletePin(userId);
-    expect((await applyStaffPinRecords(edgeContext, [recordA])).applied).toBe(1);
+    expect((await applyStaffPinRecords(edgeContext, [recordA])).applied).toBe(
+      1,
+    );
     const inserted = await pinRow(userId);
     expect(inserted.generation_text).toBe(recordA.pinGenerationAt);
     expect(inserted.pin_set_at.toISOString()).toBe(
@@ -298,9 +301,13 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     );
 
     // Newer key replaces, an older key replayed afterwards does not.
-    expect((await applyStaffPinRecords(edgeContext, [recordB])).applied).toBe(1);
+    expect((await applyStaffPinRecords(edgeContext, [recordB])).applied).toBe(
+      1,
+    );
     expect((await pinRow(userId)).pin_hash).toBe(recordB.pinHash);
-    expect((await applyStaffPinRecords(edgeContext, [recordA])).applied).toBe(0);
+    expect((await applyStaffPinRecords(edgeContext, [recordA])).applied).toBe(
+      0,
+    );
     expect((await pinRow(userId)).pin_hash).toBe(recordB.pinHash);
 
     // Tie, other material: the cloud wins (same rule as the cloud's own set).
@@ -321,7 +328,9 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     const higher: StaffPinEdgeRecord = {
       ...record,
       failedAttempts: 3,
-      updatedAt: new Date(Date.parse(record.updatedAt) - 60 * MINUTE).toISOString(),
+      updatedAt: new Date(
+        Date.parse(record.updatedAt) - 60 * MINUTE,
+      ).toISOString(),
     };
     expect((await applyStaffPinRecords(edgeContext, [higher])).applied).toBe(1);
     expect((await pinRow(userId)).failed_attempts).toBe(3);

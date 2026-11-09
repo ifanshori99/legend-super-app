@@ -223,7 +223,10 @@ describe("legend-wg5t 5 / legend-t9ii the export release does not depend on any 
     const rows: string[] = [];
     let since: string | undefined;
     for (let page = 0; page < 1000; page++) {
-      const result = await listStaffPinRecordsSince(node, { since, limit: 100 });
+      const result = await listStaffPinRecordsSince(node, {
+        since,
+        limit: 100,
+      });
       rows.push(...result.data.map((row) => row.userId));
       if (result.meta.nextCursor === null) break;
       since = result.meta.nextCursor;

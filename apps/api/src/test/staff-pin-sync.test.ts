@@ -292,10 +292,10 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
-      listStaffPinRecordsSince(
-        bandungNode,
-        { since: "bm90LWEtY3Vyc29y", limit: 10 },
-      ),
+      listStaffPinRecordsSince(bandungNode, {
+        since: "bm90LWEtY3Vyc29y",
+        limit: 10,
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

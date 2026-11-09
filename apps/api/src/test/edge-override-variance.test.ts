@@ -523,7 +523,10 @@ describe("legend-zclb cloud guard: identical pin material is a no-op", () => {
       userId,
       setBy: userId,
       self: true,
-      material: { ...material, setAt: new Date(generationMs + MINUTE).toISOString() },
+      material: {
+        ...material,
+        setAt: new Date(generationMs + MINUTE).toISOString(),
+      },
     });
 
     const outcome = await withTenant(db, node.context, (tx) =>
