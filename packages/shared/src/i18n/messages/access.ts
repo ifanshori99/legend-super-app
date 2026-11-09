@@ -493,6 +493,7 @@ const accessBaseMessages = {
       reimbursement: { approve: "Setujui reimbursement" },
       loan: { approve: "Setujui kasbon" },
       sop: { manage: "Kelola SOP" },
+      announcement: { manage: "Kelola pengumuman internal" },
       training: { manage: "Kelola pelatihan" },
       kpi: { manage: "Kelola KPI" },
     },

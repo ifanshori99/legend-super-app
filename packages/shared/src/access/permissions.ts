@@ -203,6 +203,7 @@ const entries = [
   ["hr.reimbursement.approve", ["approve"]],
   ["hr.loan.approve", ["approve", "payroll"]],
   ["hr.sop.manage", []],
+  ["hr.announcement.manage", []],
   ["hr.training.manage", []],
   ["hr.kpi.manage", []],
 

@@ -1505,3 +1505,29 @@ describe("self.loan.request (legend-e3k9)", () => {
     assert.ok(!template("employee").permissions.includes("hr.loan.approve"));
   });
 });
+
+describe("hr.announcement.manage (legend-poxk)", () => {
+  test("announcements have their own manage permission, apart from SOP", () => {
+    assert.ok(access.isPermissionCode("hr.announcement.manage"));
+    assert.ok(access.isPermissionCode("hr.sop.manage"));
+  });
+
+  test("HR-side templates hold it; kitchen_lead keeps SOP but cannot manage announcements", () => {
+    // Same holders as hr.sop.manage minus kitchen_lead (tenant_admin has neither).
+    for (const key of ["owner", "general_manager", "hr"])
+      assert.ok(
+        template(key).permissions.includes("hr.announcement.manage"),
+        key,
+      );
+    assert.ok(template("kitchen_lead").permissions.includes("hr.sop.manage"));
+    assert.ok(
+      !template("kitchen_lead").permissions.includes("hr.announcement.manage"),
+    );
+    assert.ok(
+      !template("tenant_admin").permissions.includes("hr.announcement.manage"),
+    );
+    assert.ok(
+      !template("employee").permissions.includes("hr.announcement.manage"),
+    );
+  });
+});

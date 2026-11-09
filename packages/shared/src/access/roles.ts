@@ -211,6 +211,7 @@ const templates: readonly RoleTemplate[] = [
       "hr.overtime.approve",
       "hr.kpi.manage",
       "hr.sop.manage",
+      "hr.announcement.manage",
       "hr.training.manage",
       "dashboard.management.view",
       "report.operational.view",
