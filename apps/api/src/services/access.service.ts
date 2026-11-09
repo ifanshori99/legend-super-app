@@ -198,7 +198,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued access event inside the caller's transaction. */
-async function appendAccessEvent(
+export async function appendAccessEvent(
   tx: Tx,
   context: ScopedTenantContext,
   definition: {
@@ -691,11 +691,17 @@ export async function grantRoleAssignment(
     /** Last successful re-authentication of the grantor, or null (denied). */
     reauthenticatedAt: Date | null;
     mfaVerified: boolean;
-    now?: Date;
   },
 ): Promise<RoleAssignment> {
-  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
+    // legend-8ajy4: the same per-tenant lock as endRoleAssignment and the
+    // platform Owner path, taken first, and "now" read after it. A grantor
+    // whose assignment another caller ended while this one waited is then
+    // seen as ended (READ COMMITTED re-reads below) and cannot still grant.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+    );
+    const now = new Date();
     const [roleRow] = await tx
       .select()
       .from(roles)
@@ -834,7 +840,7 @@ export async function grantRoleAssignment(
  * Owner assignment protection (coordinator decision C6, bead legend-vbws;
  * PRD §3.7 "Owner / Direksi — Seluruh tenant sesuai cakupan"). Only an active
  * tenant Owner may end another Owner's assignment, and the tenant must keep at
- * least one active tenant-scoped Owner: two Owners cannot remove each other,
+ * least one active, open-ended tenant-scoped Owner: two Owners cannot remove each other,
  * and nobody can lock a tenant out of its top authority.
  */
 async function assertCanEndOwnerAssignment(
@@ -856,7 +862,11 @@ async function assertCanEndOwnerAssignment(
     .limit(1);
   if (targetRole?.templateKey !== "owner") return;
   const activeOwners = await tx
-    .select({ id: roleAssignments.id, userId: roleAssignments.userId })
+    .select({
+      id: roleAssignments.id,
+      userId: roleAssignments.userId,
+      validUntil: roleAssignments.validUntil,
+    })
     .from(roleAssignments)
     .innerJoin(
       roles,
@@ -894,9 +904,16 @@ async function assertCanEndOwnerAssignment(
   const targetActive =
     target.validFrom.getTime() <= now.getTime() &&
     (target.validUntil === null || now.getTime() < target.validUntil.getTime());
+  // legend-qr1uv: only an open-ended Owner (valid_until null) counts as the
+  // Owner that remains. A temporary Owner is still an Owner for authority
+  // above, but it expires by itself and would leave the tenant Owner-less;
+  // after legend-7vsby only a Super Admin could recover that. Same rule as
+  // the platform Owner path (platform-tenant-owner.service.ts).
   if (
     targetActive &&
-    activeOwners.filter((row) => row.id !== target.id).length === 0
+    activeOwners.filter(
+      (row) => row.id !== target.id && row.validUntil === null,
+    ).length === 0
   )
     throw new HttpError(
       409,
@@ -910,23 +927,30 @@ export async function endRoleAssignment(
   assignmentId: string,
   input: EndRoleAssignmentInput,
   actorUserId: string,
-  now = new Date(),
 ): Promise<RoleAssignment> {
   return withTenant(db, context, async (tx) => {
+    // One lock per tenant for every "end assignment", taken BEFORE any row
+    // lock: two Owners ending each other's assignment would otherwise each
+    // hold their target row and wait for the other's in the Owner check
+    // (deadlock → 40P01 → 500). The second caller now waits here and
+    // re-reads the Owner set after the first commits (READ COMMITTED).
+    // The platform Owner path (platform-tenant-owner.service.ts) and
+    // grantRoleAssignment (legend-8ajy4) take the same lock; the key keeps
+    // its "-end" name so all three stay in step.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+    );
+    // legend-qr1uv: "now" is read AFTER the lock. A clock read before it is
+    // earlier than the valid_until the previous holder committed, so an Owner
+    // ended while this call waited would still look active, and two Owners
+    // could end each other. The permission check uses the same instant.
+    const now = new Date();
     await assertTenantPermission(
       tx,
       context,
       actorUserId,
       "access.role.assign",
       now,
-    );
-    // One lock per tenant for every "end assignment", taken BEFORE any row
-    // lock: two Owners ending each other's assignment would otherwise each
-    // hold their target row and wait for the other's in the Owner check
-    // (deadlock → 40P01 → 500). The second caller now waits here and
-    // re-reads the Owner set after the first commits (READ COMMITTED).
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
     );
     const [current] = await tx
       .select()

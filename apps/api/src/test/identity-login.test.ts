@@ -152,7 +152,9 @@ beforeEach(async () => {
   await owner.query("DELETE FROM login_challenges");
   await owner.query("DELETE FROM user_identities");
   await owner.query(
-    'DELETE FROM role_assignments WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
+    `DELETE FROM role_assignments
+      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
+         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
     ["%@wa.invalid"],
   );
   await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
@@ -163,7 +165,9 @@ afterAll(async () => {
   await owner.query("DELETE FROM login_challenges");
   await owner.query("DELETE FROM user_identities");
   await owner.query(
-    'DELETE FROM role_assignments WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
+    `DELETE FROM role_assignments
+      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
+         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
     ["%@wa.invalid"],
   );
   await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);

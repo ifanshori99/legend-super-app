@@ -33,7 +33,10 @@ import {
   getScopedTenantContext,
   requireTenantPermission,
 } from "../middleware/permissions.ts";
-import { requirePlatformAdmin } from "../middleware/platform-admin.ts";
+import {
+  requirePlatformAdmin,
+  requirePlatformAuth,
+} from "../middleware/platform-admin.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   listIntegrations,
@@ -121,7 +124,7 @@ orgIntegrationsRouter.get(
 
 const platformGuard: RequestHandler[] = [
   noStore,
-  requireAuth,
+  requirePlatformAuth,
   requireTrustedOrigin,
   requirePlatformAdmin,
   requireSessionMfa(),
