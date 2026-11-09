@@ -872,7 +872,7 @@ export async function refundPosOrder(
           lines,
           now,
         });
-      const split = refundSplit(order, payout, promoRefundedSubtotialIdr);
+      const split = refundSplit(order, payout, promoRefundedSubtotalIdr);
       // Goods part of the payout goes onto the promo application's ledger.
       if (promoApplication && !goodsReturnOnly)
         await posPromoRefundPort().recordPartialRefundPayout(tx, context, {
