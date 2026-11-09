@@ -28,6 +28,12 @@ export const receiptPrefixSchema = z
   );
 export type ReceiptPrefix = z.infer<typeof receiptPrefixSchema>;
 
+/**
+ * Fixed prefix of the cloud-owned sequence (key `deviceId = outletId`, sales
+ * without a device). Device sequences use `P1, P2, ...` and never `"C"`.
+ */
+export const CLOUD_RECEIPT_PREFIX = "C";
+
 /** Digits after the prefix; six covers a million receipts per device. */
 export const RECEIPT_ORDINAL_DIGITS = 6;
 export const RECEIPT_MAX_ORDINAL = 999_999_999;

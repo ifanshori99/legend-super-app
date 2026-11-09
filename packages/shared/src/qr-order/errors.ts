@@ -16,8 +16,15 @@ import { z } from "../core/index.ts";
 export const QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED =
   "QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED" as const;
 
+/**
+ * The outlet runs an edge node and its cloud link is down: the cloud refuses
+ * the order (it cannot reach the kitchen) and the guest asks a waiter (WS-02).
+ */
+export const EDGE_LINK_DOWN = "EDGE_LINK_DOWN" as const;
+
 export const qrOrderErrorHttpStatus = {
   [QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED]: 422,
+  [EDGE_LINK_DOWN]: 503,
 } as const satisfies Record<string, number>;
 
 export type QrOrderErrorCode = keyof typeof qrOrderErrorHttpStatus;
@@ -33,4 +40,5 @@ export const qrOrderErrorCodeSchema = z.enum(
 export const qrOrderErrorMessages: Record<QrOrderErrorCode, string> = {
   QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED:
     "Pajak harga-termasuk-pajak belum didukung untuk QR order; harga menu QR tidak termasuk pajak dan service charge.",
+  EDGE_LINK_DOWN: "Silakan pesan melalui waiter.",
 };

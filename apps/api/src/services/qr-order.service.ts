@@ -68,6 +68,9 @@ import {
   tableSessionViewSchema,
   transitionTableSession,
   updateCartLineInputSchema,
+  EDGE_LINK_DOWN,
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
   type Cart,
   type CartLine,
   type CartMutationResult,
@@ -100,6 +103,10 @@ import {
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  forwardQrOrderToEdge,
+  getOutletEdgeLinkState,
+} from "../edge/qr-order-forwarding.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -1003,6 +1010,14 @@ export async function getTableSessionView(
       }
     }
     const orderRows = await sessionOrders(tx, context, session.id);
+    // WS-02: an outlet with an edge node whose link is down cannot take QR
+    // orders; the guest page shows the waiter notice instead.
+    const edge = await getOutletEdgeLinkState(
+      tx,
+      context,
+      session.outletId,
+      now,
+    );
     return tableSessionViewSchema.parse({
       session: await sessionDto(tx, session),
       cart: cartDto(session, cart, lines),
@@ -1013,6 +1028,7 @@ export async function getTableSessionView(
         context,
         session.id,
       ),
+      orderingAvailable: !(edge.hasEdge && !edge.linkUp),
     });
   });
 }
@@ -1556,6 +1572,16 @@ async function checkout(
       "CONFLICT",
       "Zona ini sedang di luar jam pemesanan; menu tetap bisa dilihat.",
     );
+  // WS-02: an outlet with an edge node whose link is down refuses the order
+  // before anything is reserved or inserted (the guest asks a waiter). The
+  // throw rolls the whole transaction back.
+  const edge = await getOutletEdgeLinkState(tx, context, session.outletId, now);
+  if (edge.hasEdge && !edge.linkUp)
+    throw new HttpError(
+      qrOrderErrorHttpStatus[EDGE_LINK_DOWN],
+      EDGE_LINK_DOWN,
+      qrOrderErrorMessages[EDGE_LINK_DOWN],
+    );
   const businessDate = businessDateFor(outlet, now);
   const priced = await priceCartLines(tx, context, outlet, lines, now);
 
@@ -1845,6 +1871,25 @@ async function checkout(
     },
     now,
   );
+
+  // WS-02: queue the placed order for the outlet's edge node in this same
+  // transaction (it is rolled back together with the order). Order and lines
+  // are re-read so the edge sees the state after a possible fire.
+  if (edge.hasEdge && edge.edgeNodeId !== null) {
+    const forwardedItems = await tx
+      .select()
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)),
+      )
+      .orderBy(asc(orderItems.id));
+    await forwardQrOrderToEdge(tx, context, {
+      edgeNodeId: edge.edgeNodeId,
+      order: finalOrder,
+      items: forwardedItems,
+      now,
+    });
+  }
 
   const items = await orderItemsOf(tx, context, [orderId]);
   const result = placeOrderResultSchema.parse({
