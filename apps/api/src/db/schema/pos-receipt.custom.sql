@@ -92,6 +92,27 @@ BEGIN
     RAISE EXCEPTION 'POS-06: receipt sequence % retire reason is set only when retiring', OLD.id
       USING ERRCODE = '23514';
   END IF;
+  -- legend-yd0h8: the update that retires a run must say why.
+  IF OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL
+    AND NEW.retired_reason IS NULL
+  THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % must be retired with a reason', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- legend-yd0h8: the report time never goes backwards nor back to NULL, and
+  -- a retired run keeps it for good.
+  IF OLD.edge_reported_at IS NOT NULL AND (
+    NEW.edge_reported_at IS NULL OR NEW.edge_reported_at < OLD.edge_reported_at)
+  THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % report time cannot go backwards', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  IF OLD.retired_at IS NOT NULL
+    AND NEW.edge_reported_at IS DISTINCT FROM OLD.edge_reported_at
+  THEN
+    RAISE EXCEPTION 'POS-06: retired receipt sequence % cannot change its report time', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
   RETURN NEW;
 END $$;
 --> statement-breakpoint

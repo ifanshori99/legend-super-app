@@ -1,8 +1,9 @@
 ALTER TABLE "receipt_sequences" ADD COLUMN "edge_reported_number" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "receipt_sequences" ADD COLUMN "edge_reported_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "receipt_sequences" ADD COLUMN "retired_reason" varchar(30);--> statement-breakpoint
 ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_edge_reported_number_check" CHECK ("receipt_sequences"."edge_reported_number" BETWEEN 0 AND 999999999);--> statement-breakpoint
 ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_retired_reason_check" CHECK ("receipt_sequences"."retired_reason" IS NULL OR ("receipt_sequences"."retired_at" IS NOT NULL AND "receipt_sequences"."retired_reason" IN ('claim_rotated','cloud_takeover','edge_replaced','edge_regressed')));--> statement-breakpoint
--- legend-yd0h8: trigger gains the edge_reported_number / retired_reason rules (same body as pos-receipt.custom.sql).
+-- legend-yd0h8: trigger gains the edge_reported_number / edge_reported_at / retired_reason rules (same body as pos-receipt.custom.sql).
 CREATE OR REPLACE FUNCTION app.receipt_sequences_forward_only() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -65,6 +66,27 @@ BEGIN
     AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
   THEN
     RAISE EXCEPTION 'POS-06: receipt sequence % retire reason is set only when retiring', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- legend-yd0h8: the update that retires a run must say why.
+  IF OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL
+    AND NEW.retired_reason IS NULL
+  THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % must be retired with a reason', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- legend-yd0h8: the report time never goes backwards nor back to NULL, and
+  -- a retired run keeps it for good.
+  IF OLD.edge_reported_at IS NOT NULL AND (
+    NEW.edge_reported_at IS NULL OR NEW.edge_reported_at < OLD.edge_reported_at)
+  THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % report time cannot go backwards', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  IF OLD.retired_at IS NOT NULL
+    AND NEW.edge_reported_at IS DISTINCT FROM OLD.edge_reported_at
+  THEN
+    RAISE EXCEPTION 'POS-06: retired receipt sequence % cannot change its report time', OLD.id
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;

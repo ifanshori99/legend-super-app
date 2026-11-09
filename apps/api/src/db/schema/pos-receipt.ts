@@ -84,6 +84,12 @@ export const receiptSequences = pgTable(
      * the edge database was restored or cloned.
      */
     edgeReportedNumber: integer("edge_reported_number").notNull().default(0),
+    /**
+     * legend-yd0h8: edge time (clamped token) of the report that last raised
+     * the high-water; a report not newer than it is stale and skipped. Never
+     * goes backwards.
+     */
+    edgeReportedAt: timestamp("edge_reported_at", { withTimezone: true }),
     /** legend-yd0h8: why the run was retired (audit + regression rate limit). */
     retiredReason: varchar("retired_reason", {
       length: 30,

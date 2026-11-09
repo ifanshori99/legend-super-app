@@ -33,7 +33,15 @@
 //   prefix. At most RECEIPT_REGRESSION_ROTATIONS_MAX such rotations per device
 //   in RECEIPT_REGRESSION_WINDOW_HOURS (two live databases on one node id);
 //   beyond that the run is kept and an alert is raised. Every retire path
-//   stores its reason (`retired_reason`).
+//   stores its reason (`retired_reason`). A report carries the edge time it was
+//   read (`receiptRunsAt`): one older than the report that last raised the
+//   high-water (`edge_reported_at`) is stale (a request that timed out and
+//   arrived late) and is skipped, never read as a regression.
+//   Limits, stated plainly: (1) sales between a restore and the first
+//   successful pull still reuse numbers already issued (only legend-ol6v receipt
+//   events can catch them); a backup newer than the last pull is not seen.
+//   (2) a clone is an ALARM, not prevention: both databases receive the new
+//   prefix, so numbers may collide until the manual zsdd procedure is done.
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -759,6 +767,8 @@ const sameBinding = (
 
 export const RECEIPT_REGRESSION_ROTATIONS_MAX = 2;
 export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
+// legend-yd0h8: how far ahead of the cloud clock a report token may be.
+const RECEIPT_REPORT_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
@@ -785,8 +795,20 @@ export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
  *   RECEIPT_REGRESSION_WINDOW_HOURS: then the row and its high-water stay
  *   (throttled).
  * `alert` is true when some device of the node has at least the maximum of
- * such rotations in the window (this pull's included). Report entries for
- * unknown, retired or foreign-bound prefixes are ignored.
+ * such rotations in the window (this pull's included), or when the report holds
+ * a prefix of this binding retired as `edge_regressed` above its frozen
+ * high-water with a newer token (a second live database: clone). Report
+ * entries for unknown, other retired or foreign-bound prefixes are ignored.
+ *
+ * `reportedAt` is the edge time the report was read. Token `tau` =
+ * min(reportedAt ?? cloud now, cloud now + 5 min) (a forward-skewed edge clock
+ * cannot freeze the check). A row whose `edge_reported_at` is not before `tau`
+ * is STALE (a late arrival of an older report) and is skipped (`stale`). When
+ * the high-water rises, `edge_reported_at` becomes `tau`.
+ *
+ * Limits: sales between a restore and the first successful pull still reuse
+ * numbers already issued; and a clone gets an alarm, not prevention (both
+ * databases receive the new prefix).
  */
 export async function claimDeviceReceiptSequencesForEdge(
   tx: Tx,
@@ -794,12 +816,14 @@ export async function claimDeviceReceiptSequencesForEdge(
   input: {
     outletId: string;
     report?: ReceiptRunReport;
+    reportedAt?: Date;
   } & DeviceReceiptSequenceBinding,
 ): Promise<{
   claimed: number;
   rotated: number;
   regressed: number;
   throttled: number;
+  stale: number;
   alert: boolean;
 }> {
   if (isEdgeProcess())
@@ -811,8 +835,18 @@ export async function claimDeviceReceiptSequencesForEdge(
     edgeInstanceId: input.edgeInstanceId,
   };
   await lockOutletSequences(tx, tenantId, outletId);
+  // legend-yd0h8: report token, clamped so a forward-skewed edge clock cannot
+  // freeze the check.
+  const cloudNow = new Date();
+  const tau = new Date(
+    Math.min(
+      (input.reportedAt ?? cloudNow).getTime(),
+      cloudNow.getTime() + RECEIPT_REPORT_SKEW_MS,
+    ),
+  );
   // legend-yd0h8: regression rotations per device of this node in the window.
   const regressions = new Map<string, number>();
+  let cloneSeen = false;
   if (input.report !== undefined) {
     const recent = await tx
       .select({
@@ -830,6 +864,29 @@ export async function claimDeviceReceiptSequencesForEdge(
       )
       .groupBy(receiptSequences.deviceId);
     for (const row of recent) regressions.set(row.deviceId, row.count);
+    // A report of a prefix retired by a regression, above its frozen
+    // high-water and newer than it, means a second live database.
+    const retired = await tx
+      .select({
+        prefix: receiptSequences.prefix,
+        edgeReportedNumber: receiptSequences.edgeReportedNumber,
+        edgeReportedAt: receiptSequences.edgeReportedAt,
+      })
+      .from(receiptSequences)
+      .where(
+        and(
+          eq(receiptSequences.tenantId, tenantId),
+          eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
+          eq(receiptSequences.edgeInstanceId, binding.edgeInstanceId),
+          eq(receiptSequences.retiredReason, "edge_regressed"),
+          sql`${receiptSequences.retiredAt} > now() - make_interval(hours => ${RECEIPT_REGRESSION_WINDOW_HOURS})`,
+        ),
+      );
+    cloneSeen = retired.some(
+      (row) =>
+        (input.report?.get(row.prefix) ?? 0) > row.edgeReportedNumber &&
+        (row.edgeReportedAt === null || tau > row.edgeReportedAt),
+    );
   }
   const current = await tx
     .select({ sequence: receiptSequences })
@@ -860,17 +917,26 @@ export async function claimDeviceReceiptSequencesForEdge(
   let rotated = 0;
   let regressed = 0;
   let throttled = 0;
+  let stale = 0;
   let used: Map<string, string> | undefined;
   for (const { sequence } of current) {
     if (sameBinding(sequence, binding)) {
       if (input.report === undefined) continue;
+      if (sequence.edgeReportedAt !== null && tau <= sequence.edgeReportedAt) {
+        stale += 1;
+        continue;
+      }
       const reported = input.report.get(sequence.prefix) ?? 0;
       const high = Math.max(sequence.edgeReportedNumber, sequence.lastNumber);
       if (reported >= high) {
         if (reported > sequence.edgeReportedNumber)
           await tx
             .update(receiptSequences)
-            .set({ edgeReportedNumber: reported, updatedAt: sql`now()` })
+            .set({
+              edgeReportedNumber: reported,
+              edgeReportedAt: tau,
+              updatedAt: sql`now()`,
+            })
             .where(
               and(
                 eq(receiptSequences.tenantId, tenantId),
@@ -940,10 +1006,11 @@ export async function claimDeviceReceiptSequencesForEdge(
   }
   const alert =
     input.report !== undefined &&
-    [...regressions.values()].some(
-      (count) => count >= RECEIPT_REGRESSION_ROTATIONS_MAX,
-    );
-  return { claimed, rotated, regressed, throttled, alert };
+    (cloneSeen ||
+      [...regressions.values()].some(
+        (count) => count >= RECEIPT_REGRESSION_ROTATIONS_MAX,
+      ));
+  return { claimed, rotated, regressed, throttled, stale, alert };
 }
 
 /**

@@ -33,6 +33,13 @@
 //    `receiptRuns`, `receiptRunAlert`, the new columns) does not exist: cases
 //    that need it fail on that missing API. Cases 1 and 2 only use the edge
 //    pull, so they fail on the receipt NUMBER assertion.
+//  - Round 2 (R1 stale token, R2 retire needs a reason, A3 early clone alert):
+//    a report carries `receiptRunsAt` (edge time it was read). The token used
+//    by the cloud is tau = min(receiptRunsAt ?? cloudNow, cloudNow + 5 min);
+//    a row whose `edge_reported_at` is >= tau is skipped as stale (equal token
+//    = stale). The claim is driven directly for the `stale` count, and through
+//    `listDeviceRecordsSince` for page-level facts. The claim runs in the
+//    default (cloud) mode with a tenant-wide test context.
 //  - Rejected owner SQL is asserted as a rejected query (messages are backend
 //    detail), after a precondition read proves the new columns exist and
 //    followed by a check that nothing moved.
@@ -85,6 +92,7 @@ import {
 import { setPosReceiptPort } from "../services/pos-order-ports.ts";
 import {
   allocateReceipt,
+  claimDeviceReceiptSequencesForEdge,
   createPosReceiptPort,
 } from "../services/pos-receipt.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -361,6 +369,7 @@ type SeqRow = {
 };
 type RunRow = SeqRow & {
   edge_reported_number: number;
+  edge_reported_at: Date | null;
   retired_reason: string | null;
 };
 
@@ -381,7 +390,7 @@ function runRows(outletId: string): Promise<RunRow[]> {
   return asOwnerTenant(tenant.tenantId, async (client) => {
     const result = await client.query(
       `SELECT id, prefix, last_number, device_id, edge_node_id, edge_instance_id, retired_at,
-              edge_reported_number, retired_reason
+              edge_reported_number, edge_reported_at, retired_reason
        FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY prefix`,
       [tenant.tenantId, outletId],
     );
@@ -472,6 +481,8 @@ function cloudPull(
   own: Binding,
   options: {
     report?: ReceiptRunReport;
+    /** Edge time the report was read (`receiptRunsAt`); only with a report. */
+    at?: Date;
     since?: string | null;
     limit?: number;
   } = {},
@@ -483,6 +494,9 @@ function cloudPull(
     ...(options.since ? { since: options.since } : {}),
     ...(options.report
       ? { receiptRuns: encodeReceiptRunReport(options.report) }
+      : {}),
+    ...(options.report && options.at
+      ? { receiptRunsAt: options.at.toISOString() }
       : {}),
   });
   return listDeviceRecordsSince(
@@ -597,6 +611,31 @@ async function edgeAWithHighWater(sold = 3) {
   await edgePull(edgeA, outletId, own);
   return { outletId, deviceId, own, edgeA, firstPage: first.pages[0]! };
 }
+
+/** `at(10)` = 10 s after now: edge-side report times, all inside the 5 min clamp. */
+function clock(): (seconds: number) => Date {
+  const base = Date.now();
+  return (seconds) => new Date(base + seconds * 1000);
+}
+
+/** The claim run directly, to read its counts (`stale`, `regressed`, ...). */
+function claim(
+  outletId: string,
+  own: Binding,
+  report: ReceiptRunReport,
+  reportedAt?: Date,
+) {
+  return inTx((tx, context) =>
+    claimDeviceReceiptSequencesForEdge(tx, context, {
+      outletId,
+      ...own,
+      report,
+      ...(reportedAt ? { reportedAt } : {}),
+    }),
+  );
+}
+
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- Cases ---------------------------------------------------------------------
 
@@ -927,6 +966,152 @@ describe("yd0h8-5 a clone (two live databases on one node) rotates at most twice
   });
 });
 
+describe("yd0h8-8 a stale report (older edge time than the stored high-water) is skipped", () => {
+  it("POS-06 EDG-02 P1:3 read at t1 arriving after P1:5 read at t2: no rotation, stale 1, high-water and its time kept, the budget is not burned", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    const at = clock();
+    await claim(outletId, own, new Map(), at(10));
+    const raised = await claim(outletId, own, new Map([["P1", 5]]), at(40));
+    expect(raised).toMatchObject({ regressed: 0, stale: 0 });
+
+    const late = await claim(outletId, own, new Map([["P1", 3]]), at(30));
+    expect(late).toMatchObject({
+      regressed: 0,
+      throttled: 0,
+      stale: 1,
+      alert: false,
+    });
+    // The same token as the stored one is stale too (not strictly newer).
+    const same = await claim(outletId, own, new Map([["P1", 3]]), at(40));
+    expect(same).toMatchObject({ regressed: 0, stale: 1, alert: false });
+
+    // Through the page: still the same run handed out, no alert key.
+    const page = await cloudPull(outletId, own, {
+      report: new Map([["P1", 3]]),
+      at: at(35),
+    });
+    expect(page.receiptSequences?.map((s) => s.prefix)).toEqual(["P1"]);
+    expect("receiptRunAlert" in page).toBe(false);
+
+    const rows = await runRows(outletId);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_at: null,
+      retired_reason: null,
+      edge_reported_number: 5,
+    });
+    expect(rowOf(rows, "P1").edge_reported_at?.getTime()).toBe(
+      at(40).getTime(),
+    );
+
+    // A real restore afterwards is still rotated, not throttled.
+    const real = await claim(outletId, own, new Map([["P1", 1]]), at(60));
+    expect(real).toMatchObject({ regressed: 1, throttled: 0, stale: 0 });
+    const after = await runRows(outletId);
+    expect(rowOf(after, "P1").retired_reason).toBe("edge_regressed");
+    expect(rowOf(after, "P2").retired_at).toBeNull();
+    expect(regressedCount(after)).toBe(1);
+  });
+
+  it("POS-06 EDG-02 the same lower count with a NEWER edge time is a real regression: rotation, stale 0", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    const at = clock();
+    await claim(outletId, own, new Map(), at(10));
+    await claim(outletId, own, new Map([["P1", 5]]), at(40));
+
+    const result = await claim(outletId, own, new Map([["P1", 3]]), at(50));
+    expect(result).toMatchObject({ regressed: 1, throttled: 0, stale: 0 });
+    const rows = await runRows(outletId);
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_reason: "edge_regressed",
+      edge_reported_number: 5,
+    });
+    // The retired row keeps the time of its last raise.
+    expect(rowOf(rows, "P1").edge_reported_at?.getTime()).toBe(
+      at(40).getTime(),
+    );
+    expect(rowOf(rows, "P2")).toMatchObject({
+      retired_at: null,
+      edge_reported_number: 0,
+    });
+  });
+
+  it("POS-06 a forward-skewed edge clock is clamped: a report dated +1 day stamps about now+5 min, so a later regression is still detected", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    const at = clock();
+    await claim(outletId, own, new Map(), at(10));
+
+    const before = Date.now();
+    const skewed = await claim(
+      outletId,
+      own,
+      new Map([["P1", 10]]),
+      new Date(before + 24 * 3_600_000),
+    );
+    const afterSkewed = Date.now();
+    expect(skewed).toMatchObject({ regressed: 0, stale: 0 });
+    const stamp = rowOf(await runRows(outletId), "P1").edge_reported_at;
+    expect(stamp).not.toBeNull();
+    expect(stamp!.getTime()).toBeGreaterThanOrEqual(before + 5 * 60_000);
+    expect(stamp!.getTime()).toBeLessThanOrEqual(afterSkewed + 5 * 60_000);
+
+    // Without the clamp this report (now+6 min) would be older than the +1 day
+    // stamp and skipped as stale. Pause so the cloud clock is strictly later.
+    await pause(15);
+    const regressed = await claim(
+      outletId,
+      own,
+      new Map([["P1", 2]]),
+      new Date(Date.now() + 6 * 60_000),
+    );
+    expect(regressed).toMatchObject({ regressed: 1, stale: 0 });
+    const rows = await runRows(outletId);
+    expect(rowOf(rows, "P1").retired_reason).toBe("edge_regressed");
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+  });
+});
+
+describe("yd0h8-9 a clone is alerted at the first rotation", () => {
+  it("POS-06 EDG-02 after one regression, a report of the retired prefix above its frozen high-water with a newer time raises the alert at once", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    const at = clock();
+    await claim(outletId, own, new Map(), at(5));
+    await claim(outletId, own, new Map([["P1", 3]]), at(10));
+    // Clone B reports 1 < 3: one regression, a single restore: no alert yet.
+    const first = await claim(outletId, own, new Map([["P1", 1]]), at(20));
+    expect(first).toMatchObject({ regressed: 1, alert: false });
+    expect(regressedCount(await runRows(outletId))).toBe(1);
+
+    // Database A is still alive on P1: it reports P1 above the frozen 3. Not
+    // yet an alert when the token is not newer than the frozen one...
+    const olderToken = await claim(outletId, own, new Map([["P1", 4]]), at(10));
+    expect(olderToken.alert).toBe(false);
+    // ... nor when the count is not above the frozen high-water ...
+    const notAbove = await claim(outletId, own, new Map([["P1", 3]]), at(30));
+    expect(notAbove.alert).toBe(false);
+
+    // ... but above it with a newer token: a second live database exists.
+    const page = await cloudPull(outletId, own, {
+      report: new Map([["P1", 4]]),
+      at: at(30),
+    });
+    expect(page.receiptRunAlert).toBe(true);
+    // Only one rotation so far: the alert did not come from the count.
+    const rows = await runRows(outletId);
+    expect(regressedCount(rows)).toBe(1);
+    // The retired run stays frozen; the current run is unaffected.
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_reason: "edge_regressed",
+      edge_reported_number: 3,
+    });
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+
+    // An old edge (no report) never sees the alert.
+    const old = await cloudPull(outletId, own);
+    expect("receiptRunAlert" in old).toBe(false);
+  });
+});
+
 describe("yd0h8-6 the database refuses to lower the high-water or rewrite a retire reason", () => {
   async function rotatedOutlet() {
     const { outletId, own } = await cloudOutlet(1);
@@ -1020,6 +1205,77 @@ describe("yd0h8-6 the database refuses to lower the high-water or rewrite a reti
     const row = rowOf(await runRows(outletId), "P2");
     expect(row.retired_at).not.toBeNull();
     expect(row.retired_reason).toBe("claim_rotated");
+  });
+
+  it("POS-06 a row cannot be retired without a reason (retired_at alone, or with a NULL reason)", async () => {
+    const { outletId, current } = await rotatedOutlet();
+    await expect(
+      update("UPDATE receipt_sequences SET retired_at = now() WHERE id = $1", [
+        current.id,
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      update(
+        "UPDATE receipt_sequences SET retired_at = now(), retired_reason = NULL WHERE id = $1",
+        [current.id],
+      ),
+    ).rejects.toThrow();
+    expect(rowOf(await runRows(outletId), "P2")).toMatchObject({
+      retired_at: null,
+      retired_reason: null,
+    });
+  });
+
+  it("POS-06 edge_reported_at can be set from NULL and move forward, never backwards or back to NULL", async () => {
+    const { outletId, current } = await rotatedOutlet();
+    expect(current.edge_reported_at).toBeNull();
+    const base = Date.now() - 3_600_000;
+    const set = (value: Date | null) =>
+      update(
+        "UPDATE receipt_sequences SET edge_reported_at = $2 WHERE id = $1",
+        [current.id, value],
+      );
+    await set(new Date(base));
+    await expect(set(new Date(base - 1000))).rejects.toThrow();
+    await expect(set(null)).rejects.toThrow();
+    expect(
+      rowOf(await runRows(outletId), "P2").edge_reported_at?.getTime(),
+    ).toBe(base);
+    await set(new Date(base + 1000));
+    expect(
+      rowOf(await runRows(outletId), "P2").edge_reported_at?.getTime(),
+    ).toBe(base + 1000);
+  });
+
+  it("POS-06 edge_reported_at is frozen on a retired row, set or NULL", async () => {
+    const { outletId, retired, current } = await rotatedOutlet();
+    // P1 was retired after a high-water raise: its time is set (also proves
+    // the column exists and is written by the claim).
+    expect(retired.edge_reported_at).not.toBeNull();
+    for (const value of [new Date(Date.now() + 60_000), null])
+      await expect(
+        update(
+          "UPDATE receipt_sequences SET edge_reported_at = $2 WHERE id = $1",
+          [retired.id, value],
+        ),
+      ).rejects.toThrow();
+
+    // A row retired while its time is NULL stays NULL.
+    await update(
+      "UPDATE receipt_sequences SET retired_at = now(), retired_reason = 'claim_rotated' WHERE id = $1",
+      [current.id],
+    );
+    await expect(
+      update(
+        "UPDATE receipt_sequences SET edge_reported_at = $2 WHERE id = $1",
+        [current.id, new Date()],
+      ),
+    ).rejects.toThrow();
+    const rows = await runRows(outletId);
+    expect(rowOf(rows, "P1").edge_reported_at?.getTime()).toBe(
+      retired.edge_reported_at?.getTime(),
+    );
+    expect(rowOf(rows, "P2").edge_reported_at).toBeNull();
   });
 });
 

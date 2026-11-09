@@ -1,5 +1,5 @@
 {
-  "id": "911975eb-f733-49ba-a38f-5326f5b764ab",
+  "id": "4059d0cb-c05d-4015-b433-185769366b84",
   "prevId": "cc243dbc-e159-4e43-af7e-8fe3ca509db5",
   "version": "7",
   "dialect": "postgresql",
@@ -37943,6 +37943,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "edge_reported_at": {
+          "name": "edge_reported_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "retired_reason": {
           "name": "retired_reason",
