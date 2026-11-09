@@ -53,6 +53,7 @@ import {
   posOrderSummarySchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
+  posRefundItemSchema,
   posRefundSchema,
   posShiftCountReceiptSchema,
   posShiftCountSchema,
@@ -387,6 +388,9 @@ export const voidPosOrderCorrection = defineEndpoint({
  * POS-02/POS-04: refund against a paid sale. The cashier states how much to
  * refund; the API validates it against what is still refundable and splits it
  * back over the original tender methods (`refundAllocation`).
+ * A promo order must say which `items` come back: the API then works out what
+ * is really due (the promo may be kept pro rata or withdrawn) and may pay less
+ * than `amountIdr`. Refund never restores stock (only a void does).
  */
 export const refundPosOrder = defineEndpoint({
   method: "POST",
@@ -394,12 +398,19 @@ export const refundPosOrder = defineEndpoint({
   params: orderParams,
   body: clientInputSchema({
     amountIdr: z.number().int().positive(),
+    items: z.array(posRefundItemSchema).min(1).max(100).optional(),
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
     overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
-  }),
+  }).refine(
+    (value) =>
+      value.items === undefined ||
+      new Set(value.items.map((item) => item.itemId)).size ===
+        value.items.length,
+    { message: "Each refunded item may appear once", path: ["items"] },
+  ),
   response: dataResponseSchema(posRefundSchema),
 });
 

@@ -975,6 +975,7 @@ const refunds: FixtureInput["refunds"] = [
     reason: "quality_complaint",
     reasonNote: "Kentang goreng dingin; pelanggan minta pengembalian item",
     lines: [{ method: "qris", amountIdr: 31_900, reference: "DOIT-RF-2210" }],
+    items: [],
     requestedBy: staff.cashierMorning,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.orderVoid,

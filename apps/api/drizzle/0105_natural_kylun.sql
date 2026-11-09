@@ -1,0 +1,1 @@
+ALTER TABLE "pos_order_refunds" ADD COLUMN "items" jsonb DEFAULT '[]'::jsonb NOT NULL;

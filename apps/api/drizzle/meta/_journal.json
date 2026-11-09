@@ -736,6 +736,13 @@
       "when": 1794194057119,
       "tag": "0104_edc_standalone_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1794199319460,
+      "tag": "0105_natural_kylun",
+      "breakpoints": true
     }
   ]
 }

@@ -73,6 +73,9 @@ export type PosRefundLineRow = {
   reference: string | null;
 };
 
+/** One refunded order item (contract posRefundItemSchema). */
+export type PosRefundItemRow = { itemId: string; quantity: number };
+
 /** `pos_orders` (T, O): the POS extension of one `orders` row. */
 export const posOrders = pgTable(
   "pos_orders",
@@ -469,6 +472,11 @@ export const posOrderRefunds = pgTable(
     reason: varchar("reason", { length: 30 }).notNull(),
     reasonNote: varchar("reason_note", { length: 500 }).notNull(),
     lines: jsonb("lines").$type<PosRefundLineRow[]>().notNull(),
+    /** Order items this refund covers; `[]` for an amount-only refund. */
+    items: jsonb("items")
+      .$type<PosRefundItemRow[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by").notNull(),
     /** WS-01 chain id of a phone approval; null for a supervisor PIN (legend-0gy1). */

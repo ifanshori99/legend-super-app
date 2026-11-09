@@ -2,13 +2,14 @@
 // v1.7 §3.10, §3.21). Wraps `recomputeAfterPartialRefund`
 // (crm-promo-refund.ts) and closes the gap noted in the promo Q41 review:
 //
-//   The recompute caps the order's remaining discount at the kept bill value
-//   ("clamp"), but only withdrawn promotions give their discount back to
-//   `promotions.spent_idr`. When the clamp lowers the order discount, the
-//   promotion budget and the ROI cost (sum of `promotion_redemptions.
-//   discount_idr`) would still count the discount the guest no longer gets.
+//   The recompute keeps only the kept goods' pro-rata share of the order's
+//   remaining discount (founder rule, 9 Nov 2026), but only withdrawn
+//   promotions give their discount back to `promotions.spent_idr`. The share
+//   that belonged to the refunded items ("clamp" below) is no longer given to
+//   the guest, so the promotion budget and the ROI cost (sum of
+//   `promotion_redemptions.discount_idr`) would still count it.
 //
-// This wrapper lowers, by exactly the clamped amount, the still-applied
+// This wrapper lowers, by exactly that amount, the still-applied
 // redemption lines of the order (pro rata to their discount, largest
 // remainder) and the `spent_idr` of their promotions (value vouchers have no
 // promotion row: only their line is lowered). The invariant kept is
@@ -44,6 +45,7 @@ import { recordAudit } from "./core-audit";
 import { PROMO_AUDIT_SAFE_FIELDS } from "./crm-promo-engine";
 import {
   recomputeAfterPartialRefund,
+  recordPartialRefundPayout,
   type PartialRefundInput,
   type PartialRefundResult,
   type PromoPartialRefundPort,
@@ -64,8 +66,9 @@ async function lockOrder(tx: Tx, tenantId: TenantId, orderId: string) {
 }
 
 /**
- * How much of the order discount the clamp removed (>= 0): what was standing
- * before, minus what was withdrawn, minus what remains.
+ * How much of the order discount went with the refunded items (>= 0): what was
+ * standing before, minus what was withdrawn, minus the kept goods' share that
+ * remains. It goes back to the promotion budget.
  */
 export function clampedDiscountOf(
   standingBeforeIdr: number,
@@ -239,7 +242,31 @@ export async function recomputeOrderPromoAfterPartialRefund(
   return result;
 }
 
+/**
+ * The order's promo application unless it is missing or `released` (a void
+ * gives the promotion back, so a released row is no longer a live promo).
+ */
+export async function livePromoApplicationOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<{ status: string } | null> {
+  assertTrustedScopedContext(context);
+  const [application] = await tx
+    .select({ status: promotionOrderApplications.status })
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, context.tenant.tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  return application && application.status !== "released" ? application : null;
+}
+
 /** Partial-refund port for the refund module (WS-04/WS-05 wiring bead). */
 export const orderPromoPartialRefundPort: PromoPartialRefundPort = {
   recomputeAfterPartialRefund: recomputeOrderPromoAfterPartialRefund,
+  recordPartialRefundPayout,
 };

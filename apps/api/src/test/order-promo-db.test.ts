@@ -432,8 +432,8 @@ describe("legend-souz calc order and variants/modifiers", () => {
   });
 });
 
-describe("legend-souz partial refund clamp lowers the promotion budget (owner Q41)", () => {
-  it("[LOY-03] when the kept bill is smaller than the standing discount, spent_idr and the ROI cost drop by the clamped amount; a later void releases exactly the rest", async () => {
+describe("legend-souz partial refund returns the refunded items' discount share to the budget (owner Q41)", () => {
+  it("[LOY-03] the refunded item's pro-rata share of the discount goes back to spent_idr and the ROI cost; a later void releases exactly the rest", async () => {
     const item = randomUUID();
     const promotionId = await seedPromotion(item, {
       benefit: { kind: "nominal_off", amountIdr: 20_000 },
@@ -455,26 +455,32 @@ describe("legend-souz partial refund clamp lowers the promotion budget (owner Q4
           at: new Date(),
         }),
       );
-    // The promotion is still earned (one item kept) but the kept bill is only
-    // Rp15.000, so the order discount is clamped from Rp20.000 to Rp15.000.
+    // The promotion is still earned (one item kept): the kept item keeps its
+    // pro-rata share of the discount (15.000/30.000 of Rp20.000 = Rp10.000)
+    // and the refunded item's share goes back to the budget. The guest paid
+    // Rp10.000; the kept item now costs Rp5.000, so Rp5.000 is due.
     expect(await refund()).toMatchObject({
       adjusted: true,
       withdrawnDiscountIdr: 0,
-      totalDiscountIdr: 15_000,
+      totalDiscountIdr: 10_000,
+      keptPayableIdr: 5_000,
+      remainingPaidIdr: 10_000,
+      refundDueIdr: 5_000,
     });
-    expect(await counters(promotionId)).toEqual({ uses: 1, spent: 15_000 });
-    expect(await redemptionDiscounts(orderId)).toEqual([15_000]);
+    expect(await counters(promotionId)).toEqual({ uses: 1, spent: 10_000 });
+    expect(await redemptionDiscounts(orderId)).toEqual([10_000]);
 
     // Idempotent: the same refund again changes nothing.
     expect(await refund()).toMatchObject({
       adjusted: true,
-      totalDiscountIdr: 15_000,
+      totalDiscountIdr: 10_000,
+      refundDueIdr: 0,
     });
-    expect(await counters(promotionId)).toEqual({ uses: 1, spent: 15_000 });
+    expect(await counters(promotionId)).toEqual({ uses: 1, spent: 10_000 });
 
     expect(await release(orderId, "Void: pesanan dibatalkan")).toEqual({
       released: true,
-      releasedDiscountIdr: 15_000,
+      releasedDiscountIdr: 10_000,
     });
     expect(await counters(promotionId)).toEqual({ uses: 0, spent: 0 });
   });

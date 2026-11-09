@@ -761,6 +761,13 @@ export const posRefundLineSchema = z.strictObject({
 });
 export type PosRefundLine = z.infer<typeof posRefundLineSchema>;
 
+/** One order item (and how many of it) a refund covers. */
+export const posRefundItemSchema = z.strictObject({
+  itemId: orderItemIdSchema,
+  quantity: z.number().int().positive().max(999),
+});
+export type PosRefundItem = z.infer<typeof posRefundItemSchema>;
+
 export const posRefundSchema = z
   .strictObject({
     id: posRefundIdSchema,
@@ -770,6 +777,7 @@ export const posRefundSchema = z
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     lines: z.array(posRefundLineSchema).min(1),
+    items: z.array(posRefundItemSchema),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
     approvalRequestId: approvalRequestIdSchema.nullable(),

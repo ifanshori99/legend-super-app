@@ -22,17 +22,22 @@
 //   Q41 snapshot decision), so editing a promotion after the sale never
 //   changes what an already-paid bill earned. Rows from before migration 0042
 //   have no snapshot and fall back to the current rule.
-// - A promotion that still applies keeps its recorded discount; spreading it
-//   over the refunded items is the refund module's job (pro-rata). The order's
-//   discount is capped at the kept bill value, so the remaining bill can never
-//   go negative.
+// - A promotion that still applies keeps its discount on the kept items only:
+//   the discount still standing is split pro rata (by price) between the kept
+//   and the refunded goods (founder rule, 9 Nov 2026), so refunding an item
+//   gives back its price minus its share of the discount. The kept discount
+//   is capped at the kept bill value, so the remaining bill can never go
+//   negative.
 // - A same-day minimum-spend facility reward (Q40) is re-checked against the
 //   customer's day total at that outlet with this bill reduced.
-// - The payout is capped at what the guest actually paid for the goods
-//   (cumulative across refunds): `refundDueIdr` is never negative and never
-//   exceeds `paid_idr - refunded_paid_idr`.
-// - When the withdrawn discount is larger than the refunded bill value, the
-//   payout is Rp0 and `uncoveredIdr` reports the difference (owner question).
+// - The payout is cumulative: what the guest still has paid in
+//   (`paid_idr - refunded_paid_idr`) minus what the kept goods cost after the
+//   kept discount. `refundDueIdr` is never negative and never exceeds that
+//   remaining paid amount, so a repeated refund pays Rp0 more.
+// - When the kept goods cost more than the guest still has paid in, the payout
+//   is Rp0 and `uncoveredIdr` reports the difference (owner question).
+// - An empty `keptLines` (the guest returns everything left) withdraws every
+//   applied promotion (reason `no_matching_items`).
 //
 // Lock order matches redeem/release (legend-9w77 + legend-e5it): per-order
 // advisory lock, the application row, the voucher row, the customer-day
@@ -50,6 +55,7 @@ import {
   type PromotionApplicationResult,
 } from "@starter/shared/crm";
 import {
+  allocateIdr,
   assertTrustedScopedContext,
   createUlid,
   idr,
@@ -106,14 +112,21 @@ export type PartialRefundInput = {
   readonly orderId: string;
   /**
    * Every line the customer keeps after this refund, server-priced the same
-   * way as at checkout (never client prices). Empty = full refund: call
-   * `releasePromotions` instead.
+   * way as at checkout (never client prices). Empty = the guest returns
+   * everything still standing: every applied promotion is withdrawn. (A void
+   * of the whole order still goes through `releasePromotions`.)
    */
   readonly keptLines: readonly PromoLine[];
   /** Refund reason (PRD §3.10 "alasan baku"). */
   readonly reason: string;
   readonly actorUserId: string | null;
   readonly at: Date;
+  /**
+   * True when the caller records the payout itself later, through
+   * `PromoPartialRefundPort.recordPartialRefundPayout` (it may pay less than
+   * `refundDueIdr`). Default false: the due is recorded here.
+   */
+  readonly deferPayout?: boolean;
 };
 
 export type WithdrawnPromotion = {
@@ -135,15 +148,19 @@ export type PartialRefundResult =
       /** Discount the reduced bill no longer earns. */
       readonly withdrawnDiscountIdr: Idr;
       /**
-       * Payout before tax/service recomputation: refunded value minus the
-       * withdrawn discount, floored at 0 and capped by the goods value the
-       * guest actually paid (cumulative across refunds).
+       * Goods payout before tax/service recomputation: what the guest still
+       * has paid in minus the kept goods at their payable price, floored at 0
+       * (cumulative across refunds).
        */
       readonly refundDueIdr: Idr;
-      /** Withdrawn discount the refunded value does not cover (>= 0). */
+      /** Kept goods cost the guest has not paid in yet (>= 0). */
       readonly uncoveredIdr: Idr;
       /** The order's promo discount after this refund (tax engine input). */
       readonly totalDiscountIdr: Idr;
+      /** Kept goods after the kept discount (what the guest keeps paying for). */
+      readonly keptPayableIdr: Idr;
+      /** Goods amount still paid in and not refunded, before this refund. */
+      readonly remainingPaidIdr: Idr;
       readonly withdrawn: readonly WithdrawnPromotion[];
       readonly voucherIds: readonly string[];
       readonly facilityRewardIds: readonly string[];
@@ -160,6 +177,18 @@ export type PromoPartialRefundPort = {
     context: ScopedTenantContext,
     input: PartialRefundInput,
   ): Promise<PartialRefundResult>;
+  /**
+   * Records a payout the caller decided on (after `deferPayout: true`) into
+   * `refunded_paid_idr`: per-order advisory lock and the application row
+   * FOR UPDATE. No application: `{ recordedIdr: 0 }`; released: 409
+   * `PROMO_APPLICATION_RELEASED`. Records `min(payoutIdr, remainingPaid)` and
+   * returns it.
+   */
+  recordPartialRefundPayout(
+    tx: Tx,
+    context: ScopedTenantContext,
+    input: { orderId: string; payoutIdr: number; at: Date },
+  ): Promise<{ recordedIdr: number }>;
 };
 
 /** Same key as the engine's per-order lock (crm-promo-engine `lockOrder`). */
@@ -230,12 +259,7 @@ export async function recomputeAfterPartialRefund(
   const reason = refund.reason.trim();
   if (reason.length === 0 || reason.length > 300)
     throw new HttpError(422, "VALIDATION_ERROR", "Alasan refund wajib diisi.");
-  if (refund.keptLines.length === 0)
-    throw new HttpError(
-      422,
-      "VALIDATION_ERROR",
-      "Refund penuh memakai pembatalan promo, bukan refund sebagian.",
-    );
+  const returnsAll = refund.keptLines.length === 0;
   const keptSubtotal = sumLines(refund.keptLines);
   const now = refund.at;
 
@@ -383,14 +407,17 @@ export async function recomputeAfterPartialRefund(
   const withdrawn: WithdrawnPromotion[] = [];
   for (const line of lines) {
     if (line.promotionId === null) continue; // value voucher: no condition
-    const current = rules.get(line.promotionId);
-    if (!current) continue;
-    const rule = withSnapshot(current);
-    const promotion =
-      earlierSpend !== null && isSameDayMinSpendReward(rule)
-        ? withSameDaySpend(rule, earlierSpend, false)
-        : rule;
-    const failure = stillEarned(promotion, bill);
+    let failure: PromoRejectionReason | null = "no_matching_items";
+    if (!returnsAll) {
+      const current = rules.get(line.promotionId);
+      if (!current) continue;
+      const rule = withSnapshot(current);
+      const promotion =
+        earlierSpend !== null && isSameDayMinSpendReward(rule)
+          ? withSameDaySpend(rule, earlierSpend, false)
+          : rule;
+      failure = stillEarned(promotion, bill);
+    }
     if (failure === null) continue;
     withdrawn.push({
       promotionId: line.promotionId,
@@ -480,19 +507,35 @@ export async function recomputeAfterPartialRefund(
     (sum, entry) => sum + entry.discountIdr,
     0,
   );
-  // Owner Q41: the remaining bill's discount can never exceed the kept bill
-  // value (it would make the payable negative), and the payout can never
-  // exceed what the guest paid for the goods, cumulatively over all refunds.
-  const totalDiscount = Math.max(
+  // Founder rule (9 Nov 2026): the discount still standing after the
+  // withdrawals is split pro rata by price between the kept and the refunded
+  // goods; the kept part stays (capped at the kept bill value, so the payable
+  // is never negative). The payout is cumulative: what the guest still has
+  // paid in minus the kept goods at their payable price.
+  const discountAfter = Math.max(
     0,
-    Math.min(application.totalDiscountIdr - withdrawnDiscount, keptSubtotal),
+    application.totalDiscountIdr - withdrawnDiscount,
   );
+  let keptDiscount = 0;
+  if (keptSubtotal > 0 && discountAfter > 0) {
+    // keptSubtotal > 0 and standing >= keptSubtotal, so the weights sum > 0.
+    const [keptShare = 0] = allocateIdr(idr(discountAfter), [
+      keptSubtotal,
+      standing - keptSubtotal,
+    ]);
+    keptDiscount = Math.min(keptSubtotal, keptShare);
+  }
+  const totalDiscount = keptDiscount;
+  const keptPayableIdr = keptSubtotal - keptDiscount;
   const paidIdr =
     application.paidIdr ??
     idr(Math.max(0, application.subtotalIdr - application.totalDiscountIdr));
   const remainingPaidIdr = Math.max(0, paidIdr - application.refundedPaidIdr);
-  const grossRefundIdr = Math.max(0, refundedNow - withdrawnDiscount);
-  const refundDueIdr = Math.min(grossRefundIdr, remainingPaidIdr);
+  const refundDueIdr = Math.max(
+    0,
+    Math.min(remainingPaidIdr, remainingPaidIdr - keptPayableIdr),
+  );
+  const uncoveredIdr = Math.max(0, keptPayableIdr - remainingPaidIdr);
   const previous = promotionApplicationResultSchema.parse(application.result);
   const withdrawnReason = new Map(
     withdrawn.map((entry) => [entry.promotionId, entry.reason]),
@@ -516,7 +559,9 @@ export async function recomputeAfterPartialRefund(
     .update(promotionOrderApplications)
     .set({
       refundedSubtotalIdr: idr(refundedTotal),
-      refundedPaidIdr: idr(application.refundedPaidIdr + refundDueIdr),
+      refundedPaidIdr: idr(
+        application.refundedPaidIdr + (refund.deferPayout ? 0 : refundDueIdr),
+      ),
       totalDiscountIdr: idr(totalDiscount),
       result,
     })
@@ -593,15 +638,71 @@ export async function recomputeAfterPartialRefund(
     refundedSubtotalIdr: idr(refundedNow),
     withdrawnDiscountIdr: idr(withdrawnDiscount),
     refundDueIdr: idr(refundDueIdr),
-    uncoveredIdr: idr(Math.max(0, withdrawnDiscount - refundedNow)),
+    uncoveredIdr: idr(uncoveredIdr),
     totalDiscountIdr: idr(totalDiscount),
+    keptPayableIdr: idr(keptPayableIdr),
+    remainingPaidIdr: idr(remainingPaidIdr),
     withdrawn,
     voucherIds,
     facilityRewardIds: revoked.map((row) => row.id),
   };
 }
 
+/**
+ * Records a payout decided by the caller (see `deferPayout`). Same lock order
+ * as the recompute: per-order advisory lock, then the application row.
+ */
+export async function recordPartialRefundPayout(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { orderId: string; payoutIdr: number; at: Date },
+): Promise<{ recordedIdr: number }> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const orderId = orderIdSchema.parse(input.orderId);
+  if (!Number.isSafeInteger(input.payoutIdr) || input.payoutIdr < 0)
+    throw new HttpError(422, "VALIDATION_ERROR", "Jumlah refund tidak valid.");
+  await lockOrder(tx, tenantId, orderId);
+  const [application] = await tx
+    .select()
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!application) return { recordedIdr: 0 };
+  if (application.status === "released")
+    throw new HttpError(
+      409,
+      "PROMO_APPLICATION_RELEASED",
+      "Promo pesanan ini sudah dibatalkan.",
+    );
+  const paidIdr =
+    application.paidIdr ??
+    Math.max(0, application.subtotalIdr - application.totalDiscountIdr);
+  const remainingPaid = Math.max(0, paidIdr - application.refundedPaidIdr);
+  const recordedIdr = Math.min(input.payoutIdr, remainingPaid);
+  if (recordedIdr > 0)
+    await tx
+      .update(promotionOrderApplications)
+      .set({
+        refundedPaidIdr: idr(application.refundedPaidIdr + recordedIdr),
+      })
+      .where(
+        and(
+          eq(promotionOrderApplications.tenantId, tenantId),
+          eq(promotionOrderApplications.orderId, orderId),
+        ),
+      );
+  return { recordedIdr };
+}
+
 /** Default port: the real recompute (the refund module injects it). */
 export const promoPartialRefundPort: PromoPartialRefundPort = {
   recomputeAfterPartialRefund,
+  recordPartialRefundPayout,
 };

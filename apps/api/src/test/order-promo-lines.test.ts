@@ -108,6 +108,8 @@ describe("legend-souz clampedDiscountOf (owner Q41 clamp)", () => {
     refundDueIdr: idr(0),
     uncoveredIdr: idr(0),
     totalDiscountIdr: idr(total),
+    keptPayableIdr: idr(0),
+    remainingPaidIdr: idr(0),
     withdrawn: [],
     voucherIds: [],
     facilityRewardIds: [],
