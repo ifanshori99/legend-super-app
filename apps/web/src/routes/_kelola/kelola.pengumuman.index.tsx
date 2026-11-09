@@ -11,7 +11,7 @@ import {
 // /kelola/pengumuman — internal announcements with read receipts (PRD v1.7
 // §3 F32 "Pengumuman Internal", F29 "tanda terima").
 export const Route = createFileRoute("/_kelola/kelola/pengumuman/")({
-  beforeLoad: learningGuard(["hr.sop.manage"]),
+  beforeLoad: learningGuard(["hr.announcement.manage"]),
   loader: ({ context, location }) => {
     if (isMockScenarioRequest(location.searchStr)) return undefined;
     return Promise.all([

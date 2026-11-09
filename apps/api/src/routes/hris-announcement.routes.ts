@@ -39,9 +39,9 @@ import {
   resolveHrisLearningContext,
 } from "./hris-sop-gate.ts";
 
-const MANAGE: PermissionCode[] = ["hr.sop.manage"];
+const MANAGE: PermissionCode[] = ["hr.announcement.manage"];
 const SELF: PermissionCode[] = ["self.sop.read"];
-const FEED: PermissionCode[] = ["self.sop.read", "hr.sop.manage"];
+const FEED: PermissionCode[] = ["self.sop.read", "hr.announcement.manage"];
 
 const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
 

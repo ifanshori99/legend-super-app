@@ -211,6 +211,7 @@ const templates: readonly RoleTemplate[] = [
       "hr.overtime.approve",
       "hr.kpi.manage",
       "hr.sop.manage",
+      "hr.announcement.manage",
       "hr.training.manage",
       "dashboard.management.view",
       "report.operational.view",
@@ -421,6 +422,9 @@ const templates: readonly RoleTemplate[] = [
       "inventory.waste.record",
       "purchasing.request.create",
       "hr.sop.manage",
+      // legend-poxk: announcements split off hr.sop.manage; the kitchen lead
+      // keeps reading the feed through the self-service read code.
+      "self.sop.read",
       "ai.ask",
       "ai.action.propose",
       "ops.checklist.complete",
