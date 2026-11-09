@@ -18,7 +18,7 @@ Jangan dipakai untuk menutupi nomor yang masih mungkin dikirim perangkat. Write-
 
 ## Siapa yang boleh
 
-Hanya owner tenant aktif, yaitu pengguna dengan role template `owner`. Role custom tidak diterima. Kode `pos.receipt.writeoff` saat ini masih bisa dimasukkan ke role custom, tetapi tidak berpengaruh: endpoint hanya menerima role template `owner`.
+Hanya owner tenant aktif, yaitu pengguna dengan role template `owner`. Role custom tidak diterima. Kode `pos.receipt.writeoff` tidak bisa dimasukkan ke role custom (ditolak dengan `PERMISSION_OWNER_ONLY`); role custom lama yang masih menyimpannya diabaikan saat dibaca. Role `owner` sendiri hanya bisa diberikan oleh owner tenant aktif (legend-7vsby).
 
 Endpoint hanya berjalan di cloud, tidak di edge.
 

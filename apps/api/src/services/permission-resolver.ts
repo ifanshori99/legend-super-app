@@ -31,6 +31,7 @@ import {
   outletReachOf,
   stationReachOf,
   userRequiresMfa,
+  rolePermissionsAsGranted,
   type AccessTarget,
   type OrgIndex,
   type PermissionCode,
@@ -91,7 +92,9 @@ export function toAssignment(row: AssignmentRow): RoleAssignment {
 export function toRoleGrant(row: RoleRow): RoleGrantRow {
   return {
     id: roleIdSchema.parse(row.id),
-    permissions: row.permissions,
+    // legend-7vsby: a custom role stored before the Owner-only rule may still
+    // carry an Owner-template-only code; it grants nothing.
+    permissions: rolePermissionsAsGranted(row.templateKey, row.permissions),
     mfaRequired: row.mfaRequired,
     templateKey: row.templateKey,
     allowedScopeTypes: row.allowedScopeTypes,

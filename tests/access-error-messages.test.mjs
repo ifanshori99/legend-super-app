@@ -123,6 +123,7 @@ describe("accessErrorMessage", () => {
         "APPROVER_ALREADY_DECIDED",
         "APPROVER_ROLE_MISMATCH",
         "MFA_REQUIRED",
+        "PERMISSION_OWNER_ONLY",
       ],
       "update todayText when an access code gains a camelCase key",
     );

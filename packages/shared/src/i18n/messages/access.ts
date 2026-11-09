@@ -573,6 +573,8 @@ const accessBaseMessages = {
     ROLE_NOT_ASSIGNABLE: "Peran ini tidak dapat diberikan di tingkat tenant.",
     PERMISSION_NOT_IN_CATALOG:
       "Izin tidak dikenal atau tidak boleh dipakai di peran tenant.",
+    PERMISSION_OWNER_ONLY:
+      "Izin ini hanya milik peran Owner dan tidak dapat dimasukkan ke peran kustom.",
     APPROVER_IS_REQUESTER: "Penyetuju tidak boleh sama dengan pemohon.",
     APPROVER_ALREADY_DECIDED:
       "Anda sudah memberi keputusan pada permintaan ini.",

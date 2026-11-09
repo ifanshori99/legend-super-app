@@ -60,6 +60,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Batas (jujur): bila pengganti ditolak karena prefix atau id bentrok, perangkat itu tetap tidak bisa menjual (fail closed) sampai prosedur manual zsdd dijalankan. Tandanya `receiptSequencesRefused > 0` yang menetap. Kasus pengganti yang sudah maju (L > 0) pulih sendiri lewat rotasi berikutnya; ini hanya dianalisis dan belum diuji.
 - Rilis: hanya edge, tanpa urutan khusus terhadap cloud.
 
+## legend-7vsby template Owner hanya dari Owner (engineer, cabang `ws/owner-grant-escalation` dari `ws/receipt-writeoff-hardening` c4c347ef, 2026-11-09)
+
+- Sudah: `assertCanGrantRole` mewajibkan pemberi template owner memegang penugasan template owner aktif bercakupan tenant (403 `PERMISSION_DENIED`); izin yang sama lewat role custom, Owner cakupan brand, atau penugasan berakhir tidak cukup. `OWNER_TEMPLATE_ONLY_PERMISSIONS = ["pos.receipt.writeoff"]` ditolak di role custom (422 `PERMISSION_OWNER_ONLY`, kode dan pesan baru). Data lama: `rolePermissionsAsGranted` membuang kode itu dari semua role selain template owner saat dibaca (`toRole`, `toRoleGrant`, jalur grant); edit role lama membuangnya dari baris tersimpan. Runbook write-off diperbarui.
+- Bukti: di basis c4c347ef 7 dari 10 test API baru gagal dan 8 test kontrak gagal; sesudah fix 9 file test API terarah 155 lolos, `access-contract` + `access-error-messages` 69 lolos, tsc shared+api bersih, eslint dan prettier bersih.
+- Review K: reviewer Opus tanpa bypass. Architect: fix bertahan; hardening (strip untuk semua role non-owner) sudah diterapkan. Kartu baru: legend-ktc4d P1 (tidak ada jalur resmi membuat Owner pertama tenant, perlu keputusan), legend-kcwfy P3 (picker UI masih menampilkan kode write-off). Brief Codex: `docs/briefs/220b-second-opinion-owner-grant-escalation.md` (folder utama).
+
 ## legend-l56xd + legend-xlvvl pengerasan write-off nomor struk (engineer, cabang `ws/receipt-writeoff-hardening` dari `ws/receipt-number-writeoff` 13ce6220, 2026-11-09)
 
 - Sudah: `POST`/`GET` write-off hanya untuk role template owner (role custom yang memegang kode ditolak 403). `POST` wajib verifikasi 2FA dalam 5 menit terakhir (401 `REAUTH_REQUIRED`; sesi dicabut/kedaluwarsa juga 401). `GET` ditolak di edge (409). `receiptGapsForOutlet` membaca struk + write-off dalam satu statement `UNION ALL`. Komentar di `mergeDeviceReceiptRun`: write-off tidak pernah membuat run maju. Runbook: siapa boleh, preflight, jendela kompatibilitas, rollback mencabut kode dari semua role.

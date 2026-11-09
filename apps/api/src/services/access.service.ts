@@ -30,6 +30,8 @@ import {
   isRoleTemplateKey,
   normalizeCustomRolePermissions,
   ROLE_TEMPLATES,
+  rolePermissionsAsGranted,
+  withoutOwnerOnlyPermissions,
   roleCreatedEvent,
   roleAssignmentEndedEvent,
   roleAssignmentGrantedEvent,
@@ -108,7 +110,9 @@ function toRole(row: RoleRow): Role {
     name: row.name,
     isTemplate: row.isTemplate,
     templateKey: row.templateKey,
-    permissions: row.permissions,
+    // legend-7vsby: Owner-only codes left in an old custom role are not shown,
+    // so the editor never sends them back (they would be refused).
+    permissions: rolePermissionsAsGranted(row.templateKey, row.permissions),
     mfaRequired: row.mfaRequired,
     allowedScopeTypes: row.allowedScopeTypes,
     createdAt: row.createdAt.toISOString(),
@@ -484,9 +488,11 @@ export async function updateCustomRole(
         "VALIDATION_ERROR",
         "Template roles are fixed; create a custom role instead.",
       );
+    // legend-7vsby: any edit drops Owner-only codes stored before the rule;
+    // the removal shows in the event and the audit entry.
     const nextPermissions =
       input.permissions === undefined
-        ? current.permissions
+        ? withoutOwnerOnlyPermissions(current.permissions)
         : normalizeCustomRolePermissions(input.permissions, {
             mfaRequested: input.mfaRequired,
           }).permissions;
@@ -746,7 +752,12 @@ export async function grantRoleAssignment(
       granteeUserId: input.userId,
       role: {
         id: roleIdSchema.parse(roleRow.id),
-        permissions: roleRow.permissions,
+        // Same read rule as toRole (legend-7vsby): Owner-only codes left in
+        // an old custom role are not part of what this grant delegates.
+        permissions: rolePermissionsAsGranted(
+          templateKey,
+          roleRow.permissions,
+        ),
         mfaRequired: roleRow.mfaRequired,
         templateKey,
         level: template?.level ?? "tenant",
