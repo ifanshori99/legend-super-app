@@ -110,6 +110,14 @@ export type BankCsvMapping = z.infer<typeof bankCsvMappingSchema>;
  * Bank CSV amount → whole rupiah. "1.250.000,00" with "," decimals → 1250000.
  * A non-zero fraction is refused (STATEMENT_VALUE_INVALID) instead of rounded:
  * IDR statements carry ",00", anything else means a misread column.
+ *
+ * Strict grammar (anything else is STATEMENT_VALUE_INVALID):
+ *   whole    = 1-3 digits then one or more `<thousands>` + 3-digit groups, or
+ *              plain digits ("1.234.567", "1234567"); at least one digit
+ *   fraction = optional `<decimalSeparator>` + 1 or 2 digits (never 3+)
+ * So "1.2.3", "12..3", "1,", ",5" and "" are refused, and the thousands
+ * separator never doubles as a decimal one: with "," decimals "1.234" is
+ * 1234, with "." decimals it is a 3-digit fraction and refused.
  */
 export function parseBankCsvAmount(
   text: string,
@@ -126,12 +134,16 @@ export function parseBankCsvAmount(
     negative = !negative;
     value = value.slice(1);
   }
-  value = value.split(thousands).join("");
-  const [whole, fraction = "", ...rest] = value.split(decimalSeparator);
-  if (rest.length > 0 || !/^\d+$/.test(whole) || !/^\d*$/.test(fraction))
-    throw new AccountingError("STATEMENT_VALUE_INVALID");
+  const escape = (separator: string) => `\\${separator}`;
+  const grammar = new RegExp(
+    `^(\\d{1,3}(?:${escape(thousands)}\\d{3})+|\\d+)(?:${escape(decimalSeparator)}(\\d{1,2}))?$`,
+  );
+  const match = grammar.exec(value);
+  if (!match) throw new AccountingError("STATEMENT_VALUE_INVALID");
+  const [, groupedWhole, fraction = ""] = match;
   if (/[1-9]/.test(fraction))
     throw new AccountingError("STATEMENT_VALUE_INVALID");
+  const whole = groupedWhole.split(thousands).join("");
   const amount = Number(whole);
   if (!Number.isSafeInteger(amount))
     throw new AccountingError("STATEMENT_VALUE_INVALID");
