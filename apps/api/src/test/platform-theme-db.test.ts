@@ -1,6 +1,7 @@
 // Tenant Theme storage + activation gate (PRD v1.7 §3 F4 "Whitelabel", §6 A
 // `tenant_themes`). TEN-10: a theme below WCAG 2.2 AA cannot be activated,
 // checked again on the server for light AND dark mode.
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outletIdSchema } from "@starter/shared/core";
 import {
@@ -40,13 +41,17 @@ const goodTokens = {
   dark: {},
 };
 
-function draft(t: TestTenant, tokens: unknown) {
+function draft(
+  t: TestTenant,
+  tokens: unknown,
+  logoMediaId: string | null = null,
+) {
   return createThemeDraft(
     t.context,
     {
       brandId: t.brandId,
       tokens,
-      logoMediaId: null,
+      logoMediaId,
       fontFamily: "inter",
       corners: "lembut",
     } as unknown as CreateThemeDraftInput,
@@ -60,6 +65,19 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const t of [a, b]) {
+    await owner
+      .query("DELETE FROM core_storage_objects WHERE tenant_id = $1", [
+        t.tenantId,
+      ])
+      .catch(() => undefined);
+    await owner
+      .query("DELETE FROM outlets WHERE tenant_id = $1", [t.tenantId])
+      .catch(() => undefined);
+    await owner
+      .query("DELETE FROM legal_entities WHERE tenant_id = $1", [t.tenantId])
+      .catch(() => undefined);
+  }
   await removeTestTenant(a);
   await removeTestTenant(b);
   await owner.end();
@@ -203,6 +221,58 @@ describe("TEN-10 theme contrast gate", () => {
     );
     await expect(listThemes(scoped, a.brandId)).rejects.toMatchObject({
       code: "PERMISSION_DENIED",
+    });
+  });
+});
+
+/** A stored object in a new outlet of the tenant (media library row). */
+async function storedMedia(t: TestTenant): Promise<string> {
+  const legalEntityId = randomUUID();
+  const outletId = randomUUID();
+  const mediaId = randomUUID();
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Logo', false)",
+    [legalEntityId, t.tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     VALUES ($1, $2, $3, $4, 'LOGO-1', 'Outlet Logo', 'Jl. Logo', '{}')`,
+    [outletId, t.tenantId, t.brandId, legalEntityId],
+  );
+  await owner.query(
+    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+     VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
+    [t.tenantId, outletId, mediaId, `legend-iiqx/${mediaId}.webp`],
+  );
+  return mediaId;
+}
+
+describe("legend-iiqx / TEN-10 logoMediaId belongs to the tenant", () => {
+  it("legend-iiqx a draft may use a logo from the tenant's own media library", async () => {
+    const mediaId = await storedMedia(a);
+    const created = await draft(a, goodTokens, mediaId);
+    expect(created.logoMediaId).toBe(mediaId);
+  });
+
+  it("legend-iiqx a draft with no logo is still accepted", async () => {
+    const created = await draft(a, goodTokens, null);
+    expect(created.logoMediaId).toBeNull();
+  });
+
+  it("legend-iiqx a draft cannot point at another tenant's media (422, nothing stored)", async () => {
+    const foreign = await storedMedia(b);
+    const before = (await listThemes(a.context, a.brandId)).data.length;
+    await expect(draft(a, goodTokens, foreign)).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
+    });
+    expect((await listThemes(a.context, a.brandId)).data).toHaveLength(before);
+  });
+
+  it("legend-iiqx a draft cannot point at a media id that does not exist (422)", async () => {
+    await expect(draft(a, goodTokens, randomUUID())).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
     });
   });
 });
