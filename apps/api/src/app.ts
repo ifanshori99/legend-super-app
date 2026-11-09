@@ -21,6 +21,8 @@ import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
+import { auditEventsRouter } from "./routes/audit-events.routes";
+import { createMetricsRouter } from "./routes/metrics.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
@@ -329,6 +331,10 @@ export function createApp({
   // per-IP/tenant limiter, sized for a venue NAT plus a per-session bucket.
   // The staff confirm/close routes on this prefix are skipped inside.
   app.use("/api/table-sessions", guestSessionRateLimit(publicRateLimitOptions));
+  // Audit log viewer (legend-zbzr): GET /api/audit/events.
+  app.use("/api/audit", auditEventsRouter);
+  // Metric query runtime (legend-cdta): GET /api/metrics/query.
+  app.use("/api/metrics", createMetricsRouter());
   app.use("/api", apiRouter);
 
   app.use(notFound);

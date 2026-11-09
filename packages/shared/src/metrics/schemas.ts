@@ -540,6 +540,17 @@ export function metricSeriesKey(
     : `${series.metricCode}|${series.dimension.key}=${series.dimension.value}`;
 }
 
+/** Book state of one calendar month in a metric query (`meta`). */
+export const metricAccountingPeriodSchema = z.strictObject({
+  period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Period is YYYY-MM"),
+  accountingVersion: z.number().int().nonnegative().safe(),
+  /** Every legal entity with books in the month closed it (SH-02). */
+  closed: z.boolean(),
+});
+export type MetricAccountingPeriod = z.infer<
+  typeof metricAccountingPeriodSchema
+>;
+
 export const metricQueryResponseSchema = z.strictObject({
   data: z
     .strictObject({
@@ -595,6 +606,17 @@ export const metricQueryResponseSchema = z.strictObject({
     generatedAt: isoDateTimeSchema,
     /** Latest business date with data in the queried scope. */
     dataThrough: businessDateSchema,
+    /**
+     * Book state of every calendar month the period touches, read in the same
+     * snapshot as the values. `accountingVersion` is the sum of the month's
+     * fiscal period versions over all legal entities (0 without books): it
+     * grows on every close, reopen and newly opened book, so a cached figure
+     * whose version differs is stale. Optional for fixtures made before it.
+     */
+    accountingPeriods: z
+      .array(metricAccountingPeriodSchema)
+      .max(2000)
+      .optional(),
   }),
 });
 export type MetricQueryResponse = z.infer<typeof metricQueryResponseSchema>;

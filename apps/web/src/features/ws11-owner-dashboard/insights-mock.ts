@@ -95,7 +95,7 @@ const count = (value: number): Cell => ({ unit: "count", value });
  * (Rp139.113.600) from here (SH-01, DASH-02). The running month is 1 November
  * only, so its sales and discounts are the owner board's day (Rp7.420.000).
  */
-type MonthFigure = {
+export type MonthFigure = {
   netSales: number;
   food: number;
   labor: number;
@@ -107,7 +107,7 @@ type MonthFigure = {
 
 const profitShareRuns = cafeLegendAccountingFixtures.profitShare.runs;
 
-const MONTH_FIGURES: readonly MonthFigure[] = [
+export const MONTH_FIGURES: readonly MonthFigure[] = [
   {
     netSales: 448_200_000,
     food: 33.4,
@@ -146,10 +146,34 @@ const MONTH_FIGURES: readonly MonthFigure[] = [
   },
 ];
 
-function monthRuns(period: Period, figure: MonthFigure) {
+/**
+ * Income-statement figures of one month: the single source the shareholder
+ * board copies from (year to date, running estimate), so the two screens can
+ * never drift (DASH-02, legend-zc3g).
+ */
+export type MonthIncome = {
+  startDate: string;
+  endDate: string;
+  closed: boolean;
+  netSales: number;
+  cogs: number;
+  grossProfit: number;
+  netProfit: number;
+};
+
+function incomeOf(figure: MonthFigure) {
   const cogs = Math.round((figure.netSales * figure.food) / 100);
+  return {
+    netSales: figure.netSales,
+    cogs,
+    grossProfit: figure.netSales - cogs,
+    netProfit: figure.net,
+  };
+}
+
+function monthRuns(period: Period, figure: MonthFigure) {
+  const { cogs, grossProfit: gross } = incomeOf(figure);
   const payroll = Math.round((figure.netSales * figure.labor) / 100);
-  const gross = figure.netSales - cogs;
   const wastePct = (figure.waste / figure.netSales) * 100;
   return [
     run("inventory.food_cost", period, {
@@ -223,6 +247,16 @@ const monitoring: Period = {
   endDate: layout.monitoringPeriod.endDate,
   closed: layout.monitoringPeriod.status === "closed",
 };
+
+/** Months oldest first; the last one is the running month, to date. */
+export const ownerMonthIncomes: readonly MonthIncome[] = Object.freeze(
+  periods.map((period, index) => ({
+    startDate: period.startDate,
+    endDate: period.endDate,
+    closed: period.closed,
+    ...incomeOf(MONTH_FIGURES[index] as MonthFigure),
+  })),
+);
 
 export const ownerInsightRuns: Readonly<Record<string, ReportResult>> =
   Object.freeze(
