@@ -30,6 +30,8 @@ export const posKasirDaycloseMessages = {
     shiftsClosed: "{shifts} shift · {terminals} terminal",
     variance: "Selisih kas {amount} disetujui.",
     noVariance: "Tidak ada selisih kas.",
+    blindNote:
+      "Angka laci shift Anda disembunyikan. Manajer outlet yang meninjau.",
     shiftsOpenTitle: "Masih ada shift yang belum ditutup",
     shiftsOpen:
       "{open} dari {total} shift belum ditutup. Tutup semua shift sebelum tutup hari.",
@@ -68,6 +70,8 @@ export const posKasirDaycloseMessages = {
     successTitle: "Tutup harian berhasil",
     success:
       "Rekap {terminals} terminal dan {shifts} shift telah disimpan. Selisih kas {amount} beserta persetujuan tetap tercatat.",
+    successBlind:
+      "Rekap {terminals} terminal dan {shifts} shift telah disimpan.",
     successNoVariance:
       "Rekap {terminals} terminal dan {shifts} shift telah disimpan. Tidak ada selisih kas.",
     totalLabel: "Total penjualan",

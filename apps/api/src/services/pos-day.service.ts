@@ -54,11 +54,13 @@ import {
 } from "@starter/shared/core";
 import {
   closeBusinessDayInputSchema,
+  endOfDayBlindRecapSchema,
   endOfDayRecapSchema,
   PosError,
   POS_TENDER_METHODS,
   posEvents,
   type EndOfDayRecap,
+  type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { domainEventOutbox, outlets } from "../db/schema/index.ts";
@@ -164,7 +166,7 @@ async function assertApprover(
   outletId: OutletId,
   now: Date,
   permissions: readonly PermissionCode[],
-): Promise<void> {
+): Promise<ReturnType<typeof resolveAccessSnapshot>> {
   assertOutletInScope(context.outletScope, outletId);
   const data = await loadTenantAccessInTransaction(tx, context, userId);
   const snapshot = resolveAccessSnapshot({
@@ -182,6 +184,69 @@ async function assertApprover(
       "FORBIDDEN",
       "Anda tidak berwenang melihat atau menutup hari kerja outlet ini.",
     );
+  return snapshot;
+}
+
+/**
+ * POS-03 blind rule on the day report (legend-awg5p, CTO 9 Nov). A reader
+ * below the outlet manager (no `pos.day.close`) who holds a shift on this
+ * business day must not read the drawer figures of their own shift here
+ * either, before or after the close: the cash variance and expired cash outs
+ * of every device they ran a shift on, the outlet totals that sum them, and
+ * the captured / refunded / net per method (on a one-device outlet those are
+ * their own cash). The whole device row is blank, so another shift on the same
+ * device is hidden with it (fail closed). The outlet manager reviews.
+ */
+async function blindOwnDrawer(
+  tx: Tx,
+  context: ScopedTenantContext,
+  snapshot: ReturnType<typeof resolveAccessSnapshot>,
+  caller: DayCaller,
+  outletId: OutletId,
+  recap: EndOfDayRecap,
+): Promise<EndOfDayRecapView> {
+  if (snapshot.allows("pos.day.close", outletTarget(outletId))) return recap;
+  const own = await tx
+    .selectDistinct({ deviceId: posShifts.deviceId })
+    .from(posShifts)
+    .where(
+      and(
+        eq(posShifts.tenantId, context.tenant.tenantId),
+        eq(posShifts.outletId, outletId),
+        eq(posShifts.businessDate, recap.businessDate),
+        // Ids compare case-insensitively, as sameUser does in pos-shift.
+        eq(sql`lower(${posShifts.cashierId})`, caller.userId.toLowerCase()),
+      ),
+    );
+  if (own.length === 0) return recap;
+  const ownDevices = new Set(own.map((row) => row.deviceId.toLowerCase()));
+  const devices = recap.devices.map((device) =>
+    ownDevices.has(device.deviceId.toLowerCase())
+      ? { ...device, cashVarianceIdr: null, expiredCashOutIdr: null }
+      : device,
+  );
+  // An own shift whose device has no row (no sales, no shift row keyed the
+  // same) still blanks the recap: never fall back to the full figures.
+  if (!devices.some((device) => device.cashVarianceIdr === null))
+    for (const device of devices) {
+      device.cashVarianceIdr = null;
+      device.expiredCashOutIdr = null;
+    }
+  return endOfDayBlindRecapSchema.parse({
+    ...recap,
+    devices,
+    // Every method, used today or not: which methods appear would tell a
+    // one-device, cash-only day apart (sales − refunds − voids = cash net).
+    tenders: POS_TENDER_METHODS.map((method) => ({
+      method,
+      capturedIdr: null,
+      refundedIdr: null,
+      netIdr: null,
+    })),
+    totalVarianceIdr: null,
+    totalExpiredCashOutIdr: null,
+    drawerFiguresHidden: true,
+  });
 }
 
 // ---- Recap ------------------------------------------------------------------
@@ -603,11 +668,11 @@ export async function getEndOfDayRecap(
   caller: DayCaller,
   outletId: OutletId,
   businessDate: string,
-): Promise<EndOfDayRecap> {
+): Promise<EndOfDayRecapView> {
   const now = new Date();
   return withTenant(db, context, async (tx) => {
     const outlet = await loadOutlet(tx, context, outletId);
-    await assertApprover(
+    const snapshot = await assertApprover(
       tx,
       context,
       caller.userId,
@@ -625,8 +690,10 @@ export async function getEndOfDayRecap(
           eq(posDailyCloses.businessDate, businessDate),
         ),
       );
-    if (closed) return endOfDayRecapSchema.parse(closed.recap);
-    return computeRecap(tx, context, outlet, outletId, businessDate, now);
+    const recap = closed
+      ? endOfDayRecapSchema.parse(closed.recap)
+      : await computeRecap(tx, context, outlet, outletId, businessDate, now);
+    return blindOwnDrawer(tx, context, snapshot, caller, outletId, recap);
   });
 }
 

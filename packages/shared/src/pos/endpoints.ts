@@ -35,6 +35,7 @@ import {
   customerDisplayStateSchema,
   discountReasonSchema,
   endOfDayRecapSchema,
+  endOfDayRecapViewSchema,
   invoiceDocumentSchema,
   openPosShiftInputSchema,
   orderChannelSchema,
@@ -527,7 +528,7 @@ export const getEndOfDayRecap = defineEndpoint({
   path: "/api/outlets/:outletId/pos/day",
   params: outletParams,
   query: z.strictObject({ businessDate: businessDateSchema }),
-  response: dataResponseSchema(endOfDayRecapSchema),
+  response: dataResponseSchema(endOfDayRecapViewSchema),
 });
 
 /** Close the day: recap, optional stock deduction, sync to accounting. */
