@@ -160,15 +160,16 @@ function SheetBody({
   const add = useAddToCart(sessionId ?? "none");
 
   const soldOut = item.status !== "available";
-  const availableLabel =
+  const availableTime =
     item.status === "unavailable_until" && item.availableFrom
-      ? t("qrGlass.menu.card.availableFrom", {
-          time: formatAvailableFrom(
-            item.availableFrom,
-            menu?.outlet.timeZone ?? "Asia/Jakarta",
-          ),
-        })
+      ? formatAvailableFrom(
+          item.availableFrom,
+          menu?.outlet.timeZone ?? "Asia/Jakarta",
+        )
       : null;
+  const availableLabel = availableTime
+    ? t("qrGlass.menu.card.availableFrom", { time: availableTime })
+    : null;
   const orderingOpen = menu?.orderingOpen ?? true;
   const issues = useMemo(
     () => validateSelection(item, selection),
@@ -347,7 +348,9 @@ function SheetBody({
               title={availableLabel ?? t("qrGlass.item.soldOut.title")}
               className="mt-4"
             >
-              {t("qrGlass.item.soldOut.hint")}
+              {availableLabel
+                ? t("qrGlass.item.soldOut.hintUntil")
+                : t("qrGlass.item.soldOut.hint")}
             </Notice>
           )}
 

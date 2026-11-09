@@ -21,7 +21,7 @@
 // rule the engine would override; the tax engine still owns the real
 // calculation — the menu only prints the note, so no rounding happens here.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   businessDateOf,
   CoreError,

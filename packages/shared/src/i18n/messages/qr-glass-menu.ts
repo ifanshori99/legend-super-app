@@ -37,6 +37,7 @@ export const qrGlassMenuMessages = {
     soldOutLabel: "Habis hari ini",
     soldOutHint: "Belum bisa dipesan.",
     availableFrom: "Tersedia mulai {time}",
+    availableFromAria: "{name}, belum tersedia, mulai {time}",
   },
   stale: {
     message: "Menu belum diperbarui. Keranjang tetap tersimpan.",

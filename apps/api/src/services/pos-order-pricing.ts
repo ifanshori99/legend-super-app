@@ -17,7 +17,7 @@
 //   order uses the tenant's published service-charge rules (F11), which the
 //   engine filters by order type.
 
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   idr,
   outletIdSchema,
@@ -34,7 +34,6 @@ import {
 } from "@starter/shared/qr-order";
 import {
   calculateTax,
-  type ServiceChargeRule,
   type TaxCalculationInput,
   type TaxCalculationResult,
 } from "@starter/shared/tax";

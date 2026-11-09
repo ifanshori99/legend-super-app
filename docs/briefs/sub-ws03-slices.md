@@ -55,3 +55,12 @@ Starts after S4 finishes (shares checkout-page.tsx). Own: `apps/web/src/features
 - Route `metode` enum: `va` only (old `kartu` links fall back to `va`).
 - Remove CardBody + card i18n keys no longer used.
 - Verify: `pnpm --filter @starter/web typecheck`, `pnpm --filter @starter/web test` if present for these files; e2e mock run of the 4 specs: `heavy pnpm exec playwright test --config=playwright.mock.config.ts e2e/legend-b6r.mock.spec.ts e2e/legend-r1bu.mock.spec.ts e2e/legend-fzx.mock.spec.ts e2e/legend-uxh6.mock.spec.ts`.
+
+## S8 UI audit fixes (after gate; web only)
+Own: `apps/web/src/features/ws03-qr-order/components/{menu/table-nota,menu/cart-bar,item-card,item-sheet}.tsx`, `cart/checkout-page.tsx` (removed-line label only), `lib/item-options.ts`, qr-glass i18n messages.
+1. table-nota.tsx:276-285: tax note prefers the quote's `pricesIncludeTaxAndService` when a quote exists; hide the note while the menu is undefined.
+2. table-nota.tsx:46, cart-bar.tsx:50, checkout-page.tsx:402: `unavailable_until` cart lines show "Tersedia mulai HH:mm", not "Habis".
+3. item-card.tsx:174-179 aria-label: "<name>, belum tersedia, mulai HH:mm".
+4. item-sheet.tsx:347-350: own hint for unavailable_until ("Bisa dipesan lagi pada jam itu.").
+5. item-options.ts:37-47 formatAvailableFrom: HH:mm from formatToParts; invalid date → plain sold-out label, never throw.
+Verify: `heavy pnpm --filter @starter/web typecheck`, eslint on touched files, e2e mock specs touching QR menu/cart (`heavy pnpm exec playwright test --config=playwright.mock.config.ts <specs>`; find specs with grep for ws03/qr).

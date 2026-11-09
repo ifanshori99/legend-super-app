@@ -65,15 +65,16 @@ export function ItemCard({
   // Not orderable now: 86 / daily limit (`sold_out`) or outside its schedule
   // until a later window today (`unavailable_until`, legend-nx3f).
   const soldOut = item.status !== "available";
-  const availableLabel =
+  const availableTime =
     item.status === "unavailable_until" && item.availableFrom
-      ? t("qrGlass.menu.card.availableFrom", {
-          time: formatAvailableFrom(
-            item.availableFrom,
-            menu?.outlet.timeZone ?? "Asia/Jakarta",
-          ),
-        })
+      ? formatAvailableFrom(
+          item.availableFrom,
+          menu?.outlet.timeZone ?? "Asia/Jakarta",
+        )
       : null;
+  const availableLabel = availableTime
+    ? t("qrGlass.menu.card.availableFrom", { time: availableTime })
+    : null;
   const quick = isQuickAddable(item);
   const inCart = cart && cart.quantity > 0 ? cart : null;
   const steppable = !soldOut && orderingOpen && inCart?.line && onStep;
@@ -172,8 +173,11 @@ export function ItemCard({
             type="button"
             onClick={() => onOpen(item)}
             aria-label={
-              availableLabel
-                ? `${item.name}, ${availableLabel}`
+              availableTime
+                ? t("qrGlass.menu.card.availableFromAria", {
+                    name: item.name,
+                    time: availableTime,
+                  })
                 : soldOut
                   ? t("qrMenu.card.soldOutAria", { name: item.name })
                   : t("qrMenu.card.viewAria", { name: item.name })

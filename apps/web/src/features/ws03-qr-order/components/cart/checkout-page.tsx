@@ -28,6 +28,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import {
   QrFooter,
@@ -402,6 +403,17 @@ export function CheckoutPage() {
   const soldOutIds = new Set(
     menu.items.filter((item) => item.status !== "available").map((i) => i.id),
   );
+  const availableLabelFor = (menuItemId: string): string | null => {
+    const item = menu.items.find((entry) => entry.id === menuItemId);
+    const time =
+      item?.status === "unavailable_until" && item.availableFrom
+        ? formatAvailableFrom(
+            item.availableFrom,
+            menu.outlet.timeZone ?? "Asia/Jakarta",
+          )
+        : null;
+    return time ? t("qrGlass.menu.card.availableFrom", { time }) : null;
+  };
   const lineBusy = change.isPending || remove.isPending;
   const lineFailure = change.error ?? remove.error;
   const onLineError = (error: unknown) =>
@@ -554,6 +566,7 @@ export function CheckoutPage() {
                     ?.photoUrl ?? null
                 }
                 soldOut={soldOutIds.has(line.menuItemId)}
+                availableLabel={availableLabelFor(line.menuItemId)}
                 mine={
                   line.addedByParticipantId === null || participantId === null
                     ? null

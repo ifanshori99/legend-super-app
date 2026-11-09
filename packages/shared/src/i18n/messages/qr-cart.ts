@@ -31,6 +31,8 @@ export const qrCartMessages = {
     soldOut: "Habis",
     soldOutLine:
       "Menu ini baru saja habis dan akan dikeluarkan saat checkout. Hapus sekarang atau pilih menu lain.",
+    soldOutLineUntil:
+      "Menu ini belum tersedia dan akan dikeluarkan saat checkout. Hapus sekarang atau pilih menu lain.",
     subtotal: "Subtotal menu",
     subtotalHint: "Belum termasuk pajak dan service charge.",
     checkout: "Lanjut ke checkout",

@@ -15,6 +15,7 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
 import { useChangeCartLine, useRemoveCartLine } from "../../hooks";
+import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import { QrStepper, qrTextLink } from "../glass/qr-primitives";
 
@@ -48,6 +49,16 @@ export function TableNota({
       .filter((item) => item.status !== "available")
       .map((item) => item.id),
   );
+  const timeZone = menu?.outlet.timeZone ?? "Asia/Jakarta";
+  const soldOutLabel = (menuItemId: string) => {
+    const item = menu?.items.find((entry) => entry.id === menuItemId);
+    const from =
+      item?.status === "unavailable_until" ? item.availableFrom : null;
+    const time = from ? formatAvailableFrom(from, timeZone) : null;
+    return time
+      ? t("qrGlass.menu.card.availableFrom", { time })
+      : t("qrGlass.cart.nota.soldOut");
+  };
   const subtotal = lines
     .filter((line) => !soldOutIds.has(line.menuItemId))
     .reduce((sum, line) => sum + line.lineTotalIdr, 0);
@@ -183,7 +194,7 @@ export function TableNota({
                     )}
                     {soldOut ? (
                       <p className="text-sm leading-5 font-semibold">
-                        {t("qrGlass.cart.nota.soldOut")}
+                        {soldOutLabel(line.menuItemId)}
                       </p>
                     ) : (
                       <Money
@@ -275,15 +286,18 @@ export function TableNota({
               className="text-3xl leading-9 font-bold"
             />
           </div>
-          <p className="text-sm leading-5 text-qr-on-dark-muted">
-            {t(
-              menu?.pricing.taxPriceMode === "mixed"
-                ? "qrGlass.cart.nota.taxNoteMixed"
-                : menu?.pricing.pricesIncludeTaxAndService
-                  ? "qrGlass.cart.nota.taxNoteInclusive"
-                  : "qrGlass.cart.nota.taxNote",
-            )}
-          </p>
+          {menu ? (
+            <p className="text-sm leading-5 text-qr-on-dark-muted">
+              {t(
+                menu.pricing.taxPriceMode === "mixed"
+                  ? "qrGlass.cart.nota.taxNoteMixed"
+                  : (view?.quote?.pricesIncludeTaxAndService ??
+                      menu.pricing.pricesIncludeTaxAndService)
+                    ? "qrGlass.cart.nota.taxNoteInclusive"
+                    : "qrGlass.cart.nota.taxNote",
+              )}
+            </p>
+          ) : null}
           <div className="rounded-qr-cta bg-card p-1">
             <Button asChild size="lg" className="w-full justify-between">
               <Link to="/t/$token/cart" params={{ token: qrToken }}>
