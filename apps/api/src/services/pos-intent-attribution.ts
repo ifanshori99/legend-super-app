@@ -27,11 +27,11 @@ import { sql, type SQL } from "drizzle-orm";
  * - ledger (payout / sale check at a bound): captured tenders paid by the
  *   intent (payment_intent_id) of the orders `sales` keeps; POS refunds
  *   `posRefunds` keeps. `sales` filters the `orders` table and `posRefunds`
- *   the `pos_order_refunds` table, both unaliased.
+ *   the `pos_order_refunds` table, both unaliased. The caller keeps only POS
+ *   refunds whose journal posted (see posRefundsOfIntentSql).
  */
 export type PosIntentTenders =
-  | { kind: "held" }
-  | { kind: "ledger"; sales: SQL; posRefunds: SQL };
+  { kind: "held" } | { kind: "ledger"; sales: SQL; posRefunds: SQL };
 
 /**
  * A query with one row and one text column `amount`: the intent's tenders
@@ -102,5 +102,36 @@ export function netPosTendersOfIntentSql(
       FROM used u
       LEFT JOIN returned f ON f.order_id = u.order_id AND f.method = u.method
      WHERE u.on_intent IS NOT NULL
+  `;
+}
+
+/**
+ * legend-hxpd5 review: the POS refunds the ledger mode may attribute to the
+ * intent: refunds `posRefunds` keeps with a line whose method is that of a
+ * captured tender of the intent on the same order, the order kept by `sales`
+ * (same filters as the ledger mode). Rows: `id` (pos_order_refunds.id). The
+ * caller subtracts only those whose order.refunded journal posted (the credit
+ * back to customer_deposit is booked).
+ */
+export function posRefundsOfIntentSql(
+  tenantId: string,
+  intentId: string,
+  filters: { sales: SQL; posRefunds: SQL },
+): SQL {
+  return sql`
+    SELECT DISTINCT pos_order_refunds.id::text AS id
+      FROM pos_order_refunds
+     CROSS JOIN LATERAL jsonb_array_elements(pos_order_refunds.lines) AS l(value)
+     WHERE pos_order_refunds.tenant_id = ${tenantId}
+       AND ${filters.posRefunds}
+       AND EXISTS (
+         SELECT 1 FROM pos_order_tenders t
+           JOIN orders ON orders.tenant_id = t.tenant_id AND orders.id = t.order_id
+          WHERE t.tenant_id = ${tenantId}
+            AND t.order_id = pos_order_refunds.order_id
+            AND t.method = l.value->>'method'
+            AND t.status = 'captured'
+            AND t.payment_intent_id = ${intentId}::uuid
+            AND ${filters.sales})
   `;
 }

@@ -33,12 +33,16 @@ import {
 } from "../db/schema/index.ts";
 import {
   AutoJournalPayloadInvalid,
+  AutoJournalReceiptPending,
   boundedKey,
   receiptKeyOf,
 } from "./accounting-auto-journal-amounts.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
-import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
+import {
+  netPosTendersOfIntentSql,
+  posRefundsOfIntentSql,
+} from "./pos-intent-attribution.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -57,7 +61,9 @@ export const DP_INTENT_STATUSES = [
 export type Backing =
   | { kind: "intent"; intentId: string }
   | { kind: "fund"; fundId: string; intentId: string }
-  | { kind: "sale"; orderId: string };
+  | { kind: "sale"; orderId: string }
+  /** legend-hxpd5: the order.refunded journal of a POS refund (pos_order_refunds.id). */
+  | { kind: "posRefund"; refundId: string };
 
 export type BackingState = "posted" | "pending" | "none";
 
@@ -70,18 +76,21 @@ export function backingKeyOf(backing: Backing): string {
       return boundedKey(`aj:receipt-fund:${backing.fundId}`);
     case "sale":
       return boundedKey(`aj:sale:${backing.orderId}`);
+    case "posRefund":
+      return boundedKey(`aj:order-refund:${backing.refundId}`);
   }
 }
 
 const fundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'unallocatedFundId'`;
 const salePayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'orderId'`;
+const posRefundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'refundId'`;
 
 /**
  * State of every backing journal (cutover/ordering guard), keyed by
  * `backingKeyOf`:
  * - "posted": the journal exists;
- * - "pending": its event (payment.paid, payment.funds_unallocated, order.paid)
- *   is still in the outbox (pending, retrying, dead letter) or the journal is
+ * - "pending": its event (payment.paid, payment.funds_unallocated, order.paid,
+ *   order.refunded) is still in the outbox (pending, retrying, dead letter) or the journal is
  *   parked retryable: it can still post;
  * - "none": it will never post by itself (event consumed before the consumer
  *   went live or with accounting off, never emitted, or parked non-retryable).
@@ -103,10 +112,12 @@ export async function backingStatesOf(
   const intentIds = new Set<string>();
   const fundIds = new Set<string>();
   const orderIds = new Set<string>();
+  const posRefundIds = new Set<string>();
   for (const backing of backings) {
     if (backing.kind === "intent") intentIds.add(backing.intentId);
     else if (backing.kind === "fund") fundIds.add(backing.fundId);
-    else orderIds.add(backing.orderId);
+    else if (backing.kind === "sale") orderIds.add(backing.orderId);
+    else posRefundIds.add(backing.refundId);
   }
   const undelivered = and(
     eq(domainEventOutbox.tenantId, tenantId),
@@ -161,6 +172,24 @@ export async function backingStatesOf(
     for (const row of rows)
       states.set(
         backingKeyOf({ kind: "sale", orderId: row.orderId }),
+        "pending",
+      );
+  }
+  if (posRefundIds.size > 0) {
+    const rows = await tx
+      .select({ refundId: posRefundPayloadId })
+      .from(domainEventOutbox)
+      .where(
+        and(
+          undelivered,
+          eq(domainEventOutbox.aggregateType, "order"),
+          sql`${domainEventOutbox.event}->>'name' = 'order.refunded'`,
+          inArray(posRefundPayloadId, [...posRefundIds]),
+        ),
+      );
+    for (const row of rows)
+      states.set(
+        backingKeyOf({ kind: "posRefund", refundId: row.refundId }),
         "pending",
       );
   }
@@ -521,17 +550,36 @@ async function intentBackedAt(
   tenantId: TenantId,
   intentId: string,
   bound: Bound,
-): Promise<bigint> {
+): Promise<{ backedIdr: bigint; posRefundPending: boolean }> {
   // legend-hxpd5: less the gateway part POS refunds of those sales gave back
   // (order.refunded credits it to customer_deposit), attributed to the intent.
+  // Only a POS refund whose journal posted counts, like the receipt: one that
+  // can still post makes the check wait (posRefundPending), one that never
+  // posts is not subtracted (fail closed).
+  const filters = { sales: salesAt(bound), posRefunds: posRefundsAt(bound) };
+  const candidates = (
+    await tx.execute(posRefundsOfIntentSql(tenantId, intentId, filters))
+  ).rows.map((row) => String(row.id));
+  const states = await backingStatesOf(
+    tx,
+    tenantId,
+    candidates.map((refundId) => ({ kind: "posRefund", refundId })),
+  );
+  const stateOf = (refundId: string) =>
+    states.get(backingKeyOf({ kind: "posRefund", refundId })) ?? "none";
+  const posted = candidates.filter((id) => stateOf(id) === "posted");
+  const posRefundPending = candidates.some((id) => stateOf(id) === "pending");
   const tenders = BigInt(
     String(
       (
         await tx.execute(
           netPosTendersOfIntentSql(tenantId, intentId, {
             kind: "ledger",
-            sales: salesAt(bound),
-            posRefunds: posRefundsAt(bound),
+            sales: filters.sales,
+            posRefunds: and(
+              filters.posRefunds,
+              inArray(posOrderRefunds.id, posted),
+            )!,
           }),
         )
       ).rows[0]?.amount ?? "0",
@@ -593,7 +641,37 @@ async function intentBackedAt(
         ),
       ),
   );
-  return tenders + qrSales + forfeits + payouts;
+  return {
+    backedIdr: tenders + qrSales + forfeits + payouts,
+    posRefundPending,
+  };
+}
+
+/**
+ * The intent backs more than its receipt at `bound`: a POS refund journal that
+ * can still post may close the gap (AutoJournalReceiptPending, retryable),
+ * else POSTING_AMOUNTS_MISMATCH.
+ */
+async function assertIntentWithinReceipt(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  bound: Bound,
+  receiptCredit: bigint,
+  message: string,
+): Promise<void> {
+  const { backedIdr, posRefundPending } = await intentBackedAt(
+    tx,
+    tenantId,
+    intentId,
+    bound,
+  );
+  if (backedIdr <= receiptCredit) return;
+  if (posRefundPending)
+    throw new AutoJournalReceiptPending(
+      "POS refund journal of the intent's sale is not posted yet",
+    );
+  throw mismatch(message);
 }
 
 /**
@@ -648,10 +726,14 @@ export async function assertPayoutWithinReceipt(
   }
   if (backing.kind !== "intent") return;
   const intentId = backing.intentId;
-  if ((await intentBackedAt(tx, tenantId, intentId, bound)) > receiptCredit)
-    throw mismatch(
-      "Payout of an intent exceeds its receipt after sales, forfeits and earlier payouts",
-    );
+  await assertIntentWithinReceipt(
+    tx,
+    tenantId,
+    intentId,
+    bound,
+    receiptCredit,
+    "Payout of an intent exceeds its receipt after sales, forfeits and earlier payouts",
+  );
   if (refund.unallocatedFundId !== null) return;
   const sessions = await tx
     .selectDistinct({
@@ -695,10 +777,14 @@ export async function assertSaleWithinReceipt(
     tenantId,
     backingKeyOf({ kind: "intent", intentId }),
   );
-  if ((await intentBackedAt(tx, tenantId, intentId, saleBound)) > receiptCredit)
-    throw mismatch(
-      "Sale of an intent exceeds its receipt after earlier sales, forfeits and payouts",
-    );
+  await assertIntentWithinReceipt(
+    tx,
+    tenantId,
+    intentId,
+    saleBound,
+    receiptCredit,
+    "Sale of an intent exceeds its receipt after earlier sales, forfeits and payouts",
+  );
 }
 
 // ---------------------------------------------------------------------------

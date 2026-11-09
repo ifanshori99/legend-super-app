@@ -41,3 +41,7 @@ File: `services/accounting-auto-journal-consumer.ts`, runbook baru, test.
 ## R. Review K (reviewer Opus + architect, read-only, konteks segar)
 
 Rentang putaran 1: `git diff 0bee49ca 771c9fc5` (P1 hxpd5+060xt, P3 3bsyh). P2 (`pos-order-payment.ts`, r5brx) belum ada di rentang ini; jangan review berkas uncommitted. Checklist: `~/.agents/team/review-checklist.md`. Lensa penyerang: uang keluar dua kali, payout parkir palsu, kebocoran lintas tenant, salah atribusi metode/link, sumbu waktu (`salesAt`/`refundsAt`/`posRefundsAt`, tie), requeue yang menyentuh baris pesanan/tenant lain. Laporan: satu baris per temuan `path:baris`, tingkat (P0-P3), skenario gagal konkret, saran. Tandai yang tidak yakin.
+
+## R2. Review K putaran r5brx
+
+Rentang: `git show df7a3fb6` (capture QRIS di bawah kunci intent). Format laporan sama dengan R. Fokus: urutan kunci baru orders → pos_orders → tender → payment_links FOR UPDATE → payment_intents (lockIntentsForFact) → day lock; cari jalur lain yang mengunci intent lalu link/tender/order pesanan yang sama (refund approve/complete, refreshIntent/createIntent, WS-05 confirmation, completePosOrder, late payment refund, cancelPaymentLinkInTx) = deadlock. Pilihan intent (`probePaid`, status paid/partially_refunded/refunded, ORDER BY paidAt) saat link punya dua intent paid. Aturan blok `reserved - pending > cap`: uang keluar dua kali? uang tamu tertahan? Jumlah refund late payment setelah void (`requestPosLatePaymentRefund`) tidak melebihi yang diterima dikurangi refund lain. Waktu fakta `at` dipakai untuk capture/void.
