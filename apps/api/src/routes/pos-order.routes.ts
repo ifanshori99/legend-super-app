@@ -12,9 +12,10 @@
 //   requireOutletPermission on the path's outlet (TEN-03); the tenant comes
 //   from the server-minted context (TEN-02), never the body.
 // - Bodies, params and queries are parsed with the strict contract schemas.
-// - Optimistic concurrency (legend-63l6): every order response carries
-//   `ETag: "<version>"`; a write may send `If-Match: "<version>"` and gets
-//   412 PRECONDITION_FAILED when the order moved on. Without the header the
+// - Optimistic concurrency (legend-63l6): every order response carries the
+//   order `version` and `ETag: "<version>"` (the same value); a write may send
+//   it back as body `expectedVersion` or `If-Match: "<version>"` and gets 412
+//   PRECONDITION_FAILED when the order moved on. Without either, the
 //   contract's `expectedStatus` is the stale-screen guard.
 // - The device id is the signed `X-Device-Token` (device-id.ts), null without
 //   one: a client-claimed device is never trusted. Cash needs it (the drawer
@@ -84,12 +85,44 @@ function expectedVersion(req: Request): number | null {
   return Number(match[1]);
 }
 
-function caller(req: Request): PosCaller {
+/**
+ * legend-63l6: the version the client believes the order has is the body's
+ * `expectedVersion` or the `If-Match` header. Both given and different is 412
+ * (a client cannot state two versions). Both absent: no check, so legacy
+ * clients keep working; `expectedStatus` still guards transitions.
+ */
+function caller(req: Request, body?: { expectedVersion?: number }): PosCaller {
+  const fromHeader = expectedVersion(req);
+  const fromBody = body?.expectedVersion ?? null;
+  if (fromHeader !== null && fromBody !== null && fromHeader !== fromBody)
+    throw new CoreError(
+      "PRECONDITION_FAILED",
+      "expectedVersion dan If-Match harus sama.",
+    );
+  // The services fingerprint the body for idempotency and add
+  // `caller.expectedVersion` themselves. Drop the body copy (the object is the
+  // fresh result of `.parse`) so a retry that switches between the body field
+  // and If-Match keeps one fingerprint and replays instead of 409.
+  if (body) delete body.expectedVersion;
   return {
     userId: userIdSchema.parse(getAuth(req).user.id),
     deviceId: deviceIdOf(req),
-    expectedVersion: expectedVersion(req),
+    expectedVersion: fromBody ?? fromHeader,
   };
+}
+
+function versionIn(data: unknown): number | null {
+  const holder =
+    typeof data === "object" && data !== null && "order" in data
+      ? (data as { order: unknown }).order
+      : data;
+  const version =
+    typeof holder === "object" && holder !== null && "version" in holder
+      ? (holder as { version: unknown }).version
+      : undefined;
+  return typeof version === "number" && Number.isSafeInteger(version)
+    ? version
+    : null;
 }
 
 async function sendOrder(
@@ -100,11 +133,14 @@ async function sendOrder(
   data: unknown,
   status = 200,
 ): Promise<void> {
-  const version = await pos.posOrderVersion(
-    getScopedTenantContext(req),
-    outletId,
-    orderId,
-  );
+  // The ETag must match the `version` in the body: a separate read after
+  // commit could show a newer version (another write landed, or this is an
+  // idempotent replay), and echoing that back as If-Match would skip a change
+  // the client never saw. Only replays stored before legend-63l6 carry no
+  // `version`; those fall back to the current row.
+  const version =
+    versionIn(data) ??
+    (await pos.posOrderVersion(getScopedTenantContext(req), outletId, orderId));
   res.status(status).setHeader("ETag", `"${version}"`).json({ data });
 }
 
@@ -152,7 +188,7 @@ posOrderRouter.post(
     const body = submitPosOrder.body.parse(req.body);
     const data = await pos.submitPosOrder(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -170,7 +206,7 @@ posOrderRouter.post(
     const body = firePosOrderItems.body.parse(req.body);
     const data = await pos.firePosOrderItems(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -188,7 +224,7 @@ posOrderRouter.post(
     const body = completePosOrder.body.parse(req.body);
     const data = await pos.completePosOrder(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -206,7 +242,7 @@ posOrderRouter.post(
     const body = voidPosOrder.body.parse(req.body);
     const data = await pos.voidPosOrder(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -226,7 +262,7 @@ posOrderRouter.post(
     const body = voidPosOrderItem.body.parse(req.body);
     const data = await pos.voidPosOrderItem(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       itemId,
@@ -273,7 +309,7 @@ posOrderRouter.post(
     const body = addPosTender.body.parse(req.body);
     const data = await addPosTenderService(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -291,7 +327,7 @@ posOrderRouter.post(
     const body = applyPosDiscount.body.parse(req.body);
     const data = await discounts.applyPosDiscount(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       body,
@@ -311,7 +347,7 @@ posOrderRouter.delete(
     const body = removePosDiscount.body.parse(req.body);
     const data = await discounts.removePosDiscount(
       getScopedTenantContext(req),
-      caller(req),
+      caller(req, body),
       outletId,
       orderId,
       discountId,

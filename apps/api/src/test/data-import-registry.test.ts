@@ -108,6 +108,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "maps the payroll_custom_deduction role to the same account as salary_expense for every legal entity that has a salary_expense mapping and no payroll_custom_deduction mapping (legend-75kr); idempotent, never updates or deletes, FORCE RLS lifted for that one statement and restored",
   "0156_receipt_number_writeoffs.sql":
     "appends pos.receipt.writeoff to the stored owner template role rows of every tenant (legend-0hzqw); idempotent, never touches a custom role or another template",
+  "0159_notification_policy_permission.sql":
+    "appends org.notification_policy.manage to the stored owner and tenant_admin template role rows of existing tenants (legend-63l6); idempotent, never touches a custom role, FORCE RLS lifted for that one statement and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

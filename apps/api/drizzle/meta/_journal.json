@@ -1107,6 +1107,13 @@
       "when": 1794236000000,
       "tag": "0157_staff_pin_generation_instance",
       "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1794238000000,
+      "tag": "0159_notification_policy_permission",
+      "breakpoints": true
     }
   ]
 }

@@ -60,6 +60,9 @@ const entries = [
   ["org.theme.manage", []],
   ["org.config.export", []],
   ["org.tax_config.manage", []],
+  // Covers PUT /api/notifications/policy and the notification template
+  // endpoints in notification/endpoints.ts (legend-kz1m). Not wired to a route yet.
+  ["org.notification_policy.manage", []],
   ["device.registry.manage", []],
   ["device.registry.revoke", []],
 

@@ -479,6 +479,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
 
   function addTender(order: EngineOrder, tender: EngineTender) {
     order.tenders.push(tender);
+    order.version += 1;
     if (remainingOf(order) === 0 && order.receiptNo === null)
       order.receiptNo = receiptNumberFor(order);
     if (tender.method === "cash" && state.shift?.status === "open")
@@ -1002,6 +1003,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       if (remainingOf(order) > 0 || order.receiptNo === null)
         conflict("NOT_PAID", "Struk dicetak setelah tagihan lunas.");
       order.receiptPrints += 1;
+      order.version += 1;
       return {
         receiptNo: order.receiptNo,
         printedAt: iso(clock()),

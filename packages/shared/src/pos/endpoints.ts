@@ -94,9 +94,21 @@ const receiptParams = z.strictObject({
   receiptId: posReceiptIdSchema,
 });
 
+/**
+ * legend-63l6: optimistic-concurrency guard. `expectedVersion` is the `version`
+ * of the order response, equivalent to `If-Match: "v"`. The route uses
+ * `expectedVersion ?? If-Match`; both given and different is 412
+ * PRECONDITION_FAILED. Both absent means no version check, so legacy clients
+ * keep working and `expectedStatus` still guards the transition.
+ */
+const expectedVersion = {
+  expectedVersion: z.number().int().nonnegative().safe().optional(),
+};
+
 /** Stale-screen guard: the caller states the status it believes the order has. */
 const expectedStatus = {
   expectedStatus: posOrderStatusSchema,
+  ...expectedVersion,
   idempotencyKey: idempotencyKeySchema,
 };
 
@@ -222,6 +234,7 @@ export const voidPosOrderItem = defineEndpoint({
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
     overrideId: posOverrideIdSchema,
+    ...expectedVersion,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posOrderDetailSchema),
@@ -334,6 +347,7 @@ export const applyPosDiscount = defineEndpoint({
     reasonNote: z.string().min(4).max(500).nullable().optional(),
     approvedBy: userIdSchema.optional(),
     overrideId: posOverrideIdSchema.optional(),
+    ...expectedVersion,
     idempotencyKey: idempotencyKeySchema,
   })
     .refine(
@@ -424,7 +438,10 @@ export const removePosDiscount = defineEndpoint({
     orderId: orderIdSchema,
     discountId: posDiscountIdSchema,
   }),
-  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  body: clientInputSchema({
+    ...expectedVersion,
+    idempotencyKey: idempotencyKeySchema,
+  }),
   response: dataResponseSchema(posOrderDetailSchema),
 });
 
