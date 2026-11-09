@@ -151,9 +151,9 @@ describe("action requests (AIG-03)", () => {
     ).toBe(1);
 
     // Chain still open: settle does nothing.
-    expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe(
-      "pending",
-    );
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("pending");
 
     await decide(approver, receipt.approvalRequestId, "approved");
     const [a, b] = await Promise.all([
@@ -165,9 +165,9 @@ describe("action requests (AIG-03)", () => {
 
     // Double delivery executes once: one executed event, row stays executed.
     const after = await availabilityFingerprint(menuItemId);
-    expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe(
-      "executed",
-    );
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("executed");
     expect(await availabilityFingerprint(menuItemId)).toBe(after);
     expect(
       await eventCount("action_request.executed", receipt.actionRequestId),
@@ -191,9 +191,9 @@ describe("action requests (AIG-03)", () => {
       approvalRequestId: string;
     };
     await decide(approver, receipt.approvalRequestId, "rejected");
-    expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe(
-      "rejected",
-    );
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("rejected");
     expect(await availabilityFingerprint(menuItemId)).toBe(before);
     expect(
       (await getActionRequestView(ctx.access, receipt.actionRequestId)).status,
@@ -210,9 +210,9 @@ describe("action requests (AIG-03)", () => {
     };
     await decide(approver, receipt.approvalRequestId, "approved");
     await removeAssignments(requester.userId);
-    expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe(
-      "failed",
-    );
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("failed");
     expect(await availabilityFingerprint(menuItemId)).toBe(before);
     const row = await ownerPool.query(
       "SELECT failure_reason FROM action_requests WHERE id = $1",
@@ -253,7 +253,10 @@ describe("action requests (AIG-03)", () => {
     )) as { actionRequestId: string };
     const stranger = await signedIn("Orang Asing W");
     await expect(
-      getActionRequestView(await accessOf(stranger.userId), receipt.actionRequestId),
+      getActionRequestView(
+        await accessOf(stranger.userId),
+        receipt.actionRequestId,
+      ),
     ).rejects.toMatchObject({ code: "ACTION_REQUEST_NOT_FOUND" });
     await expect(
       getActionRequestStatus(await ctxOf(stranger), receipt.actionRequestId),
@@ -296,7 +299,12 @@ async function roleIdOf(templateKey: string): Promise<string> {
 
 /** Runs `body` with exactly these module policies, restoring the matrix after. */
 async function withModulePolicies(
-  policies: { action: string; threshold: number | null; role: string; levels: number }[],
+  policies: {
+    action: string;
+    threshold: number | null;
+    role: string;
+    levels: number;
+  }[],
   body: () => Promise<void>,
 ) {
   const saved = (
@@ -314,7 +322,13 @@ async function withModulePolicies(
       await ownerPool.query(
         `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
          VALUES ($1, $2, $3, $4, $5)`,
-        [tenantId, policy.action, policy.threshold, await roleIdOf(policy.role), policy.levels],
+        [
+          tenantId,
+          policy.action,
+          policy.threshold,
+          await roleIdOf(policy.role),
+          policy.levels,
+        ],
       );
     await body();
   } finally {
@@ -326,22 +340,32 @@ async function withModulePolicies(
       await ownerPool.query(
         `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [row.id, row.tenant_id, row.action_type, row.threshold_idr, row.approver_role_id, row.levels, row.requires_distinct_actor],
+        [
+          row.id,
+          row.tenant_id,
+          row.action_type,
+          row.threshold_idr,
+          row.approver_role_id,
+          row.levels,
+          row.requires_distinct_actor,
+        ],
       );
   }
 }
 
 const approvalOf = async (approvalRequestId: string) =>
   (
-    await ownerPool.query(
-      "SELECT action_type, required_levels, approver_role_ids FROM approval_requests WHERE id = $1",
-      [approvalRequestId],
-    ).catch(() =>
-      ownerPool.query(
-        "SELECT action_type, required_levels FROM approval_requests WHERE id = $1",
+    await ownerPool
+      .query(
+        "SELECT action_type, required_levels, approver_role_ids FROM approval_requests WHERE id = $1",
         [approvalRequestId],
-      ),
-    )
+      )
+      .catch(() =>
+        ownerPool.query(
+          "SELECT action_type, required_levels FROM approval_requests WHERE id = $1",
+          [approvalRequestId],
+        ),
+      )
   ).rows[0] as { action_type: string; required_levels: number };
 
 async function gmRequester() {
@@ -359,9 +383,19 @@ describe("two-policy approval (AIG-03)", () => {
   it("a price change opens the module's general-manager policy, not the weaker AI one", async () => {
     const gm = await gmRequester();
     await withModulePolicies(
-      [{ action: "price_change", threshold: null, role: "general_manager", levels: 1 }],
+      [
+        {
+          action: "price_change",
+          threshold: null,
+          role: "general_manager",
+          levels: 1,
+        },
+      ],
       async () => {
-        const receipt = (await writeTools["TL-17"]!(await ctxOf(gm), priceDraft())) as {
+        const receipt = (await writeTools["TL-17"]!(
+          await ctxOf(gm),
+          priceDraft(),
+        )) as {
           approvalRequestId: string;
         };
         const approval = await approvalOf(receipt.approvalRequestId);
@@ -376,18 +410,33 @@ describe("two-policy approval (AIG-03)", () => {
     );
     // No module policy configured: the AI rule applies.
     await withModulePolicies([], async () => {
-      const receipt = (await writeTools["TL-17"]!(await ctxOf(gm), priceDraft())) as {
+      const receipt = (await writeTools["TL-17"]!(
+        await ctxOf(gm),
+        priceDraft(),
+      )) as {
         approvalRequestId: string;
       };
-      expect((await approvalOf(receipt.approvalRequestId)).action_type).toBe("ai_action");
+      expect((await approvalOf(receipt.approvalRequestId)).action_type).toBe(
+        "ai_action",
+      );
     });
   }, 60_000);
 
   it("a stock adjustment follows the value tiers of the module policy", async () => {
     await withModulePolicies(
       [
-        { action: "stock_adjustment", threshold: 2_000_000, role: "outlet_manager", levels: 1 },
-        { action: "stock_adjustment", threshold: 2_000_000, role: "general_manager", levels: 2 },
+        {
+          action: "stock_adjustment",
+          threshold: 2_000_000,
+          role: "outlet_manager",
+          levels: 1,
+        },
+        {
+          action: "stock_adjustment",
+          threshold: 2_000_000,
+          role: "general_manager",
+          levels: 2,
+        },
       ],
       async () => {
         const pick = (amountIdr: number | null) =>
@@ -418,22 +467,44 @@ describe("two-policy approval (AIG-03)", () => {
       ),
     ).toBe(25_501);
     expect(
-      adjustmentValueIdr([{ inventoryItemId: "x", qtyDelta: "1.0000" }], new Map()),
+      adjustmentValueIdr(
+        [{ inventoryItemId: "x", qtyDelta: "1.0000" }],
+        new Map(),
+      ),
     ).toBeNull();
   });
 
   it("an unknown stock cost opens the highest module tier", async () => {
     const { requester } = await requesterWithApprover();
-    await grantTemplateRole(requester.userId, "warehouse", { type: "outlet", id: outletA });
+    await grantTemplateRole(requester.userId, "warehouse", {
+      type: "outlet",
+      id: outletA,
+    });
     await withModulePolicies(
       [
-        { action: "stock_adjustment", threshold: null, role: "outlet_manager", levels: 1 },
-        { action: "stock_adjustment", threshold: null, role: "general_manager", levels: 2 },
+        {
+          action: "stock_adjustment",
+          threshold: null,
+          role: "outlet_manager",
+          levels: 1,
+        },
+        {
+          action: "stock_adjustment",
+          threshold: null,
+          role: "general_manager",
+          levels: 2,
+        },
       ],
       async () => {
         const receipt = (await writeTools["TL-14"]!(await ctxOf(requester), {
           outletId: outletA,
-          lines: [{ inventoryItemId: randomUUID(), qtyDelta: "-1.0000", reason: "Rusak" }],
+          lines: [
+            {
+              inventoryItemId: randomUUID(),
+              qtyDelta: "-1.0000",
+              reason: "Rusak",
+            },
+          ],
         })) as { approvalRequestId: string };
         const approval = await approvalOf(receipt.approvalRequestId);
         expect(approval.action_type).toBe("stock_adjustment");
@@ -451,26 +522,39 @@ describe("write permission and execution re-check", () => {
       outletId: outletA,
       lines: [{ inventoryItemId: randomUUID(), qtyDelta, reason: "Uji" }],
     });
-    await expect(writeTools["TL-14"]!(ctx, line("5.0000"))).rejects.toMatchObject({
+    await expect(
+      writeTools["TL-14"]!(ctx, line("5.0000")),
+    ).rejects.toMatchObject({
       code: "AI_TOOL_FORBIDDEN",
     });
-    const ok = (await writeTools["TL-14"]!(ctx, line("-1.0000"))) as { status: string };
+    const ok = (await writeTools["TL-14"]!(ctx, line("-1.0000"))) as {
+      status: string;
+    };
     expect(ok.status).toBe("pending");
   });
 
   it("a banned requester's approved request fails and changes nothing", async () => {
     const { menuItemId, requester, approver } = await requesterWithApprover();
     const before = await availabilityFingerprint(menuItemId);
-    const receipt = (await writeTools["TL-18"]!(await ctxOf(requester), draft(menuItemId))) as {
+    const receipt = (await writeTools["TL-18"]!(
+      await ctxOf(requester),
+      draft(menuItemId),
+    )) as {
       actionRequestId: string;
       approvalRequestId: string;
     };
     await decide(approver, receipt.approvalRequestId, "approved");
-    await ownerPool.query('UPDATE "user" SET banned = true WHERE id = $1', [requester.userId]);
+    await ownerPool.query('UPDATE "user" SET banned = true WHERE id = $1', [
+      requester.userId,
+    ]);
     try {
-      expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe("failed");
+      expect(
+        await settleActionRequest(workerContext, receipt.actionRequestId),
+      ).toBe("failed");
     } finally {
-      await ownerPool.query('UPDATE "user" SET banned = false WHERE id = $1', [requester.userId]);
+      await ownerPool.query('UPDATE "user" SET banned = false WHERE id = $1', [
+        requester.userId,
+      ]);
     }
     expect(await availabilityFingerprint(menuItemId)).toBe(before);
   }, 60_000);

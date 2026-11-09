@@ -52,7 +52,9 @@ export const executePriceChange: ActionExecutor = async ({
         ).map((entry) => entry.id)
       : []);
   if (outletIds.length === 0)
-    throw new ActionExecutionError("Tidak ada outlet yang boleh diubah harganya.");
+    throw new ActionExecutionError(
+      "Tidak ada outlet yang boleh diubah harganya.",
+    );
   const effectiveDate = localDateOf(payload.effectiveAt);
   const today = localDateOf(now);
   const date = effectiveDate < today ? today : effectiveDate;
@@ -77,7 +79,9 @@ export const executePriceChange: ActionExecutor = async ({
       id: outletId,
     });
     if (!context)
-      throw new ActionExecutionError("Pengaju tidak lagi punya akses ke outlet ini.");
+      throw new ActionExecutionError(
+        "Pengaju tidak lagi punya akses ke outlet ini.",
+      );
     const channels = await withTenant(db, context, async (tx) => {
       const lists = await tx
         .select()
@@ -170,7 +174,11 @@ export const executePriceChange: ActionExecutor = async ({
         const list = await createPriceList(
           step.context,
           row.requestedByUserId,
-          { outletId: step.outletId, channel: step.channel, effectiveFrom: date },
+          {
+            outletId: step.outletId,
+            channel: step.channel,
+            effectiveFrom: date,
+          },
           now,
         );
         listId = list.id;

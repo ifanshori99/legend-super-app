@@ -97,7 +97,8 @@ export const getFinancialStatement: AiToolHandler = async (ctx, raw) => {
         label: closedOnly
           ? "Laporan keuangan (hanya periode tutup)"
           : "Laporan keuangan dari jurnal terposting",
-        metricCode: input.statement === "profit_loss" ? "net_profit" : undefined,
+        metricCode:
+          input.statement === "profit_loss" ? "net_profit" : undefined,
         period: input.period,
         finality,
         route: ROUTES[input.statement],

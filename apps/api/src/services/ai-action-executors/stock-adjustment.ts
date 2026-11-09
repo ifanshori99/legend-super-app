@@ -72,7 +72,11 @@ export const executeStockAdjustment: ActionExecutor = async (args) => {
     );
   let firstEntryId: string | null = null;
   for (const [index, line] of payload.lines.entries()) {
-    const place = await pickLocation(args, payload.outletId, line.inventoryItemId);
+    const place = await pickLocation(
+      args,
+      payload.outletId,
+      line.inventoryItemId,
+    );
     const inbound = parseDecimal4(line.qtyDelta) > 0n;
     if (inbound && place.avgCostIdr === null)
       throw new ActionExecutionError(

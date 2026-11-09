@@ -494,7 +494,10 @@ export async function proposeActionRequest(
     });
   } catch (error) {
     // No approval policy for the action: nobody may approve (fail closed).
-    if (error instanceof AccessError && error.code === "APPROVAL_POLICY_MISSING")
+    if (
+      error instanceof AccessError &&
+      error.code === "APPROVAL_POLICY_MISSING"
+    )
       throw new AiError(
         "AI_TOOL_DISABLED",
         "Kebijakan approval untuk aksi AI belum diatur oleh admin.",
@@ -649,7 +652,9 @@ export async function getActionRequestReview(
   if (!found) throw notFound();
   return actionRequestReviewSchema.parse({
     actionRequest: toView(found.row),
-    toolTitleId: getAiTool(found.row.toolCode as ActionRequestToolCode)?.titleId ?? found.row.toolCode,
+    toolTitleId:
+      getAiTool(found.row.toolCode as ActionRequestToolCode)?.titleId ??
+      found.row.toolCode,
     requestedByName: found.requesterName.slice(0, 120) || "Pengguna",
     outletName: found.outlet?.name.slice(0, 120) ?? null,
     summary: summaryLines(found.row.payload),
@@ -715,23 +720,27 @@ export async function getActionRequestStatus(
   actionRequestId: string,
 ): Promise<GetActionRequestStatusOutput> {
   const row = await findRow(ctx.access, actionRequestId);
-  const approval = await withTenant(db, discoveryContext(ctx.access), async (tx) => {
-    const [latest] = await tx
-      .select({
-        status: approvalRequests.status,
-        decidedAt: approvalRequests.decidedAt,
-      })
-      .from(approvalRequests)
-      .where(
-        and(
-          eq(approvalRequests.tenantId, row.tenantId),
-          eq(approvalRequests.chainId, row.approvalRequestId),
-        ),
-      )
-      .orderBy(desc(approvalRequests.level))
-      .limit(1);
-    return latest;
-  });
+  const approval = await withTenant(
+    db,
+    discoveryContext(ctx.access),
+    async (tx) => {
+      const [latest] = await tx
+        .select({
+          status: approvalRequests.status,
+          decidedAt: approvalRequests.decidedAt,
+        })
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.tenantId, row.tenantId),
+            eq(approvalRequests.chainId, row.approvalRequestId),
+          ),
+        )
+        .orderBy(desc(approvalRequests.level))
+        .limit(1);
+      return latest;
+    },
+  );
   return getActionRequestStatusOutputSchema.parse({
     actionRequestId: row.id,
     toolCode: row.toolCode,
@@ -746,7 +755,8 @@ export async function getActionRequestStatus(
 // ------------------------------------------------------------------- settle
 
 function safeFailureReason(error: unknown): string {
-  if (error instanceof ActionExecutionError) return error.message.slice(0, FAILURE_REASON_MAX);
+  if (error instanceof ActionExecutionError)
+    return error.message.slice(0, FAILURE_REASON_MAX);
   if (
     error instanceof AiError ||
     error instanceof CoreError ||
@@ -802,7 +812,10 @@ async function assertActorStillValid(
   // Tenant switches: AI master switch, and the MCP switch for MCP requests
   // (no settings row: AI on, MCP off, as `loadMcpSettings`).
   const [settings] = await tx
-    .select({ aiEnabled: aiSettings.aiEnabled, mcpEnabled: aiSettings.mcpEnabled })
+    .select({
+      aiEnabled: aiSettings.aiEnabled,
+      mcpEnabled: aiSettings.mcpEnabled,
+    })
     .from(aiSettings)
     .where(eq(aiSettings.tenantId, row.tenantId))
     .limit(1);
@@ -949,7 +962,9 @@ async function execute(
       now,
     );
     if (!executor)
-      throw new ActionExecutionError("Aksi ini belum bisa dijalankan otomatis.");
+      throw new ActionExecutionError(
+        "Aksi ini belum bisa dijalankan otomatis.",
+      );
     await assertActorStillValid(tx, row, now);
     if (
       !holdsToolAccess(

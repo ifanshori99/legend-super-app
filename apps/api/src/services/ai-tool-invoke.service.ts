@@ -174,7 +174,11 @@ function auditParams(rawInput: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(redacted)) {
     const name = key.slice(0, PARAM_KEY_MAX);
-    if (value === null || typeof value === "number" || typeof value === "boolean")
+    if (
+      value === null ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    )
       out[name] = value;
     else if (typeof value === "string")
       out[name] = value.slice(0, PARAM_VALUE_MAX);
@@ -345,7 +349,10 @@ export async function invokeAiTool(
     !callerHoldsToolPermissions(ctx.access, tool) ||
     mfaBlocks(ctx.access, tool)
   ) {
-    result = deny("AI_TOOL_FORBIDDEN", new AiError("AI_TOOL_FORBIDDEN").message);
+    result = deny(
+      "AI_TOOL_FORBIDDEN",
+      new AiError("AI_TOOL_FORBIDDEN").message,
+    );
   } else {
     const parsed = (tool.input as z.ZodType).safeParse(rawInput ?? {});
     const handler = getAiToolHandler(tool.code);
@@ -358,7 +365,10 @@ export async function invokeAiTool(
           .join("; ")}`,
       );
     } else if (!handler) {
-      result = deny("AI_TOOL_DISABLED", new AiError("AI_TOOL_DISABLED").message);
+      result = deny(
+        "AI_TOOL_DISABLED",
+        new AiError("AI_TOOL_DISABLED").message,
+      );
     } else {
       parsedInput = parsed.data;
       try {

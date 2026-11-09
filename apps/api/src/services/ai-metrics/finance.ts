@@ -57,14 +57,19 @@ async function monthsClosedIn(
       COUNT(*) FILTER (WHERE status = 'closed')::int AS closed
     FROM fiscal_periods
     WHERE tenant_id = ${tenantId}::uuid
-      AND period IN (${sql.join(months.map((m) => sql`${m}`), sql`, `)}) ${entity}
+      AND period IN (${sql.join(
+        months.map((m) => sql`${m}`),
+        sql`, `,
+      )}) ${entity}
     GROUP BY period`);
   const byMonth = new Map(
     result.rows.map((row) => [String(row.period), row] as const),
   );
   return months.every((month) => {
     const row = byMonth.get(month);
-    return row !== undefined && num(row.n) > 0 && num(row.n) === num(row.closed);
+    return (
+      row !== undefined && num(row.n) > 0 && num(row.n) === num(row.closed)
+    );
   });
 }
 

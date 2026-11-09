@@ -21,7 +21,9 @@ export function isBanActive(
   banExpires: Date | null | undefined,
   now: Date = new Date(),
 ): boolean {
-  return Boolean(banned) && (!banExpires || banExpires.getTime() > now.getTime());
+  return (
+    Boolean(banned) && (!banExpires || banExpires.getTime() > now.getTime())
+  );
 }
 
 export function outletIdsOf(payload: Record<string, unknown>): string[] {
@@ -47,10 +49,16 @@ function domainWriteHeld(
   const lines = Array.isArray(payload.lines)
     ? (payload.lines as { qtyDelta?: unknown }[])
     : [];
-  const needsDecrease = lines.some((l) => parseDecimal4(String(l.qtyDelta)) < 0n);
-  const needsIncrease = lines.some((l) => parseDecimal4(String(l.qtyDelta)) > 0n);
-  const decrease = via("inventory.opname.count") || via("inventory.waste.record");
-  const increase = via("inventory.opname.count") || via("inventory.stock.receive");
+  const needsDecrease = lines.some(
+    (l) => parseDecimal4(String(l.qtyDelta)) < 0n,
+  );
+  const needsIncrease = lines.some(
+    (l) => parseDecimal4(String(l.qtyDelta)) > 0n,
+  );
+  const decrease =
+    via("inventory.opname.count") || via("inventory.waste.record");
+  const increase =
+    via("inventory.opname.count") || via("inventory.stock.receive");
   return (!needsDecrease || decrease) && (!needsIncrease || increase);
 }
 

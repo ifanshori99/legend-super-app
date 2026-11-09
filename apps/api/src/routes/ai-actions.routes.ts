@@ -43,7 +43,9 @@ export function createAiActionsRouter(): Router {
     "/action-requests/by-approval/:approvalRequestId",
     ...gate,
     async (req, res) => {
-      const params = getActionRequestByApprovalEndpoint.params.parse(req.params);
+      const params = getActionRequestByApprovalEndpoint.params.parse(
+        req.params,
+      );
       res.json({
         data: await getActionRequestReview(
           getAccessSnapshot(req),

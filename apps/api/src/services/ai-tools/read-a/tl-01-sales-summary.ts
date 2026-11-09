@@ -29,7 +29,10 @@ export const getSalesSummary: AiToolHandler = async (ctx, raw) => {
     })),
     totals: {
       ...data.totals,
-      avgSpendPerPaxIdr: averagePerPax(data.totals.netSalesIdr, data.totals.pax),
+      avgSpendPerPaxIdr: averagePerPax(
+        data.totals.netSalesIdr,
+        data.totals.pax,
+      ),
     },
     truncated: data.truncated,
     sources: [

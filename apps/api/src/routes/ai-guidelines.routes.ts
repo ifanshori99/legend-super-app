@@ -16,7 +16,7 @@ export const AI_GUIDELINES: AiGuidelines = aiGuidelinesSchema.parse({
       titleId: "Apa itu Tanya AI",
       paragraphsId: [
         "Tanya AI membantu Anda membaca data usaha dengan bahasa sehari-hari, misalnya penjualan kemarin, stok yang menipis, atau jadwal shift.",
-        "Jawaban yang dibuat AI selalu diberi label \"Dibantu AI\" dan menyebut sumber angkanya: metrik, periode, dan tautan ke halaman asalnya.",
+        'Jawaban yang dibuat AI selalu diberi label "Dibantu AI" dan menyebut sumber angkanya: metrik, periode, dan tautan ke halaman asalnya.',
       ],
     },
     {

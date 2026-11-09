@@ -389,7 +389,13 @@ async function sopReader(name: string): Promise<Actor> {
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
                               employment_type, join_date, status)
        VALUES ($1, $2, $3, $4, 'Karyawan SOP MCP', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenantId, user.userId, `MCP-${id.slice(0, 8).toUpperCase()}`, outletA],
+      [
+        id,
+        tenantId,
+        user.userId,
+        `MCP-${id.slice(0, 8).toUpperCase()}`,
+        outletA,
+      ],
     ),
   );
   return user;

@@ -190,13 +190,14 @@ function contextFor(
   scope: Scope = "tenant",
   extraPermissions: readonly string[] = [],
 ): AiToolContext {
-  return contextForGrants(tenant, [
-    { role: roleKey, scope, extraPermissions },
-  ]);
+  return contextForGrants(tenant, [{ role: roleKey, scope, extraPermissions }]);
 }
 
-const call = (code: keyof typeof readToolsA, ctx: AiToolContext, input: object) =>
-  readToolsA[code]!(ctx, input);
+const call = (
+  code: keyof typeof readToolsA,
+  ctx: AiToolContext,
+  input: object,
+) => readToolsA[code]!(ctx, input);
 
 const forbidden = { code: "AI_TOOL_FORBIDDEN" };
 
@@ -407,7 +408,14 @@ beforeAll(async () => {
       );
     }
     const items: [string, string | null, [string, string][]][] = [
-      ["Beras", "10", [[x1, "4"], [x2, "3"]]],
+      [
+        "Beras",
+        "10",
+        [
+          [x1, "4"],
+          [x2, "3"],
+        ],
+      ],
       ["Gula", "10", [[x1, "8"]]],
       ["Kopi", "5", [[x1, "20"]]],
       ["Teh", null, [[x1, "0"]]],
@@ -499,7 +507,15 @@ beforeAll(async () => {
         `INSERT INTO journal_entries (id, tenant_id, legal_entity_id, entry_date, fiscal_period_id,
            source_type, description, idempotency_key, request_fingerprint)
          VALUES ($1, $2, $3, $4, $5, 'manual', 'test', $6, $7)`,
-        [entryId, tx.id, tx.entityId, date, periodId, randomUUID(), "f".repeat(64)],
+        [
+          entryId,
+          tx.id,
+          tx.entityId,
+          date,
+          periodId,
+          randomUUID(),
+          "f".repeat(64),
+        ],
       );
       for (const [index, [code, debit, credit]] of lines.entries())
         await client.query(
@@ -573,7 +589,14 @@ describe("TL-01 get_sales_summary", () => {
     const out = getSalesSummaryOutputSchema.parse(
       await call("TL-01", ctx, { period, outletIds: [x1] }),
     );
-    expect(out.rows.map((r) => [r.key, r.grossSalesIdr, r.netSalesIdr, r.transactionCount])).toEqual([
+    expect(
+      out.rows.map((r) => [
+        r.key,
+        r.grossSalesIdr,
+        r.netSalesIdr,
+        r.transactionCount,
+      ]),
+    ).toEqual([
       [D10, 150_000, 135_000, 2],
       [D11, 30_000, 30_000, 1],
     ]);
@@ -583,21 +606,32 @@ describe("TL-01 get_sales_summary", () => {
       transactionCount: 3,
     });
     expect(out.truncated).toBe(false);
-    expect(out.sources[0]).toMatchObject({ metricCode: "net_sales", finality: "final" });
+    expect(out.sources[0]).toMatchObject({
+      metricCode: "net_sales",
+      finality: "final",
+    });
     expect(out.sources[0]!.link).toContain("startDate=2031-03-10");
   });
 
   it("owner without filter covers every outlet; outlet grouping names outlets", async () => {
     const out = getSalesSummaryOutputSchema.parse(
-      await call("TL-01", contextFor(tx, "owner"), { period, groupBy: "outlet" }),
+      await call("TL-01", contextFor(tx, "owner"), {
+        period,
+        groupBy: "outlet",
+      }),
     );
     expect(out.totals.netSalesIdr).toBe(365_000);
-    expect(out.rows.map((r) => r.label).sort()).toEqual(tx.outlets.map((o) => o.name).sort());
+    expect(out.rows.map((r) => r.label).sort()).toEqual(
+      tx.outlets.map((o) => o.name).sort(),
+    );
   });
 
   it("groups by channel", async () => {
     const out = getSalesSummaryOutputSchema.parse(
-      await call("TL-01", contextFor(tx, "owner"), { period, groupBy: "channel" }),
+      await call("TL-01", contextFor(tx, "owner"), {
+        period,
+        groupBy: "channel",
+      }),
     );
     expect(out.rows.map((r) => [r.key, r.netSalesIdr])).toEqual([
       ["gofood", 200_000],
@@ -617,23 +651,36 @@ describe("TL-01 get_sales_summary", () => {
 
   it("outlet manager sees only the assigned outlet and is denied another", async () => {
     const ctx = contextFor(tx, "outlet_manager", x1);
-    const out = getSalesSummaryOutputSchema.parse(await call("TL-01", ctx, { period }));
+    const out = getSalesSummaryOutputSchema.parse(
+      await call("TL-01", ctx, { period }),
+    );
     expect(out.totals.netSalesIdr).toBe(165_000);
-    await expect(call("TL-01", ctx, { period, outletIds: [x2] })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-01", ctx, { period, outletIds: [x2] }),
+    ).rejects.toMatchObject(forbidden);
   });
 
   it("denies a role that is not in the tool's roles", async () => {
-    await expect(call("TL-01", contextFor(tx, "kitchen_lead", x1), { period })).rejects.toMatchObject(forbidden);
-    await expect(call("TL-01", contextFor(tx, "employee"), { period })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-01", contextFor(tx, "kitchen_lead", x1), { period }),
+    ).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-01", contextFor(tx, "employee"), { period }),
+    ).rejects.toMatchObject(forbidden);
   });
 
   it("never returns another tenant's data", async () => {
     const ownerY = contextFor(ty, "owner");
-    const out = getSalesSummaryOutputSchema.parse(await call("TL-01", ownerY, { period }));
+    const out = getSalesSummaryOutputSchema.parse(
+      await call("TL-01", ownerY, { period }),
+    );
     expect(out.totals.netSalesIdr).toBe(777_000);
     // Tenant X's owner cannot name tenant Y's outlet.
     await expect(
-      call("TL-01", contextFor(tx, "owner"), { period, outletIds: [ty.outlets[0]!.id] }),
+      call("TL-01", contextFor(tx, "owner"), {
+        period,
+        outletIds: [ty.outlets[0]!.id],
+      }),
     ).rejects.toMatchObject(forbidden);
   });
 
@@ -656,14 +703,20 @@ describe("TL-02 get_menu_performance", () => {
 
   it("ranks items and shows margin to a caller who also holds cost permission", async () => {
     const out = getMenuPerformanceOutputSchema.parse(
-      await call("TL-02", contextFor(tx, "outlet_manager", x1, ["inventory.cost.view"]), {
-        period,
-        outletIds: [x1],
-        sortBy: "margin",
-      }),
+      await call(
+        "TL-02",
+        contextFor(tx, "outlet_manager", x1, ["inventory.cost.view"]),
+        {
+          period,
+          outletIds: [x1],
+          sortBy: "margin",
+        },
+      ),
     );
     // Voided line is excluded; Kopi Susu = 2x32.000 + 1x30.000.
-    expect(out.items.map((i) => [i.name, i.qtySold, i.revenueIdr, i.marginIdr])).toEqual([
+    expect(
+      out.items.map((i) => [i.name, i.qtySold, i.revenueIdr, i.marginIdr]),
+    ).toEqual([
       ["Kopi Susu", 3, 94_000, 94_000 - 19_200],
       ["Nasi Goreng", 1, 50_000, 30_000],
     ]);
@@ -671,7 +724,11 @@ describe("TL-02 get_menu_performance", () => {
 
   it("hides margin from a kitchen lead (menu.item.view only)", async () => {
     const out = getMenuPerformanceOutputSchema.parse(
-      await call("TL-02", contextFor(tx, "kitchen_lead", x1), { period, sortBy: "margin", limit: 1 }),
+      await call("TL-02", contextFor(tx, "kitchen_lead", x1), {
+        period,
+        sortBy: "margin",
+        limit: 1,
+      }),
     );
     expect(out.items).toHaveLength(1);
     expect(out.items[0]!.marginIdr).toBeNull();
@@ -680,7 +737,10 @@ describe("TL-02 get_menu_performance", () => {
 
   it("denies an outlet outside the caller's scope and other tenants", async () => {
     await expect(
-      call("TL-02", contextFor(tx, "kitchen_lead", x1), { period, outletIds: [x2] }),
+      call("TL-02", contextFor(tx, "kitchen_lead", x1), {
+        period,
+        outletIds: [x2],
+      }),
     ).rejects.toMatchObject(forbidden);
     const out = getMenuPerformanceOutputSchema.parse(
       await call("TL-02", contextFor(ty, "marketing"), { period }),
@@ -689,7 +749,9 @@ describe("TL-02 get_menu_performance", () => {
   });
 
   it("denies a role outside the tool's roles", async () => {
-    await expect(call("TL-02", contextFor(tx, "cashier", x1), { period })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-02", contextFor(tx, "cashier", x1), { period }),
+    ).rejects.toMatchObject(forbidden);
   });
 
   it("checks a role override through that role only: kitchen_lead@x1 + cashier@x2 cannot read x2", async () => {
@@ -697,8 +759,12 @@ describe("TL-02 get_menu_performance", () => {
       { role: "kitchen_lead", scope: x1 },
       { role: "cashier", scope: x2 },
     ]);
-    await expect(call("TL-02", ctx, { period, outletIds: [x2] })).rejects.toMatchObject(forbidden);
-    const out = getMenuPerformanceOutputSchema.parse(await call("TL-02", ctx, { period }));
+    await expect(
+      call("TL-02", ctx, { period, outletIds: [x2] }),
+    ).rejects.toMatchObject(forbidden);
+    const out = getMenuPerformanceOutputSchema.parse(
+      await call("TL-02", ctx, { period }),
+    );
     // Only x1's Kopi Susu (3), never x2's 4.
     expect(out.items.find((i) => i.name === "Kopi Susu")?.qtySold).toBe(3);
   });
@@ -708,7 +774,9 @@ describe("TL-02 get_menu_performance", () => {
       { role: "outlet_manager", scope: x1 },
       { role: "kitchen_lead", scope: x2 },
     ]);
-    const out = getMenuPerformanceOutputSchema.parse(await call("TL-02", ctx, { period }));
+    const out = getMenuPerformanceOutputSchema.parse(
+      await call("TL-02", ctx, { period }),
+    );
     expect(out.items.find((i) => i.name === "Kopi Susu")?.qtySold).toBe(7);
   });
 
@@ -717,9 +785,15 @@ describe("TL-02 get_menu_performance", () => {
       { role: "outlet_manager", scope: x1, permissions: ["report.sales.view"] },
       { role: "kitchen_lead", scope: x2, permissions: ["menu.item.view"] },
     ]);
-    await expect(call("TL-02", ctx, { period })).rejects.toMatchObject(forbidden);
-    await expect(call("TL-02", ctx, { period, outletIds: [x1, x2] })).rejects.toMatchObject(forbidden);
-    const x2Only = getMenuPerformanceOutputSchema.parse(await call("TL-02", ctx, { period, outletIds: [x2] }));
+    await expect(call("TL-02", ctx, { period })).rejects.toMatchObject(
+      forbidden,
+    );
+    await expect(
+      call("TL-02", ctx, { period, outletIds: [x1, x2] }),
+    ).rejects.toMatchObject(forbidden);
+    const x2Only = getMenuPerformanceOutputSchema.parse(
+      await call("TL-02", ctx, { period, outletIds: [x2] }),
+    );
     expect(x2Only.items.find((i) => i.name === "Kopi Susu")?.qtySold).toBe(4);
   });
 });
@@ -731,7 +805,15 @@ describe("TL-03 get_stock_levels", () => {
     const out = getStockLevelsOutputSchema.parse(
       await call("TL-03", contextFor(tx, "warehouse", x1), {}),
     );
-    expect(out.items.map((i) => [i.name, i.onHandQty, i.parLevelQty, i.status, i.unit])).toEqual([
+    expect(
+      out.items.map((i) => [
+        i.name,
+        i.onHandQty,
+        i.parLevelQty,
+        i.status,
+        i.unit,
+      ]),
+    ).toEqual([
       ["Beras", "4.0000", "10.0000", "critical", "kg"],
       ["Gula", "8.0000", "10.0000", "low", "kg"],
       ["Kopi", "20.0000", "5.0000", "ok", "kg"],
@@ -741,9 +823,13 @@ describe("TL-03 get_stock_levels", () => {
 
   it("filters below par and by search", async () => {
     const ctx = contextFor(tx, "warehouse", x1);
-    const below = getStockLevelsOutputSchema.parse(await call("TL-03", ctx, { onlyBelowPar: true }));
+    const below = getStockLevelsOutputSchema.parse(
+      await call("TL-03", ctx, { onlyBelowPar: true }),
+    );
     expect(below.items.map((i) => i.name)).toEqual(["Beras", "Gula"]);
-    const found = getStockLevelsOutputSchema.parse(await call("TL-03", ctx, { search: "ber" }));
+    const found = getStockLevelsOutputSchema.parse(
+      await call("TL-03", ctx, { search: "ber" }),
+    );
     expect(found.items.map((i) => i.name)).toEqual(["Beras"]);
   });
 
@@ -751,15 +837,21 @@ describe("TL-03 get_stock_levels", () => {
     const out = getStockLevelsOutputSchema.parse(
       await call("TL-03", contextFor(tx, "purchasing"), { outletIds: [x2] }),
     );
-    expect(out.items.map((i) => [i.name, i.onHandQty])).toEqual([["Beras", "3.0000"]]);
+    expect(out.items.map((i) => [i.name, i.onHandQty])).toEqual([
+      ["Beras", "3.0000"],
+    ]);
     await expect(
       call("TL-03", contextFor(tx, "warehouse", x1), { outletIds: [x2] }),
     ).rejects.toMatchObject(forbidden);
   });
 
   it("denies other roles and never shows other tenants' stock", async () => {
-    await expect(call("TL-03", contextFor(tx, "cashier", x1), {})).rejects.toMatchObject(forbidden);
-    const out = getStockLevelsOutputSchema.parse(await call("TL-03", contextFor(ty, "purchasing"), {}));
+    await expect(
+      call("TL-03", contextFor(tx, "cashier", x1), {}),
+    ).rejects.toMatchObject(forbidden);
+    const out = getStockLevelsOutputSchema.parse(
+      await call("TL-03", contextFor(ty, "purchasing"), {}),
+    );
     expect(out.items).toEqual([]);
   });
 });
@@ -771,27 +863,48 @@ describe("TL-04 get_food_cost", () => {
 
   it("computes food cost percent per outlet from cost snapshots", async () => {
     const out = getFoodCostOutputSchema.parse(
-      await call("TL-04", contextFor(tx, "finance"), { period, outletIds: [x1] }),
+      await call("TL-04", contextFor(tx, "finance"), {
+        period,
+        outletIds: [x1],
+      }),
     );
-    expect(out).toMatchObject({ foodCostIdr: 39_200, netSalesIdr: 165_000, foodCostPct: "23.7576" });
+    expect(out).toMatchObject({
+      foodCostIdr: 39_200,
+      netSalesIdr: 165_000,
+      foodCostPct: "23.7576",
+    });
     expect(out.rows).toHaveLength(1);
-    expect(out.rows[0]).toMatchObject({ outletName: tx.outlets[0]!.name, foodCostPct: "23.7576" });
+    expect(out.rows[0]).toMatchObject({
+      outletName: tx.outlets[0]!.name,
+      foodCostPct: "23.7576",
+    });
     // Accounting month 2031-03 is open: not final.
-    expect(out.sources[0]).toMatchObject({ metricCode: "food_cost_pct", finality: "estimate" });
+    expect(out.sources[0]).toMatchObject({
+      metricCode: "food_cost_pct",
+      finality: "estimate",
+    });
   });
 
   it("lets a kitchen lead read its outlet only", async () => {
     const ctx = contextFor(tx, "kitchen_lead", x1);
-    const out = getFoodCostOutputSchema.parse(await call("TL-04", ctx, { period }));
+    const out = getFoodCostOutputSchema.parse(
+      await call("TL-04", ctx, { period }),
+    );
     expect(out.foodCostIdr).toBe(39_200);
-    await expect(call("TL-04", ctx, { period, outletIds: [x2] })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-04", ctx, { period, outletIds: [x2] }),
+    ).rejects.toMatchObject(forbidden);
   });
 
   it("is zero for a tenant without sales and denied for other roles", async () => {
-    const out = getFoodCostOutputSchema.parse(await call("TL-04", contextFor(ty, "owner"), { period }));
+    const out = getFoodCostOutputSchema.parse(
+      await call("TL-04", contextFor(ty, "owner"), { period }),
+    );
     expect(out.foodCostIdr).toBe(0);
     expect(out.foodCostPct).toBe("0.0000");
-    await expect(call("TL-04", contextFor(tx, "warehouse", x1), { period })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-04", contextFor(tx, "warehouse", x1), { period }),
+    ).rejects.toMatchObject(forbidden);
   });
 });
 
@@ -807,25 +920,47 @@ describe("TL-05 get_labor_summary", () => {
     expect(out.headcount).toBe(2);
     expect(out.overtimeHours).toBe("1.5000");
     // No payroll or attendance data exists yet.
-    expect(out).toMatchObject({ laborCostIdr: 0, laborCostPct: "0.0000", workedHours: "0.0000" });
+    expect(out).toMatchObject({
+      laborCostIdr: 0,
+      laborCostPct: "0.0000",
+      workedHours: "0.0000",
+    });
     expect(Object.keys(out).sort()).toEqual(
-      ["headcount", "laborCostIdr", "laborCostPct", "overtimeHours", "scheduledHours", "sources", "workedHours"].sort(),
+      [
+        "headcount",
+        "laborCostIdr",
+        "laborCostPct",
+        "overtimeHours",
+        "scheduledHours",
+        "sources",
+        "workedHours",
+      ].sort(),
     );
   });
 
   it("HR sees the whole tenant, an outlet manager only the assigned outlet", async () => {
-    const hr = getLaborSummaryOutputSchema.parse(await call("TL-05", contextFor(tx, "hr"), { period }));
+    const hr = getLaborSummaryOutputSchema.parse(
+      await call("TL-05", contextFor(tx, "hr"), { period }),
+    );
     expect(hr.headcount).toBe(3);
     expect(hr.overtimeHours).toBe("2.0000");
     const ctx = contextFor(tx, "outlet_manager", x1);
-    const manager = getLaborSummaryOutputSchema.parse(await call("TL-05", ctx, { period }));
+    const manager = getLaborSummaryOutputSchema.parse(
+      await call("TL-05", ctx, { period }),
+    );
     expect(manager.headcount).toBe(2);
-    await expect(call("TL-05", ctx, { period, outletIds: [x2] })).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-05", ctx, { period, outletIds: [x2] }),
+    ).rejects.toMatchObject(forbidden);
   });
 
   it("denies other roles and other tenants' staff", async () => {
-    await expect(call("TL-05", contextFor(tx, "employee"), { period })).rejects.toMatchObject(forbidden);
-    const out = getLaborSummaryOutputSchema.parse(await call("TL-05", contextFor(ty, "hr"), { period }));
+    await expect(
+      call("TL-05", contextFor(tx, "employee"), { period }),
+    ).rejects.toMatchObject(forbidden);
+    const out = getLaborSummaryOutputSchema.parse(
+      await call("TL-05", contextFor(ty, "hr"), { period }),
+    );
     expect(out.headcount).toBe(0);
   });
 });
@@ -833,8 +968,9 @@ describe("TL-05 get_labor_summary", () => {
 // ---- TL-06 -------------------------------------------------------------------
 
 describe("TL-06 get_financial_statement", () => {
-  const lines = (out: { lines: { accountCode: string; amountIdr: number }[] }) =>
-    out.lines.map((l) => [l.accountCode, l.amountIdr]);
+  const lines = (out: {
+    lines: { accountCode: string; amountIdr: number }[];
+  }) => out.lines.map((l) => [l.accountCode, l.amountIdr]);
 
   it("builds a profit and loss from posted journal lines (open period = estimate)", async () => {
     const out = getFinancialStatementOutputSchema.parse(
@@ -843,7 +979,10 @@ describe("TL-06 get_financial_statement", () => {
         period: { from: "2031-03-01", to: "2031-03-31" },
       }),
     );
-    expect(lines(out)).toEqual([["4100", 300_000], ["6100", 50_000]]);
+    expect(lines(out)).toEqual([
+      ["4100", 300_000],
+      ["6100", 50_000],
+    ]);
     expect(out).toMatchObject({ periodClosed: false, finality: "estimate" });
   });
 
@@ -854,7 +993,10 @@ describe("TL-06 get_financial_statement", () => {
         period: { from: "2031-02-01", to: "2031-02-28" },
       }),
     );
-    expect(lines(out)).toEqual([["4100", 500_000], ["5100", 200_000]]);
+    expect(lines(out)).toEqual([
+      ["4100", 500_000],
+      ["5100", 200_000],
+    ]);
     expect(out).toMatchObject({ periodClosed: true, finality: "final" });
   });
 
@@ -883,16 +1025,28 @@ describe("TL-06 get_financial_statement", () => {
   it("shows a shareholder closed periods only", async () => {
     const ctx = contextFor(tx, "shareholder");
     const march = getFinancialStatementOutputSchema.parse(
-      await call("TL-06", ctx, { statement: "profit_loss", period: { from: "2031-03-01", to: "2031-03-31" } }),
+      await call("TL-06", ctx, {
+        statement: "profit_loss",
+        period: { from: "2031-03-01", to: "2031-03-31" },
+      }),
     );
     expect(march.lines).toEqual([]);
     const both = getFinancialStatementOutputSchema.parse(
-      await call("TL-06", ctx, { statement: "profit_loss", period: { from: "2031-02-01", to: "2031-03-31" } }),
+      await call("TL-06", ctx, {
+        statement: "profit_loss",
+        period: { from: "2031-02-01", to: "2031-03-31" },
+      }),
     );
-    expect(lines(both)).toEqual([["4100", 500_000], ["5100", 200_000]]);
+    expect(lines(both)).toEqual([
+      ["4100", 500_000],
+      ["5100", 200_000],
+    ]);
     expect(both.periodClosed).toBe(false);
     const feb = getFinancialStatementOutputSchema.parse(
-      await call("TL-06", ctx, { statement: "profit_loss", period: { from: "2031-02-01", to: "2031-02-28" } }),
+      await call("TL-06", ctx, {
+        statement: "profit_loss",
+        period: { from: "2031-02-01", to: "2031-02-28" },
+      }),
     );
     expect(feb).toMatchObject({ periodClosed: true, finality: "final" });
   });
@@ -905,31 +1059,60 @@ describe("TL-06 get_financial_statement", () => {
       { role: "finance", scope: { type: "brand", id: tx.brandId } },
     ]);
     const march = getFinancialStatementOutputSchema.parse(
-      await call("TL-06", ctx, { statement: "profit_loss", period: { from: "2031-03-01", to: "2031-03-31" } }),
+      await call("TL-06", ctx, {
+        statement: "profit_loss",
+        period: { from: "2031-03-01", to: "2031-03-31" },
+      }),
     );
     expect(march.lines).toEqual([]);
   });
 
   it("uses the full grant when finance also holds tenant scope", async () => {
-    const ctx = contextForGrants(tx, [{ role: "shareholder" }, { role: "finance" }]);
+    const ctx = contextForGrants(tx, [
+      { role: "shareholder" },
+      { role: "finance" },
+    ]);
     const march = getFinancialStatementOutputSchema.parse(
-      await call("TL-06", ctx, { statement: "profit_loss", period: { from: "2031-03-01", to: "2031-03-31" } }),
+      await call("TL-06", ctx, {
+        statement: "profit_loss",
+        period: { from: "2031-03-01", to: "2031-03-31" },
+      }),
     );
-    expect(lines(march)).toEqual([["4100", 300_000], ["6100", 50_000]]);
+    expect(lines(march)).toEqual([
+      ["4100", 300_000],
+      ["6100", 50_000],
+    ]);
   });
 
   it("denies other roles and never mixes tenants", async () => {
-    const input = { statement: "profit_loss", period: { from: "2031-02-01", to: "2031-03-31" } };
-    await expect(call("TL-06", contextFor(tx, "outlet_manager", x1), input)).rejects.toMatchObject(forbidden);
-    await expect(call("TL-06", contextFor(tx, "kitchen_lead", x1), input)).rejects.toMatchObject(forbidden);
-    const other = getFinancialStatementOutputSchema.parse(await call("TL-06", contextFor(ty, "owner"), input));
+    const input = {
+      statement: "profit_loss",
+      period: { from: "2031-02-01", to: "2031-03-31" },
+    };
+    await expect(
+      call("TL-06", contextFor(tx, "outlet_manager", x1), input),
+    ).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-06", contextFor(tx, "kitchen_lead", x1), input),
+    ).rejects.toMatchObject(forbidden);
+    const other = getFinancialStatementOutputSchema.parse(
+      await call("TL-06", contextFor(ty, "owner"), input),
+    );
     expect(other.lines).toEqual([]);
   });
 });
 
 describe("contract", () => {
   it("fills exactly TL-01..TL-06 with handlers", () => {
-    expect(Object.keys(readToolsA).sort()).toEqual(["TL-01", "TL-02", "TL-03", "TL-04", "TL-05", "TL-06"]);
-    for (const code of Object.keys(readToolsA)) expect(AI_TOOL_IO).toHaveProperty(code);
+    expect(Object.keys(readToolsA).sort()).toEqual([
+      "TL-01",
+      "TL-02",
+      "TL-03",
+      "TL-04",
+      "TL-05",
+      "TL-06",
+    ]);
+    for (const code of Object.keys(readToolsA))
+      expect(AI_TOOL_IO).toHaveProperty(code);
   });
 });

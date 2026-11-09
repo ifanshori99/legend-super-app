@@ -5,7 +5,10 @@
 // injected with vi.spyOn on the module services the executors call.
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { establishScopedTenantContext, establishTenantContext } from "@starter/shared/core/server";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import {
   resolveAccessSnapshot,
   loadTenantAccess,
@@ -214,11 +217,11 @@ async function sellItem(
     type: "outlet",
     id: outletId,
   })!;
-  const list = await pricing.createPriceList(
-    context,
-    who.actor.userId,
-    { outletId, channel: "dine_in", effectiveFrom },
-  );
+  const list = await pricing.createPriceList(context, who.actor.userId, {
+    outletId,
+    channel: "dine_in",
+    effectiveFrom,
+  });
   await pricing.setPriceListItems(context, who.actor.userId, list.id, [
     { itemId, variantId: null, priceIdr },
   ]);
@@ -251,12 +254,18 @@ async function livePrice(listId: string, itemId: string): Promise<number[]> {
 
 async function twoOutletSetup() {
   const who = await manager();
-  const itemId = await createMenuItem(await signedIn("Pemilik Menu Rollback").then(async (owner) => {
-    await grantCustomRole(owner.userId, ["menu.item.view", "menu.item.manage"], {
-      type: "tenant",
-    });
-    return owner;
-  }));
+  const itemId = await createMenuItem(
+    await signedIn("Pemilik Menu Rollback").then(async (owner) => {
+      await grantCustomRole(
+        owner.userId,
+        ["menu.item.view", "menu.item.manage"],
+        {
+          type: "tenant",
+        },
+      );
+      return owner;
+    }),
+  );
   return { who, itemId, date: nextDay() };
 }
 
@@ -322,12 +331,14 @@ describe("TL-17 price change executor: failure paths", () => {
     await sellItem(who, outletB, itemId, dayBefore(date), 25_000);
     const real = pricing.setPriceListItems;
     let calls = 0;
-    vi.spyOn(pricing, "setPriceListItems").mockImplementation(async (...args) => {
-      calls += 1;
-      // Outlet A's grid is written; outlet B's list exists but its grid fails.
-      if (calls === 2) throw new Error("grid boom");
-      return real(...args);
-    });
+    vi.spyOn(pricing, "setPriceListItems").mockImplementation(
+      async (...args) => {
+        calls += 1;
+        // Outlet A's grid is written; outlet B's list exists but its grid fails.
+        if (calls === 2) throw new Error("grid boom");
+        return real(...args);
+      },
+    );
 
     await expect(
       run(
@@ -385,15 +396,17 @@ describe("TL-17 price change executor: failure paths", () => {
     const inPlace = await sellItem(who, outletA, itemId, date, 25_000);
     const real = pricing.setPriceListItems;
     let calls = 0;
-    vi.spyOn(pricing, "setPriceListItems").mockImplementation(async (...args) => {
-      calls += 1;
-      // Write lands (call 1), then the service reports an error anyway.
-      if (calls === 1) {
-        await real(...args);
-        throw new Error("late boom");
-      }
-      return real(...args);
-    });
+    vi.spyOn(pricing, "setPriceListItems").mockImplementation(
+      async (...args) => {
+        calls += 1;
+        // Write lands (call 1), then the service reports an error anyway.
+        if (calls === 1) {
+          await real(...args);
+          throw new Error("late boom");
+        }
+        return real(...args);
+      },
+    );
     await expect(
       run(
         who,

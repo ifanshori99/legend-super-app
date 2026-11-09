@@ -316,7 +316,8 @@ export function resolveAccessSnapshot(
     if (role.templateKey !== null) {
       templateKeys.add(role.templateKey);
       const byTemplate =
-        permissionsByTemplate.get(role.templateKey) ?? new Set<PermissionCode>();
+        permissionsByTemplate.get(role.templateKey) ??
+        new Set<PermissionCode>();
       for (const permission of role.permissions) byTemplate.add(permission);
       permissionsByTemplate.set(role.templateKey, byTemplate);
     }

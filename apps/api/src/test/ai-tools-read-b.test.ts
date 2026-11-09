@@ -750,9 +750,7 @@ describe("TL-10 search_sop", () => {
       title: "SOP Umum Duakuwuprokb",
       body: "Prosedur umum duakuwuprokb untuk semua cabang.",
     });
-    const base = fx.assignments.find(
-      (a) => a.userId === fx.users.employee.id,
-    );
+    const base = fx.assignments.find((a) => a.userId === fx.users.employee.id);
     if (!base) throw new Error("employee assignment fixture missing");
     const ctx = ctxFor("kitchenLead", [
       roleAssignmentSchema.parse({
@@ -856,9 +854,7 @@ describe("TL-11 get_anomalies", () => {
       types: ["discount", "ingredient_usage"],
       outletIds: [outletA],
     });
-    const byType = Object.fromEntries(
-      out.anomalies.map((a) => [a.type, a]),
-    );
+    const byType = Object.fromEntries(out.anomalies.map((a) => [a.type, a]));
     expect(byType.discount).toMatchObject({
       observedValue: "60000.0000",
       baselineValue: "0.0000",
@@ -888,9 +884,7 @@ describe("TL-11 get_anomalies", () => {
 
   it("never reports another tenant's events and ignores types it cannot measure", async () => {
     const out = await call("TL-11", "owner", { period: ANOMALY_PERIOD });
-    expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(
-      false,
-    );
+    expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(false);
     const cash = await call("TL-11", "owner", {
       period: ANOMALY_PERIOD,
       types: ["cash_variance"],

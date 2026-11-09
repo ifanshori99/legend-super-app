@@ -4,7 +4,10 @@ import {
   getStockLevelsInputSchema,
   getStockLevelsOutputSchema,
 } from "@starter/shared/ai";
-import { resolveOutletScope, todayBusinessDate } from "../../ai-metrics/scope.ts";
+import {
+  resolveOutletScope,
+  todayBusinessDate,
+} from "../../ai-metrics/scope.ts";
 import { queryStockLevels } from "../../ai-metrics/stock.ts";
 import type { AiToolHandler } from "../types.ts";
 import { makeSource, maxRowsOf } from "./shared.ts";

@@ -18,7 +18,11 @@ import {
   type ForecastMetricCode,
   type ForecastRow,
 } from "@starter/shared/ai";
-import type { OutletId, ScopedTenantContext, TenantId } from "@starter/shared/core";
+import type {
+  OutletId,
+  ScopedTenantContext,
+  TenantId,
+} from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { forecasts } from "../db/schema/ai-insights.ts";
 import { orders } from "../db/schema/qr-order.ts";

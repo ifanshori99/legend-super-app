@@ -58,7 +58,10 @@ const REFUNDS_JOIN = sql`LEFT JOIN (
 function groupExpr(groupBy: SalesGroupBy): { key: SQL; label: SQL } {
   switch (groupBy) {
     case "day":
-      return { key: sql`o.business_date::text`, label: sql`o.business_date::text` };
+      return {
+        key: sql`o.business_date::text`,
+        label: sql`o.business_date::text`,
+      };
     case "outlet":
       return { key: sql`o.outlet_id::text`, label: sql`ou.name` };
     case "channel":
@@ -77,7 +80,12 @@ export async function querySalesSummary(
   },
 ): Promise<{ rows: SalesRow[]; totals: SalesTotals; truncated: boolean }> {
   const tenantId = context.tenant.tenantId;
-  const where = paidOrdersWhere(tenantId, input.outletIds, input.from, input.to);
+  const where = paidOrdersWhere(
+    tenantId,
+    input.outletIds,
+    input.from,
+    input.to,
+  );
   const { key, label } = groupExpr(input.groupBy);
   return withTenant(db, context, async (tx: Tx) => {
     const grouped = await tx.execute(sql`
@@ -204,8 +212,12 @@ export async function queryFoodCost(
       FROM order_items oi
       JOIN orders o ON o.tenant_id = oi.tenant_id AND o.id = oi.order_id
       WHERE ${where} AND oi.status <> 'voided' GROUP BY o.outlet_id`);
-    const net = new Map(sales.rows.map((r) => [String(r.outlet_id), num(r.net)]));
-    const costs = new Map(cost.rows.map((r) => [String(r.outlet_id), num(r.cost)]));
+    const net = new Map(
+      sales.rows.map((r) => [String(r.outlet_id), num(r.net)]),
+    );
+    const costs = new Map(
+      cost.rows.map((r) => [String(r.outlet_id), num(r.cost)]),
+    );
     return input.outletIds.map((outletId) => ({
       outletId,
       netSalesIdr: net.get(outletId.toLowerCase()) ?? 0,

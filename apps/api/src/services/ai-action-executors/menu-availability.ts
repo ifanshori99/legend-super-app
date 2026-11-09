@@ -21,7 +21,9 @@ export const executeMenuAvailability: ActionExecutor = async ({
     id: payload.outletId,
   });
   if (!context)
-    throw new ActionExecutionError("Pengaju tidak lagi punya akses ke outlet ini.");
+    throw new ActionExecutionError(
+      "Pengaju tidak lagi punya akses ke outlet ini.",
+    );
   const found = await withTenant(db, context, (tx) =>
     tx
       .select({
@@ -46,7 +48,10 @@ export const executeMenuAvailability: ActionExecutor = async ({
   let changed = 0;
   for (const item of payload.items) {
     const entry = byItem.get(item.menuItemId);
-    if (!entry) throw new ActionExecutionError("Item menu tidak ditemukan di outlet ini.");
+    if (!entry)
+      throw new ActionExecutionError(
+        "Item menu tidak ditemukan di outlet ini.",
+      );
     const soldOut = entry.status === "sold_out";
     if (item.available !== soldOut) continue;
     await setAvailabilityStatus(

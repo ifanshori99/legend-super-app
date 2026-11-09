@@ -258,8 +258,10 @@ describe("TEN-03 permission resolver", () => {
 
   it("allowsVia checks one template's own assignments (kitchen_lead@A + cashier@B)", () => {
     const cashierRow = fx.assignments.find(
-      (row) => row.userId === fx.users.cashier.id &&
-        fx.roles.find((role) => role.id === row.roleId)?.templateKey === "cashier",
+      (row) =>
+        row.userId === fx.users.cashier.id &&
+        fx.roles.find((role) => role.id === row.roleId)?.templateKey ===
+          "cashier",
     )!;
     const extra = {
       ...cashierRow,
