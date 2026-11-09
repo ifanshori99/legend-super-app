@@ -19,6 +19,7 @@
 import { createHmac, hkdfSync } from "node:crypto";
 import { whatsAppNumberDigest } from "@starter/shared/identity";
 import { env } from "../config/env";
+import { clientIpKey } from "./client-ip-key";
 
 /** Domain-separates the login-digest key from Better Auth's own use of the secret. */
 const KEY_CONTEXT = "legend:identity-login-digest:v1";
@@ -62,7 +63,10 @@ export function browserBindingDigest(nonce: string): string {
 
 /** The digest of a client IP; an empty IP is never hashed (see callers). */
 export function clientIpDigest(ip: string): string {
-  return identityDigest("client-ip", ip);
+  // Keyed on the /64 for IPv6 and on the plain address for IPv4 (legend-6jgd2),
+  // so AUTH-04's per-IP count cannot be dodged by rotating inside a /64. IPv4
+  // digests are unchanged.
+  return identityDigest("client-ip", clientIpKey(ip));
 }
 
 /** Secret used for contact digests; CONTACT_HASH_SECRET when configured. */

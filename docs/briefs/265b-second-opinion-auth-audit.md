@@ -63,5 +63,28 @@ Invariant tambahan:
 13. Tidak ada IP yang dikecualikan secara default (loopback ikut dibatasi); tanpa `TRUST_PROXY` semua klien terlihat sebagai satu IP, nilai apakah itu menjadi kunci lockout satu NAT.
 14. Kunci binding hanya dari cookie `login_binding` yang tanda tangannya valid (`readBindingNonce`); cookie palsu hanya dihitung ke IP. Rotasi cookie tidak melewati batas IP.
 15. Batas per proses (memori). Beberapa instance API masing-masing punya jendela sendiri; nilai kecukupannya bersama aturan Cloudflare di `docs/deployment.md`.
-16. Diketahui dan ditunda: IPv6 dikunci per alamat penuh, satu /64 memberi bucket tak terbatas (kartu `legend-6jgd2`). Seorang klien di NAT venue bisa menghabiskan budget poll semua tamu (diterima).
+16. IPv6 per alamat penuh sudah diganti per /64 (kartu `legend-6jgd2`, bagian di bawah). Seorang klien di NAT venue bisa menghabiskan budget poll semua tamu (diterima).
 17. Logika AUTH-04 (5 challenge aktif per cookie/IP per 15 menit) tidak berubah.
+
+## Tambahan: kunci IP IPv6 per /64 (legend-6jgd2)
+
+Diff (cabang `ws/ipv6-rate-limit-key`, di atas fd953712):
+
+```
+git diff fd953712 HEAD -- apps/api/src/lib apps/api/src/middleware apps/api/src/test
+```
+
+Berkas risiko:
+
+- `apps/api/src/lib/client-ip-key.ts` (baru): `clientIpKey(address)`. IPv4 apa adanya; IPv4-mapped IPv6 (`::ffff:a.b.c.d` dan bentuk hex) menjadi IPv4; IPv6 lain menjadi /64 kanonis (mis. `2001:db8:0:1::/64`, zona `%eth0` dibuang); kosong menjadi `unknown`; teks tak valid diambil apa adanya (huruf kecil, maks 64 karakter) dan tidak pernah melempar galat.
+- `apps/api/src/middleware/public-rate-limit.ts`: kunci `ip:` dan `write-ip:` memakai helper. Pengecualian `internalIps` tetap membandingkan alamat persis.
+- `apps/api/src/middleware/login-challenge-rate-limit.ts`: kunci `ip:` memakai helper.
+- `apps/api/src/lib/identity-digest.ts`: `clientIpDigest` memakai helper, jadi hitungan AUTH-04 per IP (`login_challenges.ip_hash`) ikut per /64.
+
+Invariant tambahan:
+
+18. Dua alamat dalam satu /64 berbagi bucket di ketiga tempat (limiter login-challenge, `publicRateLimit` termasuk `write-ip`, hitungan AUTH-04); /64 berbeda tidak.
+19. Digest IPv4 tidak berubah (`identityDigest("client-ip", ipv4)`). Digest IPv6 berubah menjadi digest dari /64, baik di `login_challenges.ip_hash` maupun `ip_hash` di `audit_logs`; baris lama yang tersimpan tidak ditulis ulang, jadi baris IPv6 lama tidak cocok dengan hitungan baru (jendela AUTH-04 hanya 15 menit, efeknya hilang sendiri). Digest untuk `::ffff:a.b.c.d` juga berubah menjadi digest IPv4 biasa (terjadi tanpa `TRUST_PROXY` di socket dual-stack, saat `req.ip` berbentuk mapped); jendela AUTH-04 15 menit reset sekali saat deploy dan `ipHash` audit lama tidak tersambung dengan yang baru.
+20. Sisa kunci IP mentah di luar cakupan: `edge/link-server.ts`, `routes/staff-pin-sync.routes.ts`, `routes/edge-bootstrap.routes.ts`, `routes/payment-webhook.routes.ts`, `routes/mcp.routes.ts`, dan rate limit Better Auth lewat `CLIENT_IP_HEADER`.
+21. Satu /64 adalah satu rumah atau satu pelanggan di hampir semua ISP, jadi pengguna sah di /64 yang sama ikut berbagi budget (diterima, sama dengan NAT IPv4).
+22. Sisa risiko desain: penyerang yang memegang /48 atau /56 (mis. /48 gratis dari tunnelbroker) tetap mendapat 65536 atau 256 bucket /64. Mitigasi lanjutan: bucket kedua per /48 dengan batas lebih longgar, atau aturan Cloudflare (`docs/deployment.md`).
