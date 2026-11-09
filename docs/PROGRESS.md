@@ -443,3 +443,4 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - 18:05: Test-runner shift-close-held 6b3c6840: 7 file 227 lulus. Dikirim ke G9syc (renumber + naikkan when).
 - 18:08: m1 fast-forward ke 9a2c1e86 (batch13: payroll-journal + pph21, migrasi 0147). Batch14 9e32cd8e gate penuh berjalan.
 - 18:12: G781b selesai hxpd5 + 060xt + r5brx + 3bsyh di ws/refund-payout-followups d2f8c072 (pos-intent-attribution.ts satu rumus; capture QRIS kunci link lalu intent; requeue SALE_MISSING; runbook auto-journal-sale-missing). Tanpa migrasi. Catatan rilis: baris SALE_MISSING lama perlu query runbook sekali per tenant. Verifikasi CTO berjalan. Bead baru legend-j0ag5 (reversal ACC-01 masih dihitung). G781b lanjut brief 185 (x1i1h, j0ag5, leqj6, 45bs9+8v2yl).
+- 18:16: Test-runner refund-payout-followups d2f8c072: 32 file 721 lulus. Dikirim ke G9syc (termasuk refund-intent-guard).
