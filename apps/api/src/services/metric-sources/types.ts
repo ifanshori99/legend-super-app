@@ -59,10 +59,23 @@ export type DailyMetricReader = {
   readonly metricCodes: readonly string[];
   /** Split keys written besides the total (subset of each definition's dimensions). */
   readonly dimensions: readonly Exclude<MetricDimensionKey, "outlet">[];
+  /**
+   * Whether this reader writes the total row (dimension null) of its codes.
+   * Default true: every reader writes the total beside its splits. A split
+   * reader whose code's total comes from another reader says `false`. The
+   * job deletes a stale total row only for the reader that owns it, and the
+   * registry refuses two readers that own the total of one code.
+   */
+  readonly writesTotal?: boolean;
   /** POS metrics: final needs a pos_daily_closes row for the outlet-date. */
   readonly requiresDailyClose: boolean;
   compute(input: DailyComputeInput): Promise<readonly DailyMetricValue[]>;
 };
+
+/** Whether the reader owns the total rows of its codes (`writesTotal`). */
+export function readerWritesTotal(reader: DailyMetricReader): boolean {
+  return reader.writesTotal ?? true;
+}
 
 export type MetricSource =
   | { readonly kind: "gl"; readonly code: string; readonly gl: GlMetricSource }
@@ -70,6 +83,15 @@ export type MetricSource =
       readonly kind: "daily";
       readonly code: string;
       readonly reader: DailyMetricReader;
+      /**
+       * An `average` code only: the stored count code (same reader, same
+       * dimensions) each day's average is weighted by across days and
+       * outlets, Σ(average × weight) / Σ weight. A day without volume is left
+       * out. Without it the engine takes the plain mean of the stored days.
+       * The registry checks it: a registered `daily` count code that this
+       * same reader writes, on a metric that aggregates as `average`.
+       */
+      readonly weightCode?: string;
     }
   | {
       /** Recomputed per bucket from two registry codes; never stored. */
@@ -78,6 +100,19 @@ export type MetricSource =
       readonly numerator: string;
       readonly denominator: string;
       readonly scale: 1 | 100; // 100 for percent
+    }
+  | {
+      /**
+       * Share of a total, recomputed per bucket and never stored: each
+       * `dimension` value of the registry code `of`, divided by the sum of all
+       * values of that dimension in the same bucket (and outlet group), × 100.
+       * Answers `dimension_not_supported` unless the query splits by
+       * `dimension` (an unsplit total would always read 100 %).
+       */
+      readonly kind: "share";
+      readonly code: string; // percent unit
+      readonly of: string;
+      readonly dimension: Exclude<MetricDimensionKey, "outlet">;
     }
   | {
       readonly kind: "unavailable";

@@ -424,6 +424,8 @@ const SERVED_REPORTS: readonly string[] = [
   ...hr.reportsByPrefix.attendance,
   ...hr.reportsByPrefix.payroll,
   ...hr.reportsByPrefix.performance,
+  ...trafficOperations.reportsByPrefix.traffic,
+  ...trafficOperations.reportsByPrefix.operations,
 ];
 
 /**

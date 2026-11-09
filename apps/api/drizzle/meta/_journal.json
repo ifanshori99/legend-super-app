@@ -1247,6 +1247,13 @@
       "when": 1794259000000,
       "tag": "0180_order_issues",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1794260000000,
+      "tag": "0181_sales_targets",
+      "breakpoints": true
     }
   ]
 }

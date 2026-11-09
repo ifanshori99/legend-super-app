@@ -7,12 +7,22 @@
 //   with several orders counts once);
 // - menu revenue = non-voided line totals, cost = `order_items.cost_snapshot_idr`
 //   (HPP of the whole line at sale time).
+// The paid-order filter, refund join and net expression live in
+// `metric-sources/sales.ts` (one definition shared with the registry readers).
 // All queries run inside the caller's `withTenant` transaction and are filtered
 // by the explicit outlet list (RLS is the second wall).
 import { sql, type SQL } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../../db";
 import { withTenant } from "../../db/tenant";
+import {
+  ORDER_NET_SQL,
+  REFUNDS_JOIN,
+  outletIn,
+  paidOrdersWhere,
+} from "../metric-sources/sales.ts";
+
+export { outletIn };
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -30,30 +40,6 @@ export type SalesRow = {
 export type SalesTotals = Omit<SalesRow, "key" | "label">;
 
 const num = (value: unknown): number => Number(value ?? 0);
-
-export function outletIn(column: SQL, outletIds: readonly string[]): SQL {
-  return sql`${column} IN (${sql.join(
-    outletIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  )})`;
-}
-
-function paidOrdersWhere(
-  tenantId: string,
-  outletIds: readonly string[],
-  from: string,
-  to: string,
-): SQL {
-  return sql`o.tenant_id = ${tenantId}::uuid
-    AND o.status = 'completed'
-    AND o.business_date BETWEEN ${from}::date AND ${to}::date
-    AND ${outletIn(sql`o.outlet_id`, outletIds)}`;
-}
-
-const REFUNDS_JOIN = sql`LEFT JOIN (
-    SELECT tenant_id, order_id, SUM(amount_idr) AS amount
-    FROM pos_order_refunds GROUP BY tenant_id, order_id
-  ) r ON r.tenant_id = o.tenant_id AND r.order_id = o.id`;
 
 function groupExpr(groupBy: SalesGroupBy): { key: SQL; label: SQL } {
   switch (groupBy) {
@@ -91,7 +77,7 @@ export async function querySalesSummary(
     const grouped = await tx.execute(sql`
       SELECT ${key} AS key, MIN(${label}) AS label,
         COALESCE(SUM(o.subtotal_idr), 0)::bigint AS gross,
-        COALESCE(SUM(o.subtotal_idr - o.discount_idr - COALESCE(r.amount, 0)), 0)::bigint AS net,
+        COALESCE(SUM(${ORDER_NET_SQL}), 0)::bigint AS net,
         COUNT(*)::int AS tx_count
       FROM orders o
       JOIN outlets ou ON ou.tenant_id = o.tenant_id AND ou.id = o.outlet_id
@@ -110,7 +96,7 @@ export async function querySalesSummary(
       ) sessions GROUP BY key`);
     const totals = await tx.execute(sql`
       SELECT COALESCE(SUM(o.subtotal_idr), 0)::bigint AS gross,
-        COALESCE(SUM(o.subtotal_idr - o.discount_idr - COALESCE(r.amount, 0)), 0)::bigint AS net,
+        COALESCE(SUM(${ORDER_NET_SQL}), 0)::bigint AS net,
         COUNT(*)::int AS tx_count
       FROM orders o ${REFUNDS_JOIN} WHERE ${where}`);
     const totalPax = await tx.execute(sql`
@@ -204,7 +190,7 @@ export async function queryFoodCost(
   return withTenant(db, context, async (tx: Tx) => {
     const sales = await tx.execute(sql`
       SELECT o.outlet_id::text AS outlet_id,
-        COALESCE(SUM(o.subtotal_idr - o.discount_idr - COALESCE(r.amount, 0)), 0)::bigint AS net
+        COALESCE(SUM(${ORDER_NET_SQL}), 0)::bigint AS net
       FROM orders o ${REFUNDS_JOIN} WHERE ${where} GROUP BY o.outlet_id`);
     const cost = await tx.execute(sql`
       SELECT o.outlet_id::text AS outlet_id,

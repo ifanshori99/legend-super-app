@@ -13,8 +13,8 @@
 //
 // Nothing is invented: a metric the day model has no source figure for is
 // returned as `null` ("no data", never zero), and a split the model cannot
-// break down returns no rows. `day_of_week` is the one computed split the
-// viewer does not serve: it is the exact sum of the model's own days.
+// break down returns no rows. `day_of_week` is the exact sum of the model's
+// own days and lives in the day model, like every other split.
 //
 // Loaded in Node: bare package imports and relative `.ts` only.
 import {
@@ -32,13 +32,10 @@ import {
   ATOM_KEYS,
   BUSINESS_DATE,
   MONTH_START,
-  dayAtoms,
   distribute,
-  eachDay,
   outletSplit,
   periodAtoms,
   splitSpecFor,
-  weekdayIndex,
   zeroAtoms,
   type AtomKey,
   type Atoms,
@@ -50,25 +47,7 @@ const outlet = cafeLegendFixtures.outlets[0];
 
 // ---- Day model (the shared module above; see the header) ---------------------
 
-/** Weekday split computed from the model's own days (exact, not invented). */
-function weekdaySplit(range: DateRange): SplitSpec {
-  const sums = Array.from({ length: 7 }, zeroAtoms);
-  for (const day of eachDay(range)) {
-    const atoms = dayAtoms(day);
-    const bucket = sums[weekdayIndex(day)] as Atoms;
-    for (const key of ATOM_KEYS) bucket[key] += atoms[key];
-  }
-  const present = sums
-    .map((atoms, index) => ({ atoms, value: String(index + 1) }))
-    .filter((item) => item.atoms.net > 0);
-  const weights = Object.fromEntries(
-    ATOM_KEYS.map((key) => [key, present.map((item) => item.atoms[key])]),
-  ) as unknown as SplitSpec["weights"];
-  return { values: present.map((item) => item.value), weights };
-}
-
 function splitFor(key: string, range: DateRange): SplitSpec | null {
-  if (key === "day_of_week") return weekdaySplit(range);
   if (key === "outlet") return outletSplit(outlet.id);
   return splitSpecFor(key, range);
 }
@@ -81,12 +60,19 @@ function decimal4(numerator: number, denominator: number): string {
   return ((numerator * 100) / denominator).toFixed(4);
 }
 
+// Same ratio as the viewer's derived `salesTarget` (mock-families/sales.ts).
+const SALES_TARGET_RATIO = 1.05;
+
 function cellFor(metricCode: string, atoms: Atoms): Cell {
   const ratio = (num: number, den: number) =>
     den === 0 ? null : { unit: "percent" as const, value: decimal4(num, den) };
   const idr = (valueIdr: number) => ({ unit: "idr" as const, valueIdr });
   const count = (value: number) => ({ unit: "count" as const, value });
   switch (metricCode) {
+    case "sales_target":
+      return idr(Math.round(atoms.net * SALES_TARGET_RATIO));
+    case "target_achievement_pct":
+      return ratio(atoms.net, Math.round(atoms.net * SALES_TARGET_RATIO));
     case "net_sales":
       return idr(atoms.net);
     case "gross_sales":
@@ -121,6 +107,8 @@ function cellFor(metricCode: string, atoms: Atoms): Cell {
 
 /** Metric codes the mock model has figures for (the rest preview as "—"). */
 export const MOCK_PREVIEW_METRIC_CODES: readonly string[] = Object.freeze([
+  "sales_target",
+  "target_achievement_pct",
   "net_sales",
   "gross_sales",
   "discount_amount",

@@ -44,6 +44,7 @@
 
 import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { alias } from "drizzle-orm/pg-core";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
@@ -414,8 +415,14 @@ async function bookState(
   return { closed, periods };
 }
 
-/** accountId → sign, per component; first matching term wins. */
-type ComponentAccounts = Map<string, 1 | -1>;
+/**
+ * accountId → sign and journal sources (null: every source), per component;
+ * first matching term wins.
+ */
+type ComponentAccounts = Map<
+  string,
+  { sign: 1 | -1; sources: ReadonlySet<string> | null }
+>;
 
 async function componentAccounts(
   tx: Tx,
@@ -481,7 +488,9 @@ async function componentAccounts(
           )
           .map((row) => row.id),
       ];
-      for (const id of ids) if (!accounts.has(id)) accounts.set(id, term.sign);
+      const sources = term.sourceTypes ? new Set(term.sourceTypes) : null;
+      for (const id of ids)
+        if (!accounts.has(id)) accounts.set(id, { sign: term.sign, sources });
     }
     result.set(component, accounts);
   }
@@ -492,23 +501,30 @@ type LedgerRow = {
   accountId: string;
   date: string;
   outletId: string | null;
+  /** Journal source; a reversal carries the source of the entry it reverses. */
+  sourceType: string;
   /** credit − debit, whole rupiah. */
   net: bigint;
 };
+
+const reversedEntries = alias(journalEntries, "reversed_entries");
 
 async function ledgerRows(
   tx: Tx,
   tenantId: string,
   accountIds: readonly string[],
-  range: Range,
+  /** start null: every line up to `end` (balances). */
+  range: { start: string | null; end: string },
   outletFilter: ReturnType<typeof outletIdsForQuery>,
 ): Promise<LedgerRow[]> {
   if (accountIds.length === 0) return [];
+  const sourceType = sql<string>`coalesce(${reversedEntries.sourceType}, ${journalEntries.sourceType})`;
   const rows = await tx
     .select({
       accountId: journalLines.accountId,
       date: journalEntries.entryDate,
       outletId: journalLines.outletId,
+      sourceType,
       net: sql<string>`(sum(${journalLines.creditIdr}) - sum(${journalLines.debitIdr}))::text`,
     })
     .from(journalLines)
@@ -519,11 +535,20 @@ async function ledgerRows(
         eq(journalEntries.id, journalLines.entryId),
       ),
     )
+    .leftJoin(
+      reversedEntries,
+      and(
+        eq(reversedEntries.tenantId, journalEntries.tenantId),
+        eq(reversedEntries.id, journalEntries.reversalOf),
+      ),
+    )
     .where(
       and(
         eq(journalLines.tenantId, tenantId),
         inArray(journalLines.accountId, [...accountIds]),
-        gte(journalEntries.entryDate, range.start),
+        range.start === null
+          ? undefined
+          : gte(journalEntries.entryDate, range.start),
         lte(journalEntries.entryDate, range.end),
         outletFilter.kind === "outlets"
           ? inArray(journalLines.outletId, [...outletFilter.outletIds])
@@ -534,11 +559,13 @@ async function ledgerRows(
       journalLines.accountId,
       journalEntries.entryDate,
       journalLines.outletId,
+      sourceType,
     );
   return rows.map((row) => ({
     accountId: row.accountId,
     date: row.date,
     outletId: row.outletId,
+    sourceType: row.sourceType,
     net: BigInt(row.net),
   }));
 }
@@ -596,36 +623,66 @@ class LedgerIndex {
     /** Current buckets, in date order, then the comparison range if any. */
     ranges: readonly Range[],
     currentCount: number,
+    /** Balance components and their lines up to the last range end. */
+    balance: {
+      components: ReadonlySet<GlComponent>;
+      rows: readonly LedgerRow[];
+    } = { components: new Set(), rows: [] },
   ) {
-    const byAccount = new Map<
-      string,
-      { component: GlComponent; sign: 1 | -1 }[]
-    >();
+    type Target = {
+      component: GlComponent;
+      sign: 1 | -1;
+      sources: ReadonlySet<string> | null;
+    };
+    const byAccount = new Map<string, Target[]>();
+    const balanceByAccount = new Map<string, Target[]>();
     for (const [component, map] of accounts) {
       this.sums.set(
         component,
         ranges.map(() => new Map()),
       );
-      for (const [accountId, sign] of map) {
-        const list = byAccount.get(accountId) ?? [];
-        list.push({ component, sign });
-        byAccount.set(accountId, list);
+      const target = balance.components.has(component)
+        ? balanceByAccount
+        : byAccount;
+      for (const [accountId, { sign, sources }] of map) {
+        const list = target.get(accountId) ?? [];
+        list.push({ component, sign, sources });
+        target.set(accountId, list);
       }
     }
+    const add = (
+      component: GlComponent,
+      bucket: number,
+      row: LedgerRow,
+      sign: 1 | -1,
+    ) => {
+      const byOutlet = this.sums.get(component)![bucket]!;
+      const amount = sign === 1 ? row.net : -row.net;
+      for (const key of [outletKeyOf(row.outletId), ALL_OUTLETS]) {
+        const sum = byOutlet.get(key);
+        if (sum) sum.value += amount;
+        else byOutlet.set(key, { value: amount, hasData: true });
+      }
+    };
     for (const row of rows) {
       const targets = byAccount.get(row.accountId);
       if (!targets) continue;
       const bucket = rangeIndexOf(ranges, currentCount, row.date);
       if (bucket < 0) continue;
-      for (const { component, sign } of targets) {
-        const byOutlet = this.sums.get(component)![bucket]!;
-        const amount = sign === 1 ? row.net : -row.net;
-        for (const key of [outletKeyOf(row.outletId), ALL_OUTLETS]) {
-          const sum = byOutlet.get(key);
-          if (sum) sum.value += amount;
-          else byOutlet.set(key, { value: amount, hasData: true });
-        }
-      }
+      for (const { component, sign, sources } of targets)
+        if (!sources || sources.has(row.sourceType))
+          add(component, bucket, row, sign);
+    }
+    // A balance line counts in every range that ends on or after its date.
+    for (const row of balance.rows) {
+      const targets = balanceByAccount.get(row.accountId);
+      if (!targets) continue;
+      ranges.forEach((range, bucket) => {
+        if (row.date > range.end) return;
+        for (const { component, sign, sources } of targets)
+          if (!sources || sources.has(row.sourceType))
+            add(component, bucket, row, sign);
+      });
     }
   }
 
@@ -636,11 +693,15 @@ class LedgerIndex {
   /** Outlet keys (entity level included) with data for a component's buckets. */
   outletKeys(component: GlComponent, rangeCount: number): Set<string> {
     const keys = new Set<string>();
-    const perRange = this.sums.get(component) ?? [];
     for (let at = 0; at < rangeCount; at++)
-      for (const key of perRange[at]?.keys() ?? [])
-        if (key !== ALL_OUTLETS) keys.add(key);
+      for (const key of this.outletKeysAt(component, at)) keys.add(key);
     return keys;
+  }
+
+  /** Outlet keys (entity level included) with data in one bucket. */
+  outletKeysAt(component: GlComponent, range: number): string[] {
+    const byOutlet = this.sums.get(component)?.[range];
+    return [...(byOutlet?.keys() ?? [])].filter((key) => key !== ALL_OUTLETS);
   }
 }
 
@@ -659,7 +720,7 @@ function evaluate(
   range: number,
   outletKey: string,
 ): MetricValue | null {
-  if (source.kind === "amount") {
+  if (source.kind !== "ratio") {
     const sum = index.sum(source.component, range, outletKey);
     return sum.hasData ? idrValue(sum.value) : null;
   }
@@ -875,6 +936,8 @@ export type EvaluatedMetrics = {
 /** The split and filter a call asks for, or why the engine cannot read it. */
 type Shape = {
   byOutlet: boolean;
+  /** The query reads some outlets only (filter or the caller's scope). */
+  outletFiltered: boolean;
   splitKey: Exclude<MetricDimensionKey, "outlet"> | null;
   filter: { key: string; values: ReadonlySet<string> } | null;
   supported: boolean;
@@ -883,10 +946,12 @@ type Shape = {
 function shapeOf(
   groupBy: readonly MetricDimensionKey[],
   filters: readonly MetricDimensionFilter[],
+  outletFilter: OutletQueryFilter,
 ): Shape {
   const splitKeys = groupBy.filter((key) => key !== "outlet");
   const shape: Shape = {
     byOutlet: groupBy.includes("outlet"),
+    outletFiltered: outletFilter.kind !== "all",
     splitKey: splitKeys[0] ?? null,
     filter: null,
     supported:
@@ -916,13 +981,19 @@ function shapeOf(
 type Plan =
   | { kind: "unavailable"; reason: MetricUnavailableReason }
   | { kind: "gl"; gl: GlMetricSource; split: MetricSplitSource | null }
-  | { kind: "daily"; reader: DailyMetricReader }
+  | {
+      kind: "daily";
+      reader: DailyMetricReader;
+      /** Stored count weighting an average across days (`weightCode`). */
+      weightCode: string | null;
+    }
   | {
       kind: "derived";
       numerator: string;
       denominator: string;
       scale: 1 | 100;
-    };
+    }
+  | { kind: "share"; of: string; dimension: string };
 
 const NOT_SUPPORTED: Plan = {
   kind: "unavailable",
@@ -950,10 +1021,34 @@ function planOf(
       case "gl": {
         // The ledger cannot filter by a non-outlet dimension.
         if (shape.filter) return NOT_SUPPORTED;
+        // A balance (tax_payable) is a tenant figure only: its settling
+        // journals (the PBJT remittance is a manual or supplier payment
+        // entry) may carry no outlet, so an outlet's share of it is unknown.
+        if (
+          source.gl.kind === "balance" &&
+          (shape.byOutlet || shape.outletFiltered)
+        )
+          return NOT_SUPPORTED;
         if (shape.splitKey === null)
           return { kind: "gl", gl: source.gl, split: null };
         // A percent split is recomputed from split numerator and denominator
-        // (DECISIONS 2026-11-10 point 1); no card builds one yet.
+        // (DECISIONS 2026-11-10 point 1): both codes split first, then
+        // divided per split value; a side without that split answers
+        // dimension_not_supported.
+        if (source.gl.kind === "ratio") {
+          const from = source.gl.splitFrom;
+          if (!from) return NOT_SUPPORTED;
+          for (const input of [from.numerator, from.denominator]) {
+            const inputPlan = planOf(input, shape, sources, plans, visiting);
+            if (inputPlan.kind === "unavailable") return inputPlan;
+          }
+          return {
+            kind: "derived",
+            numerator: from.numerator,
+            denominator: from.denominator,
+            scale: 100,
+          };
+        }
         if (source.gl.kind !== "amount") return NOT_SUPPORTED;
         const split = sources.splitOf(code, shape.splitKey);
         return split ? { kind: "gl", gl: source.gl, split } : NOT_SUPPORTED;
@@ -973,7 +1068,30 @@ function planOf(
           )
         )
           return NOT_SUPPORTED;
-        return { kind: "daily", reader: source.reader };
+        // The average follows its weight only when the weight cannot be
+        // read; a weight that is not a stored daily count cannot weight it.
+        const weightCode = source.weightCode ?? null;
+        if (weightCode !== null) {
+          const weightPlan = planOf(
+            weightCode,
+            shape,
+            sources,
+            plans,
+            visiting,
+          );
+          if (weightPlan.kind === "unavailable") return weightPlan;
+          if (weightPlan.kind !== "daily") return NOT_SUPPORTED;
+        }
+        return { kind: "daily", reader: source.reader, weightCode };
+      }
+      case "share": {
+        // Without the split an unsplit value would always read 100 %; a
+        // filter would drop the siblings the total needs.
+        if (shape.splitKey !== source.dimension || shape.filter)
+          return NOT_SUPPORTED;
+        const inputPlan = planOf(source.of, shape, sources, plans, visiting);
+        if (inputPlan.kind === "unavailable") return inputPlan;
+        return { kind: "share", of: source.of, dimension: source.dimension };
       }
       case "derived": {
         for (const input of [source.numerator, source.denominator]) {
@@ -1047,7 +1165,7 @@ export async function evaluateMetrics(
   const currentCount = buckets.length;
   const outletFilter = request.outletFilter;
 
-  const shape = shapeOf(request.groupBy, request.filters);
+  const shape = shapeOf(request.groupBy, request.filters, outletFilter);
   const plans = new Map<string, Plan>();
   for (const definition of definitions)
     planOf(definition.code, shape, sources, plans);
@@ -1058,6 +1176,11 @@ export async function evaluateMetrics(
       const inputs = [plan.numerator, plan.denominator].map(officialityOf);
       if (inputs.includes("closed_period_only")) return "closed_period_only";
     }
+    if (
+      plan?.kind === "share" &&
+      officialityOf(plan.of) === "closed_period_only"
+    )
+      return "closed_period_only";
     return definitionOf(code).officiality;
   };
 
@@ -1113,17 +1236,37 @@ export async function evaluateMetrics(
     tenantId,
     glPlans.flatMap((plan) => glComponentsOf(plan.gl)),
   );
-  const accountIds = [
-    ...new Set([...accounts.values()].flatMap((map) => [...map.keys()])),
+  const balanceComponents = new Set(
+    glPlans.flatMap((plan) =>
+      plan.gl.kind === "balance" ? [plan.gl.component] : [],
+    ),
+  );
+  const accountIdsOf = (balances: boolean) => [
+    ...new Set(
+      [...accounts.entries()].flatMap(([component, map]) =>
+        balanceComponents.has(component) === balances ? [...map.keys()] : [],
+      ),
+    ),
   ];
   const ledger = await ledgerRows(
     tx,
     tenantId,
-    accountIds,
+    accountIdsOf(false),
     { start: previous?.start ?? range.start, end: range.end },
     outletFilter,
   );
-  const index = new LedgerIndex(accounts, ledger, ranges, currentCount);
+  // Balances read every line up to the period end, not only the period's.
+  const balanceLedger = await ledgerRows(
+    tx,
+    tenantId,
+    accountIdsOf(true),
+    { start: null, end: range.end },
+    outletFilter,
+  );
+  const index = new LedgerIndex(accounts, ledger, ranges, currentCount, {
+    components: balanceComponents,
+    rows: balanceLedger,
+  });
 
   // One metrics_daily read for every stored code and ledger split.
   const storedCodes = [...plans.entries()].flatMap(([code, plan]) =>
@@ -1168,13 +1311,42 @@ export async function evaluateMetrics(
    * filter. A missing day may hide activity the sum does not see (the job
    * refreshes only the last days), so it keeps the value an estimate.
    * Entity-level ledger lines have no operational rows to wait for.
+   *
+   * `ledgerOutlets` (ledger splits): without an outlet split, every outlet
+   * that has a total row of the code or a journal line in the query must have
+   * its own rows on every day, so the days of different outlets are never
+   * pooled into one set and an outlet with lines but no rows is not skipped.
    */
-  const covered = (code: string, outletKey: string, at: number) => {
+  const covered = (
+    code: string,
+    outletKey: string,
+    at: number,
+    ledgerOutlets: readonly ReadonlySet<string>[] | null = null,
+  ) => {
     if (outletKey === ENTITY_LEVEL) return true;
     if (at >= currentCount) return false;
     const bucket = ranges[at]!;
     const days = (toTime(bucket.end) - toTime(bucket.start)) / DAY_MS + 1;
-    return (coverage.get(code)?.get(outletKey)?.[at]?.size ?? 0) === days;
+    const byOutlet = coverage.get(code);
+    if (ledgerOutlets === null || outletKey !== ALL_OUTLETS)
+      return (byOutlet?.get(outletKey)?.[at]?.size ?? 0) === days;
+    const outlets =
+      outletFilter.kind === "outlets"
+        ? outletFilter.outletIds
+        : [
+            ...new Set([
+              ...[...(byOutlet?.keys() ?? [])].filter(
+                (key) => key !== ALL_OUTLETS,
+              ),
+              ...[...ledgerOutlets[at]!].filter((key) => key !== ENTITY_LEVEL),
+            ]),
+          ];
+    return (
+      outlets.length > 0 &&
+      outlets.every(
+        (outlet) => (byOutlet?.get(outlet)?.[at]?.size ?? 0) === days,
+      )
+    );
   };
 
   // Entity-level lines get their own series only when they are in the query
@@ -1201,6 +1373,15 @@ export async function evaluateMetrics(
     let outletGroups: { dim: MetricDimensionValue | null; key: string }[] = [
       { dim: null, key: ALL_OUTLETS },
     ];
+    // Per range, the outlets with journal lines of the code.
+    const ledgerOutlets = ranges.map(
+      (_, at) =>
+        new Set(
+          glComponentsOf(plan.gl).flatMap((component) =>
+            index.outletKeysAt(component, at),
+          ),
+        ),
+    );
     if (shape.byOutlet) {
       const keys = new Set<string>();
       for (const component of glComponentsOf(plan.gl))
@@ -1230,7 +1411,8 @@ export async function evaluateMetrics(
       // and need a stored total row on every day of it; the residual row
       // makes them add up to that total.
       const splitFinal = totals.map(
-        (total, at) => total.final && covered(code, outlet.key, at),
+        (total, at) =>
+          total.final && covered(code, outlet.key, at, ledgerOutlets),
       );
       const sums = new Map<string, (bigint | null)[]>();
       for (const row of splitRows) {
@@ -1282,9 +1464,34 @@ export async function evaluateMetrics(
     type Acc = {
       sum: bigint;
       count: bigint;
+      /** Weighted average: Σ(value × weight) and Σ weight. */
+      weighted: bigint;
+      weight: bigint;
+      /** Rows without a stored weight row: the bucket takes the plain mean. */
+      unweighted: boolean;
+      /** Plain mean of the rows whose volume is not a stored zero. */
+      plainSum: bigint;
+      plainCount: bigint;
       final: boolean;
       latest: Map<string, { date: string; native: bigint }>;
     };
+    // The volume of each stored average row: same day, outlet and split.
+    const plan = plans.get(code);
+    const weightCode =
+      definition.aggregation === "average" && plan?.kind === "daily"
+        ? plan.weightCode
+        : null;
+    const rowKey = (row: DailyRow) =>
+      `${row.date}|${row.outletId}|${row.dimensionKey ?? ""}|${row.dimensionValue ?? ""}`;
+    const weights =
+      weightCode === null
+        ? null
+        : new Map(
+            (rowsByCode.get(weightCode) ?? []).map((row) => [
+              rowKey(row),
+              row.native,
+            ]),
+          );
     const byGroup = new Map<
       string,
       {
@@ -1325,18 +1532,35 @@ export async function evaluateMetrics(
       const acc = (group.accs[row.range] ??= {
         sum: 0n,
         count: 0n,
+        weighted: 0n,
+        weight: 0n,
+        unweighted: false,
+        plainSum: 0n,
+        plainCount: 0n,
         final: true,
         latest: new Map(),
       });
       acc.sum += row.native;
       acc.count += 1n;
+      // A missing weight row (rows stored before the weight was written) is
+      // not a zero volume: a stored zero keeps the day out.
+      const weight = weights?.get(rowKey(row));
+      if (weight === undefined) acc.unweighted = true;
+      if (weight === undefined || weight > 0n) {
+        acc.plainSum += row.native;
+        acc.plainCount += 1n;
+      }
+      if (weight !== undefined && weight > 0n) {
+        acc.weighted += row.native * weight;
+        acc.weight += weight;
+      }
       acc.final &&= row.final;
       const latestKey = `${row.outletId}|${row.dimensionValue ?? ""}`;
       const latest = acc.latest.get(latestKey);
       if (!latest || latest.date < row.date)
         acc.latest.set(latestKey, { date: row.date, native: row.native });
     }
-    const aggregate = (acc: Acc): bigint => {
+    const aggregate = (acc: Acc): bigint | null => {
       switch (definition.aggregation) {
         // A balance: the last day of the bucket per outlet and split value.
         case "latest":
@@ -1344,9 +1568,19 @@ export async function evaluateMetrics(
             (sum, entry) => sum + entry.native,
             0n,
           );
-        // Mean of the stored outlet-days.
+        // Mean of the stored outlet-days, weighted by their volume when the
+        // source declares a weight; no volume at all is no data. A bucket
+        // with a day lacking its weight row takes the plain mean instead.
         case "average":
-          return divideRounded(acc.sum, acc.count, "half_up");
+          if (weights === null)
+            return divideRounded(acc.sum, acc.count, "half_up");
+          if (acc.unweighted)
+            return acc.plainCount === 0n
+              ? null
+              : divideRounded(acc.plainSum, acc.plainCount, "half_up");
+          return acc.weight === 0n
+            ? null
+            : divideRounded(acc.weighted, acc.weight, "half_up");
         default:
           return acc.sum;
       }
@@ -1355,15 +1589,18 @@ export async function evaluateMetrics(
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([, group]) => ({
         dims: group.dims,
-        cells: group.accs.map((acc, at) => ({
-          // An absent row is no data (null, never zero); a day without a
-          // stored total row keeps the bucket an estimate.
-          value: acc ? valueOf(definition.unit, aggregate(acc)) : null,
-          final:
-            ruleFinal(at, officiality) &&
-            (acc?.final ?? true) &&
-            covered(code, group.outletKey, at),
-        })),
+        cells: group.accs.map((acc, at) => {
+          const native = acc ? aggregate(acc) : null;
+          return {
+            // An absent row is no data (null, never zero); a day without a
+            // stored total row keeps the bucket an estimate.
+            value: native === null ? null : valueOf(definition.unit, native),
+            final:
+              ruleFinal(at, officiality) &&
+              (acc?.final ?? true) &&
+              covered(code, group.outletKey, at),
+          };
+        }),
       }));
   };
 
@@ -1383,6 +1620,48 @@ export async function evaluateMetrics(
       case "daily":
         groups = storedGroups(code);
         break;
+      case "share": {
+        // Value / sum of the values sharing the other dimensions (the outlet),
+        // per bucket; final only when every value of the sum is final.
+        const unit = definitionOf(code).unit;
+        const officiality = definitionOf(code).officiality;
+        const parts = groupsOf(plan.of);
+        const familyOf = (group: Group) =>
+          groupKeyOf(group.dims.filter((dim) => dim.key !== plan.dimension));
+        const totals = new Map<string, Cell[]>();
+        for (const group of parts) {
+          const family = familyOf(group);
+          const cells = totals.get(family) ?? ranges.map(() => EMPTY_CELL);
+          totals.set(
+            family,
+            cells.map((total, at) => {
+              const cell = group.cells[at]!;
+              return {
+                value:
+                  cell.value === null
+                    ? total.value
+                    : valueOf(
+                        cell.value.unit,
+                        (total.value ? nativeOf(total.value) : 0n) +
+                          nativeOf(cell.value),
+                      ),
+                final: total.final && cell.final,
+              };
+            }),
+          );
+        }
+        groups = parts.map((group) => {
+          const total = totals.get(familyOf(group))!;
+          return {
+            dims: group.dims,
+            cells: group.cells.map((cell, at) => ({
+              value: ratioValue(cell.value, total[at]!.value, 100, unit),
+              final: total[at]!.final && ruleFinal(at, officiality),
+            })),
+          };
+        });
+        break;
+      }
       case "derived": {
         // Recomputed per bucket and group from its two inputs; final only
         // when both inputs are final.

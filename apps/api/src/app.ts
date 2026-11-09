@@ -32,6 +32,7 @@ import { apiRouter } from "./routes";
 import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
 import { auditEventsRouter } from "./routes/audit-events.routes";
 import { createMetricsRouter } from "./routes/metrics.routes";
+import { createDashboardsRouter } from "./routes/dashboards.routes";
 import { createReportsRouter } from "./routes/reports.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
@@ -395,6 +396,8 @@ export function createApp({
   app.use("/api/metrics", createMetricsRouter());
   // Report catalog, run and builder preview (legend-5wzoc): /api/reports.
   app.use("/api/reports", createReportsRouter());
+  // Dashboard layout, tile values (batch) and queue rows (legend-flb8f).
+  app.use("/api/dashboards", createDashboardsRouter());
   app.use("/api", apiRouter);
 
   app.use(notFound);

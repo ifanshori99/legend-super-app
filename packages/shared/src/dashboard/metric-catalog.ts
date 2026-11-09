@@ -428,14 +428,32 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "d7cafaa5-b725-4d27-8b5e-84885f7b5415",
     code: "avg_serving_time",
+    version: 2,
     name: "Rata-rata waktu saji",
     description:
       "Rata-rata durasi dari pesanan diterima sampai tiket selesai per stasiun.",
     ownerModule: "kitchen",
     formulaRef: "kitchen.avg_serving_time",
-    expression: "average(ticket.ready_at - ticket.submitted_at)",
+    expression:
+      "sum(daily average(ticket.ready_at - ticket.submitted_at) × served_ticket_count) / sum(served_ticket_count)",
     unit: "seconds",
     aggregation: "average",
+    dimensions: ["outlet", "station", "hour"],
+    grain: "day",
+    officiality: "live",
+    reportCode: "operations.serving_time",
+  }),
+  defineMetric({
+    id: "56f662c5-5c22-41a0-8ee8-0e95813f376d",
+    code: "served_ticket_count",
+    name: "Tiket tersaji",
+    description:
+      "Jumlah tiket dapur yang selesai pada periode; bobot rata-rata waktu saji.",
+    ownerModule: "kitchen",
+    formulaRef: "kitchen.served_ticket_count",
+    expression: "count(ticket.ready_at)",
+    unit: "count",
+    aggregation: "sum",
     dimensions: ["outlet", "station", "hour"],
     grain: "day",
     officiality: "live",
@@ -715,13 +733,31 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "5f4c3eb7-a6e4-46c3-accb-951acb11b024",
     code: "avg_dwell_minutes",
+    version: 2,
     name: "Rata-rata durasi duduk",
     description: "Rata-rata lama tamu duduk per sesi meja pada periode.",
     ownerModule: "facility",
     formulaRef: "facility.avg_dwell_minutes",
-    expression: "average(table_session.ended_at - seated_at)",
+    expression:
+      "sum(daily average(table_session.ended_at - seated_at) × closed_session_count) / sum(closed_session_count)",
     unit: "decimal",
     aggregation: "average",
+    dimensions: ["outlet", "zone"],
+    grain: "day",
+    officiality: "live",
+    reportCode: "traffic.dwell_time",
+  }),
+  defineMetric({
+    id: "681e4310-125a-4142-b309-1bd3c4a9c0f2",
+    code: "closed_session_count",
+    name: "Sesi meja ditutup",
+    description:
+      "Jumlah sesi meja yang ditutup pada periode; bobot rata-rata durasi duduk.",
+    ownerModule: "facility",
+    formulaRef: "facility.closed_session_count",
+    expression: "count(table_session.ended_at)",
+    unit: "count",
+    aggregation: "sum",
     dimensions: ["outlet", "zone"],
     grain: "day",
     officiality: "live",
@@ -974,11 +1010,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "8f95b3a9-584a-48e8-a2ca-7404acddd2d4",
     code: "tax_collected",
+    version: 3,
     name: "Pajak terkumpul",
-    description: "Nilai pajak yang dipungut dari transaksi pada periode.",
+    description:
+      "Gerak akun PBJT keluaran di buku besar pada periode dari jurnal penjualan dan refund yang sudah diposting (penjualan dikurangi refund); setoran ke kantor pajak tidak dihitung.",
     ownerModule: "accounting",
     formulaRef: "accounting.tax_collected",
-    expression: "sum(tax_line.amount_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'tax_payable_pbjt' incl. child accounts and journal_entries.source_type in ('sale', 'refund'), a reversal by the reversed entry's source",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "menu_category"],
@@ -989,11 +1028,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "eaaaf372-871b-4acf-8570-4bc37299ac60",
     code: "service_charge_collected",
+    version: 3,
     name: "Service charge terkumpul",
-    description: "Nilai service charge yang dipungut pada periode.",
+    description:
+      "Gerak akun service charge di buku besar pada periode dari jurnal penjualan dan refund yang sudah diposting; pembayaran lewat payroll tidak dihitung.",
     ownerModule: "accounting",
     formulaRef: "accounting.service_charge_collected",
-    expression: "sum(service_charge.amount_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'service_charge' incl. child accounts and journal_entries.source_type in ('sale', 'refund'), a reversal by the reversed entry's source",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet"],
@@ -1004,11 +1046,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "1908def5-45ea-4d45-9ea9-d44a3179ab79",
     code: "tax_payable",
+    version: 2,
     name: "Utang pajak",
-    description: "Saldo pajak yang belum disetor pada saat data.",
+    description:
+      "Saldo akun utang PBJT di buku besar per akhir periode (semua jurnal yang sudah diposting sampai tanggal akhir).",
     ownerModule: "accounting",
     formulaRef: "accounting.tax_payable",
-    expression: "latest(tax_payable.balance_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'tax_payable_pbjt' incl. child accounts and journal_entries.entry_date <= period end",
     unit: "idr",
     aggregation: "latest",
     dimensions: ["outlet"],

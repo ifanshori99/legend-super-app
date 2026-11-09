@@ -174,11 +174,46 @@ in parallel. Reviewed with an architect consult before implementation.
      which accepts the aggregate view, already lists `cogs` per outlet to a
      shareholder and `gross_profit` is `net_sales - cogs`; the per-menu split
      is the only detail no path shows (architect review 2026-11-10).
+   - Q61 (2026-11-10): a shareholder may see the income statement per
+     outlet, including each outlet's `cogs`, through the
+     `finance.income_statement` report run. The per-menu `cogs` breakdown
+     stays closed. The current behaviour already matches; no code change.
    - Q60: widening `report.operational.view` to `cogs`, `food_cost_pct`,
      `waste_cost`, `payment_fee` and `stock_value` is approved only within
      the outlets the role reaches. An outlet-scoped holder reads their own
      outlet without a filter and gets 403 for another outlet's filter
      (`apps/api/src/test/metrics-query-access.test.ts`).
+
+9. **Shared round 2 (brief 272, 2026-11-10).**
+   - One reader per metric code and dimension in `metrics_daily`; a
+     reader's stale-row delete covers only the dimensions it writes. Which
+     reader owns a code's total row is explicit (`writesTotal`), and two
+     total writers for one code are refused by `assertRegistry`.
+   - `net_sales` splits by `payment_method` (each order's net spread over
+     its captured tenders with `allocateByWeight`, then the paid intent
+     method, then `unassigned`) and by `menu_category` / `menu_item`
+     (largest remainder per order). Sales owns every `net_sales` reader.
+   - New source kinds: `share` (a split's summed value over the summed
+     total, for `menu_popularity_pct`) and GL `balance` (all lines up to the
+     bucket end, for `tax_payable`). A balance is a tenant figure only: by
+     outlet, an outlet filter or an outlet scope answer
+     `dimension_not_supported`, because the PBJT remittance journal may carry
+     no outlet. A GL term may be limited to journal
+     source types: `tax_collected` and `service_charge_collected` count
+     only `sale` and `refund` journals (a reversal counts as the entry it
+     reverses), so remittances and payouts do not reduce them.
+   - `food_cost_pct` splits by splitting `cogs` and `net_sales` and
+     dividing per split value; a split one side lacks is
+     `dimension_not_supported`.
+   - Multi-day `avg_serving_time` and `avg_dwell_minutes` are weighted by
+     the catalog counts `served_ticket_count` and `closed_session_count`
+     (`weightCode`); days without stored weight fall back to the plain
+     mean until history is recomputed (legend-ka1hg).
+   - A GL split is final only when every outlet with ledger lines has a
+     final total row for every day of the bucket.
+   - Dashboards: `managerRole` on the management query; tiles and queues
+     carry `availability`; an unbuilt queue answers 200 with no rows and
+     `source_not_built` instead of 501.
 
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
