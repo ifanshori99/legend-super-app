@@ -18,7 +18,7 @@ Jangan dipakai untuk menutupi nomor yang masih mungkin dikirim perangkat. Write-
 
 ## Siapa yang boleh
 
-Hanya owner tenant aktif, yaitu pengguna dengan role template `owner`. Role custom tidak diterima, meskipun role itu memegang izin `pos.receipt.writeoff`. Izin ini tidak bisa diberikan lewat role custom.
+Hanya owner tenant aktif, yaitu pengguna dengan role template `owner`. Role custom tidak diterima. Kode `pos.receipt.writeoff` saat ini masih bisa dimasukkan ke role custom, tetapi tidak berpengaruh: endpoint hanya menerima role template `owner`.
 
 Endpoint hanya berjalan di cloud, tidak di edge.
 
@@ -47,13 +47,13 @@ Respons berhasil `201` dengan `{ "data": ... }` untuk `POST`. Setelah berhasil, 
 Kemungkinan penolakan:
 
 - `403` `MFA_REQUIRED`, sesi belum pernah diverifikasi 2FA. Verifikasi 2FA, lalu ulangi.
-- `401` `REAUTH_REQUIRED`, verifikasi 2FA sudah lebih dari 5 menit lalu. Verifikasi 2FA lagi, lalu ulangi.
+- `401` `REAUTH_REQUIRED`, verifikasi 2FA sudah lebih dari 5 menit lalu, atau sesi sudah dicabut atau kedaluwarsa. Verifikasi 2FA lagi (atau masuk lagi), lalu ulangi.
 - `409`, nomor di luar rentang yang sudah terbit (lebih besar dari nomor terakhir).
 - `409`, nomor ini sudah punya struk.
 - `409`, nomor ini sudah di-write-off sebelumnya.
 - `404`, prefix tidak dikenal.
 - `403`, pengguna bukan owner (termasuk role custom yang memegang izin).
-- `400`, alasan kurang dari 10 karakter.
+- `422`, alasan kurang dari 10 karakter.
 
 ### Outlet dengan edge
 
@@ -86,6 +86,8 @@ Di laporan shift, nomor tersebut tampil sebagai "di-write-off", bukan sebagai ce
 
 - Jalankan migrasi 0156 dan deploy API baru dalam satu langkah rilis, atau
 - Jika migrasi sudah jalan lebih dulu, deploy API baru segera setelahnya. Selama jeda itu, daftar role tenant terdampak bisa gagal.
+- Jangan pernah menyalakan API baru sebelum migrasi 0156 jalan. Tanpa tabel `receipt_number_writeoffs`, Tutup Hari dan laporan shift gagal.
+- Jendela ini hanya berlaku di rilis pertama yang membawa 0156.
 
 **Preflight.** Jalankan sebelum migrasi 0156 dan sebelum rollback. Pakai role dengan `BYPASSRLS` (tabel `roles` memakai FORCE RLS).
 
@@ -107,9 +109,9 @@ GROUP BY tenant_id
 ORDER BY tenant_id;
 ```
 
-Tenant dari query 1 perlu ditindaklanjuti sebelum rilis. Cara perbaikannya belum ditetapkan di runbook ini. Role custom dari query 2 harus dicabut kodenya (lihat rollback (a)) atau dicatat sebagai keputusan.
+Tenant dari query 1 tidak bisa write-off. Laporkan daftarnya ke CTO sebelum rilis; cara perbaikannya (misalnya seed ulang template) perlu keputusan dan diuji terpisah, jangan menambah baris template dengan tangan. Role custom dari query 2 harus dicabut kodenya (lihat rollback (a)) atau dicatat sebagai keputusan.
 
-**Rollback (a): cabut izin dari semua role.** Lakukan sebelum API lama dinyalakan. Kode ini harus dicabut dari template owner dan dari role custom, karena API lama menolak role yang memegang kode yang tidak dikenalnya.
+**Rollback (a): cabut izin dari semua role.** Lakukan sebelum API lama dinyalakan. Kode ini harus dicabut dari template owner dan dari role custom, karena API lama menolak role yang memegang kode yang tidak dikenalnya. UPDATE ini tidak menulis audit atau access event, jadi catat audit manual: siapa, kapan, jumlah role per tenant (simpan hasil query preflight 2). Jangan memutar ulang access event yang memuat kode baru ke API lama; parsingnya juga ketat.
 
 ```sql
 -- Per tenant, dari role dengan BYPASSRLS (atau ulangi per tenant dengan set_config).

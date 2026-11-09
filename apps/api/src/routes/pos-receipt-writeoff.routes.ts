@@ -56,12 +56,19 @@ const ownerTemplateOnly: RequestHandler = (req, _res, next) => {
 // cannot be undone, so the session's second factor must be recent, not just
 // verified once (same rule and age expression as the role-grant path in
 // grants.ts): no verification is MFA_REQUIRED (403), a stale or future one is
-// REAUTH_REQUIRED (401).
+// REAUTH_REQUIRED (401). A revoked or expired session row never counts, even
+// with a fresh stamp (same rule as sessionMfaVerifiedAt in lib/mfa.ts).
 const recentSecondFactor: RequestHandler = async (req, _res, next) => {
   const session = await loadSessionRow(getAuth(req).session.id);
+  const now = Date.now();
+  if (
+    session &&
+    (session.revokedAt !== null || session.expiresAt.getTime() <= now)
+  )
+    throw new AccessError("REAUTH_REQUIRED");
   const verifiedAt = session?.mfaVerifiedAt ?? null;
   if (verifiedAt === null) throw new AccessError("MFA_REQUIRED");
-  const age = Date.now() - verifiedAt.getTime();
+  const age = now - verifiedAt.getTime();
   if (!(age >= 0 && age <= ROLE_GRANT_REAUTH_MAX_AGE_MS))
     throw new AccessError("REAUTH_REQUIRED");
   next();
