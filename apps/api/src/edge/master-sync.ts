@@ -22,6 +22,10 @@
 //   account_mappings are the exception: the cloud's set per legal entity is
 //   authoritative, so local mappings whose role is not in the snapshot are
 //   deleted (nothing references a mapping row).
+// - A mapping whose role this build does not know (a newer cloud, legend-dhbt1)
+//   is dropped before the apply: logged (role names and count only) and
+//   counted as `droppedMappings`. The rest of the snapshot is applied, and the
+//   mapping replacement above works on the known roles only.
 // - The natural-key pre-check assumes uom and account codes are immutable on
 //   the cloud (a renamed code would look like a local fork). Stock locations
 //   have no natural key, so a location created locally under another id is not
@@ -38,6 +42,7 @@ import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   EDGE_MASTER_SNAPSHOT_PATH,
   edgeMasterSnapshotSchema,
+  partitionEdgeMasterMappings,
   type EdgeMasterSnapshot,
 } from "@starter/shared/edge/master-sync";
 import { guardDataImport } from "../config/data-import.ts";
@@ -62,7 +67,10 @@ export type EdgeMasterSyncCounts = {
   uoms: number;
   stockLocations: number;
   accounts: number;
+  /** Mappings applied (known roles). */
   mappings: number;
+  /** Mappings dropped because this build does not know their role. */
+  droppedMappings: number;
 };
 
 /**
@@ -180,6 +188,10 @@ export async function applyEdgeMasterSnapshotInTransaction(
   assertScope(claims, snapshot);
   const accounts = parentsFirst(snapshot.chartOfAccounts);
   const { tenantId, outletId, legalEntityId } = snapshot;
+  // Unknown roles (a newer cloud) are dropped, not fatal: see the header.
+  const { known: mappings, unknownRoles } = partitionEdgeMasterMappings(
+    snapshot.accountMappings,
+  );
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`edge-master-sync:${tenantId}:${outletId}`}, 0))`,
   );
@@ -286,7 +298,7 @@ export async function applyEdgeMasterSnapshotInTransaction(
       .returning({ id: chartOfAccounts.id });
     if (written.length === 0) throw new EdgeMasterSyncError("SCOPE_MISMATCH");
   }
-  for (const row of snapshot.accountMappings) {
+  for (const row of mappings) {
     await tx
       .insert(accountMappings)
       .values(row)
@@ -299,9 +311,9 @@ export async function applyEdgeMasterSnapshotInTransaction(
         set: { accountId: row.accountId },
       });
   }
-  // The cloud's mapping set replaces the local one (see the header). An empty
-  // snapshot set means no role is kept.
-  const keptRoles = snapshot.accountMappings.map((row) => row.role);
+  // The cloud's mapping set (known roles) replaces the local one (see the
+  // header). An empty set means no role is kept.
+  const keptRoles = mappings.map((row) => row.role);
   await tx
     .delete(accountMappings)
     .where(
@@ -313,11 +325,19 @@ export async function applyEdgeMasterSnapshotInTransaction(
           : undefined,
       ),
     );
+  // Logged before the caller commits: a later rollback still leaves this line.
+  // Repeats on every sync while the cloud is ahead (bounded: 200 x 40 chars).
+  if (unknownRoles.length > 0)
+    logger.warn(
+      { droppedMappings: unknownRoles.length, droppedRoles: unknownRoles },
+      "Edge master sync dropped mappings with roles this build does not know",
+    );
   return {
     uoms: snapshot.uoms.length,
     stockLocations: snapshot.stockLocations.length,
     accounts: accounts.length,
-    mappings: snapshot.accountMappings.length,
+    mappings: mappings.length,
+    droppedMappings: unknownRoles.length,
   };
 }
 

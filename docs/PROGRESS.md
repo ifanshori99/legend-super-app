@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-dhbt1 master sync menoleransi role mapping yang belum dikenal edge (engineer, cabang `ws/master-sync-role-tolerance` dari m1 12c91f6b, 2026-11-09)
+
+- Sudah: role di wire master sync jadi string terbatas (`z.string().min(1).max(40)`); role kosong, lebih dari 40 karakter, atau duplikat tetap `BAD_SNAPSHOT`. Helper `partitionEdgeMasterMappings` di shared memisah role dikenal dan tidak.
+- Edge (`applyEdgeMasterSnapshotInTransaction`): role tak dikenal dibuang sebelum upsert, dicatat `logger.warn` (nama role + jumlah saja) dan dihitung `droppedMappings`; uom, lokasi, akun dan role dikenal tetap diterapkan; penggantian set mapping memakai role dikenal saja. Tanda tangan tetap dicek atas snapshot mentah sebelum filter.
+- Repro: di kode base test baru gagal `BAD_SNAPSHOT`; sesudah fix lulus. Tanpa migrasi.
+- Aturan rilis: build ini harus sampai di semua edge sebelum cloud memetakan role posting baru (edge lama tetap menolak). Role hanya ditambah, tidak di-rename/split, selama edge lama masih jalan.
+- Gate: tsc shared/api/web/root (heavy), eslint dan prettier 3 file, 3 file test 89 test. Review: reviewer Opus + architect (tanpa bug; 2 aturan rollout dan 2 test tambahan diterapkan), re-review segar bersih.
+- Berikut: second-opinion Codex (brief `docs/briefs/200b-second-opinion-master-sync-role-tolerance.md` di folder utama), merge train (di-merge sebelum cabang payroll).
+- Metrik (sesi kumulatif, termasuk tugas payroll sebelumnya): biaya* 7017k (Opus utama 4717k, Opus subagent 860k, Sonnet subagent 1330k, Haiku 110k), 22 subagent Claude, 0 Codex, 1 compact. Tugas ini: 6 subagent, puncak 3 berjalan bersamaan.
+
 ## legend-zsdd nomor struk perangkat terikat ke satu database edge (engineer, cabang `ws/receipt-seq-edge` dari batch16 cc188ee0, 2026-11-09)
 
 - Sudah: `receipt_sequences` dapat `edge_node_id` + `edge_instance_id` (database mana yang memegang counter) dan `retired_at`; satu baris aktif per perangkat (unique parsial), prefix tidak pernah dipakai ulang; trigger: ikatan sekali, pensiun final. `edge_nodes.instance_id` = id acak database edge (edge dibangun ulang = id baru). Pull cloud oleh primary aktif yang mengirim `edgeInstance`: klaim urutan bebas di 0, rotasi (prefix baru) untuk urutan yang mungkin sudah bernomor di tempat lain; standby atau tanpa instance dapat `[]`. Cloud tidak meneruskan counter edge. Edge menolak ikatan asing dan memakai run terikat hanya bila cocok dengan `edge_nodes` miliknya. Status urutan ditolak tampil di `GET /api/edge/status` (`deviceRegistry.receiptSequencesRefused`, `receiptSequencesRefusedAt`). Fetcher edge baru mundur tanpa `edgeInstance` bila cloud lama menjawab 400. Perbaikan sementara 3yqy dipertahankan sebagai backstop.
