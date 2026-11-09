@@ -86,10 +86,20 @@ const specs: Spec[] = [
   { name: "clean-12-digit-rrn", cols: { rrn: "123456789012" } },
   { name: "clean-nulls", cols: {} },
   {
-    name: "clean-12-digits-spaced-in-message",
+    name: "clean-11-digits-spaced-in-message",
+    status: "declined",
+    cols: { message: "Ref 1234 5678 901 ditolak, kode 51" },
+  },
+  // 12-digit runs: masked in card_type, message and masked_pan like the write
+  // path (a 12-digit card number exists), kept in the reference columns.
+  {
+    name: "message-12-digits-spaced",
     status: "declined",
     cols: { message: "Ref 1234 5678 9012 ditolak, kode 51" },
+    expect: { message: "Ref [disamarkan] ditolak, kode 51" },
   },
+  { name: "card-type-12-digits", cols: { card_type: "4111 1111 1111" }, expect: { card_type: "UNKNOWN" } },
+  { name: "masked-pan-12-digits", cols: { masked_pan: "411111111111" }, expect: { masked_pan: null } },
   { name: "clean-masked-x", cols: { masked_pan: "4111XXXXXX1111" } },
   // ---- PAN in each column separately
   { name: "card-type-plain", cols: { card_type: PAN }, expect: { card_type: "UNKNOWN" } },
@@ -130,8 +140,9 @@ const specs: Spec[] = [
   },
   {
     name: "message-two-pans",
-    cols: { message: `A ${PAN} | B 5500-0000-0000-0004 | tetap 123456789012` },
-    expect: { message: `A ${SCRUBBED} | B ${SCRUBBED} | tetap 123456789012` },
+    // The trailing 12-digit run is masked too: message uses the 12+ threshold.
+    cols: { message: `A ${PAN} | B 5500-0000-0000-0004 | juga 123456789012` },
+    expect: { message: `A ${SCRUBBED} | B ${SCRUBBED} | juga ${SCRUBBED}` },
   },
   {
     name: "message-only-pan",
@@ -362,7 +373,14 @@ let dirtyCount = 0;
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  expect(statements.length).toBe(3);
+  // SET LOCAL lock_timeout, NO FORCE, UPDATE, FORCE, reset lock_timeout.
+  expect(statements.length).toBe(5);
+  expect(statements[0]).toMatch(/SET LOCAL lock_timeout/i);
+  expect(statements[1]).toMatch(/NO FORCE ROW LEVEL SECURITY/i);
+  expect(statements[2]).toMatch(/UPDATE\s+"edc_transactions"/i);
+  expect(statements[3]).toMatch(/FORCE ROW LEVEL SECURITY/i);
+  expect(statements[3]).not.toMatch(/NO FORCE/i);
+  expect(statements[4]).toMatch(/lock_timeout/i);
   isolated = await createIsolatedTenant(`pan-${randomUUID().slice(0, 8)}`);
   // Tenant A: seeded fixture tenant, all specs. Tenant B: isolated tenant,
   // a mixed subset, so a tenant-scoped migration bug would show.
@@ -533,5 +551,121 @@ describe("EDC-01 legend-5gub migration 0113 PAN scrub", () => {
        WHERE n.nspname = 'public' AND c.relname = 'edc_transactions'`,
     );
     expect(result.rows).toEqual([{ enabled: true, forced: true }]);
+  });
+  // Realistic deploy: the migration role owns the table but is NOT a superuser
+  // and does NOT bypass RLS, and no tenant context is set. Everything runs in
+  // one transaction that is rolled back, so ownership and data revert.
+  it("under a NOSUPERUSER NOBYPASSRLS owner role the bare UPDATE fails and the 5 statements scrub", async () => {
+    const role = `scrub_probe_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const rowId = randomUUID();
+    const setContext = (client: PoolClient, tenant: string, outlets: string) =>
+      client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', $2, true)",
+        [tenant, outlets],
+      );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await setContext(client, fixA.tenantId, "*");
+      await client.query(`CREATE ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      // legend_app carries USAGE on schema app (the RLS policy functions).
+      await client.query(`GRANT legend_app TO ${role}`);
+      await client.query(`GRANT ${role} TO CURRENT_USER`);
+      await client.query(`GRANT CREATE ON SCHEMA public TO ${role}`);
+      await client.query(`ALTER TABLE edc_transactions OWNER TO ${role}`);
+      await client.query(`SET LOCAL ROLE ${role}`);
+
+      const who = await client.query(
+        `SELECT r.rolsuper, r.rolbypassrls, c.relowner = r.oid AS owner_is_me
+         FROM pg_roles r, pg_class c
+         WHERE r.rolname = current_user AND c.oid = 'public.edc_transactions'::regclass`,
+      );
+      expect(who.rows).toEqual([
+        { rolsuper: false, rolbypassrls: false, owner_is_me: true },
+      ]);
+
+      seq += 1;
+      await client.query(
+        `INSERT INTO edc_transactions
+           (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+            request_fingerprint, amount_idr, method, status, trace, completed_at,
+            card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message,
+            masked_pan, updated_at, created_at)
+         VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp-scrub', 12345, 'card', 'approved', $7,
+                 '2024-01-02T03:04:05Z', $8, $9, '000123', '000045', '000044', $10, $11,
+                 '2024-01-02T03:04:06Z', '2024-01-02T03:00:00Z')`,
+        [
+          rowId,
+          fixA.tenantId,
+          fixA.outletId,
+          fixA.terminalId,
+          `REF-SCRUB-ROLE-${seq}`,
+          randomUUID(),
+          `TSR${String(seq).padStart(6, "0")}`,
+          PAN_SPACED,
+          PAN,
+          `Kartu ${PAN_DASHED} ditolak`,
+          PAN,
+        ],
+      );
+
+      // Migration time: no tenant context.
+      await setContext(client, "", "");
+
+      // The bare UPDATE (statement 3 alone) hits FORCE RLS and fails.
+      await client.query("SAVEPOINT bare_update");
+      await expect(client.query(statements[2])).rejects.toThrow(
+        /tenant context is required/,
+      );
+      await client.query("ROLLBACK TO SAVEPOINT bare_update");
+
+      // The 5 statements together, as the migrator runs them, succeed.
+      let updated = -1;
+      for (const statement of statements) {
+        const result = await client.query(statement);
+        if (/^\s*(--[^\n]*\n\s*)*UPDATE/i.test(statement)) {
+          updated = result.rowCount ?? -1;
+        }
+      }
+      expect(updated).toBeGreaterThanOrEqual(1);
+
+      // FORCE is back on: reading without tenant context fails again.
+      await client.query("SAVEPOINT forced_again");
+      await expect(
+        client.query("SELECT 1 FROM edc_transactions LIMIT 1"),
+      ).rejects.toThrow(/tenant context is required/);
+      await client.query("ROLLBACK TO SAVEPOINT forced_again");
+
+      // With the tenant context back, the row is masked.
+      await setContext(client, fixA.tenantId, "*");
+      const scrubbed = await client.query(
+        `SELECT card_type, rrn, message, masked_pan, invoice_no, amount_idr, status
+         FROM edc_transactions WHERE id = $1`,
+        [rowId],
+      );
+      expect(scrubbed.rows).toEqual([
+        {
+          card_type: "UNKNOWN",
+          rrn: null,
+          message: `Kartu ${SCRUBBED} ditolak`,
+          masked_pan: "411111******1111",
+          invoice_no: "000123",
+          amount_idr: "12345", // bigint column: node-pg returns a string
+          status: "approved",
+        },
+      ]);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+
+    // Rolled back: the probe role and the ownership change are gone.
+    const after = await owner.query(
+      `SELECT (SELECT count(*) FROM pg_roles WHERE rolname = $1)::int AS roles,
+              pg_get_userbyid(c.relowner) <> $1 AS owner_restored
+       FROM pg_class c WHERE c.oid = 'public.edc_transactions'::regclass`,
+      [role],
+    );
+    expect(after.rows).toEqual([{ roles: 0, owner_restored: true }]);
   });
 });

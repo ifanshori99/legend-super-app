@@ -175,8 +175,18 @@ const CARD_TEXT_COLUMNS = [
   "reference",
 ] as const;
 
+// Random UUIDs and ISO timestamps can hold 13+ digits split by dashes by
+// chance ("…58-3702-4046-987c…"): blank them before the pattern check so it
+// only fires on real card-number-like text. The literal PAN check still runs on
+// the full text.
+const UUID_OR_TIMESTAMP =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/gi;
+
 function expectNoPan(label: string, text: string): void {
-  expect(text, `${label} matches a card-number pattern`).not.toMatch(PAN_LIKE);
+  expect(
+    text.replace(UUID_OR_TIMESTAMP, "<id>"),
+    `${label} matches a card-number pattern`,
+  ).not.toMatch(PAN_LIKE);
   for (const pan of PAN_LITERALS)
     expect(text, `${label} contains ${pan}`).not.toContain(pan);
 }

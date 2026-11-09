@@ -22,6 +22,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect, semua temuan nyata sudah dibetulkan. Follow-up pra-ada: issue bd backup login `postgres`.
 - Belum: test DB terakhir dan `heavy pnpm check` belum hijau karena forwarding port Colima untuk container baru mati (ECONNREFUSED), bukan karena kode. Jalankan ulang setelah Colima dipulihkan. Second-opinion Codex (tingkat K) masih perlu diantre CTO.
 
+## legend-5gub PAN lama di data EDC (engineer, cabang `ws/edc-pan-scrub`, 2026-11-09)
+
+- Sudah: migrasi data `0113_edc_pan_scrub` menyamarkan nomor kartu di baris lama `edc_transactions` (card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message, masked_pan), ambang sama dengan filter tulis; idempoten, baris bersih dan jumlah/status tidak berubah; `lock_timeout` 5 detik. `message` juga disamarkan saat dibaca. Log EDC diperiksa: tidak ada data kartu. Runbook `docs/runbooks/edc-pan-scrub.md`.
+- DB dev lokal baru 54 migrasi (tabel EDC belum ada): 0 baris terdeteksi, tidak membuktikan apa-apa. Deteksi perlu dijalankan di staging, pilot, dan tiap node edge.
+- Review K: reviewer Opus 2x dan architect, temuan sudah dibetulkan. Second opinion Codex: antre, brief 150.
+- Berikut: merge train meregenerasi nomor migrasi.
+
 ## Sedang
 
 - (kosong selain thread di bawah)
