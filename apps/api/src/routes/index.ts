@@ -61,6 +61,9 @@ import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
+import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
+import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -126,6 +129,13 @@ apiRouter.use("/floor", floorRouter);
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
+// WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
+apiRouter.use("/outlets/:outletId/delivery-channels", deliveryChannelsRouter);
+apiRouter.use("/outlets/:outletId/delivery-orders", deliveryOrdersRouter);
+apiRouter.use(
+  "/outlets/:outletId/delivery-reconciliation",
+  deliveryReconciliationRouter,
+);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);

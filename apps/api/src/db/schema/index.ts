@@ -83,3 +83,5 @@ export * from "./device";
 export * from "./inventory-gl";
 // WS-08 public brand website content (legend-qgr6).
 export * from "./website";
+// WS-08 delivery channel framework (legend-5bn3).
+export * from "./delivery";

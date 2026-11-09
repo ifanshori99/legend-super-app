@@ -30,6 +30,7 @@ import {
 import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { deliveryWebhookRouter } from "./routes/delivery-webhook.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
@@ -229,6 +230,9 @@ export function createApp({
     "/api/webhooks/whatsapp",
     createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
   );
+  // Delivery platform webhooks (GoFood, GrabFood, ShopeeFood; legend-5bn3):
+  // same server-to-server rules, signature per platform.
+  app.use("/api/webhooks/delivery", deliveryWebhookRouter);
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the

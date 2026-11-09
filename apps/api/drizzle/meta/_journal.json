@@ -659,6 +659,20 @@
       "when": 1794183531117,
       "tag": "0093_promo_idempotency_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794183892662,
+      "tag": "0094_ws08_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794183899243,
+      "tag": "0095_delivery_rls",
+      "breakpoints": true
     }
   ]
 }
