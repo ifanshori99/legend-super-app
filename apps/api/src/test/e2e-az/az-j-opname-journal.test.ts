@@ -46,7 +46,6 @@ import { db } from "../../db/index.ts";
 import { withTenant } from "../../db/tenant.ts";
 import { recordStockMovement } from "../../services/inventory.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "../helpers.ts";
-import { describeUntilMerged } from "./pending-branch.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const brandId = cafeLegendPlatformFixtures.brand.id;
@@ -852,148 +851,144 @@ async function deliverToGl(ledgerRowId: string): Promise<{ status: string }> {
   );
 }
 
-describeUntilMerged(
-  "ws/inventory-gl",
-  "Alur J jurnal otomatis: selisih opname masuk GL seimbang (INV-03, ACC-01)",
-  () => {
-    let world: GlWorld;
-    let glCrew: Crew;
-    let finance: Actor;
-    let shelf: Shelf;
-    let countId: string;
+describe("Alur J jurnal otomatis: selisih opname masuk GL seimbang (INV-03, ACC-01)", () => {
+  let world: GlWorld;
+  let glCrew: Crew;
+  let finance: Actor;
+  let shelf: Shelf;
+  let countId: string;
 
-    beforeAll(async () => {
-      world = await makeGlWorld();
-      glCrew = await makeCrew(world.outletId);
-      finance = await makeActor(
-        "Opname Finance",
-        [["finance", { type: "tenant" }]],
-        {
-          mfa: true,
-        },
-      );
-      shelf = await seedShelf(world.outletId, gramId);
-    });
+  beforeAll(async () => {
+    world = await makeGlWorld();
+    glCrew = await makeCrew(world.outletId);
+    finance = await makeActor(
+      "Opname Finance",
+      [["finance", { type: "tenant" }]],
+      {
+        mfa: true,
+      },
+    );
+    shelf = await seedShelf(world.outletId, gramId);
+  });
 
-    async function journalsOfCount() {
-      const { rows } = await owner.query<{
-        id: string;
-        debit: string;
-        credit: string;
-      }>(
-        `SELECT e.id,
+  async function journalsOfCount() {
+    const { rows } = await owner.query<{
+      id: string;
+      debit: string;
+      credit: string;
+    }>(
+      `SELECT e.id,
                 COALESCE(SUM(l.debit_idr), 0)::text AS debit,
                 COALESCE(SUM(l.credit_idr), 0)::text AS credit
            FROM journal_entries e
            JOIN journal_lines l ON l.tenant_id = e.tenant_id AND l.entry_id = e.id
           WHERE e.tenant_id = $1 AND e.legal_entity_id = $2 AND e.source_id = $3
           GROUP BY e.id`,
-        [tenantId, world.entity, countId],
-      );
-      return rows.map((row) => ({
-        id: row.id,
-        debit: Number(row.debit),
-        credit: Number(row.credit),
-      }));
+      [tenantId, world.entity, countId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      debit: Number(row.debit),
+      credit: Number(row.credit),
+    }));
+  }
+
+  it("INV-03 ACC-01 sebelum disetujui tidak ada jurnal; setelah disetujui satu jurnal seimbang terbentuk otomatis", async () => {
+    const count = await submitCount(glCrew.gudang, shelf);
+    countId = count.id;
+    expect(await journalsOfCount()).toEqual([]);
+
+    await ok(await transition(glCrew.manajer, countId, "approve"));
+    // Still nothing until the ledger events reach the GL consumer.
+    for (const row of await countLedger(countId)) {
+      const result = await deliverToGl(row.id);
+      expect(["posted", "already_posted"]).toContain(result.status);
     }
 
-    it("INV-03 ACC-01 sebelum disetujui tidak ada jurnal; setelah disetujui satu jurnal seimbang terbentuk otomatis", async () => {
-      const count = await submitCount(glCrew.gudang, shelf);
-      countId = count.id;
-      expect(await journalsOfCount()).toEqual([]);
+    const journals = await journalsOfCount();
+    expect(journals.length).toBeGreaterThanOrEqual(1);
+    for (const journal of journals) {
+      expect(journal.debit).toBeGreaterThan(0);
+      expect(journal.debit).toBe(journal.credit);
+    }
+  });
 
-      await ok(await transition(glCrew.manajer, countId, "approve"));
-      // Still nothing until the ledger events reach the GL consumer.
-      for (const row of await countLedger(countId)) {
-        const result = await deliverToGl(row.id);
-        expect(["posted", "already_posted"]).toContain(result.status);
-      }
-
-      const journals = await journalsOfCount();
-      expect(journals.length).toBeGreaterThanOrEqual(1);
-      for (const journal of journals) {
-        expect(journal.debit).toBeGreaterThan(0);
-        expect(journal.debit).toBe(journal.credit);
-      }
-    });
-
-    it("ACC-01 efek bersih pada akun persediaan sama dengan selisih bersih Rp1.500 (kurang)", async () => {
-      const { rows } = await owner.query<{
-        net_credit: string;
-        adj_debit: string;
-      }>(
-        `SELECT COALESCE(SUM(CASE WHEN l.account_id = $4 THEN l.credit_idr - l.debit_idr END), 0)::text AS net_credit,
+  it("ACC-01 efek bersih pada akun persediaan sama dengan selisih bersih Rp1.500 (kurang)", async () => {
+    const { rows } = await owner.query<{
+      net_credit: string;
+      adj_debit: string;
+    }>(
+      `SELECT COALESCE(SUM(CASE WHEN l.account_id = $4 THEN l.credit_idr - l.debit_idr END), 0)::text AS net_credit,
                 COALESCE(SUM(CASE WHEN l.account_id = $5 THEN l.debit_idr - l.credit_idr END), 0)::text AS adj_debit
            FROM journal_entries e
            JOIN journal_lines l ON l.tenant_id = e.tenant_id AND l.entry_id = e.id
           WHERE e.tenant_id = $1 AND e.legal_entity_id = $2 AND e.source_id = $3`,
-        [
-          tenantId,
-          world.entity,
-          countId,
-          world.inventoryAccount,
-          world.adjustmentAccount,
-        ],
-      );
-      // Loss 2 x 1.500 = 3.000, gain 1 x 1.500 = 1.500, net loss 1.500:
-      // persediaan turun, beban selisih opname naik.
-      expect(Number(rows[0]!.net_credit)).toBe(1500);
-      expect(Number(rows[0]!.adj_debit)).toBe(1500);
-    });
+      [
+        tenantId,
+        world.entity,
+        countId,
+        world.inventoryAccount,
+        world.adjustmentAccount,
+      ],
+    );
+    // Loss 2 x 1.500 = 3.000, gain 1 x 1.500 = 1.500, net loss 1.500:
+    // persediaan turun, beban selisih opname naik.
+    expect(Number(rows[0]!.net_credit)).toBe(1500);
+    expect(Number(rows[0]!.adj_debit)).toBe(1500);
+  });
 
-    it("ACC-01 finance membaca jurnal opname lewat API dan melihat debit sama dengan kredit", async () => {
-      const month = today.slice(0, 7);
-      const list = await finance.client.get(
-        `/api/accounting/journals?legalEntityId=${world.entity}&from=${month}-01&to=${today}`,
-      );
-      expect(list.status, JSON.stringify(list.body)).toBe(200);
-      const ours = (
-        list.body.data as Array<{ id: string; sourceId: string | null }>
-      ).filter((entry) => entry.sourceId === countId);
-      expect(ours.length).toBeGreaterThanOrEqual(1);
+  it("ACC-01 finance membaca jurnal opname lewat API dan melihat debit sama dengan kredit", async () => {
+    const month = today.slice(0, 7);
+    const list = await finance.client.get(
+      `/api/accounting/journals?legalEntityId=${world.entity}&from=${month}-01&to=${today}`,
+    );
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const ours = (
+      list.body.data as Array<{ id: string; sourceId: string | null }>
+    ).filter((entry) => entry.sourceId === countId);
+    expect(ours.length).toBeGreaterThanOrEqual(1);
 
-      const detail = await finance.client.get(
-        `/api/accounting/journals/${ours[0]!.id}`,
-      );
-      expect(detail.status, JSON.stringify(detail.body)).toBe(200);
-      const lines = detail.body.data.entry.lines as Array<{
-        debitIdr: number;
-        creditIdr: number;
-      }>;
-      const debit = lines.reduce((sum, l) => sum + l.debitIdr, 0);
-      const credit = lines.reduce((sum, l) => sum + l.creditIdr, 0);
-      expect(debit).toBe(credit);
-    });
+    const detail = await finance.client.get(
+      `/api/accounting/journals/${ours[0]!.id}`,
+    );
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    const lines = detail.body.data.entry.lines as Array<{
+      debitIdr: number;
+      creditIdr: number;
+    }>;
+    const debit = lines.reduce((sum, l) => sum + l.debitIdr, 0);
+    const credit = lines.reduce((sum, l) => sum + l.creditIdr, 0);
+    expect(debit).toBe(credit);
+  });
 
-    it("ACC-01 jurnal final tidak dihapus: koreksi lewat jurnal pembalik, sekali saja", async () => {
-      const [journal] = await journalsOfCount();
-      const reverse = () =>
-        finance.client
-          .post(`/api/accounting/journals/${journal!.id}/reversal`)
-          .set(originHeader)
-          .send({
-            entryDate: today,
-            reason: "Hitungan ulang menunjukkan selisih salah catat",
-            idempotencyKey: key("rev"),
-          });
-      const first = await reverse();
-      expect(first.status, JSON.stringify(first.body)).toBe(201);
-      expect(first.body.data.reversalOf).toBe(journal!.id);
+  it("ACC-01 jurnal final tidak dihapus: koreksi lewat jurnal pembalik, sekali saja", async () => {
+    const [journal] = await journalsOfCount();
+    const reverse = () =>
+      finance.client
+        .post(`/api/accounting/journals/${journal!.id}/reversal`)
+        .set(originHeader)
+        .send({
+          entryDate: today,
+          reason: "Hitungan ulang menunjukkan selisih salah catat",
+          idempotencyKey: key("rev"),
+        });
+    const first = await reverse();
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body.data.reversalOf).toBe(journal!.id);
 
-      const second = await reverse();
-      expect(second.status).toBe(409);
-      expect(second.body.error.code).toBe("JOURNAL_ALREADY_REVERSED");
-    });
+    const second = await reverse();
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("JOURNAL_ALREADY_REVERSED");
+  });
 
-    it("INV-03 hitungan ditolak tidak menghasilkan jurnal", async () => {
-      const other = await seedShelf(world.outletId, gramId);
-      const count = await submitCount(glCrew.gudang, other);
-      await ok(await transition(glCrew.manajer, count.id, "reject"));
-      const { rows } = await owner.query(
-        "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND source_id = $2",
-        [tenantId, count.id],
-      );
-      expect(rows).toHaveLength(0);
-    });
-  },
-);
+  it("INV-03 hitungan ditolak tidak menghasilkan jurnal", async () => {
+    const other = await seedShelf(world.outletId, gramId);
+    const count = await submitCount(glCrew.gudang, other);
+    await ok(await transition(glCrew.manajer, count.id, "reject"));
+    const { rows } = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND source_id = $2",
+      [tenantId, count.id],
+    );
+    expect(rows).toHaveLength(0);
+  });
+});

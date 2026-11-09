@@ -47,7 +47,7 @@ import {
   owner,
   type IsolatedTenant,
 } from "../floor-test-helpers.ts";
-import { describeUntilMerged, itUntilMerged } from "./pending-branch.ts";
+import { describeUntilMerged } from "./pending-branch.ts";
 
 const PIN = "582914";
 const CASHIER_PIN = "719364";
@@ -740,7 +740,7 @@ describe("Alur E kasir melayani pesanan (m1)", () => {
 
 // ---- Alur E, shift (ws/pos-shift) -------------------------------------------------------
 
-describeUntilMerged("ws/pos-shift", "Alur E buka dan tutup shift kasir", () => {
+describe("Alur E buka dan tutup shift kasir", () => {
   const countsFor = (total: number) => {
     let rest = total;
     const lines: { denominationIdr: number; quantity: number }[] = [];
@@ -932,260 +932,238 @@ describeUntilMerged("ws/pos-shift", "Alur E buka dan tutup shift kasir", () => {
 
 // ---- Alur W, EDC (ws/edc-framework) -----------------------------------------------------
 
-describeUntilMerged(
-  "ws/edc-framework",
-  "Alur W bayar di kasir dengan EDC",
-  () => {
-    async function edcFixture() {
-      const { createEdcAgent } = await dynamicImport("../../edge/edc/agent.ts");
-      const { EdcProviderRegistry } = await dynamicImport(
-        "../../edge/edc/registry.ts",
-      );
-      const { EcrSimulator } = await dynamicImport(
-        "../../edge/edc/simulator.ts",
-      );
-      const { db } = await dynamicImport("../../db/index.ts");
-      const { establishScopedTenantContext } = await dynamicImport(
-        "@starter/shared/core/server",
-      );
-      const registry = new EdcProviderRegistry();
-      const sims: Record<string, Loose> = {};
-      const terminals: Record<string, string> = {};
-      for (const bank of ["bca", "mandiri"]) {
-        sims[bank] = new EcrSimulator(bank);
-        registry.register(sims[bank]);
-        const id = randomUUID();
-        terminals[bank] = id;
-        await asOwnerTenant((client) =>
-          client.query(
-            `INSERT INTO payment_edc_terminals
+describe("Alur W bayar di kasir dengan EDC", () => {
+  async function edcFixture() {
+    const { createEdcAgent } = await dynamicImport("../../edge/edc/agent.ts");
+    const { EdcProviderRegistry } = await dynamicImport(
+      "../../edge/edc/registry.ts",
+    );
+    const { EcrSimulator } = await dynamicImport("../../edge/edc/simulator.ts");
+    const { db } = await dynamicImport("../../db/index.ts");
+    const { establishScopedTenantContext } = await dynamicImport(
+      "@starter/shared/core/server",
+    );
+    const registry = new EdcProviderRegistry();
+    const sims: Record<string, Loose> = {};
+    const terminals: Record<string, string> = {};
+    for (const bank of ["bca", "mandiri"]) {
+      sims[bank] = new EcrSimulator(bank);
+      registry.register(sims[bank]);
+      const id = randomUUID();
+      terminals[bank] = id;
+      await asOwnerTenant((client) =>
+        client.query(
+          `INSERT INTO payment_edc_terminals
              (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
               connection, ip_address, supported_methods, status)
            VALUES ($1, $2, $3, $4, $5, 'MID-AZ', 'Test EDC', 'lan', '10.0.0.5', $6, 'active')`,
-            [
-              id,
-              tenant.tenantId,
-              tenant.outletId,
-              bank,
-              `TID-${id.slice(0, 8)}`,
-              ["card", "qris"],
-            ],
-          ),
-        );
-      }
-      const scoped = establishScopedTenantContext(ctx(), {
-        kind: "outlets",
-        outletIds: [tenant.outletId],
-      });
-      const edc = createEdcAgent({
-        db,
-        registry,
-        saleTimeoutMs: 50,
-        inquiryTimeoutMs: 50,
-        cancelTimeoutMs: 50,
-      });
-      await edc.start(scoped);
-      const charge = (
-        bank: string,
-        reference: string,
-        amountIdr: number,
-        method = "card",
-      ) =>
-        edc.requestPayment(scoped, cashier.userId, {
-          tenantId: tenant.tenantId,
-          outletId: tenant.outletId,
-          terminalId: terminals[bank],
-          reference,
-          idempotencyKey: randomUUID(),
-          amountIdr,
-          method,
-        });
-      return { edc, scoped, sims, terminals, charge };
-    }
-
-    it("EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code", async () => {
-      const f = await edcFixture();
-      try {
-        const order = await newOrder();
-        const tx = await f.charge(
-          "bca",
-          `BILL-${order.orderId}`,
-          order.totalIdr,
-        );
-        expect(tx.status).toBe("approved");
-        expect(tx.amountIdr).toBe(order.totalIdr);
-        expect(tx.approvalCode).toBeTruthy();
-        const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
-          method: "edc_card",
-          edcTransactionId: tx.id,
-          reference: tx.approvalCode,
-          expectedStatus: order.status,
-        });
-        expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-        expect(paid.body.data.tender).toMatchObject({
-          method: "edc_card",
-          amountIdr: order.totalIdr,
-          status: "captured",
-          reference: tx.approvalCode,
-        });
-        expect(paid.body.data.remainingIdr).toBe(0);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    });
-
-    it("EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai", async () => {
-      const f = await edcFixture();
-      try {
-        const order = await newOrder();
-        f.sims.bca.next(f.terminals.bca, "decline");
-        const tx = await f.charge(
-          "bca",
-          `BILL-${order.orderId}`,
-          order.totalIdr,
-        );
-        expect(tx.status).toBe("declined");
-        const attempt = await post(
-          cashier,
-          `/orders/${order.orderId}/tenders`,
-          {
-            method: "edc_card",
-            edcTransactionId: tx.id,
-            reference: "DECLINED",
-            expectedStatus: order.status,
-          },
-        );
-        expect(attempt.status).toBeGreaterThanOrEqual(400);
-        const unpaid = await get(cashier, `/orders/${order.orderId}`);
-        expect(unpaid.body.data.status).not.toBe("completed");
-        const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
-          method: "cash",
-          receivedIdr: order.totalIdr,
-          expectedStatus: order.status,
-        });
-        expect(cash.status, JSON.stringify(cash.body)).toBe(201);
-        expect(cash.body.data.remainingIdr).toBe(0);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    });
-
-    it("EDC-03 koneksi putus setelah kartu tergesek: ulangi bayar tidak menagih dua kali", async () => {
-      const f = await edcFixture();
-      try {
-        const order = await newOrder();
-        const reference = `BILL-${order.orderId}`;
-        f.sims.bca.next(f.terminals.bca, "timeout_after_charge");
-        const first = await f.charge("bca", reference, order.totalIdr);
-        expect(first.status).toBe("unknown");
-        await expect(
-          f.charge("bca", reference, order.totalIdr),
-        ).rejects.toMatchObject({
-          reason: "EDC_ALREADY_APPROVED",
-        });
-        expect(f.sims.bca.chargedCount(f.terminals.bca)).toBe(1);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    });
-
-    it("EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak", async () => {
-      const order = await newOrder();
-      const noRef = await post(cashier, `/orders/${order.orderId}/tenders`, {
-        method: "edc_card",
-        expectedStatus: order.status,
-      });
-      expect(noRef.status).toBeGreaterThanOrEqual(400);
-      const noApprover = await post(
-        cashier,
-        `/orders/${order.orderId}/tenders`,
-        {
-          method: "edc_card",
-          reference: "MANUAL-123456",
-          expectedStatus: order.status,
-        },
+          [
+            id,
+            tenant.tenantId,
+            tenant.outletId,
+            bank,
+            `TID-${id.slice(0, 8)}`,
+            ["card", "qris"],
+          ],
+        ),
       );
-      expect(noApprover.status).toBeGreaterThanOrEqual(400);
-      expect(
-        (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
-      ).not.toBe("completed");
-
-      // Positive case: supervisor PIN + reference settle it and flag it for
-      // reconciliation. Assumption: the PRD names no override action for
-      // this, so `edc_standalone` is used; the tender is booked with the
-      // supervisor as approver and an edc_transactions row in standalone
-      // mode with needs_reconciliation set.
-      const reference = `MANUAL-${randomUUID().slice(0, 8)}`;
-      const approval = await pinApproval({
-        action: "edc_standalone",
-        objectId: order.orderId,
-        valueIdr: order.totalIdr,
+    }
+    const scoped = establishScopedTenantContext(ctx(), {
+      kind: "outlets",
+      outletIds: [tenant.outletId],
+    });
+    const edc = createEdcAgent({
+      db,
+      registry,
+      saleTimeoutMs: 50,
+      inquiryTimeoutMs: 50,
+      cancelTimeoutMs: 50,
+    });
+    await edc.start(scoped);
+    const charge = (
+      bank: string,
+      reference: string,
+      amountIdr: number,
+      method = "card",
+    ) =>
+      edc.requestPayment(scoped, cashier.userId, {
+        tenantId: tenant.tenantId,
+        outletId: tenant.outletId,
+        terminalId: terminals[bank],
+        reference,
+        idempotencyKey: randomUUID(),
+        amountIdr,
+        method,
       });
+    return { edc, scoped, sims, terminals, charge };
+  }
+
+  it("EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code", async () => {
+    const f = await edcFixture();
+    try {
+      const order = await newOrder();
+      const tx = await f.charge("bca", `BILL-${order.orderId}`, order.totalIdr);
+      expect(tx.status).toBe("approved");
+      expect(tx.amountIdr).toBe(order.totalIdr);
+      expect(tx.approvalCode).toBeTruthy();
       const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
         method: "edc_card",
-        reference,
+        edcTransactionId: tx.id,
+        reference: tx.approvalCode,
         expectedStatus: order.status,
-        ...approval,
       });
       expect(paid.status, JSON.stringify(paid.body)).toBe(201);
       expect(paid.body.data.tender).toMatchObject({
         method: "edc_card",
-        reference,
+        amountIdr: order.totalIdr,
         status: "captured",
-        approvedBy: supervisor.userId,
+        reference: tx.approvalCode,
       });
       expect(paid.body.data.remainingIdr).toBe(0);
-      const flagged = await owner.query(
-        `SELECT mode, needs_reconciliation FROM edc_transactions
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
+
+  it("EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai", async () => {
+    const f = await edcFixture();
+    try {
+      const order = await newOrder();
+      f.sims.bca.next(f.terminals.bca, "decline");
+      const tx = await f.charge("bca", `BILL-${order.orderId}`, order.totalIdr);
+      expect(tx.status).toBe("declined");
+      const attempt = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "edc_card",
+        edcTransactionId: tx.id,
+        reference: "DECLINED",
+        expectedStatus: order.status,
+      });
+      expect(attempt.status).toBeGreaterThanOrEqual(400);
+      const unpaid = await get(cashier, `/orders/${order.orderId}`);
+      expect(unpaid.body.data.status).not.toBe("completed");
+      const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "cash",
+        receivedIdr: order.totalIdr,
+        expectedStatus: order.status,
+      });
+      expect(cash.status, JSON.stringify(cash.body)).toBe(201);
+      expect(cash.body.data.remainingIdr).toBe(0);
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
+
+  it("EDC-03 koneksi putus setelah kartu tergesek: ulangi bayar tidak menagih dua kali", async () => {
+    const f = await edcFixture();
+    try {
+      const order = await newOrder();
+      const reference = `BILL-${order.orderId}`;
+      f.sims.bca.next(f.terminals.bca, "timeout_after_charge");
+      const first = await f.charge("bca", reference, order.totalIdr);
+      expect(first.status).toBe("unknown");
+      await expect(
+        f.charge("bca", reference, order.totalIdr),
+      ).rejects.toMatchObject({
+        reason: "EDC_ALREADY_APPROVED",
+      });
+      expect(f.sims.bca.chargedCount(f.terminals.bca)).toBe(1);
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
+
+  it("EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak", async () => {
+    const order = await newOrder();
+    const noRef = await post(cashier, `/orders/${order.orderId}/tenders`, {
+      method: "edc_card",
+      expectedStatus: order.status,
+    });
+    expect(noRef.status).toBeGreaterThanOrEqual(400);
+    const noApprover = await post(cashier, `/orders/${order.orderId}/tenders`, {
+      method: "edc_card",
+      reference: "MANUAL-123456",
+      expectedStatus: order.status,
+    });
+    expect(noApprover.status).toBeGreaterThanOrEqual(400);
+    expect(
+      (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
+    ).not.toBe("completed");
+
+    // Positive case: supervisor PIN + reference settle it and flag it for
+    // reconciliation. Assumption: the PRD names no override action for
+    // this, so `edc_standalone` is used; the tender is booked with the
+    // supervisor as approver and an edc_transactions row in standalone
+    // mode with needs_reconciliation set.
+    const reference = `MANUAL-${randomUUID().slice(0, 8)}`;
+    const approval = await pinApproval({
+      action: "edc_standalone",
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
+      method: "edc_card",
+      reference,
+      expectedStatus: order.status,
+      ...approval,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    expect(paid.body.data.tender).toMatchObject({
+      method: "edc_card",
+      reference,
+      status: "captured",
+      approvedBy: supervisor.userId,
+    });
+    expect(paid.body.data.remainingIdr).toBe(0);
+    const flagged = await owner.query(
+      `SELECT mode, needs_reconciliation FROM edc_transactions
          WHERE tenant_id = $1 AND reference = $2`,
-        [tenant.tenantId, reference],
+      [tenant.tenantId, reference],
+    );
+    expect(flagged.rows).toEqual([
+      { mode: "standalone", needs_reconciliation: true },
+    ]);
+  });
+
+  it("EDC-07 dua bank aktif bersamaan di satu outlet menerima transaksi masing-masing", async () => {
+    const f = await edcFixture();
+    try {
+      const a = await f.charge("bca", `BILL-${randomUUID()}`, 40_000);
+      const b = await f.charge(
+        "mandiri",
+        `BILL-${randomUUID()}`,
+        15_000,
+        "qris",
       );
-      expect(flagged.rows).toEqual([
-        { mode: "standalone", needs_reconciliation: true },
-      ]);
-    });
+      expect(a).toMatchObject({ status: "approved", bank: "bca" });
+      expect(b).toMatchObject({ status: "approved", bank: "mandiri" });
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
 
-    it("EDC-07 dua bank aktif bersamaan di satu outlet menerima transaksi masing-masing", async () => {
-      const f = await edcFixture();
-      try {
-        const a = await f.charge("bca", `BILL-${randomUUID()}`, 40_000);
-        const b = await f.charge(
-          "mandiri",
-          `BILL-${randomUUID()}`,
-          15_000,
-          "qris",
-        );
-        expect(a).toMatchObject({ status: "approved", bank: "bca" });
-        expect(b).toMatchObject({ status: "approved", bank: "mandiri" });
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    });
-
-    it("EDC transaksi disetujui menulis event ke outbox edge dalam transaksi yang sama, belum terkirim", async () => {
-      const f = await edcFixture();
-      try {
-        const tx = await f.charge("bca", `BILL-${randomUUID()}`, 30_000);
-        const { rows } = await owner.query(
-          `SELECT event->>'name' AS name, status FROM domain_event_outbox
+  it("EDC transaksi disetujui menulis event ke outbox edge dalam transaksi yang sama, belum terkirim", async () => {
+    const f = await edcFixture();
+    try {
+      const tx = await f.charge("bca", `BILL-${randomUUID()}`, 30_000);
+      const { rows } = await owner.query(
+        `SELECT event->>'name' AS name, status FROM domain_event_outbox
          WHERE tenant_id = $1 AND event->'payload'->>'transactionId' = $2`,
-          [tenant.tenantId, tx.id],
-        );
-        expect(rows.map((r) => r.name)).toContain("edc_transaction.approved");
-        // Nothing relays it in this test: the record waits on the edge node.
-        expect(rows.every((r) => r.status !== "delivered")).toBe(true);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    });
+        [tenant.tenantId, tx.id],
+      );
+      expect(rows.map((r) => r.name)).toContain("edc_transaction.approved");
+      // Nothing relays it in this test: the record waits on the edge node.
+      expect(rows.every((r) => r.status !== "delivered")).toBe(true);
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
 
-    // PENDING-DECISION edc-offline-sync: ws/edc-framework only writes the
-    // outbox row; it has no way to cut the cafe internet and relay after it
-    // returns. EDC-05 (offline, then synced) needs that harness, so the ID is
-    // not claimed by the test above.
-    it.skip("[PENDING-DECISION edc-offline-sync] EDC-05 internet cafe diputus: pembayaran EDC tercatat di edge node dan tersinkron setelah koneksi pulih", () => {});
-  },
-);
+  // PENDING-DECISION edc-offline-sync: ws/edc-framework only writes the
+  // outbox row; it has no way to cut the cafe internet and relay after it
+  // returns. EDC-05 (offline, then synced) needs that harness, so the ID is
+  // not claimed by the test above.
+  it.skip("[PENDING-DECISION edc-offline-sync] EDC-05 internet cafe diputus: pembayaran EDC tercatat di edge node dan tersinkron setelah koneksi pulih", () => {});
+});
 
 describe("Alur W EDC-06 settlement", () => {
   // PENDING-CARD legend-cs7 (settlement engine): no branch delivers the end-of-day batch
@@ -1199,102 +1177,88 @@ describe("Alur W EDC-06 settlement", () => {
 
 // ---- Refund through the gateway (ws/refund-approval) --------------------------------------
 
-describeUntilMerged(
-  "ws/refund-approval",
-  "Alur E refund pembayaran gateway butuh orang kedua",
-  () => {
-    itUntilMerged(
-      "ws/refund-approval",
-      "POS-02 PAY-04 refund QRIS: pemohon tidak bisa menyetujui sendiri, orang kedua menyetujui, dana keluar sekali",
-      async () => {
-        const { FakeRefundGateway } = await dynamicImport(
-          "../refund-fake-gateway.ts",
-        );
-        const { setPaymentRefundGateway } = await dynamicImport(
-          "../../services/payment-refund-gateway.ts",
-        );
-        const fake = new FakeRefundGateway();
-        setPaymentRefundGateway(fake);
-        try {
-          // A QRIS bill already paid (settled) in the isolated tenant.
-          const linkId = randomUUID();
-          const intentId = randomUUID();
-          await asOwnerTenant(async (client) => {
-            await client.query(
-              `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
-           VALUES ($1, $2, $3, $4, $5, 55000, 55000, 55000, $6)`,
-              [
-                linkId,
-                tenant.tenantId,
-                tenant.outletId,
-                randomUUID().replaceAll("-", "") +
-                  randomUUID().replaceAll("-", ""),
-                `AZE-${linkId.slice(0, 8)}`,
-                supervisor.userId,
-              ],
-            );
-            await client.query(
-              `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key, status, paid_at, instructions, expires_at)
-           VALUES ($1, $2, $3, $4, 'qris', 'doit', 55000, $5, 'paid', now(), '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
-              [
-                intentId,
-                tenant.tenantId,
-                tenant.outletId,
-                linkId,
-                `aze-${intentId}`,
-              ],
-            );
-            await client.query(
-              `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
-           VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 55000, now())`,
-              [
-                tenant.tenantId,
-                tenant.outletId,
-                intentId,
-                `evidence-${intentId}`,
-              ],
-            );
-          });
-          const ADMIN = "/api/payments/admin";
-          const requested = await cashier.client
-            .post(`${ADMIN}/refunds`)
-            .set(headers)
-            .set(originHeader)
-            .send({
-              idempotencyKey: randomUUID(),
-              paymentIntentId: intentId,
-              amountIdr: 25_000,
-              reason: "Pelanggan mengembalikan pesanan",
-            });
-          expect(requested.status, JSON.stringify(requested.body)).toBe(201);
-          expect(requested.body.data.status).toBe("pending");
-          expect(fake.calls).toHaveLength(0);
-          const refundId = requested.body.data.id as string;
-          const selfApprove = await cashier.client
-            .post(`${ADMIN}/refunds/${refundId}/approve`)
-            .set(headers)
-            .set(originHeader)
-            .send({ idempotencyKey: randomUUID() });
-          expect(selfApprove.status).toBeGreaterThanOrEqual(400);
-          expect(fake.calls).toHaveLength(0);
-          const approved = await supervisor.client
-            .post(`${ADMIN}/refunds/${refundId}/approve`)
-            .set(headers)
-            .set(originHeader)
-            .send({ idempotencyKey: randomUUID() });
-          expect(approved.status, JSON.stringify(approved.body)).toBe(200);
-          expect(approved.body.data).toMatchObject({
-            status: "completed",
-            amountIdr: 25_000,
-          });
-          expect(fake.calls).toHaveLength(1);
-        } finally {
-          setPaymentRefundGateway(null);
-        }
-      },
+describe("Alur E refund pembayaran gateway butuh orang kedua", () => {
+  it("POS-02 PAY-04 refund QRIS: pemohon tidak bisa menyetujui sendiri, orang kedua menyetujui, dana keluar sekali", async () => {
+    const { FakeRefundGateway } = await dynamicImport(
+      "../refund-fake-gateway.ts",
     );
-  },
-);
+    const { setPaymentRefundGateway } = await dynamicImport(
+      "../../services/payment-refund-gateway.ts",
+    );
+    const fake = new FakeRefundGateway();
+    setPaymentRefundGateway(fake);
+    try {
+      // A QRIS bill already paid (settled) in the isolated tenant.
+      const linkId = randomUUID();
+      const intentId = randomUUID();
+      await asOwnerTenant(async (client) => {
+        await client.query(
+          `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+           VALUES ($1, $2, $3, $4, $5, 55000, 55000, 55000, $6)`,
+          [
+            linkId,
+            tenant.tenantId,
+            tenant.outletId,
+            randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+            `AZE-${linkId.slice(0, 8)}`,
+            supervisor.userId,
+          ],
+        );
+        await client.query(
+          `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key, status, paid_at, instructions, expires_at)
+           VALUES ($1, $2, $3, $4, 'qris', 'doit', 55000, $5, 'paid', now(), '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+          [
+            intentId,
+            tenant.tenantId,
+            tenant.outletId,
+            linkId,
+            `aze-${intentId}`,
+          ],
+        );
+        await client.query(
+          `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+           VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 55000, now())`,
+          [tenant.tenantId, tenant.outletId, intentId, `evidence-${intentId}`],
+        );
+      });
+      const ADMIN = "/api/payments/admin";
+      const requested = await cashier.client
+        .post(`${ADMIN}/refunds`)
+        .set(headers)
+        .set(originHeader)
+        .send({
+          idempotencyKey: randomUUID(),
+          paymentIntentId: intentId,
+          amountIdr: 25_000,
+          reason: "Pelanggan mengembalikan pesanan",
+        });
+      expect(requested.status, JSON.stringify(requested.body)).toBe(201);
+      expect(requested.body.data.status).toBe("pending");
+      expect(fake.calls).toHaveLength(0);
+      const refundId = requested.body.data.id as string;
+      const selfApprove = await cashier.client
+        .post(`${ADMIN}/refunds/${refundId}/approve`)
+        .set(headers)
+        .set(originHeader)
+        .send({ idempotencyKey: randomUUID() });
+      expect(selfApprove.status).toBeGreaterThanOrEqual(400);
+      expect(fake.calls).toHaveLength(0);
+      const approved = await supervisor.client
+        .post(`${ADMIN}/refunds/${refundId}/approve`)
+        .set(headers)
+        .set(originHeader)
+        .send({ idempotencyKey: randomUUID() });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(approved.body.data).toMatchObject({
+        status: "completed",
+        amountIdr: 25_000,
+      });
+      expect(fake.calls).toHaveLength(1);
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+  });
+});
 
 // ---- Receipt (ws/pos-receipt) ----------------------------------------------------------------
 

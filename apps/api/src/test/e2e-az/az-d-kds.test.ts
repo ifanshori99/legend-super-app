@@ -38,7 +38,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   tenantIdSchema,
   ulidToUuid,
@@ -82,11 +82,7 @@ import {
   type IsolatedTenant,
   type Staff,
 } from "../floor-test-helpers.ts";
-import {
-  describeUntilBuilt,
-  describeUntilMerged,
-  itUntilBuilt,
-} from "./pending-branch.ts";
+import { describeUntilBuilt, itUntilBuilt } from "./pending-branch.ts";
 
 const PIN = "582914";
 const ALL_DAY = [
@@ -809,358 +805,342 @@ async function qrOpenBillOrder() {
 // Alur D langkah 1-2: pecah per stasiun, mulai, selesai
 // =====================================================================================
 
-describeUntilMerged(
-  "ws/kds",
-  "Alur D langkah 1-2: pesanan dipecah per stasiun, barista/cook mulai lalu selesai (KDS-01, KDS-04)",
-  () => {
-    beforeAll(ensureSetup);
+describe("Alur D langkah 1-2: pesanan dipecah per stasiun, barista/cook mulai lalu selesai (KDS-01, KDS-04)", () => {
+  beforeAll(ensureSetup);
 
-    it("KDS-01 kasir kirim kopi + nasi + air: tiap stasiun hanya melihat itemnya, item tanpa stasiun tidak punya tiket", async () => {
-      const placed = await placeOrder([
-        { menuItemId: ids.kopi, quantity: 2, note: "Less sugar" },
-        { menuItemId: ids.nasi },
-        { menuItemId: ids.air },
-      ]);
+  it("KDS-01 kasir kirim kopi + nasi + air: tiap stasiun hanya melihat itemnya, item tanpa stasiun tidak punya tiket", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi, quantity: 2, note: "Less sugar" },
+      { menuItemId: ids.nasi },
+      { menuItemId: ids.air },
+    ]);
 
-      const bar = await ticketOf(ids.bar, placed.orderId);
-      expect(bar.status).toBe("new");
-      expect(bar.items).toHaveLength(1);
-      expect(bar.items[0]).toMatchObject({
-        name: "Kopi Susu",
-        quantity: 2,
-        note: "Less sugar", // catatan tampil menonjol di tiket
-        status: "queued",
-      });
-
-      const kitchen = await ticketOf(ids.kitchen, placed.orderId);
-      expect(kitchen.items.map((item) => item.name)).toEqual(["Nasi Goreng"]);
-
-      // Layar bar tidak memuat tiket dapur, dan sebaliknya.
-      const barBoard = await board(ids.bar);
-      const kitchenBoard = await board(ids.kitchen);
-      expect(barBoard.tickets.map((t) => t.id)).not.toContain(kitchen.id);
-      expect(kitchenBoard.tickets.map((t) => t.id)).not.toContain(bar.id);
-      // Air Mineral tidak muncul di layar mana pun.
-      for (const t of [...barBoard.tickets, ...kitchenBoard.tickets])
-        expect(t.items.map((item) => item.name)).not.toContain("Air Mineral");
+    const bar = await ticketOf(ids.bar, placed.orderId);
+    expect(bar.status).toBe("new");
+    expect(bar.items).toHaveLength(1);
+    expect(bar.items[0]).toMatchObject({
+      name: "Kopi Susu",
+      quantity: 2,
+      note: "Less sugar", // catatan tampil menonjol di tiket
+      status: "queued",
     });
 
-    it("KDS-01 API papan stasiun memuat tiket item yang benar paling lambat 2 detik setelah diteruskan (waktu API, bukan render layar)", async () => {
-      const placed = await placeOrder([{ menuItemId: ids.kopi }], {
-        hold: true,
-      });
-      const before = await board(ids.bar);
-      // Jam mulai saat fire ("setelah diteruskan"), bukan saat pesanan dibuat.
-      const started = performance.now();
-      const fired = await posOf().fire(
-        placed.orderId,
-        placed.lines.map((line) => line.id),
-        placed.status,
-      );
-      expect(fired.status, JSON.stringify(fired.body)).toBe(200);
-      const after = await board(ids.bar);
-      expect(performance.now() - started).toBeLessThan(2_000);
-      expect(after.tickets.map((t) => t.orderId)).toContain(placed.orderId);
-      expect(after.sequence).toBeGreaterThan(before.sequence);
+    const kitchen = await ticketOf(ids.kitchen, placed.orderId);
+    expect(kitchen.items.map((item) => item.name)).toEqual(["Nasi Goreng"]);
+
+    // Layar bar tidak memuat tiket dapur, dan sebaliknya.
+    const barBoard = await board(ids.bar);
+    const kitchenBoard = await board(ids.kitchen);
+    expect(barBoard.tickets.map((t) => t.id)).not.toContain(kitchen.id);
+    expect(kitchenBoard.tickets.map((t) => t.id)).not.toContain(bar.id);
+    // Air Mineral tidak muncul di layar mana pun.
+    for (const t of [...barBoard.tickets, ...kitchenBoard.tickets])
+      expect(t.items.map((item) => item.name)).not.toContain("Air Mineral");
+  });
+
+  it("KDS-01 API papan stasiun memuat tiket item yang benar paling lambat 2 detik setelah diteruskan (waktu API, bukan render layar)", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.kopi }], {
+      hold: true,
     });
+    const before = await board(ids.bar);
+    // Jam mulai saat fire ("setelah diteruskan"), bukan saat pesanan dibuat.
+    const started = performance.now();
+    const fired = await posOf().fire(
+      placed.orderId,
+      placed.lines.map((line) => line.id),
+      placed.status,
+    );
+    expect(fired.status, JSON.stringify(fired.body)).toBe(200);
+    const after = await board(ids.bar);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(after.tickets.map((t) => t.orderId)).toContain(placed.orderId);
+    expect(after.sequence).toBeGreaterThan(before.sequence);
+  });
 
-    it("KDS-04 barista menekan mulai lalu selesai: status per item berubah dan tiap perubahan tercatat dengan waktu dan pengguna", async () => {
-      const placed = await placeOrder([{ menuItemId: ids.nasi, quantity: 3 }]);
-      const ticket = await ticketOf(ids.kitchen, placed.orderId);
+  it("KDS-04 barista menekan mulai lalu selesai: status per item berubah dan tiap perubahan tercatat dengan waktu dan pengguna", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.nasi, quantity: 3 }]);
+    const ticket = await ticketOf(ids.kitchen, placed.orderId);
 
-      const started = await kdsOf(cook).start(ticket.id);
-      expect(started.status, JSON.stringify(started.body)).toBe(200);
-      expect(started.body.data.status).toBe("in_progress");
-      expect(started.body.data.startedAt).not.toBeNull();
-      expect(
-        started.body.data.items.every(
-          (i: { status: string }) => i.status === "in_progress",
-        ),
-      ).toBe(true);
+    const started = await kdsOf(cook).start(ticket.id);
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    expect(started.body.data.status).toBe("in_progress");
+    expect(started.body.data.startedAt).not.toBeNull();
+    expect(
+      started.body.data.items.every(
+        (i: { status: string }) => i.status === "in_progress",
+      ),
+    ).toBe(true);
 
-      const bumped = await kdsOf(cook).bump(ticket.id);
-      expect(bumped.status, JSON.stringify(bumped.body)).toBe(200);
-      expect(bumped.body.data.status).toBe("done");
-      expect(bumped.body.data.doneAt).not.toBeNull();
-      expect(
-        bumped.body.data.items.every(
-          (i: { status: string; readyAt: string | null }) =>
-            i.status === "ready" && i.readyAt !== null,
-        ),
-      ).toBe(true);
+    const bumped = await kdsOf(cook).bump(ticket.id);
+    expect(bumped.status, JSON.stringify(bumped.body)).toBe(200);
+    expect(bumped.body.data.status).toBe("done");
+    expect(bumped.body.data.doneAt).not.toBeNull();
+    expect(
+      bumped.body.data.items.every(
+        (i: { status: string; readyAt: string | null }) =>
+          i.status === "ready" && i.readyAt !== null,
+      ),
+    ).toBe(true);
 
-      const log = (await changesOf(ticket.id)).filter(
-        (row) => row.order_item_id === null,
-      );
-      expect(log.map((row) => [row.from_status, row.to_status])).toEqual([
-        [null, "new"],
-        ["new", "in_progress"],
-        ["in_progress", "done"],
-      ]);
-      for (const row of log) {
-        expect(row.occurred_at).toBeInstanceOf(Date);
-        expect(row.actor_id).not.toBeNull();
-      }
-      expect(log[0]?.actor_id).toBe(cashier.userId); // kasir meneruskan
-      expect(log[1]?.actor_id).toBe(cook.userId); // koki mulai
-      expect(log[2]?.actor_id).toBe(cook.userId); // koki selesai
-    });
+    const log = (await changesOf(ticket.id)).filter(
+      (row) => row.order_item_id === null,
+    );
+    expect(log.map((row) => [row.from_status, row.to_status])).toEqual([
+      [null, "new"],
+      ["new", "in_progress"],
+      ["in_progress", "done"],
+    ]);
+    for (const row of log) {
+      expect(row.occurred_at).toBeInstanceOf(Date);
+      expect(row.actor_id).not.toBeNull();
+    }
+    expect(log[0]?.actor_id).toBe(cashier.userId); // kasir meneruskan
+    expect(log[1]?.actor_id).toBe(cook.userId); // koki mulai
+    expect(log[2]?.actor_id).toBe(cook.userId); // koki selesai
+  });
 
-    it("KDS-04 tombol selesai sebelum mulai ditolak 409 dan tiket tetap baru", async () => {
-      const placed = await placeOrder([{ menuItemId: ids.nasi }]);
-      const ticket = await ticketOf(ids.kitchen, placed.orderId);
-      const bump = await kdsOf(cook).bump(ticket.id);
-      expect(bump.status).toBe(409);
-      expect((await ticketDetail(ticket.id)).status).toBe("new");
-    });
+  it("KDS-04 tombol selesai sebelum mulai ditolak 409 dan tiket tetap baru", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.nasi }]);
+    const ticket = await ticketOf(ids.kitchen, placed.orderId);
+    const bump = await kdsOf(cook).bump(ticket.id);
+    expect(bump.status).toBe(409);
+    expect((await ticketDetail(ticket.id)).status).toBe("new");
+  });
 
-    it("KDS-04 tiket yang sudah selesai bisa dipanggil ulang dengan alasan, dan alasan wajib diisi", async () => {
-      const placed = await placeOrder([{ menuItemId: ids.nasi }]);
-      const ticket = await ticketOf(ids.kitchen, placed.orderId);
-      expect((await kdsOf(cook).start(ticket.id)).status).toBe(200);
-      expect((await kdsOf(cook).bump(ticket.id)).status).toBe(200);
+  it("KDS-04 tiket yang sudah selesai bisa dipanggil ulang dengan alasan, dan alasan wajib diisi", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.nasi }]);
+    const ticket = await ticketOf(ids.kitchen, placed.orderId);
+    expect((await kdsOf(cook).start(ticket.id)).status).toBe(200);
+    expect((await kdsOf(cook).bump(ticket.id)).status).toBe(200);
 
-      const noReason = await kdsOf(cook).recall(ticket.id, "");
-      expect(noReason.status).toBe(422);
-      expect(noReason.body.error.code).toBe("VALIDATION_ERROR");
-      expect((await ticketDetail(ticket.id)).status).toBe("done");
+    const noReason = await kdsOf(cook).recall(ticket.id, "");
+    expect(noReason.status).toBe(422);
+    expect(noReason.body.error.code).toBe("VALIDATION_ERROR");
+    expect((await ticketDetail(ticket.id)).status).toBe("done");
 
-      const recalled = await kdsOf(cook).recall(ticket.id, "Salah meja");
-      expect(recalled.status, JSON.stringify(recalled.body)).toBe(200);
-      expect(recalled.body.data.status).toBe("recalled");
-      const log = await changesOf(ticket.id);
-      expect(log.find((row) => row.to_status === "recalled")?.reason).toBe(
-        "Salah meja",
-      );
-    });
+    const recalled = await kdsOf(cook).recall(ticket.id, "Salah meja");
+    expect(recalled.status, JSON.stringify(recalled.body)).toBe(200);
+    expect(recalled.body.data.status).toBe("recalled");
+    const log = await changesOf(ticket.id);
+    expect(log.find((row) => row.to_status === "recalled")?.reason).toBe(
+      "Salah meja",
+    );
+  });
 
-    it("TEN-03 barista yang ditugaskan di Bar Kopi hanya bisa membuka stasiunnya sendiri", async () => {
-      const placed = await placeOrder([
-        { menuItemId: ids.kopi },
-        { menuItemId: ids.nasi },
-      ]);
-      const own = await kdsOf(barista).snapshot(ids.bar);
-      expect(own.status, JSON.stringify(own.body)).toBe(200);
-      expect(own.body.data.tickets.map((t: Ticket) => t.orderId)).toContain(
-        placed.orderId,
-      );
-      // PRD baris 573: barista/cook hanya KDS stasiun yang ditugaskan.
-      expect((await kdsOf(barista).snapshot(ids.kitchen)).status).toBe(403);
-      const kitchenTicket = await ticketOf(ids.kitchen, placed.orderId);
-      expect((await kdsOf(barista).start(kitchenTicket.id)).status).toBe(403);
-      expect((await ticketDetail(kitchenTicket.id)).status).toBe("new");
-    });
-  },
-);
+  it("TEN-03 barista yang ditugaskan di Bar Kopi hanya bisa membuka stasiunnya sendiri", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi },
+      { menuItemId: ids.nasi },
+    ]);
+    const own = await kdsOf(barista).snapshot(ids.bar);
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data.tickets.map((t: Ticket) => t.orderId)).toContain(
+      placed.orderId,
+    );
+    // PRD baris 573: barista/cook hanya KDS stasiun yang ditugaskan.
+    expect((await kdsOf(barista).snapshot(ids.kitchen)).status).toBe(403);
+    const kitchenTicket = await ticketOf(ids.kitchen, placed.orderId);
+    expect((await kdsOf(barista).start(kitchenTicket.id)).status).toBe(403);
+    expect((await ticketDetail(kitchenTicket.id)).status).toBe("new");
+  });
+});
 
 // =====================================================================================
 // Alur D, void: item dibatalkan setelah diteruskan (KDS-03) dan void KDS tampil di POS
 // =====================================================================================
 
-describeUntilMerged(
-  "ws/kds",
-  "Alur D void: item dibatalkan setelah diteruskan (KDS-03, KDS-04)",
-  () => {
-    beforeAll(ensureSetup);
+describe("Alur D void: item dibatalkan setelah diteruskan (KDS-03, KDS-04)", () => {
+  beforeAll(ensureSetup);
 
-    it("KDS-03 kasir void satu baris setelah diteruskan: item ditandai batal di layar stasiun segera, tiket tetap selama baris lain hidup", async () => {
-      const placed = await placeOrder([
-        { menuItemId: ids.kopi },
-        { menuItemId: ids.kopi, note: "Es banyak" },
-      ]);
-      const ticket = await ticketOf(ids.bar, placed.orderId);
-      const cursor = (await board(ids.bar)).sequence;
+  it("KDS-03 kasir void satu baris setelah diteruskan: item ditandai batal di layar stasiun segera, tiket tetap selama baris lain hidup", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi },
+      { menuItemId: ids.kopi, note: "Es banyak" },
+    ]);
+    const ticket = await ticketOf(ids.bar, placed.orderId);
+    const cursor = (await board(ids.bar)).sequence;
 
-      const voided = await posVoidLine(placed, ids.kopi);
-      expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    const voided = await posVoidLine(placed, ids.kopi);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
 
-      const after = await ticketDetail(ticket.id);
-      expect(after.status).toBe("new"); // baris lain masih hidup
-      expect(
-        after.items.filter((item) => item.status === "voided"),
-      ).toHaveLength(1);
-      expect(
-        after.items.filter((item) => item.status === "queued"),
-      ).toHaveLength(1);
-      // Perubahan sampai ke layar lewat feed, tanpa muat ulang manual.
-      const changes = await feed(ids.bar, cursor);
-      expect(changes.entries.map((entry) => entry.ticket.id)).toContain(
-        ticket.id,
-      );
-      const log = await changesOf(ticket.id);
-      expect(log.some((row) => row.order_item_id !== null)).toBe(true);
+    const after = await ticketDetail(ticket.id);
+    expect(after.status).toBe("new"); // baris lain masih hidup
+    expect(after.items.filter((item) => item.status === "voided")).toHaveLength(
+      1,
+    );
+    expect(after.items.filter((item) => item.status === "queued")).toHaveLength(
+      1,
+    );
+    // Perubahan sampai ke layar lewat feed, tanpa muat ulang manual.
+    const changes = await feed(ids.bar, cursor);
+    expect(changes.entries.map((entry) => entry.ticket.id)).toContain(
+      ticket.id,
+    );
+    const log = await changesOf(ticket.id);
+    expect(log.some((row) => row.order_item_id !== null)).toBe(true);
+  });
+
+  it("KDS-03 kasir void seluruh pesanan: semua tiketnya dibatalkan, termasuk yang sudah dimulai, dan tidak bisa dimulai lagi", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi },
+      { menuItemId: ids.nasi },
+    ]);
+    const bar = await ticketOf(ids.bar, placed.orderId);
+    const kitchen = await ticketOf(ids.kitchen, placed.orderId);
+    expect((await kdsOf(cook).start(kitchen.id)).status).toBe(200);
+
+    const current = await posOf().get(placed.orderId);
+    const voided = await posOf().voidOrder(placed.orderId, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan batal",
+      expectedStatus: current.body.data.status,
+      ...(await approval(placed.orderId, 200_000)),
     });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
 
-    it("KDS-03 kasir void seluruh pesanan: semua tiketnya dibatalkan, termasuk yang sudah dimulai, dan tidak bisa dimulai lagi", async () => {
-      const placed = await placeOrder([
-        { menuItemId: ids.kopi },
-        { menuItemId: ids.nasi },
-      ]);
-      const bar = await ticketOf(ids.bar, placed.orderId);
-      const kitchen = await ticketOf(ids.kitchen, placed.orderId);
-      expect((await kdsOf(cook).start(kitchen.id)).status).toBe(200);
+    expect((await ticketDetail(bar.id)).status).toBe("cancelled");
+    expect((await ticketDetail(kitchen.id)).status).toBe("cancelled");
+    expect((await kdsOf(cook).start(kitchen.id)).status).toBe(409);
+  });
 
-      const current = await posOf().get(placed.orderId);
-      const voided = await posOf().voidOrder(placed.orderId, {
-        reason: "customer_cancelled",
-        reasonNote: "Pelanggan batal",
-        expectedStatus: current.body.data.status,
-        ...(await approval(placed.orderId, 200_000)),
-      });
-      expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+  it("KDS-03 cook membatalkan tiket di KDS dengan alasan: kasir melihatnya di POS, tagihan tidak berubah", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi },
+      { menuItemId: ids.nasi },
+    ]);
+    const before = await posOf().get(placed.orderId);
+    const ticket = await ticketOf(ids.bar, placed.orderId);
 
-      expect((await ticketDetail(bar.id)).status).toBe("cancelled");
-      expect((await ticketDetail(kitchen.id)).status).toBe("cancelled");
-      expect((await kdsOf(cook).start(kitchen.id)).status).toBe(409);
+    const noReason = await kdsOf(cook).voidTicket(ticket.id, "");
+    expect(noReason.status).toBe(422);
+    expect(noReason.body.error.code).toBe("VALIDATION_ERROR");
+
+    const voided = await kdsOf(cook).voidTicket(ticket.id, "Susu habis");
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    expect(voided.body.data.status).toBe("cancelled");
+
+    // Void di KDS hanya urusan dapur: tagihan tidak berubah sampai ada void di POS.
+    const after = await posOf().get(placed.orderId);
+    expect(after.body.data.totalIdr).toBe(before.body.data.totalIdr);
+
+    // Kasir melihat pemberitahuannya (event pesanan) lengkap dengan siapa dan alasannya.
+    const events = await posOf().events(placed.orderId);
+    expect(events.status, JSON.stringify(events.body)).toBe(200);
+    const notices = (
+      events.body.data as {
+        type: string;
+        actorId: string | null;
+        payload: Record<string, unknown>;
+      }[]
+    ).filter((event) => event.type === "order.kitchen_voided");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.actorId).toBe(cook.userId);
+    expect(notices[0]?.payload).toMatchObject({
+      ticketId: ticket.id,
+      stationId: ids.bar,
+      ticketCancelled: true,
+      reason: "Susu habis",
     });
-
-    it("KDS-03 cook membatalkan tiket di KDS dengan alasan: kasir melihatnya di POS, tagihan tidak berubah", async () => {
-      const placed = await placeOrder([
-        { menuItemId: ids.kopi },
-        { menuItemId: ids.nasi },
-      ]);
-      const before = await posOf().get(placed.orderId);
-      const ticket = await ticketOf(ids.bar, placed.orderId);
-
-      const noReason = await kdsOf(cook).voidTicket(ticket.id, "");
-      expect(noReason.status).toBe(422);
-      expect(noReason.body.error.code).toBe("VALIDATION_ERROR");
-
-      const voided = await kdsOf(cook).voidTicket(ticket.id, "Susu habis");
-      expect(voided.status, JSON.stringify(voided.body)).toBe(200);
-      expect(voided.body.data.status).toBe("cancelled");
-
-      // Void di KDS hanya urusan dapur: tagihan tidak berubah sampai ada void di POS.
-      const after = await posOf().get(placed.orderId);
-      expect(after.body.data.totalIdr).toBe(before.body.data.totalIdr);
-
-      // Kasir melihat pemberitahuannya (event pesanan) lengkap dengan siapa dan alasannya.
-      const events = await posOf().events(placed.orderId);
-      expect(events.status, JSON.stringify(events.body)).toBe(200);
-      const notices = (
-        events.body.data as {
-          type: string;
-          actorId: string | null;
-          payload: Record<string, unknown>;
-        }[]
-      ).filter((event) => event.type === "order.kitchen_voided");
-      expect(notices).toHaveLength(1);
-      expect(notices[0]?.actorId).toBe(cook.userId);
-      expect(notices[0]?.payload).toMatchObject({
-        ticketId: ticket.id,
-        stationId: ids.bar,
-        ticketCancelled: true,
-        reason: "Susu habis",
-      });
-    });
-  },
-);
+  });
+});
 
 // =====================================================================================
 // KDS-02: perangkat KDS terputus lalu tersambung kembali
 // =====================================================================================
 
-describeUntilMerged(
-  "ws/kds",
-  "Alur D: perangkat KDS terputus lalu tersambung kembali (KDS-02)",
-  () => {
-    beforeAll(ensureSetup);
+describe("Alur D: perangkat KDS terputus lalu tersambung kembali (KDS-02)", () => {
+  beforeAll(ensureSetup);
 
-    it("KDS-02 tablet bar terputus saat dua pesanan masuk: setelah tersambung tiap tiket muncul tepat satu kali, tanpa celah", async () => {
-      const first = await placeOrder([{ menuItemId: ids.kopi }]);
-      const snapshot = await board(ids.bar); // tablet memuat layar, menyimpan kursor
-      expect(snapshot.tickets.map((t) => t.orderId)).toContain(first.orderId);
+  it("KDS-02 tablet bar terputus saat dua pesanan masuk: setelah tersambung tiap tiket muncul tepat satu kali, tanpa celah", async () => {
+    const first = await placeOrder([{ menuItemId: ids.kopi }]);
+    const snapshot = await board(ids.bar); // tablet memuat layar, menyimpan kursor
+    expect(snapshot.tickets.map((t) => t.orderId)).toContain(first.orderId);
 
-      // Tablet putus. Dua pesanan masuk dan satu tiket lama sudah dimulai.
-      const second = await placeOrder([{ menuItemId: ids.kopi }]);
-      const third = await placeOrder([{ menuItemId: ids.kopi, quantity: 2 }]);
-      const firstTicket = await ticketOf(ids.bar, first.orderId);
-      expect((await kdsOf(cook).start(firstTicket.id)).status).toBe(200);
+    // Tablet putus. Dua pesanan masuk dan satu tiket lama sudah dimulai.
+    const second = await placeOrder([{ menuItemId: ids.kopi }]);
+    const third = await placeOrder([{ menuItemId: ids.kopi, quantity: 2 }]);
+    const firstTicket = await ticketOf(ids.bar, first.orderId);
+    expect((await kdsOf(cook).start(firstTicket.id)).status).toBe(200);
 
-      // Tablet tersambung kembali dan meminta semua perubahan setelah kursornya.
-      const changes = await feed(ids.bar, snapshot.sequence);
-      const orderIds = changes.entries.map((entry) => entry.ticket.orderId);
-      expect(orderIds.filter((id) => id === second.orderId)).toHaveLength(1);
-      expect(orderIds.filter((id) => id === third.orderId)).toHaveLength(1);
-      expect(orderIds.filter((id) => id === first.orderId)).toHaveLength(1);
-      const sequences = changes.entries.map((entry) => entry.sequence);
-      expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
+    // Tablet tersambung kembali dan meminta semua perubahan setelah kursornya.
+    const changes = await feed(ids.bar, snapshot.sequence);
+    const orderIds = changes.entries.map((entry) => entry.ticket.orderId);
+    expect(orderIds.filter((id) => id === second.orderId)).toHaveLength(1);
+    expect(orderIds.filter((id) => id === third.orderId)).toHaveLength(1);
+    expect(orderIds.filter((id) => id === first.orderId)).toHaveLength(1);
+    const sequences = changes.entries.map((entry) => entry.sequence);
+    expect([...sequences].sort((a, b) => a - b)).toEqual(sequences);
 
-      // Layar lama + perubahan = layar baru: tidak ada yang hilang atau ganda.
-      const merged = new Map(snapshot.tickets.map((t) => [t.id, t]));
-      for (const entry of changes.entries)
-        merged.set(entry.ticket.id, entry.ticket);
-      const fresh = await board(ids.bar);
-      expect([...merged.keys()].sort()).toEqual(
-        fresh.tickets.map((t) => t.id).sort(),
-      );
-      expect(changes.toSequence).toBe(fresh.sequence);
+    // Layar lama + perubahan = layar baru: tidak ada yang hilang atau ganda.
+    const merged = new Map(snapshot.tickets.map((t) => [t.id, t]));
+    for (const entry of changes.entries)
+      merged.set(entry.ticket.id, entry.ticket);
+    const fresh = await board(ids.bar);
+    expect([...merged.keys()].sort()).toEqual(
+      fresh.tickets.map((t) => t.id).sort(),
+    );
+    expect(changes.toSequence).toBe(fresh.sequence);
 
-      // Sambung lagi dari kursor terbaru: tidak ada yang diputar ulang.
-      expect((await feed(ids.bar, changes.toSequence)).entries).toEqual([]);
-    });
+    // Sambung lagi dari kursor terbaru: tidak ada yang diputar ulang.
+    expect((await feed(ids.bar, changes.toSequence)).entries).toEqual([]);
+  });
 
-    it("KDS-02 kursor yang tidak masuk akal (melebihi stasiun) diminta memuat ulang layar dengan 409 KDS_RESYNC_REQUIRED", async () => {
-      const { sequence } = await board(ids.bar);
-      const response = await kdsOf(cook).feed(ids.bar, sequence + 1_000);
-      expect(response.status).toBe(409);
-      expect(response.body.error.code).toBe("KDS_RESYNC_REQUIRED");
-    });
-  },
-);
+  it("KDS-02 kursor yang tidak masuk akal (melebihi stasiun) diminta memuat ulang layar dengan 409 KDS_RESYNC_REQUIRED", async () => {
+    const { sequence } = await board(ids.bar);
+    const response = await kdsOf(cook).feed(ids.bar, sequence + 1_000);
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("KDS_RESYNC_REQUIRED");
+  });
+});
 
 // =====================================================================================
 // ORD-02: bayar di muka, tidak ada item ke KDS sebelum webhook terverifikasi
 // =====================================================================================
 
-describeUntilMerged(
-  "ws/kds",
-  "Alur A/D: pesanan QR bayar di muka sampai ke dapur hanya setelah pembayaran terverifikasi (ORD-02, KDS-01)",
-  () => {
-    beforeAll(ensureSetup);
+describe("Alur A/D: pesanan QR bayar di muka sampai ke dapur hanya setelah pembayaran terverifikasi (ORD-02, KDS-01)", () => {
+  beforeAll(ensureSetup);
 
-    it("ORD-02 tamu memesan dan membuat pembayaran QRIS: dapur tidak melihat apa pun sampai webhook terverifikasi, lalu tiket muncul satu kali per stasiun", async () => {
-      const { qrToken } = await newTable("pay_first");
-      const guest = await seat(qrToken);
-      const version = await fillCart(guest);
-      const placed = await asGuest(guest).checkout({
-        expectedCartVersion: version,
-        idempotencyKey: randomUUID(),
-      });
-      expect(placed.status, JSON.stringify(placed.body)).toBe(201);
-      const orderId = placed.body.data.order.id as string;
-
-      const noneYet = async () => {
-        for (const stationId of [ids.bar, ids.kitchen])
-          expect(
-            (await board(stationId)).tickets.map((t) => t.orderId),
-          ).not.toContain(orderId);
-      };
-      await noneYet(); // pesanan dibuat tetapi belum dibayar
-
-      const paid = await asGuest(guest).pay(orderId);
-      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-      const intentId = paid.body.data.id as string;
-      await noneYet(); // intent QRIS dibuat tetapi belum ada konfirmasi gateway
-
-      // Tamu memeriksa status: masih menunggu. Pemeriksaan itu sendiri tidak menembak dapur.
-      const status = await asGuest(guest).payment(intentId);
-      expect(status.status).toBe(200);
-      await noneYet();
-
-      await payVerified(intentId, paid.body.data.amountIdr as number);
-
-      const bar = await ticketOf(ids.bar, orderId);
-      const kitchen = await ticketOf(ids.kitchen, orderId);
-      expect(bar.items.map((i) => i.name)).toEqual(["Kopi Susu"]);
-      expect(kitchen.items.map((i) => i.name)).toEqual(["Nasi Goreng"]);
-      const count = (await board(ids.bar)).tickets.filter(
-        (t) => t.orderId === orderId,
-      );
-      expect(count).toHaveLength(1);
+  it("ORD-02 tamu memesan dan membuat pembayaran QRIS: dapur tidak melihat apa pun sampai webhook terverifikasi, lalu tiket muncul satu kali per stasiun", async () => {
+    const { qrToken } = await newTable("pay_first");
+    const guest = await seat(qrToken);
+    const version = await fillCart(guest);
+    const placed = await asGuest(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
     });
-  },
-);
+    expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+    const orderId = placed.body.data.order.id as string;
+
+    const noneYet = async () => {
+      for (const stationId of [ids.bar, ids.kitchen])
+        expect(
+          (await board(stationId)).tickets.map((t) => t.orderId),
+        ).not.toContain(orderId);
+    };
+    await noneYet(); // pesanan dibuat tetapi belum dibayar
+
+    const paid = await asGuest(guest).pay(orderId);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const intentId = paid.body.data.id as string;
+    await noneYet(); // intent QRIS dibuat tetapi belum ada konfirmasi gateway
+
+    // Tamu memeriksa status: masih menunggu. Pemeriksaan itu sendiri tidak menembak dapur.
+    const status = await asGuest(guest).payment(intentId);
+    expect(status.status).toBe(200);
+    await noneYet();
+
+    await payVerified(intentId, paid.body.data.amountIdr as number);
+
+    const bar = await ticketOf(ids.bar, orderId);
+    const kitchen = await ticketOf(ids.kitchen, orderId);
+    expect(bar.items.map((i) => i.name)).toEqual(["Kopi Susu"]);
+    expect(kitchen.items.map((i) => i.name)).toEqual(["Nasi Goreng"]);
+    const count = (await board(ids.bar)).tickets.filter(
+      (t) => t.orderId === orderId,
+    );
+    expect(count).toHaveLength(1);
+  });
+});
 
 // =====================================================================================
 // Alur D langkah 3-4: expo, runner, diantar

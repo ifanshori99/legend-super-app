@@ -72,12 +72,7 @@ import {
   type IsolatedTenant,
   type Staff,
 } from "../floor-test-helpers.ts";
-import {
-  describeUntilBuilt,
-  describeUntilMerged,
-  itUntilBuilt,
-  itUntilMerged,
-} from "./pending-branch.ts";
+import { describeUntilBuilt, itUntilBuilt } from "./pending-branch.ts";
 
 let app: Express;
 let tenant: IsolatedTenant;
@@ -852,7 +847,7 @@ describe("Alur A langkah 5 payment link: QRIS dan VA", () => {
 });
 
 // Real DOIT webhook (signed) and polling arrive with ws/doit-provider.
-describeUntilMerged("ws/doit-provider", "Alur A webhook DOIT asli", () => {
+describe("Alur A webhook DOIT asli", () => {
   // The tenant's webhook secret is seeded through the platform integration, as
   // in payment-webhook-api.test.ts of ws/doit-provider. Seeded before any
   // webhook arrives so the receiver has not cached an empty secret yet.
@@ -942,19 +937,15 @@ describeUntilMerged("ws/doit-provider", "Alur A webhook DOIT asli", () => {
     expect(settled.rows[0]?.paid_idr).toBe("144375");
   });
 
-  itUntilMerged(
-    "ws/doit-provider",
-    "PAY-02 polling ke gateway melunasi intent yang webhooknya terlambat",
-    async () => {
-      const { token } = await openLink();
-      const created = await createIntent(token, "qris");
-      gateway.settle(gateway.lastCreated!);
-      const polled = await agent(app).get(
-        `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`,
-      );
-      expect(polled.body.data.status).toBe("paid");
-    },
-  );
+  it("PAY-02 polling ke gateway melunasi intent yang webhooknya terlambat", async () => {
+    const { token } = await openLink();
+    const created = await createIntent(token, "qris");
+    gateway.settle(gateway.lastCreated!);
+    const polled = await agent(app).get(
+      `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`,
+    );
+    expect(polled.body.data.status).toBe("paid");
+  });
 });
 
 // --------------------------------------------------------------------------
