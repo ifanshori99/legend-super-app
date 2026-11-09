@@ -57,6 +57,8 @@ export const posErrorHttpStatus = {
   RECEIPT_SEQUENCE_NOT_PROVISIONED: 409,
   /** A merged receipt says voided but the cloud holds no matching void. */
   RECEIPT_VOID_UNMATCHED: 409,
+  /** S-K1 (legend-3yqy): the device numbers on the outlet edge, not the cloud. */
+  RECEIPT_DEVICE_ON_EDGE: 409,
   /** A receipt is voided once; its number stays on record. */
   RECEIPT_ALREADY_VOIDED: 409,
   /** The business day was already closed for this outlet. */
@@ -105,6 +107,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
     "Perangkat ini belum menerima urutan nomor struk dari cloud.",
   RECEIPT_VOID_UNMATCHED:
     "Struk ditandai void tetapi cloud tidak punya void yang cocok.",
+  RECEIPT_DEVICE_ON_EDGE:
+    "Perangkat ini memberi nomor struk lewat server lokal outlet. Lakukan penjualan lewat server lokal.",
   RECEIPT_ALREADY_VOIDED: "Struk ini sudah di-void.",
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
 };

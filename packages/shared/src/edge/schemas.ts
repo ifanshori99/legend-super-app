@@ -100,9 +100,12 @@ export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;
 
 /**
  * A device's receipt run as the cloud hands it to the edge (legend-3yqy). The
- * edge inserts a missing row starting at `lastNumber` (so a rebuilt edge never
- * reissues a number) and never touches an existing row: its own counter is
- * ahead of the cloud's.
+ * edge inserts a missing row only while the cloud's `lastNumber` is 0 (and at
+ * 0), and never touches an existing row: its own counter is ahead of the
+ * cloud's. A missing row with `lastNumber` > 0 is refused (S-K1): the
+ * terminal is re-enrolled for a fresh prefix. A rebuilt edge not reissuing a
+ * number is only safe once legend-ol6v merges edge runs into the cloud; until
+ * then see the follow-up bead "sequence bound to one edge node".
  */
 export const deviceReceiptSequenceSyncSchema = z.strictObject({
   id: uuidSchema,
@@ -119,7 +122,9 @@ export const deviceSyncPageSchema = z.strictObject({
   data: z.array(deviceSyncRecordSchema),
   /**
    * legend-3yqy: every device receipt sequence of the outlet, sent in full on
-   * each page (a handful per outlet; no cursor). Optional: older clouds omit it.
+   * each page (a handful per outlet; no cursor). Optional: older clouds omit
+   * it, and the cloud adds it only for `?receiptSequences=1` (S-K1). The edge
+   * parses it apart from the page, so a bad list never refuses the page.
    */
   receiptSequences: z.array(deviceReceiptSequenceSyncSchema).optional(),
   meta: z.strictObject({

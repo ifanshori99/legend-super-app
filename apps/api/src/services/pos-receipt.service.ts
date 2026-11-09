@@ -45,6 +45,7 @@ import {
 import type { DeviceReceiptSequenceSync } from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { devices } from "../db/schema/device.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
 import { posOrders, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { legalEntities, outlets } from "../db/schema/platform-org.ts";
@@ -316,6 +317,26 @@ export async function outletSnapshotFor(
   };
 }
 
+/** S-K1 (legend-3yqy): the outlet has an active edge node in this database. */
+async function outletHasActiveEdge(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, tenantId),
+        eq(edgeNodes.outletId, outletId),
+        eq(edgeNodes.status, "active"),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 /**
  * POS-06: next gapless number of the sale's device, inside the caller's order
  * transaction. An order that already has a receipt gets it back unchanged.
@@ -338,6 +359,16 @@ export async function allocateReceipt(
   const tenantId = context.tenant.tenantId;
   const deviceKey = input.deviceId ?? input.outletId;
   const outletId = input.outletId as OutletId;
+  // S-K1 (legend-3yqy): while an edge serves the outlet, its devices number
+  // on the edge. A cloud number on the same device run would collide with
+  // the edge's (two allocators, one counter each). Sales without a device
+  // (sequence C) are the cloud's own and stay allowed.
+  if (
+    input.deviceId !== null &&
+    !getEdgeRuntimeState().edgeMode &&
+    (await outletHasActiveEdge(tx, tenantId, outletId))
+  )
+    throw new PosError("RECEIPT_DEVICE_ON_EDGE");
   const sequence = await ensureSequence(tx, tenantId, outletId, deviceKey);
   // The row lock taken here serialises every device sale on this sequence.
   const [advanced] = await tx
@@ -615,11 +646,15 @@ export async function listDeviceReceiptSequences(
 
 /**
  * Edge: one pulled device sequence.
- * - inserted: no row for the device; created with the cloud's id, prefix and
- *   lastNumber (a rebuilt edge must not reissue numbers the cloud has).
+ * - inserted: no row for the device and the cloud's lastNumber is 0; created
+ *   with the cloud's id and prefix at 0.
  * - kept: a row with the same prefix exists; untouched (its counter is ahead).
  * - refused: the device already numbers under another prefix, or the prefix or
  *   id belongs to another device (two numbering namespaces). Nothing written.
+ * - refused (S-K1): no row here but the cloud run is already at L > 0. The
+ *   edge holds none of receipts 1..L, so the gap check would refuse Tutup Hari
+ *   forever. Fresh numbering comes from re-enrolling the terminal (new device,
+ *   new prefix).
  */
 export async function applyCloudDeviceReceiptSequence(
   tx: Tx,
@@ -641,6 +676,7 @@ export async function applyCloudDeviceReceiptSequence(
     sequence.deviceId,
   );
   if (existing) return existing.prefix === sequence.prefix ? "kept" : "refused";
+  if (sequence.lastNumber > 0) return "refused";
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   if (used.has(sequence.prefix)) return "refused";
   const [sameId] = await tx
@@ -659,7 +695,7 @@ export async function applyCloudDeviceReceiptSequence(
     outletId,
     deviceId: sequence.deviceId,
     prefix: sequence.prefix,
-    lastNumber: sequence.lastNumber,
+    lastNumber: 0,
   });
   return "inserted";
 }

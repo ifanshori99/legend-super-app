@@ -23,6 +23,18 @@
 //    lastNumber; an existing row is never touched; a prefix mismatch skips only
 //    that sequence, the rest of the pull applies, and the error is logged
 //    without device data.
+//
+// Review K fixes (S-K1, legend-3yqy):
+//  - A missing row is inserted only when the cloud's lastNumber is 0 (at 0).
+//    Cloud lastNumber > 0 and no edge row: refused (the edge holds none of
+//    1..L, so the gap check would refuse Tutup Hari forever); the terminal is
+//    re-enrolled for a fresh prefix.
+//  - Cloud mode refuses a device-keyed sale while the outlet has an active
+//    edge node (RECEIPT_DEVICE_ON_EDGE): that device numbers on the edge.
+//  - A standby edge never applies pulled sequences.
+//  - The cloud adds `receiptSequences` only for `?receiptSequences=1`. On the
+//    edge any sequence error is counted and logged, never stops the device
+//    records or later pages.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
@@ -56,6 +68,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { enrollDevice, revokeDevice } from "../services/device.service.ts";
 import {
+  deviceSyncQuerySchema,
   listDeviceRecordsSince,
   pullDeviceRegistry,
 } from "../services/edge-device-sync.ts";
@@ -292,22 +305,88 @@ const nodeOf = (outletId: string, tenantId = tenant.tenantId) => ({
   edgeNodeId: randomUUID(),
 });
 
+/** A page as a current edge asks for it (`?receiptSequences=1`). */
 function cloudPage(
   outletId: string,
   tenantId = tenant.tenantId,
+  receiptSequences: "1" | null = "1",
 ): Promise<DeviceSyncPage> {
   return listDeviceRecordsSince(
     nodeOf(outletId, tenantId),
-    { limit: 100 },
+    deviceSyncQuerySchema.parse({
+      limit: 100,
+      receiptSequences: receiptSequences ?? undefined,
+    }),
     { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
   );
 }
 
 /** The edge pulls one page the cloud would have sent. */
-function edgePull(outletId: string, page: unknown) {
+function edgePull(
+  outletId: string,
+  page: unknown,
+  role: "primary" | "standby" = "primary",
+) {
   return pullDeviceRegistry({
     context: edgeScope(outletId),
+    role,
     fetchPage: async () => page,
+  });
+}
+
+/** An edge node row of the outlet in the cloud registry (owner SQL). */
+async function edgeNodeAt(
+  outletId: string,
+  status: "active" | "revoked" = "active",
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, revoked_at)
+       VALUES ($1, $2, $3, 'primary', $4, 'Server lokal', $5, $6)`,
+      [
+        randomUUID(),
+        tenant.tenantId,
+        outletId,
+        status,
+        "a".repeat(64),
+        status === "revoked" ? new Date() : null,
+      ],
+    ),
+  );
+}
+
+/** A cloud revocation record of `deviceId`, with the edge row not yet revoked. */
+async function revocationOf(outletId: string, deviceId: string) {
+  const cloud = await cloudPage(outletId);
+  const record = cloud.data.find((d) => d.id === deviceId)!;
+  const revokedAt = new Date().toISOString();
+  // The "edge" database is the cloud one: drop the row so the record inserts.
+  await asOwnerTenant(tenant.tenantId, (c) =>
+    c.query("DELETE FROM devices WHERE id = $1", [deviceId]),
+  );
+  return {
+    ...record,
+    status: "revoked" as const,
+    revokedAt,
+    updatedAt: revokedAt,
+  };
+}
+
+async function deviceStatus(deviceId: string): Promise<string | undefined> {
+  const [row] = await asOwnerTenant(tenant.tenantId, async (c) =>
+    (await c.query("SELECT status FROM devices WHERE id = $1", [deviceId]))
+      .rows,
+  );
+  return (row as { status?: string } | undefined)?.status;
+}
+
+function receiptCount(outletId: string): Promise<number> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    const result = await client.query(
+      "SELECT count(*)::int AS n FROM pos_receipts WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenant.tenantId, outletId],
+    );
+    return result.rows[0].n as number;
   });
 }
 
@@ -494,7 +573,11 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
     // sequence still is.
     const again = await listDeviceRecordsSince(
       nodeOf(outletId),
-      { limit: 100, since: first.meta.watermark ?? undefined },
+      {
+        limit: 100,
+        since: first.meta.watermark ?? undefined,
+        receiptSequences: "1",
+      },
       { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
     );
     expect(again.data.map((d) => d.id)).not.toContain(legacy);
@@ -573,16 +656,19 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
     });
   });
 
-  it("POS-06 a rebuilt edge starts at the cloud's lastNumber, so it never reissues a number", async () => {
+  it("POS-06 S-K1 an edge with no row refuses a sequence the cloud already advanced (lastNumber 40): not inserted, counted", async () => {
     const outletId = await freshOutlet();
-    const sequence = unseen(outletId, "P8", 5);
-    const orderId = await draftOrder(outletId);
-    await inEdgeMode(() => edgePull(outletId, pageWith([sequence])));
-    expect((await sequenceOf(outletId, sequence.deviceId))?.last_number).toBe(5);
-    const receipt = await inEdgeMode(() =>
-      allocate(outletId, orderId, sequence.deviceId),
+    const advanced = unseen(outletId, "P8", 40);
+    const fresh = unseen(outletId, "P6", 0);
+    const result = await inEdgeMode(() =>
+      edgePull(outletId, pageWith([advanced, fresh])),
     );
-    expect(receipt.number).toBe("P8-000006");
+    expect(result.receiptSequencesRefused).toBe(1);
+    expect(await sequenceOf(outletId, advanced.deviceId)).toBeUndefined();
+    expect(await sequenceOf(outletId, fresh.deviceId)).toMatchObject({
+      prefix: "P6",
+      last_number: 0,
+    });
   });
 
   it("POS-06 a re-pull never resets the edge counter (existing row untouched)", async () => {
@@ -641,21 +727,137 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
       expect(logged).not.toContain(secret);
   });
 
-  it("TEN-01 a sequence of another outlet or tenant refuses the whole page and writes nothing", async () => {
+  it("TEN-01 S-K1 a sequence of another outlet or tenant writes no sequence, is counted, and the page's revocation still lands", async () => {
     const outletId = await freshOutlet();
     const elsewhere = await freshOutlet();
     const good = unseen(outletId, "P2");
-    await expect(
-      inEdgeMode(() =>
-        edgePull(outletId, pageWith([good, unseen(elsewhere, "P1")])),
+    const device = await enroll(outletId, "printer");
+    const revocation = await revocationOf(outletId, device.id);
+    const errors = vi.spyOn(logger, "error");
+    const first = await inEdgeMode(() =>
+      edgePull(
+        outletId,
+        pageWith([good, unseen(elsewhere, "P1")], [revocation]),
       ),
-    ).rejects.toThrow();
-    await expect(
-      inEdgeMode(() =>
-        edgePull(outletId, pageWith([good, unseen(other.outletId, "P1")])),
-      ),
-    ).rejects.toThrow();
+    );
+    const second = await inEdgeMode(() =>
+      edgePull(outletId, pageWith([good, unseen(other.outletId, "P1")])),
+    );
+    expect(first.receiptSequencesRefused).toBe(2);
+    expect(second.receiptSequencesRefused).toBe(2);
+    expect(first.applied).toBe(1);
+    expect(await deviceStatus(device.id)).toBe("revoked");
     expect(await sequenceRows(outletId)).toEqual([]);
     expect(await sequenceRows(elsewhere)).toEqual([]);
+    const logged = JSON.stringify(errors.mock.calls);
+    for (const secret of [good.deviceId, good.id, elsewhere, other.outletId])
+      expect(logged).not.toContain(secret);
+  });
+
+  it("EDG-02 S-K1 a malformed sequence never stops the device records of its page or the later pages", async () => {
+    const outletId = await freshOutlet();
+    const a = await enroll(outletId, "printer");
+    const b = await enroll(outletId, "printer");
+    const pages = [
+      {
+        ...pageWith([], [await revocationOf(outletId, a.id)]),
+        receiptSequences: [{ id: "not-a-uuid", prefix: 7 }],
+        meta: { limit: 1, nextCursor: "c2", watermark: "c1" },
+      },
+      {
+        ...pageWith([], [await revocationOf(outletId, b.id)]),
+        receiptSequences: "nonsense",
+        meta: { limit: 1, nextCursor: null, watermark: "c2" },
+      },
+    ];
+    let call = 0;
+    const result = await inEdgeMode(() =>
+      pullDeviceRegistry({
+        context: edgeScope(outletId),
+        role: "primary",
+        fetchPage: async () => pages[call++],
+      }),
+    );
+    expect(result).toMatchObject({ pages: 2, applied: 2 });
+    expect(result.receiptSequencesRefused).toBe(2);
+    expect(await deviceStatus(a.id)).toBe("revoked");
+    expect(await deviceStatus(b.id)).toBe("revoked");
+  });
+
+  it("EDG-02 S-K1 a standby edge applies the device records but never the pulled sequences", async () => {
+    const outletId = await freshOutlet();
+    const sequence = unseen(outletId, "P3");
+    const device = await enroll(outletId, "printer");
+    const revocation = await revocationOf(outletId, device.id);
+    const result = await inEdgeMode(() =>
+      edgePull(outletId, pageWith([sequence], [revocation]), "standby"),
+    );
+    expect(result).toMatchObject({ applied: 1, receiptSequencesRefused: 0 });
+    expect(await sequenceOf(outletId, sequence.deviceId)).toBeUndefined();
+    expect(await deviceStatus(device.id)).toBe("revoked");
+  });
+});
+
+// ---- S-K1: the flag, and cloud sales of an edge outlet -----------------------
+
+describe("EDG-02 S-K1 the cloud sends receipt sequences only when the edge asks", () => {
+  it("EDG-02 a page without `receiptSequences=1` has no field and provisions nothing; with it, the list", async () => {
+    const outletId = await freshOutlet();
+    const legacy = await legacyDevice(outletId);
+    const plain = await cloudPage(outletId, tenant.tenantId, null);
+    expect("receiptSequences" in plain).toBe(false);
+    expect(await sequenceOf(outletId, legacy)).toBeUndefined();
+    const asked = await cloudPage(outletId);
+    expect(asked.receiptSequences?.map((s) => s.deviceId)).toEqual([legacy]);
+  });
+
+  it("EDG-02 the flag is validated strictly", () => {
+    for (const bad of ["0", "true", "yes", ""])
+      expect(
+        deviceSyncQuerySchema.safeParse({ receiptSequences: bad }).success,
+      ).toBe(false);
+    expect(
+      deviceSyncQuerySchema.safeParse({ receiptSequences: "1" }).success,
+    ).toBe(true);
+  });
+});
+
+describe("POS-06 S-K1 cloud refuses a device sale of an outlet served by an edge", () => {
+  it("POS-06 a device-keyed cloud sale with an active edge node: RECEIPT_DEVICE_ON_EDGE, nothing written", async () => {
+    const outletId = await freshOutlet();
+    const device = await enroll(outletId, "pos");
+    await edgeNodeAt(outletId);
+    const orderId = await draftOrder(outletId);
+    await expect(allocate(outletId, orderId, device.id)).rejects.toMatchObject({
+      code: "RECEIPT_DEVICE_ON_EDGE",
+      status: 409,
+    });
+    expect(await receiptCount(outletId)).toBe(0);
+    expect((await sequenceOf(outletId, device.id))?.last_number).toBe(0);
+  });
+
+  it("POS-06 a cloud sale without a device (sequence C) still takes C-000001 on an edge outlet", async () => {
+    const outletId = await freshOutlet();
+    await edgeNodeAt(outletId);
+    const orderId = await draftOrder(outletId);
+    const receipt = await inTx((tx, context) =>
+      allocateReceipt(tx, context, {
+        orderId,
+        outletId,
+        deviceId: null,
+        at: new Date(),
+      }),
+    );
+    expect(receipt.number).toBe("C-000001");
+  });
+
+  it("POS-06 a revoked edge node does not block the cloud device sale", async () => {
+    const outletId = await freshOutlet();
+    const device = await enroll(outletId, "pos");
+    await edgeNodeAt(outletId, "revoked");
+    const orderId = await draftOrder(outletId);
+    expect((await allocate(outletId, orderId, device.id)).number).toBe(
+      "P1-000001",
+    );
   });
 });

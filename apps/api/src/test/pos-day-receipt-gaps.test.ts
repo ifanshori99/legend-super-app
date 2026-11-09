@@ -19,11 +19,29 @@ import { readFileSync } from "node:fs";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ulidToUuid } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { formatReceiptNumber } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  getEdgeRuntimeState,
+  setEdgeRuntimeStateForTests,
+} from "../edge/runtime.ts";
+import { pullDeviceRegistry } from "../services/edge-device-sync.ts";
 import { setPosReceiptGapsPort } from "../services/pos-shift-ports.ts";
-import { receiptGapsForDevice } from "../services/pos-receipt.service.ts";
+import {
+  allocateReceipt,
+  receiptGapsForDevice,
+} from "../services/pos-receipt.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -373,6 +391,49 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
     expect(await setAndAsk(outletId, fresh.deviceId)).toEqual([]);
   });
 
+  it("S-K1 an edge pull never inserts an advanced cloud run (lastNumber 40); a fresh one (0) closes the day after one edge sale with no gap", async () => {
+    const outletId = await freshOutlet();
+    const advanced = pulledSequence(outletId, "P8", 40);
+    const fresh = pulledSequence(outletId, "P1", 0);
+    const pulled = await inEdgeMode(() =>
+      pullDeviceRegistry({
+        context: edgeContext(outletId),
+        role: "primary",
+        fetchPage: async () => ({
+          data: [],
+          receiptSequences: [advanced, fresh],
+          meta: { limit: 100, nextCursor: null, watermark: null },
+        }),
+      }),
+    );
+    expect(pulled.receiptSequencesRefused).toBe(1);
+    const sequences = await owner.query(
+      `SELECT device_id, last_number FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenant.tenantId, outletId],
+    );
+    expect(sequences.rows).toEqual([
+      { device_id: fresh.deviceId, last_number: 0 },
+    ]);
+
+    // One edge sale on the fresh run, then Tutup Hari on the edge.
+    const orderId = await draftOrder(outletId);
+    const businessDate = await completeAsDevice(orderId, fresh.deviceId);
+    const receipt = await inEdgeMode(() =>
+      withTenant(db, edgeContext(outletId), (tx) =>
+        allocateReceipt(tx as never, edgeContext(outletId), {
+          orderId,
+          outletId,
+          deviceId: fresh.deviceId,
+          at: new Date(),
+        }),
+      ),
+    );
+    expect(receipt.number).toBe("P1-000001");
+    const closed = await inEdgeMode(() => closeDay(outletId, businessDate));
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(await dailyCloseCount(outletId)).toBe(1);
+  });
+
   it("app.ts installs the real port (the default would report no gaps)", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     expect(source).toContain("setPosReceiptGapsPort(receiptGapsForDevice)");
@@ -396,4 +457,61 @@ async function setAndAsk(outletId: string, deviceId: string) {
   return withTenant(db, context, (tx) =>
     receiptGapsForDevice(tx as never, context, { outletId, deviceId }),
   );
+}
+
+// ---- S-K1 helpers (edge pull, edge sale) -------------------------------------
+
+function edgeContext(outletId: string) {
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "device",
+    }),
+    { kind: "outlets", outletIds: [outletIdSchema.parse(outletId)] },
+  );
+}
+
+function pulledSequence(outletId: string, prefix: string, lastNumber: number) {
+  return {
+    id: randomUUID(),
+    outletId,
+    deviceId: randomUUID(),
+    prefix,
+    lastNumber,
+  };
+}
+
+/** Runs `run` with edge mode on and always restores the previous state. */
+async function inEdgeMode<T>(run: () => Promise<T>): Promise<T> {
+  const previous = getEdgeRuntimeState();
+  setEdgeRuntimeStateForTests({ ...previous, edgeMode: true });
+  try {
+    return await run();
+  } finally {
+    setEdgeRuntimeStateForTests(previous);
+  }
+}
+
+/** Owner SQL: the draft becomes a zero-value completed order of the device. */
+async function completeAsDevice(
+  orderId: string,
+  deviceId: string,
+): Promise<string> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    const orderUuid = ulidToUuid(orderId);
+    await client.query(
+      `UPDATE pos_orders SET device_id = $3 WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, orderUuid, deviceId],
+    );
+    const done = await client.query<{ business_date: string }>(
+      `UPDATE orders
+          SET subtotal_idr = 0, discount_idr = 0, service_charge_idr = 0,
+              tax_idr = 0, rounding_idr = 0, total_idr = 0, status = 'completed'
+        WHERE tenant_id = $1 AND id = $2::uuid
+        RETURNING business_date::text AS business_date`,
+      [tenant.tenantId, orderUuid],
+    );
+    return done.rows[0]!.business_date;
+  });
 }

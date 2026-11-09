@@ -117,6 +117,9 @@ export function createDeviceRecordsFetcher(
   return (since, signal) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
+    // legend-3yqy: opt in to the outlet's device receipt sequences; a cloud
+    // sends them only on request so older edges keep parsing their pages.
+    query.set("receiptSequences", "1");
     return cloudGetJson({
       ...options,
       path: `${DEVICE_RECORDS_PATH}?${query.toString()}`,
