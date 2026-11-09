@@ -226,3 +226,4 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `1e2ab930` cherry-pick PRD d6a223d9 (metode bayar: tanpa transfer bank, kartu online Duitku pascarilis; docs/PRD.md saja).
 - Rantai 3 (tanpa head-of-line blocking): ws11 gagal tripwire audit inventory-count (reopen G8kmx), jadi ws02 → whitelabel → receipt dibangun langsung di atas m1; gate paralel di heavy (adaptif 4 jalur).
 - m1 `e8efc11d` ws02-edge (fix tes training 9f1c40af dari G0h5c; 0099/0100; gate prep3 5cb07d8d API 2885 / root 1433; 7 kartu sudah ditutup thread asal; brief 108 rentang 1e2ab930..e8efc11d).
+- m1 `cc3e778c` fix-whitelabel (TEN-08 manifest + design-system nama tenant; tanpa migrasi; gate prep4 2d0f7f4a API 2885 / root 1437; ozud ww29 ditutup).
