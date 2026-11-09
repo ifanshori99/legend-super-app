@@ -13,6 +13,7 @@ import {
   createBankAccount as createBankAccountEndpoint,
   createCashDeposit as createCashDepositEndpoint,
   excludeStatementLine as excludeStatementLineEndpoint,
+  getFinancePolicy as getFinancePolicyEndpoint,
   getJournal as getJournalEndpoint,
   getReconciliationCase as getReconciliationCaseEndpoint,
   getReconciliationSummary as getReconciliationSummaryEndpoint,
@@ -56,6 +57,14 @@ export type ImportStatementInput = {
   csv: string;
   mapping: BankCsvMapping;
 };
+
+// ---- Finance policy -------------------------------------------------------
+
+/** Tenant policy: the matching date tolerance and the undeposited-cash limit. */
+export async function fetchFinancePolicy(signal?: AbortSignal) {
+  const response = await callEndpoint(getFinancePolicyEndpoint, {}, { signal });
+  return response.data;
+}
 
 // ---- Bank accounts --------------------------------------------------------
 

@@ -112,9 +112,9 @@ describe("ACC-04: matching target and suggestions", () => {
     };
     const policy = fixtures.matchingPolicy;
     assert.equal(policy.dateToleranceDays, 2);
-    // The screens use the sample tenant's window until the policy endpoint
-    // exists; the matcher itself always takes the policy as an argument.
-    assert.deepEqual(cash.MATCHING_POLICY, { dateToleranceDays: 2 });
+    // The screens read the tenant's window from GET finance-policy; the
+    // matcher itself always takes the policy as an argument.
+    assert.equal("MATCHING_POLICY" in cash, false);
 
     assert.deepEqual(
       findStatementMatch(
@@ -423,6 +423,16 @@ describe("ACC-04: matching target and suggestions", () => {
 });
 
 // ---- ACC-05: cash deposits and undeposited cash ---------------------------
+
+describe("finance policy", () => {
+  test("GET finance-policy serves the default tenant policy in mock mode", async () => {
+    const response = await get("/api/accounting/finance-policy");
+    assert.deepEqual(response.data.matchingPolicy, { dateToleranceDays: 2 });
+    assert.deepEqual(response.data.cashDepositPolicy, {
+      maxDaysUndeposited: 2,
+    });
+  });
+});
 
 describe("ACC-05: deposits and undeposited cash", () => {
   test("ACC-05: cash undeposited beyond the tenant day limit raises an alert per business date", async () => {
@@ -1016,6 +1026,20 @@ describe("display helpers", () => {
       cash.matchErrorKey("STATEMENT_LINE_ALREADY_MATCHED"),
       "accounting.cash.match.error.alreadyMatched",
     );
+    assert.equal(
+      cash.matchErrorKey("CONFLICT"),
+      "accounting.cash.match.error.alreadyMatched",
+    );
+    assert.equal(
+      cash.importErrorKey("CONFLICT"),
+      "accounting.cash.import.error.conflict",
+    );
+    assert.equal(
+      cash.importErrorKey("SOMETHING_ELSE"),
+      "accounting.cash.import.failed",
+    );
+    assert.equal(cash.isStatementValueInvalid("STATEMENT_VALUE_INVALID"), true);
+    assert.equal(cash.isStatementValueInvalid("CONFLICT"), false);
     assert.equal(
       cash.matchErrorKey("MATCH_AMOUNT_MISMATCH"),
       "accounting.cash.match.error.amountMismatch",

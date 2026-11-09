@@ -622,13 +622,6 @@ export function reconciliationCaseActions(
 
 // ---- Matching (ACC-04) ----------------------------------------------------
 
-/**
- * Tenant matching window. The contract exposes `matchingPolicy` as tenant data
- * but has no endpoint that serves it yet, so the screens use the sample
- * tenant's value (2 days) until the finance API adds the policy read.
- */
-export const MATCHING_POLICY: MatchingPolicy = { dateToleranceDays: 2 };
-
 export function candidateKey(ref: ReconciliationRef): string {
   return `${ref.type}:${ref.id}`;
 }
@@ -684,7 +677,7 @@ export function matchCandidates(
 export function suggestMatch(
   line: Pick<BankStatementLine, "amountIdr" | "postedOn">,
   candidates: readonly MatchCandidate[],
-  policy: MatchingPolicy = MATCHING_POLICY,
+  policy: MatchingPolicy,
 ): MatchOutcome {
   return findStatementMatch(line, candidates, policy);
 }
@@ -833,6 +826,7 @@ export function totalDeposits(
 export function matchErrorKey(code: string): MessageKey {
   switch (code) {
     case "STATEMENT_LINE_ALREADY_MATCHED":
+    case "CONFLICT":
       return "accounting.cash.match.error.alreadyMatched";
     case "MATCH_AMOUNT_MISMATCH":
       return "accounting.cash.match.error.amountMismatch";
@@ -842,6 +836,22 @@ export function matchErrorKey(code: string): MessageKey {
       return "accounting.cash.match.error.notFound";
     default:
       return "accounting.cash.match.error.failed";
+  }
+}
+
+/** True when the server refused the CSV because a cell cannot be read. */
+export function isStatementValueInvalid(code: string): boolean {
+  return code === "STATEMENT_VALUE_INVALID";
+}
+
+/** Import refusal → the fallback sentence when the server gives no row detail. */
+export function importErrorKey(code: string): MessageKey {
+  switch (code) {
+    case "STATEMENT_LINE_ALREADY_MATCHED":
+    case "CONFLICT":
+      return "accounting.cash.import.error.conflict";
+    default:
+      return "accounting.cash.import.failed";
   }
 }
 
