@@ -257,6 +257,12 @@ export const journalEntries = pgTable(
     requestFingerprint: varchar("request_fingerprint", {
       length: 64,
     }).notNull(),
+    /**
+     * Business date an auto-journal fact really happened on, set only when the
+     * natural period was closed and the entry rolled to the first open day
+     * (`entry_date`). Null for every on-time entry.
+     */
+    lateAdjustmentFrom: businessDate("late_adjustment_from"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -293,7 +299,11 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_source_type_check",
-      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal')`,
+      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal', 'customer_deposit')`,
+    ),
+    check(
+      "journal_entries_late_adjustment_check",
+      sql`${table.lateAdjustmentFrom} IS NULL OR ${table.lateAdjustmentFrom} < ${table.entryDate}`,
     ),
     // Contract/journal.ts: reversalOf is set exactly when sourceType is reversal.
     check(

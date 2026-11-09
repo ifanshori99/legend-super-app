@@ -1045,14 +1045,35 @@ export async function recordUnsettledGatewayFunds(
       })
       .returning({ id: paymentEvidence.id });
     if (!inserted) return;
-    await tx.insert(paymentUnallocatedFunds).values({
-      tenantId: context.tenant.tenantId,
+    const [fund] = await tx
+      .insert(paymentUnallocatedFunds)
+      .values({
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId,
+        paymentIntentId: intent.id,
+        // The payout refunds exactly this transaction (legend-knev).
+        evidenceId: inserted.id,
+        amountIdr: idr(paid),
+        reason,
+      })
+      .returning({ id: paymentUnallocatedFunds.id });
+    if (!fund) throw new Error("Unallocated funds insert returned no row");
+    // No payment.paid books this money, so the receipt event is its own.
+    await appendPaymentEvent(tx, context, {
+      name: "payment.funds_unallocated",
+      aggregateId: fund.id,
       outletId: intent.outletId,
-      paymentIntentId: intent.id,
-      // The payout refunds exactly this transaction (legend-knev).
-      evidenceId: inserted.id,
-      amountIdr: idr(paid),
-      reason,
+      actor: { type: "system" },
+      payload: {
+        unallocatedFundId: fund.id,
+        intentId: intent.id,
+        method: funds.method ?? intent.method,
+        provider: funds.provider,
+        receivedIdr: paid,
+        receivedAt: funds.receivedAt.toISOString(),
+        reason,
+      },
+      now,
     });
     await recordAudit(
       tx,
@@ -1522,13 +1543,37 @@ async function applyConfirmation(
         )
         .returning();
       if (!row) throw new Error("Payment intent update returned no row");
-      await tx.insert(paymentUnallocatedFunds).values({
-        tenantId: context.tenant.tenantId,
+      const [fund] = await tx
+        .insert(paymentUnallocatedFunds)
+        .values({
+          tenantId: context.tenant.tenantId,
+          outletId: current.outletId,
+          paymentIntentId: current.id,
+          evidenceId,
+          amountIdr: idr(decision.amountIdr),
+          reason: "double_payment",
+        })
+        .returning({ id: paymentUnallocatedFunds.id });
+      if (!fund) throw new Error("Unallocated funds insert returned no row");
+      // The intent is already paid: no payment.paid books this money.
+      await appendPaymentEvent(tx, context, {
+        name: "payment.funds_unallocated",
+        aggregateId: fund.id,
         outletId: current.outletId,
-        paymentIntentId: current.id,
-        evidenceId,
-        amountIdr: idr(decision.amountIdr),
-        reason: "double_payment",
+        actor:
+          actor.type === "user"
+            ? { type: "user", id: actor.id }
+            : { type: "system" },
+        payload: {
+          unallocatedFundId: fund.id,
+          intentId: current.id,
+          method: confirmation.method,
+          provider: current.provider,
+          receivedIdr: decision.amountIdr,
+          receivedAt: new Date(confirmation.at).toISOString(),
+          reason: "double_payment",
+        },
+        now,
       });
       await recordAudit(
         tx,

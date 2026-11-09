@@ -122,6 +122,8 @@ export type PostJournalInput = {
   readonly postedBy: UserId | null;
   readonly idempotencyKey: string;
   readonly expectedPeriodVersion?: number | null;
+  /** Business date the fact really happened on, when it posts into a later open period. */
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 /** A module posts its event through a catalogued posting rule (contract). */
@@ -138,6 +140,7 @@ export type PostFromRuleInput = {
   readonly idempotencyKey: string;
   readonly costCenter?: string | null;
   readonly expectedPeriodVersion?: number | null;
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 type ParsedPost = PostJournalInput & {
@@ -176,6 +179,10 @@ function parsePostInput(input: PostJournalInput): ParsedPost {
     description,
     lines,
     idempotencyKey: idempotencyKeySchema.parse(input.idempotencyKey),
+    lateAdjustmentFrom:
+      input.lateAdjustmentFrom == null
+        ? null
+        : businessDateSchema.parse(input.lateAdjustmentFrom),
   };
 }
 
@@ -333,6 +340,7 @@ function postFingerprint(parsed: ParsedPost): string {
     sourceId: parsed.sourceId,
     description: parsed.description,
     lines: parsed.lines,
+    lateAdjustmentFrom: parsed.lateAdjustmentFrom,
   });
 }
 
@@ -491,6 +499,7 @@ export async function postJournalInTransaction(
       postedAt: now,
       idempotencyKey: parsed.idempotencyKey,
       requestFingerprint: fingerprint,
+      lateAdjustmentFrom: parsed.lateAdjustmentFrom ?? null,
     })
     .onConflictDoNothing({
       target: [journalEntries.tenantId, journalEntries.idempotencyKey],
@@ -587,6 +596,7 @@ export async function postJournalFromRuleInTransaction(
       postedBy: input.postedBy,
       idempotencyKey: input.idempotencyKey,
       expectedPeriodVersion: input.expectedPeriodVersion,
+      lateAdjustmentFrom: input.lateAdjustmentFrom ?? null,
     },
     now,
   );

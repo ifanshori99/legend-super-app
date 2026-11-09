@@ -22,7 +22,10 @@ import type { PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { tenantIdSchema, ulidToUuid, userIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { voidPosOrder as voidPosOrderEndpoint } from "@starter/shared/pos";
+import {
+  voidPosOrder as voidPosOrderEndpoint,
+  type PosReceipt,
+} from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import {
@@ -71,13 +74,38 @@ let b: Fixture;
 
 // ---- Fixtures ---------------------------------------------------------------------
 
-/** The receipt numbering bead (legend-93a) is not built; a trivial double. */
+/**
+ * Receipt numbering double: only the legend-9pz9 DP sale completes here, so
+ * one receipt per order is enough.
+ */
+const RECEIPT_DEVICE_ID = randomUUID();
+const receipts = new Map<string, PosReceipt>();
 const receiptPort: PosReceiptPort = {
-  async issueForSale() {
-    throw new Error("This file never completes a sale");
+  async issueForSale(_tx, context, input) {
+    const existing = receipts.get(input.orderId);
+    if (existing) return existing;
+    const sequenceNumber = receipts.size + 1;
+    const receipt = {
+      id: randomUUID(),
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId,
+      orderId: input.orderId,
+      // No device token in this file; the receipt DTO needs a device id.
+      deviceId: input.deviceId ?? RECEIPT_DEVICE_ID,
+      number: `DEP1-${String(sequenceNumber).padStart(6, "0")}`,
+      sequenceNumber,
+      status: "issued",
+      issuedAt: input.at.toISOString(),
+      voidedAt: null,
+      voidReason: null,
+      voidedBy: null,
+      reprintCount: 0,
+    } as unknown as PosReceipt;
+    receipts.set(input.orderId, receipt);
+    return receipt;
   },
-  async findForOrder() {
-    return null;
+  async findForOrder(_tx, _context, orderId) {
+    return receipts.get(orderId) ?? null;
   },
   async voidForOrder() {
     return null;
@@ -393,6 +421,12 @@ function posRoutes(fx: Fixture, who: Member = fx.cashier) {
       }),
     voidOrder: (orderId: string, body: Record<string, unknown>) =>
       send(`/${orderId}/void`, body),
+    submit: (orderId: string, expectedStatus: string) =>
+      send(`/${orderId}/submit`, { expectedStatus }),
+    complete: (orderId: string, expectedStatus: string) =>
+      send(`/${orderId}/complete`, { expectedStatus }),
+    correctionVoid: (orderId: string, body: Record<string, unknown>) =>
+      send(`/${orderId}/corrections/void`, body),
   };
 }
 
@@ -684,5 +718,95 @@ describe("POS session deposit credit (legend-94qt)", () => {
     expect(depositOf(rowsB, orderB.id)).toBe(40_000);
     expect(rowsB[0]?.total).toBe(ORDER_TOTAL_IDR);
     expect(rowsB[0]?.status).not.toBe("voided");
+  });
+});
+
+// legend-9pz9: a sale settled by the reservation DP completes and its
+// order.paid carries the DP as `paidDepositIdr` (before: 409 CONFLICT).
+describe("POS sale settled by the session deposit (legend-9pz9)", () => {
+  /** draft -> sent, so the order can complete. */
+  async function sent(fx: Fixture, order: { id: string; status: string }) {
+    if (order.status !== "draft") return order.status;
+    const submitted = await posRoutes(fx).submit(order.id, order.status);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    return submitted.body.data.status as string;
+  }
+
+  async function paidEvents(fx: Fixture, orderId: string) {
+    const { rows } = await owner.query<{ payload: Record<string, unknown> }>(
+      `SELECT event->'payload' AS payload FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'name' = 'order.paid'
+         AND event->'payload'->>'orderId' = $2`,
+      [fx.tenant.tenantId, orderId],
+    );
+    return rows.map((row) => row.payload);
+  }
+
+  it("legend-9pz9 a sale fully covered by the DP completes without a tender and emits order.paid with paidDepositIdr", async () => {
+    const session = await openSession(a);
+    setCredit(a, session, 100_000);
+    const order = await createDineIn(a, session);
+    expect(depositOf(await ordersOf(a, session), order.id)).toBe(
+      ORDER_TOTAL_IDR,
+    );
+    const status = await sent(a, order);
+    const completed = await posRoutes(a).complete(order.id, status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect(completed.body.data.status).toBe("completed");
+    const events = await paidEvents(a, order.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      totalIdr: ORDER_TOTAL_IDR,
+      paidDepositIdr: ORDER_TOTAL_IDR,
+      paidCashIdr: 0,
+      paidGatewayIdr: 0,
+      paidEdcIdr: 0,
+      paidPointsIdr: 0,
+      tenders: [],
+    });
+  });
+
+  it("legend-9pz9 a completed sale paid with the DP is refused a linked void (admin corrects it)", async () => {
+    const session = await openSession(a);
+    setCredit(a, session, 100_000);
+    const order = await createDineIn(a, session);
+    const status = await sent(a, order);
+    const completed = await posRoutes(a).complete(order.id, status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    // The void pays back only captured cash and books the full total, so the
+    // DP would vanish: refused before any approval is consumed.
+    const voided = await posRoutes(a).correctionVoid(order.id, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan salah pesan",
+      ...(await voidApproval(a, order.id, ORDER_TOTAL_IDR)),
+    });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+    expect(voided.body.error?.code ?? voided.body.code).toBe("CONFLICT");
+    expect(JSON.stringify(voided.body)).toMatch(/hubungi admin/);
+    const { rows } = await owner.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pos_order_voids
+       WHERE tenant_id = $1 AND order_id = $2`,
+      [a.tenant.tenantId, ulidToUuid(order.id)],
+    );
+    expect(rows[0]?.count).toBe("0");
+  });
+
+  it("legend-9pz9 a sale part-covered by the DP still needs tenders for the rest", async () => {
+    const session = await openSession(a);
+    setCredit(a, session, 20_000);
+    const order = await createDineIn(a, session);
+    expect(depositOf(await ordersOf(a, session), order.id)).toBe(20_000);
+    const status = await sent(a, order);
+    // The balance check stays: DP + captured tenders must equal the total.
+    const refused = await posRoutes(a).complete(order.id, status);
+    expect(refused.status).toBe(422);
+    expect(refused.body.error?.code ?? refused.body.code).toBe(
+      "TENDER_TOTAL_MISMATCH",
+    );
+    expect(await paidEvents(a, order.id)).toHaveLength(0);
+    const [row] = (await ordersOf(a, session)).filter(
+      (candidate) => candidate.id === ulidToUuid(order.id),
+    );
+    expect(row?.status).not.toBe("completed");
   });
 });

@@ -84,6 +84,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "trigger body and backfill of the delivery store index from existing delivery channels",
   "0135_edc_pan_scrub.sql":
     "masks card-number-like digit runs in existing edc_transactions rows (legend-5gub); edits no other column",
+  "0139_auto_journals_backfill_rls.sql":
+    "backfills the two new posting roles (customer deposit and forfeited deposit) per legal entity: adds one chart account and one account mapping each, ON CONFLICT DO NOTHING; edits no existing row",
 };
 
 // Entrypoints that open a database pool but import no data.

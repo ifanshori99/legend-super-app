@@ -48,6 +48,7 @@ export * from "./hris";
 export * from "./hris-leave";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
+export * from "./accounting-auto-journal";
 export * from "./accounting-journal-requests";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";

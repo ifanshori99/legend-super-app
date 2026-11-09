@@ -889,6 +889,8 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
   });
   const saleAmounts = {
     paidCashIdr: 137_500,
+    paidGatewayIntentIdr: 0,
+    paidDepositIdr: 0,
     paidGatewayIdr: 0,
     paidEdcIdr: 0,
     paidPointsIdr: 0,
@@ -972,13 +974,6 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
     throwsCode(
       () =>
         acc.resolvePostingRule(acc.defaultPostingRules, {
-          eventName: "payment.paid",
-        }),
-      "POSTING_RULE_MISSING",
-    );
-    throwsCode(
-      () =>
-        acc.resolvePostingRule(acc.defaultPostingRules, {
           eventName: "stock.adjusted",
         }),
       "POSTING_RULE_MISSING",
@@ -1014,6 +1009,135 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
       }).success,
       false,
     );
+  });
+});
+
+describe("Auto-journal receipt-first rules and late adjustment", () => {
+  const map = acc.accountMapFor(fx.accountMappings, fx.legalEntity.id);
+  const linesFor = (eventName, amounts) => {
+    const rule = acc.resolvePostingRule(acc.defaultPostingRules, { eventName });
+    return acc.buildJournalLinesFromRule(rule, amounts, map, {
+      outletId: null,
+    });
+  };
+  const sum = (lines, accountCode, side) =>
+    lines
+      .filter((l) => l.accountId === code(accountCode))
+      .reduce((total, l) => total + l[side], 0);
+
+  test("payment.paid receives into customer_deposit; payment.refunded pays it out of gateway_clearing", () => {
+    const received = linesFor("payment.paid", { receivedIdr: 275_000 });
+    assert.equal(sum(received, "1202", "debitIdr"), 275_000);
+    assert.equal(sum(received, "2107", "creditIdr"), 275_000);
+    const paidOut = linesFor("payment.refunded", { amountIdr: 50_000 });
+    assert.equal(sum(paidOut, "2107", "debitIdr"), 50_000);
+    assert.equal(sum(paidOut, "1202", "creditIdr"), 50_000);
+    assert.equal(
+      acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName: "payment.paid",
+      }).sourceType,
+      "customer_deposit",
+    );
+  });
+
+  test("payment.funds_unallocated receives into customer_deposit like payment.paid", () => {
+    const received = linesFor("payment.funds_unallocated", {
+      receivedIdr: 125_000,
+    });
+    assert.equal(sum(received, "1202", "debitIdr"), 125_000);
+    assert.equal(sum(received, "2107", "creditIdr"), 125_000);
+    assert.equal(received.length, 2);
+    assert.equal(
+      acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName: "payment.funds_unallocated",
+      }).sourceType,
+      "customer_deposit",
+    );
+  });
+
+  test("order.paid draws intent-backed gateway and applied DP from customer_deposit", () => {
+    const lines = linesFor("order.paid", {
+      paidCashIdr: 0,
+      paidGatewayIntentIdr: 100_000,
+      paidDepositIdr: 37_500,
+      paidGatewayIdr: 0,
+      paidEdcIdr: 0,
+      paidPointsIdr: 0,
+      discountIdr: 0,
+      grossSalesIdr: 125_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 12_500,
+      roundingIdr: 0,
+    });
+    assert.equal(sum(lines, "2107", "debitIdr"), 137_500);
+    assert.equal(sum(lines, "1202", "debitIdr"), 0);
+  });
+
+  test("order.refunded gateway part is owed in customer_deposit", () => {
+    const lines = linesFor("order.refunded", {
+      grossSalesIdr: 50_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 5_000,
+      discountIdr: 0,
+      refundCashIdr: 0,
+      refundGatewayIdr: 55_000,
+      refundEdcIdr: 0,
+      refundPointsIdr: 0,
+    });
+    assert.equal(sum(lines, "2107", "creditIdr"), 55_000);
+    assert.equal(sum(lines, "1202", "creditIdr"), 0);
+  });
+
+  test("reservation.cancelled and reservation.no_show move a forfeited DP to income", () => {
+    for (const eventName of ["reservation.cancelled", "reservation.no_show"]) {
+      const lines = linesFor(eventName, {
+        forfeitedIdr: 200_000,
+        forfeitedGatewayIdr: 0,
+      });
+      assert.equal(sum(lines, "2107", "debitIdr"), 200_000);
+      assert.equal(sum(lines, "7103", "creditIdr"), 200_000);
+      assert.equal(lines.length, 2);
+      // A DP paid before the cutover never reached customer_deposit: it is
+      // forfeited out of gateway_clearing.
+      const early = linesFor(eventName, {
+        forfeitedIdr: 0,
+        forfeitedGatewayIdr: 150_000,
+      });
+      assert.equal(sum(early, "1202", "debitIdr"), 150_000);
+      assert.equal(sum(early, "2107", "debitIdr"), 0);
+      assert.equal(sum(early, "7103", "creditIdr"), 150_000);
+      assert.equal(early.length, 2);
+      assert.deepEqual(
+        acc.postingRuleAmountKeys(
+          acc.resolvePostingRule(acc.defaultPostingRules, { eventName }),
+        ),
+        ["forfeitedGatewayIdr", "forfeitedIdr"],
+      );
+    }
+  });
+
+  test("resolveAutoJournalDate keeps an open date and rolls a closed one to the next open period", () => {
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-11-05", null), {
+      entryDate: "2026-11-05",
+      lateAdjustmentFrom: null,
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-11-05", "2026-10"), {
+      entryDate: "2026-11-05",
+      lateAdjustmentFrom: null,
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-10-31", "2026-10"), {
+      entryDate: "2026-11-01",
+      lateAdjustmentFrom: "2026-10-31",
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-08-15", "2026-10"), {
+      entryDate: "2026-11-01",
+      lateAdjustmentFrom: "2026-08-15",
+    });
+    assert.deepEqual(acc.resolveAutoJournalDate("2026-12-20", "2026-12"), {
+      entryDate: "2027-01-01",
+      lateAdjustmentFrom: "2026-12-20",
+    });
+    assert.throws(() => acc.resolveAutoJournalDate("2026-13-01", null));
   });
 });
 

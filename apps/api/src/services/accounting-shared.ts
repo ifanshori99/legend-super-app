@@ -42,6 +42,8 @@ export type JournalFingerprintInput = {
     readonly outletId: string | null;
     readonly costCenter: string | null;
   }[];
+  /** Original business date of a late adjustment; null for a normal entry. */
+  readonly lateAdjustmentFrom?: string | null;
 };
 
 /**
@@ -52,7 +54,7 @@ export type JournalFingerprintInput = {
 export function journalRequestFingerprint(
   input: JournalFingerprintInput,
 ): string {
-  const canonical = JSON.stringify([
+  const fields: unknown[] = [
     input.legalEntityId.toLowerCase(),
     input.outletId?.toLowerCase() ?? null,
     input.entryDate,
@@ -66,7 +68,11 @@ export function journalRequestFingerprint(
       line.outletId?.toLowerCase() ?? null,
       line.costCenter ?? null,
     ]),
-  ]);
+  ];
+  // Only a late adjustment adds a field, so every existing fingerprint (and so
+  // every stored idempotency binding) stays unchanged.
+  if (input.lateAdjustmentFrom) fields.push(["late", input.lateAdjustmentFrom]);
+  const canonical = JSON.stringify(fields);
   return createHash("sha256").update(canonical).digest("hex");
 }
 

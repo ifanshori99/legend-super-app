@@ -358,6 +358,7 @@ export const accountingMessages = {
     dividend: "Dividen",
     cash_deposit: "Setoran kas",
     cashier_shift: "Tutup shift kasir",
+    customer_deposit: "Uang muka pelanggan",
     opening_balance: "Saldo awal",
     manual: "Jurnal manual",
     recurring: "Jurnal berulang",

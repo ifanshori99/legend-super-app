@@ -1,0 +1,260 @@
+# Design: Auto-journals F19 (legend-9pz9, incl. legend-o9q9, legend-kej3, legend-fbms)
+
+Status: design, 9 Nov 2026. Branch `ws/dp-late-journal` (base milestone/m1 3143577d).
+Tier K (money, migration, journal contract): architect review + Codex second opinion before the release gate.
+Points marked **TBD-verify** were not confirmed in code; the implementer checks them first.
+
+## 1. Decision
+
+One cloud-only outbox consumer, `accounting-auto-journal-consumer.ts`, posts every automatic
+money journal through the existing engine (`postJournalFromRuleInTransaction`). It copies the
+proven `inventory-gl-consumer.ts` pattern: savepoint per posting, park on expected accounting
+errors, sweep retries, never block cloud-sync delivery.
+
+Gateway money uses a **receipt-first** model with one liability role, `customer_deposit`
+("Uang Muka Pelanggan"):
+
+| Fact | Event | Journal |
+|---|---|---|
+| Gateway money received (any intent: sale, DP, late, double) | `payment.paid` | Dr gateway_clearing / Cr customer_deposit (receivedIdr) |
+| Sale paid | `order.paid` | Dr cash / customer_deposit (intent-backed gateway + DP applied) / gateway_clearing (gateway without intent) / edc_clearing / loyalty_liability / sales_discount; Cr sales_revenue, service_charge, tax_payable_pbjt, rounding |
+| Sale refunded | `order.refunded` | mirror; gateway part Cr customer_deposit (owed to guest until payout) |
+| Gateway money paid back | `payment.refunded` | Dr customer_deposit / Cr gateway_clearing |
+| DP forfeited | `reservation.cancelled`, `reservation.no_show` (depositForfeitedIdr > 0) | Dr customer_deposit (gateway_clearing if the DP predates the cutover) / Cr deposit_forfeit_income |
+| Cash over/short | `cashier_shift.closed` | existing rule (differenceIdr) |
+| Gateway settlement + MDR | `settlement.reconciled` | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross) |
+| EDC settlement + MDR | `edc_transaction.settled` | existing rule (Cr edc_clearing gross) |
+| Cash deposit to bank | `cash_deposit.recorded` / document `cash_deposit` | existing rule (Dr bank / Cr cash_on_hand) |
+| End of day | `day.closed` | **no journal** (recap only; posting it would double count sales) |
+
+Why receipt-first: `gateway_clearing` then equals exactly what the gateway received per intent,
+so settlement reconciles (the o9q9 bug). DP receipts, late payments, double payments and
+payments on voided orders all get a journal on the day the money arrived, with no lookup of
+"will this become a sale". `customer_deposit` holds every customer advance: DP held, late or
+double payments awaiting refund, and gateway refunds awaiting payout. It should net to the open
+DP balance plus pending refunds; that is a usable control.
+
+Cutover/ordering guard (`order.paid`, per intent-backed gateway tender): the receipt under
+`aj:receipt:<intentId>` is **posted** (journal exists: Dr customer_deposit), **pending**
+(`payment.paid` not yet delivered in the `cloud-sync` outbox, or its receipt parked retryable:
+the sale parks retryable `AUTO_JOURNAL_RECEIPT_PENDING` and the sweep posts it later) or **none**
+(never emitted, consumed before wiring or with accounting off, or parked non-retryable: Dr
+gateway_clearing, so the money is booked once). The outbox is read before the journal, so a
+receipt committing between the reads is seen as pending, never as none.
+
+Why one role, not a separate "unapplied receipts" role: the CTO decision authorised exactly one
+liability role. A split can come later by mapping, without rule churn in consumers.
+
+## 2. Rule changes (`packages/shared/src/accounting/`)
+
+`coa.ts`
+- `POSTING_ACCOUNT_ROLES`: add `customer_deposit: "liability"`, `deposit_forfeit_income: "revenue"`.
+- `standardFnbChartTemplate` rows: `["2107", "Uang Muka Pelanggan", "current_liability", "2100", ["customer_deposit"]]`
+  and an "other income" row for `deposit_forfeit_income` under the revenue header
+  (code and account type **TBD-verify**: pick the next free 4xxx code and the type the template
+  uses for other income). Check that 2107 is free (**TBD-verify**, 2101..2106 are taken).
+
+`journal.ts` + DB check: add source type `customer_deposit` (receipts, forfeits). Refunds keep `refund`.
+
+`posting-rules.ts`
+- Header comment: replace "payment.paid and payment.refunded post nothing" with the receipt-first text above.
+- `order.paid` lines become:
+  `cash_on_hand Dr paidCashIdr`, `customer_deposit Dr paidGatewayIntentIdr`,
+  `customer_deposit Dr paidDepositIdr`, `gateway_clearing Dr paidGatewayIdr` (gateway tender without
+  an intent; expected 0, **TBD-verify** such tenders exist), `edc_clearing Dr paidEdcIdr`,
+  `loyalty_liability Dr paidPointsIdr`, `sales_discount Dr discountIdr`,
+  `sales_revenue Cr grossSalesIdr`, `service_charge Cr serviceChargeIdr`,
+  `tax_payable_pbjt Cr pbjtIdr`, `rounding Cr roundingIdr` (negative flips side, already supported).
+- `order.refunded`: `gateway_clearing Cr refundGatewayIdr` becomes `customer_deposit Cr refundGatewayIdr`.
+- New `payment.paid` (sourceType `customer_deposit`): `gateway_clearing Dr receivedIdr`, `customer_deposit Cr receivedIdr`.
+- New `payment.refunded` (sourceType `refund`): `customer_deposit Dr amountIdr`, `gateway_clearing Cr amountIdr`.
+- New `reservation.cancelled` and `reservation.no_show` (sourceType `customer_deposit`):
+  `customer_deposit Dr forfeitedIdr`, `gateway_clearing Dr forfeitedGatewayIdr` (slice 2: DP paid
+  before the cutover), `deposit_forfeit_income Cr forfeitedIdr`, `deposit_forfeit_income Cr forfeitedGatewayIdr`.
+- Settlement, EDC settlement, cashier shift, cash deposit rules: unchanged.
+
+Event catalog (`events/catalog.ts`): no new names needed; every trigger above is already
+catalogued. Payload schemas are added where missing (section 3).
+
+## 3. Event payloads
+
+The consumer parses only the fields it needs, with a consumer-local zod schema (`z.object`,
+not strict, so emitter additions do not break it). Amounts are whole rupiah.
+
+| Event | Fields used | Natural money time | Extra reads |
+|---|---|---|---|
+| `order.paid` | orderId, outletId, grossSalesIdr, discountIdr, serviceChargeIdr, pbjtIdr, roundingIdr, totalIdr, paidCash/Gateway/Edc/PointsIdr, paidDepositIdr (slice 2), paidAt | paidAt | `pos_order_tenders` gateway rows: with `payment_intent_id` -> paidGatewayIntentIdr, without -> paidGatewayIdr |
+| `order.refunded` | refundId, orderId, gross/discount/serviceCharge/pbjtIdr, refundCash/Gateway/Edc/PointsIdr, refundedAt | refundedAt | none |
+| `payment.paid` | intentId, method, provider, receivedIdr, paidAt, late; envelope outletId | paidAt | `payment_intents.edc_transaction_id`; skip EDC-linked intents (**TBD-verify** EDC intents emit payment.paid) |
+| `payment.refunded` | refundId, paymentIntentId, amountIdr | `payment_refunds.completed_at` (payload lacks it) | read refund row; skip EDC-linked intents |
+| `reservation.cancelled/no_show` | reservationId, depositForfeitedIdr; envelope outletId | envelope occurredAt (closedAt) | `reservations` row (outlet, status, depositForfeitedIdr must match); DP intents (`payment_intents.reservation_id`) |
+| `cashier_shift.closed` | shiftId, outletId, differenceIdr, closedAt | closedAt | `pos_shifts` row (closed, same outlet, varianceIdr must match) |
+| `settlement.reconciled` v1 (new schema) | settlementId, provider, outletId, settledOn, grossIdr, feeIdr, netSettledIdr; refine gross = net + fee | settledOn | none |
+| `edc_transaction.settled` v1 (new schema) | settlementBatchId, terminalId, outletId, settledOn, grossIdr, feeIdr, netSettledIdr | settledOn | none |
+| `cash_deposit.recorded` v1 (new schema) | cashDepositId, outletId, amountIdr, depositedOn | depositedOn | none |
+
+`order.paid` schema changes (`packages/shared/src/pos/events.ts`):
+- Slice 2: add `paidDepositIdr: nonnegativeIdr` (default 0) to the bucket sum refine; tenders sum = total - paidDepositIdr.
+- Slice 3 (fbms design A): `totalIdr` nonnegative, `tenders` may be empty, refine allows 0.
+
+Slice 2, verified 9 Nov (resolves the TBD-verify notes above):
+- `reservation.*` payload (`reservation-lifecycle.ts:498`, `reservation-public.ts:586`) is
+  {reservationId, closedBy, reason, depositPaidIdr, depositRefundIdr, depositForfeitedIdr,
+  policyVersion}; the system cancels (`reservation-booking.ts:416`, `reservation-core.ts:761`)
+  always send 0 and post nothing. forfeited = held DP - refund, written to the row with the event.
+- `cashier_shift.closed` (`pos-shift.service.ts:1384`): differenceIdr = countedIdr - expectedIdr
+  (= `pos_shifts.variance_idr`), signed; 0 posts nothing.
+- DP placement (`depositReceiptOf`): every DP intent's receipt posted -> customer_deposit; none ->
+  gateway_clearing (`paidGatewayIdr` on order.paid, `forfeitedGatewayIdr` on the forfeit); any
+  pending -> `AUTO_JOURNAL_RECEIPT_PENDING`; mixed -> `AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED`
+  (not retryable). order.paid reaches the DP through `orders.table_session_id` ->
+  `reservation_deposit_allocations` and requires paidDepositIdr = `orders.deposit_applied_idr`.
+- `order.refunded` has no DP leg (`pos-order-corrections.ts:520`): no refund split needed.
+
+Legal entity: `outlets.legal_entity_id` of the event outlet (same query as inventory-gl :414).
+Null -> park `OUTLET_LEGAL_ENTITY_MISSING`. Tenants without the accounting module: `ignored`.
+
+## 4. Idempotency key per event
+
+Business-fact keys, prefix `aj:`, sha256 fallback above 100 chars (as `idempotencyKeyOf`).
+
+| Event | Key |
+|---|---|
+| order.paid | `aj:sale:<orderId>` |
+| order.refunded | `aj:order-refund:<refundId>` |
+| payment.paid | `aj:receipt:<event.id>` (one event per money arrival; a double payment is a new event) **TBD-verify** |
+| payment.refunded | `aj:payout:<refundId>` |
+| reservation.cancelled / no_show | `aj:dp-forfeit:<reservationId>` |
+| cashier_shift.closed | `aj:shift:<shiftId>` |
+| settlement.reconciled | `aj:settlement:<settlementId>` |
+| edc_transaction.settled | `aj:edc-settlement:<settlementBatchId>` |
+| cash_deposit.recorded | `aj:cash-deposit:<cashDepositId>` |
+
+Rule: before computing the date, look the key up in `journal_entries`. Found -> `already_posted`
+(no-op). This avoids `IDEMPOTENCY_KEY_REUSED` when a retry would compute a different
+(rolled-forward) date than the first post. A `pg_advisory_xact_lock(hashtext(key))` serializes
+the consumer and the sweep.
+
+## 5. Late-adjustment date logic (CTO decision 1, applied to every event of this consumer)
+
+1. `naturalDate = businessDateOf(moneyTime, outletBusinessDayClock(outlet))` (`outlet-clock.ts`).
+2. `wouldPostingBeBlockedByClosedPeriod(tx, tenant, entity, periodOf(naturalDate))` (takes the
+   entity FOR SHARE lock, so close/reopen cannot race the post in the same transaction).
+3. Not blocked -> `entryDate = naturalDate`, `lateAdjustmentFrom = null`.
+4. Blocked -> `latest = max(period) where status = 'closed'` for the entity;
+   `entryDate = first day of nextPeriod(latest)` (`period-key.ts`), `lateAdjustmentFrom = naturalDate`.
+   Periods are monthly and the gate rejects any date before a later closed month, so this is the
+   first open day after. `lockFiscalPeriod` creates the target month if missing (**TBD-verify**).
+5. Flag: new nullable column `journal_entries.late_adjustment_from` (business date), CHECK
+   `late_adjustment_from IS NULL OR late_adjustment_from < entry_date`. Included in the request
+   fingerprint. Description suffix ` (penyesuaian terlambat dari <date>)`.
+6. Audit: `auditAccountingChange` action `accounting.journal.late_adjusted`
+   {journalId, eventName, sourceId, originalDate, entryDate}, same transaction (**TBD-verify** signature, accounting-shared.ts:122).
+
+Pure part goes to shared `late-adjustment.ts`: `resolveAutoJournalDate(naturalDate, latestClosedPeriod)`.
+
+Why for every event, not only `late=true` payments: any money fact that reaches a closed month
+(edge offline, outbox backlog) is the same situation. Consistent with the 8 Nov edge-offline
+decision. Note: inventory GL still parks on PERIOD_CLOSED (follow-up bead, section 9).
+
+## 6. Failure parking
+
+Table `auto_journal_parked` (T, outlet-owned; RLS `app.enforce_tenant_rls` + `app.enforce_outlet_rls` as in 0087):
+`tenant_id uuid NOT NULL, outlet_id uuid NOT NULL, idempotency_key varchar(100) NOT NULL,
+event_id text NOT NULL, event_name varchar(80) NOT NULL, payload jsonb NOT NULL (ids + amounts only, no PII),
+error_code varchar(60) NOT NULL, retryable boolean NOT NULL, attempts int NOT NULL default 1,
+first_failed_at, last_failed_at timestamptz NOT NULL, next_retry_at timestamptz NULL`;
+UNIQUE (tenant_id, idempotency_key); INDEX (tenant_id, next_retry_at).
+
+- Retryable (park, sweep retries every 10 min): `ACCOUNT_MAPPING_MISSING`, `ACCOUNT_INACTIVE`,
+  `ACCOUNT_NOT_POSTABLE`, `ACCOUNT_ENTITY_MISMATCH`, `OUTLET_LEGAL_ENTITY_MISSING`, `PERIOD_CLOSED` (race only).
+- Not retryable (park, `next_retry_at = null`, finance sees it): any other `AccountingError`
+  (`POSTING_AMOUNTS_MISMATCH`, `JOURNAL_UNBALANCED`, `IDEMPOTENCY_KEY_REUSED`). Deterministic,
+  so retrying the outbox would only block cloud-sync until dead letter.
+- Non-`AccountingError` (DB, transient): propagate; outbox retry as today.
+- Success after parking deletes the row. Sweep `retryParkedAutoJournals(context, now)`: batch 100,
+  rebuilds from the stored payload (no outbox replay needed), recomputes the date (section 5).
+
+## 7. Backfill migration
+
+Two migration files (number = next free after rebasing on the latest m1; batch4 already
+uses up to 0132, so **do not use 0113 blindly**):
+
+A. DDL (drizzle-generated): `auto_journal_parked`; `journal_entries.late_adjustment_from` + CHECK;
+   replace `journal_entries_source_type_check` with the list plus `customer_deposit`.
+B. Hand-written: RLS for `auto_journal_parked`, then per legal entity:
+   - insert account `2107 Uang Muka Pelanggan` (current_liability) under that entity's `2100`
+     header; `ON CONFLICT DO NOTHING`; only entities that already have header `2100`;
+   - insert mapping role `customer_deposit` to that account only when the row with code 2107 has
+     that name and type (never map a tenant's own different 2107);
+     `ON CONFLICT (tenant_id, legal_entity_id, role) DO NOTHING`;
+   - same two steps for `deposit_forfeit_income`.
+   Entities without the headers get nothing; their postings park `ACCOUNT_MAPPING_MISSING` until
+   finance maps the role. Trigger 0027:324 (parent/type) is satisfied by the header choice.
+   Table and column names, and whether the migration role bypasses forced RLS: **TBD-verify**
+   against earlier data migrations.
+No historical journal backfill: auto-journals start at deploy. Opening balances stay manual.
+
+## 8. Slice order
+
+| Slice | Content | Gate |
+|---|---|---|
+| 1 | Roles, rules, source type, late-adjustment, parking, backfill, consumer for order.paid (POS), order.refunded, payment.paid, payment.refunded; wiring patch | now |
+| 2 | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, no DP leg on order.refunded (verified); forfeit handler; `cashier_shift.closed` handler | after 1 |
+| 3 | kej3: emit `order.paid` from QR fire path (`qr-order-consumers.ts` ~:341), gateway intent tender, paidAt = intent.paidAt, paidDepositIdr = depositApplied; shared `order-revenue.ts` `orderRevenueSplit()` (exclusive if subtotal - discount + svc + tax + rounding = total, gross = subtotal; inclusive if subtotal - discount + rounding = total, gross = subtotal - svc - tax; else fail closed). fbms design A: schema nonnegative, drop `if (order.totalIdr > 0)` (:1220), consumer skips all-zero amounts | after batch3 + batch4 are in m1 (inclusive QR, recipe deduction, qr-order-consumers +167 lines) |
+| 4 | Settlement + MDR: payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events. Emitters need a settlement import ledger (new WS-05 bead; `payment-admin-reconciliation.service.ts:144`) | after 1 |
+| 5 | Cash deposit: `accounting-cash-deposit.service.ts` posting document `cash_deposit` + emitting `cash_deposit.recorded`; route registration through a second wiring patch | after 1 |
+
+Slices 1 and 3 must both land before the release gate: until 3, QR receipts sit in
+`customer_deposit` with no sale.
+
+Slice 2 deploys API and web together: `posOrderBaseSchema` is strict and the web client
+validates every response against it (`apps/web/src/lib/api/endpoint-core.ts:121`), so an
+old web build answers a new API's POS order with `RESPONSE_SHAPE_INVALID` (and the reverse).
+Slice 2 also decides the DP source on the exact intents only (the session's
+`reservation_deposit_allocations.payment_intent_id` for a sale, `reservations.deposit_payment_id`
+for a forfeit), parks a sale whose session applies more DP than those intents still hold
+(`POSTING_AMOUNTS_MISMATCH`, not retryable), and refuses a linked void of a sale paid with DP
+(409 CONFLICT, refund instead).
+
+### Slice 1 files (no forbidden file; about 740 non-test lines)
+
+| File | Change | Est. lines |
+|---|---|---|
+| packages/shared/src/accounting/coa.ts | 2 roles, 2 template rows | 15 |
+| packages/shared/src/accounting/posting-rules.ts | header, order.paid, order.refunded, payment.paid, payment.refunded, reservation forfeit rules | 50 |
+| packages/shared/src/accounting/journal.ts | source type `customer_deposit` | 2 |
+| packages/shared/src/accounting/late-adjustment.ts (new) | `resolveAutoJournalDate` | 40 |
+| packages/shared/src/accounting/index.ts | export | 1 |
+| apps/api/src/db/schema/accounting.ts | `late_adjustment_from`, source CHECK | 12 |
+| apps/api/src/db/schema/accounting-auto-journal.ts (new) + db/schema/index.ts | parked table | 50 |
+| apps/api/drizzle/<next>_auto_journals.sql + meta (generated) | DDL | 30 |
+| apps/api/drizzle/<next+1>_auto_journals_backfill_rls.sql | RLS + backfill | 70 |
+| apps/api/src/services/accounting-journal.service.ts | `lateAdjustmentFrom` in inputs, fingerprint, insert | 20 |
+| apps/api/src/services/accounting-auto-journal-amounts.ts (new) | per-event parse, amounts, keys, money time | 130 |
+| apps/api/src/services/accounting-auto-journal-consumer.ts (new) | deliver, date, park, sweep, audit | 320 |
+| docs/briefs/141-auto-journals-wiring.patch (new) | worker-main.ts: import, `if (postsInventoryGl) await deliverAutoJournalEvent(context, event, tx)` after the inventory GL call, sweep in relay tick with try/catch | patch |
+
+Tests (not counted): `apps/api/src/test/accounting-auto-journal.test.ts` (each event balanced,
+replay no-op, late payment into closed month rolls to first open day + flag + audit, mapping
+missing parks then sweep posts, cross-tenant isolation of the parked table, accounting module off
+ignored), `packages/shared/src/accounting/posting-rules.test.ts`, `late-adjustment.test.ts`.
+Run with `LEGEND_TEST_FILES=...`.
+
+Forbidden, untouched: `worker-main.ts`, `app.ts`, `routes/index.ts`, `edge/runtime.ts`,
+DOIT adapter + webhook, refund module (`payment-refund.service.ts` read-only via events),
+`crm-promo-refund.ts`.
+
+## 9. Risks
+
+1. Migration number collision: batch4 holds 0113..0132. Rebase on the latest m1 before `pnpm db:generate`.
+2. Receipt-first assumes every intent-backed gateway tender has a `payment.paid`, and EDC-linked
+   intents are excluded. Wrong -> `customer_deposit` drifts. Verify first; add a test per path.
+3. Gateway refunds paid outside the refund module (no `payment.refunded`) would leave a credit in
+   `customer_deposit` (**TBD-verify**).
+4. Inventory GL parks PERIOD_CLOSED while sales roll forward: COGS and sales can sit in different
+   months. File a follow-up bead to align.
+5. An admin `replayOutbox` of old events would post historical journals into the current month
+   (flagged). Acceptable; CTO may ask for a cutover guard.
+6. Adding template rows can change shared fixtures and tests that count accounts.
+7. Journal contract change (source type, column, fingerprint) is tier K: architect + Codex.

@@ -992,6 +992,7 @@ export async function orderDetail(
     taxIdr: order.taxIdr,
     roundingIdr: order.roundingIdr,
     totalIdr: order.totalIdr,
+    depositAppliedIdr: order.depositAppliedIdr,
     status: order.status,
     createdBy: order.createdBy,
     createdAt: order.createdAt.toISOString(),

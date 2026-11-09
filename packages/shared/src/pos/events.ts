@@ -16,8 +16,9 @@
 // `order.paid` and `order.refunded` carry exactly the amount keys the already
 // merged WS-07 posting rules read (`paidCashIdr`, `paidGatewayIdr`,
 // `paidEdcIdr`, `paidPointsIdr`, `discountIdr`, `grossSalesIdr`,
-// `serviceChargeIdr`, `pbjtIdr`, `roundingIdr`; refunds: `refundCashIdr`,
-// `refundGatewayIdr`, `refundEdcIdr`), so a sale posts once and balances.
+// `serviceChargeIdr`, `pbjtIdr`, `roundingIdr`, `paidDepositIdr`; refunds:
+// `refundCashIdr`, `refundGatewayIdr`, `refundEdcIdr`), so a sale posts once
+// and balances.
 // `cashier_shift.closed` carries the signed `differenceIdr` its rule needs.
 //
 // PRD v1.7: §3 F8 (Shift Kasir, Tutup Hari), §5 "Model event untuk
@@ -25,6 +26,7 @@
 
 import {
   z,
+  idr,
   idrSchema,
   outletIdSchema,
   uuidIdSchema,
@@ -116,7 +118,17 @@ export const orderPaidPayloadSchema = z
     paidGatewayIdr: nonnegativeIdr,
     paidEdcIdr: nonnegativeIdr,
     paidPointsIdr: nonnegativeIdr,
-    tenders: z.array(tenderLineSchema).min(1),
+    /**
+     * legend-9pz9: the reservation DP applied to this sale (the order's
+     * `depositAppliedIdr`). Not a tender: the tenders settle the rest.
+     */
+    paidDepositIdr: nonnegativeIdr.default(idr(0)),
+    /**
+     * Empty only when the DP covers the whole total: the sum check below
+     * (tenders = totalIdr - paidDepositIdr, totalIdr > 0) refuses any other
+     * empty list.
+     */
+    tenders: z.array(tenderLineSchema),
     shiftId: posShiftIdSchema.nullable(),
     cashierId: userIdSchema.nullable(),
     deviceId: deviceIdSchema.nullable(),
@@ -140,11 +152,20 @@ export const orderPaidPayloadSchema = z
       (sum, line) => sum + Number(line.amountIdr),
       0,
     );
-    if (paid !== Number(payload.totalIdr))
+    if (Number(payload.paidDepositIdr) > Number(payload.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidDepositIdr"],
+        message: "paidDepositIdr must not exceed totalIdr",
+      });
+    else if (
+      paid !==
+      Number(payload.totalIdr) - Number(payload.paidDepositIdr)
+    )
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
-        message: "Captured tenders must equal totalIdr",
+        message: "Captured tenders must equal totalIdr - paidDepositIdr",
       });
     for (const [key, bucket] of [
       ["paidCashIdr", "cash"],
