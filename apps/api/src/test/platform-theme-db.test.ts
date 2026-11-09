@@ -20,6 +20,7 @@ import {
   createTestTenant,
   owner,
   removeTestTenant,
+  storedMedia,
   type TestTenant,
 } from "./platform-theme-helpers";
 
@@ -65,19 +66,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const t of [a, b]) {
-    await owner
-      .query("DELETE FROM core_storage_objects WHERE tenant_id = $1", [
-        t.tenantId,
-      ])
-      .catch(() => undefined);
-    await owner
-      .query("DELETE FROM outlets WHERE tenant_id = $1", [t.tenantId])
-      .catch(() => undefined);
-    await owner
-      .query("DELETE FROM legal_entities WHERE tenant_id = $1", [t.tenantId])
-      .catch(() => undefined);
-  }
   await removeTestTenant(a);
   await removeTestTenant(b);
   await owner.end();
@@ -224,28 +212,6 @@ describe("TEN-10 theme contrast gate", () => {
     });
   });
 });
-
-/** A stored object in a new outlet of the tenant (media library row). */
-async function storedMedia(t: TestTenant): Promise<string> {
-  const legalEntityId = randomUUID();
-  const outletId = randomUUID();
-  const mediaId = randomUUID();
-  await owner.query(
-    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Logo', false)",
-    [legalEntityId, t.tenantId],
-  );
-  await owner.query(
-    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
-     VALUES ($1, $2, $3, $4, 'LOGO-1', 'Outlet Logo', 'Jl. Logo', '{}')`,
-    [outletId, t.tenantId, t.brandId, legalEntityId],
-  );
-  await owner.query(
-    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-     VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
-    [t.tenantId, outletId, mediaId, `legend-iiqx/${mediaId}.webp`],
-  );
-  return mediaId;
-}
 
 describe("legend-iiqx / TEN-10 logoMediaId belongs to the tenant", () => {
   it("legend-iiqx a draft may use a logo from the tenant's own media library", async () => {

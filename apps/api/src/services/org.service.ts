@@ -78,6 +78,7 @@ import {
 } from "./inventory-provisioning.service";
 import { provisionDefaultServiceChargeRule } from "./tax-provisioning.service";
 import { HttpError } from "../lib/http-error";
+import { assertTenantMedia } from "./tenant-media";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -231,6 +232,13 @@ export async function createBrand(
   input: CreateBrandInput,
 ): Promise<Brand> {
   return withTenant(db, context, async (tx) => {
+    // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library.
+    await assertTenantMedia(
+      tx,
+      context.tenant.tenantId,
+      input.logoMediaId,
+      "Logo",
+    );
     try {
       const [row] = await tx
         .insert(brands)
@@ -256,6 +264,13 @@ export async function updateBrand(
   input: UpdateBrandInput,
 ): Promise<Brand> {
   return withTenant(db, context, async (tx) => {
+    // legend-ja7i7 (TEN-10): same rule as createBrand; null clears the logo.
+    await assertTenantMedia(
+      tx,
+      context.tenant.tenantId,
+      input.logoMediaId,
+      "Logo",
+    );
     const changes = {
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.logoMediaId === undefined
