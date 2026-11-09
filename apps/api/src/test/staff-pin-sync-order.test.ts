@@ -35,6 +35,7 @@ import {
 import {
   registerEdgeNode,
   authenticateEdgeCredential,
+  revokeEdgeNode,
 } from "../services/edge-node.service.ts";
 import {
   applyStaffPinRecords,
@@ -173,6 +174,7 @@ async function asEdge<T>(run: () => Promise<T>): Promise<T> {
 }
 
 let cloudNode: Awaited<ReturnType<typeof authenticateEdgeCredential>> = null;
+let cloudNodeRegisteredBy: string | null = null;
 
 /**
  * The cloud applier ingesting an edge `staff_pin.set`, as a standby node
@@ -189,6 +191,7 @@ async function adoptOnCloud(event: EventEnvelope, registeredBy: string) {
       { outletId: bandung, role: "standby", label: "uji urutan" },
     );
     cloudNode = await authenticateEdgeCredential(registered.credential);
+    cloudNodeRegisteredBy = registeredBy;
   }
   const authenticated = cloudNode!;
   return withTenant(db, authenticated.context, (tx) =>
@@ -227,6 +230,17 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  // The standby node sits on the shared fixture outlet: revoke it so a later
+  // test file (edge-db EDG-03) can register its own standby there.
+  if (cloudNode !== null && cloudNodeRegisteredBy !== null)
+    await revokeEdgeNode(
+      establishScopedTenantContext(tenant, {
+        kind: "outlets",
+        outletIds: [outletIdSchema.parse(bandung)],
+      }),
+      cloudNodeRegisteredBy,
+      { edgeNodeId: cloudNode.scope.edgeNodeId, reason: "Selesai uji urutan" },
+    );
   setAuditWriter(null);
   await owner.query(
     `DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND event->'payload'->>'userId' = ANY($2::text[])`,
@@ -240,8 +254,8 @@ afterAll(async () => {
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantId, createdUserIds],
   );
-  // edge_nodes rows are revoked, never deleted (trigger): the disposable
-  // database drops the standby node registered by the adoption test.
+  // edge_nodes rows are revoked, never deleted (trigger): the standby node is
+  // revoked above and the disposable database drops the row.
   await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
     createdUserIds,
   ]);
