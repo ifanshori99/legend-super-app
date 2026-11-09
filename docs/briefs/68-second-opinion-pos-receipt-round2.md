@@ -4,8 +4,9 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pos-receipt`, cabang `ws/pos-receipt`, SHA `d379023`.
-Rentang diff: `git diff $(git merge-base main d379023)..d379023` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/prep-pos-receipt`, cabang `prep2/pos-receipt` HEAD `39296fae`, berisi `ws/pos-receipt` (1657797e) plus fix shift (`bd5885b6`: cash sale mengikuti aturan pos-shift). Cabang ini BELUM digabung ke `milestone/m1`.
+Rentang diff isi receipt saja: `git diff 2d0f7f4a 39296fae` (29 file; abaikan drizzle `meta/*.json`). `2d0f7f4a` adalah parent kedua `39296fae` (chain head `prep4/fix-whitelabel`). Jangan pakai `git diff milestone/m1...`: merge-base `1e2ab930` menyeret isi ws02-edge dan whitelabel yang belum merge.
+Migration pada rantai ini: 0101/0102 (diregen di atas chain ws02-edge).
 
 ## Berkas berisiko
 - `apps/api/src/services/pos-receipt.service.ts`
@@ -15,7 +16,8 @@ Rentang diff: `git diff $(git merge-base main d379023)..d379023` (abaikan drizzl
 - `apps/api/src/services/pos-receipt-pdf.ts`
 - `apps/api/src/routes/pos-receipt.routes.ts`
 - Error handler dan `app.ts` (jalur decode URI dan log error)
-- Migration `0063_pos_receipts` (nomor bentrok dirapikan saat merge, bukan temuan)
+- Migration `0101_reflective_sue_storm.sql` dan `0102_pos_receipts_rls.sql` (nomor diregen saat merge, bukan temuan)
+- `apps/api/src/worker/pos-receipt-email.job.ts`
 
 ## Invariant (PRD)
 - POS-06: nomor struk berurutan tanpa celah per outlet dan per perangkat, termasuk saat offline. Struk yang di-void tetap tercatat dengan nomornya.

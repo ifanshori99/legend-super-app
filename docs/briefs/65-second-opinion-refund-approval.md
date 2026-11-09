@@ -34,4 +34,7 @@ Satu baris per temuan: `path:baris`, tingkat, masalah, skenario gagal, saran per
 ## Larangan
 Jangan edit atau commit. Jangan baca `.env*` atau `~/.ssh`.
 
-Putaran fix (brief 92): cabang ws/refund-approval 7c24b7b8, digabung m1 `baf6d615` lewat prep2/refund-approval f5025cf9. Rentang diff fix: `git diff 30a31a3c baf6d615`.
+## Run ulang setelah fix brief 92 (antrean 10:30)
+Putaran fix (Codex R2 P1: otoritas supervisor, bukti sumber) sudah digabung ke `milestone/m1` sebagai merge `baf6d615` lewat `prep2/refund-approval` f5025cf9 (migration diregen 0091). Parent merge: `30a31a3c` (m1) dan `f5025cf9`.
+Rentang diff fix: `git diff 30a31a3c baf6d615` (abaikan drizzle `meta/*.json`). Rentang putaran pertama tetap `git diff e4938167 1056e208`.
+Fokus run ulang: tiap temuan R2 P1 benar-benar tertutup; penyetuju tetap berbeda dari pemohon; refund manual hanya supervisor dengan approval dan alasan tertulis; bukti sumber tidak bisa dipalsukan lintas tenant atau outlet; migration 0091 aman untuk data lama dengan RLS ENABLE + FORCE.

@@ -4,7 +4,10 @@
 Baca `~/.agents/team/roles/second-opinion.md` dan `~/.agents/team/TEAM.md`. Read-only: jangan ubah kode, jangan commit. Langkah pertama: pecah tugas dan spawn subagent paralel dalam satu giliran.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/payroll-pph21-tests`, cabang `ws/payroll-pph21-tests` (HEAD `34a5e2d`). Diff: `git diff main...ws/payroll-pph21-tests`.
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/payroll-pph21-tests`, cabang `ws/payroll-pph21-tests` (HEAD awal `34a5e2d`).
+
+Digabung ke `milestone/m1` sebagai merge `4a040820` lewat `prep/payroll-pph21-tests` 53379722 (K: fix brief 82 dan skema campuran; migration diregen 0084/0085). Parent merge: `658b055b` (m1) dan `53379722`.
+Rentang diff isi cabang di atas m1: `git diff 658b055b 4a040820` (abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`.
 
 ## Fokus (uang dan pajak)
 - `apps/api/src/services/payroll-pph21.ts` (`computePph21Period`): TER bulanan PP 58/2023, hitung ulang di masa pajak terakhir (Desember atau bulan keluar), Pasal 17 HPP, PKP dibulatkan ke bawah ribuan, PTKP, biaya jabatan 5% maks Rp6 jt/tahun.
