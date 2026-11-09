@@ -10,7 +10,10 @@
 // revenue section reads with +1 and an expense with −1. One account counts
 // once per component even when two terms match it (first term wins). A role
 // term also reads every descendant (`chart_of_accounts.parent_id`) of the
-// mapped account, so sub-accounts opened under it are never dropped.
+// mapped account, so sub-accounts opened under it are never dropped. A term
+// with `sourceTypes` reads only lines of journals posted from those sources; a
+// reversal counts as the source of the entry it reverses (a voided sale is a
+// sale, a corrected remittance is not).
 //
 // The registry formula of each metric here (`formula.expression`, sent to
 // Tanya AI and MCP through `definitionRef`) must describe this source; a
@@ -18,6 +21,7 @@
 // (metrics-runtime.test.ts guards both).
 
 import type {
+  JournalSourceType,
   PostingAccountRole,
   ReportGroup,
 } from "@starter/shared/accounting";
@@ -26,6 +30,8 @@ export type GlTerm = {
   readonly reportGroups?: readonly ReportGroup[];
   readonly roles?: readonly PostingAccountRole[];
   readonly sign: 1 | -1;
+  /** Only journals of these sources (reversals by the reversed entry's). */
+  readonly sourceTypes?: readonly Exclude<JournalSourceType, "reversal">[];
 };
 
 export type GlComponent = readonly GlTerm[];
@@ -69,7 +75,12 @@ const GROSS_PROFIT: GlComponent = [
   { reportGroups: ["revenue"], sign: 1 },
   { reportGroups: ["cogs"], sign: 1 },
 ];
-const PBJT: GlComponent = [{ roles: ["tax_payable_pbjt"], sign: 1 }];
+/**
+ * Journals that collect from or return to the guest: the PBJT remittance to
+ * the tax office (manual) and the service charge payout (payroll) move the
+ * same accounts but are not collections.
+ */
+const SALE_SOURCES = ["sale", "refund"] as const;
 const LABOR: GlComponent = [
   { roles: ["salary_expense", "bpjs_expense"], sign: -1 },
 ];
@@ -119,15 +130,21 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     numerator: GROSS_PROFIT,
     denominator: NET_SALES,
   },
-  // Output tax and service charge: the movement of the period on their
-  // accounts (sales credit them, refunds debit them).
-  tax_collected: { kind: "amount", component: PBJT },
+  // Output tax and service charge: sales credit them, refunds debit them; the
+  // remittance and the payroll payout are left out (SALE_SOURCES).
+  tax_collected: {
+    kind: "amount",
+    component: [
+      { roles: ["tax_payable_pbjt"], sign: 1, sourceTypes: SALE_SOURCES },
+    ],
+  },
   service_charge_collected: {
     kind: "amount",
-    component: [{ roles: ["service_charge"], sign: 1 }],
+    component: [
+      { roles: ["service_charge"], sign: 1, sourceTypes: SALE_SOURCES },
+    ],
   },
-  // Own component object: the engine keys sums by component, and a balance
-  // must not share its sums with the movement of tax_collected.
+  // Every source counts in the balance, the remittance included.
   tax_payable: {
     kind: "balance",
     component: [{ roles: ["tax_payable_pbjt"], sign: 1 }],

@@ -44,6 +44,7 @@
 
 import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { alias } from "drizzle-orm/pg-core";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
@@ -414,8 +415,14 @@ async function bookState(
   return { closed, periods };
 }
 
-/** accountId → sign, per component; first matching term wins. */
-type ComponentAccounts = Map<string, 1 | -1>;
+/**
+ * accountId → sign and journal sources (null: every source), per component;
+ * first matching term wins.
+ */
+type ComponentAccounts = Map<
+  string,
+  { sign: 1 | -1; sources: ReadonlySet<string> | null }
+>;
 
 async function componentAccounts(
   tx: Tx,
@@ -481,7 +488,9 @@ async function componentAccounts(
           )
           .map((row) => row.id),
       ];
-      for (const id of ids) if (!accounts.has(id)) accounts.set(id, term.sign);
+      const sources = term.sourceTypes ? new Set(term.sourceTypes) : null;
+      for (const id of ids)
+        if (!accounts.has(id)) accounts.set(id, { sign: term.sign, sources });
     }
     result.set(component, accounts);
   }
@@ -492,9 +501,13 @@ type LedgerRow = {
   accountId: string;
   date: string;
   outletId: string | null;
+  /** Journal source; a reversal carries the source of the entry it reverses. */
+  sourceType: string;
   /** credit − debit, whole rupiah. */
   net: bigint;
 };
+
+const reversedEntries = alias(journalEntries, "reversed_entries");
 
 async function ledgerRows(
   tx: Tx,
@@ -505,11 +518,13 @@ async function ledgerRows(
   outletFilter: ReturnType<typeof outletIdsForQuery>,
 ): Promise<LedgerRow[]> {
   if (accountIds.length === 0) return [];
+  const sourceType = sql<string>`coalesce(${reversedEntries.sourceType}, ${journalEntries.sourceType})`;
   const rows = await tx
     .select({
       accountId: journalLines.accountId,
       date: journalEntries.entryDate,
       outletId: journalLines.outletId,
+      sourceType,
       net: sql<string>`(sum(${journalLines.creditIdr}) - sum(${journalLines.debitIdr}))::text`,
     })
     .from(journalLines)
@@ -518,6 +533,13 @@ async function ledgerRows(
       and(
         eq(journalEntries.tenantId, journalLines.tenantId),
         eq(journalEntries.id, journalLines.entryId),
+      ),
+    )
+    .leftJoin(
+      reversedEntries,
+      and(
+        eq(reversedEntries.tenantId, journalEntries.tenantId),
+        eq(reversedEntries.id, journalEntries.reversalOf),
       ),
     )
     .where(
@@ -537,11 +559,13 @@ async function ledgerRows(
       journalLines.accountId,
       journalEntries.entryDate,
       journalLines.outletId,
+      sourceType,
     );
   return rows.map((row) => ({
     accountId: row.accountId,
     date: row.date,
     outletId: row.outletId,
+    sourceType: row.sourceType,
     net: BigInt(row.net),
   }));
 }
@@ -605,14 +629,13 @@ class LedgerIndex {
       rows: readonly LedgerRow[];
     } = { components: new Set(), rows: [] },
   ) {
-    const byAccount = new Map<
-      string,
-      { component: GlComponent; sign: 1 | -1 }[]
-    >();
-    const balanceByAccount = new Map<
-      string,
-      { component: GlComponent; sign: 1 | -1 }[]
-    >();
+    type Target = {
+      component: GlComponent;
+      sign: 1 | -1;
+      sources: ReadonlySet<string> | null;
+    };
+    const byAccount = new Map<string, Target[]>();
+    const balanceByAccount = new Map<string, Target[]>();
     for (const [component, map] of accounts) {
       this.sums.set(
         component,
@@ -621,9 +644,9 @@ class LedgerIndex {
       const target = balance.components.has(component)
         ? balanceByAccount
         : byAccount;
-      for (const [accountId, sign] of map) {
+      for (const [accountId, { sign, sources }] of map) {
         const list = target.get(accountId) ?? [];
-        list.push({ component, sign });
+        list.push({ component, sign, sources });
         target.set(accountId, list);
       }
     }
@@ -646,8 +669,9 @@ class LedgerIndex {
       if (!targets) continue;
       const bucket = rangeIndexOf(ranges, currentCount, row.date);
       if (bucket < 0) continue;
-      for (const { component, sign } of targets)
-        add(component, bucket, row, sign);
+      for (const { component, sign, sources } of targets)
+        if (!sources || sources.has(row.sourceType))
+          add(component, bucket, row, sign);
     }
     // A balance line counts in every range that ends on or after its date.
     for (const row of balance.rows) {
@@ -655,8 +679,9 @@ class LedgerIndex {
       if (!targets) continue;
       ranges.forEach((range, bucket) => {
         if (row.date > range.end) return;
-        for (const { component, sign } of targets)
-          add(component, bucket, row, sign);
+        for (const { component, sign, sources } of targets)
+          if (!sources || sources.has(row.sourceType))
+            add(component, bucket, row, sign);
       });
     }
   }

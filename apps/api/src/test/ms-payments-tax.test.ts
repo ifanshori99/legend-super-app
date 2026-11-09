@@ -22,10 +22,14 @@ import {
 import {
   accountIdSchema,
   type JournalLineInput,
+  type JournalSourceType,
 } from "@starter/shared/accounting";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
-import { postJournalInTransaction } from "../services/accounting-journal.service";
+import {
+  postJournalInTransaction,
+  reverseJournalInTransaction,
+} from "../services/accounting-journal.service";
 import {
   assertRegistry,
   dailyReaders,
@@ -884,6 +888,28 @@ describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
   let pbjt: string;
   let service: string;
 
+  const post = (
+    day: string,
+    outlet: string,
+    sourceType: Exclude<JournalSourceType, "reversal">,
+    lines: JournalLineInput[],
+  ) => {
+    const ctx = context(tax.tenantId);
+    return withTenant(db, ctx, (tx) =>
+      postJournalInTransaction(tx, ctx, {
+        legalEntityId: tax.entityId,
+        outletId: outletIdSchema.parse(outlet),
+        entryDate: date(day),
+        sourceType,
+        sourceId: randomUUID(),
+        description: "Uji pajak buku besar",
+        lines,
+        postedBy: null,
+        idempotencyKey: `ms-payments-tax-gl-${randomUUID()}`,
+      }),
+    );
+  };
+
   beforeAll(async () => {
     tax = await makeWorld("tax");
     pbjt = randomUUID();
@@ -900,27 +926,6 @@ describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
        ON CONFLICT DO NOTHING`,
       [tax.tenantId, tax.entityId, pbjt, service],
     );
-    const post = (
-      day: string,
-      outlet: string,
-      sourceType: "sale" | "manual",
-      lines: JournalLineInput[],
-    ) => {
-      const ctx = context(tax.tenantId);
-      return withTenant(db, ctx, (tx) =>
-        postJournalInTransaction(tx, ctx, {
-          legalEntityId: tax.entityId,
-          outletId: outletIdSchema.parse(outlet),
-          entryDate: date(day),
-          sourceType,
-          sourceId: randomUUID(),
-          description: "Uji pajak buku besar",
-          lines,
-          postedBy: null,
-          idempotencyKey: `ms-payments-tax-gl-${randomUUID()}`,
-        }),
-      );
-    };
     const o1 = tax.outlet1;
     const o2 = tax.outlet2;
     // 1 Sep, outlet 1: sale 100k + PBJT 10k + service charge 5k.
@@ -979,6 +984,61 @@ describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
     expect(byOutlet(late, "service_charge_collected")).toEqual(
       new Map([[tax.outlet2, 10_000]]),
     );
+  });
+
+  it("collected counts sales net of refunds, never the PBJT remittance or the payroll payout (S9)", async () => {
+    const o1 = tax.outlet1;
+    // October, outlet 1: a sale, a refund, a voided sale (reversal), then the
+    // PBJT paid to the tax office and the service charge paid through payroll.
+    await post("2025-10-01", o1, "sale", [
+      line(tax.cash, 345_000, 0, o1),
+      line(tax.revenue, 0, 300_000, o1),
+      line(pbjt, 0, 30_000, o1),
+      line(service, 0, 15_000, o1),
+    ]);
+    await post("2025-10-02", o1, "refund", [
+      line(tax.revenue, 30_000, 0, o1),
+      line(pbjt, 3_000, 0, o1),
+      line(service, 1_500, 0, o1),
+      line(tax.cash, 0, 34_500, o1),
+    ]);
+    const voided = await post("2025-10-03", o1, "sale", [
+      line(tax.cash, 92_000, 0, o1),
+      line(tax.revenue, 0, 80_000, o1),
+      line(pbjt, 0, 8_000, o1),
+      line(service, 0, 4_000, o1),
+    ]);
+    const ctx = context(tax.tenantId);
+    await withTenant(db, ctx, (tx) =>
+      reverseJournalInTransaction(tx, ctx, voided.id, {
+        entryDate: date("2025-10-04"),
+        reason: "Uji void penjualan",
+        idempotencyKey: `ms-payments-tax-gl-${randomUUID()}`,
+        postedBy: null,
+      }),
+    );
+    await post("2025-10-20", o1, "manual", [
+      line(pbjt, 27_000, 0, o1),
+      line(tax.cash, 0, 27_000, o1),
+    ]);
+    await post("2025-10-25", o1, "payroll", [
+      line(service, 13_500, 0, o1),
+      line(tax.cash, 0, 13_500, o1),
+    ]);
+    const october = await evaluate(tax, {
+      metricCodes: ["tax_collected", "service_charge_collected", "tax_payable"],
+      start: "2025-10-01",
+      end: "2025-10-31",
+    });
+    const value = (code: string) =>
+      native(
+        october.series.find((series) => series.metricCode === code)!.points[0],
+      );
+    // Sale − refund (the voided sale nets to zero).
+    expect(value("tax_collected")).toBe(27_000);
+    expect(value("service_charge_collected")).toBe(13_500);
+    // The balance still counts the remittance: 20k open from September.
+    expect(value("tax_payable")).toBe(20_000);
   });
 
   it("tax_payable is the balance through the period end, not the movement", async () => {
