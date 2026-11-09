@@ -81,4 +81,18 @@ export const LINK_CLOSE = {
   replaced: 4409,
   /** Server shutting down; retry with backoff. */
   shutdown: 1001,
+  /**
+   * The peer sent frames faster than they could be processed (legend-wg5t #1).
+   * 1013 is "Try Again Later": the edge reconnects with backoff.
+   */
+  overloaded: 1013,
 } as const;
+
+/**
+ * Header on an upgrade refusal that says the CREDENTIAL itself was refused
+ * (legend-wg5t #6). Only this explicit signal stops the edge client from
+ * retrying: a bare 401/403 can come from a WAF, proxy or captive portal in
+ * front of the cloud and must not kill the outlet's sync for good.
+ */
+export const LINK_REFUSED_HEADER = "x-edge-link-refused";
+export const LINK_REFUSED_CREDENTIAL = "credential";

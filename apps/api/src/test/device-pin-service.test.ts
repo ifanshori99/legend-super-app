@@ -62,6 +62,48 @@ const deviceAt = (outletId: string) => {
   devices.set(id, outletId);
   return id;
 };
+/** Device ids enrolled in the real registry for the HTTP tests; removed in afterAll. */
+const registeredDeviceIds: string[] = [];
+
+/**
+ * An enrolled device (F5 registry, legend-165) and a token issued for it. The
+ * credential check needs a registry row: active, same tenant, with
+ * `token_issued_at` at or before the token's `issuedAt`.
+ */
+async function enrolledDeviceToken(outletId: string) {
+  const deviceId = deviceAt(outletId);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    await client.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir PIN', $4)`,
+      [deviceId, tenantId, outletId, new Date(issuedAt * 1000)],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  registeredDeviceIds.push(deviceId);
+  return {
+    deviceId,
+    token: signDeviceToken({
+      version: 1,
+      tenantId,
+      brandId: null,
+      deviceId,
+      issuedAt,
+    }),
+  };
+}
 
 async function roleIdOf(templateKey: string): Promise<string> {
   const { rows } = await owner.query<{ id: string }>(
@@ -200,6 +242,25 @@ afterEach(() => {
 afterAll(async () => {
   setAuditWriter(null);
   setDeviceOutletResolver(null);
+  if (registeredDeviceIds.length > 0) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query("DELETE FROM devices WHERE id = ANY($1::uuid[])", [
+        registeredDeviceIds,
+      ]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
   await owner.query(
     `DELETE FROM pos_overrides WHERE tenant_id = $1 AND requested_by = ANY($2::text[])`,
     [tenantId, createdUserIds],
@@ -963,13 +1024,7 @@ describe("legend-dxb HTTP API (§3 F6, AUTH-06)", () => {
 
   it("§3 F6 POST /api/staff-pins/verify needs a signed device token and a strict body", async () => {
     const cashier = await staffWithPin("cashier");
-    const deviceId = deviceAt(bandung);
-    const token = signDeviceToken({
-      version: 1,
-      tenantId,
-      brandId: null,
-      deviceId,
-    });
+    const { token } = await enrolledDeviceToken(bandung);
     const ok = await agent(app)
       .post("/api/staff-pins/verify")
       .set("X-Device-Token", token)
@@ -995,6 +1050,21 @@ describe("legend-dxb HTTP API (§3 F6, AUTH-06)", () => {
       .post("/api/staff-pins/verify")
       .send({ userId: cashier, pin: PIN });
     expect([401, 404]).toContain(anonymous.status);
+    // A correctly signed token for a device the registry does not know (F5).
+    const stranger = await agent(app)
+      .post("/api/staff-pins/verify")
+      .set(
+        "X-Device-Token",
+        signDeviceToken({
+          version: 1,
+          tenantId,
+          brandId: null,
+          deviceId: deviceAt(bandung),
+          issuedAt: Math.floor(Date.now() / 1000),
+        }),
+      )
+      .send({ userId: cashier, pin: PIN });
+    expect([401, 404]).toContain(stranger.status);
   });
 
   it("AUTH-06 POST /api/pos-overrides: session, origin, self-approval refused, 201 then 200 replay", async () => {

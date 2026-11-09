@@ -195,14 +195,32 @@ export const requestPeriodReopenInputSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
 });
 
-/** Opening a reopen request: the period must be closed and a reason given. */
+/**
+ * Opening a reopen request: the period must be closed and a reason given.
+ * With `entityPeriods`, it must also be the latest closed period of its
+ * entity: an earlier one could never be approved (PERIOD_REOPEN_OUT_OF_ORDER
+ * in decidePeriodReopen), so the request is refused up front.
+ */
 export function assertReopenRequestable(
-  period: Pick<FiscalPeriod, "status">,
+  period: Pick<FiscalPeriod, "status"> &
+    Partial<Pick<FiscalPeriod, "legalEntityId" | "period">>,
   reason: string,
+  entityPeriods?: readonly Pick<
+    FiscalPeriod,
+    "legalEntityId" | "period" | "status"
+  >[],
 ): void {
   if (reason.trim() === "") throw new AccountingError("REOPEN_REASON_REQUIRED");
   if (period.status !== "closed")
     throw new AccountingError("PERIOD_ALREADY_OPEN");
+  const laterClosed = entityPeriods?.some(
+    (row) =>
+      row.legalEntityId === period.legalEntityId &&
+      period.period !== undefined &&
+      row.period > period.period &&
+      row.status === "closed",
+  );
+  if (laterClosed) throw new AccountingError("PERIOD_REOPEN_OUT_OF_ORDER");
 }
 
 /**
@@ -283,6 +301,13 @@ export const periodCloseSnapshotSchema = z
     version: z.number().int().min(2).safe(),
     takenAt: isoDateTimeSchema,
     takenBy: userIdSchema,
+    /**
+     * Current status/version of the period, filled by the API on read. The
+     * snapshot is history once periodStatus is "open" or periodVersion differs
+     * from `version` (reopened, maybe closed again). Optional for older mocks.
+     */
+    periodStatus: fiscalPeriodStatusSchema.optional(),
+    periodVersion: z.number().int().min(1).safe().optional(),
     balances: z.array(
       z.strictObject({
         accountId: accountIdSchema,

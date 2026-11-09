@@ -65,7 +65,7 @@ const namesByWorkstream = {
   // PRD §6), not published as a tenant event.
   // Text contract (packages/shared/src/text): one event per term override change.
   "WS-00":
-    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed text_override.updated",
+    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled edc_transaction.approved edc_transaction.declined edc_transaction.failed edc_transaction.flagged wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed text_override.updated",
 } as const;
 export const eventCatalog: readonly EventCatalogEntry[] = Object.freeze(
   Object.entries(namesByWorkstream).flatMap(([workstream, names]) =>

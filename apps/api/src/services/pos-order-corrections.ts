@@ -40,12 +40,18 @@ import { db } from "../db/index.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
+import {
+  assertBusinessDayOpen,
+  lockCashierShiftForCash,
+} from "./pos-cash-guard.ts";
 import { posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
   appendPosEvent,
   auditPos,
+  businessDateFor,
   consumeApproval,
+  loadOutlet,
   lockPosOrder,
   posIdempotent,
   tenderDto,
@@ -73,6 +79,7 @@ function voidDto(row: VoidRow): PosVoid {
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
     approvalRequestId: row.approvalRequestId,
+    overrideId: row.overrideId,
     voidedAt: row.voidedAt.toISOString(),
   });
 }
@@ -90,6 +97,7 @@ function refundDto(row: RefundRow): PosRefund {
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
     approvalRequestId: row.approvalRequestId,
+    overrideId: row.overrideId,
     refundedAt: row.refundedAt.toISOString(),
   });
 }
@@ -196,7 +204,7 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Tidak ada nilai transaksi untuk di-void.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",
         outletId,
@@ -205,8 +213,9 @@ export async function voidPosOrderCorrection(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        now,
       });
       const receipts = posReceiptPort();
       const receipt = await receipts.findForOrder(tx, context, order.id);
@@ -215,6 +224,29 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Struk transaksi ini tidak ditemukan; void tertaut memerlukan nomor struk.",
         );
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      // The void pays the sale's captured cash back out of this drawer.
+      const voidCashIdr = (await tendersOf(tx, context, order.id))
+        .filter(
+          (tender) => tender.method === "cash" && tender.status === "captured",
+        )
+        .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
+      const shift =
+        voidCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: voidCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -227,8 +259,10 @@ export async function voidPosOrderCorrection(
           reasonNote: input.reasonNote,
           requestedBy: caller.userId,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           voidedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
@@ -247,7 +281,8 @@ export async function voidPosOrderCorrection(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         voidedFinalOrder: true,
         voidId: row.id,
         receiptNumber: receipt.number,
@@ -282,6 +317,7 @@ export async function voidPosOrderCorrection(
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
+            overrideId: row.overrideId,
             receiptNumber: row.receiptNumber,
           },
           reason: input.reasonNote,
@@ -394,7 +430,7 @@ export async function refundPosOrder(
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
       assertRefundWithinPaid(idr(paid), idr(refunded), idr(input.amountIdr));
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
         outletId,
@@ -403,8 +439,9 @@ export async function refundPosOrder(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: input.amountIdr,
+        now,
       });
       const allocation = refundAllocation(
         stillRefundableByMethod(tenders, refunds),
@@ -415,6 +452,26 @@ export async function refundPosOrder(
         amountIdr: Number(line.amountIdr),
         reference: null,
       }));
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      const refundCashIdr = lines
+        .filter((line) => tenderBucket(line.method as never) === "cash")
+        .reduce((sum, line) => sum + line.amountIdr, 0);
+      const shift =
+        refundCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: refundCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderRefunds)
         .values({
@@ -427,8 +484,10 @@ export async function refundPosOrder(
           lines,
           requestedBy: caller.userId,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           refundedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");
@@ -445,7 +504,8 @@ export async function refundPosOrder(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         ...refundSplit(order, input.amountIdr),
         refundCashIdr: bucket("cash"),
         refundGatewayIdr: bucket("gateway"),
@@ -486,6 +546,7 @@ export async function refundPosOrder(
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
+            overrideId: row.overrideId,
           },
           reason: input.reasonNote,
         },

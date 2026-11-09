@@ -23,12 +23,14 @@ import {
   uuidSchema,
   idempotencyKeySchema,
 } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
   cashMovementTypeSchema,
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
+  forceClosePosShiftInputSchema,
   customerDisplayPairingSchema,
   customerDisplayStateSchema,
   discountReasonSchema,
@@ -52,6 +54,8 @@ import {
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
   posRefundSchema,
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
   posShiftIdSchema,
   posShiftReportSchema,
   posShiftSchema,
@@ -65,6 +69,7 @@ import {
   recordCashMovementInputSchema,
   refundReasonSchema,
   serviceTypeSchema,
+  submitPosShiftCountInputSchema,
   voidReasonSchema,
 } from "./schemas.ts";
 
@@ -199,7 +204,7 @@ export const voidPosOrder = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     ...expectedStatus,
   }),
   response: dataResponseSchema(posOrderDetailSchema),
@@ -214,7 +219,7 @@ export const voidPosOrderItem = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posOrderDetailSchema),
@@ -286,7 +291,7 @@ export const applyPosDiscount = defineEndpoint({
     reason: discountReasonSchema,
     reasonNote: z.string().min(4).max(500).nullable().optional(),
     approvedBy: userIdSchema.optional(),
-    approvalRequestId: uuidSchema.optional(),
+    overrideId: posOverrideIdSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   })
     .refine(
@@ -303,11 +308,10 @@ export const applyPosDiscount = defineEndpoint({
     )
     .refine(
       (value) =>
-        (value.approvedBy === undefined) ===
-        (value.approvalRequestId === undefined),
+        (value.approvedBy === undefined) === (value.overrideId === undefined),
       {
-        message: "Approval carries both the approver and the request id",
-        path: ["approvalRequestId"],
+        message: "Approval carries both the approver and the override id",
+        path: ["overrideId"],
       },
     )
     .refine(
@@ -333,7 +337,7 @@ export const voidPosOrderCorrection = defineEndpoint({
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posVoidSchema),
@@ -353,7 +357,7 @@ export const refundPosOrder = defineEndpoint({
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema,
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posRefundSchema),
@@ -410,12 +414,38 @@ export const getPosShift = defineEndpoint({
   response: dataResponseSchema(posShiftReportSchema),
 });
 
-/** POS-03: blind count + supervisor approval; the variance is locked after. */
+/** POS-03: a blind count submission (cashier); the answer is blind too. */
+export const submitPosShiftCount = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  body: submitPosShiftCountInputSchema,
+  response: dataResponseSchema(posShiftCountReceiptSchema),
+});
+
+/** Supervisor view of every count submission of the shift. */
+export const listPosShiftCounts = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  response: dataResponseSchema(z.array(posShiftCountSchema)),
+});
+
+/** POS-03: close with a stored count + supervisor approval; variance locked. */
 export const closePosShift = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pos/shifts/:shiftId/close",
   params: shiftParams,
   body: closePosShiftInputSchema,
+  response: dataResponseSchema(posShiftSchema),
+});
+
+/** U9: a supervisor force closes a shift after the cashier's recount limit. */
+export const forceClosePosShift = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/force-close",
+  params: shiftParams,
+  body: forceClosePosShiftInputSchema,
   response: dataResponseSchema(posShiftSchema),
 });
 

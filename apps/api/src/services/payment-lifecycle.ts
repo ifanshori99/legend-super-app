@@ -12,6 +12,9 @@
 //   (`source: "browser_redirect"`) is never a settlement.
 // - PRD "Siklus Pembayaran": an expired intent may still be paid; the payment
 //   is accepted and flagged `late_payment` for follow-up.
+// - legend-b0au: the same holds for a `failed` intent when the settlement is a
+//   verified gateway one (the shared transition table refuses other sources):
+//   dropping that money would leave it neither recorded nor refunded.
 // - PAY-04: a second payment for a settled intent, or a payment above the
 //   amount due, becomes unallocated funds resolved by refund or credit with
 //   approval. The intent status never double-counts the money.
@@ -149,6 +152,7 @@ export function decidePaymentConfirmation(
 
   const late =
     intent.status === "expired" ||
+    intent.status === "failed" ||
     Date.parse(confirmation.at) > Date.parse(intent.expiresAt);
   const unallocatedIdr = confirmation.amountIdr - intent.amountIdr;
   return {

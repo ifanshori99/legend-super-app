@@ -56,6 +56,7 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { posShifts } from "./pos-shift";
 import { orderItems, orders } from "./qr-order";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
@@ -87,11 +88,18 @@ export const posOrders = pgTable(
     cashierId: text("cashier_id"),
     /** The cashier asked for every line to start held (F8 hold & fire). */
     holdItems: boolean("hold_items").notNull().default(false),
+    /**
+     * Training stamp (legend-2lp.8): copy of `devices.training_mode` at
+     * creation. Written once by createPosOrder, never changed afterwards.
+     */
+    isTraining: boolean("is_training").notNull().default(false),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
     voidApprovedBy: text("void_approved_by"),
     voidApprovalRequestId: uuid("void_approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved the void (ULID). */
+    voidOverrideId: ulidInUuid("void_override_id"),
     /** Optimistic concurrency (legend-63l6): bumped by every write. */
     version: integer("version").notNull().default(0),
     createdAt,
@@ -144,6 +152,8 @@ export const posOrderItems = pgTable(
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
     voidApprovalRequestId: uuid("void_approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved the void (ULID). */
+    voidOverrideId: ulidInUuid("void_override_id"),
     createdAt,
     updatedAt,
   },
@@ -237,11 +247,18 @@ export const posOrderTenders = pgTable(
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     capturedBy: text("captured_by"),
     approvedBy: text("approved_by"),
+    /** The drawer (shift) a cash tender went into; null for non-cash. */
+    shiftId: uuid("shift_id"),
     createdAt,
     updatedAt,
   },
   (table) => [
     unique("pos_order_tenders_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_tenders_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     foreignKey({
       name: "pos_order_tenders_pos_order_fk",
       columns: [table.tenantId, table.orderId],
@@ -315,7 +332,10 @@ export const posOrderDiscounts = pgTable(
     reasonNote: varchar("reason_note", { length: 500 }),
     appliedBy: text("applied_by").notNull(),
     approvedBy: text("approved_by"),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN. */
     approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this discount. */
+    overrideId: ulidInUuid("override_id"),
     removedAt: timestamp("removed_at", { withTimezone: true }),
     removedBy: text("removed_by"),
     createdAt,
@@ -364,7 +384,7 @@ export const posOrderDiscounts = pgTable(
     ),
     check(
       "pos_order_discounts_approval_pair_check",
-      sql`(${table.approvedBy} IS NULL) = (${table.approvalRequestId} IS NULL)`,
+      sql`(${table.approvedBy} IS NULL) = (${table.approvalRequestId} IS NULL AND ${table.overrideId} IS NULL)`,
     ),
     check(
       "pos_order_discounts_removed_pair_check",
@@ -388,12 +408,22 @@ export const posOrderVoids = pgTable(
     reasonNote: varchar("reason_note", { length: 500 }).notNull(),
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by").notNull(),
-    approvalRequestId: uuid("approval_request_id").notNull(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN (legend-0gy1). */
+    approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this action. */
+    overrideId: ulidInUuid("override_id"),
     voidedAt: timestamp("voided_at", { withTimezone: true }).notNull(),
+    /** The drawer (shift) a cash void paid out of; null when no cash tender. */
+    shiftId: uuid("shift_id"),
     createdAt,
   },
   (table) => [
     unique("pos_order_voids_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_voids_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     // A completed sale is voided by correction at most once.
     unique("pos_order_voids_order_key").on(table.tenantId, table.orderId),
     foreignKey({
@@ -407,6 +437,12 @@ export const posOrderVoids = pgTable(
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
     check("pos_order_voids_amount_check", sql`${table.amountIdr} > 0`),
+    // legend-0gy1: every correction names its approval (override row, or the
+    // phone chain id on rows written before the override id was recorded).
+    check(
+      "pos_order_voids_approval_check",
+      sql`${table.overrideId} IS NOT NULL OR ${table.approvalRequestId} IS NOT NULL`,
+    ),
     check(
       "pos_order_voids_approver_check",
       sql`lower(${table.requestedBy}) <> lower(${table.approvedBy})`,
@@ -428,12 +464,22 @@ export const posOrderRefunds = pgTable(
     lines: jsonb("lines").$type<PosRefundLineRow[]>().notNull(),
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by").notNull(),
-    approvalRequestId: uuid("approval_request_id").notNull(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN (legend-0gy1). */
+    approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this action. */
+    overrideId: ulidInUuid("override_id"),
     refundedAt: timestamp("refunded_at", { withTimezone: true }).notNull(),
+    /** The drawer (shift) a cash refund paid out of; null when no cash line. */
+    shiftId: uuid("shift_id"),
     createdAt,
   },
   (table) => [
     unique("pos_order_refunds_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_refunds_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     foreignKey({
       name: "pos_order_refunds_pos_order_fk",
       columns: [table.tenantId, table.orderId],
@@ -446,6 +492,12 @@ export const posOrderRefunds = pgTable(
     }),
     index("pos_order_refunds_order_idx").on(table.tenantId, table.orderId),
     check("pos_order_refunds_amount_check", sql`${table.amountIdr} > 0`),
+    // legend-0gy1: every correction names its approval (override row, or the
+    // phone chain id on rows written before the override id was recorded).
+    check(
+      "pos_order_refunds_approval_check",
+      sql`${table.overrideId} IS NOT NULL OR ${table.approvalRequestId} IS NOT NULL`,
+    ),
     check(
       "pos_order_refunds_lines_check",
       sql`jsonb_typeof(${table.lines}) = 'array' AND jsonb_array_length(${table.lines}) > 0`,

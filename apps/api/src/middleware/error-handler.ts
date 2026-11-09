@@ -12,6 +12,7 @@ import {
   deliveryErrorHttpStatus,
 } from "@starter/shared/delivery";
 import { FacilityError } from "@starter/shared/facility";
+import { PayrollError } from "@starter/shared/hris/payroll";
 import { IdentityError } from "@starter/shared/identity";
 import { NotificationError } from "@starter/shared/notification";
 import { OperationsError } from "@starter/shared/operations";
@@ -57,6 +58,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof IdentityError ||
     error instanceof NotificationError ||
     error instanceof OperationsError ||
+    error instanceof PayrollError ||
     error instanceof PlatformError ||
     error instanceof PosError ||
     error instanceof TaxError
@@ -91,6 +93,18 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         message: issue.message,
       })),
     );
+
+  // The router rejects a malformed percent-encoding in a route param with a
+  // URIError whose message echoes the raw param (it can be a bearer token).
+  // Answer a fixed message and keep the error out of the log. Only the
+  // router's decode error matches: a URIError thrown by application code is a
+  // server bug and still takes the logged 500 path below.
+  if (
+    error instanceof URIError &&
+    (error as URIError & { status?: unknown }).status === 400 &&
+    error.message.startsWith("Failed to decode param")
+  )
+    return send(400, "VALIDATION_ERROR", "The request URL is malformed.");
 
   const parserError = error as ParserError | null;
   if (parserError?.type === "entity.parse.failed")

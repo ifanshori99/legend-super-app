@@ -33,6 +33,7 @@ import {
   businessDateSchema,
   isoDateTimeSchema,
 } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
@@ -47,6 +48,7 @@ import {
   refundReasonSchema,
   serviceTypeSchema,
   voidReasonSchema,
+  storedApprovalIdSchema,
 } from "./schemas.ts";
 
 const deviceIdSchema = uuidSchema;
@@ -173,7 +175,13 @@ export const orderVoidedPayloadSchema = z
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    /**
+     * legend-0gy1: the consumed `pos_overrides` row; the proof of approval.
+     * Null only on events written before the override id was recorded.
+     */
+    overrideId: posOverrideIdSchema.nullable(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN. */
+    approvalRequestId: uuidSchema.nullable(),
     /** True when a completed sale is being corrected by a linked void. */
     voidedFinalOrder: z.boolean(),
     voidId: posVoidIdSchema.nullable(),
@@ -208,7 +216,8 @@ export const orderRefundedPayloadSchema = z
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    overrideId: posOverrideIdSchema.nullable(),
+    approvalRequestId: uuidSchema.nullable(),
     /** Refund buckets: the amount keys of the refund posting rule. */
     grossSalesIdr: nonnegativeIdr,
     discountIdr: nonnegativeIdr,
@@ -297,7 +306,7 @@ export const cashierShiftClosedPayloadSchema = z
     differenceIdr: idrSchema,
     varianceNote: z.string().min(4).max(500).nullable(),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    approvalRequestId: storedApprovalIdSchema,
     closedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {

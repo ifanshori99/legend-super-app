@@ -1,8 +1,12 @@
 import "./load-env";
 import { createApp } from "./app";
+import { guardEdgeUpgrades } from "./edge/mode.ts";
+import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
+import { createDoitGateway } from "./services/payment-doit.ts";
+import { setPaymentGateway } from "./services/payment-gateway.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import {
@@ -14,6 +18,11 @@ import {
   listenQrCartWakeups,
   resolveGuestTenantFromHost,
 } from "./services/qr-order-realtime.ts";
+import {
+  attachKdsRealtime,
+  listenKdsWakeups,
+} from "./services/kds-realtime.ts";
+import { resolveKdsStaffConnection } from "./services/kds-realtime-auth.ts";
 import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
 import { verifyEdgeNodeCredential } from "./services/edge-node.service.ts";
@@ -27,6 +36,9 @@ import {
 } from "./edge/runtime.ts";
 
 const app = createApp();
+// WS-05 payment gateway (legend-b9i): DOIT, fails closed without credentials.
+// Installed here, not in createApp, so tests keep their fake gateways.
+setPaymentGateway(createDoitGateway());
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
 setReservationDepositPort(createPaymentReservationDepositPort());
 // Staff device PIN (legend-obh5): a device names an outlet only through the
@@ -58,6 +70,12 @@ const server = app.listen(env.PORT, env.HOST, async (error) => {
   );
 });
 
+// The EDGE_MODE route split for WebSocket upgrades (legend-zinn): Express
+// never sees an upgrade, so without this the edge would still open cloud-only
+// streams such as /api/notifications/realtime. Installed before any upgrade
+// listener; it refuses before every listener, attached now or later.
+guardEdgeUpgrades(server, { edgeMode: env.EDGE_MODE });
+
 // Until the tenant membership and scoped role resolvers are wired, realtime
 // subscriptions deny by default. Wakeups contain IDs only and follow commit.
 const realtime = attachNotificationRealtime(server, {
@@ -83,6 +101,19 @@ const stopQrWakeups = listenQrCartWakeups(pool, qrRealtime.dispatch).catch(
   },
 );
 
+// KDS station realtime (legend-4d5): staff session + kds.ticket.process on
+// the station, re-resolved on every wakeup; wakeups carry ids only.
+const kdsRealtime = attachKdsRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+  resolveConnection: resolveKdsStaffConnection,
+});
+const stopKdsWakeups = listenKdsWakeups(pool, kdsRealtime.dispatch).catch(
+  (error: unknown) => {
+    logger.error({ err: error }, "KDS wakeup listener unavailable");
+    return async () => {};
+  },
+);
+
 // WS-02 edge mode (legend-2pi). The cloud accepts edge links on
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
@@ -91,15 +122,32 @@ let edgeLink: EdgeLinkHandle | null = null;
 const edgeReady = (async () => {
   try {
     if (env.EDGE_MODE) edgeRuntime = await startEdgeRuntime();
-    else edgeLink = await registerEdgeLink(server);
+    else
+      edgeLink = await registerEdgeLink(server, {
+        // Upgrade rate limit per real client, not per proxy (legend-wg5t).
+        clientAddress: expressClientAddress(app),
+      });
   } catch (error) {
     if (error instanceof EdgeBootError) {
       // The message names settings and tables only, never their values.
       logger.fatal({ errName: error.name }, error.message);
-      logger.flush();
-      process.exit(1);
+    } else {
+      // Any other failure (database down at boot, LISTEN refused) used to be
+      // rethrown into an unhandled rejection; exit explicitly instead. Name
+      // and code only: driver errors can carry SQL parameters (legend-wg5t).
+      const failure = error as { name?: unknown; code?: unknown };
+      logger.fatal(
+        {
+          errName: typeof failure?.name === "string" ? failure.name : "Error",
+          code: typeof failure?.code === "string" ? failure.code : undefined,
+        },
+        env.EDGE_MODE
+          ? "The edge runtime could not start."
+          : "The edge link server could not start.",
+      );
     }
-    throw error;
+    logger.flush();
+    process.exit(1);
   }
 })();
 
@@ -123,6 +171,10 @@ async function shutdown(signal: string) {
   await qrRealtime.close();
   await (
     await stopQrWakeups
+  )();
+  await kdsRealtime.close();
+  await (
+    await stopKdsWakeups
   )();
   await edgeReady.catch(() => {});
   await edgeRuntime?.stop();

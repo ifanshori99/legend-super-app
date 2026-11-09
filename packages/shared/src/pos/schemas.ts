@@ -38,6 +38,7 @@ import {
   idempotencyKeySchema,
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import {
   discountLineSchema,
@@ -67,10 +68,41 @@ const positiveIdr = idrSchema.refine(
 );
 /** Approval records are WS-01 `approval_requests` rows (§3.7 Matriks Approval). */
 const approvalRequestIdSchema = uuidSchema;
+/**
+ * The approval id a closed shift stores. A supervisor PIN decision has no WS-01
+ * chain, so the shift keeps the `pos_overrides` ULID as a uuid (`ulidToUuid`);
+ * that value has no RFC 4122 version/variant bits, so only its shape is
+ * checked here. Client input keeps the strict `approvalRequestIdSchema`.
+ */
+export const storedApprovalIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  .toLowerCase();
+/**
+ * The approval a shift close names (legend-6c0): the WS-01 phone approval id
+ * (uuid), or the supervisor PIN override id itself, the `pos_overrides` ULID as
+ * the override service returns it. The `ulidToUuid` form a closed shift stores
+ * parses too, so a client may send back the value it read. The server still
+ * proves the approval from the override row, never from the id alone.
+ */
+export const closeApprovalIdSchema = z.union([
+  posOverrideIdSchema,
+  storedApprovalIdSchema,
+]);
+/**
+ * legend-0gy1: the `pos_overrides` row (ULID) a void / discount / refund
+ * consumed. It is the proof of approval; `approvalRequestId` is only the WS-01
+ * chain id of a phone approval and is null for a supervisor PIN.
+ */
+const overrideIdSchema = posOverrideIdSchema;
+// Rows written before legend-0gy1 carry only the client-sent approval id and
+// no override id, so the stored shapes accept either one (new rows always set
+// the override id).
 
 // ---- Ids ------------------------------------------------------------------
 
 export const posShiftIdSchema = uuidIdSchema<"CashierShiftId">();
+export const posShiftCountIdSchema = uuidIdSchema<"CashierShiftCountId">();
 export const cashMovementIdSchema = uuidIdSchema<"CashMovementId">();
 export const posTenderIdSchema = uuidIdSchema<"PosTenderId">();
 export const posDiscountIdSchema = uuidIdSchema<"PosDiscountId">();
@@ -253,6 +285,7 @@ export const posOrderShape = {
   voidReasonNote: z.string().min(4).max(500).nullable(),
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+  voidOverrideId: overrideIdSchema.nullable(),
 };
 
 export const posOrderBaseSchema = z.strictObject(posOrderShape);
@@ -323,7 +356,7 @@ export const posOrderSchema = posOrderBaseSchema.superRefine((order, ctx) => {
       order.voidedAt === null ||
       order.voidReason === null ||
       order.voidApprovedBy === null ||
-      order.voidApprovalRequestId === null
+      (order.voidOverrideId === null && order.voidApprovalRequestId === null)
     )
       ctx.addIssue({
         code: "custom",
@@ -341,7 +374,8 @@ export const posOrderSchema = posOrderBaseSchema.superRefine((order, ctx) => {
     order.voidedAt !== null ||
     order.voidReason !== null ||
     order.voidApprovedBy !== null ||
-    order.voidApprovalRequestId !== null
+    order.voidApprovalRequestId !== null ||
+    order.voidOverrideId !== null
   )
     ctx.addIssue({
       code: "custom",
@@ -394,6 +428,7 @@ export const posOrderItemShape = {
   voidedBy: userIdSchema.nullable(),
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+  voidOverrideId: overrideIdSchema.nullable(),
   /** §6 `order_items.cost_snapshot_idr`: HPP at sale time, server-computed. */
   costSnapshotIdr: nonnegativeIdr,
   createdAt: isoDateTimeSchema,
@@ -435,7 +470,7 @@ export const posOrderItemSchema = z
         item.voidReason === null ||
         item.voidedBy === null ||
         item.voidApprovedBy === null ||
-        item.voidApprovalRequestId === null
+        (item.voidOverrideId === null && item.voidApprovalRequestId === null)
       )
         ctx.addIssue({
           code: "custom",
@@ -447,7 +482,8 @@ export const posOrderItemSchema = z
       item.voidReason !== null ||
       item.voidedBy !== null ||
       item.voidApprovedBy !== null ||
-      item.voidApprovalRequestId !== null
+      item.voidApprovalRequestId !== null ||
+      item.voidOverrideId !== null
     )
       ctx.addIssue({
         code: "custom",
@@ -634,6 +670,7 @@ export const posDiscountSchema = z
     appliedBy: userIdSchema,
     approvedBy: userIdSchema.nullable(),
     approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     createdAt: isoDateTimeSchema,
   })
   .superRefine((discount, ctx) => {
@@ -694,12 +731,17 @@ export const posVoidSchema = z
     reasonNote: z.string().min(4).max(500),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
-    approvalRequestId: approvalRequestIdSchema,
+    approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     voidedAt: isoDateTimeSchema,
   })
   .refine((row) => row.requestedBy !== row.approvedBy, {
     path: ["approvedBy"],
     message: "The approver is a different actor from the requester (§3.7)",
+  })
+  .refine((row) => row.overrideId !== null || row.approvalRequestId !== null, {
+    path: ["overrideId"],
+    message: "A void records the approval it consumed (POS-02)",
   });
 export type PosVoid = z.infer<typeof posVoidSchema>;
 
@@ -730,7 +772,8 @@ export const posRefundSchema = z
     lines: z.array(posRefundLineSchema).min(1),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
-    approvalRequestId: approvalRequestIdSchema,
+    approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     refundedAt: isoDateTimeSchema,
   })
   .superRefine((refund, ctx) => {
@@ -750,6 +793,12 @@ export const posRefundSchema = z
         path: ["approvedBy"],
         message: "The approver is a different actor from the requester (§3.7)",
       });
+    if (refund.overrideId === null && refund.approvalRequestId === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["overrideId"],
+        message: "A refund records the approval it consumed (POS-02)",
+      });
   });
 export type PosRefund = z.infer<typeof posRefundSchema>;
 
@@ -761,6 +810,12 @@ export const posOrderEventTypeSchema = z.enum([
   "order.paid",
   "order.voided",
   "order.refunded",
+  /**
+   * A ticket or line was voided on the KDS (kitchen-only; the bill is
+   * unchanged until a POS void). Payload: { ticketId, stationId,
+   * orderItemIds, ticketCancelled, reason } (bead legend-4d5).
+   */
+  "order.kitchen_voided",
 ]);
 export type PosOrderEventType = z.infer<typeof posOrderEventTypeSchema>;
 
@@ -807,9 +862,11 @@ export const posShiftShape = {
   varianceIdr: idrSchema.nullable(),
   varianceNote: z.string().min(4).max(500).nullable(),
   approvedBy: userIdSchema.nullable(),
-  approvalRequestId: approvalRequestIdSchema.nullable(),
+  approvalRequestId: storedApprovalIdSchema.nullable(),
   approvedAt: isoDateTimeSchema.nullable(),
   closedAt: isoDateTimeSchema.nullable(),
+  /** The count submission the close used (`pos_shift_counts`). */
+  countId: posShiftCountIdSchema.nullable(),
 };
 
 export const posShiftSchema = z
@@ -824,6 +881,7 @@ export const posShiftSchema = z
         "approvalRequestId",
         "approvedAt",
         "closedAt",
+        "countId",
       ] as const)
         if (shift[key] !== null)
           ctx.addIssue({
@@ -840,7 +898,8 @@ export const posShiftSchema = z
       shift.varianceIdr === null ||
       shift.approvedBy === null ||
       shift.approvalRequestId === null ||
-      shift.approvedAt === null
+      shift.approvedAt === null ||
+      shift.countId === null
     )
       ctx.addIssue({
         code: "custom",
@@ -876,25 +935,110 @@ export const posShiftSchema = z
   });
 export type PosShift = z.infer<typeof posShiftSchema>;
 
+/**
+ * Rupiah notes and coins in circulation (Bank Indonesia); the blind count is
+ * entered per denomination from this list (founder Q8, 2026-11-08).
+ */
+export const IDR_CASH_DENOMINATIONS = [
+  100_000, 50_000, 20_000, 10_000, 5_000, 2_000, 1_000, 500, 200, 100,
+] as const;
+
 /** One denomination line of the blind count sheet. */
 export const blindCashCountSchema = z.strictObject({
-  denominationIdr: z.number().int().positive().max(100_000),
+  denominationIdr: z
+    .number()
+    .refine(
+      (value) => (IDR_CASH_DENOMINATIONS as readonly number[]).includes(value),
+      {
+        message: `denominationIdr must be one of ${IDR_CASH_DENOMINATIONS.join(", ")}`,
+      },
+    ),
   quantity: z.number().int().min(0).max(10_000),
 });
 export type BlindCashCount = z.infer<typeof blindCashCountSchema>;
 
+/** The blind count sheet: listed denominations, each at most once, 1..10 rows. */
+const blindCountsSchema = z
+  .array(blindCashCountSchema)
+  .min(1)
+  .max(IDR_CASH_DENOMINATIONS.length)
+  .refine(
+    (counts) =>
+      new Set(counts.map((row) => row.denominationIdr)).size === counts.length,
+    { message: "Each denomination can be counted only once" },
+  );
+
 /**
- * POS-03 blind count input. It deliberately has **no** expected, counted or
- * variance field: the cashier counts notes and coins, and the server derives
- * the total (strict parsing rejects a submitted system number). The approval
- * fields carry the verified supervisor decision (§3.7, action type
- * `cash_shift_close`); the API re-checks them, the id alone is not proof.
+ * POS-03 blind count submission. It deliberately has **no** expected, counted
+ * or variance field: the cashier counts notes and coins, and the server derives
+ * the total (strict parsing rejects a submitted system number). Every
+ * submission is stored append-only (`pos_shift_counts`); the close later
+ * names the submission it uses.
+ */
+export const submitPosShiftCountInputSchema = clientInputSchema({
+  counts: blindCountsSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/** Supervisor view of one stored count submission (full figures). */
+export const posShiftCountSchema = z.strictObject({
+  id: posShiftCountIdSchema,
+  ...scope,
+  shiftId: posShiftIdSchema,
+  /** 1, 2, 3 … per shift; a recount is a new row, never an edit. */
+  sequence: z.number().int().positive(),
+  counts: blindCountsSchema,
+  countedIdr: nonnegativeIdr,
+  expectedIdr: nonnegativeIdr,
+  /** counted − expected: negative is short, positive is over. */
+  varianceIdr: idrSchema,
+  submittedBy: userIdSchema,
+  submittedAt: isoDateTimeSchema,
+});
+export type PosShiftCount = z.infer<typeof posShiftCountSchema>;
+
+/**
+ * Cashier view of the same submission: blind. It carries the counted total the
+ * cashier typed but never the expected figure or the variance, only whether a
+ * written note is required before the close.
+ */
+export const posShiftCountReceiptSchema = z.strictObject({
+  id: posShiftCountIdSchema,
+  shiftId: posShiftIdSchema,
+  sequence: z.number().int().positive(),
+  countedIdr: nonnegativeIdr,
+  noteRequired: z.boolean(),
+  submittedAt: isoDateTimeSchema,
+});
+export type PosShiftCountReceipt = z.infer<typeof posShiftCountReceiptSchema>;
+
+/**
+ * POS-03 close: names the stored count submission it closes with. The server
+ * derives expected and variance, and re-checks the supervisor approval
+ * (§3.7, action type `cash_shift_close`) against that variance; the id alone is
+ * not proof.
  */
 export const closePosShiftInputSchema = clientInputSchema({
-  counts: z.array(blindCashCountSchema).min(1),
+  countId: posShiftCountIdSchema,
   varianceNote: z.string().min(4).max(500).nullable().optional(),
   approvedBy: userIdSchema,
-  approvalRequestId: approvalRequestIdSchema,
+  approvalRequestId: closeApprovalIdSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * U9 force close (legend-6c0 review K), step two. Step one is a normal
+ * `POST .../counts` by a supervisor who is not the shift's cashier: it stores a
+ * forced count (the server derives the figures). The witness (`approvedBy`:
+ * neither the caller nor the cashier, holding `shift.cash.approve_close`)
+ * approves that count through the usual `cash_shift_close` override, then this
+ * closes the shift with it. `note` is the supervisor's written reason.
+ */
+export const forceClosePosShiftInputSchema = clientInputSchema({
+  countId: posShiftCountIdSchema,
+  note: z.string().trim().min(10).max(500),
+  approvedBy: userIdSchema,
+  approvalRequestId: closeApprovalIdSchema,
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -1398,6 +1542,8 @@ export const receiptDocumentBaseShape = {
   orderNumber: orderNumber,
   documentKind: z.enum(["receipt", "kuitansi"]),
   status: z.enum(["issued", "voided"]),
+  /** POS-06: true once the receipt has been printed again ("CETAK ULANG"). */
+  reprint: z.boolean(),
   outletName: z.string().min(1).max(150),
   /** D40/POS-07: the address is printed on every receipt and kuitansi. */
   outletAddress: z.string().min(10).max(300),
@@ -1405,7 +1551,8 @@ export const receiptDocumentBaseShape = {
   items: z.array(posDocumentLineSchema).min(1),
   discounts: z.array(discountLineSchema),
   serviceCharge: serviceChargeLineSchema.nullable(),
-  taxLines: z.array(taxLineSchema).min(1),
+  // Empty for a tax-free order: the receipt prints no tax rows.
+  taxLines: z.array(taxLineSchema),
   ...documentTotalsShape,
   tenders: z.array(posDocumentTenderSchema).min(1),
   cashierName: z.string().min(1).max(150).nullable(),
@@ -1610,6 +1757,7 @@ export type CustomerDisplayState = z.infer<typeof customerDisplayStateSchema>;
 export const posFixtureSchema = z.strictObject({
   approvalPolicy: posApprovalPolicySchema,
   shifts: z.array(posShiftSchema),
+  shiftCounts: z.array(posShiftCountSchema),
   cashMovements: z.array(posCashMovementSchema),
   orders: z.array(posOrderSchema),
   orderDetails: z.array(posOrderDetailSchema),

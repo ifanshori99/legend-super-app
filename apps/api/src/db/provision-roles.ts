@@ -1,0 +1,1103 @@
+// Restricted database login provisioning (legend-zoqc, PRD §3 F3, TEN-02).
+//
+// Runs with the migration/owner connection from a trusted operator job, never
+// inside the API or worker. It creates (or re-keys) two LOGIN roles:
+//   - the application login, a member of the NOLOGIN `legend_app` group that
+//     migrations grant DML on tenant tables (RLS-forced), and
+//   - the queue login, which owns only the pg-boss schema and can read the
+//     filtered app.active_tenant_registry view.
+// Neither may be a superuser, bypass RLS, own domain tables, or create objects
+// outside its own schema. Every run re-verifies that, so the job is safe to
+// repeat and doubles as an audit.
+//
+// PostgreSQL 16 or newer is required: role memberships record INHERIT, SET
+// and ADMIN per grant there, and the audit relies on that.
+//
+// Passwords are sent as SCRAM-SHA-256 verifiers computed here, so the plaintext
+// never reaches the server and cannot appear in its statement or error logs.
+// This module imports only `pg` and Node built-ins so the root scripts can load
+// it through Node type stripping.
+import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
+import { Client, type ClientBase } from "pg";
+
+export const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
+export const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
+export const PASSWORD = /^[a-f0-9]{48}$/;
+const APP_GROUP = "legend_app";
+const QUEUE_SCHEMA = "pgboss";
+// Serialises concurrent runs against one database (hashtext is stable).
+const LOCK_KEY = "legend.provision-roles";
+const MIN_SERVER_VERSION = 160000;
+// pg lets query parameters override the URL's authority (user, password,
+// host, port, database, options). Only transport settings may appear, so the
+// login and endpoint validated below are the ones pg actually uses.
+const URL_PARAMS = new Set([
+  "sslmode",
+  "sslrootcert",
+  "sslcert",
+  "sslkey",
+  "ssl",
+  "channel_binding",
+  "application_name",
+  "connect_timeout",
+]);
+const APP_TABLE_RIGHTS = ["SELECT", "INSERT", "UPDATE", "DELETE"];
+// nextval()/currval() for serial columns; never UPDATE (setval).
+const APP_SEQUENCE_RIGHTS = ["USAGE", "SELECT"];
+// Catalogs with an owner column: [catalog, owner column, namespace column].
+const OWNED_CATALOGS: [string, string, string | null][] = [
+  ["pg_class", "relowner", "relnamespace"],
+  ["pg_proc", "proowner", "pronamespace"],
+  ["pg_type", "typowner", "typnamespace"],
+  ["pg_operator", "oprowner", "oprnamespace"],
+  ["pg_opclass", "opcowner", "opcnamespace"],
+  ["pg_opfamily", "opfowner", "opfnamespace"],
+  ["pg_collation", "collowner", "collnamespace"],
+  ["pg_conversion", "conowner", "connamespace"],
+  ["pg_statistic_ext", "stxowner", "stxnamespace"],
+  ["pg_ts_config", "cfgowner", "cfgnamespace"],
+  ["pg_ts_dict", "dictowner", "dictnamespace"],
+  ["pg_extension", "extowner", null],
+  ["pg_event_trigger", "evtowner", null],
+  ["pg_foreign_data_wrapper", "fdwowner", null],
+  ["pg_foreign_server", "srvowner", null],
+  ["pg_largeobject_metadata", "lomowner", null],
+  ["pg_publication", "pubowner", null],
+];
+// Objects no restricted login may reach by any path, PUBLIC included: the
+// password verifiers, foreign-server passwords, raw statistics and large
+// objects, and functions that read the server's files or control the server.
+// An explicit list instead of a per-version copy of PostgreSQL's default
+// catalog ACLs: short, reviewable, and the same on every major version.
+const SENSITIVE_TABLES = [
+  "pg_authid",
+  "pg_shadow",
+  "pg_user_mapping",
+  "pg_statistic",
+  "pg_statistic_ext_data",
+  "pg_largeobject",
+];
+const SENSITIVE_FUNCTIONS = [
+  "pg_read_file",
+  "pg_read_binary_file",
+  "pg_ls_dir",
+  "pg_stat_file",
+  "pg_ls_logdir",
+  "pg_ls_waldir",
+  "pg_ls_tmpdir",
+  "pg_ls_archive_statusdir",
+  "pg_ls_logicalsnapdir",
+  "pg_ls_logicalmapdir",
+  "pg_ls_replslotdir",
+  "lo_import",
+  "lo_export",
+  "pg_reload_conf",
+  "pg_rotate_logfile",
+  "pg_promote",
+];
+// Tables with a tenant_id that are deliberately not under the restrictive
+// tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
+// each). The first two must still keep row-level security enabled: their
+// write policies are what stop cross-tenant writes.
+const TENANT_RLS_EXCEPTIONS: Record<string, { rowSecurity: boolean }> = {
+  "public.tenant_domains": { rowSecurity: true },
+  "public.payment_link_tokens": { rowSecurity: true },
+  "public.session": { rowSecurity: false },
+  "public.login_challenges": { rowSecurity: false },
+  "public.wa_inbound_messages": { rowSecurity: false },
+};
+const TENANT_PREDICATE = "(tenant_id = app.require_tenant_id())";
+
+/** An operator-facing failure. Its message never contains a credential. */
+export class ProvisionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProvisionError";
+  }
+}
+
+type Login = { user: string; password: string; url: string };
+
+export function parseUrl(raw: string, label: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ProvisionError(`The ${label} connection URL is not valid.`);
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:")
+    throw new ProvisionError(
+      `The ${label} connection URL must start with postgresql://.`,
+    );
+  if (url.hash)
+    throw new ProvisionError(
+      `The ${label} connection URL must not contain a # fragment.`,
+    );
+  for (const key of url.searchParams.keys())
+    if (!URL_PARAMS.has(key))
+      throw new ProvisionError(
+        `The ${label} connection URL has a query parameter that is not allowed (${/^[a-z_]{1,40}$/.test(key) ? key : "unrecognised"}); only TLS and timeout settings may follow "?". Put the login, host and database in the URL itself.`,
+      );
+  return url;
+}
+
+export function parseLogin(
+  adminUrl: string,
+  loginUrl: string,
+  pattern: RegExp,
+  label: string,
+): Login {
+  const url = parseUrl(loginUrl, label);
+  const admin = parseUrl(adminUrl, "migration");
+  if (url.host !== admin.host || url.pathname !== admin.pathname)
+    throw new ProvisionError(
+      `The ${label} and migration URLs must point to the same database.`,
+    );
+  const user = decodeURIComponent(url.username);
+  const password = decodeURIComponent(url.password);
+  if (user === decodeURIComponent(admin.username))
+    throw new ProvisionError(
+      `The ${label} URL uses the migration login; it needs its own restricted login.`,
+    );
+  if (!pattern.test(user) || !PASSWORD.test(password))
+    throw new ProvisionError(
+      `The ${label} login has an invalid name or password format.`,
+    );
+  return { user, password, url: loginUrl };
+}
+
+/**
+ * PostgreSQL stores a client-supplied SCRAM verifier as is (RFC 5802/7677,
+ * the same derivation libpq's PQencryptPasswordConn performs). Passwords are
+ * validated hex, so SASLprep is the identity.
+ */
+export function scramSha256Verifier(password: string, iterations = 4096) {
+  const salt = randomBytes(16);
+  const salted = pbkdf2Sync(password, salt, iterations, 32, "sha256");
+  const clientKey = createHmac("sha256", salted).update("Client Key").digest();
+  const storedKey = createHash("sha256").update(clientKey).digest();
+  const serverKey = createHmac("sha256", salted).update("Server Key").digest();
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
+}
+
+// Identifiers are validated against APP_LOGIN/WORKER_LOGIN before use, and the
+// verifier alphabet is base64 plus `$:-`, so neither can break out of quotes.
+export function quoteVerifier(verifier: string) {
+  if (
+    !/^SCRAM-SHA-256\$\d+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/.test(
+      verifier,
+    )
+  )
+    throw new ProvisionError("Could not derive a password verifier.");
+  return `'${verifier}'`;
+}
+
+async function serverVersion(client: ClientBase): Promise<number> {
+  return (
+    await client.query(
+      "SELECT current_setting('server_version_num')::int AS version",
+    )
+  ).rows[0].version;
+}
+
+export async function currentDatabase(client: ClientBase) {
+  const name: string = (await client.query("SELECT current_database() AS name"))
+    .rows[0].name;
+  // Quoted as an identifier below; refuse anything that could break out.
+  if (name.includes('"'))
+    throw new ProvisionError("The database name cannot be quoted safely.");
+  return name;
+}
+
+async function upsertLogin(client: ClientBase, login: Login, label: string) {
+  const existing = await client.query(
+    "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
+    [login.user],
+  );
+  const verifier = quoteVerifier(scramSha256Verifier(login.password));
+  if (!existing.rows.length) {
+    await client.query(
+      `CREATE ROLE "${login.user}" LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT VALID UNTIL 'infinity' CONNECTION LIMIT -1 PASSWORD ${verifier}`,
+    );
+    return "created";
+  }
+  const r = existing.rows[0];
+  if (
+    r.rolsuper ||
+    r.rolbypassrls ||
+    r.rolcreatedb ||
+    r.rolcreaterole ||
+    r.rolreplication ||
+    !r.rolcanlogin
+  )
+    throw new ProvisionError(
+      `The ${label} role already exists with unsafe privileges; fix or drop it by hand.`,
+    );
+  // Re-key on every run so the database always matches the env file (this is
+  // also how a password is rotated), and undo drift that would stop the login
+  // working or change its behaviour: NOINHERIT, an expiry, a connection limit,
+  // or role-level settings such as search_path or role.
+  await client.query(
+    `ALTER ROLE "${login.user}" INHERIT VALID UNTIL 'infinity' CONNECTION LIMIT -1 PASSWORD ${verifier}`,
+  );
+  await client.query(`ALTER ROLE "${login.user}" RESET ALL`);
+  await client.query(
+    `ALTER ROLE "${login.user}" IN DATABASE "${await currentDatabase(client)}" RESET ALL`,
+  );
+  await assertNoSettings(client, login.user, label);
+  return "updated";
+}
+
+// A non-superuser admin silently keeps superuser-only settings (for example
+// session_replication_role) after RESET ALL, so prove none are left.
+async function assertNoSettings(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
+  const left = await client.query(
+    `SELECT count(*)::int AS count FROM pg_db_role_setting s
+     WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = $1)
+       AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`,
+    [user],
+  );
+  if (left.rows[0].count)
+    throw new ProvisionError(
+      `The ${label} role has role-level settings this login cannot reset; a superuser must run ALTER ROLE ... RESET ALL.`,
+    );
+}
+
+/**
+ * Fails unless `user` is a plain login whose only power comes from the listed
+ * group roles, which owns nothing outside `ownSchemas`, and which can create
+ * objects only inside `ownSchemas`.
+ */
+async function assertRestricted(
+  client: ClientBase,
+  user: string,
+  label: string,
+  allowedGroups: string[],
+  ownSchemas: string[],
+) {
+  const unsafe = await client.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_roles r
+       WHERE (r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication)
+         AND pg_has_role($1, r.oid, 'MEMBER')
+     ) AS unsafe`,
+    [user],
+  );
+  if (unsafe.rows[0].unsafe)
+    throw new ProvisionError(
+      `The ${label} role has or inherits superuser, BYPASSRLS, CREATEDB, CREATEROLE or REPLICATION.`,
+    );
+  // Predefined roles (pg_read_server_files, pg_execute_server_program,
+  // pg_write_all_data, ...) grant powers outside RLS. pg_database_owner only
+  // matches the database owner, which these logins never are.
+  const predefined = await client.query(
+    `SELECT ARRAY(
+       SELECT r.rolname::text FROM pg_roles r
+       WHERE r.rolname LIKE 'pg\\_%' AND pg_has_role($1, r.oid, 'MEMBER')
+       ORDER BY 1
+     ) AS roles`,
+    [user],
+  );
+  if (predefined.rows[0].roles.length)
+    throw new ProvisionError(
+      `The ${label} role has or inherits predefined roles: ${predefined.rows[0].roles.join(", ")}.`,
+    );
+  // Any role reached directly or through a group (legend_app granted some
+  // other role, with or without ADMIN OPTION) widens the login beyond its
+  // lane. ADMIN OPTION always rides on a membership, so this also rules out
+  // inherited ADMIN.
+  const reached = await client.query(
+    `SELECT ARRAY(
+       SELECT r.rolname::text FROM pg_roles r
+       WHERE r.rolname <> $1 AND r.rolname <> ALL($2::text[])
+         AND pg_has_role($1, r.oid, 'MEMBER')
+       ORDER BY 1
+     ) AS roles`,
+    [user, allowedGroups],
+  );
+  if (reached.rows[0].roles.length)
+    throw new ProvisionError(
+      `The ${label} role is a member of unexpected roles (directly or through a group): ${reached.rows[0].roles.join(", ")}.`,
+    );
+  // INHERIT is recorded per grant: a membership without it gives the login
+  // no privileges. ADMIN would let the login hand the group out.
+  const groups = await client.query(
+    `SELECT g.rolname, pg_get_userbyid(m.grantor) AS grantor, m.admin_option, m.inherit_option AS inherit
+     FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member
+     WHERE u.rolname = $1`,
+    [user],
+  );
+  const flawed = groups.rows
+    .filter(
+      (row: { admin_option: boolean; inherit: boolean }) =>
+        row.admin_option || !row.inherit,
+    )
+    .map(
+      (row: { rolname: string; grantor: string }) =>
+        `${row.rolname} (granted by ${row.grantor})`,
+    );
+  if (flawed.length)
+    throw new ProvisionError(
+      `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION; a superuser can remove it with REVOKE <group> FROM <login> GRANTED BY <grantor>, then re-run.`,
+    );
+  // Catalog objects belong to the bootstrap superuser, so no schema is exempt
+  // except session temp schemas (a live session's own temp tables): a login
+  // owning anything else outside its own schemas is drift.
+  const ownedBy = OWNED_CATALOGS.map(
+    ([catalog, owner, namespace]) =>
+      `EXISTS (SELECT 1 FROM ${catalog} o${namespace ? ` JOIN pg_namespace n ON n.oid = o.${namespace}` : ""}
+               WHERE pg_has_role($1, o.${owner}, 'MEMBER')${namespace ? " AND n.nspname <> ALL($2::text[]) AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast%'" : ""})`,
+  );
+  const owned = await client.query(
+    `SELECT ${ownedBy.join(" OR ")} OR EXISTS (
+       SELECT 1 FROM pg_namespace n
+       WHERE pg_has_role($1, n.nspowner, 'MEMBER') AND n.nspname <> ALL($2::text[])
+         AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'
+     ) AS owned`,
+    [user, ownSchemas],
+  );
+  if (owned.rows[0].owned)
+    throw new ProvisionError(
+      `The ${label} role owns tables, functions, types, schemas or other objects outside its own; it must not own application objects.`,
+    );
+  // Built-in functions PUBLIC cannot run (pg_read_file, lo_import, ...)
+  // reach the server's files or other sessions, outside RLS.
+  const functions = await client.query(
+    `SELECT ARRAY(
+       SELECT DISTINCT p.proname::text FROM pg_proc p
+       WHERE p.pronamespace = 'pg_catalog'::regnamespace
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+       ORDER BY 1
+     ) AS names`,
+    [user],
+  );
+  if (functions.rows[0].names.length)
+    throw new ProvisionError(
+      `The ${label} role may run built-in functions PUBLIC cannot: ${functions.rows[0].names.slice(0, 5).join(", ")}${functions.rows[0].names.length > 5 ? ", ..." : ""}.`,
+    );
+  const ddl = await client.query(
+    `SELECT has_database_privilege($1, current_database(), 'CREATE') AS database_create,
+            ARRAY(
+              SELECT n.nspname::text FROM pg_namespace n
+              WHERE has_schema_privilege($1, n.oid, 'CREATE')
+                AND n.nspname <> ALL($2::text[])
+                AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'
+              ORDER BY 1
+            ) AS schemas`,
+    [user, ownSchemas],
+  );
+  const { database_create: databaseCreate, schemas } = ddl.rows[0];
+  if (databaseCreate || schemas.length)
+    throw new ProvisionError(
+      `The ${label} role can create objects (${[
+        ...(databaseCreate ? ["database"] : []),
+        ...schemas.map((schema: string) => `schema ${schema}`),
+      ].join(", ")}); revoke CREATE before provisioning.`,
+    );
+}
+
+/**
+ * Table rights outside `ownSchemas` must stay within `allowed` (privilege
+ * names per relation, "*" for any relation). TRUNCATE ignores RLS,
+ * TRIGGER/REFERENCES are DDL-adjacent and MAINTAIN (PostgreSQL 17+) runs
+ * REINDEX/CLUSTER/REFRESH, so none of them may appear. A grant on a single
+ * column counts as the privilege on its table.
+ */
+async function assertTableRights(
+  client: ClientBase,
+  user: string,
+  label: string,
+  ownSchemas: string[],
+  allowed: Record<string, string[]>,
+) {
+  const privileges = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    ...((await serverVersion(client)) >= 170000 ? ["MAINTAIN"] : []),
+  ];
+  const rights = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege,
+            n.nspname IN ('pg_catalog', 'information_schema') AS system
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest($3::text[]) AS p(privilege)
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND n.nspname <> ALL($2::text[])
+       AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+       AND CASE
+         -- System catalogs: only what goes beyond PUBLIC's own rights (a
+         -- grant on pg_authid or one of its columns is a leak, reading
+         -- pg_class is not).
+         WHEN n.nspname IN ('pg_catalog', 'information_schema') THEN
+           (has_table_privilege($1, c.oid, p.privilege)
+            AND NOT has_table_privilege('public', c.oid, p.privilege))
+           OR EXISTS (
+             SELECT 1 FROM pg_attribute a
+             WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+               AND CASE WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                        THEN has_column_privilege($1, c.oid, a.attnum, p.privilege)
+                             AND NOT has_column_privilege('public', c.oid, a.attnum, p.privilege)
+                        ELSE false END)
+         WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+           THEN has_any_column_privilege($1, c.oid, p.privilege)
+         ELSE has_table_privilege($1, c.oid, p.privilege) END
+       -- Extension views such as pg_stat_statements are readable by PUBLIC by
+       -- design; that is not a right of this login. Only extension-owned
+       -- relations are exempt, never application tables granted to PUBLIC.
+       AND NOT (
+         p.privilege = 'SELECT'
+         AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) a WHERE a.grantee = 0 AND a.privilege_type = 'SELECT')
+         AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+       )
+     ORDER BY 1, 2`,
+    [user, ownSchemas, privileges],
+  );
+  // "*" covers application relations only; a system catalog right beyond
+  // PUBLIC's is never allowed unless listed by name.
+  const extra = rights.rows
+    .filter(
+      (row: { relation: string; privilege: string; system: boolean }) =>
+        !(
+          allowed[row.relation] ??
+          (row.system ? undefined : allowed["*"]) ??
+          []
+        ).includes(row.privilege),
+    )
+    .map(
+      (row: { relation: string; privilege: string }) =>
+        `${row.privilege} on ${row.relation}`,
+    );
+  if (extra.length)
+    throw new ProvisionError(
+      `The ${label} role has table rights it must not have: ${extra.slice(0, 5).join(", ")}${extra.length > 5 ? ", ..." : ""}.`,
+    );
+}
+
+/**
+ * Sequence rights outside `ownSchemas` must stay within `allowed`. UPDATE
+ * means setval(), which can push a sequence to its end and break every
+ * insert that draws from it.
+ */
+async function assertSequenceRights(
+  client: ClientBase,
+  user: string,
+  label: string,
+  ownSchemas: string[],
+  allowed: string[],
+) {
+  const rights = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['USAGE', 'SELECT', 'UPDATE']) AS p(privilege)
+     WHERE c.relkind = 'S'
+       AND n.nspname <> ALL($2::text[])
+       AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+       AND has_sequence_privilege($1, c.oid, p.privilege)
+     ORDER BY 1, 2`,
+    [user, ownSchemas],
+  );
+  const extra = rights.rows
+    .filter((row: { privilege: string }) => !allowed.includes(row.privilege))
+    .map(
+      (row: { relation: string; privilege: string }) =>
+        `${row.privilege} on ${row.relation}`,
+    );
+  if (extra.length)
+    throw new ProvisionError(
+      `The ${label} role has sequence rights it must not have: ${extra.slice(0, 5).join(", ")}${extra.length > 5 ? ", ..." : ""}.`,
+    );
+}
+
+/**
+ * The fixed denylist above, checked on the login's effective rights, so a
+ * grant to PUBLIC counts the same as a grant to the login.
+ */
+async function assertNoSensitive(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
+  const reached = await client.query(
+    `SELECT ARRAY(
+       SELECT format('%s on pg_catalog.%I', p.privilege, c.relname)
+       FROM pg_class c
+       CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS p(privilege)
+       WHERE c.relnamespace = 'pg_catalog'::regnamespace AND c.relname = ANY($2::text[])
+         AND CASE WHEN p.privilege = 'DELETE'
+                  THEN has_table_privilege($1, c.oid, 'DELETE')
+                  ELSE has_any_column_privilege($1, c.oid, p.privilege) END
+       UNION ALL
+       SELECT 'SELECT on pg_catalog.pg_subscription.subconninfo'
+       WHERE has_column_privilege($1, 'pg_catalog.pg_subscription', 'subconninfo', 'SELECT')
+       UNION ALL
+       SELECT DISTINCT format('EXECUTE on %I.%I', n.nspname, f.proname)
+       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+       WHERE ((n.nspname = 'pg_catalog' AND f.proname = ANY($3::text[]))
+              OR f.proname LIKE 'dblink%')
+         AND has_function_privilege($1, f.oid, 'EXECUTE')
+       ORDER BY 1
+     ) AS objects`,
+    [user, SENSITIVE_TABLES, SENSITIVE_FUNCTIONS],
+  );
+  const objects: string[] = reached.rows[0].objects;
+  if (objects.length)
+    throw new ProvisionError(
+      `The ${label} role can reach sensitive server objects (directly or through PUBLIC): ${objects.slice(0, 5).join(", ")}${objects.length > 5 ? ", ..." : ""}. Revoke the grant, then re-run.`,
+    );
+}
+
+/**
+ * SET on a parameter only a superuser may change (session_replication_role
+ * skips triggers and foreign keys) or ALTER SYSTEM on any parameter is a
+ * superuser power. Grants are read from pg_parameter_acl, so a grant on a
+ * parameter no loaded module defines yet is caught too (it is refused: the
+ * module may make it superuser-only). Only a grant reaches the login: no
+ * parameter ACL row means no privilege.
+ */
+async function assertNoParameterGrants(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
+  // pg_parameter_acl exists from PostgreSQL 15.
+  if ((await serverVersion(client)) < 150000) return;
+  const granted = await client.query(
+    `SELECT ARRAY(
+       SELECT format('%s on %s (granted to %s)', x.privilege_type, a.parname,
+                     CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(x.grantee) END)
+       FROM pg_catalog.pg_parameter_acl a
+       CROSS JOIN LATERAL pg_catalog.aclexplode(a.paracl) x
+       -- parname is stored in lower case; pg_settings keeps names like DateStyle.
+       LEFT JOIN pg_catalog.pg_settings s ON pg_catalog.lower(s.name) = a.parname
+       WHERE (x.grantee = 0 OR pg_catalog.pg_has_role($1, x.grantee, 'MEMBER'))
+         AND (x.privilege_type = 'ALTER SYSTEM' OR s.context IS NULL
+              OR s.context NOT IN ('user', 'backend'))
+       ORDER BY 1
+     ) AS grants`,
+    [user],
+  );
+  const grants: string[] = granted.rows[0].grants;
+  if (grants.length)
+    throw new ProvisionError(
+      `The ${label} role may change server settings it must not: ${grants.slice(0, 5).join(", ")}${grants.length > 5 ? ", ..." : ""}. As a superuser run REVOKE SET ON PARAMETER <parameter> FROM <role|PUBLIC> (or REVOKE ALTER SYSTEM ON PARAMETER ...), then re-run.`,
+    );
+}
+
+/**
+ * TEN-02: every table with a tenant_id (outside the queue schema, or inside
+ * it when the application can reach it) enables and forces row-level
+ * security and keeps a restrictive policy, for every command and every role,
+ * that matches app.require_tenant_id() on reads and writes. Only the
+ * documented exceptions are exempt; those that keep row-level security may
+ * only have permissive write policies (for the login) limited to the tenant,
+ * as the migrations create them.
+ */
+async function assertTenantRls(client: ClientBase, user: string) {
+  const tables = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation,
+            c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
+            EXISTS (
+              SELECT 1 FROM pg_policy p
+              WHERE p.polrelid = c.oid AND NOT p.polpermissive AND p.polcmd = '*'
+                AND p.polroles = '{0}'::oid[]
+                AND pg_get_expr(p.polqual, p.polrelid) = $2
+                AND pg_get_expr(p.polwithcheck, p.polrelid) = $2
+            ) AS policy,
+            -- Permissive write policies the login can use whose expressions
+            -- are not exactly the tenant predicate (the documented exceptions
+            -- rely on these alone to stop cross-tenant writes). UPDATE and ALL
+            -- may omit WITH CHECK: USING then also checks the new row.
+            ARRAY(
+              SELECT format('%I', p.polname) FROM pg_catalog.pg_policy p
+              WHERE p.polrelid = c.oid AND p.polpermissive AND p.polcmd IN ('a', 'w', 'd', '*')
+                AND ('0'::oid = ANY(p.polroles)
+                     OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS r(oid) WHERE pg_has_role($1, r.oid, 'MEMBER')))
+                AND NOT CASE p.polcmd
+                  WHEN 'a' THEN pg_get_expr(p.polwithcheck, p.polrelid) IS NOT DISTINCT FROM $2
+                  WHEN 'd' THEN pg_get_expr(p.polqual, p.polrelid) IS NOT DISTINCT FROM $2
+                  ELSE pg_get_expr(p.polqual, p.polrelid) IS NOT DISTINCT FROM $2
+                    AND (p.polwithcheck IS NULL OR pg_get_expr(p.polwithcheck, p.polrelid) = $2)
+                END
+              ORDER BY 1
+            ) AS loose
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+     WHERE c.relkind IN ('r', 'p')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+       -- A grant on a single column reaches the table as much as a table grant.
+       AND (n.nspname <> $3
+            OR has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE')
+            OR has_any_column_privilege($1, c.oid, 'SELECT, INSERT, UPDATE'))
+     ORDER BY 1`,
+    [user, TENANT_PREDICATE, QUEUE_SCHEMA],
+  );
+  type Row = {
+    relation: string;
+    enabled: boolean;
+    forced: boolean;
+    policy: boolean;
+    loose: string[];
+  };
+  const broken = (tables.rows as Row[]).flatMap((row) => {
+    const exception = TENANT_RLS_EXCEPTIONS[row.relation];
+    if (exception)
+      return exception.rowSecurity
+        ? [
+            ...(row.enabled
+              ? []
+              : [`${row.relation} (row-level security disabled)`]),
+            ...row.loose.map(
+              (policy) =>
+                `${row.relation} (write policy ${policy} is not limited to the tenant)`,
+            ),
+          ]
+        : [];
+    const problems = [
+      ...(row.enabled ? [] : ["row-level security disabled"]),
+      ...(row.forced ? [] : ["not forced"]),
+      ...(row.policy ? [] : ["no restrictive tenant_isolation policy"]),
+    ];
+    return problems.length ? [`${row.relation} (${problems.join(", ")})`] : [];
+  });
+  if (broken.length)
+    throw new ProvisionError(
+      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains or payment_link_tokens, which only need RLS enabled). For a write policy "not limited to the tenant" on tenant_domains or payment_link_tokens run DROP POLICY <policy> ON <table>, or, for one the migrations created (tenant_domain_* or payment_link_tokens_*), ALTER POLICY <policy> ON <table> so each of its USING and WITH CHECK expressions is (tenant_id = app.require_tenant_id()). Then re-run.`,
+    );
+}
+
+/**
+ * Default privileges (ALTER DEFAULT PRIVILEGES) are applied to every table,
+ * sequence or schema created later, for example by the next migration, so
+ * they get the same limits as existing objects: `allowedTable` and
+ * `allowedSequence` for grants this login inherits (none through PUBLIC),
+ * never CREATE on schemas. Grants inside `ownSchemas` to the login itself are
+ * its own business.
+ */
+async function assertDefaultPrivileges(
+  client: ClientBase,
+  user: string,
+  label: string,
+  ownSchemas: string[],
+  allowedTable: string[],
+  allowedSequence: string[],
+) {
+  const rows = await client.query(
+    `SELECT a.grantee = 0 AS public,
+            CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+            pg_get_userbyid(d.defaclrole) AS owner,
+            COALESCE(n.nspname::text, '') AS schema,
+            d.defaclobjtype AS type, a.privilege_type AS privilege
+     FROM pg_default_acl d
+     LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+     CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+     WHERE d.defaclobjtype IN ('r', 'S', 'n')
+       AND a.grantee <> d.defaclrole
+       AND CASE WHEN a.grantee = 0 THEN true ELSE pg_has_role($1, a.grantee, 'MEMBER') END
+     ORDER BY 3, 4, 5, 6`,
+    [user],
+  );
+  type Row = {
+    public: boolean;
+    grantee: string;
+    owner: string;
+    schema: string;
+    type: string;
+    privilege: string;
+  };
+  const extra = (rows.rows as Row[])
+    .filter((row) => {
+      if (row.type === "n") return row.privilege === "CREATE";
+      if (!row.public && ownSchemas.includes(row.schema)) return false;
+      const allowed = row.type === "S" ? allowedSequence : allowedTable;
+      return row.public || !allowed.includes(row.privilege);
+    })
+    .map(
+      (row) =>
+        `${row.privilege} on new ${{ n: "schemas", S: "sequences" }[row.type] ?? "tables"} created by ${row.owner}${row.schema ? ` in ${row.schema}` : ""} (granted to ${row.grantee})`,
+    );
+  if (extra.length)
+    throw new ProvisionError(
+      `The ${label} role would get default privileges it must not have: ${extra.slice(0, 5).join(", ")}${extra.length > 5 ? ", ..." : ""}. Remove them with ALTER DEFAULT PRIVILEGES ... REVOKE, then re-run.`,
+    );
+}
+
+/**
+ * Opens one admin connection and runs `work` in a single transaction under
+ * an advisory lock, so concurrent runs serialise. `commit: false` always
+ * rolls back (audit mode).
+ */
+export async function withAdmin<T>(
+  adminUrl: string,
+  work: (client: ClientBase) => Promise<T>,
+  commit = true,
+) {
+  const client = new Client({
+    connectionString: adminUrl,
+    connectionTimeoutMillis: 5000,
+  });
+  await client.connect();
+  try {
+    const version = await serverVersion(client);
+    if (version < MIN_SERVER_VERSION)
+      throw new ProvisionError(
+        `PostgreSQL 16 or newer is required; this server reports version ${Math.floor(version / 10000)}.`,
+      );
+    await client.query("BEGIN");
+    // Catalog text (pg_get_expr) is compared exactly; a search_path that
+    // includes app would print app.require_tenant_id() without its schema.
+    await client.query("SET LOCAL search_path = pg_catalog");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      LOCK_KEY,
+    ]);
+    const result = await work(client);
+    await client.query(commit ? "COMMIT" : "ROLLBACK");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * After the transaction commits, sign in with the URL exactly as given and
+ * confirm who PostgreSQL says we are. This is the check that cannot be fooled
+ * by URL parsing differences.
+ */
+async function verifyIdentity(login: Login, label: string, database: string) {
+  const client = new Client({
+    connectionString: login.url,
+    connectionTimeoutMillis: 5000,
+  });
+  try {
+    await client.connect();
+    const row = (
+      await client.query(
+        `SELECT current_user AS current, session_user AS session, current_database() AS database,
+                (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS elevated`,
+      )
+    ).rows[0];
+    if (
+      row.current !== login.user ||
+      row.session !== login.user ||
+      row.database !== database ||
+      row.elevated !== false
+    )
+      throw new ProvisionError(
+        `The ${label} URL does not sign in as ${login.user} on ${database}; refusing it.`,
+      );
+  } catch (error) {
+    if (error instanceof ProvisionError) throw error;
+    const code = (error as { code?: unknown }).code;
+    throw new ProvisionError(
+      `Could not sign in with the ${label} URL as ${login.user}${typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? ` (SQLSTATE ${code})` : ""}; check its password and host.`,
+    );
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function assertGroup(client: ClientBase) {
+  const group = await client.query(
+    "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
+    [APP_GROUP],
+  );
+  if (!group.rows.length)
+    throw new ProvisionError(
+      `Run the migrations first: the ${APP_GROUP} group role does not exist.`,
+    );
+  const g = group.rows[0];
+  if (
+    g.rolsuper ||
+    g.rolbypassrls ||
+    g.rolcreatedb ||
+    g.rolcreaterole ||
+    g.rolreplication ||
+    g.rolcanlogin
+  )
+    throw new ProvisionError(
+      `The ${APP_GROUP} group role must be NOLOGIN without elevated attributes.`,
+    );
+}
+
+async function provisionApp(client: ClientBase, login: Login) {
+  await assertGroup(client);
+  // Before PostgreSQL 15 every role could create in `public`. Revoking is a
+  // no-op on newer servers and is verified below either way.
+  await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
+  const outcome = await upsertLogin(client, login, "application");
+  // Normalise existing memberships: drop any grant without INHERIT or with
+  // ADMIN OPTION, then grant cleanly. PostgreSQL keeps one row per grantor; a
+  // superuser can revoke each by name, anyone can revoke their own. Rows it
+  // cannot revoke stay and make assertRestricted refuse with the grantor named.
+  const admin = await client.query(
+    "SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user",
+  );
+  const rows = await client.query(
+    `SELECT pg_get_userbyid(m.grantor) AS grantor, m.admin_option,
+            m.inherit_option AS inherit
+     FROM pg_auth_members m
+     WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
+       AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)`,
+    [APP_GROUP, login.user],
+  );
+  for (const row of rows.rows as {
+    grantor: string;
+    admin_option: boolean;
+    inherit: boolean;
+  }[]) {
+    if (!row.admin_option && row.inherit) continue;
+    if (row.grantor === admin.rows[0].name)
+      await client.query(`REVOKE ${APP_GROUP} FROM "${login.user}"`);
+    else if (admin.rows[0].rolsuper && !row.grantor.includes('"'))
+      await client.query(
+        `REVOKE ${APP_GROUP} FROM "${login.user}" GRANTED BY "${row.grantor}"`,
+      );
+  }
+  await client.query(`GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`);
+  await auditApp(client, login.user);
+  return outcome;
+}
+
+async function auditApp(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "application", [APP_GROUP], []);
+  await assertTableRights(client, user, "application", [], {
+    "*": APP_TABLE_RIGHTS,
+  });
+  await assertSequenceRights(
+    client,
+    user,
+    "application",
+    [],
+    APP_SEQUENCE_RIGHTS,
+  );
+  await assertDefaultPrivileges(
+    client,
+    user,
+    "application",
+    [],
+    APP_TABLE_RIGHTS,
+    APP_SEQUENCE_RIGHTS,
+  );
+  await assertNoSensitive(client, user, "application");
+  await assertNoParameterGrants(client, user, "application");
+  await assertTenantRls(client, user);
+}
+
+async function auditWorker(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "queue", [], [QUEUE_SCHEMA]);
+  await assertTableRights(client, user, "queue", [QUEUE_SCHEMA], {
+    "app.active_tenant_registry": ["SELECT"],
+  });
+  await assertSequenceRights(client, user, "queue", [QUEUE_SCHEMA], []);
+  await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], [], []);
+  await assertNoSensitive(client, user, "queue");
+  await assertNoParameterGrants(client, user, "queue");
+}
+
+async function assertRegistry(client: ClientBase) {
+  const registry = await client.query(
+    "SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relname = 'active_tenant_registry'",
+  );
+  if (registry.rows[0]?.relkind !== "v")
+    throw new ProvisionError(
+      "Run the migrations first: the trusted app.active_tenant_registry view does not exist.",
+    );
+}
+
+async function provisionWorker(client: ClientBase, login: Login) {
+  await assertRegistry(client);
+  const outcome = await upsertLogin(client, login, "queue");
+  const owner = await queueSchemaOwner(client);
+  if (owner && owner !== login.user)
+    throw new ProvisionError(
+      `The pg-boss schema is owned by ${owner}, not ${login.user}. To change the queue login, rename the existing role so it keeps the queue's tables: as the migration owner run ALTER ROLE "${owner}" RENAME TO "${login.user}", then re-run (the job re-keys the password from worker.env).`,
+    );
+  if (!owner) {
+    // A non-superuser CREATEROLE admin may only hand an object to a role it
+    // can SET ROLE to, and creating a role grants ADMIN without SET, so grant
+    // SET (never INHERIT) first.
+    const admin = await client.query(
+      "SELECT rolsuper FROM pg_roles WHERE rolname = current_user",
+    );
+    if (!admin.rows[0].rolsuper)
+      await client.query(
+        `GRANT "${login.user}" TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
+      );
+    await client.query(
+      `CREATE SCHEMA ${QUEUE_SCHEMA} AUTHORIZATION "${login.user}"`,
+    );
+  }
+  await client.query("REVOKE ALL ON app.active_tenant_registry FROM PUBLIC");
+  await client.query(`GRANT USAGE ON SCHEMA app TO "${login.user}"`);
+  await client.query(
+    `GRANT SELECT ON app.active_tenant_registry TO "${login.user}"`,
+  );
+  await auditWorker(client, login.user);
+  return outcome;
+}
+
+async function queueSchemaOwner(
+  client: ClientBase,
+): Promise<string | undefined> {
+  const owner = await client.query(
+    "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1",
+    [QUEUE_SCHEMA],
+  );
+  return owner.rows[0]?.owner;
+}
+
+export type ProvisionResult = {
+  app: { user: string; outcome: "created" | "updated" };
+  worker?: { user: string; outcome: "created" | "updated" };
+};
+
+/**
+ * Creates or re-keys the restricted logins in one transaction, verifies them,
+ * then signs in with each URL to confirm the identity PostgreSQL sees.
+ * Idempotent: a second run with the same URLs succeeds and changes only the
+ * stored verifier salt.
+ */
+export async function provisionRoles(options: {
+  adminUrl: string;
+  appUrl: string;
+  workerUrl?: string;
+}): Promise<ProvisionResult> {
+  const app = parseLogin(
+    options.adminUrl,
+    options.appUrl,
+    APP_LOGIN,
+    "application",
+  );
+  const worker = options.workerUrl
+    ? parseLogin(options.adminUrl, options.workerUrl, WORKER_LOGIN, "queue")
+    : undefined;
+  const { result, database } = await withAdmin(
+    options.adminUrl,
+    async (client) => {
+      const result: ProvisionResult = {
+        app: { user: app.user, outcome: await provisionApp(client, app) },
+      };
+      if (worker)
+        result.worker = {
+          user: worker.user,
+          outcome: await provisionWorker(client, worker),
+        };
+      return { result, database: await currentDatabase(client) };
+    },
+  );
+  await verifyIdentity(app, "application", database);
+  if (worker) await verifyIdentity(worker, "queue", database);
+  return result;
+}
+
+async function assertLogin(client: ClientBase, user: string, label: string) {
+  const role = await client.query(
+    `SELECT rolcanlogin AND rolinherit AND rolconnlimit = -1
+            AND (rolvaliduntil IS NULL OR rolvaliduntil = 'infinity') AS usable
+     FROM pg_roles WHERE rolname = $1`,
+    [user],
+  );
+  if (!role.rows.length)
+    throw new ProvisionError(
+      `The ${label} login ${user} does not exist yet; run deploy/single-vm/provision-roles.sh before starting the services.`,
+    );
+  if (!role.rows[0].usable)
+    throw new ProvisionError(
+      `The ${label} login ${user} cannot log in, does not inherit its group, or has a connection limit or expiry; re-run provision-roles.sh.`,
+    );
+  await assertNoSettings(client, user, label);
+}
+
+/**
+ * Verifies the provisioned state without changing anything (deploy.sh runs
+ * it after every migration): both logins exist, keep their limits, and the
+ * URLs sign in as them. Fails with the same messages as provisioning.
+ */
+export async function auditRoles(options: {
+  adminUrl: string;
+  appUrl: string;
+  workerUrl: string;
+}) {
+  const app = parseLogin(
+    options.adminUrl,
+    options.appUrl,
+    APP_LOGIN,
+    "application",
+  );
+  const worker = parseLogin(
+    options.adminUrl,
+    options.workerUrl,
+    WORKER_LOGIN,
+    "queue",
+  );
+  const database = await withAdmin(
+    options.adminUrl,
+    async (client) => {
+      await assertGroup(client);
+      await assertRegistry(client);
+      await assertLogin(client, app.user, "application");
+      const member = await client.query(
+        "SELECT pg_has_role($1, $2, 'USAGE') AS member",
+        [app.user, APP_GROUP],
+      );
+      if (!member.rows[0].member)
+        throw new ProvisionError(
+          `The application login ${app.user} does not inherit ${APP_GROUP}; re-run provision-roles.sh.`,
+        );
+      await auditApp(client, app.user);
+      await assertLogin(client, worker.user, "queue");
+      if ((await queueSchemaOwner(client)) !== worker.user)
+        throw new ProvisionError(
+          `The pg-boss schema is not owned by ${worker.user}; re-run provision-roles.sh.`,
+        );
+      const registry = await client.query(
+        "SELECT has_table_privilege($1, 'app.active_tenant_registry', 'SELECT') AS granted",
+        [worker.user],
+      );
+      if (!registry.rows[0].granted)
+        throw new ProvisionError(
+          `The queue login ${worker.user} cannot read app.active_tenant_registry; re-run provision-roles.sh.`,
+        );
+      await auditWorker(client, worker.user);
+      return currentDatabase(client);
+    },
+    false,
+  );
+  await verifyIdentity(app, "application", database);
+  await verifyIdentity(worker, "queue", database);
+  return { app: app.user, worker: worker.user };
+}
+
+/** Local development and test harness entry point (scripts/*.mjs). */
+export async function provisionAppRole(adminUrl: string, appUrl: string) {
+  await provisionRoles({
+    adminUrl,
+    appUrl,
+    workerUrl: process.env.WORKER_DATABASE_URL || undefined,
+  });
+}
+
+/** Queue login only, for callers that manage the application login apart. */
+export async function provisionWorkerRole(adminUrl: string, workerUrl: string) {
+  const worker = parseLogin(adminUrl, workerUrl, WORKER_LOGIN, "queue");
+  const database = await withAdmin(adminUrl, async (client) => {
+    await provisionWorker(client, worker);
+    return currentDatabase(client);
+  });
+  await verifyIdentity(worker, "queue", database);
+}

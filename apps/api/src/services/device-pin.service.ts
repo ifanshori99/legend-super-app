@@ -41,7 +41,7 @@ import {
   staffPinSwitchSchema,
   type StaffPinSwitch,
 } from "@starter/shared/identity";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { staffPins } from "../db/schema/device-pin";
 import { user } from "../db/schema/user";
@@ -90,6 +90,14 @@ export function setDeviceOutletResolver(
   deviceOutletResolver = next ?? denyAllDevices;
 }
 
+/** The outlet a registered device belongs to, or null (fail closed). */
+export function resolveDeviceOutlet(
+  tenantId: string,
+  deviceId: string,
+): Promise<string | null> {
+  return deviceOutletResolver({ tenantId, deviceId });
+}
+
 // ------------------------------------------------------------------ helpers
 
 function bindingOf(row: Pick<PinRow, "tenantId" | "outletId" | "userId">) {
@@ -128,6 +136,17 @@ export type SetStaffPinOptions = {
   readonly now?: Date;
   readonly deviceId?: string | null;
 };
+
+/**
+ * `updated_at` of a staff pin row: the DATABASE clock (legend-wg5t item 5).
+ * The edge down-sync releases rows older than `now() - settle window` by the
+ * same database clock (staff-pin-sync.ts), so an app instance whose clock lags
+ * the database cannot stamp a late commit below the edge's watermark. An
+ * explicit `now` (tests) is used as given.
+ */
+function staffPinVersionStamp(explicit: Date | undefined): Date | SQL {
+  return explicit ?? sql`now()`;
+}
 
 /**
  * PUT /api/staff-pins/:outletId/:userId. Self, or `device.registry.manage` on
@@ -209,7 +228,7 @@ export async function setStaffPin(
       failedAttempts: 0,
       lockedUntil: null,
       setBy: actorId,
-      updatedAt: now,
+      updatedAt: staffPinVersionStamp(options.now),
     };
     const [row] = previous
       ? await tx
@@ -326,7 +345,7 @@ export async function attemptStaffPin(
         failedAttempts: next.failedAttempts,
         lockedUntil:
           next.lockedUntil === null ? null : new Date(next.lockedUntil),
-        updatedAt: now,
+        updatedAt: staffPinVersionStamp(input.now),
       })
       .where(eq(staffPins.id, row.id));
     if (!correct) {
@@ -420,7 +439,9 @@ export async function verifyStaffPinOnDevice(
     userId: input.userId,
     pin: input.pin,
     deviceId: input.deviceId,
-    now,
+    // Only an explicit clock: unset keeps the row version on the database
+    // clock (legend-wg5t item 5).
+    now: input.now,
   });
   assertPinAttemptOk(outcome);
   const context = outletContext(tenant, outlet.data);

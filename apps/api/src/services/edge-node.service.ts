@@ -7,10 +7,17 @@
 //   bound SHA-256 digest is stored (edge/credential.ts). Audited.
 // - revoke: `device.registry.revoke`; terminal (database trigger), audited,
 //   and every open link of the node is closed through the revocation
-//   listeners (link server), with the periodic re-check covering other API
-//   instances.
+//   listeners (link server) and, for other API instances, a NOTIFY on
+//   EDGE_NODE_REVOKED_CHANNEL sent from the revoke transaction (legend-x3lv);
+//   the periodic re-check still covers a missed notification.
+// - rotate (legend-x3lv): `device.registry.revoke`; a new credential returned
+//   ONCE, the replaced digest still accepted for the grace period
+//   (EDGE_CREDENTIAL_ROTATION_GRACE_HOURS), then refused and its open link
+//   closed by the re-check. Audited like revoke.
 // - authenticate: the cloud link's credential check. The tenant must be
-//   active, the node active, the credential digest equal (constant time).
+//   active, the outlet not closed, the node active, the credential digest
+//   equal (constant time) to the current digest, or to the previous one
+//   while its grace period lasts.
 // - ensureLocalEdgeNode: on the edge itself, the node's own row (needed by
 //   the link tables' foreign keys), created from its credential at boot.
 //
@@ -25,6 +32,7 @@ import {
   tenantIdSchema,
   type OutletId,
   type ScopedTenantContext,
+  type TenantContext,
   type TenantId,
 } from "@starter/shared/core";
 import {
@@ -32,9 +40,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { edgeNodeSchema, type EdgeNode } from "@starter/shared/edge";
+import { parseEdgeHardeningEnv } from "@starter/shared/env";
 import { db } from "../db/index.ts";
 import { edgeNodes, type EdgeNodeRole } from "../db/schema/edge-node.ts";
-import { tenants } from "../db/schema/platform-org.ts";
+import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   edgeCredentialMatches,
@@ -147,6 +156,13 @@ export async function registerEdgeNode(
   }
 }
 
+/**
+ * NOTIFY channel for revocations (legend-x3lv): the payload is the edge node
+ * id only. Sent inside the revoke transaction, so it is delivered on commit;
+ * every API instance LISTENs and closes its link to that node.
+ */
+export const EDGE_NODE_REVOKED_CHANNEL = "edge_node_revoked";
+
 type RevocationListener = (edgeNodeId: string) => void;
 const revocationListeners = new Set<RevocationListener>();
 
@@ -204,6 +220,9 @@ export async function revokeEdgeNode(
       },
       { tx, context },
     );
+    await tx.execute(
+      sql`SELECT pg_notify(${EDGE_NODE_REVOKED_CHANNEL}, ${current.id})`,
+    );
     return updated;
   });
   for (const listener of revocationListeners) {
@@ -215,6 +234,188 @@ export async function revokeEdgeNode(
     }
   }
   return toAdminView(row);
+}
+
+/**
+ * The outlet of an edge node, read under tenant-wide RLS so a route can check
+ * the permission on that outlet. null = unknown node (or another tenant's):
+ * the caller answers 404 without saying which.
+ */
+export async function findEdgeNodeOutletId(
+  tenant: TenantContext,
+  edgeNodeId: string,
+): Promise<string | null> {
+  const context = establishScopedTenantContext(tenant, { kind: "tenant" });
+  const [row] = await withTenant(db, context, (tx) =>
+    tx
+      .select({ outletId: edgeNodes.outletId })
+      .from(edgeNodes)
+      .where(
+        and(
+          eq(edgeNodes.tenantId, tenant.tenantId),
+          eq(edgeNodes.id, edgeNodeId),
+        ),
+      )
+      .limit(1),
+  );
+  return row?.outletId ?? null;
+}
+
+export type RotateEdgeNodeCredentialOptions = {
+  /**
+   * Grace for the replaced credential, 0..EDGE_CREDENTIAL_ROTATION_GRACE_HOURS
+   * (the default). 0 cuts it off at once (suspected leak).
+   */
+  graceHours?: number;
+  /**
+   * Rotate even while the previous credential's grace is still open. Without
+   * it that is a 409: a retried rotate must not silently kill the credential
+   * the edge has just installed.
+   */
+  force?: boolean;
+};
+
+/**
+ * Credential rotation (legend-x3lv). Only an active node; the new credential
+ * is returned ONCE and never logged or audited. The replaced digest stays
+ * valid until `previousCredentialExpiresAt` (null when the grace is 0: cut
+ * off at once); a forced rotation inside an open grace replaces it (the
+ * credential before that stops working at once).
+ */
+export async function rotateEdgeNodeCredential(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  edgeNodeId: string,
+  now: Date = new Date(),
+  options: RotateEdgeNodeCredentialOptions = {},
+): Promise<{
+  edgeNode: EdgeNodeAdminView;
+  credential: string;
+  previousCredentialExpiresAt: string | null;
+}> {
+  assertTrustedScopedContext(context);
+  const maxGraceHours = parseEdgeHardeningEnv(
+    process.env,
+  ).EDGE_CREDENTIAL_ROTATION_GRACE_HOURS;
+  const graceHours = options.graceHours ?? maxGraceHours;
+  if (
+    !Number.isFinite(graceHours) ||
+    graceHours < 0 ||
+    graceHours > maxGraceHours
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      `Masa tenggang harus antara 0 dan ${maxGraceHours} jam.`,
+    );
+  const expiresAt =
+    graceHours > 0 ? new Date(now.getTime() + graceHours * 3_600_000) : null;
+  const result = await withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(edgeNodes)
+      .where(
+        and(
+          eq(edgeNodes.tenantId, context.tenant.tenantId),
+          eq(edgeNodes.id, edgeNodeId),
+        ),
+      )
+      .for("update");
+    if (!current)
+      throw new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
+    assertOutletInScope(context.outletScope, current.outletId);
+    if (current.status !== "active")
+      throw new CoreError(
+        "CONFLICT",
+        "Edge node sudah dicabut; kredensialnya tidak dapat diganti.",
+      );
+    if (
+      !options.force &&
+      current.previousCredentialExpiresAt &&
+      current.previousCredentialExpiresAt.getTime() > now.getTime()
+    )
+      throw new CoreError(
+        "CONFLICT",
+        "Kredensial edge node baru saja diganti dan masa tenggangnya masih berjalan. Ganti lagi hanya dengan konfirmasi paksa.",
+      );
+    const { token, hash } = mintEdgeCredential({
+      tenantId: current.tenantId,
+      outletId: current.outletId,
+      edgeNodeId: current.id,
+    });
+    const [updated] = await tx
+      .update(edgeNodes)
+      .set({
+        credentialHash: hash,
+        credentialIssuedAt: now,
+        previousCredentialHash: expiresAt ? current.credentialHash : null,
+        previousCredentialExpiresAt: expiresAt,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(edgeNodes.tenantId, context.tenant.tenantId),
+          eq(edgeNodes.id, current.id),
+          eq(edgeNodes.status, "active"),
+        ),
+      )
+      .returning();
+    if (!updated)
+      throw new CoreError("CONFLICT", "Edge node berubah, coba lagi.");
+    await recordAudit(
+      {
+        tenantId: current.tenantId,
+        outletId: current.outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "edge_node.credential_rotated",
+        objectType: "edge_node",
+        objectId: current.id,
+        reason: null,
+        before: {
+          credentialIssuedAt: current.credentialIssuedAt.toISOString(),
+        },
+        after: {
+          credentialIssuedAt: now.toISOString(),
+          previousCredentialExpiresAt: expiresAt?.toISOString() ?? null,
+          forced: options.force === true,
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return { row: updated, token };
+  });
+  return {
+    edgeNode: toAdminView(result.row),
+    credential: result.token,
+    previousCredentialExpiresAt: expiresAt?.toISOString() ?? null,
+  };
+}
+
+/**
+ * The stored digest the presented one matches: the current credential, or
+ * the previous one while its rotation grace lasts. Null for no match.
+ */
+function matchingCredentialHash(
+  presentedHash: string,
+  row: {
+    credentialHash: string;
+    previousCredentialHash: string | null;
+    previousCredentialExpiresAt: Date | null;
+  },
+  now: Date,
+): string | null {
+  if (edgeCredentialMatches(presentedHash, row.credentialHash))
+    return row.credentialHash;
+  if (
+    row.previousCredentialHash &&
+    row.previousCredentialExpiresAt &&
+    row.previousCredentialExpiresAt.getTime() > now.getTime() &&
+    edgeCredentialMatches(presentedHash, row.previousCredentialHash)
+  )
+    return row.previousCredentialHash;
+  return null;
 }
 
 export async function listEdgeNodes(
@@ -265,6 +466,7 @@ export function edgeNodeContext(claims: {
 export type AuthenticatedEdgeNode = {
   readonly scope: LinkScope;
   readonly context: ScopedTenantContext;
+  /** The stored digest this link authenticated with (current or previous). */
   readonly credentialHash: string;
 };
 
@@ -280,11 +482,12 @@ export type EdgeCredentialVerifier = (
 
 /**
  * Cloud link credential check. Every refusal is the same null (no oracle):
- * malformed token, unknown/inactive tenant, unknown node, other outlet,
- * revoked node, digest mismatch.
+ * malformed token, unknown/inactive tenant, closed outlet, unknown node,
+ * other outlet, revoked node, digest mismatch, expired previous credential.
  */
 export async function authenticateEdgeCredential(
   token: string,
+  now: Date = new Date(),
 ): Promise<AuthenticatedEdgeNode | null> {
   const claims = parseEdgeCredential(token);
   if (!claims) return null;
@@ -301,18 +504,25 @@ export async function authenticateEdgeCredential(
         outletId: edgeNodes.outletId,
         status: edgeNodes.status,
         credentialHash: edgeNodes.credentialHash,
+        previousCredentialHash: edgeNodes.previousCredentialHash,
+        previousCredentialExpiresAt: edgeNodes.previousCredentialExpiresAt,
       })
       .from(edgeNodes)
-      .where(eq(edgeNodes.id, claims.edgeNodeId))
+      .where(
+        and(
+          eq(edgeNodes.tenantId, claims.tenantId),
+          eq(edgeNodes.id, claims.edgeNodeId),
+        ),
+      )
       .limit(1),
   );
-  if (
-    !row ||
-    row.outletId !== claims.outletId ||
-    row.status !== "active" ||
-    !edgeCredentialMatches(claims.hash, row.credentialHash)
-  )
+  // Same outlet rule as the re-check (isEdgeNodeActive), so connect and
+  // re-check agree (legend-wg5t): a closed outlet cannot open a link.
+  if (row && (await isOutletClosed(context, claims.outletId))) return null;
+  if (!row || row.outletId !== claims.outletId || row.status !== "active")
     return null;
+  const credentialHash = matchingCredentialHash(claims.hash, row, now);
+  if (!credentialHash) return null;
   return {
     scope: {
       tenantId: claims.tenantId,
@@ -320,7 +530,7 @@ export async function authenticateEdgeCredential(
       edgeNodeId: claims.edgeNodeId,
     },
     context,
-    credentialHash: row.credentialHash,
+    credentialHash,
   };
 }
 
@@ -336,7 +546,10 @@ export async function verifyEdgeNodeCredential(input: {
   outletId: OutletId;
   edgeNodeId: string;
 } | null> {
-  const node = await authenticateEdgeCredential(input.credential);
+  const node = await authenticateEdgeCredential(
+    input.credential,
+    input.now ?? new Date(),
+  );
   if (!node) return null;
   return {
     tenantId: tenantIdSchema.parse(node.scope.tenantId),
@@ -345,21 +558,64 @@ export async function verifyEdgeNodeCredential(input: {
   };
 }
 
-/** Re-check for an open link: still active with the same credential. */
+async function isOutletClosed(
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<boolean> {
+  const [outlet] = await withTenant(db, context, (tx) =>
+    tx
+      .select({ status: outlets.status })
+      .from(outlets)
+      .where(eq(outlets.id, outletId))
+      .limit(1),
+  );
+  // A missing outlet row is treated as closed: fail closed.
+  return !outlet || outlet.status === "closed";
+}
+
+/**
+ * Re-check for an open link: still active with the same credential, and
+ * (legend-wg5t) the tenant still `active` and the outlet not `closed`, so a
+ * suspended tenant or closed outlet drops an already-open link at the next
+ * periodic check, not only at the next connect. A link opened with a
+ * credential that was rotated away stays up only until the grace period ends
+ * (legend-x3lv), or at once when it is rotated a second time.
+ */
 export async function isEdgeNodeActive(
   node: AuthenticatedEdgeNode,
+  now: Date = new Date(),
 ): Promise<boolean> {
+  const [tenant] = await db
+    .select({ status: tenants.status })
+    .from(tenants)
+    .where(eq(tenants.id, node.scope.tenantId))
+    .limit(1);
+  if (tenant?.status !== "active") return false;
+  if (await isOutletClosed(node.context, node.scope.outletId)) return false;
   const [row] = await withTenant(db, node.context, (tx) =>
     tx
       .select({
         status: edgeNodes.status,
         credentialHash: edgeNodes.credentialHash,
+        previousCredentialHash: edgeNodes.previousCredentialHash,
+        previousCredentialExpiresAt: edgeNodes.previousCredentialExpiresAt,
       })
       .from(edgeNodes)
-      .where(eq(edgeNodes.id, node.scope.edgeNodeId))
+      .where(
+        and(
+          eq(edgeNodes.tenantId, node.context.tenant.tenantId),
+          eq(edgeNodes.id, node.scope.edgeNodeId),
+        ),
+      )
       .limit(1),
   );
-  return row?.status === "active" && row.credentialHash === node.credentialHash;
+  if (row?.status !== "active") return false;
+  if (row.credentialHash === node.credentialHash) return true;
+  return (
+    row.previousCredentialHash === node.credentialHash &&
+    row.previousCredentialExpiresAt !== null &&
+    row.previousCredentialExpiresAt.getTime() > now.getTime()
+  );
 }
 
 /** Heartbeat from the link (PRD §3 F5 Registri: heartbeat + versi). */

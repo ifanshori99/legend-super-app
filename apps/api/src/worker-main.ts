@@ -10,6 +10,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
+import { verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -21,10 +22,24 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
+import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import {
+  deliverInventoryGlEvent,
+  retryBlockedInventoryGl,
+} from "./services/inventory-gl-consumer.ts";
+import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import {
+  handleRefundApprovalResolved,
+  sweepApprovedRefundPayouts,
+} from "./services/payment-refund.service.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -43,6 +58,11 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
+import { setPaymentGateway } from "./services/payment-gateway.ts";
+import { createDoitGateway } from "./services/payment-doit.ts";
+import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
 
@@ -54,10 +74,21 @@ if (!process.env.WORKER_DATABASE_URL)
     "WORKER_DATABASE_URL is required for the isolated queue role",
   );
 const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
+// PRD §3.19 (legend-w1vo): only the cloud posts the GL from stock movements;
+// an edge node (or an unreadable edge configuration) never does.
+const edgeRuntime = parseEdgeRuntimeConfig(process.env);
+const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
-const registry = new Pool({ connectionString: workerUrl, max: 1 });
+// PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
+// pending intents whose webhook never arrived.
+setPaymentGateway(createDoitGateway());
+const registry = new Pool({
+  connectionString: workerUrl,
+  max: 1,
+  verify: verifyQueueConnection,
+});
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
   const parsed = tenantIdSchema.parse(tenantId);
@@ -109,9 +140,25 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
+          // or sale posts its GL journal in a savepoint; a closed period or a
+          // missing mapping parks the source for the sweep, never fails this.
+          if (postsInventoryGl)
+            await deliverInventoryGlEvent(context, event, tx);
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
+          // from the chain re-read under the row lock; replays are no-ops.
+          await handlePurchasingApprovalResolved(context, event);
+          // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
+          // the payout itself runs from the approve call or the payout sweep.
+          await handleRefundApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
+          // Manual/recurring journals (legend-vmyg): settle from the chain.
+          await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -155,6 +202,14 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Approval deadline sweep failed");
     }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
+    }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
       await expireDueSupportAccessGrants(context);
@@ -192,6 +247,37 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Depreciation job sweep failed");
     }
+    // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
+    // arrived and retry stored webhook events. Fail closed like the sweeps.
+    try {
+      await runPaymentGatewayPollJob(context, new Date());
+    } catch {
+      console.error("Payment gateway poll sweep failed");
+    }
+    // PRD §3.19 (legend-w1vo), cloud only: retry stock sources whose journal
+    // was blocked (closed period, missing mapping). Retry only, never another
+    // period. A sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await retryBlockedInventoryGl(context, new Date());
+      } catch {
+        console.error("Inventory GL retry sweep failed");
+      }
+    }
+    // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+    // templates, one transaction per period. Fail closed, next tick resumes.
+    try {
+      const recurring = await runDueRecurringJournals(context, new Date());
+      // Counts only (no template data); the per-template reason is stored on
+      // recurring_journals.last_error for finance.
+      if (recurring.failed > 0)
+        logger.warn(
+          { job: "recurring_journals", ...recurring },
+          "recurring journal generation had failures",
+        );
+    } catch {
+      console.error("Recurring journal sweep failed");
+    }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
       await runInventoryParAlertJob(context);
@@ -202,6 +288,15 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // PRD §3.18 "Kirim PO" (legend-9yz): send queued PO emails. Logs carry only
+    // a masked address; an unconfigured provider fails the delivery closed.
+    try {
+      await runPurchasingPoEmailJob([context], {
+        email: handlers.notificationDelivery?.email ?? null,
+      });
+    } catch {
+      console.error("Purchasing PO email sweep failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:
@@ -260,10 +355,56 @@ const relay = createRelayRuntime({
     }
   },
 });
+// PAY-04 (legend-hvvn): pay out approved refunds whose provider call has not
+// finished (unknown outcome, pending). Its own loop, not the relay tick: each
+// provider call may take up to a minute and must never stall the outbox relay.
+// Rounds never overlap; each tenant sweep has a time budget of its own.
+const REFUND_PAYOUT_SWEEP_INTERVAL_MS = 30_000;
+let refundSweepStopped = false;
+let refundSweepTimer: NodeJS.Timeout | null = null;
+let refundSweepRound: Promise<void> = Promise.resolve();
+async function runRefundPayoutRound() {
+  try {
+    const tenants = await registry.query<{ id: string }>(
+      "SELECT id FROM app.active_tenant_registry",
+    );
+    for (const { id } of tenants.rows) {
+      if (refundSweepStopped) return;
+      try {
+        await sweepApprovedRefundPayouts(
+          await resolveContext(id),
+          new Date(),
+          undefined,
+          undefined,
+          () => refundSweepStopped,
+        );
+      } catch {
+        console.error("Refund payout sweep failed");
+      }
+    }
+  } catch {
+    console.error("Refund payout sweep failed");
+  }
+}
+function scheduleRefundPayoutRound() {
+  if (refundSweepStopped) return;
+  refundSweepTimer = setTimeout(() => {
+    refundSweepRound = runRefundPayoutRound().finally(
+      scheduleRefundPayoutRound,
+    );
+  }, REFUND_PAYOUT_SWEEP_INTERVAL_MS);
+}
+async function stopRefundPayoutSweep() {
+  refundSweepStopped = true;
+  if (refundSweepTimer) clearTimeout(refundSweepTimer);
+  await refundSweepRound;
+}
 try {
   await runtime.start();
   await relay.start();
+  scheduleRefundPayoutRound();
 } catch (error) {
+  refundSweepStopped = true;
   await runtime.stop().catch(() => {});
   await registry.end();
   throw error;
@@ -272,6 +413,7 @@ let stopping = false;
 async function stop() {
   if (stopping) return;
   stopping = true;
+  await stopRefundPayoutSweep();
   await relay.stop();
   await runtime.stop();
   await registry.end();

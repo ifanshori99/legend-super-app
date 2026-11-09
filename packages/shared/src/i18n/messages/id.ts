@@ -71,6 +71,14 @@ import { crm360Messages } from "./ws08-crm-360.ts";
 import { crmCampaignsMessages } from "./ws08-crm-campaigns.ts";
 import { deliveryOpsMessages } from "./ws08-delivery.ts";
 import { reservationBookingMessages } from "./ws08-reservation-customer.ts";
+import { posKasirCommonMessages } from "./pos-kasir-common.ts";
+import { posKasirPaymentMessages } from "./pos-kasir-payment.ts";
+import { posKasirGatewayMessages } from "./pos-kasir-gateway.ts";
+import { posKasirEdcMessages } from "./pos-kasir-edc.ts";
+import { posKasirCodeMessages } from "./pos-kasir-code.ts";
+import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
+import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
+import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -105,6 +113,15 @@ export const id = {
   posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
+  posKasirCommon: posKasirCommonMessages,
+  posKasirPayment: posKasirPaymentMessages,
+  posKasirGateway: posKasirGatewayMessages,
+  posKasirEdc: posKasirEdcMessages,
+  posKasirCode: posKasirCodeMessages,
+  posKasirShift: posKasirShiftMessages,
+  posKasirSupervisor: posKasirSupervisorMessages,
+  posKasirDayclose: posKasirDaycloseMessages,
   // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews (legend-i026),
   // campaigns/automations (legend-hbad), delivery channels (legend-e8oa) and
   // the guest booking flow (legend-xm4y). One module per bead so they never
@@ -1266,6 +1283,7 @@ export const id = {
       stock_critical: "Stok kritis",
       approval_request: "Permintaan approval",
       printer_offline: "Printer offline",
+      edge_sync_conflict: "Konflik sinkron edge",
       cash_variance: "Selisih kas",
       emergency: "Darurat",
       security: "Keamanan",
@@ -3392,7 +3410,7 @@ export const id = {
   designSystem: {
     title: "Design System Platform",
     intro:
-      "Token, tema, dan komponen yang dipakai semua layar Legend Super App. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
+      "Token, tema, dan komponen yang dipakai semua layar aplikasi. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
     controls: "Pengaturan tampilan",
     sections: {
       colors: "Warna",

@@ -17,7 +17,7 @@
 //   are refused for now.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import {
   CoreError,
   idr,
@@ -41,7 +41,14 @@ import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
-import { createIntent, createPaymentLink } from "./payment.service.ts";
+import type { Tx } from "./menu-internals.ts";
+import {
+  cancelPaymentLinkInTx,
+  createIntent,
+  createPaymentLink,
+} from "./payment.service.ts";
+import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
+import { requestPosLatePaymentRefund } from "./pos-order-late-payment.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
@@ -65,11 +72,116 @@ function linkSealAad(tenantId: string, tenderId: string): string {
   return `pos-order-payment-link:${tenantId}:${tenderId}`;
 }
 
+const closedPayloadSchema = z.looseObject({
+  intentId: uuidSchema,
+  reason: z.string().optional(),
+});
+
 const paidPayloadSchema = z.looseObject({
   paymentLinkId: uuidSchema,
   intentId: uuidSchema,
   providerRef: z.string().min(1).max(100).nullable().optional(),
 });
+
+/**
+ * Voids every QRIS tender of the order that still waits for its payment and
+ * closes its WS-05 link (bead legend-b0au), inside the caller's transaction:
+ * the tender becomes `voided` with `resolvedAt`, the link stops taking money
+ * (`cancelPaymentLinkInTx`: link expired, pending intent `expired`, one
+ * `payment.expired` event). Idempotent: a tender already resolved is not
+ * returned and nothing is cancelled twice. The caller writes its own order
+ * event / audit, as before (complete and void order added none for this).
+ * `caller` is accepted for symmetry with the callers; the void has no actor
+ * column.
+ */
+export async function voidPendingQrisTenders(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    orderId: string;
+    now: Date;
+    caller?: PosCaller | null;
+    /** Refuse (409) when the guest already paid a pending QRIS (void order). */
+    refuseWhenPaid?: boolean;
+  },
+): Promise<(typeof posOrderTenders.$inferSelect)[]> {
+  const tenantId = context.tenant.tenantId;
+  if (input.refuseWhenPaid) {
+    const pending = await tx
+      .select({ linkId: posOrderTenders.paymentLinkId })
+      .from(posOrderTenders)
+      .where(
+        and(
+          eq(posOrderTenders.tenantId, tenantId),
+          eq(posOrderTenders.orderId, input.orderId),
+          eq(posOrderTenders.status, "authorized"),
+          isNotNull(posOrderTenders.paymentLinkId),
+        ),
+      );
+    const linkIds = pending.flatMap((row) =>
+      row.linkId === null ? [] : [row.linkId],
+    );
+    if (linkIds.length > 0) await assertNoPaidQrisIntent(tx, tenantId, linkIds);
+  }
+  const voided = await tx
+    .update(posOrderTenders)
+    .set({ status: "voided", resolvedAt: input.now, updatedAt: input.now })
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.orderId, input.orderId),
+        eq(posOrderTenders.status, "authorized"),
+        isNotNull(posOrderTenders.paymentLinkId),
+      ),
+    )
+    .returning();
+  for (const tender of voided)
+    if (tender.paymentLinkId)
+      await cancelPaymentLinkInTx(tx, context, {
+        linkId: tender.paymentLinkId,
+        now: input.now,
+        reason: "cancelled",
+      });
+  return voided;
+}
+
+/**
+ * A QRIS the guest already paid (verified `paid` intent on the link) whose
+ * `payment.paid` event the consumer has not booked yet must not be voided:
+ * the money is in, so the cashier waits for the confirmation.
+ */
+async function assertNoPaidQrisIntent(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  linkIds: readonly string[],
+): Promise<void> {
+  // Lock the links first (link -> intent, the WS-05 confirmation order), so a
+  // confirmation cannot commit `paid` between this check and the cancel.
+  await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        inArray(paymentLinks.id, [...linkIds]),
+      ),
+    )
+    .orderBy(asc(paymentLinks.id))
+    .for("update");
+  const [paid] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.paymentLinkId, [...linkIds]),
+        eq(paymentIntents.status, "paid"),
+      ),
+    )
+    .limit(1);
+  if (paid)
+    throw new CoreError("CONFLICT", "QRIS sudah dibayar; tunggu konfirmasi.");
+}
 
 /**
  * POST .../tenders. Serialized on the order row: two cashiers splitting one
@@ -101,7 +213,59 @@ export async function addPosTender(
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
-      const tenders = await tendersOf(tx, context, order.id);
+      let tenders = await tendersOf(tx, context, order.id);
+      // legend-b0au: another method while a QRIS waits closes that QRIS first
+      // (its link stops taking money) unless the guest already paid it.
+      if (input.method !== "qris") {
+        const waiting = tenders.filter(
+          (tender) =>
+            tender.status === "authorized" && tender.paymentLinkId !== null,
+        );
+        if (waiting.length > 0) {
+          await assertNoPaidQrisIntent(
+            tx,
+            tenantId,
+            waiting.map((tender) => tender.paymentLinkId as string),
+          );
+          const voided = await voidPendingQrisTenders(tx, context, {
+            orderId: order.id,
+            now,
+            caller,
+          });
+          for (const tender of voided) {
+            await appendOrderEvent(tx, context, {
+              order,
+              type: "order.tender_voided",
+              payload: {
+                tenderId: tender.id,
+                method: tender.method,
+                amountIdr: tender.amountIdr,
+                reason: "replaced_by_other_method",
+              },
+              caller,
+              now,
+            });
+            await auditPos(
+              tx,
+              context,
+              {
+                action: "pos_order.tender_voided",
+                order,
+                caller,
+                before: { id: order.id, status: "authorized" },
+                after: {
+                  id: order.id,
+                  method: tender.method,
+                  amountIdr: tender.amountIdr,
+                  status: "voided",
+                },
+              },
+              now,
+            );
+          }
+          tenders = await tendersOf(tx, context, order.id);
+        }
+      }
       const remaining = remainingIdr(order, tenders);
       if (remaining <= 0)
         throw new PosError("ORDER_NOT_PAYABLE", "Tagihan ini sudah lunas.");
@@ -124,10 +288,18 @@ export async function addPosTender(
           if (input.receivedIdr === undefined)
             throw new PosError("CASH_TENDER_MISMATCH");
           const plan = planCashTender(idr(remaining), idr(input.receivedIdr));
+          const shift = await lockCashierShiftForCash(tx, context, {
+            outletId,
+            cashierId: caller.userId,
+            deviceId: caller.deviceId,
+            mode: "in",
+            at: now,
+          });
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({
               ...base,
+              shiftId: shift.id,
               provider: "manual",
               amountIdr: plan.amountIdr,
               receivedIdr: plan.receivedIdr,
@@ -302,9 +474,10 @@ export async function addPosTender(
  * Captures the POS QRIS tender whose payment link the event names, once the
  * link is fully covered by verified money and a `paid` intent exists on it
  * (decision re-read from the locked rows, never from the event alone).
- * Idempotent and safe on replay: a tender already captured/voided, an order
- * already final, or a link that is not a POS tender's changes nothing (a late
- * payment stays WS-05 unallocated funds, PAY-04).
+ * Idempotent and safe on replay: a tender already captured, or a link that is
+ * not a POS tender's, changes nothing. A payment that lands on a voided/failed
+ * tender or a final order is refunded in full by a system WS-05 refund request
+ * (`pos-order-late-payment.ts`, legend-b0au), once per intent.
  */
 export async function handlePosPaymentPaid(
   context: ScopedTenantContext,
@@ -332,8 +505,9 @@ export async function handlePosPaymentPaid(
       .from(orders)
       .where(and(eq(orders.tenantId, tenantId), eq(orders.id, probe.orderId)))
       .for("update");
-    if (!order || order.status === "completed" || order.status === "voided")
-      return;
+    if (!order) return;
+    const orderFinal =
+      order.status === "completed" || order.status === "voided";
     const [pos] = await tx
       .select()
       .from(posOrders)
@@ -352,7 +526,18 @@ export async function handlePosPaymentPaid(
         ),
       )
       .for("update");
-    if (!tender || tender.status !== "authorized") return;
+    if (!tender || tender.status === "captured") return;
+    // legend-b0au: money arrived for a tender that can no longer take it (it
+    // was voided or failed, or the order closed). Refund what the intent holds.
+    if (tender.status !== "authorized" || orderFinal) {
+      await requestPosLatePaymentRefund(tx, context, {
+        order,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: payload.data.intentId,
+        now,
+      });
+      return;
+    }
     const [link] = await tx
       .select({
         paidIdr: paymentLinks.paidIdr,
@@ -383,7 +568,54 @@ export async function handlePosPaymentPaid(
     if (!paid) return;
     // A tender may never take the order above its total (contract refine).
     const tenders = await tendersOf(tx, context, order.id);
-    if (tender.amountIdr > remainingIdr(order, tenders)) return;
+    if (tender.amountIdr > remainingIdr(order, tenders)) {
+      // legend-b0au: the bill shrank under the open QRIS (e.g. more deposit
+      // applied). The tender cannot take the money, so it is voided, its link
+      // closed, and what the intent holds is refunded instead of stranded.
+      const voided = await voidPendingQrisTenders(tx, context, {
+        orderId: order.id,
+        now,
+      });
+      await bumpPos(tx, context, pos, now);
+      for (const row of voided) {
+        await appendOrderEvent(tx, context, {
+          order,
+          type: "order.tender_voided",
+          payload: {
+            tenderId: row.id,
+            method: row.method,
+            amountIdr: row.amountIdr,
+            reason: "bill_below_tender",
+          },
+          caller: null,
+          now,
+        });
+        await auditPos(
+          tx,
+          context,
+          {
+            action: "pos_order.tender_voided",
+            order,
+            caller: null,
+            before: { id: order.id, status: "authorized" },
+            after: {
+              id: order.id,
+              method: row.method,
+              amountIdr: row.amountIdr,
+              status: "voided",
+            },
+          },
+          now,
+        );
+      }
+      await requestPosLatePaymentRefund(tx, context, {
+        order,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: payload.data.intentId,
+        now,
+      });
+      return;
+    }
     await tx
       .update(posOrderTenders)
       .set({
@@ -432,4 +664,157 @@ export async function handlePosPaymentPaid(
       now,
     );
   });
+}
+
+/**
+ * WS-05 `payment.expired` / `payment.failed` for the intent of a POS QRIS
+ * tender (bead legend-b0au). Runs IN the outbox consumption transaction (`tx`)
+ * so the change commits with the consumed offset. The lock order matches
+ * `handlePosPaymentPaid`: orders row -> pos_orders row -> tender row. The tender
+ * is decided from the locked row: only a still `authorized` tender whose
+ * `paymentIntentId` is the event's intent becomes `failed`, so the cashier can
+ * open a new QRIS; a voided/captured tender or a replay changes nothing.
+ * Returns true when the intent's link belongs to a POS tender (handled or
+ * ignored as stale), false when it is not a POS bill (the router then ignores
+ * the event). Rows of another tenant are never visible (RLS + explicit filter).
+ */
+export async function handlePosPaymentClosed(
+  context: ScopedTenantContext,
+  event: DomainEvent,
+  tx: Tx,
+  now: Date,
+): Promise<boolean> {
+  if (event.name !== "payment.expired" && event.name !== "payment.failed")
+    return false;
+  const payload = closedPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return false;
+  const tenantId = context.tenant.tenantId;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, payload.data.intentId),
+      ),
+    );
+  if (!intent) return false;
+  const [probe] = await tx
+    .select({ orderId: posOrderTenders.orderId })
+    .from(posOrderTenders)
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.paymentLinkId, intent.paymentLinkId),
+      ),
+    );
+  if (!probe) return false;
+  // Lock order: orders row -> pos_orders row -> tender row.
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, probe.orderId)))
+    .for("update");
+  if (!order) return true;
+  const [pos] = await tx
+    .select()
+    .from(posOrders)
+    .where(
+      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
+    )
+    .for("update");
+  if (!pos) return true;
+  const [tender] = await tx
+    .select()
+    .from(posOrderTenders)
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.paymentLinkId, intent.paymentLinkId),
+      ),
+    )
+    .for("update");
+  if (
+    !tender ||
+    tender.status !== "authorized" ||
+    tender.paymentIntentId !== payload.data.intentId
+  )
+    return true;
+  // A guest who paid just before the expiry sweep: the webhook may already
+  // have moved the intent on to `paid` (WS-05 accepts a late settlement). Its
+  // `payment.paid` captures the tender; failing it here would refund the money
+  // and make the cashier charge again. Lock order link -> intent, the same as
+  // the WS-05 confirmation and `cancelPaymentLinkInTx`.
+  await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, intent.paymentLinkId),
+      ),
+    )
+    .for("update");
+  const [current] = await tx
+    .select({ status: paymentIntents.status })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, payload.data.intentId),
+      ),
+    )
+    .for("update");
+  if (current && current.status !== "expired" && current.status !== "failed")
+    return true;
+  await tx
+    .update(posOrderTenders)
+    .set({ status: "failed", resolvedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.id, tender.id),
+        eq(posOrderTenders.status, "authorized"),
+      ),
+    );
+  // The link would otherwise keep taking new intents for a tender that is no
+  // longer waiting (the cashier opens a fresh QRIS); close it like a void.
+  if (tender.paymentLinkId)
+    await cancelPaymentLinkInTx(tx, context, {
+      linkId: tender.paymentLinkId,
+      now,
+      reason: "cancelled",
+    });
+  await bumpPos(tx, context, pos, now);
+  await appendOrderEvent(tx, context, {
+    order,
+    type: "order.tender_failed",
+    payload: {
+      tenderId: tender.id,
+      method: tender.method,
+      amountIdr: tender.amountIdr,
+      paymentIntentId: tender.paymentIntentId,
+      reason: event.name === "payment.expired" ? "expired" : "failed",
+    },
+    caller: null,
+    now,
+  });
+  await auditPos(
+    tx,
+    context,
+    {
+      action: "pos_order.tender_failed",
+      order,
+      caller: null,
+      before: { id: order.id, status: "authorized" },
+      after: {
+        id: order.id,
+        method: tender.method,
+        amountIdr: tender.amountIdr,
+        status: "failed",
+      },
+    },
+    now,
+  );
+  return true;
 }
