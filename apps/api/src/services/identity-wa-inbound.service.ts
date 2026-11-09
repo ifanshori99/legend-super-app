@@ -67,6 +67,11 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
+import {
+  maskSenderForAudit,
+  recordLoginAudit,
+  type LoginAuditAction,
+} from "./identity-wa-audit.ts";
 
 /** One inbound text message, already reduced to the fields the flow needs. */
 export type InboundWhatsAppMessage = {
@@ -207,6 +212,41 @@ async function finish(
     .where(eq(waInboundMessages.id, id));
 }
 
+function webhookContext(tenantId: string, brandId: string | null) {
+  return establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId, source: "webhook" }),
+    { kind: "tenant" },
+  );
+}
+
+/**
+ * legend-wq3f: audit row for a challenge milestone reached through the webhook,
+ * on the same transaction as the state change. Only the masked sender is kept.
+ */
+async function auditChallenge(
+  transaction: Transaction,
+  input: {
+    action: LoginAuditAction;
+    challengeId: string;
+    tenantId: string;
+    brandId: string | null;
+    actorUserId?: string | null;
+    details: Parameters<typeof recordLoginAudit>[2]["details"];
+    now: Date;
+  },
+): Promise<void> {
+  const context = webhookContext(input.tenantId, input.brandId);
+  await withTenant(transaction as unknown as typeof db, context, (tx) =>
+    recordLoginAudit(tx, context, {
+      action: input.action,
+      challengeId: input.challengeId,
+      actorUserId: input.actorUserId,
+      details: input.details,
+      now: input.now,
+    }),
+  );
+}
+
 /** AUTH-04: at most 10 login messages per number per hour. */
 async function underPerNumberLimit(
   tx: Transaction,
@@ -334,6 +374,8 @@ export async function processInboundWhatsApp(
           deps.afterLinkWrite,
         );
         const kind: InboundKind = completed ? "login" : "rejected";
+        if (!completed)
+          await auditRejected(tx, challenge, message.sender, now, true);
         await finish(tx, claim.id, {
           kind,
           tenantId: challenge.tenantId,
@@ -354,9 +396,12 @@ export async function processInboundWhatsApp(
         brandId: challenge.brandId,
         receivingNumber: message.receivingNumber,
         userId: account.userId,
+        senderMasked: maskSenderForAudit(message.sender),
         now,
       });
       const kind: InboundKind = completed ? "login" : "rejected";
+      if (!completed)
+        await auditRejected(tx, challenge, message.sender, now, false);
       await finish(tx, claim.id, {
         kind,
         tenantId: challenge.tenantId,
@@ -365,6 +410,30 @@ export async function processInboundWhatsApp(
       return { eventId: message.eventId, duplicate: false, kind };
     }),
   );
+}
+
+/** A found challenge whose completion was refused (inactive tenant, number
+ * mismatch, lost race, stale link session). */
+async function auditRejected(
+  tx: Transaction,
+  challenge: { id: string; tenantId: string; brandId: string | null },
+  sender: string,
+  now: Date,
+  linking: boolean,
+): Promise<void> {
+  await auditChallenge(tx, {
+    action: "login_challenge.rejected",
+    challengeId: challenge.id,
+    tenantId: challenge.tenantId,
+    brandId: challenge.brandId,
+    details: {
+      channel: "whatsapp_inbound",
+      cause: "completion_refused",
+      linking,
+      senderMasked: maskSenderForAudit(sender),
+    },
+    now,
+  });
 }
 
 type ChallengeMatch =
@@ -412,7 +481,7 @@ async function pendingChallengeFor(
   const row = rows[0];
   if (!row || row.status !== "pending") return { kind: "none" };
   if (row.expiresAt.getTime() <= now.getTime()) {
-    await tx
+    const flipped = await tx
       .update(loginChallenges)
       .set({ status: "expired" })
       .where(
@@ -420,7 +489,22 @@ async function pendingChallengeFor(
           eq(loginChallenges.id, row.id),
           eq(loginChallenges.status, "pending"),
         ),
-      );
+      )
+      .returning({ id: loginChallenges.id });
+    if (flipped.length === 1 && row.tenantId !== null)
+      await auditChallenge(tx, {
+        action: "login_challenge.expired",
+        challengeId: row.id,
+        tenantId: row.tenantId,
+        brandId: row.brandId,
+        details: {
+          channel: "whatsapp_inbound",
+          status: "expired",
+          cause: "ttl_elapsed",
+          linking: row.linkUserId !== null,
+        },
+        now,
+      });
     return { kind: "none" };
   }
   if (row.tenantId === null) return { kind: "none" };
@@ -452,6 +536,7 @@ async function completeChallenge(
     brandId: string | null;
     receivingNumber: string;
     userId: string;
+    senderMasked: string | null;
     now: Date;
   },
 ): Promise<boolean> {
@@ -500,7 +585,20 @@ async function completeChallenge(
           ),
         )
         .returning({ id: loginChallenges.id });
-      return updated.length === 1;
+      if (updated.length !== 1) return false;
+      await recordLoginAudit(tx, context, {
+        action: "login_challenge.completed",
+        challengeId: input.challengeId,
+        actorUserId: input.userId,
+        details: {
+          channel: "whatsapp_inbound",
+          status: "completed",
+          matchedUserId: input.userId,
+          senderMasked: input.senderMasked,
+        },
+        now: input.now,
+      });
+      return true;
     },
   );
 }
@@ -688,6 +786,19 @@ async function completeLink(
           completedAt: input.now,
         })
         .where(eq(loginChallenges.id, input.id));
+      await recordLoginAudit(tx, context, {
+        action: "login_challenge.completed",
+        challengeId: input.id,
+        actorUserId: userId,
+        details: {
+          channel: "whatsapp_inbound",
+          status: "completed",
+          linking: true,
+          matchedUserId: userId,
+          senderMasked: maskSenderForAudit(input.sender),
+        },
+        now: input.now,
+      });
       return true;
     },
   );

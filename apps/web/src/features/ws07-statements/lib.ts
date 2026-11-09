@@ -20,6 +20,7 @@ import {
   decidePeriodClose,
   multiEntityProfitAndLossSchema,
   periodBounds,
+  statementBasisFor,
   type BalanceSheet,
   type CashFlowStatement,
   type EquityChanges,
@@ -548,31 +549,6 @@ export function closedPeriodsInRange(
 
 // ---- Official vs estimate (PRD §3.19 Tutup Periode, §3 dashboard rule) -----
 
-/**
- * Month keys ("2026-10") a date range touches, inclusive. Capped so a typo'd
- * year cannot loop for ever; a capped range is treated as an estimate.
- */
-const MAX_BASIS_MONTHS = 240;
-
-export function monthsInRange(from: string, to: string): string[] | null {
-  let year = Number(from.slice(0, 4));
-  let month = Number(from.slice(5, 7));
-  const endYear = Number(to.slice(0, 4));
-  const endMonth = Number(to.slice(5, 7));
-  if (![year, month, endYear, endMonth].every(Number.isInteger)) return null;
-  const months: string[] = [];
-  while (year < endYear || (year === endYear && month <= endMonth)) {
-    if (months.length >= MAX_BASIS_MONTHS) return null;
-    months.push(`${year}-${String(month).padStart(2, "0")}`);
-    month += 1;
-    if (month > 12) {
-      month = 1;
-      year += 1;
-    }
-  }
-  return months;
-}
-
 export type StatementBasisKind = "official" | "estimate";
 
 export type StatementBasis = {
@@ -597,19 +573,17 @@ export function statementBasis(
   to: string,
   options: { cumulative?: boolean } = {},
 ): StatementBasis {
-  const status = new Map(periods.map((row) => [row.period, row.status]));
-  const months = monthsInRange(from, to);
-  if (months === null || months.length === 0)
-    return { basis: "estimate", closed: [], open: [] };
-  const closed = months.filter((month) => status.get(month) === "closed");
-  const open = months.filter((month) => status.get(month) !== "closed");
-  if (options.cumulative) {
-    const first = months[0]!;
-    for (const row of periods)
-      if (row.period < first && row.status !== "closed") open.push(row.period);
-    open.sort();
-  }
-  return { basis: open.length === 0 ? "official" : "estimate", closed, open };
+  // One rule for web and API: the shared statementBasisFor.
+  const result = statementBasisFor(periods, {
+    from,
+    to,
+    ...(options.cumulative ? { cumulative: true } : {}),
+  });
+  return {
+    basis: result.basis === "closed_snapshot" ? "official" : "estimate",
+    closed: result.closedPeriodKeys,
+    open: result.openPeriodKeys,
+  };
 }
 
 /** Multi-entity: official only when every entity's figures are official. */

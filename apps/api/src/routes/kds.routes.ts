@@ -20,11 +20,16 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   bumpKitchenTicket,
   getKitchenStationFeed,
+  getKitchenStationSummary,
   getKitchenTicket,
+  getStationCapacityRules,
+  listCapacityRules,
+  listKitchenStationLabels,
   listKitchenStationTickets,
   recallKitchenTicket,
   setKitchenTicketPriority,
   startKitchenTicket,
+  updateCapacityRules,
   updateKitchenTicketItem,
   voidKitchenTicket,
 } from "@starter/shared/kitchen";
@@ -34,10 +39,13 @@ import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
   getStationScope,
+  requireOutletPermission,
   requireStationScopePermission,
   requireStationPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import * as capacity from "../services/kds-capacity.service.ts";
+import * as cookReads from "../services/kds-cook-reads.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -103,6 +111,55 @@ kdsRouter.get(
         outletId,
         stationId,
         after,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// One light read for the station switch: open-ticket count per station. The
+// caller may hold the permission on an outlet or on stations only, so the
+// service narrows to `permittedStationIds`.
+kdsRouter.get("/station-summary", processTicket, async (req, res) => {
+  const { outletId } = getKitchenStationSummary.params.parse(req.params);
+  res.json({
+    data: await kds.getStationSummary(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+// Cook reads (legend-gt7f): the label and the capacity rules a station-scoped
+// cook needs, under `kds.ticket.process` only. Slim views; the capacity config
+// read (`/capacity-rules`, kds.station.manage) and PUT keep their guard.
+kdsRouter.get("/station-labels", processTicket, async (req, res) => {
+  const { outletId } = listKitchenStationLabels.params.parse(req.params);
+  res.json({
+    data: await cookReads.listStationLabels(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.get(
+  "/stations/:stationId/capacity-rules",
+  ...processStation,
+  async (req, res) => {
+    const { outletId, stationId } = getStationCapacityRules.params.parse(
+      req.params,
+    );
+    res.json({
+      data: await cookReads.listStationCapacityRules(
+        getScopedTenantContext(req),
+        actor(req),
+        outletId,
+        stationId,
         new Date(),
       ),
     });
@@ -236,6 +293,51 @@ kdsRouter.post(
         outletId,
         itemId,
         body.action,
+        new Date(),
+      ),
+    });
+  },
+);
+
+// ---- Capacity rules (legend-w4nq4, legend-44jm) ----------------------------
+// The kitchen config screen reads and replaces a station's capacity windows.
+// `kds.station.manage` on the outlet (tenant or outlet scope) is the guard:
+// the same permission that owns station configuration; a station-only or
+// `kds.ticket.process` grant is refused. The service re-asserts that the
+// station belongs to the path outlet (TEN-03).
+
+const manageStations = requireOutletPermission("kds.station.manage", (req) =>
+  String(req.params.outletId),
+);
+
+// legend-44jm: GET answers `listCapacityRules` (contract rows), ordered by
+// station, then window_minutes, then id, so two reads of an unchanged config
+// are identical. Only this tenant's and this path outlet's stations appear.
+kdsRouter.get("/capacity-rules", manageStations, async (req, res) => {
+  const { outletId } = listCapacityRules.params.parse(req.params);
+  res.json({
+    data: await capacity.listCapacityRules(
+      getScopedTenantContext(req),
+      outletId,
+    ),
+  });
+});
+
+kdsRouter.put(
+  "/stations/:stationId/capacity-rules",
+  manageStations,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, stationId } = updateCapacityRules.params.parse(
+      req.params,
+    );
+    const body = updateCapacityRules.body.parse(req.body);
+    res.json({
+      data: await capacity.replaceCapacityRules(
+        getScopedTenantContext(req),
+        outletId,
+        stationId,
+        body.rules,
         new Date(),
       ),
     });

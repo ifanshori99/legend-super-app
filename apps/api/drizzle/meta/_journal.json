@@ -1179,6 +1179,97 @@
       "breakpoints": true
     },
     {
+      "idx": 171,
+      "version": "7",
+      "when": 1794250000000,
+      "tag": "0171_access_perm_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1794251000000,
+      "tag": "0172_inventory_item_manage_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1794252000000,
+      "tag": "0173_goods_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1794253000000,
+      "tag": "0174_finance_policy_asset_register",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1794254000000,
+      "tag": "0175_pickup_call_letters",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1794255000000,
+      "tag": "0176_metrics_daily",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1794256000000,
+      "tag": "0177_storage_object_owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1794257000000,
+      "tag": "0178_tenant_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1794258000000,
+      "tag": "0179_delivery_platform_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1794259000000,
+      "tag": "0180_order_issues",
+      "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1794260000000,
+      "tag": "0181_sales_targets",
+      "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1794263000000,
+      "tag": "0184_kitchen_capacity_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1794265000000,
+      "tag": "0186_stock_ledger_posting_seq",
+      "breakpoints": true
+    },
+    {
       "idx": 187,
       "version": "7",
       "when": 1794266000000,

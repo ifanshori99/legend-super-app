@@ -114,6 +114,18 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends org.support_access.approve to the stored owner template role rows of every tenant, one tenant context at a time (legend-c9kbk); idempotent, never touches a custom role or another template",
   "0170_edc_pan_backfill_separators.sql":
     "masks card-number-like digit runs (any whitespace, slash, underscore, dash separators) in the stored edc_transactions.message of existing rows, in batches of 1000 (legend-0lrkl, backfill for legend-deu7r); overwrites message text, idempotent, never inserts or deletes rows",
+  "0171_access_perm_backfill.sql":
+    "appends hr.announcement.manage, self.loan.request and self.sop.read to the stored template role rows of existing tenants (legend-9yb5u); idempotent, never touches a custom role, FORCE RLS lifted for these statements and restored",
+  "0172_inventory_item_manage_backfill.sql":
+    "appends inventory.item.manage to every role that holds inventory.stock.receive and to the owner and warehouse templates; idempotent, skips rows that already hold it, FORCE RLS lifted and restored",
+  "0174_finance_policy_asset_register.sql":
+    "backfills fixed_assets.code of existing assets (FA-nnnnn per entity)",
+  "0177_storage_object_owner.sql":
+    "links legacy core_storage_objects rows to their source record (source_kind, source_id) and sets owner_user_id (legend-pszrm); rows with a link are not rewritten again, no rows inserted or deleted, FORCE RLS lifted and restored",
+  "0178_tenant_claims.sql":
+    "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
+  "0186_stock_ledger_posting_seq.sql":
+    "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.

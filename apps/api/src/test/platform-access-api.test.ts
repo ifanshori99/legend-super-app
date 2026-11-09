@@ -16,7 +16,8 @@ import {
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
-import { setAuditWriter, type AuditEntry } from "../services/audit-writer";
+import { setAuditWriter } from "../services/audit-writer";
+import { coreAuditWriter } from "../services/core-audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
 import {
   agent,
@@ -35,7 +36,23 @@ const owner = new Pool({
 });
 const createdUserIds: string[] = [];
 const createdRoleIds: string[] = [];
-const audits: AuditEntry[] = [];
+
+type AuditedEvent = {
+  action: string;
+  objectId: string | null;
+  actorId: string | null;
+  tenantId: string;
+};
+
+// Audit rows are read back from audit_logs as the owner (the real core writer
+// commits them on the domain transaction), not from an in-memory recorder.
+async function auditEvents(tenantId: string): Promise<AuditedEvent[]> {
+  const { rows } = await owner.query<{ event: AuditedEvent }>(
+    "SELECT event FROM audit_logs WHERE tenant_id = $1",
+    [tenantId],
+  );
+  return rows.map((row) => row.event);
+}
 
 function scopedContext(tenantId = seededTenantId): ScopedTenantContext {
   return establishScopedTenantContext(
@@ -96,13 +113,7 @@ async function assign(
 const unique = () => randomBytes(4).toString("hex");
 
 beforeAll(() => {
-  // The real audit service (legend-4sc) is not on main yet; the port's default
-  // fails closed, so install a recording writer for the write paths here.
-  setAuditWriter({
-    record: async (entry) => {
-      audits.push(entry);
-    },
-  });
+  setAuditWriter(coreAuditWriter);
 });
 
 afterAll(async () => {
@@ -271,15 +282,16 @@ describe("§3.7 role templates and custom roles", () => {
       .send({ name: "Renamed template" });
     expect(patch.status).toBe(422);
 
+    const roleAudits = await auditEvents(seededTenantId);
     expect(
-      audits.some(
+      roleAudits.some(
         (entry) =>
           entry.action === "role.created" &&
           entry.objectId === custom.body.data.id,
       ),
     ).toBe(true);
     expect(
-      audits.some(
+      roleAudits.some(
         (entry) =>
           entry.action === "role.created" &&
           entry.actorId === admin.userId &&
@@ -521,7 +533,7 @@ describe("§3.7 Pemberian Role", () => {
     expect(access.body.data.permissions).not.toContain("org.structure.manage");
 
     expect(
-      audits.some(
+      (await auditEvents(seededTenantId)).some(
         (entry) =>
           entry.action === "role_assignment.granted" &&
           entry.objectId === assignment.id,
@@ -690,7 +702,7 @@ describe("§3.7 Matriks Approval", () => {
       expect(gap.status).toBe(422);
 
       expect(
-        audits.some(
+        (await auditEvents(seededTenantId)).some(
           (entry) =>
             entry.action === "approval_policy.changed" &&
             entry.tenantId === seededTenantId,

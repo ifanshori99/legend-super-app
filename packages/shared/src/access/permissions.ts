@@ -138,6 +138,7 @@ const entries = [
   // Inventory, recipes, purchasing (§3.14–3.15, F13–F15)
   ["inventory.stock.view", []],
   ["inventory.stock.receive", []],
+  ["inventory.item.manage", []],
   ["inventory.stock.transfer", []],
   ["inventory.opname.count", []],
   ["inventory.waste.record", []],
@@ -203,6 +204,7 @@ const entries = [
   ["hr.reimbursement.approve", ["approve"]],
   ["hr.loan.approve", ["approve", "payroll"]],
   ["hr.sop.manage", []],
+  ["hr.announcement.manage", []],
   ["hr.training.manage", []],
   ["hr.kpi.manage", []],
 
@@ -220,6 +222,7 @@ const entries = [
   ["self.leave.request", ["self"]],
   ["self.payslip.view", ["self"]],
   ["self.reimbursement.request", ["self"]],
+  ["self.loan.request", ["self"]],
   ["self.shift_swap.request", ["self"]],
   ["self.sop.read", ["self"]],
 

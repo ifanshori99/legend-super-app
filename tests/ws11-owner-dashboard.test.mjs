@@ -119,7 +119,12 @@ describe("owner dashboard part 1 · DASH-02", () => {
         );
         assert.equal(row.values.length, report.metrics.length);
       }
-      assert.equal(board.isReportResultEmpty(run), false);
+      // A run whose metrics the API answers unavailable has no number to show
+      // (brief 284 T4): it reads as empty, every other run has rows.
+      const allUnavailable = run.availability.every(
+        (entry) => entry.status === "unavailable",
+      );
+      assert.equal(board.isReportResultEmpty(run), allUnavailable);
     }
   });
 

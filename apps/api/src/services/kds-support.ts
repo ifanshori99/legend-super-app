@@ -44,7 +44,13 @@ import {
   type KitchenTicketStatus,
 } from "@starter/shared/kitchen";
 import { HttpError } from "../lib/http-error.ts";
-import { domainEventOutbox } from "../db/schema/index.ts";
+import type { OrderChannel, ServiceType } from "@starter/shared/pos";
+import {
+  domainEventOutbox,
+  orders,
+  tables,
+  tableSessions,
+} from "../db/schema/index.ts";
 import {
   kitchenStationCursors,
   kitchenStationFeed,
@@ -55,6 +61,7 @@ import {
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
+import { posPriceChannel } from "./pos-order-pricing.ts";
 
 export type TicketRow = typeof kitchenTickets.$inferSelect;
 export type TicketItemRow = typeof kitchenTicketItems.$inferSelect;
@@ -444,9 +451,13 @@ export function ticketItemDto(row: TicketItemRow): KitchenTicketItem {
   });
 }
 
+/** What the KDS header reads from the ticket's order (legend-rutl). */
+type OrderHeader = Pick<KitchenTicketDetail, "tableLabel" | "channel">;
+
 function ticketDetailDto(
   row: TicketRow,
   items: readonly TicketItemRow[],
+  header: OrderHeader,
 ): KitchenTicketDetail {
   return kitchenTicketDetailSchema.parse({
     tenantId: row.tenantId,
@@ -461,8 +472,63 @@ function ticketDetailDto(
     doneAt: iso(row.doneAt),
     servedAt: iso(row.servedAt),
     printedFallback: row.printedFallback,
+    tableLabel: header.tableLabel,
+    channel: header.channel,
     items: items.map(ticketItemDto),
   });
+}
+
+/**
+ * Table code and menu channel of each ticket's order, read in one query. The
+ * table comes from the order's table session; an order without one has none.
+ */
+async function orderHeaders(
+  tx: Tx,
+  context: ScopedTenantContext,
+  tickets: readonly TicketRow[],
+): Promise<Map<string, OrderHeader>> {
+  const rows = await tx
+    .select({
+      id: orders.id,
+      channel: orders.channel,
+      serviceType: orders.serviceType,
+      tableCode: tables.code,
+    })
+    .from(orders)
+    .leftJoin(
+      tableSessions,
+      and(
+        eq(tableSessions.tenantId, orders.tenantId),
+        eq(tableSessions.id, orders.tableSessionId),
+      ),
+    )
+    .leftJoin(
+      tables,
+      and(
+        eq(tables.tenantId, tableSessions.tenantId),
+        eq(tables.id, tableSessions.tableId),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, context.tenant.tenantId),
+        inArray(orders.id, [
+          ...new Set(tickets.map((ticket) => ticket.orderId)),
+        ]),
+      ),
+    );
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      {
+        tableLabel: row.tableCode,
+        channel: posPriceChannel(
+          row.channel as OrderChannel,
+          row.serviceType as ServiceType,
+        ),
+      },
+    ]),
+  );
 }
 
 /** Renders tickets with their lines (one items query), keeping input order. */
@@ -491,9 +557,13 @@ export async function ticketDetails(
     list.push(item);
     byTicket.set(item.ticketId, list);
   }
-  return tickets.map((ticket) =>
-    ticketDetailDto(ticket, byTicket.get(ticket.id) ?? []),
-  );
+  const headers = await orderHeaders(tx, context, tickets);
+  return tickets.map((ticket) => {
+    const header = headers.get(ticket.orderId);
+    // The ticket's order FK guarantees the row; a miss is a bug, not a default.
+    if (!header) throw new Error("Kitchen ticket order vanished");
+    return ticketDetailDto(ticket, byTicket.get(ticket.id) ?? [], header);
+  });
 }
 
 /** Re-reads one ticket and renders it. */

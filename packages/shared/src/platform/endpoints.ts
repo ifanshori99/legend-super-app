@@ -72,6 +72,12 @@ import {
   updateOutletInputSchema,
 } from "./org.ts";
 import {
+  assignTenantOwnerInputSchema,
+  replaceTenantOwnerInputSchema,
+  tenantOwnerAssignmentIdSchema,
+  tenantOwnerAssignmentSchema,
+} from "./tenant-owner.ts";
+import {
   decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
@@ -227,6 +233,23 @@ export const platformEndpoints = {
     body: requestSupportWriteAccessInputSchema,
     response: dataResponseSchema(supportAccessRequestSchema),
   }),
+  assignTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners",
+    params: tenantParams,
+    body: assignTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
+  }),
+  replaceTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners/:assignmentId/replace",
+    params: z.strictObject({
+      tenantId: tenantIdSchema,
+      assignmentId: tenantOwnerAssignmentIdSchema,
+    }),
+    body: replaceTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
+  }),
   listSupportAccess: defineEndpoint({
     method: "GET",
     path: "/api/platform/support-access",
@@ -367,6 +390,12 @@ export const orgEndpoints = {
     method: "POST",
     path: "/api/org/domains",
     body: addDomainInputSchema,
+    response: dataResponseSchema(tenantDomainSchema),
+  }),
+  verifyDomain: defineEndpoint({
+    method: "POST",
+    path: "/api/org/domains/:domainId/verify",
+    params: z.strictObject({ domainId: tenantDomainIdSchema }),
     response: dataResponseSchema(tenantDomainSchema),
   }),
   removeDomain: defineEndpoint({

@@ -15,9 +15,10 @@
 // - Location, UOM conversion, alternate and par level changes are audited
 //   (`recordAudit`). The shared event catalog defines no setup events, so
 //   nothing is written to the outbox.
-// - Permission codes: the catalog has no `inventory.setup.manage`, so master
-//   data writes reuse `inventory.stock.receive` (the same decision as the item
-//   master in inventory.service.ts). Decision recorded in the bead report.
+// - Permission codes: master data writes (locations, UOM conversions,
+//   alternates, par levels) need `inventory.item.manage`, the same code as the
+//   item master in inventory.service.ts (legend-1ozj; migration 0172 backfilled
+//   the stored roles).
 
 import { createHash } from "node:crypto";
 import { and, asc, eq, gt, ne, sql, type SQL } from "drizzle-orm";
@@ -103,7 +104,7 @@ export type UpdateParLevelInput = z.infer<typeof updateParLevelInputSchema>;
 // --------------------------------------------------------------- guards
 
 /** Permission that gates master-data writes (see the file header). */
-export const SETUP_WRITE_PERMISSION: PermissionCode = "inventory.stock.receive";
+export const SETUP_WRITE_PERMISSION: PermissionCode = "inventory.item.manage";
 const SETUP_READ_PERMISSION: PermissionCode = "inventory.stock.view";
 
 export async function assertSetupPermission(

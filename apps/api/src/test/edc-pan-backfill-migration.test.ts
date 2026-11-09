@@ -541,11 +541,13 @@ describe("0170 journal and snapshot chain", () => {
     readFileSync(drizzleFile("meta/_journal.json"), "utf8"),
   ) as { entries: { idx: number; tag: string; when: number }[] };
 
-  it("is registered as idx 170 with when 1794249000000, after the last entry", () => {
+  it("is registered as idx 170 with when 1794249000000, after every lower entry and before every higher one", () => {
     const entry = journal.entries.find((e) => e.tag === TAG);
     expect(entry).toMatchObject({ idx: 170, when: 1794249000000 });
-    const others = journal.entries.filter((e) => e.tag !== TAG);
-    expect(Math.max(...others.map((e) => e.when))).toBeLessThan(1794249000000);
+    const lower = journal.entries.filter((e) => e.idx < 170);
+    const higher = journal.entries.filter((e) => e.idx > 170);
+    expect(Math.max(...lower.map((e) => e.when))).toBeLessThan(1794249000000);
+    for (const e of higher) expect(e.when).toBeGreaterThan(1794249000000);
   });
 
   it("its snapshot chains to the previous snapshot and changes no schema", () => {
@@ -553,7 +555,7 @@ describe("0170 journal and snapshot chain", () => {
       readFileSync(drizzleFile("meta/0170_snapshot.json"), "utf8"),
     ) as Record<string, unknown> & { id: string; prevId: string };
     const prevEntry = [...journal.entries]
-      .filter((e) => e.tag !== TAG)
+      .filter((e) => e.idx < 170)
       .sort((a, b) => b.idx - a.idx)[0]!;
     const prevName = `${String(prevEntry.idx).padStart(4, "0")}_snapshot.json`;
     const prev = JSON.parse(

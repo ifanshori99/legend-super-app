@@ -385,7 +385,7 @@ export class FakeObjectStorage implements ObjectStorage {
     const v = accept(c, storageSignedLookupSchema, input);
     if (v.visibility === "public")
       throw new TypeError("Private object required");
-    return `https://storage.invalid/private/${encodeURIComponent(this.key(v))}?expires=${v.expiresInSeconds}`;
+    return `https://storage.invalid/private/${encodeURIComponent(this.key(v))}?expires=${v.expiresInSeconds}${v.downloadFileName ? `&download=${encodeURIComponent(v.downloadFileName)}` : ""}`;
   }
   async publicUrl(c: ScopedTenantContext, input: StorageLookup) {
     const v = accept(c, storageLookupSchema, input);

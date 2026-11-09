@@ -12,6 +12,7 @@ import {
   listCapacityRules,
   listKitchenStations,
   listOrderIssues,
+  orderIssueViews,
   updateCapacityRules,
 } from "@starter/shared/kitchen";
 import type {
@@ -26,13 +27,8 @@ import { createMockStore } from "../../lib/mock/store.ts";
 import { FIXTURE_BUSINESS_DATE } from "./outlet.ts";
 import { periodIncludesDate } from "./lib.ts";
 
-const {
-  stationConfigs,
-  capacityRules,
-  pacing,
-  servingTimeSummaries,
-  orderIssues,
-} = cafeLegendKitchenFixtures;
+const { stationConfigs, capacityRules, pacing, servingTimeSummaries } =
+  cafeLegendKitchenFixtures;
 
 /** Fixtures stay immutable: the stores own the copies the screens mutate. */
 function seedRules(): CapacityRule[] {
@@ -98,7 +94,7 @@ registerMock(getServingTimeSummary, ({ query, scenario }) => {
 });
 
 registerMock(listOrderIssues, ({ query, scenario }) => {
-  const rows = [...orderIssues]
+  const rows = [...orderIssueViews]
     .filter((row) => (query.type ? row.type === query.type : true))
     .filter((row) =>
       query.stationId ? row.stationId === query.stationId : true,

@@ -14,6 +14,8 @@ import {
   createManualDeliveryOrder,
   getDeliveryOrder,
   listDeliveryOrders,
+  resendDeliveryOrderSync,
+  resolveDeliveryOrderSync,
   updateDeliveryOrderStatus,
 } from "@starter/shared/delivery";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -25,6 +27,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as deliveryOrders from "../services/delivery-orders.service.ts";
+import * as platformRetry from "../services/delivery-platform-retry.ts";
 
 export const deliveryOrdersRouter = Router({ mergeParams: true });
 
@@ -106,6 +109,49 @@ deliveryOrdersRouter.post(
       data: await deliveryOrders.updateDeliveryOrderStatus(
         getScopedTenantContext(req),
         caller(req),
+        outletId,
+        deliveryOrderId,
+        body,
+      ),
+    });
+  },
+);
+
+// legend-eyqvo (founder Q58): staff act on a `platformSync: needs_action`
+// order. Same `delivery.order.handle` gate as the status step.
+deliveryOrdersRouter.post(
+  "/:deliveryOrderId/platform-sync/resend",
+  handle,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, deliveryOrderId } = resendDeliveryOrderSync.params.parse(
+      req.params,
+    );
+    resendDeliveryOrderSync.body.parse(req.body);
+    res.json({
+      data: await platformRetry.resendDeliveryOrderSync(
+        getScopedTenantContext(req),
+        { userId: userIdSchema.parse(getAuth(req).user.id) },
+        outletId,
+        deliveryOrderId,
+      ),
+    });
+  },
+);
+
+deliveryOrdersRouter.post(
+  "/:deliveryOrderId/platform-sync/resolve",
+  handle,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, deliveryOrderId } = resolveDeliveryOrderSync.params.parse(
+      req.params,
+    );
+    const body = resolveDeliveryOrderSync.body.parse(req.body);
+    res.json({
+      data: await platformRetry.resolveDeliveryOrderSync(
+        getScopedTenantContext(req),
+        { userId: userIdSchema.parse(getAuth(req).user.id) },
         outletId,
         deliveryOrderId,
         body,

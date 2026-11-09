@@ -899,6 +899,16 @@ test("F8 tenders: cash change, multi-tender coverage and refund allocation are s
   );
 });
 
+test("order item DTO: costSnapshotIdr is nullable (HPP not exposed) and never negative", () => {
+  // HPP is finance data (inventory.cost.view): the POS order DTO sends null.
+  const item = parsed.orderItems[0];
+  const withCost = (costSnapshotIdr) =>
+    pos.posOrderItemSchema.safeParse({ ...item, costSnapshotIdr });
+  const ok = withCost(null);
+  assert.equal(ok.success, true, JSON.stringify(ok.error?.issues));
+  assert.equal(withCost(-1).success, false, "negative HPP is rejected");
+});
+
 test("F8 hold & fire: items start held and are fired by item or course", () => {
   const draft = detailById.get(P.orders.heldDraft);
   assert.equal(draft.status, "draft");

@@ -61,11 +61,18 @@ function run(
       status: period.closed ? "closed" : "open",
       accountingPeriodClosed: period.closed,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [...layout.availableOutlets] },
     definitions: report.metrics.map(ref),
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy: [],
     rows: [
       {
+        bucketStart: period.startDate,
+        bucketEnd: period.endDate,
         dimensions: [],
         values: report.metrics.map((metricCode) => ({
           metricCode,
@@ -76,6 +83,7 @@ function run(
     ],
     generatedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 

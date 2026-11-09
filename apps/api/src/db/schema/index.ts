@@ -72,6 +72,10 @@ export * from "./pos-receipt-writeoff";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
 export * from "./expo-pickup";
+// WS-04 remake / comp / complaint log (legend-4b5).
+export * from "./kds-issues";
+// WS-04 kitchen capacity rules (legend-w4nq4).
+export * from "./kds-capacity";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
@@ -108,3 +112,9 @@ export * from "./website";
 export * from "./delivery";
 // WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
 export * from "./recipe";
+// WS-06 goods receipts: partial receiving, QC, photos (legend-o1o4s).
+export * from "./inventory-receiving";
+// WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
+export * from "./metrics";
+// WS-11 sales targets (legend-ne81z).
+export * from "./sales-targets";

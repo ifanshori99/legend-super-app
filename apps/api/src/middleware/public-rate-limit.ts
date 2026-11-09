@@ -38,6 +38,7 @@ import {
 import { siteConfig } from "@starter/shared/site";
 import { MINUTE_MS } from "@starter/shared/identity";
 import { env } from "../config/env";
+import { clientIpKey } from "../lib/client-ip-key";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import { HttpError } from "../lib/http-error";
 import { whatsAppDigest } from "../lib/identity-digest";
@@ -112,8 +113,12 @@ export type PublicRateLimitOptions = {
 // link server can use it too: legend-wg5t); re-exported for existing callers.
 export { createFixedWindowCounter };
 
-/** The address Express resolved; never a raw client-supplied header. */
-function clientIp(req: Request): string {
+/**
+ * The address Express resolved; never a raw client-supplied header. Buckets are
+ * keyed on `clientIpKey(ip)` (IPv6 by /64, legend-6jgd2); the internal-IP skip
+ * still compares the exact address.
+ */
+export function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 
@@ -151,7 +156,9 @@ export function publicRateLimit(
     // visitor IP (apps/web upstream.server.ts), so that address skips the
     // per-IP bucket; the tenant bucket below still caps it.
     const ip = clientIp(req);
-    const ipRetry = internalIps.has(ip) ? null : perIp.take(`ip:${ip}`, now);
+    const ipRetry = internalIps.has(ip)
+      ? null
+      : perIp.take(`ip:${clientIpKey(ip)}`, now);
     const tenant = findTenantContext(req);
     const tenantRetry = tenant
       ? perTenant.take(`tenant:${tenant.tenantId}`, now)
@@ -306,7 +313,10 @@ export type PublicWriteRateLimitOptions = {
   now?: () => number;
 };
 
-function rejectRateLimited(res: Parameters<RequestHandler>[1], retry: number) {
+export function rejectRateLimited(
+  res: Parameters<RequestHandler>[1],
+  retry: number,
+) {
   res.setHeader("Retry-After", String(retry));
   res.setHeader("Cache-Control", "no-store");
   throw new HttpError(429, "RATE_LIMITED", PUBLIC_RATE_LIMIT_MESSAGE);
@@ -359,7 +369,7 @@ export function createPublicBookingLimits(
       const ip = clientIp(req);
       const ipRetry = internalIps.has(ip)
         ? null
-        : perIp.take(`write-ip:${ip}`, now);
+        : perIp.take(`write-ip:${clientIpKey(ip)}`, now);
       const tenant = findTenantContext(req);
       const tenantRetry = tenant
         ? perTenant.take(`write-tenant:${tenant.tenantId}`, now)

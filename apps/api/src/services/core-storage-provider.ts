@@ -21,6 +21,12 @@ import {
   type StorageSignedLookup,
 } from "@starter/shared/adapters";
 
+/** `attachment` header for a name already validated by `storageDownloadFileNameSchema`
+ * (ASCII only, no quotes or control characters), so no escaping is needed. */
+function attachmentContentDisposition(fileName: string) {
+  return `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
 /** S3 credentials, endpoint, and path-style mode are configured on the injected SDK client. */
 export class S3ObjectStorage implements ObjectStorage {
   private readonly base: string;
@@ -127,7 +133,14 @@ export class S3ObjectStorage implements ObjectStorage {
       throw new TypeError("Private object required");
     return (this.options.sign ?? getSignedUrl)(
       this.options.client,
-      new GetObjectCommand(path),
+      new GetObjectCommand({
+        ...path,
+        ...(v.downloadFileName && {
+          ResponseContentDisposition: attachmentContentDisposition(
+            v.downloadFileName,
+          ),
+        }),
+      }),
       { expiresIn: v.expiresInSeconds },
     );
   }

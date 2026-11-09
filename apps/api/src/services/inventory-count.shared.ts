@@ -12,7 +12,7 @@ import {
   type Decimal4,
 } from "@starter/shared/core";
 import {
-  InventoryError,
+  inventoryErrorHttpStatus,
   stockBatchSchema,
   stockCountLineSchema,
   stockCountSchema,
@@ -29,7 +29,8 @@ import type {
 } from "../db/schema/inventory-count.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { BatchStock } from "./inventory-expiry.service.ts";
-import { translateInventoryError, type Tx } from "./inventory-ops.shared.ts";
+import { translateDomainError } from "./domain-error-http.shared.ts";
+import type { Tx } from "./inventory-ops.shared.ts";
 
 /** `approval_requests.source_module` of every count approval. */
 export const COUNT_APPROVAL_MODULE = "inventory_count";
@@ -169,41 +170,17 @@ export async function referenceUnitCost(
 
 // ------------------------------------------------------------------ errors
 
-const COUNT_ERROR_STATUS: Partial<Record<InventoryErrorCode, number>> = {
-  STOCK_COUNT_INVALID_TRANSITION: 409,
-  STOCK_COUNT_NOT_PENDING_APPROVAL: 409,
-  STOCK_COUNT_SELF_APPROVAL: 403,
-  STOCK_COUNT_BLIND_HIDDEN: 403,
-  STOCK_COUNT_BLIND_USE_SHEET: 409,
-  STOCK_COUNT_LOCATION_BUSY: 409,
-  STOCK_COUNT_LINES_INCOMPLETE: 422,
-  STOCK_COUNT_APPROVAL_UNROUTED: 409,
-  STOCK_COUNT_VERSION_MISMATCH: 409,
-  STOCK_COUNT_NOT_EDITABLE: 409,
-  STOCK_COUNT_COST_MISSING: 422,
-  STOCK_COUNT_DECIDER_CANNOT_COUNT: 403,
-  STOCK_COUNT_VIEWER_CANNOT_COUNT: 403,
-  STOCK_COUNT_APPROVAL_EXPIRED: 409,
-};
-
+/** Status from the contract table; the caller's message is built in the service. */
 export function countError(
   code: InventoryErrorCode,
   message: string,
 ): HttpError {
-  return new HttpError(COUNT_ERROR_STATUS[code] ?? 422, code, message);
+  return new HttpError(inventoryErrorHttpStatus[code], code, message);
 }
 
-/**
- * Inventory contract errors have no HTTP mapping (docs/backend.md): the count
- * codes get their documented status, the rest fall through to the shared map.
- */
+/** Contract status and safe message per code (see domain-error-http.shared.ts). */
 export function translateCountError(error: unknown): unknown {
-  if (
-    error instanceof InventoryError &&
-    COUNT_ERROR_STATUS[error.code] !== undefined
-  )
-    return countError(error.code, error.message);
-  return translateInventoryError(error);
+  return translateDomainError(error);
 }
 
 // ------------------------------------------------------------ batch reads

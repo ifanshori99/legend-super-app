@@ -37,6 +37,32 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - 18455b7a (ws/ws11-shared-1, ganti 01aa6ec2 dan a597254c): total HPP pemegang saham (legend-upmn7 Q59), test cakupan outlet (Q60), mock bucket legend-e0fhh. SH-01 kini hijau. Tanpa migrasi.
 - 5680dab0 (ws/delivery-staff-resolve, legend-eyqvo, tingkat K): dua commit di atas 2ab2edea, tanpa migrasi.
 
+## Tambahan batch39
+
+- ws/auth-audit-trail fd953712 (5bb9758f..fd953712, tingkat K, tanpa migrasi): `TRUST_PROXY` wajib diatur di belakang proxy, karena limiter login-challenges memakai IP klien. Tanpa itu semua klien terlihat satu IP.
+- Migrasi 0171, 0172, 0177 dan 0178 berisi UPDATE data (backfill izin peran, token verifikasi domain, tautan storage). Semuanya idempotent dan terdaftar di `MIGRATION_DATA_STATEMENTS`.
+- `0178_tenant_claims.sql` diubah oleh merge train: `tenant_integrations` diberi `NO FORCE ROW LEVEL SECURITY` sebelum blok DO pengecekan duplikat dan `FORCE ROW LEVEL SECURITY` sesudahnya. Tanpa itu migrasi gagal 42501 (tenant context is required) untuk migrator non-superuser. Pemilik cabang perlu mengonfirmasi.
+
+## Tambahan batch40
+
+- 0180 (ws/kds-issues-station 038d8201, tingkat K, when 1794259000000): tabel `order_issues`.
+- 0181 (a92b9bac, when 1794260000000): tabel `sales_targets` dan backfill `recomputeMetricsDaily` untuk seluruh riwayat (legend-ka1hg). Jalankan backfill sebelum pembaca WS-11 dipakai.
+- 0184 (34f0dc53, 6538c932, when 1794263000000): tabel `kitchen_capacity_rules`.
+- 0186 (b10f22dd, legend-bsw9, when 1794265000000): kolom `stock_ledger.posting_seq`. Migrasi memakai ACCESS EXCLUSIVE saat update, jadi deploy saat sepi.
+- 42dded50: `ip_hash` IPv6 kini digest /64. Jendela AUTH-04 (reset) mulai ulang sekali saat deploy.
+- 690eaf41: status HTTP kode error inventori disatukan. `PO_LINE_MISMATCH` dan `THREE_WAY_MATCH_INVALID_INPUT` berubah 409 menjadi 422. `INSUFFICIENT_STOCK` lewat translator tetap 409. `WASTE_MEDIA_NOT_FOUND` (dari 92d81f70) ditambahkan ke peta status (422, sama dengan service dan test) dan peta pesan.
+- ec37dc36 dan 8f30eb0d: snapshot HPP per baris pesanan. HPP tidak dikirim ke kasir lewat DTO pesanan POS.
+- cff27b49: 4 file test webhook lama ikut dijalankan di gate ini (hijau).
+- Test `stock-ledger-posting-seq-migration` kini mencari snapshot sebelum 0186, bukan mengasumsikan 0170.
+- Nomor 0182, 0183 dan 0185 belum dikirim. Celah idx ini wajar untuk drizzle.
+
+## Tambahan batch41
+
+- ws/ws11-shared-3 (dc4a1014, tingkat K, tanpa migrasi baru): F5, F8, F10, legend-3nfc9 dan legend-fr62g (pesanan latihan tidak masuk metrik penjualan). Mock laporan WS-11 mengikuti ketersediaan API.
+- Langkah rilis: jalankan `recomputeMetricsDaily` untuk seluruh riwayat (legend-ka1hg), termasuk 6 kode jumlah fasilitas, sebelum laporan WS-11 meninggalkan mock.
+- Konflik hanya di `docs/DECISIONS.md` dan `docs/PROGRESS.md` (keep-both). Rantai migrasi tetap 0186 terakhir.
+- ws/audit-retention-purge (0187) menyusul sesudah tes migrasi pemilik non-superuser.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

@@ -32,6 +32,7 @@ import {
 } from "@starter/shared/inventory";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { inventoryItems, stockLocations } from "../db/schema/inventory.ts";
 import { wasteLogs } from "../db/schema/inventory-ops.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -203,6 +204,24 @@ export async function createWasteLog(
       if (replay) return masked(wasteLogSchema.parse(replay.replay), withCost);
 
       await requireLocation(tx, input.outletId, input.locationId);
+      // The photo must be a stored object of this tenant (legend-tk7i).
+      if (input.mediaId) {
+        const [media] = await tx
+          .select({ id: coreStorageObjects.id })
+          .from(coreStorageObjects)
+          .where(
+            and(
+              eq(coreStorageObjects.tenantId, context.tenant.tenantId),
+              eq(coreStorageObjects.id, input.mediaId),
+            ),
+          );
+        if (!media)
+          throw new HttpError(
+            422,
+            "WASTE_MEDIA_NOT_FOUND",
+            "The waste photo was not found.",
+          );
+      }
       const plan = await wastePlan(tx, context, input);
       const id = randomUUID();
       await lockLocations(tx, context.tenant.tenantId, [input.locationId]);

@@ -18,6 +18,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -307,6 +308,18 @@ export const stockLedger = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Insertion sequence (legend-bsw9). `recordStockMovementInTransaction`
+     * inserts the row while it holds the location advisory lock and the
+     * balance row lock, so for one (location, item) this order is exactly the
+     * order the live moving average was applied. `rebuildStockBalances` folds
+     * by it, so a repair equals the live balance even when a caller posts a
+     * past `occurred_at` (EOD deduction, opname, import). Rows that existed
+     * before the column were numbered by (occurred_at, id) in the migration.
+     */
+    postingSeq: bigint("posting_seq", { mode: "number" })
+      .generatedAlwaysAsIdentity()
+      .notNull(),
   },
   (table) => [
     // NULL keys stay distinct, so postings without a key are never deduped.
@@ -348,6 +361,12 @@ export const stockLedger = pgTable(
       table.inventoryItemId,
       table.occurredAt,
       table.id,
+    ),
+    // The balance rebuild reads one outlet's rows in posting order.
+    index("stock_ledger_tenant_outlet_seq_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.postingSeq,
     ),
     // The GL bridge reads every ledger row of one source document.
     index("stock_ledger_tenant_source_idx").on(

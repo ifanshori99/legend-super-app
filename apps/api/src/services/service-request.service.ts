@@ -24,7 +24,6 @@ import {
   createUlid,
   decodeCursor,
   encodeCursor,
-  idr,
   idempotencyKeySchema,
   toIsoDateTime,
   z,
@@ -38,8 +37,10 @@ import {
   type EventEnvelope,
 } from "@starter/shared/events";
 import {
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
+  type NotificationCategory,
 } from "@starter/shared/notification";
 import {
   assignZoneWaiterInputSchema,
@@ -162,7 +163,7 @@ async function nextSequence(
 }
 
 /** Zone waiters (user ids) of one zone; the only push audience. */
-async function zoneWaiterIds(
+export async function zoneWaiterIds(
   tx: Tx,
   tenantId: TenantId,
   zoneId: string,
@@ -185,38 +186,24 @@ export async function buildRecipients(
   userIds: string[],
   content: { title: string; body: string },
   now: Date,
+  category: NotificationCategory = "waiter_call",
 ): Promise<NotificationRecipient[]> {
   if (userIds.length === 0) return [];
   const [policyRow] = await tx
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, tenantId));
-  const policy = notificationPolicySchema.parse(
-    policyRow
-      ? {
-          tenantId,
-          webPushEnabled: policyRow.webPushEnabled,
-          emailEnabled: policyRow.emailEnabled,
-          whatsapp: policyRow.whatsapp,
-          maxAttempts: policyRow.maxAttempts,
-          retryBackoffSeconds: policyRow.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(policyRow.updatedAt),
-        }
-      : {
-          tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  const policy = policyRow
+    ? notificationPolicySchema.parse({
+        tenantId,
+        webPushEnabled: policyRow.webPushEnabled,
+        emailEnabled: policyRow.emailEnabled,
+        whatsapp: policyRow.whatsapp,
+        maxAttempts: policyRow.maxAttempts,
+        retryBackoffSeconds: policyRow.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(policyRow.updatedAt),
+      })
+    : defaultNotificationPolicy(tenantId, now);
   const subscribed = new Set(
     (
       await tx
@@ -263,7 +250,7 @@ export async function buildRecipients(
   }
   return userIds.map((userId) => ({
     userId,
-    category: "waiter_call" as const,
+    category,
     title: content.title,
     body: content.body,
     link: null,

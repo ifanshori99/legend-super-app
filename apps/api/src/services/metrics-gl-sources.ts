@@ -10,7 +10,10 @@
 // revenue section reads with +1 and an expense with −1. One account counts
 // once per component even when two terms match it (first term wins). A role
 // term also reads every descendant (`chart_of_accounts.parent_id`) of the
-// mapped account, so sub-accounts opened under it are never dropped.
+// mapped account, so sub-accounts opened under it are never dropped. A term
+// with `sourceTypes` reads only lines of journals posted from those sources; a
+// reversal counts as the source of the entry it reverses (a voided sale is a
+// sale, a corrected remittance is not).
 //
 // The registry formula of each metric here (`formula.expression`, sent to
 // Tanya AI and MCP through `definitionRef`) must describe this source; a
@@ -18,6 +21,7 @@
 // (metrics-runtime.test.ts guards both).
 
 import type {
+  JournalSourceType,
   PostingAccountRole,
   ReportGroup,
 } from "@starter/shared/accounting";
@@ -26,17 +30,34 @@ export type GlTerm = {
   readonly reportGroups?: readonly ReportGroup[];
   readonly roles?: readonly PostingAccountRole[];
   readonly sign: 1 | -1;
+  /** Only journals of these sources (reversals by the reversed entry's). */
+  readonly sourceTypes?: readonly Exclude<JournalSourceType, "reversal">[];
 };
 
 export type GlComponent = readonly GlTerm[];
 
 export type GlMetricSource =
+  /** Movement of the bucket: lines dated inside it. */
   | { readonly kind: "amount"; readonly component: GlComponent }
+  /**
+   * Balance at the bucket end: every line dated up to the last day of the
+   * bucket, from the first posting on (a liability such as PBJT payable).
+   */
+  | { readonly kind: "balance"; readonly component: GlComponent }
   /** Percent = numerator / denominator × 100, recomputed per bucket. */
   | {
       readonly kind: "ratio";
       readonly numerator: GlComponent;
       readonly denominator: GlComponent;
+      /**
+       * The registry codes of numerator and denominator. A non-outlet split
+       * of the percent splits both codes first and divides per split value
+       * (DECISIONS 2026-11-10 point 1); without it the percent is not split.
+       */
+      readonly splitFrom?: {
+        readonly numerator: string;
+        readonly denominator: string;
+      };
     };
 
 const INCOME_STATEMENT_GROUPS: readonly ReportGroup[] = [
@@ -54,6 +75,12 @@ const GROSS_PROFIT: GlComponent = [
   { reportGroups: ["revenue"], sign: 1 },
   { reportGroups: ["cogs"], sign: 1 },
 ];
+/**
+ * Journals that collect from or return to the guest: the PBJT remittance to
+ * the tax office (manual) and the service charge payout (payroll) move the
+ * same accounts but are not collections.
+ */
+const SALE_SOURCES = ["sale", "refund"] as const;
 const LABOR: GlComponent = [
   { roles: ["salary_expense", "bpjs_expense"], sign: -1 },
 ];
@@ -86,7 +113,12 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     kind: "amount",
     component: [{ roles: ["gateway_fee_expense"], sign: -1 }],
   },
-  food_cost_pct: { kind: "ratio", numerator: COGS, denominator: NET_SALES },
+  food_cost_pct: {
+    kind: "ratio",
+    numerator: COGS,
+    denominator: NET_SALES,
+    splitFrom: { numerator: "cogs", denominator: "net_sales" },
+  },
   labor_cost_pct: { kind: "ratio", numerator: LABOR, denominator: NET_SALES },
   prime_cost_pct: {
     kind: "ratio",
@@ -98,6 +130,25 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     numerator: GROSS_PROFIT,
     denominator: NET_SALES,
   },
+  // Output tax and service charge: sales credit them, refunds debit them; the
+  // remittance and the payroll payout are left out (SALE_SOURCES).
+  tax_collected: {
+    kind: "amount",
+    component: [
+      { roles: ["tax_payable_pbjt"], sign: 1, sourceTypes: SALE_SOURCES },
+    ],
+  },
+  service_charge_collected: {
+    kind: "amount",
+    component: [
+      { roles: ["service_charge"], sign: 1, sourceTypes: SALE_SOURCES },
+    ],
+  },
+  // Every source counts in the balance, the remittance included.
+  tax_payable: {
+    kind: "balance",
+    component: [{ roles: ["tax_payable_pbjt"], sign: 1 }],
+  },
 };
 
 /**
@@ -105,6 +156,18 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
  * operational sources (orders, settlements, stock) or balances, so the runtime
  * answers null for them rather than a figure that bypasses the ledger (I1).
  * Moving one into GL_METRIC_SOURCES removes it from this list.
+ *
+ * Not listed on purpose: a money metric a registered daily reader owns is
+ * neither a ledger source nor a ledger gap. Reasons, per code:
+ * - stock_value: stock is a point-in-time quantity x cost of the outlet
+ *   (inventory-purchasing reader); the ledger has no per-outlet stock subledger.
+ * - purchase_total: approved purchase orders of the business day, before any
+ *   goods receipt or bill, so no journal exists for it yet.
+ * - supplier_due: open payable items due on or before the day (point in
+ *   time); the ledger answers the payable balance, not the due schedule.
+ * - delivery_sales: gross - commission of delivery orders (reservation-delivery
+ *   reader); the ledger does not post delivery orders yet, so there is no GL
+ *   total to reconcile against.
  */
 export const NON_GL_MONEY_METRICS: readonly string[] = [
   "avg_spend_per_pax",
@@ -120,22 +183,14 @@ export const NON_GL_MONEY_METRICS: readonly string[] = [
   "promo_cost",
   "cash_balance",
   "bank_balance",
-  "supplier_due",
   "pending_settlement",
   "cash_variance",
-  "menu_gross_margin",
-  "delivery_sales",
-  "stock_value",
-  "purchase_total",
-  "tax_collected",
-  "service_charge_collected",
-  "tax_payable",
   "gateway_settlement",
   "edc_settlement",
 ];
 
 export function glComponentsOf(source: GlMetricSource): GlComponent[] {
-  return source.kind === "amount"
+  return source.kind !== "ratio"
     ? [source.component]
     : [source.numerator, source.denominator];
 }

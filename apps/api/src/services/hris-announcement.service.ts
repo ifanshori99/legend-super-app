@@ -1,7 +1,8 @@
 // HRIS internal announcements (PRD v1.7 §3 F32 "Pengumuman Internal"; bead
 // legend-7df1). Routes: routes/hris-announcement.routes.ts.
 //
-// Manage = `hr.sop.manage` (no dedicated code yet); employees read and
+// Manage = `hr.announcement.manage` (legend-poxk; apart from `hr.sop.manage`
+// so a kitchen lead does not see every employee's receipts); employees read and
 // confirm with `self.sop.read` on their own employee row.
 //
 // - An `all` announcement needs tenant-wide reach to publish; an `outlets`
@@ -69,7 +70,7 @@ import {
   type Tx,
 } from "./hris-access.ts";
 
-export const ANNOUNCEMENT_MANAGE_CODE = "hr.sop.manage";
+export const ANNOUNCEMENT_MANAGE_CODE = "hr.announcement.manage";
 export const ANNOUNCEMENT_SELF_CODE = "self.sop.read";
 
 type AnnouncementRow = typeof announcements.$inferSelect;

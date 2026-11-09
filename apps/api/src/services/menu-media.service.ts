@@ -139,6 +139,7 @@ export async function uploadMenuPhoto(
       // Authority was checked above on the same scope; the storage service
       // re-asserts the outlet is inside the context's reach.
       authorize: async () => true,
+      actorUserId,
     },
   );
   if (!object.publicUrl)

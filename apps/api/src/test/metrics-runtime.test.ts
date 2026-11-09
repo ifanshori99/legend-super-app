@@ -50,6 +50,7 @@ import {
   GL_METRIC_SOURCES,
   NON_GL_MONEY_METRICS,
 } from "../services/metrics-gl-sources";
+import { METRIC_SOURCE_MODULES } from "../services/metric-sources";
 import { createIsolatedTenant, owner } from "./floor-test-helpers";
 
 type World = {
@@ -596,7 +597,7 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
     expect(idrOf(total(theirs, "net_sales"))).toBe(9_000_000);
   });
 
-  it("an aggregate viewer cannot split by a person; nobody splits ledger money by employee", async () => {
+  it("an aggregate viewer cannot split by a person; a ledger metric split without a source is unsupported", async () => {
     for (const groupBy of ["employee", "customer", "member"])
       expect(
         await codeOf(
@@ -612,7 +613,7 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
         run(world, {
           metricCodes: ["net_sales"],
           period: JUNE,
-          groupBy: "employee",
+          groupBy: "promo", // net_sales declares it, no card builds the split
         }),
       ),
     ).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
@@ -910,7 +911,7 @@ describe("review K: one formula source", () => {
       const definition = reportMetricByCode.get(code);
       expect(definition, code).toBeDefined();
       expect(definition!.unit, code).toBe(
-        source.kind === "amount" ? "idr" : "percent",
+        source.kind === "ratio" ? "percent" : "idr",
       );
     }
   });
@@ -919,10 +920,22 @@ describe("review K: one formula source", () => {
     const mapped = new Set(Object.keys(GL_METRIC_SOURCES));
     const nonGl = new Set(NON_GL_MONEY_METRICS);
     for (const code of nonGl) expect(mapped.has(code), code).toBe(false);
+    // A rupiah metric a family card claims as a non-ledger source (a
+    // registered daily reader with its reason written next to
+    // NON_GL_MONEY_METRICS, derived, or unavailable with its own reason, such
+    // as menu_gross_margin) is neither ledger-mapped nor a ledger gap.
+    const familyClaimed = new Set(
+      METRIC_SOURCE_MODULES.filter((module) => module.family !== "gl").flatMap(
+        (module) => module.sources.map((source) => source.code),
+      ),
+    );
+    const registeredNonGl = (code: string) => familyClaimed.has(code);
     for (const definition of reportMetricByCode.values())
       if (definition.unit === "idr")
         expect(
-          mapped.has(definition.code) || nonGl.has(definition.code),
+          mapped.has(definition.code) ||
+            nonGl.has(definition.code) ||
+            registeredNonGl(definition.code),
           definition.code,
         ).toBe(true);
     for (const code of nonGl)
@@ -999,5 +1012,77 @@ describe("wire query", () => {
         tenantId: "x",
       }),
     ).toThrow();
+  });
+});
+
+describe("GL split finality counts total rows per outlet", () => {
+  // June is closed, so the ledger total is final; a split row is final only
+  // when every outlet has a stored total row on every day of the bucket.
+  async function cogsRow(
+    outlet: string,
+    date: string,
+    value: number,
+    dimension?: string,
+  ) {
+    const definition = reportMetricByCode.get("cogs")!;
+    await owner.query(
+      `INSERT INTO metrics_daily (tenant_id, outlet_id, metric_date, metric_code, definition_id, definition_version,
+         dimension_key, dimension_value, unit, value_int, finality, computed_at)
+       VALUES ($1, $2, $3, 'cogs', $4, $5, $6, $7, 'idr', $8, 'final', now())`,
+      [
+        world.tenantId,
+        outlet,
+        date,
+        definition.id,
+        definition.version,
+        dimension ? "menu_item" : null,
+        dimension ?? null,
+        value,
+      ],
+    );
+  }
+  const finalities = async (start: string, end: string) => {
+    const response = await run(world, {
+      metricCodes: ["cogs"],
+      period: { startDate: start, endDate: end },
+      groupBy: "menu_item",
+    });
+    return response.data.series
+      .filter((entry) => entry.dimension?.key === "menu_item")
+      .map((entry) => entry.points[0]!.finality);
+  };
+
+  it("an outlet with ledger lines but no stored rows keeps the split an estimate (R-A 3)", async () => {
+    // 11 Jun: outlet 2 has HPP lines, only outlet 1 has stored rows.
+    await cogsRow(world.outlet1, "2025-06-11", 0);
+    await cogsRow(world.outlet1, "2025-06-11", 0, "menu-a");
+    const result = await finalities("2025-06-11", "2025-06-11");
+    expect(result.length).toBeGreaterThan(0);
+    expect(new Set(result)).toEqual(new Set(["estimate"]));
+  });
+
+  it("two outlets that each miss a different day do not cover the bucket together", async () => {
+    // outlet 1 has a total row on the 10th only, outlet 2 on the 11th only:
+    // the union of dates is complete, the per-outlet sets are not.
+    await cogsRow(world.outlet1, "2025-06-10", 100);
+    await cogsRow(world.outlet1, "2025-06-10", 100, "menu-a");
+    await cogsRow(world.outlet2, "2025-06-11", 50);
+    await cogsRow(world.outlet2, "2025-06-11", 50, "menu-a");
+    expect(await finalities("2025-06-10", "2025-06-11")).toEqual([
+      "estimate",
+      "estimate",
+    ]);
+  });
+
+  it("every outlet with a total row on every day keeps the split final", async () => {
+    for (const outlet of [world.outlet1, world.outlet2])
+      for (const date of ["2025-06-12", "2025-06-13"]) {
+        await cogsRow(outlet, date, 10);
+        await cogsRow(outlet, date, 10, "menu-b");
+      }
+    expect(await finalities("2025-06-12", "2025-06-13")).toEqual([
+      "final",
+      "final",
+    ]);
   });
 });

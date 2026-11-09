@@ -45,6 +45,328 @@ append-only; only the owner may delete, and only rows 2 years or older
    retention class is `audit_2y`; a class-to-days map is not introduced because
    the CHECK constraint allows one class.
 
+## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
+
+Context: founder Q54 puts all 110 standard reports and 89 metrics in scope
+before release. On m1 only `GET /api/metrics/query` answers, for 12 money
+metrics read from posted journal lines and split by outlet only; every other
+metric answers null. Twelve family cards (F1-F12) build the remaining sources
+in parallel. Reviewed with an architect consult before implementation.
+
+1. **Money totals stay on the ledger; other splits come from the sub-ledger
+   with the ledger as control.** A money metric whose figure the ledger posts
+   (`GL_METRIC_SOURCES`) keeps its ledger total for every query. A split the
+   ledger cannot carry (channel, menu item, hour, employee, payment method,
+   ...) is read from operational rows (orders, order items, payments) through
+   `metrics_daily`. The rows of such a split are always followed by one
+   residual row, dimension value `__ledger_adjustment__` (shown as
+   "Penyesuaian buku besar"), equal to the ledger total minus the sum of the
+   split rows for the same bucket and outlet filter. The rows therefore add
+   up to the ledger total, like the "Tingkat badan usaha" series of the
+   outlet split (DASH-02). The residual row is shown whenever it is not zero;
+   there is no tolerance that hides it. Split rows are never scaled pro rata
+   to the ledger: a scaled per-menu or per-employee figure would be a number
+   nobody recorded. Split rows carry the finality of the ledger total of
+   their bucket. A percent metric split this way (food cost % per menu) is
+   recomputed per row from its split numerator and denominator; the residual
+   row gets the ratio of the residual components, null when the residual
+   denominator is zero. The old I1 rule (`metrics-query.service.ts` header)
+   is narrowed to: a money total never comes from operational rows when the
+   ledger posts it. A money metric the ledger never posts (void amount, pax
+   spend, settlement in transit) may read operational rows directly; its
+   family card states why in the source's comment and removes it from
+   `NON_GL_MONEY_METRICS`.
+2. **One registry, one engine.** `apps/api/src/services/metric-sources/`
+   holds exactly one `MetricSource` per registry metric code (`gl`, `daily`,
+   `derived` or `unavailable`) and at most one `MetricSplitSource` per
+   (ledger metric, dimension). The 12 ledger sources live in
+   `metric-sources/gl.ts`; each family file adds its own sources and splits
+   and never edits another file. A code no family claims resolves to
+   `unavailable` (`source_not_built`), so all 89 codes always resolve. The
+   registry refuses at load a code claimed twice, a code missing from the
+   catalog, a unit that does not fit the source kind, and a split on a code
+   that is not `gl`. `evaluateMetrics` in `metrics-query.service.ts` is the
+   only path that turns codes into values. `GET /api/metrics/query`, report
+   run and preview (`report-run.service.ts`), the dashboard batch (F11) and
+   the AI tools all call it. The AI helpers in
+   `apps/api/src/services/ai-metrics/` (sales, finance, labor, stock) still
+   compute registry metrics from operational tables, for example `net_sales`
+   from orders. The card that owns each metric moves its helper onto the
+   engine: sales to F1, stock to F5, finance to F6, labor to F9. The guard
+   test `metric-single-path.test.ts` lists these four files as the only
+   allowed exceptions, and INT requires the list to be empty.
+3. **`metrics_daily` plus a batch engine for the 3-second dashboard.**
+   `metrics_daily` stores outlet-day values of `daily` sources and of splits
+   (tenant and outlet RLS forced). Ledger totals stay live from journal lines
+   in the existing REPEATABLE READ READ ONLY snapshot, so a close or reopen
+   is never stale. `evaluateMetrics` takes many codes for one period, bucket
+   and outlet filter, and makes one ledger read and one `metrics_daily` read
+   per call. F11 groups the 18 owner tiles by (period, bucket, outlet
+   filter) and evaluates them in one snapshot. The p95 budget for one owner
+   dashboard load is 3 s. F11 measures it on a seed of 10 outlets and 400
+   days. If the ledger read alone exceeds 1 s p95 there, F11 adds a daily
+   ledger roll-up as its own bead; A does not build one now. Ratios
+   (`aggregation: ratio`) are never stored; they are recomputed from their
+   input codes per bucket. A report run groups by the outlet and at most one
+   other dimension in this release. A deeper group-by answers "belum
+   tersedia" (`dimension_not_supported`) instead of a wrong table.
+4. **Closed versus estimate.** A stored row is `final` only when its business
+   day has settled (day end plus the settle delay, as in the AI daily
+   summary). Point-of-sale metrics also need a `pos_daily_closes` row for
+   that outlet and date. Every other row is `estimate`. On read, a value is
+   `final` only when every stored row behind it is `final` and
+   `metricValueFinality` says `final` now. `closed_period_only` metrics also
+   need closed books (`bookState`). So a reopened month or a late
+   recomputation turns a value back into an estimate without waiting for the
+   job. `requireFinal` keeps refusing with `PERIOD_NOT_CLOSED` before any
+   value is read; an unavailable metric is not counted in that check.
+5. **The daily job is idempotent per outlet and date.**
+   `worker/metrics-daily.job.ts` runs from the worker tick per tenant, every
+   15 minutes. It handles today (estimate) and the last 7 settled business
+   dates per open outlet. Each (tenant, outlet, date) takes a transaction
+   advisory lock. Each family runs in its own savepoint, so a failing family
+   is logged and retried on the next tick without blocking the others. The
+   rows of a code are upserted on the unique key and rewritten only when the
+   value, finality or definition version changes, so a rerun leaves
+   `updated_at` unchanged. Rows of that code whose dimension no longer exists
+   are deleted. A changed `final` row is logged as `metrics_daily final row
+   changed` (late data) and still written. Dates older than the window are
+   recomputed only through `recomputeMetricsDaily(context, outletId, from,
+   to)`. A family card that bumps a definition version runs it over the
+   history it changes. A family card that ships a new reader also runs it
+   over the history its reports cover, before its reports leave the mock.
+   Every reader writes a total row (no dimension) per outlet-day, zero when
+   nothing happened; a stored value is `final` only when every business day
+   of its bucket has that total row, so a day the job never computed (worker
+   down for more than the window, a reader shipped without backfill) keeps
+   the value an `estimate` instead of a closed figure that silently misses
+   days (architect review 2026-11-10).
+6. **"Belum tersedia" is a field, not a zero, an error or an empty row.**
+   Report results (`reportResultSchema`) and metric series carry an
+   availability per metric: `available`, or `unavailable` with a reason
+   (`source_not_built`, `dimension_not_supported`) and an Indonesian message.
+   An unavailable metric has null in every cell. A report whose metrics are
+   all unavailable answers 200 with no rows and every metric marked
+   `unavailable`, so the viewer, the dashboard and Tanya AI can say "belum
+   tersedia". The low-level `GET /api/metrics/query` keeps answering 400
+   `METRIC_DIMENSION_NOT_SUPPORTED` for a split the metric does not declare
+   (unchanged). A split the metric declares but no card has built yet is
+   marked `unavailable` by the engine and by report runs; `GET
+   /api/metrics/query` keeps its m1 answer (400) for that case too, so the
+   existing ledger regression tests stay unchanged. A split of a percent
+   ledger metric is `dimension_not_supported` until a family card builds its
+   numerator and denominator splits. Report run rows carry their bucket
+   (`bucket` on the result, `bucketStart`/`bucketEnd` on each row; for
+   `total` both equal the period bounds), so `day`, `week` and `month`
+   reports answer one row per bucket and split; rows order by bucket, then
+   dimensions, `sort` applies inside a bucket and `limit` counts all rows
+   (legend-ymtsg, brief 267). A run splits by `outlet` plus at most
+   `REPORT_RUN_MAX_SPLIT_DIMENSIONS` (1) other dimension: `metrics_daily`
+   stores one dimension per row, so going deeper needs a schema change. A
+   deeper `groupBy` is not refused by the schema; the run answers 200 with
+   `unavailable` / `dimension_not_supported` (legend-hdfd2).
+7. **File ownership.** Only card A, and after A merges only a serialized
+   follow-up bead labelled `ws11-shared`, edits
+   `metrics-query.service.ts`, `metrics-gl-sources.ts`,
+   `metric-sources/index.ts`, `types.ts` and `gl.ts`,
+   `report-run.service.ts`, `routes/reports.routes.ts`,
+   `db/schema/metrics.ts`, `worker/metrics-daily.job.ts`,
+   `packages/shared/src/metrics/*`, `packages/shared/src/dashboard/*` and
+   `mock-day-model.ts`. A family card that needs a change there comments on
+   that bead and does not edit the file in its own branch. A family card owns
+   its own `metric-sources/<family>.ts`, `test/ms-<family>.test.ts`,
+   `mock-families/<family>.ts`, `routes/_kelola/reports.<family>.*.tsx`, and
+   any new schema file of its own migration. Report families map to source
+   files as follows: sales; traffic and operations; menu and cogs; payments
+   and tax; inventory and purchasing; finance; loyalty and crm; reservation
+   and delivery; attendance, payroll and performance (`hr`); facility.
+8. **`GET /api/metrics/query` follows the report run access rule**
+   (legend-svrzc, CTO decision 2026-11-10, brief 267). Each metric's source
+   report decides access: its full permission gives the caller's own scope;
+   without it, `report.aggregate.view` gives the tenant aggregate only when
+   the source report is on the aggregate whitelist
+   (`reportAcceptsAggregateView`). Scopes intersect across the asked
+   metrics; an empty intersection or no access answers 403
+   `REPORT_NOT_PERMITTED`, never a tenant-wide figure. A metric code without
+   a known source report keeps its old permission, without aggregate
+   fallback. The shared logic lives in `routes/report-viewer.ts`. Callers
+   that passed through the aggregate before without the source report now
+   get 403: a shareholder asking for `cogs` (source `inventory.food_cost`,
+   not whitelisted) is refused. The rule also widens access: money metrics
+   no longer all need `report.financial.view`; each needs its source
+   report's permission, so `report.operational.view` reads `cogs`,
+   `food_cost_pct`, `waste_cost`, `payment_fee` and `stock_value`, and
+   `report.sales.view` reads `net_sales` and `discount_amount`. The same
+   figures were already readable through a report run (architect review
+   2026-11-10).
+   Founder decisions (legend-upmn7, 2026-11-10):
+   - Q59: a shareholder (`report.aggregate.view`) may read the business
+     total of `cogs` through `GET /api/metrics/query`, never a breakdown.
+     `AGGREGATE_TOTAL_METRIC_CODES = ["cogs"]` in
+     `packages/shared/src/dashboard/catalog.ts` lists such total-only
+     metrics. A listed metric gets the aggregate reach only for a request
+     with no `groupBy`, no `outletIds` filter and bucket `total`; any split
+     (outlet, menu item, menu category), an outlet filter or a smaller
+     bucket answers 403 `REPORT_NOT_PERMITTED`. The mark is per metric, so
+     `food_cost_pct` from the same source report stays 403.
+     `inventory.food_cost` is not added to `AGGREGATE_VIEW_REPORT_CODES`: its
+     report run, with per-menu detail, stays closed to the aggregate view.
+     The metric query follows the founder's words literally (whole business,
+     whole period), although the `finance.income_statement` report run,
+     which accepts the aggregate view, already lists `cogs` per outlet to a
+     shareholder and `gross_profit` is `net_sales - cogs`; the per-menu split
+     is the only detail no path shows (architect review 2026-11-10).
+   - Q61 (2026-11-10): a shareholder may see the income statement per
+     outlet, including each outlet's `cogs`, through the
+     `finance.income_statement` report run. The per-menu `cogs` breakdown
+     stays closed. The current behaviour already matches; no code change.
+   - Q60: widening `report.operational.view` to `cogs`, `food_cost_pct`,
+     `waste_cost`, `payment_fee` and `stock_value` is approved only within
+     the outlets the role reaches. An outlet-scoped holder reads their own
+     outlet without a filter and gets 403 for another outlet's filter
+     (`apps/api/src/test/metrics-query-access.test.ts`).
+
+9. **Shared round 2 (brief 272, 2026-11-10).**
+   - One reader per metric code and dimension in `metrics_daily`; a
+     reader's stale-row delete covers only the dimensions it writes. Which
+     reader owns a code's total row is explicit (`writesTotal`), and two
+     total writers for one code are refused by `assertRegistry`.
+   - `net_sales` splits by `payment_method` (each order's net spread over
+     its captured tenders with `allocateByWeight`, then the paid intent
+     method, then `unassigned`) and by `menu_category` / `menu_item`
+     (largest remainder per order). Sales owns every `net_sales` reader.
+   - New source kinds: `share` (a split's summed value over the summed
+     total, for `menu_popularity_pct`) and GL `balance` (all lines up to the
+     bucket end, for `tax_payable`). A balance is a tenant figure only: by
+     outlet, an outlet filter or an outlet scope answer
+     `dimension_not_supported`, because the PBJT remittance journal may carry
+     no outlet. A GL term may be limited to journal
+     source types: `tax_collected` and `service_charge_collected` count
+     only `sale` and `refund` journals (a reversal counts as the entry it
+     reverses), so remittances and payouts do not reduce them.
+   - `food_cost_pct` splits by splitting `cogs` and `net_sales` and
+     dividing per split value; a split one side lacks is
+     `dimension_not_supported`.
+   - Multi-day `avg_serving_time` and `avg_dwell_minutes` are weighted by
+     the catalog counts `served_ticket_count` and `closed_session_count`
+     (`weightCode`); days without stored weight fall back to the plain
+     mean until history is recomputed (legend-ka1hg).
+   - A GL split is final only when every outlet with ledger lines has a
+     final total row for every day of the bucket.
+   - Dashboards: `managerRole` on the management query; tiles and queues
+     carry `availability`; an unbuilt queue answers 200 with no rows and
+     `source_not_built` instead of 501.
+
+## 2026-11-10: WS-11: HPP per baris pesanan saat penjualan (legend-u4js6)
+
+Konteks: `order_items.cost_snapshot_idr` (bigint, nullable) sudah ada tapi tidak
+ada insert yang mengisinya. Pembacanya `ai-metrics/sales.ts` dan reader WS-11
+F3 (`metric-sources/menu-cogs.ts`) sudah menganggapnya "HPP seluruh baris saat
+terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
+(tingkat K, uang).
+
+1. **Nilai = HPP total baris** (jumlah x HPP per porsi), rupiah bulat. Resep
+   satu baris diledakkan dengan jumlah sebenarnya (bukan 1 porsi dikali jumlah),
+   lalu jumlah bahan (Decimal4) x `avg_cost_idr` (Decimal4) dijumlah dalam skala
+   penuh dan dibulatkan **sekali per baris**, setengah ke atas, lewat
+   `scaledCostToIdr` (`inventory-ops.shared.ts`). Tanpa pembulatan per bahan.
+2. **Sumber biaya: `stock_balances.avg_cost_idr` di lokasi jual outlet
+   (`outlet_inventory_settings.sale_location_id`) pada saat baris dimasukkan**,
+   di transaksi yang sama. Alasan: kolom ini "HPP teoretis saat terjual"
+   (PRD), ditulis sekali bersama barisnya, tanpa jalur tulis kedua dan tanpa
+   menyentuh konsumen `order.paid` milik `recipe-deduction.service.ts`. Biaya
+   deduksi (`recipe_deductions.cost_idr`) boleh berbeda: real_time memakai
+   rata-rata saat lunas, day_close saat tutup hari, dan deduksi dibulatkan per
+   pesanan, bukan per baris. Selisih itu (pergerakan harga rata-rata, pembulatan,
+   baris NULL) masuk ke baris residual `__ledger_adjustment__` WS-11; itu yang
+   diharapkan, bukan bug. `recipes.theoretical_cost_idr` tidak dipakai (belum
+   pernah diisi, default 0).
+3. **Varian dan modifier ikut**, dengan aturan yang sama dengan deduksi: resep
+   varian, kalau tidak ada resep menu; modifier add-on dan aturan
+   add/replace/remove. Pesanan delivery menyimpan `modifiers: []`, jadi modifier
+   platform tidak dihitung (hanya resep dasar). Batas yang diketahui.
+4. **NULL, bukan 0**, untuk baris yang: menunya tanpa resep; resepnya tidak aktif
+   atau rusak; outletnya tanpa lokasi jual; jumlahnya kurang dari 1; resepnya
+   meledak jadi nol bahan; atau satu saja bahannya tidak punya saldo di lokasi
+   jual atau `avg_cost_idr` = 0. **Tidak ada nilai sebagian**: HPP sebagian
+   terbaca sebagai margin palsu. Bahan yang memang gratis ikut jadi NULL;
+   selisihnya tertampung di residual. Baris lain di pesanan yang sama tetap
+   dihitung sendiri-sendiri.
+5. **Edge `qr-order-applier.ts` menulis NULL, payload tidak diubah.** Pesanan
+   itu dibuat di cloud oleh `qr-order.service.ts`, yang sudah menulis snapshot
+   di barisnya; laporan membaca cloud, jadi tidak perlu pengisian ulang. Payload
+   `qr_order.placed` adalah `z.strictObject`: menambah field membuat edge versi
+   lama menolak event dan menahan semua pesanan QR. Master sync edge tidak
+   membawa resep atau `stock_balances`. POS yang berjalan di edge memakai helper
+   yang sama dan mendapat NULL bila data itu tidak ada. Bila nanti ada applier
+   cloud untuk pesanan dari edge (legend-kai), applier itu memanggil helper ini
+   di cloud saat menerapkan.
+6. **Snapshot tidak pernah ditulis ulang.** Void, refund, koreksi, remake, comp
+   dan fire hanya mengubah `status` atau `fire_status`; pembaca mengecualikan
+   baris `voided`. Remake dan comp punya biaya sendiri di deduksinya. Replay
+   edge memakai `onConflictDoNothing`.
+7. **Kegagalan tidak menggagalkan pesanan.** Helper berjalan di savepoint
+   (`tx.transaction(...)`, pola `openRefundChainSafely` di
+   `payment-refund.service.ts`). Galat SQL tanpa savepoint membatalkan seluruh
+   transaksi Postgres, jadi try/catch saja tidak cukup. Galat tak terduga: semua
+   baris pesanan NULL, `logger.warn` dengan tenant, outlet, order id dan kode
+   galat saja. Alasan NULL yang biasa (tanpa resep dan sebagainya) tidak dicatat
+   ke log.
+8. **Bentuk.** Berkas baru `apps/api/src/services/order-cost-snapshot.service.ts`:
+   `computeLineCostSnapshots(tx, context, outletId, lines) -> Promise<(number |
+   null)[]>` (urutan sama dengan `lines`; baris =
+   `{menuItemId, variantId, modifierIds, quantity}`). Nama tidak bentrok dengan
+   `estimateDeductionCostIdr` (cabang KDS, yang mengembalikan 0, kontrak
+   berbeda), dan tidak mengimpor dari `recipe-deduction.service.ts`. Satu
+   pesanan memakai jumlah query tetap: lokasi jual (berhenti di sini bila
+   kosong), satu ledakan per baris yang memuat data master sekali, satu baca
+   saldo. Untuk itu `recipe-bom.service.ts` mendapat ekspor tambahan
+   `explodeMenuLinesEach` (hasil per baris), dengan pemuatan data master dan
+   konversi UOM diekstrak ke fungsi internal bersama; perilaku
+   `explodeMenuLines` tidak berubah. Dipanggil tepat sebelum
+   `insert(orderItems)` di `pos-order.service.ts`, `qr-order.service.ts` dan
+   `delivery-inject.ts`. Tidak ada migrasi; slot 0183 dilepas.
+9. **Tidak ada backfill dan tidak ada kartu bd untuk itu.** Mengisi baris lama
+   dengan harga hari ini memalsukan "saat terjual". Baris lama tetap NULL dan
+   tampil sebagai residual WS-11.
+
+Tindak lanjut (legend-n8r5m, cabang `ws/cost-snapshot-edge`): DTO order POS
+(`pos-order-support.ts`) tidak lagi memetakan NULL ke 0. HPP adalah data
+finance (`inventory.cost.view`) sedangkan DTO POS bisa dibaca peran dengan
+`order.view` saja, jadi DTO POS selalu mengirim `costSnapshotIdr: null` (tidak
+diketahui / tidak ditampilkan); pembaca biaya memakai SQL. `ai-metrics/sales.ts`
+masih menjumlah dengan `COALESCE` (HPP tak diketahui terbaca 0); berkas itu
+milik alur WS-11 dan menunggu di sana.
+
+Pesanan lewat edge: cloud tidak punya titik ingest `order_items` untuk pesanan
+edge. Applier `qr_order.placed` hanya berjalan di edge (arah cloud_to_edge, baris
+itu salinan dari pesanan cloud yang sudah ber-HPP) dan event `order.*` dari edge
+hanya diparkir di `edge_deferred_events`. Pengisian HPP untuk pesanan POS edge
+menunggu applier backfill (legend-078n).
+
+10. **Shared round 3 (brief 284, 2026-11-10).**
+    - Readers get the job's clock (`DailyComputeInput.now`) and never read
+      the wall clock.
+    - Finality hold: a reader may declare `pendingDay`; the job asks it
+      before computing, and while it holds the reader's rows stay
+      estimates. Delivery holds while an order of the day is
+      `received`..`picked_up`; incident response holds while an incident of
+      the day has no `responded_at`. Each sweep also revisits held days up
+      to 90 days back, so a late end turns the day final and its value
+      follows.
+    - `keepFinal`: a reader whose inputs are configuration without history
+      (facility operating hours) keeps its closed days as they are. Hours
+      with an effective date are a follow-up (legend-4us1a).
+    - Facility occupancy, unit utilization and incident response time are
+      derived ratios over new stored sums, so multi-day values are weighted
+      by volume.
+    - `stock_value`, `purchase_total`, `supplier_due` and `delivery_sales`
+      are owned by daily readers and are no longer listed as ledger gaps.
+    - Training orders change no sales metric. Their sales journals are a
+      separate bug (legend-gkc6b).
+    - Mocks follow the registry: every family mock lists its unavailable
+      metrics and a drift test pins the list to the registry.
+
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
 Context: the production worker refused to start without an operator-supplied

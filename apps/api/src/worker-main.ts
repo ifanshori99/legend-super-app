@@ -54,6 +54,7 @@ import {
 import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
+import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -92,6 +93,7 @@ import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
 import { runAiForecastJob } from "./worker/ai-forecast.job.ts";
 import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
+import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
@@ -382,6 +384,12 @@ const relay = createRelayRuntime({
       } catch {
         console.error("Delivery channel sync sweep failed");
       }
+      // legend-r7vxn: resend platform status steps whose outcome was unknown.
+      try {
+        await retryDeliveryPlatformIntents(context, new Date());
+      } catch {
+        console.error("Delivery platform retry sweep failed");
+      }
     }
     // §3.19 (legend-9pz9), cloud only: retry parked auto-journals (mapping
     // missing, period closed race). A sweep error never blocks the relay.
@@ -447,6 +455,11 @@ const relay = createRelayRuntime({
       await runAiDailySummaryJob(context);
     } catch {
       console.error("AI daily summary sweep failed");
+    }
+    try {
+      await runMetricsDailyJob(context);
+    } catch {
+      console.error("Metrics daily sweep failed");
     }
     // PRD §3.18 "Kirim PO" (legend-9yz): send queued PO emails. Logs carry only
     // a masked address; an unconfigured provider fails the delivery closed.

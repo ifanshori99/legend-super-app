@@ -17,6 +17,7 @@ import {
   userIdSchema,
   z,
 } from "../core/index.ts";
+import { roleAssignmentIdSchema } from "../access/ids.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import type { DomainEventDefinition } from "../events/define.ts";
 import {
@@ -142,6 +143,18 @@ export const PLATFORM_EVENT_PAYLOADS = {
       "ended_by_super_admin",
       "revoked_by_tenant_admin",
     ]),
+  }),
+  // legend-fmpgz (Q46): a Super Admin appointed or replaced a tenant Owner.
+  // The payload names assignments, not recipients: the notification consumer
+  // reads the new and the replaced Owner from those rows (the replaced one has
+  // already ended by then), and every active Owner from the tenant itself.
+  "tenant_owner.changed": z.strictObject({
+    kind: z.enum(["assigned", "replaced"]),
+    actorUserId: userIdSchema,
+    reason,
+    changedAt: isoDateTimeSchema,
+    newAssignmentId: roleAssignmentIdSchema,
+    replacedAssignmentId: roleAssignmentIdSchema.nullable(),
   }),
   "config_import.completed": z.strictObject({
     importId: configImportIdSchema,

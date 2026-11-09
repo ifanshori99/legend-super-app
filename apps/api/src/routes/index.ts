@@ -10,6 +10,7 @@ import { createInventoryCountRouter } from "./inventory-count.routes.ts";
 import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
 import { createPurchasingSupplierRouter } from "./purchasing-supplier.routes.ts";
 import { createPurchasingOrderRouter } from "./purchasing-order.routes.ts";
+import { createInventoryReceivingRouter } from "./inventory-receiving.routes.ts";
 import {
   createPurchasingSendRouter,
   publicPurchaseOrderRouter,
@@ -17,6 +18,8 @@ import {
 import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
+import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
+import { createAccountingLegalEntitiesRouter } from "./accounting-legal-entities.routes";
 import { meRouter } from "./me.routes";
 import { orgRouter } from "./org.routes";
 import {
@@ -38,6 +41,7 @@ import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
+import { salesTargetsRouter } from "./sales-targets.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -85,7 +89,10 @@ import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { expoRouter } from "./expo.routes.ts";
+import { pickupRouter } from "./pickup.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
+import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -151,6 +158,8 @@ apiRouter.use("/inventory", createInventoryOpsRouter());
 apiRouter.use("/inventory", createPurchasingSupplierRouter());
 // Purchase requests + purchase orders with approval (PRD §3.18, legend-9yz).
 apiRouter.use("/inventory", createPurchasingOrderRouter());
+// Goods receipt: partial receiving, QC, photos (PRD §3.18 INV-05, legend-o1o4s).
+apiRouter.use("/inventory", createInventoryReceivingRouter());
 // Send PO by email or share link (PRD §3.18 "Kirim PO", legend-9yz).
 apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
@@ -175,6 +184,14 @@ apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 apiRouter.use("/outlets/:outletId/pos", posReceiptWriteoffRouter);
 // WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
+// WS-04 pickup display feed and call/picked-up (legend-mzhr0): per-route auth,
+// the prefix is shared with other outlet routers.
+apiRouter.use("/outlets/:outletId", pickupRouter);
+// WS-04 expo board, runner assignment and delivered (legend-him8j), same prefix.
+apiRouter.use("/outlets/:outletId", expoRouter);
+// WS-04 remake / comp log (legend-4b5): /api/outlets/:outletId/orders/:orderId/issues
+// and /api/outlets/:outletId/order-issues; per-route middleware (shared prefix).
+apiRouter.use("/outlets/:outletId", orderIssuesRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
@@ -184,6 +201,8 @@ apiRouter.use(
   "/outlets/:outletId/delivery-reconciliation",
   deliveryReconciliationRouter,
 );
+// WS-11 sales targets per outlet and day (legend-ne81z).
+apiRouter.use("/outlets/:outletId/sales-targets", salesTargetsRouter);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);
@@ -215,6 +234,10 @@ apiRouter.use("/accounting", accountingRouter);
 apiRouter.use("/accounting", accountingJournalRouter);
 // AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).
 apiRouter.use("/accounting", createAccountingApFaRouter());
+// Per-tenant finance policy: bank matching tolerance, ACC-05 day limit (legend-pxcs).
+apiRouter.use("/accounting", createAccountingFinancePolicyRouter());
+// Legal-entity picker for finance screens, accounting.journal.view (legend-bddb).
+apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);

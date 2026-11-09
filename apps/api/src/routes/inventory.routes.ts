@@ -26,6 +26,7 @@ import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
+  requireMenuPermission,
   requireOutletPermission,
   requireTenantPermission,
 } from "../middleware/permissions";
@@ -47,15 +48,16 @@ export const inventoryRouter = Router();
 
 inventoryRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
-const viewTenant = requireTenantPermission("inventory.stock.view");
-const receiveTenant = requireTenantPermission("inventory.stock.receive");
+const manageItemsTenant = requireTenantPermission("inventory.item.manage");
+// Catalog reads reach the caller's tenant or outlets; the service re-checks.
+const viewCatalog = requireMenuPermission("inventory.stock.view");
 const viewOutlet = requireOutletPermission("inventory.stock.view", (req) =>
   String(req.query.outletId),
 );
 
 // ------------------------------------------------------------ item master
 
-inventoryRouter.get("/items", viewTenant, async (req, res) => {
+inventoryRouter.get("/items", viewCatalog, async (req, res) => {
   const query = inventoryItemListQuerySchema.parse(req.query);
   res.json(
     await listInventoryItems(
@@ -66,7 +68,7 @@ inventoryRouter.get("/items", viewTenant, async (req, res) => {
   );
 });
 
-inventoryRouter.get("/items/:itemId", viewTenant, async (req, res) => {
+inventoryRouter.get("/items/:itemId", viewCatalog, async (req, res) => {
   const itemId = inventoryItemIdSchema.parse(req.params.itemId);
   res.json({
     data: await getInventoryItem(
@@ -79,7 +81,7 @@ inventoryRouter.get("/items/:itemId", viewTenant, async (req, res) => {
 
 inventoryRouter.get(
   "/items/:itemId/uom-conversions",
-  viewTenant,
+  viewCatalog,
   async (req, res) => {
     const itemId = inventoryItemIdSchema.parse(req.params.itemId);
     res.json({
@@ -92,22 +94,27 @@ inventoryRouter.get(
   },
 );
 
-inventoryRouter.post("/items", receiveTenant, jsonBody, async (req, res) => {
-  const input = createInventoryItemInputSchema.parse(req.body);
-  const item = await createInventoryItem(
-    getScopedTenantContext(req),
-    getAuth(req).user.id,
-    input,
-  );
-  res
-    .status(201)
-    .location(`/api/inventory/items/${item.id}`)
-    .json({ data: item });
-});
+inventoryRouter.post(
+  "/items",
+  manageItemsTenant,
+  jsonBody,
+  async (req, res) => {
+    const input = createInventoryItemInputSchema.parse(req.body);
+    const item = await createInventoryItem(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      input,
+    );
+    res
+      .status(201)
+      .location(`/api/inventory/items/${item.id}`)
+      .json({ data: item });
+  },
+);
 
 inventoryRouter.patch(
   "/items/:itemId",
-  receiveTenant,
+  manageItemsTenant,
   jsonBody,
   async (req, res) => {
     const itemId = inventoryItemIdSchema.parse(req.params.itemId);
@@ -125,7 +132,7 @@ inventoryRouter.patch(
 
 // ------------------------------------------------------------------ units
 
-inventoryRouter.get("/uoms", viewTenant, async (req, res) => {
+inventoryRouter.get("/uoms", viewCatalog, async (req, res) => {
   const query = cursorPageQuerySchema.parse(req.query);
   res.json(
     await listUoms(getScopedTenantContext(req), getAuth(req).user.id, query),

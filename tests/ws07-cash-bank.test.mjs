@@ -753,6 +753,60 @@ describe("CSV import helpers", () => {
     );
   });
 
+  test("CSV: parseBankCsvAmount grammar table (valid and ambiguous input)", () => {
+    // [text, separator, whole rupiah]
+    const valid = [
+      ["1.234.567,00", ",", 1_234_567],
+      ["1234567,0", ",", 1_234_567],
+      ["(1.234,00)", ",", -1_234],
+      ["Rp 1.000", ",", 1_000],
+      ["-0,00", ",", 0],
+      ["1.234,00", ",", 1_234],
+      ["1,234,567.00", ".", 1_234_567],
+      ["1.234", ",", 1_234],
+      ["( 1.000 )", ",", -1_000],
+      ["-Rp 1.000", ",", -1_000],
+      ["Rp -1.000", ",", -1_000],
+      ["rp1.000", ",", 1_000],
+    ];
+    for (const [text, separator, expected] of valid) {
+      assert.equal(parseBankCsvAmount(text, separator), expected, text);
+    }
+    // Misplaced groups, 3+ decimals, non-zero fraction, mixed separators,
+    // dangling or leading separator, empty.
+    const invalid = [
+      ["1.2.3", ","],
+      ["12.34.567", ","],
+      ["12..3", ","],
+      ["1.234,567", ","],
+      ["1.234,000", ","],
+      ["1.234,50", ","],
+      ["1234567,5", ","],
+      ["1,234,56", ","],
+      ["1,234.56", ","],
+      ["1,", ","],
+      [",5", ","],
+      ["", ","],
+      // "1.234" with "." is a 3-digit fraction, never thousands.
+      ["1.234", "."],
+      // Double sign, spaces or "Rp" inside the number (misread columns).
+      ["(-1.000)", ","],
+      ["-(1.000)", ","],
+      ["--1.000", ","],
+      ["12 34", ","],
+      ["1 2 3", ","],
+      ["100 200", ","],
+      ["1Rp000", ","],
+      ["1.000 Rp", ","],
+    ];
+    for (const [text, separator] of invalid) {
+      throwsWithCode(
+        () => parseBankCsvAmount(text, separator),
+        "STATEMENT_VALUE_INVALID",
+      );
+    }
+  });
+
   test("CSV: statementLineDedupeKey normalizes the description and keeps occurrences apart", () => {
     const base = {
       postedOn: "2026-11-02",

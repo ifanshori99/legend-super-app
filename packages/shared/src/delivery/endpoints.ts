@@ -26,6 +26,8 @@ import {
   deliveryReconciliationSchema,
   linkDeliveryChannelInputSchema,
   listDeliveryOrdersQuerySchema,
+  resendDeliveryOrderSyncInputSchema,
+  resolveDeliveryOrderSyncInputSchema,
   setDeliveryChannelStateInputSchema,
   updateDeliveryOrderStatusInputSchema,
 } from "./schemas.ts";
@@ -105,6 +107,33 @@ export const updateDeliveryOrderStatus = defineEndpoint({
   path: "/api/outlets/:outletId/delivery-orders/:deliveryOrderId/status",
   params: orderParams,
   body: updateDeliveryOrderStatusInputSchema,
+  response: dataResponseSchema(deliveryChannelOrderSchema),
+});
+
+/**
+ * Staff resend of the held step of a `platformSync: needs_action` order: one
+ * platform call (same idempotent reference as the sweep). 200 with the order:
+ * `platformSync` is `ok` when the platform took it, else still `needs_action`.
+ * 409 `DELIVERY_SYNC_NOT_PENDING` when the order is not `needs_action`.
+ */
+export const resendDeliveryOrderSync = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/delivery-orders/:deliveryOrderId/platform-sync/resend",
+  params: orderParams,
+  body: resendDeliveryOrderSyncInputSchema,
+  response: dataResponseSchema(deliveryChannelOrderSchema),
+});
+
+/**
+ * Staff mark a `needs_action` order as handled in the partner app: sync flag
+ * cleared (`ok`), audited with who, when and the optional reason. 409
+ * `DELIVERY_SYNC_NOT_PENDING` when the order is not `needs_action`.
+ */
+export const resolveDeliveryOrderSync = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/delivery-orders/:deliveryOrderId/platform-sync/resolve",
+  params: orderParams,
+  body: resolveDeliveryOrderSyncInputSchema,
   response: dataResponseSchema(deliveryChannelOrderSchema),
 });
 

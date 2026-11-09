@@ -177,6 +177,24 @@ async function assignRole(
   );
 }
 
+/** A tenant custom role holding exactly these codes, assigned tenant-wide. */
+async function assignCustomRole(
+  userId: string,
+  permissions: string[],
+): Promise<void> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO roles (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, false, NULL, $3::jsonb, false, '["tenant"]'::jsonb) RETURNING id`,
+    [tenantA, `Custom ${randomUUID()}`, JSON.stringify(permissions)],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [tenantA, userId, rows[0]!.id],
+  );
+}
+
 async function signedIn(name: string) {
   const client = agent(app);
   await signUp(client, name);
@@ -404,6 +422,57 @@ describe("SETUP-01 stock locations", () => {
       [tenantA, created.id],
     );
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("legend-1ozj setup writes need inventory.item.manage", () => {
+  const location = (name: string) => ({
+    outletId: outletA,
+    name,
+    type: "chiller",
+    idempotencyKey: `loc-${randomUUID()}`,
+  });
+
+  it("denies stock.receive alone and allows inventory.item.manage on locations", async () => {
+    const receiveOnly = await signedIn("Setup Terima Saja");
+    await assignCustomRole(receiveOnly.userId, [
+      "inventory.stock.view",
+      "inventory.stock.receive",
+    ]);
+    const denied = await receiveOnly.client
+      .post("/api/inventory/locations")
+      .set(originHeader)
+      .send(location(`Gudang ${randomUUID().slice(0, 6)}`));
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+
+    const manager = await signedIn("Setup Pengelola");
+    await assignCustomRole(manager.userId, [
+      "inventory.stock.view",
+      "inventory.item.manage",
+    ]);
+    const created = await manager.client
+      .post("/api/inventory/locations")
+      .set(originHeader)
+      .send(location(`Gudang ${randomUUID().slice(0, 6)}`));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+  });
+
+  it("denies stock.receive alone on a UOM conversion", async () => {
+    const receiveOnly = await signedIn("Konversi Terima Saja");
+    await assignCustomRole(receiveOnly.userId, [
+      "inventory.stock.view",
+      "inventory.stock.receive",
+    ]);
+    const denied = await receiveOnly.client
+      .post(`/api/inventory/items/${itemA}/uom-conversions`)
+      .set(originHeader)
+      .send({
+        fromUomId: uomPcs,
+        toUomId: uomG,
+        factor: "7.0000",
+        idempotencyKey: `uom-${randomUUID()}`,
+      });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
   });
 });
 

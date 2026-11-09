@@ -21,7 +21,6 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
-  PurchasingError,
   purchaseOrderSchema,
   purchasingEvents,
   type PurchaseOrder,
@@ -36,6 +35,7 @@ import {
   purchasingIdempotency,
 } from "../db/schema/purchasing.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { translateDomainError } from "./domain-error-http.shared.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import {
@@ -61,11 +61,9 @@ export const PURCHASING_READ_PERMISSIONS: readonly PermissionCode[] = [
   "purchasing.invoice.match",
 ];
 
-/** PRD §3.7 / contract: purchasing rules map to HTTP 409 with their code. */
+/** Contract status and safe message per code (see domain-error-http.shared.ts). */
 export function translatePurchasingError(error: unknown): unknown {
-  if (error instanceof PurchasingError)
-    return new HttpError(409, error.code, error.message);
-  return error;
+  return translateDomainError(error);
 }
 
 /**

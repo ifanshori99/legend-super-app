@@ -60,7 +60,7 @@ export function createInventorySetupRouter(): Router {
   router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
   const viewTenant = requireTenantPermission("inventory.stock.view");
-  const writeTenant = requireTenantPermission("inventory.stock.receive");
+  const writeTenant = requireTenantPermission("inventory.item.manage");
   const manageSettings = requireTenantPermission(
     "inventory.adjustment.approve",
   );
@@ -69,13 +69,13 @@ export function createInventorySetupRouter(): Router {
   );
   // Create routes: the outlet comes from the (already parsed) body.
   const writeBodyOutlet = requireOutletPermission(
-    "inventory.stock.receive",
+    "inventory.item.manage",
     (req) => String((req.body as { outletId?: unknown } | undefined)?.outletId),
   );
   // Id-only outlet-owned routes: mints the caller's reachable scope for the
   // permission (tenant-wide, else the union of their outlets); the service
   // then checks the concrete row's outlet. Fails closed without reach.
-  const writeReachable = requireMenuPermission("inventory.stock.receive");
+  const writeReachable = requireMenuPermission("inventory.item.manage");
 
   // ------------------------------------------------------------ locations
 

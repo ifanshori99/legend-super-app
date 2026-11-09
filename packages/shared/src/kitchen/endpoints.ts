@@ -33,6 +33,7 @@ import {
   kitchenTicketItemSchema,
   orderIdSchema,
   orderIssueSchema,
+  orderIssueViewSchema,
   orderIssueTypeSchema,
   pacingSnapshotSchema,
   pickupCallSchema,
@@ -41,8 +42,11 @@ import {
   servingTimeGroupSchema,
   servingTimeSummarySchema,
   stationBoardSchema,
+  stationCapacityRuleSchema,
   stationConfigSchema,
   stationIdSchema,
+  stationLabelSchema,
+  stationSummarySchema,
 } from "./schemas.ts";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
@@ -67,12 +71,47 @@ export const listKitchenStations = defineEndpoint({
   response: dataResponseSchema(z.array(stationConfigSchema)),
 });
 
+/**
+ * Station labels for the KDS switch and timer (legend-gt7f). Needs only
+ * `kds.ticket.process`, so a cook reads the name and target time without
+ * `menu.item.view`. Lists the active stations the caller reaches, by name.
+ */
+export const listKitchenStationLabels = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-labels",
+  params: outletParams,
+  response: dataResponseSchema(z.array(stationLabelSchema)),
+});
+
+/**
+ * A cook reads the capacity rules of one station they reach (legend-gt7f).
+ * Slim rows: the config screen's `listCapacityRules` keeps the full rows and
+ * `kds.station.manage`. Ordered by window, then rule.
+ */
+export const getStationCapacityRules = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/stations/:stationId/capacity-rules",
+  params: stationParams,
+  response: dataResponseSchema(z.array(stationCapacityRuleSchema)),
+});
+
 /** One KDS station tab: open tickets, all-day count, current pacing (F12). */
 export const getKitchenBoard = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/kitchen/stations/:stationId/board",
   params: stationParams,
   response: dataResponseSchema(stationBoardSchema),
+});
+
+/**
+ * KDS station switch: open-ticket count per station in one small payload, so
+ * the tablet does not poll every station's board (legend-tsp5).
+ */
+export const getKitchenStationSummary = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-summary",
+  params: outletParams,
+  response: dataResponseSchema(stationSummarySchema),
 });
 
 /** "Aksi Tiket": start, bump, recall, void. */
@@ -296,7 +335,10 @@ export const reportOrderIssue = defineEndpoint({
   response: dataResponseSchema(orderIssueSchema),
 });
 
-/** Remake/comp log for the kitchen analytics screen. */
+/**
+ * Remake/comp log for the kitchen analytics screen. Rows carry the order label,
+ * item name and staff names (legend-0eq7), so the UI shows no id.
+ */
 export const listOrderIssues = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/order-issues",
@@ -305,5 +347,5 @@ export const listOrderIssues = defineEndpoint({
     type: orderIssueTypeSchema.optional(),
     stationId: stationIdSchema.optional(),
   }),
-  response: cursorPageSchema(orderIssueSchema),
+  response: cursorPageSchema(orderIssueViewSchema),
 });

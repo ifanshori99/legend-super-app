@@ -81,6 +81,29 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "cause",
     "grantExpiresAt",
   ],
+
+  "tenant_owner.assigned": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.replaced": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.denied": ["cause", "impersonatedBy"],
+  "tenant_owner.notify_failed": ["assignmentId", "kind", "error"],
+  "platform.access.denied": [
+    "cause",
+    "code",
+    "impersonatedBy",
+    "impersonatedUserId",
+    "method",
+    "route",
+  ],
   "integration.created": ["provider", "outletId", "status", "configKeys"],
   "integration.config.updated": [
     "provider",

@@ -43,9 +43,23 @@ import { orderNetSubtotalIdr } from "../tax/net-subtotal.ts";
 import {
   orderIdSchema,
   orderIssueTypeSchema,
+  orderIssueReasonSchema,
   orderIssueResolutionSchema,
+  orderIssueStatusSchema,
+  orderIssueSchema,
+  ORDER_ISSUE_STATUSES,
 } from "../kitchen/schemas.ts";
-export { orderIdSchema, orderIssueTypeSchema, orderIssueResolutionSchema };
+import type { OrderIssue } from "../kitchen/schemas.ts";
+export {
+  orderIdSchema,
+  orderIssueTypeSchema,
+  orderIssueReasonSchema,
+  orderIssueResolutionSchema,
+  orderIssueStatusSchema,
+  orderIssueSchema,
+  ORDER_ISSUE_STATUSES,
+};
+export type { OrderIssue };
 
 const name = z.string().min(1).max(150);
 const note = z.string().max(200);
@@ -1441,82 +1455,26 @@ export type CustomerOrderIssueResolution = z.infer<
   typeof customerOrderIssueResolutionSchema
 >;
 
-export const ORDER_ISSUE_STATUSES = ["open", "resolved", "cancelled"] as const;
-export const orderIssueStatusSchema = z.enum(ORDER_ISSUE_STATUSES);
 export type OrderIssueStatus = z.infer<typeof orderIssueStatusSchema>;
 
-export const orderIssueSchema = z
-  .strictObject({
-    id: orderIssueIdSchema,
-    ...scope,
-    orderId: orderIdSchema,
-    orderItemId: orderItemIdSchema,
-    type: orderIssueTypeSchema,
-    reason: z.string().min(1).max(500),
-    resolution: orderIssueResolutionSchema.nullable(),
-    replacementItemId: uuidSchema.nullable(),
-    voucherId: apologyVoucherIdSchema.nullable(),
-    /** Positive: the guest pays the difference; negative: the guest is credited. */
-    priceDifferenceIdr: idrSchema.nullable(),
-    /** Theoretical cost of the failed or comped item, for evaluation (U20). */
-    costIdr: nonnegativeIdr,
-    /** Set for a manual refund; ORD-09 requires a supervisor. */
-    approvedBy: userIdSchema.nullable(),
-    status: orderIssueStatusSchema,
-    reportedBy: userIdSchema.nullable(),
-    createdAt: isoDateTimeSchema,
-    resolvedAt: isoDateTimeSchema.nullable(),
-  })
-  .superRefine((issue, ctx) => {
-    const add = (
-      path: (string | number)[],
-      message: string,
-      invalid: boolean,
-    ) => {
-      if (invalid) ctx.addIssue({ code: "custom", path, message });
-    };
-    add(
-      ["resolution"],
-      "An open issue has no resolution yet",
-      issue.status === "open" && issue.resolution !== null,
-    );
-    add(
-      ["resolvedAt"],
-      "A resolved issue needs a resolution and resolvedAt",
-      issue.status === "resolved" &&
-        (issue.resolution === null || issue.resolvedAt === null),
-    );
-    add(
-      ["resolvedAt"],
-      "A cancelled issue is not resolved",
-      issue.status === "cancelled" && issue.resolvedAt !== null,
-    );
-    add(
-      ["replacementItemId"],
-      "A swap needs the replacement menu item",
-      issue.resolution === "swap" && issue.replacementItemId === null,
-    );
-    add(
-      ["voucherId"],
-      "A voucher resolution needs the apology voucher",
-      issue.resolution === "voucher" && issue.voucherId === null,
-    );
-    add(
-      ["approvedBy"],
-      "ORD-09: a manual refund needs supervisor approval",
-      issue.resolution === "manual_refund" && issue.approvedBy === null,
-    );
-    add(
-      ["reason"],
-      "ORD-09: a manual refund needs a written reason of at least 10 characters",
-      issue.resolution === "manual_refund" && issue.reason.trim().length < 10,
-    );
-  });
-export type OrderIssue = z.infer<typeof orderIssueSchema>;
+// legend-d60m: `orderIssueSchema` is the single `order_issues` record, owned by
+// the kitchen contract and re-exported above. The QR recovery lifecycle
+// (status, resolvedAt, replacementItemId, priceDifferenceIdr) lives on it.
+
+/**
+ * remake and comp need the staff member (`employeeId`), which this input does
+ * not carry: guest-facing recovery reports only unfulfillable or complaint.
+ */
+export const QR_ORDER_ISSUE_INPUT_TYPES = [
+  "unfulfillable",
+  "complaint",
+] as const;
 
 export const createOrderIssueInputSchema = clientInputSchema({
-  type: orderIssueTypeSchema,
-  reason: z.string().min(1).max(500),
+  type: z.enum(QR_ORDER_ISSUE_INPUT_TYPES),
+  reason: orderIssueReasonSchema,
+  /** Written reason; stored as `order_issues.reasonNote`. */
+  reasonNote: z.string().min(1).max(500),
 });
 
 export const customerOrderIssueChoiceInputSchema = clientInputSchema({

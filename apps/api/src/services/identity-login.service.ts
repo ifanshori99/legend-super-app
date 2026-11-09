@@ -47,17 +47,23 @@ import {
   type LoginChallengeView,
 } from "@starter/shared/identity";
 import { CoreError, type TenantContext } from "@starter/shared/core";
-import { establishScopedTenantContext } from "@starter/shared/core/server";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db";
 import { loginChallenges, tenants, tenantIntegrations } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { clientIpDigest, loginCodeDigest } from "../lib/identity-digest";
+import { logger } from "../lib/logger";
 import { bindingDigestOf } from "../lib/login-binding";
 import {
   createCustomerSession,
   type IssuedSession,
 } from "../lib/identity-session";
+
+import { recordLoginAudit } from "./identity-wa-audit.ts";
 
 type ChallengeRow = typeof loginChallenges.$inferSelect;
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -145,6 +151,23 @@ function toChallenge(row: ChallengeRow): LoginChallenge {
     matchedUserId: row.matchedUserId,
     createdAt: row.createdAt.toISOString(),
   });
+}
+
+/**
+ * The tenant scope a stored challenge belongs to, for its audit rows. A row
+ * with no tenant has nowhere to write an audit row (login_challenges.tenant_id
+ * is nullable), so it is not audited.
+ */
+function challengeContext(row: ChallengeRow): ScopedTenantContext | null {
+  if (row.tenantId === null) return null;
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: row.tenantId,
+      brandId: row.brandId,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
 }
 
 /** A tenant that is not active cannot hand out sessions (fail closed). */
@@ -254,7 +277,31 @@ export async function issueWhatsAppChallenge(
       })
       .returning();
     if (!row) throw new Error("The login challenge was not stored");
+    // legend-wq3f: the issuance row commits with the challenge it describes.
+    await recordLoginAudit(tx, context, {
+      action: "login_challenge.created",
+      challengeId: row.id,
+      details: {
+        channel: "whatsapp_inbound",
+        status: "pending",
+        expiresAt: row.expiresAt.toISOString(),
+        linking: row.linkUserId !== null,
+      },
+      now,
+      ipHash,
+    });
     return { row, channel };
+  }).catch(async (error: unknown) => {
+    // AUTH-04: the refused request rolled its transaction back, so the audit
+    // row for the refusal is written on its own. Best effort: a failing audit
+    // write must not turn a 429 into a 503 or hide the original error.
+    if (error instanceof CoreError && error.code === "RATE_LIMITED")
+      await auditRateLimited(context, {
+        ipHash,
+        pivot: ipHash ?? bindingHash,
+        now,
+      });
+    throw error;
   });
 
   return {
@@ -267,6 +314,90 @@ export async function issueWhatsAppChallenge(
       keyword: issued.channel.keyword,
     }),
   };
+}
+
+/**
+ * The endpoint has no HTTP rate limit of its own, and audit_logs is append-only
+ * (2 years), so an anonymous flood of refused requests must not become a flood
+ * of audit rows: one rate_limited row per tenant and device/IP pivot per
+ * AUTH-04 window. Process-local and bounded; a second API instance may add one
+ * more row per window, which is still bounded.
+ */
+const RATE_AUDIT_MAX_KEYS = 5000;
+const rateAuditWindowStart = new Map<string, number>();
+
+function shouldAuditRateLimit(
+  tenantId: string,
+  pivot: string,
+  now: Date,
+): boolean {
+  const windowMs = CHALLENGE_WINDOW_MINUTES * MINUTE_MS;
+  const at = now.getTime();
+  if (rateAuditWindowStart.size >= RATE_AUDIT_MAX_KEYS)
+    for (const [key, started] of rateAuditWindowStart)
+      if (at - started >= windowMs) rateAuditWindowStart.delete(key);
+  // Still full of live windows: skip the row rather than grow without bound.
+  if (rateAuditWindowStart.size >= RATE_AUDIT_MAX_KEYS) return false;
+  const key = `${tenantId}\u0000${pivot}`;
+  const started = rateAuditWindowStart.get(key);
+  if (started !== undefined && at - started < windowMs) return false;
+  rateAuditWindowStart.set(key, at);
+  return true;
+}
+
+async function auditRateLimited(
+  context: ScopedTenantContext,
+  input: { ipHash: string | null; pivot: string; now: Date },
+): Promise<void> {
+  if (!shouldAuditRateLimit(context.tenant.tenantId, input.pivot, input.now))
+    return;
+  try {
+    await withTenant(db, context, (tx) =>
+      recordLoginAudit(tx, context, {
+        action: "login_challenge.rate_limited",
+        challengeId: null,
+        details: { channel: "whatsapp_inbound", cause: "per_device_limit" },
+        now: input.now,
+        ipHash: input.ipHash,
+      }),
+    );
+  } catch (error) {
+    logger.warn(
+      { err: error, tenantId: context.tenant.tenantId },
+      "failed to audit a rate-limited login challenge",
+    );
+  }
+}
+
+/** Best effort: the session error is the one the caller must see. */
+async function auditClaimFailed(
+  context: ScopedTenantContext | null,
+  row: ChallengeRow,
+  now: Date,
+  ipHash: string | null,
+): Promise<void> {
+  if (context === null) return;
+  try {
+    await withTenant(db, context, (tx) =>
+      recordLoginAudit(tx, context, {
+        action: "login_challenge.claim_failed",
+        challengeId: row.id,
+        actorUserId: row.matchedUserId,
+        details: {
+          channel: "whatsapp_inbound",
+          status: "completed",
+          cause: "session_not_created",
+        },
+        now,
+        ipHash,
+      }),
+    );
+  } catch (error) {
+    logger.warn(
+      { err: error, tenantId: row.tenantId },
+      "failed to audit a login session claim failure",
+    );
+  }
 }
 
 async function loadChallenge(
@@ -348,15 +479,37 @@ export async function pollWhatsAppChallenge(
     const expired = expireLoginChallenge(toChallenge(row), now);
     if (expired.status !== "expired")
       return { view: pendingView(toChallenge(row)), session: null };
-    await db
-      .update(loginChallenges)
-      .set({ status: "expired" })
-      .where(
-        and(
-          eq(loginChallenges.id, row.id),
-          eq(loginChallenges.status, "pending"),
-        ),
-      );
+    const expiredContext = challengeContext(row);
+    const markExpired = async (tx: Pick<typeof db, "update">) =>
+      tx
+        .update(loginChallenges)
+        .set({ status: "expired" })
+        .where(
+          and(
+            eq(loginChallenges.id, row.id),
+            eq(loginChallenges.status, "pending"),
+          ),
+        )
+        .returning({ id: loginChallenges.id });
+    if (expiredContext === null) await markExpired(db);
+    else
+      await withTenant(db, expiredContext, async (tx) => {
+        // Audit only the poll that actually flipped the row (idempotent).
+        const flipped = await markExpired(tx);
+        if (flipped.length === 1)
+          await recordLoginAudit(tx, expiredContext, {
+            action: "login_challenge.expired",
+            challengeId: row.id,
+            details: {
+              channel: "whatsapp_inbound",
+              status: "expired",
+              cause: "ttl_elapsed",
+              linking: row.linkUserId !== null,
+            },
+            now,
+            ipHash: row.ipHash,
+          });
+      });
     return { view: pendingView(expired), session: null };
   }
 
@@ -376,16 +529,42 @@ export async function pollWhatsAppChallenge(
 
   // Reserve the claim atomically, so two racing polls cannot both create a
   // session; the loser gets CHALLENGE_NOT_PENDING.
-  const reserved = await db
-    .update(loginChallenges)
-    .set({ sessionIssuedAt: now })
-    .where(
-      and(
-        eq(loginChallenges.id, row.id),
-        isNull(loginChallenges.sessionIssuedAt),
-      ),
-    )
-    .returning({ id: loginChallenges.id });
+  // The audit row commits with the reservation, so a claim is never unrecorded.
+  const claimContext = challengeContext(row);
+  // The claiming request's IP, not the issuing one: a stolen binding cookie
+  // used from another network must show up in the trail.
+  const claimIpHash = request.ip ? clientIpDigest(request.ip) : null;
+  const reserveClaim = (tx: Pick<typeof db, "update">) =>
+    tx
+      .update(loginChallenges)
+      .set({ sessionIssuedAt: now })
+      .where(
+        and(
+          eq(loginChallenges.id, row.id),
+          isNull(loginChallenges.sessionIssuedAt),
+        ),
+      )
+      .returning({ id: loginChallenges.id });
+  const reserved =
+    claimContext === null
+      ? await reserveClaim(db)
+      : await withTenant(db, claimContext, async (tx) => {
+          const claimed = await reserveClaim(tx);
+          if (claimed.length === 1)
+            await recordLoginAudit(tx, claimContext, {
+              action: "login_challenge.claimed",
+              challengeId: row.id,
+              actorUserId: row.matchedUserId,
+              details: {
+                channel: "whatsapp_inbound",
+                status: "completed",
+                matchedUserId: row.matchedUserId,
+              },
+              now,
+              ipHash: claimIpHash,
+            });
+          return claimed;
+        });
   if (reserved.length === 0) throw new IdentityError("CHALLENGE_NOT_PENDING");
 
   let session: IssuedSession;
@@ -402,6 +581,7 @@ export async function pollWhatsAppChallenge(
       .update(loginChallenges)
       .set({ sessionIssuedAt: null })
       .where(eq(loginChallenges.id, row.id));
+    await auditClaimFailed(claimContext, row, now, claimIpHash);
     throw error;
   }
   await db
@@ -441,13 +621,36 @@ export async function cancelWhatsAppChallenge(
   assertBinding(row, bindingNonce);
   const cancelled = cancelChallenge(toChallenge(row));
   if (cancelled.status === row.status) return;
-  await db
-    .update(loginChallenges)
-    .set({ status: cancelled.status })
-    .where(
-      and(
-        eq(loginChallenges.id, row.id),
-        eq(loginChallenges.status, "pending"),
-      ),
-    );
+  const cancelContext = challengeContext(row);
+  const markCancelled = (tx: Pick<typeof db, "update">) =>
+    tx
+      .update(loginChallenges)
+      .set({ status: cancelled.status })
+      .where(
+        and(
+          eq(loginChallenges.id, row.id),
+          eq(loginChallenges.status, "pending"),
+        ),
+      )
+      .returning({ id: loginChallenges.id });
+  if (cancelContext === null) {
+    await markCancelled(db);
+    return;
+  }
+  await withTenant(db, cancelContext, async (tx) => {
+    const flipped = await markCancelled(tx);
+    if (flipped.length === 1)
+      await recordLoginAudit(tx, cancelContext, {
+        action: "login_challenge.cancelled",
+        challengeId: row.id,
+        details: {
+          channel: "whatsapp_inbound",
+          status: cancelled.status,
+          cause: "browser_cancelled",
+          linking: row.linkUserId !== null,
+        },
+        now: new Date(),
+        ipHash: row.ipHash,
+      });
+  });
 }

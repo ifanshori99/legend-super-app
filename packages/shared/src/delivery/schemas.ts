@@ -74,6 +74,18 @@ export type DeliveryOrderStatus = z.infer<typeof deliveryOrderStatusSchema>;
 
 /** `platform`: the adapter received it. `manual_pos`: cashier recorded it (D12). */
 export const deliveryOrderSourceSchema = z.enum(["platform", "manual_pos"]);
+
+/**
+ * Platform sync of an order's latest staff step (legend-r7vxn): `ok` nothing
+ * pending, `retrying` the system resends it, `needs_action` the platform
+ * refused it or retries ran out, so staff must act (staff screens flag it).
+ */
+export const deliveryPlatformSyncSchema = z.enum([
+  "ok",
+  "retrying",
+  "needs_action",
+]);
+export type DeliveryPlatformSync = z.infer<typeof deliveryPlatformSyncSchema>;
 export type DeliveryOrderSource = z.infer<typeof deliveryOrderSourceSchema>;
 
 export const DELIVERY_MAPPING_STATUSES = [
@@ -182,6 +194,8 @@ export const deliveryChannelOrderSchema = z
     /** Commission settlement: when the platform statement matched this order. */
     settledAt: isoDateTimeSchema.nullable(),
     settledNetIdr: nonnegativeIdr.nullable(),
+    /** Platform sync of the latest status step; manual orders stay `ok`. */
+    platformSync: deliveryPlatformSyncSchema.default("ok"),
   })
   .superRefine((order, ctx) => {
     if (
@@ -393,6 +407,23 @@ export const updateDeliveryOrderStatusInputSchema = clientInputSchema({
 );
 export type UpdateDeliveryOrderStatusInput = z.infer<
   typeof updateDeliveryOrderStatusInputSchema
+>;
+
+/**
+ * Staff resend of the held platform step of a `needs_action` order
+ * (legend-eyqvo): no input, the stored step is the one resent.
+ */
+export const resendDeliveryOrderSyncInputSchema = clientInputSchema({});
+export type ResendDeliveryOrderSyncInput = z.infer<
+  typeof resendDeliveryOrderSyncInputSchema
+>;
+
+/** Staff marks a `needs_action` order as handled in the partner app. */
+export const resolveDeliveryOrderSyncInputSchema = clientInputSchema({
+  reason: note300.optional(),
+});
+export type ResolveDeliveryOrderSyncInput = z.infer<
+  typeof resolveDeliveryOrderSyncInputSchema
 >;
 
 // ---- Commission reconciliation (§3.23 "Rekonsiliasi Komisi") --------------

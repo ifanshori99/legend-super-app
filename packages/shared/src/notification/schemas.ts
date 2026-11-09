@@ -200,6 +200,15 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "AI-09",
   },
+  // legend-078b: a QR line with no kitchen station, or a kitchen void of a QR
+  // order. Not `waiter_call` (a guest request) or `order_ready` (a done order).
+  kitchen_alert: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F9 Kitchen Display System; KDS-01",
+  },
 } as const satisfies Record<string, CategoryMeta>;
 
 export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;
@@ -207,6 +216,20 @@ export const NOTIFICATION_CATEGORIES = Object.keys(
   NOTIFICATION_CATEGORY_CATALOG,
 ) as [NotificationCategory, ...NotificationCategory[]];
 export const notificationCategorySchema = z.enum(NOTIFICATION_CATEGORIES);
+
+/**
+ * Categories whose email cannot be switched off by the tenant policy
+ * (`emailEnabled`) or by the user's own preference (legend-307w3): the user
+ * must always learn about security events by email. An unverified address
+ * stays unreachable; the other channels keep their normal opt-outs.
+ */
+export const MANDATORY_EMAIL_CATEGORIES: readonly NotificationCategory[] = [
+  "security",
+];
+
+export function isEmailMandatory(category: NotificationCategory): boolean {
+  return MANDATORY_EMAIL_CATEGORIES.includes(category);
+}
 
 export function categoryMeta(category: NotificationCategory): CategoryMeta {
   return NOTIFICATION_CATEGORY_CATALOG[category];
@@ -242,6 +265,32 @@ export const notificationPolicySchema = z
     },
   );
 export type NotificationPolicy = z.infer<typeof notificationPolicySchema>;
+
+/**
+ * The policy a tenant has before it saves one (no `notification_policies`
+ * row): web push only, no email, no WhatsApp, 3 tries with 30 s / 120 s
+ * backoff. The worker, service requests, edge sync alerts and the
+ * notification center all read this one fallback (legend-md0zx).
+ */
+export function defaultNotificationPolicy(
+  tenantId: string,
+  now: Date,
+): NotificationPolicy {
+  return notificationPolicySchema.parse({
+    tenantId,
+    webPushEnabled: true,
+    emailEnabled: false,
+    whatsapp: {
+      enabled: false,
+      allowedCategories: [],
+      monthlyCap: 0,
+      costPerMessageIdr: 0,
+    },
+    maxAttempts: 3,
+    retryBackoffSeconds: [30, 120],
+    updatedAt: now.toISOString(),
+  });
+}
 
 // ---- User preferences -------------------------------------------------------
 

@@ -8,7 +8,12 @@
 // three contracts reference the same records.
 
 import { z, cafeLegendFixtures } from "../core/index.ts";
-import { kitchenFixtureSchema } from "./schemas.ts";
+import {
+  kitchenFixtureSchema,
+  orderIssueViewSchema,
+  stationCapacityRuleSchema,
+  stationLabelSchema,
+} from "./schemas.ts";
 
 // Fixtures are written as plain data (`z.input`): branded ids appear only after
 // the schema parses them, which is what the fixture test and the API do.
@@ -60,6 +65,17 @@ const orderIds = {
   dineInPastry: "01JBQ7Z8K0A1B2C3D4E5F6G7HA",
   takeaway: "01JBQ7Z8K0A1B2C3D4E5F6G7HB",
   takeawayDone: "01JBQ7Z8K0A1B2C3D4E5F6G7HC",
+};
+/** Table label and channel the KDS header shows per order (legend-rutl). */
+export const orderHeaders: Record<
+  string,
+  { tableLabel: string | null; channel: "dine_in" | "takeaway" | "gofood" }
+> = {
+  [orderIds.dineIn]: { tableLabel: "A3", channel: "dine_in" },
+  [orderIds.gofood]: { tableLabel: null, channel: "gofood" },
+  [orderIds.dineInPastry]: { tableLabel: "B7", channel: "dine_in" },
+  [orderIds.takeaway]: { tableLabel: null, channel: "takeaway" },
+  [orderIds.takeawayDone]: { tableLabel: null, channel: "takeaway" },
 };
 const orderItemIds = [
   "01JBQ7Z8K3M4N5P6Q7R8S9T0VY",
@@ -799,6 +815,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "dine_in",
       tableLabel: "A3",
       pickupNumber: null,
+      pickupCode: null,
       stations: [
         {
           stationId: stationId.kitchen,
@@ -825,6 +842,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "gofood",
       tableLabel: null,
       pickupNumber: 12,
+      pickupCode: "A-012",
       stations: [
         {
           stationId: stationId.kitchen,
@@ -851,6 +869,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "dine_in",
       tableLabel: "B7",
       pickupNumber: null,
+      pickupCode: null,
       stations: [
         {
           stationId: stationId.pastry,
@@ -871,6 +890,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "takeaway",
       tableLabel: null,
       pickupNumber: 14,
+      pickupCode: "A-014",
       stations: [
         {
           stationId: stationId.kitchen,
@@ -891,6 +911,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "takeaway",
       tableLabel: null,
       pickupNumber: 13,
+      pickupCode: "A-013",
       stations: [
         {
           stationId: stationId.beverage,
@@ -923,6 +944,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.gofood,
     channel: "gofood",
     number: 12,
+    code: "A-012",
     businessDate: "2026-11-01",
     status: "assigned",
     calledAt: null,
@@ -934,6 +956,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.takeaway,
     channel: "takeaway",
     number: 13,
+    code: "A-013",
     businessDate: "2026-11-01",
     status: "called",
     calledAt: "2026-11-01T04:12:00.000Z",
@@ -945,6 +968,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.takeawayDone,
     channel: "takeaway",
     number: 14,
+    code: "A-014",
     businessDate: "2026-11-01",
     status: "picked_up",
     calledAt: "2026-11-01T04:01:00.000Z",
@@ -1106,10 +1130,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.cook,
     reportedBy: staffId.supervisor,
     resolution: "swap",
+    replacementItemId: menuItemId.kentangGoreng,
     voucherId: null,
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 12_500,
     createdAt: "2026-11-01T04:06:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T04:07:00.000Z",
   },
   {
     ...scope,
@@ -1123,10 +1151,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.pastry,
     reportedBy: staffId.supervisor,
     resolution: "voucher",
+    replacementItemId: null,
     voucherId: id(900),
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 4_000,
     createdAt: "2026-11-01T03:52:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T03:53:00.000Z",
   },
   {
     ...scope,
@@ -1140,10 +1172,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.cook,
     reportedBy: staffId.cashier,
     resolution: "manual_refund",
+    replacementItemId: null,
     voucherId: null,
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 0,
     createdAt: "2026-11-01T04:08:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T04:09:00.000Z",
   },
   {
     ...scope,
@@ -1157,12 +1193,46 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: null,
     reportedBy: staffId.supervisor,
     resolution: null,
+    replacementItemId: null,
     voucherId: null,
     approvedBy: null,
+    priceDifferenceIdr: null,
     costIdr: 0,
     createdAt: "2026-11-01T04:09:00.000Z",
+    status: "open",
+    resolvedAt: null,
   },
 ];
+
+const staffNames: Record<string, string> = {
+  [staffId.cook]: "Budi Santoso",
+  [staffId.barista]: "Sari Wulandari",
+  [staffId.pastry]: "Dewi Lestari",
+  [staffId.supervisor]: "Rina Pratama",
+  [staffId.cashier]: "Agus Hartono",
+};
+const orderLabels: Record<string, string> = {
+  [orderIds.dineIn]: "A-0101",
+  [orderIds.gofood]: "GF-0102",
+  [orderIds.dineInPastry]: "A-0103",
+};
+
+/** `listOrderIssues` rows: each record plus order label, item and staff names (legend-0eq7). */
+export const orderIssueViews: z.input<typeof orderIssueViewSchema>[] =
+  orderIssues.map((issue) => ({
+    ...issue,
+    orderLabel: orderLabels[issue.orderId] ?? "A-0100",
+    itemName:
+      ticketItems.find((item) => item.orderItemId === issue.orderItemId)
+        ?.name ?? "Menu",
+    reportedByName: staffNames[issue.reportedBy] ?? "Staf",
+    employeeName: issue.employeeId
+      ? (staffNames[issue.employeeId] ?? "Staf")
+      : null,
+    approvedByName: issue.approvedBy
+      ? (staffNames[issue.approvedBy] ?? "Staf")
+      : null,
+  }));
 
 export const channelPauses: KitchenFixtureInput["channelPauses"] = [
   {
@@ -1190,6 +1260,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...kitchenDoneTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.kitchenDone,
         ),
@@ -1205,6 +1277,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...coffeeInProgressTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.coffeeInProgress,
         ),
@@ -1228,6 +1302,71 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
   },
 ];
 
+const OPEN_TICKET_STATUSES = ["new", "in_progress", "recalled"];
+
+export const stationSummary: KitchenFixtureInput["stationSummary"] = {
+  ...scope,
+  generatedAt: "2026-11-01T04:10:00.000Z",
+  stations: stationConfigs.map((config) => ({
+    stationId: config.stationId,
+    openTickets: tickets.filter(
+      (ticket) =>
+        ticket.stationId === config.stationId &&
+        OPEN_TICKET_STATUSES.includes(ticket.status),
+    ).length,
+  })),
+};
+
+/** What a cook reads (legend-gt7f); names and types follow the menu stations. */
+export const stationLabels: z.input<typeof stationLabelSchema>[] = [
+  {
+    stationId: stationId.coffee,
+    name: "Kopi",
+    type: "coffee_bar",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.beverage,
+    name: "Nonkopi",
+    type: "beverage_bar",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.kitchen,
+    name: "Dapur",
+    type: "hot_kitchen",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.pastry,
+    name: "Pastry",
+    type: "pastry",
+    targetSeconds: 600,
+  },
+];
+
+/** The cook's slim view of a station's capacity rules (legend-gt7f). */
+export const stationCapacityRules: z.input<typeof stationCapacityRuleSchema>[] =
+  capacityRules
+    .filter((rule) => rule.stationId === stationId.kitchen)
+    .map(
+      ({
+        stationId: station,
+        windowMinutes,
+        capacityPoints,
+        nearCapacityBp,
+        schedule,
+        channelPriority,
+      }) => ({
+        stationId: station,
+        windowMinutes,
+        capacityPoints,
+        nearCapacityBp,
+        schedule,
+        channelPriority,
+      }),
+    );
+
 export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   stationConfigs,
   menuLoads,
@@ -1246,4 +1385,5 @@ export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   orderIssues,
   channelPauses,
   stationBoards,
+  stationSummary,
 };

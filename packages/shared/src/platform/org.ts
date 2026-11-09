@@ -121,6 +121,14 @@ const whatsappNumber = z
   .string()
   .regex(/^628\d{7,12}$/, "WhatsApp number as digits, e.g. 62812…");
 
+/** Person to appoint as a tenant's first admin (or Owner, see tenant-owner.ts). */
+export const tenantFirstAdminSchema = z.strictObject({
+  name: name150,
+  whatsapp: whatsappNumber,
+  email: z.email().max(254).nullable(),
+});
+export type TenantFirstAdmin = z.infer<typeof tenantFirstAdminSchema>;
+
 /** Panel Platform: create tenant + appoint first admin (flow R steps 2-3).
  * A tenant is created `active`; its domains, brands and outlets follow. */
 export const createTenantInputSchema = clientInputSchema({
@@ -130,11 +138,7 @@ export const createTenantInputSchema = clientInputSchema({
   deploymentMode: deploymentModeSchema,
   featureFlags: featureFlagsSchema,
   limits: tenantLimitsSchema,
-  firstAdmin: z.strictObject({
-    name: name150,
-    whatsapp: whatsappNumber,
-    email: z.email().max(254).nullable(),
-  }),
+  firstAdmin: tenantFirstAdminSchema,
 });
 export type CreateTenantInput = z.infer<typeof createTenantInputSchema>;
 

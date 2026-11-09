@@ -20,8 +20,8 @@ const nav: AreaNavEntry[] = [
     to: "/karyawan/kasbon",
     icon: HandCoins,
     order: 40,
-    // PRD silent on a self loan permission: the area's own permission applies.
-    anyPermission: ["self.profile.view"],
+    // legend-e3k9: kasbon has its own self-service permission.
+    anyPermission: ["self.loan.request"],
   },
   {
     area: "karyawan",

@@ -123,6 +123,8 @@ import {
   type OrderRow,
   type PosCaller,
 } from "./pos-order-support.ts";
+import { allocatePickupCall } from "./pickup.service.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
 import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
@@ -743,31 +745,49 @@ export async function createPosOrder(
           createdAt: now,
           updatedAt: now,
         });
-        await tx.insert(orderItems).values(
+        // HPP per line at sale time (legend-u4js6); NULL = unknown.
+        const costSnapshots = await computeLineCostSnapshots(
+          tx,
+          context,
+          outlet.id as OutletId,
           resolved.map((entry) => ({
-            id: entry.id,
-            tenantId,
-            outletId: outlet.id as OutletId,
-            orderId,
             menuItemId: entry.line.menuItemId,
             variantId: entry.line.variantId ?? null,
-            name: entry.priced.name,
-            quantity: entry.line.quantity,
-            unitPriceIdr: entry.priced.unitPriceIdr,
-            modifiersTotalIdr: entry.priced.modifiersTotalIdr,
-            lineTotalIdr: idr(
-              (entry.priced.unitPriceIdr + entry.priced.modifiersTotalIdr) *
-                entry.line.quantity,
+            modifierIds: entry.priced.modifiers.map(
+              (modifier) => modifier.modifierId,
             ),
-            modifiers: entry.priced.modifiers,
-            note: entry.line.note ?? null,
-            course: entry.line.course ?? entry.item.course,
-            fireStatus: "held" as const,
-            status: "queued" as const,
-            reservedBusinessDate: businessDate,
-            createdAt: now,
-            updatedAt: now,
+            quantity: entry.line.quantity,
           })),
+        );
+        await tx.insert(orderItems).values(
+          resolved.map((entry, index) => {
+            const costSnapshot = costSnapshots[index] ?? null;
+            return {
+              id: entry.id,
+              tenantId,
+              outletId: outlet.id as OutletId,
+              orderId,
+              menuItemId: entry.line.menuItemId,
+              variantId: entry.line.variantId ?? null,
+              name: entry.priced.name,
+              quantity: entry.line.quantity,
+              unitPriceIdr: entry.priced.unitPriceIdr,
+              modifiersTotalIdr: entry.priced.modifiersTotalIdr,
+              lineTotalIdr: idr(
+                (entry.priced.unitPriceIdr + entry.priced.modifiersTotalIdr) *
+                  entry.line.quantity,
+              ),
+              modifiers: entry.priced.modifiers,
+              note: entry.line.note ?? null,
+              course: entry.line.course ?? entry.item.course,
+              fireStatus: "held" as const,
+              status: "queued" as const,
+              reservedBusinessDate: businessDate,
+              costSnapshotIdr: costSnapshot === null ? null : idr(costSnapshot),
+              createdAt: now,
+              updatedAt: now,
+            };
+          }),
         );
         await tx.insert(posOrderItems).values(
           resolved.map((entry) => ({
@@ -814,6 +834,14 @@ export async function createPosOrder(
           },
           now,
         );
+        // Takeaway and own-delivery orders get their daily call number in the
+        // same transaction (legend-ggpoe); dine-in has none. A training device
+        // must not take numbers off the real wall.
+        if (
+          !isTraining &&
+          (input.serviceType === "takeaway" || input.serviceType === "delivery")
+        )
+          await allocatePickupCall(tx, context, orderId);
         return freshDetail(tx, context, outletId, orderId);
       },
     ),

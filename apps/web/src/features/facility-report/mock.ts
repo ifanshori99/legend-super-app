@@ -30,13 +30,17 @@ import {
   type ReportDefinition,
   type ReportResult,
 } from "@starter/shared/dashboard";
-import { metricDefinitionRefSchema } from "@starter/shared/metrics";
+import {
+  METRIC_UNAVAILABLE_MESSAGES,
+  metricDefinitionRefSchema,
+} from "@starter/shared/metrics";
 import { registerMockReportRuns } from "../../lib/mock/handlers/report-runs.ts";
 import {
   namedPresets,
   resolvePreset,
   type DateRange,
 } from "../ws11-reports/lib.ts";
+import { unavailableMetrics } from "../ws11-reports/mock-families/facility.ts";
 import { FACILITY_REPORT_CODES } from "./lib.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
@@ -739,6 +743,8 @@ function metricRef(code: string) {
 }
 
 type LooseRow = {
+  bucketStart: string;
+  bucketEnd: string;
   dimensions: { key: string; value: string }[];
   values: { metricCode: string; value: Cell; finality: "final" | "estimate" }[];
 };
@@ -753,7 +759,14 @@ function buildRun(
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
   const refs = report.metrics.map(metricRef);
-  const rows: LooseRow[] = seeds.map((seed) => ({
+  // Like the API: a grouped run of a report whose metrics are all unavailable
+  // has no rows; an ungrouped run keeps its one row of null cells.
+  const noRows =
+    groupBy !== null &&
+    report.metrics.every((code) => unavailableMetrics.has(code));
+  const rows: LooseRow[] = (noRows ? [] : seeds).map((seed) => ({
+    bucketStart: range.startDate,
+    bucketEnd: range.endDate,
     dimensions: seed.dims.map(([key, value]) => ({ key, value })),
     values: refs.map((ref) => {
       // SH-02: final only for a closed period, and for closed-period-only
@@ -765,7 +778,9 @@ function buildRun(
             !report.closedPeriodOnly));
       return {
         metricCode: ref.code,
-        value: cellFor(ref.code, seed.raw),
+        value: unavailableMetrics.has(ref.code)
+          ? null
+          : cellFor(ref.code, seed.raw),
         finality: official ? ("final" as const) : ("estimate" as const),
       };
     }),
@@ -779,12 +794,24 @@ function buildRun(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
+    availability: report.metrics.map((metricCode) =>
+      unavailableMetrics.has(metricCode)
+        ? {
+            metricCode,
+            status: "unavailable",
+            reason: "source_not_built",
+            message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+          }
+        : { metricCode, status: "available" },
+    ),
     groupBy: groupBy === null ? [] : [groupBy],
     rows,
     generatedAt: GENERATED_AT,
     rowLimit: 100,
+    truncated: false,
   } as unknown as ReportResult;
 }
 
