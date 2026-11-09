@@ -1,22 +1,30 @@
 // Delivery channel orders API (bead legend-5bn3, slice D4): list paging,
 // detail, manual order, status steps through the contract machine, KDS void
-// on an early cancel, adapter push for platform orders (last before the
-// commit, desync recorded when the commit fails), needs_review orders only
-// turned down, and Idempotency-Key.
+// on an early cancel, adapter push for platform orders (a stored intent pushed
+// by the outbox consumer after the commit, legend-bk99), needs_review orders
+// only turned down, and Idempotency-Key.
 // Real Express app, Better Auth, RBAC and PostgreSQL with RLS (disposable
 // server from `pnpm test`), one fresh isolated tenant.
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ulidToUuid } from "@starter/shared/core";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import type { EventEnvelope } from "@starter/shared/events";
 import {
   PERMISSION_CODES,
   tenantPermissionCodeSchema,
 } from "@starter/shared/access";
 import { deliveryChannelOrderSchema } from "@starter/shared/delivery";
 import { createApp } from "../app.ts";
+import { db as appDb } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { setDeliveryChannelAdapter } from "../services/delivery-ports.ts";
+import { deliverDeliveryChannelEvent } from "../services/delivery-sync-consumer.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import { createIsolatedTenant, owner } from "./floor-test-helpers.ts";
 
@@ -324,12 +332,56 @@ describe("delivery orders: status steps", () => {
   });
 });
 
-describe("delivery orders: platform orders push the adapter action", () => {
-  it("accepts through accept_order when the store is open", async () => {
-    const calls: string[] = [];
+/**
+ * Runs the outbox consumer (worker-main.ts) over the status events of one
+ * order, in sequence, each in its own consumption transaction. `edit` lets a
+ * test change the stored envelope first.
+ */
+async function consumeStatusEvents(
+  id: string,
+  edit?: (event: EventEnvelope) => EventEnvelope,
+): Promise<void> {
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+  const events = await asOwnerTenant(async (db) => {
+    const { rows } = await db.query<{ event: EventEnvelope }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'delivery_order.status_changed'
+          AND event->>'aggregateId' = $2
+        ORDER BY sequence`,
+      [tenant.tenantId, id],
+    );
+    return rows.map((row) => row.event);
+  });
+  for (const event of events)
+    await withTenant(appDb, context, (tx) =>
+      deliverDeliveryChannelEvent(context, edit ? edit(event) : event, tx),
+    );
+}
+
+const desyncOutcomes = (id: string) =>
+  asOwnerTenant(async (db) => {
+    const audit = await db.query<{ outcome: string }>(
+      `SELECT event->'maskedChanges'->'after'->>'outcome' AS outcome FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectId' = $2
+          AND event->>'action' = 'delivery_order.platform_desync'`,
+      [tenant.tenantId, id],
+    );
+    return audit.rows.map((row) => row.outcome);
+  });
+
+describe("delivery orders: platform orders push the adapter action after the commit", () => {
+  it("stores the step as an intent and pushes accept_order from the outbox consumer", async () => {
+    const calls: { action: string; reference: string }[] = [];
     setDeliveryChannelAdapter("gofood", {
       execute: async (_context, input) => {
-        calls.push(input.action);
+        calls.push({ action: input.action, reference: input.reference });
         return { reference: input.reference, accepted: true };
       },
     });
@@ -339,35 +391,39 @@ describe("delivery orders: platform orders push the adapter action", () => {
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data.acceptedAt).not.toBeNull();
-    expect(calls).toEqual(["accept_order"]);
+    // Nothing reached the platform inside the request transaction.
+    expect(calls).toEqual([]);
+    await consumeStatusEvents(id);
+    expect(calls).toEqual([
+      { action: "accept_order", reference: `${id}:accepted` },
+    ]);
   });
 
-  it("rolls the step back when the platform call fails", async () => {
+  it("commits the step when the platform is down and retries the same reference", async () => {
+    let down = true;
+    const references: string[] = [];
     setDeliveryChannelAdapter("gofood", {
-      execute: async () => {
-        throw new Error("platform down");
+      execute: async (_context, input) => {
+        references.push(input.reference);
+        if (down) throw new Error("platform down");
+        return { reference: input.reference, accepted: true };
       },
     });
     const id = await seedInjectedPlatformOrder();
     const res = await post(`/delivery-orders/${id}/status`, {
       status: "accepted",
     });
-    expect(res.status).toBe(502);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The consumption fails, so the outbox retries it.
+    await expect(consumeStatusEvents(id)).rejects.toThrow();
     const read = await get(`/delivery-orders/${id}`);
-    expect(read.body.data.status).toBe("received");
-    // A thrown call may still have reached the platform: recorded as unknown.
-    await asOwnerTenant(async (db) => {
-      const audit = await db.query<{ outcome: string }>(
-        `SELECT event->'maskedChanges'->'after'->>'outcome' AS outcome FROM audit_logs
-          WHERE tenant_id = $1 AND event->>'objectId' = $2
-            AND event->>'action' = 'delivery_order.platform_desync'`,
-        [tenant.tenantId, id],
-      );
-      expect(audit.rows.map((row) => row.outcome)).toEqual(["unknown"]);
-    });
+    expect(read.body.data.status).toBe("accepted");
+    down = false;
+    await consumeStatusEvents(id);
+    expect(references).toEqual([`${id}:accepted`, `${id}:accepted`]);
   });
 
-  it("a refused platform call rolls the step back without a desync entry", async () => {
+  it("records a refused push as a desync and settles the event", async () => {
     setDeliveryChannelAdapter("gofood", {
       execute: async (_context, input) => ({
         reference: input.reference,
@@ -378,16 +434,52 @@ describe("delivery orders: platform orders push the adapter action", () => {
     const res = await post(`/delivery-orders/${id}/status`, {
       status: "accepted",
     });
-    expect(res.status).toBe(502);
-    await asOwnerTenant(async (db) => {
-      const audit = await db.query(
-        `SELECT 1 FROM audit_logs
-          WHERE tenant_id = $1 AND event->>'objectId' = $2
-            AND event->>'action' = 'delivery_order.platform_desync'`,
-        [tenant.tenantId, id],
-      );
-      expect(audit.rows).toEqual([]);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    await consumeStatusEvents(id);
+    expect(await desyncOutcomes(id)).toEqual(["refused"]);
+  });
+
+  it("a replay with the same Idempotency-Key stores one intent", async () => {
+    const calls: string[] = [];
+    setDeliveryChannelAdapter("gofood", {
+      execute: async (_context, input) => {
+        calls.push(input.action);
+        return { reference: input.reference, accepted: true };
+      },
     });
+    const id = await seedInjectedPlatformOrder();
+    const key = randomUUID();
+    const first = await post(
+      `/delivery-orders/${id}/status`,
+      { status: "accepted" },
+      key,
+    );
+    const replay = await post(
+      `/delivery-orders/${id}/status`,
+      { status: "accepted" },
+      key,
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(replay.status).toBe(200);
+    await consumeStatusEvents(id);
+    expect(calls).toEqual(["accept_order"]);
+  });
+
+  it("does not push a step the platform itself started (system actor)", async () => {
+    const calls: string[] = [];
+    setDeliveryChannelAdapter("gofood", {
+      execute: async (_context, input) => {
+        calls.push(input.action);
+        return { reference: input.reference, accepted: true };
+      },
+    });
+    const id = await seedInjectedPlatformOrder();
+    await post(`/delivery-orders/${id}/status`, { status: "accepted" });
+    await consumeStatusEvents(id, (event) => ({
+      ...event,
+      actor: { type: "system" },
+    }));
+    expect(calls).toEqual([]);
   });
 
   it("refuses to accept while the store is closed but still allows reject", async () => {
@@ -417,6 +509,7 @@ describe("delivery orders: platform orders push the adapter action", () => {
         reason: "Toko tutup",
       });
       expect(reject.status, JSON.stringify(reject.body)).toBe(200);
+      await consumeStatusEvents(id);
       expect(calls).toEqual(["cancel_order"]);
     } finally {
       await asOwnerTenant((db) =>
@@ -427,56 +520,6 @@ describe("delivery orders: platform orders push the adapter action", () => {
         ),
       );
     }
-  });
-
-  it("records a desync when the commit fails after the platform took the step", async () => {
-    const id = await seedInjectedPlatformOrder();
-    const key = randomUUID();
-    const references: string[] = [];
-    let clash = true;
-    setDeliveryChannelAdapter("gofood", {
-      execute: async (_context, input) => {
-        references.push(input.reference);
-        // Another writer takes the Idempotency-Key row first: our commit fails
-        // after the platform already accepted.
-        if (clash)
-          await asOwnerTenant((db) =>
-            db.query(
-              `INSERT INTO pos_order_idempotency
-                 (tenant_id, outlet_id, key, operation, fingerprint, response)
-               VALUES ($1, $2, $3, 'delivery_order.status', $4, '{}')`,
-              [tenant.tenantId, tenant.outletId, key, "b".repeat(64)],
-            ),
-          );
-        return { reference: input.reference, accepted: true };
-      },
-    });
-    const failed = await post(
-      `/delivery-orders/${id}/status`,
-      { status: "accepted" },
-      key,
-    );
-    expect(failed.status).not.toBe(200);
-    const read = await get(`/delivery-orders/${id}`);
-    expect(read.body.data.status).toBe("received");
-    await asOwnerTenant(async (db) => {
-      const audit = await db.query<{ action: string }>(
-        `SELECT event->>'action' AS action FROM audit_logs
-          WHERE tenant_id = $1 AND event->>'objectId' = $2`,
-        [tenant.tenantId, id],
-      );
-      expect(audit.rows.map((row) => row.action)).toContain(
-        "delivery_order.platform_desync",
-      );
-    });
-    // A retry re-sends the same reference and lands the step.
-    clash = false;
-    const retry = await post(`/delivery-orders/${id}/status`, {
-      status: "accepted",
-    });
-    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
-    expect(retry.body.data.status).toBe("accepted");
-    expect(references).toEqual([`${id}:accepted`, `${id}:accepted`]);
   });
 });
 
@@ -504,6 +547,7 @@ describe("delivery orders: an order kept for review", () => {
     });
     expect(reject.status, JSON.stringify(reject.body)).toBe(200);
     expect(reject.body.data.status).toBe("rejected");
+    await consumeStatusEvents(id);
     expect(calls).toEqual(["cancel_order"]);
   });
 });
