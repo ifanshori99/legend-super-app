@@ -609,6 +609,35 @@ may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
 job does not read `.env` files. Local development keeps using
 `pnpm dev:prepare`, which provisions its own random login through the same code.
 
+### Migration lock timeout (legend-jluo)
+
+`deploy.sh` runs the migrations while the previous api and worker still serve. A
+migration that needs a strong table lock (`ALTER TABLE`, `NO FORCE ROW LEVEL
+SECURITY`, `ADD FOREIGN KEY`) waits behind any long query on that table, and
+every new query on it then queues behind the waiting lock, so the old API would
+stall for as long as the migration waits. The migrator therefore sets, on its
+own session only:
+
+| Variable (migrator.env)       | Default | Meaning                                                                                                   |
+| ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `MIGRATION_LOCK_TIMEOUT`      | `10s`   | Longest wait for one lock. `0` waits forever.                                                             |
+| `MIGRATION_STATEMENT_TIMEOUT` | `0`     | Longest single statement. `0` (none) overrides any role or database default, so a long backfill finishes. |
+
+Values are `0` or a whole number with `ms`, `s` or `min` (a bare number such as
+`10` is refused, since PostgreSQL would read it as milliseconds), at most
+`35791min`; anything else stops the migrator before it connects. All pending
+migrations run in one transaction, so when a lock is not granted in time the
+migrator prints `Migration stopped: a
+lock was not granted within MIGRATION_LOCK_TIMEOUT …`, applies nothing,
+and exits 1; `deploy.sh` (`set -eu`) then stops before the role audit and the
+service restart, and the previous release keeps serving. Retry at a quieter
+time, or for that run raise `MIGRATION_LOCK_TIMEOUT` in `migrator.env`.
+
+The limit is per lock wait, not per run: a lock already taken is held until the
+whole batch commits. Put a strong lock on a hot table (`outlets`, `employees`,
+orders) at the end of its release, after any backfill or index build, so the
+services are blocked only for the last statements.
+
 ### Pre-deploy check (legend-jtnd, legend-k1np)
 
 `predeploy-check.js` runs before any migration and changes nothing. It opens one

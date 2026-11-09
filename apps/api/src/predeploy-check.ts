@@ -7,6 +7,10 @@
 // a path to a file holding the URL. Prints role and stream counts only, never a
 // URL or password. Deliberately does not load .env files.
 import { readFileSync } from "node:fs";
+import {
+  MigrationSettingError,
+  migrationTimeouts,
+} from "./db/migration-session";
 import { PredeployCheckError, runPredeployCheck } from "./db/predeploy-check";
 
 function setting(name: string) {
@@ -66,6 +70,9 @@ function describe(error: unknown) {
 }
 
 try {
+  // Refuse a bad MIGRATION_*_TIMEOUT here, before the database is touched,
+  // rather than at the migrate step (db/migration-session.ts, legend-jluo).
+  migrationTimeouts();
   const report = await runPredeployCheck(setting("MIGRATION_DATABASE_URL"));
   const who = report.migrator.superuser ? "superuser" : "BYPASSRLS";
   const outbox = report.outbox.present
@@ -75,6 +82,8 @@ try {
     `Pre-deploy check passed: migrator ${report.migrator.user} (${who}), outbox ${outbox}.`,
   );
 } catch (error) {
-  console.error(`Pre-deploy check failed: ${describe(error)}`);
+  console.error(
+    `Pre-deploy check failed: ${error instanceof MigrationSettingError ? error.message : describe(error)}`,
+  );
   process.exitCode = 1;
 }

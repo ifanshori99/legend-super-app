@@ -5,9 +5,13 @@ import "./load-env";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { databaseError, databaseUrl } from "./db/connection";
+import { databaseUrl } from "./db/connection";
+import {
+  type MigrationTimeouts,
+  migrationError,
+  migrationTimeouts,
+  runMigrations,
+} from "./db/migration-session";
 
 // src/migrate.ts and dist/migrate.js both sit one level below apps/api.
 const migrationsFolder = resolve(
@@ -16,7 +20,10 @@ const migrationsFolder = resolve(
 );
 
 let pool: Pool | undefined;
+let timeouts: MigrationTimeouts | undefined;
 try {
+  // Bounded lock wait, unbounded statements by default (db/migration-session.ts).
+  timeouts = migrationTimeouts();
   pool = new Pool({
     connectionString: databaseUrl(
       process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
@@ -27,10 +34,10 @@ try {
   pool.on("error", () =>
     console.error("The PostgreSQL migration connection was interrupted."),
   );
-  await migrate(drizzle(pool), { migrationsFolder });
+  await runMigrations(pool, migrationsFolder, timeouts);
   console.log("PostgreSQL migrations applied.");
 } catch (error) {
-  console.error(databaseError(error));
+  console.error(migrationError(error, timeouts));
   process.exitCode = 1;
 } finally {
   await pool?.end();
