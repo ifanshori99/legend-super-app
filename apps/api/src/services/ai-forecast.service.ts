@@ -18,7 +18,7 @@ import {
   type ForecastMetricCode,
   type ForecastRow,
 } from "@starter/shared/ai";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import type { OutletId, ScopedTenantContext, TenantId } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { forecasts } from "../db/schema/ai-insights.ts";
 import { orders } from "../db/schema/qr-order.ts";
@@ -81,8 +81,8 @@ export async function computeRuleForecast(
     .from(orders)
     .where(
       and(
-        eq(orders.tenantId, tenantId),
-        eq(orders.outletId, outletId),
+        eq(orders.tenantId, tenantId as TenantId),
+        eq(orders.outletId, outletId as OutletId),
         ne(orders.status, "voided"),
         gte(orders.businessDate, historyFrom),
         lte(orders.businessDate, historyTo),

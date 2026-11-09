@@ -3,90 +3,25 @@
 // seeded Cafe Legend tenant, with the scripted fake provider. Needs the
 // engineer's registration of `aiChatRouter` under `/api/ai` (routes/index.ts).
 import { randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { createApp } from "../app.ts";
 import { createFakeProvider } from "../lib/ai/fake.ts";
 import { setAiProviderForTests } from "../lib/ai/provider-factory.ts";
-import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import {
+  asTenant,
+  cleanupAcceptance,
+  created,
+  grantCustomRole,
+  newOwner,
+  originHeader,
+  outletA,
+  ownerPool,
+  resetGovernance,
+  signedIn,
+  tenantAgent,
+  tenantId,
+} from "./ai-acceptance-helpers.ts";
 
-const app = createApp();
-const tenant = cafeLegendPlatformFixtures.tenant;
-const [outlet] = cafeLegendPlatformFixtures.outlets;
-const owner = new Pool({
-  connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 2,
-});
-const createdUsers: string[] = [];
-const createdRoles: string[] = [];
-
-async function asTenant<T>(
-  run: (client: PoolClient) => Promise<T>,
-): Promise<T> {
-  const client = await owner.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenant.id],
-    );
-    const result = await run(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-async function signedInClient(name: string) {
-  const client = agent(app);
-  const email = await signUp(client, name);
-  await verifySessionMfa(email);
-  const session = await client.get("/api/auth/get-session");
-  const userId = session.body.user.id as string;
-  createdUsers.push(userId);
-  return { client, userId };
-}
-
-async function grantRole(
-  userId: string,
-  permissions: string[],
-  scope: { type: "tenant" } | { type: "outlet"; id: string },
-) {
-  const roleId = randomUUID();
-  createdRoles.push(roleId);
-  await asTenant(async (db) => {
-    await db.query(
-      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
-       VALUES ($1, $2, $3, false, $4, $5)`,
-      [
-        roleId,
-        tenant.id,
-        `AI chat ${roleId.slice(0, 8)}`,
-        JSON.stringify(permissions),
-        JSON.stringify([scope.type]),
-      ],
-    );
-    await db.query(
-      `INSERT INTO role_assignments
-         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-       VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
-      [
-        tenant.id,
-        userId,
-        roleId,
-        scope.type,
-        scope.type === "outlet" ? scope.id : null,
-      ],
-    );
-  });
-}
-
-type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
+type Client = Awaited<ReturnType<typeof signedIn>>["client"];
 let asker: Client;
 let otherAsker: Client;
 let outsider: Client;
@@ -103,18 +38,21 @@ beforeAll(async () => {
       stopReason: "end_turn",
     })),
   );
-  const a = await signedInClient("Penanya A");
-  await grantRole(a.userId, ["ai.ask"], { type: "tenant" });
+  // Own tenant (ai-acceptance-helpers) with a funded AI budget: a tenant with
+  // no ai_settings row fails closed with a zero budget (AIG-01, HTTP 402).
+  await resetGovernance(await newOwner("Pemilik AI chat"));
+  const a = await signedIn("Penanya A");
+  await grantCustomRole(a.userId, ["ai.ask"], { type: "tenant" });
   asker = a.client;
   askerId = a.userId;
-  const b = await signedInClient("Penanya B");
-  await grantRole(b.userId, ["ai.ask"], { type: "tenant" });
+  const b = await signedIn("Penanya B");
+  await grantCustomRole(b.userId, ["ai.ask"], { type: "tenant" });
   otherAsker = b.client;
-  const c = await signedInClient("Tanpa izin");
-  await grantRole(c.userId, ["self.profile.view"], { type: "tenant" });
+  const c = await signedIn("Tanpa izin");
+  await grantCustomRole(c.userId, ["self.profile.view"], { type: "tenant" });
   outsider = c.client;
-  const d = await signedInClient("Penanya outlet");
-  await grantRole(d.userId, ["ai.ask"], { type: "outlet", id: outlet.id });
+  const d = await signedIn("Penanya outlet");
+  await grantCustomRole(d.userId, ["ai.ask"], { type: "outlet", id: outletA });
   outletAsker = d.client;
 });
 
@@ -123,28 +61,27 @@ afterAll(async () => {
   await asTenant(async (db) => {
     await db.query(
       "DELETE FROM ai_conversations WHERE tenant_id = $1 AND owner_user_id = ANY($2)",
-      [tenant.id, createdUsers],
+      [tenantId, created.users],
     );
-    await db.query(
-      "DELETE FROM ai_usage_daily WHERE tenant_id = $1 AND user_id = ANY($2)",
-      [tenant.id, createdUsers],
-    );
-    await db.query(
-      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
-      [tenant.id, createdUsers],
-    );
-    await db.query("DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)", [
-      tenant.id,
-      createdRoles,
-    ]);
+    for (const table of ["ai_usage_events", "ai_usage_daily"])
+      await db.query(
+        `DELETE FROM ${table} WHERE tenant_id = $1 AND user_id = ANY($2)`,
+        [tenantId, created.users],
+      );
   });
-  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
-  await owner.end();
+  await cleanupAcceptance();
+  await ownerPool.query("DELETE FROM ai_settings WHERE tenant_id = $1", [
+    tenantId,
+  ]);
+  await ownerPool.query('DELETE FROM "user" WHERE id = ANY($1)', [
+    created.users,
+  ]);
+  await ownerPool.end();
 });
 
 describe("auth and permission", () => {
   it("answers 401 without a session", async () => {
-    const response = await agent(app).get("/api/ai/tools");
+    const response = await tenantAgent().get("/api/ai/tools");
     expect(response.status).toBe(401);
   });
 
@@ -297,7 +234,7 @@ describe("ask and conversations", () => {
     const events = await asTenant((db) =>
       db.query(
         "SELECT 1 FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_id = $2",
-        [tenant.id, id],
+        [tenantId, id],
       ),
     );
     expect(events.rowCount).toBeGreaterThanOrEqual(1);

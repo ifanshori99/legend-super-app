@@ -41,13 +41,16 @@ export const ownerPool = new Pool({
 // outlet of another brand), the seeded tenant's modules and limits, the role
 // templates and the AI/MCP approval policies (migration 0089 only seeds tenants
 // that already exist; seedTenantRoleTemplates does it for new ones). AI settings
-// are written by resetGovernance through the governance endpoint.
+// are written by resetGovernance through the governance endpoint. The helper
+// inserts created_by = 'test'; this tenant is never dropped, so it takes the
+// seeded tenant's creator, or GET /api/platform/tenants fails tenantSchema.
 async function createAiTenant() {
   const suffix = `ai${randomUUID().replaceAll("-", "").slice(0, 10)}`;
   const isolated = await createIsolatedTenant(suffix);
   const second = randomUUID();
   await floorPool.query(
-    `UPDATE tenants t SET feature_flags = s.feature_flags, limits = s.limits
+    `UPDATE tenants t SET feature_flags = s.feature_flags, limits = s.limits,
+            created_by = s.created_by
        FROM tenants s WHERE t.id = $1 AND s.id = $2`,
     [isolated.tenantId, seededTenantId],
   );
