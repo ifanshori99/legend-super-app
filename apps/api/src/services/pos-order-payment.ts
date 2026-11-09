@@ -49,6 +49,7 @@ import {
 } from "./payment.service.ts";
 import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
 import { requestPosLatePaymentRefund } from "./pos-order-late-payment.ts";
+import { settlePosEdcStandalone } from "./pos-edc-standalone.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
@@ -384,27 +385,49 @@ export async function addPosTender(
               "VALIDATION_ERROR",
               "Pembayaran poin mencantumkan jumlah poin.",
             );
-          const port =
-            input.method === "points"
-              ? posPointsTenderPort()
-              : posEdcTenderPort();
-          const settled = await port(tx, context, {
-            orderId: order.id,
-            outletId: order.outletId,
-            method: input.method,
-            amountIdr: remaining,
-            reference: input.reference ?? null,
-            edcTransactionId: input.edcTransactionId ?? null,
-            pointsUsed: input.pointsUsed ?? null,
-            cashierId: caller.userId,
-            at: now,
-          });
+          // EDC-04: a hand-keyed terminal payment takes the supervisor-approved
+          // standalone path; everything else settles through its port.
+          const settled =
+            input.standalone &&
+            (input.method === "edc_card" || input.method === "edc_qris")
+              ? await settlePosEdcStandalone(tx, context, {
+                  orderId: order.id,
+                  orderNumber: order.number,
+                  outletId: order.outletId,
+                  method: input.method,
+                  amountIdr: remaining,
+                  terminalId: input.standalone.terminalId,
+                  bankRef: input.standalone.bankRef,
+                  approvalCode: input.standalone.approvalCode ?? null,
+                  overrideId: input.standalone.overrideId,
+                  cashierId: caller.userId,
+                  at: now,
+                })
+              : await (
+                  input.method === "points"
+                    ? posPointsTenderPort()
+                    : posEdcTenderPort()
+                )(tx, context, {
+                  orderId: order.id,
+                  outletId: order.outletId,
+                  method: input.method,
+                  amountIdr: remaining,
+                  reference: input.reference ?? null,
+                  edcTransactionId: input.edcTransactionId ?? null,
+                  pointsUsed: input.pointsUsed ?? null,
+                  cashierId: caller.userId,
+                  at: now,
+                });
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({
               ...base,
               provider: input.method === "points" ? "manual" : "edc",
               reference: settled.reference ?? base.reference,
+              edcTransactionId:
+                "edcTransactionId" in settled
+                  ? settled.edcTransactionId
+                  : base.edcTransactionId,
               pointsUsed:
                 input.method === "points" ? (input.pointsUsed ?? null) : null,
               amountIdr: idr(remaining),

@@ -115,7 +115,46 @@ export const ecrTraceSchema = z
   .max(32)
   .regex(/^[A-Za-z0-9]+$/, "ECR trace uses letters and digits");
 
-const shortText = z.string().min(1).max(32);
+/** Card scheme labels the agent stores. Anything else (including a card
+ * number a terminal put in this field) becomes `UNKNOWN`. */
+export const EDC_CARD_TYPES = [
+  "VISA",
+  "MASTERCARD",
+  "JCB",
+  "AMEX",
+  "UNIONPAY",
+  "GPN",
+  "QRIS",
+  "DEBIT",
+  "CREDIT",
+  "UNKNOWN",
+] as const;
+export type EdcCardType = (typeof EDC_CARD_TYPES)[number];
+
+function normaliseCardType(raw: string): EdcCardType {
+  const key = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return (EDC_CARD_TYPES as readonly string[]).includes(key)
+    ? (key as EdcCardType)
+    : "UNKNOWN";
+}
+const cardTypeSchema = z.string().transform(normaliseCardType);
+
+/** Reference-style field (RRN, invoice, batch): any value that holds a run of
+ * 13-19 digits (the length of a card number), alone or with letters around
+ * it, is dropped rather than stored. */
+const panLengthDigits = /\d{13,19}/;
+export const hasPanLengthDigits = (value: string): boolean =>
+  panLengthDigits.test(value);
+const dropPanLike = (value: string | null): string | null =>
+  value !== null && panLengthDigits.test(value) ? null : value;
+function referenceField(max: number) {
+  return z
+    .string()
+    .regex(new RegExp(`^[A-Za-z0-9]{1,${max}}$`))
+    .nullable()
+    .default(null)
+    .transform(dropPanLike);
+}
 
 /** A run of 12+ digits (optionally split by spaces or dashes) looks like a
  * card number: the terminal's free text is masked before it is stored. */
@@ -135,12 +174,8 @@ export const ecrResultDetailsSchema = z.strictObject({
     .nullable()
     .default(null),
   /** Retrieval reference number from the host. */
-  rrn: z
-    .string()
-    .regex(/^[A-Za-z0-9]{1,24}$/)
-    .nullable()
-    .default(null),
-  cardType: shortText.nullable().default(null),
+  rrn: referenceField(24),
+  cardType: cardTypeSchema.nullable().default(null),
   maskedPan: maskedPanSchema.nullable().default(null),
   /** Bank/terminal response code, e.g. "00", "51". */
   responseCode: z
@@ -153,16 +188,8 @@ export const ecrResultDetailsSchema = z.strictObject({
   message: safeMessage.nullable().default(null),
   /** Terminal invoice number and batch number (void and settlement need
    * them; many terminals reset the invoice number per batch). */
-  invoiceNo: z
-    .string()
-    .regex(/^[A-Za-z0-9]{1,20}$/)
-    .nullable()
-    .default(null),
-  batchNo: z
-    .string()
-    .regex(/^[A-Za-z0-9]{1,20}$/)
-    .nullable()
-    .default(null),
+  invoiceNo: referenceField(20),
+  batchNo: referenceField(20),
   /** The trace the terminal answered for. When present it must equal the
    * request's trace, otherwise the answer belongs to another exchange. */
   trace: ecrTraceSchema.nullable().default(null),
@@ -186,7 +213,10 @@ export type EcrResult = z.infer<typeof ecrResultSchema>;
  * `capabilities.inquiry` is `by_trace`, and only once the sale is old enough
  * that it cannot still be in transit; otherwise it stays `unknown`.
  *
- * Adapter contract: a `not_found` MUST carry `batchNo`, the terminal's
+ * Adapter contract: a provider whose protocol echoes the request trace
+ * (every `by_trace` provider does) MUST put that trace on a `not_found` too.
+ * The agent never settles on a `not_found` without the trace or with another
+ * trace: the row stays `unknown`. A `not_found` also MUST carry `batchNo`, the terminal's
  * current open batch. A bank settlement closes the batch and hides its
  * transactions from a by-trace inquiry, so the agent trusts `not_found`
  * (records `failed`) only when `batchNo` is present and equals the batch known
@@ -341,14 +371,19 @@ export const edcTransactionSchema = z.strictObject({
   method: edcMethodSchema,
   status: edcTransactionStatusSchema,
   trace: ecrTraceSchema,
-  approvalCode: z.string().nullable(),
-  rrn: z.string().nullable(),
-  cardType: z.string().nullable(),
+  // Rows written before the response boundary filtered card data may still
+  // hold a card number here: the same allowlist and PAN filter apply on read.
+  approvalCode: z.string().nullable().transform(dropPanLike),
+  rrn: z.string().nullable().transform(dropPanLike),
+  cardType: z
+    .string()
+    .nullable()
+    .transform((v) => (v === null ? null : normaliseCardType(v))),
   maskedPan: maskedPanSchema.nullable(),
   responseCode: z.string().nullable(),
   message: z.string().nullable(),
-  invoiceNo: z.string().nullable(),
-  batchNo: z.string().nullable(),
+  invoiceNo: z.string().nullable().transform(dropPanLike),
+  batchNo: z.string().nullable().transform(dropPanLike),
   /** Set when the terminal approved a second sale for a reference that
    * already had an approved one (customer charged twice): needs a void and
    * reconciliation, never a silent drop. */
@@ -390,6 +425,10 @@ export const edcErrorReasons = {
   EDC_CANCEL_UNSUPPORTED: "CONFLICT",
   /** The agent for this outlet is not started, or another process holds it. */
   EDC_AGENT_NOT_READY: "SERVICE_UNAVAILABLE",
+  /** The terminal has an unfinished EDC transaction, so its bank, TID, MID,
+   * connection or IP cannot change (admin edit refused; the message starts
+   * with this key for the UI). */
+  EDC_TERMINAL_BUSY: "CONFLICT",
 } as const satisfies Record<string, CoreErrorCode>;
 export type EdcErrorReason = keyof typeof edcErrorReasons;
 
@@ -407,6 +446,8 @@ const edcErrorMessages: Record<EdcErrorReason, string> = {
   EDC_CANCEL_UNSUPPORTED:
     "Terminal ini tidak dapat dibatalkan dari kasir. Batalkan di terminal EDC, lalu cek status.",
   EDC_AGENT_NOT_READY: "Layanan EDC di outlet ini belum siap.",
+  EDC_TERMINAL_BUSY:
+    "EDC_TERMINAL_BUSY: Terminal masih punya transaksi EDC yang belum selesai. Selesaikan atau rekonsiliasi dulu sebelum mengubah TID, MID, bank, koneksi, atau IP.",
 };
 
 export class EdcError extends CoreError {

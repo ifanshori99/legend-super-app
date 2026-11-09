@@ -353,6 +353,18 @@ export async function createPosOverride(
     );
   if (!Number.isSafeInteger(input.valueIdr) || input.valueIdr < 0)
     throw new CoreError("VALIDATION_ERROR", "Nilai override tidak valid.");
+  // legend-m4fv, EDC-04: a standalone EDC payment is approved by a supervisor
+  // PIN on this device (no phone approval), for a real amount on one POS order.
+  if (
+    input.action === "edc_standalone" &&
+    (input.approval.method !== "supervisor_pin" ||
+      input.valueIdr <= 0 ||
+      input.objectType !== "pos_order")
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Pembayaran EDC standalone butuh PIN supervisor di perangkat ini, nominal lebih dari 0, dan nomor pesanan.",
+    );
   // legend-6c0 round 2: a shift-close approval is worth the server's variance
   // of the blind count it names. The cashier counts blind and cannot know
   // it, so the submitted value is ignored for this action and the matrix tier

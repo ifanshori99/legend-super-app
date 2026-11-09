@@ -862,6 +862,99 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
   });
 });
 
+// legend-m4fv, PRD EDC-04: a standalone EDC payment (EDC agent down) needs a
+// supervisor PIN on the device, tied to the order and a real amount.
+describe("legend-m4fv EDC-04 edc_standalone override", () => {
+  const edcInput = (
+    approval: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) =>
+    overrideInput(approval, {
+      action: "edc_standalone",
+      valueIdr: 125_000,
+      reason: "EDC standalone, referensi bank 123456789012",
+      objectType: "pos_order",
+      ...extra,
+    });
+
+  it("EDC-04 a supervisor PIN approves a standalone EDC payment and it is recorded", async () => {
+    const cashier = await createUser("cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    const supervisor = await staffWithPin("supervisor");
+    const { override } = await createPosOverride(
+      tenant,
+      cashier,
+      edcInput({
+        method: "supervisor_pin",
+        approverUserId: supervisor,
+        pin: PIN,
+      }),
+      { idempotencyKey: null },
+    );
+    expect(override).toMatchObject({
+      action: "edc_standalone",
+      method: "supervisor_pin",
+      status: "approved",
+      requestedBy: cashier,
+      approvedBy: supervisor,
+      valueIdr: 125_000,
+      objectType: "pos_order",
+    });
+    const events = await overrideEvents(override.id);
+    expect(events.map((row) => row.name)).toEqual(["pos_override.recorded"]);
+  });
+
+  it("EDC-04 an approver without pos.edc_standalone.approve is refused before any pin attempt", async () => {
+    const cashier = await createUser("cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    const otherCashier = await staffWithPin("cashier");
+    await expect(
+      createPosOverride(
+        tenant,
+        cashier,
+        edcInput({
+          method: "supervisor_pin",
+          approverUserId: otherCashier,
+          pin: WRONG,
+        }),
+        { idempotencyKey: null },
+      ),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(await pinRow(otherCashier)).toMatchObject({ failed_attempts: 0 });
+  });
+
+  it("EDC-04 phone approval, a zero amount or a non-order object are refused", async () => {
+    const cashier = await createUser("cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    const supervisor = await staffWithPin("supervisor");
+    const pin = {
+      method: "supervisor_pin",
+      approverUserId: supervisor,
+      pin: PIN,
+    };
+    for (const input of [
+      edcInput({ method: "supervisor_phone" }),
+      edcInput(pin, { valueIdr: 0 }),
+      edcInput(pin, { objectType: "order" }),
+    ])
+      await expect(
+        createPosOverride(tenant, cashier, input, { idempotencyKey: null }),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const { rowCount } = await owner.query(
+      "SELECT 1 FROM pos_overrides WHERE tenant_id = $1 AND requested_by = $2",
+      [tenantId, cashier],
+    );
+    expect(rowCount).toBe(0);
+    expect(await pinRow(supervisor)).toMatchObject({ failed_attempts: 0 });
+  });
+});
+
 describe("legend-dxb AUTH-06 remote approval from the supervisor's phone", () => {
   async function phoneOverride(
     cashier: string,

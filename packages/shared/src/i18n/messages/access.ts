@@ -265,6 +265,7 @@ const accessBaseMessages = {
     cash_drawer_open: "Buka laci tanpa transaksi",
     price_correction: "Koreksi harga di POS",
     cash_shift_close: "Tutup shift kasir",
+    edc_standalone: "Pembayaran EDC standalone",
     apology_voucher: "Voucher permintaan maaf",
     unallocated_funds: "Dana belum teralokasi",
     purchase_request: "Purchase request",
@@ -384,6 +385,7 @@ const accessBaseMessages = {
       refund: { request: "Ajukan refund", approve: "Setujui refund" },
       cash_drawer: { approve: "Setujui buka laci kas" },
       price_correction: { approve: "Setujui koreksi harga" },
+      edc_standalone: { approve: "Setujui pembayaran EDC standalone" },
       day: { close: "Tutup hari usaha" },
     },
     shift: {

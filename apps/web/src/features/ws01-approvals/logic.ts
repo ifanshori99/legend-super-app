@@ -45,6 +45,7 @@ export const ACTION_MODULE: Readonly<
   cash_drawer_open: "pos",
   price_correction: "pos",
   cash_shift_close: "pos",
+  edc_standalone: "pos",
   apology_voucher: "pos",
   expense: "finance",
   supplier_payment: "finance",

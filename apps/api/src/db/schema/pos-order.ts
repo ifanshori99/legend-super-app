@@ -267,6 +267,13 @@ export const posOrderTenders = pgTable(
     uniqueIndex("pos_order_tenders_payment_link_key")
       .on(table.tenantId, table.paymentLinkId)
       .where(sql`${table.paymentLinkId} IS NOT NULL`),
+    // EDC-01/04: one EDC ledger row backs at most one live tender, even when
+    // two requests race past the application check.
+    uniqueIndex("pos_order_tenders_edc_transaction_key")
+      .on(table.tenantId, table.edcTransactionId)
+      .where(
+        sql`${table.edcTransactionId} IS NOT NULL AND ${table.status} NOT IN ('voided', 'failed')`,
+      ),
     index("pos_order_tenders_order_idx").on(
       table.tenantId,
       table.orderId,
@@ -537,7 +544,7 @@ export const posOrderApprovalUses = pgTable(
     }),
     check(
       "pos_order_approval_uses_purpose_check",
-      sql`${table.purpose} IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund')`,
+      sql`${table.purpose} IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone')`,
     ),
   ],
 );

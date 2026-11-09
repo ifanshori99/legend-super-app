@@ -237,6 +237,29 @@ export const listPosOrderEvents = defineEndpoint({
 // ---- Payment panel --------------------------------------------------------
 
 /**
+ * EDC-04 (legend-m4fv): a payment keyed on the terminal by hand while the EDC
+ * agent is down. The bank reference is what the terminal slip prints (an RRN,
+ * 6-24 letters/digits). Any value holding a 13-19 digit run looks like a card number (PAN) and
+ * is refused, so a cashier cannot park a card number in the ledger.
+ */
+export const posStandaloneEdcSchema = z
+  .object({
+    terminalId: uuidSchema,
+    bankRef: z
+      .string()
+      .regex(/^[A-Za-z0-9-]{6,24}$/, "Nomor referensi bank tidak valid.")
+      .refine((value) => !/\d{13,19}/.test(value.replaceAll("-", "")), {
+        message: "Nomor referensi bank tidak boleh menyerupai nomor kartu.",
+      }),
+    approvalCode: z
+      .string()
+      .regex(/^[A-Za-z0-9]{1,12}$/, "Kode persetujuan tidak valid.")
+      .optional(),
+    overrideId: posOverrideIdSchema,
+  })
+  .strict();
+
+/**
  * Add one tender. The body has no amount: cash sends what the customer handed
  * over (`receivedIdr`) and the API applies `min(received, remaining)` and
  * computes change; every other method settles the remaining balance. Payment
@@ -251,6 +274,8 @@ export const addPosTender = defineEndpoint({
     receivedIdr: z.number().int().positive().optional(),
     reference: z.string().min(1).max(100).nullable().optional(),
     edcTransactionId: uuidSchema.nullable().optional(),
+    /** EDC-04: standalone terminal payment; exclusive with edcTransactionId. */
+    standalone: posStandaloneEdcSchema.optional(),
     pointsUsed: z
       .number()
       .int()
@@ -259,16 +284,31 @@ export const addPosTender = defineEndpoint({
       .nullable()
       .optional(),
     ...expectedStatus,
-  }).refine(
-    (value) =>
-      value.method === "cash"
-        ? value.receivedIdr !== undefined
-        : value.receivedIdr === undefined,
-    {
-      message: "Only a cash tender sends receivedIdr",
-      path: ["receivedIdr"],
-    },
-  ),
+  })
+    .refine(
+      (value) =>
+        value.method === "cash"
+          ? value.receivedIdr !== undefined
+          : value.receivedIdr === undefined,
+      {
+        message: "Only a cash tender sends receivedIdr",
+        path: ["receivedIdr"],
+      },
+    )
+    .refine((value) => !(value.standalone && value.edcTransactionId), {
+      message: "A standalone EDC payment has no edcTransactionId",
+      path: ["standalone"],
+    })
+    .refine(
+      (value) =>
+        !value.standalone ||
+        value.method === "edc_card" ||
+        value.method === "edc_qris",
+      {
+        message: "Only an EDC tender can be standalone",
+        path: ["standalone"],
+      },
+    ),
   response: dataResponseSchema(posTenderResultSchema),
 });
 

@@ -140,6 +140,14 @@ describe("EcrSimulator", () => {
     expect((await sim.inquiry(traceRequest("T1"))).outcome).toBe("not_found");
   });
 
+  it("an inquiry not_found echoes the asked trace", async () => {
+    const sim = new EcrSimulator("bca");
+    expect(await sim.inquiry(traceRequest("T9"))).toMatchObject({
+      outcome: "not_found",
+      trace: "T9",
+    });
+  });
+
   it("EDC-03 disconnect throws disconnected, inquiry approved", async () => {
     const sim = new EcrSimulator("bca").next(terminal.id, "disconnect");
     await expect(sim.sale(saleRequest("T1"))).rejects.toMatchObject({
