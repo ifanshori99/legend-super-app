@@ -75,9 +75,33 @@ A new migration that references a FORCE RLS table must use one of these, in this
 1. **Foreign key inside `CREATE TABLE`** of the new (empty) table: no validation scan runs. When drizzle generates a separate `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY`, move the clause into the `CREATE TABLE` by hand before committing the SQL (keep the constraint name so the drizzle snapshot still matches).
 2. **Lift FORCE for the transaction** around the foreign keys: `ALTER TABLE public.<parent> NO FORCE ROW LEVEL SECURITY;` at the top, `ALTER TABLE public.<parent> FORCE ROW LEVEL SECURITY;` after the last statement that needs it, before the file ends (drizzle runs all pending migrations in one transaction, so no other session sees the lifted state). Required whenever the child already holds rows, or the migration also reads the parent. Examples: `0065_edge_received_events.sql`, `0068_closed_tiger_shark.sql`. Restore FORCE on every table you lifted.
 
+```sql
+-- Pattern 1: new empty table, foreign key inline (no validation scan).
+CREATE TABLE "leave_requests" (
+  "tenant_id" uuid NOT NULL,
+  "id" uuid NOT NULL,
+  "employee_id" uuid NOT NULL,
+  CONSTRAINT "leave_requests_pk" PRIMARY KEY ("tenant_id", "id"),
+  CONSTRAINT "leave_requests_employee_fk" FOREIGN KEY ("tenant_id", "employee_id")
+    REFERENCES "public"."employees" ("tenant_id", "id")
+);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.leave_requests');
+
+-- Pattern 2: existing child with rows (or any ALTER … ADD FOREIGN KEY).
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "attendance_logs" ADD CONSTRAINT "attendance_logs_employee_fk"
+  FOREIGN KEY ("tenant_id", "employee_id") REFERENCES "public"."employees" ("tenant_id", "id");
+--> statement-breakpoint
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;
+```
+
+Pattern 2 validates every existing row against the whole parent (all tenants), which is the check we want; setting a dummy `app.tenant_id` instead would hide every parent row and reject a populated child. `ALTER TABLE … NO FORCE` takes an ACCESS EXCLUSIVE lock on the parent until the migration transaction commits, so keep the lifted section short on large tables.
+
 Do not use `NOT VALID` (the constraint stays unvalidated forever, and a later `VALIDATE CONSTRAINT` hits the same error) and do not rely on BYPASSRLS for migrations 0065 and later.
 
-Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") applies the real folder from 0065 as a plain owner, so a new migration that breaks the rule fails there; `migrator-role.test.ts` is the contrast case (a plain owner is expected to fail on 0000-0064). Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
+Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") applies the real folder from 0065 as a plain owner, so a new migration that breaks the rule fails there; `migrator-role.test.ts` is the contrast case (a plain owner is expected to fail on 0000-0064). `migration-force-rls-guard.test.ts` catches the silent failures: a `NO FORCE` with no later `FORCE` on the same table in the same file, a foreign key `NOT VALID` in migrations 0065 and later, and (after all migrations) any public table with RLS enabled but not forced other than the two documented ENABLE-only tables `tenant_domains` and `payment_link_tokens`. Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
 
 ## Naming
 
