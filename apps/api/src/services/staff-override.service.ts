@@ -45,6 +45,8 @@ import {
   outletIdSchema,
   ulidSchema,
   userIdSchema,
+  uuidSchema,
+  type Idr,
   type ScopedTenantContext,
   type TenantContext,
   type TenantId,
@@ -54,6 +56,8 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { approvalRequests } from "../db/schema/platform-approval";
 import { posOverrides } from "../db/schema/device-pin";
+import { posShiftCounts, posShifts } from "../db/schema/pos-shift";
+import { SHIFT_COUNT_OBJECT_TYPE } from "./pos-shift-support";
 import { withTenant } from "../db/tenant";
 import { recordAudit } from "./audit-writer";
 import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
@@ -91,7 +95,16 @@ function notFound(): CoreError {
   return new CoreError("NOT_FOUND", "Override tidak ditemukan.");
 }
 
-function toView(row: Row): PosOverrideView {
+/**
+ * `viewerId` is the caller; omitted for the in-process consumer. A blind
+ * cash count (`cash_shift_close`) hides its value (the |variance|) from the
+ * requester, so the cashier never learns the expected cash.
+ */
+function toView(row: Row, viewerId?: string): PosOverrideView {
+  const hideValue =
+    row.action === "cash_shift_close" &&
+    viewerId !== undefined &&
+    viewerId.toLowerCase() === row.requestedBy.toLowerCase();
   return posOverrideViewSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -103,7 +116,7 @@ function toView(row: Row): PosOverrideView {
     approvedBy: row.approvedBy,
     reasonCode: row.reasonCode,
     reason: row.reason,
-    valueIdr: row.valueIdr,
+    valueIdr: hideValue ? null : row.valueIdr,
     objectType: row.objectType,
     objectId: row.objectId,
     approvalRequestId: row.approvalRequestId,
@@ -255,6 +268,70 @@ export type CreatePosOverrideOptions = {
 };
 
 /**
+ * The value of a `cash_shift_close` override: |variance| of the count
+ * submission it names, which must be the latest count of an open shift,
+ * submitted by the requester (the shift's cashier).
+ */
+async function shiftCloseApprovalValue(
+  context: ScopedTenantContext,
+  requestedBy: string,
+  input: CreatePosOverrideInput,
+): Promise<Idr> {
+  const refused = () =>
+    new CoreError(
+      "VALIDATION_ERROR",
+      "Persetujuan tutup shift harus menunjuk hitungan kas terakhir dari shift yang masih terbuka.",
+    );
+  if (input.objectType !== SHIFT_COUNT_OBJECT_TYPE) throw refused();
+  const countId = uuidSchema.safeParse(input.objectId);
+  if (!countId.success) throw refused();
+  return withTenant(db, context, async (tx) => {
+    const [count] = await tx
+      .select({
+        shiftId: posShiftCounts.shiftId,
+        sequence: posShiftCounts.sequence,
+        varianceIdr: posShiftCounts.varianceIdr,
+        submittedBy: posShiftCounts.submittedBy,
+        shiftStatus: posShifts.status,
+      })
+      .from(posShiftCounts)
+      .innerJoin(
+        posShifts,
+        and(
+          eq(posShifts.tenantId, posShiftCounts.tenantId),
+          eq(posShifts.id, posShiftCounts.shiftId),
+        ),
+      )
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          eq(posShiftCounts.outletId, input.outletId),
+          eq(posShiftCounts.id, countId.data),
+        ),
+      );
+    if (
+      !count ||
+      count.shiftStatus !== "open" ||
+      count.submittedBy.toLowerCase() !== requestedBy.toLowerCase()
+    )
+      throw refused();
+    const [latest] = await tx
+      .select({ sequence: posShiftCounts.sequence })
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          eq(posShiftCounts.shiftId, count.shiftId),
+        ),
+      )
+      .orderBy(desc(posShiftCounts.sequence))
+      .limit(1);
+    if (latest?.sequence !== count.sequence) throw refused();
+    return Math.abs(Number(count.varianceIdr)) as Idr;
+  });
+}
+
+/**
  * POST /api/pos-overrides, and the in-process entry point for the POS order
  * service (legend-kk7), which passes the trusted requester id. Returns the
  * override (approved for a PIN, pending for a phone approval).
@@ -276,6 +353,18 @@ export async function createPosOverride(
     );
   if (!Number.isSafeInteger(input.valueIdr) || input.valueIdr < 0)
     throw new CoreError("VALIDATION_ERROR", "Nilai override tidak valid.");
+  // legend-6c0 round 2: a shift-close approval is worth the server's variance
+  // of the blind count it names. The cashier counts blind and cannot know
+  // it, so the submitted value is ignored for this action and the matrix tier
+  // (phone) and the close (pos-shift.service.ts) both see the real value.
+  const valueIdr =
+    input.action === "cash_shift_close"
+      ? await shiftCloseApprovalValue(
+          outletContext(tenant, outletId),
+          requestedBy,
+          input,
+        )
+      : input.valueIdr;
   const reasonCode = input.reasonCode?.trim() || null;
   const approval = input.approval;
   const approverUserId =
@@ -296,7 +385,7 @@ export async function createPosOverride(
     requestedBy: requestedBy.toLowerCase(),
     outletId: outletId.toLowerCase(),
     action: input.action,
-    valueIdr: input.valueIdr,
+    valueIdr: valueIdr,
     reason,
     reasonCode,
     objectType: input.objectType,
@@ -318,7 +407,8 @@ export async function createPosOverride(
         key,
         requestFingerprint,
       );
-      if (replay) return { override: toView(replay), replayed: true };
+      if (replay)
+        return { override: toView(replay, requestedBy), replayed: true };
       await assertRequesterMember(
         tx,
         tenant,
@@ -333,14 +423,14 @@ export async function createPosOverride(
         actionType: input.action,
         objectType: APPROVAL_OBJECT_TYPE,
         objectId: id,
-        amountIdr: input.valueIdr,
+        amountIdr: valueIdr,
         outletId,
         requestedBy,
         source: "user",
         requestReason: reason,
         payload: {
           action: input.action,
-          valueIdr: input.valueIdr,
+          valueIdr: valueIdr,
           objectType: input.objectType,
           objectId: input.objectId,
           reasonCode,
@@ -368,7 +458,7 @@ export async function createPosOverride(
           approvedBy: null,
           reasonCode,
           reason,
-          valueIdr: input.valueIdr,
+          valueIdr: valueIdr,
           objectType: input.objectType,
           objectId: input.objectId,
           approvalRequestId: opened.chainId,
@@ -403,7 +493,7 @@ export async function createPosOverride(
         },
         { tx, context },
       );
-      return { override: toView(row), replayed: false };
+      return { override: toView(row, requestedBy), replayed: false };
     });
 
   // supervisor_pin ----------------------------------------------------------
@@ -446,7 +536,7 @@ export async function createPosOverride(
       );
     return null;
   });
-  if (replay) return { override: toView(replay), replayed: true };
+  if (replay) return { override: toView(replay, requestedBy), replayed: true };
 
   // 2. The approver's pin: counted and committed on its own (§3 F6 lock).
   assertPinAttemptOk(
@@ -471,7 +561,7 @@ export async function createPosOverride(
       key,
       requestFingerprint,
     );
-    if (raced) return { override: toView(raced), replayed: true };
+    if (raced) return { override: toView(raced, requestedBy), replayed: true };
     // Re-check on this transaction's snapshot: a role ended meanwhile fails closed.
     if (
       !(await holdsOverridePermission(
@@ -498,7 +588,7 @@ export async function createPosOverride(
         approvedBy: approverUserId,
         reasonCode,
         reason,
-        valueIdr: input.valueIdr,
+        valueIdr: valueIdr,
         objectType: input.objectType,
         objectId: input.objectId,
         approvalRequestId: null,
@@ -510,7 +600,7 @@ export async function createPosOverride(
       .returning();
     if (!row) throw new Error("pos override insert returned no row");
     await recordApprovedOverride(tx, context, row, deviceId, now);
-    return { override: toView(row), replayed: false };
+    return { override: toView(row, requestedBy), replayed: false };
   });
 }
 
@@ -660,6 +750,7 @@ export async function getPosOverride(
         row,
         now,
       ),
+      actorId,
     );
   });
 }

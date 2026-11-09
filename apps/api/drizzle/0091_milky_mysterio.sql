@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "payment_unallocated_funds_evidence_key" ON "payment_unallocated_funds" USING btree ("tenant_id","evidence_id") WHERE "payment_unallocated_funds"."evidence_id" IS NOT NULL;

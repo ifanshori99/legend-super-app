@@ -1,0 +1,11 @@
+# Sub-brief: ws/pos-shift review-K round 2 (legend-6c0)
+
+Worktree `legend/.worktrees/pos-shift`. Do NOT read `.env*`. Do NOT `pkill`/`killall`. Do NOT commit. Do NOT generate migrations (no schema change needed).
+Files: `apps/api/src/services/pos-shift.service.ts`, test `apps/api/src/test/pos-shift.test.ts` only.
+Run: `LEGEND_TEST_FILES="src/test/pos-shift.test.ts" heavy pnpm test` from worktree root (Colima: `~/.claude/scripts/colima-up`). Typecheck: `pnpm --filter @starter/api exec tsc --noEmit -p .`. Lint: `pnpm --filter @starter/api exec eslint src/services/pos-shift.service.ts src/test/pos-shift.test.ts`.
+
+1. Cash-out probe oracle (`recordCashMovement`, ~:514-550). A cashier can binary-search expected drawer cash: cash_out X refused vs accepted, then cash_in X to restore. Fix: count prior refusals for this shift (audit rows `action = 'pos_shift.cash_movement_refused'`, objectId = shift.id, same tenant) inside the locked tx. If count >= `MAX_CASH_OUT_REFUSALS` (const = 2), refuse EVERY further cash_out/cash_drop on that shift, whatever the amount, with the same generic message "Kas keluar ini perlu persetujuan supervisor." and the same audit row (so a refusal at amount 1 looks identical). cash_in stays allowed. Test: 2 over-drawer refusals, then a small cash_out that fits is refused (409, nothing inserted, audit row exists); cash_in still works; count + close still work.
+2. `writeClose` (~~:1251, :1300) and force close (~~:1424, :1445, :1456) store/emit `input.approvedBy` (client). Store the verified override's `approvedBy` (returned by `verifyCloseApproval`, ~:938-945) in `pos_shifts.approved_by`, the event payload and audit. Test: client sends approver id in different letter case (if user ids are case-insensitive-matched) -> close succeeds and stored `approved_by` equals the real user id (not the client spelling). If ids cannot differ in case in tests, assert stored value === override.approvedBy.
+3. Count limit (~:715-740): `MAX_CASHIER_COUNTS` must count only the cashier's own non-forced rows (`forced = false`), not `last.sequence` (forced counts by supervisors currently eat the cashier's limit). Keep `sequence = max + 1`. Test: supervisor submits 2 forced counts, cashier can still submit 3 counts; 4th -> SHIFT_COUNT_LIMIT.
+
+Report: diff summary, commands run with pass/fail counts.
