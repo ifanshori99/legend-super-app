@@ -59,6 +59,7 @@ import {
   hasSourceDocument,
   missing,
   posSaleInUseRefused,
+  qrSaleInUseRefused,
   refundableBalance,
   refundAudit,
   refundView,
@@ -347,10 +348,12 @@ async function applyApproval(
   // This refund is itself reserved (pending), so reserved must still fit the
   // cap; the cap excludes money a captured POS tender still holds.
   let posSaleInUse = 0n;
+  let qrSaleInUse = 0n;
   const fits = fund
     ? !fund.resolution
     : await refundableBalance(tx, intent).then(async (balance) => {
         posSaleInUse = balance.posSaleInUse;
+        qrSaleInUse = balance.qrSaleInUse;
         // legend-leqj6: a late-payment refund is filed once per intent for
         // what is left after the approved refunds, so other refunds still
         // pending do not count against it (their own approval fails
@@ -367,8 +370,17 @@ async function applyApproval(
       action: "payment.refund_failed",
       actorId: approvedBy,
       note: null,
-      ...(posSaleInUse > 0n
-        ? { detail: { posSaleInUseIdr: Number(posSaleInUse) } }
+      ...(posSaleInUse > 0n || qrSaleInUse > 0n
+        ? {
+            detail: {
+              ...(posSaleInUse > 0n
+                ? { posSaleInUseIdr: Number(posSaleInUse) }
+                : {}),
+              ...(qrSaleInUse > 0n
+                ? { qrSaleInUseIdr: Number(qrSaleInUse) }
+                : {}),
+            },
+          }
         : {}),
       now: at,
     });
@@ -1033,14 +1045,16 @@ async function capRefusal(
         ),
       );
     if (!intent) return null;
-    const { cap, reserved, posSaleInUse } = await refundableBalance(
-      tx,
-      intent,
-      { lockDeposit: false },
-    );
+    const { cap, reserved, posSaleInUse, qrSaleInUse } =
+      await refundableBalance(tx, intent, { lockDeposit: false });
     const wanted = reserved + BigInt(refund.amountIdr);
-    return posSaleInUse > 0n && wanted > cap && wanted <= cap + posSaleInUse
-      ? posSaleInUseRefused(cap > reserved ? cap - reserved : 0n)
+    const left = cap > reserved ? cap - reserved : 0n;
+    if (wanted <= cap) return null;
+    if (posSaleInUse > 0n && wanted <= cap + posSaleInUse)
+      return posSaleInUseRefused(left);
+    // legend-xtzpb: a fired QR pay-first sale holds the money.
+    return qrSaleInUse > 0n && wanted <= cap + posSaleInUse + qrSaleInUse
+      ? qrSaleInUseRefused(left)
       : null;
   });
   return refusal ?? conflict(fallback);
