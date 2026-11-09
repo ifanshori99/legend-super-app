@@ -153,7 +153,7 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
     // Approved by CTO 9 Nov 2026 after Opus + architect review. Adding to this
     // list needs an Opus/owner review.
     // public.delivery_store_index: webhook store-id lookup before any tenant
-    // context (legend-5bn3 D3, CTO decision); ids only, see db/rls.test.ts.
+    // context (legend-5bn3 D3, CTO approval pending); ids only, see db/rls.test.ts.
     const allowlist = [
       "public.payment_link_tokens",
       "public.brand_websites",
