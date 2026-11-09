@@ -708,6 +708,13 @@
       "when": 1794189914674,
       "tag": "0100_wifi_device_grants_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794191977046,
+      "tag": "0101_wifi_device_grants_hardening",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,10 @@
 // TEN-01/TEN-02 FAC-13 (legend-hsk): wifi_device_grants is tenant + outlet
 // owned and forced through RLS; the request of a grant (its provider
-// reference) is immutable, a terminal status is final, and the raw controller
-// id (MAC) only lives on live rows. Raw checks run as the restricted
-// legend_app role with explicit settings; fixtures as the migration owner.
+// reference) is immutable, a terminal status is final, a terminal row is
+// frozen except revoke_retry_at (legend-1mbi), the app role deletes only in
+// scope (legend-y2dg), and the raw controller id (MAC) only lives on live rows.
+// Raw checks run as the restricted legend_app role with explicit settings;
+// fixtures as the migration owner.
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -367,6 +369,147 @@ describe("legend-hsk wifi_device_grants RLS", () => {
         [revoked.id, grantA.id],
       ),
     ).rejects.toThrow(/terminal wifi grant status is final/);
+  });
+
+  it("legend-1mbi a terminal row is frozen except revoke_retry_at", async () => {
+    const revoked = await seedGrant(insertActiveSql);
+    await asOwner(
+      `UPDATE wifi_device_grants SET status = 'revoked', controller_device_id = NULL,
+         ended_at = now(), revoke_requested_at = now(), end_reason = 'staff_revoked'
+       WHERE id = $1`,
+      [revoked.id],
+    );
+    const changes: Array<[string, string]> = [
+      ["ended_at", "ended_at + interval '1 minute'"],
+      ["end_reason", "'session_ended'"],
+      ["superseded_by", `'${grantA.id}'`],
+      ["controller_device_id", `'${revoked.mac}'`],
+      ["authorized_at", "authorized_at + interval '1 minute'"],
+      ["expires_at", "expires_at + interval '1 minute'"],
+      ["revoke_requested_at", "revoke_requested_at + interval '1 minute'"],
+      ["attempt_count", "attempt_count + 1"],
+      ["last_error_code", "'WIFI_PROVIDER_TIMEOUT'"],
+      ["updated_at", "updated_at + interval '1 minute'"],
+      ["created_at", "created_at - interval '1 minute'"],
+    ];
+    for (const [column, value] of changes) {
+      await expect(
+        asOwner(
+          `UPDATE wifi_device_grants SET ${column} = ${value} WHERE id = $1`,
+          [revoked.id],
+        ),
+        column,
+      ).rejects.toThrow(/terminal wifi grant is frozen except revoke_retry_at/);
+    }
+
+    // Superseded and failed rows are frozen too (successor and end time).
+    const old = await seedGrant(insertActiveSql);
+    const next = await seedGrant(insertActiveSql, { session: old.session });
+    await asOwner(
+      `UPDATE wifi_device_grants SET status = 'superseded', superseded_by = $2,
+         controller_device_id = NULL, ended_at = now() WHERE id = $1`,
+      [old.id, next.id],
+    );
+    await expect(
+      asOwner(
+        "UPDATE wifi_device_grants SET superseded_by = $2 WHERE id = $1",
+        [old.id, grantA.id],
+      ),
+    ).rejects.toThrow(/terminal wifi grant is frozen except revoke_retry_at/);
+    const failed = await seedGrant(insertPendingSql);
+    await asOwner(
+      `UPDATE wifi_device_grants SET status = 'failed', controller_device_id = NULL,
+         ended_at = now() WHERE id = $1`,
+      [failed.id],
+    );
+    await expect(
+      asOwner(
+        "UPDATE wifi_device_grants SET ended_at = ended_at - interval '1 day' WHERE id = $1",
+        [failed.id],
+      ),
+    ).rejects.toThrow(/terminal wifi grant is frozen except revoke_retry_at/);
+
+    // revoke_retry_at is set, moved and cleared by the app role.
+    for (const value of [
+      "now() + interval '30 seconds'",
+      "revoke_retry_at + interval '2 minutes'",
+      "NULL",
+    ]) {
+      const ok = await asAppRole(
+        { tenant: tenantId, outlets: JSON.stringify([outletA]) },
+        (c) =>
+          c.query(
+            `UPDATE wifi_device_grants SET revoke_retry_at = ${value} WHERE id = $1`,
+            [revoked.id],
+          ),
+      );
+      expect(ok.rowCount, value).toBe(1);
+    }
+    const persisted = await asOwner(
+      "UPDATE wifi_device_grants SET revoke_retry_at = now() WHERE id = $1 RETURNING revoke_retry_at IS NOT NULL AS pending",
+      [old.id],
+    );
+    expect(persisted.rows).toEqual([{ pending: true }]);
+
+    // A live row may end and ask for a revoke retry in the same update.
+    const live = await seedGrant(insertActiveSql);
+    const ended = await asOwner(
+      `UPDATE wifi_device_grants SET status = 'revoked', controller_device_id = NULL,
+         ended_at = now(), revoke_requested_at = now(), end_reason = 'session_ended',
+         revoke_retry_at = now() WHERE id = $1 RETURNING status`,
+      [live.id],
+    );
+    expect(ended.rows).toEqual([{ status: "revoked" }]);
+  });
+
+  it("legend-y2dg the app role deletes grants only inside its tenant and outlet scope", async () => {
+    const privilege = await owner.query(
+      "SELECT has_table_privilege('legend_app', 'public.wifi_device_grants', 'DELETE') AS ok",
+    );
+    expect(privilege.rows).toEqual([{ ok: true }]);
+    const grant = await seedGrant(insertActiveSql);
+    const onB = await seedGrant(insertActiveSql, { outlet: outletB });
+    const outOfScope = await asAppRole(
+      { tenant: tenantId, outlets: JSON.stringify([outletB]) },
+      (c) =>
+        c.query("DELETE FROM wifi_device_grants WHERE id = ANY($1::uuid[])", [
+          [grant.id, grantOther.id],
+        ]),
+    );
+    expect(outOfScope.rowCount).toBe(0);
+    const otherTenantDelete = await asAppRole(
+      { tenant: otherTenant, outlets: "*" },
+      (c) =>
+        c.query("DELETE FROM wifi_device_grants WHERE id = $1", [grant.id]),
+    );
+    expect(otherTenantDelete.rowCount).toBe(0);
+    // asAppRole rolls back, so the in-scope delete is observed in-transaction.
+    const inScope = await asAppRole(
+      { tenant: tenantId, outlets: JSON.stringify([outletA]) },
+      async (c) => {
+        const deleted = await c.query(
+          "DELETE FROM wifi_device_grants WHERE id = ANY($1::uuid[]) RETURNING id",
+          [[grant.id, onB.id, grantOther.id]],
+        );
+        const left = await c.query(
+          "SELECT id FROM wifi_device_grants WHERE id = $1",
+          [grant.id],
+        );
+        return { deleted: deleted.rows, left: left.rows };
+      },
+    );
+    expect(inScope).toEqual({ deleted: [{ id: grant.id }], left: [] });
+    const stillThere = await asOwner(
+      "SELECT count(*)::int AS n FROM wifi_device_grants WHERE id = ANY($1::uuid[])",
+      [[grant.id, onB.id]],
+    );
+    expect(stillThere.rows).toEqual([{ n: 2 }]);
+    const otherStill = await asOwner(
+      "SELECT id FROM wifi_device_grants WHERE id = $1",
+      [grantOther.id],
+      otherTenant,
+    );
+    expect(otherStill.rows).toEqual([{ id: grantOther.id }]);
   });
 
   it("legend-hsk the raw controller id lives only on live rows (scrub)", async () => {

@@ -18,6 +18,9 @@
 //   row. device_hash = sha256 hex of `${tenantId}:${normalized id}` is only a
 //   lookup key, not anonymization.
 // - wifi_session_id is opaque here; kmd3 adds the FK to wifi_sessions.
+// - A terminal row (superseded, revoked, failed) is frozen except
+//   revoke_retry_at (legend-1mbi); retention deletes it on the edge after
+//   WIFI_GRANT_RETENTION_DAYS (legend-y2dg).
 // - Tenant + outlet RLS and the update guard: edge-wifi.custom.sql.
 import { sql } from "drizzle-orm";
 import {
@@ -60,6 +63,11 @@ export const wifiDeviceGrants = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     // Write-ahead for revoke retries; set together with end_reason.
     revokeRequestedAt: timestamp("revoke_requested_at", { withTimezone: true }),
+    // legend-1mbi: the controller revoke of this reference still has to be
+    // (re)sent at or after this time (late-landing grant, failed revoke).
+    // Cleared once a revoke succeeds. The only column a terminal row may
+    // change (edge-wifi.custom.sql trigger); retention keeps the row while set.
+    revokeRetryAt: timestamp("revoke_retry_at", { withTimezone: true }),
     endReason: varchar("end_reason", { length: 32 }),
     endedAt: timestamp("ended_at", { withTimezone: true }),
     supersededBy: uuid("superseded_by"),
