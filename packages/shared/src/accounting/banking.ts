@@ -124,16 +124,25 @@ export function parseBankCsvAmount(
   decimalSeparator: "," | ".",
 ): Idr {
   const thousands = decimalSeparator === "," ? "." : ",";
-  let value = text.trim().replace(/\s|Rp/gi, "");
-  let negative = false;
-  if (/^\(.*\)$/.test(value)) {
-    negative = true;
-    value = value.slice(1, -1);
-  }
+  // Sign: one "(...)" wrapper or one "-" (before or after "Rp"), never both.
+  // "Rp" is only a prefix; spaces are allowed only around it and the wrapper,
+  // so "12 34" (two misread columns) is refused instead of read as 1234.
+  let value = text.trim();
+  const wrapped = /^\(.*\)$/.test(value);
+  if (wrapped) value = value.slice(1, -1).trim();
+  let minus = 0;
   if (value.startsWith("-")) {
-    negative = !negative;
+    minus += 1;
     value = value.slice(1);
   }
+  value = value.replace(/^Rp\s*/i, "");
+  if (value.startsWith("-")) {
+    minus += 1;
+    value = value.slice(1);
+  }
+  if (minus > 1 || (wrapped && minus > 0))
+    throw new AccountingError("STATEMENT_VALUE_INVALID");
+  const negative = wrapped || minus === 1;
   const escape = (separator: string) => `\\${separator}`;
   const grammar = new RegExp(
     `^(\\d{1,3}(?:${escape(thousands)}\\d{3})+|\\d+)(?:${escape(decimalSeparator)}(\\d{1,2}))?$`,
