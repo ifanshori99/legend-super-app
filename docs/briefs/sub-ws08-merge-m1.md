@@ -25,3 +25,11 @@ Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/ws08-si
 5. LOW `delivery-orders.service.ts:665-684`: adapter throw (ambiguous) → record desync with outcome "unknown".
 6. LOW hygiene: store index trigger DELETE uses `OLD.*`; `REVOKE EXECUTE ON FUNCTION app.sync_delivery_store_index() FROM PUBLIC`; replace open SELECT with SECURITY DEFINER `app.resolve_delivery_store(platform, store_id)` returning one row + REVOKE SELECT (update provision-roles/rls.test exception + comments: say "approved for review by CTO pending", consistent in both tests). These go in the regenerated custom migration.
 7. Site test gaps: service-level test calling `getBrandWebsiteContent`/`saveBrandWebsiteContent` with outlet scope → `AccessError`; `public-site-api.test.ts` raw body must not contain the platform name; `outlet-rls.test.ts` allowlist comment for brand_websites must mention the `tenant_wide_only` restrictive policy and the policy test must assert `polqual` contains `outlet_scope_is_tenant`.
+
+## M3 (review of d26fb669, tier K) — files: `services/delivery-inject.ts`, `services/delivery-ingest.service.ts`, delivery tests
+1. BLOCKER `delivery-inject.ts:~840-850` `voidQueuedKdsLines`: sets order `voided` without `order.voided` POS event + audit. Emit them exactly like `voidPosOrder` (`pos-order.service.ts:1464-1480`; system actor when null). Test: event row exists after platform cancel.
+2. MED `delivery-inject.ts:~771-818`: race between "kitchen started" NOT EXISTS check and void. Lock the order's kitchen tickets/items `FOR UPDATE` (same lock order as KDS bump) before deciding which lines to void, or re-check status under lock so `in_progress`/`ready` lines are never voided.
+3. LOW `delivery-inject.ts:~765`: platform cancel of a manual POS twin with captured tenders (`capturedIdr > 0`, see `voidPosOrder` guard) → do not void; flag needs_review + audit.
+4. LOW `delivery-ingest.service.ts:~556-575` `deliveryLinesChanged`: normalise payload `variantId` like `mapDeliveryLines` before comparing (no false needs_review).
+5. LOW partial cancel (some lines already cooking) leaves the POS order `sent` with nothing closing it: do not fix; add a code comment pointing at legend-5d76 (staff review).
+Targeted tests (no heavy) for delivery-* + kds* + pos void tests; one heavy API tsc; commit; report max 20 lines.
