@@ -1633,6 +1633,8 @@ const payrollPaidEvent = payrollPaid.envelopeSchema.parse({
   payload: {
     ...runRef,
     netIdr: octoberTotals.netIdr,
+    bankTransferIdr: octoberTotals.bankTransferIdr,
+    cashIdr: octoberTotals.cashIdr,
     bankTransferFileId: must(bankTransferFiles[0], "bank file").id,
     paidBy: financeApprover,
     paidAt,

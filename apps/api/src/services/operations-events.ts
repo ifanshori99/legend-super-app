@@ -67,7 +67,7 @@ export async function emitOperationsEvent(
   definition: OperationsEventDefinition,
   input: {
     aggregateId: string;
-    outletId: string;
+    outletId: string | null;
     actor: OperationsEventActor;
     payload: Record<string, unknown>;
     destination?: string;

@@ -301,6 +301,7 @@ post({
       pph21EmployerBorneIdr: idr(0),
       pph21RefundIdr: idr(0),
       pph21EmployerRefundIdr: idr(0),
+      pph21EmployerAllowanceRefundIdr: idr(0),
       loanRepaymentIdr: idr(0),
       pph21ReceivableIdr: idr(0),
       pph21ReceivableCollectedIdr: idr(0),

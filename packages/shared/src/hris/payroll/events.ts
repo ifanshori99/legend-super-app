@@ -54,16 +54,30 @@ export const payrollLocked = defineDomainEvent({
   }),
 });
 
-/** Finance marked the transfer done (Alur K step 5). */
+const nonNegativeIdr = idrSchema.refine((v) => v >= 0, "Must not be negative");
+
+/**
+ * Finance marked the transfer done (Alur K step 5). The payout split is
+ * carried for the journal: Dr salaries_payable net, Cr bank + petty_cash.
+ */
 export const payrollPaid = defineDomainEvent({
   name: "payroll.paid",
-  payload: z.strictObject({
-    ...runRef,
-    netIdr: idrSchema,
-    bankTransferFileId: bankTransferFileIdSchema.nullable(),
-    paidBy: userIdSchema,
-    paidAt: isoDateTimeSchema,
-  }),
+  payload: z
+    .strictObject({
+      ...runRef,
+      netIdr: idrSchema,
+      /** Paid by bank transfer (the run totals' `bankTransferIdr`). */
+      bankTransferIdr: nonNegativeIdr,
+      /** Paid in cash (the run totals' `cashIdr`). */
+      cashIdr: nonNegativeIdr,
+      bankTransferFileId: bankTransferFileIdSchema.nullable(),
+      paidBy: userIdSchema,
+      paidAt: isoDateTimeSchema,
+    })
+    .refine((p) => p.netIdr === p.bankTransferIdr + p.cashIdr, {
+      path: ["netIdr"],
+      message: "net = bank transfer + cash (PAYR-04)",
+    }),
 });
 
 /** Approved cancellation of a locked run: reversing journal (PAYR-05). */

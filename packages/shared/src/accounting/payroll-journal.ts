@@ -9,8 +9,10 @@
 //   + SC + RB + bpjsCo + R       service_charge, reimbursement_expense,
 //                                bpjs_expense, employee_receivable
 //   = gross - rf + bpjsCo + B + R
-// Credits (erf goes to pph21_borne_expense, other to salary_expense): net +
-// (bpjsEmp + bpjsCo) + pph21 + collected + loan + other + erf, where net = gross - (bpjsEmp + W + loan + collected + other) and
+// Credits (the employer refund erf = erfA + erfB: the gross-up allowance part
+// erfA goes to salary_expense, the borne part erfB to pph21_borne_expense):
+// net + (bpjsEmp + bpjsCo) + pph21 + collected + loan + other + erfA + erfB,
+// where net = gross - (bpjsEmp + W + loan + collected + other) and
 // pph21 = W + B + R - rf - erf. Substituting:
 //   gross - bpjsEmp - W - loan - collected - other + bpjsEmp + bpjsCo
 //   + W + B + R - rf - erf + collected + loan + other + erf
@@ -24,7 +26,8 @@ import { payrollRunTotalsSchema } from "../hris/payroll/payslips.ts";
 export type PayrollJournalAmountKey =
   | "salaryExpenseIdr"
   | "pph21EmployerBorneIdr"
-  | "pph21EmployerRefundIdr"
+  | "pph21EmployerAllowanceRefundIdr"
+  | "pph21EmployerBorneRefundIdr"
   | "otherDeductionsIdr"
   | "serviceChargeIdr"
   | "reimbursementIdr"
@@ -45,7 +48,9 @@ export function payrollJournalAmounts(
     salaryExpenseIdr:
       t.grossIdr - t.pph21RefundIdr - t.serviceChargeIdr - t.reimbursementIdr,
     pph21EmployerBorneIdr: t.pph21EmployerBorneIdr,
-    pph21EmployerRefundIdr: t.pph21EmployerRefundIdr,
+    pph21EmployerAllowanceRefundIdr: t.pph21EmployerAllowanceRefundIdr,
+    pph21EmployerBorneRefundIdr:
+      t.pph21EmployerRefundIdr - t.pph21EmployerAllowanceRefundIdr,
     otherDeductionsIdr: t.otherDeductionsIdr,
     serviceChargeIdr: t.serviceChargeIdr,
     reimbursementIdr: t.reimbursementIdr,
