@@ -61,6 +61,17 @@ const orderIds = {
   takeaway: "01JBQ7Z8K0A1B2C3D4E5F6G7HB",
   takeawayDone: "01JBQ7Z8K0A1B2C3D4E5F6G7HC",
 };
+/** Table label and channel the KDS header shows per order (legend-rutl). */
+export const orderHeaders: Record<
+  string,
+  { tableLabel: string | null; channel: "dine_in" | "takeaway" | "gofood" }
+> = {
+  [orderIds.dineIn]: { tableLabel: "A3", channel: "dine_in" },
+  [orderIds.gofood]: { tableLabel: null, channel: "gofood" },
+  [orderIds.dineInPastry]: { tableLabel: "B7", channel: "dine_in" },
+  [orderIds.takeaway]: { tableLabel: null, channel: "takeaway" },
+  [orderIds.takeawayDone]: { tableLabel: null, channel: "takeaway" },
+};
 const orderItemIds = [
   "01JBQ7Z8K3M4N5P6Q7R8S9T0VY",
   "01JBQ7Z8K4M4N5P6Q7R8S9T0VY",
@@ -1206,6 +1217,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...kitchenDoneTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.kitchenDone,
         ),
@@ -1221,6 +1234,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...coffeeInProgressTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.coffeeInProgress,
         ),

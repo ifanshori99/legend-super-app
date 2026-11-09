@@ -2,6 +2,7 @@
 import {
   cafeLegendKitchenFixtures,
   kitchenFixtureSchema,
+  orderHeaders,
   getKitchenBoard,
   startKitchenTicket,
   bumpKitchenTicket,
@@ -38,12 +39,17 @@ const boards = createMockStore<StationBoard[]>(() =>
       pacing,
       tickets: fixtures.tickets
         .filter((ticket) => ticket.stationId === config.stationId)
-        .map((ticket) => ({
-          ...ticket,
-          items: fixtures.ticketItems.filter(
-            (item) => item.ticketId === ticket.id,
-          ),
-        })),
+        .map((ticket) => {
+          const header = orderHeaders[ticket.orderId];
+          if (!header) throw new Error("Missing fixture order header");
+          return {
+            ...ticket,
+            ...header,
+            items: fixtures.ticketItems.filter(
+              (item) => item.ticketId === ticket.id,
+            ),
+          };
+        }),
       allDay: {
         tenantId: config.tenantId,
         outletId: config.outletId,

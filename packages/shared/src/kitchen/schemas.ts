@@ -246,7 +246,16 @@ export const kitchenTicketSchema = ticketSchemaBase
 
 /** What the KDS renders: one ticket per station with its item lines. */
 export const kitchenTicketDetailSchema = ticketSchemaBase
-  .extend({ items: z.array(kitchenTicketItemSchema).min(1) })
+  .extend({
+    /**
+     * legend-rutl: read from the order for the KDS header. The table code when
+     * the order sits on a table session, else null (takeaway, delivery).
+     */
+    tableLabel: z.string().min(1).max(20).nullable(),
+    /** The order's menu channel (dine-in or takeaway for own orders). */
+    channel: channelSchema,
+    items: z.array(kitchenTicketItemSchema).min(1),
+  })
   .refine(startedTicketRule, {
     path: ["startedAt"],
     message: "A started ticket records startedAt (KDS-04)",
@@ -838,55 +847,97 @@ const orderIssueRules = (
  *   recovery lifecycle; a staff-recorded remake or comp is born `resolved`.
  * `costIdr` is whole rupiah (D-CORE-2) computed server-side from the recipe.
  */
+const orderIssueFields = {
+  ...outletScope,
+  id: uuidSchema,
+  orderId: orderIdSchema,
+  orderItemId: orderItemIdSchema,
+  type: orderIssueTypeSchema,
+  reason: orderIssueReasonSchema,
+  /** Written reason, mandatory for R25 ("alasan tertulis"). */
+  reasonNote: z.string().min(1).max(500),
+  stationId: stationIdSchema.nullable(),
+  /** Staff member whose station produced the remake/comp (KDS-07). */
+  employeeId: userIdSchema.nullable(),
+  reportedBy: userIdSchema,
+  resolution: orderIssueResolutionSchema.nullable(),
+  replacementItemId: uuidSchema.nullable(),
+  voucherId: uuidSchema.nullable(),
+  /** Positive: the guest pays the difference; negative: the guest is credited. */
+  priceDifferenceIdr: idrSchema.nullable(),
+  approvedBy: userIdSchema.nullable(),
+  /** Ingredient cost of the remake/comp, whole rupiah (KDS-07). */
+  costIdr: idrSchema.refine((amount) => amount >= 0, {
+    message: "Ingredient cost cannot be negative",
+  }),
+  status: orderIssueStatusSchema,
+  createdAt: isoDateTimeSchema,
+  resolvedAt: isoDateTimeSchema.nullable(),
+};
+
+/** Lifecycle rules of the stored record, shared with the read projection. */
+type OrderIssueStateFields = OrderIssueRuleFields & {
+  status: z.infer<typeof orderIssueStatusSchema>;
+  resolvedAt: string | null;
+};
+const orderIssueStateRules = (
+  issue: OrderIssueStateFields,
+  ctx: z.RefinementCtx,
+): void => {
+  orderIssueRules(issue, ctx);
+  const add = (path: string, message: string, invalid: boolean) => {
+    if (invalid) ctx.addIssue({ code: "custom", path: [path], message });
+  };
+  add(
+    "resolution",
+    "An open issue has no resolution yet",
+    issue.status === "open" && issue.resolution !== null,
+  );
+  add(
+    "resolvedAt",
+    "A resolved issue needs a resolution and resolvedAt",
+    issue.status === "resolved" &&
+      (issue.resolution === null || issue.resolvedAt === null),
+  );
+  add(
+    "resolvedAt",
+    "A cancelled issue is not resolved",
+    issue.status === "cancelled" && issue.resolvedAt !== null,
+  );
+};
+
 export const orderIssueSchema = z
+  .strictObject(orderIssueFields)
+  .superRefine(orderIssueStateRules);
+
+/**
+ * `listOrderIssues` row (legend-0eq7): the record plus the readable labels the
+ * log shows, so the UI never renders an id. `orderLabel` is the order number
+ * (`orders.number`), `itemName` the name snapshotted on the order line, and
+ * the staff names come from the user table; each is null only when the
+ * matching id is null.
+ */
+export const orderIssueViewSchema = z
   .strictObject({
-    ...outletScope,
-    id: uuidSchema,
-    orderId: orderIdSchema,
-    orderItemId: orderItemIdSchema,
-    type: orderIssueTypeSchema,
-    reason: orderIssueReasonSchema,
-    /** Written reason, mandatory for R25 ("alasan tertulis"). */
-    reasonNote: z.string().min(1).max(500),
-    stationId: stationIdSchema.nullable(),
-    /** Staff member whose station produced the remake/comp (KDS-07). */
-    employeeId: userIdSchema.nullable(),
-    reportedBy: userIdSchema,
-    resolution: orderIssueResolutionSchema.nullable(),
-    replacementItemId: uuidSchema.nullable(),
-    voucherId: uuidSchema.nullable(),
-    /** Positive: the guest pays the difference; negative: the guest is credited. */
-    priceDifferenceIdr: idrSchema.nullable(),
-    approvedBy: userIdSchema.nullable(),
-    /** Ingredient cost of the remake/comp, whole rupiah (KDS-07). */
-    costIdr: idrSchema.refine((amount) => amount >= 0, {
-      message: "Ingredient cost cannot be negative",
-    }),
-    status: orderIssueStatusSchema,
-    createdAt: isoDateTimeSchema,
-    resolvedAt: isoDateTimeSchema.nullable(),
+    ...orderIssueFields,
+    orderLabel: z.string().min(1).max(30),
+    itemName: name,
+    reportedByName: z.string().min(1).max(100),
+    employeeName: z.string().min(1).max(100).nullable(),
+    approvedByName: z.string().min(1).max(100).nullable(),
   })
+  .superRefine(orderIssueStateRules)
   .superRefine((issue, ctx) => {
-    orderIssueRules(issue, ctx);
-    const add = (path: string, message: string, invalid: boolean) => {
-      if (invalid) ctx.addIssue({ code: "custom", path: [path], message });
-    };
-    add(
-      "resolution",
-      "An open issue has no resolution yet",
-      issue.status === "open" && issue.resolution !== null,
-    );
-    add(
-      "resolvedAt",
-      "A resolved issue needs a resolution and resolvedAt",
-      issue.status === "resolved" &&
-        (issue.resolution === null || issue.resolvedAt === null),
-    );
-    add(
-      "resolvedAt",
-      "A cancelled issue is not resolved",
-      issue.status === "cancelled" && issue.resolvedAt !== null,
-    );
+    for (const [id, label, path] of [
+      [issue.employeeId, issue.employeeName, "employeeName"],
+      [issue.approvedBy, issue.approvedByName, "approvedByName"],
+    ] as const)
+      if ((id === null) !== (label === null))
+        ctx.addIssue({
+          code: "custom",
+          path: [path],
+          message: "A staff name is present exactly when its id is",
+        });
   });
 
 /**
@@ -999,6 +1050,7 @@ export type OrderIssueReason = z.infer<typeof orderIssueReasonSchema>;
 export type OrderIssueStatus = z.infer<typeof orderIssueStatusSchema>;
 export type OrderIssueResolution = z.infer<typeof orderIssueResolutionSchema>;
 export type OrderIssue = z.infer<typeof orderIssueSchema>;
+export type OrderIssueView = z.infer<typeof orderIssueViewSchema>;
 export type CreateOrderIssueInput = z.infer<typeof createOrderIssueInputSchema>;
 export type KitchenTicket = z.infer<typeof kitchenTicketSchema>;
 export type KitchenTicketDetail = z.infer<typeof kitchenTicketDetailSchema>;

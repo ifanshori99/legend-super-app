@@ -323,12 +323,23 @@ function StationBoard({
                     icon={band.icon}
                     label={band.label}
                   >
-                    <p className="text-sm leading-5 font-semibold">
-                      {t("kds.orderCode")}{" "}
-                      <span className="font-mono tracking-wider">
-                        {ticket.orderId.slice(-6)}
-                      </span>
-                    </p>
+                    <div className="flex min-w-0 flex-col">
+                      <p className="text-sm leading-5 font-semibold">
+                        {ticket.tableLabel !== null && (
+                          <>
+                            {t("kds.table", { label: ticket.tableLabel })}
+                            {" · "}
+                          </>
+                        )}
+                        {t("kds.orderCode")}{" "}
+                        <span className="font-mono tracking-wider">
+                          {ticket.orderId.slice(-6)}
+                        </span>
+                      </p>
+                      <p className="text-xs leading-4">
+                        {t(`kds.channel.${ticket.channel}`)}
+                      </p>
+                    </div>
                     {elapsed !== null && (
                       <p className="text-[30px] leading-9 font-bold tabular">
                         {formatElapsedSeconds(elapsed)}

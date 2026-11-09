@@ -190,6 +190,32 @@ test("PRD §6 kitchen_capacity_rules + KDS-05: pacing levels derive from capacit
   );
 });
 
+test("legend-rutl: a ticket detail carries the table label and channel of its order", () => {
+  for (const board of fixtures.stationBoards)
+    for (const ticket of board.tickets) {
+      assert.ok(
+        "tableLabel" in ticket && "channel" in ticket,
+        "board tickets carry both fields",
+      );
+      kitchen.kitchenTicketDetailSchema.parse(ticket);
+    }
+  const base = fixtures.stationBoards[0].tickets[0];
+  const parse = (patch) =>
+    kitchen.kitchenTicketDetailSchema.safeParse({ ...base, ...patch }).success;
+  assert.equal(parse({ tableLabel: null, channel: "takeaway" }), true);
+  assert.equal(parse({ tableLabel: "A3", channel: "gofood" }), true);
+  assert.equal(parse({ tableLabel: "", channel: "dine_in" }), false);
+  assert.equal(parse({ tableLabel: "A3", channel: "pos" }), false);
+  assert.equal(
+    kitchen.kitchenTicketDetailSchema.safeParse({
+      ...base,
+      tableLabel: undefined,
+    }).success,
+    false,
+    "the table label is explicit: null when the order has no table",
+  );
+});
+
 test("legend-tsp5: the station summary is one open-ticket count per station", () => {
   const summary = fixtures.stationSummary;
   kitchen.stationSummarySchema.parse(summary);
@@ -676,6 +702,8 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   const ticket = fixtures.tickets[0];
   const detail = {
     ...ticket,
+    tableLabel: "A3",
+    channel: "dine_in",
     items: fixtures.ticketItems.filter((item) => item.ticketId === ticket.id),
   };
   respond(kitchen.listKitchenStations, fixtures.stationConfigs);
