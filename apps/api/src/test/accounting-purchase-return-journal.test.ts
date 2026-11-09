@@ -626,7 +626,8 @@ describe("delivery is idempotent", () => {
       `aj:purchase-return:${returnId}`,
     );
     for (const result of results) {
-      if (result.status === "ignored") throw new Error("ignored");
+      if (result.status !== "posted" && result.status !== "already_posted")
+        throw new Error(`unexpected status ${result.status}`);
       expect(result.journalEntryId).toBe(journalId);
     }
   });
