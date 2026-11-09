@@ -123,6 +123,8 @@ export const qrCartMessages = {
         "Pesanan belum mencapai minimum belanja zona ini. Tambah menu lalu coba lagi.",
       closed: "Sesi meja sudah berakhir. Buka sesi baru untuk memesan.",
       cartEmpty: "Semua menu di keranjang habis. Pilih menu lain.",
+      dayClosed:
+        "Outlet sudah tutup untuk hari ini. Pesanan belum bisa dibuat, silakan hubungi staf.",
     },
   },
   pay: {

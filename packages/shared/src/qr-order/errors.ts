@@ -42,3 +42,11 @@ export const qrOrderErrorMessages: Record<QrOrderErrorCode, string> = {
     "Pajak harga-termasuk-pajak belum didukung untuk QR order; harga menu QR tidak termasuk pajak dan service charge.",
   EDGE_LINK_DOWN: "Silakan pesan melalui waiter.",
 };
+
+/**
+ * Guest message when a QR order lands on a business day already closed by
+ * Tutup Hari. The API refuses it as a PosError BUSINESS_DAY_ALREADY_CLOSED
+ * (409) carrying this text (bead legend-2o1b).
+ */
+export const QR_OUTLET_CLOSED_MESSAGE =
+  "Outlet sudah tutup untuk hari ini. Pesanan belum bisa dibuat, silakan hubungi staf.";

@@ -59,6 +59,8 @@ function errorText(t: ReturnType<typeof useT>, error: unknown): string {
       return t("qrCart.checkout.error.closed");
     case "CART_EMPTY":
       return t("qrCart.checkout.error.cartEmpty");
+    case "BUSINESS_DAY_ALREADY_CLOSED":
+      return t("qrCart.checkout.error.dayClosed");
     default:
       return t("qrCart.checkout.error.generic");
   }
