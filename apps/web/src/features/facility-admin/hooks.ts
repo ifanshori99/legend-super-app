@@ -7,9 +7,11 @@
 // store the writes change (bead legend-wbwl), so a refetch keeps the edits.
 //
 // Writes follow bead legend-6jms: an update sends the `updatedAt` of the row as
-// the cache holds it (`expectedUpdatedAt`; the API answers 409 when another
+// the editor saw it when it opened (`expectedUpdatedAt`, passed by the caller;
+// never read from the cache at save time, which a refetch may have replaced
+// while the form still shows the old values). The API answers 412 when another
 // admin saved first, and the config is refetched so the form shows the new
-// values), and a create sends one `idempotencyKey` per attempt, reused while the
+// values, and a create sends one `idempotencyKey` per attempt, reused while the
 // same body is retried so a double submit creates one row.
 import { useRef } from "react";
 import {
@@ -86,31 +88,16 @@ function patchFacilityRow(queryClient: QueryClient, facility: Facility) {
   );
 }
 
-/** The cached config of a facility, the source of every `expectedUpdatedAt`. */
-function cachedConfig(queryClient: QueryClient, facilityId: string) {
-  return queryClient.getQueryData<FacilityConfig>(
-    facilityAdminKeys.config(facilityId),
-  );
-}
-
-/** The stamp of a row that must exist; without it the editor must reload. */
-function requireStamp(row: { updatedAt: string } | undefined): string {
-  if (!row)
-    throw new ApiError(
-      409,
-      "FACILITY_CONFIG_STALE",
-      "Data belum dimuat atau sudah berubah. Muat ulang lalu coba lagi.",
-    );
-  return row.updatedAt;
-}
-
-/** After a 409 the cache is stale: refetch so the form shows what won. */
+/** After a 409/412 the cache is stale: refetch so the form shows what won. */
 function refetchOnConflict(
   queryClient: QueryClient,
   facilityId: string,
   error: unknown,
 ) {
-  if (error instanceof ApiError && error.status === 409) {
+  if (
+    error instanceof ApiError &&
+    (error.status === 409 || error.status === 412)
+  ) {
     void queryClient.invalidateQueries({
       queryKey: facilityAdminKeys.config(facilityId),
     });
@@ -141,12 +128,10 @@ function useCreateKey() {
 export function useUpdateFacility(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: api.UpdateFacilityBody) =>
-      api.updateFacility(
-        facilityId,
-        body,
-        requireStamp(cachedConfig(queryClient, facilityId)?.facility),
-      ),
+    mutationFn: (input: {
+      body: api.UpdateFacilityBody;
+      expectedUpdatedAt: string;
+    }) => api.updateFacility(facilityId, input.body, input.expectedUpdatedAt),
     onSuccess: (facility) => {
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -178,16 +163,11 @@ export function useCreateArea(facilityId: string) {
 export function useUpdateArea(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { areaId: string; body: api.UpdateAreaBody }) =>
-      api.updateArea(
-        input.areaId,
-        input.body,
-        requireStamp(
-          cachedConfig(queryClient, facilityId)?.areas.find(
-            (row) => row.id === input.areaId,
-          ),
-        ),
-      ),
+    mutationFn: (input: {
+      areaId: string;
+      body: api.UpdateAreaBody;
+      expectedUpdatedAt: string;
+    }) => api.updateArea(input.areaId, input.body, input.expectedUpdatedAt),
     onSuccess: (area) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -217,16 +197,12 @@ export function useCreateUnit(facilityId: string) {
 export function useUpdateUnitConfig(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { unitId: string; body: api.UpdateUnitConfigBody }) =>
-      api.updateUnitConfig(
-        input.unitId,
-        input.body,
-        requireStamp(
-          cachedConfig(queryClient, facilityId)?.units.find(
-            (row) => row.id === input.unitId,
-          ),
-        ),
-      ),
+    mutationFn: (input: {
+      unitId: string;
+      body: api.UpdateUnitConfigBody;
+      expectedUpdatedAt: string;
+    }) =>
+      api.updateUnitConfig(input.unitId, input.body, input.expectedUpdatedAt),
     onSuccess: (unit) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -256,16 +232,12 @@ export function useCreateProduct(facilityId: string) {
 export function useUpdateProduct(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { productId: string; body: api.UpdateProductBody }) =>
-      api.updateProduct(
-        input.productId,
-        input.body,
-        requireStamp(
-          cachedConfig(queryClient, facilityId)?.products.find(
-            (row) => row.id === input.productId,
-          ),
-        ),
-      ),
+    mutationFn: (input: {
+      productId: string;
+      body: api.UpdateProductBody;
+      expectedUpdatedAt: string;
+    }) =>
+      api.updateProduct(input.productId, input.body, input.expectedUpdatedAt),
     onSuccess: (product) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -297,16 +269,11 @@ export function useCreateAddon(facilityId: string) {
 export function useUpdateAddon(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { addonId: string; body: api.UpdateAddonBody }) =>
-      api.updateAddon(
-        input.addonId,
-        input.body,
-        requireStamp(
-          cachedConfig(queryClient, facilityId)?.addons.find(
-            (row) => row.id === input.addonId,
-          ),
-        ),
-      ),
+    mutationFn: (input: {
+      addonId: string;
+      body: api.UpdateAddonBody;
+      expectedUpdatedAt: string;
+    }) => api.updateAddon(input.addonId, input.body, input.expectedUpdatedAt),
     onSuccess: (addon) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -319,15 +286,11 @@ export function useUpdateAddon(facilityId: string) {
 export function usePutRule(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { ruleId: string; body: api.PutEntitlementRuleBody }) =>
-      api.putRule(
-        input.ruleId,
-        input.body,
-        // null = the rule is not in the cache, so the editor means to create it.
-        cachedConfig(queryClient, facilityId)?.entitlementRules.find(
-          (row) => row.id === input.ruleId,
-        )?.updatedAt ?? null,
-      ),
+    mutationFn: (input: {
+      ruleId: string;
+      body: api.PutEntitlementRuleBody;
+      expectedUpdatedAt: string | null;
+    }) => api.putRule(input.ruleId, input.body, input.expectedUpdatedAt),
     onSuccess: (rule) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -363,16 +326,11 @@ export function useCreatePlan(facilityId: string) {
 export function useUpdatePlan(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { planId: string; body: api.UpdatePlanBody }) =>
-      api.updatePlan(
-        input.planId,
-        input.body,
-        requireStamp(
-          cachedConfig(queryClient, facilityId)?.subscriptionPlans.find(
-            (row) => row.id === input.planId,
-          ),
-        ),
-      ),
+    mutationFn: (input: {
+      planId: string;
+      body: api.UpdatePlanBody;
+      expectedUpdatedAt: string;
+    }) => api.updatePlan(input.planId, input.body, input.expectedUpdatedAt),
     onSuccess: (plan) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,
@@ -387,15 +345,12 @@ export function useUpdatePlan(facilityId: string) {
 export function usePutWifiPolicy(facilityId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { policyId: string; body: api.PutWifiPolicyBody }) =>
-      api.putWifiPolicy(
-        input.policyId,
-        input.body,
-        // null = the policy is not in the cache, so the editor means to create it.
-        cachedConfig(queryClient, facilityId)?.wifiPolicies.find(
-          (row) => row.id === input.policyId,
-        )?.updatedAt ?? null,
-      ),
+    mutationFn: (input: {
+      policyId: string;
+      body: api.PutWifiPolicyBody;
+      expectedUpdatedAt: string | null;
+    }) =>
+      api.putWifiPolicy(input.policyId, input.body, input.expectedUpdatedAt),
     onSuccess: (policy) =>
       patchConfig(queryClient, facilityId, (config) => ({
         ...config,

@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CreditCard, PauseCircle, PlayCircle, ReceiptText } from "lucide-react";
-import type { SubscriptionPlan } from "@starter/shared/facility";
+import type { PublicSubscriptionPlan } from "@starter/shared/facility";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -86,14 +86,16 @@ export function FacilitySubscriptionScreen({
   const plans = useSubscriptionPlans(facilityId);
   const start = useStartSubscription();
   const update = useUpdateSubscription();
-  const [pendingPlan, setPendingPlan] = useState<SubscriptionPlan | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<PublicSubscriptionPlan | null>(
+    null,
+  );
   const [pendingAction, setPendingAction] = useState<
     "pause" | "resume" | "cancel" | null
   >(null);
 
   const view = current.data ?? null;
 
-  async function startPlan(plan: SubscriptionPlan) {
+  async function startPlan(plan: PublicSubscriptionPlan) {
     try {
       await start.mutateAsync({
         planId: plan.id,

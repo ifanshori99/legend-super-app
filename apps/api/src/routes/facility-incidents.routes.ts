@@ -1,6 +1,7 @@
-// Facility incident raise/respond and the subscription plan list (PRD v1.7
-// §25, FAC-08; bead legend-1cj0). Paths, params, bodies and queries come from
-// the WS-09 contract (`@starter/shared/facility` defineEndpoint objects).
+// Facility incident raise/respond (PRD v1.7 §25, FAC-08; bead legend-1cj0). The
+// subscription plan list is public and lives in facility-customer.routes.ts.
+// Paths, params, bodies and queries come from the WS-09 contract
+// (`@starter/shared/facility` defineEndpoint objects).
 // Mounted under `facilityRouter` (`facilityRouter.use(...)` after its
 // requireAuth / requireTrustedOrigin / requireTenantContext), so the paths
 // here are relative to /api/facility.
@@ -12,7 +13,6 @@
 import { Router } from "express";
 import { idempotencyKeySchema } from "@starter/shared/core";
 import {
-  listSubscriptionPlans as listSubscriptionPlansEndpoint,
   raiseFacilityIncident as raiseFacilityIncidentEndpoint,
   respondFacilityIncident as respondFacilityIncidentEndpoint,
 } from "@starter/shared/facility";
@@ -24,7 +24,6 @@ import {
 } from "../middleware/permissions.ts";
 import { HttpError } from "../lib/http-error.ts";
 import * as incidents from "../services/facility-incidents.service.ts";
-import * as plans from "../services/facility-plans.service.ts";
 
 const operate = requireMenuPermission("facility.booth.operate");
 
@@ -77,21 +76,6 @@ facilityIncidentsRouter.post(
         getAuth(req).user.id,
         incidentId,
         input,
-      ),
-    });
-  },
-);
-
-facilityIncidentsRouter.get(
-  "/subscription-plans",
-  operate,
-  async (req, res) => {
-    const query = listSubscriptionPlansEndpoint.query.parse(req.query);
-    res.json({
-      data: await plans.listActiveSubscriptionPlans(
-        getScopedTenantContext(req),
-        getAuth(req).user.id,
-        query,
       ),
     });
   },

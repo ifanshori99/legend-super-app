@@ -9,6 +9,7 @@
 // `facility.booth.operate` on the incident's outlet (TEN-03).
 import { and, desc, eq, lt, or } from "drizzle-orm";
 import {
+  createUlid,
   decodeCursor,
   encodeCursor,
   userIdSchema,
@@ -17,6 +18,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  facilityIncidentRaisedEvent,
   facilityIncidentSchema,
   type FacilityIncident,
   type RaiseFacilityIncidentInput,
@@ -28,6 +30,7 @@ import {
   facilityUnits,
 } from "../db/schema/facility.ts";
 import { withTenant } from "../db/tenant.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   assertFacilityPermission,
@@ -41,6 +44,9 @@ import {
   readIdempotentResult,
   storeIdempotentResult,
 } from "./operations-idempotency.ts";
+
+/** Outbox destination of facility events (same as the WS-06 inventory writers). */
+const FACILITY_EVENT_DESTINATION = "cloud-sync";
 
 /** `operations_idempotency.result_table` value of a raised incident. */
 export const FACILITY_INCIDENT_RESULT_TABLE = "facility_incidents";
@@ -143,7 +149,9 @@ export async function listFacilityIncidents(
  * the record's own outlet (403). An optional `Idempotency-Key` makes a retry
  * return the first incident (`replayed: true`); the same key with another
  * payload is IDEMPOTENCY_KEY_REUSED. The contract `note` has no column and
- * is not stored.
+ * is not stored. A first raise also appends `facility_incident.raised`
+ * (bead legend-5rgl) to the outbox in the same transaction; a replay appends
+ * nothing.
  */
 export async function raiseFacilityIncident(
   context: ScopedTenantContext,
@@ -268,6 +276,38 @@ export async function raiseFacilityIncident(
         unitId: row.unitId,
         type: row.type,
       },
+    });
+    // One aggregate per incident: sequence 1, no ordering race. The idempotency
+    // key is per incident id, so a retried transaction never doubles the event.
+    const event = facilityIncidentRaisedEvent.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId: row.outletId,
+      name: "facility_incident.raised",
+      version: 1,
+      aggregateType: "facility_incident",
+      aggregateId: row.id,
+      sequence: 1,
+      occurredAt: row.triggeredAt.toISOString(),
+      actor: { type: "user", id: actor },
+      deviceId: null,
+      idempotencyKey: `facility_incident.raised:${row.id}`,
+      payloadSchemaRef: "facility_incident.raised.v1",
+      payload: {
+        incidentId: row.id,
+        facilityId: row.facilityId,
+        unitId: row.unitId,
+        type: row.type,
+        triggeredAt: row.triggeredAt.toISOString(),
+        offline: row.offline,
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination: FACILITY_EVENT_DESTINATION,
+      direction: null,
+      peerId: null,
     });
     return { incident: toFacilityIncident(row), replayed: false };
   });

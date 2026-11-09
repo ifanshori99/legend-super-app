@@ -884,6 +884,150 @@ describe("legend-18qw notification recipient resolver", () => {
     expect(mine).not.toContain(users.lapsedApprover);
   });
 
+  it("legend-5rgl facility_incident.raised pages in-scope booth operators with the emergency category", async () => {
+    const roleId = randomUUID();
+    const facilityId = randomUUID();
+    const incidentId = randomUUID();
+    const respondedId = randomUUID();
+    const otherOutletIncidentId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, 'Operator bilik 5rgl', false, $3::jsonb, '["tenant","brand","outlet"]'::jsonb)`,
+      [roleId, tenantId, JSON.stringify(["facility.booth.operate"])],
+    );
+    const grant = async (
+      name: string,
+      scope: { type: string; id?: string },
+      options: { validUntil?: string } = {},
+    ) => {
+      const id = randomUUID();
+      await owner.query(
+        `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, false)`,
+        [id, name, `${id}@example.test`],
+      );
+      createdUserIds.push(id);
+      await owner.query(
+        `INSERT INTO role_assignments
+           (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', ${
+           options.validUntil ? "now() + $6::interval" : "$6::timestamptz"
+         }, $2)`,
+        [
+          tenantId,
+          id,
+          roleId,
+          scope.type,
+          scope.id ?? null,
+          options.validUntil ?? null,
+        ],
+      );
+      return id;
+    };
+    const operator = await grant("Operator outlet", {
+      type: "outlet",
+      id: bandung,
+    });
+    const otherOutletOperator = await grant("Operator outlet lain", {
+      type: "outlet",
+      id: bandung2,
+    });
+    const lapsedOperator = await grant(
+      "Operator lewat",
+      { type: "outlet", id: bandung },
+      { validUntil: "-1 minute" },
+    );
+    const insertIncident = (id: string, outletId: string, responded: boolean) =>
+      owner.query(
+        `INSERT INTO facility_incidents
+           (id, tenant_id, outlet_id, facility_id, type, triggered_at, responded_by, responded_at)
+         VALUES ($1, $2, $3, $4, 'panic', now(), $5, $6)`,
+        [
+          id,
+          tenantId,
+          outletId,
+          facilityId,
+          responded ? operator : null,
+          responded ? new Date() : null,
+        ],
+      );
+    const raised = (id: string, outletId: string) =>
+      envelope("facility_incident.raised", outletId, {
+        incidentId: id,
+        facilityId,
+        unitId: null,
+        type: "panic",
+        triggeredAt: new Date().toISOString(),
+        offline: false,
+      });
+    try {
+      await owner.query(
+        `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                                 arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+         VALUES ($1, $2, $3, 'Notif 5rgl', 'shower', 20, 10, 10, '[]', $4, $5)`,
+        [
+          facilityId,
+          tenantId,
+          bandung,
+          JSON.stringify({
+            graceMinutes: 5,
+            blockMinutes: 15,
+            feePerBlockIdr: 5000,
+          }),
+          JSON.stringify({
+            freeCancelMinutesBefore: 30,
+            lateCancelResolution: "no_refund",
+            lateCancelFeeIdr: 0,
+            noShowResolution: "no_refund",
+          }),
+        ],
+      );
+      await insertIncident(incidentId, bandung, false);
+      await insertIncident(respondedId, bandung, true);
+
+      const recipients = await resolve(
+        { email: true, push: true },
+        raised(incidentId, bandung),
+      );
+      // Seeded supervisor templates may hold the permission too: assert on
+      // the users this test granted it to, plus the roles that lack it.
+      const mine = ours(recipients).map((r) => r.userId);
+      expect(mine).toContain(operator);
+      expect(mine).not.toContain(otherOutletOperator);
+      expect(mine).not.toContain(lapsedOperator);
+      expect(mine).not.toContain(users.cashier);
+      expect(recipients[0]?.category).toBe("emergency");
+
+      // Already answered: a delayed event pages nobody.
+      expect(
+        await resolve(
+          { email: true, push: true },
+          raised(respondedId, bandung),
+        ),
+      ).toEqual([]);
+
+      // The event outlet must match the stored incident, and the row must exist.
+      await expect(
+        resolve({ email: true, push: true }, raised(incidentId, bandung2)),
+      ).rejects.toThrow("outlet does not match");
+      await expect(
+        resolve(
+          { email: true, push: true },
+          raised(otherOutletIncidentId, bandung),
+        ),
+      ).rejects.toThrow("not found");
+    } finally {
+      await owner.query("DELETE FROM role_assignments WHERE role_id = $1", [
+        roleId,
+      ]);
+      await owner.query(
+        "DELETE FROM facility_incidents WHERE tenant_id = $1 AND facility_id = $2",
+        [tenantId, facilityId],
+      );
+      await owner.query("DELETE FROM facilities WHERE id = $1", [facilityId]);
+      await owner.query("DELETE FROM roles WHERE id = $1", [roleId]);
+    }
+  });
+
   it("legend-18qw a banned supervisor does not hide the owner fallback; an expired ban is active again", async () => {
     // An isolated tenant: the fixture tenant has seeded supervisors.
     const tenantC = randomUUID();

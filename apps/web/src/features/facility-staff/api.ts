@@ -111,8 +111,17 @@ export async function updateUnit(unitId: string, body: UpdateFacilityUnitBody) {
   return response.data;
 }
 
-export async function raiseIncident(body: RaiseFacilityIncidentBody) {
-  const response = await callEndpoint(raiseFacilityIncident, { body });
+export async function raiseIncident(
+  body: RaiseFacilityIncidentBody,
+  idempotencyKey: string,
+) {
+  // The caller owns the key and reuses it for every retry of the same attempt,
+  // so a retry cannot create a second incident (the API replays the first one).
+  const response = await callEndpoint(
+    raiseFacilityIncident,
+    { body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
   return response.data;
 }
 

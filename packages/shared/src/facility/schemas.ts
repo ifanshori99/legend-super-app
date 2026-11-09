@@ -155,6 +155,18 @@ export const facilitySchema = z.strictObject({
 });
 export type Facility = z.infer<typeof facilitySchema>;
 
+/**
+ * A facility row of the config index with the sizes of its children, so the
+ * list needs no per-facility reads (bead legend-34fu). Counts cover every
+ * area, unit and product of the facility, active or not.
+ */
+export const facilityListItemSchema = facilitySchema.extend({
+  areaCount: z.number().int().min(0),
+  unitCount: z.number().int().min(0),
+  productCount: z.number().int().min(0),
+});
+export type FacilityListItem = z.infer<typeof facilityListItemSchema>;
+
 /** One separated area inside a facility, e.g. Area Pria / Area Wanita. */
 export const facilityAreaSchema = z.strictObject({
   id: facilityAreaIdSchema,

@@ -47,7 +47,9 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useCreatePlan, useUpdatePlan } from "../hooks.ts";
 import {
+  parseCreateDraft,
   parseInteger,
+  parseUpdateDraft,
   subscriptionIntervalLabel,
   zodFieldErrors,
 } from "../lib.ts";
@@ -77,7 +79,11 @@ export function SubscriptionsTab({
 
   function toggle(plan: SubscriptionPlan, isActive: boolean) {
     updatePlan.mutate(
-      { planId: plan.id, body: { isActive } },
+      {
+        planId: plan.id,
+        body: { isActive },
+        expectedUpdatedAt: plan.updatedAt,
+      },
       {
         onSuccess: () =>
           toast({
@@ -287,7 +293,7 @@ function PlanDialog({
     if (priceIdr === null || quotaPerPeriod === null) return;
 
     if (plan) {
-      const parsed = updateSubscriptionPlanSchema.safeParse({
+      const parsed = parseUpdateDraft(updateSubscriptionPlanSchema, {
         name: trimmed,
         priceIdr,
         quotaPerPeriod,
@@ -304,7 +310,11 @@ function PlanDialog({
         return;
       }
       updatePlan.mutate(
-        { planId: plan.id, body: parsed.data },
+        {
+          planId: plan.id,
+          body: parsed.data,
+          expectedUpdatedAt: plan.updatedAt,
+        },
         {
           onSuccess: () => {
             toast({
@@ -324,7 +334,7 @@ function PlanDialog({
       return;
     }
 
-    const parsed = createSubscriptionPlanSchema.safeParse({
+    const parsed = parseCreateDraft(createSubscriptionPlanSchema, {
       facilityId,
       name: trimmed,
       priceIdr,

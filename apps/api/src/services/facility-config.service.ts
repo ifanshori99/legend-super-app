@@ -11,7 +11,7 @@
 // `listFacilities` backs the config index (GET /facilities): the facility ids
 // cannot be invented by a screen, so the list is gated by the config
 // permission and re-checked per distinct outlet of the page.
-import { and, asc, eq, gt, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import {
   decodeCursor,
   encodeCursor,
@@ -28,6 +28,7 @@ import {
   type CreateFacilityInput,
   type CreateFacilityUnitInput,
   type Facility,
+  type FacilityListItem,
   type FacilityArea,
   type FacilityConfig,
   type FacilityUnit,
@@ -37,6 +38,7 @@ import {
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
 import {
+  accessTickets,
   facilities,
   facilityAreas,
   facilityUnits,
@@ -83,7 +85,7 @@ export async function listFacilities(
   context: ScopedTenantContext,
   actorUserId: string,
   query: { cursor?: string; limit: number },
-): Promise<CursorPage<Facility>> {
+): Promise<CursorPage<FacilityListItem>> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const filters = [eq(facilities.tenantId, context.tenant.tenantId)];
@@ -95,15 +97,29 @@ export async function listFacilities(
       );
       if (cursorFilter) filters.push(cursorFilter);
     }
+    // The child counts ride on the same statement as correlated scalar
+    // subqueries (one round trip for the page, no per-facility reads). Columns
+    // are written qualified: drizzle renders a column of a single-table select
+    // unqualified, which would bind to the subquery's own table.
+    const childCount = (table: string) => sql<number>`(
+          SELECT count(*)::int FROM ${sql.identifier(table)}
+          WHERE ${sql.identifier(table)}.tenant_id = "facilities"."tenant_id"
+            AND ${sql.identifier(table)}.facility_id = "facilities"."id"
+        )`;
     const rows = await tx
-      .select()
+      .select({
+        facility: facilities,
+        areaCount: childCount("facility_areas"),
+        unitCount: childCount("facility_units"),
+        productCount: childCount("facility_products"),
+      })
       .from(facilities)
       .where(and(...filters))
       .orderBy(asc(facilities.name), asc(facilities.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
-    const outlets = [...new Set(page.map((row) => row.outletId))];
+    const outlets = [...new Set(page.map((row) => row.facility.outletId))];
     for (const outletId of outlets)
       await assertFacilityPermission(
         tx,
@@ -113,12 +129,17 @@ export async function listFacilities(
         outletId,
       );
     return {
-      data: page.map(toFacility),
+      data: page.map((row) => ({
+        ...toFacility(row.facility),
+        areaCount: row.areaCount,
+        unitCount: row.unitCount,
+        productCount: row.productCount,
+      })),
       meta: {
         limit: query.limit,
         nextCursor:
           rows.length > query.limit && last
-            ? encodeCursor([last.name, last.id])
+            ? encodeCursor([last.facility.name, last.facility.id])
             : null,
       },
     };
@@ -534,6 +555,29 @@ export async function updateFacilityUnitConfig(
           "VALIDATION_ERROR",
           "Area bukan bagian dari fasilitas ini.",
         );
+      if (input.areaId !== existing.areaId) {
+        const [active] = await tx
+          .select({ id: accessTickets.id })
+          .from(accessTickets)
+          .where(
+            and(
+              eq(accessTickets.tenantId, context.tenant.tenantId),
+              eq(accessTickets.unitId, unitId),
+              inArray(accessTickets.status, [
+                "pending_payment",
+                "issued",
+                "in_use",
+              ]),
+            ),
+          )
+          .limit(1);
+        if (active)
+          throw new HttpError(
+            409,
+            "CONFLICT",
+            "Bilik masih punya tiket aktif, jadi tidak bisa dipindah ke area lain. Selesaikan atau batalkan tiketnya dulu.",
+          );
+      }
     }
     let row;
     try {
@@ -576,12 +620,16 @@ export async function updateFacilityUnitConfig(
         id: existing.id,
         areaId: existing.areaId,
         code: existing.code,
+        lockDeviceId: existing.lockDeviceId,
+        panicDeviceId: existing.panicDeviceId,
         sortOrder: existing.sortOrder,
       },
       after: {
         id: row.id,
         areaId: row.areaId,
         code: row.code,
+        lockDeviceId: row.lockDeviceId,
+        panicDeviceId: row.panicDeviceId,
         sortOrder: row.sortOrder,
       },
     });

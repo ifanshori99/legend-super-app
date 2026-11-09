@@ -200,6 +200,26 @@ describe("public read rate limit wiring (legend-wd4b)", () => {
     }
   });
 
+  it("limits only the public subscription-plans GET, never staff writes or sub-paths", async () => {
+    const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
+    const client = agent(app);
+    const path = "/api/facility/subscription-plans";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const post = await client.post(path).set("Host", hostname).send({});
+      expect(post.status).not.toBe(429);
+      const patch = await client
+        .patch(`${path}/${randomUUID()}`)
+        .set("Host", hostname)
+        .send({});
+      expect(patch.status).not.toBe(429);
+    }
+    // Staff calls spent nothing: the first public GET passes, the next is limited.
+    const first = await client.get(path).set("Host", hostname);
+    expect(first.status, JSON.stringify(first.body)).not.toBe(429);
+    const limited = await client.get(path).set("Host", hostname);
+    expect(limited.status, JSON.stringify(limited.body)).toBe(429);
+  });
+
   it("legend-wd4b limits the guest QR read in the real app", async () => {
     const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
     const client = agent(app);

@@ -643,16 +643,27 @@ export async function holdFacilitySlot(
     throw error;
   }
 
-  if (queued)
-    await tx
+  if (queued) {
+    // Status predicate: an entry the sweeper expired between the read above
+    // and this write must not be revived; 0 rows rolls the whole claim back.
+    const converted = await tx
       .update(facilityQueueEntries)
       .set({ status: "converted", updatedAt: now })
       .where(
         and(
           eq(facilityQueueEntries.tenantId, tenantId),
           eq(facilityQueueEntries.id, queued.id),
+          inArray(facilityQueueEntries.status, ["waiting", "notified"]),
         ),
+      )
+      .returning({ id: facilityQueueEntries.id });
+    if (converted.length === 0)
+      throw new HttpError(
+        409,
+        "QUEUE_CLAIM_EXPIRED",
+        "Klaim antrean sudah kedaluwarsa.",
       );
+  }
 
   await auditFacility(tx, context, input.actorUserId ?? null, now, {
     action: "access_ticket.hold_created",
@@ -792,7 +803,8 @@ export async function notifyNextInQueue(
  * Sweeper (legend-ke4z): a `notified` guest who did not book within
  * `QUEUE_CLAIM_WINDOW_MINUTES` loses the place (status `expired`) and the next
  * waiting guest of that area is notified. `facilityId` narrows the sweep to one
- * facility (used under the facility lock by `holdFacilitySlot`). Returns the
+ * facility; every facility is swept under its slot lock (shared with
+ * `holdFacilitySlot`), so a sweep and a claim cannot interleave. Returns the
  * expired entry ids.
  */
 export async function expireStaleQueueNotifications(
@@ -803,6 +815,36 @@ export async function expireStaleQueueNotifications(
 ): Promise<string[]> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
+  if (!facilityId) {
+    // Whole-tenant sweep: expire facility by facility so each one runs under
+    // its own slot lock (the same lock a claim holds in `holdFacilitySlot`).
+    const facilities = await tx
+      .selectDistinct({ facilityId: facilityQueueEntries.facilityId })
+      .from(facilityQueueEntries)
+      .where(
+        and(
+          eq(facilityQueueEntries.tenantId, tenantId),
+          eq(facilityQueueEntries.status, "notified"),
+          lt(facilityQueueEntries.notifiedAt, claimCutoff(now)),
+        ),
+      )
+      // Fixed lock order: two sweeps of the same tenant take the facility
+      // locks in the same sequence, so they cannot deadlock each other.
+      .orderBy(asc(facilityQueueEntries.facilityId));
+    const all: string[] = [];
+    for (const row of facilities)
+      all.push(
+        ...(await expireStaleQueueNotifications(
+          tx,
+          context,
+          now,
+          row.facilityId,
+        )),
+      );
+    return all;
+  }
+  // Re-entrant for the same transaction when called from `holdFacilitySlot`.
+  await lockFacilitySlots(tx, tenantId, facilityId);
   const stale = await tx
     .select()
     .from(facilityQueueEntries)
@@ -811,9 +853,7 @@ export async function expireStaleQueueNotifications(
         eq(facilityQueueEntries.tenantId, tenantId),
         eq(facilityQueueEntries.status, "notified"),
         lt(facilityQueueEntries.notifiedAt, claimCutoff(now)),
-        ...(facilityId
-          ? [eq(facilityQueueEntries.facilityId, facilityId)]
-          : []),
+        eq(facilityQueueEntries.facilityId, facilityId),
       ),
     )
     .orderBy(asc(facilityQueueEntries.notifiedAt), asc(facilityQueueEntries.id))

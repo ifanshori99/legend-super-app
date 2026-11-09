@@ -206,6 +206,61 @@ export function zodFieldErrors(error: z.ZodError): Record<string, string> {
   return out;
 }
 
+/**
+ * Form-side validation of a contract write body (bead legend-6jms). The
+ * optimistic-lock stamp and the create key are added by hooks.ts, never by a
+ * form, yet the contract schemas require them. The form therefore validates
+ * with a placeholder in their place and returns the body without it, so every
+ * other contract rule (ranges, refinements, "at least one field") still
+ * applies and the contract itself is untouched.
+ */
+type FormDraft<T> = T extends unknown
+  ? Omit<T, "expectedUpdatedAt" | "idempotencyKey">
+  : never;
+type FormParseResult<S extends z.ZodType> =
+  | { success: true; data: FormDraft<z.output<S>> }
+  | { success: false; error: z.ZodError };
+
+const DRAFT_STAMP = "1970-01-01T00:00:00.000Z";
+const DRAFT_KEY = "form-draft-placeholder-key";
+
+function parseFormDraft<S extends z.ZodType>(
+  schema: S,
+  draft: object,
+  placeholder:
+    { expectedUpdatedAt: string | null } | { idempotencyKey: string },
+): FormParseResult<S> {
+  const result = schema.safeParse({ ...draft, ...placeholder });
+  if (!result.success) return { success: false, error: result.error };
+  const {
+    expectedUpdatedAt: _stamp,
+    idempotencyKey: _key,
+    ...rest
+  } = result.data as Record<string, unknown>;
+  return { success: true, data: rest as FormDraft<z.output<S>> };
+}
+
+/** PATCH body: the row's stamp is required (hooks fill the real one). */
+export function parseUpdateDraft<S extends z.ZodType>(
+  schema: S,
+  draft: object,
+) {
+  return parseFormDraft(schema, draft, { expectedUpdatedAt: DRAFT_STAMP });
+}
+
+/** PUT upsert body: the stamp is nullable (null = the row is new). */
+export function parsePutDraft<S extends z.ZodType>(schema: S, draft: object) {
+  return parseFormDraft(schema, draft, { expectedUpdatedAt: null });
+}
+
+/** POST create body: one idempotency key per attempt (hooks mint it). */
+export function parseCreateDraft<S extends z.ZodType>(
+  schema: S,
+  draft: object,
+) {
+  return parseFormDraft(schema, draft, { idempotencyKey: DRAFT_KEY });
+}
+
 export type UnitSummary = {
   total: number;
   active: number;

@@ -1,12 +1,11 @@
-// Facility incident raise/respond and the subscription plan list (PRD v1.7 §25,
-// FAC-08; TEN-01..03; bead legend-1cj0). Runs the real Express app, Better
-// Auth, the RBAC resolver and PostgreSQL against the seeded Cafe Legend tenant.
+// Facility incident raise/respond (PRD v1.7 §25, FAC-08; TEN-01..03; bead
+// legend-1cj0). Runs the real Express app, Better Auth, the RBAC resolver and
+// PostgreSQL against the seeded Cafe Legend tenant.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import {
-  listSubscriptionPlans,
   raiseFacilityIncident,
   respondFacilityIncident,
 } from "@starter/shared/facility";
@@ -26,8 +25,6 @@ const createdUsers: string[] = [];
 const facilityId = randomUUID();
 const areaId = randomUUID();
 const unitId = randomUUID();
-const activePlanId = randomUUID();
-const inactivePlanId = randomUUID();
 
 async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -129,16 +126,6 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, $4, $5, 'I1', 'available', 0)`,
       [unitId, tenant.id, outletA.id, facilityId, areaId],
     );
-    for (const [id, name, active] of [
-      [activePlanId, "Plan Aktif", true],
-      [inactivePlanId, "Plan Mati", false],
-    ] as const)
-      await client.query(
-        `INSERT INTO facility_subscription_plans (id, tenant_id, outlet_id, facility_id, name, price_idr,
-                                                  quota_per_period, interval, max_per_day, is_active)
-         VALUES ($1, $2, $3, $4, $5, 250000, 10, 'month', 1, $6)`,
-        [id, tenant.id, outletA.id, facilityId, name, active],
-      );
   });
 });
 
@@ -148,9 +135,12 @@ afterAll(async () => {
       "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND result_table = 'facility_incidents'",
       [tenant.id],
     );
+    await client.query(
+      "DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_type = 'facility_incident' AND outlet_id = $2",
+      [tenant.id, outletA.id],
+    );
     for (const table of [
       "facility_incidents",
-      "facility_subscription_plans",
       "facility_units",
       "facility_areas",
     ])
@@ -176,9 +166,6 @@ afterAll(async () => {
   await owner.end();
 });
 
-const plansPath = (id = facilityId) =>
-  `/api/facility/subscription-plans?facilityId=${id}`;
-
 describe("Facility incidents API authorization and isolation", () => {
   it("[TEN-01] answers 401 to anonymous requests", async () => {
     const anonymous = agent(app);
@@ -198,7 +185,6 @@ describe("Facility incidents API authorization and isolation", () => {
           .send({ resolution: "Ditangani" })
       ).status,
     ).toBe(401);
-    expect((await anonymous.get(plansPath())).status).toBe(401);
   });
 
   it("[TEN-03] a signed-in user without facility permissions gets 403", async () => {
@@ -219,7 +205,6 @@ describe("Facility incidents API authorization and isolation", () => {
           .send({ resolution: "Ditangani" })
       ).status,
     ).toBe(403);
-    expect((await client.get(plansPath())).status).toBe(403);
   });
 
   it("[TEN-02] a write from an untrusted origin is refused", async () => {
@@ -231,7 +216,7 @@ describe("Facility incidents API authorization and isolation", () => {
     expect(response.status).toBe(403);
   });
 
-  it("[TEN-03] an actor who only holds outlet B cannot raise, answer or list outlet A", async () => {
+  it("[TEN-03] an actor who only holds outlet B cannot raise or answer outlet A", async () => {
     const owned = await ownerClient();
     const raised = await owned.client
       .post("/api/facility/incidents")
@@ -255,7 +240,6 @@ describe("Facility incidents API authorization and isolation", () => {
           .send({ resolution: "Lintas outlet" })
       ).status,
     ).toBe(404);
-    expect((await client.get(plansPath())).status).toBe(404);
     const stored = await owner.query(
       "SELECT responded_at FROM facility_incidents WHERE id = $1",
       [raised.body.data.id],
@@ -291,6 +275,31 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
       [tenant.id, response.body.data.id, userId],
     );
     expect(audit.rows[0].n).toBe(1);
+    // legend-5rgl: the event is in the outbox, written with the incident.
+    const outbox = await owner.query(
+      `SELECT event, destination FROM domain_event_outbox
+        WHERE tenant_id = $1 AND aggregate_type = 'facility_incident'
+          AND aggregate_id = $2`,
+      [tenant.id, response.body.data.id],
+    );
+    expect(outbox.rows).toHaveLength(1);
+    expect(outbox.rows[0].destination).toBe("cloud-sync");
+    expect(outbox.rows[0].event).toMatchObject({
+      name: "facility_incident.raised",
+      outletId: outletA.id,
+      actor: { type: "user", id: userId },
+      payload: {
+        incidentId: response.body.data.id,
+        facilityId,
+        unitId,
+        type: "panic",
+        offline: false,
+      },
+    });
+    // The contract note and no PII leave in the payload.
+    expect(JSON.stringify(outbox.rows[0].event)).not.toContain(
+      "Tombol darurat ditekan",
+    );
   });
 
   it("rejects a body without unit or ticket, unknown fields, and unknown records", async () => {
@@ -332,6 +341,14 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
       [tenant.id, first.body.data.id],
     );
     expect(count.rows[0].n).toBe(1);
+    // legend-5rgl: the replay did not publish a second event.
+    const events = await owner.query(
+      `SELECT count(*)::int AS n FROM domain_event_outbox
+        WHERE tenant_id = $1 AND aggregate_type = 'facility_incident'
+          AND aggregate_id = $2`,
+      [tenant.id, first.body.data.id],
+    );
+    expect(events.rows[0].n).toBe(1);
     expect(
       (
         await client
@@ -383,21 +400,5 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
           .send({ resolution: "Tidak ada" })
       ).status,
     ).toBe(404);
-  });
-});
-
-describe("Subscription plan list", () => {
-  it("returns the active plans of the facility in the contract shape", async () => {
-    const { client } = await ownerClient();
-    const response = await client.get(plansPath());
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    listSubscriptionPlans.response.parse(response.body);
-    expect(
-      response.body.data.plans.map((plan: { id: string }) => plan.id),
-    ).toEqual([activePlanId]);
-    expect((await client.get(plansPath(randomUUID()))).status).toBe(404);
-    expect((await client.get("/api/facility/subscription-plans")).status).toBe(
-      422,
-    );
   });
 });

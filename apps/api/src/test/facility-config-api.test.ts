@@ -827,7 +827,7 @@ const facilityBody = {
 };
 
 describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () => {
-  it("[FAC-02][legend-6jms] PATCH answers 409 on a stale expectedUpdatedAt and the loser changes nothing", async () => {
+  it("[FAC-02][legend-6jms] PATCH answers 412 on a stale expectedUpdatedAt and the loser changes nothing", async () => {
     const { client } = await ownerClient();
     const product = await client
       .post("/api/facility/products")
@@ -853,8 +853,8 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
       .patch(url)
       .set(originHeader)
       .send({ priceIdr: 99000, expectedUpdatedAt: stamp });
-    expect(loser.status, JSON.stringify(loser.body)).toBe(409);
-    expect(loser.body.error.code).toBe("FACILITY_CONFIG_STALE");
+    expect(loser.status, JSON.stringify(loser.body)).toBe(412);
+    expect(loser.body.error.code).toBe("PRECONDITION_FAILED");
     const config = await client.get(
       `/api/facility/config?facilityId=${facilityId}`,
     );
@@ -888,7 +888,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ priceIdr: 6000, expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     const plan = await client
       .post("/api/facility/subscription-plans")
       .set(originHeader)
@@ -907,7 +907,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ quotaPerPeriod: 6, expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     const area = await client
       .post("/api/facility/areas")
       .set(originHeader)
@@ -920,7 +920,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ name: "Area Baru", expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     // The facility itself (PUT).
     expect(
       (
@@ -929,7 +929,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ name: "Dirubah", expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
 
     const ruleBody = {
       facilityId,
@@ -954,7 +954,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ ...ruleBody, expectedUpdatedAt: null })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     expect(
       (
         await client
@@ -962,7 +962,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ ...ruleBody, expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     expect(
       (
         await client
@@ -983,13 +983,13 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
           .set(originHeader)
           .send({ ...ruleBody, expectedUpdatedAt: old })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     await owner.query("DELETE FROM entitlement_rules WHERE id = $1", [
       newRuleId,
     ]);
   });
 
-  it("[FAC-14][legend-6jms] a stale Wi-Fi policy PUT answers 409 and keeps the stored numbers", async () => {
+  it("[FAC-14][legend-6jms] a stale Wi-Fi policy PUT answers 412 and keeps the stored numbers", async () => {
     const { client } = await ownerClient();
     const id = randomUUID();
     const zone = randomUUID();
@@ -1034,7 +1034,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
         .put(`/api/wifi/policies/${id}`)
         .set(originHeader)
         .send({ ...body, freeMinutes: 90, expectedUpdatedAt: stamp });
-      expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+      expect(stale.status, JSON.stringify(stale.body)).toBe(412);
       const stored = await owner.query(
         "SELECT free_minutes FROM wifi_policies WHERE id = $1",
         [id],
@@ -1241,7 +1241,7 @@ describe("Facility admin create/update endpoints without SQL seeding (legend-nng
           .set(originHeader)
           .send({ code: "M3", expectedUpdatedAt: unit.body.data.updatedAt })
       ).status,
-    ).toBe(409);
+    ).toBe(412);
     expect(
       (
         await client

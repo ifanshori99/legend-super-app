@@ -3,15 +3,15 @@
 //
 // - `assertConfigFresh`: PATCH/PUT carry the `updatedAt` the editor last read
 //   (`expectedUpdatedAt`); a different value means another admin saved first,
-//   so the write answers 409 instead of overwriting (last-write-wins is gone).
+//   so the write answers 412 (CoreError PRECONDITION_FAILED, as the inventory
+//   writes do) instead of overwriting (last-write-wins is gone).
 // - `createOnce`: every POST create carries an `idempotencyKey`. The key is
 //   bound to a fingerprint of the payload and to the created row inside the
 //   caller's tenant transaction (operations-idempotency.ts). A replay returns
 //   the first row; the same key with another payload answers
 //   IDEMPOTENCY_KEY_REUSED (409).
 import { sql } from "drizzle-orm";
-import type { ScopedTenantContext } from "@starter/shared/core";
-import { HttpError } from "../lib/http-error.ts";
+import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 import {
   operationsFingerprint,
   readIdempotentResult,
@@ -20,7 +20,7 @@ import {
 import { notFound, type Tx } from "./facility-shared.ts";
 
 /**
- * 409 unless the stored `updatedAt` is the one the editor read. `null` means
+ * 412 PRECONDITION_FAILED unless the stored `updatedAt` is the one the editor read. `null` means
  * "I expect no row yet" and is only valid for an upsert whose row is absent.
  * Millisecond comparison: the contract and `Date` both stop at milliseconds.
  */
@@ -33,9 +33,8 @@ export function assertConfigFresh(
       ? current === null && expected === null
       : current.getTime() === new Date(expected).getTime();
   if (!fresh)
-    throw new HttpError(
-      409,
-      "FACILITY_CONFIG_STALE",
+    throw new CoreError(
+      "PRECONDITION_FAILED",
       "Data sudah diubah orang lain. Muat ulang lalu coba lagi.",
     );
 }

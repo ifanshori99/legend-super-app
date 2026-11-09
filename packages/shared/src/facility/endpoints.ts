@@ -39,6 +39,7 @@ import {
   wifiPolicySchema,
   wifiQuotaViewSchema,
   wifiSessionSchema,
+  facilityListItemSchema,
 } from "./schemas.ts";
 import {
   bookAccessTicketSchema,
@@ -91,7 +92,10 @@ import {
   facilityUnitIdSchema,
   subscriptionPlanIdSchema,
 } from "./ids.ts";
-import { facilityCustomerEndpoints } from "./customer.ts";
+import {
+  facilityCustomerEndpoints,
+  publicSubscriptionPlanSchema,
+} from "./customer.ts";
 
 const ticketIdParams = z.strictObject({ ticketId: accessTicketIdSchema });
 const unitIdParams = z.strictObject({ unitId: facilityUnitIdSchema });
@@ -193,7 +197,7 @@ export const listSubscriptionPlans = defineEndpoint({
   path: "/api/facility/subscription-plans",
   query: z.strictObject({ facilityId: facilityIdSchema }),
   response: dataResponseSchema(
-    z.strictObject({ plans: z.array(subscriptionPlanSchema) }),
+    z.strictObject({ plans: z.array(publicSubscriptionPlanSchema) }),
   ),
 });
 
@@ -354,7 +358,7 @@ export const listFacilities = defineEndpoint({
   method: "GET",
   path: "/api/facility/facilities",
   query: cursorPageQuerySchema,
-  response: cursorPageSchema(facilitySchema),
+  response: cursorPageSchema(facilityListItemSchema),
 });
 
 export const getFacilityConfig = defineEndpoint({

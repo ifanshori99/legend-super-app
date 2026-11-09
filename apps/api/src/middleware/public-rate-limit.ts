@@ -61,7 +61,22 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   // Guest facility price board and QR entry lookup, no login (FAC-11, legend-zjfi).
   "/api/facility/catalog",
   "/api/facility/entry",
+  // Active subscription plans for the Wi-Fi portal, no login (legend-1cj0).
+  "/api/facility/subscription-plans",
 ];
+
+/**
+ * Mounts shared with authenticated staff routes: only the exact public read
+ * (GET/HEAD on the mount itself) is limited; staff POST/PATCH and sub-paths
+ * pass through without spending the guests' budget.
+ */
+const PUBLIC_READ_ONLY_MOUNTS = new Set(["/api/facility/subscription-plans"]);
+
+function skipsLimiter(req: Request): boolean {
+  if (!PUBLIC_READ_ONLY_MOUNTS.has(req.baseUrl)) return false;
+  const readsOnly = req.method === "GET" || req.method === "HEAD";
+  return !readsOnly || req.path !== "/";
+}
 
 export type PublicRateLimitOptions = {
   /** Requests allowed per client IP in one window. */
@@ -115,6 +130,7 @@ export function publicRateLimit(
   });
 
   return (req, res, next) => {
+    if (skipsLimiter(req)) return next();
     const now = clock();
     // Both buckets are charged, so one noisy IP cannot spend a tenant's whole
     // budget and one tenant's burst cannot hide behind many IPs.

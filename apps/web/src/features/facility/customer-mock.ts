@@ -14,15 +14,28 @@ import {
 } from "@starter/shared/facility";
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
+import { readFacilityAdminConfig } from "../facility-admin/mock.ts";
 import { OUTLET_TIME_ZONE } from "./flow.ts";
 
 const ME = fx.ids.customerC1;
 
-function facilityById(facilityId: string): Facility {
+// Admin edits live in the facility-admin store; reading from it keeps them
+// across a refetch. Unknown ids fall back to the fixtures.
+function facilityConfig(facilityId: string) {
+  const edited = readFacilityAdminConfig(facilityId);
+  if (edited) return edited;
   const facility = fx.facilities.find((item) => item.id === facilityId);
   if (!facility)
     throw new ApiError(404, "NOT_FOUND", "Fasilitas tidak ditemukan.");
-  return facility;
+  return {
+    facility,
+    areas: fx.areas.filter((item) => item.facilityId === facility.id),
+    products: fx.products.filter((item) => item.facilityId === facility.id),
+    addons: fx.addons.filter((item) => item.facilityId === facility.id),
+    subscriptionPlans: fx.subscriptionPlans.filter(
+      (item) => item.facilityId === facility.id,
+    ),
+  };
 }
 
 function toPublicFacility(facility: Facility): PublicFacility {
@@ -38,12 +51,14 @@ function toPublicFacility(facility: Facility): PublicFacility {
 }
 
 registerMock(getFacilityCatalog, ({ query }) => {
-  const facility = facilityById(query.facilityId);
+  const config = facilityConfig(query.facilityId);
+  const { facility } = config;
   return {
     data: {
       facility: toPublicFacility(facility),
-      products: fx.products
+      products: config.products
         .filter((item) => item.facilityId === facility.id && item.isActive)
+        .sort((a, b) => a.priceIdr - b.priceIdr)
         .map(({ id, name, type, priceIdr, sessions, maxPerDay }) => ({
           id,
           name,
@@ -52,16 +67,18 @@ registerMock(getFacilityCatalog, ({ query }) => {
           sessions,
           maxPerDay,
         })),
-      addons: fx.addons
+      addons: config.addons
         .filter((item) => item.facilityId === facility.id && item.isEnabled)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
         .map(({ id, name, priceIdr, sortOrder }) => ({
           id,
           name,
           priceIdr,
           sortOrder,
         })),
-      plans: fx.subscriptionPlans
+      plans: config.subscriptionPlans
         .filter((item) => item.facilityId === facility.id && item.isActive)
+        .sort((a, b) => a.priceIdr - b.priceIdr)
         .map(({ id, name, priceIdr, quotaPerPeriod, interval, maxPerDay }) => ({
           id,
           name,
@@ -76,21 +93,20 @@ registerMock(getFacilityCatalog, ({ query }) => {
 
 registerMock(resolveFacilityEntry, ({ params }) => {
   // The token is the facility's public id until a QR token column exists.
-  const facility = fx.facilities.find((item) => item.id === params.token);
-  if (!facility)
-    throw new ApiError(404, "NOT_FOUND", "Fasilitas tidak ditemukan.");
+  const { facility, areas } = facilityConfig(params.token);
   return {
     data: {
       facility: toPublicFacility(facility),
-      areas: fx.areas
+      areas: areas
         .filter((item) => item.facilityId === facility.id)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
         .map(({ id, name, sortOrder }) => ({ id, name, sortOrder })),
     },
   };
 });
 
 registerMock(getCurrentEntitlements, ({ query, scenario }) => {
-  const facility = facilityById(query.facilityId);
+  const { facility } = facilityConfig(query.facilityId);
   const at = new Date();
   const ledger = scenario === "empty" ? [] : fx.entitlementLedger;
   const balance = entitlementBalance(ledger, {

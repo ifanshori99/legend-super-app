@@ -33,11 +33,12 @@ import {
   facilityTypeLabel,
   hoursToRows,
   parseInteger,
+  parseUpdateDraft,
   resolutionLabel,
   rowsToHours,
   summarizeOperatingHours,
-  zodFieldErrors,
   type DayRow,
+  zodFieldErrors,
 } from "../lib.ts";
 import { ConfigSection } from "./config-section";
 import { FormError } from "./form-error";
@@ -103,6 +104,11 @@ export function GeneralTab({
   const [values, setValues] = React.useState<GeneralValues>(() =>
     initialValues(facility),
   );
+  // The stamp of the row the form was filled from, not of the latest refetch:
+  // a refetch swaps `facility` while the form keeps the old values, so saving
+  // with the new stamp would overwrite another admin's edit. Advances only
+  // after our own save.
+  const [stamp, setStamp] = React.useState(facility.updatedAt);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [hoursErrors, setHoursErrors] = React.useState<Record<number, string>>(
     {},
@@ -300,7 +306,7 @@ export function GeneralTab({
         noShowResolution: values.noShowResolution,
       },
     };
-    const parsed = updateFacilitySchema.safeParse(candidate);
+    const parsed = parseUpdateDraft(updateFacilitySchema, candidate);
     if (!parsed.success) {
       setErrors((current) => ({
         ...current,
@@ -312,16 +318,21 @@ export function GeneralTab({
       return;
     }
 
-    updateFacility.mutate(parsed.data, {
-      onSuccess: () =>
-        toast({ title: t("facilityAdmin.general.saved"), tone: "success" }),
-      onError: (error) =>
-        setFormError(
-          error instanceof ApiError
-            ? error.message
-            : t("facilityAdmin.general.saveFailed"),
-        ),
-    });
+    updateFacility.mutate(
+      { body: parsed.data, expectedUpdatedAt: stamp },
+      {
+        onSuccess: (saved) => {
+          setStamp(saved.updatedAt);
+          toast({ title: t("facilityAdmin.general.saved"), tone: "success" });
+        },
+        onError: (error) =>
+          setFormError(
+            error instanceof ApiError
+              ? error.message
+              : t("facilityAdmin.general.saveFailed"),
+          ),
+      },
+    );
   }
 
   const hoursSummary = summarizeOperatingHours(

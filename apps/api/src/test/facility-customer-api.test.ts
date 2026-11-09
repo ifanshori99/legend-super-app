@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   facilityCatalogSchema,
   facilityEntrySchema,
+  listSubscriptionPlans,
 } from "@starter/shared/facility";
 import { createApp } from "../app";
 import { agent } from "./helpers";
@@ -243,6 +244,36 @@ describe("GET /api/facility/catalog (public)", () => {
     );
     expect(response.status).toBe(404);
     expect(JSON.stringify(response.body)).not.toContain("WFC Guest API");
+  });
+});
+
+describe("GET /api/facility/subscription-plans (public)", () => {
+  const plansPath = (id: string = facilityId) =>
+    `/api/facility/subscription-plans?facilityId=${id}`;
+
+  it("[FAC-11] lists the active plans without a session, allow-listed", async () => {
+    const response = await publicGet(plansPath());
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    listSubscriptionPlans.response.parse(response.body);
+    expect(
+      response.body.data.plans.map((plan: { id: string }) => plan.id),
+    ).toEqual([activePlan]);
+    const keys = collectKeys(response.body);
+    for (const key of STAFF_ONLY_KEYS) expect(keys.has(key)).toBe(false);
+    expect(JSON.stringify(response.body)).not.toContain("provider-secret-plan");
+  });
+
+  it("answers 404 for an unknown facility and 422 for a bad query", async () => {
+    expect((await publicGet(plansPath(randomUUID()))).status).toBe(404);
+    expect((await publicGet("/api/facility/subscription-plans")).status).toBe(
+      422,
+    );
+  });
+
+  it("[TEN-01] another tenant's host cannot read this facility's plans", async () => {
+    const response = await publicGet(plansPath(), otherTenant.hostname);
+    expect(response.status).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain("Langganan 10x");
   });
 });
 

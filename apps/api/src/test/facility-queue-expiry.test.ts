@@ -446,6 +446,68 @@ describe("[FAC-02] notified queue entries expire after the claim window (legend-
   });
 });
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("[FAC-02] sweeper and claim cannot interleave (legend-ke4z review)", () => {
+  it("the sweep waits for the facility slot lock before expiring entries", async () => {
+    const { f, first, firstEntry } = await notifiedQueue();
+    let sweepDone = false;
+    let sweeping: Promise<string[]> | undefined;
+    await asOwner(f.tenant, async (client) => {
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`facility-slots:${f.tenant}:${f.facilityId}`],
+      );
+      sweeping = sweep(tenantScope(), QUEUE_CLAIM_WINDOW_MINUTES + 1).then(
+        (ids) => {
+          sweepDone = true;
+          return ids;
+        },
+      );
+      await sleep(400);
+      // A claim in flight owns the lock: the sweep must not have expired it.
+      expect(sweepDone).toBe(false);
+      expect((await current(f, first))?.status).toBe("notified");
+    });
+    expect(await sweeping).toContain(firstEntry.id);
+    expect(await current(f, first)).toBeNull();
+  });
+
+  it("a claim whose entry was expired meanwhile is refused with 409 and leaves no ticket", async () => {
+    const { f, first } = await notifiedQueue();
+    const context = outletScope(f.outletId);
+    let claim: Promise<unknown> | undefined;
+    await asOwner(f.tenant, async (client) => {
+      // Uncommitted expiry holds the entry's row lock.
+      await client.query(
+        "UPDATE facility_queue_entries SET status = 'expired' WHERE tenant_id = $1 AND facility_id = $2 AND customer_profile_id = $3",
+        [f.tenant, f.facilityId, first],
+      );
+      claim = withTenant(db, context, (tx) =>
+        holdFacilitySlot(
+          tx,
+          context,
+          holdInput(f, { timing: { kind: "now" }, customerProfileId: first }),
+          at2(1),
+        ),
+      ).then(
+        () => "claimed",
+        (error: unknown) => error,
+      );
+      await sleep(400);
+    });
+    expect(await claim).toMatchObject({
+      status: 409,
+      code: "QUEUE_CLAIM_EXPIRED",
+    });
+    const tickets = await owner.query(
+      "SELECT count(*)::int AS n FROM access_tickets WHERE tenant_id = $1 AND facility_id = $2 AND customer_profile_id = $3",
+      [f.tenant, f.facilityId, first],
+    );
+    expect(tickets.rows[0].n).toBe(0);
+  });
+});
+
 describe("[FAC-02] wait estimate counts holds that start before the turn ends (legend-ke4z)", () => {
   it("a free unit with a hold starting inside the next turn is not 0 minutes", async () => {
     const f = await seedFacility({ units: 1 });

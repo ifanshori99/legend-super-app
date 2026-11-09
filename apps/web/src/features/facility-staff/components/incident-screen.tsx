@@ -30,6 +30,7 @@ import {
   type FacilityIncident,
   type FacilityIncidentType,
 } from "@starter/shared/facility";
+import { newIdempotencyKey } from "@/lib/idempotency.ts";
 import { useOutletClock } from "@/lib/tenant-context";
 import {
   useRaiseFacilityIncident,
@@ -76,6 +77,9 @@ export function IncidentScreen({ facilityId }: { facilityId?: string }) {
     null,
   );
   const unitFieldId = React.useId();
+  // The key follows the form content: a retry of the same failed submit replays
+  // it, an edited form is a new attempt and gets a fresh key.
+  const attempt = React.useRef<{ signature: string; key: string } | null>(null);
 
   const loading =
     facilities.isPending ||
@@ -102,14 +106,19 @@ export function IncidentScreen({ facilityId }: { facilityId?: string }) {
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError(null);
+    const body = {
+      type,
+      unitId: unitId === NO_UNIT ? undefined : unitId,
+      note: note.trim() || undefined,
+    };
+    const signature = JSON.stringify(body);
+    if (attempt.current?.signature !== signature)
+      attempt.current = { signature, key: newIdempotencyKey() };
     raise.mutate(
-      {
-        type,
-        unitId: unitId === NO_UNIT ? undefined : unitId,
-        note: note.trim() || undefined,
-      },
+      { body, idempotencyKey: attempt.current.key },
       {
         onSuccess: () => {
+          attempt.current = null;
           toast({
             title: t("facilityStaff.incident.created"),
             tone: "success",

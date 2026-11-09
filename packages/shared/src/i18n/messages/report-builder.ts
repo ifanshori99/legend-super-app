@@ -72,6 +72,8 @@ export const reportBuilderMessages = {
     supplier: "Pemasok",
     facility: "Fasilitas",
     promo: "Promo",
+    unit: "Unit",
+    product: "Produk",
   },
   weekdays: {
     "1": "Senin",

@@ -4,7 +4,7 @@
 // BEFORE `facilityRouter`, whose router-level `requireAuth` would otherwise
 // answer 401 to the public paths.
 //
-// - `/catalog` and `/entry/:token` are public (no session): tenant from the
+// - `/catalog`, `/entry/:token` and `/subscription-plans` are public (no session): tenant from the
 //   host (TEN-02), prices and hours only, no staff configuration. The paths are
 //   in PUBLIC_RATE_LIMIT_PATHS (middleware/public-rate-limit.ts).
 // - Authenticated customer reads (`/entitlements/current`) are not served here
@@ -13,6 +13,7 @@ import { Router, type Request } from "express";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   getFacilityCatalog as getFacilityCatalogEndpoint,
+  listSubscriptionPlans as listSubscriptionPlansEndpoint,
   resolveFacilityEntry as resolveFacilityEntryEndpoint,
 } from "@starter/shared/facility";
 import {
@@ -44,6 +45,20 @@ facilityCustomerRouter.get(
     const { token } = resolveFacilityEntryEndpoint.params.parse(req.params);
     res.json({
       data: await customer.resolveFacilityEntry(publicContext(req), token),
+    });
+  },
+);
+
+facilityCustomerRouter.get(
+  "/subscription-plans",
+  requireTenantContext,
+  async (req, res) => {
+    const query = listSubscriptionPlansEndpoint.query.parse(req.query);
+    res.json({
+      data: await customer.listPublicSubscriptionPlans(
+        publicContext(req),
+        query,
+      ),
     });
   },
 );

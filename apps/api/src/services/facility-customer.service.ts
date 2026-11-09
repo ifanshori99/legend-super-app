@@ -16,6 +16,8 @@ import {
   facilityEntrySchema,
   type FacilityCatalog,
   type FacilityEntry,
+  type PublicSubscriptionPlan,
+  type SubscriptionPlan,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
 import { facilityAreas } from "../db/schema/facility.ts";
@@ -46,6 +48,18 @@ async function toPublicFacility(
     operatingHours: row.operatingHours,
     outletId: row.outletId,
     timeZone: await outletTimeZone(tx, context, row.outletId),
+  };
+}
+
+/** Allow-list of the plan fields a guest sees (no provider plan id, no scope). */
+function toPublicPlan(plan: SubscriptionPlan): PublicSubscriptionPlan {
+  return {
+    id: plan.id,
+    name: plan.name,
+    priceIdr: plan.priceIdr,
+    quotaPerPeriod: plan.quotaPerPeriod,
+    interval: plan.interval,
+    maxPerDay: plan.maxPerDay,
   };
 }
 
@@ -84,17 +98,27 @@ export async function getFacilityCatalog(
           priceIdr: addon.priceIdr,
           sortOrder: addon.sortOrder,
         })),
-      plans: plans
-        .filter((plan) => plan.isActive)
-        .map((plan) => ({
-          id: plan.id,
-          name: plan.name,
-          priceIdr: plan.priceIdr,
-          quotaPerPeriod: plan.quotaPerPeriod,
-          interval: plan.interval,
-          maxPerDay: plan.maxPerDay,
-        })),
+      plans: plans.filter((plan) => plan.isActive).map(toPublicPlan),
     });
+  });
+}
+
+/**
+ * Active plans of one facility for the Wi-Fi portal and WFC screens (public,
+ * same allow-list mapper as the catalog; contract `listSubscriptionPlans`).
+ */
+export async function listPublicSubscriptionPlans(
+  context: ScopedTenantContext,
+  query: { facilityId: string },
+): Promise<{ plans: PublicSubscriptionPlan[] }> {
+  return withTenant(db, context, async (tx) => {
+    const facility = await loadFacility(tx, context, query.facilityId);
+    const plans = await listFacilitySubscriptionPlans(
+      tx,
+      context.tenant.tenantId,
+      facility.id,
+    );
+    return { plans: plans.filter((plan) => plan.isActive).map(toPublicPlan) };
   });
 }
 

@@ -10,8 +10,8 @@
 // Assumptions:
 // - "Reload" in mock mode keeps state only in browser memory, so a full
 //   page.reload() would reset the mock store. The refetch is therefore done
-//   in-app: leave the config editor (history back to the facility list) and
-//   open it again. This depends on S3 (legend-wbwl): the config read must
+//   in-app: leave the config editor (the "Kembali ke daftar fasilitas" link; not
+//   history back, which reloads the document) and open it again. This depends on S3 (legend-wbwl): the config read must
 //   serve the admin store, otherwise the saved value is lost on refetch.
 // - Both fixture policies show on every facility; the spec edits the one
 //   labelled "Zona WFC" (it has a minimum spend, the regular zone has none).
@@ -141,8 +141,13 @@ test("legend-emcy FAC-14: peak hours, minimum spend and quota are saved and surv
   await expect(wfc).toContainText("150 menit gratis/hari");
   await expect(wfc).toContainText(/Minimum belanja Rp\s?45\.000\/jam/);
 
-  // Refetch: back to the facility list, then open the config again.
-  await page.goBack();
+  // Refetch: back to the facility list through the in-app link (no document
+  // reload, which would reset the in-memory mock store), then open the config
+  // again.
+  await page
+    .getByRole("link", { name: "Kembali ke daftar fasilitas" })
+    .first()
+    .click();
   await expect(
     page.getByRole("heading", { level: 1, name: "Fasilitas" }),
   ).toBeVisible();
@@ -212,7 +217,9 @@ test("legend-emcy FAC-14: a negative quota or minimum spend is rejected with a m
 
   await dialog.getByRole("button", { name: "Batal" }).click();
   await expect(dialog).toBeHidden();
-  await expect(wfcCard(page)).toContainText(/Minimum belanja Rp\s?30\.000\/jam/);
+  await expect(wfcCard(page)).toContainText(
+    /Minimum belanja Rp\s?30\.000\/jam/,
+  );
 });
 
 test("legend-emcy FAC-14: a peak allowance above the daily quota is rejected", async ({

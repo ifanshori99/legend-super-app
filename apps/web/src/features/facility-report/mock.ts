@@ -395,20 +395,17 @@ function opsRaw(
   switch (reportCode) {
     case "facility.overtime":
       return {
-        facility_overtime_sessions: share(
-          sum(units, (unit) => unit.overtimeSessions),
-          factor,
+        facility_overtime_sessions: sum(units, (unit) =>
+          share(unit.overtimeSessions, factor),
         ),
-        facility_overtime_seconds: share(
-          sum(units, (unit) => unit.overtimeMinutes * 60),
-          factor,
+        facility_overtime_seconds: sum(units, (unit) =>
+          share(unit.overtimeMinutes * 60, factor),
         ),
       };
     case "facility.cleaning_time":
       return {
-        facility_cleaning_count: share(
-          sum(units, (unit) => unit.cleanings),
-          factor,
+        facility_cleaning_count: sum(units, (unit) =>
+          share(unit.cleanings, factor),
         ),
         facility_cleaning_seconds: weighted(
           units,
@@ -418,9 +415,8 @@ function opsRaw(
       };
     case "facility.incidents":
       return {
-        facility_incident_count: share(
-          sum(units, (unit) => unit.incidents),
-          factor,
+        facility_incident_count: sum(units, (unit) =>
+          share(unit.incidents, factor),
         ),
         facility_incident_response_seconds: weighted(
           units,

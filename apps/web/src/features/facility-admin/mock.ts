@@ -11,7 +11,7 @@
 // legend-wbwl); a full reload starts from the fixtures again.
 //
 // Writes follow the API contract of bead legend-6jms: a PATCH/PUT whose
-// `expectedUpdatedAt` is not the row's `updatedAt` answers 409, and a POST create
+// `expectedUpdatedAt` is not the row's `updatedAt` answers 412, and a POST create
 // with a known `idempotencyKey` returns the first row (another payload with the
 // same key is a 409).
 import type { z } from "zod";
@@ -141,12 +141,12 @@ function stamp(): string {
   return new Date().toISOString();
 }
 
-/** The API answers 409 when the editor's stamp is not the stored one. */
+/** The API answers 412 when the editor's stamp is not the stored one. */
 function assertFresh(current: string | null, expected: string | null) {
   if (current !== expected)
     throw new ApiError(
-      409,
-      "FACILITY_CONFIG_STALE",
+      412,
+      "PRECONDITION_FAILED",
       "Data sudah diubah orang lain. Muat ulang lalu coba lagi.",
     );
 }
@@ -231,14 +231,24 @@ function assertSlotFits(facility: Facility) {
 
 // ---- Facilities -------------------------------------------------------------
 
-registerMock(listFacilities, ({ query, scenario }) =>
-  paginateFixture(
-    store.get().facilities,
+// Each row carries the sizes of its areas, units and products (legend-34fu),
+// counted from the edited store so an admin edit shows in the next list read.
+registerMock(listFacilities, ({ query, scenario }) => {
+  const state = store.get();
+  const count = (rows: readonly { facilityId: string }[], id: string) =>
+    rows.filter((row) => row.facilityId === id).length;
+  return paginateFixture(
+    state.facilities.map((facility) => ({
+      ...facility,
+      areaCount: count(state.areas, facility.id),
+      unitCount: count(state.units, facility.id),
+      productCount: count(state.products, facility.id),
+    })),
     query,
     (facility) => facility.id,
     scenario,
-  ),
-);
+  );
+});
 
 registerMock(createFacility, ({ body }) => {
   const state = store.get();
@@ -583,11 +593,14 @@ registerMock(putWifiPolicy, ({ params, body }) => {
   assertFresh(current?.updatedAt ?? null, body.expectedUpdatedAt);
   // `facilityId` is optional in the PUT body but is not a policy column; the
   // zone and the outlet scope identify it (PRD §6 C floor_zones).
-  const scope =
-    current ??
-    (body.facilityId
-      ? requireFacility(state, body.facilityId)
-      : state.facilities[0]);
+  if (!current && !body.facilityId)
+    throw new ApiError(400, "VALIDATION_ERROR", "Fasilitas wajib diisi.", [
+      {
+        field: "facilityId",
+        message: "Fasilitas wajib diisi untuk aturan baru.",
+      },
+    ]);
+  const scope = current ?? requireFacility(state, body.facilityId as string);
   const next = validate(wifiPolicySchema, {
     id: params.policyId,
     tenantId: scope.tenantId,

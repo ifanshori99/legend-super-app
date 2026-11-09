@@ -1,5 +1,5 @@
 // legend-wbwl + legend-6jms: in mock mode the config read serves what the admin
-// saved (an edit survives a refetch), a stale `expectedUpdatedAt` is a 409, and
+// saved (an edit survives a refetch), a stale `expectedUpdatedAt` is a 412, and
 // a create with a known `idempotencyKey` returns the first row.
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "node:test";
@@ -19,7 +19,7 @@ const config = async () =>
 beforeEach(() => resetMocks());
 
 describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
-  test("a saved Wi-Fi policy survives a config refetch and a stale stamp is a 409", async () => {
+  test("a saved Wi-Fi policy survives a config refetch and a stale stamp is a 412", async () => {
     const policy = (await config()).wifiPolicies[0];
     const { id, updatedAt, ...columns } = policy;
     const { tenantId, outletId, ...body } = columns;
@@ -36,7 +36,7 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
       request("PUT", `/api/wifi/policies/${id}`, {
         body: { ...body, freeMinutes: 90, expectedUpdatedAt: updatedAt },
       }),
-      (error) => error.status === 409,
+      (error) => error.status === 412,
     );
     assert.equal(
       (await config()).wifiPolicies.find((p) => p.id === id).freeMinutes,
@@ -44,7 +44,7 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
     );
   });
 
-  test("PATCH conflicts on a stale stamp; POST replays by key and refuses another payload", async () => {
+  test("PATCH is refused on a stale stamp (412); POST replays by key and refuses another payload (409)", async () => {
     const product = (await config()).products[0];
     const patched = (
       await request("PATCH", `/api/facility/products/${product.id}`, {
@@ -56,7 +56,7 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
       request("PATCH", `/api/facility/products/${product.id}`, {
         body: { priceIdr: 1000, expectedUpdatedAt: product.updatedAt },
       }),
-      (error) => error.status === 409,
+      (error) => error.status === 412,
     );
     assert.equal(
       (await config()).products.find((p) => p.id === product.id).priceIdr,
@@ -84,6 +84,31 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
         body: { ...create, name: "Lain" },
       }),
       (error) => error.status === 409,
+    );
+  });
+
+  test("a dialog opened on an old row cannot overwrite a newer save (412); a new Wi-Fi policy needs a facilityId (400)", async () => {
+    const policy = (await config()).wifiPolicies[0];
+    const { id, updatedAt, tenantId, outletId, ...body } = policy;
+    // Admin B saves; admin A's dialog still holds the stamp from when it opened.
+    await request("PUT", `/api/wifi/policies/${id}`, {
+      body: { ...body, freeMinutes: 150, expectedUpdatedAt: updatedAt },
+    });
+    await assert.rejects(
+      request("PUT", `/api/wifi/policies/${id}`, {
+        body: { ...body, freeMinutes: 90, expectedUpdatedAt: updatedAt },
+      }),
+      (error) => error.status === 412,
+    );
+    assert.equal(
+      (await config()).wifiPolicies.find((p) => p.id === id).freeMinutes,
+      150,
+    );
+    await assert.rejects(
+      request("PUT", `/api/wifi/policies/${crypto.randomUUID()}`, {
+        body: { ...body, expectedUpdatedAt: null },
+      }),
+      (error) => error.status === 400 && error.code === "VALIDATION_ERROR",
     );
   });
 });

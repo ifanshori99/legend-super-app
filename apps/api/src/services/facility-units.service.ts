@@ -134,7 +134,9 @@ export async function updateFacilityUnit(
     const status = transitionUnit(locked.status, input.action);
     const [row] = await tx
       .update(facilityUnits)
-      .set({ status, updatedAt: now })
+      // `updatedAt` stays: it only stamps configuration (stale-check of
+      // PATCH /units/:unitId/config), not the operational status.
+      .set({ status })
       .where(
         and(eq(facilityUnits.tenantId, tenantId), eq(facilityUnits.id, unitId)),
       )
