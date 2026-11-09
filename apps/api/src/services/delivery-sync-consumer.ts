@@ -28,6 +28,9 @@
 //   that throws (timeout, network) fails the consumption so the outbox retries
 //   it; a clear refusal is recorded as `delivery_order.platform_desync`
 //   (outcome `refused`) and settles the event, since a retry cannot change it.
+//   The outcome is also kept on the order row (`platform_sync_state`,
+//   legend-r7vxn): `unknown` is resent by the worker sweep
+//   (delivery-platform-retry.ts), `refused` flags the order for staff.
 //   A step the platform started itself (webhook, system actor) is never pushed
 //   back.
 // - Other events: ignored.
@@ -61,6 +64,10 @@ import {
   soldOutItemIds,
 } from "./delivery-channels.service.ts";
 import { outletsAffectedByEvent } from "./menu-print.service.ts";
+import {
+  markPlatformSynced,
+  markPlatformUnsynced,
+} from "./delivery-platform-retry.ts";
 import type { DeliveryChannelRow } from "./delivery-store.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -312,11 +319,23 @@ async function deliverOrderStatusIntent(
         },
       },
     );
-    if (result.accepted) return;
+    if (result.accepted) {
+      await markPlatformSynced(tx, tenantId, payload.deliveryChannelOrderId);
+      return;
+    }
     outcome = "refused";
   } catch {
     outcome = "unknown";
   }
+  // legend-r7vxn: the order row carries the sync state. `unknown` is resent by
+  // the worker sweep (retryDeliveryPlatformIntents); `refused` needs staff.
+  await markPlatformUnsynced(tx, {
+    tenantId,
+    deliveryChannelOrderId: payload.deliveryChannelOrderId,
+    outcome,
+    intent: { action: payload.action, status: payload.to },
+    now,
+  });
   await recordAudit(
     tx,
     context,

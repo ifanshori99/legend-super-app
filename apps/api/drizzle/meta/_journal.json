@@ -1233,6 +1233,13 @@
       "when": 1794257000000,
       "tag": "0178_tenant_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1794258000000,
+      "tag": "0179_delivery_platform_sync",
+      "breakpoints": true
     }
   ]
 }
