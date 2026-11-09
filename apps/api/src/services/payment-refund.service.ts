@@ -76,6 +76,7 @@ import {
   decideApprovalRequest,
   getApprovalChainOutcome,
   openApprovalRequest,
+  type OpenApprovalRequestInput,
 } from "./platform-approval.service.ts";
 import {
   loadTenantAccessInTransaction,
@@ -88,6 +89,13 @@ export const REFUND_SOURCE_MODULE = "payment";
 const REFUND_ACTION_TYPE = "refund";
 const REFUND_OBJECT_TYPE = "payment_refund";
 const REFUND_DEADLINE_MINUTES = 1440;
+/**
+ * Deadline of a chain opened when the refund is requested (legend-zi9o): the
+ * approver may be a supervisor who is off today, so it gets the longest window
+ * the approval service allows (7 days). The decide-time lazy open keeps
+ * REFUND_DEADLINE_MINUTES.
+ */
+const REFUND_REQUEST_DEADLINE_MINUTES = 10080;
 /** Lease on an in-flight provider call; another worker skips while it holds. */
 const PAYOUT_CLAIM_MS = 120_000;
 /** Deadline of one provider call; a timeout is an unknown outcome. */
@@ -556,6 +564,92 @@ function isUserId(id: string): boolean {
   return userIdSchema.safeParse(id).success;
 }
 
+/** Approval request of one refund: the same arguments at request time and at decide time. */
+function refundApprovalInput(
+  refund: Refund,
+  requestedBy: string,
+  now: Date,
+  deadlineMinutes: number,
+): OpenApprovalRequestInput {
+  return {
+    sourceModule: REFUND_SOURCE_MODULE,
+    actionType: REFUND_ACTION_TYPE,
+    objectType: REFUND_OBJECT_TYPE,
+    objectId: refund.id,
+    amountIdr: refund.amountIdr,
+    outletId: refund.outletId,
+    requestedBy,
+    source: "user",
+    requestReason: requestReasonOf(refund.reason),
+    payload: {
+      paymentIntentId: refund.paymentIntentId,
+      unallocatedFundId: refund.unallocatedFundId,
+    },
+    deadlineMinutes,
+    now,
+  };
+}
+
+async function setRefundChain(
+  tx: Tx,
+  refund: Refund,
+  chainId: string,
+  now: Date,
+): Promise<Refund> {
+  const [row] = await tx
+    .update(paymentRefunds)
+    .set({ approvalChainId: chainId, updatedAt: now })
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, refund.tenantId),
+        eq(paymentRefunds.id, refund.id),
+      ),
+    )
+    .returning();
+  if (!row) throw new Error("Refund chain update returned no row");
+  return row;
+}
+
+/**
+ * Opens the approval chain when a person requests the refund, in the request's
+ * transaction, so approvers see it in their inbox without a reconcile holder
+ * deciding first (legend-zi9o). Returns the refund with its chain id. A refund
+ * below every tier keeps the lazy direct path, and a tenant without refund
+ * policy rows is unchanged: decide still fails closed (APPROVAL_POLICY_MISSING).
+ * System-requested refunds are not opened here; the first human submits them.
+ */
+export async function openRefundChainAtRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<Refund> {
+  if (!isUserId(refund.requestedBy) || refund.approvalChainId !== null)
+    return refund;
+  try {
+    const opened = await openApprovalRequest(
+      tx,
+      context,
+      refundApprovalInput(
+        refund,
+        refund.requestedBy,
+        now,
+        REFUND_REQUEST_DEADLINE_MINUTES,
+      ),
+    );
+    if (!opened.required) return refund;
+    return await setRefundChain(tx, refund, opened.chainId, now);
+  } catch (error) {
+    // Only reads ran before this throw, so the transaction stays usable.
+    if (
+      error instanceof AccessError &&
+      error.code === "APPROVAL_POLICY_MISSING"
+    )
+      return refund;
+    throw error;
+  }
+}
+
 /**
  * Applies the chain's terminal outcome to a still-`pending` refund, under the
  * intent -> fund -> refund locks. The chain is re-read from the database: an
@@ -764,24 +858,17 @@ async function decideRefund(
           }
           let justOpened = false;
           if (chainId === null) {
-            const opened = await openApprovalRequest(tx, context, {
-              sourceModule: REFUND_SOURCE_MODULE,
-              actionType: REFUND_ACTION_TYPE,
-              objectType: REFUND_OBJECT_TYPE,
-              objectId: refund.id,
-              amountIdr: refund.amountIdr,
-              outletId: refund.outletId,
-              // A system requester has no user row: the first human acting submits.
-              requestedBy: systemRequester ? actor : refund.requestedBy,
-              source: "user",
-              requestReason: requestReasonOf(refund.reason),
-              payload: {
-                paymentIntentId: refund.paymentIntentId,
-                unallocatedFundId: refund.unallocatedFundId,
-              },
-              deadlineMinutes: REFUND_DEADLINE_MINUTES,
-              now,
-            });
+            const opened = await openApprovalRequest(
+              tx,
+              context,
+              refundApprovalInput(
+                refund,
+                // A system requester has no user row: the first human acting submits.
+                systemRequester ? actor : refund.requestedBy,
+                now,
+                REFUND_DEADLINE_MINUTES,
+              ),
+            );
             if (!opened.required) {
               // Below every tier of the matrix: this one authorised person decides.
               if (decision === "approved") {
@@ -822,15 +909,7 @@ async function decideRefund(
               });
               return { kind: "done" };
             }
-            await tx
-              .update(paymentRefunds)
-              .set({ approvalChainId: opened.chainId, updatedAt: now })
-              .where(
-                and(
-                  eq(paymentRefunds.tenantId, refund.tenantId),
-                  eq(paymentRefunds.id, refund.id),
-                ),
-              );
+            await setRefundChain(tx, refund, opened.chainId, now);
             chainId = opened.chainId;
             justOpened = true;
           }
@@ -1664,8 +1743,9 @@ const ESCALATION_PAYOUT_STALLED_HOURS = 24;
 /**
  * Marks refunds that wait too long as escalated, once per reason, and tells
  * outlet managers and finance through the notification outbox. Case
- * `pending_unapproved`: `pending` with no approval chain, aged from
- * `created_at` (default 24 h). Case `provider_pending`: `approved` with the
+ * `pending_unapproved`: `pending`, with or without an open approval chain
+ * (legend-zi9o: a chain opened at request time can sit unattended until it
+ * expires), aged from `created_at` (default 24 h). Case `provider_pending`: `approved` with the
  * provider still answering `pending`, aged from `decided_at` (default 72 h).
  * Case `payout_stalled`: `approved` with no provider polls whose payout is
  * stuck (with a gateway: `last_payout_error` is `MANUAL_RECONCILIATION`,
@@ -1752,7 +1832,6 @@ export async function escalateStaleRefunds(
         age: sql`${paymentRefunds.createdAt}`,
         stale: and(
           eq(paymentRefunds.status, "pending"),
-          isNull(paymentRefunds.approvalChainId),
           isNull(paymentRefunds.escalatedAt),
         ),
       },

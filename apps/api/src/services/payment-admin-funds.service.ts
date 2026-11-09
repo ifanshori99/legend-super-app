@@ -24,6 +24,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import { openRefundChainAtRequest } from "./payment-refund.service.ts";
 import {
   appendPaymentEvent,
   assertPaymentPermission,
@@ -326,7 +327,7 @@ export async function resolveUnallocatedFund(
         )
           throw ambiguous();
         const now = new Date();
-        const [refund] = await tx
+        const [inserted] = await tx
           .insert(paymentRefunds)
           .values({
             tenantId: context.tenant.tenantId,
@@ -340,6 +341,13 @@ export async function resolveUnallocatedFund(
             status: "pending",
           })
           .returning();
+        if (!inserted) throw new Error("Refund insert returned no row");
+        const refund = await openRefundChainAtRequest(
+          tx,
+          context,
+          inserted,
+          now,
+        );
         await recordAudit(
           tx,
           context,
@@ -352,20 +360,23 @@ export async function resolveUnallocatedFund(
             deviceId: null,
             action: "payment.unallocated_refund_requested",
             objectType: "payment_refund",
-            objectId: refund!.id,
+            objectId: refund.id,
             reason: request.note,
             maskedChanges: {
               before: null,
-              after: { amountIdr: fund.amountIdr, status: "pending" },
+              after: {
+                amountIdr: fund.amountIdr,
+                status: refund.status,
+                approvalChainId: refund.approvalChainId,
+              },
             },
             ipHash: null,
             sensitiveAccess: false,
             retentionClass: "audit_2y",
             createdAt: isoDateTimeSchema.parse(now.toISOString()),
           },
-          ["amountIdr", "status"],
+          ["amountIdr", "status", "approvalChainId"],
         );
-        if (!refund) throw new Error("Refund insert returned no row");
         await appendPaymentEvent(tx, context, {
           name: "payment.refund_requested",
           aggregateId: refund.id,

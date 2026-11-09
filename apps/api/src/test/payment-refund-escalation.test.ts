@@ -499,17 +499,27 @@ describe.each(gatewayModes)(
       expect(await snapshot(polling)).toEqual(before.polling);
     });
 
-    it("legend-n9kn a pending refund that has an approval chain is never escalated", async () => {
+    it("legend-n9kn a pending refund that has an approval chain is escalated past the threshold and stays pending with its chain untouched", async () => {
+      // legend-zi9o: the chain now opens when the refund is requested, so a
+      // refund waiting in the inbox must still raise the alarm before it expires.
       const id = await seedRefund({ createdHoursAgo: 200, chain: true });
       const before = await snapshot(id);
 
       const result = await sweep();
 
-      expect(result.escalated).toBe(0);
-      expect((await refundRow(id)).escalated_at).toBeNull();
+      expect(result.escalated).toBe(1);
+      const row = await refundRow(id);
+      expect(row.escalated_at).not.toBeNull();
+      expect(row.escalation_reason).toBe("pending_unapproved");
+      expect(row.status).toBe("pending");
+      // Everything but the two escalation columns is unchanged, chain id included.
       expect(await snapshot(id)).toEqual(before);
-      expect(await audits(id)).toHaveLength(0);
-      expect(await outboxRows(id)).toHaveLength(0);
+      expect(await audits(id)).toHaveLength(1);
+      expect(await outboxRows(id)).toHaveLength(1);
+
+      // Once only.
+      expect((await sweep()).escalated).toBe(0);
+      expect(await audits(id)).toHaveLength(1);
     });
 
     it("legend-n9kn completed and failed refunds are never escalated", async () => {
