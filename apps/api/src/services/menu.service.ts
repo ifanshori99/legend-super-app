@@ -94,7 +94,11 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
-import { assertStationPermission, permittedStationIds } from "./station-access";
+import {
+  assertStationPermission,
+  permittedStationIds,
+  stationScopeCondition,
+} from "./station-access";
 
 export type { MenuMediaUrls } from "./menu-internals";
 
@@ -533,8 +537,7 @@ export async function listStations(
       MENU_VIEW_PERMISSION,
       now,
     );
-    if (stationIds.length === 0)
-      return { data: [], meta: { limit: query.limit, nextCursor: null } };
+    // An empty reach becomes `false` in the filter: no rows (fail closed).
     const rows = await tx
       .select()
       .from(stations)
@@ -542,7 +545,7 @@ export async function listStations(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           isNull(stations.deletedAt),
-          inArray(stations.id, stationIds),
+          stationScopeCondition(stations.id, stationIds),
           scope.kind === "outlets"
             ? inArray(stations.outletId, [...scope.outletIds])
             : undefined,
@@ -645,11 +648,31 @@ export async function updateStation(
       existing.id,
       now,
     );
+    // Name and type decide which station of the outlet KDS routing picks
+    // (first active station of a type, by name): changing them moves tickets
+    // between stations, so it is outlet configuration, not this station's
+    // own (legend-cot3). A station-scoped grant keeps target time and printer.
+    // Only a real change is written: a form echoing the stored values (the
+    // web form trims the name) needs no outlet grant, and an echo can never
+    // overwrite a concurrent rename by an outlet manager.
+    const nameChanged =
+      input.name !== undefined && input.name.trim() !== existing.name.trim();
+    const typeChanged =
+      input.type !== undefined && input.type !== existing.type;
+    if (nameChanged || typeChanged)
+      await assertOutletPermission(
+        tx,
+        context,
+        actorUserId,
+        MENU_ITEM_PERMISSION,
+        existing.outletId,
+        now,
+      );
     const [row] = await tx
       .update(stations)
       .set({
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.type !== undefined ? { type: input.type } : {}),
+        ...(nameChanged ? { name: input.name } : {}),
+        ...(typeChanged ? { type: input.type } : {}),
         ...(input.printerDeviceId !== undefined
           ? { printerDeviceId: input.printerDeviceId }
           : {}),
@@ -684,14 +707,24 @@ export async function deleteStation(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
-    // Station-bound config record: same station target as updateStation
-    // (legend-fsb7).
+    // Station target first, so another or unknown station answers the same
+    // station denial as updateStation (legend-fsb7). Removing a station also
+    // changes KDS routing for the whole outlet, so it needs the outlet
+    // permission too, like createStation (legend-cot3).
     await assertStationPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
       existing.id,
+      now,
+    );
+    await assertOutletPermission(
+      tx,
+      context,
+      actorUserId,
+      MENU_ITEM_PERMISSION,
+      existing.outletId,
       now,
     );
     const [usedItem] = await tx

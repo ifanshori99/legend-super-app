@@ -2142,6 +2142,59 @@ describe("KDS isolation and authorization", () => {
     ).toEqual(["new"]);
   });
 
+  it("legend-cot3 a station-scoped cook changes priority and item status on their own station only", async () => {
+    const asBarista = kds(barista);
+    const barOrder = await placeOrder([{ menuItemId: ids.kopi }]);
+    const barTicket = await ticketOn(barOrder.orderId, ids.barA);
+    const kitchenOrder = await placeOrder([{ menuItemId: ids.nasi }]);
+    const kitchenTicket = await ticketOn(kitchenOrder.orderId, ids.kitchenA);
+    const [barLine] = (await ticketDetail(barTicket)).items;
+    const [kitchenLine] = (await ticketDetail(kitchenTicket)).items;
+
+    // Positive control: the same calls succeed on the barista's own station.
+    const ownPriority = await asBarista.priority(barTicket, 7);
+    expect(ownPriority.status, JSON.stringify(ownPriority.body)).toBe(200);
+    expect(ownPriority.body.data.priority).toBe(7);
+    const ownStart = await asBarista.item(barLine!.id, "start");
+    expect(ownStart.status, JSON.stringify(ownStart.body)).toBe(200);
+    expect((await ticketDetail(barTicket)).priority).toBe(7);
+    expect((await ticketDetail(barTicket)).items[0]?.status).not.toBe(
+      barLine?.status,
+    );
+    expect((await asBarista.bump(barTicket)).status).toBe(200);
+    const ownServe = await asBarista.item(barLine!.id, "serve");
+    expect(ownServe.status, JSON.stringify(ownServe.body)).toBe(200);
+
+    // The kitchen ticket of the same outlet: refused, nothing changes.
+    const before = await ticketDetail(kitchenTicket);
+    const changesBefore = (await changesOf(kitchenTicket)).length;
+    const cursorBefore = await cursorOf(ids.kitchenA);
+    const denied = [
+      await asBarista.priority(kitchenTicket, 9),
+      await asBarista.item(kitchenLine!.id, "start"),
+      await asBarista.item(kitchenLine!.id, "serve"),
+      await asBarista.item(kitchenLine!.id, "void"),
+      // Permission runs before the state machine, so bump and recall of a
+      // ticket that is not started/done still answer 403, not 409.
+      await asBarista.bump(kitchenTicket),
+      await asBarista.recall(kitchenTicket, { reason: "Uji" }),
+    ];
+    for (const response of denied) {
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect(response.body.error?.code ?? response.body.code).toBe(
+        "PERMISSION_DENIED",
+      );
+    }
+    const after = await ticketDetail(kitchenTicket);
+    expect(after).toEqual(before);
+    expect(after.priority).toBe(before.priority);
+    expect(after.items.map((item) => item.status)).toEqual(
+      before.items.map((item) => item.status),
+    );
+    expect((await changesOf(kitchenTicket)).length).toBe(changesBefore);
+    expect(await cursorOf(ids.kitchenA)).toBe(cursorBefore);
+  });
+
   it("TEN-03 an unknown station, or one of another outlet, is refused (fail closed)", async () => {
     for (const stationId of [randomUUID(), ids.barB]) {
       const snapshotResponse = await kds().snapshot(stationId);
