@@ -3,14 +3,16 @@
 //
 // Mounts (routes/index.ts): apiRouter.use("/outlets/:outletId/pos", ...)
 
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import { z } from "zod";
+import { AccessError } from "@starter/shared/access";
 import { outletIdSchema, userIdSchema } from "@starter/shared/core";
 import { receiptNumberWriteoffInputSchema } from "@starter/shared/pos";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
+  getAccessSnapshot,
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
@@ -30,9 +32,21 @@ const owner = requireOutletPermission("pos.receipt.writeoff", outletOf);
 
 const params = z.strictObject({ outletId: outletIdSchema });
 
+// A write-off hides a missing number from the receipt trail for good, so the
+// session must have verified its second factor (AUTH-05), whatever role grants
+// the permission: `approve` is not an MFA-sensitive tag, so a custom role
+// holding the code would otherwise skip MFA. Runs after the permission check,
+// which loads the access snapshot.
+const verifiedSecondFactor: RequestHandler = (req, _res, next) => {
+  if (!getAccessSnapshot(req).mfaVerified)
+    throw new AccessError("MFA_REQUIRED");
+  next();
+};
+
 posReceiptWriteoffRouter.post(
   "/receipt-writeoffs",
   owner,
+  verifiedSecondFactor,
   jsonBody,
   async (req, res) => {
     const { outletId } = params.parse(req.params);

@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-0hzqw write-off teraudit nomor struk hilang (engineer, cabang `ws/receipt-number-writeoff` dari `ws/day-close-all-gaps` 57e92b6d, 2026-11-09)
+
+- Sudah: tabel `receipt_number_writeoffs` (migrasi 0156, when 1794235000000; FORCE RLS tenant + outlet, append-only, trigger backstop insert), izin `pos.receipt.writeoff` hanya template owner (backfill baris owner tenant lama di 0156), `POST`/`GET /api/outlets/:outletId/pos/receipt-writeoffs` (cloud saja, sesi wajib 2FA terverifikasi, kunci baris sequence, tolak nomor ber-struk / di atas lastNumber / ganda, audit `pos.receipt.written_off`). Cek celah (Tutup Hari, rekap shift) menghitung nomor write-off sebagai ada; rekap shift memuat `writtenOff`. Write-off yang nomornya kemudian punya struk diabaikan (tidak dihitung ganda).
+- Review K: reviewer Opus + architect. Dibetulkan: fast path tetap jalan dengan write-off, struk terlambat, wajib 2FA, runbook (edge, urutan rilis, rollback). Lanjutan: legend-jcby0 (sync write-off ke edge, P1), legend-refx7 (alarm struk terlambat), legend-vsw4q (UI, menunggu review founder). Brief Codex: `docs/briefs/201b-second-opinion-receipt-number-writeoff.md` (folder utama).
+- Rilis: 0155 (payroll) harus masuk sebelum atau bersama 0156. Runbook: `docs/runbooks/receipt-number-writeoff.md`.
+
 ## legend-6b0ld Tutup Hari memeriksa celah struk semua run outlet (engineer, cabang `ws/day-close-all-gaps` dari `ws/receipt-gaps-prefix` 4087b661, 2026-11-09)
 
 - Sudah: port baru `posOutletReceiptGapsPort` (app.ts memasang `receiptGapsForOutletFast`) dicek sekali di `closePosDay` sesudah loop per perangkat. Tutup Hari kini ditolak (`RECEIPT_SEQUENCE_GAP`) bila ada nomor hilang di run mana pun milik outlet: perangkat yang tidak aktif hari itu, perangkat dicabut, run pensiun, dan urutan cloud prefix C. Pesan menyebut sampai 20 nomor (mis. `C-000002`). Rentang hilang `edge_regressed` tetap tidak menahan. Hitungan celah memakai kolom ordinal (indeks).
