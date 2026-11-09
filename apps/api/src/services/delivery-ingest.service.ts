@@ -379,7 +379,11 @@ async function storeWithoutInjection(
   return row;
 }
 
-/** A platform cancel of a known order: through the machine, never a new order. */
+/**
+ * A platform cancel of a known order: through the machine, never a new order.
+ * `needsReview` when the POS order already has captured money (left unvoided
+ * for staff, see voidQueuedKdsLines).
+ */
 async function cancelFromPlatform(
   tx: Tx,
   context: ScopedTenantContext,
@@ -390,7 +394,7 @@ async function cancelFromPlatform(
     reason: string;
     now: Date;
   },
-): Promise<DeliveryChannelOrderRow> {
+): Promise<{ row: DeliveryChannelOrderRow; needsReview: boolean }> {
   assertDeliveryOrderTransition(existing.status, "cancelled");
   const tenantId = context.tenant.tenantId;
   const [row] = await tx
@@ -434,12 +438,12 @@ async function cancelFromPlatform(
   });
   // The kitchen stops: lines not started are voided (KDS too), their daily
   // limit released, and the POS order voided once no live line is left.
-  await voidQueuedKdsLines(tx, context, row, {
+  const { needsReview } = await voidQueuedKdsLines(tx, context, row, {
     reason: input.reason,
     actorUserId: null,
     now: input.now,
   });
-  return row;
+  return { row, needsReview };
 }
 
 /**
@@ -568,7 +572,11 @@ export function deliveryLinesChanged(
     lineSignature(
       items.map((item) => ({
         itemId: item.itemId.slice(0, 100),
-        variantId: item.variantId ?? null,
+        // As mapDeliveryLines stores it (uuidSchema lower-cases).
+        variantId:
+          item.variantId == null
+            ? null
+            : (uuidSchema.safeParse(item.variantId).data ?? item.variantId),
         quantity: item.quantity,
         unitPriceIdr: item.unitPriceIdr,
         modifiers: item.modifiers,
@@ -759,14 +767,19 @@ export async function ingestDeliveryWebhook(
           rejected: null,
         };
       }
-      const row = await cancelFromPlatform(tx, context, existing, {
-        payloadHash,
-        signedAt,
-        reason: payload.reason?.trim() || "Dibatalkan oleh platform",
-        now,
-      });
+      const { row, needsReview } = await cancelFromPlatform(
+        tx,
+        context,
+        existing,
+        {
+          payloadHash,
+          signedAt,
+          reason: payload.reason?.trim() || "Dibatalkan oleh platform",
+          now,
+        },
+      );
       return {
-        result: outcome("cancelled", row),
+        result: outcome(needsReview ? "needs_review" : "cancelled", row),
         accept: null,
         rejected: null,
       };

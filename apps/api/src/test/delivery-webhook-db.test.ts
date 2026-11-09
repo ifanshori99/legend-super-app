@@ -11,8 +11,10 @@ import request from "supertest";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { signDeliveryWebhook } from "@starter/shared/adapters";
+import type { DeliveryOrderLine } from "@starter/shared/delivery";
 import { errorHandler } from "../middleware/error-handler";
 import { createDeliveryWebhookRouter } from "../routes/delivery-webhook.routes";
+import { deliveryLinesChanged } from "../services/delivery-ingest.service.ts";
 import {
   clearRecordedDeliveryCalls,
   recordedDeliveryCalls,
@@ -654,8 +656,120 @@ describe("platform cancel voids the POS order", () => {
         [a.tenant.tenantId, orderUuid],
       );
       expect(tickets.rows.map((row) => row.status)).toEqual(["cancelled"]);
+      // Same order event and audit as a POS void, by the system.
+      const events = await db.query<{
+        actor_id: string | null;
+        payload: { reason: string };
+      }>(
+        `SELECT actor_id, payload FROM order_events
+          WHERE tenant_id = $1 AND order_id = $2::uuid AND type = 'order.voided'`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(events.rows).toHaveLength(1);
+      expect(events.rows[0]).toMatchObject({
+        actor_id: null,
+        payload: { reason: "Driver tidak ditemukan" },
+      });
+      const audit = await db.query<{ n: string }>(
+        `SELECT count(*) AS n FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'pos_order.voided'
+            AND event->>'objectId' = $2`,
+        [a.tenant.tenantId, created.body.data.orderId],
+      );
+      expect(Number(audit.rows[0]?.n)).toBe(1);
     });
     expect(await usage()).toBe(reserved - 2);
+  });
+
+  it("an order with captured money is not voided: needs_review and an audit entry", async () => {
+    const body = payloadOf(a);
+    const created = await send("gofood", body);
+    expect(created.body.data.result).toBe("injected");
+    const orderUuid = await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const { rows } = await db.query<{ id: string }>(
+        `SELECT id FROM orders WHERE tenant_id = $1 AND external_ref = $2`,
+        [a.tenant.tenantId, body.orderId],
+      );
+      const id = rows[0]!.id;
+      // A manual POS twin the cashier already took payment for (EDC card).
+      await db.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, amount_idr,
+            status, requested_at, resolved_at)
+         VALUES ($1, $2, $3, 'edc_card', 'edc', $4, 'captured', now(), now())`,
+        [a.tenant.tenantId, a.tenant.outletId, id, KOPI_IDR * 2],
+      );
+      return id;
+    });
+    const cancel = await send("gofood", {
+      storeId: a.goStore,
+      orderId: body.orderId,
+      event: "order.cancelled",
+      reason: "Pelanggan batal",
+      grossIdr: 0,
+    });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.data).toMatchObject({
+      result: "needs_review",
+      status: "cancelled",
+    });
+    await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const order = await db.query<{ status: string }>(
+        `SELECT status FROM orders WHERE tenant_id = $1 AND id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(order.rows[0]?.status).not.toBe("voided");
+      const items = await db.query<{ status: string }>(
+        `SELECT status FROM order_items WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      for (const item of items.rows) expect(item.status).not.toBe("voided");
+      const audit = await db.query<{ n: string }>(
+        `SELECT count(*) AS n FROM audit_logs
+          WHERE tenant_id = $1
+            AND event->>'action' = 'pos_order.delivery_cancel_needs_review'
+            AND event->>'objectId' = $2`,
+        [a.tenant.tenantId, created.body.data.orderId],
+      );
+      expect(Number(audit.rows[0]?.n)).toBe(1);
+    });
+  });
+});
+
+describe("deliveryLinesChanged", () => {
+  it("compares the variant id as stored (lower-cased), not as sent", () => {
+    const variantId = randomUUID();
+    const stored = [
+      {
+        lineNo: 1,
+        externalItemId: "kopi-1",
+        externalItemName: "Kopi Susu",
+        menuItemId: randomUUID(),
+        variantId,
+        quantity: 1,
+        unitPriceIdr: KOPI_IDR,
+        lineTotalIdr: KOPI_IDR,
+        modifiers: [],
+        note: null,
+        mapping: "matched",
+        channelPriceIdr: KOPI_IDR,
+      },
+    ] as unknown as DeliveryOrderLine[];
+    const item = {
+      itemId: "kopi-1",
+      name: "Kopi Susu",
+      quantity: 1,
+      unitPriceIdr: KOPI_IDR,
+      modifiers: [],
+    };
+    expect(
+      deliveryLinesChanged(stored, [
+        { ...item, variantId: variantId.toUpperCase() },
+      ]),
+    ).toBe(false);
+    expect(
+      deliveryLinesChanged(stored, [{ ...item, variantId: randomUUID() }]),
+    ).toBe(true);
   });
 });
 

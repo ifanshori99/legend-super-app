@@ -11,7 +11,7 @@
 // (platform-paid, PRD §3.23). The caller owns the transaction, the idempotency
 // decision (webhook replay vs. payload change, handled before this runs) and
 // any adapter call (accept_order is pushed after this commits).
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -32,6 +32,7 @@ import {
 import {
   domainEventOutbox,
   kitchenTicketItems,
+  kitchenTickets,
   menuItems,
 } from "../db/schema/index.ts";
 import { deliveryChannelOrders } from "../db/schema/delivery.ts";
@@ -58,7 +59,9 @@ import {
   appendPosEvent,
   auditPos,
   businessDateFor,
+  capturedIdr,
   loadOutlet,
+  tendersOf,
   type OrderRow,
 } from "./pos-order-support.ts";
 
@@ -747,18 +750,28 @@ async function linkManualTwin(
  * the platform's own cancel): POS line `voided`, daily limit released, KDS
  * ticket line voided (ticket cancelled once empty). A line whose KDS ticket
  * line is already in progress, ready or served is left alone. The order is
- * `voided` only when no live line is left. `actorUserId` null is the system
+ * `voided` only when no live line is left, with the same `order.voided`
+ * order event and audit as a POS void. `actorUserId` null is the system
  * (platform cancel): `voided_by` stays null.
+ *
+ * Money already captured on the POS order (a manual POS twin the cashier took
+ * payment for) is never voided here (same guard as `voidPosOrder`): nothing
+ * changes, an audit entry is written and `needsReview` is returned so staff
+ * settle it.
  */
 export async function voidQueuedKdsLines(
   tx: Tx,
   context: ScopedTenantContext,
   row: Pick<DeliveryChannelOrderRow, "orderId">,
   input: { reason: string; actorUserId: UserId | null; now: Date },
-): Promise<void> {
-  if (row.orderId === null) return;
+): Promise<{ needsReview: boolean }> {
+  if (row.orderId === null) return { needsReview: false };
   const tenantId = context.tenant.tenantId;
   const { now } = input;
+  const caller =
+    input.actorUserId === null
+      ? null
+      : { userId: input.actorUserId, deviceId: null };
   const [order] = await tx
     .select()
     .from(orders)
@@ -766,7 +779,38 @@ export async function voidQueuedKdsLines(
     .limit(1)
     .for("update");
   if (!order || order.status === "voided" || order.status === "completed")
-    return;
+    return { needsReview: false };
+  if (capturedIdr(await tendersOf(tx, context, order.id)) > 0) {
+    await auditPos(
+      tx,
+      context,
+      {
+        action: "pos_order.delivery_cancel_needs_review",
+        order,
+        caller,
+        before: { id: order.id, status: order.status },
+        after: { id: order.id, status: order.status },
+        reason: input.reason.slice(0, 500),
+      },
+      now,
+    );
+    return { needsReview: true };
+  }
+  // Order row first, then this order's kitchen tickets in id order: the KDS
+  // void lock order (lockOrderOf, then the ticket). A start or bump holds the
+  // ticket row, so no line can move to in_progress/ready between the check
+  // below and the void.
+  await tx
+    .select({ id: kitchenTickets.id })
+    .from(kitchenTickets)
+    .where(
+      and(
+        eq(kitchenTickets.tenantId, tenantId),
+        eq(kitchenTickets.orderId, order.id),
+      ),
+    )
+    .orderBy(asc(kitchenTickets.id))
+    .for("update");
   // The UPDATE ... WHERE status = 'queued' RETURNING is the once-only key.
   const voided = await tx
     .update(orderItems)
@@ -820,10 +864,7 @@ export async function voidQueuedKdsLines(
       orderId: order.id,
       itemIds: voided.map((item) => item.id),
       reason: input.reason,
-      actor:
-        input.actorUserId === null
-          ? null
-          : { userId: input.actorUserId, deviceId: null },
+      actor: caller,
       now,
     });
   }
@@ -837,7 +878,9 @@ export async function voidQueuedKdsLines(
         sql`${orderItems.status} <> 'voided'`,
       ),
     );
-  if (Number(live?.count ?? 0) > 0) return;
+  // Partial cancel (some lines already cooking): the POS order stays `sent`
+  // with nothing closing it; staff review is bead legend-5d76.
+  if (Number(live?.count ?? 0) > 0) return { needsReview: false };
   await tx
     .update(posOrders)
     .set({ voidReasonNote: input.reason.slice(0, 500), updatedAt: now })
@@ -853,4 +896,48 @@ export async function voidQueuedKdsLines(
       updatedAt: now,
     })
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
+  // Same order event and audit as voidPosOrder. The `order.voided` outbox
+  // event (appendPosEvent) is not emitted: its contract payload requires an
+  // approver and a void-reason enum a platform cancel does not have.
+  const payload = {
+    orderId: order.id,
+    outletId: order.outletId,
+    businessDate: order.businessDate,
+    amountIdr: order.totalIdr,
+    reason: input.reason.slice(0, 100),
+    reasonNote: input.reason.slice(0, 500),
+    approvedBy: input.actorUserId,
+    approvalRequestId: null,
+    overrideId: null,
+    voidedFinalOrder: false,
+    voidId: null,
+    receiptNumber: null,
+    voidedAt: now.toISOString(),
+  };
+  await appendOrderEvent(tx, context, {
+    order,
+    type: "order.voided",
+    payload,
+    caller,
+    now,
+  });
+  await auditPos(
+    tx,
+    context,
+    {
+      action: "pos_order.voided",
+      order,
+      caller,
+      before: { id: order.id, status: order.status, totalIdr: order.totalIdr },
+      after: {
+        id: order.id,
+        status: "voided",
+        itemCount: voided.length,
+        reason: input.reason.slice(0, 100),
+      },
+      reason: input.reason.slice(0, 500),
+    },
+    now,
+  );
+  return { needsReview: false };
 }
