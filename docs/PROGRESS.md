@@ -664,3 +664,8 @@ Langkah berikut CTO baru:
 - 23:25 Thread baru G3ggy "Edge link restored DB refuse" (brief 234, legend-a9iby, Opus high).
 - G04ur parkir menunggu job test 8ajy4 sejak 23:17.
 - 23:30 f3e0fb54 lolos verifikasi CTO 60/60 (5 file + migrasi), antre G9syc sesudah aa489d1b dengan rantai ulang 0165.
+- 23:40 m1 maju ke 42ee5c28 (gate batch29 lulus: API 6637 lulus/0 gagal, root 1705/1705). legend-4fzhu ditutup. Batch30 e4e4ed87, batch31 d7a95d0c, batch32 4c818489 (aa489d1b 0163, faa696e2, 126fe833), batch33 73af1bd0 (f3e0fb54 0165, prevId 0163). Gate batch32 berjalan; batch33 butuh gate sendiri.
+- 23:40 Merge train menahan 9b9d719e+61eb1ca0 di hold/ktc4d-qr1uv-b33: platform-tenant-owner.test.ts:700 gagal karena requirePlatformAdmin (sejak 6618970d) menolak sesi impersonate sebelum service menulis tenant_owner.denied. Keputusan CTO: audit penolakan dipindah ke middleware; G04ur mengerjakan sesudah 8ajy4, satu rantai.
+- 23:40 G9syc compact 2x: selesaikan gate batch32, FF, tulis serah terima, berhenti. CTO mulai thread merge train baru sesudahnya.
+- 23:40 G6q9e lapor imdzn+8bvin: ws/better-auth-admin-lockdown 814bc779 (semua /admin/* Better Auth 403 kecuali impersonate-user, stop-impersonating, has-permission hanya dari server). Verifikasi CTO 14 file berjalan. Kartu baru legend-atwse (P1: /api/admin/notes hanya cek user.role) dikirim ke G6q9e (ws/admin-notes-guard dari 814bc779). Catatan rilis: `pnpm role:set admin` tidak lagi memberi kelola user lewat Better Auth.
+- 23:40 Q46 ke founder: penjagaan saat Super Admin mengganti Owner (rekomendasi: kabari Owner lama dan semua Owner).
