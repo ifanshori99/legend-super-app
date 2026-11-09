@@ -655,6 +655,7 @@ const contracts = employees.map((employee, index) => {
     tenantId: tenant.id,
     employeeId: employee.id,
     type,
+    taxScheme: "gross",
     startDate: employee.joinDate,
     endDate,
     renewedFromId: index === 15 ? id(3015) : null,
