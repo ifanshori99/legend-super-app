@@ -11,6 +11,13 @@
 // 3. a seeded property test over payslips built with the real PPh 21 engine
 //    (`computePayslipTax`), summed by `sumPayrollRunTotals`.
 //
+// legend-75kr / legend-k8sz / legend-1coh (brief
+// docs/briefs/sub-payroll-journal-followups.md) add three more groups below:
+// custom deductions credit their own role `payroll_custom_deduction`, a service
+// charge mapped to revenue is paid out from salary expense
+// (`payroll.locked#service_charge_expense`), and a kasbon is disbursed from
+// petty cash or the bank (`employee_loan.disbursed#cash` / `#bank`).
+//
 // The employer refund is split (legend-w6vah): the part returning an earlier
 // gross-up tax allowance credits 6101 (the allowance was booked there), the
 // rest credits 6111 (employer-borne PPh 21).
@@ -24,6 +31,7 @@ import {
   defaultPostingRules,
   legalEntityIdSchema,
   payrollJournalAmounts,
+  payrollLockedVariant,
   postingRuleAmountKeys,
   resolvePostingRule,
   standardFnbChartTemplate,
@@ -31,6 +39,7 @@ import {
 import {
   DEFAULT_PPH21_POLICY,
   computePayslipTax,
+  employeeLoanDisbursed,
   payrollRunTotalsSchema,
   payslipCalculationSchema,
   payslipLineSchema,
@@ -57,9 +66,20 @@ const accountIds = new Map(
     ),
   ]),
 );
-const codeOfAccount = new Map(
-  [...accountIds].map(([code, id]) => [id as string, code]),
+// Extra accounts outside the standard chart: a liability for the remapped
+// payroll_custom_deduction role ("Utang Iuran Koperasi") and a revenue account
+// for a service charge the tenant maps to revenue.
+const koperasiLiabilityId = accountIdSchema.parse(
+  "33333333-3333-4333-8333-000000009001",
 );
+const scRevenueId = accountIdSchema.parse(
+  "33333333-3333-4333-8333-000000009002",
+);
+const codeOfAccount = new Map<string, string>([
+  ...[...accountIds].map(([code, id]) => [id as string, code] as const),
+  [koperasiLiabilityId as string, "2199"],
+  [scRevenueId as string, "4199"],
+]);
 const accountMap = accountMapFor(
   standardFnbChartTemplate.flatMap((row) =>
     row.roles.map((role) =>
@@ -73,6 +93,40 @@ const accountMap = accountMapFor(
   ),
   entity,
 );
+
+/** The standard map with some roles pointed at another account (null: unmapped). */
+function mapWith(
+  over: Partial<Record<string, typeof koperasiLiabilityId | null>>,
+) {
+  return accountMapFor(
+    [
+      ...standardFnbChartTemplate.flatMap((row) =>
+        row.roles
+          .filter((role) => !(role in over))
+          .map((role) =>
+            accountMappingSchema.parse({
+              tenantId,
+              legalEntityId: entity,
+              role,
+              accountId: accountIds.get(row.code),
+            }),
+          ),
+      ),
+      ...Object.entries(over)
+        .filter(([, accountId]) => accountId)
+        .map(([role, accountId]) =>
+          accountMappingSchema.parse({
+            tenantId,
+            legalEntityId: entity,
+            role,
+            accountId,
+          }),
+        ),
+    ],
+    entity,
+  );
+}
+const splitMap = mapWith({ payroll_custom_deduction: koperasiLiabilityId });
 
 type ByCode = Record<string, { debit: number; credit: number }>;
 type Built = ReturnType<typeof buildJournalLinesFromRule>;
@@ -104,15 +158,20 @@ function summarise(lines: Built) {
 const build = (
   postingRule: ReturnType<typeof rule>,
   amounts: Record<string, number>,
+  map: typeof accountMap = accountMap,
 ): Built =>
-  buildJournalLinesFromRule(postingRule, amounts, accountMap, {
+  buildJournalLinesFromRule(postingRule, amounts, map, {
     outletId: null,
   });
 
-const lockLines = (totals: PayrollRunTotals) =>
-  build(lockedRule, payrollJournalAmounts(totals));
-const reverseLines = (totals: PayrollRunTotals) =>
-  build(reversedRule, payrollJournalAmounts(totals));
+const lockLines = (
+  totals: PayrollRunTotals,
+  map: typeof accountMap = accountMap,
+) => build(lockedRule, payrollJournalAmounts(totals), map);
+const reverseLines = (
+  totals: PayrollRunTotals,
+  map: typeof accountMap = accountMap,
+) => build(reversedRule, payrollJournalAmounts(totals), map);
 
 /**
  * Run totals from the parts a payroll has. Everything derived follows the
@@ -133,7 +192,10 @@ type Parts = {
   employerAllowanceRefund?: number;
   loan?: number;
   collected?: number;
+  /** LATE (other deductions that are not custom). */
   other?: number;
+  /** Custom deductions (koperasi dues etc.); part of otherDeductionsIdr. */
+  custom?: number;
   serviceCharge?: number;
   reimbursement?: number;
 };
@@ -150,11 +212,13 @@ function totalsOf(parts: Parts): PayrollRunTotals {
     loan: 0,
     collected: 0,
     other: 0,
+    custom: 0,
     serviceCharge: 0,
     reimbursement: 0,
     ...parts,
   };
-  const deductions = p.bpjsEmp + p.withheld + p.loan + p.collected + p.other;
+  const deductions =
+    p.bpjsEmp + p.withheld + p.loan + p.collected + p.other + p.custom;
   const net = p.gross - deductions;
   return payrollRunTotalsSchema.parse({
     employeeCount: 1,
@@ -172,7 +236,8 @@ function totalsOf(parts: Parts): PayrollRunTotals {
     loanRepaymentIdr: p.loan,
     pph21ReceivableIdr: p.receivable,
     pph21ReceivableCollectedIdr: p.collected,
-    otherDeductionsIdr: p.other,
+    otherDeductionsIdr: p.other + p.custom,
+    customDeductionsIdr: p.custom,
     serviceChargeIdr: p.serviceCharge,
     reimbursementIdr: p.reimbursement,
     bankTransferIdr: net,
@@ -199,6 +264,17 @@ const cases: [string, Parts, ByCode][] = [
       "6101": { debit: 10_000_000, credit: 75_000 },
       "6102": { debit: 400_000, credit: 0 },
       "2103": { debit: 0, credit: 9_375_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    },
+  ],
+  [
+    "custom deduction 60.000 with the default mapping credits 6101 like LATE",
+    { ...base, custom: 60_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 60_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_390_000 },
       "2104": { debit: 0, credit: 700_000 },
       "2202": { debit: 0, credit: 250_000 },
     },
@@ -324,19 +400,21 @@ const cases: [string, Parts, ByCode][] = [
       loan: 500_000,
       collected: 100_000,
       other: 75_000,
+      custom: 60_000,
       serviceCharge: 1_000_000,
       reimbursement: 300_000,
     },
     {
-      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = other 75.000 +
-      // the allowance part 25.000 of the employer refund 40.000
-      "6101": { debit: 18_610_000, credit: 100_000 },
+      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = LATE 75.000 +
+      // custom 60.000 (default mapping: same account) + the allowance part
+      // 25.000 of the employer refund 40.000
+      "6101": { debit: 18_610_000, credit: 160_000 },
       "6111": { debit: 124_062, credit: 15_000 },
       "2106": { debit: 1_000_000, credit: 0 },
       "6110": { debit: 300_000, credit: 0 },
       "6102": { debit: 400_000, credit: 0 },
       "1204": { debit: 200_000, credit: 600_000 },
-      "2103": { debit: 0, credit: 18_775_000 },
+      "2103": { debit: 0, credit: 18_715_000 },
       "2104": { debit: 0, credit: 700_000 },
       "2202": { debit: 0, credit: 444_062 },
     },
@@ -381,7 +459,8 @@ describe("payroll.locked from run totals", () => {
       pph21EmployerBorneIdr: 124_062,
       pph21EmployerAllowanceRefundIdr: 25_000,
       pph21EmployerBorneRefundIdr: 15_000,
-      otherDeductionsIdr: 75_000,
+      lateDeductionsIdr: 75_000,
+      customDeductionsIdr: 60_000,
       serviceChargeIdr: 1_000_000,
       reimbursementIdr: 300_000,
       bpjsCompanyIdr: 400_000,
@@ -389,7 +468,7 @@ describe("payroll.locked from run totals", () => {
       pph21ReceivableIdr: 200_000,
       pph21ReceivableCollectedIdr: 100_000,
       loanRepaymentIdr: 500_000,
-      netIdr: 18_775_000,
+      netIdr: 18_715_000,
       pph21Idr: 444_062,
     });
   });
@@ -686,6 +765,343 @@ describe("employer refund split (legend-w6vah)", () => {
       pph21EmployerAllowanceRefundIdr: 40_001,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---- legend-75kr: custom deductions have their own role --------------------
+
+describe("custom deductions credit payroll_custom_deduction (legend-75kr)", () => {
+  // LATE 75.000 and a koperasi due of 60.000 in the same run.
+  const mixed: Parts = { ...base, other: 75_000, custom: 60_000 };
+
+  it("the standard chart maps the role to 6101 together with salary_expense", () => {
+    const row = standardFnbChartTemplate.find((r) => r.code === "6101");
+    expect(row?.roles).toEqual(["salary_expense", "payroll_custom_deduction"]);
+  });
+
+  it("remapped to a liability: custom credits that account, LATE still credits 6101", () => {
+    const { byCode, debit, credit } = summarise(
+      lockLines(totalsOf(mixed), splitMap),
+    );
+    expect(byCode).toEqual({
+      "6101": { debit: 10_000_000, credit: 75_000 },
+      "2199": { debit: 0, credit: 60_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_315_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    });
+    expect(debit).toBe(10_400_000);
+    expect(debit).toBe(credit);
+  });
+
+  it("with the default mapping custom and LATE both land on 6101 (today's posting)", () => {
+    const { byCode, debit, credit } = summarise(lockLines(totalsOf(mixed)));
+    expect(byCode["6101"]).toEqual({ debit: 10_000_000, credit: 135_000 });
+    expect(byCode["2199"]).toBeUndefined();
+    expect(debit).toBe(credit);
+  });
+
+  it("splits the amount keys: late + custom = otherDeductionsIdr", () => {
+    const totals = totalsOf(mixed);
+    const amounts = payrollJournalAmounts(totals);
+    expect(amounts.lateDeductionsIdr).toBe(75_000);
+    expect(amounts.customDeductionsIdr).toBe(60_000);
+    expect(amounts.lateDeductionsIdr + amounts.customDeductionsIdr).toBe(
+      totals.otherDeductionsIdr,
+    );
+    expect("otherDeductionsIdr" in amounts).toBe(false);
+  });
+
+  it("locked and reversed are balanced and the reversal mirrors the lock (remapped)", () => {
+    const totals = totalsOf(mixed);
+    const locked = lockLines(totals, splitMap);
+    const reversed = reverseLines(totals, splitMap);
+    expect(reversed.map((l) => [l.accountId, l.creditIdr, l.debitIdr])).toEqual(
+      locked.map((l) => [l.accountId, l.debitIdr, l.creditIdr]),
+    );
+    const both = summarise([...locked, ...reversed]);
+    expect(summarise(reversed).debit).toBe(summarise(reversed).credit);
+    for (const row of Object.values(both.byCode))
+      expect(row.debit).toBe(row.credit);
+    expect(both.byCode["2199"]).toEqual({ debit: 60_000, credit: 60_000 });
+  });
+
+  it("custom only: LATE is zero, so 6101 gets no credit when remapped", () => {
+    const { byCode, debit, credit } = summarise(
+      lockLines(totalsOf({ ...base, custom: 60_000 }), splitMap),
+    );
+    expect(byCode["6101"]).toEqual({ debit: 10_000_000, credit: 0 });
+    expect(byCode["2199"]).toEqual({ debit: 0, credit: 60_000 });
+    expect(debit).toBe(credit);
+  });
+
+  it("totals written before customDeductionsIdr parse to 0 and post exactly as before", () => {
+    const { customDeductionsIdr, ...legacy } = totalsOf({
+      ...base,
+      other: 75_000,
+    });
+    void customDeductionsIdr;
+    const parsed = payrollRunTotalsSchema.parse(legacy);
+    expect(parsed.customDeductionsIdr).toBe(0);
+    expect(parsed.otherDeductionsIdr).toBe(75_000);
+    const amounts = payrollJournalAmounts(parsed);
+    expect(amounts.lateDeductionsIdr).toBe(75_000);
+    expect(amounts.customDeductionsIdr).toBe(0);
+    // Even with the custom role remapped: all 75.000 stays on 6101, as before.
+    const expected = cases.find(([name]) => name.startsWith("LATE 75.000"))![2];
+    for (const map of [accountMap, splitMap])
+      expect(summarise(lockLines(parsed, map)).byCode).toEqual(expected);
+  });
+
+  it("rejects custom deductions above the other deductions", () => {
+    const good = totalsOf(mixed);
+    expect(payrollRunTotalsSchema.safeParse(good).success).toBe(true);
+    const over = payrollRunTotalsSchema.safeParse({
+      ...good,
+      customDeductionsIdr: good.otherDeductionsIdr + 1,
+    });
+    expect(over.success).toBe(false);
+    if (!over.success)
+      expect(over.error.issues.map((i) => i.path[0])).toEqual([
+        "customDeductionsIdr",
+      ]);
+    expect(() =>
+      payrollJournalAmounts({
+        ...good,
+        customDeductionsIdr: good.otherDeductionsIdr + 1,
+      } as PayrollRunTotals),
+    ).toThrow();
+    // All other deductions custom (LATE zero) is fine.
+    expect(
+      payrollRunTotalsSchema.safeParse({
+        ...good,
+        customDeductionsIdr: good.otherDeductionsIdr,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a negative custom deduction total", () => {
+    expect(
+      payrollRunTotalsSchema.safeParse({
+        ...totalsOf(mixed),
+        customDeductionsIdr: -1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("sumPayrollRunTotals sums the custom_deduction lines only", () => {
+    const rng = lcg(7);
+    const slips = Array.from({ length: 200 }, () => fuzzSlip(rng));
+    const expected = slips
+      .flatMap((slip) => slip.lines)
+      .filter(
+        (l) => l.kind === "deduction" && l.category === "custom_deduction",
+      )
+      .reduce((sum, l) => sum + l.amountIdr, 0);
+    const totals = sumPayrollRunTotals(slips);
+    expect(expected).toBeGreaterThan(0);
+    expect(totals.customDeductionsIdr).toBe(expected);
+    expect(totals.otherDeductionsIdr).toBeGreaterThanOrEqual(expected);
+  });
+
+  it("with the role unmapped a custom deduction fails closed; zero custom still posts", () => {
+    const unmapped = mapWith({ payroll_custom_deduction: null });
+    expect(() => lockLines(totalsOf(mixed), unmapped)).toThrow(
+      /payroll_custom_deduction/,
+    );
+    expect(() =>
+      lockLines(totalsOf({ ...base, other: 75_000 }), unmapped),
+    ).not.toThrow();
+  });
+});
+
+// ---- legend-k8sz: service charge payout never debits revenue ---------------
+
+describe("service charge mapped to revenue (legend-k8sz)", () => {
+  const scMap = mapWith({ service_charge: scRevenueId });
+  const withSc: Parts = { ...base, serviceCharge: 1_000_000 };
+  const variantRule = rule("payroll.locked", "service_charge_expense");
+
+  it("payrollLockedVariant picks the variant only for revenue; every other type or no mapping keeps the base rule", () => {
+    expect(payrollLockedVariant("revenue")).toBe("service_charge_expense");
+    expect(payrollLockedVariant("liability")).toBeUndefined();
+    expect(payrollLockedVariant("expense")).toBeUndefined();
+    expect(payrollLockedVariant("asset")).toBeUndefined();
+    expect(payrollLockedVariant("equity")).toBeUndefined();
+    expect(payrollLockedVariant(null)).toBeUndefined();
+  });
+
+  it("legacy expense / asset / equity mapping: the base rule debits the mapped account, not 6101", () => {
+    // 6111 stands for any legacy non-liability account the tenant mapped; the
+    // base case (no employer refund) posts nothing else to it.
+    const legacyMap = mapWith({ service_charge: accountIds.get("6111")! });
+    const { byCode, debit, credit } = summarise(
+      lockLines(totalsOf(withSc), legacyMap),
+    );
+    expect(byCode["6111"]).toEqual({ debit: 1_000_000, credit: 0 });
+    expect(byCode["2106"]).toBeUndefined();
+    expect(byCode["6101"]).toEqual({ debit: 9_000_000, credit: 0 });
+    expect(debit).toBe(credit);
+  });
+
+  it("the variant takes the same amount keys as the base rule", () => {
+    expect(postingRuleAmountKeys(variantRule)).toEqual(
+      postingRuleAmountKeys(lockedRule),
+    );
+  });
+
+  it("revenue mapping: the 1.000.000 is debited to 6101, never to the revenue account or 2106", () => {
+    const { byCode, debit, credit } = summarise(
+      build(variantRule, payrollJournalAmounts(totalsOf(withSc)), scMap),
+    );
+    expect(byCode).toEqual({
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    });
+    expect(byCode["4199"]).toBeUndefined();
+    expect(byCode["2106"]).toBeUndefined();
+    expect(debit).toBe(credit);
+  });
+
+  it("liability mapping keeps the base rule: Dr 2106 (case 'service charge 1.000.000')", () => {
+    const [, parts, expected] = cases.find(([name]) =>
+      name.startsWith("service charge 1.000.000"),
+    )!;
+    expect(payrollLockedVariant("liability")).toBeUndefined();
+    expect(summarise(lockLines(totalsOf(parts))).byCode).toEqual(expected);
+  });
+
+  it("with no service charge the variant posts exactly like the base rule", () => {
+    const amounts = payrollJournalAmounts(totalsOf({ ...base, other: 75_000 }));
+    expect(summarise(build(variantRule, amounts, scMap)).byCode).toEqual(
+      summarise(build(lockedRule, amounts, scMap)).byCode,
+    );
+  });
+
+  it("everything at once: only the service charge debit moves from 2106 to 6101", () => {
+    const [, parts, expected] = cases.find(
+      ([name]) => name === "everything at once",
+    )!;
+    const { byCode, debit, credit } = summarise(
+      build(variantRule, payrollJournalAmounts(totalsOf(parts)), scMap),
+    );
+    const { "2106": moved, ...rest } = expected;
+    expect(moved).toEqual({ debit: 1_000_000, credit: 0 });
+    expect(byCode).toEqual({
+      ...rest,
+      "6101": {
+        debit: expected["6101"]!.debit + 1_000_000,
+        credit: expected["6101"]!.credit,
+      },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("the lock mirrored (what the consumer's reversal posts) nets every account to zero", () => {
+    const amounts = payrollJournalAmounts(totalsOf(withSc));
+    const locked = build(variantRule, amounts, scMap);
+    const mirrored = locked.map((l) => ({
+      ...l,
+      debitIdr: l.creditIdr,
+      creditIdr: l.debitIdr,
+    }));
+    const both = summarise([...locked, ...mirrored]);
+    for (const row of Object.values(both.byCode))
+      expect(row.debit).toBe(row.credit);
+  });
+
+  it("no service charge mapping at all: the base rule fails closed when SC > 0", () => {
+    const none = mapWith({ service_charge: null });
+    expect(() => lockLines(totalsOf(withSc), none)).toThrow(/service_charge/);
+  });
+});
+
+// ---- legend-1coh: kasbon disbursed through cash or bank ---------------------
+
+describe("employee_loan.disbursed via cash or bank (legend-1coh)", () => {
+  const principal = { principalIdr: 2_000_000 };
+
+  it("cash credits petty cash 1102", () => {
+    const { byCode, debit, credit } = summarise(
+      build(rule("employee_loan.disbursed", "cash"), principal),
+    );
+    expect(byCode).toEqual({
+      "1204": { debit: 2_000_000, credit: 0 },
+      "1102": { debit: 0, credit: 2_000_000 },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("bank credits the operating bank account 1103", () => {
+    const { byCode, debit, credit } = summarise(
+      build(rule("employee_loan.disbursed", "bank"), principal),
+    );
+    expect(byCode).toEqual({
+      "1204": { debit: 2_000_000, credit: 0 },
+      "1103": { debit: 0, credit: 2_000_000 },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("the base rule (events without disbursedVia) still credits petty cash", () => {
+    expect(
+      summarise(build(rule("employee_loan.disbursed"), principal)).byCode,
+    ).toEqual({
+      "1204": { debit: 2_000_000, credit: 0 },
+      "1102": { debit: 0, credit: 2_000_000 },
+    });
+  });
+
+  it("all variants take only principalIdr, so one payload feeds any of them", () => {
+    for (const variant of [undefined, "cash", "bank"])
+      expect(
+        postingRuleAmountKeys(rule("employee_loan.disbursed", variant)),
+      ).toEqual(["principalIdr"]);
+  });
+
+  it("an unknown variant has no rule", () => {
+    expect(() => rule("employee_loan.disbursed", "cheque")).toThrow(
+      /No posting rule/,
+    );
+  });
+
+  describe("event payload", () => {
+    const payload = {
+      employeeLoanId: "66666666-6666-4666-8666-000000000001",
+      employeeId: "44444444-4444-4444-8444-000000000001",
+      legalEntityId: entity,
+      principalIdr: 2_000_000,
+      disbursedBy: "77777777-7777-4777-8777-000000000001",
+      disbursedAt: "2026-11-27T05:00:00.000Z",
+    };
+
+    it("disbursedVia is optional: events emitted before legend-1coh still parse", () => {
+      const parsed = employeeLoanDisbursed.payloadSchema.parse(payload);
+      expect(parsed.disbursedVia).toBeUndefined();
+    });
+
+    it.each(["cash", "bank"] as const)("accepts disbursedVia %s", (via) => {
+      expect(
+        employeeLoanDisbursed.payloadSchema.parse({
+          ...payload,
+          disbursedVia: via,
+        }).disbursedVia,
+      ).toBe(via);
+    });
+
+    it("rejects any other disbursedVia", () => {
+      for (const via of ["cheque", "Bank", "", null])
+        expect(
+          employeeLoanDisbursed.payloadSchema.safeParse({
+            ...payload,
+            disbursedVia: via,
+          }).success,
+        ).toBe(false);
+    });
   });
 });
 
@@ -1013,6 +1429,7 @@ describe("property: payroll journal balances for engine-built payslips", () => {
       withEmployerRefund: 0,
       withAllowanceRefund: 0,
       negativePph21: 0,
+      withCustom: 0,
     };
     for (let i = 0; i < FUZZ_CASES; i += 1) {
       const seed = FUZZ_SEED + i;
@@ -1077,6 +1494,40 @@ describe("property: payroll journal balances for engine-built payslips", () => {
         expect(owed("6111")).toBe(totals.pph21EmployerBorneIdr - borneRefund);
         if (allowanceRefund > 0) seen.withAllowanceRefund += 1;
 
+        // legend-75kr: customDeductionsIdr is the sum of the custom_deduction
+        // lines; remapped to a liability it credits its own account and LATE
+        // alone stays on 6101. Balanced, and locked + reversed net to zero.
+        const customLines = slips
+          .flatMap((slip) => slip.lines)
+          .filter(
+            (l) => l.kind === "deduction" && l.category === "custom_deduction",
+          )
+          .reduce((sum, l) => sum + l.amountIdr, 0);
+        expect(totals.customDeductionsIdr).toBe(customLines);
+        expect(totals.customDeductionsIdr).toBeLessThanOrEqual(
+          totals.otherDeductionsIdr,
+        );
+        const split = summarise(lockLines(totals, splitMap));
+        const splitReversed = summarise(reverseLines(totals, splitMap));
+        expect(split.debit).toBe(split.credit);
+        expect(splitReversed.debit).toBe(splitReversed.credit);
+        expect(split.debit).toBe(locked.debit);
+        expect(
+          (split.byCode["2199"]?.credit ?? 0) -
+            (split.byCode["2199"]?.debit ?? 0),
+        ).toBe(totals.customDeductionsIdr);
+        expect(
+          (split.byCode["6101"]?.debit ?? 0) -
+            (split.byCode["6101"]?.credit ?? 0),
+        ).toBe(owed("6101") + totals.customDeductionsIdr);
+        const splitBoth = summarise([
+          ...lockLines(totals, splitMap),
+          ...reverseLines(totals, splitMap),
+        ]);
+        for (const row of Object.values(splitBoth.byCode))
+          expect(row.debit).toBe(row.credit);
+        if (totals.customDeductionsIdr > 0) seen.withCustom += 1;
+
         if (totals.pph21RefundIdr > 0) seen.withRefund += 1;
         if (totals.pph21ReceivableIdr > 0) seen.withReceivable += 1;
         if (totals.pph21EmployerBorneIdr > 0) seen.withBorne += 1;
@@ -1096,5 +1547,6 @@ describe("property: payroll journal balances for engine-built payslips", () => {
     expect(seen.withEmployerRefund).toBeGreaterThan(0);
     expect(seen.withAllowanceRefund).toBeGreaterThan(0);
     expect(seen.negativePph21).toBeGreaterThan(0);
+    expect(seen.withCustom).toBeGreaterThan(0);
   });
 });

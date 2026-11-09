@@ -8,14 +8,23 @@
 // if the module was switched off since. An all-zero journal is `skipped`.
 //
 // - `payroll.locked`: the run journal (`payroll.locked` rule) on the period
-//   end, amounts from `payrollJournalAmounts(totals)`.
+//   end, amounts from `payrollJournalAmounts(totals)`. When the entity's
+//   service_charge mapping points to a revenue account, the
+//   `service_charge_expense` variant is posted (`payrollLockedVariant`): the
+//   service charge payout debits salary_expense, never revenue. Other types
+//   (liability, or a legacy mapping saved before the type guard) debit the
+//   mapped account, where the POS credited it. No service_charge mapping: the base rule, which then fails
+//   ACCOUNT_MAPPING_MISSING when the service charge is above 0.
 // - `payroll.paid`: Dr salaries_payable net, Cr bank / petty_cash, on the
 //   business date of the payment. Skipped when the run has no locked entry
 //   (accounting switched on after the lock): the payable was never booked.
 // - `payroll.reversed`: reverses the locked entry itself (ACC-01 path), so the
 //   reversal mirrors what was really posted. The `payroll.reversed` rule built
-//   from the payload totals is only a cross-check against that entry.
-// - `employee_loan.disbursed`: Dr employee_receivable, Cr petty_cash.
+//   from the payload totals is only a cross-check against that entry; it uses
+//   the base `payroll.locked` rule because the variants share the amount keys.
+// - `employee_loan.disbursed`: Dr employee_receivable, Cr petty_cash (`cash`)
+//   or bank (`bank`) by the payload's `disbursedVia`; absent (events emitted
+//   before legend-1coh) posts the base rule, petty cash.
 // - `reimbursement.paid`: a payroll payout posts nothing (the run journal
 //   carries it); a cash payout posts on the employee's legal entity.
 //
@@ -39,8 +48,10 @@
 
 import { and, eq } from "drizzle-orm";
 import {
+  type AccountType,
   defaultPostingRules,
   payrollJournalAmounts,
+  payrollLockedVariant,
   resolvePostingRule,
 } from "@starter/shared/accounting";
 import {
@@ -59,6 +70,8 @@ import {
 } from "@starter/shared/hris/payroll";
 import { isModuleEnabled } from "@starter/shared/platform";
 import {
+  accountMappings,
+  chartOfAccounts,
   employees,
   journalEntries,
   journalLines,
@@ -117,6 +130,34 @@ function entryDateOf(instant: string) {
 
 const minDate = (a: string, b: string) => (a < b ? a : b);
 const maxDate = (a: string, b: string) => (a > b ? a : b);
+
+/** Type of the account the entity's service_charge role maps to, if any. */
+async function serviceChargeAccountType(
+  tx: Tx,
+  context: ScopedTenantContext,
+  legalEntityId: string,
+): Promise<AccountType | null> {
+  const [row] = await tx
+    .select({ type: chartOfAccounts.type })
+    .from(accountMappings)
+    .innerJoin(
+      chartOfAccounts,
+      and(
+        eq(chartOfAccounts.tenantId, accountMappings.tenantId),
+        eq(chartOfAccounts.legalEntityId, accountMappings.legalEntityId),
+        eq(chartOfAccounts.id, accountMappings.accountId),
+      ),
+    )
+    .where(
+      and(
+        eq(accountMappings.tenantId, context.tenant.tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "service_charge"),
+      ),
+    )
+    .limit(1);
+  return row?.type ?? null;
+}
 
 /** Sorted non-zero amounts of one side: what the entry's lines must carry. */
 function sideAmounts(
@@ -237,6 +278,11 @@ export async function deliverPayrollGlEvent(
       context,
       {
         eventName: payrollLocked.name,
+        variant: payrollLockedVariant(
+          amounts.serviceChargeIdr
+            ? await serviceChargeAccountType(tx, context, payload.legalEntityId)
+            : null,
+        ),
         amounts,
         legalEntityId: payload.legalEntityId,
         outletId: null,
@@ -302,7 +348,8 @@ export async function deliverPayrollGlEvent(
     )
       return { status: "skipped" };
     // Cross-check: the reversed totals must be the amounts that were posted,
-    // line by line (sorted per side), not only the total.
+    // line by line (sorted per side), not only the total. The base rule serves
+    // every variant: they share the amount keys, so the sums agree.
     const rule = resolvePostingRule(defaultPostingRules, {
       eventName: payrollLocked.name,
     });
@@ -310,11 +357,25 @@ export async function deliverPayrollGlEvent(
       payload.totals,
     );
     const posted = await entrySideAmounts(tx, context, locked.id);
-    const expected = {
-      debit: sideAmounts(rule.lines, amounts, "debit"),
-      credit: sideAmounts(rule.lines, amounts, "credit"),
+    const expectedFor = (values: Readonly<Record<string, number>>) =>
+      JSON.stringify({
+        debit: sideAmounts(rule.lines, values, "debit"),
+        credit: sideAmounts(rule.lines, values, "credit"),
+      });
+    // An entry locked before legend-75kr carries late + custom deductions as
+    // one salary_expense credit; accept that shape too, so a run locked then
+    // can still be reversed when its totals now split the custom part.
+    const legacyAmounts = {
+      ...amounts,
+      lateDeductionsIdr:
+        (amounts.lateDeductionsIdr ?? 0) + (amounts.customDeductionsIdr ?? 0),
+      customDeductionsIdr: 0,
     };
-    if (JSON.stringify(expected) !== JSON.stringify(posted))
+    const postedShape = JSON.stringify(posted);
+    if (
+      expectedFor(amounts) !== postedShape &&
+      expectedFor(legacyAmounts) !== postedShape
+    )
       throw new Error(
         `payroll.reversed totals differ from the locked entry of run ${payload.payrollRunId}`,
       );
@@ -340,6 +401,7 @@ export async function deliverPayrollGlEvent(
       context,
       {
         eventName: employeeLoanDisbursed.name,
+        variant: payload.disbursedVia,
         amounts: { principalIdr: payload.principalIdr },
         legalEntityId: payload.legalEntityId,
         outletId: null,

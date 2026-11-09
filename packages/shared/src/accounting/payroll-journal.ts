@@ -12,7 +12,9 @@
 // Credits (the employer refund erf = erfA + erfB: the gross-up allowance part
 // erfA goes to salary_expense, the borne part erfB to pph21_borne_expense):
 // net + (bpjsEmp + bpjsCo) + pph21 + collected + loan + other + erfA + erfB,
-// where net = gross - (bpjsEmp + W + loan + collected + other) and
+// where other = late + custom (both credited: late to salary_expense, custom to
+// payroll_custom_deduction), net = gross - (bpjsEmp + W + loan + collected +
+// other) and
 // pph21 = W + B + R - rf - erf. Substituting:
 //   gross - bpjsEmp - W - loan - collected - other + bpjsEmp + bpjsCo
 //   + W + B + R - rf - erf + collected + loan + other + erf
@@ -20,7 +22,7 @@
 // which equals the debits. The totals schema guards both identities, so the
 // journal balances for every parsed totals object.
 
-import type { PayrollRunTotals } from "../hris/payroll/payslips.ts";
+import type { PayrollRunTotalsInput } from "../hris/payroll/payslips.ts";
 import { payrollRunTotalsSchema } from "../hris/payroll/payslips.ts";
 
 export type PayrollJournalAmountKey =
@@ -28,7 +30,8 @@ export type PayrollJournalAmountKey =
   | "pph21EmployerBorneIdr"
   | "pph21EmployerAllowanceRefundIdr"
   | "pph21EmployerBorneRefundIdr"
-  | "otherDeductionsIdr"
+  | "lateDeductionsIdr"
+  | "customDeductionsIdr"
   | "serviceChargeIdr"
   | "reimbursementIdr"
   | "bpjsCompanyIdr"
@@ -40,7 +43,7 @@ export type PayrollJournalAmountKey =
   | "pph21Idr";
 
 export function payrollJournalAmounts(
-  totals: PayrollRunTotals,
+  totals: PayrollRunTotalsInput,
 ): Record<PayrollJournalAmountKey, number> {
   // Parse first so the invariants hold even for a hand-built object.
   const t = payrollRunTotalsSchema.parse(totals);
@@ -51,7 +54,9 @@ export function payrollJournalAmounts(
     pph21EmployerAllowanceRefundIdr: t.pph21EmployerAllowanceRefundIdr,
     pph21EmployerBorneRefundIdr:
       t.pph21EmployerRefundIdr - t.pph21EmployerAllowanceRefundIdr,
-    otherDeductionsIdr: t.otherDeductionsIdr,
+    // Other deductions that are not custom (today: late).
+    lateDeductionsIdr: t.otherDeductionsIdr - t.customDeductionsIdr,
+    customDeductionsIdr: t.customDeductionsIdr,
     serviceChargeIdr: t.serviceChargeIdr,
     reimbursementIdr: t.reimbursementIdr,
     bpjsCompanyIdr: t.bpjsCompanyIdr,

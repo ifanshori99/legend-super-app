@@ -1086,6 +1086,13 @@
       "when": 1794233000000,
       "tag": "0154_receipt_sequence_restore_detect",
       "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1794234000000,
+      "tag": "0155_payroll_custom_deduction_role",
+      "breakpoints": true
     }
   ]
 }

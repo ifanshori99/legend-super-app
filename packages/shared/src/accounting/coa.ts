@@ -224,11 +224,40 @@ export const POSTING_ACCOUNT_ROLES = {
   depreciation_expense: "expense",
   service_expense: "expense",
   cash_over_short: "expense",
-  // Service charge may be revenue or a staff liability; the tenant decides by
-  // mapping it (PRD F11 service charge is configuration), so no type is fixed.
+  /**
+   * Custom payroll deductions (koperasi dues etc.). Default is salary_expense's
+   * account (today's behaviour); a tenant may remap it to a liability such as
+   * "Utang Iuran Koperasi". Allowed types: see POSTING_ROLE_ALLOWED_TYPES.
+   */
+  payroll_custom_deduction: null,
+  // Service charge may be a staff liability or revenue; the tenant decides by
+  // mapping it (PRD F11 service charge is configuration). Allowed types: see
+  // POSTING_ROLE_ALLOWED_TYPES.
   service_charge: null,
 } as const satisfies Record<string, AccountType | null>;
 export type PostingAccountRole = keyof typeof POSTING_ACCOUNT_ROLES;
+
+/**
+ * Roles without a single fixed type (value `null` above) that still restrict
+ * the mapped account to a list of types. A `null` role missing here accepts
+ * any type.
+ */
+export const POSTING_ROLE_ALLOWED_TYPES: Partial<
+  Record<PostingAccountRole, readonly AccountType[]>
+> = {
+  service_charge: ["liability", "revenue"],
+  payroll_custom_deduction: ["expense", "liability"],
+};
+
+/** Account types a role may be mapped to; null = any type. */
+export function allowedAccountTypesForRole(
+  role: PostingAccountRole,
+): readonly AccountType[] | null {
+  const fixed: AccountType | null = POSTING_ACCOUNT_ROLES[role];
+  if (fixed !== null) return [fixed];
+  return POSTING_ROLE_ALLOWED_TYPES[role] ?? null;
+}
+
 export const postingAccountRoleSchema = z.enum(
   Object.keys(POSTING_ACCOUNT_ROLES) as [
     PostingAccountRole,
@@ -261,9 +290,11 @@ export function accountMappingIssues(
       issues.push(`Role ${mapping.role}: account not in this legal entity`);
       continue;
     }
-    const expected = POSTING_ACCOUNT_ROLES[mapping.role];
-    if (expected !== null && account.type !== expected)
-      issues.push(`Role ${mapping.role}: needs a ${expected} account`);
+    const allowed = allowedAccountTypesForRole(mapping.role);
+    if (allowed !== null && !allowed.includes(account.type))
+      issues.push(
+        `Role ${mapping.role}: needs a ${allowed.join(" or ")} account`,
+      );
     if (headers.has(account.id))
       issues.push(`Role ${mapping.role}: header account is not postable`);
   }
@@ -426,7 +457,13 @@ const standardRows: Row[] = [
   ["5102", "Waste dan Spoilage", "cogs", "5100", ["waste_expense"]],
   ["5103", "Selisih Stok Opname", "cogs", "5100", ["inventory_adjustment"]],
   ["6100", "Beban Operasional", "operating_expense", null],
-  ["6101", "Beban Gaji", "operating_expense", "6100", ["salary_expense"]],
+  [
+    "6101",
+    "Beban Gaji",
+    "operating_expense",
+    "6100",
+    ["salary_expense", "payroll_custom_deduction"],
+  ],
   [
     "6102",
     "Beban BPJS Perusahaan",

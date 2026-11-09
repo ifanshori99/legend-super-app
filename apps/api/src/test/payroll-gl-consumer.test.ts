@@ -10,6 +10,17 @@
 // shared payroll event schemas and delivered inside `withTenant` like the
 // worker does.
 //
+// Follow-ups (brief docs/briefs/sub-payroll-journal-followups.md):
+// - legend-75kr: custom deductions credit the entity's payroll_custom_deduction
+//   account (a liability when the tenant remaps it), LATE still credits 6101;
+//   totals written before `customDeductionsIdr` post as before.
+// - legend-k8sz: a service charge mapped to revenue is paid out from 6101, never
+//   from the revenue account; a legacy expense / asset / equity mapping keeps the
+//   base rule (the mapped account is debited, as POS credited it). The reversal
+//   mirrors the entry.
+// - legend-1coh: a kasbon disbursed via bank credits 1103, via cash 1102,
+//   without `disbursedVia` (old events) 1102.
+//
 // Decisions pinned here:
 // - A replay of an event posts nothing new (the idempotency key returns the
 //   entry already posted).
@@ -132,13 +143,21 @@ function totalsOf(
     gross?: number;
     employerRefund?: number;
     employerAllowanceRefund?: number;
+    /** LATE (other deductions that are not custom). */
+    late?: number;
+    /** Custom deductions (koperasi dues); part of otherDeductionsIdr. */
+    custom?: number;
+    /** Service charge inside gross. */
+    serviceCharge?: number;
   } = {},
 ): PayrollRunTotals {
   const gross = over.gross ?? 10_000_000;
   const bpjsEmp = 300_000;
   const withheld = 250_000;
   const erf = over.employerRefund ?? 0;
-  const deductions = bpjsEmp + withheld;
+  const late = over.late ?? 0;
+  const custom = over.custom ?? 0;
+  const deductions = bpjsEmp + withheld + late + custom;
   const net = gross - deductions;
   return payrollRunTotalsSchema.parse({
     employeeCount: 1,
@@ -156,8 +175,9 @@ function totalsOf(
     loanRepaymentIdr: 0,
     pph21ReceivableIdr: 0,
     pph21ReceivableCollectedIdr: 0,
-    otherDeductionsIdr: 0,
-    serviceChargeIdr: 0,
+    otherDeductionsIdr: late + custom,
+    customDeductionsIdr: custom,
+    serviceChargeIdr: over.serviceCharge ?? 0,
     reimbursementIdr: 0,
     // A split payout: most by bank transfer, the rest in cash.
     bankTransferIdr: net - 450_000,
@@ -328,6 +348,82 @@ const sumOf = (
   lines: { debit: number; credit: number }[],
   side: "debit" | "credit",
 ) => lines.reduce((s, l) => s + l[side], 0);
+
+type AccountKind = {
+  type: "asset" | "liability" | "equity" | "revenue" | "expense";
+  reportGroup: string;
+};
+const KINDS = {
+  asset: { type: "asset", reportGroup: "current_asset" },
+  liability: { type: "liability", reportGroup: "current_liability" },
+  equity: { type: "equity", reportGroup: "equity" },
+  revenue: { type: "revenue", reportGroup: "revenue" },
+  expense: { type: "expense", reportGroup: "operating_expense" },
+} as const satisfies Record<string, AccountKind>;
+
+/** A new postable leaf account in the entity's chart; returns its id. */
+async function addAccount(
+  world: World,
+  code: string,
+  kind: keyof typeof KINDS,
+): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, true)`,
+    [
+      id,
+      tenantId,
+      world.entity,
+      code,
+      `Akun uji ${code}`,
+      KINDS[kind].type,
+      KINDS[kind].reportGroup,
+    ],
+  );
+  return id;
+}
+
+/**
+ * Points a role at another account of the entity, straight in the database
+ * (the way a mapping saved before a type guard exists).
+ */
+async function remap(world: World, role: string, accountId: string) {
+  const result = await owner.query(
+    `UPDATE account_mappings SET account_id = $4
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3`,
+    [tenantId, world.entity, role, accountId],
+  );
+  expect(result.rowCount).toBe(1);
+}
+
+async function unmap(world: World, role: string) {
+  const result = await owner.query(
+    "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+    [tenantId, world.entity, role],
+  );
+  expect(result.rowCount).toBe(1);
+}
+
+const mappedAccountCode = async (world: World, role: string) =>
+  (
+    await owner.query<{ code: string }>(
+      `SELECT a.code FROM account_mappings m
+         JOIN chart_of_accounts a ON a.tenant_id = m.tenant_id AND a.id = m.account_id
+        WHERE m.tenant_id = $1 AND m.legal_entity_id = $2 AND m.role = $3`,
+      [tenantId, world.entity, role],
+    )
+  ).rows[0]?.code;
+
+/** Lines of the run's locked entry and of its reversal (when there is one) by code. */
+async function lockedAndReversed(world: World, runId: string) {
+  const [locked] = await byKey(world, `payroll-gl:locked:${runId}`);
+  const [reversal] = await byKey(world, `payroll-gl:reversed:${runId}`);
+  return {
+    locked: byCode(await linesOf(locked!.id)),
+    reversed: reversal ? byCode(await linesOf(reversal.id)) : undefined,
+  };
+}
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -668,7 +764,356 @@ describe("payroll GL guards (architect review)", () => {
   });
 });
 
+describe("custom deductions (legend-75kr)", () => {
+  it("provisioning maps payroll_custom_deduction to 6101 like salary_expense", async () => {
+    const world = await makeWorld();
+    expect(await mappedAccountCode(world, "payroll_custom_deduction")).toBe(
+      "6101",
+    );
+    expect(await mappedAccountCode(world, "salary_expense")).toBe("6101");
+  });
+
+  it("default mapping: LATE 75.000 and custom 60.000 both credit 6101 (today's posting)", async () => {
+    const world = await makeWorld();
+    const runId = randomUUID();
+    await deliver(
+      lockedEvent(world, runId, totalsOf({ late: 75_000, custom: 60_000 })),
+    );
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    const codes = byCode(lines);
+    expect(codes["6101"]).toEqual({ debit: 10_000_000, credit: 135_000 });
+    expect(codes["2103"]).toEqual({ debit: 0, credit: 9_315_000 });
+  });
+
+  it("remapped to a liability: custom credits it, LATE still credits 6101, reversal nets to zero", async () => {
+    const world = await makeWorld();
+    const koperasi = await addAccount(world, "2190", "liability");
+    await remap(world, "payroll_custom_deduction", koperasi);
+    const runId = randomUUID();
+    const totals = totalsOf({ late: 75_000, custom: 60_000 });
+
+    await deliver(lockedEvent(world, runId, totals));
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    expect(byCode(lines)).toEqual({
+      "6101": { debit: 10_000_000, credit: 75_000 },
+      "2190": { debit: 0, credit: 60_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_315_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    });
+
+    const result = await deliver(reversedEvent(world, runId, totals));
+    expect(result.status).toBe("posted");
+    const { locked, reversed } = await lockedAndReversed(world, runId);
+    expect(reversed).toBeDefined();
+    for (const [code, row] of Object.entries(locked))
+      expect(reversed![code]).toEqual({ debit: row.credit, credit: row.debit });
+    expect(reversed!["2190"]).toEqual({ debit: 60_000, credit: 0 });
+  });
+
+  it("totals written before customDeductionsIdr post as before, even with the role remapped", async () => {
+    const world = await makeWorld();
+    const koperasi = await addAccount(world, "2190", "liability");
+    await remap(world, "payroll_custom_deduction", koperasi);
+    const runId = randomUUID();
+    const { customDeductionsIdr, ...legacy } = totalsOf({ late: 75_000 });
+    void customDeductionsIdr;
+    const parsed = payrollRunTotalsSchema.parse(legacy);
+    expect(parsed.customDeductionsIdr).toBe(0);
+
+    await deliver(lockedEvent(world, runId, legacy as PayrollRunTotals));
+    const [entry] = await bySource(world, runId);
+    const codes = byCode(await linesOf(entry!.id));
+    expect(codes["6101"]).toEqual({ debit: 10_000_000, credit: 75_000 });
+    expect(codes["2190"]).toBeUndefined();
+
+    // The reversal, built from the same legacy totals, passes the cross-check.
+    const reversal = await deliver(reversedEvent(world, runId, parsed));
+    expect(reversal.status).toBe("posted");
+  });
+
+  it("a reversal whose custom part moved to LATE differs from the locked entry", async () => {
+    const world = await makeWorld();
+    const koperasi = await addAccount(world, "2190", "liability");
+    await remap(world, "payroll_custom_deduction", koperasi);
+    const runId = randomUUID();
+    await deliver(
+      lockedEvent(world, runId, totalsOf({ late: 10_000, custom: 60_000 })),
+    );
+    // Same net and same other-deductions total (70.000), but all of it is LATE
+    // now. LATE is non-zero on both sides: the cross-check compares sorted
+    // amounts, so a zero LATE would hide the move.
+    await expect(
+      deliver(
+        reversedEvent(world, runId, totalsOf({ late: 70_000, custom: 0 })),
+      ),
+    ).rejects.toThrow(/differ from the locked entry/);
+    expect(await entriesOf(world)).toHaveLength(1);
+  });
+
+  // Assumption: the pre-legend-75kr shape is what the consumer posted before the
+  // split, i.e. one salary_expense (6101) credit = late + custom. It is built here
+  // by locking with totals that have no customDeductionsIdr (all 135.000 in
+  // otherDeductionsIdr), which yields exactly that single credit. The tenant then
+  // remaps payroll_custom_deduction to a liability and the run is reversed with
+  // totals from the current code, which carry custom 60.000 + LATE 75.000.
+  describe("run locked in the pre-legend-75kr shape", () => {
+    const LATE = 75_000;
+    const CUSTOM = 60_000;
+
+    async function lockedLegacy() {
+      const world = await makeWorld();
+      const runId = randomUUID();
+      await deliver(
+        lockedEvent(world, runId, totalsOf({ late: LATE + CUSTOM })),
+      );
+      const [entry] = await bySource(world, runId);
+      const lines = await linesOf(entry!.id);
+      const salary = lines.filter((l) => l.code === "6101" && l.credit > 0);
+      // The legacy shape: a single 6101 credit that holds late + custom.
+      expect(salary).toEqual([
+        { code: "6101", debit: 0, credit: LATE + CUSTOM },
+      ]);
+      const koperasi = await addAccount(world, "2190", "liability");
+      await remap(world, "payroll_custom_deduction", koperasi);
+      return { world, runId };
+    }
+
+    it("payroll.reversed with customDeductionsIdr > 0 succeeds and nets to zero per account", async () => {
+      const { world, runId } = await lockedLegacy();
+      const totals = totalsOf({ late: LATE, custom: CUSTOM });
+      expect(totals.customDeductionsIdr).toBeGreaterThan(0);
+
+      const result = await deliver(reversedEvent(world, runId, totals));
+      expect(result.status).toBe("posted");
+
+      const { locked, reversed } = await lockedAndReversed(world, runId);
+      expect(reversed).toBeDefined();
+      expect(Object.keys(reversed!).sort()).toEqual(Object.keys(locked).sort());
+      for (const code of Object.keys(locked)) {
+        const debit = locked[code]!.debit + reversed![code]!.debit;
+        const credit = locked[code]!.credit + reversed![code]!.credit;
+        expect(debit - credit, `account ${code}`).toBe(0);
+      }
+      // Nothing was ever posted to the remapped liability.
+      expect(locked["2190"]).toBeUndefined();
+      expect(reversed!["2190"]).toBeUndefined();
+    });
+
+    it("a reversal whose totals differ in amount still throws and posts nothing", async () => {
+      const { world, runId } = await lockedLegacy();
+      // Custom 70.000 instead of 60.000: other deductions and net differ.
+      await expect(
+        deliver(
+          reversedEvent(
+            world,
+            runId,
+            totalsOf({ late: LATE, custom: CUSTOM + 10_000 }),
+          ),
+        ),
+      ).rejects.toThrow(/differ from the locked entry/);
+      expect(await entriesOf(world)).toHaveLength(1);
+    });
+  });
+});
+
+describe("service charge payout never debits revenue (legend-k8sz)", () => {
+  const SC = 1_000_000;
+
+  it("liability mapping (standard 2106): Dr 2106 1.000.000, Dr 6101 9.000.000", async () => {
+    const world = await makeWorld();
+    const runId = randomUUID();
+    await deliver(lockedEvent(world, runId, totalsOf({ serviceCharge: SC })));
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    const codes = byCode(lines);
+    expect(codes["2106"]).toEqual({ debit: SC, credit: 0 });
+    expect(codes["6101"]).toEqual({ debit: 9_000_000, credit: 0 });
+  });
+
+  it("revenue mapping: the payout is debited to 6101, the revenue account gets no line, the reversal works", async () => {
+    const world = await makeWorld();
+    const revenue = await addAccount(world, "4190", "revenue");
+    await remap(world, "service_charge", revenue);
+    const runId = randomUUID();
+    const totals = totalsOf({ serviceCharge: SC });
+
+    const result = await deliver(lockedEvent(world, runId, totals));
+    expect(result.status).toBe("posted");
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    expect(byCode(lines)).toEqual({
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: totals.netIdr },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    });
+
+    expect((await deliver(reversedEvent(world, runId, totals))).status).toBe(
+      "posted",
+    );
+    const { locked, reversed } = await lockedAndReversed(world, runId);
+    expect(reversed).toBeDefined();
+    expect(reversed!["4190"]).toBeUndefined();
+    for (const [code, row] of Object.entries(locked))
+      expect(reversed![code]).toEqual({ debit: row.credit, credit: row.debit });
+  });
+
+  it.each(["expense", "asset", "equity"] as const)(
+    "legacy %s mapping written straight into the DB: the payout debits the mapped account, not 6101",
+    async (kind) => {
+      const world = await makeWorld();
+      const legacy = await addAccount(world, "9190", kind);
+      await remap(world, "service_charge", legacy);
+      const runId = randomUUID();
+      const totals = totalsOf({ serviceCharge: SC });
+
+      await deliver(lockedEvent(world, runId, totals));
+      const [entry] = await bySource(world, runId);
+      const lines = await linesOf(entry!.id);
+      expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+      const codes = byCode(lines);
+      // Base rule: the mapped service_charge account is debited, as POS credited it.
+      expect(codes["9190"]).toEqual({ debit: SC, credit: 0 });
+      expect(codes["2106"]).toBeUndefined();
+      expect(codes["6101"]).toEqual({ debit: 9_000_000, credit: 0 });
+
+      expect((await deliver(reversedEvent(world, runId, totals))).status).toBe(
+        "posted",
+      );
+      const { reversed } = await lockedAndReversed(world, runId);
+      expect(reversed!["9190"]).toEqual({ debit: 0, credit: SC });
+      expect(reversed!["6101"]).toEqual({ debit: 0, credit: 9_000_000 });
+    },
+  );
+
+  it("revenue mapping with every follow-up in one run: custom, LATE and service charge", async () => {
+    const world = await makeWorld();
+    const revenue = await addAccount(world, "4190", "revenue");
+    const koperasi = await addAccount(world, "2190", "liability");
+    await remap(world, "service_charge", revenue);
+    await remap(world, "payroll_custom_deduction", koperasi);
+    const runId = randomUUID();
+    const totals = totalsOf({
+      serviceCharge: SC,
+      late: 75_000,
+      custom: 60_000,
+    });
+
+    await deliver(lockedEvent(world, runId, totals));
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    const codes = byCode(lines);
+    expect(codes["6101"]).toEqual({ debit: 10_000_000, credit: 75_000 });
+    expect(codes["2190"]).toEqual({ debit: 0, credit: 60_000 });
+    expect(codes["4190"]).toBeUndefined();
+
+    await deliver(reversedEvent(world, runId, totals));
+    const all = byCode(
+      (
+        await Promise.all((await entriesOf(world)).map((e) => linesOf(e.id)))
+      ).flat(),
+    );
+    for (const row of Object.values(all)) expect(row.debit).toBe(row.credit);
+  });
+
+  it("a revenue mapping with no service charge in the run posts as usual", async () => {
+    const world = await makeWorld();
+    const revenue = await addAccount(world, "4190", "revenue");
+    await remap(world, "service_charge", revenue);
+    const runId = randomUUID();
+    await deliver(lockedEvent(world, runId, totalsOf()));
+    const [entry] = await bySource(world, runId);
+    const codes = byCode(await linesOf(entry!.id));
+    expect(codes["6101"]).toEqual({ debit: 10_000_000, credit: 0 });
+    expect(codes["4190"]).toBeUndefined();
+  });
+
+  it("no service_charge mapping at all: a run with service charge fails ACCOUNT_MAPPING_MISSING and posts nothing", async () => {
+    const world = await makeWorld();
+    await unmap(world, "service_charge");
+    await expect(
+      deliver(
+        lockedEvent(world, randomUUID(), totalsOf({ serviceCharge: SC })),
+      ),
+    ).rejects.toMatchObject({ code: "ACCOUNT_MAPPING_MISSING" });
+    expect(await entriesOf(world)).toHaveLength(0);
+  });
+
+  it("no service_charge mapping but no service charge in the run: posts", async () => {
+    const world = await makeWorld();
+    await unmap(world, "service_charge");
+    const result = await deliver(lockedEvent(world, randomUUID(), totalsOf()));
+    expect(result.status).toBe("posted");
+  });
+});
+
 describe("employee_loan.disbursed", () => {
+  const loanEvent = (
+    world: World,
+    loanId: string,
+    disbursedVia?: "cash" | "bank",
+  ) =>
+    employeeLoanDisbursed.envelopeSchema.parse(
+      envelope(
+        "employee_loan.disbursed",
+        "employee_loan",
+        loanId,
+        PAID_AT,
+        "employee_loan.disbursed.v1",
+        {
+          employeeLoanId: loanId,
+          employeeId: world.employeeId,
+          legalEntityId: world.entity,
+          principalIdr: 1_500_000,
+          ...(disbursedVia ? { disbursedVia } : {}),
+          disbursedBy: randomUUID(),
+          disbursedAt: PAID_AT,
+        },
+      ),
+    );
+
+  it.each([
+    ["bank", "1103"],
+    ["cash", "1102"],
+    [undefined, "1102"],
+  ] as const)(
+    "disbursedVia %s credits %s (Dr 1204)",
+    async (via, creditCode) => {
+      const world = await makeWorld();
+      const loanId = randomUUID();
+      const result = await deliver(loanEvent(world, loanId, via));
+      expect(result.status).toBe("posted");
+      const entries = await byKey(world, `payroll-gl:loan:${loanId}`);
+      expect(entries).toHaveLength(1);
+      const lines = await linesOf(entries[0]!.id);
+      expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+      expect(byCode(lines)).toEqual({
+        "1204": { debit: 1_500_000, credit: 0 },
+        [creditCode]: { debit: 0, credit: 1_500_000 },
+      });
+    },
+  );
+
+  it("replaying a bank disbursement posts nothing new (same idempotency key)", async () => {
+    const world = await makeWorld();
+    const loanId = randomUUID();
+    const event = loanEvent(world, loanId, "bank");
+    const first = await deliver(event);
+    const second = await deliver(event);
+    expect(second).toEqual(first);
+    expect(await entriesOf(world)).toHaveLength(1);
+  });
+
   it("posts Dr 1204 / Cr 1102 by the principal", async () => {
     const world = await makeWorld();
     const loanId = randomUUID();
