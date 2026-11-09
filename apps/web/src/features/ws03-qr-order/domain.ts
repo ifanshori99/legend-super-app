@@ -239,13 +239,22 @@ export function canSplitBill(input: {
   );
 }
 
-/** PRD "Kontrol Open Bill": how far the bill is from the zone minimum spend. */
+/**
+ * PRD "Kontrol Open Bill": how far the bill is from the zone minimum spend.
+ * Q53 (legend-v9fh): the minimum counts the value before tax and service
+ * charge, so the service charge and tax already inside inclusive-price orders
+ * (`includedChargesIdr`) are taken out; same rule as the API quote.
+ */
 export function minimumSpendShortfall(
   requiredIdr: number,
   subtotalIdr: number,
   discountIdr: number,
+  includedChargesIdr = 0,
 ): number {
-  return Math.max(0, requiredIdr - (subtotalIdr - discountIdr));
+  return Math.max(
+    0,
+    requiredIdr - (subtotalIdr - discountIdr - includedChargesIdr),
+  );
 }
 
 export type ClaimView = "unavailable" | "available" | "claimed" | "expired";

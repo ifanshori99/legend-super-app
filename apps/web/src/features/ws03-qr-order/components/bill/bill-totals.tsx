@@ -145,6 +145,9 @@ export function MinimumSpendStatus({
     requiredIdr,
     bill.totals.subtotalIdr,
     bill.totals.discountIdr,
+    bill.orders
+      .filter((order) => order.pricesIncludeTaxAndService)
+      .reduce((sum, order) => sum + order.serviceChargeIdr + order.taxIdr, 0),
   );
   const Icon = shortfall === 0 ? CircleCheck : TriangleAlert;
   return (

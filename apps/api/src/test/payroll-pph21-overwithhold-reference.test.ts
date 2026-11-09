@@ -133,6 +133,20 @@ describe("PPh 21 over-withholding Jan-Nov: the company's credit is the company's
       // Check: 2_250_000 - 806_502 = 1_443_498 = T. Take-home = 15_000_000 -
       //   2_250_000 = 12_750_000. The old code gave W = floor(T x G*/X) =
       //   1_443_498: the company's credit reduced the employee's tax.
+      // gross_first (updated for bead legend-y2lf, founder Q52): Gs = 0, so De =
+      //   annual(Gs + G*) - annual(Gs) = annual(15_000_000) - 0 = 0 (net
+      //   14_250_000 < PTKP), not D = 2_250_000. W = 0; the company bears the
+      //   December tax, its credit used up: Dr = D, r = Dr - Cr = D - 806_502 > 0
+      //   so S > 0 (all borne, no gross-up line). Fixed point (python3):
+      //   S0=0         X 15_000_000 annual 13_862_850 D 2_250_000 next 1_443_498
+      //   S1=1_443_498 X 16_443_498 annual 14_079_300 D 2_466_450 next 1_659_948
+      //   S2=1_659_948 X 16_659_948 annual 14_111_850 D 2_499_000 next 1_692_498
+      //   S3=1_692_498 X 16_692_498 annual 14_116_650 D 2_503_800 next 1_697_298
+      //   S4=1_697_298 X 16_697_298 annual 14_117_400 D 2_504_550 next 1_698_048
+      //   S5=1_698_048 X 16_698_048 annual 14_117_550 D 2_504_700 next 1_698_198
+      //   S6=1_698_198 X 16_698_198 annual 14_117_550 D 2_504_700 next 1_698_198 stop.
+      //   X = 16_698_198, T = 14_117_550 - 12_419_352 = 1_698_198 = borne, W = 0,
+      //   no refund. Take-home = 15_000_000.
       const r = run(
         {
           taxableLines: [{ amountIdr: 15_000_000, taxScheme: "gross" }],
@@ -140,22 +154,25 @@ describe("PPh 21 over-withholding Jan-Nov: the company's credit is the company's
         },
         { mixedSchemeAllocation: allocation },
       );
+      const grossFirst = allocation === "gross_first";
       expect(r.method).toBe("annual_recalculation");
-      expect(r.taxableGrossIdr).toBe(15_000_000);
-      expect(r.pph21Idr).toBe(1_443_498);
+      expect(r.taxableGrossIdr).toBe(grossFirst ? 16_698_198 : 15_000_000);
+      expect(r.pph21Idr).toBe(grossFirst ? 1_698_198 : 1_443_498);
       expect(r.taxAllowanceIdr).toBe(0);
-      expect(r.pph21WithheldIdr).toBe(2_250_000);
-      expect(r.pph21EmployerBorneIdr).toBe(0);
+      expect(r.pph21WithheldIdr).toBe(grossFirst ? 0 : 2_250_000);
+      expect(r.pph21EmployerBorneIdr).toBe(grossFirst ? 1_698_198 : 0);
       expect(r.pph21RefundIdr).toBe(0);
-      expect(r.pph21EmployerRefundIdr).toBe(806_502);
-      expect(r.annual?.annualTaxIdr).toBe(13_862_850);
+      expect(r.pph21EmployerRefundIdr).toBe(grossFirst ? 0 : 806_502);
+      expect(r.annual?.annualTaxIdr).toBe(grossFirst ? 14_117_550 : 13_862_850);
       expect(r.annual?.priorPph21Idr).toBe(12_419_352);
 
       expectAccounting(r);
       const employeeTax = r.pph21WithheldIdr - r.taxAllowanceIdr;
-      expect(employeeTax).toBeLessThanOrEqual(2_250_000); // W <= De
+      expect(employeeTax).toBeLessThanOrEqual(grossFirst ? 0 : 2_250_000); // W <= De
       expect(r.pph21EmployerRefundIdr).toBeLessThanOrEqual(806_502); // <= Cr
-      expect(15_000_000 - employeeTax + r.pph21RefundIdr).toBe(12_750_000);
+      expect(15_000_000 - employeeTax + r.pph21RefundIdr).toBe(
+        grossFirst ? 15_000_000 : 12_750_000,
+      );
     });
   }
 
@@ -344,7 +361,9 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
     // X0 = 25_000_000, G* = 5_000_000. annual(prior + G*) = annual(225_000_000):
     //   cost 6_000_000, net 219_000_000, PKP 165_000_000, tax 3_000_000 + 15% x
     //   105_000_000 = 18_750_000 => the employee's own extra tax 750_000.
-    // gross_first: De = min(D, 750_000) = 750_000 for every D here.
+    // gross_first: De = min(D, annual(Gs + G*) - annual(Gs)) with the scheme
+    // base (bead legend-y2lf: 237_500, see below), min(D, 750_000) = 750_000
+    // for every D here without it (priorMix = 0: the old rule).
     // The company's extra tax Dr = D - De is covered (Dr > Cr), so S > 0 and S
     // is the company's allowance (the only employer-scheme line is gross_up).
     // Fixed point S_{k+1} = max(0, Dr(X0 + S_k) - Cr), stop when S_{k+1} <= S_k.
@@ -358,6 +377,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       ce: number;
       cr: number;
       employerRefund?: number; // bead legend-mmgd: default 0
+      refund?: number; // employee refund (bead legend-y2lf): default 0
     };
     const lines = [
       { amountIdr: 5_000_000, taxScheme: "gross" as const },
@@ -381,7 +401,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         expect(r.taxAllowanceIdr).toBe(c.s);
         expect(r.pph21WithheldIdr).toBe(c.w + c.s);
         expect(r.pph21EmployerBorneIdr).toBe(0);
-        expect(r.pph21RefundIdr).toBe(0);
+        expect(r.pph21RefundIdr).toBe(c.refund ?? 0);
         expect(r.pph21EmployerRefundIdr).toBe(c.employerRefund ?? 0);
         expect(r.annual?.annualTaxIdr).toBe(c.annual);
         expect(r.annual?.priorPph21Idr).toBe(20_000_000);
@@ -392,7 +412,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
           25_000_000 -
             (r.pph21WithheldIdr - r.taxAllowanceIdr) +
             r.pph21RefundIdr,
-        ).toBe(25_000_000 - c.w);
+        ).toBe(25_000_000 - c.w + (c.refund ?? 0));
       });
 
     // with scheme base, proportional (updated for bead legend-mmgd: signed
@@ -421,25 +441,30 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       cr: 7_631_819, // max(0, -bR)
       employerRefund: 4_631_819,
     });
-    // with scheme base, gross_first: Ce = 500_000, Cr = 1_500_000, De = 750_000.
-    //   S0=0       X 25_000_000 annual 21_750_000 D 3_750_000 Dr 3_000_000 next 1_500_000
-    //   S1=1_500_000 X 26_500_000 annual 21_975_000 D 3_975_000 Dr 3_225_000 next 1_725_000
-    //   S2=1_725_000 X 26_725_000 annual 22_008_750 D 4_008_750 Dr 3_258_750 next 1_758_750
-    //   S3=1_758_750 X 26_758_750 annual 22_013_700 D 4_013_700 Dr 3_263_700 next 1_763_700
-    //   S4=1_763_700 X 26_763_700 annual 22_014_450 D 4_014_450 Dr 3_264_450 next 1_764_450
-    //   S5=1_764_450 X 26_764_450 annual 22_014_600 D 4_014_600 Dr 3_264_600 next 1_764_600
-    //   S6=1_764_600 X 26_764_600 annual 22_014_600 D 4_014_600 Dr 3_264_600 next 1_764_600 stop.
-    //   W = 750_000 - 500_000 = 250_000, S = 3_264_600 - 1_500_000 = 1_764_600.
-    //   T = 22_014_600 - 20_000_000 = 2_014_600 = W + S.
+    // with scheme base, gross_first (updated for bead legend-y2lf, founder Q52):
+    //   Ce = 500_000, Cr = 1_500_000, De = annual(Gs + G*) - annual(Gs) =
+    //   annual(105_000_000) - 2_050_000 = 2_287_500 - 2_050_000 = 237_500
+    //   (was 750_000), Dr = D - 237_500.
+    //   S0=0         X 25_000_000 annual 21_750_000 D 3_750_000 Dr 3_512_500 next 2_012_500
+    //   S1=2_012_500 X 27_012_500 annual 22_051_800 D 4_051_800 Dr 3_814_300 next 2_314_300
+    //   S2=2_314_300 X 27_314_300 annual 22_097_100 D 4_097_100 Dr 3_859_600 next 2_359_600
+    //   S3=2_359_600 X 27_359_600 annual 22_103_850 D 4_103_850 Dr 3_866_350 next 2_366_350
+    //   S4=2_366_350 X 27_366_350 annual 22_104_900 D 4_104_900 Dr 3_867_400 next 2_367_400
+    //   S5=2_367_400 X 27_367_400 annual 22_105_050 D 4_105_050 Dr 3_867_550 next 2_367_550
+    //   S6=2_367_550 X 27_367_550 annual 22_105_050 D 4_105_050 Dr 3_867_550 next 2_367_550 stop.
+    //   Employee: e = 237_500 - 500_000 = -262_500 => W = 0, employee refund
+    //   262_500. S = 3_867_550 - 1_500_000 = 2_367_550 (allowance).
+    //   T = 22_105_050 - 20_000_000 = 2_105_050 = S - refund (2_367_550 - 262_500).
     check("with scheme base", MIXED_BASES, "gross_first", {
-      x: 26_764_600,
-      annual: 22_014_600,
-      t: 2_014_600,
-      w: 250_000,
-      s: 1_764_600,
-      de: 750_000,
+      x: 27_367_550,
+      annual: 22_105_050,
+      t: 2_105_050,
+      w: 0,
+      s: 2_367_550,
+      de: 237_500,
       ce: 500_000,
       cr: 1_500_000,
+      refund: 262_500,
     });
     // no scheme base, proportional: Cr = 1_745_000, Ce = 255_000.
     //   S0=0       X 25_000_000 annual 21_750_000 D 3_750_000 De 750_000 Dr 3_000_000 next 1_255_000
@@ -557,13 +582,16 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       cr: 7_631_819,
       de: 2_000_000, // the available pay (bead legend-4ndx), below De + bE 5_781_819
     });
-    // with base, gross_first: Ce = 500_000, Cr = 1_500_000. Employee: 150_000
-    //   - 500_000 < 0 -> W = 0, refund 350_000. Company: 150_000 - 1_500_000
-    //   -> refund 1_350_000. Check: -350_000 - 1_350_000 = -1_700_000 = T.
+    // with base, gross_first (updated for bead legend-y2lf, founder Q52): Ce =
+    //   500_000, Cr = 1_500_000, De = annual(Gs + G*) - annual(Gs) =
+    //   annual(101_000_000) - 2_050_000 = 2_097_500 - 2_050_000 = 47_500 (was
+    //   150_000, D = 300_000, Dr = 252_500). Employee: 47_500 - 500_000 < 0 ->
+    //   W = 0, refund 452_500. Company: 252_500 - 1_500_000 -> refund
+    //   1_247_500. Check: -452_500 - 1_247_500 = -1_700_000 = T.
     check("with scheme base", MIXED_BASES, "gross_first", {
       w: 0,
-      refund: 350_000,
-      employerRefund: 1_350_000,
+      refund: 452_500,
+      employerRefund: 1_247_500,
       ce: 500_000,
       cr: 1_500_000,
     });

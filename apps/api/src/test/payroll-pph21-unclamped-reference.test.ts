@@ -26,7 +26,9 @@
 //   no scheme base, priorTax > 0:     bR = trunc(H x pET / priorTax), bE = H - bR.
 // One path for all months:
 //   De = employee's share of D (`proportional` floor(D x G*/X), 0 if X = 0;
-//        `gross_first` min(D, annual(prior + G*) - annual(prior))), Dr = D - De.
+//        `gross_first` min(D, annual(Gs + G*) - annual(Gs)) when the earlier
+//        scheme mix is sent (bead legend-y2lf, founder Q52; before: annual(prior
+//        + G*) - annual(prior)), else the old formula), Dr = D - De.
 //   covered (the company's money that feeds X): covered_0 = 0, covered_{k+1} =
 //        max(0, Dr(X0 + covered_k) + bR), stop at the first non-increase.
 //   Employee: e = De + bE; W = max(0, e), employee refund = max(0, -e).
@@ -38,7 +40,10 @@
 //   a payer is never withheld from and refunded in the same month.
 // When bE and bR have the same sign (or one is 0) the figures equal the old
 // engine's; they change only when the clamp used to bind (cases C1-C6 are the
-// changed ones, N1-N5 must not move).
+// changed ones, N1-N5 must not move). Bead legend-y2lf (founder Q52) moved the
+// December `gross_first` employee part De to annual(Gs + G*) - annual(Gs): the
+// `gross_first` figures of C1-C6 and N1 changed by that rule alone (see each
+// case); `proportional` and N2-N6 did not move.
 //
 // Assumptions where the brief is silent (flagged in the report):
 // - U1: pph21Idr is T (also negative); pph21WithheldIdr = W + A, so W = withheld
@@ -200,7 +205,10 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     // December gross 20_000_000: G* = X0, U = N = 0 so the company's covered
     //   tax is all borne. annual(prior + G*) = annual(152_400_000): net
     //   146_400_000, PKP 92_400_000, tax 3_000_000 + 15% x 32_400_000 =
-    //   7_860_000 => gross_first De cap = 7_860_000 - 4_860_000 = 3_000_000.
+    //   7_860_000. gross_first (bead legend-y2lf, founder Q52): De =
+    //   annual(Gs + G*) - annual(Gs) = annual(120_000_000) - 2_050_000 =
+    //   3_000_000 - 2_050_000 = 950_000 (annual(120 jt): cost 6_000_000, net
+    //   114_000_000, PKP 60_000_000), capped at D (D is larger at every step).
     // proportional (D = annual(prior + X) - 4_860_000, De = floor(D x 20M/X)):
     // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=3000000 Dr=0 next=1189305
     // S1=1189305 X=21189305 annual=8038350 T=-961650 D=3178350 De=2999956 Dr=178394 next=1367699
@@ -211,22 +219,23 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     // S6=1399165 X=21399165 annual=8069850 T=-930150 D=3209850 De=2999976 Dr=209874 next=1399179
     // S7=1399179 X=21399179 annual=8069850 T=-930150 D=3209850 De=2999974 Dr=209876 next=1399181
     // S8=1399181 X=21399181 annual=8069850 T=-930150 D=3209850 De=2999974 Dr=209876 next=1399181
-    // gross_first (De = 3_000_000 every step):
-    // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=3000000 Dr=0 next=2810000
-    // S1=2810000 X=22810000 annual=8281500 T=-718500 D=3421500 De=3000000 Dr=421500 next=3231500
-    // S2=3231500 X=23231500 annual=8344650 T=-655350 D=3484650 De=3000000 Dr=484650 next=3294650
-    // S3=3294650 X=23294650 annual=8354100 T=-645900 D=3494100 De=3000000 Dr=494100 next=3304100
-    // S4=3304100 X=23304100 annual=8355600 T=-644400 D=3495600 De=3000000 Dr=495600 next=3305600
-    // S5=3305600 X=23305600 annual=8355750 T=-644250 D=3495750 De=3000000 Dr=495750 next=3305750
-    // S6=3305750 X=23305750 annual=8355750 T=-644250 D=3495750 De=3000000 Dr=495750 next=3305750
+    // gross_first (De = 950_000 every step; updated for bead legend-y2lf):
+    // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=950000 Dr=2050000 next=4860000
+    // S1=4860000 X=24860000 annual=8589000 T=-411000 D=3729000 De=950000 Dr=2779000 next=5589000
+    // S2=5589000 X=25589000 annual=8698350 T=-301650 D=3838350 De=950000 Dr=2888350 next=5698350
+    // S3=5698350 X=25698350 annual=8714700 T=-285300 D=3854700 De=950000 Dr=2904700 next=5714700
+    // S4=5714700 X=25714700 annual=8717100 T=-282900 D=3857100 De=950000 Dr=2907100 next=5717100
+    // S5=5717100 X=25717100 annual=8717550 T=-282450 D=3857550 De=950000 Dr=2907550 next=5717550
+    // S6=5717550 X=25717550 annual=8717550 T=-282450 D=3857550 De=950000 Dr=2907550 next=5717550
     // Result proportional: X = 21_399_181, T = 8_069_850 - 9_000_000 =
     //   -930_150. e = 2_999_974 - 5_329_305 < 0 => W = 0, employee refund
     //   2_329_331. r = Dr + bR = 209_876 + 1_189_305 = 1_399_181 = B (borne).
     //   Check: 0 + 1_399_181 - 2_329_331 = -930_150 = T.
-    // Result gross_first: X = 23_305_750, T = 8_355_750 - 9_000_000 =
-    //   -644_250. e = 3_000_000 - 6_950_000 => W = 0, employee refund
-    //   3_950_000. B = 495_750 + 2_810_000 = 3_305_750.
-    //   Check: 3_305_750 - 3_950_000 = -644_250 = T.
+    // Result gross_first: X = 25_717_550, T = 8_717_550 - 9_000_000 =
+    //   -282_450. e = 950_000 - 6_950_000 < 0 => W = 0, employee refund
+    //   6_000_000. B = 2_907_550 + 2_810_000 = 5_717_550.
+    //   Check: 5_717_550 - 6_000_000 = -282_450 = T. (Before legend-y2lf
+    //   De was 3_000_000: refund 3_950_000, B 3_305_750.)
     cases(
       "C1",
       "the employee gets his over-payment back in cash and the company bears its own shortfall, instead of the employee funding it",
@@ -251,15 +260,15 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
           bR: 1_189_305,
         },
         gross_first: {
-          x: 23_305_750,
-          t: -644_250,
-          annual: 8_355_750,
+          x: 25_717_550,
+          t: -282_450,
+          annual: 8_717_550,
           w: 0,
           a: 0,
-          b: 3_305_750,
-          refund: 3_950_000,
+          b: 5_717_550,
+          refund: 6_000_000,
           employerRefund: 0,
-          de: 3_000_000,
+          de: 950_000,
           bE: -6_950_000,
           bR: 2_810_000,
         },
@@ -272,9 +281,10 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     // 1_189_305; gross_first bE = -6_950_000, bR = 2_810_000).
     // X0 = 20_000_000, G* = 10_000_000, U = 10_000_000, N = 0 so
     // A = min(covered x U/(U+N), r) = r (all allowance), B = 0.
-    // gross_first De cap = annual(142_400_000) - 4_860_000: net 136_400_000,
-    //   PKP 82_400_000, tax 3_000_000 + 15% x 22_400_000 = 6_360_000 => De =
-    //   1_500_000 (D is larger at every step).
+    // gross_first (bead legend-y2lf, founder Q52): De = annual(Gs + G*) -
+    //   annual(Gs) = annual(110_000_000) - 2_050_000 = 2_525_000 - 2_050_000 =
+    //   475_000 (annual(110 jt): cost 5_500_000, net 104_500_000, PKP
+    //   50_500_000), capped at D (D is larger at every step).
     // proportional (De = floor(D x 10M/X)):
     // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=1500000 Dr=1500000 next=2689305
     // S1=2689305 X=22689305 annual=8263350 T=-736650 D=3403350 De=1499979 Dr=1903371 next=3092676
@@ -285,22 +295,24 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     // S6=3163796 X=23163796 annual=8334450 T=-665550 D=3474450 De=1499948 Dr=1974502 next=3163807
     // S7=3163807 X=23163807 annual=8334450 T=-665550 D=3474450 De=1499947 Dr=1974503 next=3163808
     // S8=3163808 X=23163808 annual=8334450 T=-665550 D=3474450 De=1499947 Dr=1974503 next=3163808
-    // gross_first (De = 1_500_000 every step):
-    // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=1500000 Dr=1500000 next=4310000
-    // S1=4310000 X=24310000 annual=8506500 T=-493500 D=3646500 De=1500000 Dr=2146500 next=4956500
-    // S2=4956500 X=24956500 annual=8603400 T=-396600 D=3743400 De=1500000 Dr=2243400 next=5053400
-    // S3=5053400 X=25053400 annual=8617950 T=-382050 D=3757950 De=1500000 Dr=2257950 next=5067950
-    // S4=5067950 X=25067950 annual=8620050 T=-379950 D=3760050 De=1500000 Dr=2260050 next=5070050
-    // S5=5070050 X=25070050 annual=8620500 T=-379500 D=3760500 De=1500000 Dr=2260500 next=5070500
-    // S6=5070500 X=25070500 annual=8620500 T=-379500 D=3760500 De=1500000 Dr=2260500 next=5070500
+    // gross_first (De = 475_000 every step; updated for bead legend-y2lf):
+    // S0=0 X=20000000 annual=7860000 T=-1140000 D=3000000 De=475000 Dr=2525000 next=5335000
+    // S1=5335000 X=25335000 annual=8660250 T=-339750 D=3800250 De=475000 Dr=3325250 next=6135250
+    // S2=6135250 X=26135250 annual=8780250 T=-219750 D=3920250 De=475000 Dr=3445250 next=6255250
+    // S3=6255250 X=26255250 annual=8798250 T=-201750 D=3938250 De=475000 Dr=3463250 next=6273250
+    // S4=6273250 X=26273250 annual=8800950 T=-199050 D=3940950 De=475000 Dr=3465950 next=6275950
+    // S5=6275950 X=26275950 annual=8801250 T=-198750 D=3941250 De=475000 Dr=3466250 next=6276250
+    // S6=6276250 X=26276250 annual=8801400 T=-198600 D=3941400 De=475000 Dr=3466400 next=6276400
+    // S7=6276400 X=26276400 annual=8801400 T=-198600 D=3941400 De=475000 Dr=3466400 next=6276400
     // Result proportional: X = 23_163_808, T = 8_334_450 - 9_000_000 =
     //   -665_550. e = 1_499_947 - 5_329_305 => W = 0, employee refund
     //   3_829_358. r = 1_974_503 + 1_189_305 = 3_163_808 = A.
     //   Check: 3_163_808 - 3_829_358 = -665_550 = T (withheld = allowance).
-    // Result gross_first: X = 25_070_500, T = 8_620_500 - 9_000_000 =
-    //   -379_500. W = 0, employee refund 5_450_000 (1_500_000 - 6_950_000).
-    //   r = 2_260_500 + 2_810_000 = 5_070_500 = A.
-    //   Check: 5_070_500 - 5_450_000 = -379_500 = T.
+    // Result gross_first: X = 26_276_400, T = 8_801_400 - 9_000_000 =
+    //   -198_600. W = 0, employee refund 6_475_000 (475_000 -
+    //   6_950_000). r = 3_466_400 + 2_810_000 = 6_276_400 = A.
+    //   Check: 6_276_400 - 6_475_000 = -198_600 = T. (Before
+    //   legend-y2lf De was 1_500_000: refund 5_450_000, A 5_070_500.)
     cases(
       "C2",
       "the employee is refunded and his December salary carries the company's allowance",
@@ -328,15 +340,15 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
           bR: 1_189_305,
         },
         gross_first: {
-          x: 25_070_500,
-          t: -379_500,
-          annual: 8_620_500,
+          x: 26_276_400,
+          t: -198_600,
+          annual: 8_801_400,
           w: 0,
-          a: 5_070_500,
+          a: 6_276_400,
           b: 0,
-          refund: 5_450_000,
+          refund: 6_475_000,
           employerRefund: 0,
-          de: 1_500_000,
+          de: 475_000,
           bE: -6_950_000,
           bR: 2_810_000,
         },
@@ -364,8 +376,12 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     // S0=0 X=10000000 annual=19500000 T=-500000 D=1500000 De=1500000 Dr=0 next=0
     // proportional: e = 1_500_000 + 8_181_819 => W = 9_681_819; company
     //   refund 10_181_819. Check: 9_681_819 - 10_181_819 = -500_000 = T.
-    // gross_first: e = 1_500_000 + 2_050_000 => W = 3_550_000; company refund
-    //   4_050_000. Check: 3_550_000 - 4_050_000 = -500_000 = T.
+    // gross_first (updated for bead legend-y2lf, founder Q52): De = annual(Gs
+    //   + G*) - annual(Gs) = annual(110_000_000) - 2_050_000 = 2_525_000 -
+    //   2_050_000 = 475_000 (was 1_500_000). Dr = D - De = 1_025_000, Dr + bR <
+    //   0 so covered stays 0: e = 475_000 + 2_050_000 => W = 2_525_000; company
+    //   refund 4_050_000 - 1_025_000 = 3_025_000.
+    //   Check: 2_525_000 - 3_025_000 = -500_000 = T.
     cases(
       "C5",
       "the employee pays his own shortfall and the company is refunded its over-payment, not netted away",
@@ -398,12 +414,12 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
           x: 10_000_000,
           t: -500_000,
           annual: 19_500_000,
-          w: 3_550_000,
+          w: 2_525_000,
           a: 0,
           b: 0,
           refund: 0,
-          employerRefund: 4_050_000,
-          de: 1_500_000,
+          employerRefund: 3_025_000,
+          de: 475_000,
           bE: 2_050_000,
           bR: -4_050_000,
         },
@@ -422,13 +438,17 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
     //     company over-paid (opposite signs: the old clamp binds).
     //   gross_first: bE = annual(Gs) - pEeT = 2_050_000 - 2_550_000 =
     //     -500_000, bR = -2_000_000 + 500_000 = -1_500_000 => both over-paid,
-    //     same sign: figures equal the old engine's.
+    //     same sign: (the figures moved only through De, see below).
     // December gross 10_000_000 as C5: T = -500_000, D = 1_500_000 = De, Dr = 0,
     //   covered 0.
     // proportional: e = 1_500_000 + 5_631_819 => W = 7_131_819; company refund
     //   7_631_819. Check: 7_131_819 - 7_631_819 = -500_000 = T.
-    // gross_first: e = 1_500_000 - 500_000 => W = 1_000_000; company refund
-    //   1_500_000. Check: 1_000_000 - 1_500_000 = -500_000 = T.
+    // gross_first (updated for bead legend-y2lf, founder Q52): De = annual(Gs
+    //   + G*) - annual(Gs) = annual(110_000_000) - 2_050_000 = 475_000 (was
+    //   1_500_000), Dr = 1_025_000, Dr + bR < 0 so covered stays 0:
+    //   e = 475_000 - 500_000 = -25_000 => W = 0, employee refund 25_000;
+    //   company refund 1_500_000 - 1_025_000 = 475_000.
+    //   Check: -25_000 - 475_000 = -500_000 = T.
     cases(
       "C6",
       "H < 0 after a mixed year: each payer settles its own balance",
@@ -461,12 +481,12 @@ describe("PPh 21 unclamped payer balances, H < 0 with one payer short (legend-mm
           x: 10_000_000,
           t: -500_000,
           annual: 19_500_000,
-          w: 1_000_000,
+          w: 0,
           a: 0,
           b: 0,
-          refund: 0,
-          employerRefund: 1_500_000,
-          de: 1_500_000,
+          refund: 25_000,
+          employerRefund: 475_000,
+          de: 475_000,
           bE: -500_000,
           bR: -1_500_000,
         },
@@ -491,8 +511,11 @@ describe("PPh 21 unclamped payer balances, H > 0 with one payer over-paid (legen
     //   The employee over-paid although H > 0: the old clamp to [0, H] made
     //   him pay 0 of H and left the company with 214_000 only.
     // December gross 10_000_000 (G* = X0): annual(92_400_000): cost 4_620_000,
-    //   net 87_780_000, PKP 33_780_000 => 1_689_000. gross_first De cap =
-    //   1_689_000 - 1_214_000 = 475_000.
+    //   net 87_780_000, PKP 33_780_000 => 1_689_000. proportional De starts at
+    //   D = 1_689_000 - 1_214_000 = 475_000. gross_first (bead legend-y2lf,
+    //   founder Q52): De = annual(Gs + G*) - annual(Gs) = annual(60_000_000) -
+    //   0 = 150_000 (annual(60 jt): cost 3_000_000, net 57_000_000, PKP
+    //   3_000_000; was the cap 475_000).
     // proportional:
     // S0=0 X=10000000 annual=1689000 T=689000 D=475000 De=475000 Dr=0 next=477349
     // S1=477349 X=10477349 annual=1711650 T=711650 D=497650 De=474977 Dr=22673 next=500022
@@ -500,19 +523,20 @@ describe("PPh 21 unclamped payer balances, H > 0 with one payer over-paid (legen
     // S3=501100 X=10501100 annual=1712800 T=712800 D=498800 De=474997 Dr=23803 next=501152
     // S4=501152 X=10501152 annual=1712800 T=712800 D=498800 De=474995 Dr=23805 next=501154
     // S5=501154 X=10501154 annual=1712800 T=712800 D=498800 De=474995 Dr=23805 next=501154
-    // gross_first (De = 475_000 every step):
-    // S0=0 X=10000000 annual=1689000 T=689000 D=475000 De=475000 Dr=0 next=1214000
-    // S1=1214000 X=11214000 annual=1746650 T=746650 D=532650 De=475000 Dr=57650 next=1271650
-    // S2=1271650 X=11271650 annual=1749400 T=749400 D=535400 De=475000 Dr=60400 next=1274400
-    // S3=1274400 X=11274400 annual=1749500 T=749500 D=535500 De=475000 Dr=60500 next=1274500
-    // S4=1274500 X=11274500 annual=1749500 T=749500 D=535500 De=475000 Dr=60500 next=1274500
+    // gross_first (De = 150_000 every step; updated for bead legend-y2lf):
+    // S0=0 X=10000000 annual=1689000 T=689000 D=475000 De=150000 Dr=325000 next=1539000
+    // S1=1539000 X=11539000 annual=1762100 T=762100 D=548100 De=150000 Dr=398100 next=1612100
+    // S2=1612100 X=11612100 annual=1765550 T=765550 D=551550 De=150000 Dr=401550 next=1615550
+    // S3=1615550 X=11615550 annual=1765700 T=765700 D=551700 De=150000 Dr=401700 next=1615700
+    // S4=1615700 X=11615700 annual=1765700 T=765700 D=551700 De=150000 Dr=401700 next=1615700
     // Result proportional: X = 10_501_154, T = 1_712_800 - 1_000_000 = 712_800.
     //   e = 474_995 - 263_349 = 211_646 => W = 211_646. r = 23_805 + 477_349 =
     //   501_154 = B. Check: 211_646 + 501_154 = 712_800 = T.
-    // Result gross_first: X = 11_274_500, T = 1_749_500 - 1_000_000 = 749_500.
-    //   e = 475_000 - 1_000_000 < 0 => W = 0, employee refund 525_000. r =
-    //   60_500 + 1_214_000 = 1_274_500 = B. Check: 1_274_500 - 525_000 =
-    //   749_500 = T. (Old engine: the employee paid 475_000 / 474_978.)
+    // Result gross_first: X = 11_615_700, T = 1_765_700 - 1_000_000 = 765_700.
+    //   e = 150_000 - 1_000_000 < 0 => W = 0, employee refund 850_000. r =
+    //   401_700 + 1_214_000 = 1_615_700 = B. Check: 1_615_700 - 850_000 =
+    //   765_700 = T. (Before legend-y2lf: De 475_000, refund 525_000, B
+    //   1_274_500; the employee still ends at his own 150_000 tax.)
     cases(
       "C3",
       "the employee is not charged for the company's shortfall (gross_first: he is even refunded his over-payment)",
@@ -542,15 +566,15 @@ describe("PPh 21 unclamped payer balances, H > 0 with one payer over-paid (legen
           bR: 477_349,
         },
         gross_first: {
-          x: 11_274_500,
-          t: 749_500,
-          annual: 1_749_500,
+          x: 11_615_700,
+          t: 765_700,
+          annual: 1_765_700,
           w: 0,
           a: 0,
-          b: 1_274_500,
-          refund: 525_000,
+          b: 1_615_700,
+          refund: 850_000,
           employerRefund: 0,
-          de: 475_000,
+          de: 150_000,
           bE: -1_000_000,
           bR: 1_214_000,
         },
@@ -578,8 +602,11 @@ describe("PPh 21 unclamped payer balances, H > 0 with one payer over-paid (legen
     // S0=0 X=10000000 annual=16500000 T=2500000 D=1500000 De=1500000 Dr=0 next=0
     // proportional: e = 1_500_000 + 7_500_000 => W = 9_000_000; company
     //   refund 6_500_000. Check: 9_000_000 - 6_500_000 = 2_500_000 = T.
-    // gross_first: e = 1_500_000 + 2_050_000 => W = 3_550_000; company refund
-    //   1_050_000. Check: 3_550_000 - 1_050_000 = 2_500_000 = T.
+    // gross_first (updated for bead legend-y2lf, founder Q52): De = annual(Gs
+    //   + G*) - annual(Gs) = annual(110_000_000) - 2_050_000 = 475_000 (was
+    //   1_500_000), Dr = 1_025_000, Dr + bR < 0 so covered stays 0:
+    //   e = 475_000 + 2_050_000 => W = 2_525_000; company refund 1_050_000 -
+    //   1_025_000 = 25_000. Check: 2_525_000 - 25_000 = 2_500_000 = T.
     cases(
       "C4",
       "the company is refunded its over-payment and the employee pays his own shortfall in full",
@@ -612,12 +639,12 @@ describe("PPh 21 unclamped payer balances, H > 0 with one payer over-paid (legen
           x: 10_000_000,
           t: 2_500_000,
           annual: 16_500_000,
-          w: 3_550_000,
+          w: 2_525_000,
           a: 0,
           b: 0,
           refund: 0,
-          employerRefund: 1_050_000,
-          de: 1_500_000,
+          employerRefund: 25_000,
+          de: 475_000,
           bE: 2_050_000,
           bR: -1_050_000,
         },
@@ -637,12 +664,29 @@ describe("PPh 21 unclamped payer balances: months where nothing changes (legend-
     //   H = -806_502. pET = priorTax, pEeT = 0: bE = 0, bR = H (both policies).
     // December gross 15_000_000: annual(192_419_352): PKP 132_419_000 =>
     //   13_862_850; T = 1_443_498, D = 2_250_000 = De, Dr = 0.
-    // e = 2_250_000 => W = 2_250_000; r = -806_502 => company refund 806_502.
-    //   Check: 2_250_000 - 806_502 = 1_443_498 = T.
+    // proportional: e = 2_250_000 => W = 2_250_000; r = -806_502 => company
+    //   refund 806_502. Check: 2_250_000 - 806_502 = 1_443_498 = T.
+    // gross_first (updated for bead legend-y2lf, founder Q52): Gs = 0, so De =
+    //   annual(Gs + G*) - annual(Gs) = annual(15_000_000) - 0 = 0 (below PTKP:
+    //   net 14_250_000 < 54_000_000) instead of D = 2_250_000. Dr = D - 0, so
+    //   the company bears the whole December tax and its credit is used up:
+    //   e = 0 => W = 0; r = Dr + bR = 2_250_000 - 806_502 = 1_443_498 > 0, so
+    //   covered S > 0, all borne (no gross-up line), fixed point (python3):
+    //   S0=0 X=15000000 annual=13862850 T=1443498 D=2250000 De=0 Dr=2250000 next=1443498
+    //   S1=1443498 X=16443498 annual=14079300 T=1659948 D=2466450 De=0 Dr=2466450 next=1659948
+    //   S2=1659948 X=16659948 annual=14111850 T=1692498 D=2499000 De=0 Dr=2499000 next=1692498
+    //   S3=1692498 X=16692498 annual=14116650 T=1697298 D=2503800 De=0 Dr=2503800 next=1697298
+    //   S4=1697298 X=16697298 annual=14117400 T=1698048 D=2504550 De=0 Dr=2504550 next=1698048
+    //   S5=1698048 X=16698048 annual=14117550 T=1698198 D=2504700 De=0 Dr=2504700 next=1698198
+    //   S6=1698198 X=16698198 annual=14117550 T=1698198 D=2504700 De=0 Dr=2504700 next=1698198
+    //   X = 16_698_198, T = 14_117_550 - 12_419_352 = 1_698_198 = borne B,
+    //   W = 0. The tax on the employee's December pay moves to the company
+    //   because his gross-scheme pay alone stays under PTKP (risk: flagged to
+    //   the founder / tax consultant, see docs/release-notes-pph21-december.md).
     // S0=0 X=15000000 annual=13862850 T=1443498 D=2250000 De=2250000 Dr=0 next=0
     cases(
       "N1",
-      "the company's credit is the company's: the employee pays 2_250_000, the company is refunded 806_502",
+      "the company's credit is the company's: proportional: the employee pays 2_250_000 and the company is refunded 806_502; gross_first (legend-y2lf): the employee pays 0 and the company bears the tax",
       {
         taxableLines: [{ amountIdr: 15_000_000, taxScheme: "gross" }],
         prior: {
@@ -669,15 +713,15 @@ describe("PPh 21 unclamped payer balances: months where nothing changes (legend-
           bR: -806_502,
         },
         gross_first: {
-          x: 15_000_000,
-          t: 1_443_498,
-          annual: 13_862_850,
-          w: 2_250_000,
+          x: 16_698_198,
+          t: 1_698_198,
+          annual: 14_117_550,
+          w: 0,
           a: 0,
-          b: 0,
+          b: 1_698_198,
           refund: 0,
-          employerRefund: 806_502,
-          de: 2_250_000,
+          employerRefund: 0,
+          de: 0,
           bE: 0,
           bR: -806_502,
         },

@@ -33,6 +33,7 @@ import {
 } from "@starter/shared/qr-order";
 import {
   calculateTax,
+  orderNetSubtotalIdr,
   resolveTaxSettings,
   type ServiceChargeRule,
   type TaxCalculationInput,
@@ -809,7 +810,18 @@ export function buildQuote(input: {
     priceChanges: input.priceChanges,
     minimumSpend: {
       requiredIdr: input.zone.minimumSpendIdr,
-      shortfallIdr: Math.max(0, input.zone.minimumSpendIdr - net),
+      // Q53 (legend-v9fh): measured before tax and service charge, also when
+      // the prices include them (inclusive); exclusive keeps `net`.
+      shortfallIdr: Math.max(
+        0,
+        input.zone.minimumSpendIdr -
+          orderNetSubtotalIdr({
+            subtotalIdr: net,
+            serviceChargeIdr: tax.serviceChargeIdr,
+            taxIdr: tax.taxIdr,
+            pricesIncludeTax: inclusive,
+          }),
+      ),
     },
     servingEstimate: estimate,
     computedAt,
