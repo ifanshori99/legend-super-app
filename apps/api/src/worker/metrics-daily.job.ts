@@ -4,10 +4,18 @@
 // recent days). The service takes a per (tenant, outlet, date) advisory lock
 // and writes only changed rows, so a restart or a second worker is harmless.
 // A failing outlet or family never blocks the others.
+//
+// Catch-up pass: a day a reader still holds (`pendingDay`, e.g. a delivery
+// order in flight) can outlive the window. Each sweep also refreshes, for
+// those readers only, older outlet-dates (up to `METRICS_DAILY_CATCH_UP_DAYS`
+// back) that still hold their `estimate` rows, so the day turns final and its
+// value follows once the hold ends.
+import { sql } from "drizzle-orm";
 import {
   addBusinessDays,
   assertTrustedScopedContext,
   businessDateOf,
+  businessDateSchema,
   type BusinessDate,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -16,6 +24,9 @@ import {
   refreshMetricsDaily,
   type MetricsDailyOptions,
 } from "../services/metrics-daily.service.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { dailyReaders } from "../services/metric-sources/index.ts";
 import { jobOutletClocks } from "./ai-anomaly.job.ts";
 
 export { METRICS_DAILY_SETTLE_MS };
@@ -24,6 +35,8 @@ export { METRICS_DAILY_SETTLE_MS };
 export const METRICS_DAILY_INTERVAL_MS = 15 * 60_000;
 /** Business dates before today that each sweep refreshes. */
 export const METRICS_DAILY_REFRESH_DAYS = 7;
+/** Oldest business date (days before today) the catch-up pass revisits. */
+export const METRICS_DAILY_CATCH_UP_DAYS = 90;
 
 export type MetricsDailyJobResult = {
   outlets: number;
@@ -48,6 +61,44 @@ export async function metricsDailyTargets(
   return targets;
 }
 
+/**
+ * Outlet-dates older than the refresh window, at most
+ * `METRICS_DAILY_CATCH_UP_DAYS` back, that still hold `estimate` rows of
+ * `codes` (the codes of readers with a `pendingDay` hold), oldest first.
+ */
+export async function metricsDailyCatchUpTargets(
+  context: ScopedTenantContext,
+  now: Date,
+  codes: readonly string[],
+): Promise<{ outletId: string; businessDate: BusinessDate }[]> {
+  if (codes.length === 0) return [];
+  const targets: { outletId: string; businessDate: BusinessDate }[] = [];
+  for (const { outletId, clock } of await jobOutletClocks(context)) {
+    const today = businessDateOf(now, clock);
+    const rows = await withTenant(db, context, (tx) =>
+      tx.execute(sql`
+        SELECT DISTINCT metric_date::text AS business_date
+          FROM metrics_daily
+         WHERE tenant_id = ${context.tenant.tenantId}
+           AND outlet_id = ${outletId}
+           AND finality = 'estimate'
+           AND metric_date >= ${addBusinessDays(today, -METRICS_DAILY_CATCH_UP_DAYS)}
+           AND metric_date < ${addBusinessDays(today, -METRICS_DAILY_REFRESH_DAYS)}
+           AND metric_code IN (${sql.join(
+             codes.map((code) => sql`${code}`),
+             sql`, `,
+           )})
+         ORDER BY 1`),
+    );
+    for (const row of rows.rows)
+      targets.push({
+        outletId,
+        businessDate: businessDateSchema.parse(String(row.business_date)),
+      });
+  }
+  return targets;
+}
+
 export async function runMetricsDailyJob(
   context: ScopedTenantContext,
   now: Date = new Date(),
@@ -63,7 +114,25 @@ export async function runMetricsDailyJob(
   )
     return null;
   lastRunByTenant.set(tenantId, now.getTime());
-  const targets = await metricsDailyTargets(context, now);
+  const readers = options.readers ?? dailyReaders();
+  const heldReaders = readers.filter(({ reader }) => reader.pendingDay);
+  const targets: {
+    outletId: string;
+    businessDate: BusinessDate;
+    options: MetricsDailyOptions;
+  }[] = [
+    ...(
+      await metricsDailyCatchUpTargets(
+        context,
+        now,
+        heldReaders.flatMap(({ reader }) => reader.metricCodes),
+      )
+    ).map((target) => ({ ...target, options: { readers: heldReaders } })),
+    ...(await metricsDailyTargets(context, now)).map((target) => ({
+      ...target,
+      options: { readers },
+    })),
+  ];
   const result: MetricsDailyJobResult = {
     outlets: new Set(targets.map((target) => target.outletId)).size,
     failedOutlets: 0,
@@ -73,7 +142,12 @@ export async function runMetricsDailyJob(
   const failed = new Set<string>();
   for (const target of targets) {
     try {
-      const outcome = await refreshMetricsDaily(context, target, now, options);
+      const outcome = await refreshMetricsDaily(
+        context,
+        { outletId: target.outletId, businessDate: target.businessDate },
+        now,
+        target.options,
+      );
       result.written += outcome.written;
       result.deleted += outcome.deleted;
       if (outcome.failedFamilies.length > 0) failed.add(target.outletId);
