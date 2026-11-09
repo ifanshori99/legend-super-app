@@ -278,3 +278,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect; temuan (null integrasi fail-open, UPDATE MALFORMED tanpa guard, celah test) dibetulkan.
 - Beads: legend-srf6 (kunci dedupe tanpa integrasi, risiko diterima), legend-dnkm (callback refund tanpa ikatan integrasi), legend-f03o (secret dipakai bersama antar integrasi).
 - Gate penuh: oleh merge train. Second opinion Codex: antre.
+
+## legend-0ogy refund DOIT lewat PaymentRefundPort (engineer, cabang `ws/doit-refund`, 2026-11-09)
+
+- Dasar: `ws/fix-refund-quarantine-ops` (84a89e35) + merge `milestone/m1` (dab1d592, provider DOIT). Merge bersih, journal migrasi tanpa duplikat, tanpa migrasi baru.
+- Kontrak DOIT (docs resmi): hanya `POST /v1/payments/{id}/refunds` + Idempotency-Key. Bentuk respons refund, GET refund, dan isi webhook `refund.*` tidak didokumentasikan. Desain fail-safe: `getRefundStatus` tidak pernah `not_found` (refund hanya dikirim sekali), bentuk tak dikenal = hasil tak diketahui, `failed` hanya untuk penolakan definitif kiriman pertama (409 `payment_not_refundable`, 400 `invalid_refund_amount`, 502 `provider_refund_failed`).
+- Adapter: `createDoitGateway` juga `PaymentRefundPort` (kredensial integrasi pencetak intent). Webhook `refund.succeeded/failed` ke `applyRefundProviderUpdate` lewat idempotency key, refund id, atau objek payment (hanya refund penuh, tepat satu kandidat, bukan refund dana). Integrasi penanda tangan wajib sama dengan pencetak intent (menutup legend-dnkm). Poll: sweep `sweepApprovedRefundPayouts` yang sudah ada.
+- Kill switch `DOIT_REFUNDS_ENABLED` (default off). Saat off, sweep dan payout tidak meng-claim (tidak menaikkan `payoutAttempts`).
+- Review K: reviewer Opus (3 bug refund dana tak teralokasi + intent manual + kebocoran kill switch) dan architect (kill switch, `pending` saat payment masih `paid`, cek reference) dibetulkan semua.
+- Sebelum switch dinyalakan: verifikasi sandbox DOIT (bentuk respons, payload webhook, masa simpan kunci) dan putuskan reset satu kali `payout_attempts` refund lama yang sempat di-claim gateway kosong.
+- Gate penuh: oleh merge train. Second opinion Codex: antre.

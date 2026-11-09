@@ -1604,3 +1604,57 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
     });
   }
 });
+
+describe("legend-0ogy: no refund gateway installed claims nothing", () => {
+  it("the sweep leaves payout_attempts at 0, flags nothing, and the next sweep with a gateway sends exactly once", async () => {
+    const refundId = await seedApprovedRefund(financeSupId);
+    // Past the attempt cap: with a gateway the sweep would flag it for manual
+    // reconciliation; without one it must not.
+    const spentId = await seedApprovedRefund(financeSupId, "0 seconds", 99);
+    setPaymentRefundGateway(null);
+
+    await expect(sweep()).resolves.toEqual({ attempted: 0, exhausted: 0 });
+
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 0,
+      last_payout_error: null,
+    });
+    expect(await refundRow(spentId)).toMatchObject({
+      payout_attempts: 99,
+      last_payout_error: null,
+    });
+
+    setPaymentRefundGateway(fake);
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "completed",
+      payout_attempts: 1,
+    });
+  });
+
+  it("runRefundPayout and the retry endpoint answer 503 before any claim or write", async () => {
+    const refundId = await seedApprovedRefund(financeSupId);
+    setPaymentRefundGateway(null);
+
+    await expect(runRefundPayout(tenantWide, refundId)).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(await refundRow(refundId)).toMatchObject({
+      payout_attempts: 0,
+      last_payout_error: null,
+    });
+
+    const retried = await retryWith(financeSup, refundId);
+    expect(retried.status).toBe(503);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 0,
+      last_payout_error: null,
+    });
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.statusCalls).toHaveLength(0);
+  });
+});

@@ -60,8 +60,10 @@ import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { setPaymentGateway } from "./services/payment-gateway.ts";
+import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { env } from "./config/env";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -82,8 +84,13 @@ const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
-// pending intents whose webhook never arrived.
-setPaymentGateway(createDoitGateway());
+// pending intents whose webhook never arrived. The refund payout sweep
+// (sweepApprovedRefundPayouts) sends approved refunds and polls pending ones
+// through the same adapter (PaymentRefundPort, legend-0ogy), only while
+// DOIT_REFUNDS_ENABLED is on; otherwise the refund port stays fail-closed.
+const doitGateway = createDoitGateway();
+setPaymentGateway(doitGateway);
+if (env.DOIT_REFUNDS_ENABLED) setPaymentRefundGateway(doitGateway);
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,

@@ -12,8 +12,10 @@
 // id (`data.reference`), amount and the integration that signed it must all
 // agree, otherwise the row is `ignored` and nothing settles; a paid `amount`
 // that differs from the intent goes the AMOUNT_MISMATCH way (money parked).
-// Only `payment.paid` and `payment.expired` move an intent: any other event
-// type (`webhook.test`, `invoice.created`, refunds, ...) is stored `ignored`.
+// Only `payment.paid` and `payment.expired` move an intent; `refund.succeeded`
+// and `refund.failed` close an approved refund (see processRefundEvent); any
+// other event type (`webhook.test`, `invoice.created`, ...) is stored
+// `ignored`.
 // Failures before the signature is verified all answer with the same
 // UNAUTHORIZED error.
 
@@ -45,6 +47,9 @@ import { db } from "../db";
 import {
   gatewayWebhookEvents,
   paymentIntents,
+  paymentEvidence,
+  paymentRefunds,
+  paymentUnallocatedFunds,
   tenants,
   type GatewayWebhookEvent,
 } from "../db/schema";
@@ -59,6 +64,16 @@ import {
 } from "./payment.service";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
 import { plausiblePaidAt } from "./payment-paid-at";
+import {
+  doitRefundWebhookEventSchema,
+  isDoitRefundEvent,
+  matchDoitRefundEvent,
+  pickRefundCandidate,
+  readDoitRefundFacts,
+  type DoitRefundFacts,
+  type DoitRefundWebhookEvent,
+} from "./payment-doit-refund-webhook";
+import { applyRefundProviderUpdate } from "./payment-refund.service";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -84,12 +99,23 @@ export const WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS = 15 * 60_000;
 const SECRET_CACHE_TTL_MS = 60_000;
 /** Audit snapshot keys of a refused cross-integration retry (ids only). */
 const MISMATCH_AUDIT_FIELDS = ["eventId", "integrationId"] as const;
+/** Audit snapshot keys of a refund event signed by the wrong integration. */
+const REFUND_MISMATCH_AUDIT_FIELDS = [
+  "eventId",
+  "refundId",
+  "integrationId",
+] as const;
 
 export type WebhookResultStatus =
   "processed" | "duplicate" | "ignored" | "failed";
 
 type DoitWebhookEvent = ReturnType<typeof doitWebhookEventSchema.parse>;
 type ProcessOutcome = "processed" | "ignored" | "failed";
+/** A verified event after parsing: payment events carry a payment object,
+ * refund events only the facts of `readDoitRefundFacts`. */
+type ParsedEvent =
+  | { kind: "payment"; event: DoitWebhookEvent }
+  | { kind: "refund"; event: DoitRefundWebhookEvent };
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
 type WebhookSecretEntry = { secret: string; integrationId: string };
 
@@ -459,7 +485,7 @@ async function handleRejectedConfirmation(
  * no downgrade of a paid intent) lives in one place. `verifiedSecret` is the
  * webhook secret that verified this delivery, when known.
  */
-async function processStoredEvent(
+async function processPaymentEvent(
   context: ScopedTenantContext,
   row: GatewayWebhookEvent,
   event: DoitWebhookEvent,
@@ -578,6 +604,347 @@ async function processStoredEvent(
       "Webhook belum dapat diproses. Coba lagi.",
     );
   }
+}
+
+// ---------------------------------------------------------- refund events
+
+type RefundTarget =
+  | {
+      kind: "found";
+      refund: typeof paymentRefunds.$inferSelect;
+      intent: PaymentIntentRow;
+    }
+  | { kind: "none" }
+  | { kind: "ambiguous" };
+
+/** Refund (and the intent it refunds) the event names, by the first matching
+ * path of `matchDoitRefundEvent`. `none` may still resolve later (the
+ * provider ref is stored after the payout call); `ambiguous` never will. */
+async function findRefundTarget(
+  context: ScopedTenantContext,
+  match: ReturnType<typeof matchDoitRefundEvent>,
+): Promise<RefundTarget> {
+  if (match.kind === "none") return { kind: "none" };
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx): Promise<RefundTarget> => {
+    const joined = () =>
+      tx
+        .select({ refund: paymentRefunds, intent: paymentIntents })
+        .from(paymentRefunds)
+        .innerJoin(
+          paymentIntents,
+          and(
+            eq(paymentIntents.tenantId, paymentRefunds.tenantId),
+            eq(paymentIntents.id, paymentRefunds.paymentIntentId),
+          ),
+        );
+    if (match.kind === "key" || match.kind === "refund_id") {
+      const rows = await joined()
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, tenantId),
+            match.kind === "key"
+              ? eq(paymentRefunds.id, match.refundId)
+              : eq(paymentRefunds.providerRef, match.providerRef),
+          ),
+        )
+        .limit(2);
+      if (rows.length > 1) return { kind: "ambiguous" };
+      return rows[0] ? { kind: "found", ...rows[0] } : { kind: "none" };
+    }
+    // Payment object: the refunds of the intent that payment belongs to.
+    const reference = uuidSchema.safeParse(match.payment.reference);
+    if (!reference.success) return { kind: "none" };
+    const rows = await joined().where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentIntents.id, reference.data),
+        eq(paymentIntents.provider, PROVIDER),
+        eq(paymentIntents.providerRef, match.payment.id),
+      ),
+    );
+    const candidate = pickRefundCandidate(
+      rows.map(({ refund }) => ({
+        id: refund.id,
+        status: refund.status,
+        amountIdr: refund.amountIdr,
+        unallocatedFundId: refund.unallocatedFundId,
+      })),
+      match.payment.amount,
+    );
+    const chosen = rows.find(({ refund }) => refund.id === candidate?.id);
+    return chosen ? { kind: "found", ...chosen } : { kind: "none" };
+  });
+}
+
+/** Provider payment the refund pays back, when known: the fund's evidence for
+ * a fund refund (its money may come from another payment than the intent's
+ * own), otherwise the intent's provider ref. `unknown` never rejects. */
+async function refundSourcePayment(
+  context: ScopedTenantContext,
+  refund: typeof paymentRefunds.$inferSelect,
+  intent: PaymentIntentRow,
+): Promise<{ provider: string; providerRef: string } | null> {
+  if (!refund.unallocatedFundId)
+    return intent.providerRef === null
+      ? null
+      : { provider: intent.provider, providerRef: intent.providerRef };
+  return withTenant(db, context, async (tx) => {
+    const [evidence] = await tx
+      .select({
+        provider: paymentEvidence.provider,
+        providerRef: paymentEvidence.providerRef,
+      })
+      .from(paymentUnallocatedFunds)
+      .innerJoin(
+        paymentEvidence,
+        and(
+          eq(paymentEvidence.tenantId, paymentUnallocatedFunds.tenantId),
+          eq(paymentEvidence.id, paymentUnallocatedFunds.evidenceId),
+        ),
+      )
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
+          eq(paymentUnallocatedFunds.id, refund.unallocatedFundId!),
+        ),
+      )
+      .limit(1);
+    return evidence ?? null;
+  });
+}
+
+/** The payment object of the event (when it carries one) must be the payment
+ * the refund pays back: the intent's reference always, the provider payment
+ * id when known (see `refundSourcePayment`). */
+async function paymentMatchesRefund(
+  context: ScopedTenantContext,
+  facts: DoitRefundFacts,
+  refund: typeof paymentRefunds.$inferSelect,
+  intent: PaymentIntentRow,
+): Promise<boolean> {
+  if (!facts.payment) return true;
+  if (facts.payment.reference !== intent.id) return false;
+  const source = await refundSourcePayment(context, refund, intent);
+  return (
+    source === null ||
+    (source.provider === PROVIDER && source.providerRef === facts.payment.id)
+  );
+}
+
+/** Audit of a refund event refused because another integration signed it.
+ * Ids only: no payload, no secret. */
+async function recordRefundIntegrationMismatch(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refundId: string,
+  intentIntegrationId: string | null,
+  now: Date,
+): Promise<void> {
+  logger.warn(
+    { module: "payment-webhook", tenantId: context.tenant.tenantId },
+    "DOIT refund webhook signed by another integration",
+  );
+  await withTenant(db, context, async (tx) => {
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.webhook.refund_integration_mismatch",
+        objectType: "gateway_webhook_event",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: {
+            eventId: row.eventId,
+            refundId,
+            integrationId: intentIntegrationId,
+          },
+          after: {
+            eventId: row.eventId,
+            refundId,
+            integrationId: row.integrationId,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      REFUND_MISMATCH_AUDIT_FIELDS,
+    );
+  });
+}
+
+/**
+ * Applies a stored, verified `refund.succeeded` / `refund.failed`. The provider
+ * result is authoritative (`applyRefundProviderUpdate` also closes a
+ * quarantined refund and never touches the quarantine logic), but only for a
+ * refund whose intent was minted by the integration that verified the
+ * signature. No match: retried for 15 minutes (the refund may not carry its
+ * provider ref yet), then ignored as REFUND_UNMATCHED.
+ */
+async function processRefundEvent(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  event: DoitRefundWebhookEvent,
+  now: Date,
+  verifiedSecret?: string,
+): Promise<ProcessOutcome> {
+  try {
+    const facts = readDoitRefundFacts(event.data);
+    const status = event.type === "refund.succeeded" ? "succeeded" : "failed";
+    const match = matchDoitRefundEvent(event.type, facts);
+    const target = await findRefundTarget(context, match);
+    const unmatched = async (): Promise<ProcessOutcome> => {
+      const retryable =
+        now.getTime() - row.receivedAt.getTime() <
+        WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+      await markRow(
+        context,
+        row.id,
+        retryable
+          ? { status: "failed", lastErrorCode: "REFUND_UNMATCHED" }
+          : {
+              status: "ignored",
+              lastErrorCode: "REFUND_UNMATCHED",
+              processedAt: now,
+            },
+        now,
+      );
+      return retryable ? "failed" : "ignored";
+    };
+    const ignoredWith = async (code: string): Promise<ProcessOutcome> => {
+      await markRow(
+        context,
+        row.id,
+        { status: "ignored", lastErrorCode: code, processedAt: now },
+        now,
+      );
+      return "ignored";
+    };
+    if (target.kind === "none") return await unmatched();
+    if (target.kind === "ambiguous")
+      return await ignoredWith("REJECTED_CONFLICT");
+
+    const { refund, intent } = target;
+    if (
+      intent.provider !== PROVIDER ||
+      !(await paymentMatchesRefund(context, facts, refund, intent)) ||
+      !(await signedByIntentIntegration(context, intent, row, verifiedSecret))
+    ) {
+      await recordRefundIntegrationMismatch(
+        context,
+        row,
+        refund.id,
+        intent.gatewayIntegrationId,
+        now,
+      );
+      return await ignoredWith("REFERENCE_MISMATCH");
+    }
+
+    const providerRef =
+      match.kind === "payment_object" ? match.payment.id : facts.refundId;
+    try {
+      await applyRefundProviderUpdate(
+        context,
+        {
+          ...(match.kind === "refund_id"
+            ? {}
+            : { idempotencyKey: `refund:${refund.id}` }),
+          ...(providerRef ? { providerRef } : {}),
+          status,
+          ...(status === "failed" && facts.failureCode
+            ? { code: facts.failureCode }
+            : {}),
+          ...(match.kind !== "payment_object" && facts.amountIdr !== undefined
+            ? { amountIdr: facts.amountIdr }
+            : {}),
+        },
+        now,
+      );
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 409)
+        return await ignoredWith("REJECTED_CONFLICT");
+      if (error instanceof HttpError && error.status === 404)
+        return await unmatched();
+      throw error;
+    }
+    await markRow(
+      context,
+      row.id,
+      {
+        status: "processed",
+        lastErrorCode: null,
+        processedAt: now,
+        paymentIntentId: intent.id,
+        outletId: intent.outletId,
+        providerRef: providerRef ?? refund.providerRef,
+      },
+      now,
+    );
+    return "processed";
+  } catch (error) {
+    await markRow(
+      context,
+      row.id,
+      { status: "failed", lastErrorCode: errorCodeOf(error) },
+      now,
+    ).catch(() => {});
+    throw new HttpError(
+      500,
+      "INTERNAL_ERROR",
+      "Webhook belum dapat diproses. Coba lagi.",
+    );
+  }
+}
+
+/** Parses the body of a verified event by its type. Null: not readable. */
+function parseEventBody(type: string, body: unknown): ParsedEvent | null {
+  if (isDoitRefundEvent(type)) {
+    const refund = doitRefundWebhookEventSchema.safeParse(body);
+    return refund.success ? { kind: "refund", event: refund.data } : null;
+  }
+  const payment = doitWebhookEventSchema.safeParse(body);
+  return payment.success ? { kind: "payment", event: payment.data } : null;
+}
+
+/** Same, for a stored payload (the type is read from the payload itself). */
+function parseStoredEvent(payload: unknown): ParsedEvent | null {
+  const type =
+    typeof payload === "object" && payload !== null
+      ? (payload as { type?: unknown }).type
+      : undefined;
+  return typeof type === "string" ? parseEventBody(type, payload) : null;
+}
+
+/** Provider reference to keep on the stored row (a refund event may name none). */
+function eventProviderRef(parsed: ParsedEvent): string | null {
+  let ref: string | undefined;
+  if (parsed.kind === "payment") ref = parsed.event.data.id;
+  else {
+    const facts = readDoitRefundFacts(parsed.event.data);
+    ref = facts.refundId ?? facts.payment?.id;
+  }
+  return ref === undefined ? null : ref.slice(0, 100);
+}
+
+async function processStoredEvent(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  parsed: ParsedEvent,
+  now: Date,
+  verifiedSecret?: string,
+): Promise<ProcessOutcome> {
+  return parsed.kind === "refund"
+    ? processRefundEvent(context, row, parsed.event, now, verifiedSecret)
+    : processPaymentEvent(context, row, parsed.event, now, verifiedSecret);
 }
 
 async function insertRow(
@@ -775,8 +1142,12 @@ export async function receiveDoitWebhook(input: {
     throw unauthorized();
   }
   const envelope = doitWebhookEnvelopeSchema.safeParse(json);
-  if (envelope.success && !isDoitPaymentEvent(envelope.data.type)) {
-    // Not a payment event: stored (deduped by event id) and ignored, 200.
+  if (
+    envelope.success &&
+    !isDoitPaymentEvent(envelope.data.type) &&
+    !isDoitRefundEvent(envelope.data.type)
+  ) {
+    // Not a payment or refund event: stored (deduped by event id) and ignored, 200.
     const { id, type, created_at } = envelope.data;
     const stored = await insertRow(context, {
       integrationId: verified.integrationId,
@@ -796,10 +1167,10 @@ export async function receiveDoitWebhook(input: {
     });
     return { status: stored ? "ignored" : "duplicate", eventId: id };
   }
-  const parsed = envelope.success
-    ? doitWebhookEventSchema.safeParse(json)
-    : envelope;
-  if (!parsed.success) {
+  const parsedEvent = envelope.success
+    ? parseEventBody(envelope.data.type, json)
+    : null;
+  if (!parsedEvent) {
     await insertRow(context, {
       integrationId: verified.integrationId,
       signatureValid: true,
@@ -822,7 +1193,7 @@ export async function receiveDoitWebhook(input: {
       "Webhook belum dapat diproses. Coba lagi.",
     );
   }
-  const event = parsed.data;
+  const event = parsedEvent.event;
 
   // STORE FIRST: a retry of the same event id hits the unique index.
   let row = await insertRow(context, {
@@ -833,7 +1204,7 @@ export async function receiveDoitWebhook(input: {
     payloadHash,
     // The schema-validated event, never the raw JSON with unknown fields.
     payload: event as unknown as Record<string, unknown>,
-    providerRef: event.data.id.slice(0, 100),
+    providerRef: eventProviderRef(parsedEvent),
     status: "received",
     receivedAt: now,
     createdAt: now,
@@ -842,7 +1213,7 @@ export async function receiveDoitWebhook(input: {
   // The event to process: the new body only for a fresh row (or a stored
   // MALFORMED one it just filled); a retried row is processed from what it
   // stored.
-  let toProcess = event;
+  let toProcess: ParsedEvent = parsedEvent;
   if (!row) {
     row = await loadVerifiedRow(context, event.id);
     if (!row) throw new Error("Webhook event conflicted without a winner");
@@ -879,7 +1250,7 @@ export async function receiveDoitWebhook(input: {
           .set({
             payload: event as unknown as Record<string, unknown>,
             eventType: event.type.slice(0, 60),
-            providerRef: event.data.id.slice(0, 100),
+            providerRef: eventProviderRef(parsedEvent),
             updatedAt: now,
           })
           .where(
@@ -906,8 +1277,8 @@ export async function receiveDoitWebhook(input: {
     if (useStored) {
       // Never the replacement body: the stored payload is what was verified
       // and stored first (the payload hash may differ, the stored one wins).
-      const storedEvent = doitWebhookEventSchema.safeParse(row.payload);
-      if (!storedEvent.success) {
+      const storedEvent = parseStoredEvent(row.payload);
+      if (!storedEvent) {
         await markRow(
           context,
           row.id,
@@ -920,7 +1291,7 @@ export async function receiveDoitWebhook(input: {
           "Webhook belum dapat diproses. Coba lagi.",
         );
       }
-      toProcess = storedEvent.data;
+      toProcess = storedEvent;
     }
   }
   const outcome = await processStoredEvent(
@@ -967,8 +1338,8 @@ export async function reprocessStoredWebhookEvents(
   let processed = 0;
   const secrets = rows.length > 0 ? await cachedWebhookSecrets(context) : [];
   for (const row of rows) {
-    const parsed = doitWebhookEventSchema.safeParse(row.payload);
-    if (!parsed.success) {
+    const parsed = parseStoredEvent(row.payload);
+    if (!parsed) {
       await markRow(
         context,
         row.id,
@@ -984,7 +1355,7 @@ export async function reprocessStoredWebhookEvents(
       const outcome = await processStoredEvent(
         context,
         row,
-        parsed.data,
+        parsed,
         now,
         verifiedSecret,
       );

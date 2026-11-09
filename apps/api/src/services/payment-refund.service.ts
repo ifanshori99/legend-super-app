@@ -58,6 +58,7 @@ import {
 } from "./payment-admin.service.ts";
 import {
   paymentRefundGateway,
+  UNCONFIGURED_REFUND_PROVIDER,
   type GatewayRefundLookup,
 } from "./payment-refund-gateway.ts";
 import {
@@ -851,8 +852,11 @@ async function decideRefund(
     // above is settled, but a still-pending refund is not a success for us.
     if (raced && settled.status === "pending")
       throw conflict("Approval level was already decided; refresh.");
-    if (settled.status === "approved") await runRefundPayout(context, refundId);
-  } else if (first.kind === "payout") {
+    // Without a refund gateway nothing is claimed: the refund stays approved
+    // and the sweep pays it once a gateway is installed.
+    if (settled.status === "approved" && refundGatewayInstalled())
+      await runRefundPayout(context, refundId);
+  } else if (first.kind === "payout" && refundGatewayInstalled()) {
     await runRefundPayout(context, refundId);
   }
   return loadView(context, refundId, actor);
@@ -1031,6 +1035,9 @@ type PayoutClaim =
       /** False for a quarantined refund: look the provider up, never send. */
       readonly send: boolean;
       readonly paymentProviderRef: string | null;
+      /** Intent facts the refund port needs to pick credentials. */
+      readonly integrationId: string | null;
+      readonly outletId: string;
     };
 
 /** Rejects when the deadline signal fires, even if the adapter ignores it. */
@@ -1098,6 +1105,11 @@ function contradicts(
 const keepQuarantine = (next: string | null) =>
   sql`CASE WHEN ${paymentRefunds.lastPayoutError} = ${PAYOUT_QUARANTINED} THEN ${PAYOUT_QUARANTINED} ELSE ${next}::text END`;
 
+/** False while the fail-closed default port is installed (no adapter). */
+function refundGatewayInstalled(): boolean {
+  return paymentRefundGateway().provider !== UNCONFIGURED_REFUND_PROVIDER;
+}
+
 /**
  * Pays an `approved` refund out through the refund port. The claim lease (with a
  * fencing token) makes concurrent callers skip; the provider dedupes on
@@ -1110,6 +1122,13 @@ export async function runRefundPayout(
   refundId: string,
   now: Date = new Date(),
 ): Promise<Refund> {
+  // Before any claim or write: an attempt counted against no provider would
+  // make a later first send look like a possible duplicate.
+  if (!refundGatewayInstalled())
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
+    );
   const token = randomUUID();
   const claim = await withTenant(
     db,
@@ -1176,7 +1195,34 @@ export async function runRefundPayout(
         );
       if (!intent) throw missing();
       let paymentProviderRef = intent.providerRef;
-      // Lookup-only needs no source transaction: never map or hold here.
+      // Lookup-only needs no source transaction: never map or hold here. But a
+      // fund refund never looks at the intent's own payment (another payment
+      // of the intent could settle it by mistake): read the fund's stored
+      // evidence mapping, else null.
+      if (refund.unallocatedFundId && !send) {
+        const [fund] = await tx
+          .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
+          .from(paymentUnallocatedFunds)
+          .where(
+            and(
+              eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
+              eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+            ),
+          );
+        const [evidence] = fund?.evidenceId
+          ? await tx
+              .select({ providerRef: paymentEvidence.providerRef })
+              .from(paymentEvidence)
+              .where(
+                and(
+                  eq(paymentEvidence.tenantId, refund.tenantId),
+                  eq(paymentEvidence.paymentIntentId, refund.paymentIntentId),
+                  eq(paymentEvidence.id, fund.evidenceId),
+                ),
+              )
+          : [];
+        paymentProviderRef = evidence?.providerRef ?? null;
+      }
       if (refund.unallocatedFundId && send) {
         // The fund's own evidence is the transaction to refund; never the
         // intent's providerRef. A fund without one resolves only when the intent
@@ -1302,6 +1348,8 @@ export async function runRefundPayout(
         lookupFirst: maybeSent,
         send,
         paymentProviderRef,
+        integrationId: intent.gatewayIntegrationId,
+        outletId: intent.outletId,
       };
     },
   );
@@ -1321,6 +1369,11 @@ export async function runRefundPayout(
           context,
           idempotencyKey,
           providerRef: refund.providerRef,
+          paymentIntentId: refund.paymentIntentId,
+          paymentProviderRef: claim.paymentProviderRef,
+          integrationId: claim.integrationId,
+          outletId: claim.outletId,
+          amountIdr: refund.amountIdr,
           signal,
         }),
       );
@@ -1337,6 +1390,8 @@ export async function runRefundPayout(
           idempotencyKey,
           paymentIntentId: refund.paymentIntentId,
           paymentProviderRef: claim.paymentProviderRef,
+          integrationId: claim.integrationId,
+          outletId: claim.outletId,
           amountIdr: refund.amountIdr,
           reason: refund.reason,
           signal,
@@ -1459,6 +1514,8 @@ export async function sweepApprovedRefundPayouts(
   /** Checked before each claim (worker shutdown): stop starting new payouts. */
   shouldStop: () => boolean = () => false,
 ): Promise<{ attempted: number; exhausted: number }> {
+  // No gateway: claim nothing and flag nothing (see runRefundPayout).
+  if (!refundGatewayInstalled()) return { attempted: 0, exhausted: 0 };
   const tenantId = context.tenant.tenantId;
   const leaseFree = sql`(${paymentRefunds.payoutClaimedUntil} IS NULL OR ${paymentRefunds.payoutClaimedUntil} <= ${now})`;
   const decidedAtOrCreated = sql`coalesce(${paymentRefunds.decidedAt}, ${paymentRefunds.createdAt})`;
@@ -1539,6 +1596,12 @@ export async function retryRefundPayout(
 ) {
   // The provider key is `refund:<id>`, so a retry is naturally idempotent.
   void key;
+  // Before the evidence mapping below writes anything.
+  if (!refundGatewayInstalled())
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
+    );
   await withTenant(db, context, async (tx) => {
     const [refund] = await tx
       .select()

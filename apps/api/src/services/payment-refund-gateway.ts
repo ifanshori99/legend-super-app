@@ -5,7 +5,8 @@
 // method there would break every `FakeGateway` in the tests and the unmerged
 // DOIT branch. The DOIT adapter implements this port after `ws/doit-provider`
 // merges; until then the default implementation fails closed — a payout answers
-// 503 and the refund stays `approved` so it can be retried later.
+// 503 and the refund stays `approved` so it can be retried later. The DOIT
+// adapter (`createDoitGateway`) implements this port too.
 //
 // Contract the adapter must keep:
 // - `idempotencyKey` is `refund:<refundId>` and the provider MUST dedupe on it,
@@ -19,6 +20,12 @@
 //   it. A timeout is an unknown outcome like a throw.
 // - Before re-sending after an earlier attempt the service asks
 //   `getRefundStatus`; only `not_found` allows a new `refund()` with the same key.
+//   An adapter whose provider cannot prove a key was never seen (DOIT has no
+//   refund lookup and does not document how long it keeps a key) MUST NOT answer
+//   `not_found`: `refund()` then runs on the first attempt only, and an unknown
+//   outcome ends in manual reconciliation instead of a second payout.
+// - `failed` is only for a definitive decline of the first send (or a request
+//   that never left, e.g. no payment ref). Any unrecognised answer throws.
 
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 
@@ -30,6 +37,11 @@ export type GatewayRefundRequest = {
   readonly paymentIntentId: string;
   /** Provider ref of the original payment (or the fund's evidence). */
   readonly paymentProviderRef: string | null;
+  /** Integration that minted the payment intent (`gatewayIntegrationId`); the
+   * adapter refunds with its credentials. Null on rows minted before it existed. */
+  readonly integrationId: string | null;
+  /** Outlet of the payment intent (credential resolution when no integration). */
+  readonly outletId: string;
   /** Integer IDR. */
   readonly amountIdr: number;
   readonly reason: string;
@@ -61,16 +73,29 @@ export interface PaymentRefundPort {
     context: ScopedTenantContext;
     idempotencyKey: string;
     providerRef: string | null;
+    paymentIntentId: string;
+    /** Provider ref of the original payment. */
+    paymentProviderRef: string | null;
+    /** Integration that minted the payment intent. */
+    integrationId: string | null;
+    outletId: string;
+    /** Integer IDR. */
+    amountIdr: number;
     signal: AbortSignal;
   }): Promise<GatewayRefundLookup>;
 }
+
+/** `provider` of the fail-closed default. While it is installed the refund
+ * service claims nothing: a claim would count an attempt that never reached any
+ * provider and strand the refund once a real gateway is installed. */
+export const UNCONFIGURED_REFUND_PROVIDER = "unconfigured";
 
 /**
  * Fail-closed default. Both calls answer 503 rather than pretending money
  * moved; an approved refund then stays `approved` until an adapter is installed.
  */
 export const unconfiguredRefundGateway: PaymentRefundPort = {
-  provider: "unconfigured",
+  provider: UNCONFIGURED_REFUND_PROVIDER,
   async refund() {
     throw new CoreError(
       "SERVICE_UNAVAILABLE",
