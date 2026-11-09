@@ -55,12 +55,14 @@ import {
   platformAdmins,
   roleAssignments,
   roles,
+  session,
   supportAccessGrants,
   supportAccessRequests,
   tenants,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import { getRequestContext } from "../lib/request-context.ts";
 import {
   recordAudit,
@@ -1217,7 +1219,7 @@ export async function endSupportAccess(input: {
   if (tenantId === null)
     throw new HttpError(404, "NOT_FOUND", "Support session not found.");
   const context = platformTenantContext(tenantId);
-  return withTenant(db, context, async (tx) => {
+  const grant = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
       .from(supportAccessGrants)
@@ -1274,6 +1276,22 @@ export async function endSupportAccess(input: {
     });
     return toGrant(row);
   });
+  // legend-w1due: the support sessions this grant carried die with it, unless
+  // another live grant of the same admin still covers their user.
+  // The grant is already ended; a cleanup failure must not undo that answer,
+  // and the per-request guard still refuses the session meanwhile.
+  try {
+    await endImpersonationSessionsWithoutGrant({
+      adminUserId: grant.superAdminUserId,
+      now,
+    });
+  } catch (error) {
+    logger.error(
+      { err: error, grantId: grant.id },
+      "failed to end support sessions of an ended grant",
+    );
+  }
+  return grant;
 }
 
 // -------------------------------------------------------------- sweep
@@ -1415,7 +1433,13 @@ export class ImpersonationRefused extends Error {
 
 export type ImpersonationMatch = { tenantId: string; grant: GrantRow };
 export type ImpersonationEndCause =
-  "stopped" | "signed_out" | "expired" | "revoked";
+  | "stopped"
+  | "signed_out"
+  | "expired"
+  | "revoked"
+  // legend-w1due: no live grant covers the session any more (ended, lapsed,
+  // or the admin lost platform standing).
+  | "grant_ended";
 
 /**
  * Tenants where `adminUserId` holds a grant active at `at` (default `now`)
@@ -1617,6 +1641,78 @@ export async function recordImpersonationStarted(input: {
     }),
     input.adminUserId,
   );
+}
+
+/**
+ * legend-w1due: deletes every impersonated session of `adminUserId` (or only
+ * `sessionId`) that no live grant covers any more, and audits each end as
+ * "grant_ended". A session still covered by another live grant of the same
+ * admin (another tenant the user belongs to) is kept; the per-request guard
+ * keeps it out of the tenant whose grant ended. Without this a session
+ * outlived its grant until its own expiry: readable through get-session and
+ * the session list, and one guard away from acting in the tenant.
+ * Returns the ids of the deleted sessions.
+ */
+export async function endImpersonationSessionsWithoutGrant(input: {
+  adminUserId: string;
+  sessionId?: string;
+  now?: Date;
+}): Promise<string[]> {
+  const now = input.now ?? new Date();
+  const rows = await db
+    .select({
+      id: session.id,
+      userId: session.userId,
+      createdAt: session.createdAt,
+    })
+    .from(session)
+    .where(
+      and(
+        eq(session.impersonatedBy, input.adminUserId),
+        input.sessionId === undefined
+          ? undefined
+          : eq(session.id, input.sessionId),
+      ),
+    );
+  if (rows.length === 0) return [];
+  const standing = await isPlatformAdmin(input.adminUserId);
+  const ended: string[] = [];
+  for (const row of rows) {
+    if (standing) {
+      const live = await findImpersonationGrants({
+        adminUserId: input.adminUserId,
+        targetUserId: row.userId,
+        now,
+      });
+      if (live.length > 0) continue;
+    }
+    // A direct delete skips Better Auth's delete hook, so the end is audited
+    // once, here. Only the call that actually deleted the row audits it.
+    const deleted = await db
+      .delete(session)
+      .where(eq(session.id, row.id))
+      .returning({ id: session.id });
+    if (deleted.length === 0) continue;
+    ended.push(row.id);
+    try {
+      await recordImpersonationEnded({
+        adminUserId: input.adminUserId,
+        targetUserId: row.userId,
+        sessionId: row.id,
+        sessionCreatedAt: row.createdAt,
+        cause: "grant_ended",
+        now,
+      });
+    } catch (error) {
+      // Never keep a dead session alive over an audit failure; logged for
+      // follow-up like the other impersonation end paths.
+      logger.error(
+        { err: error, sessionId: row.id },
+        "failed to audit impersonation end",
+      );
+    }
+  }
+  return ended;
 }
 
 export async function recordImpersonationEnded(input: {

@@ -865,3 +865,156 @@ describe("legend-npkpz TEN-04 impersonation expiry cap and single grant scan", (
     ).toEqual(at(5));
   });
 });
+
+// legend-w1due: a support session must not outlive its grant. Without this,
+// an impersonated session stayed usable (as a row, through get-session and
+// the session list) after the grant ended, and only the per-request guard
+// stood between it and the tenant; an Owner made through it after the grant
+// ended would pass the c9kbk independence rule (SUPPORT_APPROVER_NOT_INDEPENDENT).
+describe("legend-w1due TEN-04 a support session dies with its grant", () => {
+  const cleanupTenantB: string[] = [];
+
+  afterAll(async () => {
+    await db.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND role_id = ANY($2::uuid[])",
+      [otherTenantId, cleanupTenantB],
+    );
+    await db.query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
+      cleanupTenantB,
+    ]);
+  });
+
+  async function impersonatedSessionIds(adminUserId: string) {
+    const result = await db.query<{ id: string }>(
+      `SELECT id FROM "session" WHERE impersonated_by = $1`,
+      [adminUserId],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
+  it("legend-w1due TEN-04 ending the grant deletes the support session and audits the end as grant_ended", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId);
+    const support = await impersonate(admin, tenant);
+    expect((await support.get("/api/access/roles")).status).toBe(200);
+    const [sessionId] = await impersonatedSessionIds(admin.userId);
+    expect(sessionId).toBeTruthy();
+
+    await endSupportAccess({
+      tenantId,
+      grantId: grant.id,
+      actorUserId: admin.userId,
+    });
+
+    expect(await impersonatedSessionIds(admin.userId)).toEqual([]);
+    expect((await support.get("/api/auth/get-session")).body).toBeNull();
+    expect((await support.get("/api/access/roles")).status).toBe(401);
+    const ended = await auditRows(
+      tenantId,
+      "support_access.impersonation_ended",
+      { actorId: admin.userId, objectId: grant.id },
+    );
+    expect(ended).toHaveLength(1);
+    expect(ended[0]!.maskedChanges.after).toMatchObject({
+      impersonatedUserId: tenant.userId,
+      impersonationId: sessionId,
+      cause: "grant_ended",
+    });
+  });
+
+  it("legend-w1due TEN-04 a lapsed grant deletes the support session on its next request", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId, {
+      durationMinutes: 60,
+    });
+    const support = await impersonate(admin, tenant);
+    expect((await support.get("/api/access/roles")).status).toBe(200);
+
+    // The grant lapses while the session row is still within its own expiry.
+    await db.query(
+      `UPDATE support_access_grants
+          SET started_at = started_at - interval '2 hours',
+              expires_at = expires_at - interval '2 hours',
+              mfa_verified_at = mfa_verified_at - interval '2 hours'
+        WHERE id = $1`,
+      [grant.id],
+    );
+    const refused = await support.get("/api/access/roles");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error?.code).toBe("SUPPORT_ACCESS_REQUIRED");
+
+    expect(await impersonatedSessionIds(admin.userId)).toEqual([]);
+    expect((await support.get("/api/access/roles")).status).toBe(401);
+  });
+
+  it("legend-w1due TEN-04 a session whose admin still holds another live grant for the user survives one grant ending", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const first = await openGrant(tenantId, admin.userId);
+    const support = await impersonate(admin, tenant);
+    // The same user also belongs to tenant B, where the admin holds a grant.
+    const roleB = await db.query<{ id: string }>(
+      `INSERT INTO roles
+         (tenant_id, name, is_template, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, false, '["access.role.view"]'::jsonb, false, '["tenant"]'::jsonb)
+       RETURNING id`,
+      [otherTenantId, `Staf B ${unique()}`],
+    );
+    await db.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+      [otherTenantId, tenant.userId, roleB.rows[0]!.id],
+    );
+    cleanupTenantB.push(roleB.rows[0]!.id);
+    await openGrant(otherTenantId, admin.userId);
+
+    await endSupportAccess({
+      tenantId,
+      grantId: first.id,
+      actorUserId: admin.userId,
+    });
+
+    // Still a live support session (tenant B), but closed for tenant A.
+    expect(await impersonatedSessionIds(admin.userId)).toHaveLength(1);
+    const refused = await support.get("/api/access/roles");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error?.code).toBe("SUPPORT_ACCESS_REQUIRED");
+    expect(await impersonatedSessionIds(admin.userId)).toHaveLength(1);
+  });
+
+  it("legend-w1due TEN-04 after a read_write grant ends, the support session cannot appoint an Owner", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openWriteGrant(tenantId, admin.userId, tenant.userId);
+    const support = await impersonate(admin, tenant);
+    const outsider = await newOutsider();
+    const owner = await db.query<{ id: string }>(
+      `SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+      [tenantId],
+    );
+
+    await endSupportAccess({
+      tenantId,
+      grantId: grant.id,
+      actorUserId: admin.userId,
+    });
+
+    const appoint = await support
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId: outsider.userId,
+        roleId: owner.rows[0]!.id,
+        scope: { type: "tenant" },
+      });
+    expect([401, 403]).toContain(appoint.status);
+    const rows = await db.query(
+      `SELECT 1 FROM role_assignments WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, outsider.userId],
+    );
+    expect(rows.rowCount).toBe(0);
+  });
+});

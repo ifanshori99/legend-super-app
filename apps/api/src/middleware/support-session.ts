@@ -2,8 +2,12 @@ import type { Request, RequestHandler } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { PlatformError } from "@starter/shared/platform";
 import { auth } from "../lib/auth";
+import { logger } from "../lib/logger";
 import { setRequestSupport } from "../lib/request-context";
-import { assertSupportAccess } from "../services/platform-support.service";
+import {
+  assertSupportAccess,
+  endImpersonationSessionsWithoutGrant,
+} from "../services/platform-support.service";
 import { findTenantContext } from "./tenant";
 
 /*
@@ -28,6 +32,10 @@ import { findTenantContext } from "./tenant";
  *   7. Lasting credentials (CREDENTIAL_PATHS: MCP authorization, device
  *      enrolment and tokens, staff PINs) are refused even with read_write:
  *      support never mints or changes a way to act as someone later.
+ *   8. A session refused under rule 1 whose user no live grant of the admin
+ *      covers any more is deleted (legend-w1due): the session dies with its
+ *      grant instead of lingering until its own expiry. endSupportAccess
+ *      does the same eagerly when a grant is ended early.
  *
  * Errors are thrown as PlatformError so the error handler shapes the reply.
  */
@@ -148,15 +156,39 @@ export async function enforceSupportSession(req: Request): Promise<void> {
       throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     return;
   }
-  const decision = assertSupportAccess({
-    tenantId: tenant.tenantId,
-    actorUserId: impersonatedBy,
-    dataClass: "personal",
-    intent: safe ? "read" : "write",
-  });
+  let grant: ActiveGrant | null;
+  try {
+    grant = await assertSupportAccess({
+      tenantId: tenant.tenantId,
+      actorUserId: impersonatedBy,
+      dataClass: "personal",
+      intent: safe ? "read" : "write",
+    });
+  } catch (error) {
+    // legend-w1due: no live grant for this tenant. When no other live grant
+    // of the admin covers this user either, the session itself dies here
+    // (deleted and audited as grant_ended) instead of lingering until its
+    // own expiry. The refusal still answers this request.
+    if (
+      error instanceof PlatformError &&
+      error.code === "SUPPORT_ACCESS_REQUIRED" &&
+      req.auth?.session.id
+    )
+      // A failed cleanup must not change the answer: the refusal stands and
+      // the next request tries again.
+      await endImpersonationSessionsWithoutGrant({
+        adminUserId: impersonatedBy,
+        sessionId: req.auth.session.id,
+      }).catch((cleanupError: unknown) =>
+        logger.error(
+          { err: cleanupError, sessionId: req.auth?.session.id },
+          "failed to end a support session without grant",
+        ),
+      );
+    throw error;
+  }
   // Only cache a pass: a write passes only with read_write, so that grant is
   // valid for reads too. A rejection must not poison supportSessionOf.
-  const grant = await decision;
   grants.set(req, Promise.resolve(grant));
   // Tell the audit writer who is really acting (legend-6yfhc): recordAudit
   // swaps the impersonated tenant user for the admin on this tenant's rows.
