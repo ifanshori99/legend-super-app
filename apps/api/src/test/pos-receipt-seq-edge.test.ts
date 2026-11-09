@@ -47,10 +47,16 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  decodeReceiptRunRefusals,
   deviceSyncPageSchema,
+  encodeReceiptRunReport,
+  encodeReceiptRunRefusals,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
+  type ReceiptRunRefusalReason,
+  type ReceiptRunRefusalReport,
+  type ReceiptRunReport,
 } from "@starter/shared/edge";
 import { type PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
@@ -64,6 +70,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { enrollDevice } from "../services/device.service.ts";
 import {
+  applyDeviceReceiptSequences,
   deviceSyncQuerySchema,
   listDeviceRecordsSince,
   pullDeviceRegistry,
@@ -71,8 +78,10 @@ import {
 import { setPosReceiptPort } from "../services/pos-order-ports.ts";
 import {
   allocateReceipt,
+  claimDeviceReceiptSequencesForEdge,
   createPosReceiptPort,
   listDeviceReceiptSequences,
+  RECEIPT_REFUSAL_ROTATIONS_MAX,
 } from "../services/pos-receipt.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -1308,6 +1317,1225 @@ describe("sduiq the edge retires a local run the cloud no longer lists (legend-s
       retired_reason: "edge_replaced",
       edge_node_id: null,
       last_number: 4,
+    });
+  });
+});
+
+// ---- legend-hfq3z: a refused run is reported and replaced by the cloud -------
+//
+// Assumptions (the brief is the contract; no backend code was used to derive them):
+//  - Edge and cloud share one test database, so a page is shipped as in the
+//    sduiq block, except that the id of a run the edge is meant to REFUSE is
+//    kept: the id then clashes with the cloud row itself (`id_used`), and with
+//    a local prefix of the edge (`prefix_used`) when the edge holds that
+//    prefix. A refused run is never inserted on the edge, so keeping its id
+//    cannot collide; every other run gets a stable edge-side id.
+//  - Pulls here send no `receiptRuns` (an old-style report-less pull, except
+//    the empty report sent with refusals, see below): the edge
+//    and cloud use the same prefixes for different devices in this simulation,
+//    and a forwarded report would only add yd0h8 noise. The brief allows
+//    `receiptRefused` with `receiptSequences=1` alone.
+//  - Only `receiptRunRefusals` (pullDeviceRegistry result), `refusals`
+//    (applyDeviceReceiptSequences result), the `receiptRefused` query param and
+//    the claim result `refusedRotated` / `refusedThrottled` are read; row state
+//    is read from the table.
+//  - The cloud rotates a run for the throttle with `claim_rotated` retirements
+//    of the SAME node and the SAME instance, counted per device within
+//    RECEIPT_REGRESSION_WINDOW_HOURS (fix round 1, A2).
+//  - Fix round 1 (A1): the cloud heals only when the request also carries
+//    `receiptRuns`. A real edge always sends it with refusals, so the helpers
+//    below send an EMPTY report (`new Map()`: the edge holds no run) whenever
+//    refusals are given and no report is. `report: null` sends none.
+//  - A new prefix is the smallest free `P<n>` above every `P<n>` of the report
+//    and above the refused run's own number when its reason is `prefix_used`
+//    (A5); with nothing above, it is the smallest free prefix of the outlet.
+
+describe("hfq3z a clash-refused replacement run is reported and healed by the cloud (legend-hfq3z)", () => {
+  let hfqClock = 0;
+  /** Strictly increasing cloud arrival times (the report token of a pull). */
+  function hfqNow(): Date {
+    hfqClock = Math.max(Date.now() + 10 * 60_000, hfqClock + 1);
+    return new Date(hfqClock);
+  }
+
+  /** The cloud answering one pull of node N, instance I (no `receiptRuns`). */
+  function cloudPull(
+    cloudOutletId: string,
+    own: Binding,
+    options: {
+      /** `null` = send no `receiptRuns`; default: empty when refusals given. */
+      report?: ReceiptRunReport | null;
+      refusals?: ReceiptRunRefusalReport;
+      since?: string | null;
+    } = {},
+  ): Promise<DeviceSyncPage> {
+    const report =
+      options.report === undefined
+        ? options.refusals
+          ? new Map<string, number>()
+          : undefined
+        : (options.report ?? undefined);
+    const query = deviceSyncQuerySchema.parse({
+      limit: 100,
+      receiptSequences: "1",
+      edgeInstance: own.edgeInstanceId,
+      ...(options.since ? { since: options.since } : {}),
+      ...(report ? { receiptRuns: encodeReceiptRunReport(report) } : {}),
+      ...(options.refusals
+        ? { receiptRefused: encodeReceiptRunRefusals(options.refusals) }
+        : {}),
+    });
+    return listDeviceRecordsSince(
+      {
+        tenantId: tenant.tenantId as TenantId,
+        outletId: outletIdSchema.parse(cloudOutletId),
+        edgeNodeId: own.edgeNodeId,
+      },
+      query,
+      { now: hfqNow(), settleMs: 0 },
+    );
+  }
+
+  const refusal = (
+    id: string,
+    reason: ReceiptRunRefusalReason = "prefix_used",
+  ): ReceiptRunRefusalReport => new Map([[id, reason]]);
+
+  /** The claim run directly (its counts are not part of the page). */
+  function hfqClaim(
+    outletId: string,
+    own: Binding,
+    refusals?: ReceiptRunRefusalReport,
+    /** `null` = no report; default: empty when refusals given. */
+    report?: ReceiptRunReport | null,
+  ) {
+    const sent =
+      report === undefined
+        ? refusals
+          ? new Map<string, number>()
+          : undefined
+        : (report ?? undefined);
+    return inTx((tx, context) =>
+      claimDeviceReceiptSequencesForEdge(tx, context, {
+        outletId,
+        ...own,
+        ...(refusals ? { refusals } : {}),
+        ...(sent ? { report: sent } : {}),
+      }),
+    );
+  }
+
+  /** A cloud outlet with device D and primary node N; an empty edge outlet. */
+  async function scenario() {
+    const cloudOutletId = await freshOutlet();
+    const edgeOutletId = await freshOutlet();
+    const device = await enroll(cloudOutletId, "pos");
+    const nodeId = await insertNode(cloudOutletId);
+    const own: Binding = { edgeNodeId: nodeId, edgeInstanceId: randomUUID() };
+    /** cloud run id -> id used on the edge database (stable across pulls). */
+    const edgeIds = new Map<string, string>();
+    /** Cloud run ids that keep their id on the edge (the refused ones). */
+    const keepIds = new Set<string>();
+    const ship = (page: DeviceSyncPage) => ({
+      ...page,
+      data: [],
+      receiptSequences: (page.receiptSequences ?? []).map((s) => {
+        if (!keepIds.has(s.id) && !edgeIds.has(s.id))
+          edgeIds.set(s.id, randomUUID());
+        return {
+          ...s,
+          id: keepIds.has(s.id) ? s.id : edgeIds.get(s.id)!,
+          outletId: edgeOutletId,
+        };
+      }),
+    });
+
+    /** One edge pull through pullDeviceRegistry; `refusals` = previous pull's. */
+    async function pull(refusals?: ReceiptRunRefusalReport) {
+      await localEdgeNode(edgeOutletId, own);
+      const calls: Array<ReceiptRunRefusalReport | undefined> = [];
+      const pages: DeviceSyncPage[] = [];
+      const result = await inEdgeMode(() =>
+        pullDeviceRegistry({
+          context: edgeScope(edgeOutletId),
+          role: "primary",
+          binding: own,
+          ...(refusals ? { refusals } : {}),
+          fetchPage: async (
+            since: string | null,
+            _receiptRuns?: ReceiptRunReport,
+            sent?: ReceiptRunRefusalReport,
+          ) => {
+            calls.push(sent);
+            // The cloud answers in cloud mode, whatever the edge's mode.
+            const edgeState = getEdgeRuntimeState();
+            setEdgeRuntimeStateForTests(cloudState);
+            try {
+              const page = await cloudPull(cloudOutletId, own, {
+                since,
+                ...(sent ? { refusals: sent } : {}),
+              });
+              pages.push(page);
+              return ship(page);
+            } finally {
+              setEdgeRuntimeStateForTests(edgeState);
+            }
+          },
+        }),
+      );
+      return { result, calls, pages };
+    }
+
+    /** yd0h8: the cloud rotates D's run (restored database): P1 -> P2. */
+    async function rotateOnCloud() {
+      await cloudPull(cloudOutletId, own, { report: new Map() });
+      await cloudPull(cloudOutletId, own, {
+        report: new Map([["P1", 3]]),
+      });
+      await cloudPull(cloudOutletId, own, {
+        report: new Map([["P1", 1]]),
+      });
+      const rows = await fullRows(cloudOutletId);
+      const replacement = rowOf(rows, "P2");
+      // Precondition: the replacement is a fresh current run for D.
+      expect(replacement).toMatchObject({
+        device_id: device.id,
+        last_number: 0,
+        retired_at: null,
+        edge_node_id: own.edgeNodeId,
+        edge_instance_id: own.edgeInstanceId,
+      });
+      expect(rowOf(rows, "P1").retired_reason).toBe("edge_regressed");
+      return replacement;
+    }
+
+    return {
+      cloudOutletId,
+      edgeOutletId,
+      device,
+      own,
+      keepIds,
+      pull,
+      rotateOnCloud,
+      ship,
+    };
+  }
+
+  type Scenario = Awaited<ReturnType<typeof scenario>>;
+
+  const currentOf = (rows: FullRow[], deviceId: string) =>
+    rows.filter((r) => r.device_id === deviceId && r.retired_at === null);
+
+  /**
+   * Edge holds P1 of D (sold once), the cloud rotated D to P2, and the edge
+   * pulled it: the replacement is refused for `reason`.
+   */
+  async function refusedScenario(reason: ReceiptRunRefusalReason) {
+    const s = await scenario();
+    if (reason === "prefix_used") {
+      // The edge already holds prefix P2 (a local run of another device).
+      await edgeApply(
+        s.edgeOutletId,
+        pageOf([seq(s.edgeOutletId, randomUUID(), "P2", s.own)]),
+        s.own,
+      );
+    }
+    await s.pull();
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P1-000001");
+    const replacement = await s.rotateOnCloud();
+    s.keepIds.add(replacement.id);
+    const refused = await s.pull();
+    return { ...s, replacement, refused };
+  }
+
+  async function expectCannotSell(s: Scenario) {
+    const orderId = await draftOrder(s.edgeOutletId);
+    await expect(
+      inEdgeMode(() => allocate(s.edgeOutletId, orderId, s.device.id)),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_NOT_PROVISIONED" });
+  }
+
+  it("POS-06 EDG-02 prefix clash: the device cannot sell; the next pull carries the refusal, the cloud retires the run (claim_rotated) and lists a new prefix, the edge accepts it and numbers P3-000001", async () => {
+    const s = await refusedScenario("prefix_used");
+
+    // Repro: replacement refused, old local run retired, device cannot sell.
+    expect(s.refused.result.receiptSequencesRefused).toBe(1);
+    expect(s.refused.result.receiptSequencesRetired).toBe(1);
+    expect(s.refused.result.receiptRunRefusals).toEqual(
+      new Map([[s.replacement.id, "prefix_used"]]),
+    );
+    // The first pull had nothing to report.
+    expect(s.refused.calls[0]?.size ?? 0).toBe(0);
+    await expectCannotSell(s);
+
+    // Next pull carries the refusal and heals within the same response.
+    const healed = await s.pull(s.refused.result.receiptRunRefusals);
+    expect(healed.calls[0]).toEqual(
+      new Map([[s.replacement.id, "prefix_used"]]),
+    );
+    expect(healed.pages[0]?.receiptSequences).toHaveLength(1);
+    expect(healed.pages[0]?.receiptSequences?.[0]).toMatchObject({
+      deviceId: s.device.id,
+      prefix: "P3",
+      lastNumber: 0,
+      edgeNodeId: s.own.edgeNodeId,
+      edgeInstanceId: s.own.edgeInstanceId,
+    });
+    expect(healed.result.receiptSequencesRefused).toBe(0);
+    expect(healed.result.receiptRunRefusals.size).toBe(0);
+
+    const cloudRows = await fullRows(s.cloudOutletId);
+    expect(rowOf(cloudRows, "P2").retired_reason).toBe("claim_rotated");
+    expect(rowOf(cloudRows, "P2").retired_at).not.toBeNull();
+    expect(rowOf(cloudRows, "P3")).toMatchObject({
+      device_id: s.device.id,
+      last_number: 0,
+      retired_at: null,
+      edge_node_id: s.own.edgeNodeId,
+      edge_instance_id: s.own.edgeInstanceId,
+    });
+    expect(currentOf(cloudRows, s.device.id)).toHaveLength(1);
+
+    // A sale on the edge is numbered under the new prefix, starting at 1.
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P3-000001");
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P3-000002");
+    // The old run's printed number is never issued again.
+    const edgeRows = await fullRows(s.edgeOutletId);
+    expect(rowOf(edgeRows, "P1")).toMatchObject({ last_number: 1 });
+    expect(rowOf(edgeRows, "P1").retired_at).not.toBeNull();
+  });
+
+  it("POS-06 EDG-02 id clash: the edge reports id_used, the cloud rotates the run and the edge numbers P3-000001", async () => {
+    const s = await refusedScenario("id_used");
+
+    expect(s.refused.result.receiptSequencesRefused).toBe(1);
+    expect(s.refused.result.receiptRunRefusals).toEqual(
+      new Map([[s.replacement.id, "id_used"]]),
+    );
+    await expectCannotSell(s);
+
+    const healed = await s.pull(s.refused.result.receiptRunRefusals);
+    expect(healed.calls[0]).toEqual(new Map([[s.replacement.id, "id_used"]]));
+    expect(healed.result.receiptSequencesRefused).toBe(0);
+    expect(healed.result.receiptRunRefusals.size).toBe(0);
+    const cloudRows = await fullRows(s.cloudOutletId);
+    expect(rowOf(cloudRows, "P2").retired_reason).toBe("claim_rotated");
+    expect(rowOf(cloudRows, "P3").retired_at).toBeNull();
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P3-000001");
+  });
+
+  it("POS-06 applyDeviceReceiptSequences reports only clash refusals: prefix_used and id_used count in refused and are listed by run id, other refusals are not", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = { edgeNodeId: randomUUID(), edgeInstanceId: randomUUID() };
+    const [a, b, c, d] = [
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+      randomUUID(),
+    ];
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, a, "P1", own), seq(edgeOutlet, b, "P2", own)]),
+      own,
+    );
+    const prefixClash = seq(edgeOutlet, a, "P2", own);
+    // Same id as a row that exists in this (shared) database, free prefix.
+    const existing = rowOf(await fullRows(edgeOutlet), "P1");
+    const idClash = { ...seq(edgeOutlet, c, "P7", own), id: existing.id };
+    const advanced = seq(edgeOutlet, d, "P8", own, 3);
+    const otherBinding = seq(edgeOutlet, randomUUID(), "P9", {
+      edgeNodeId: randomUUID(),
+      edgeInstanceId: randomUUID(),
+    });
+    await localEdgeNode(edgeOutlet, own);
+    const result = await inEdgeMode(() =>
+      applyDeviceReceiptSequences(
+        edgeScope(edgeOutlet),
+        [prefixClash, idClash, advanced, otherBinding],
+        own,
+      ),
+    );
+    expect(result.refused).toBe(4);
+    expect(result.refusals).toEqual(
+      new Map<string, ReceiptRunRefusalReason>([
+        [prefixClash.id, "prefix_used"],
+        [idClash.id, "id_used"],
+      ]),
+    );
+  });
+
+  it("POS-06 the same refusals sent again (before and after the heal) change nothing: one current run per device, one extra retired run, no prefix reused", async () => {
+    const s = await refusedScenario("prefix_used");
+    const refusals = s.refused.result.receiptRunRefusals;
+    await s.pull(refusals);
+    const afterFirst = await fullRows(s.cloudOutletId);
+
+    // Duplicate: the edge repeats the report (lost response, retry) ...
+    await cloudPull(s.cloudOutletId, s.own, { refusals });
+    await cloudPull(s.cloudOutletId, s.own, { refusals });
+    // ... and a full edge pull that still carries it.
+    await s.pull(refusals);
+
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rows.map((r) => [r.prefix, r.retired_reason])).toEqual(
+      afterFirst.map((r) => [r.prefix, r.retired_reason]),
+    );
+    expect(rows.map((r) => r.prefix)).toEqual(["P1", "P2", "P3"]);
+    expect(new Set(rows.map((r) => r.prefix)).size).toBe(rows.length);
+    expect(currentOf(rows, s.device.id)).toHaveLength(1);
+    expect(
+      rows.filter((r) => r.retired_reason === "claim_rotated"),
+    ).toHaveLength(1);
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P3-000001");
+  });
+
+  it("POS-06 the same refusals sent twice before the edge heals rotate exactly once", async () => {
+    const s = await refusedScenario("id_used");
+    const refusals = s.refused.result.receiptRunRefusals;
+    const first = await cloudPull(s.cloudOutletId, s.own, { refusals });
+    const second = await cloudPull(s.cloudOutletId, s.own, { refusals });
+    expect(first.receiptSequences?.map((x) => x.prefix)).toEqual(["P3"]);
+    expect(second.receiptSequences?.map((x) => x.prefix)).toEqual(["P3"]);
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1", "P2", "P3"]);
+    expect(currentOf(rows, s.device.id)).toHaveLength(1);
+  });
+
+  it("EDG-02 an old edge (no receiptRefused) is not healed: the cloud keeps the refused run, the device stays unable to sell", async () => {
+    const s = await refusedScenario("prefix_used");
+    // Old-style pulls only (no refusals sent); the control comes last.
+    const again = await s.pull();
+    const third = await s.pull();
+    for (const p of [again, third]) {
+      expect(p.calls[0]).toBeUndefined();
+      expect(p.pages[0]?.receiptSequences?.map((x) => x.prefix)).toEqual([
+        "P2",
+      ]);
+      expect(p.result.receiptSequencesRefused).toBe(1);
+    }
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1", "P2"]);
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+    expect(rows.some((r) => r.retired_reason === "claim_rotated")).toBe(false);
+    await expectCannotSell(s);
+
+    // Control: the same state IS healed once the refusal is reported.
+    await s.pull(again.result.receiptRunRefusals);
+    expect(rowOf(await fullRows(s.cloudOutletId), "P2").retired_reason).toBe(
+      "claim_rotated",
+    );
+  });
+
+  it("POS-06 EDG-02 refusals WITHOUT receiptRuns do not rotate: the cloud cannot tell an unreported numbered run (A1)", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    const before = await fullRows(s.cloudOutletId);
+    const run = rowOf(before, "P1");
+
+    const direct = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(run.id),
+      null,
+    );
+    expect(direct.refusedRotated).toBe(0);
+    expect(direct.refusedThrottled).toBe(0);
+    const page = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(run.id, "id_used"),
+      report: null,
+    });
+    expect(page.receiptSequences?.map((x) => x.id)).toEqual([run.id]);
+    expect(await fullRows(s.cloudOutletId)).toEqual(before);
+
+    // Control: the same refusal WITH a report (the edge holds no run) heals.
+    const healed = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(run.id),
+      report: new Map(),
+    });
+    expect(healed.receiptSequences?.map((x) => x.prefix)).toEqual(["P2"]);
+    expect(rowOf(await fullRows(s.cloudOutletId), "P1").retired_reason).toBe(
+      "claim_rotated",
+    );
+  });
+
+  describe("the new prefix is above everything the edge holds (A5)", () => {
+    it("POS-06 the edge reports P7:3 for another device: the replacement of P1 is P8, not P2", async () => {
+      const s = await scenario();
+      await cloudPull(s.cloudOutletId, s.own);
+      const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(run.id, "id_used"),
+        new Map([["P7", 3]]),
+      );
+      expect(result.refusedRotated).toBe(1);
+      const rows = await fullRows(s.cloudOutletId);
+      expect(rowOf(rows, "P1").retired_reason).toBe("claim_rotated");
+      expect(rows.map((r) => r.prefix)).toEqual(["P1", "P8"]);
+      expect(rowOf(rows, "P8")).toMatchObject({
+        device_id: s.device.id,
+        last_number: 0,
+        retired_at: null,
+        edge_node_id: s.own.edgeNodeId,
+        edge_instance_id: s.own.edgeInstanceId,
+      });
+    });
+
+    it("POS-06 prefix_used: the replacement is above the refused run's own number (cloud run P5 -> P6)", async () => {
+      const s = await scenario();
+      await cloudPull(s.cloudOutletId, s.own);
+      const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+      await asOwnerTenant(tenant.tenantId, (c) =>
+        c.query("UPDATE receipt_sequences SET prefix = 'P5' WHERE id = $1", [
+          run.id,
+        ]),
+      );
+      await hfqClaim(s.cloudOutletId, s.own, refusal(run.id, "prefix_used"));
+      const rows = await fullRows(s.cloudOutletId);
+      expect(rowOf(rows, "P5").retired_reason).toBe("claim_rotated");
+      expect(currentOf(rows, s.device.id).map((r) => r.prefix)).toEqual(["P6"]);
+    });
+
+    it("POS-06 a floor that would make the prefix longer than 12 characters falls back to the smallest free prefix", async () => {
+      const s = await scenario();
+      await cloudPull(s.cloudOutletId, s.own);
+      const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+      await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(run.id, "id_used"),
+        new Map([["P99999999999", 1]]),
+      );
+      const rows = await fullRows(s.cloudOutletId);
+      expect(rowOf(rows, "P1").retired_reason).toBe("claim_rotated");
+      expect(currentOf(rows, s.device.id).map((r) => r.prefix)).toEqual(["P2"]);
+    });
+
+    it("POS-06 through the pull: report P7:3 and the id refusal give the edge P8, which it numbers P8-000001", async () => {
+      const s = await refusedScenario("id_used");
+      const page = await cloudPull(s.cloudOutletId, s.own, {
+        refusals: s.refused.result.receiptRunRefusals,
+        report: new Map([["P7", 3]]),
+      });
+      expect(page.receiptSequences?.map((x) => x.prefix)).toEqual(["P8"]);
+    });
+  });
+
+  describe("a heal retirement is part of the clone alarm (A4)", () => {
+    it("EDG-02 after the cloud healed P1 away (id_used), a request of the same binding reporting P1:3 raises receiptRunAlert", async () => {
+      // Fix round 3 (F1): only an id_used heal stays in the clone check; a
+      // prefix_used heal does not (see the F1 test below).
+      const s = await scenario();
+      await cloudPull(s.cloudOutletId, s.own);
+      const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+      const healed = await cloudPull(s.cloudOutletId, s.own, {
+        refusals: refusal(run.id, "id_used"),
+      });
+      expect(healed.receiptSequences?.map((x) => x.prefix)).toEqual(["P2"]);
+      expect(healed.receiptRunAlert).not.toBe(true);
+      expect(rowOf(await fullRows(s.cloudOutletId), "P1").retired_reason).toBe(
+        "claim_rotated",
+      );
+
+      // A quiet request (the edge holds no number of the healed run): no alarm.
+      const quiet = await cloudPull(s.cloudOutletId, s.own, {
+        report: new Map(),
+      });
+      expect(quiet.receiptRunAlert).not.toBe(true);
+
+      // A clone numbered P1 unreported; its later report is newer and higher.
+      const clone = await cloudPull(s.cloudOutletId, s.own, {
+        report: new Map([["P1", 3]]),
+      });
+      expect(clone.receiptRunAlert).toBe(true);
+    });
+  });
+
+  describe("reports the cloud ignores", () => {
+    /** One cloud run of device D claimed by (N, I). */
+    async function claimed() {
+      const s = await scenario();
+      await cloudPull(s.cloudOutletId, s.own);
+      const rows = await fullRows(s.cloudOutletId);
+      const run = rowOf(rows, "P1");
+      expect(run).toMatchObject({
+        retired_at: null,
+        edge_node_id: s.own.edgeNodeId,
+        last_number: 0,
+      });
+      return { ...s, run, before: rows };
+    }
+    const sameRows = async (s: { cloudOutletId: string; before: FullRow[] }) =>
+      expect(await fullRows(s.cloudOutletId)).toEqual(s.before);
+
+    it("POS-06 a run the cloud already advanced (lastNumber > 0) is not rotated", async () => {
+      const s = await claimed();
+      await asOwnerTenant(tenant.tenantId, (c) =>
+        c.query("UPDATE receipt_sequences SET last_number = 2 WHERE id = $1", [
+          s.run.id,
+        ]),
+      );
+      const before = await fullRows(s.cloudOutletId);
+      // A report consistent with the cloud counter, so nothing else rotates.
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(s.run.id),
+        new Map([["P1", 2]]),
+      );
+      expect(result.refusedRotated).toBe(0);
+      expect(await fullRows(s.cloudOutletId)).toEqual(before);
+    });
+
+    it("POS-06 a run with an edge high-water (edge_reported_number > 0) is not rotated", async () => {
+      const s = await claimed();
+      await asOwnerTenant(tenant.tenantId, (c) =>
+        c.query(
+          "UPDATE receipt_sequences SET edge_reported_number = 4 WHERE id = $1",
+          [s.run.id],
+        ),
+      );
+      const before = await fullRows(s.cloudOutletId);
+      // A report consistent with the high-water, so nothing else rotates.
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(s.run.id, "id_used"),
+        new Map([["P1", 4]]),
+      );
+      expect(result.refusedRotated).toBe(0);
+      expect(await fullRows(s.cloudOutletId)).toEqual(before);
+    });
+
+    it("POS-06 a run the edge reports as having numbers in the same request (receiptRuns > 0) is not rotated (id_used: on prefix_used that number is another row's)", async () => {
+      const s = await claimed();
+      await cloudPull(s.cloudOutletId, s.own, {
+        report: new Map([["P1", 2]]),
+        refusals: refusal(s.run.id, "id_used"),
+      });
+      const rows = await fullRows(s.cloudOutletId);
+      expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
+      expect(rowOf(rows, "P1").retired_at).toBeNull();
+      const reported = await asOwnerTenant(tenant.tenantId, (c) =>
+        c.query<{ edge_reported_number: number }>(
+          "SELECT edge_reported_number FROM receipt_sequences WHERE id = $1",
+          [s.run.id],
+        ),
+      );
+      expect(reported.rows[0]?.edge_reported_number).toBe(2);
+    });
+
+    it("POS-06 an unknown run id is ignored", async () => {
+      const s = await claimed();
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(randomUUID()),
+      );
+      expect(result.refusedRotated).toBe(0);
+      expect(result.refusedThrottled).toBe(0);
+      await sameRows(s);
+      const page = await cloudPull(s.cloudOutletId, s.own, {
+        refusals: refusal(randomUUID(), "id_used"),
+      });
+      expect(page.receiptSequences?.map((x) => x.id)).toEqual([s.run.id]);
+      await sameRows(s);
+    });
+
+    it("POS-06 a run bound to another node is not rotated by a standby's report", async () => {
+      const s = await claimed();
+      const standby = await insertNode(s.cloudOutletId, "standby");
+      const standbyBinding: Binding = {
+        edgeNodeId: standby,
+        edgeInstanceId: randomUUID(),
+      };
+      const page = await cloudPull(s.cloudOutletId, standbyBinding, {
+        refusals: refusal(s.run.id),
+      });
+      expect(page.receiptSequences ?? []).toEqual([]);
+      await sameRows(s);
+    });
+
+    it("POS-06 a retired run is ignored (its replacement is not rotated either)", async () => {
+      const s = await claimed();
+      const stale = new Map<string, ReceiptRunRefusalReason>([
+        [s.run.id, "prefix_used"],
+      ]);
+      await cloudPull(s.cloudOutletId, s.own, { refusals: stale });
+      const afterRotation = await fullRows(s.cloudOutletId);
+      expect(rowOf(afterRotation, "P1").retired_reason).toBe("claim_rotated");
+      await cloudPull(s.cloudOutletId, s.own, { refusals: stale });
+      expect(await fullRows(s.cloudOutletId)).toEqual(afterRotation);
+    });
+
+    it("POS-06 tenant isolation: the id of another tenant's run is ignored and that run is untouched", async () => {
+      const s = await claimed();
+      const foreignDevice = await enroll(other.outletId, "pos", other.tenantId);
+      // Bind the other tenant's run to the SAME node/instance ids as ours.
+      await asOwnerTenant(other.tenantId, (c) =>
+        c.query(
+          `UPDATE receipt_sequences SET edge_node_id = $3, edge_instance_id = $4
+           WHERE tenant_id = $1 AND device_id = $2 AND retired_at IS NULL`,
+          [
+            other.tenantId,
+            foreignDevice.id,
+            s.own.edgeNodeId,
+            s.own.edgeInstanceId,
+          ],
+        ),
+      );
+      const foreignRows = () =>
+        asOwnerTenant(other.tenantId, async (c) => {
+          const r = await c.query(
+            `SELECT id, prefix, last_number, device_id, edge_node_id, edge_instance_id, retired_at, retired_reason
+             FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY prefix`,
+            [other.tenantId, other.outletId],
+          );
+          return r.rows;
+        });
+      const before = await foreignRows();
+      const foreign = before.find((r) => r.device_id === foreignDevice.id);
+      expect(foreign).toMatchObject({
+        retired_at: null,
+        edge_node_id: s.own.edgeNodeId,
+      });
+      await cloudPull(s.cloudOutletId, s.own, {
+        refusals: refusal(foreign.id as string),
+      });
+      expect(await foreignRows()).toEqual(before);
+      await sameRows(s);
+    });
+  });
+
+  it("POS-06 throttle: after RECEIPT_REFUSAL_ROTATIONS_MAX (10) claim_rotated retirements of the device on this node and instance in the window, a refused run is counted as throttled, kept, and raises the alert", async () => {
+    expect(RECEIPT_REFUSAL_ROTATIONS_MAX).toBe(10);
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const current = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      expect(current).toHaveLength(1);
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(current[0]!.id),
+      );
+      expect(result.refusedRotated).toBe(1);
+      expect(result.refusedThrottled).toBe(0);
+    }
+    const before = await fullRows(s.cloudOutletId);
+    expect(
+      before.filter((r) => r.retired_reason === "claim_rotated"),
+    ).toHaveLength(RECEIPT_REFUSAL_ROTATIONS_MAX);
+
+    const stuck = currentOf(before, s.device.id)[0]!;
+    const result = await hfqClaim(s.cloudOutletId, s.own, refusal(stuck.id));
+    expect(result.refusedRotated).toBe(0);
+    expect(result.refusedThrottled).toBe(1);
+    // A device left without a run: the edge must show the alert (A6).
+    expect(result.alert).toBe(true);
+    // No further rotation: the same run stays current, no new row.
+    const after = await fullRows(s.cloudOutletId);
+    expect(after).toEqual(before);
+    expect(currentOf(after, s.device.id)[0]!.id).toBe(stuck.id);
+
+    // Through the pull API too: the run is still listed, unchanged.
+    const page = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(stuck.id, "id_used"),
+    });
+    expect(page.receiptSequences?.map((x) => x.id)).toEqual([stuck.id]);
+    expect(page.receiptRunAlert).toBe(true);
+    expect(await fullRows(s.cloudOutletId)).toEqual(before);
+  });
+
+  it("POS-06 the throttle counts only this instance: claim_rotated runs of another instance of the same node do not count", async () => {
+    const s = await scenario();
+    const previous: Binding = {
+      edgeNodeId: s.own.edgeNodeId,
+      edgeInstanceId: randomUUID(),
+    };
+    await hfqClaim(s.cloudOutletId, previous);
+    // The previous instance used up its rotations.
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const [run] = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      const healed = await hfqClaim(
+        s.cloudOutletId,
+        previous,
+        refusal(run!.id),
+      );
+      expect(healed.refusedRotated).toBe(1);
+    }
+    // The rebuilt edge (same node, new instance) takes the run over: a normal
+    // claim rotation of the previous instance's row.
+    await hfqClaim(s.cloudOutletId, s.own);
+    const rows = await fullRows(s.cloudOutletId);
+    expect(
+      rows.filter((r) => r.retired_reason === "claim_rotated").length,
+    ).toBeGreaterThan(RECEIPT_REFUSAL_ROTATIONS_MAX);
+    const mine = currentOf(rows, s.device.id);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ edge_instance_id: s.own.edgeInstanceId });
+
+    const result = await hfqClaim(s.cloudOutletId, s.own, refusal(mine[0]!.id));
+    expect(result.refusedThrottled).toBe(0);
+    expect(result.refusedRotated).toBe(1);
+    const after = await fullRows(s.cloudOutletId);
+    expect(rowOf(after, mine[0]!.prefix).retired_reason).toBe("claim_rotated");
+    expect(currentOf(after, s.device.id)).toHaveLength(1);
+  });
+
+  it("POS-06 the throttle is per device: another device of the node is still rotated", async () => {
+    const s = await scenario();
+    const second = await enroll(s.cloudOutletId, "pos");
+    await cloudPull(s.cloudOutletId, s.own);
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const [run] = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      await hfqClaim(s.cloudOutletId, s.own, refusal(run!.id));
+    }
+    const rows = await fullRows(s.cloudOutletId);
+    const other2 = currentOf(rows, second.id)[0]!;
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      new Map<string, ReceiptRunRefusalReason>([
+        [currentOf(rows, s.device.id)[0]!.id, "prefix_used"],
+        [other2.id, "prefix_used"],
+      ]),
+    );
+    expect(result.refusedThrottled).toBe(1);
+    expect(result.refusedRotated).toBe(1);
+    const after = await fullRows(s.cloudOutletId);
+    expect(rowOf(after, other2.prefix).retired_reason).toBe("claim_rotated");
+  });
+
+  // ---- fix round 2: the heal marker and the prefix_used report number --------
+  //
+  // Assumptions (derived from fix2 brief only): a heal row is exactly
+  // `retired_reason = 'claim_rotated' AND retired_at = edge_reported_at`
+  // (R1); on a `prefix_used` refusal the report number of the refused run's
+  // prefix belongs to ANOTHER local row and is ignored (R2). `edge_reported_*`
+  // are not in `fullRows`, so they are read directly here.
+
+  type ReportCols = {
+    prefix: string;
+    retired_reason: string | null;
+    retired_at: Date | null;
+    edge_reported_number: number;
+    edge_reported_at: Date | null;
+  };
+  function reportCols(outletId: string): Promise<ReportCols[]> {
+    return asOwnerTenant(tenant.tenantId, async (client) => {
+      const result = await client.query(
+        `SELECT prefix, retired_reason, retired_at, edge_reported_number, edge_reported_at
+         FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY prefix`,
+        [tenant.tenantId, outletId],
+      );
+      return result.rows as ReportCols[];
+    });
+  }
+  const colsOf = (rows: ReportCols[], prefix: string): ReportCols => {
+    const row = rows.find((r) => r.prefix === prefix);
+    if (!row)
+      throw new Error(`No sequence ${prefix} in ${JSON.stringify(rows)}`);
+    return row;
+  };
+
+  it("EDG-02 POS-06 failover: a normal rotation by another instance does not count for the first instance's heal throttle, and its later higher report is no clone alarm (R1)", async () => {
+    const s = await scenario();
+    const second: Binding = {
+      edgeNodeId: s.own.edgeNodeId,
+      edgeInstanceId: randomUUID(),
+    };
+    // I1 claims the device's run and reports numbers on it.
+    await cloudPull(s.cloudOutletId, s.own);
+    await cloudPull(s.cloudOutletId, s.own, {
+      report: new Map([["P1", 5]]),
+    });
+    // The standby-turned-primary I2 of the same node takes over: a normal
+    // claim rotation. The retired P1 keeps its binding to I1.
+    await cloudPull(s.cloudOutletId, second);
+    const afterFailover = await fullRows(s.cloudOutletId);
+    expect(rowOf(afterFailover, "P1")).toMatchObject({
+      retired_reason: "claim_rotated",
+      edge_instance_id: s.own.edgeInstanceId,
+    });
+    expect(rowOf(afterFailover, "P2")).toMatchObject({
+      retired_at: null,
+      edge_instance_id: second.edgeInstanceId,
+    });
+
+    // I1 comes back and reports a higher number for its old run: no alarm.
+    const back = await cloudPull(s.cloudOutletId, s.own, {
+      report: new Map([["P1", 7]]),
+    });
+    expect(back.receiptRunAlert).not.toBe(true);
+
+    // I1's heal throttle is untouched by I2's rotation: it can still heal
+    // RECEIPT_REFUSAL_ROTATIONS_MAX times.
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const current = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      expect(current).toHaveLength(1);
+      expect(current[0]).toMatchObject({
+        edge_instance_id: s.own.edgeInstanceId,
+      });
+      const result = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(current[0]!.id),
+      );
+      expect(result.refusedThrottled).toBe(0);
+      expect(result.refusedRotated).toBe(1);
+    }
+  });
+
+  it("POS-06 a heal row has retired_at = edge_reported_at; a normal rotation or an edge_regressed row does not", async () => {
+    const s = await refusedScenario("id_used");
+    await s.pull(s.refused.result.receiptRunRefusals);
+    // A normal claim rotation by another instance of the same node.
+    const second: Binding = {
+      edgeNodeId: s.own.edgeNodeId,
+      edgeInstanceId: randomUUID(),
+    };
+    await cloudPull(s.cloudOutletId, second);
+
+    const cols = await reportCols(s.cloudOutletId);
+    const healed = colsOf(cols, "P2");
+    expect(healed.retired_reason).toBe("claim_rotated");
+    expect(healed.retired_at).not.toBeNull();
+    expect(healed.edge_reported_at).not.toBeNull();
+    expect(healed.retired_at?.getTime()).toBe(
+      healed.edge_reported_at?.getTime(),
+    );
+
+    const regressed = colsOf(cols, "P1");
+    expect(regressed.retired_reason).toBe("edge_regressed");
+    expect(regressed.retired_at?.getTime()).not.toBe(
+      regressed.edge_reported_at?.getTime(),
+    );
+
+    // P3 (the heal's replacement) was retired by the failover rotation.
+    const rotated = colsOf(cols, "P3");
+    expect(rotated.retired_reason).toBe("claim_rotated");
+    expect(rotated.retired_at?.getTime()).not.toBe(
+      rotated.edge_reported_at?.getTime(),
+    );
+  });
+
+  it("POS-06 prefix_used with a report number for the refused prefix (another local run, P3:4): the heal still runs above the floor and the healed row's edge_reported_number stays 0", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+    await asOwnerTenant(tenant.tenantId, (c) =>
+      c.query("UPDATE receipt_sequences SET prefix = 'P3' WHERE id = $1", [
+        run.id,
+      ]),
+    );
+
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(run.id, "prefix_used"),
+      new Map([["P3", 4]]),
+    );
+    expect(result.refusedRotated).toBe(1);
+    expect(result.refusedThrottled).toBe(0);
+
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rowOf(rows, "P3").retired_reason).toBe("claim_rotated");
+    // New prefix above the refused run's own number and the report's P3.
+    const current = currentOf(rows, s.device.id);
+    expect(current).toHaveLength(1);
+    expect(Number(current[0]!.prefix.slice(1))).toBeGreaterThan(3);
+    expect(current[0]).toMatchObject({
+      last_number: 0,
+      edge_instance_id: s.own.edgeInstanceId,
+    });
+
+    const cols = await reportCols(s.cloudOutletId);
+    expect(colsOf(cols, "P3").edge_reported_number).toBe(0);
+    expect(colsOf(cols, current[0]!.prefix).edge_reported_number).toBe(0);
+  });
+
+  it("POS-06 prefix_used throttled: the foreign report number is not taken as the run's high-water and the run is not rotated as edge_regressed", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const [run] = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      const healed = await hfqClaim(s.cloudOutletId, s.own, refusal(run!.id));
+      expect(healed.refusedRotated).toBe(1);
+    }
+    const stuck = currentOf(await fullRows(s.cloudOutletId), s.device.id)[0]!;
+    const beforeRows = await fullRows(s.cloudOutletId);
+    const beforeCols = await reportCols(s.cloudOutletId);
+    expect(colsOf(beforeCols, stuck.prefix).edge_reported_number).toBe(0);
+
+    // The report number for the stuck prefix is another local run's number.
+    const foreign = new Map([[stuck.prefix, 4]]);
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(stuck.id, "prefix_used"),
+      foreign,
+    );
+    expect(result.refusedRotated).toBe(0);
+    expect(result.refusedThrottled).toBe(1);
+    expect(await fullRows(s.cloudOutletId)).toEqual(beforeRows);
+    expect(
+      colsOf(await reportCols(s.cloudOutletId), stuck.prefix),
+    ).toMatchObject({
+      edge_reported_number: 0,
+      retired_at: null,
+      retired_reason: null,
+    });
+
+    // Through the pull API, then a plain report-only request: still no
+    // high-water, so a later lower report cannot look like a regression.
+    const page = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(stuck.id, "prefix_used"),
+      report: foreign,
+    });
+    expect(page.receiptSequences?.map((x) => x.id)).toEqual([stuck.id]);
+    await cloudPull(s.cloudOutletId, s.own, {
+      report: new Map([[stuck.prefix, 1]]),
+    });
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rows.some((r) => r.retired_reason === "edge_regressed")).toBe(false);
+    expect(currentOf(rows, s.device.id)[0]!.id).toBe(stuck.id);
+  });
+
+  // ---- fix round 3: prefix_used heal retires 1 ms after the report ----------
+  //
+  // Assumptions (derived from fix3 brief only): an id_used heal has
+  // `retired_at = edge_reported_at`; a prefix_used heal has `retired_at =
+  // edge_reported_at + 1 ms`. The clone check counts only the first kind; the
+  // heal throttle counts both. For a prefix_used refusal the edge keeps
+  // reporting the refused prefix for its OTHER local run, so that report is
+  // never a clone.
+
+  it("POS-06 F1 a prefix_used heal is no clone alarm: the edge keeps reporting the prefix of its other local run (P3:4, then P3:6) and no later pull raises receiptRunAlert", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    const run = rowOf(await fullRows(s.cloudOutletId), "P1");
+    await asOwnerTenant(tenant.tenantId, (c) =>
+      c.query("UPDATE receipt_sequences SET prefix = 'P3' WHERE id = $1", [
+        run.id,
+      ]),
+    );
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(run.id, "prefix_used"),
+      new Map([["P3", 4]]),
+    );
+    expect(result.refusedRotated).toBe(1);
+    expect(result.alert).not.toBe(true);
+    const healedRows = await fullRows(s.cloudOutletId);
+    expect(rowOf(healedRows, "P3").retired_reason).toBe("claim_rotated");
+    const replacement = currentOf(healedRows, s.device.id);
+    expect(replacement).toHaveLength(1);
+
+    // Follow-up pulls (newer report token), same report, no refusals.
+    const again = await cloudPull(s.cloudOutletId, s.own, {
+      report: new Map([["P3", 4]]),
+    });
+    expect(again.receiptRunAlert).not.toBe(true);
+    // The other local run keeps selling: a higher number is no alarm either.
+    const higher = await cloudPull(s.cloudOutletId, s.own, {
+      report: new Map([["P3", 6]]),
+    });
+    expect(higher.receiptRunAlert).not.toBe(true);
+
+    // The device keeps its one healed run; nothing was rotated or regressed.
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rows.some((r) => r.retired_reason === "edge_regressed")).toBe(false);
+    const current = currentOf(rows, s.device.id);
+    expect(current.map((r) => r.id)).toEqual([replacement[0]!.id]);
+  });
+
+  it("POS-06 F1 heal marker columns: an id_used heal has retired_at = edge_reported_at, a prefix_used heal has retired_at - edge_reported_at = 1 ms", async () => {
+    const byId = await scenario();
+    await cloudPull(byId.cloudOutletId, byId.own);
+    const idRun = rowOf(await fullRows(byId.cloudOutletId), "P1");
+    const idHeal = await hfqClaim(
+      byId.cloudOutletId,
+      byId.own,
+      refusal(idRun.id, "id_used"),
+    );
+    expect(idHeal.refusedRotated).toBe(1);
+    const idCols = colsOf(await reportCols(byId.cloudOutletId), "P1");
+    expect(idCols.retired_reason).toBe("claim_rotated");
+    expect(idCols.retired_at).not.toBeNull();
+    expect(idCols.edge_reported_at).not.toBeNull();
+    expect(
+      idCols.retired_at!.getTime() - idCols.edge_reported_at!.getTime(),
+    ).toBe(0);
+
+    const byPrefix = await scenario();
+    await cloudPull(byPrefix.cloudOutletId, byPrefix.own);
+    const prefixRun = rowOf(await fullRows(byPrefix.cloudOutletId), "P1");
+    const prefixHeal = await hfqClaim(
+      byPrefix.cloudOutletId,
+      byPrefix.own,
+      refusal(prefixRun.id, "prefix_used"),
+    );
+    expect(prefixHeal.refusedRotated).toBe(1);
+    const prefixCols = colsOf(await reportCols(byPrefix.cloudOutletId), "P1");
+    expect(prefixCols.retired_reason).toBe("claim_rotated");
+    expect(prefixCols.retired_at).not.toBeNull();
+    expect(prefixCols.edge_reported_at).not.toBeNull();
+    expect(
+      prefixCols.retired_at!.getTime() - prefixCols.edge_reported_at!.getTime(),
+    ).toBe(1);
+  });
+
+  it("POS-06 F2 a prefix_used refused run whose edge_reported_number is already raised (> 0, lastNumber 0) is still healed: a new prefix above the floor and the device sells after apply", async () => {
+    const s = await refusedScenario("prefix_used");
+    // The edge's other local run P2 was reported on the normal path before
+    // (the old yd0h8 path): the cloud row P2 (the refused run) was raised.
+    await cloudPull(s.cloudOutletId, s.own, { report: new Map([["P2", 3]]) });
+    const before = colsOf(await reportCols(s.cloudOutletId), "P2");
+    expect(before.edge_reported_number).toBeGreaterThan(0);
+    expect(rowOf(await fullRows(s.cloudOutletId), "P2")).toMatchObject({
+      last_number: 0,
+      retired_at: null,
+    });
+    await expectCannotSell(s);
+
+    // The refusal arrives with the edge's (unchanged) report of P2.
+    const healed = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(s.replacement.id, "prefix_used"),
+      report: new Map([["P2", 3]]),
+    });
+    expect(healed.receiptSequences).toHaveLength(1);
+    expect(healed.receiptSequences?.[0]).toMatchObject({
+      deviceId: s.device.id,
+      prefix: "P3",
+      lastNumber: 0,
+      edgeNodeId: s.own.edgeNodeId,
+      edgeInstanceId: s.own.edgeInstanceId,
+    });
+    expect(healed.receiptRunAlert).not.toBe(true);
+    const rows = await fullRows(s.cloudOutletId);
+    expect(rowOf(rows, "P2").retired_reason).toBe("claim_rotated");
+    expect(currentOf(rows, s.device.id).map((r) => r.prefix)).toEqual(["P3"]);
+
+    // Apply on the edge: the device sells under the new prefix.
+    await edgeApply(s.edgeOutletId, s.ship(healed), s.own);
+    expect(await edgeSell(s.edgeOutletId, s.device.id)).toBe("P3-000001");
+  });
+
+  it("POS-06 F1 throttle: RECEIPT_REFUSAL_ROTATIONS_MAX (10) prefix_used heals in the window still count, the next refusal is throttled, kept, and raises the alert", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const [run] = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      const healed = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(run!.id, "prefix_used"),
+      );
+      expect(healed.refusedRotated).toBe(1);
+      expect(healed.refusedThrottled).toBe(0);
+    }
+    const before = await fullRows(s.cloudOutletId);
+    expect(
+      before.filter((r) => r.retired_reason === "claim_rotated"),
+    ).toHaveLength(RECEIPT_REFUSAL_ROTATIONS_MAX);
+    const stuck = currentOf(before, s.device.id)[0]!;
+
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(stuck.id, "prefix_used"),
+    );
+    expect(result.refusedRotated).toBe(0);
+    expect(result.refusedThrottled).toBe(1);
+    expect(result.alert).toBe(true);
+    expect(await fullRows(s.cloudOutletId)).toEqual(before);
+
+    const page = await cloudPull(s.cloudOutletId, s.own, {
+      refusals: refusal(stuck.id, "prefix_used"),
+    });
+    expect(page.receiptSequences?.map((x) => x.id)).toEqual([stuck.id]);
+    expect(page.receiptRunAlert).toBe(true);
+  });
+
+  it("POS-06 F1 throttle: prefix_used (1 ms marker) and id_used (0 ms marker) heals are counted together", async () => {
+    const s = await scenario();
+    await cloudPull(s.cloudOutletId, s.own);
+    for (let i = 1; i <= RECEIPT_REFUSAL_ROTATIONS_MAX; i += 1) {
+      const [run] = currentOf(await fullRows(s.cloudOutletId), s.device.id);
+      const healed = await hfqClaim(
+        s.cloudOutletId,
+        s.own,
+        refusal(run!.id, i % 2 === 0 ? "prefix_used" : "id_used"),
+      );
+      expect(healed.refusedRotated).toBe(1);
+    }
+    const before = await fullRows(s.cloudOutletId);
+    const stuck = currentOf(before, s.device.id)[0]!;
+    const result = await hfqClaim(
+      s.cloudOutletId,
+      s.own,
+      refusal(stuck.id, "prefix_used"),
+    );
+    expect(result.refusedRotated).toBe(0);
+    expect(result.refusedThrottled).toBe(1);
+    expect(await fullRows(s.cloudOutletId)).toEqual(before);
+  });
+
+  describe("the receiptRefused query parameter is parsed strictly", () => {
+    const parse = (receiptRefused: string) =>
+      deviceSyncQuerySchema.safeParse({
+        limit: 100,
+        receiptSequences: "1",
+        receiptRefused,
+      });
+    const entry = (reason = "prefix_used") => `${randomUUID()}:${reason}`;
+    const many = (n: number) =>
+      Array.from({ length: n }, () => entry()).join(",");
+
+    it("EDG-02 accepts the empty report and valid entries, keeps the string, and round-trips with the codec", () => {
+      expect(parse("").success).toBe(true);
+      const a = randomUUID();
+      const b = randomUUID();
+      const value = `${a}:prefix_used,${b}:id_used`;
+      const ok = deviceSyncQuerySchema.parse({
+        limit: 100,
+        receiptSequences: "1",
+        receiptRefused: value,
+      });
+      expect(ok.receiptRefused).toBe(value);
+      // A second parse (route, then service) accepts the first one's output.
+      expect(deviceSyncQuerySchema.parse(ok)).toEqual(ok);
+      expect(decodeReceiptRunRefusals(value)).toEqual(
+        new Map<string, ReceiptRunRefusalReason>([
+          [a, "prefix_used"],
+          [b, "id_used"],
+        ]),
+      );
+      expect(
+        decodeReceiptRunRefusals(
+          encodeReceiptRunRefusals(refusal(a, "id_used")),
+        ),
+      ).toEqual(refusal(a, "id_used"));
+      expect(parse(many(50)).success).toBe(true);
+      // Ids are case-insensitive.
+      expect(parse(`${a.toUpperCase()}:id_used`).success).toBe(true);
+    });
+
+    it("EDG-02 refuses a bad uuid, a bad reason, a missing reason, a duplicate id and more than 50 entries", () => {
+      const id = randomUUID();
+      expect(parse("not-a-uuid:prefix_used").success).toBe(false);
+      expect(parse(`${id}:other_reason`).success).toBe(false);
+      expect(parse(`${id}:`).success).toBe(false);
+      expect(parse(id).success).toBe(false);
+      expect(parse(`${id}:prefix_used,${id}:id_used`).success).toBe(false);
+      expect(
+        parse(`${id}:prefix_used,${id.toUpperCase()}:prefix_used`).success,
+      ).toBe(false);
+      expect(parse(`${id}:prefix_used,`).success).toBe(false);
+      expect(parse(many(51)).success).toBe(false);
     });
   });
 });

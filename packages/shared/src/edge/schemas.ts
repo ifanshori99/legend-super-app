@@ -188,6 +188,81 @@ export const receiptRunReportQuerySchema = z
     message: "Bad receipt run report.",
   });
 
+/**
+ * legend-hfq3z: why a primary edge refused a pulled run bound to itself that a
+ * new run (new id, new prefix) would fix: its prefix (`prefix_used`) or its id
+ * (`id_used`) already exists on another row of this edge database.
+ */
+export const RECEIPT_RUN_REFUSAL_REASONS = ["prefix_used", "id_used"] as const;
+export type ReceiptRunRefusalReason =
+  (typeof RECEIPT_RUN_REFUSAL_REASONS)[number];
+/**
+ * legend-hfq3z: the runs an edge refused on its last pull, `run id -> reason`.
+ * Sent on the next pull (`receiptRefused`) so the cloud retires each one and
+ * hands the device a new run under a new prefix.
+ */
+export type ReceiptRunRefusalReport = ReadonlyMap<
+  string,
+  ReceiptRunRefusalReason
+>;
+
+export const RECEIPT_RUN_REFUSAL_MAX_ENTRIES = 50;
+
+/**
+ * `<id>:<reason>` entries sorted by id (lowercase), joined by `,`. At most
+ * `RECEIPT_RUN_REFUSAL_MAX_ENTRIES` entries, the lowest ids: the rest go on a
+ * later pull once these healed (the cloud refuses more than 50 with 400).
+ */
+export function encodeReceiptRunRefusals(
+  report: ReceiptRunRefusalReport,
+): string {
+  return [...report.entries()]
+    .map(([id, reason]) => [id.toLowerCase(), reason] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, RECEIPT_RUN_REFUSAL_MAX_ENTRIES)
+    .map(([id, reason]) => `${id}:${reason}`)
+    .join(",");
+}
+
+/**
+ * legend-hfq3z: decodes the `receiptRefused` query param. `""` = nothing
+ * refused; else `<uuid>:<reason>` entries joined by `,` (max 50, no duplicate
+ * id; ids are lowercased). Returns null when the value is malformed.
+ */
+export function decodeReceiptRunRefusals(
+  value: string,
+): Map<string, ReceiptRunRefusalReason> | null {
+  const report = new Map<string, ReceiptRunRefusalReason>();
+  if (value === "") return report;
+  const entries = value.split(",");
+  if (entries.length > RECEIPT_RUN_REFUSAL_MAX_ENTRIES) return null;
+  for (const entry of entries) {
+    const at = entry.indexOf(":");
+    if (at < 0) return null;
+    const id = entry.slice(0, at).toLowerCase();
+    const reason = entry.slice(at + 1);
+    if (
+      !uuidSchema.safeParse(id).success ||
+      !(RECEIPT_RUN_REFUSAL_REASONS as readonly string[]).includes(reason) ||
+      report.has(id)
+    )
+      return null;
+    report.set(id, reason as ReceiptRunRefusalReason);
+  }
+  return report;
+}
+
+/**
+ * legend-hfq3z: the `receiptRefused` query param, validated but kept as the
+ * string; decode it with `decodeReceiptRunRefusals`.
+ */
+export const receiptRunRefusalQuerySchema = z
+  .string()
+  .max(4_000)
+  .refine((value) => decodeReceiptRunRefusals(value) !== null, {
+    message: "Bad receipt run refusal report.",
+  });
+
 export const deviceSyncPageSchema = z.strictObject({
   data: z.array(deviceSyncRecordSchema),
   /**

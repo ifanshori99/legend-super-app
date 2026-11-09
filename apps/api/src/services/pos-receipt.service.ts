@@ -82,6 +82,7 @@ import {
 import type {
   DeviceReceiptSequenceBinding,
   DeviceReceiptSequenceSync,
+  ReceiptRunRefusalReport,
   ReceiptRunReport,
 } from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
@@ -195,6 +196,28 @@ function nextFreePrefix(used: ReadonlyMap<string, string>): string {
   for (let n = 1; ; n += 1) if (!used.has(`P${n}`)) return `P${n}`;
 }
 
+/** Number of a `P<n>` prefix (at most 11 digits), 0 for any other string. */
+function prefixNumber(prefix: string): number {
+  const match = /^P(\d{1,11})$/.exec(prefix);
+  return match ? Number(match[1]) : 0;
+}
+
+/**
+ * First `P<n>` with n above `floor`, not used by any row of the outlet
+ * (legend-hfq3z). Falls back to `nextFreePrefix` when the prefix would be
+ * longer than 12 characters.
+ */
+function nextFreePrefixAbove(
+  used: ReadonlyMap<string, string>,
+  floor: number,
+): string {
+  for (let n = floor + 1; ; n += 1) {
+    const prefix = `P${n}`;
+    if (prefix.length > 12) return nextFreePrefix(used);
+    if (!used.has(prefix)) return prefix;
+  }
+}
+
 /** New sequence at 0; `binding` set = the counter lives on that edge (legend-zsdd). */
 async function insertSequence(
   tx: Tx,
@@ -227,6 +250,9 @@ async function insertSequence(
  * legend-yd0h8: `reason` is stored in `retired_reason` (audit, rate limit).
  * `stampReportedAt` also moves `edge_reported_at` (an `edge_regressed` retire:
  * a later, older report of this run must not look newer than the retire).
+ * legend-hfq3z: `retiredAt` (default `now()`) lets the self-heal retire set
+ * `retired_at` and `edge_reported_at` to the same instant, which marks a heal
+ * row (`claim_rotated` with `retired_at = edge_reported_at`).
  */
 async function retireSequence(
   tx: Tx,
@@ -234,11 +260,12 @@ async function retireSequence(
   sequenceId: string,
   reason: ReceiptSequenceRetiredReason,
   stampReportedAt?: Date,
+  retiredAt?: Date,
 ): Promise<void> {
   const [row] = await tx
     .update(receiptSequences)
     .set({
-      retiredAt: sql`now()`,
+      retiredAt: retiredAt ?? sql`now()`,
       retiredReason: reason,
       ...(stampReportedAt === undefined
         ? {}
@@ -787,6 +814,17 @@ const sameBinding = (
 
 export const RECEIPT_REGRESSION_ROTATIONS_MAX = 2;
 export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
+/**
+ * legend-hfq3z: refused-run rotations (`claim_rotated`) per device and edge
+ * database within RECEIPT_REGRESSION_WINDOW_HOURS before further refusals are throttled.
+ */
+export const RECEIPT_REFUSAL_ROTATIONS_MAX = 10;
+/**
+ * legend-hfq3z: a `prefix_used` heal retires at tau + this offset (an
+ * `id_used` heal at tau), so the clone alarm can leave it out without a new
+ * retire reason (follow-up legend-p7gb6 replaces both markers with a reason).
+ */
+const HEAL_PREFIX_USED_OFFSET_MS = 1;
 
 /**
  * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
@@ -826,6 +864,39 @@ export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
  * `edge_reported_at` becomes `tau`; a regression retire also stamps `tau`, so
  * a delayed report read before the restore cannot look newer than the retire.
  *
+ * legend-hfq3z: `refusals` (id -> reason, the edge's report of replacement runs
+ * it refused for a prefix or id clash on the previous pull; absent = old edge)
+ * heals a device left without a run, only together with a `report` (an edge
+ * that sends refusals always sends its runs; without a report an unreported
+ * numbered run cannot be told from an empty one). A current row bound to
+ * exactly this edge database whose id is reported, with lastNumber 0 and (on
+ * `id_used`) edge_reported_number 0 and no number in `report`, is retired
+ * (`claim_rotated`, no new reason; the heal stamps `edge_reported_at` with
+ * `tau` and `retired_at` with `tau`, or `tau` + 1 ms on `prefix_used`, which
+ * marks it) and
+ * the device continues under the next free prefix bound to this database
+ * (refusedRotated); the same request then lists the new run. That prefix is
+ * above every `P<n>` in `report` and, on a prefix clash, above the refused
+ * run's own (the edge holds prefixes the cloud lacks, e.g. after a cloud
+ * restore), falling back to the first free one when it would be too long. On
+ * a `prefix_used` refusal the report's number for the prefix is another local
+ * run's and is ignored (also by the legend-yd0h8 check of a row that is not
+ * healed); on `id_used` it is the run's own. A row with a stale token
+ * (`edge_reported_at` not before `tau`) is not healed. A heal row is exactly:
+ * `claim_rotated` with `retired_at - edge_reported_at` 0 or 1 ms and this
+ * binding; a
+ * normal claim rotation by another database of the node keeps the binding of
+ * the retired row but has retired_at = now() and an older or NULL
+ * edge_reported_at, so binding alone does not identify a heal. The throttle is
+ * RECEIPT_REFUSAL_ROTATIONS_MAX heal rows of the device in the window. Beyond
+ * it the row is left to the normal handling (refusedThrottled, which also sets
+ * `alert`: a device is left without a run).
+ * Reported ids that are retired, unknown, of another tenant or binding, or
+ * that hold numbers are ignored; repeating a report is idempotent (the new run
+ * has another id). The clone alarm also counts `id_used` heal rows: a later
+ * report above the frozen high-water with a newer token means another live
+ * database numbered that run.
+ *
  * Limits: sales between a restore and the first successful pull still reuse
  * numbers already issued; and a clone gets an alarm, not prevention (both
  * databases receive the new prefix).
@@ -836,6 +907,7 @@ export async function claimDeviceReceiptSequencesForEdge(
   input: {
     outletId: string;
     report?: ReceiptRunReport;
+    refusals?: ReceiptRunRefusalReport;
     reportedAt?: Date;
   } & DeviceReceiptSequenceBinding,
 ): Promise<{
@@ -843,6 +915,8 @@ export async function claimDeviceReceiptSequencesForEdge(
   rotated: number;
   regressed: number;
   throttled: number;
+  refusedRotated: number;
+  refusedThrottled: number;
   stale: number;
   alert: boolean;
 }> {
@@ -860,6 +934,39 @@ export async function claimDeviceReceiptSequencesForEdge(
   // legend-yd0h8: regression rotations per device of this node in the window.
   const regressions = new Map<string, number>();
   let cloneSeen = false;
+  // legend-hfq3z: refused-run rotations per device of this node in the window.
+  const refusalRotations = new Map<string, number>();
+  const refusals = input.refusals;
+  if (
+    input.report !== undefined &&
+    refusals !== undefined &&
+    refusals.size > 0
+  ) {
+    // A heal row is `claim_rotated` with `retired_at - edge_reported_at` 0
+    // (id_used) or 1 ms (prefix_used) and this exact binding. The binding alone is
+    // not enough: a normal claim rotation by another database of the node
+    // retires this binding's row too (the row keeps its binding), but with
+    // retired_at = now() and an older or NULL edge_reported_at.
+    const recent = await tx
+      .select({
+        deviceId: receiptSequences.deviceId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(receiptSequences)
+      .where(
+        and(
+          eq(receiptSequences.tenantId, tenantId),
+          eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
+          eq(receiptSequences.edgeInstanceId, binding.edgeInstanceId),
+          eq(receiptSequences.retiredReason, "claim_rotated"),
+          // Both heal markers (id_used: +0, prefix_used: +1 ms).
+          sql`${receiptSequences.retiredAt} - ${receiptSequences.edgeReportedAt} IN (interval '0', make_interval(secs => ${HEAL_PREFIX_USED_OFFSET_MS / 1000}))`,
+          sql`${receiptSequences.retiredAt} > now() - make_interval(hours => ${RECEIPT_REGRESSION_WINDOW_HOURS})`,
+        ),
+      )
+      .groupBy(receiptSequences.deviceId);
+    for (const row of recent) refusalRotations.set(row.deviceId, row.count);
+  }
   if (input.report !== undefined) {
     const recent = await tx
       .select({
@@ -891,7 +998,18 @@ export async function claimDeviceReceiptSequencesForEdge(
           eq(receiptSequences.tenantId, tenantId),
           eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
           eq(receiptSequences.edgeInstanceId, binding.edgeInstanceId),
-          eq(receiptSequences.retiredReason, "edge_regressed"),
+          // An id_used heal retirement (legend-hfq3z) is `claim_rotated` of
+          // this exact binding with retired_at = edge_reported_at (both tau);
+          // a normal claim rotation keeps the binding too but does not match.
+          // A prefix_used heal (retired_at = tau + 1 ms) is left out: the edge
+          // keeps reporting that prefix for its other local run by definition.
+          or(
+            eq(receiptSequences.retiredReason, "edge_regressed"),
+            and(
+              eq(receiptSequences.retiredReason, "claim_rotated"),
+              sql`${receiptSequences.retiredAt} = ${receiptSequences.edgeReportedAt}`,
+            ),
+          ),
           sql`${receiptSequences.retiredAt} > now() - make_interval(hours => ${RECEIPT_REGRESSION_WINDOW_HOURS})`,
         ),
       );
@@ -930,10 +1048,76 @@ export async function claimDeviceReceiptSequencesForEdge(
   let rotated = 0;
   let regressed = 0;
   let throttled = 0;
+  let refusedRotated = 0;
+  let refusedThrottled = 0;
   let stale = 0;
   let used: Map<string, string> | undefined;
   for (const { sequence } of current) {
     if (sameBinding(sequence, binding)) {
+      // legend-hfq3z: the edge refused this run (prefix or id clash) and
+      // holds no number of it: replace it, the device has no usable run.
+      // Only with a report: without one the cloud cannot tell an unreported
+      // numbered run from an empty one. On a `prefix_used` refusal the
+      // report's number for this prefix belongs to ANOTHER local run (the
+      // clashing one), so it is ignored; on `id_used` it is this run's own.
+      // A `prefix_used` row may carry an edge_reported_number raised from
+      // that other run before legend-hfq3z (the old legend-yd0h8 path); the
+      // edge holds no number of this id (the prefix check runs first), and a
+      // fresh prefix cannot reuse a number, so that number does not block it.
+      const refusal = refusals?.get(sequence.id);
+      if (input.report !== undefined && refusal !== undefined) {
+        const healable =
+          sequence.lastNumber === 0 &&
+          (refusal === "prefix_used" ||
+            (sequence.edgeReportedNumber === 0 &&
+              (input.report.get(sequence.prefix) ?? 0) === 0)) &&
+          // A stale token (defensive: a heal-eligible row normally has NULL).
+          !(sequence.edgeReportedAt !== null && tau <= sequence.edgeReportedAt);
+        if (healable) {
+          const done = refusalRotations.get(sequence.deviceId) ?? 0;
+          if (done >= RECEIPT_REFUSAL_ROTATIONS_MAX) {
+            refusedThrottled += 1;
+          } else {
+            // The heal marker: edge_reported_at = tau and retired_at = tau
+            // (id_used) or tau + 1 ms (prefix_used, see HEAL_PREFIX_USED_OFFSET_MS).
+            await retireSequence(
+              tx,
+              tenantId,
+              sequence.id,
+              "claim_rotated",
+              tau,
+              refusal === "prefix_used"
+                ? new Date(tau.getTime() + HEAL_PREFIX_USED_OFFSET_MS)
+                : tau,
+            );
+            used ??= await prefixesOfOutlet(tx, tenantId, outletId);
+            // A clash means the edge holds prefixes the cloud lacks: step past
+            // every prefix it reports (and past the refused one on a prefix
+            // clash) instead of burning the throttle one prefix at a time.
+            let floor = 0;
+            for (const reportedPrefix of input.report.keys())
+              floor = Math.max(floor, prefixNumber(reportedPrefix));
+            if (refusal === "prefix_used")
+              floor = Math.max(floor, prefixNumber(sequence.prefix));
+            const prefix = nextFreePrefixAbove(used, floor);
+            await insertSequence(tx, {
+              tenantId,
+              outletId,
+              deviceId: sequence.deviceId,
+              prefix,
+              binding,
+            });
+            used.set(prefix, sequence.deviceId);
+            refusalRotations.set(sequence.deviceId, done + 1);
+            refusedRotated += 1;
+            continue;
+          }
+        }
+        // Not healed (throttled or not eligible): the report's number for a
+        // `prefix_used` run is another run's, so it must neither raise this
+        // run's high-water nor rotate it as regressed.
+        if (refusal === "prefix_used") continue;
+      }
       if (input.report === undefined) continue;
       if (sequence.edgeReportedAt !== null && tau <= sequence.edgeReportedAt) {
         stale += 1;
@@ -1018,12 +1202,22 @@ export async function claimDeviceReceiptSequencesForEdge(
     rotated += 1;
   }
   const alert =
-    input.report !== undefined &&
-    (cloneSeen ||
-      [...regressions.values()].some(
-        (count) => count >= RECEIPT_REGRESSION_ROTATIONS_MAX,
-      ));
-  return { claimed, rotated, regressed, throttled, stale, alert };
+    (input.report !== undefined &&
+      (cloneSeen ||
+        [...regressions.values()].some(
+          (count) => count >= RECEIPT_REGRESSION_ROTATIONS_MAX,
+        ))) ||
+    refusedThrottled > 0;
+  return {
+    claimed,
+    rotated,
+    regressed,
+    throttled,
+    refusedRotated,
+    refusedThrottled,
+    stale,
+    alert,
+  };
 }
 
 /**
@@ -1103,18 +1297,28 @@ export async function listDeviceReceiptSequences(
  *   inserted at 0 bound to `own`. Refused if the pulled prefix or id already
  *   exists here on another row, or the pulled run is already at L > 0 (same
  *   3yqy backstop as `inserted`; review K R1-A); the local row stays current.
+ *   A prefix or id clash returns `refused_prefix_used` / `refused_id_used`
+ *   (legend-hfq3z) so the edge can report it to the cloud on the next pull;
+ *   both count as refused.
  * - inserted: no current row for the device; created with the cloud's id and
  *   prefix at 0 bound to `own`. Refused if the prefix or id is already used
  *   here, or (S-K1, legend-3yqy backstop) the cloud run is already at L > 0:
  *   the edge holds none of receipts 1..L, so the gap check would refuse Tutup
- *   Hari forever.
+ *   Hari forever. The clash outcomes are as for `replaced`.
  */
 export async function applyCloudDeviceReceiptSequence(
   tx: Tx,
   context: ScopedTenantContext,
   sequence: DeviceReceiptSequenceSync,
   own: DeviceReceiptSequenceBinding,
-): Promise<"inserted" | "kept" | "replaced" | "refused"> {
+): Promise<
+  | "inserted"
+  | "kept"
+  | "replaced"
+  | "refused"
+  | "refused_prefix_used"
+  | "refused_id_used"
+> {
   const tenantId = context.tenant.tenantId;
   const outletId = sequence.outletId as OutletId;
   if (!sameBinding(sequence, own)) return "refused";
@@ -1159,7 +1363,7 @@ export async function applyCloudDeviceReceiptSequence(
   // Backstop for both `inserted` and `replaced` (review K R1-A).
   if (sequence.lastNumber > 0) return "refused";
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
-  if (used.has(sequence.prefix)) return "refused";
+  if (used.has(sequence.prefix)) return "refused_prefix_used";
   const [sameId] = await tx
     .select({ id: receiptSequences.id })
     .from(receiptSequences)
@@ -1169,20 +1373,62 @@ export async function applyCloudDeviceReceiptSequence(
         eq(receiptSequences.id, sequence.id),
       ),
     );
-  if (sameId) return "refused";
-  if (existing)
-    await retireSequence(tx, tenantId, existing.id, "edge_replaced");
-  await tx.insert(receiptSequences).values({
-    id: sequence.id,
-    tenantId,
-    outletId,
-    deviceId: sequence.deviceId,
-    prefix: sequence.prefix,
-    lastNumber: 0,
-    edgeNodeId: own.edgeNodeId,
-    edgeInstanceId: own.edgeInstanceId,
-  });
+  if (sameId) return "refused_id_used";
+  // legend-hfq3z: the id is the primary key of the whole table, and a row
+  // this outlet-scoped read cannot see (RLS) still clashes on insert. The
+  // retire and insert run in a savepoint: such a clash undoes both (the local
+  // row stays current, as for any refusal) and is reported like `sameId`,
+  // instead of aborting the whole list.
+  try {
+    await tx.transaction(async (savepoint) => {
+      if (existing)
+        await retireSequence(savepoint, tenantId, existing.id, "edge_replaced");
+      await savepoint.insert(receiptSequences).values({
+        id: sequence.id,
+        tenantId,
+        outletId,
+        deviceId: sequence.deviceId,
+        prefix: sequence.prefix,
+        lastNumber: 0,
+        edgeNodeId: own.edgeNodeId,
+        edgeInstanceId: own.edgeInstanceId,
+      });
+    });
+  } catch (error) {
+    const clash = receiptSequenceClashOf(error);
+    if (clash === "id") return "refused_id_used";
+    if (clash === "prefix") return "refused_prefix_used";
+    throw error;
+  }
   return existing ? "replaced" : "inserted";
+}
+
+/**
+ * legend-hfq3z: which unique key of `receipt_sequences` a PostgreSQL error
+ * (directly or in drizzle's cause chain) violated: the id (primary key or
+ * tenant + id) or the outlet prefix; null for anything else.
+ */
+function receiptSequenceClashOf(
+  error: unknown,
+  depth = 0,
+): "id" | "prefix" | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  if (candidate.code === "23505") {
+    if (
+      candidate.constraint === "receipt_sequences_pkey" ||
+      candidate.constraint === "receipt_sequences_tenant_id_id_key"
+    )
+      return "id";
+    if (candidate.constraint === "receipt_sequences_prefix_key")
+      return "prefix";
+    return null;
+  }
+  return receiptSequenceClashOf(candidate.cause, depth + 1);
 }
 
 /**
@@ -1197,9 +1443,9 @@ export async function applyCloudDeviceReceiptSequence(
  * device then numbers nothing (RECEIPT_SEQUENCE_NOT_PROVISIONED; fail closed)
  * until a pull delivers a run it accepts. For an advanced replacement
  * (L > 0) the next claim rotates it (absent from the report = 0 < high-water).
- * For a prefix or id clash it does NOT recover by itself: the replacement
- * stays at 0 and is refused on every pull (edge status
- * `receiptSequencesRefused` > 0); the manual zsdd procedure is needed.
+ * For a prefix or id clash the replacement stays at 0 and is refused here
+ * (edge status `receiptSequencesRefused` > 0); the edge reports the refusal on
+ * the next pull and the cloud claim rotates it (legend-hfq3z).
  * Callers pass the ids of the page's entries bound to `own`, from a list that
  * passed its page checks (a refused list never gets here); no such id (empty
  * list, or a node id mismatch) is ambiguous and never retires anything. Rows
