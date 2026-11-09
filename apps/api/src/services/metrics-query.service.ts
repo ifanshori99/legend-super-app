@@ -693,11 +693,15 @@ class LedgerIndex {
   /** Outlet keys (entity level included) with data for a component's buckets. */
   outletKeys(component: GlComponent, rangeCount: number): Set<string> {
     const keys = new Set<string>();
-    const perRange = this.sums.get(component) ?? [];
     for (let at = 0; at < rangeCount; at++)
-      for (const key of perRange[at]?.keys() ?? [])
-        if (key !== ALL_OUTLETS) keys.add(key);
+      for (const key of this.outletKeysAt(component, at)) keys.add(key);
     return keys;
+  }
+
+  /** Outlet keys (entity level included) with data in one bucket. */
+  outletKeysAt(component: GlComponent, range: number): string[] {
+    const byOutlet = this.sums.get(component)?.[range];
+    return [...(byOutlet?.keys() ?? [])].filter((key) => key !== ALL_OUTLETS);
   }
 }
 
@@ -932,6 +936,8 @@ export type EvaluatedMetrics = {
 /** The split and filter a call asks for, or why the engine cannot read it. */
 type Shape = {
   byOutlet: boolean;
+  /** The query reads some outlets only (filter or the caller's scope). */
+  outletFiltered: boolean;
   splitKey: Exclude<MetricDimensionKey, "outlet"> | null;
   filter: { key: string; values: ReadonlySet<string> } | null;
   supported: boolean;
@@ -940,10 +946,12 @@ type Shape = {
 function shapeOf(
   groupBy: readonly MetricDimensionKey[],
   filters: readonly MetricDimensionFilter[],
+  outletFilter: OutletQueryFilter,
 ): Shape {
   const splitKeys = groupBy.filter((key) => key !== "outlet");
   const shape: Shape = {
     byOutlet: groupBy.includes("outlet"),
+    outletFiltered: outletFilter.kind !== "all",
     splitKey: splitKeys[0] ?? null,
     filter: null,
     supported:
@@ -1013,6 +1021,14 @@ function planOf(
       case "gl": {
         // The ledger cannot filter by a non-outlet dimension.
         if (shape.filter) return NOT_SUPPORTED;
+        // A balance (tax_payable) is a tenant figure only: its settling
+        // journals (the PBJT remittance is a manual or supplier payment
+        // entry) may carry no outlet, so an outlet's share of it is unknown.
+        if (
+          source.gl.kind === "balance" &&
+          (shape.byOutlet || shape.outletFiltered)
+        )
+          return NOT_SUPPORTED;
         if (shape.splitKey === null)
           return { kind: "gl", gl: source.gl, split: null };
         // A percent split is recomputed from split numerator and denominator
@@ -1052,6 +1068,8 @@ function planOf(
           )
         )
           return NOT_SUPPORTED;
+        // The average follows its weight only when the weight cannot be
+        // read; a weight that is not a stored daily count cannot weight it.
         const weightCode = source.weightCode ?? null;
         if (weightCode !== null) {
           const weightPlan = planOf(
@@ -1061,7 +1079,8 @@ function planOf(
             plans,
             visiting,
           );
-          if (weightPlan.kind !== "daily") return weightPlan;
+          if (weightPlan.kind === "unavailable") return weightPlan;
+          if (weightPlan.kind !== "daily") return NOT_SUPPORTED;
         }
         return { kind: "daily", reader: source.reader, weightCode };
       }
@@ -1146,7 +1165,7 @@ export async function evaluateMetrics(
   const currentCount = buckets.length;
   const outletFilter = request.outletFilter;
 
-  const shape = shapeOf(request.groupBy, request.filters);
+  const shape = shapeOf(request.groupBy, request.filters, outletFilter);
   const plans = new Map<string, Plan>();
   for (const definition of definitions)
     planOf(definition.code, shape, sources, plans);
@@ -1293,27 +1312,35 @@ export async function evaluateMetrics(
    * refreshes only the last days), so it keeps the value an estimate.
    * Entity-level ledger lines have no operational rows to wait for.
    *
-   * `perOutlet` (ledger splits): without an outlet split, every outlet that
-   * has a total row of the code in the query must have its own rows on every
-   * day, so the days of different outlets are never pooled into one set.
+   * `ledgerOutlets` (ledger splits): without an outlet split, every outlet
+   * that has a total row of the code or a journal line in the query must have
+   * its own rows on every day, so the days of different outlets are never
+   * pooled into one set and an outlet with lines but no rows is not skipped.
    */
   const covered = (
     code: string,
     outletKey: string,
     at: number,
-    perOutlet = false,
+    ledgerOutlets: readonly ReadonlySet<string>[] | null = null,
   ) => {
     if (outletKey === ENTITY_LEVEL) return true;
     if (at >= currentCount) return false;
     const bucket = ranges[at]!;
     const days = (toTime(bucket.end) - toTime(bucket.start)) / DAY_MS + 1;
     const byOutlet = coverage.get(code);
-    if (!perOutlet || outletKey !== ALL_OUTLETS)
+    if (ledgerOutlets === null || outletKey !== ALL_OUTLETS)
       return (byOutlet?.get(outletKey)?.[at]?.size ?? 0) === days;
     const outlets =
       outletFilter.kind === "outlets"
         ? outletFilter.outletIds
-        : [...(byOutlet?.keys() ?? [])].filter((key) => key !== ALL_OUTLETS);
+        : [
+            ...new Set([
+              ...[...(byOutlet?.keys() ?? [])].filter(
+                (key) => key !== ALL_OUTLETS,
+              ),
+              ...[...ledgerOutlets[at]!].filter((key) => key !== ENTITY_LEVEL),
+            ]),
+          ];
     return (
       outlets.length > 0 &&
       outlets.every(
@@ -1346,6 +1373,15 @@ export async function evaluateMetrics(
     let outletGroups: { dim: MetricDimensionValue | null; key: string }[] = [
       { dim: null, key: ALL_OUTLETS },
     ];
+    // Per range, the outlets with journal lines of the code.
+    const ledgerOutlets = ranges.map(
+      (_, at) =>
+        new Set(
+          glComponentsOf(plan.gl).flatMap((component) =>
+            index.outletKeysAt(component, at),
+          ),
+        ),
+    );
     if (shape.byOutlet) {
       const keys = new Set<string>();
       for (const component of glComponentsOf(plan.gl))
@@ -1375,7 +1411,8 @@ export async function evaluateMetrics(
       // and need a stored total row on every day of it; the residual row
       // makes them add up to that total.
       const splitFinal = totals.map(
-        (total, at) => total.final && covered(code, outlet.key, at, true),
+        (total, at) =>
+          total.final && covered(code, outlet.key, at, ledgerOutlets),
       );
       const sums = new Map<string, (bigint | null)[]>();
       for (const row of splitRows) {
@@ -1430,6 +1467,11 @@ export async function evaluateMetrics(
       /** Weighted average: Σ(value × weight) and Σ weight. */
       weighted: bigint;
       weight: bigint;
+      /** Rows without a stored weight row: the bucket takes the plain mean. */
+      unweighted: boolean;
+      /** Plain mean of the rows whose volume is not a stored zero. */
+      plainSum: bigint;
+      plainCount: bigint;
       final: boolean;
       latest: Map<string, { date: string; native: bigint }>;
     };
@@ -1492,13 +1534,23 @@ export async function evaluateMetrics(
         count: 0n,
         weighted: 0n,
         weight: 0n,
+        unweighted: false,
+        plainSum: 0n,
+        plainCount: 0n,
         final: true,
         latest: new Map(),
       });
       acc.sum += row.native;
       acc.count += 1n;
-      const weight = weights?.get(rowKey(row)) ?? 0n;
-      if (weight > 0n) {
+      // A missing weight row (rows stored before the weight was written) is
+      // not a zero volume: a stored zero keeps the day out.
+      const weight = weights?.get(rowKey(row));
+      if (weight === undefined) acc.unweighted = true;
+      if (weight === undefined || weight > 0n) {
+        acc.plainSum += row.native;
+        acc.plainCount += 1n;
+      }
+      if (weight !== undefined && weight > 0n) {
         acc.weighted += row.native * weight;
         acc.weight += weight;
       }
@@ -1517,10 +1569,15 @@ export async function evaluateMetrics(
             0n,
           );
         // Mean of the stored outlet-days, weighted by their volume when the
-        // source declares a weight; no volume at all is no data.
+        // source declares a weight; no volume at all is no data. A bucket
+        // with a day lacking its weight row takes the plain mean instead.
         case "average":
           if (weights === null)
             return divideRounded(acc.sum, acc.count, "half_up");
+          if (acc.unweighted)
+            return acc.plainCount === 0n
+              ? null
+              : divideRounded(acc.plainSum, acc.plainCount, "half_up");
           return acc.weight === 0n
             ? null
             : divideRounded(acc.weighted, acc.weight, "half_up");

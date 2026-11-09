@@ -25,6 +25,7 @@ import { reportMetricByCode } from "@starter/shared/dashboard";
 import {
   dailyReaders,
   metricSourceOf,
+  metricSplitOf,
   METRIC_SOURCE_MODULES,
   assertRegistry,
   type DailyMetricReader,
@@ -37,6 +38,7 @@ import {
   evaluateMetrics,
   withTenantSnapshot,
   type EvaluatedMetrics,
+  type SourceLookup,
 } from "../services/metrics-query.service";
 import { createIsolatedTenant, owner } from "./floor-test-helpers";
 
@@ -616,6 +618,91 @@ describe("traffic-operations reports through the engine", () => {
     expect(valueOf(total, "avg_dwell_minutes")).toBe("32.5000");
     const byStation = await run(["avg_serving_time"], ["station"]);
     expect(valueOf(byStation, "avg_serving_time")).toBe(325);
+  });
+
+  // Rows of avg_serving_time (and its weight) for outlet 1 of tenant b.
+  async function storedServing(
+    rows: readonly (readonly [string, string, string | null])[],
+    sources?: SourceLookup,
+  ) {
+    const outletId = b.outlet1;
+    for (const [day, serving, tickets] of rows)
+      for (const [code, value] of [
+        ["avg_serving_time", serving],
+        ["served_ticket_count", tickets],
+      ] as const) {
+        if (value === null) continue;
+        const definition = reportMetricByCode.get(code)!;
+        await owner.query(
+          `INSERT INTO metrics_daily (tenant_id, outlet_id, metric_date, metric_code,
+             definition_id, definition_version, unit, value_int, finality, computed_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'final', now())`,
+          [
+            b.tenantId,
+            outletId,
+            day,
+            code,
+            definition.id,
+            definition.version,
+            definition.unit,
+            value,
+          ],
+        );
+      }
+    const ctx = context(b.tenantId, outletId);
+    const [first, last] = [rows[0]![0], rows.at(-1)![0]];
+    return withTenantSnapshot(ctx, (tx) =>
+      evaluateMetrics(
+        tx,
+        ctx,
+        {
+          metricCodes: ["avg_serving_time"],
+          period: { start: date(first), end: date(last) },
+          bucket: "total",
+          outletFilter: outletIdsForQuery(ctx.outletScope),
+          groupBy: [],
+          filters: [],
+          comparePrevious: false,
+          viewer: "full",
+        },
+        LATE,
+        sources ? { sources } : {},
+      ),
+    );
+  }
+
+  it("days without a stored weight row fall back to the plain mean; a real zero volume stays out (R-A 1)", async () => {
+    // Rows written before the weight code existed: no served_ticket_count.
+    const result = await storedServing([
+      ["2025-08-01", "100", null],
+      ["2025-08-02", "400", null],
+      ["2025-08-03", "0", "0"],
+    ]);
+    expect(result.availability[0]?.status).toBe("available");
+    expect(
+      (result.series[0]!.points[0]!.value as { value: unknown } | null)?.value,
+    ).toBe(250);
+  });
+
+  it("a weight that is not a stored daily count makes the average unsupported (R-A 5)", async () => {
+    const sources: SourceLookup = {
+      sourceOf: (code) =>
+        code === "served_ticket_count"
+          ? {
+              kind: "derived",
+              code,
+              numerator: "pax",
+              denominator: "pax",
+              scale: 1,
+            }
+          : metricSourceOf(code),
+      splitOf: metricSplitOf,
+    };
+    const result = await storedServing([["2025-08-10", "100", "1"]], sources);
+    expect(result.availability[0]).toMatchObject({
+      status: "unavailable",
+      reason: "dimension_not_supported",
+    });
   });
 
   it("marks a split the reader does not build as not supported", async () => {

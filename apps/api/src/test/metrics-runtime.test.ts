@@ -1051,6 +1051,15 @@ describe("GL split finality counts total rows per outlet", () => {
       .map((entry) => entry.points[0]!.finality);
   };
 
+  it("an outlet with ledger lines but no stored rows keeps the split an estimate (R-A 3)", async () => {
+    // 11 Jun: outlet 2 has HPP lines, only outlet 1 has stored rows.
+    await cogsRow(world.outlet1, "2025-06-11", 0);
+    await cogsRow(world.outlet1, "2025-06-11", 0, "menu-a");
+    const result = await finalities("2025-06-11", "2025-06-11");
+    expect(result.length).toBeGreaterThan(0);
+    expect(new Set(result)).toEqual(new Set(["estimate"]));
+  });
+
   it("two outlets that each miss a different day do not cover the bucket together", async () => {
     // outlet 1 has a total row on the 10th only, outlet 2 on the 11th only:
     // the union of dates is complete, the per-outlet sets are not.

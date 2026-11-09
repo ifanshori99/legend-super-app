@@ -1056,15 +1056,6 @@ describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
     // Lines before the period count; the payment on 10 Sep clears outlet 1.
     expect(await through("2025-09-11", "2025-09-12")).toBe(0);
     expect(await through("2025-09-11", "2025-09-30")).toBe(20_000);
-    const split = await evaluate(tax, {
-      metricCodes: ["tax_payable"],
-      start: "2025-09-11",
-      end: "2025-09-30",
-      groupBy: ["outlet"],
-    });
-    const outlets = byOutlet(split, "tax_payable");
-    expect(outlets.get(tax.outlet1)).toBe(0);
-    expect(outlets.get(tax.outlet2)).toBe(20_000);
     // Day buckets: each one is the balance at its own end.
     const days = await evaluate(tax, {
       metricCodes: ["tax_payable"],
@@ -1073,6 +1064,37 @@ describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
       bucket: "day",
     });
     expect(days.series[0]!.points.map(native)).toEqual([10_000, 0, 0]);
+  });
+
+  it("tax_payable per outlet is not supported: a remittance may carry no outlet (R-A 4)", async () => {
+    // A PBJT remittance is a manual (or supplier payment) journal whose
+    // lines may be entity-level, so an outlet balance would be wrong.
+    const period = { start: "2025-09-11", end: "2025-09-30" };
+    const split = await evaluate(tax, {
+      metricCodes: ["tax_payable"],
+      ...period,
+      groupBy: ["outlet"],
+    });
+    const scoped = await evaluate(
+      tax,
+      { metricCodes: ["tax_payable"], ...period },
+      [tax.outlet2],
+    );
+    for (const result of [split, scoped]) {
+      expect(result.availability[0]).toMatchObject({
+        status: "unavailable",
+        reason: "dimension_not_supported",
+      });
+      expect(result.series.every((series) => !series.points[0]?.value)).toBe(
+        true,
+      );
+    }
+    // The tenant figure without an outlet filter stays.
+    const tenant = await evaluate(tax, {
+      metricCodes: ["tax_payable"],
+      ...period,
+    });
+    expect(native(tenant.series[0]!.points[0])).toBe(20_000);
   });
 
   it("tax_collected by menu_category has no split: dimension_not_supported", async () => {
