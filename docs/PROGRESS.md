@@ -1382,3 +1382,5 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
 - Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
 - Keputusan: meja sumber setelah gabung jadi `dirty` (bukan `occupied`) supaya pindai ulang QR tidak membuka tagihan kedua.
+
+- 10 Nov 05:5x legend-9p0k selesai di ws/notification-outbox-events: notification.created/read dan notification_preference.updated masuk outbox cloud-sync satu transaksi dengan datanya, urutan agregat dari outbox (tanpa migrasi; 0192 tidak dipakai). 27 tes baru+lama lulus, tsc api bersih. 1 reviewer, 2 temuan dibetulkan (preferensi user outlet-terbatas, markAllRead massal).
