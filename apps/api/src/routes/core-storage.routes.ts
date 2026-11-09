@@ -27,7 +27,8 @@ type ResolveRequest = (request: Request) => Promise<{
 }>;
 
 /** The caller supplies a server-side identity/scope and authorization resolver.
- * No router is mounted until the application has a real resolver and providers. */
+ * The real resolver is services/core-storage-access.ts. No router is mounted
+ * until an object storage provider exists (legend-7nv1). */
 export function createStorageRouter(options: {
   database: Database;
   storage: UploadDependencies["storage"];
