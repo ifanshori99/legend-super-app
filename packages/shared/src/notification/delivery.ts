@@ -2,7 +2,7 @@
 // WhatsApp cap, retry state machine and template rendering. The worker in
 // legend-5ub / legend-hyq calls these; the FE uses them for previews.
 
-import { categoryMeta, inAppLinkSchema } from "./schemas.ts";
+import { categoryMeta, inAppLinkSchema, isEmailMandatory } from "./schemas.ts";
 import type {
   ChannelPreference,
   DeliveryStatus,
@@ -171,13 +171,17 @@ export function planDelivery(input: {
       : !input.reachability.hasPushSubscription
         ? skip("web_push", "unreachable")
         : go("web_push");
-  const email = !input.policy.emailEnabled
-    ? skip("email", "policy_disabled")
-    : !wants.email
-      ? skip("email", "opted_out")
-      : !input.reachability.hasVerifiedEmail
-        ? skip("email", "unreachable")
-        : go("email");
+  // Security email is mandatory: neither the tenant switch nor the user's
+  // opt-out applies (legend-307w3); only an unverified address skips it.
+  const mandatoryEmail = isEmailMandatory(input.category);
+  const email =
+    !mandatoryEmail && !input.policy.emailEnabled
+      ? skip("email", "policy_disabled")
+      : !mandatoryEmail && !wants.email
+        ? skip("email", "opted_out")
+        : !input.reachability.hasVerifiedEmail
+          ? skip("email", "unreachable")
+          : go("email");
   const freeWillDeliver = push.decision !== "skip" || email.decision !== "skip";
   const wa = input.policy.whatsapp;
   const whatsapp = !wa.enabled

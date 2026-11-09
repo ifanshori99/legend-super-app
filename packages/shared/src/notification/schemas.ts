@@ -200,6 +200,20 @@ export const NOTIFICATION_CATEGORIES = Object.keys(
 ) as [NotificationCategory, ...NotificationCategory[]];
 export const notificationCategorySchema = z.enum(NOTIFICATION_CATEGORIES);
 
+/**
+ * Categories whose email cannot be switched off by the tenant policy
+ * (`emailEnabled`) or by the user's own preference (legend-307w3): the user
+ * must always learn about security events by email. An unverified address
+ * stays unreachable; the other channels keep their normal opt-outs.
+ */
+export const MANDATORY_EMAIL_CATEGORIES: readonly NotificationCategory[] = [
+  "security",
+];
+
+export function isEmailMandatory(category: NotificationCategory): boolean {
+  return MANDATORY_EMAIL_CATEGORIES.includes(category);
+}
+
 export function categoryMeta(category: NotificationCategory): CategoryMeta {
   return NOTIFICATION_CATEGORY_CATALOG[category];
 }
