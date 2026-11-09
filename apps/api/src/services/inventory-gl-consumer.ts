@@ -61,6 +61,7 @@ import {
   tenants,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import { sourceIdFromDb, sourceIdToDb } from "./inventory.service.ts";
 import {
@@ -424,6 +425,37 @@ export async function postStockSourceToGl(
   if (!mapping) return { status: "ignored" };
   const tenantId = context.tenant.tenantId;
   const target = normalizeSource(source);
+  // legend-gkc6b: stock moved by a training order never reaches the books. A
+  // source that already has posted rows (posted before this rule existed) keeps
+  // posting, so its return reverses in the books. A training source that was
+  // blocked earlier is released: nothing is left to retry.
+  if (
+    source.sourceType === "order" &&
+    (await isTrainingOrder(tx, tenantId, target.domainId))
+  ) {
+    const [posted] = await tx
+      .select({ id: inventoryGlPostings.ledgerEntryId })
+      .from(inventoryGlPostings)
+      .innerJoin(
+        stockLedger,
+        and(
+          eq(stockLedger.tenantId, inventoryGlPostings.tenantId),
+          eq(stockLedger.id, inventoryGlPostings.ledgerEntryId),
+        ),
+      )
+      .where(
+        and(
+          eq(stockLedger.tenantId, tenantId),
+          eq(stockLedger.sourceType, target.sourceType),
+          eq(stockLedger.sourceId, target.dbId),
+        ),
+      )
+      .limit(1);
+    if (!posted) {
+      await clearBlocked(tx, tenantId, target);
+      return { status: "ignored" };
+    }
+  }
   await lockSource(tx, tenantId, target);
   let rows = await tx
     .select({

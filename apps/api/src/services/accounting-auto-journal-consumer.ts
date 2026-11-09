@@ -81,10 +81,17 @@ import {
 } from "./accounting-journal.service.ts";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
 import { recordAudit } from "./core-audit.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
+
+const TRAINING_ORDER_EVENTS: ReadonlySet<string> = new Set([
+  "order.paid",
+  "order.refunded",
+  "order.voided",
+]);
 
 export type AutoJournalResult =
   | { status: "ignored" }
@@ -490,6 +497,28 @@ async function latestClosedPeriod(
   return row?.period ?? null;
 }
 
+/** The `aj:sale:<orderId>` journal of the order of a void or refund exists. */
+async function saleJournalPosted(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(
+          journalEntries.idempotencyKey,
+          autoJournalKeyOf({ ...stored, eventName: "order.paid" }),
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 async function postAutoJournal(
   tx: Tx,
   context: ScopedTenantContext,
@@ -498,6 +527,20 @@ async function postAutoJournal(
   now: Date,
 ): Promise<AutoJournalResult> {
   const tenantId = context.tenant.tenantId;
+  // legend-gkc6b: a training order never reaches the books. One check here
+  // covers every producer (POS, QR, delivery) and the sweep, and keeps the
+  // void/refund of a training sale from parking as SALE_MISSING. A void or
+  // refund still reverses a sale journal that was posted before this rule
+  // existed: those books are not left half reversed.
+  if (
+    TRAINING_ORDER_EVENTS.has(stored.eventName) &&
+    (await isTrainingOrder(tx, tenantId, String(stored.payload.orderId))) &&
+    !(
+      stored.eventName !== "order.paid" &&
+      (await saleJournalPosted(tx, tenantId, stored))
+    )
+  )
+    return { status: "ignored" };
   // order.voided reverses the sale journal; every other event posts a rule.
   const isVoid = stored.eventName === "order.voided";
   const voidFact = isVoid ? await voidFactOf(tx, tenantId, stored) : null;

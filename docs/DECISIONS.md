@@ -3,6 +3,46 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Pesanan latihan tidak boleh menjurnal (legend-gkc6b)
+
+Konteks: `accounting-auto-journal` dan jembatan stok ke buku besar
+(`inventory-gl-consumer`) tidak memeriksa `pos_orders.is_training`. Event
+`order.paid` terbit untuk tiap penjualan, jadi penjualan Mode Latihan masuk
+buku besar sebagai pendapatan dan HPP, sedangkan laporan WS-11 sudah
+mengecualikannya (legend-fr62g). Selisihnya muncul sebagai baris "Penyesuaian
+buku besar". Tingkat K (uang), ditinjau satu architect.
+
+Keputusan: pemeriksaan ada di sisi konsumen, bukan di sisi penerbit event.
+
+1. **Satu titik per konsumen.** `isTrainingOrder` (`services/device-training.ts`)
+   dipanggil di `postAutoJournal` untuk `order.paid`, `order.refunded`,
+   `order.voided`, dan di `postStockSourceToGl` untuk sumber `order`. Hasilnya
+   `ignored`: tidak ada jurnal, tidak ada baris parkir.
+2. **Alasan di konsumen.** Penerbit ada banyak (POS, QR, delivery, koreksi) dan
+   payload event tidak membawa penanda latihan. Penerbit baru yang lupa
+   menandai akan lolos. Konsumen membaca `is_training` dari `pos_orders` per
+   orderId, jadi semua penerbit, pengiriman ulang, dan sweep ikut tertutup
+   (sweep dan pengiriman pertama lewat fungsi yang sama). Tanpa kolom atau
+   migrasi baru.
+3. **Void dan refund ikut diabaikan, kecuali jurnal penjualannya sudah ada.**
+   Tanpa pengabaian, keduanya diparkir `AUTO_JOURNAL_SALE_MISSING` selamanya
+   karena jurnal penjualannya memang tidak ada. Bila jurnal `aj:sale:<id>` dari
+   sebelum aturan ini sudah ada, void dan refund tetap membaliknya (juga
+   `return` stok yang sumbernya sudah terposting), supaya buku tidak setengah
+   terbalik. Sumber stok latihan yang dulu terblokir dilepas dari
+   `inventory_gl_blocked`, supaya sweep tidak mengulanginya terus.
+4. **Tidak ada baris `pos_orders`** (QR bayar-dulu, id tidak dikenal) bukan
+   latihan: tetap menjurnal seperti biasa. Pesanan QR tidak punya mode latihan.
+5. **Tidak diubah:** pemotongan stok `recipe-deduction` untuk pesanan latihan
+   (PRD dan kode tidak punya aturan; hanya jurnal HPP-nya yang ditutup),
+   `payment.*` (uang gateway sungguhan, bukan pesanan), settlement (berbasis
+   bank). `cashier_shift.closed` tidak diperiksa di sini, tetapi
+   `computeShiftAggregates` (`pos-shift-support.ts`) menghitung tender tunai
+   pesanan latihan ke kas yang diharapkan, sehingga satu shift campuran bisa
+   mencatat selisih kas palsu. Dilaporkan sebagai kartu terpisah.
+6. **Data lama:** jurnal latihan yang sudah terbentuk sebelum perbaikan ini
+   tidak dihapus atau dikoreksi otomatis; perlu keputusan finance.
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope
