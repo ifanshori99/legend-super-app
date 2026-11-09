@@ -40,6 +40,7 @@ import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
+import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 
 /**
  * Requester of the QR late-payment refund (legend-dahl); listed in the shared
@@ -95,7 +96,11 @@ export async function requestQrLatePaymentRefund(
     { paymentIntentId: intent.id, reason: "qr_late_payment" },
     async () => {
       const { cap, reserved } = await refundableBalance(tx, intent);
-      const amount = cap - reserved;
+      // legend-leqj6: a refund still `pending` is not subtracted; the key
+      // above is used once, so a pending refund rejected or failed later would
+      // never be returned to the guest. Its approval fails `cap_exceeded`.
+      const pending = await pendingRefundIdr(tx, tenantId, intent.id);
+      const amount = cap - (reserved - pending);
       if (amount <= 0n) return { refundId: null };
       const [inserted] = await tx
         .insert(paymentRefunds)

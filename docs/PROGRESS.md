@@ -9,6 +9,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Prosedur restore/clone DB edge: set `edge_nodes.instance_id` ke uuid baru sebelum API edge jalan. Deteksi otomatis: legend-yd0h8. Gap struk per prefix di laporan shift: legend-nhmct.
 - Review K: architect + reviewer Opus; temuan nyata dibetulkan (R1). Berikut: second-opinion Codex (brief `docs/briefs/187b-second-opinion-receipt-seq-edge.md` di folder utama), merge train.
 
+## Brief 185 refund followups 2: legend-x1i1h, legend-j0ag5, legend-leqj6 (engineer, cabang `ws/refund-followups-2`, rebase ke batch17 9fb949ca, 2026-11-09)
+
+- Sudah: void penjualan ber-tender QRIS/gateway dengan intent yang penerimaannya terposting kini dijurnal (bagian gateway kembali ke `customer_deposit`); EDC/poin tetap parkir `AUTO_JOURNAL_VOID_UNSUPPORTED`. Guard payout tidak menghitung penjualan yang void-nya terposting; void yang belum terposting membuat payout menunggu (retryable). Jurnal sale, refund POS, dan void yang di-reverse finance (ACC-01) dibaca `none` (fail closed). Refund late payment POS dan QR = cap - (reserved - pending); approval refund late payment tidak menghitung refund lain yang masih `pending`, jadi tamu menerima penuh di urutan approval mana pun.
+- Commit (setelah rebase): bbffa965, 30f95f2d, b86b942c, bf5e0c67, f642fa84, e2363aff. Tanpa migrasi. Train mengembalikan 25cbe987 karena dua test leqj6 memakai alur approval lama; setelah rebase test disesuaikan ke rantai approval legend-2dnh (refund sistem membuka rantai saat dibuat, policy default threshold 0 supervisor), kode tidak berubah.
+- Gate (di atas 9fb949ca): tsc (heavy), eslint dan prettier 9 file, 26 file 710 test.
+- Review K: reviewer Opus + architect; P1 (refund late gagal `cap_exceeded` bila disetujui duluan) dan P2 runbook dibetulkan; re-review segar bersih.
+- Rilis: jalankan langkah sekali di `docs/runbooks/auto-journal-sale-missing.md` (re-queue void parkir lama dan payout-nya).
+- Tugas 4 (legend-45bs9 + legend-8v2yl) dilepas ke agent refund promo; tanpa commit, patch WIP `docs/briefs/185-task4-wip-8v2yl-45bs9.patch` di folder utama.
+- Metrik (17:28-18:55): biaya* sesi 10369k (Opus utama 2530k, Opus subagent 6597k, Sonnet subagent 1209k, Haiku 33k), 20 subagent Claude, 0 Codex, rata-rata 3 subagent berjalan, 1 compact.
+
 ## legend-t9ii + legend-zclb + legend-7iti sinkron PIN edge-cloud dan audit override edge (engineer, cabang `ws/edge-pin-sync`, 2026-11-09)
 
 - Sudah: ekspor PIN cloud ke edge berurutan commit (kolom `staff_pins.sync_xid` xid8 + trigger, filter `pg_snapshot_xmin`, cursor `spin2` [tag, epoch, xid, id], epoch = system_identifier:timeline:postmaster start; cursor lama, epoch lain, atau xid dari masa depan mulai ulang dari awal). Edge membandingkan kunci generasi (`pin_generation_at`), bukan jam; kolom baru `cloud_generation_at` menjadi dasar cap set edge, jadi jam edge tertinggal 10 atau 30 menit tetap menang. Job edge sekali jalan `staff-pin-resend.ts` mengirim ulang set PIN v1 tanpa material (setAt = occurredAt lama, dibatasi jam edge). Cloud: material sama = no-op (lock tidak dibuka). Override `cash_shift_close` dari edge membawa `shiftCloseVariance` (hanya proses edge); audit cloud dan edge berisi expectedIdr, countedIdr, varianceIdr, valueIdr = |varians|.

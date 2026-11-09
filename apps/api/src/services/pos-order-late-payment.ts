@@ -12,6 +12,7 @@
 // - Idempotent: the WS-05 admin key `pos-late-payment-refund:<intentId>` makes
 //   an event replay return the first answer, and the intent row lock plus
 //   `refundableBalance` (what is not already reserved) stop a second row.
+// - Refunds still pending are not subtracted (legend-leqj6): see the amount.
 // - The amount is re-read from the locked intent, never from the event.
 
 import {
@@ -20,7 +21,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -38,6 +39,29 @@ export const POS_SYSTEM_ACTOR: SystemRefundActor = "system:pos";
 
 export const posLatePaymentRefundKey = (intentId: string) =>
   `pos-late-payment-refund:${intentId}`;
+
+/**
+ * legend-leqj6 (first written for legend-r5brx): refunds of the intent still
+ * `pending`, with the filter of `refundableBalance().reserved` (no unallocated
+ * fund). Read under the intent row lock, so `reserved - pending` is what
+ * approved and completed refunds already committed. Shared by the POS paid
+ * consumer and the QR late-payment refund.
+ */
+export async function pendingRefundIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum(amount_idr), 0)::text AS pending
+      FROM payment_refunds
+     WHERE tenant_id = ${tenantId}
+       AND payment_intent_id = ${intentId}::uuid
+       AND status = 'pending'
+       AND unallocated_fund_id IS NULL
+  `);
+  return BigInt(String(result.rows[0]?.pending ?? "0"));
+}
 
 /**
  * Files a full refund request for what `intentId` still holds. Returns the
@@ -82,7 +106,13 @@ export async function requestPosLatePaymentRefund(
     { paymentIntentId: intent.id, reason: "pos_late_payment" },
     async () => {
       const { cap, reserved } = await refundableBalance(tx, intent);
-      const amount = cap - reserved;
+      // legend-leqj6: a refund still `pending` is not subtracted. This
+      // request is filed once per intent (the key above), so if that refund
+      // were rejected or failed later its amount would never be returned to
+      // the guest. Its approval fails `cap_exceeded` instead (reserved then
+      // exceeds the cap), see `payment-refund.service.ts`.
+      const pending = await pendingRefundIdr(tx, tenantId, intent.id);
+      const amount = cap - (reserved - pending);
       if (amount <= 0n) return { refundId: null };
       const [inserted] = await tx
         .insert(paymentRefunds)
