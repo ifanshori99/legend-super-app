@@ -11,13 +11,16 @@ CREATE TABLE "receipt_number_writeoffs" (
 	CONSTRAINT "receipt_number_writeoffs_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "receipt_number_writeoffs_ordinal_key" UNIQUE("tenant_id","sequence_id","sequence_number"),
 	CONSTRAINT "receipt_number_writeoffs_sequence_number_check" CHECK ("receipt_number_writeoffs"."sequence_number" > 0),
-	CONSTRAINT "receipt_number_writeoffs_reason_check" CHECK (char_length("receipt_number_writeoffs"."reason") BETWEEN 10 AND 500)
+	CONSTRAINT "receipt_number_writeoffs_reason_check" CHECK (char_length("receipt_number_writeoffs"."reason") BETWEEN 10 AND 500),
+	-- Foreign keys inline (docs/plan/contracts.md "Migrations: foreign keys
+	-- into FORCE RLS tables", pattern 1): an ALTER TABLE ... ADD FOREIGN KEY
+	-- validates under the FORCE RLS parent's policy and aborts the migration
+	-- without app.tenant_id. Inside CREATE TABLE no validation scan runs.
+	CONSTRAINT "receipt_number_writeoffs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "receipt_number_writeoffs_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "receipt_number_writeoffs_sequence_fk" FOREIGN KEY ("tenant_id","sequence_id") REFERENCES "public"."receipt_sequences"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "receipt_number_writeoffs_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
---> statement-breakpoint
-ALTER TABLE "receipt_number_writeoffs" ADD CONSTRAINT "receipt_number_writeoffs_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "receipt_number_writeoffs" ADD CONSTRAINT "receipt_number_writeoffs_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "receipt_number_writeoffs" ADD CONSTRAINT "receipt_number_writeoffs_sequence_fk" FOREIGN KEY ("tenant_id","sequence_id") REFERENCES "public"."receipt_sequences"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "receipt_number_writeoffs" ADD CONSTRAINT "receipt_number_writeoffs_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 
 -- Custom SQL migration fragment for legend-0hzqw (audited write-off of a lost
