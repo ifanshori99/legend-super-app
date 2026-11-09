@@ -107,3 +107,5 @@ export * from "./delivery";
 export * from "./recipe";
 // WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
 export * from "./metrics";
+// WS-11 sales targets (legend-ne81z).
+export * from "./sales-targets";

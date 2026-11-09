@@ -1156,6 +1156,13 @@
       "when": 1794255000000,
       "tag": "0176_metrics_daily",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1794260000000,
+      "tag": "0181_sales_targets",
+      "breakpoints": true
     }
   ]
 }
