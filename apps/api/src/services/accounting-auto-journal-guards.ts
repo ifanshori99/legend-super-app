@@ -771,15 +771,16 @@ async function intentBackedAt(
   // QR pay-first sales carry no tenders: the money taken is total - DP. One
   // code paying alone is pinned (orders.payment_intent_id) and backs all of it.
   // legend-05cm9: a bill split over several codes of the order's payment link
-  // pins only the first payer; each code backs the part it put toward the bill
-  // (its evidence less its unallocated funds, at most total - DP), like
+  // pins only the code of the event that fired it; each code backs the part
+  // it put toward the bill (its evidence less its unallocated funds, at most
+  // total - DP), like
   // qrSaleInUseOfIntent (payment-admin.service.ts). The pinned payer of a split
   // bill backs its part too, not the whole bill its receipt never carried.
   const evidenceOf = (id: SQL) => sql`(
     SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
-      WHERE e.tenant_id = ${orders.tenantId} AND e.payment_intent_id = ${id})
+      WHERE e.tenant_id = ${tenantId} AND e.payment_intent_id = ${id})
     - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
-      WHERE f.tenant_id = ${orders.tenantId} AND f.payment_intent_id = ${id})`;
+      WHERE f.tenant_id = ${tenantId} AND f.payment_intent_id = ${id})`;
   const due = sql`(${orders.totalIdr} - ${orders.depositAppliedIdr})`;
   const qrSales = await sumOf(
     tx
@@ -788,7 +789,7 @@ async function intentBackedAt(
           CASE WHEN ${orders.paymentIntentId} = ${intentId}::uuid
                 AND NOT EXISTS (
                   SELECT 1 FROM payment_intents other
-                  WHERE other.tenant_id = ${orders.tenantId}
+                  WHERE other.tenant_id = ${tenantId}
                     AND other.payment_link_id = ${orders.paymentLinkId}
                     AND other.id <> ${intentId}::uuid
                     AND other.status IN ('paid', 'partially_refunded', 'refunded')
@@ -803,7 +804,7 @@ async function intentBackedAt(
           eq(orders.tenantId, tenantId),
           sql`(${orders.paymentIntentId} = ${intentId}::uuid
             OR ${orders.paymentLinkId} = (SELECT pi.payment_link_id FROM payment_intents pi
-              WHERE pi.tenant_id = ${orders.tenantId} AND pi.id = ${intentId}::uuid))`,
+              WHERE pi.tenant_id = ${tenantId} AND pi.id = ${intentId}::uuid))`,
           eq(orders.channel, "qr"),
           eq(orders.paymentMode, "pay_first"),
           sql`NOT EXISTS (SELECT 1 FROM pos_orders sp

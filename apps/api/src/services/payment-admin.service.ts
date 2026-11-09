@@ -167,7 +167,8 @@ async function posSaleInUseOfIntent(
  * and holds nothing, so a late payment on it is still refundable. Same
  * predicate as the payout guard (accounting-auto-journal-guards.ts qrSales)
  * for the pinned intent.
- * legend-nslvm: a bill split over several codes pins only the first payer;
+ * legend-nslvm: a bill split over several codes pins only the code of the
+ * event that fired it;
  * every other code of the order's payment link holds the part it put toward
  * the bill (its evidence less its unallocated funds, at most the amount due).
  * A code whose money was all booked as a double payment holds nothing.
