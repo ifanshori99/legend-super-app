@@ -31,9 +31,11 @@ import {
   createPosOrder as createPosOrderContract,
   type PosReceipt,
 } from "@starter/shared/pos";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
+import { signDeviceToken } from "../lib/device-token.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -41,6 +43,8 @@ import {
   enrollDevice,
   setDeviceTrainingMode,
 } from "../services/device.service.ts";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
+import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { reportablePosOrders } from "../services/device-training.ts";
 import {
   setPosReceiptPort,
@@ -206,14 +210,41 @@ async function reportableIds(): Promise<string[]> {
   return rows.map((row) => canon(String(row.orderId)));
 }
 
-const posHttp = (path: string, body: Record<string, unknown>) =>
-  cashier.client
+/** The device token header a registered terminal sends (pos-shift). */
+const deviceToken = (deviceId: string) =>
+  signDeviceToken({
+    version: 1,
+    issuedAt: Math.floor(Date.now() / 1000),
+    tenantId: tenant.tenantId,
+    brandId: null,
+    deviceId,
+  });
+
+const posHttp = (
+  path: string,
+  body: Record<string, unknown>,
+  deviceId?: string,
+) => {
+  const request = cashier.client
     .post(
       `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders${path}`,
     )
     .set(headers)
+    .set(originHeader);
+  if (deviceId) request.set(DEVICE_TOKEN_HEADER, deviceToken(deviceId));
+  return request.send({ idempotencyKey: randomUUID(), ...body });
+};
+
+/** The cashier opens a shift on `deviceId`: cash needs that drawer (pos-shift). */
+async function openShiftOn(deviceId: string) {
+  const opened = await cashier.client
+    .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/shifts`)
+    .set(headers)
     .set(originHeader)
-    .send({ idempotencyKey: randomUUID(), ...body });
+    .set(DEVICE_TOKEN_HEADER, deviceToken(deviceId))
+    .send({ openingFloatIdr: 100_000, idempotencyKey: randomUUID() });
+  expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+}
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -221,6 +252,8 @@ beforeAll(async () => {
   app = createApp();
   setAuditWriter(coreAuditWriter);
   setPosReceiptPort(memoryReceiptPort());
+  // Production resolver: a cash drawer opens only on a device row (pos-shift).
+  setDeviceOutletResolver(createDeviceOutletResolver());
   tenant = await createIsolatedTenant(`trn-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
   await owner.query(
@@ -236,6 +269,7 @@ beforeAll(async () => {
         "pos.discount.apply",
         "pos.void.request",
         "pos.refund.request",
+        "shift.cash.operate",
       ]),
     ],
   );
@@ -295,6 +329,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setPosReceiptPort(null);
+  setDeviceOutletResolver(null);
   setAuditWriter(null);
   await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
     tenant.tenantId,
@@ -340,7 +375,11 @@ describe("legend-2lp.8 training stamp on pos_orders", () => {
 
   it("submitting, paying and completing an order never flips the stamp", async () => {
     const trainingId = await createOrder(await newDevice(true));
-    const normalId = await createOrder(await newDevice(false));
+    const tillDevice = await newDevice(false);
+    const normalId = await createOrder(tillDevice);
+    // Since pos-shift a cash tender goes into the open drawer of the device
+    // it is taken on; both orders are paid at the normal terminal's till.
+    await openShiftOn(tillDevice);
     for (const orderId of [trainingId, normalId]) {
       const read = await cashier.client
         .get(
@@ -351,21 +390,29 @@ describe("legend-2lp.8 training stamp on pos_orders", () => {
       expect(read.status).toBe(200);
       let status = read.body.data.status as string;
       if (status === "draft") {
-        const submitted = await posHttp(`/${orderId}/submit`, {
-          expectedStatus: status,
-        });
+        const submitted = await posHttp(
+          `/${orderId}/submit`,
+          { expectedStatus: status },
+          tillDevice,
+        );
         expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
         status = submitted.body.data.status;
       }
-      const paid = await posHttp(`/${orderId}/tenders`, {
-        method: "cash",
-        receivedIdr: read.body.data.totalIdr + 5_000,
-        expectedStatus: status,
-      });
+      const paid = await posHttp(
+        `/${orderId}/tenders`,
+        {
+          method: "cash",
+          receivedIdr: read.body.data.totalIdr + 5_000,
+          expectedStatus: status,
+        },
+        tillDevice,
+      );
       expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-      const done = await posHttp(`/${orderId}/complete`, {
-        expectedStatus: paid.body.data.order.status,
-      });
+      const done = await posHttp(
+        `/${orderId}/complete`,
+        { expectedStatus: paid.body.data.order.status },
+        tillDevice,
+      );
       expect(done.status, JSON.stringify(done.body)).toBe(200);
     }
     expect(await isTraining(trainingId)).toBe(true);
