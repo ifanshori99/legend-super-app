@@ -24,7 +24,7 @@
 --   3. digits 13-15 after a mask ('...[disamarkan] - 111', under the 5 digit
 --      after-mask threshold of 0143).
 --
--- Rule (the same in packages/shared/src/edc, maskCardNumbers; keep both equal).
+-- Rule (the same in packages/shared/src/edc, maskStoredMessage, and in 0143; keep all equal).
 -- Applied only to a message whose UTF-16 length is exactly 200 (astral
 -- characters count twice, like JS string length). In order:
 --   1. the existing chain of 0143 (card number run, digits before a mask,

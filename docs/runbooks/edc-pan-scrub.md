@@ -230,8 +230,12 @@ only on `milestone/m1`, never on `main`).
 `apps/api/scripts/edc-pan-scrub-tail.sql` is a manual fallback script, not a
 migration: the migrator never runs it. Use it ONLY on a database that applied
 0143 before legend-lg45, that is, with the old 0143 that had no tail rule.
-Check `drizzle.__drizzle_migrations` (the 0143 `hash` and `created_at`) against
-the release that carried legend-lg45, and ask the CTO before running it.
+Check the 0143 row in `drizzle.__drizzle_migrations` by its `hash` (sha256 of
+the file), not by `created_at`: both versions share the same journal `when`
+(1794216906488), and the migrator never compares hashes, so a database with the
+old 0143 skips the new one without an error. The old 0143 (milestone/m1 at
+f5438770) has a hash starting `67c6b05aa11f841b`. If the merge train renumbers
+0143 again, recompute both hashes. Ask the CTO before running the script.
 
 ### What it fixes
 
