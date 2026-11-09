@@ -66,6 +66,7 @@ async function asOwner<T>(
 const app = createApp();
 let staff: Staff;
 let approver: ReturnType<typeof agent>; // finance + outlet supervisor, never the requester
+let approver2: ReturnType<typeof agent>; // second human for system requests
 const approverUserIds: string[] = [];
 let savedPolicies: Record<string, unknown>[] = [];
 const intentIds: string[] = [];
@@ -287,12 +288,6 @@ beforeAll(async () => {
     label: "Capture Race Owner",
   });
   await verifySessionMfa(staff.email);
-  approver = agent(app);
-  const approverEmail = await signUp(approver, "Capture Race Finance");
-  const approverSession = await approver.get("/api/auth/get-session");
-  const approverId = approverSession.body.user.id as string;
-  approverUserIds.push(approverId);
-  await verifySessionMfa(approverEmail);
   const roleId = async (templateKey: string) =>
     (
       await owner.query<{ id: string }>(
@@ -300,16 +295,28 @@ beforeAll(async () => {
         [seededTenantId, templateKey],
       )
     ).rows[0]!.id;
-  await owner.query(
-    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
-    [seededTenantId, approverId, await roleId("finance")],
-  );
-  await owner.query(
-    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-    [seededTenantId, approverId, await roleId("supervisor"), seededOutletA],
-  );
+  // Two finance + supervisor approvers: a system request needs two humans.
+  const makeApprover = async (label: string) => {
+    const client = agent(app);
+    const email = await signUp(client, label);
+    const session = await client.get("/api/auth/get-session");
+    const userId = session.body.user.id as string;
+    approverUserIds.push(userId);
+    await verifySessionMfa(email);
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+      [seededTenantId, userId, await roleId("finance")],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [seededTenantId, userId, await roleId("supervisor"), seededOutletA],
+    );
+    return client;
+  };
+  approver = await makeApprover("Late Refund Finance");
+  approver2 = await makeApprover("Late Refund Finance Two");
   // One tier for every amount: Finance decides in a single level.
   savedPolicies = (
     await owner.query(
@@ -436,6 +443,55 @@ describe("legend-leqj6 the POS late-payment refund ignores refunds still pending
       setPaymentRefundGateway(null);
     }
     // The guest gets exactly what was paid: 10000 approved + 90000 late.
+    expect(await reservedOf(bill.intentId)).toBe(bill.amountIdr);
+  });
+
+  it("legend-leqj6 approving the late refund first succeeds; the old pending 20000 then fails cap_exceeded", async () => {
+    const bill = await paidBill(100_000);
+    await addTender(bill);
+    await pendingRefund(bill.intentId, 10_000, { approved: true });
+    const pendingId = await pendingRefund(bill.intentId, 20_000);
+
+    await deliverPaid(bill);
+
+    const late = (await refundRows(bill.intentId)).find(
+      (row) => row.requested_by === "system:pos",
+    )!;
+    expect(late).toMatchObject({ status: "pending", amount: "90000" });
+
+    const fake = new FakeRefundGateway();
+    setPaymentRefundGateway(fake);
+    try {
+      // A system request needs two humans: the first finance approver
+      // submits, the second decides.
+      const submitted = await approveRefund(late.id);
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      expect(submitted.body.data.status).toBe("pending");
+      const lateResponse = await approver2
+        .post(`${ADMIN}/refunds/${late.id}/approve`)
+        .set(originHeader)
+        .send({ idempotencyKey: key("apr") });
+      expect(lateResponse.status, JSON.stringify(lateResponse.body)).toBe(200);
+      expect(["approved", "completed"]).toContain(
+        lateResponse.body.data.status,
+      );
+
+      await approveRefund(pendingId);
+      const { rows: after } = await owner.query<{
+        status: string;
+        failure_reason: string | null;
+      }>(
+        "SELECT status, failure_reason FROM payment_refunds WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, pendingId],
+      );
+      expect(after[0]).toEqual({
+        status: "failed",
+        failure_reason: "cap_exceeded",
+      });
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+    // Guest total: 10000 approved + 90000 late, whichever approval came first.
     expect(await reservedOf(bill.intentId)).toBe(bill.amountIdr);
   });
 

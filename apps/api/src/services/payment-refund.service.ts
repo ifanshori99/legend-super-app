@@ -349,9 +349,17 @@ async function applyApproval(
   let posSaleInUse = 0n;
   const fits = fund
     ? !fund.resolution
-    : await refundableBalance(tx, intent).then((balance) => {
+    : await refundableBalance(tx, intent).then(async (balance) => {
         posSaleInUse = balance.posSaleInUse;
-        return balance.reserved <= balance.cap;
+        // legend-leqj6: a late-payment refund is filed once per intent for
+        // what is left after the approved refunds, so other refunds still
+        // pending do not count against it (their own approval fails
+        // `cap_exceeded` once this one is reserved). Every other approval
+        // counts all refunds, including a pending late-payment refund.
+        const otherPending = (await isLatePaymentRefund(tx, refund))
+          ? await otherPendingRefundIdr(tx, refund)
+          : 0n;
+        return balance.reserved - otherPending <= balance.cap;
       });
   if (!fits)
     return failRefund(tx, context, refund, {
@@ -384,6 +392,56 @@ async function applyApproval(
     before: { status: "pending" },
   });
   return updated;
+}
+
+/**
+ * legend-leqj6: idempotency key prefixes of the late-payment refund requests
+ * (`posLatePaymentRefundKey`, `qrLatePaymentRefundKey`). Spelled out here
+ * because those modules import this one's callers (import cycle).
+ */
+const LATE_PAYMENT_REFUND_KEY_PREFIXES = [
+  "pos-late-payment-refund:",
+  "qr-late-payment-refund:",
+];
+
+/**
+ * legend-leqj6: whether `refund` is the late-payment refund of its intent: the
+ * request recorded its id under the once-per-intent key, so a refund that only
+ * shares the requester (`system:pos`, `system:qr`) is not one.
+ */
+async function isLatePaymentRefund(tx: Tx, refund: Refund): Promise<boolean> {
+  const result = await tx.execute(sql`
+    SELECT 1
+      FROM payment_admin_idempotency
+     WHERE tenant_id = ${refund.tenantId}
+       AND key IN (${sql.join(
+         LATE_PAYMENT_REFUND_KEY_PREFIXES.map(
+           (prefix) => sql`${prefix + refund.paymentIntentId}`,
+         ),
+         sql`, `,
+       )})
+       AND response->>'refundId' = ${refund.id}
+     LIMIT 1
+  `);
+  return result.rows.length > 0;
+}
+
+/**
+ * legend-leqj6: refunds of the same intent, other than `refund`, still
+ * `pending`, with the filter of `refundableBalance().reserved`. Read under the
+ * intent row lock.
+ */
+async function otherPendingRefundIdr(tx: Tx, refund: Refund): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum(amount_idr), 0)::text AS pending
+      FROM payment_refunds
+     WHERE tenant_id = ${refund.tenantId}
+       AND payment_intent_id = ${refund.paymentIntentId}::uuid
+       AND id <> ${refund.id}::uuid
+       AND status = 'pending'
+       AND unallocated_fund_id IS NULL
+  `);
+  return BigInt(String(result.rows[0]?.pending ?? "0"));
 }
 
 /** Ends a refund `failed`; `failed` releases the reservation (refundableBalance). */
