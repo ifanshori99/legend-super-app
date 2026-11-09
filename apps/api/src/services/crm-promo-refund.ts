@@ -28,6 +28,12 @@
 //   gives back its price minus its share of the discount. The kept discount
 //   is capped at the kept bill value, so the remaining bill can never go
 //   negative.
+// - Q19 (founder 9 Nov 2026): the kept discount is also capped by what the
+//   still-applied promotions give when re-evaluated on the kept lines. So a
+//   returned free item (buy 2 coffee, get 1 croissant free, croissant sent
+//   back) pays Rp0 instead of a pro-rata share. Value vouchers and rules that
+//   no longer exist have nothing to re-evaluate and keep their full discount
+//   in that cap. The cap only ever lowers the kept discount.
 // - A same-day minimum-spend facility reward (Q40) is re-checked against the
 //   customer's day total at that outlet with this bill reduced.
 // - The payout is cumulative: what the guest still has paid in
@@ -219,11 +225,14 @@ function sumLines(lines: readonly PromoLine[]): number {
  * Does the reduced bill still earn `promotion`? Only the bill-content
  * conditions are re-checked (see header); gates such as status, validity,
  * quota and budget are neutralized because the order already consumed them.
+ * `recomputedIdr` is what the promotion gives on the reduced bill (Q19);
+ * null when the re-check is rejected for a reason that is not a withdrawal
+ * (a gate this re-check cannot reproduce): the line then keeps its discount.
  */
 function stillEarned(
   promotion: Promotion,
   bill: PromoEvaluationInput,
-): PromoRejectionReason | null {
+): { failure: PromoRejectionReason | null; recomputedIdr: number | null } {
   const neutral: Promotion = {
     ...promotion,
     status: "active",
@@ -239,8 +248,12 @@ function stillEarned(
     ),
   };
   const evaluation = evaluatePromotion(neutral, bill);
-  if (evaluation.applied) return null;
-  return WITHDRAW_REASONS.has(evaluation.reason) ? evaluation.reason : null;
+  if (evaluation.applied)
+    return { failure: null, recomputedIdr: evaluation.discountIdr };
+  return {
+    failure: WITHDRAW_REASONS.has(evaluation.reason) ? evaluation.reason : null,
+    recomputedIdr: null,
+  };
 }
 
 /**
@@ -405,20 +418,36 @@ export async function recomputeAfterPartialRefund(
   };
 
   const withdrawn: WithdrawnPromotion[] = [];
+  // Q19: what the kept promotions give on the kept lines (cap on the kept
+  // discount).
+  let keptCap = 0;
   for (const line of lines) {
-    if (line.promotionId === null) continue; // value voucher: no condition
+    if (line.promotionId === null) {
+      keptCap += line.discountIdr; // value voucher: no condition
+      continue;
+    }
     let failure: PromoRejectionReason | null = "no_matching_items";
+    let recomputedIdr: number | null = null;
     if (!returnsAll) {
       const current = rules.get(line.promotionId);
-      if (!current) continue;
+      if (!current) {
+        keptCap += line.discountIdr;
+        continue;
+      }
       const rule = withSnapshot(current);
       const promotion =
         earlierSpend !== null && isSameDayMinSpendReward(rule)
           ? withSameDaySpend(rule, earlierSpend, false)
           : rule;
-      failure = stillEarned(promotion, bill);
+      ({ failure, recomputedIdr } = stillEarned(promotion, bill));
     }
-    if (failure === null) continue;
+    if (failure === null) {
+      keptCap +=
+        recomputedIdr === null
+          ? line.discountIdr
+          : Math.min(line.discountIdr, recomputedIdr);
+      continue;
+    }
     withdrawn.push({
       promotionId: line.promotionId,
       voucherId: line.voucherId,
@@ -510,7 +539,8 @@ export async function recomputeAfterPartialRefund(
   // Founder rule (9 Nov 2026): the discount still standing after the
   // withdrawals is split pro rata by price between the kept and the refunded
   // goods; the kept part stays (capped at the kept bill value, so the payable
-  // is never negative). The payout is cumulative: what the guest still has
+  // is never negative, and at what the kept promotions still give on the kept
+  // lines, Q19). The payout is cumulative: what the guest still has
   // paid in minus the kept goods at their payable price.
   const discountAfter = Math.max(
     0,
@@ -523,7 +553,7 @@ export async function recomputeAfterPartialRefund(
       keptSubtotal,
       standing - keptSubtotal,
     ]);
-    keptDiscount = Math.min(keptSubtotal, keptShare);
+    keptDiscount = Math.min(keptSubtotal, keptShare, keptCap);
   }
   const totalDiscount = keptDiscount;
   const keptPayableIdr = keptSubtotal - keptDiscount;

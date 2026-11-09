@@ -47,3 +47,14 @@ Body gains optional `items: [{ itemId, quantity }]` (order_items ids of this ord
 - Targeted run: `LEGEND_TEST_FILES="src/test/a.test.ts src/test/b.test.ts" pnpm test` from the worktree root. Never kill other sessions' processes; stop only your own PIDs.
 - Part A updates expectations in `apps/api/src/test/order-promo-db.test.ts` and `crm-promo-e5it-db.test.ts` to the founder formula (only the partial-refund cases).
 - Part D (test-writer) writes `apps/api/src/test/pos-refund-promo-db.test.ts` (see parent brief "Contoh uji wajib").
+
+## Q19 (founder 9 Nov 2026, bead legend-15by): returned free item pays Rp0
+Rule: the kept discount is also capped by what the still-applied promotions give when re-evaluated on the kept lines.
+- `stillEarned` returns `{ failure: PromoRejectionReason | null; recomputedIdr: number }` (recomputedIdr = evaluation.discountIdr when applied, else 0).
+- In the withdraw loop, for each line NOT withdrawn: `cap += min(line.discountIdr, recomputedIdr)`; value-voucher lines (`promotionId === null`) and lines whose rule is missing add `line.discountIdr`.
+- `keptDiscount = min(keptSubtotal, proRataShare, cap)` (cap only ever lowers it). Withdrawn lines add nothing. `returnsAll` unchanged.
+- Founder examples stay 40k / 30k (20k-off whole-bill promo: recompute on kept 50k = 20k >= pro-rata 10k).
+- Examples to test (prices: coffee 30k, croissant 25k; promo "buy 2 coffee get 1 croissant free"):
+  - BOGO: 4 coffee + 2 croissant = 170k, discount 50k, paid 120k. Return 1 croissant -> Rp0 (REFUND_NOTHING_DUE at POS; refundDueIdr 0 at crm level), kept discount 25k.
+  - Mixed A: same bill, return 1 coffee -> kept 3 coffee + 2 croissant = 140k, recompute 25k, pro-rata 41,176 -> kept discount 25k, payout 120k - 115k = 5k.
+  - Mixed B: 2 coffee + 1 croissant + 1 juice 30k = 115k, discount 25k, paid 90k; return juice -> pro-rata binds (18,478 < 25k): kept discount 18,478, payout 90k - (85k - 18,478) = 23,478 (check allocateIdr rounding).

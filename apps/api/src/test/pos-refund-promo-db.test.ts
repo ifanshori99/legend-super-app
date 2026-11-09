@@ -893,3 +893,240 @@ describe("legend-q1e0 refund of a promo order that also carries a manual discoun
     }
   });
 });
+
+// ---- Q19 (founder 9 Nov 2026, bead legend-15by): returned free item pays Rp0 ------------
+// The kept discount is also capped by what the promotion still gives when it is
+// re-evaluated on the kept lines. Promo: "buy 2 coffee, get 1 croissant free"
+// (free_items, one croissant per 2 coffee). Coffee 30k, croissant 25k, juice 30k.
+//
+// Assumptions (see docs/briefs/sub-115-refund-promo.md "Q19"):
+// - A refund that has nothing due (BOGO) is refused at the POS with 422
+//   REFUND_NOTHING_DUE inside the refund transaction, so nothing is written:
+//   the stored application keeps the original discount (50k) until a refund
+//   that actually pays something is accepted. The "kept discount 25k" of the
+//   brief is the crm-level result, not observable through a refused POS call.
+// - A request asking for more than is due is paid at the due amount.
+// - The free croissants are named in the stored discount (50k = 2 x 25k).
+
+const q19 = {
+  coffee: randomUUID(),
+  croissant: randomUUID(),
+  juice: randomUUID(),
+};
+const COFFEE_IDR = 30_000;
+const CROISSANT_IDR = 25_000;
+const JUICE_IDR = 30_000;
+
+async function seedQ19Menu() {
+  await asOwnerTenant(async (client) => {
+    for (const [id, name, price] of [
+      [q19.coffee, "Kopi Q19", COFFEE_IDR],
+      [q19.croissant, "Croissant Q19", CROISSANT_IDR],
+      [q19.juice, "Jus Q19", JUICE_IDR],
+    ] as const) {
+      await client.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, $5, true, $6)`,
+        [id, tenant.tenantId, tenant.brandId, ids.category, name, randomUUID()],
+      );
+      await client.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), tenant.tenantId, ids.priceList, id, price],
+      );
+    }
+  });
+}
+
+async function seedBogoPromotion() {
+  const id = randomUUID();
+  const code = newCode();
+  await asOwnerTenant((client) =>
+    client.query(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, code_hash, voucher_required, starts_at, ends_at,
+          conditions, benefit, stack_group, stackable, priority, quota_total, quota_per_customer,
+          budget_idr)
+       VALUES ($1, $2, $3, '', 'active', $4, true, now() - interval '1 hour', NULL, $5, $6, $7,
+               true, 0, NULL, NULL, 1000000)`,
+      [
+        id,
+        tenant.tenantId,
+        `Beli 2 kopi gratis croissant ${id.slice(0, 8)}`,
+        sha(code),
+        JSON.stringify([
+          { kind: "item_quantity", menuItemIds: [q19.coffee], minQuantity: 2 },
+        ]),
+        JSON.stringify({
+          kind: "free_items",
+          menuItemIds: [q19.croissant],
+          quantityPerMultiple: 1,
+        }),
+        `g${id.slice(0, 8)}`,
+      ],
+    ),
+  );
+  return { promotionId: id, code };
+}
+
+/** Completed, cash-paid sale of `lines` with the BOGO promo applied. */
+async function bogoSale(
+  lines: { menuItemId: string; quantity: number }[],
+  expected: { subtotalIdr: number; discountIdr: number },
+) {
+  const { promotionId, code } = await seedBogoPromotion();
+  const created = await cashier.client
+    .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`)
+    .set(headers)
+    .set(originHeader)
+    .set(
+      DEVICE_TOKEN_HEADER,
+      signDeviceToken({
+        version: 1,
+        issuedAt: Math.floor(Date.now() / 1000),
+        tenantId: tenant.tenantId,
+        brandId: null,
+        deviceId: ids.device,
+      }),
+    )
+    .send({
+      idempotencyKey: randomUUID(),
+      channel: "pos",
+      serviceType: "takeaway",
+      items: lines.map((entry) => ({ ...entry, modifierIds: [] })),
+    });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const orderId = created.body.data.id as string;
+  const items = created.body.data.items as { id: string; menuItemId: string }[];
+  const lineOf = (menuItemId: string) => {
+    const found = items.find((item) => item.menuItemId === menuItemId)?.id;
+    expect(found).toBeTruthy();
+    return found as string;
+  };
+
+  const discounted = await pos().promo(orderId, code);
+  expect(discounted.status, JSON.stringify(discounted.body)).toBeLessThan(300);
+  const fresh = (await pos().get(orderId)).body.data;
+  const paidIdr = fresh.totalIdr as number;
+  expect(paidIdr).toBe(expected.subtotalIdr - expected.discountIdr);
+  let status = fresh.status as string;
+  if (status === "draft") {
+    const submitted = await pos().submit(orderId, status);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    status = submitted.body.data.status as string;
+  }
+  const paid = await pos().cash(orderId, status, paidIdr);
+  expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+  const completed = await pos().complete(
+    orderId,
+    paid.body.data.order.status as string,
+  );
+  expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+  expect(await spentOf(promotionId)).toBe(expected.discountIdr);
+  return { orderId, promotionId, paidIdr, lineOf };
+}
+
+describe("legend-15by Q19 kept discount is capped by what the promo still gives", () => {
+  beforeAll(seedQ19Menu);
+
+  it("BOGO: 4 coffee + 2 croissant (170k, 50k off, paid 120k), returning 1 free croissant pays Rp0 and is refused with nothing written", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 4 },
+        { menuItemId: q19.croissant, quantity: 2 },
+      ],
+      { subtotalIdr: 170_000, discountIdr: 50_000 },
+    );
+    const stockBefore = await dailyStock();
+
+    const refused = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        // Even a request for the full croissant price pays nothing: the kept
+        // lines still earn 25k, exactly what the returned croissant carried.
+        amountIdr: CROISSANT_IDR,
+        items: [{ itemId: sale.lineOf(q19.croissant), quantity: 1 }],
+      }),
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(JSON.stringify(refused.body)).toContain("REFUND_NOTHING_DUE");
+
+    // Nothing paid, nothing recorded, budget untouched.
+    expect(await refundRows(sale.orderId)).toHaveLength(0);
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 120_000,
+      refundedPaid: 0,
+      totalDiscount: 50_000,
+      refundedSubtotal: 0,
+    });
+    expect(await spentOf(sale.promotionId)).toBe(50_000);
+    expect(await dailyStock()).toEqual(stockBefore);
+  });
+
+  it("Mixed A: same bill, returning 1 coffee keeps 25k off (3 coffee + 2 croissant = 140k) and pays Rp5.000", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 4 },
+        { menuItemId: q19.croissant, quantity: 2 },
+      ],
+      { subtotalIdr: 170_000, discountIdr: 50_000 },
+    );
+
+    const refunded = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        // Asking for the coffee price still pays only what is due.
+        amountIdr: COFFEE_IDR,
+        items: [{ itemId: sale.lineOf(q19.coffee), quantity: 1 }],
+      }),
+    );
+    expect(refunded.status, JSON.stringify(refunded.body)).toBeLessThan(300);
+    // Paid 120k - (kept 140k - kept discount 25k) = 5k.
+    expect(refunded.body.data.amountIdr).toBe(5_000);
+
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 120_000,
+      refundedPaid: 5_000,
+      totalDiscount: 25_000,
+    });
+    // The released croissant's 25k goes back to the promo budget.
+    expect(await spentOf(sale.promotionId)).toBe(25_000);
+    expect(await refundRows(sale.orderId)).toEqual([
+      {
+        amount: 5_000,
+        items: [{ itemId: sale.lineOf(q19.coffee), quantity: 1 }],
+      },
+    ]);
+  });
+
+  it("Mixed B: 2 coffee + 1 croissant + 1 juice (115k, 25k off, paid 90k), returning the juice is bound by pro rata: kept 18.478 off, pays Rp23.478", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 2 },
+        { menuItemId: q19.croissant, quantity: 1 },
+        { menuItemId: q19.juice, quantity: 1 },
+      ],
+      { subtotalIdr: 115_000, discountIdr: 25_000 },
+    );
+
+    const refunded = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: JUICE_IDR,
+        items: [{ itemId: sale.lineOf(q19.juice), quantity: 1 }],
+      }),
+    );
+    expect(refunded.status, JSON.stringify(refunded.body)).toBeLessThan(300);
+    // Pro rata of 25k over kept 85k / standing 115k = 18.478 (the cap of 25k
+    // does not bind); payout = 90k - (85k - 18.478k) = 23.478k.
+    expect(refunded.body.data.amountIdr).toBe(23_478);
+
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 90_000,
+      refundedPaid: 23_478,
+      totalDiscount: 18_478,
+    });
+    expect(await spentOf(sale.promotionId)).toBe(18_478);
+    expect(await refundRows(sale.orderId)).toMatchObject([{ amount: 23_478 }]);
+  });
+});
