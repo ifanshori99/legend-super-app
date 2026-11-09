@@ -141,32 +141,6 @@ export function requireTenantPermission(
 }
 
 /**
- * Like requireTenantPermission, but any ONE of the permissions grants access
- * (first match mints the context). Used while a new permission code is rolled
- * out next to the code that gated the route before it (legend-1ozj).
- */
-export function requireAnyTenantPermission(
-  permissions: readonly PermissionCode[],
-): RequestHandler {
-  return async (req, res, next) => {
-    const snapshot = await loadRequestAccess(req);
-    let context: ScopedTenantContext | null = null;
-    for (const permission of permissions) {
-      context = snapshot.contextFor(permission, { type: "tenant" });
-      if (context) break;
-    }
-    if (!context)
-      throw new AccessError(
-        "PERMISSION_DENIED",
-        "Your account cannot perform this action in this tenant.",
-      );
-    contexts.set(req, context);
-    res.setHeader("Cache-Control", "private, no-store");
-    next();
-  };
-}
-
-/**
  * Menu routes (legend-lmk): brand-owned records need a brand target and
  * outlet-owned records an outlet target, so a tenant-wide check alone would
  * deny a general manager assigned at brand scope or an outlet manager toggling

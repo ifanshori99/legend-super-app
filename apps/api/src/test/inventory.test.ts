@@ -190,6 +190,24 @@ async function assignRole(
   );
 }
 
+/** A tenant custom role holding exactly these codes, assigned tenant-wide. */
+async function assignCustomRole(
+  userId: string,
+  permissions: string[],
+): Promise<void> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO roles (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, false, NULL, $3::jsonb, false, '["tenant"]'::jsonb) RETURNING id`,
+    [tenantA, `Custom ${randomUUID()}`, JSON.stringify(permissions)],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [tenantA, userId, rows[0]!.id],
+  );
+}
+
 async function signedIn(name: string) {
   const client = agent(app);
   await signUp(client, name);
@@ -1157,12 +1175,17 @@ describe("inventory API", () => {
     // Reading the catalog never widens writes: outlet_manager has no
     // inventory.item.manage, and the code must exist in the catalog.
     expect(PERMISSION_CODES).toContain("inventory.item.manage");
-    const denied = await reader.client.post("/api/inventory/items").send({
-      name: "Tidak Boleh",
-      type: "raw",
-      baseUomId: randomUUID(),
-      idempotencyKey: `catalog-${randomUUID()}`,
-    });
+    const denied = await reader.client
+      .post("/api/inventory/items")
+      .set(originHeader)
+      .send({
+        name: "Tidak Boleh",
+        category: "Bahan Baku",
+        type: "raw_material",
+        baseUomId: randomUUID(),
+        isPerishable: false,
+        idempotencyKey: `catalog-${randomUUID()}`,
+      });
     expect(denied.status).toBe(403);
 
     // The warehouse role holds the master-data code and may write.
@@ -1172,5 +1195,47 @@ describe("inventory API", () => {
     expect(roleTemplate("outlet_manager").permissions).not.toContain(
       "inventory.item.manage",
     );
+  });
+  it("legend-1ozj item writes need inventory.item.manage; stock.receive alone no longer writes the item master", async () => {
+    const owned = await signedIn("Pemilik Katalog");
+    await assignRole(owned.userId, "owner", { type: "tenant" });
+    const uoms = await owned.client.get("/api/inventory/uoms?limit=1");
+    const baseUomId = uoms.body.data[0].id as string;
+    const body = () => ({
+      name: `Bahan ${randomUUID().slice(0, 8)}`,
+      category: "Bahan Baku",
+      type: "raw_material",
+      baseUomId,
+      isPerishable: false,
+      parMin: null,
+      parMax: null,
+      idempotencyKey: `perm-${randomUUID()}`,
+    });
+
+    const receiveOnly = await signedIn("Penerima Saja");
+    await assignCustomRole(receiveOnly.userId, [
+      "inventory.stock.view",
+      "inventory.stock.receive",
+    ]);
+    expect(
+      (
+        await receiveOnly.client
+          .post("/api/inventory/items")
+          .set(originHeader)
+          .send(body())
+      ).status,
+    ).toBe(403);
+
+    const manager = await signedIn("Pengelola Katalog");
+    await assignCustomRole(manager.userId, [
+      "inventory.stock.view",
+      "inventory.item.manage",
+    ]);
+    const created = await manager.client
+      .post("/api/inventory/items")
+      .set(originHeader)
+      .send(body());
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    createdItemIds.push(created.body.data.id as string);
   });
 });

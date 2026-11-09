@@ -27,8 +27,8 @@ import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
   requireMenuPermission,
-  requireAnyTenantPermission,
   requireOutletPermission,
+  requireTenantPermission,
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import {
@@ -48,13 +48,7 @@ export const inventoryRouter = Router();
 
 inventoryRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
-// Transitional (legend-1ozj): tenants created before the code existed hold
-// `inventory.stock.receive` but not `inventory.item.manage` until a backfill
-// migration lands, so either code writes item master data.
-const manageItemsTenant = requireAnyTenantPermission([
-  "inventory.item.manage",
-  "inventory.stock.receive",
-]);
+const manageItemsTenant = requireTenantPermission("inventory.item.manage");
 // Catalog reads reach the caller's tenant or outlets; the service re-checks.
 const viewCatalog = requireMenuPermission("inventory.stock.view");
 const viewOutlet = requireOutletPermission("inventory.stock.view", (req) =>
