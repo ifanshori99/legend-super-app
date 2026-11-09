@@ -1528,6 +1528,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status_before_close": {
+          "name": "status_before_close",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1664,6 +1676,14 @@
         "outlets_status_check": {
           "name": "outlets_status_check",
           "value": "\"outlets\".\"status\" IN ('preopening', 'active', 'closed')"
+        },
+        "outlets_status_before_close_check": {
+          "name": "outlets_status_before_close_check",
+          "value": "\"outlets\".\"status_before_close\" IS NULL OR \"outlets\".\"status_before_close\" IN ('preopening', 'active')"
+        },
+        "outlets_close_record_check": {
+          "name": "outlets_close_record_check",
+          "value": "(\"outlets\".\"closed_at\" IS NULL) = (\"outlets\".\"status_before_close\" IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -1889,6 +1909,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status_before_archive": {
+          "name": "status_before_archive",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1945,6 +1977,14 @@
         "tenants_status_check": {
           "name": "tenants_status_check",
           "value": "\"tenants\".\"status\" IN ('active', 'suspended', 'archived')"
+        },
+        "tenants_status_before_archive_check": {
+          "name": "tenants_status_before_archive_check",
+          "value": "\"tenants\".\"status_before_archive\" IS NULL OR \"tenants\".\"status_before_archive\" IN ('active', 'suspended')"
+        },
+        "tenants_archive_record_check": {
+          "name": "tenants_archive_record_check",
+          "value": "(\"tenants\".\"archived_at\" IS NULL) = (\"tenants\".\"status_before_archive\" IS NULL)"
         },
         "tenants_deployment_mode_check": {
           "name": "tenants_deployment_mode_check",
@@ -18647,6 +18687,19 @@
         "cloud_locked_until": {
           "name": "cloud_locked_until",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_revision": {
+          "name": "attempt_revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "cloud_attempt_revision": {
+          "name": "cloud_attempt_revision",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
