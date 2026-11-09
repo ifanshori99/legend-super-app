@@ -279,6 +279,8 @@ export const POS_OVERRIDE_ACTIONS = [
   "refund",
   "cash_drawer_open",
   "price_correction",
+  // §4 E step 5 / POS-03: the supervisor approves the blind-count close.
+  "cash_shift_close",
 ] as const satisfies readonly ApprovalActionType[];
 export type PosOverrideAction = (typeof POS_OVERRIDE_ACTIONS)[number];
 

@@ -30,16 +30,38 @@ export PATH
 [ "$(grep -c 'config --quiet' "$TEST_LOG")" -eq 2 ]
 : > "$TEST_LOG"
 "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null
-[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 8 ]
+[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 9 ]
 sed -n '2p' "$TEST_LOG" | grep -F 'up -d --wait postgres' >/dev/null
-sed -n '3p' "$TEST_LOG" | grep -F -- '--profile migration run --rm migrate' >/dev/null
-# Lines 5-6: the effective Compose configuration piped into its checker.
-sed -n '5,6p' "$TEST_LOG" | grep -F 'config --format json' >/dev/null
-sed -n '5,6p' "$TEST_LOG" | grep -E -- '^run --rm -i --network none .* /tmp/check-compose-env\.mjs$' >/dev/null
-sed -n '7p' "$TEST_LOG" | grep -F -- '--profile provisioning run --rm provision-roles node dist/provision-roles.js --audit' >/dev/null
-sed -n '8p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
+# legend-jtnd, legend-k1np: the pre-deploy check runs before migrate.
+sed -n '3p' "$TEST_LOG" | grep -F -- '--profile migration run --rm migrate node dist/predeploy-check.js' >/dev/null
+sed -n '4p' "$TEST_LOG" | grep -F -- '--profile migration run --rm migrate' >/dev/null
+if sed -n '4p' "$TEST_LOG" | grep -F 'predeploy-check' >/dev/null; then
+  echo 'legend-jtnd: line 4 is not the migration' >&2
+  exit 1
+fi
+# Lines 6-7: the effective Compose configuration piped into its checker.
+sed -n '6,7p' "$TEST_LOG" | grep -F 'config --format json' >/dev/null
+sed -n '6,7p' "$TEST_LOG" | grep -E -- '^run --rm -i --network none .* /tmp/check-compose-env\.mjs$' >/dev/null
+sed -n '8p' "$TEST_LOG" | grep -F -- '--profile provisioning run --rm provision-roles node dist/provision-roles.js --audit' >/dev/null
+sed -n '9p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
 if grep -F "$password" "$TEST_LOG" >/dev/null; then
   echo 'legend-zoqc: a password reached the docker command line' >&2
+  exit 1
+fi
+# A failed pre-deploy check stops the deploy before the migration, the audit
+# and any service.
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+case "$*" in *predeploy-check*) exit 1 ;; esac
+STUB
+: > "$TEST_LOG"
+if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1; then
+  echo 'legend-jtnd: deploy continued after a failed pre-deploy check' >&2
+  exit 1
+fi
+if grep -F -e 'api web worker caddy' -e 'dist/provision-roles.js --audit' -e 'run --rm migrate' "$TEST_LOG" | grep -v 'predeploy-check' >/dev/null; then
+  echo 'legend-jtnd: migration, audit or services ran after a failed pre-deploy check' >&2
   exit 1
 fi
 # A failed role audit stops the deploy before any service starts.

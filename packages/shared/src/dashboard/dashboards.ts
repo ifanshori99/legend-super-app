@@ -140,7 +140,7 @@ export const DASHBOARD_QUEUES = [
 export const dashboardQueueSchema = z.enum(DASHBOARD_QUEUES);
 export type DashboardQueue = z.infer<typeof dashboardQueueSchema>;
 
-const tileKeySchema = z
+export const tileKeySchema = z
   .string()
   .min(3)
   .max(80)

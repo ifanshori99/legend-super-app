@@ -19,6 +19,8 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { auditEventsRouter } from "./routes/audit-events.routes";
+import { createMetricsRouter } from "./routes/metrics.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
@@ -31,10 +33,15 @@ import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
+import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
-import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
+import {
+  setPosOrderPromoPort,
+  setPosShiftLookup,
+} from "./services/pos-order-ports.ts";
+import { findOpenShiftId } from "./services/pos-shift.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -50,13 +57,18 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // points tenders keep their fail-closed defaults (pos-order-ports.ts) until
 // those beads land.
 setPosOrderPromoPort(orderPromoPort);
+// WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
+setPosShiftLookup(findOpenShiftId);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [path, query] = url.split("?", 2);
+  const [rawPath, query] = url.split("?", 2);
+  // The purchase order share token is a path segment: bearer credential.
+  const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())
@@ -223,6 +235,8 @@ export function createApp({
     "/api/webhooks/whatsapp",
     createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
   );
+  // Payment provider webhooks: tenant in the URL, signature per tenant secret.
+  app.use("/api/webhooks/payments", createPaymentWebhookRouter());
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the
@@ -255,6 +269,10 @@ export function createApp({
   // prefixes: health, Better Auth, provider webhooks and the TLS ask keep their
   // own budgets, and a limiter window can never fail a probe (legend-wd4b).
   app.use(PUBLIC_RATE_LIMIT_PATHS, publicRateLimit(publicRateLimitOptions));
+  // Audit log viewer (legend-zbzr): GET /api/audit/events.
+  app.use("/api/audit", auditEventsRouter);
+  // Metric query runtime (legend-cdta): GET /api/metrics/query.
+  app.use("/api/metrics", createMetricsRouter());
   app.use("/api", apiRouter);
 
   app.use(notFound);

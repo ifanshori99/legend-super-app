@@ -105,6 +105,13 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3.15 Notifikasi Operasional; EDG-05",
   },
+  edge_sync_conflict: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F5 Sinkronisasi; EDG-02 (legend-wqc6)",
+  },
   cash_variance: {
     audience: "staff",
     realtime: true,

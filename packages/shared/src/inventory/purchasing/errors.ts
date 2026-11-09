@@ -41,6 +41,14 @@ export const PURCHASING_ERROR_CODES = [
   "PETTY_PURCHASE_LIMIT_EXCEEDED",
   /** The three-way match input does not describe one order (unknown line). */
   "THREE_WAY_MATCH_INVALID_INPUT",
+  /** A write needs an active supplier (catalog price, PO on an inactive one). */
+  "SUPPLIER_INACTIVE",
+  /** Another supplier in the tenant has the same name (case-insensitive). */
+  "SUPPLIER_NAME_TAKEN",
+  /** Send was asked for a PO that is not approved, sent or partially received. */
+  "PURCHASE_ORDER_NOT_SENDABLE",
+  /** Replay of a send whose share link is expired, revoked or missing. */
+  "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
 ] as const;
 
 export const purchasingErrorCodeSchema = z.enum(PURCHASING_ERROR_CODES);

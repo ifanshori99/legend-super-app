@@ -4,6 +4,7 @@
 // browser API, so tests/ws11-shareholder.test.mjs can load this file in Node.
 import {
   dashboardTileReport,
+  reportPermittedFor,
   type DashboardLayout,
   type DashboardTile,
   type ReportResult,
@@ -141,20 +142,22 @@ export function shareholderRunInputs(
 }
 
 /**
- * Drill-down link to a tile's source report. A shareholder holds only
- * report.aggregate.view (access/roles.ts), which no catalog report accepts, so
- * this is null until the catalog grants it; callers still gate on the route.
+ * Drill-down link to a tile's source report. Report pages live in the kelola
+ * area, which needs dashboard.management.view; a shareholder does not hold it,
+ * so the link stays hidden until the report route for shareholders is decided
+ * (bead legend-5bjh). Once it can open the page, report.aggregate.view opens
+ * only aggregate reports (SH-01: no employee, customer or member split).
  */
+export const REPORT_AREA_PERMISSION = "dashboard.management.view";
+
 export function permittedReportPath(
   tile: DashboardTile,
   permissions: readonly string[],
 ): string | null {
   const report = dashboardTileReport(tile);
-  if (report === null) return null;
-  const held = new Set(permissions);
-  return report.requiredPermissions.every((code) => held.has(code))
-    ? report.route
-    : null;
+  if (report === null || !permissions.includes(REPORT_AREA_PERMISSION))
+    return null;
+  return reportPermittedFor(report, permissions) ? report.route : null;
 }
 
 export function metricCell(
@@ -285,8 +288,10 @@ function at(date: string): Date {
   return new Date(`${date}T00:00:00Z`);
 }
 
-/** "Oktober 2026", "Jan – Okt 2026" or "1 – 5 Nov 2026". */
+/** "Oktober 2026", "Jan – Okt 2026", "1 – 5 Nov 2026" or "1 Nov 2026". */
 export function formatPeriod(period: SharePeriod): string {
+  if (period.startDate === period.endDate)
+    return dayMonthYear.format(at(period.endDate));
   const start = at(period.startDate);
   const end = at(period.endDate);
   const [sy = 0, sm = 1, sd = 1] = period.startDate.split("-").map(Number);
