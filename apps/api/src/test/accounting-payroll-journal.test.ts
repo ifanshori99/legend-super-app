@@ -1,0 +1,871 @@
+// Balanced payroll journal (legend-s8a3, brief docs/briefs/sub-174-payroll-journal.md):
+// `payroll.locked` and `payroll.reversed` fed from `payrollRunTotalsSchema` via
+// `payrollJournalAmounts`, plus `employee_loan.disbursed` and
+// `reimbursement.paid#cash`. Pure rule tests, no database.
+//
+// Three layers:
+// 1. one case per combination (LATE, loan, PPh 21 borne, employee refund,
+//    employer refund, receivable, service charge, reimbursement, all at once,
+//    negative PPh 21) with the Rupiah per account code written out by hand;
+// 2. the reversal is the exact mirror of the lock;
+// 3. a seeded property test over payslips built with the real PPh 21 engine
+//    (`computePayslipTax`), summed by `sumPayrollRunTotals`.
+
+import { describe, expect, it } from "vitest";
+import {
+  accountIdSchema,
+  accountMapFor,
+  accountMappingSchema,
+  buildJournalLinesFromRule,
+  defaultPostingRules,
+  legalEntityIdSchema,
+  payrollJournalAmounts,
+  postingRuleAmountKeys,
+  resolvePostingRule,
+  standardFnbChartTemplate,
+} from "@starter/shared/accounting";
+import {
+  DEFAULT_PPH21_POLICY,
+  computePayslipTax,
+  payrollRunTotalsSchema,
+  payslipCalculationSchema,
+  payslipLineSchema,
+  payslipWithholdingCap,
+  planPph21ReceivableCollection,
+  sumPayrollRunTotals,
+  type PayrollRunTotals,
+  type PayslipLine,
+} from "@starter/shared/hris/payroll";
+import type { TaxScheme } from "@starter/shared/hris/payroll";
+import { idr } from "@starter/shared/core";
+import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
+
+const entity = legalEntityIdSchema.parse(
+  "11111111-1111-4111-8111-111111111111",
+);
+const tenantId = "22222222-2222-4222-8222-222222222222";
+
+const accountIds = new Map(
+  standardFnbChartTemplate.map((row, index) => [
+    row.code,
+    accountIdSchema.parse(
+      `33333333-3333-4333-8333-${String(index + 1).padStart(12, "0")}`,
+    ),
+  ]),
+);
+const codeOfAccount = new Map(
+  [...accountIds].map(([code, id]) => [id as string, code]),
+);
+const accountMap = accountMapFor(
+  standardFnbChartTemplate.flatMap((row) =>
+    row.roles.map((role) =>
+      accountMappingSchema.parse({
+        tenantId,
+        legalEntityId: entity,
+        role,
+        accountId: accountIds.get(row.code),
+      }),
+    ),
+  ),
+  entity,
+);
+
+type ByCode = Record<string, { debit: number; credit: number }>;
+type Built = ReturnType<typeof buildJournalLinesFromRule>;
+
+const rule = (eventName: string, variant?: string) =>
+  resolvePostingRule(
+    defaultPostingRules,
+    variant === undefined ? { eventName } : { eventName, variant },
+  );
+
+const lockedRule = rule("payroll.locked");
+const reversedRule = rule("payroll.reversed");
+
+function summarise(lines: Built) {
+  const byCode: ByCode = {};
+  for (const line of lines) {
+    const code = codeOfAccount.get(line.accountId as string)!;
+    const row = (byCode[code] ??= { debit: 0, credit: 0 });
+    row.debit += line.debitIdr;
+    row.credit += line.creditIdr;
+  }
+  return {
+    byCode,
+    debit: lines.reduce((sum, line) => sum + line.debitIdr, 0),
+    credit: lines.reduce((sum, line) => sum + line.creditIdr, 0),
+  };
+}
+
+const build = (
+  postingRule: ReturnType<typeof rule>,
+  amounts: Record<string, number>,
+): Built =>
+  buildJournalLinesFromRule(postingRule, amounts, accountMap, {
+    outletId: null,
+  });
+
+const lockLines = (totals: PayrollRunTotals) =>
+  build(lockedRule, payrollJournalAmounts(totals));
+const reverseLines = (totals: PayrollRunTotals) =>
+  build(reversedRule, payrollJournalAmounts(totals));
+
+/**
+ * Run totals from the parts a payroll has. Everything derived follows the
+ * schema identities: pph21 = W + B + R - rf - erf, deductions = employee BPJS
+ * + W + loan + collected + other, net = gross - deductions. `gross` already
+ * contains the PPh 21 refund, service charge and reimbursement.
+ */
+type Parts = {
+  gross: number;
+  bpjsEmp?: number;
+  bpjsCo?: number;
+  withheld?: number;
+  borne?: number;
+  receivable?: number;
+  refund?: number;
+  employerRefund?: number;
+  loan?: number;
+  collected?: number;
+  other?: number;
+  serviceCharge?: number;
+  reimbursement?: number;
+};
+function totalsOf(parts: Parts): PayrollRunTotals {
+  const p = {
+    bpjsEmp: 0,
+    bpjsCo: 0,
+    withheld: 0,
+    borne: 0,
+    receivable: 0,
+    refund: 0,
+    employerRefund: 0,
+    loan: 0,
+    collected: 0,
+    other: 0,
+    serviceCharge: 0,
+    reimbursement: 0,
+    ...parts,
+  };
+  const deductions = p.bpjsEmp + p.withheld + p.loan + p.collected + p.other;
+  const net = p.gross - deductions;
+  return payrollRunTotalsSchema.parse({
+    employeeCount: 1,
+    grossIdr: p.gross,
+    deductionsIdr: deductions,
+    netIdr: net,
+    bpjsEmployeeIdr: p.bpjsEmp,
+    bpjsCompanyIdr: p.bpjsCo,
+    pph21Idr: p.withheld + p.borne + p.receivable - p.refund - p.employerRefund,
+    pph21WithheldIdr: p.withheld,
+    pph21EmployerBorneIdr: p.borne,
+    pph21RefundIdr: p.refund,
+    pph21EmployerRefundIdr: p.employerRefund,
+    loanRepaymentIdr: p.loan,
+    pph21ReceivableIdr: p.receivable,
+    pph21ReceivableCollectedIdr: p.collected,
+    otherDeductionsIdr: p.other,
+    serviceChargeIdr: p.serviceCharge,
+    reimbursementIdr: p.reimbursement,
+    bankTransferIdr: net,
+    cashIdr: 0,
+  });
+}
+
+// Accounts: 6101 salary expense, 6102 employer BPJS, 6110 reimbursement,
+// 6111 employer-borne PPh 21, 2103 salaries payable, 2104 BPJS payable, 2106
+// service charge, 2202 PPh 21 payable, 1204 employee receivable, 1102 petty
+// cash.
+const base = {
+  gross: 10_000_000,
+  bpjsEmp: 300_000,
+  bpjsCo: 400_000,
+  withheld: 250_000,
+};
+
+const cases: [string, Parts, ByCode][] = [
+  [
+    "LATE 75.000 (other deduction) credits salary expense",
+    { ...base, other: 75_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 75_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_375_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    },
+  ],
+  [
+    "loan installment 500.000 credits employee receivable",
+    { ...base, loan: 500_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 8_950_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+      "1204": { debit: 0, credit: 500_000 },
+    },
+  ],
+  [
+    "PPh 21 borne by the employer B 124.062 (the real case)",
+    { ...base, borne: 124_062 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6111": { debit: 124_062, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 374_062 },
+    },
+  ],
+  [
+    "employee refund 90.000 paid as an earning inside gross",
+    { ...base, gross: 10_090_000, refund: 90_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_540_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 160_000 },
+    },
+  ],
+  [
+    "employer refund 40.000 credits 6111",
+    { ...base, employerRefund: 40_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6111": { debit: 0, credit: 40_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 210_000 },
+    },
+  ],
+  [
+    "receivable 200.000 raised and 100.000 collected",
+    { ...base, receivable: 200_000, collected: 100_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "1204": { debit: 200_000, credit: 100_000 },
+      "2103": { debit: 0, credit: 9_350_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 450_000 },
+    },
+  ],
+  [
+    "service charge 1.000.000 inside gross goes to the 2106 liability",
+    { ...base, serviceCharge: 1_000_000 },
+    {
+      "6101": { debit: 9_000_000, credit: 0 },
+      "2106": { debit: 1_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    },
+  ],
+  [
+    "reimbursement 300.000 inside gross goes to 6110",
+    { ...base, reimbursement: 300_000 },
+    {
+      "6101": { debit: 9_700_000, credit: 0 },
+      "6110": { debit: 300_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 250_000 },
+    },
+  ],
+  [
+    "everything at once",
+    {
+      gross: 20_000_000,
+      bpjsEmp: 300_000,
+      bpjsCo: 400_000,
+      withheld: 250_000,
+      borne: 124_062,
+      receivable: 200_000,
+      refund: 90_000,
+      employerRefund: 40_000,
+      loan: 500_000,
+      collected: 100_000,
+      other: 75_000,
+      serviceCharge: 1_000_000,
+      reimbursement: 300_000,
+    },
+    {
+      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = other 75.000
+      "6101": { debit: 18_610_000, credit: 75_000 },
+      "6111": { debit: 124_062, credit: 40_000 },
+      "2106": { debit: 1_000_000, credit: 0 },
+      "6110": { debit: 300_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "1204": { debit: 200_000, credit: 600_000 },
+      "2103": { debit: 0, credit: 18_775_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 444_062 },
+    },
+  ],
+  [
+    "negative PPh 21 (refund 200.000 > withheld 50.000) debits 2202",
+    { ...base, gross: 10_200_000, withheld: 50_000, refund: 200_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_850_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 150_000, credit: 0 },
+    },
+  ],
+];
+
+describe("payroll.locked from run totals", () => {
+  it("amount keys are exactly what payrollJournalAmounts returns", () => {
+    expect(postingRuleAmountKeys(lockedRule)).toEqual(
+      Object.keys(payrollJournalAmounts(totalsOf(base))).sort(),
+    );
+    expect(postingRuleAmountKeys(reversedRule)).toEqual(
+      postingRuleAmountKeys(lockedRule),
+    );
+  });
+
+  it("the placeholder payroll_run.completed rule is gone", () => {
+    expect(() => rule("payroll_run.completed")).toThrow(/No posting rule/);
+  });
+
+  it.each(cases)("%s", (_name, parts, expected) => {
+    const { byCode, debit, credit } = summarise(lockLines(totalsOf(parts)));
+    expect(byCode).toEqual(expected);
+    expect(debit).toBe(credit);
+  });
+
+  it("maps totals to the documented amount keys", () => {
+    const [, parts] = cases[8]!;
+    expect(payrollJournalAmounts(totalsOf(parts))).toEqual({
+      salaryExpenseIdr: 18_610_000,
+      pph21EmployerBorneIdr: 124_062,
+      pph21EmployerRefundIdr: 40_000,
+      otherDeductionsIdr: 75_000,
+      serviceChargeIdr: 1_000_000,
+      reimbursementIdr: 300_000,
+      bpjsCompanyIdr: 400_000,
+      bpjsTotalIdr: 700_000,
+      pph21ReceivableIdr: 200_000,
+      pph21ReceivableCollectedIdr: 100_000,
+      loanRepaymentIdr: 500_000,
+      netIdr: 18_775_000,
+      pph21Idr: 444_062,
+    });
+  });
+
+  it("refuses totals that break an identity before posting anything", () => {
+    const good = totalsOf(base);
+    expect(() =>
+      payrollJournalAmounts({ ...good, pph21Idr: idr(good.pph21Idr + 1) }),
+    ).toThrow();
+  });
+});
+
+describe("payroll.reversed mirrors payroll.locked", () => {
+  it.each(cases)("%s", (_name, parts) => {
+    const totals = totalsOf(parts);
+    const locked = lockLines(totals);
+    const reversed = reverseLines(totals);
+    expect(reversed).toHaveLength(locked.length);
+    expect(
+      reversed.map((l) => ({
+        accountId: l.accountId,
+        debitIdr: l.creditIdr,
+        creditIdr: l.debitIdr,
+      })),
+    ).toEqual(
+      locked.map((l) => ({
+        accountId: l.accountId,
+        debitIdr: l.debitIdr,
+        creditIdr: l.creditIdr,
+      })),
+    );
+    const sum = summarise(reversed);
+    expect(sum.debit).toBe(sum.credit);
+  });
+
+  it("locked and reversed net to zero per account", () => {
+    const totals = totalsOf(cases[8]![1]);
+    const both = summarise([...lockLines(totals), ...reverseLines(totals)]);
+    for (const row of Object.values(both.byCode))
+      expect(row.debit).toBe(row.credit);
+  });
+});
+
+describe("employee_loan.disbursed and reimbursement.paid#cash", () => {
+  it("disbursing a loan debits 1204 and credits petty cash", () => {
+    const { byCode, debit, credit } = summarise(
+      build(rule("employee_loan.disbursed"), { principalIdr: 2_000_000 }),
+    );
+    expect(byCode).toEqual({
+      "1204": { debit: 2_000_000, credit: 0 },
+      "1102": { debit: 0, credit: 2_000_000 },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("a cash reimbursement debits 6110 and credits petty cash", () => {
+    const { byCode, debit, credit } = summarise(
+      build(rule("reimbursement.paid", "cash"), { amountIdr: 450_000 }),
+    );
+    expect(byCode).toEqual({
+      "6110": { debit: 450_000, credit: 0 },
+      "1102": { debit: 0, credit: 450_000 },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("a payroll payout posts nothing here: the run journal carries it", () => {
+    expect(() => rule("reimbursement.paid", "payroll")).toThrow(
+      /No posting rule/,
+    );
+    expect(() => rule("reimbursement.paid")).toThrow(/No posting rule/);
+  });
+});
+
+describe("run totals schema guards the journal identities", () => {
+  const good = totalsOf({ ...base, borne: 124_062 });
+
+  it("accepts consistent totals", () => {
+    expect(payrollRunTotalsSchema.safeParse(good).success).toBe(true);
+  });
+
+  it("rejects a broken PPh 21 identity", () => {
+    for (const patch of [
+      { pph21Idr: good.pph21Idr + 1 },
+      { pph21EmployerBorneIdr: good.pph21EmployerBorneIdr + 1 },
+      { pph21RefundIdr: 1 },
+      { pph21EmployerRefundIdr: 1 },
+      { pph21ReceivableIdr: 1 },
+    ]) {
+      const result = payrollRunTotalsSchema.safeParse({ ...good, ...patch });
+      expect(result.success).toBe(false);
+      if (!result.success)
+        expect(result.error.issues.some((i) => i.path[0] === "pph21Idr")).toBe(
+          true,
+        );
+    }
+  });
+
+  it("rejects refund + service charge + reimbursement above gross", () => {
+    // Identities hold (pph21 = -refund, net = gross), only the split is wrong.
+    const over = {
+      ...good,
+      grossIdr: 100,
+      deductionsIdr: 0,
+      netIdr: 100,
+      bankTransferIdr: 100,
+      bpjsEmployeeIdr: 0,
+      bpjsCompanyIdr: 0,
+      pph21Idr: -20,
+      pph21WithheldIdr: 0,
+      pph21EmployerBorneIdr: 0,
+      pph21RefundIdr: 20,
+      pph21EmployerRefundIdr: 0,
+      pph21ReceivableIdr: 0,
+      pph21ReceivableCollectedIdr: 0,
+      loanRepaymentIdr: 0,
+      otherDeductionsIdr: 0,
+      cashIdr: 0,
+      serviceChargeIdr: 60,
+      reimbursementIdr: 30,
+    };
+    const result = payrollRunTotalsSchema.safeParse(over);
+    expect(result.success).toBe(false);
+    if (!result.success)
+      expect(result.error.issues.map((i) => i.path[0])).toEqual([
+        "serviceChargeIdr",
+      ]);
+    expect(
+      payrollRunTotalsSchema.safeParse({
+        ...over,
+        pph21RefundIdr: 10,
+        pph21Idr: -10,
+      }).success,
+    ).toBe(true);
+  });
+});
+
+// ---- Property test over the real PPh 21 engine -----------------------------
+
+/** Seeded LCG (Numerical Recipes constants); no dependency, replayable. */
+function lcg(seed: number) {
+  let state = seed >>> 0;
+  const next = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+  return {
+    float: next,
+    int: (min: number, max: number) =>
+      min + Math.floor(next() * (max - min + 1)),
+    chance: (p: number) => next() < p,
+    pick: <T>(items: readonly T[]): T =>
+      items[Math.floor(next() * items.length)]!,
+  };
+}
+type Rng = ReturnType<typeof lcg>;
+
+const FUZZ_SEED = 20_261_109;
+const FUZZ_CASES = 2_500;
+const PTKP_STATUSES = Object.keys(
+  REFERENCE_TABLES.ptkp.annualAmountIdrByStatus,
+) as (keyof typeof REFERENCE_TABLES.ptkp.annualAmountIdrByStatus)[];
+
+const EMPLOYEE_ID = "44444444-4444-4444-8444-000000000001";
+const OUTLET_ID = "55555555-5555-4555-8555-000000000001";
+
+/**
+ * One payslip as the payroll run builds it (fixtures.ts `calculate`): taxable
+ * earnings through `computePayslipTax`, then TAX_ALLOWANCE and PPH21_REFUND
+ * earnings, then deductions in the order BPJS_EMP, PPH21, LATE, receivable,
+ * loan, custom, each limited by the pay left.
+ */
+function fuzzSlip(rng: Rng) {
+  type Earning = {
+    code: string;
+    category: PayslipLine["category"];
+    amount: number;
+    taxable: boolean;
+    scheme: TaxScheme;
+  };
+  const schemeOf = (): TaxScheme =>
+    rng.pick(["gross", "gross", "gross", "gross_up", "net"] as const);
+  const earnings: Earning[] = [
+    {
+      code: "BASIC",
+      category: "base_salary",
+      amount: rng.int(1_000, 60_000) * 1_000,
+      taxable: true,
+      scheme: schemeOf(),
+    },
+  ];
+  if (rng.chance(0.4))
+    earnings.push({
+      code: "ALLOWANCE",
+      category: "fixed_allowance",
+      amount: rng.int(100, 5_000) * 1_000,
+      taxable: true,
+      scheme: schemeOf(),
+    });
+  if (rng.chance(0.5))
+    earnings.push({
+      code: "MEAL",
+      category: "meal_allowance",
+      amount: rng.int(10, 1_000) * 1_000,
+      taxable: false,
+      scheme: "gross",
+    });
+  if (rng.chance(0.4))
+    earnings.push({
+      code: "SERVICE_CHARGE",
+      category: "service_charge",
+      amount: rng.int(100, 3_000) * 1_000,
+      taxable: true,
+      scheme: "gross",
+    });
+  if (rng.chance(0.3))
+    earnings.push({
+      code: "REIMBURSEMENT",
+      category: "reimbursement",
+      amount: rng.int(50, 2_000) * 1_000,
+      taxable: false,
+      scheme: "gross",
+    });
+
+  // BPJS: employee shares of JHT, JP and health; employer shares of all five.
+  const basic = earnings[0]!.amount;
+  const pct = (value: number, bp: number) => Math.round((value * bp) / 10_000);
+  const bpjs = (
+    [
+      ["bpjs_kes", 100, 400],
+      ["jht", 200, 370],
+      ["jkk", 0, 24],
+      ["jkm", 0, 30],
+      ["jp", 100, 200],
+    ] as const
+  )
+    .filter(() => rng.chance(0.8))
+    .map(([type, employeeBp, employerBp]) => ({
+      type,
+      baseIdr: basic,
+      capped: false,
+      employeeIdr: pct(basic, employeeBp),
+      employerIdr: pct(basic, employerBp),
+    }));
+  const sumBpjs = (
+    keep: (type: string) => boolean,
+    side: "employeeIdr" | "employerIdr",
+  ) => bpjs.filter((b) => keep(b.type)).reduce((s, b) => s + b[side], 0);
+  const bpjsEmployeeIdr = sumBpjs(() => true, "employeeIdr");
+  const bpjsCompanyIdr = sumBpjs(() => true, "employerIdr");
+  const employerBenefitIdr = sumBpjs(
+    (t) => t === "jkk" || t === "jkm" || t === "bpjs_kes",
+    "employerIdr",
+  );
+  const employeeDeductibleIdr = sumBpjs(
+    (t) => t === "jht" || t === "jp",
+    "employeeIdr",
+  );
+
+  const late = rng.chance(0.3);
+  const cash = earnings.reduce((s, e) => s + e.amount, 0);
+  const lateIdr = late
+    ? Math.min(
+        rng.int(10, 300) * 1_000,
+        Math.floor(Math.max(0, cash - bpjsEmployeeIdr) / 2),
+      )
+    : 0;
+
+  const lastTaxPeriod = rng.chance(0.35);
+  const monthsWorked = lastTaxPeriod ? rng.int(2, 12) : rng.int(1, 12);
+  const taxableNow = earnings
+    .filter((e) => e.taxable)
+    .reduce((s, e) => s + e.amount, 0);
+  const prior = {
+    taxableGrossIdr: 0,
+    employeeDeductibleIdr: 0,
+    pph21WithheldIdr: 0,
+    pph21EmployerBorneIdr: 0,
+  } as {
+    taxableGrossIdr: number;
+    employeeDeductibleIdr: number;
+    pph21WithheldIdr: number;
+    pph21EmployerBorneIdr: number;
+    grossSchemeBaseIdr?: number;
+    employerSchemeBaseIdr?: number;
+    taxAllowanceIdr?: number;
+    pph21ReceivableIdr?: number;
+  };
+  if (lastTaxPeriod) {
+    const earlier = monthsWorked - 1;
+    prior.taxableGrossIdr = Math.round(
+      earlier * (taxableNow + employerBenefitIdr) * (0.5 + rng.float()),
+    );
+    prior.employeeDeductibleIdr = Math.round(
+      earlier * employeeDeductibleIdr * (0.5 + rng.float()),
+    );
+    // Earlier tax anywhere from nothing (a big refund or shortfall) to a lot.
+    prior.pph21WithheldIdr = rng.chance(0.2)
+      ? 0
+      : Math.round(prior.taxableGrossIdr * rng.float() * 0.12);
+    if (rng.chance(0.3))
+      prior.pph21EmployerBorneIdr = Math.round(
+        prior.pph21WithheldIdr * rng.float() * 0.5,
+      );
+    if (rng.chance(0.3))
+      prior.taxAllowanceIdr = Math.round(prior.pph21WithheldIdr * rng.float());
+    if (rng.chance(0.2))
+      prior.pph21ReceivableIdr = Math.round(rng.float() * 3_000_000);
+    if (rng.chance(0.3)) {
+      prior.grossSchemeBaseIdr = Math.round(
+        prior.taxableGrossIdr * rng.float(),
+      );
+      prior.employerSchemeBaseIdr =
+        prior.taxableGrossIdr - prior.grossSchemeBaseIdr;
+      // The engine wants the allowance reported with an employer-scheme history.
+      prior.taxAllowanceIdr ??= Math.round(
+        prior.pph21WithheldIdr * rng.float(),
+      );
+    }
+  }
+
+  const { tax } = computePayslipTax({
+    tables: REFERENCE_TABLES,
+    policy: DEFAULT_PPH21_POLICY,
+    ptkpStatus: rng.pick(PTKP_STATUSES),
+    hasTaxId: rng.chance(0.8),
+    lastTaxPeriod,
+    monthsWorked,
+    earnings: earnings.map((e) => ({
+      amountIdr: e.amount,
+      taxable: e.taxable,
+      taxScheme: e.scheme,
+    })),
+    employerBenefitIdr,
+    contractTaxScheme: earnings[0]!.scheme,
+    employeeDeductibleIdr,
+    employeeWithholdingCapIdr: payslipWithholdingCap({
+      cashEarningsIdr: cash,
+      bpjsEmployeeIdr,
+      preNetDeductionsIdr: lateIdr,
+    }),
+    prior,
+  });
+
+  const line = (
+    code: string,
+    category: PayslipLine["category"],
+    kind: PayslipLine["kind"],
+    amountIdr: number,
+    taxable = false,
+  ) =>
+    payslipLineSchema.parse({
+      componentCode: code,
+      name: code,
+      category,
+      kind,
+      amountIdr,
+      taxable,
+      quantity: null,
+      sourceId: null,
+    });
+  const earningLines = earnings.map((e) =>
+    line(e.code, e.category, "earning", e.amount, e.taxable),
+  );
+  if (tax.taxAllowanceIdr > 0)
+    earningLines.push(
+      line("TAX_ALLOWANCE", "tax_allowance", "earning", tax.taxAllowanceIdr),
+    );
+  if (tax.pph21RefundIdr > 0)
+    earningLines.push(
+      line("PPH21_REFUND", "custom_earning", "earning", tax.pph21RefundIdr),
+    );
+  const grossIdr = earningLines.reduce((s, l) => s + l.amountIdr, 0);
+
+  const netBeforeLoans =
+    grossIdr - bpjsEmployeeIdr - tax.pph21WithheldIdr - lateIdr;
+  const collected = planPph21ReceivableCollection({
+    openIdr: rng.chance(0.3) ? rng.int(0, 2_000) * 1_000 : 0,
+    roomIdr: netBeforeLoans,
+  }).collectedIdr;
+  const loanIdr = rng.chance(0.3)
+    ? Math.min(
+        rng.int(100, 2_000) * 1_000,
+        Math.max(0, netBeforeLoans - collected),
+      )
+    : 0;
+  const customIdr = rng.chance(0.2)
+    ? Math.min(
+        rng.int(10, 500) * 1_000,
+        Math.max(0, netBeforeLoans - collected - loanIdr),
+      )
+    : 0;
+
+  const deductionLines = [
+    line("BPJS_EMP", "bpjs_employee", "deduction", bpjsEmployeeIdr),
+    line("PPH21", "pph21", "deduction", tax.pph21WithheldIdr),
+  ];
+  if (lateIdr > 0)
+    deductionLines.push(line("LATE", "late_deduction", "deduction", lateIdr));
+  if (collected > 0)
+    deductionLines.push(
+      line("PPH21_RECEIVABLE", "pph21_receivable", "deduction", collected),
+    );
+  if (loanIdr > 0)
+    deductionLines.push(line("LOAN", "loan_installment", "deduction", loanIdr));
+  if (customIdr > 0)
+    deductionLines.push(
+      line("FINE", "custom_deduction", "deduction", customIdr),
+    );
+  const deductionsIdr = deductionLines.reduce((s, l) => s + l.amountIdr, 0);
+  const sumOf = (category: PayslipLine["category"]) =>
+    [...earningLines, ...deductionLines]
+      .filter((l) => l.category === category)
+      .reduce((s, l) => s + l.amountIdr, 0);
+
+  return payslipCalculationSchema.parse({
+    employeeId: EMPLOYEE_ID,
+    employeeNo: "EMP-0001",
+    employeeName: "Fuzz Employee",
+    positionName: null,
+    outletId: OUTLET_ID,
+    periodStart: "2026-10-26",
+    periodEnd: "2026-11-25",
+    payDate: "2026-11-27",
+    grossIdr,
+    deductionsIdr,
+    netIdr: grossIdr - deductionsIdr,
+    pph21Idr: tax.pph21Idr,
+    bpjsEmployeeIdr,
+    bpjsCompanyIdr,
+    serviceChargeIdr: sumOf("service_charge"),
+    overtimeIdr: 0,
+    lines: [...earningLines, ...deductionLines],
+    bpjs,
+    tax,
+    paymentMethod: rng.chance(0.2) ? "cash" : "bank_transfer",
+  });
+}
+
+describe("property: payroll journal balances for engine-built payslips", () => {
+  it(`${FUZZ_CASES} seeded runs of 1-5 payslips post balanced locked and reversed journals`, () => {
+    const seen = {
+      withRefund: 0,
+      withReceivable: 0,
+      withBorne: 0,
+      withEmployerRefund: 0,
+      negativePph21: 0,
+    };
+    for (let i = 0; i < FUZZ_CASES; i += 1) {
+      const seed = FUZZ_SEED + i;
+      try {
+        const rng = lcg(seed);
+        const slips = Array.from({ length: rng.int(1, 5) }, () =>
+          fuzzSlip(rng),
+        );
+        const totals = sumPayrollRunTotals(slips);
+        const locked = summarise(lockLines(totals));
+        const reversed = summarise(reverseLines(totals));
+
+        expect(locked.debit).toBe(locked.credit);
+        expect(reversed.debit).toBe(reversed.credit);
+        // Debits are gross - refund + employer BPJS + borne + receivable, plus
+        // a negative PPh 21 payable that flips to the debit side.
+        expect(locked.debit).toBe(
+          totals.grossIdr -
+            totals.pph21RefundIdr +
+            totals.bpjsCompanyIdr +
+            totals.pph21EmployerBorneIdr +
+            totals.pph21ReceivableIdr +
+            Math.max(0, -totals.pph21Idr),
+        );
+        const net = (code: string) =>
+          (locked.byCode[code]?.credit ?? 0) -
+          (locked.byCode[code]?.debit ?? 0);
+        const owed = (code: string) =>
+          (locked.byCode[code]?.debit ?? 0) -
+          (locked.byCode[code]?.credit ?? 0);
+        expect(net("2103")).toBe(totals.netIdr);
+        expect(net("2202")).toBe(totals.pph21Idr);
+        expect(net("2104")).toBe(
+          totals.bpjsEmployeeIdr + totals.bpjsCompanyIdr,
+        );
+        expect(owed("1204")).toBe(
+          totals.pph21ReceivableIdr -
+            totals.pph21ReceivableCollectedIdr -
+            totals.loanRepaymentIdr,
+        );
+        expect(owed("2106")).toBe(totals.serviceChargeIdr);
+        expect(owed("6110")).toBe(totals.reimbursementIdr);
+        expect(owed("6111")).toBe(
+          totals.pph21EmployerBorneIdr - totals.pph21EmployerRefundIdr,
+        );
+
+        if (totals.pph21RefundIdr > 0) seen.withRefund += 1;
+        if (totals.pph21ReceivableIdr > 0) seen.withReceivable += 1;
+        if (totals.pph21EmployerBorneIdr > 0) seen.withBorne += 1;
+        if (totals.pph21EmployerRefundIdr > 0) seen.withEmployerRefund += 1;
+        if (totals.pph21Idr < 0) seen.negativePph21 += 1;
+      } catch (error) {
+        throw new Error(
+          `payroll journal property failed, seed=${seed} (case ${i}, base seed ${FUZZ_SEED}): ${(error as Error).message}`,
+          { cause: error },
+        );
+      }
+    }
+    // The generator really reaches the interesting branches.
+    expect(seen.withRefund).toBeGreaterThan(0);
+    expect(seen.withReceivable).toBeGreaterThan(0);
+    expect(seen.withBorne).toBeGreaterThan(0);
+    expect(seen.withEmployerRefund).toBeGreaterThan(0);
+    expect(seen.negativePph21).toBeGreaterThan(0);
+  });
+});

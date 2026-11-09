@@ -1030,6 +1030,13 @@
       "when": 1794218337968,
       "tag": "0146_pos_shift_count_cash_watermark",
       "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1794220000000,
+      "tag": "0147_accounting_coa_backfill_1204",
+      "breakpoints": true
     }
   ]
 }

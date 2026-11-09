@@ -2,6 +2,8 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+<<<<<<< HEAD
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
@@ -83,6 +85,18 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Test: `apps/api/src/test/edge-event-class.test.ts` (R, A, B, C, D). Semua 23 file `edge-*` lulus.
 - Review K: reviewer Opus dan architect, dua kali re-review; temuan nyata dibetulkan.
 - Berikut: legend-kyie (P1, cloud menerapkan event PIN dan override), legend-vw3d (kategori alarm sendiri), legend-tbl4 (index outbox, test tanpa supervisor). Brief second opinion: `docs/briefs/158-second-opinion-edge-event-class.md` (tidak di-commit).
+  \=======
+
+## legend-s8a3: jurnal payroll seimbang (engineer, cabang `ws/payroll-journal`, 2026-11-09)
+
+- `payroll_run.completed` diganti `payroll.locked` dan cerminnya `payroll.reversed` (PAYR-04/05). Jumlah dari `payrollJournalAmounts(totals)`; totals run membawa PPh21 ditanggung (B), refund karyawan, refund perusahaan, dengan cek identitas `pph21 = W + B + R - rf - erf`.
+- Akun: telat/custom mengkredit 6101, cicilan kasbon dan piutang PPh21 ke 1204, B dan refund perusahaan ke 6111 (role baru `pph21_borne_expense`, koreksi fiskal), service charge debit 2106, reimbursement ke 6110 (role baru `reimbursement_expense`). Rule `employee_loan.disbursed` dan `reimbursement.paid#cash` mengkredit 1102 Kas Kecil.
+- Migrasi data 0134 (`when` 1794220000000): backfill 1204/6110/6111 dan mapping untuk setup lama; merge train menomori ulang setelah `ws/provisioning-race`.
+- Bukti: repro 5 dari 6 kombinasi tidak seimbang sebelum fix; fuzz 2.500 run lewat engine PPh21 asli seimbang. Gate: 45 file vitest (778 lulus, 15 skip), 142 test root lulus, tsc shared/api/web, eslint, prettier, db:generate kosong. Architect approve; reviewer Opus 1 temuan salah akun (legend-w6vah).
+- Biaya sesi ~3,66 jt token-setara, 15 subagent, maks 4 bersamaan, rata 0,54.
+- Follow-up: legend-w6vah, legend-4n3r (wiring + payroll.paid + reversal), legend-1coh, legend-75kr, legend-k8sz. Second-opinion Codex: `docs/briefs/174b-second-opinion-payroll-journal.md`.
+
+> > > > > > > 0705f12f
 
 ## legend-kn3n bagian 2, legend-xzid, legend-6ajk: kekurangan PPh21 jadi piutang karyawan (engineer, cabang `ws/pph21-overwithhold`, 2026-11-09)
 

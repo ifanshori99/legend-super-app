@@ -18,6 +18,8 @@ export * from "./statements.ts";
 export * from "./tax.ts";
 export * from "./posting-rules.ts";
 export * from "./late-adjustment.ts";
+
+export * from "./payroll-journal.ts";
 export * from "./profit-share.ts";
 export * from "./events.ts";
 export * from "./profit-share-events.ts";

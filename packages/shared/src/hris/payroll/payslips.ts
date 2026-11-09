@@ -335,6 +335,15 @@ export const payrollRunTotalsSchema = z
     bpjsCompanyIdr: nonNegativeIdr,
     pph21Idr: idrSchema,
     pph21WithheldIdr: nonNegativeIdr,
+    /** PPh 21 borne by the employer (net scheme): no payslip line, not in gross. */
+    pph21EmployerBorneIdr: nonNegativeIdr,
+    /**
+     * Lebih potong paid back to employees as a PPH21_REFUND earning line, so
+     * it is inside gross.
+     */
+    pph21RefundIdr: nonNegativeIdr,
+    /** Lebih potong that returns to the employer (tax it bore earlier). */
+    pph21EmployerRefundIdr: nonNegativeIdr,
     loanRepaymentIdr: nonNegativeIdr,
     /**
      * PPh 21 the employees could not have withheld this run, raised as an
@@ -376,8 +385,23 @@ export const payrollRunTotalsSchema = z
     // No withheld <= owed check here: a slip may withhold more than it owes
     // when the employer gets its own lebih potong back (bead legend-u1xq);
     // each slip's split is checked by payslipTotalsIssues.
-    if (t.serviceChargeIdr + t.reimbursementIdr > t.grossIdr)
-      issue("serviceChargeIdr", "service charge + reimbursement exceed gross");
+    if (
+      t.pph21Idr !==
+      t.pph21WithheldIdr +
+        t.pph21EmployerBorneIdr +
+        t.pph21ReceivableIdr -
+        t.pph21RefundIdr -
+        t.pph21EmployerRefundIdr
+    )
+      issue(
+        "pph21Idr",
+        "PPh 21 = withheld + employer borne + receivable - refund - employer refund",
+      );
+    if (t.serviceChargeIdr + t.reimbursementIdr + t.pph21RefundIdr > t.grossIdr)
+      issue(
+        "serviceChargeIdr",
+        "service charge + reimbursement + PPh 21 refund exceed gross",
+      );
   });
 export type PayrollRunTotals = z.infer<typeof payrollRunTotalsSchema>;
 
@@ -404,6 +428,9 @@ export function sumPayrollRunTotals(
     bpjsCompanyIdr: total((s) => s.bpjsCompanyIdr),
     pph21Idr: total((s) => s.pph21Idr),
     pph21WithheldIdr: total((s) => s.tax.pph21WithheldIdr),
+    pph21EmployerBorneIdr: total((s) => s.tax.pph21EmployerBorneIdr),
+    pph21RefundIdr: total((s) => s.tax.pph21RefundIdr),
+    pph21EmployerRefundIdr: total((s) => s.tax.pph21EmployerRefundIdr),
     loanRepaymentIdr: lineTotal((l) => l.category === "loan_installment"),
     pph21ReceivableIdr: total((s) => idr(s.tax.pph21ReceivableIdr ?? 0)),
     pph21ReceivableCollectedIdr: lineTotal(

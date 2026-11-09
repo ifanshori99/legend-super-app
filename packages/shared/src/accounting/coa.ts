@@ -212,6 +212,13 @@ export const POSTING_ACCOUNT_ROLES = {
   waste_expense: "expense",
   inventory_adjustment: "expense",
   salary_expense: "expense",
+  /** Employee reimbursements (PRD §3 reimbursement via payroll or kas). */
+  reimbursement_expense: "expense",
+  /**
+   * Employer-borne PPh 21 (net scheme). Not deductible (UU PPh Pasal 9(1)h),
+   * so it needs a fiscal correction (koreksi fiskal).
+   */
+  pph21_borne_expense: "expense",
   bpjs_expense: "expense",
   gateway_fee_expense: "expense",
   depreciation_expense: "expense",
@@ -452,6 +459,20 @@ const standardRows: Row[] = [
   ],
   ["6108", "Selisih Kas", "operating_expense", "6100", ["cash_over_short"]],
   ["6109", "Beban Pemasaran", "operating_expense", "6100"],
+  [
+    "6110",
+    "Beban Reimbursement Karyawan",
+    "operating_expense",
+    "6100",
+    ["reimbursement_expense"],
+  ],
+  [
+    "6111",
+    "Beban PPh 21 Ditanggung Perusahaan",
+    "operating_expense",
+    "6100",
+    ["pph21_borne_expense"],
+  ],
   ["7100", "Pendapatan Lain-lain", "other_income", null],
   ["7101", "Pembulatan Kas", "other_income", "7100", ["rounding"]],
   [

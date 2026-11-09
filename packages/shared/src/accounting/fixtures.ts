@@ -43,6 +43,7 @@ import type {
   JournalSourceType,
 } from "./journal.ts";
 import { openItemSchema } from "./payables.ts";
+import { payrollJournalAmounts } from "./payroll-journal.ts";
 import {
   fiscalPeriodSchema,
   periodCloseSnapshotSchema,
@@ -287,16 +288,28 @@ post({
   sourceId: fixedId("9a000000", 1),
   description: "Payroll Oktober 2026",
   lines: fromRule(
-    { eventName: "payroll_run.completed" },
-    {
-      grossPayIdr: 42_000_000,
-      employerBpjsIdr: 2_184_000,
-      netPayIdr: 40_530_000,
-      totalBpjsIdr: 3_024_000,
-      pph21Idr: 630_000,
-      pph21ReceivableIdr: 0,
-      pph21ReceivableCollectedIdr: 0,
-    },
+    { eventName: "payroll.locked" },
+    payrollJournalAmounts({
+      employeeCount: 3,
+      grossIdr: idr(42_000_000),
+      deductionsIdr: idr(1_470_000),
+      netIdr: idr(40_530_000),
+      bpjsEmployeeIdr: idr(840_000),
+      bpjsCompanyIdr: idr(2_184_000),
+      pph21Idr: idr(630_000),
+      pph21WithheldIdr: idr(630_000),
+      pph21EmployerBorneIdr: idr(0),
+      pph21RefundIdr: idr(0),
+      pph21EmployerRefundIdr: idr(0),
+      loanRepaymentIdr: idr(0),
+      pph21ReceivableIdr: idr(0),
+      pph21ReceivableCollectedIdr: idr(0),
+      otherDeductionsIdr: idr(0),
+      serviceChargeIdr: idr(0),
+      reimbursementIdr: idr(0),
+      bankTransferIdr: idr(40_530_000),
+      cashIdr: idr(0),
+    }),
     null,
   ),
 });
