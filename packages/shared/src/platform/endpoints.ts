@@ -67,6 +67,12 @@ import {
   updateOutletInputSchema,
 } from "./org.ts";
 import {
+  assignTenantOwnerInputSchema,
+  replaceTenantOwnerInputSchema,
+  tenantOwnerAssignmentIdSchema,
+  tenantOwnerAssignmentSchema,
+} from "./tenant-owner.ts";
+import {
   requestSupportAccessInputSchema,
   supportAccessGrantSchema,
 } from "./support-access.ts";
@@ -180,6 +186,23 @@ export const platformEndpoints = {
     params: tenantParams,
     body: requestSupportAccessInputSchema,
     response: dataResponseSchema(supportAccessGrantSchema),
+  }),
+  assignTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners",
+    params: tenantParams,
+    body: assignTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
+  }),
+  replaceTenantOwner: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/owners/:assignmentId/replace",
+    params: z.strictObject({
+      tenantId: tenantIdSchema,
+      assignmentId: tenantOwnerAssignmentIdSchema,
+    }),
+    body: replaceTenantOwnerInputSchema,
+    response: dataResponseSchema(tenantOwnerAssignmentSchema),
   }),
   listSupportAccess: defineEndpoint({
     method: "GET",

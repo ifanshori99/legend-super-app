@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ktc4d Super Admin menunjuk/mengganti Owner tenant (engineer, cabang `ws/platform-assign-owner` dari `ws/owner-grant-escalation` e2d5df50, 2026-11-09)
+
+- Sudah: `POST /api/platform/tenants/:tenantId/owners` (tunjuk) dan `.../owners/:assignmentId/replace` (ganti dalam satu transaksi). Hanya registry `platform_admins`, sesi impersonasi ditolak, TOTP segar per request (`mfaCode`, aturan 5 menit seperti support access), alasan wajib (kosong 422). Akun: anggota aktif tenant (`userId`) atau undangan dengan aturan akun admin pertama provisioning. Tolak: diri sendiri, Super Admin lain, akun sistem/di-ban. Hanya Owner permanen (`valid_until` null) dihitung "sudah Owner" dan "tenant masih punya Owner"; kunci advisory sama dengan `endRoleAssignment`, `now` dibaca sesudah kunci. Event `role_assignment.granted/ended` + audit `role_assignment.*` (dengan alasan) + `tenant_owner.assigned/replaced/denied`. `assertCanGrantRole` tidak berubah. Tanpa migrasi.
+- Bukti: 8 file test terarah 80 lolos (21 di `platform-tenant-owner.test.ts`), tsc shared+api bersih, eslint dan prettier bersih.
+- Review K: reviewer Opus + architect; temuan Owner sementara dipakai ulang (tenant bisa tanpa Owner saat kedaluwarsa), `now` sebelum kunci, target Super Admin lain, `impersonatedBy` di audit penolakan: semua dibetulkan dan diuji. Kartu baru: legend-be0lx (UI Panel Platform, butuh mockup), legend-qr1uv P1 (race `now` sebelum kunci di `endRoleAssignment`, sudah ada sebelumnya). Brief Codex: `docs/briefs/224b-second-opinion-platform-assign-owner.md` (folder utama).
+
 ## legend-7vsby template Owner hanya dari Owner (engineer, cabang `ws/owner-grant-escalation` dari `ws/receipt-writeoff-hardening` c4c347ef, 2026-11-09)
 
 - Sudah: `assertCanGrantRole` mewajibkan pemberi template owner memegang penugasan template owner aktif bercakupan tenant (403 `PERMISSION_DENIED`); izin yang sama lewat role custom, Owner cakupan brand, atau penugasan berakhir tidak cukup. `OWNER_TEMPLATE_ONLY_PERMISSIONS = ["pos.receipt.writeoff"]` ditolak di role custom (422 `PERMISSION_OWNER_ONLY`, kode dan pesan baru). Data lama: `rolePermissionsAsGranted` membuang kode itu dari semua role selain template owner saat dibaca (`toRole`, `toRoleGrant`, jalur grant); edit role lama membuangnya dari baris tersimpan. Runbook write-off diperbarui.

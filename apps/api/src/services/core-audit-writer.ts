@@ -64,6 +64,19 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   "support_access.ended": ["status", "endedAt", "superAdminUserId"],
   "support_access.expired": ["status", "expiresAt", "superAdminUserId"],
   "support_access.denied": ["cause", "accessMode", "durationMinutes"],
+  "tenant_owner.assigned": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.replaced": [
+    "userId",
+    "assignmentId",
+    "replacedAssignmentId",
+    "account",
+  ],
+  "tenant_owner.denied": ["cause", "impersonatedBy"],
   "integration.created": ["provider", "outletId", "status", "configKeys"],
   "integration.config.updated": [
     "provider",

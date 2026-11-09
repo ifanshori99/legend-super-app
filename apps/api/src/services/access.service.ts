@@ -198,7 +198,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued access event inside the caller's transaction. */
-async function appendAccessEvent(
+export async function appendAccessEvent(
   tx: Tx,
   context: ScopedTenantContext,
   definition: {
@@ -754,10 +754,7 @@ export async function grantRoleAssignment(
         id: roleIdSchema.parse(roleRow.id),
         // Same read rule as toRole (legend-7vsby): Owner-only codes left in
         // an old custom role are not part of what this grant delegates.
-        permissions: rolePermissionsAsGranted(
-          templateKey,
-          roleRow.permissions,
-        ),
+        permissions: rolePermissionsAsGranted(templateKey, roleRow.permissions),
         mfaRequired: roleRow.mfaRequired,
         templateKey,
         level: template?.level ?? "tenant",
