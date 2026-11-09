@@ -45,6 +45,7 @@ const stations = groups.map(([name], i) => ({
   type: (["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"] as const)[i],
   printerDeviceId: null,
   targetSeconds: 600,
+  updatedAt: "2026-01-01T00:00:00.000Z",
 }));
 const items: MenuItem[] = groups.flatMap(([, names], group) =>
   names.split("|").map((name, i) => ({

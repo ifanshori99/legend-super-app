@@ -73,7 +73,11 @@ export function targetsOf(payload: Record<string, unknown>): AccessTarget[] {
 /**
  * True when, at every target of the payload, the user holds one minRoles role
  * with all of its tool permissions, `ai.action.propose` and the domain write
- * permission, all through that same role.
+ * permission, all through that same role. The role may differ per target
+ * (GM at outlet A, owner at outlet B passes for a payload naming A and B):
+ * each target is still fully covered by one role legitimately held there, and
+ * permissions are never combined across roles at the same target. Accepted by
+ * the CTO after Codex review 152 (legend-cy2e).
  */
 export function holdsToolAccess(
   access: AccessSnapshot,

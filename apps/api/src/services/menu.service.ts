@@ -126,6 +126,7 @@ function toStation(row: typeof stations.$inferSelect): Station {
     type: row.type,
     printerDeviceId: row.printerDeviceId,
     targetSeconds: row.targetSeconds,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -671,9 +672,28 @@ export async function updateStation(
     type?: string;
     printerDeviceId?: string | null;
     targetSeconds?: number | null;
+    expectedUpdatedAt?: string;
   },
   now = new Date(),
 ): Promise<Station> {
+  // legend-4xai (Codex 159): a printer change from a stale form must not win
+  // over a newer one, so any printerDeviceId (null included) needs the
+  // station version the form was loaded at.
+  if (input.printerDeviceId !== undefined && !input.expectedUpdatedAt)
+    throw new HttpError(
+      400,
+      "VALIDATION_ERROR",
+      "expectedUpdatedAt wajib dikirim bersama printerDeviceId.",
+    );
+  const expectedAt = input.expectedUpdatedAt
+    ? new Date(input.expectedUpdatedAt)
+    : null;
+  const stale = () =>
+    new HttpError(
+      409,
+      "CONFLICT",
+      "Stasiun sudah diubah orang lain. Muat ulang lalu coba lagi.",
+    );
   return withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
     // Station-bound config (target time, printer binding): the caller must
@@ -687,6 +707,11 @@ export async function updateStation(
       existing.id,
       now,
     );
+    // Early stale check before any other validation: a stale form that
+    // still names a since-revoked printer gets 409, not 422. The
+    // conditional WHERE below stays the real guard.
+    if (expectedAt && existing.updatedAt.getTime() !== expectedAt.getTime())
+      throw stale();
     // Name and type decide which station of the outlet KDS routing picks
     // (first active station of a type, by name): changing them moves tickets
     // between stations, so it is outlet configuration, not this station's
@@ -737,9 +762,17 @@ export async function updateStation(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           eq(stations.id, stationId),
+          // The real guard: the row's own version, re-checked by Postgres
+          // after any row lock wait. Column has microseconds, JS has ms.
+          ...(expectedAt
+            ? [
+                sql`date_trunc('milliseconds', ${stations.updatedAt}) = ${expectedAt.toISOString()}::timestamptz`,
+              ]
+            : []),
         ),
       )
       .returning();
+    if (!row) throw stale();
     await appendMenuEvent(tx, context, menuUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,

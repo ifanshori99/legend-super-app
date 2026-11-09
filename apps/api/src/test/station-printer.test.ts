@@ -118,6 +118,16 @@ async function boundPrinter(stationId: string) {
   return rows[0].printer_device_id;
 }
 
+async function stationStamp(stationId: string) {
+  const { rows } = await asOwnerTenant(tenantId, (client) =>
+    client.query<{ updated_at: Date }>(
+      "SELECT updated_at FROM stations WHERE id = $1",
+      [stationId],
+    ),
+  );
+  return rows[0].updated_at.toISOString();
+}
+
 const tenantContext = () =>
   establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "session" }),
@@ -128,6 +138,12 @@ const INVALID = {
   status: 422,
   code: "VALIDATION_ERROR",
   message: "Printer tidak valid untuk outlet ini.",
+};
+
+const STALE = {
+  status: 409,
+  code: "CONFLICT",
+  message: "Stasiun sudah diubah orang lain. Muat ulang lalu coba lagi.",
 };
 
 beforeAll(async () => {
@@ -215,12 +231,14 @@ describe("legend-e087 station printerDeviceId", () => {
     const stationId = await insertStation();
     const updated = await updateStation(tenantContext(), userId, stationId, {
       printerDeviceId: printer,
+      expectedUpdatedAt: await stationStamp(stationId),
     });
     expect(updated.printerDeviceId).toBe(printer);
   });
 
   it("rejects every invalid printer with one identical error", async () => {
     const stationId = await insertStation();
+    const expectedUpdatedAt = await stationStamp(stationId);
     const invalid: Record<string, string> = {
       "another outlet": await seedDevice(tenantId, outletB, "printer"),
       "another tenant": await seedDevice(
@@ -234,7 +252,10 @@ describe("legend-e087 station printerDeviceId", () => {
     };
     for (const [label, printerDeviceId] of Object.entries(invalid)) {
       await expect(
-        updateStation(tenantContext(), userId, stationId, { printerDeviceId }),
+        updateStation(tenantContext(), userId, stationId, {
+          printerDeviceId,
+          expectedUpdatedAt,
+        }),
         `update: ${label}`,
       ).rejects.toMatchObject(INVALID);
       await expect(
@@ -257,6 +278,7 @@ describe("legend-e087 station printerDeviceId", () => {
     const updated = await updateStation(tenantContext(), userId, stationId, {
       printerDeviceId: printer,
       targetSeconds: 321,
+      expectedUpdatedAt: await stationStamp(stationId),
     });
     expect(updated.targetSeconds).toBe(321);
     expect(updated.printerDeviceId).toBe(printer);
@@ -267,6 +289,7 @@ describe("legend-e087 station printerDeviceId", () => {
     const stationId = await insertStation(printer);
     const updated = await updateStation(tenantContext(), userId, stationId, {
       printerDeviceId: null,
+      expectedUpdatedAt: await stationStamp(stationId),
     });
     expect(updated.printerDeviceId).toBeNull();
     expect(await boundPrinter(stationId)).toBeNull();
@@ -282,14 +305,20 @@ describe("legend-e087 station printerDeviceId", () => {
     const ok = await cook
       .patch(url)
       .set(originHeader)
-      .send({ printerDeviceId: own });
+      .send({
+        printerDeviceId: own,
+        expectedUpdatedAt: await stationStamp(stationId),
+      });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(await boundPrinter(stationId)).toBe(own);
 
     const refused = await cook
       .patch(url)
       .set(originHeader)
-      .send({ printerDeviceId: foreign });
+      .send({
+        printerDeviceId: foreign,
+        expectedUpdatedAt: await stationStamp(stationId),
+      });
     expect(refused.status).toBe(INVALID.status);
     expect(refused.body.error).toMatchObject({
       code: INVALID.code,
@@ -298,11 +327,12 @@ describe("legend-e087 station printerDeviceId", () => {
     expect(await boundPrinter(stationId)).toBe(own);
   });
 
-  it("an echo of a revoked stored printer writes nothing over a concurrent change", async () => {
+  it("an echo of a revoked stored printer is refused (409) over a concurrent change", async () => {
     const pOld = await seedDevice(tenantId, outletA, "printer");
     const pNew = await seedDevice(tenantId, outletA, "printer");
     const stationId = await insertStation(pOld);
     await revoke(pOld);
+    const staleStamp = await stationStamp(stationId);
 
     // A manager's change to pNew is in flight (row locked, not committed).
     const manager = await ownerPool.connect();
@@ -314,7 +344,7 @@ describe("legend-e087 station printerDeviceId", () => {
         [tenantId],
       );
       await manager.query(
-        "UPDATE stations SET printer_device_id = $2 WHERE id = $1",
+        "UPDATE stations SET printer_device_id = $2, updated_at = now() WHERE id = $1",
         [stationId, pNew],
       );
       // The cook's stale form still shows pOld. The service reads pOld, then
@@ -322,6 +352,7 @@ describe("legend-e087 station printerDeviceId", () => {
       echo = updateStation(tenantContext(), userId, stationId, {
         printerDeviceId: pOld,
         targetSeconds: 123,
+        expectedUpdatedAt: staleStamp,
       });
       echo.catch(() => undefined);
       let waiting = false;
@@ -342,9 +373,7 @@ describe("legend-e087 station printerDeviceId", () => {
       manager.release();
     }
 
-    const saved = await echo;
-    expect(saved.targetSeconds).toBe(123);
-    expect(saved.printerDeviceId).toBe(pNew);
+    await expect(echo).rejects.toMatchObject(STALE);
     expect(await boundPrinter(stationId)).toBe(pNew);
   });
 
@@ -355,8 +384,108 @@ describe("legend-e087 station printerDeviceId", () => {
     const updated = await updateStation(tenantContext(), userId, stationId, {
       printerDeviceId: printer.toUpperCase(),
       targetSeconds: 77,
+      expectedUpdatedAt: await stationStamp(stationId),
     });
     expect(updated.targetSeconds).toBe(77);
     expect(await boundPrinter(stationId)).toBe(printer);
+  });
+
+  // legend-4xai finding 2: a stale form must not write over a newer change.
+  it("a stale form (old printer + target time) gets 409 and leaves the newer printer", async () => {
+    const p = await seedDevice(tenantId, outletA, "printer");
+    const q = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation(p);
+    const t0 = await stationStamp(stationId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const byManager = await updateStation(tenantContext(), userId, stationId, {
+      printerDeviceId: q,
+      expectedUpdatedAt: t0,
+    });
+    expect(byManager.printerDeviceId).toBe(q);
+    expect(byManager.updatedAt).not.toBe(t0);
+
+    await expect(
+      updateStation(tenantContext(), userId, stationId, {
+        printerDeviceId: p,
+        targetSeconds: 999,
+        expectedUpdatedAt: t0,
+      }),
+    ).rejects.toMatchObject(STALE);
+    expect(await boundPrinter(stationId)).toBe(q);
+    const { rows } = await asOwnerTenant(tenantId, (client) =>
+      client.query<{ target_seconds: number | null }>(
+        "SELECT target_seconds FROM stations WHERE id = $1",
+        [stationId],
+      ),
+    );
+    expect(rows[0].target_seconds).not.toBe(999);
+  });
+
+  it("printerDeviceId without expectedUpdatedAt is a 400 VALIDATION_ERROR, null included", async () => {
+    const printer = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation(printer);
+    for (const printerDeviceId of [printer, null])
+      await expect(
+        updateStation(tenantContext(), userId, stationId, {
+          printerDeviceId,
+        }),
+      ).rejects.toMatchObject({ status: 400, code: "VALIDATION_ERROR" });
+    const cook = await stationClient(stationId);
+    const res = await cook
+      .patch(`/api/menu/stations/${stationId}`)
+      .set(originHeader)
+      .send({ printerDeviceId: null });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await boundPrinter(stationId)).toBe(printer);
+  });
+
+  it("a fresh expectedUpdatedAt saves and returns a new updatedAt; target time alone needs none", async () => {
+    const printer = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation();
+    const t0 = await stationStamp(stationId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const saved = await updateStation(tenantContext(), userId, stationId, {
+      printerDeviceId: printer,
+      expectedUpdatedAt: t0,
+    });
+    expect(saved.printerDeviceId).toBe(printer);
+    expect(saved.updatedAt).toBe(await stationStamp(stationId));
+    expect(saved.updatedAt).not.toBe(t0);
+    const plain = await updateStation(tenantContext(), userId, stationId, {
+      targetSeconds: 45,
+    });
+    expect(plain.targetSeconds).toBe(45);
+  });
+
+  // legend-4xai finding 2 at the HTTP layer: the route answers 409 CONFLICT.
+  it("PATCH with a stale expectedUpdatedAt answers 409 CONFLICT and changes nothing", async () => {
+    const p = await seedDevice(tenantId, outletA, "printer");
+    const q = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation(p);
+    const cook = await stationClient(stationId);
+    const t0 = await stationStamp(stationId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await updateStation(tenantContext(), userId, stationId, {
+      printerDeviceId: q,
+      expectedUpdatedAt: t0,
+    });
+    const t1 = await stationStamp(stationId);
+
+    const res = await cook
+      .patch(`/api/menu/stations/${stationId}`)
+      .set(originHeader)
+      .send({ printerDeviceId: p, targetSeconds: 555, expectedUpdatedAt: t0 });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error.code).toBe("CONFLICT");
+    expect(await boundPrinter(stationId)).toBe(q);
+    expect(await stationStamp(stationId)).toBe(t1);
+    const { rows } = await asOwnerTenant(tenantId, (client) =>
+      client.query<{ target_seconds: number | null }>(
+        "SELECT target_seconds FROM stations WHERE id = $1",
+        [stationId],
+      ),
+    );
+    expect(rows[0].target_seconds).not.toBe(555);
   });
 });

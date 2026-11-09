@@ -2,8 +2,6 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
-<<<<<<< HEAD
-
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
@@ -786,3 +784,12 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bead baru: legend-x1i1h (void QRIS tidak kredit balik customer_deposit, P2), legend-45bs9 (dua intent QRIS + refund POS sebagian, P3), legend-leqj6 (late refund memotong refund pending, P3).
 - Biaya sesi: 6.241k (biaya*), 14 subagent, rata 0,97 berjalan, puncak 3.
 - Berikut: second opinion Codex `docs/briefs/181b-second-opinion-refund-payout-followups.md` (folder utama), gerbang merge CTO setelah `ws/refund-intent-guard`.
+
+## legend-4xai + legend-cy2e station printer dan gate station (engineer, cabang `ws/station-fixes` di atas 9a2c1e86, 2026-11-09)
+
+- 4xai temuan 1: `revokeDevice` mengosongkan `stations.printer_device_id` di transaksi yang sama sesudah kunci device (urutan device lalu station, sama dengan create/update), mengirim event menu per station, audit `clearedStationIds`. Migrasi data 0148 (`when` 1794222890808) mengosongkan binding lama yang bukan printer aktif tenant+outlet yang sama (FORCE RLS stations dan devices diangkat lalu dipulihkan).
+- 4xai temuan 2: DTO station membawa `updatedAt`; `expectedUpdatedAt` wajib bila `printerDeviceId` dikirim (400), basi = 409 `CONFLICT` (cek awal sesudah izin + `UPDATE ... WHERE date_trunc('milliseconds', updated_at) = expected`). Form web tidak mengirim printer, tidak berubah; mock web ikut aturan 409.
+- cy2e: `requireStationScopePermission` memakai gabungan outlet reach dan outlet dari station reach; service tetap menyaring per station (listStations `permittedStationIds`, 7 route ticket KDS `assertTicketStationPermission`). Komentar invariant `holdsToolAccess` dan `gatewayContext`, `docs/plan/contracts.md`.
+- Bukti merah dulu: union 3/7 gagal di m1, revoke 3/4 gagal, stale form 5/10 gagal. Hijau: 43 file API 1063/1063, root node 146/146, tsc shared/api/web lewat heavy, eslint, prettier, `db:generate` kosong.
+- Review K: reviewer Opus + architect paralel. Dibetulkan: nomor migrasi bentrok (0147 jadi 0148 sesudah rebase), event dan audit di revoke, urutan cek basi, backfill binding lama, test race update vs revoke, test HTTP 409, union semua route ticket. Brief Codex `docs/briefs/184b-second-opinion-station-fixes.md` (folder utama, tidak di-commit).
+- Biaya sesi 9b6ee4f5: total biaya* 3674k (utama Opus 1726k, subagent Opus 796k, Sonnet 1087k, Haiku 65k), 14 subagent, puncak 4 berjalan.

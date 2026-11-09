@@ -102,6 +102,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills accounts 1204, 6110 and 6111 and the employee_receivable, reimbursement_expense and pph21_borne_expense mappings for every already provisioned legal entity that lacks them (legend-s8a3); idempotent, never updates or deletes, keeps a custom account with the same code",
   "0148_open_bill_roles_permissions.sql":
     "appends floor.session.open_bill and floor.open_bill_policy.manage to the stored template role rows that hold them for existing tenants (legend-8cm4, legend-2zb5); idempotent, never touches a custom role",
+  "0150_station_printer_binding_cleanup.sql":
+    "clears stations.printer_device_id where it does not point at an active, unrevoked printer of the same tenant and outlet (legend-4xai); idempotent, edits no other column, a manager binds a valid printer again",
 };
 
 // Entrypoints that open a database pool but import no data.
