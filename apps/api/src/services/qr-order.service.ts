@@ -87,7 +87,12 @@ import {
   type TableSessionStatus,
   type TableSessionView,
 } from "@starter/shared/qr-order";
-import { TaxError } from "@starter/shared/tax";
+import {
+  calculateTax,
+  orderNetSubtotalIdr,
+  TaxError,
+  type TaxCalculationInput,
+} from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
@@ -141,10 +146,13 @@ import {
   buildQuote,
   loadCatalogue,
   loadTaxConfig,
+  QR_PRICE_CHANNEL,
   resolveLine,
+  selectServiceChargeRules,
   type CatalogueItem,
   type PriceChangeDraft,
   type PricedQuoteLine,
+  type QrTaxConfig,
   type QuoteBuild,
   type RemovedLineDraft,
 } from "./qr-order-pricing.ts";
@@ -892,6 +900,7 @@ function promoInput(
   lines: readonly PricedQuoteLine[],
   code: string | null,
   now: Date,
+  minSpendSubtotalIdr?: Idr,
 ): OrderPromoInput {
   return {
     outletId: outlet.id as OrderPromoInput["outletId"],
@@ -905,7 +914,68 @@ function promoInput(
     customer: null,
     voucherCode: code,
     at: now,
+    ...(minSpendSubtotalIdr === undefined ? {} : { minSpendSubtotalIdr }),
   };
+}
+
+/**
+ * Promo `min_spend` basis at an inclusive outlet (legend-u5tkd, Q53): the
+ * pre-promo bill before service charge and tax, which the gross line sum
+ * already contains. The same engine call as `buildQuote` with no discount, so
+ * quote and redeem send one value. Undefined for an exclusive cart (and a
+ * mixed one, which `buildQuote` refuses): the engine then keeps the subtotal.
+ */
+function promoMinSpendBasis(input: {
+  context: ScopedTenantContext;
+  outlet: OutletRow;
+  zone: ZoneRow;
+  lines: readonly PricedQuoteLine[];
+  taxConfig: QrTaxConfig;
+  now: Date;
+}): Idr | undefined {
+  const subtotals = input.lines.map(lineTotal);
+  const subtotal = subtotals.reduce((sum, value) => sum + value, 0);
+  const tax = calculateTax(
+    {
+      outletId: input.outlet.id as OutletId,
+      businessDate: businessDateFor(input.outlet, input.now),
+      channel: QR_PRICE_CHANNEL,
+      zoneId: input.zone.id,
+      regionCode: null,
+      lines: input.lines.map((line, index) => ({
+        lineId: line.cartLineId,
+        itemId: line.menuItemId,
+        categoryId: line.categoryId,
+        itemClass: "food_beverage" as const,
+        grossIdr: idr(subtotals[index]),
+        discountIdr: idr(0),
+        components: [],
+      })),
+      orderDiscountIdr: idr(0),
+    } as TaxCalculationInput,
+    {
+      taxRules: input.taxConfig.taxRules,
+      serviceChargeRules: selectServiceChargeRules(
+        input.zone,
+        input.context,
+        input.taxConfig.serviceChargeRules,
+      ),
+      settings: input.taxConfig.settings,
+    },
+  );
+  const inclusiveRules = tax.taxes.filter(
+    (summary) => summary.priceIncludesTax,
+  );
+  if (inclusiveRules.length === 0 || inclusiveRules.length < tax.taxes.length)
+    return undefined;
+  return idr(
+    orderNetSubtotalIdr({
+      subtotalIdr: subtotal,
+      serviceChargeIdr: tax.serviceChargeIdr,
+      taxIdr: tax.taxIdr,
+      pricesIncludeTax: true,
+    }),
+  );
 }
 
 async function quoteFor(
@@ -921,20 +991,45 @@ async function quoteFor(
     promoCode: string | null;
     now: Date;
   },
-): Promise<QuoteBuild & { promo: OrderPromoQuote | null }> {
+): Promise<
+  QuoteBuild & {
+    promo: OrderPromoQuote | null;
+    /** The inclusive pre-tax promo min spend basis (redeem sends it again). */
+    minSpendSubtotalIdr: Idr | undefined;
+  }
+> {
   const lines = input.priced.sellable.map((entry) => entry.priced);
+  // Tax config first: the promo engine measures `min_spend` before tax and
+  // service charge, which an inclusive outlet only knows from the tax rules.
+  const taxConfig =
+    lines.length === 0
+      ? null
+      : await loadTaxConfig(tx, context, input.outlet.id);
+  const minSpendSubtotalIdr =
+    taxConfig === null
+      ? undefined
+      : promoMinSpendBasis({
+          context,
+          outlet: input.outlet,
+          zone: input.zone,
+          lines,
+          taxConfig,
+          now: input.now,
+        });
   const promo =
     lines.length === 0
       ? null
       : await qrOrderPromoPort().quote(
           tx,
           context,
-          promoInput(input.outlet, lines, input.promoCode, input.now),
+          promoInput(
+            input.outlet,
+            lines,
+            input.promoCode,
+            input.now,
+            minSpendSubtotalIdr,
+          ),
         );
-  const taxConfig =
-    lines.length === 0
-      ? null
-      : await loadTaxConfig(tx, context, input.outlet.id);
   const estimate =
     lines.length === 0
       ? null
@@ -963,7 +1058,7 @@ async function quoteFor(
     servingEstimate: estimate,
     now: input.now,
   });
-  return { ...build, promo };
+  return { ...build, promo, minSpendSubtotalIdr };
 }
 
 // ---- Session view ---------------------------------------------------------------------
@@ -1812,6 +1907,7 @@ async function checkout(
         reserved.map((entry) => entry.priced),
         cart.promoCode,
         now,
+        built.minSpendSubtotalIdr,
       ),
       orderId,
       actorUserId: null,

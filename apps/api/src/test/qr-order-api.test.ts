@@ -737,6 +737,81 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
     }
   });
 
+  it("ORD-03 the promo min spend basis is the pre-tax bill at an inclusive outlet, same at quote and redeem (legend-u5tkd, Q53)", async () => {
+    const seen: { step: string; basis: number | undefined }[] = [];
+    let discount = 0;
+    const recording: OrderPromoPort = {
+      async quote(_tx, _ctx, input) {
+        seen.push({ step: "quote", basis: input.minSpendSubtotalIdr });
+        return {
+          result: { evaluations: [], totalDiscountIdr: idr(discount) },
+          totalDiscountIdr: idr(discount),
+        };
+      },
+      async redeem(_tx, _ctx, input) {
+        seen.push({ step: "redeem", basis: input.minSpendSubtotalIdr });
+        return {
+          result: { evaluations: [], totalDiscountIdr: idr(discount) },
+          totalDiscountIdr: idr(discount),
+        };
+      },
+      async release() {
+        return { released: true, releasedDiscountIdr: idr(0) };
+      },
+    };
+    const publishRuleVersion = (ruleVersion: number, inclusive: boolean) =>
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `INSERT INTO tax_rules
+             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+              price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+              published_at, published_by)
+           VALUES ($1, $2, NULL, 'PBJT-QRO', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
+                   '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+                   $3, true, true, $4, '2026-01-01', 'published', now(), $5)`,
+          [randomUUID(), tenant.tenantId, inclusive, ruleVersion, staff.userId],
+        ),
+      );
+    setQrOrderPromoPort(recording);
+    try {
+      // Exclusive outlet: no pre-tax basis is sent, the engine keeps subtotal.
+      const exclusiveGuest = await seat((await newTable()).qrToken);
+      await fillStandardCart(exclusiveGuest);
+      const exclusive = await as(exclusiveGuest).quote();
+      expect(exclusive.status).toBe(200);
+      expect(seen.at(-1)).toEqual({ step: "quote", basis: undefined });
+
+      seen.length = 0;
+      await publishRuleVersion(4, true);
+      const guest = await seat((await newTable()).qrToken);
+      const version = await fillStandardCart(guest);
+      const quote = await as(guest).quote();
+      expect(quote.status).toBe(200);
+      const data = quote.body.data;
+      expect(data.pricesIncludeTaxAndService).toBe(true);
+      const preTax =
+        data.subtotalIdr - data.serviceCharge.amountIdr - data.taxIdr;
+      expect(preTax).toBeLessThan(data.subtotalIdr);
+      expect(seen).toEqual([{ step: "quote", basis: preTax }]);
+
+      // With a discount the quote and the redeem both carry that same
+      // pre-promo basis (the order fingerprint must match).
+      seen.length = 0;
+      discount = 1_000;
+      expect((await as(guest).quote()).status).toBe(200);
+      const placed = await as(guest).checkout({
+        expectedCartVersion: version,
+        idempotencyKey: randomUUID(),
+      });
+      expect(placed.status).toBe(201);
+      expect(seen.map((entry) => entry.step)).toContain("redeem");
+      expect(seen.every((entry) => entry.basis === preTax)).toBe(true);
+    } finally {
+      setQrOrderPromoPort(null);
+      await publishRuleVersion(5, false);
+    }
+  });
+
   it("ORD-03 a cart mixing an inclusive and an exclusive rule is refused (legend-49pw)", async () => {
     const guest = await seat((await newTable()).qrToken);
     await fillStandardCart(guest);
