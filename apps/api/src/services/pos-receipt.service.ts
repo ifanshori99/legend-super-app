@@ -25,6 +25,15 @@
 //   (cloud) sequence and prefix `C`, receipts whose order is not completed on
 //   the same tenant, outlet and device, a device void with no
 //   matching cloud void row, and an ordinal that is already taken by another receipt.
+// - legend-yd0h8: a restored or cloned edge database keeps its instance id, so
+//   its old runs would number again. A pull that sends `receiptRuns` reports
+//   the edge's local counter per run; the cloud keeps a never-decreasing
+//   high-water (`edge_reported_number`) and, when a report falls below it,
+//   retires the run (`edge_regressed`) so the device continues under a new
+//   prefix. At most RECEIPT_REGRESSION_ROTATIONS_MAX such rotations per device
+//   in RECEIPT_REGRESSION_WINDOW_HOURS (two live databases on one node id);
+//   beyond that the run is kept and an alert is raised. Every retire path
+//   stores its reason (`retired_reason`).
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -53,6 +62,7 @@ import {
 import type {
   DeviceReceiptSequenceBinding,
   DeviceReceiptSequenceSync,
+  ReceiptRunReport,
 } from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { devices } from "../db/schema/device.ts";
@@ -64,6 +74,7 @@ import {
   posReceipts,
   receiptSequences,
   type PosReceiptOutletSnapshot,
+  type ReceiptSequenceRetiredReason,
 } from "../db/schema/pos-receipt.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -189,15 +200,23 @@ async function insertSequence(
   return row;
 }
 
-/** legend-zsdd: closes a run for good; the device continues under a new prefix. */
+/**
+ * legend-zsdd: closes a run for good; the device continues under a new prefix.
+ * legend-yd0h8: `reason` is stored in `retired_reason` (audit, rate limit).
+ */
 async function retireSequence(
   tx: Tx,
   tenantId: TenantId,
   sequenceId: string,
+  reason: ReceiptSequenceRetiredReason,
 ): Promise<void> {
   const [row] = await tx
     .update(receiptSequences)
-    .set({ retiredAt: sql`now()`, updatedAt: sql`now()` })
+    .set({
+      retiredAt: sql`now()`,
+      retiredReason: reason,
+      updatedAt: sql`now()`,
+    })
     .where(
       and(
         eq(receiptSequences.tenantId, tenantId),
@@ -271,7 +290,7 @@ async function ensureSequence(
     // Sequence `C` is never claimed by an edge (prefix `C` cannot be reused).
     if (cloudOwned)
       throw new Error("Cloud-owned receipt sequence is bound to an edge");
-    await retireSequence(tx, tenantId, created.id);
+    await retireSequence(tx, tenantId, created.id, "cloud_takeover");
   } else if (cloudOwned)
     return insertSequence(tx, {
       tenantId,
@@ -738,22 +757,51 @@ const sameBinding = (
   row.edgeNodeId === binding.edgeNodeId &&
   row.edgeInstanceId === binding.edgeInstanceId;
 
+export const RECEIPT_REGRESSION_ROTATIONS_MAX = 2;
+export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
+
 /**
  * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
  * database `edgeInstanceId` of node `edgeNodeId`. The caller has checked that
  * the node is the outlet's active primary. For each current sequence of an
  * active, not revoked, order-taking device:
- * - bound to this edge database: nothing;
+ * - bound to this edge database: nothing, except the legend-yd0h8 check below;
  * - unbound at lastNumber 0: bound to it (claimed);
  * - otherwise (the cloud already numbered on it, or another node or another
- *   database of the node may have): retired, and the device continues under
- *   the next free prefix, bound to this edge database at 0 (rotated).
+ *   database of the node may have): retired (`claim_rotated`), and the device
+ *   continues under the next free prefix, bound to this edge database at 0
+ *   (rotated).
+ *
+ * legend-yd0h8: when `report` is given (the edge's local counter per run,
+ * `prefix -> lastNumber`; absent = old edge, no check), every row bound to
+ * exactly this edge database is compared with it. `reported` is the report's
+ * entry for the prefix, 0 when the edge no longer holds the run; `high` is
+ * max(edge_reported_number, lastNumber).
+ * - reported >= high: normal; the high-water rises to `reported` if lower.
+ * - reported < high: REGRESSION (restored or cloned database). The run is
+ *   retired (`edge_regressed`) and the device continues under a new prefix
+ *   bound to this database (regressed), unless the device already had
+ *   RECEIPT_REGRESSION_ROTATIONS_MAX such rotations on this node in the last
+ *   RECEIPT_REGRESSION_WINDOW_HOURS: then the row and its high-water stay
+ *   (throttled).
+ * `alert` is true when some device of the node has at least the maximum of
+ * such rotations in the window (this pull's included). Report entries for
+ * unknown, retired or foreign-bound prefixes are ignored.
  */
 export async function claimDeviceReceiptSequencesForEdge(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { outletId: string } & DeviceReceiptSequenceBinding,
-): Promise<{ claimed: number; rotated: number }> {
+  input: {
+    outletId: string;
+    report?: ReceiptRunReport;
+  } & DeviceReceiptSequenceBinding,
+): Promise<{
+  claimed: number;
+  rotated: number;
+  regressed: number;
+  throttled: number;
+  alert: boolean;
+}> {
   if (isEdgeProcess())
     throw new Error("Receipt sequences are claimed on the cloud only");
   const tenantId = context.tenant.tenantId;
@@ -763,6 +811,26 @@ export async function claimDeviceReceiptSequencesForEdge(
     edgeInstanceId: input.edgeInstanceId,
   };
   await lockOutletSequences(tx, tenantId, outletId);
+  // legend-yd0h8: regression rotations per device of this node in the window.
+  const regressions = new Map<string, number>();
+  if (input.report !== undefined) {
+    const recent = await tx
+      .select({
+        deviceId: receiptSequences.deviceId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(receiptSequences)
+      .where(
+        and(
+          eq(receiptSequences.tenantId, tenantId),
+          eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
+          eq(receiptSequences.retiredReason, "edge_regressed"),
+          sql`${receiptSequences.retiredAt} > now() - make_interval(hours => ${RECEIPT_REGRESSION_WINDOW_HOURS})`,
+        ),
+      )
+      .groupBy(receiptSequences.deviceId);
+    for (const row of recent) regressions.set(row.deviceId, row.count);
+  }
   const current = await tx
     .select({ sequence: receiptSequences })
     .from(receiptSequences)
@@ -790,9 +858,50 @@ export async function claimDeviceReceiptSequencesForEdge(
     .for("update", { of: receiptSequences });
   let claimed = 0;
   let rotated = 0;
+  let regressed = 0;
+  let throttled = 0;
   let used: Map<string, string> | undefined;
   for (const { sequence } of current) {
-    if (sameBinding(sequence, binding)) continue;
+    if (sameBinding(sequence, binding)) {
+      if (input.report === undefined) continue;
+      const reported = input.report.get(sequence.prefix) ?? 0;
+      const high = Math.max(sequence.edgeReportedNumber, sequence.lastNumber);
+      if (reported >= high) {
+        if (reported > sequence.edgeReportedNumber)
+          await tx
+            .update(receiptSequences)
+            .set({ edgeReportedNumber: reported, updatedAt: sql`now()` })
+            .where(
+              and(
+                eq(receiptSequences.tenantId, tenantId),
+                eq(receiptSequences.id, sequence.id),
+                isNull(receiptSequences.retiredAt),
+                sql`${receiptSequences.edgeReportedNumber} < ${reported}`,
+              ),
+            );
+        continue;
+      }
+      // legend-yd0h8: the edge is behind what it reported or issued before.
+      const done = regressions.get(sequence.deviceId) ?? 0;
+      if (done >= RECEIPT_REGRESSION_ROTATIONS_MAX) {
+        throttled += 1;
+        continue;
+      }
+      await retireSequence(tx, tenantId, sequence.id, "edge_regressed");
+      used ??= await prefixesOfOutlet(tx, tenantId, outletId);
+      const prefix = nextFreePrefix(used);
+      await insertSequence(tx, {
+        tenantId,
+        outletId,
+        deviceId: sequence.deviceId,
+        prefix,
+        binding,
+      });
+      used.set(prefix, sequence.deviceId);
+      regressions.set(sequence.deviceId, done + 1);
+      regressed += 1;
+      continue;
+    }
     if (sequence.edgeNodeId === null && sequence.lastNumber === 0) {
       const [bound] = await tx
         .update(receiptSequences)
@@ -816,7 +925,7 @@ export async function claimDeviceReceiptSequencesForEdge(
         continue;
       }
     }
-    await retireSequence(tx, tenantId, sequence.id);
+    await retireSequence(tx, tenantId, sequence.id, "claim_rotated");
     used ??= await prefixesOfOutlet(tx, tenantId, outletId);
     const prefix = nextFreePrefix(used);
     await insertSequence(tx, {
@@ -829,7 +938,41 @@ export async function claimDeviceReceiptSequencesForEdge(
     used.set(prefix, sequence.deviceId);
     rotated += 1;
   }
-  return { claimed, rotated };
+  const alert =
+    input.report !== undefined &&
+    [...regressions.values()].some(
+      (count) => count >= RECEIPT_REGRESSION_ROTATIONS_MAX,
+    );
+  return { claimed, rotated, regressed, throttled, alert };
+}
+
+/**
+ * Edge (legend-yd0h8): the counter of every current local device run,
+ * `prefix -> lastNumber`, any binding (not the outlet-owned run). Sent with the
+ * device-records pull so the cloud can tell a restored or cloned database.
+ */
+export async function localReceiptRunReport(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<Map<string, number>> {
+  if (!isEdgeProcess())
+    throw new Error("The receipt run report is built on the edge only");
+  const rows = await tx
+    .select({
+      prefix: receiptSequences.prefix,
+      lastNumber: receiptSequences.lastNumber,
+    })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, context.tenant.tenantId),
+        eq(receiptSequences.outletId, outletId as OutletId),
+        isNull(receiptSequences.retiredAt),
+        sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+      ),
+    );
+  return new Map(rows.map((row) => [row.prefix, row.lastNumber]));
 }
 
 /**
@@ -947,7 +1090,8 @@ export async function applyCloudDeviceReceiptSequence(
       ),
     );
   if (sameId) return "refused";
-  if (existing) await retireSequence(tx, tenantId, existing.id);
+  if (existing)
+    await retireSequence(tx, tenantId, existing.id, "edge_replaced");
   await tx.insert(receiptSequences).values({
     id: sequence.id,
     tenantId,

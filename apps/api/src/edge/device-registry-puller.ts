@@ -21,6 +21,10 @@ export type DeviceRegistrySyncState = {
   readonly receiptSequencesRefused: number;
   /** Time of the last successful pull that refused at least one, else null. */
   readonly receiptSequencesRefusedAt: string | null;
+  /** legend-yd0h8: the last successful pull saw the cloud's restore alert. */
+  readonly receiptRunAlert: boolean;
+  /** Time of the last successful pull with the alert, else null. */
+  readonly receiptRunAlertAt: string | null;
 };
 
 export type DeviceRegistryPuller = {
@@ -37,7 +41,12 @@ export type DeviceRegistryPullerDeps = {
   pull(
     since: string | null,
     signal: AbortSignal,
-  ): Promise<{ watermark: string | null; receiptSequencesRefused?: number }>;
+  ): Promise<{
+    watermark: string | null;
+    receiptSequencesRefused?: number;
+    /** legend-yd0h8 */
+    receiptRunAlert?: boolean;
+  }>;
   /** Called once, lazily, before the first pull (retried next run if it throws). */
   load(): Promise<{ watermark: string | null; lastSuccessAt: Date | null }>;
   /** After every successful pull. */
@@ -89,6 +98,8 @@ export function createDeviceRegistryPuller(
   let consecutiveFailures = 0;
   let receiptSequencesRefused = 0;
   let receiptSequencesRefusedAt: Date | null = null;
+  let receiptRunAlert = false;
+  let receiptRunAlertAt: Date | null = null;
 
   let started = false;
   let stopped = false;
@@ -155,6 +166,9 @@ export function createDeviceRegistryPuller(
       lastSuccessAt = succeededAt;
       receiptSequencesRefused = result.receiptSequencesRefused ?? 0;
       if (receiptSequencesRefused > 0) receiptSequencesRefusedAt = succeededAt;
+      // legend-yd0h8: same pattern as the refused count above.
+      receiptRunAlert = result.receiptRunAlert === true;
+      if (receiptRunAlert) receiptRunAlertAt = succeededAt;
       lastError = null;
       consecutiveFailures = 0;
       ok = true;
@@ -214,6 +228,10 @@ export function createDeviceRegistryPuller(
         receiptSequencesRefused,
         receiptSequencesRefusedAt: receiptSequencesRefusedAt
           ? receiptSequencesRefusedAt.toISOString()
+          : null,
+        receiptRunAlert,
+        receiptRunAlertAt: receiptRunAlertAt
+          ? receiptRunAlertAt.toISOString()
           : null,
       };
     },

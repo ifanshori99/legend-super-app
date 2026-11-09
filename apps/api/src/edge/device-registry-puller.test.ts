@@ -466,3 +466,59 @@ describe("refused receipt sequences (legend-zsdd)", () => {
     expect(t.puller.getState().receiptSequencesRefused).toBe(0);
   });
 });
+
+describe("receipt run alert (legend-yd0h8)", () => {
+  it("legend-yd0h8 starts false and null", () => {
+    const t = setup();
+    expect(t.puller.getState()).toMatchObject({
+      receiptRunAlert: false,
+      receiptRunAlertAt: null,
+    });
+  });
+
+  it("legend-yd0h8 a pull with the alert sets the flag and the time", async () => {
+    const t = setup({
+      pull: vi.fn(async () => ({ watermark: "w1", receiptRunAlert: true })),
+    });
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptRunAlert: true,
+      receiptRunAlertAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+
+  it("legend-yd0h8 a later alert-free pull clears the flag and keeps the time", async () => {
+    const alerts = [true, undefined];
+    const t = setup({
+      pull: vi.fn(async () => ({
+        watermark: "w1",
+        receiptRunAlert: alerts.shift(),
+      })),
+    });
+    await t.puller.runOnce();
+    t.advance(INTERVAL);
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptRunAlert: false,
+      receiptRunAlertAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+
+  it("legend-yd0h8 a failed pull changes neither field", async () => {
+    let fail = false;
+    const t = setup({
+      pull: vi.fn(async () => {
+        if (fail) throw new Error("down");
+        return { watermark: "w1", receiptRunAlert: true };
+      }),
+    });
+    await t.puller.runOnce();
+    fail = true;
+    t.advance(INTERVAL);
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptRunAlert: true,
+      receiptRunAlertAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+});

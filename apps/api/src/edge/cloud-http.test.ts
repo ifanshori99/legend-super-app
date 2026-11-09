@@ -150,6 +150,96 @@ describe("createDeviceRecordsFetcher", () => {
     expect((second as EdgeCloudHttpError).code).toBe("HTTP_503");
   });
 
+  it("legend-yd0h8 sends the receipt run report sorted, and an empty report as an empty param", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
+    const fetcher = createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    });
+    await fetcher(
+      null,
+      new AbortController().signal,
+      new Map([
+        ["P3", 7],
+        ["P1", 150],
+      ]),
+    );
+    await fetcher(null, new AbortController().signal, new Map());
+    await fetcher(null, new AbortController().signal);
+    const urls = fetchImpl.mock.calls.map(
+      (call) => new URL((call as unknown as [string])[0]),
+    );
+    expect(urls[0]!.searchParams.get("receiptRuns")).toBe("P1:150,P3:7");
+    expect(urls[1]!.searchParams.get("receiptRuns")).toBe("");
+    expect(urls[2]!.searchParams.has("receiptRuns")).toBe(false);
+  });
+
+  it("legend-yd0h8 HTTP 400 on a request with receiptRuns retries with edgeInstance but without receiptRuns", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const result = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })("v1", new AbortController().signal, new Map([["P1", 3]]));
+    expect(result).toEqual({ data: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const first = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    const second = new URL((fetchImpl.mock.calls[1] as unknown as [string])[0]);
+    expect(first.searchParams.get("receiptRuns")).toBe("P1:3");
+    expect(second.searchParams.has("receiptRuns")).toBe(false);
+    expect(second.searchParams.get("receiptSequences")).toBe("1");
+    expect(second.searchParams.get("edgeInstance")).toBe(INSTANCE);
+    expect(second.searchParams.get("since")).toBe("v1");
+  });
+
+  it("legend-yd0h8 a second 400 retries without sequences and edgeInstance; a third failure is thrown", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const result = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal, new Map([["P1", 3]]));
+    expect(result).toEqual({ data: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const third = new URL((fetchImpl.mock.calls[2] as unknown as [string])[0]);
+    expect(third.searchParams.has("receiptRuns")).toBe(false);
+    expect(third.searchParams.has("edgeInstance")).toBe(false);
+    expect(third.searchParams.has("receiptSequences")).toBe(false);
+
+    const failing = vi.fn(async () => new Response("{}", { status: 400 }));
+    const error = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: failing as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal, new Map()).catch((e: unknown) => e);
+    expect(failing).toHaveBeenCalledTimes(3);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
+  });
+
+  it("legend-yd0h8 a non-400 failure on the receiptRuns request is not retried", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 503 }));
+    const error = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal, new Map()).catch((e: unknown) => e);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_503");
+  });
+
   it("legend-zsdd HTTP 400 without an edgeInstance is not retried", async () => {
     const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
     const error = await fetcherWith(fetchImpl as unknown as typeof fetch)(
