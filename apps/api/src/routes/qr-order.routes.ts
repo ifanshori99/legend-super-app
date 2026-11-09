@@ -19,6 +19,7 @@ import {
   addCartLine,
   createGuestPayment,
   getGuestPayment,
+  getMenuSuggestions,
   getSessionBill,
   getTableSession,
   placeQrOrder,
@@ -43,6 +44,7 @@ import {
   updateCartLine as updateCartLineService,
 } from "../services/qr-order.service.ts";
 import { guestSessionContext } from "../services/guest-session-scope.ts";
+import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
 import {
   createGuestPayment as createGuestPaymentService,
   getGuestPayment as getGuestPaymentService,
@@ -234,3 +236,17 @@ qrOrderRouter.get(
     });
   },
 );
+
+qrOrderRouter.get("/:sessionId/suggestions", ...read, async (req, res) => {
+  const { sessionId } = getMenuSuggestions.params.parse(req.params);
+  const query = getMenuSuggestions.query.parse(req.query);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await getMenuSuggestionsService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+      query,
+    ),
+  });
+});

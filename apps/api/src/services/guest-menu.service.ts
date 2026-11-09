@@ -626,6 +626,37 @@ async function brandAndOutletRefs(
 }
 
 /**
+ * Guest items that can be ordered right now at one outlet (read-only wrapper
+ * of the private catalogue read, same Q23 / price / 86 rules): status
+ * `available`, in the menu's own order. Used by the guest suggestions read
+ * model, which must never offer an item the guest cannot order.
+ */
+export async function listOrderableGuestItems(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; now: Date },
+): Promise<QrMenuItem[]> {
+  const { outlet } = await brandAndOutletRefs(
+    tx,
+    context.tenant.tenantId,
+    input.outletId,
+  );
+  const catalogue = await readGuestCatalogue(
+    tx,
+    context,
+    {
+      brandId: brandIdSchema.parse(outlet.brandId),
+      outletId: input.outletId,
+      now: input.now,
+      timeZone: outlet.timezone,
+      businessDayCutoff: outlet.businessDayCutoff,
+    },
+    noMediaUrls,
+  );
+  return catalogue.items.filter((item) => item.status === "available");
+}
+
+/**
  * `GET /api/qr/menu/:qrToken` (contract `getQrMenu`): the guest menu of the
  * scanned table. Public by signed token — the token resolves tenant, outlet and
  * table (TEN-02/ORD-04), never a request parameter.
