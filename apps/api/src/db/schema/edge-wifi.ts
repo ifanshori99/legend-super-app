@@ -171,6 +171,11 @@ export const wifiDeviceGrants = pgTable(
       "wifi_device_grants_superseded_check",
       sql`(${t.supersededBy} IS NOT NULL) = (${t.status} = 'superseded') AND ${t.supersededBy} IS DISTINCT FROM ${t.id}`,
     ),
+    // A controller revoke is only owed by an ended row (legend-1mbi).
+    check(
+      "wifi_device_grants_revoke_retry_check",
+      sql`${t.revokeRetryAt} IS NULL OR ${t.status} IN ('superseded','revoked','failed')`,
+    ),
   ],
 );
 

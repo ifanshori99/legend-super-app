@@ -525,6 +525,84 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     expect(f.sim.calls.revoke).toBe(revokesBefore + 2);
   });
 
+  it("an authorize that timed out and lands after its revoke is revoked again after the backoff", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let landed!: Promise<unknown>;
+    const forget = new Set<string>();
+    const f = await fixture({
+      providerTimeoutMs: 50,
+      provider: (sim) => ({
+        authorize(context, request) {
+          // The controller applies the grant only after the agent gave up.
+          landed = gate.then(() => sim.authorize(context, request));
+          return landed as ReturnType<WifiProvider["authorize"]>;
+        },
+        async revoke(context, reference) {
+          // A controller that keeps no record of a reference it never saw.
+          if (forget.delete(reference.reference))
+            return { reference: reference.reference, authorized: false };
+          return sim.revoke(context, reference);
+        },
+      }),
+    });
+    const input = f.input();
+    const view = await f.agent.applySession(f.ctx, input);
+    expect(view.status).toBe("unknown");
+    forget.add(view.id);
+    await f.agent.endSession(f.ctx, {
+      outletId: f.outletId,
+      wifiSessionId: input.wifiSessionId,
+      reason: "staff_revoked",
+    });
+    const [ended] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(ended).toMatchObject({
+      status: "revoked",
+      controller_device_id: null,
+    });
+    expect(ended!.revoke_retry_at!.getTime()).toBe(f.now().getTime() + 30_000);
+
+    // The timed-out authorize lands at the controller after the revoke.
+    release();
+    await landed;
+    expect(f.access(input.controllerDeviceId)).toMatchObject({
+      state: "online",
+      reference: view.id,
+    });
+    const revokesBefore = f.sim.calls.revoke;
+
+    // Not due yet: no controller call.
+    f.advance(29);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(0);
+    expect(f.sim.calls.revoke).toBe(revokesBefore);
+
+    // Due: the confirming revoke blocks the device and clears the marker.
+    f.advance(1);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(1);
+    expect(f.sim.calls.revoke).toBe(revokesBefore + 1);
+    expect(f.access(input.controllerDeviceId).state).toBe("blocked");
+    const [done] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(done!.revoke_retry_at).toBeNull();
+    expect({ ...done, revoke_retry_at: null }).toEqual({
+      ...ended,
+      revoke_retry_at: null,
+    });
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(0);
+  });
+
+  it("a revoke of a grant known to be applied owes no confirming revoke", async () => {
+    const f = await fixture();
+    const input = f.input();
+    await f.agent.applySession(f.ctx, input);
+    await f.agent.endSession(f.ctx, {
+      outletId: f.outletId,
+      wifiSessionId: input.wifiSessionId,
+      reason: "staff_revoked",
+    });
+    const [ended] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(ended).toMatchObject({ status: "revoked", revoke_retry_at: null });
+  });
+
   it("an in-flight grant refuses a different request with 409", async () => {
     const f = await fixture();
     const input = f.input();

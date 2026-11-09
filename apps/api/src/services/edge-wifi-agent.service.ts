@@ -91,6 +91,7 @@ const LIST_LIMIT = 500;
 const REUSE_TOLERANCE_SECONDS = 60;
 const LIVE = ["pending", "active", "unknown"] as const;
 const INFLIGHT = ["pending", "unknown"] as const;
+const TERMINAL = ["superseded", "revoked", "failed"] as const;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type GrantRow = typeof wifiDeviceGrants.$inferSelect;
@@ -521,6 +522,10 @@ export function createWifiAgent(options: {
             endedAt: at,
             controllerDeviceId: null,
             lastErrorCode: null,
+            // An in-flight authorize may still land after this revoke (a
+            // timed-out call, or one still running): owe one delayed
+            // confirming revoke. Step 1b sends it and clears the marker.
+            revokeRetryAt: sql`CASE WHEN ${inArray(wifiDeviceGrants.status, [...INFLIGHT])} THEN ${addSeconds(at, REVOKE_RETRY_MIN_SECONDS).toISOString()}::timestamptz END`,
             updatedAt: at,
           })
           .where(where);
@@ -885,7 +890,12 @@ export function createWifiAgent(options: {
           .select()
           .from(wifiDeviceGrants)
           .where(
-            scoped(tenantId, outletId, lte(wifiDeviceGrants.revokeRetryAt, at)),
+            scoped(
+              tenantId,
+              outletId,
+              inArray(wifiDeviceGrants.status, [...TERMINAL]),
+              lte(wifiDeviceGrants.revokeRetryAt, at),
+            ),
           )
           .orderBy(
             asc(wifiDeviceGrants.revokeRetryAt),

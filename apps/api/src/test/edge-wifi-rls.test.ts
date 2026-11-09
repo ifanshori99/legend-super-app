@@ -534,6 +534,18 @@ describe("legend-hsk wifi_device_grants RLS", () => {
     ).rejects.toThrow(/wifi_device_grants_scrub_check/);
   });
 
+  it("legend-1mbi only an ended row may owe a controller revoke", async () => {
+    const active = await seedGrant(insertActiveSql);
+    const pending = await seedGrant(insertPendingSql);
+    for (const grant of [active, pending])
+      await expect(
+        asOwner(
+          "UPDATE wifi_device_grants SET revoke_retry_at = now() WHERE id = $1",
+          [grant.id],
+        ),
+      ).rejects.toThrow(/wifi_device_grants_revoke_retry_check/);
+  });
+
   it("legend-hsk lifecycle checks: active needs expiry, terminal needs ended_at, revoke is write-ahead", async () => {
     const grant = await seedGrant(insertPendingSql);
     await expect(
