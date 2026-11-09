@@ -12,9 +12,10 @@
 //   = the latest `done_at`.
 // - Assign and deliver of one order serialise on a transaction advisory lock,
 //   so parallel calls end in one `expo_assignments` row and one `delivered_at`.
-// - Runner roster (legend-aiksz: `runner_id` has no FK): a user with a live
-//   (not expired) role assignment on the tenant or on this outlet, not banned.
-//   Brand- and station-scoped assignments are not counted (no org index here).
+// - Runner roster (legend-aiksz: `runner_id` has no FK; legend-f1qr7): a user
+//   with a live (not expired) role assignment that reaches this outlet, not
+//   banned: tenant scope, the outlet's brand, the outlet itself, or one of the
+//   outlet's stations (a station-scoped waiter or cook can still carry plates).
 // - Channel on the ticket: delivery platforms and `reservation` pass through;
 //   anything else follows `service_type` (`delivery` without a platform is
 //   shown as `takeaway`: the contract has no plain delivery channel).
@@ -56,6 +57,7 @@ import {
   expoAssignments,
   kitchenTickets,
   orders,
+  outlets,
   pickupCalls,
   roleAssignments,
   stations,
@@ -345,8 +347,16 @@ function liveStaffOfOutlet(
     or(
       eq(roleAssignments.scopeType, "tenant"),
       and(
+        eq(roleAssignments.scopeType, "brand"),
+        sql`${roleAssignments.scopeId} IN (SELECT ${outlets.brandId} FROM ${outlets} WHERE ${outlets.tenantId} = ${context.tenant.tenantId} AND ${outlets.id} = ${outletId})`,
+      ),
+      and(
         eq(roleAssignments.scopeType, "outlet"),
         eq(roleAssignments.scopeId, outletId),
+      ),
+      and(
+        eq(roleAssignments.scopeType, "station"),
+        sql`${roleAssignments.scopeId} IN (SELECT ${stations.id} FROM ${stations} WHERE ${stations.tenantId} = ${context.tenant.tenantId} AND ${stations.outletId} = ${outletId})`,
       ),
     ),
     or(isNull(user.banned), eq(user.banned, false)),
