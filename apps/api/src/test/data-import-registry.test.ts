@@ -126,6 +126,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
+  "0187_audit_retention_maintenance.sql":
+    "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
 };
 
 // Entrypoints that open a database pool but import no data.
@@ -140,6 +142,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
   "scripts/doctor.mjs": "read-only health query",
   "scripts/test-setup.mjs":
     "writes a marker table into a disposable test database only",
+  "apps/api/src/worker/audit-retention.job.ts":
+    "maintenance pool for the daily audit retention purge: calls two SECURITY DEFINER functions that delete expired audit rows, imports nothing (legend-usyi)",
 };
 
 // package.json script names matching /seed|import|backfill/ that are not
