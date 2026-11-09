@@ -638,6 +638,8 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
     expect(await deferredRows(moved.id)).toHaveLength(0);
   });
 
+  // Handler-level only: through the link an outlet-less event is already
+  // refused by the edge queue and by db-link-store's node-scope check.
   it("r2) fallback refusals are 4xx: other tenant, other outlet, no outlet", async () => {
     const name = "table_session.opened";
     const cases = {

@@ -64,6 +64,9 @@ export async function applyEdgeDeferredEvent(
   if (event.tenantId !== tenantId)
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
   const outletId = event.outletId;
+  // Defence in depth: through the link an outlet-less event never gets here.
+  // The edge queue refuses it (edge-queue.service.ts) and db-link-store
+  // rejects an outlet other than the node's before the applier runs.
   if (!outletId)
     throw new CoreError("CONFLICT", "Event has no outlet; it cannot be parked");
   if (!isOutletInScope(meta.context.outletScope, outletId))
