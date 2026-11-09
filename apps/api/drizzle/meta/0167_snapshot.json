@@ -1,5 +1,5 @@
 {
-  "id": "3e33d297-2814-4915-8938-ecec71988020",
+  "id": "511eaa50-01ff-4291-a9d8-c48f94af6c15",
   "prevId": "5ef58157-28b7-4c8d-aa99-ce5097cbd15f",
   "version": "7",
   "dialect": "postgresql",
@@ -44295,6 +44295,56 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "payroll_runs_live_regular_period_key": {
+          "name": "payroll_runs_live_regular_period_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payroll_policy_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "period_start",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_runs\".\"run_type\" = 'regular' AND \"payroll_runs\".\"status\" <> 'reversed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_runs_live_thr_schedule_key": {
+          "name": "payroll_runs_live_thr_schedule_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thr_schedule_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_runs\".\"run_type\" = 'thr' AND \"payroll_runs\".\"status\" <> 'reversed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -44394,9 +44444,17 @@
           "name": "payroll_runs_distinct_approvers_check",
           "value": "\"payroll_runs\".\"approved_by_finance\" IS NULL OR \"payroll_runs\".\"approved_by_hr\" IS NULL OR \"payroll_runs\".\"approved_by_finance\" <> \"payroll_runs\".\"approved_by_hr\""
         },
-        "payroll_runs_locked_snapshot_check": {
-          "name": "payroll_runs_locked_snapshot_check",
-          "value": "\"payroll_runs\".\"status\" NOT IN ('locked', 'paid', 'reversed') OR (\"payroll_runs\".\"config_snapshot\" IS NOT NULL AND \"payroll_runs\".\"totals\" IS NOT NULL AND \"payroll_runs\".\"locked_at\" IS NOT NULL)"
+        "payroll_runs_frozen_check": {
+          "name": "payroll_runs_frozen_check",
+          "value": "\"payroll_runs\".\"status\" NOT IN ('locked', 'paid', 'reversed') OR (\"payroll_runs\".\"config_snapshot\" IS NOT NULL AND \"payroll_runs\".\"totals\" IS NOT NULL\n        AND \"payroll_runs\".\"approved_by_hr\" IS NOT NULL AND \"payroll_runs\".\"approved_by_hr_at\" IS NOT NULL\n        AND \"payroll_runs\".\"approved_by_finance\" IS NOT NULL AND \"payroll_runs\".\"approved_by_finance_at\" IS NOT NULL\n        AND \"payroll_runs\".\"locked_by\" IS NOT NULL AND \"payroll_runs\".\"locked_at\" IS NOT NULL)"
+        },
+        "payroll_runs_paid_pair_check": {
+          "name": "payroll_runs_paid_pair_check",
+          "value": "(\"payroll_runs\".\"status\" = 'paid') = (\"payroll_runs\".\"paid_at\" IS NOT NULL)\n        AND (\"payroll_runs\".\"status\" = 'paid') = (\"payroll_runs\".\"paid_by\" IS NOT NULL)"
+        },
+        "payroll_runs_reversed_check": {
+          "name": "payroll_runs_reversed_check",
+          "value": "\"payroll_runs\".\"status\" <> 'reversed' OR \"payroll_runs\".\"reversal\" ->> 'status' = 'approved'"
         }
       },
       "isRLSEnabled": false

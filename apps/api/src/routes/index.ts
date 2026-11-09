@@ -56,6 +56,22 @@ import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
 import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
+import { payrollStatutoryRouter } from "./payroll-statutory.routes";
+import {
+  payrollComponentsRouter,
+  payrollEmployeeComponentsRouter,
+} from "./payroll-components.routes";
+import {
+  payrollLoansRouter,
+  payrollMyLoansRouter,
+} from "./payroll-loans.routes";
+import { payrollPolicyRouter, payrollThrRouter } from "./payroll-policy.routes";
+import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
+import {
+  payrollMyReimbursementsRouter,
+  payrollReimbursementCategoriesRouter,
+  payrollReimbursementsRouter,
+} from "./payroll-reimbursements.routes";
 import { hrisAnnouncementRouter } from "./hris-announcement.routes";
 import { hrisSopRouter } from "./hris-sop.routes";
 import { hrisTrainingRouter } from "./hris-training.routes";
@@ -220,6 +236,21 @@ apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
 // whose router applies its own middleware to everything under its prefix.
 apiRouter.use("/hris/payroll/pph21-policies", payrollPph21PolicyRouter);
+// WS-10 payroll configuration API (legend-gfcr). Before `/hris` as well.
+apiRouter.use("/hris/payroll/statutory-tables", payrollStatutoryRouter);
+apiRouter.use("/hris/payroll/policies", payrollPolicyRouter);
+apiRouter.use("/hris/payroll/thr-schedules", payrollThrRouter);
+apiRouter.use("/hris/payroll/components", payrollComponentsRouter);
+apiRouter.use("/hris/payroll/employees", payrollEmployeeComponentsRouter);
+apiRouter.use("/hris/payroll/loans", payrollLoansRouter);
+apiRouter.use("/hris/payroll/service-charge-pools", payrollServiceChargeRouter);
+apiRouter.use(
+  "/hris/payroll/reimbursement-categories",
+  payrollReimbursementCategoriesRouter,
+);
+apiRouter.use("/hris/payroll/reimbursements", payrollReimbursementsRouter);
+apiRouter.use("/hris/me/loans", payrollMyLoansRouter);
+apiRouter.use("/hris/me/reimbursements", payrollMyReimbursementsRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
 apiRouter.use(

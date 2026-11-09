@@ -466,6 +466,16 @@ export const payrollRuns = pgTable(
       table.tenantId,
       table.periodStart,
     ),
+    // One live regular run per policy and period, and one live run per THR
+    // schedule: a period is never paid twice (a reversed run can be redone).
+    uniqueIndex("payroll_runs_live_regular_period_key")
+      .on(table.tenantId, table.payrollPolicyId, table.periodStart)
+      .where(
+        sql`${table.runType} = 'regular' AND ${table.status} <> 'reversed'`,
+      ),
+    uniqueIndex("payroll_runs_live_thr_schedule_key")
+      .on(table.tenantId, table.thrScheduleId)
+      .where(sql`${table.runType} = 'thr' AND ${table.status} <> 'reversed'`),
     check(
       "payroll_runs_run_type_check",
       sql`${table.runType} IN ('regular', 'thr', 'off_cycle')`,
@@ -491,9 +501,23 @@ export const payrollRuns = pgTable(
       "payroll_runs_distinct_approvers_check",
       sql`${table.approvedByFinance} IS NULL OR ${table.approvedByHr} IS NULL OR ${table.approvedByFinance} <> ${table.approvedByHr}`,
     ),
+    // A frozen run went through both approvals and the lock (PAYR-01).
     check(
-      "payroll_runs_locked_snapshot_check",
-      sql`${table.status} NOT IN ('locked', 'paid', 'reversed') OR (${table.configSnapshot} IS NOT NULL AND ${table.totals} IS NOT NULL AND ${table.lockedAt} IS NOT NULL)`,
+      "payroll_runs_frozen_check",
+      sql`${table.status} NOT IN ('locked', 'paid', 'reversed') OR (${table.configSnapshot} IS NOT NULL AND ${table.totals} IS NOT NULL
+        AND ${table.approvedByHr} IS NOT NULL AND ${table.approvedByHrAt} IS NOT NULL
+        AND ${table.approvedByFinance} IS NOT NULL AND ${table.approvedByFinanceAt} IS NOT NULL
+        AND ${table.lockedBy} IS NOT NULL AND ${table.lockedAt} IS NOT NULL)`,
+    ),
+    check(
+      "payroll_runs_paid_pair_check",
+      sql`(${table.status} = 'paid') = (${table.paidAt} IS NOT NULL)
+        AND (${table.status} = 'paid') = (${table.paidBy} IS NOT NULL)`,
+    ),
+    // PAYR-05: a run is reversed only through an approved reversal.
+    check(
+      "payroll_runs_reversed_check",
+      sql`${table.status} <> 'reversed' OR ${table.reversal} ->> 'status' = 'approved'`,
     ),
   ],
 );
