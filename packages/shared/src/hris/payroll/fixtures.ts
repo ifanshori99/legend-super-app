@@ -583,7 +583,7 @@ const componentTuples: readonly ComponentTuple[] = [
     "variable",
     false,
     false,
-    125,
+    115,
   ],
 ];
 

@@ -2,6 +2,18 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-kn3n bagian 2, legend-xzid, legend-6ajk: kekurangan PPh21 jadi piutang karyawan (engineer, cabang `ws/pph21-overwithhold`, 2026-11-09)
+
+- Keputusan founder B8: potongan PPh21 karyawan di atas gaji tersedia jadi piutang karyawan (`tax.pph21ReceivableIdr`), bukan beban perusahaan; setoran tetap T, tanpa gross-up.
+- Engine `pph21.ts`: W = clamp(De + bE, 0, cap), piutang = sisanya, tidak masuk X; priorTax memuat piutang; jalur settlement dihapus (6ajk hilang). Fuzz diferensial architect 16.000 tahun: 0 beda dengan model.
+- R63: sebelum X = T = B = 5.646.900 (PKP 77.646.000); sesudah X 0, T 4.800.000, piutang 4.800.000 (PKP 72.000.000).
+- xzid: `payslipWithholdingCap` + builder fixtures mengisi `employeeWithholdingCapIdr`.
+- Penagihan: urutan BPJS, PPH21, LATE, PPH21_RECEIVABLE, LOAN, plafon = sisa sebelum pinjaman; refund PPh21 menetting piutang. Totals run punya `pph21ReceivableIdr` / `pph21ReceivableCollectedIdr`.
+- Jurnal: role `employee_receivable`, akun 1204 Piutang Karyawan, baris di `payroll_run.completed`. Tanpa migrasi.
+- Gate: 44 file test payroll/accounting/hris lulus (758 lulus, 15 skip), tsc api/shared/web bersih, eslint, prettier. Review K: reviewer Opus 0 temuan, architect approve.
+- Follow-up: legend-s8a3 (aturan payroll tidak seimbang + backfill mapping 1204), legend-itph (open item party employee), legend-45lm (piutang karyawan keluar / write-off), legend-f2rv (ekspor menghitung piutang), legend-8463 (default proportional menghasilkan piutang besar).
+- Berikut: second-opinion Codex brief 170b, gerbang founder untuk merge.
+
 ## legend-9fhs event edge tidak lagi menghentikan sinkron ke cloud (engineer, cabang `ws/fix-9fhs`, 2026-11-09)
 
 - Akar masalah: edge mengirim semua baris outbox `cloud-sync` ke cloud; cloud tidak mengenal aggregate POS (`order`, `cashier_shift`, `day`, `table_session`, `pos_override`, ...) sehingga `applyInbound` melempar `EdgeEventUnclassifiedError`, seluruh batch rollback, kursor tidak maju, `stock.moved` ikut tertahan selamanya. Direproduksi dengan test.
