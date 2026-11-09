@@ -91,7 +91,6 @@ import {
 import {
   posDayInventoryPort,
   posOutletReceiptGapsPort,
-  posReceiptGapsPort,
 } from "./pos-shift-ports.ts";
 
 type DayCaller = { userId: UserId };
@@ -823,19 +822,11 @@ export async function closePosDay(
       now,
     );
 
-    for (const device of open.devices) {
-      if (device.deviceId === NIL_DEVICE) continue;
-      const gaps = await posReceiptGapsPort()(tx, context, {
-        outletId,
-        deviceId: device.deviceId,
-      });
-      // A lost range (legend-yd0h8) is for reconciliation display only; it has
-      // no resolution path, so it must not block the close.
-      if (gaps.some((run) => run.missing.length > 0))
-        throw new PosError("RECEIPT_SEQUENCE_GAP");
-    }
     // legend-6b0ld: POS-06 covers every run of the outlet, also devices idle
-    // today and the cloud sequence. Lost ranges are not in this result.
+    // today and the cloud sequence. Lost ranges (legend-yd0h8) are not in this
+    // result: they are for reconciliation display only and never block the
+    // close. One check only (legend-sgh4l): a per-device loop before it hid
+    // the message that names the missing numbers.
     const outletGaps = await posOutletReceiptGapsPort()(tx, context, {
       outletId,
     });
