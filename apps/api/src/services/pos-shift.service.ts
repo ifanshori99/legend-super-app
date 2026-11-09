@@ -85,8 +85,10 @@ import {
   computeShiftAggregates,
   countDto,
   countReceiptDto,
+  expireHeldCashMovements,
   findShift,
   heldCashOutIdrOf,
+  heldCorrectionCashIdrOf,
   loadOutletAccess,
   movementDto,
   movementsOf,
@@ -776,6 +778,7 @@ export async function submitPosShiftCount(
     const aggregates = await computeShiftAggregates(tx, shift);
     const expectedIdr = expectedCashOf(shift, aggregates);
     const heldCashOutIdr = await heldCashOutIdrOf(tx, shift);
+    const heldCorrectionIdr = await heldCorrectionCashIdrOf(tx, shift);
     const cashWatermark = await cashWatermarkOf(tx, shift);
     const counts = request.counts.map((line) => ({
       denominationIdr: line.denominationIdr,
@@ -822,6 +825,7 @@ export async function submitPosShiftCount(
         expectedIdr: expectedIdr as Idr,
         varianceIdr: (countedIdr - expectedIdr) as Idr,
         heldCashOutIdr: heldCashOutIdr as Idr,
+        heldCorrectionIdr: heldCorrectionIdr as Idr,
         cashWatermark,
         submittedBy: caller.userId,
         submittedAt: now,
@@ -1257,9 +1261,12 @@ export async function closePosShift(
     // legend-q7jj F1: any cash row since the count (held or not) makes it
     // stale, checked first and the same way for every row, so the answer
     // never tells a held row from a normal one. A count made before the
-    // watermark existed is stale too.
+    // watermark existed is stale too, and so is one made before the held
+    // correction was stored (legend-y9bf): its receipt judged the note
+    // with the old formula.
     if (
       count.cashWatermark === null ||
+      count.heldCorrectionIdr === null ||
       (await cashWatermarkOf(tx, shift)) !== count.cashWatermark
     )
       throw new PosError("SHIFT_COUNT_STALE");
@@ -1269,9 +1276,15 @@ export async function closePosShift(
     // A cash out held for review moves no drawer figure, so it is checked
     // on its own: the supervisor approved the count with its held sum.
     // Backstop of the watermark above.
+    // legend-y9bf: the close books variance + the held refund and void cash
+    // the count stored (their own events book that cash); held cash outs
+    // expire in writeClose. The note rule follows that booked difference.
+    // The recomputed held correction is a cheap backstop of the count's.
+    const heldCorrectionIdr = Number(count.heldCorrectionIdr);
     if (
       expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
-      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)
+      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr) ||
+      (await heldCorrectionCashIdrOf(tx, shift)) !== heldCorrectionIdr
     )
       throw new PosError("SHIFT_COUNT_STALE");
     let closed: PosShift;
@@ -1279,7 +1292,7 @@ export async function closePosShift(
       closed = closeShift(shiftDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
-        heldCashOutIdr: Number(count.heldCashOutIdr),
+        heldCashOutIdr: heldCorrectionIdr,
         varianceNote: input.varianceNote ?? null,
         approvedBy: input.approvedBy,
         approvalRequestId: input.approvalRequestId,
@@ -1314,6 +1327,7 @@ export async function closePosShift(
       aggregates,
       count,
       closed,
+      heldCorrectionIdr,
       override,
       idempotencyKey,
       fingerprint,
@@ -1339,6 +1353,8 @@ async function writeClose(
     aggregates: ShiftAggregates;
     count: ShiftCountRow;
     closed: PosShift;
+    /** Held refund and void cash of the shift (heldCorrectionCashIdrOf). */
+    heldCorrectionIdr: number;
     override: OverrideRow;
     idempotencyKey: string;
     fingerprint: string;
@@ -1348,6 +1364,17 @@ async function writeClose(
 ): Promise<PosShift> {
   const { outletId, shift, aggregates, count, closed, override, now } = input;
   const tenantId = context.tenant.tenantId;
+  // legend-y9bf: the booked difference. Held cash outs and drops are left
+  // out: they expire here, their cash still in the drawer (counted against
+  // an expected that never subtracted them).
+  const differenceIdr = (closed.varianceIdr ?? 0) + input.heldCorrectionIdr;
+  const expiredIdr = await expireHeldCashMovements(
+    tx,
+    context,
+    shift,
+    caller,
+    now,
+  );
   const approvedAt = override.resolvedAt ?? override.createdAt;
   // The verified override's approver, never the client's spelling of the id.
   const approvedBy = override.approvedBy;
@@ -1370,6 +1397,7 @@ async function writeClose(
         varianceIdr: closed.varianceIdr,
         varianceNote: closed.varianceNote,
         heldCashOutIdr: count.heldCashOutIdr,
+        differenceIdr: differenceIdr as Idr,
         counts: count.counts,
         countId: count.id,
         approvedBy,
@@ -1419,11 +1447,12 @@ async function writeClose(
       cashDropIdr: dto.cashDropIdr,
       expectedIdr: closed.expectedIdr,
       countedIdr: closed.countedIdr,
-      // Booked as if nothing were held (legend-utqr): counted − (expected −
-      // held). A held refund is already credited to cash by order.refunded,
-      // so the stored variance (counted − expected) would book it twice.
-      differenceIdr: (closed.varianceIdr ?? 0) + Number(count.heldCashOutIdr),
-      heldCashOutIdr: Number(count.heldCashOutIdr),
+      // counted − (expected − held refund and void cash) (legend-y9bf): a
+      // held refund is already credited to cash by order.refunded, so the
+      // stored variance alone would book it twice. Expired held cash outs
+      // are not in it. Stored as pos_shifts.difference_idr.
+      differenceIdr,
+      heldCashOutIdr: input.heldCorrectionIdr,
       varianceNote: dto.varianceNote,
       approvedBy,
       approvalRequestId,
@@ -1446,6 +1475,8 @@ async function writeClose(
         ...shiftAuditView(row),
         countId: count.id,
         heldCashOutIdr: Number(count.heldCashOutIdr),
+        differenceIdr,
+        expiredCashOutIdr: expiredIdr,
       },
       reason: dto.varianceNote,
     },
@@ -1544,9 +1575,10 @@ export async function forceClosePosShift(
       .limit(1);
     if (!latest || latest.id !== count.id)
       throw new PosError("SHIFT_COUNT_SUPERSEDED");
-    // legend-q7jj F1: same watermark check as the cashier close.
+    // legend-q7jj F1, legend-y9bf: same staleness check as the cashier close.
     if (
       count.cashWatermark === null ||
+      count.heldCorrectionIdr === null ||
       (await cashWatermarkOf(tx, shift)) !== count.cashWatermark
     )
       throw new PosError("SHIFT_COUNT_STALE");
@@ -1554,9 +1586,15 @@ export async function forceClosePosShift(
     // A cash out held for review moves no drawer figure, so it is checked
     // on its own: the supervisor approved the count with its held sum.
     // Backstop of the watermark above.
+    // legend-y9bf: the close books variance + the held refund and void cash
+    // the count stored (their own events book that cash); held cash outs
+    // expire in writeClose. The note rule follows that booked difference.
+    // The recomputed held correction is a cheap backstop of the count's.
+    const heldCorrectionIdr = Number(count.heldCorrectionIdr);
     if (
       expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
-      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)
+      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr) ||
+      (await heldCorrectionCashIdrOf(tx, shift)) !== heldCorrectionIdr
     )
       throw new PosError("SHIFT_COUNT_STALE");
     let closed: PosShift;
@@ -1564,7 +1602,7 @@ export async function forceClosePosShift(
       closed = closeShift(shiftDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
-        heldCashOutIdr: Number(count.heldCashOutIdr),
+        heldCashOutIdr: heldCorrectionIdr,
         varianceNote: input.note,
         approvedBy: input.approvedBy,
         approvalRequestId: input.approvalRequestId,
@@ -1597,6 +1635,7 @@ export async function forceClosePosShift(
       aggregates,
       count,
       closed,
+      heldCorrectionIdr,
       override,
       idempotencyKey,
       fingerprint,

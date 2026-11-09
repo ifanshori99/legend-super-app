@@ -201,3 +201,71 @@ CREATE TRIGGER "cash_movement_refusals_guard_trg"
   FOR EACH ROW EXECUTE FUNCTION app.cash_movement_refusals_guard();
 --> statement-breakpoint
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.cash_movement_refusals FROM legend_app;
+--> statement-breakpoint
+
+-- legend-y9bf: Tenant + outlet RLS (TEN-01/TEN-03) for the decisions on held
+-- cash movements.
+SELECT app.enforce_tenant_rls('public.cash_movement_outcomes'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.cash_movement_outcomes'::regclass);
+--> statement-breakpoint
+
+-- A decision on a held cash movement is append-only history (enforce_tenant_rls
+-- grants the app role UPDATE/DELETE, so the trigger and the REVOKE below close
+-- that). It names a held movement (needs_approval) of the same shift and
+-- outlet. 'approved' is refused outright: no approval flow puts a held cash
+-- movement into the drawer figures yet (legend-3l4q). 'rejected' (not booked,
+-- like 'expired') lands only while that shift is open: the close expires every
+-- undecided held movement. The shift row is read FOR SHARE so a decision waits
+-- for an in-flight close holding it FOR UPDATE. The unique movement key
+-- refuses a second decision on the same movement, including one on an expired
+-- movement.
+CREATE OR REPLACE FUNCTION app.cash_movement_outcomes_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  movement_shift uuid;
+  movement_outlet uuid;
+  movement_held boolean;
+  shift_status text;
+  shift_outlet uuid;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'POS-03: cash movement outcome % is history and cannot change', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.outcome = 'approved' THEN
+    RAISE EXCEPTION 'POS-03: no approval flow updates the drawer for a held cash movement yet (legend-3l4q)'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT m.shift_id, m.outlet_id, m.needs_approval
+  INTO movement_shift, movement_outlet, movement_held
+  FROM public.cash_movements m
+  WHERE m.tenant_id = NEW.tenant_id AND m.id = NEW.movement_id;
+  IF movement_held IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'POS-03: cash movement % is not held for review', NEW.movement_id
+      USING ERRCODE = '23514';
+  END IF;
+  IF movement_shift <> NEW.shift_id OR movement_outlet <> NEW.outlet_id THEN
+    RAISE EXCEPTION 'TEN-03: cash movement outcome differs from its movement'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT s.status, s.outlet_id INTO shift_status, shift_outlet
+  FROM public.pos_shifts s
+  WHERE s.tenant_id = NEW.tenant_id AND s.id = NEW.shift_id
+  FOR SHARE;
+  IF shift_outlet IS DISTINCT FROM NEW.outlet_id THEN
+    RAISE EXCEPTION 'TEN-03: cash movement outcome outlet differs from its shift'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.outcome <> 'expired' AND shift_status IS DISTINCT FROM 'open' THEN
+    RAISE EXCEPTION 'POS-03: shift % is closed; its held cash movements expired', NEW.shift_id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER "cash_movement_outcomes_guard_trg"
+  BEFORE INSERT OR UPDATE OR DELETE ON "cash_movement_outcomes"
+  FOR EACH ROW EXECUTE FUNCTION app.cash_movement_outcomes_guard();
+--> statement-breakpoint
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.cash_movement_outcomes FROM legend_app;

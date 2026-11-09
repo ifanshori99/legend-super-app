@@ -15,13 +15,12 @@
 //    409 SHIFT_COUNT_STALE, before any approval is judged. The test asserts
 //    that the normal and the held path answer the SAME status and code, and
 //    that the answer is the stale one.
-//  - F2 (pending decision): the booking rule for a held cash movement awaits a
-//    CTO accounting decision, so the event field is not asserted. The money
-//    invariant that holds today is asserted instead: closing with an unpaid
-//    held cash out of Rp150.000 (counted = expected) posts NO journal for the
-//    shift (the auto-journal consumer refuses the event whose differenceIdr is
-//    not the shift variance and parks it). A control close with a real over
-//    posts, so the test cannot pass because the accounting setup is broken.
+//  - F2 (decided, legend-y9bf): a held cash movement is not disbursed; it
+//    expires at the close with its cash still in the drawer. Closing with an
+//    unpaid held cash out of Rp150.000 (counted = expected) needs no note,
+//    books differenceIdr 0 and the auto-journal consumer posts NO journal for
+//    the shift and parks nothing. A control close with a real over posts, so
+//    the test cannot pass because the accounting setup is broken.
 //  - F3: the refusal of an over-cap cash out is a 400 VALIDATION_ERROR, like
 //    the existing "second held cash out past the safe integer" refusal. Held
 //    and normal refunds are seeded straight into pos_order_refunds with
@@ -696,6 +695,10 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
     shiftId: string,
     submittedBy: string,
     forced: boolean,
+    // legend-y9bf: a count made between 0146 and 0149 (0142 and 0143 on the
+    // branch) has a watermark but no held_correction_idr (left NULL here in
+    // every case).
+    cashWatermark: number | null = null,
   ): Promise<string> {
     const id = randomUUID();
     await asOwnerTenant(tenant.tenantId, (client) =>
@@ -704,7 +707,7 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
            (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
             counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
             idempotency_key, request_fingerprint, cash_watermark)
-         VALUES ($1, $2, $3, $4, 1, $5::jsonb, $6, $7, $7, 0, $8, now(), $9, $10, $6, NULL)`,
+         VALUES ($1, $2, $3, $4, 1, $5::jsonb, $6, $7, $7, 0, $8, now(), $9, $10, $6, $11)`,
         [
           id,
           tenant.tenantId,
@@ -716,11 +719,29 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
           submittedBy,
           forced,
           randomUUID(),
+          cashWatermark,
         ],
       ),
     );
     return id;
   }
+
+  it("legend-y9bf: a count with a watermark but no held correction (made before 0149) is stale; a recount closes", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    // No cash row yet, so the watermark 0 is current: only the missing held
+    // correction makes it stale.
+    const countId = await legacyCount(shift.id, cashier.userId, false, 0);
+    const stale = await close(cashier, shift.id, {
+      countId,
+      ...(await approvalFor(cashier, countId)),
+    });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+  });
 
   it("a count without a cash watermark (made before the column) is stale for close and for force close; a recount closes", async () => {
     // Close: nothing moved since the count, but its watermark is unknown.
@@ -874,12 +895,11 @@ async function journalCount(): Promise<number> {
   return rows[0]!.n;
 }
 
-describe("POS-03 legend-q7jj F2 (pending decision): a held cash out that was never paid out", () => {
-  // The booking rule for held cash movements awaits a CTO accounting decision
-  // (what differenceIdr the close event carries). Until then the invariant is
-  // the money one: the unpaid held Rp150.000 never becomes a Rp150.000 cash
-  // debit; the auto-journal consumer refuses the event and posts nothing.
-  it("legend-q7jj F2 (pending decision): closing with an unpaid held cash out of Rp150.000 posts no journal for that shift, while a plain Rp5.000 over does post", async () => {
+describe("POS-03 legend-q7jj F2 (decided, legend-y9bf): a held cash out that was never paid out", () => {
+  // The unpaid held Rp150.000 expires at the close and never becomes a
+  // Rp150.000 cash debit: the close event books differenceIdr 0, and the
+  // auto-journal consumer ignores it (nothing posted, nothing parked).
+  it("legend-q7jj F2 (decided, legend-y9bf): closing with an unpaid held cash out of Rp150.000 needs no note, books differenceIdr 0 and posts nothing for that shift, while a plain Rp5.000 over does post", async () => {
     const control = await newCashier("Kasir Kontrol");
     const controlShift = await openShift(control);
     await enableAccounting(controlShift.businessDate);
@@ -903,18 +923,18 @@ describe("POS-03 legend-q7jj F2 (pending decision): a held cash out that was nev
       reasonNote: "Beli gas elpiji",
     });
     expect(held.status, JSON.stringify(held.body)).toBe(201);
-    const closed = await closeShift(cashier, shift.id, FLOAT_IDR, {
-      varianceNote: "Kas keluar menunggu persetujuan",
-    });
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(closed.body.data).toMatchObject({
       status: "closed",
       expectedIdr: FLOAT_IDR,
       countedIdr: FLOAT_IDR,
+      varianceIdr: 0,
+      varianceNote: null,
     });
 
     const result = await deliverClosedEvent(shift.id);
-    expect(result.status, JSON.stringify(result)).not.toBe("posted");
+    expect(result.status, JSON.stringify(result)).toBe("ignored");
     expect(await journalCount()).toBe(afterControl);
   });
 });

@@ -68,7 +68,12 @@ import {
   posOrderTenders,
   posOrderVoids,
 } from "../db/schema/pos-order.ts";
-import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
+import {
+  cashMovementOutcomes,
+  cashMovements,
+  posDailyCloses,
+  posShifts,
+} from "../db/schema/pos-shift.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -196,6 +201,7 @@ type DeviceAcc = {
   refundAmountIdr: number;
   shiftCount: number;
   cashVarianceIdr: number;
+  expiredCashOutIdr: number;
   closed: boolean;
 };
 
@@ -215,6 +221,7 @@ function newDevice(deviceId: string): DeviceAcc {
     refundAmountIdr: 0,
     shiftCount: 0,
     cashVarianceIdr: 0,
+    expiredCashOutIdr: 0,
     closed: true,
   };
 }
@@ -477,6 +484,7 @@ async function computeRecap(
       status: posShifts.status,
       varianceIdr: posShifts.varianceIdr,
       heldCashOutIdr: posShifts.heldCashOutIdr,
+      differenceIdr: posShifts.differenceIdr,
     })
     .from(posShifts)
     .where(
@@ -490,14 +498,51 @@ async function computeRecap(
     const acc = deviceOf(row.deviceId);
     acc.shiftCount += 1;
     // Book variance, as the shift close booked it (cashier_shift.closed
-    // differenceIdr, legend-ifnb): counted − (expected − held). Held cash
-    // refunds already sit in refundedIdr, so counted − expected would count
-    // them twice.
+    // differenceIdr, legend-ifnb): difference_idr, counted − (expected −
+    // held refund and void cash) (legend-y9bf). Held cash refunds already sit
+    // in refundedIdr, so counted − expected would count them twice. A shift
+    // closed before difference_idr booked counted − (expected − held).
     if (row.status === "closed")
       acc.cashVarianceIdr +=
-        Number(row.varianceIdr ?? 0) + Number(row.heldCashOutIdr);
+        row.differenceIdr !== null
+          ? Number(row.differenceIdr)
+          : Number(row.varianceIdr ?? 0) + Number(row.heldCashOutIdr);
     else acc.closed = false;
   }
+
+  // Held cash outs / drops that expired at the close of this day's shifts
+  // (legend-y9bf): the cash stayed in the drawer and nothing was booked.
+  const expired = await tx
+    .select({
+      deviceId: posShifts.deviceId,
+      amountIdr: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
+    })
+    .from(cashMovementOutcomes)
+    .innerJoin(
+      cashMovements,
+      and(
+        eq(cashMovements.tenantId, cashMovementOutcomes.tenantId),
+        eq(cashMovements.id, cashMovementOutcomes.movementId),
+      ),
+    )
+    .innerJoin(
+      posShifts,
+      and(
+        eq(posShifts.tenantId, cashMovementOutcomes.tenantId),
+        eq(posShifts.id, cashMovementOutcomes.shiftId),
+      ),
+    )
+    .where(
+      and(
+        eq(cashMovementOutcomes.tenantId, tenantId),
+        eq(cashMovementOutcomes.outletId, outletId),
+        eq(cashMovementOutcomes.outcome, "expired"),
+        eq(posShifts.businessDate, businessDate),
+      ),
+    )
+    .groupBy(posShifts.deviceId);
+  for (const row of expired)
+    deviceOf(row.deviceId).expiredCashOutIdr += Number(row.amountIdr);
 
   if (devices.size === 0) deviceOf(NIL_DEVICE);
   const deviceRows = [...devices.values()].sort((a, b) =>
@@ -544,6 +589,7 @@ async function computeRecap(
     totalRefundsIdr: sum((device) => device.refundAmountIdr),
     totalVoidsIdr: sum((device) => device.voidedAmountIdr),
     totalVarianceIdr: sum((device) => device.cashVarianceIdr),
+    totalExpiredCashOutIdr: sum((device) => device.expiredCashOutIdr),
     inventoryDeductionApplied: false,
     accountingSync: { status: "pending", journalCount: 0, postedAt: null },
   });
