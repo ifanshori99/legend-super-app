@@ -849,4 +849,49 @@ describe("Promotion outletScope allowlist (legend-jh27)", () => {
     expect(patched.status, JSON.stringify(patched.body)).toBe(200);
     expect(patched.body.data.outletScope).toBe("all_except");
   });
+
+  it("emits promotion_outlet.changed from the effective `only` state, not the all_except default", async () => {
+    const { client } = await ownerClient();
+    const itemId = await seedItem(50_000);
+    const created = await client
+      .post("/api/promotions")
+      .set(originHeader)
+      .send(itemPromoBody(itemId, { name: "Hanya Event", outletScope: "only" }));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const promotionId = created.body.data.id as string;
+    createdPromotions.push(promotionId);
+    const changes = async () =>
+      (
+        await owner.query(
+          `SELECT event->'payload' AS payload FROM domain_event_outbox
+            WHERE tenant_id = $1 AND event->>'name' = 'promotion_outlet.changed'
+              AND event->'payload'->>'promotionId' = $2`,
+          [tenant.id, promotionId],
+        )
+      ).rows;
+
+    // Disabling a non-allowlisted outlet: off -> off, no event.
+    const off = await client
+      .put(`/api/promotions/${promotionId}/outlets/${outlet.id}`)
+      .set(originHeader)
+      .send({ enabled: false });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect(await changes()).toEqual([]);
+
+    // Enabling an outlet without an allowlist row: off -> on, one event.
+    const on = await client
+      .put(`/api/promotions/${promotionId}/outlets/${secondOutlet.id}`)
+      .set(originHeader)
+      .send({ enabled: true });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect(await changes()).toEqual([
+      {
+        payload: {
+          promotionId,
+          outletId: secondOutlet.id,
+          enabled: true,
+        },
+      },
+    ]);
+  });
 });

@@ -159,7 +159,7 @@ export async function setPromotionOutlet(
       id: outletKey,
     });
     await requirePromoOutlet(tx, context, outletKey);
-    await requirePromotion(tx, context, promotionId);
+    const scope = await requirePromotion(tx, context, promotionId);
     const tenantId = context.tenant.tenantId;
     const [before] = await tx
       .select({ enabled: promotionOutlets.enabled })
@@ -173,7 +173,7 @@ export async function setPromotionOutlet(
       )
       .limit(1)
       .for("update");
-    const wasEnabled = before?.enabled ?? true;
+    const wasEnabled = promotionRunsAtOutlet(scope, before?.enabled ?? null);
     await tx
       .insert(promotionOutlets)
       .values({

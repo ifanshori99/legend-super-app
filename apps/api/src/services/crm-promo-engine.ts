@@ -128,6 +128,7 @@ export const PROMO_AUDIT_SAFE_FIELDS: readonly string[] = [
   "promotionId",
   "orderId",
   "outletId",
+  "outletScope",
   "status",
   "change",
   "priority",
