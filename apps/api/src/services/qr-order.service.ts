@@ -124,7 +124,6 @@ import {
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
 import {
-  assertQuotePlaceable,
   buildQuote,
   loadCatalogue,
   loadTaxConfig,
@@ -737,6 +736,7 @@ export function orderDto(
     taxIdr: row.taxIdr,
     roundingIdr: row.roundingIdr,
     totalIdr: row.totalIdr,
+    pricesIncludeTaxAndService: row.pricesIncludeTax,
     status: row.status,
     items: items.map((item) => ({
       id: item.id,
@@ -1616,7 +1616,6 @@ async function checkout(
   });
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
-  assertQuotePlaceable(quote);
   // ORD-10 / F43: an open-bill order may not push the session over its limit.
   await assertOpenBillWithinLimit(tx, context, {
     sessionId: session.id,
@@ -1655,6 +1654,9 @@ async function checkout(
       taxIdr: quote.taxIdr,
       roundingIdr: quote.rounding.adjustmentIdr,
       totalIdr: quote.totalIdr,
+      // legend-zmc2: subtotal stays the gross line sum; service and tax are
+      // the parts backed out of it (orders_total_check branches on this).
+      pricesIncludeTax: quote.pricesIncludeTaxAndService,
       depositAppliedIdr: idr(0),
       status: payFirst ? "awaiting_payment" : "sent",
       businessDate,

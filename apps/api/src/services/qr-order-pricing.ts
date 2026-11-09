@@ -622,22 +622,6 @@ function lineSubtotal(line: PricedQuoteLine): number {
 }
 
 /**
- * An inclusive quote can be shown, but not yet placed: `orders` carries
- * `total = subtotal - discount + service + tax + rounding` as a CHECK and
- * `qrOrderSchema` ties `subtotal` to the item lines, so a gross subtotal with
- * included service/tax needs a migration (legend-49pw follow-up). Fail closed
- * with the catalogued error instead of a constraint violation.
- */
-export function assertQuotePlaceable(quote: OrderQuote): void {
-  if (quote.pricesIncludeTaxAndService)
-    throw new HttpError(
-      qrOrderErrorHttpStatus.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
-      QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
-      qrOrderErrorMessages.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
-    );
-}
-
-/**
  * Builds the contract quote from server-priced lines. The tax engine runs
  * discount -> service -> tax and fails closed (TaxError) on a configuration
  * gap. A tax-inclusive rule yields an inclusive quote (`pricesIncludeTaxAndService`);

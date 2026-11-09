@@ -737,6 +737,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
         taxIdr: idr(0),
         roundingIdr: idr(0),
         totalIdr: idr(0),
+        pricesIncludeTaxAndService: false,
         status: "sent",
         items: [],
         createdAt: now,

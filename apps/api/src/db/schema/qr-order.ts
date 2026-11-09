@@ -19,6 +19,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -202,6 +203,12 @@ export const orders = pgTable(
     taxIdr: idrColumn("tax_idr").notNull(),
     roundingIdr: idrColumn("rounding_idr").notNull(),
     totalIdr: idrColumn("total_idr").notNull(),
+    /**
+     * Prices include service and tax (harga nett, legend-zmc2): `subtotal_idr`
+     * is the gross line sum the guest saw, and `service_charge_idr`/`tax_idr`
+     * are the parts backed out of it, so they are not added to the total.
+     */
+    pricesIncludeTax: boolean("prices_include_tax").notNull().default(false),
     /** Reservation deposit (DP) credit applied to this order (pay-first). */
     depositAppliedIdr: idrColumn("deposit_applied_idr")
       .notNull()
@@ -279,7 +286,7 @@ export const orders = pgTable(
     ),
     check(
       "orders_total_check",
-      sql`${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}`,
+      sql`(${table.pricesIncludeTax} = false AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}) OR (${table.pricesIncludeTax} = true AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.roundingIdr})`,
     ),
     check(
       "orders_payment_link_pair_check",

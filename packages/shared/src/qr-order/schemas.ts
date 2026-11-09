@@ -894,19 +894,36 @@ export const qrOrderSchema = z
     taxIdr: nonnegativeIdr,
     roundingIdr: idrSchema,
     totalIdr: nonnegativeIdr,
+    /**
+     * Inclusive prices (harga nett, legend-zmc2), as on the quote: subtotal is
+     * the gross item sum, service and tax are the parts backed out of it, and
+     * total = subtotal - discount + rounding.
+     */
+    pricesIncludeTaxAndService: z.boolean().default(false),
     status: qrOrderStatusSchema,
     items: z.array(qrOrderItemSchema),
     createdAt: isoDateTimeSchema,
     placedAt: isoDateTimeSchema,
   })
   .superRefine((order, ctx) => {
-    if (
+    const netSubtotal = order.subtotalIdr - order.discountIdr;
+    if (order.pricesIncludeTaxAndService) {
+      if (order.totalIdr !== netSubtotal + order.roundingIdr)
+        ctx.addIssue({
+          code: "custom",
+          path: ["totalIdr"],
+          message: "inclusive totalIdr must equal subtotal - discount + rounding",
+        });
+      if (order.serviceChargeIdr + order.taxIdr > netSubtotal)
+        ctx.addIssue({
+          code: "custom",
+          path: ["serviceChargeIdr"],
+          message:
+            "included service charge and tax cannot exceed the net subtotal",
+        });
+    } else if (
       order.totalIdr !==
-      order.subtotalIdr -
-        order.discountIdr +
-        order.serviceChargeIdr +
-        order.taxIdr +
-        order.roundingIdr
+      netSubtotal + order.serviceChargeIdr + order.taxIdr + order.roundingIdr
     )
       ctx.addIssue({
         code: "custom",
@@ -1037,7 +1054,9 @@ export const placeOrderResultSchema = z
           result.quote.serviceCharge.amountIdr ||
         result.order.taxIdr !== result.quote.taxIdr ||
         result.order.roundingIdr !== result.quote.rounding.adjustmentIdr ||
-        result.order.totalIdr !== result.quote.totalIdr,
+        result.order.totalIdr !== result.quote.totalIdr ||
+        result.order.pricesIncludeTaxAndService !==
+          result.quote.pricesIncludeTaxAndService,
     );
   });
 export type PlaceOrderResult = z.infer<typeof placeOrderResultSchema>;
