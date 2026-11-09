@@ -15,11 +15,13 @@ import {
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
   platformEndpoints,
+  restoreOutletInputSchema,
+  restoreTenantInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
   supportAccessGrantIdSchema,
 } from "@starter/shared/platform";
-import { tenantIdSchema, z } from "@starter/shared/core";
+import { outletIdSchema, tenantIdSchema, z } from "@starter/shared/core";
 import { verifiedMfaAt } from "../lib/mfa";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { requireSessionMfa } from "../middleware/identity";
@@ -28,9 +30,13 @@ import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   createTenant,
+  getOutletRestoreWindow,
   getTenantOrThrow,
+  getTenantRestoreWindow,
   listPackages,
   listTenants,
+  restoreOutlet,
+  restoreTenant,
   setTenantPackage,
   setTenantStatus,
 } from "../services/platform-org.service";
@@ -55,6 +61,10 @@ platformRouter.use(
 );
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
+const outletParams = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+});
 const grantParams = z.strictObject({ grantId: supportAccessGrantIdSchema });
 
 platformRouter.get("/packages", async (_req, res) => {
@@ -86,6 +96,50 @@ platformRouter.post("/tenants/:tenantId/status", jsonBody, async (req, res) => {
     data: await setTenantStatus(tenantId, input, getAuth(req).user.id),
   });
 });
+
+// Q40 (legend-umzos): restore within 30 days; the generic status endpoint
+// still refuses to leave archived/closed.
+platformRouter.post(
+  "/tenants/:tenantId/restore",
+  jsonBody,
+  async (req, res) => {
+    const { tenantId } = tenantParams.parse(req.params);
+    const input = restoreTenantInputSchema.parse(req.body);
+    res.json({
+      data: await restoreTenant(tenantId, input, getAuth(req).user.id),
+    });
+  },
+);
+
+platformRouter.get("/tenants/:tenantId/restore-window", async (req, res) => {
+  const { tenantId } = tenantParams.parse(req.params);
+  res.json({ data: await getTenantRestoreWindow(tenantId) });
+});
+
+platformRouter.post(
+  "/tenants/:tenantId/outlets/:outletId/restore",
+  jsonBody,
+  async (req, res) => {
+    const { tenantId, outletId } = outletParams.parse(req.params);
+    const input = restoreOutletInputSchema.parse(req.body);
+    res.json({
+      data: await restoreOutlet(
+        tenantId,
+        outletId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+platformRouter.get(
+  "/tenants/:tenantId/outlets/:outletId/restore-window",
+  async (req, res) => {
+    const { tenantId, outletId } = outletParams.parse(req.params);
+    res.json({ data: await getOutletRestoreWindow(tenantId, outletId) });
+  },
+);
 
 platformRouter.put("/tenants/:tenantId/package", jsonBody, async (req, res) => {
   const { tenantId } = tenantParams.parse(req.params);

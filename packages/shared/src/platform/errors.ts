@@ -29,6 +29,10 @@ export const platformErrorHttpStatus = {
   CONFIG_BUNDLE_INVALID: 422,
   /** Status change not allowed from the current status. */
   INVALID_TRANSITION: 409,
+  /** Restore asked for a tenant/outlet that is not archived/closed, or whose transition time was never recorded (legacy rows stay final). */
+  RESTORE_NOT_AVAILABLE: 409,
+  /** Restore asked more than 30 days after the tenant was archived or the outlet closed (Q40): the status is final. */
+  RESTORE_WINDOW_EXPIRED: 409,
 } as const satisfies Record<string, number>;
 
 export type PlatformErrorCode = keyof typeof platformErrorHttpStatus;
@@ -54,6 +58,10 @@ const defaultMessages: Record<PlatformErrorCode, string> = {
     "Penyedia integrasi ini belum tersedia untuk tenant.",
   CONFIG_BUNDLE_INVALID: "Berkas konfigurasi tidak valid.",
   INVALID_TRANSITION: "Perubahan status ini tidak diizinkan.",
+  RESTORE_NOT_AVAILABLE:
+    "Status ini tidak dapat dipulihkan karena waktu arsip atau tutup tidak tercatat.",
+  RESTORE_WINDOW_EXPIRED:
+    "Batas 30 hari untuk memulihkan sudah lewat; status ini final.",
 };
 
 export class PlatformError extends Error {

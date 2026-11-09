@@ -10,26 +10,39 @@
 // Tenant-owned rows are only reached through org.service.ts, under RLS.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, ilike, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, lt, or } from "drizzle-orm";
 import { PlatformError, platformEvents } from "@starter/shared/platform";
 import type {
   CreateTenantInput,
+  Outlet,
+  OutletRestoreWindow,
+  RestoreOutletInput,
+  RestoreTenantInput,
   SetTenantPackageInput,
   SetTenantStatusInput,
   Tenant,
+  TenantRestoreWindow,
   PlatformPackage,
   PackageKey,
 } from "@starter/shared/platform";
 import {
+  canRestoreFrom,
   canTransitionTenant,
   modulesOutsidePackage,
+  outletRestoreStatusSchema,
+  outletRestoreWindowSchema,
   platformPackageSchema,
+  restoreDeadline,
+  tenantRestoreStatusSchema,
+  tenantRestoreWindowSchema,
   tenantSchema,
 } from "@starter/shared/platform";
 import {
   createUlid,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
+  tenantIdSchema,
   userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -39,12 +52,18 @@ import {
 } from "@starter/shared/core/server";
 import type { TenantStatus } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
-import { platformPackages, tenants } from "../db/schema/index.ts";
+import {
+  edgeNodes,
+  outlets,
+  platformPackages,
+  tenants,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
 import {
@@ -307,11 +326,17 @@ export async function createTenant(
   });
 }
 
-/** Suspension is reversible, archiving is final (contract state machine). */
+/**
+ * Suspension is reversible. Archiving is final through this endpoint (contract
+ * state machine) except for the platform restore within 30 days (Q40,
+ * `restoreTenant`); archiving records when and from which status, so a restore
+ * can return there.
+ */
 export async function setTenantStatus(
   tenantId: string,
   input: SetTenantStatusInput,
   actorUserId: string,
+  now: Date = new Date(),
 ): Promise<Tenant> {
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
@@ -327,7 +352,17 @@ export async function setTenantStatus(
       throw new PlatformError("INVALID_TRANSITION");
     const [row] = await tx
       .update(tenants)
-      .set({ status: input.status })
+      .set({
+        status: input.status,
+        ...(input.status === "archived"
+          ? {
+              archivedAt: now,
+              statusBeforeArchive: tenantRestoreStatusSchema.parse(
+                current.status,
+              ),
+            }
+          : {}),
+      })
       .where(eq(tenants.id, tenantId))
       .returning();
     await recordAudit(
@@ -348,6 +383,218 @@ export async function setTenantStatus(
       { tx, context },
     );
     return toTenant(row);
+  });
+}
+
+/**
+ * Q40 (legend-umzos): a Super Admin restores an archived tenant to the status
+ * it had before archiving, within 30 days of archiving (deadline inclusive).
+ * Legacy rows without a recorded archive time stay final.
+ */
+export async function restoreTenant(
+  tenantId: string,
+  input: RestoreTenantInput,
+  actorUserId: string,
+  now: Date = new Date(),
+): Promise<Tenant> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    if (current.status !== "archived")
+      throw new PlatformError(
+        "RESTORE_NOT_AVAILABLE",
+        "Tenant ini tidak berstatus diarsipkan.",
+      );
+    const check = canRestoreFrom(
+      current.archivedAt,
+      current.statusBeforeArchive,
+      now,
+    );
+    if (!check.ok) throw new PlatformError(check.code);
+    const [row] = await tx
+      .update(tenants)
+      .set({
+        status: tenantRestoreStatusSchema.parse(current.statusBeforeArchive),
+        archivedAt: null,
+        statusBeforeArchive: null,
+      })
+      .where(eq(tenants.id, tenantId))
+      .returning();
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "tenant.restored",
+        objectType: "tenant",
+        objectId: tenantId,
+        reason: input.reason,
+        before: {
+          status: "archived",
+          archivedAt: current.archivedAt?.toISOString() ?? null,
+        },
+        after: { status: row.status },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toTenant(row);
+  });
+}
+
+/** Panel read model: can this tenant be restored, to what, until when. */
+export async function getTenantRestoreWindow(
+  tenantId: string,
+  now: Date = new Date(),
+): Promise<TenantRestoreWindow> {
+  const [row] = await db
+    .select()
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!row) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+  const check = canRestoreFrom(row.archivedAt, row.statusBeforeArchive, now);
+  return tenantRestoreWindowSchema.parse({
+    tenantId: row.id,
+    status: row.status,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
+    restoreTo: row.statusBeforeArchive,
+    restorableUntil: row.archivedAt
+      ? restoreDeadline(row.archivedAt).toISOString()
+      : null,
+    restorable: row.status === "archived" && check.ok,
+  });
+}
+
+/**
+ * Q40: restores a closed outlet to its status before closing, within 30 days.
+ * The tenant must not be archived (restore the tenant first). Edge credentials
+ * were never revoked on close, so the outlet's edge nodes reconnect without
+ * re-registration; the audit row counts the active ones.
+ */
+export async function restoreOutlet(
+  tenantId: string,
+  outletId: string,
+  input: RestoreOutletInput,
+  actorUserId: string,
+  now: Date = new Date(),
+): Promise<Outlet> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [tenant] = await tx
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("update");
+    if (!tenant) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    if (tenant.status === "archived")
+      throw new PlatformError(
+        "INVALID_TRANSITION",
+        "Pulihkan tenant terlebih dahulu sebelum memulihkan outlet.",
+      );
+    const [current] = await tx
+      .select()
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    if (current.status !== "closed")
+      throw new PlatformError(
+        "RESTORE_NOT_AVAILABLE",
+        "Outlet ini tidak berstatus ditutup.",
+      );
+    const check = canRestoreFrom(
+      current.closedAt,
+      current.statusBeforeClose,
+      now,
+    );
+    if (!check.ok) throw new PlatformError(check.code);
+    const [row] = await tx
+      .update(outlets)
+      .set({
+        status: outletRestoreStatusSchema.parse(current.statusBeforeClose),
+        closedAt: null,
+        statusBeforeClose: null,
+      })
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .returning();
+    const [edge] = await tx
+      .select({ total: count() })
+      .from(edgeNodes)
+      .where(
+        and(
+          eq(edgeNodes.tenantId, tenantIdSchema.parse(tenantId)),
+          eq(edgeNodes.outletId, outletIdSchema.parse(outletId)),
+          eq(edgeNodes.status, "active"),
+        ),
+      );
+    await recordAudit(
+      {
+        tenantId,
+        outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "outlet.restored",
+        objectType: "outlet",
+        objectId: outletId,
+        reason: input.reason,
+        before: {
+          status: "closed",
+          closedAt: current.closedAt?.toISOString() ?? null,
+        },
+        after: { status: row.status, activeEdgeNodes: edge?.total ?? 0 },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toOutlet(row);
+  });
+}
+
+/** Panel read model for a closed outlet. Needs the tenant not archived. */
+export async function getOutletRestoreWindow(
+  tenantId: string,
+  outletId: string,
+  now: Date = new Date(),
+): Promise<OutletRestoreWindow> {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [tenant] = await tx
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    if (!tenant) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    const [row] = await tx
+      .select()
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .limit(1);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    const check = canRestoreFrom(row.closedAt, row.statusBeforeClose, now);
+    return outletRestoreWindowSchema.parse({
+      tenantId,
+      outletId,
+      status: row.status,
+      closedAt: row.closedAt?.toISOString() ?? null,
+      restoreTo: row.statusBeforeClose,
+      restorableUntil: row.closedAt
+        ? restoreDeadline(row.closedAt).toISOString()
+        : null,
+      restorable:
+        row.status === "closed" && check.ok && tenant.status !== "archived",
+    });
   });
 }
 

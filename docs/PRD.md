@@ -484,6 +484,8 @@ Workstream WS-00 s.d. WS-05.
 
 **4. Multi-Tenant & Super Admin** — Satu platform untuk banyak operator dengan data terisolasi.
 - **Hierarki Organisasi [P0]** — **Tenant** (perusahaan pengguna platform) → **Brand** (misalnya Cafe Legend) → **Outlet** (lokasi fisik). Satu tenant dapat memiliki beberapa brand dan outlet, serta beberapa badan usaha (legal entity) dengan NPWP dan status PKP masing-masing.
+
+  Super Admin dapat memulihkan tenant berstatus `archived` ke status sebelumnya (`active` atau `suspended`), dan outlet berstatus `closed` ke status sebelumnya (`preopening` atau `active`), dalam 30 hari sejak transisi, dengan alasan wajib yang tercatat di audit log (TEN-04). Sesudah 30 hari status menjadi final. Data lama yang tidak memiliki waktu transisi dianggap final. Saat outlet dipulihkan, perangkat edge yang belum dicabut dapat tersambung kembali tanpa daftar ulang karena kredensial tidak dicabut saat tutup, tetapi layanan edge di perangkat itu harus dijalankan ulang karena edge berhenti mencoba setelah ditolak; nomor struk melanjutkan urutan yang sama. Aturan ini mengikuti keputusan founder Q40.
 - **Isolasi Data [P0]** — Seluruh data tenant memiliki `tenant_id` dan dilindungi RLS serta pemeriksaan di service layer. Data operasional juga membawa `outlet_id` agar role per outlet hanya melihat outletnya.
 - **Domain [P0]** — Custom domain per brand dan subdomain default di domain platform, dengan TLS otomatis.
 - **Feature Flag & Paket [P0]** — Modul POS, QR Order, KDS, Inventori, Akuntansi, Loyalty, CRM, Reservasi, Ojek Online, HRIS, Payroll, Dashboard Shareholder, Tanya AI, dan MCP dapat diaktifkan per tenant sesuai paket.
@@ -1549,7 +1551,7 @@ Berikut tabel-tabel yang dibutuhkan beserta kolom penting, tipe data, dan keguna
 | id | UUID (PK) | Identitas tenant |
 | slug / name | VARCHAR(60) / VARCHAR(150) | Kode unik dan nama perusahaan |
 | plan | VARCHAR(30) | Paket langganan |
-| status | VARCHAR(20) | `active` / `suspended` / `archived` |
+| status | VARCHAR(20) | `active` / `suspended` / `archived` (archived dapat dipulihkan dalam 30 hari, Q40) |
 | deployment_mode | VARCHAR(20) | `dedicated` / `shared` |
 | feature_flags | JSONB | Modul aktif |
 | limits | JSONB | Kuota outlet, karyawan, perangkat, AI, dan plafon biaya WhatsApp serta AI |

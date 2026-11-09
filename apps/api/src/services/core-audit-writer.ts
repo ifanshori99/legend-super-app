@@ -45,6 +45,9 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "adminProvisioning",
   ],
   "tenant.status_changed": ["status"],
+  // Q40 (legend-umzos): platform restore within 30 days.
+  "tenant.restored": ["status", "archivedAt"],
+  "outlet.restored": ["status", "closedAt", "activeEdgeNodes"],
   "tenant.package_changed": [
     "plan",
     "modules",

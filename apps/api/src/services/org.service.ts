@@ -46,6 +46,7 @@ import {
 import {
   brandSchema,
   legalEntitySchema,
+  outletRestoreStatusSchema,
   outletSchema,
   tenantDomainSchema,
   canTransitionOutlet,
@@ -122,7 +123,7 @@ function toBrand(
   });
 }
 
-function toOutlet(row: typeof outlets.$inferSelect): Outlet {
+export function toOutlet(row: typeof outlets.$inferSelect): Outlet {
   return outletSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -642,9 +643,17 @@ export async function setOutletStatus(
     if (current.status === input.status) return toOutlet(current);
     if (!canTransitionOutlet(current.status, input.status))
       throw new PlatformError("INVALID_TRANSITION");
+    // Q40 (legend-umzos): closing starts the 30-day platform restore window.
+    const closing =
+      input.status === "closed"
+        ? {
+            closedAt: new Date(),
+            statusBeforeClose: outletRestoreStatusSchema.parse(current.status),
+          }
+        : {};
     const [row] = await tx
       .update(outlets)
-      .set({ status: input.status })
+      .set({ status: input.status, ...closing })
       .where(eq(outlets.id, outletId))
       .returning();
     return toOutlet(row);

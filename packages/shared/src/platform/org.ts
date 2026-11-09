@@ -68,9 +68,10 @@ export const tenantSchema = z.strictObject({
 export type Tenant = z.infer<typeof tenantSchema>;
 
 /**
- * Super Admin "membuat dan menonaktifkan tenant". Suspension is reversible;
- * archiving is final (data kept, never reopened). PRD names the three
- * statuses only; the transition set is the smallest one that serves them.
+ * Super Admin "membuat dan menonaktifkan tenant". Suspension is reversible.
+ * Archiving is final through this map (data kept); the only way back is the
+ * platform restore within {@link RESTORE_WINDOW_DAYS} days (Q40, see
+ * `canRestoreFrom`), which returns the tenant to its status before archiving.
  */
 const tenantTransitions: Record<TenantStatus, readonly TenantStatus[]> = {
   active: ["suspended", "archived"],
@@ -241,7 +242,9 @@ const outletTransitions: Record<OutletStatus, readonly OutletStatus[]> = {
   active: ["closed"],
   closed: [],
 };
-/** Closing is final (history stays); a reopened site is a new outlet. */
+/** Closing is final through this map (history stays); a reopened site is a
+ * new outlet. Only the platform restore within {@link RESTORE_WINDOW_DAYS}
+ * days (Q40) returns a closed outlet to its status before closing. */
 export function canTransitionOutlet(
   from: OutletStatus,
   to: OutletStatus,
@@ -332,6 +335,84 @@ export const setOutletStatusInputSchema = clientInputSchema({
   reason: reasonSchema,
 });
 export type SetOutletStatusInput = z.infer<typeof setOutletStatusInputSchema>;
+
+// ------------------------------------------------ restore window (Q40)
+
+/**
+ * Founder Q40 (legend-umzos): a Super Admin may restore an archived tenant or
+ * a closed outlet to its previous status within 30 days of the transition;
+ * after that the status is final. The transition time and previous status are
+ * recorded on the row (`tenants.archived_at` / `status_before_archive`,
+ * `outlets.closed_at` / `status_before_close`). A row archived or closed
+ * before they were recorded cannot prove it is inside the window, so it is
+ * final (`RESTORE_NOT_AVAILABLE`).
+ */
+export const RESTORE_WINDOW_DAYS = 30;
+export const RESTORE_WINDOW_MS = RESTORE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+/** Last instant a restore is allowed for a transition at `transitionAt`. */
+export function restoreDeadline(transitionAt: Date): Date {
+  return new Date(transitionAt.getTime() + RESTORE_WINDOW_MS);
+}
+
+export type RestoreCheck =
+  | { ok: true; deadline: Date }
+  | { ok: false; code: "RESTORE_NOT_AVAILABLE" | "RESTORE_WINDOW_EXPIRED" };
+
+/**
+ * Whether a row in a final status may be restored at `now`. `transitionAt` or
+ * `previousStatus` missing (legacy rows) means final. The deadline is
+ * inclusive: exactly 30 days after the transition still restores.
+ */
+export function canRestoreFrom(
+  transitionAt: Date | null,
+  previousStatus: string | null,
+  now: Date,
+): RestoreCheck {
+  if (transitionAt === null || previousStatus === null)
+    return { ok: false, code: "RESTORE_NOT_AVAILABLE" };
+  const deadline = restoreDeadline(transitionAt);
+  if (now.getTime() > deadline.getTime())
+    return { ok: false, code: "RESTORE_WINDOW_EXPIRED" };
+  return { ok: true, deadline };
+}
+
+/** Statuses a tenant can be archived from, so the ones a restore returns to. */
+export const tenantRestoreStatusSchema = z.enum(["active", "suspended"]);
+/** Statuses an outlet can be closed from, so the ones a restore returns to. */
+export const outletRestoreStatusSchema = z.enum(["preopening", "active"]);
+
+/** Panel Platform "Pulihkan": reason is required and audited (TEN-04). */
+export const restoreTenantInputSchema = clientInputSchema({
+  reason: reasonSchema,
+});
+export type RestoreTenantInput = z.infer<typeof restoreTenantInputSchema>;
+export const restoreOutletInputSchema = clientInputSchema({
+  reason: reasonSchema,
+});
+export type RestoreOutletInput = z.infer<typeof restoreOutletInputSchema>;
+
+/** Read model for the panel: is a restore possible, to what, until when.
+ * `restorable` is evaluated at read time against the server clock. */
+export const tenantRestoreWindowSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  status: tenantStatusSchema,
+  archivedAt: isoDateTimeSchema.nullable(),
+  restoreTo: tenantRestoreStatusSchema.nullable(),
+  restorableUntil: isoDateTimeSchema.nullable(),
+  restorable: z.boolean(),
+});
+export type TenantRestoreWindow = z.infer<typeof tenantRestoreWindowSchema>;
+export const outletRestoreWindowSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  status: outletStatusSchema,
+  closedAt: isoDateTimeSchema.nullable(),
+  restoreTo: outletRestoreStatusSchema.nullable(),
+  restorableUntil: isoDateTimeSchema.nullable(),
+  restorable: z.boolean(),
+});
+export type OutletRestoreWindow = z.infer<typeof outletRestoreWindowSchema>;
 
 // ------------------------------------------------- platform admins, regions
 

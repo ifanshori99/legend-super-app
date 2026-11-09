@@ -2,6 +2,17 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-umzos pulihkan tenant diarsip / outlet ditutup dalam 30 hari (engineer, cabang `ws/platform-restore-archived` dari integ/m1-batch31 d7a95d0c, 2026-11-09)
+
+- Keputusan founder Q40. Super Admin memulihkan tenant `archived` ke status sebelumnya (`active`/`suspended`) dan outlet `closed` ke status sebelumnya (`preopening`/`active`) dalam 30 hari sejak transisi (batas inklusif); sesudahnya 409 `RESTORE_WINDOW_EXPIRED`. Peta transisi tetap final (`archived -> []`, `closed -> []`); endpoint status umum tetap 409 `INVALID_TRANSITION`. Pulih hanya lewat aksi khusus.
+- Kontrak shared (`packages/shared/src/platform/org.ts` bagian "restore window (Q40)"): `RESTORE_WINDOW_DAYS`, `canRestoreFrom`, `restoreDeadline`, input `{reason}` (min 10), read model `tenantRestoreWindowSchema`/`outletRestoreWindowSchema`; error `RESTORE_NOT_AVAILABLE`, `RESTORE_WINDOW_EXPIRED`; 4 endpoint di `platformEndpoints`.
+- API (router platform: `requirePlatformAdmin` + MFA sesi, sama dengan arsip): `POST /api/platform/tenants/:tenantId/restore`, `GET .../restore-window`, `POST /api/platform/tenants/:tenantId/outlets/:outletId/restore`, `GET .../outlets/:outletId/restore-window`. Audit `tenant.restored` / `outlet.restored` (safe field status, archivedAt/closedAt, activeEdgeNodes). Outlet tidak bisa dipulihkan selama tenant masih diarsip (409 `INVALID_TRANSITION`). Kunci baris tenant lalu outlet (`FOR UPDATE`).
+- Migrasi `0165_platform_restore_window` (when 1794244000000): `tenants.archived_at`, `status_before_archive`, `outlets.closed_at`, `status_before_close` (nullable, CHECK enum + CHECK berpasangan). Tanpa backfill: data lama tanpa waktu transisi final (`RESTORE_NOT_AVAILABLE`); produk belum production, tutup outlet tidak pernah diaudit sehingga tidak bisa dibuktikan.
+- Efek samping: nomor struk aman (counter tidak disentuh status, unique + trigger maju-saja); langganan: tidak ada tabel billing tenant, plan/limits tidak berubah; akses pengguna dan edge hanya digerbang saat baca, kembali saat pulih; kredensial edge tidak dicabut saat tutup, tetapi edge berhenti mencoba setelah ditolak sehingga layanan edge harus di-restart (kartu legend-rmq4g). Kuota outlet menghitung outlet tutup, jadi pulih tidak melampaui kuota.
+- Bukti: `platform-restore-window.test.ts` 20/20; set terarah 5 file 59/59 (termasuk edge-received-events-migration, migration-fk-force-rls); db:generate kosong; tsc shared + api exit 0 (heavy); eslint + prettier bersih.
+- Review K: reviewer Opus (tanpa bug; risiko urutan merge 0163/0164 vs 0165) + architect (blocking: audit ter-redaksi, dibetulkan dengan safe fields; PRD edge restart, dibetulkan). Second opinion Codex: `docs/briefs/230b-second-opinion-platform-restore.md` di folder utama.
+- Kartu baru: legend-nb4iy (UI Panel Platform), legend-rmq4g (edge retry), legend-hb1u9 (audit status outlet).
+
 ## legend-3k8no + legend-k7x4p order POS: replay idempoten lintas deploy, biaya layanan zona (engineer, cabang `ws/pos-order-replay-zone-charge` dari integ/m1-batch31 37ec911e, 2026-11-09)
 
 - Basis: integ/m1-batch31, bukan `milestone/m1` lokal (94d769c6, batch24), karena bug 3k8no ada di legend-63l6 (batch28) yang belum ada di `milestone/m1`.

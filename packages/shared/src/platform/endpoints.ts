@@ -57,10 +57,14 @@ import {
   createOutletInputSchema,
   createTenantInputSchema,
   legalEntitySchema,
+  outletRestoreWindowSchema,
   outletSchema,
+  restoreOutletInputSchema,
+  restoreTenantInputSchema,
   setOutletStatusInputSchema,
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
+  tenantRestoreWindowSchema,
   tenantSchema,
   tenantStatusSchema,
   updateBrandInputSchema,
@@ -81,6 +85,10 @@ import {
 } from "./themes.ts";
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
+const tenantOutletParams = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+});
 // Contrast failures may name derived tokens (e.g. primary-hover) too.
 const themeToken = z.enum([
   ...COLOR_TOKENS,
@@ -164,6 +172,33 @@ export const platformEndpoints = {
     params: tenantParams,
     body: setTenantStatusInputSchema,
     response: dataResponseSchema(tenantSchema),
+  }),
+  // Q40 (legend-umzos): restore within 30 days of archive / close.
+  restoreTenant: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/restore",
+    params: tenantParams,
+    body: restoreTenantInputSchema,
+    response: dataResponseSchema(tenantSchema),
+  }),
+  getTenantRestoreWindow: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/restore-window",
+    params: tenantParams,
+    response: dataResponseSchema(tenantRestoreWindowSchema),
+  }),
+  restoreOutlet: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/outlets/:outletId/restore",
+    params: tenantOutletParams,
+    body: restoreOutletInputSchema,
+    response: dataResponseSchema(outletSchema),
+  }),
+  getOutletRestoreWindow: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/outlets/:outletId/restore-window",
+    params: tenantOutletParams,
+    response: dataResponseSchema(outletRestoreWindowSchema),
   }),
   setTenantPackage: defineEndpoint({
     method: "PUT",
