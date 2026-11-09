@@ -452,7 +452,7 @@ describe("registry of the payments-tax family", () => {
     // Sales (F1) owns the net_sales split readers; two readers would clash.
     expect(metricSplitOf("net_sales", "payment_method")).toBeNull();
     expect(
-      dailyReaders().flatMap(({ reader }) => reader.metricCodes),
+      FAMILY_READERS.flatMap(({ reader }) => reader.metricCodes),
     ).not.toContain("net_sales");
     expect(metricSourceOf("failed_payment_count").kind).toBe("daily");
     expect(metricSourceOf("cash_variance").kind).toBe("daily");
