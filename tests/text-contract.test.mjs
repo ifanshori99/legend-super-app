@@ -303,10 +303,6 @@ const STARTER_PAGES = new Map([
     "Starter auth form; WS-01 login screens replace it.",
   ],
   [
-    "components/brand.tsx",
-    "Wordmark comes from tenant config (TEN-08), not the catalog.",
-  ],
-  [
     "components/design-system/token-sections.tsx",
     "Token documentation shows raw token values and sample data.",
   ],
