@@ -21,6 +21,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - legend-18qw (worker event transport, gap replay, adapter notifikasi Brevo): commit `b22d549` di `ws/worker-transport` (worktree `.worktrees/worker-transport`). pnpm check hijau. Bead sudah di-close engineer.
 - Review legend-18qw: reviewer Claude (tanpa blocker) + second-opinion Codex (2 major). Semua temuan: `docs/briefs/06-fix-review-worker-transport.md`.
 
+## Fix edge Codex 108 (engineer, cabang `ws/fix-edge-codex`, worktree `.worktrees/fix-edge-codex`, 2026-11-09)
+
+- legend-ddoy (P1): klaim source stok edge atomik. `lockStockSource` (advisory xact lock per tenant, source_type, source_id) diambil sebelum lock lokasi, lalu cek outlet lain membaca baris ledger dan dokumen sumber cloud (5 tabel, Drizzle bertipe). Test race PG deterministik via `pg_locks` (`inventory-edge-source-race.test.ts`).
+- legend-12ku (P2): link-server mereservasi slot gagal-auth per IP sebelum `await authenticate` (`fixed-window-counter.reserve/release`); sukses, error cloud, dan 429 mengembalikan slot.
+- legend-aor4 (P2): limiter bootstrap edge per IP (30) dan per credential (10) sebelum verifikasi credential (`createEdgeBootstrapRouter`).
+- Tingkat K: reviewer Opus + architect, temuan dibetulkan. Second-opinion Codex belum (brief `docs/briefs/second-opinion-fix-edge-codex.md`, antrean CTO).
+- Follow-up bd: posting stok cloud-local tanpa klaim source; koneksi kedua saat lock dipegang (pool).
+
 ## Brief 88 persiapan deploy (engineer, cabang `ws/deploy-prep`, worktree `.worktrees/deploy-prep`)
 
 - legend-jtnd: peran migrator production `legend_migrator_<16 hex>` (NOSUPERUSER, BYPASSRLS, CREATEROLE, pemilik database), dibuat sekali oleh superuser bootstrap lewat `deploy/single-vm/provision-roles.sh --env-file ... --migrator` (`apps/api/src/db/migrator-role.ts`). Peran aplikasi dan queue tidak berubah (NOBYPASSRLS).

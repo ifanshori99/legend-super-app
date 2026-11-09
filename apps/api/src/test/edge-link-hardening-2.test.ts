@@ -49,6 +49,7 @@ import { withTenant } from "../db/tenant.ts";
 import { mintEdgeCredential } from "../edge/credential.ts";
 import { createEdgeLinkClient } from "../edge/link-client.ts";
 import { createEdgeLinkServer } from "../edge/link-server.ts";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import type { LinkScope, LinkStore } from "../edge/link-peer.ts";
 import { registerEdgeLink } from "../edge/runtime.ts";
 import { expressClientAddress } from "../lib/client-address.ts";
@@ -657,6 +658,8 @@ describe("legend-x3lv #2 failed-authentication rate limit on the link upgrade", 
       windowMs?: number;
       knownCredentialTtlMs?: number;
     },
+    // legend-12ku: holds every authenticate call open until released.
+    gate?: Promise<void>,
   ) {
     const clock = { at: BASE };
     const calls = { authenticate: 0 };
@@ -677,6 +680,7 @@ describe("legend-x3lv #2 failed-authentication rate limit on the link upgrade", 
       clientAddress: expressClientAddress(proxied),
       authenticate: async (presented) => {
         calls.authenticate += 1;
+        if (gate) await gate;
         return accepted.has(presented) ? { scope } : null;
       },
       isActive: async () => true,
@@ -827,6 +831,118 @@ describe("legend-x3lv #2 failed-authentication rate limit on the link upgrade", 
     clock.at = BASE + 61_000;
     expect(await attempt(url, good, "192.0.2.1")).toBe(101);
     await linkServer.close();
+  });
+
+  // legend-12ku: the slot is reserved before the authenticate await, so a
+  // parallel burst cannot all get past a peek that no failure has moved yet.
+  it("legend-12ku: 20 parallel bad credentials reach authenticate at most `limit` times, the rest get 429", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const { calls, linkServer, url } = await start(
+      new Set(),
+      { limit: 10 },
+      gate,
+    );
+    const burst = Array.from({ length: 20 }, () =>
+      attempt(url, forged(), "203.0.113.30"),
+    );
+    // The 429s answer without waiting on the gate; the held ones stay pending.
+    const early = await Promise.race([
+      Promise.all(burst.map((p, i) => p.then((status) => ({ i, status })))),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+    ]);
+    expect(early).toBeNull();
+    expect(calls.authenticate).toBeLessThanOrEqual(10);
+    open();
+    const statuses = await Promise.all(burst);
+    expect(statuses.filter((status) => status === 401)).toHaveLength(10);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(10);
+    expect(calls.authenticate).toBe(10);
+    await linkServer.close();
+  });
+
+  // legend-12ku B2: a refused reserve must not keep its count, or a reconnect
+  // burst behind one venue NAT (after a cloud restart) locks the address out.
+  it("legend-12ku: a burst of 25 good credentials over the limit does not lock the address afterwards", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const goods = Array.from(
+      { length: 26 },
+      () => mintEdgeCredential(scope).token,
+    );
+    const fresh = goods.pop()!;
+    const { calls, linkServer, url } = await start(
+      new Set([...goods, fresh]),
+      { limit: 10 },
+      gate,
+    );
+    let refused = 0;
+    const burst = goods.map((token) =>
+      attempt(url, token, "203.0.113.32").then((status) => {
+        if (status === 429) refused += 1;
+        return status;
+      }),
+    );
+    // Poll instead of sleeping: open the gate only once all 10 in-flight
+    // attempts hold a slot and the other 15 were refused, so a slow machine
+    // cannot let a late upgrade reserve after a release.
+    const deadline = Date.now() + 10_000;
+    while (calls.authenticate < 10 || refused < 15) {
+      if (Date.now() > deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(calls.authenticate).toBe(10);
+    expect(refused).toBe(15);
+    open();
+    const statuses = await Promise.all(burst);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+    // 15 refused ones must not leave their counts behind. Only real failures count, so the address is not locked out afterwards.
+    expect(await attempt(url, fresh, "203.0.113.32")).toBe(101);
+    await linkServer.close();
+  });
+
+  it("legend-12ku: a credential that authenticates releases its slot, so good logins never use up the budget", async () => {
+    const good = mintEdgeCredential(scope).token;
+    const { calls, linkServer, url } = await start(new Set([good]), {
+      limit: 2,
+    });
+    for (let i = 0; i < 6; i += 1)
+      expect(await attempt(url, good, "203.0.113.31")).toBe(101);
+    // Still the full budget of 2 failures left for this address.
+    expect(await attempt(url, forged(), "203.0.113.31")).toBe(401);
+    expect(await attempt(url, forged(), "203.0.113.31")).toBe(401);
+    expect(await attempt(url, forged(), "203.0.113.31")).toBe(429);
+    expect(calls.authenticate).toBe(8);
+    await linkServer.close();
+  });
+});
+
+describe("legend-12ku fixed-window counter reserve/release", () => {
+  const counter = () =>
+    createFixedWindowCounter({ limit: 2, windowMs: 1000, capacity: 10 });
+
+  it("counts like take and release gives the slot back once", () => {
+    const c = counter();
+    const a = c.reserve("k", 0);
+    const b = c.reserve("k", 0);
+    expect([a.retryAfter, b.retryAfter]).toEqual([null, null]);
+    const over = c.reserve("k", 0);
+    expect(over.retryAfter).toBe(1);
+    over.release(); // a refused reserve hands its count back (legend-12ku B2)
+    a.release();
+    a.release(); // second release is a no-op
+    // 3 reserved - 2 released = 1 counted: one slot free, then over again.
+    expect(c.reserve("k", 0).retryAfter).toBeNull();
+    expect(c.reserve("k", 0).retryAfter).toBe(1);
+  });
+
+  it("release does nothing once its window was replaced", () => {
+    const c = counter();
+    const old = c.reserve("k", 0);
+    c.reserve("k", 1500); // new window, count 1
+    old.release();
+    expect(c.reserve("k", 1500).retryAfter).toBeNull(); // count 2
+    expect(c.reserve("k", 1500).retryAfter).toBe(1); // count 3, over
   });
 });
 
