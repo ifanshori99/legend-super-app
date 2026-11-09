@@ -23,7 +23,7 @@ export interface ReservationDepositPort {
    * Throws a 503 when online DP payments cannot be collected right now
    * (gateway unconfigured or down). Called BEFORE a DP booking holds tables.
    */
-  assertReady(context: ScopedTenantContext): Promise<void>;
+  assertReady(context: ScopedTenantContext, outletId?: string): Promise<void>;
   /** Opens the payable DP bill link for the reservation. */
   openDeposit(input: {
     context: ScopedTenantContext;

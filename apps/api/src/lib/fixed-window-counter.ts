@@ -47,5 +47,19 @@ export function createFixedWindowCounter(options: {
         Math.ceil((hit.windowStart + options.windowMs - now) / 1000),
       );
     },
+    /**
+     * Counts nothing. Returns null while the next `take` would still be inside
+     * the limit, or the whole seconds left in the window once the key has used
+     * it up (e.g. failed attempts, legend-x3lv).
+     */
+    peek(key: string, now: number): number | null {
+      const hit = hits.get(key);
+      if (!hit || now - hit.windowStart >= options.windowMs) return null;
+      if (hit.count < options.limit) return null;
+      return Math.max(
+        1,
+        Math.ceil((hit.windowStart + options.windowMs - now) / 1000),
+      );
+    },
   };
 }

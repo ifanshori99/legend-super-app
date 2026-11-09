@@ -14,7 +14,7 @@
 // payment intent -> unallocated fund -> refund everywhere; the payout claim
 // transaction locks only the refund (a short lease, then the provider call).
 
-import { AccessError } from "@starter/shared/access";
+import { AccessError, type PermissionCode } from "@starter/shared/access";
 import {
   CoreError,
   userIdSchema,
@@ -24,7 +24,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { approvalResolvedEvent, IdentityError } from "@starter/shared/identity";
 import type * as contract from "@starter/shared/payment/admin";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -54,7 +54,10 @@ import {
   paymentRefundGateway,
   type GatewayRefundLookup,
 } from "./payment-refund-gateway.ts";
-import { appendPaymentEvent } from "./payment-support.ts";
+import {
+  appendPaymentEvent,
+  assertPaymentPermission,
+} from "./payment-support.ts";
 import {
   cancelApprovalRequest,
   decideApprovalRequest,
@@ -81,6 +84,8 @@ const PAYOUT_SWEEP_BUDGET_MS = 20_000;
 /** A refund the provider still reports `pending` this long after approval needs ops. */
 const PAYOUT_PENDING_MAX_HOURS = 72;
 export const MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION";
+/** The fund has no usable evidence of its own: ops must map it (retry with sourceEvidenceId). */
+export const EVIDENCE_MAPPING_REQUIRED = "EVIDENCE_MAPPING_REQUIRED";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
@@ -164,6 +169,34 @@ async function loadView(
       ? refundView(tx, refund)
       : refundViewFor(tx, context, refund, viewerId);
   });
+}
+
+/** Supervisor authority: the permission that stands for a PIN or phone approval. */
+const SUPERVISOR_PERMISSION = "pos.refund.approve";
+
+/** Boolean form of assertPaymentPermission: only a denial is `false`. */
+async function holdsPermission(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  permission: PermissionCode,
+  outletId: string,
+  now: Date,
+): Promise<boolean> {
+  try {
+    await assertPaymentPermission(
+      tx,
+      context,
+      userId,
+      permission,
+      { type: "outlet", id: outletId },
+      now,
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof AccessError) return false;
+    throw error;
+  }
 }
 
 // ------------------------------------------------------------ transitions
@@ -459,25 +492,34 @@ async function settleLocked(
   if (outcome === "approved") {
     const last = rows.at(-1);
     if (!last?.decidedBy) throw new Error("approved chain has no approver");
-    // Every approver must hold payment.reconcile at this outlet (the inbox
-    // route does not check the outlet). The chain is already resolved, so a
-    // pending refund could never be decided again: fail it closed instead
-    // (never paid, and the approval.resolved consumer does not retry forever).
+    // Every approver must hold payment.reconcile or pos.refund.approve at this
+    // outlet (the inbox route does not check the outlet), and at least one must
+    // hold pos.refund.approve (supervisor authority). The chain is already
+    // resolved, so a pending refund could never be decided again: fail it closed
+    // instead (never paid, and the approval.resolved consumer does not retry
+    // forever).
+    let supervisorApproved = false;
     for (const row of rows) {
       if (row.status !== "approved" || !row.decidedBy) continue;
-      const allowed = await authorize(
+      const supervisor = await holdsPermission(
         tx,
         context,
         row.decidedBy,
-        "payment.reconcile",
+        SUPERVISOR_PERMISSION,
         refund.outletId,
-      ).then(
-        () => true,
-        (error: unknown) => {
-          if (error instanceof AccessError) return false;
-          throw error;
-        },
+        now,
       );
+      if (supervisor) supervisorApproved = true;
+      const allowed =
+        supervisor ||
+        (await holdsPermission(
+          tx,
+          context,
+          row.decidedBy,
+          "payment.reconcile",
+          refund.outletId,
+          now,
+        ));
       if (!allowed)
         return failRefund(tx, context, refund, {
           reason: "approver_unauthorized",
@@ -487,6 +529,14 @@ async function settleLocked(
           now,
         });
     }
+    if (!supervisorApproved)
+      return failRefund(tx, context, refund, {
+        reason: "approver_unauthorized",
+        action: "payment.refund_failed",
+        actorId: null,
+        note: "supervisor_required",
+        now,
+      });
     return applyApproval(tx, context, locked, last.decidedBy, now);
   }
   if (outcome === "rejected") {
@@ -647,6 +697,23 @@ async function decideRefund(
             if (!opened.required) {
               // Below every tier of the matrix: this one authorised person decides.
               if (decision === "approved") {
+                // Supervisor authority is required on top of payment.reconcile;
+                // the throw rolls back the opened request, so the refund stays
+                // pending with no chain row.
+                if (
+                  !(await holdsPermission(
+                    tx,
+                    context,
+                    actor,
+                    SUPERVISOR_PERMISSION,
+                    refund.outletId,
+                    now,
+                  ))
+                )
+                  throw new AccessError(
+                    "PERMISSION_DENIED",
+                    "Your account cannot perform this action.",
+                  );
                 const applied = await applyApproval(
                   tx,
                   context,
@@ -912,8 +979,9 @@ export async function runRefundPayout(
       if (!intent) throw missing();
       let paymentProviderRef = intent.providerRef;
       if (refund.unallocatedFundId) {
-        // The fund's own evidence is the transaction to refund. A fund without
-        // one (row from before the column) falls back to the intent's latest.
+        // The fund's own evidence is the transaction to refund; never the
+        // intent's providerRef. A fund without one resolves only when the intent
+        // has exactly one evidence row (the mapping is certain), else it holds.
         const [fund] = await tx
           .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
           .from(paymentUnallocatedFunds)
@@ -923,8 +991,11 @@ export async function runRefundPayout(
               eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
             ),
           );
-        const [evidence] = await tx
-          .select({ providerRef: paymentEvidence.providerRef })
+        const evidenceRows = await tx
+          .select({
+            id: paymentEvidence.id,
+            providerRef: paymentEvidence.providerRef,
+          })
           .from(paymentEvidence)
           .where(
             and(
@@ -935,16 +1006,60 @@ export async function runRefundPayout(
                 : []),
             ),
           )
-          .orderBy(
-            desc(paymentEvidence.receivedAt),
-            desc(paymentEvidence.createdAt),
-          )
-          .limit(1);
-        paymentProviderRef = evidence?.providerRef ?? intent.providerRef;
+          .limit(2);
+        let evidence: (typeof evidenceRows)[number] | undefined;
+        if (fund?.evidenceId) evidence = evidenceRows[0];
+        else if (fund && evidenceRows.length === 1) {
+          // The single evidence is certain only while no other fund owns it and
+          // no other unmapped fund of this intent could claim it too (legacy rows).
+          const [owned] = await tx
+            .select({ id: paymentUnallocatedFunds.id })
+            .from(paymentUnallocatedFunds)
+            .where(
+              and(
+                eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
+                ne(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+                or(
+                  eq(paymentUnallocatedFunds.evidenceId, evidenceRows[0]!.id),
+                  and(
+                    isNull(paymentUnallocatedFunds.evidenceId),
+                    eq(
+                      paymentUnallocatedFunds.paymentIntentId,
+                      refund.paymentIntentId,
+                    ),
+                  ),
+                ),
+              ),
+            )
+            .limit(1);
+          if (!owned) evidence = evidenceRows[0];
+        }
+        if (!evidence) {
+          const [held] = await tx
+            .update(paymentRefunds)
+            .set({ lastPayoutError: EVIDENCE_MAPPING_REQUIRED, updatedAt: now })
+            .where(
+              and(
+                eq(paymentRefunds.tenantId, refund.tenantId),
+                eq(paymentRefunds.id, refund.id),
+              ),
+            )
+            .returning();
+          if (refund.lastPayoutError !== EVIDENCE_MAPPING_REQUIRED)
+            logger.warn(
+              { refundId: refund.id },
+              "refund payout held: fund evidence mapping required",
+            );
+          return { run: false, refund: held ?? refund };
+        }
+        paymentProviderRef = evidence.providerRef;
       }
       const [claimed] = await tx
         .update(paymentRefunds)
         .set({
+          // A held refund that now resolves (one evidence row arrived) must not
+          // keep reporting EVIDENCE_MAPPING_REQUIRED while its payout runs.
+          lastPayoutError: sql`nullif(${paymentRefunds.lastPayoutError}, ${EVIDENCE_MAPPING_REQUIRED})`,
           payoutClaimedUntil: new Date(now.getTime() + PAYOUT_CLAIM_MS),
           payoutClaimToken: token,
           payoutAttempts: sql`${paymentRefunds.payoutAttempts} + 1`,
@@ -1184,7 +1299,7 @@ export async function sweepApprovedRefundPayouts(
 export async function retryRefundPayout(
   context: ScopedTenantContext,
   actor: string,
-  params: { refundId: string },
+  params: { refundId: string; sourceEvidenceId?: string },
   key: string,
 ) {
   // The provider key is `refund:<id>`, so a retry is naturally idempotent.
@@ -1203,9 +1318,133 @@ export async function retryRefundPayout(
     await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
     if (refund.status !== "approved")
       throw conflict("Only an approved refund can be retried.");
+    if (params.sourceEvidenceId)
+      await mapFundEvidence(
+        tx,
+        context,
+        actor,
+        refund,
+        params.sourceEvidenceId,
+      );
   });
-  await runRefundPayout(context, params.refundId);
+  const result = await runRefundPayout(context, params.refundId);
+  if (
+    result.status === "approved" &&
+    result.lastPayoutError === EVIDENCE_MAPPING_REQUIRED
+  )
+    throw new HttpError(
+      409,
+      "EVIDENCE_MAPPING_REQUIRED",
+      "Map the fund to its source evidence (sourceEvidenceId) before retrying.",
+    );
   return loadView(context, params.refundId, actor);
+}
+
+function isUniqueViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23505" || isUniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Maps an unmapped fund to the evidence it came from, once (no remapping). */
+async function mapFundEvidence(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: string,
+  refund: Refund,
+  evidenceId: string,
+) {
+  const now = new Date();
+  const tenantId = refund.tenantId;
+  if (!refund.unallocatedFundId)
+    throw conflict("Refund is not paid from an unallocated fund.");
+  // Lock the intent first (same order as lockRefundGraph): every fund that could
+  // claim this evidence belongs to it, so two mappings to one evidence serialize
+  // and the "used by another fund" check below cannot race.
+  const [intent] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, refund.paymentIntentId),
+      ),
+    )
+    .for("update");
+  if (!intent) throw missing();
+  const [fund] = await tx
+    .select()
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+      ),
+    )
+    .for("update");
+  if (!fund) throw missing();
+  const [evidence] = await tx
+    .select({ id: paymentEvidence.id })
+    .from(paymentEvidence)
+    .where(
+      and(
+        eq(paymentEvidence.tenantId, tenantId),
+        eq(paymentEvidence.paymentIntentId, refund.paymentIntentId),
+        eq(paymentEvidence.id, evidenceId),
+      ),
+    );
+  if (!evidence) throw conflict("Evidence does not belong to this payment.");
+  if (fund.evidenceId === evidenceId) return;
+  if (fund.evidenceId) throw conflict("Fund is already mapped to evidence.");
+  const [used] = await tx
+    .select({ id: paymentUnallocatedFunds.id })
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentUnallocatedFunds.evidenceId, evidenceId),
+        ne(paymentUnallocatedFunds.id, fund.id),
+      ),
+    )
+    .limit(1);
+  if (used) throw conflict("Evidence is already mapped to another fund.");
+  try {
+    await tx
+      .update(paymentUnallocatedFunds)
+      .set({ evidenceId })
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, tenantId),
+          eq(paymentUnallocatedFunds.id, fund.id),
+        ),
+      );
+  } catch (error) {
+    // payment_unallocated_funds_evidence_key: the backstop for the check above.
+    if (isUniqueViolation(error))
+      throw conflict("Evidence is already mapped to another fund.");
+    throw error;
+  }
+  const [cleared] = await tx
+    .update(paymentRefunds)
+    .set({ lastPayoutError: null, updatedAt: now })
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.id, refund.id),
+        eq(paymentRefunds.lastPayoutError, EVIDENCE_MAPPING_REQUIRED),
+      ),
+    )
+    .returning();
+  await refundAudit(tx, context, {
+    actorId: actor,
+    row: cleared ?? refund,
+    action: "payment.refund_fund_evidence_mapped",
+    now,
+    before: { evidenceId: null },
+    after: { evidenceId },
+  });
 }
 
 // ------------------------------------------------- provider webhook / poll

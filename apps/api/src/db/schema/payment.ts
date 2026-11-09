@@ -43,6 +43,7 @@ import type {
 } from "@starter/shared/payment";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { tenantIntegrations } from "./platform-integrations";
 
 /** PRD §6 D `flags`; "late_payment" marks a payment that landed after expiry. */
 export type PaymentFlag = "late_payment" | "double_payment";
@@ -180,6 +181,12 @@ export const paymentIntents = pgTable(
     feeIdr: idrColumn("fee_idr").notNull().default(idr(0)),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     providerRef: varchar("provider_ref", { length: 100 }),
+    /** `tenant_integrations` row whose credentials minted `provider_ref`.
+     * Status checks and webhook binding use this row, even after an outlet
+     * gets its own integration or this one is disabled, so money already in
+     * flight is still verified against the account that created it. Null on
+     * rows minted before it existed (resolve by outlet as before). */
+    gatewayIntegrationId: uuid("gateway_integration_id"),
     status: varchar("status", { length: 20 })
       .$type<PaymentStatus>()
       .notNull()
@@ -195,6 +202,9 @@ export const paymentIntents = pgTable(
     /** Bank/channel code for `va`/`bank_transfer`; null for QRIS. */
     channelCode: varchar("channel_code", { length: 40 }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    /** Last time the polling fallback asked the gateway; null = never. Lets
+     * the poller rotate so an erroring intent cannot starve the others. */
+    gatewayPolledAt: timestamp("gateway_polled_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -218,6 +228,13 @@ export const paymentIntents = pgTable(
       name: "payment_intents_link_fk",
       columns: [table.tenantId, table.paymentLinkId],
       foreignColumns: [paymentLinks.tenantId, paymentLinks.id],
+    }),
+    // tenant_integrations has no (tenant_id, id) key, so a plain key; the
+    // adapter only ever stores the id of a row it loaded in this tenant.
+    foreignKey({
+      name: "payment_intents_gateway_integration_fk",
+      columns: [table.gatewayIntegrationId],
+      foreignColumns: [tenantIntegrations.id],
     }),
     // Expiry sweep and POS/admin lists: tenant + outlet + status + expiry.
     index("payment_intents_status_expiry_idx").on(
@@ -353,6 +370,11 @@ export const paymentUnallocatedFunds = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    // One fund per provider evidence: a refund of a fund pays back exactly the
+    // transaction that brought it in, so two funds can never share one.
+    uniqueIndex("payment_unallocated_funds_evidence_key")
+      .on(table.tenantId, table.evidenceId)
+      .where(sql`${table.evidenceId} IS NOT NULL`),
     index("payment_unallocated_funds_open_idx").on(
       table.tenantId,
       table.outletId,

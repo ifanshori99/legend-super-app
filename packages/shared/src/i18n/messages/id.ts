@@ -1283,6 +1283,7 @@ export const id = {
       stock_critical: "Stok kritis",
       approval_request: "Permintaan approval",
       printer_offline: "Printer offline",
+      edge_sync_conflict: "Konflik sinkron edge",
       cash_variance: "Selisih kas",
       emergency: "Darurat",
       security: "Keamanan",

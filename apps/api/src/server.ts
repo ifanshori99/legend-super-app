@@ -5,6 +5,8 @@ import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
+import { createDoitGateway } from "./services/payment-doit.ts";
+import { setPaymentGateway } from "./services/payment-gateway.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import {
@@ -16,6 +18,11 @@ import {
   listenQrCartWakeups,
   resolveGuestTenantFromHost,
 } from "./services/qr-order-realtime.ts";
+import {
+  attachKdsRealtime,
+  listenKdsWakeups,
+} from "./services/kds-realtime.ts";
+import { resolveKdsStaffConnection } from "./services/kds-realtime-auth.ts";
 import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
 import { verifyEdgeNodeCredential } from "./services/edge-node.service.ts";
@@ -29,6 +36,9 @@ import {
 } from "./edge/runtime.ts";
 
 const app = createApp();
+// WS-05 payment gateway (legend-b9i): DOIT, fails closed without credentials.
+// Installed here, not in createApp, so tests keep their fake gateways.
+setPaymentGateway(createDoitGateway());
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
 setReservationDepositPort(createPaymentReservationDepositPort());
 // Staff device PIN (legend-obh5): a device names an outlet only through the
@@ -91,6 +101,19 @@ const stopQrWakeups = listenQrCartWakeups(pool, qrRealtime.dispatch).catch(
   },
 );
 
+// KDS station realtime (legend-4d5): staff session + kds.ticket.process on
+// the station, re-resolved on every wakeup; wakeups carry ids only.
+const kdsRealtime = attachKdsRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+  resolveConnection: resolveKdsStaffConnection,
+});
+const stopKdsWakeups = listenKdsWakeups(pool, kdsRealtime.dispatch).catch(
+  (error: unknown) => {
+    logger.error({ err: error }, "KDS wakeup listener unavailable");
+    return async () => {};
+  },
+);
+
 // WS-02 edge mode (legend-2pi). The cloud accepts edge links on
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
@@ -148,6 +171,10 @@ async function shutdown(signal: string) {
   await qrRealtime.close();
   await (
     await stopQrWakeups
+  )();
+  await kdsRealtime.close();
+  await (
+    await stopKdsWakeups
   )();
   await edgeReady.catch(() => {});
   await edgeRuntime?.stop();
