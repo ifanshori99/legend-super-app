@@ -694,6 +694,20 @@
       "when": 1794184044028,
       "tag": "0098_doit_webhook_events_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1794189891917,
+      "tag": "0099_wifi_device_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1794189914674,
+      "tag": "0100_wifi_device_grants_rls",
+      "breakpoints": true
     }
   ]
 }

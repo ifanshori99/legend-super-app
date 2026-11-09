@@ -66,6 +66,7 @@ import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
+import { edgeWifiRouter } from "./edge-wifi.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
@@ -200,6 +201,8 @@ apiRouter.use("/operations", operationsEquipmentRouter);
 // the split before any router runs.
 // /edge/devices (registry list + heartbeat, legend-165) before /edge.
 apiRouter.use("/edge/devices", edgeDeviceRouter);
+// Wi-Fi agent grants + staff revoke + walled garden (legend-hsk), also before /edge.
+apiRouter.use("/edge/wifi", edgeWifiRouter);
 apiRouter.use("/edge", edgeRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential

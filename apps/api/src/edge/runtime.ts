@@ -20,7 +20,8 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Pool } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
@@ -42,6 +43,11 @@ import {
 } from "../services/edge-device-sync-store.ts";
 import { EDGE_LINK_WAKE_CHANNEL } from "../services/edge-queue.service.ts";
 import {
+  WIFI_RECONCILE_INTERVAL_MS,
+  createWifiAgent,
+  type WifiAgent,
+} from "../services/edge-wifi-agent.service.ts";
+import {
   createDeviceRecordsFetcher,
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
@@ -53,6 +59,8 @@ import {
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
 import { createEdgeLinkServer } from "./link-server.ts";
+import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
+import { createDefaultWifiProvider } from "./wifi/registry.ts";
 import {
   createDeviceRegistryPuller,
   pullWithCursorRecovery,
@@ -70,6 +78,7 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_inbound_events",
   "edge_sync_conflicts",
   "edge_pull_checkpoints",
+  "wifi_device_grants",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
@@ -234,6 +243,134 @@ export async function assertEdgeSchemaReady(): Promise<void> {
 
 export type EdgeRuntimeHandle = { stop(): Promise<void> };
 
+export type WifiAgentHandle = { stop(): Promise<void> };
+
+/**
+ * Wi-Fi agent (bead legend-hsk, plan section 5). Primary node only: a standby
+ * never talks to the venue controller. Starts nothing, and installs nothing
+ * (the port stays fail-closed, 503), when there is no provider for this
+ * environment or another process owns the outlet. One owner per outlet: a
+ * session-level advisory lock on a dedicated connection, like the EDC agent;
+ * if that connection dies the lock is gone and the agent is uninstalled.
+ * The reconcile loop errors are logged by name/code only.
+ */
+export async function startWifiAgent(options: {
+  context: ScopedTenantContext;
+  scope: LinkScope;
+  role: "primary" | "standby";
+  /** Defaults to `NODE_ENV === "production"` (as the provider registry). */
+  production?: boolean;
+  /** Defaults to WIFI_RECONCILE_INTERVAL_MS. */
+  intervalMs?: number;
+  /** Test seam: use this agent instead of building one from the registry. */
+  agent?: WifiAgent;
+}): Promise<WifiAgentHandle | null> {
+  if (options.role !== "primary") return null;
+  const { context, scope } = options;
+  const production =
+    options.production ?? process.env.NODE_ENV === "production";
+  let agent = options.agent;
+  if (!agent) {
+    const provider = createDefaultWifiProvider({
+      simulator: !production,
+      production,
+    });
+    if (provider === null) {
+      logger.warn("No Wi-Fi controller adapter registered: Wi-Fi agent off");
+      return null;
+    }
+    agent = createWifiAgent({
+      provider,
+      contextFor: (outletId) => {
+        if (outletId !== scope.outletId)
+          throw new EdgeBootError("The Wi-Fi agent serves its own outlet only");
+        return establishScopedTenantContext(context.tenant, {
+          kind: "outlets",
+          outletIds: [outletIdSchema.parse(outletId)],
+        });
+      },
+    });
+  }
+  const active = agent;
+  const lockName = `wifi-agent:${scope.tenantId}:${scope.outletId}`;
+  const client = await pool.connect();
+  let released = false;
+  let stopped = false;
+  const loop: { timer?: ReturnType<typeof setInterval> } = {};
+  let inflight: Promise<void> = Promise.resolve();
+  const uninstall = () => {
+    if (wifiEnforcement() === active) installWifiAgent(null);
+  };
+  const lost = () => {
+    if (stopped) return;
+    stopped = true;
+    if (loop.timer) clearInterval(loop.timer);
+    uninstall();
+    logger.error("Wi-Fi agent lost its database connection: agent stopped");
+    release(true);
+  };
+  const release = (destroy: boolean) => {
+    if (released) return;
+    released = true;
+    client.removeListener("error", lost);
+    client.removeListener("end", lost);
+    client.release(destroy);
+  };
+  client.on("error", lost);
+  client.on("end", lost);
+  try {
+    const result = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+      [lockName],
+    );
+    if (result.rows[0]?.locked !== true) {
+      logger.warn("Another process owns the Wi-Fi agent of this outlet");
+      release(false);
+      return null;
+    }
+  } catch (error) {
+    release(true);
+    throw error;
+  }
+  installWifiAgent(active);
+  let busy = false;
+  loop.timer = setInterval(() => {
+    if (busy || stopped) return;
+    busy = true;
+    inflight = active
+      .reconcile(context, scope.outletId)
+      .then(
+        () => undefined,
+        (error: unknown) =>
+          logger.warn(safeError(error), "Wi-Fi reconcile failed"),
+      )
+      .finally(() => {
+        busy = false;
+      });
+  }, options.intervalMs ?? WIFI_RECONCILE_INTERVAL_MS);
+  loop.timer.unref();
+  return {
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      if (loop.timer) clearInterval(loop.timer);
+      uninstall();
+      await inflight;
+      let broken = false;
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [lockName],
+        );
+      } catch {
+        // Destroying the connection drops the session lock all the same.
+        broken = true;
+      }
+      release(broken);
+    },
+  };
+}
+
 /**
  * Call once at API start. Cloud: no-op. Edge: boot guards, then the link.
  * Throws EdgeBootError for a misconfigured or unprovisioned node; the caller
@@ -360,9 +497,22 @@ export async function startEdgeRuntime(
   registryPuller = puller;
   // Not awaited: boot never waits for, or fails on, the cloud.
   puller.start();
+  let wifi: WifiAgentHandle | null = null;
+  try {
+    wifi = await startWifiAgent({
+      context: local.context,
+      scope: local.scope,
+      role: config.role,
+    });
+  } catch (error) {
+    // A Wi-Fi problem must not take down POS or the link: the port stays
+    // fail-closed (503) and the cause is logged by name/code only.
+    logger.error(safeError(error), "Wi-Fi agent failed to start");
+  }
   return {
     async stop() {
       clearInterval(sweep);
+      await wifi?.stop();
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([puller.stop(), stopWakeups(), client.stop()]);
