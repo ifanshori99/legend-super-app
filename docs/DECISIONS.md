@@ -3,6 +3,49 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Member identity and point ledger (legend-k2l, legend-111j, legend-u57q)
+
+Context: the member page (legend-u57q) has a UI but no backend. Customers
+already sign in with WhatsApp reverse OTP, which creates rows in the Better
+Auth `user` table; there is no customer profile, ledger, rewards or member
+authorization. Full design and card plan: `docs/design/ws08-member-loyalty.md`.
+
+1. **One person table.** Members and staff share the Better Auth `user` table;
+   membership is a `customer_profiles` row per tenant, staff access a role
+   assignment. A second Better Auth instance was rejected: it would rewrite the
+   tested WhatsApp login and hide the cashier-is-the-member link that the
+   self-serve ban needs. Every member table keys on `customer_profile_id`, so
+   the cookie can still move to its own instance later.
+2. **Member sign-in = WhatsApp, email magic link, Google.** All mint customer
+   sessions and refuse staff accounts in m1, so an inbox can never replace a
+   staff password plus MFA. Email and Google stay off until their keys exist.
+   Points need a verified WhatsApp (AUTH-07).
+3. **Merge only WhatsApp-only accounts.** Proving a number held by an account
+   with no other identity, no role and no platform access merges it into the
+   signed-in account; everything else is refused with
+   `IDENTITY_MERGE_NEEDS_SUPPORT`. Profiles move, the ledger does not.
+4. **The database keeps the money rules.** `point_ledger` is append-only, the
+   balance column is maintained only by an insert trigger and cannot go below
+   zero, writers lock the profile row, and the unique source key makes every
+   paid, refund, redemption and expiry posting happen once. The point value is
+   copied onto every row and locks at the first posting, so the liability sum
+   always matches outstanding points.
+5. **Member isolation in two layers.** `requireMember` turns the session into
+   a `MemberScope` that services take as their only identity input, and a
+   RESTRICTIVE `member_self` policy keyed on `app.customer_profile_id` hides
+   other members' rows if a query forgets its filter.
+6. **Earn from the existing outbox events.** `order.paid` and
+   `order.refunded` drive a `loyalty-earn` consumer; the member comes from the
+   order row. Base = gross sales minus discount minus points tender, before
+   service and PBJT. Partial refunds reverse cumulatively, rounded against the
+   member, clamped at the balance with an anomaly row.
+7. **Consent from the member app** is written with source `member_pwa` against
+   a versioned `consent_policy_versions` row; an outdated version is refused.
+8. **Defaults until the founder decides (A15, 30 Nov):** program inactive,
+   Rp10.000 = 1 point, point value Rp100, 12-month expiry and tier window,
+   daily cap 500, self-serve ban on, referral off, points tender off. All are
+   settings, not code.
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope

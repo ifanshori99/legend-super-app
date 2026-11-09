@@ -103,6 +103,47 @@ One ignored root `.env.local` serves both apps (process environment wins, then `
 
 Schema updates use `pnpm db:generate` then `pnpm db:migrate`. Startup never pushes schema, erases tables, or seeds accounts.
 
+## WS-08 member foundation (customer identity and points)
+
+Full design: `docs/design/ws08-member-loyalty.md`. Decisions:
+`docs/DECISIONS.md` 2026-11-10 "Member identity and point ledger".
+
+- **One person, two roles.** The single Better Auth `user` table holds every
+  person. A person is a member of a tenant when `customer_profiles` has a row
+  for `(tenant_id, user_id)`, and staff when an active role assignment exists.
+  Member sign-in methods (WhatsApp reverse OTP, email magic link, Google) mint
+  `session.kind = 'customer'` sessions and refuse staff accounts.
+- **Identity graph.** `user_identities` holds one row per verified method
+  (`whatsapp`, `email`, `google`), at most one WhatsApp per person. Proving a
+  WhatsApp number that a WhatsApp-only account already holds merges that
+  account into the signed-in one (`identity_merges`); anything else goes to
+  support.
+- **Member routes.** `/api/member/*` = `tenantContext` from the PWA host,
+  `requireAuth`, `requireTrustedOrigin` on mutations, then `requireMember`,
+  which resolves the caller's own profile into a `MemberScope`. Member services
+  take only the scope, never an id from the request. `withMemberScope` sets
+  `app.customer_profile_id`, and a RESTRICTIVE `member_self` policy
+  (`app.enforce_member_rls`) hides other members' rows even if a query forgets
+  the filter. Staff and worker paths leave the setting empty.
+- **Point ledger.** `point_ledger` is append-only (trigger + INSERT/SELECT
+  grants). An insert trigger keeps `customer_profiles.points_balance` equal to
+  the ledger sum, and `CHECK (points_balance >= 0)` stops overdraws. Writers
+  hold the profile row lock. A unique key per `(tenant, type, source_type,
+  source_id)` makes paid, refund, redemption and expiry postings idempotent.
+  Each row carries `liability_idr = points x point_value_idr`; the point value
+  locks after the first posting.
+- **Earn and reverse.** Outbox consumer `loyalty-earn` reads `order.paid` and
+  `order.refunded`. The member on an order comes from the order row
+  (`customer_profile_id`, attached by member QR, cashier lookup or the member's
+  own QR-order session). Earn base = gross sales minus discount minus points
+  tender, before service and PBJT; daily cap and the staff self-serve ban are
+  checked under the profile lock. Partial refunds reverse points
+  proportionally and cumulatively, clamped at the balance.
+- **Consent.** `consents` stays the record; members write with source
+  `member_pwa` against the active `consent_policy_versions` row of the
+  purpose. The loyalty consent plus a verified WhatsApp activate membership.
+- **Migrations** `0193` (111j) to `0197` (3zd1), numbered by merge order.
+
 ## Dependency notes
 
 TypeScript 5.9 and ESLint 9 are pinned with `typescript-eslint` and `eslint-plugin-react-hooks`. Shared versions (better-auth, drizzle-orm, pg, pino, zod, TypeScript) come from the pnpm catalog in `pnpm-workspace.yaml`. pnpm blocks dependency install scripts unless listed under `allowBuilds`. The `@esbuild-kit/core-utils` override updates Drizzle Kit's legacy nested esbuild to the patched 0.25.12. Turborepo runs in `envMode: "loose"` so your shell environment reaches both apps, matching the precedence above.
