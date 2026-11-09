@@ -22,6 +22,15 @@
 // sourceId = the order id (an `order_issue` deduction stores the ORDER id as
 // its sourceId, the issue id lives in the idempotency key); duty_meal ->
 // movement `duty_meal`, source `duty_meal`, sourceId = the deduction id.
+//
+// Reversal (legend-9w46): the sale deduction of an order is reversed once when
+// the order is finally voided (`order.voided` with `voidedFinalOrder`) or
+// fully refunded (`order.refunded`, cumulative). A posted deduction gets one
+// `return/order` ledger row per line at the line's ORIGINAL unit cost, so the
+// GL return journal offsets the HPP journal exactly; a pending one is just
+// marked reversed. A reversal that arrives before `order.paid` leaves a
+// line-less `reversed` tombstone under the sale key, so the later paid event
+// draws nothing. Remake/comp/duty meal deductions are never reversed.
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
@@ -58,12 +67,18 @@ import {
 import {
   dayClosedPayloadSchema,
   orderPaidPayloadSchema,
+  orderRefundedPayloadSchema,
+  orderVoidedPayloadSchema,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { inventorySettings } from "../db/schema/inventory-setup.ts";
 import { stockLocations } from "../db/schema/inventory.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
-import { posOrderItems } from "../db/schema/pos-order.ts";
+import {
+  posOrderItems,
+  posOrderRefunds,
+  posOrderTenders,
+} from "../db/schema/pos-order.ts";
 import { orderItems } from "../db/schema/qr-order.ts";
 import {
   outletInventorySettings,
@@ -225,6 +240,8 @@ function toDeduction(
     shiftId: row.shiftId,
     createdAt: row.createdAt.toISOString(),
     postedAt: row.postedAt ? row.postedAt.toISOString() : null,
+    reversedAt: row.reversedAt ? row.reversedAt.toISOString() : null,
+    reversalReason: row.reversalReason,
     lines: [...lines]
       .sort((a, b) => a.inventoryItemId.localeCompare(b.inventoryItemId))
       .map((line) => ({
@@ -535,6 +552,186 @@ export async function postPendingDeductions(
   return posted;
 }
 
+// ---------------------------------------------------------------- reversal
+
+export type ReverseOrderSaleDeductionInput = {
+  outletId: string;
+  orderId: string;
+  reason: "void" | "refund";
+  /** Void id or refund id that caused the reversal. */
+  reversalSourceId: string;
+  /** ISO instant of the void / refund. */
+  occurredAt: string;
+};
+
+/**
+ * Reverses the sale deduction of an order (key `sale:order:<orderId>`), once.
+ * Posted -> one `return/order` ledger row per line at the line's stored unit
+ * cost (never the current average); pending -> marked reversed, nothing
+ * posted; skipped or already reversed -> no-op. No sale deduction yet -> a
+ * line-less `reversed` tombstone, so a later `order.paid` draws nothing.
+ */
+export async function reverseOrderSaleDeduction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: ReverseOrderSaleDeductionInput,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const key = `sale:order:${input.orderId}`;
+  const occurredAt = new Date(input.occurredAt);
+  // Two rounds: a concurrent order.paid can win the tombstone insert, then the
+  // second round finds and locks its row.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const [row] = await tx
+      .select()
+      .from(recipeDeductions)
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.idempotencyKey, key),
+        ),
+      )
+      .for("update");
+    if (!row) {
+      const config = await loadDeductionConfig(tx, context, input.outletId);
+      const clock = await loadOutletClock(tx, input.outletId);
+      const [inserted] = await tx
+        .insert(recipeDeductions)
+        .values({
+          tenantId,
+          outletId: input.outletId,
+          kind: "sale",
+          status: "reversed",
+          mode: config.mode,
+          sourceType: "order",
+          sourceId: input.orderId,
+          businessDate: businessDateOf(occurredAt, clock),
+          idempotencyKey: key,
+          costIdr: null,
+          skipReason: null,
+          reason: null,
+          recordedBy: null,
+          occurredAt,
+          reversedAt: occurredAt,
+          reversalReason: input.reason,
+          reversalSourceId: input.reversalSourceId,
+        })
+        .onConflictDoNothing({
+          target: [recipeDeductions.tenantId, recipeDeductions.idempotencyKey],
+        })
+        .returning({ id: recipeDeductions.id });
+      if (inserted) return;
+      continue;
+    }
+    if (row.kind !== "sale") return;
+    if (row.status === "reversed" || row.status === "skipped") return;
+
+    if (row.status === "posted") {
+      const lines = (
+        await tx
+          .select()
+          .from(recipeDeductionLines)
+          .where(
+            and(
+              eq(recipeDeductionLines.tenantId, tenantId),
+              eq(recipeDeductionLines.deductionId, row.id),
+            ),
+          )
+      ).sort((a, b) => a.inventoryItemId.localeCompare(b.inventoryItemId));
+      await lockLocations(
+        tx,
+        tenantId,
+        lines.map((line) => line.locationId),
+      );
+      for (const line of lines) {
+        if (line.unitCostIdr === null) continue; // posted lines always carry it
+        await recordStockMovementInTransaction(tx, context, {
+          outletId: row.outletId,
+          locationId: line.locationId,
+          inventoryItemId: line.inventoryItemId,
+          movementType: "return",
+          quantity: line.quantity,
+          unitCostIdr: formatDecimal4(parseDecimal4(line.unitCostIdr)),
+          sourceType: "order",
+          sourceId: row.sourceId,
+          occurredAt: occurredAt.toISOString() as never,
+          idempotencyKey: `recipe-reversal:${row.id}:${line.inventoryItemId}`,
+          actor: { type: "system" },
+        });
+      }
+    }
+    await tx
+      .update(recipeDeductions)
+      .set({
+        status: "reversed",
+        reversedAt: occurredAt,
+        reversalReason: input.reason,
+        reversalSourceId: input.reversalSourceId,
+      })
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.id, row.id),
+        ),
+      );
+    return;
+  }
+}
+
+/** True when the refunds of the order now cover everything it captured. */
+async function isOrderFullyRefunded(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  const tenders = await tx
+    .select({ amountIdr: posOrderTenders.amountIdr })
+    .from(posOrderTenders)
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.orderId, orderId),
+        eq(posOrderTenders.status, "captured"),
+      ),
+    );
+  const refunds = await tx
+    .select({ amountIdr: posOrderRefunds.amountIdr })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        eq(posOrderRefunds.orderId, orderId),
+      ),
+    );
+  const paid = tenders.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+  const refunded = refunds.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+  return paid > 0 && refunded >= paid;
+}
+
+/**
+ * Reversal inside a savepoint: a stock rule that refuses the return rolls the
+ * reversal back alone and is logged; it never fails (and blocks) the consumer.
+ */
+async function reverseSafely(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: ReverseOrderSaleDeductionInput,
+): Promise<void> {
+  try {
+    await tx.transaction(async (savepoint) => {
+      await reverseOrderSaleDeduction(savepoint, context, input);
+    });
+  } catch (error) {
+    if (!(error instanceof HttpError || error instanceof InventoryError))
+      throw error;
+    logger.warn(
+      { err: error, orderId: input.orderId, outletId: input.outletId },
+      "Recipe deduction reversal not posted; left as is",
+    );
+  }
+}
+
 // ---------------------------------------------------------------- consumer
 
 /** The sellable lines of a paid order: not voided at the kitchen nor the POS. */
@@ -630,6 +827,32 @@ async function consumeInTransaction(
       recordedBy: payload.recordedBy,
       occurredAt: payload.occurredAt,
     });
+  } else if (event.name === "order.voided") {
+    const parsed = orderVoidedPayloadSchema.safeParse(event.payload);
+    if (!parsed.success) return;
+    const payload = parsed.data;
+    // A void before payment never drew stock; only a final-order void reverses.
+    if (!payload.voidedFinalOrder || payload.voidId === null) return;
+    await reverseSafely(tx, context, {
+      outletId: payload.outletId,
+      orderId: payload.orderId,
+      reason: "void",
+      reversalSourceId: payload.voidId,
+      occurredAt: payload.voidedAt,
+    });
+  } else if (event.name === "order.refunded") {
+    const parsed = orderRefundedPayloadSchema.safeParse(event.payload);
+    if (!parsed.success) return;
+    const payload = parsed.data;
+    // A partial refund is money-only (no line data to map to stock).
+    if (!(await isOrderFullyRefunded(tx, context, payload.orderId))) return;
+    await reverseSafely(tx, context, {
+      outletId: payload.outletId,
+      orderId: payload.orderId,
+      reason: "refund",
+      reversalSourceId: payload.refundId,
+      occurredAt: payload.refundedAt,
+    });
   } else if (event.name === "day.closed") {
     const parsed = dayClosedPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
@@ -643,6 +866,8 @@ async function consumeInTransaction(
 export const RECIPE_DEDUCTION_EVENT_NAMES = [
   "order.paid",
   "order_issue.recorded",
+  "order.voided",
+  "order.refunded",
   "day.closed",
 ] as const;
 

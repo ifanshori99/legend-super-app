@@ -1,6 +1,6 @@
 {
-  "id": "676cd486-26a0-4a1d-821b-3c2aa55efb69",
-  "prevId": "1cdb7f12-d332-42af-8af5-287fc53b2670",
+  "id": "ad5add5c-735d-4551-b8d1-60b300901bf2",
+  "prevId": "115a7160-3889-4266-ab24-8c62aea4f2e2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -44699,6 +44699,24 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "reversed_at": {
+          "name": "reversed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversal_reason": {
+          "name": "reversal_reason",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversal_source_id": {
+          "name": "reversal_source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -44861,7 +44879,7 @@
         },
         "recipe_deductions_status_check": {
           "name": "recipe_deductions_status_check",
-          "value": "\"recipe_deductions\".\"status\" IN ('pending', 'posted', 'skipped')"
+          "value": "\"recipe_deductions\".\"status\" IN ('pending', 'posted', 'skipped', 'reversed')"
         },
         "recipe_deductions_mode_check": {
           "name": "recipe_deductions_mode_check",
@@ -44881,7 +44899,15 @@
         },
         "recipe_deductions_posted_check": {
           "name": "recipe_deductions_posted_check",
-          "value": "(\"recipe_deductions\".\"status\" = 'posted') = (\"recipe_deductions\".\"posted_at\" IS NOT NULL)"
+          "value": "(\"recipe_deductions\".\"status\" = 'posted' AND \"recipe_deductions\".\"posted_at\" IS NOT NULL) OR (\"recipe_deductions\".\"status\" IN ('pending', 'skipped') AND \"recipe_deductions\".\"posted_at\" IS NULL) OR \"recipe_deductions\".\"status\" = 'reversed'"
+        },
+        "recipe_deductions_reversed_check": {
+          "name": "recipe_deductions_reversed_check",
+          "value": "(\"recipe_deductions\".\"status\" = 'reversed') = (\"recipe_deductions\".\"reversed_at\" IS NOT NULL AND \"recipe_deductions\".\"reversal_reason\" IS NOT NULL AND \"recipe_deductions\".\"reversal_source_id\" IS NOT NULL)"
+        },
+        "recipe_deductions_reversal_reason_check": {
+          "name": "recipe_deductions_reversal_reason_check",
+          "value": "\"recipe_deductions\".\"reversal_reason\" IS NULL OR \"recipe_deductions\".\"reversal_reason\" IN ('void', 'refund')"
         },
         "recipe_deductions_skipped_check": {
           "name": "recipe_deductions_skipped_check",

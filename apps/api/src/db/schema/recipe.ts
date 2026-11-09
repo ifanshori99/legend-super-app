@@ -34,6 +34,7 @@ import type {
   RecipeDeductionSkipReason,
   RecipeDeductionSourceType,
   RecipeDeductionStatus,
+  RecipeDeductionReversalReason,
 } from "@starter/shared/inventory";
 import {
   businessDate,
@@ -336,6 +337,17 @@ export const recipeDeductions = pgTable(
       .defaultNow()
       .notNull(),
     postedAt: timestamp("posted_at", { withTimezone: true }),
+    // legend-9w46: a sale deduction is reversed once when its order is voided
+    // after payment or fully refunded. A posted one gets `return` movements
+    // back at its own line costs (posted_at stays); a pending one is never
+    // posted; a reversal that arrives first leaves a line-less tombstone so
+    // the late `order.paid` finds the key and draws nothing.
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversalReason: varchar("reversal_reason", {
+      length: 20,
+    }).$type<RecipeDeductionReversalReason>(),
+    // Void id or refund id that reversed it (UUID or ULID, so text).
+    reversalSourceId: text("reversal_source_id"),
   },
   (table) => [
     unique("recipe_deductions_tenant_id_id_key").on(table.tenantId, table.id),
@@ -371,7 +383,7 @@ export const recipeDeductions = pgTable(
     ),
     check(
       "recipe_deductions_status_check",
-      sql`${table.status} IN ('pending', 'posted', 'skipped')`,
+      sql`${table.status} IN ('pending', 'posted', 'skipped', 'reversed')`,
     ),
     check(
       "recipe_deductions_mode_check",
@@ -391,7 +403,15 @@ export const recipeDeductions = pgTable(
     ),
     check(
       "recipe_deductions_posted_check",
-      sql`(${table.status} = 'posted') = (${table.postedAt} IS NOT NULL)`,
+      sql`(${table.status} = 'posted' AND ${table.postedAt} IS NOT NULL) OR (${table.status} IN ('pending', 'skipped') AND ${table.postedAt} IS NULL) OR ${table.status} = 'reversed'`,
+    ),
+    check(
+      "recipe_deductions_reversed_check",
+      sql`(${table.status} = 'reversed') = (${table.reversedAt} IS NOT NULL AND ${table.reversalReason} IS NOT NULL AND ${table.reversalSourceId} IS NOT NULL)`,
+    ),
+    check(
+      "recipe_deductions_reversal_reason_check",
+      sql`${table.reversalReason} IS NULL OR ${table.reversalReason} IN ('void', 'refund')`,
     ),
     check(
       "recipe_deductions_skipped_check",

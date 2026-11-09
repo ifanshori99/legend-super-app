@@ -152,6 +152,7 @@ export const recipeDeductionStatusSchema = z.enum([
   "pending",
   "posted",
   "skipped",
+  "reversed",
 ]);
 export type RecipeDeductionStatus = z.infer<typeof recipeDeductionStatusSchema>;
 
@@ -163,6 +164,12 @@ export const recipeDeductionSkipReasonSchema = z.enum([
 ]);
 export type RecipeDeductionSkipReason = z.infer<
   typeof recipeDeductionSkipReasonSchema
+>;
+
+/** Why a sale deduction was reversed (legend-9w46). */
+export const recipeDeductionReversalReasonSchema = z.enum(["void", "refund"]);
+export type RecipeDeductionReversalReason = z.infer<
+  typeof recipeDeductionReversalReasonSchema
 >;
 
 export const recipeDeductionSourceTypeSchema = z.enum([
@@ -209,6 +216,9 @@ export const recipeDeductionSchema = z.strictObject({
   shiftId: uuidSchema.nullable(),
   createdAt: isoDateTimeSchema,
   postedAt: isoDateTimeSchema.nullable(),
+  /** Set once when the order was voided after payment or fully refunded. */
+  reversedAt: isoDateTimeSchema.nullable(),
+  reversalReason: recipeDeductionReversalReasonSchema.nullable(),
   lines: z.array(recipeDeductionLineSchema),
 });
 export type RecipeDeduction = z.infer<typeof recipeDeductionSchema>;

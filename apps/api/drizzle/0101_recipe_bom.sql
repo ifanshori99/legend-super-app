@@ -82,16 +82,21 @@ CREATE TABLE "recipe_deductions" (
 	"occurred_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"posted_at" timestamp with time zone,
+	"reversed_at" timestamp with time zone,
+	"reversal_reason" varchar(20),
+	"reversal_source_id" text,
 	CONSTRAINT "recipe_deductions_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "recipe_deductions_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "recipe_deductions_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
 	CONSTRAINT "recipe_deductions_kind_check" CHECK ("recipe_deductions"."kind" IN ('sale', 'remake', 'comp', 'duty_meal')),
-	CONSTRAINT "recipe_deductions_status_check" CHECK ("recipe_deductions"."status" IN ('pending', 'posted', 'skipped')),
+	CONSTRAINT "recipe_deductions_status_check" CHECK ("recipe_deductions"."status" IN ('pending', 'posted', 'skipped', 'reversed')),
 	CONSTRAINT "recipe_deductions_mode_check" CHECK ("recipe_deductions"."mode" IN ('real_time', 'close_of_day')),
 	CONSTRAINT "recipe_deductions_source_type_check" CHECK ("recipe_deductions"."source_type" IN ('order', 'order_issue', 'duty_meal')),
 	CONSTRAINT "recipe_deductions_skip_reason_check" CHECK ("recipe_deductions"."skip_reason" IS NULL OR "recipe_deductions"."skip_reason" IN ('no_recipe', 'no_sale_location', 'recipe_inactive', 'recipe_error')),
 	CONSTRAINT "recipe_deductions_cost_check" CHECK ("recipe_deductions"."cost_idr" IS NULL OR "recipe_deductions"."cost_idr" >= 0),
-	CONSTRAINT "recipe_deductions_posted_check" CHECK (("recipe_deductions"."status" = 'posted') = ("recipe_deductions"."posted_at" IS NOT NULL)),
+	CONSTRAINT "recipe_deductions_posted_check" CHECK (("recipe_deductions"."status" = 'posted' AND "recipe_deductions"."posted_at" IS NOT NULL) OR ("recipe_deductions"."status" IN ('pending', 'skipped') AND "recipe_deductions"."posted_at" IS NULL) OR "recipe_deductions"."status" = 'reversed'),
+	CONSTRAINT "recipe_deductions_reversed_check" CHECK (("recipe_deductions"."status" = 'reversed') = ("recipe_deductions"."reversed_at" IS NOT NULL AND "recipe_deductions"."reversal_reason" IS NOT NULL AND "recipe_deductions"."reversal_source_id" IS NOT NULL)),
+	CONSTRAINT "recipe_deductions_reversal_reason_check" CHECK ("recipe_deductions"."reversal_reason" IS NULL OR "recipe_deductions"."reversal_reason" IN ('void', 'refund')),
 	CONSTRAINT "recipe_deductions_skipped_check" CHECK ("recipe_deductions"."status" <> 'skipped' OR "recipe_deductions"."skip_reason" IS NOT NULL)
 );
 --> statement-breakpoint
