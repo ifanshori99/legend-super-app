@@ -17,6 +17,10 @@
 //   a fresh updated_at, so the payout sweep in the same run does not touch them
 //   and "money columns unchanged" stays assertable through `sweepApproved...`.
 //   (Escalation must ignore the lease: the brief lists no lease condition.)
+// - payout_stalled (legend-ix8i): written from the sub-brief rule. thresholdHours
+//   in the event payload is the per-tenant payout_stalled_hours (same meaning as
+//   for the other reasons), and `waitingSince` is the stall stamp. Stall tests
+//   call escalateStaleRefunds directly so the payout sweep cannot move a row.
 // - Recipient rule: users with `outlet_manager` (outlet scope) and `finance`
 //   (tenant scope) both receive the alert; a cashier does not.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -128,6 +132,8 @@ type RefundSeed = {
   decidedHoursAgo?: number;
   chain?: boolean;
   polls?: number;
+  /** last_payout_error for a non-polling approved refund (e.g. MANUAL_RECONCILIATION). */
+  payoutError?: string;
   seed?: Seeded;
 };
 
@@ -164,7 +170,7 @@ async function seedRefund(input: RefundSeed = {}): Promise<string> {
       polling ? 2 : 0,
       polling ? new Date(now + 10 * 60 * HOUR) : null,
       polling ? randomUUID() : null,
-      polling ? "provider_pending" : null,
+      input.payoutError ?? (polling ? "provider_pending" : null),
       polling ? `prov-${refundId.slice(0, 8)}` : null,
       new Date(now - (input.createdHoursAgo ?? 0) * HOUR),
       // Fresh and distinctive: the payout backoff reads it; escalation must not move it.
@@ -181,11 +187,12 @@ type Row = {
   amount_idr: string;
   escalated_at: Date | null;
   escalation_reason: string | null;
+  payout_stall_detected_at: Date | null;
 };
 
 async function refundRow(id: string): Promise<Row> {
   const { rows } = await owner.query<Row>(
-    "SELECT status, amount_idr, escalated_at, escalation_reason FROM payment_refunds WHERE id = $1",
+    "SELECT status, amount_idr, escalated_at, escalation_reason, payout_stall_detected_at FROM payment_refunds WHERE id = $1",
     [id],
   );
   if (!rows[0]) throw new Error("refund row missing");
@@ -201,6 +208,25 @@ async function snapshot(id: string): Promise<Record<string, unknown>> {
   );
   return rows[0]!.snap;
 }
+
+/** Every column except the three escalation-owned ones (escalation pair + stall stamp). */
+async function moneySnapshot(id: string): Promise<Record<string, unknown>> {
+  const { rows } = await owner.query<{ snap: Record<string, unknown> }>(
+    `SELECT to_jsonb(r) - 'escalated_at' - 'escalation_reason' - 'payout_stall_detected_at' AS snap
+     FROM payment_refunds r WHERE id = $1`,
+    [id],
+  );
+  return rows[0]!.snap;
+}
+
+async function backdateStall(id: string, hours: number) {
+  await owner.query(
+    "UPDATE payment_refunds SET payout_stall_detected_at = now() - ($2::int * interval '1 hour') WHERE id = $1",
+    [id, hours],
+  );
+}
+
+const escalate = () => escalateStaleRefunds(tenantWide, new Date(), 100);
 
 async function audits(refundId: string, forTenant: string = tenantId) {
   const { rows } = await owner.query<{
@@ -332,10 +358,16 @@ afterAll(async () => {
   await appPool.end();
 });
 
-describe.each([
-  ["no gateway installed", () => null],
-  ["FakeRefundGateway installed", () => new FakeRefundGateway()],
-])("legend-n9kn refund escalation (%s)", (_label, makeGateway) => {
+const gatewayModes: [string, () => FakeRefundGateway | null, boolean][] = [
+  ["no gateway installed", () => null, false],
+  ["FakeRefundGateway installed", () => new FakeRefundGateway(), true],
+];
+
+describe.each(gatewayModes)("legend-n9kn refund escalation (%s)", (_label, makeGateway, installed) => {
+  // A refund that is "stalled" in this mode: with a gateway it needs a stuck-payout
+  // error flag; without one an approved refund with no polls is enough.
+  const stallError = installed ? "MANUAL_RECONCILIATION" : undefined;
+
   beforeEach(() => {
     fake = makeGateway();
     setPaymentRefundGateway(fake);
@@ -700,11 +732,325 @@ describe.each([
     expect(calmIds).toContain(calm);
     expect(calmIds).not.toContain(pending);
   });
+
+  // ---- legend-ix8i: third reason payout_stalled -------------------------------
+
+  const stalledSeed = (extra: RefundSeed = {}): Promise<string> =>
+    seedRefund({
+      status: "approved",
+      decidedHoursAgo: 1,
+      polls: 0,
+      payoutError: stallError,
+      ...extra,
+    });
+
+  it.skipIf(!installed).each([
+    "MANUAL_RECONCILIATION",
+    "PAYOUT_QUARANTINED",
+    "EVIDENCE_MAPPING_REQUIRED",
+  ])(
+    "legend-ix8i with a gateway, an approved refund flagged %s is stamped first and escalates as payout_stalled 24 h later, once",
+    async (flag) => {
+      const id = await stalledSeed({ payoutError: flag });
+
+      expect(await escalate()).toBe(0);
+      const stamped = await refundRow(id);
+      expect(stamped.payout_stall_detected_at).not.toBeNull();
+      expect(stamped.escalated_at).toBeNull();
+      expect(stamped.escalation_reason).toBeNull();
+      expect(await audits(id)).toHaveLength(0);
+      expect(await outboxRows(id)).toHaveLength(0);
+
+      // Another sweep inside the 24 h window changes nothing, the clock is not restarted.
+      expect(await escalate()).toBe(0);
+      expect((await refundRow(id)).payout_stall_detected_at).toEqual(
+        stamped.payout_stall_detected_at,
+      );
+
+      await backdateStall(id, 25);
+      const stampAfterBackdate = (await refundRow(id)).payout_stall_detected_at;
+      expect(await escalate()).toBe(1);
+      const row = await refundRow(id);
+      expect(row.escalation_reason).toBe("payout_stalled");
+      expect(row.escalated_at).not.toBeNull();
+      expect(row.status).toBe("approved");
+      const auditRows = await audits(id);
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0]!.actor).toBeNull();
+      expect(auditRows[0]!.before).toHaveProperty("escalatedAt");
+      expect(auditRows[0]!.after).toMatchObject({
+        escalationReason: "payout_stalled",
+        status: "approved",
+      });
+      const events = await outboxRows(id);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.destination).toBe("notification");
+      expect(events[0]!.event.payload).toMatchObject({
+        refundId: id,
+        outletId: outletA,
+        reason: "payout_stalled",
+        thresholdHours: 24,
+      });
+      expect(
+        new Date(String(events[0]!.event.payload.waitingSince)).getTime(),
+      ).toBe(stampAfterBackdate!.getTime());
+
+      expect(await escalate()).toBe(0);
+      expect(await escalate()).toBe(0);
+      expect(await audits(id)).toHaveLength(1);
+      expect(await outboxRows(id)).toHaveLength(1);
+      expect((await refundRow(id)).escalated_at).toEqual(row.escalated_at);
+    },
+  );
+
+  it.skipIf(!installed)(
+    "legend-ix8i with a gateway, an approved refund with no error flag (normal payout backoff) or an unrelated error is never stamped or escalated",
+    async () => {
+      const calm = await stalledSeed({ payoutError: undefined, decidedHoursAgo: 200 });
+      const transient = await stalledSeed({
+        payoutError: "PROVIDER_TIMEOUT",
+        decidedHoursAgo: 200,
+      });
+
+      expect(await escalate()).toBe(0);
+      expect(await escalate()).toBe(0);
+
+      for (const id of [calm, transient]) {
+        const row = await refundRow(id);
+        expect(row.payout_stall_detected_at).toBeNull();
+        expect(row.escalated_at).toBeNull();
+        expect(await audits(id)).toHaveLength(0);
+        expect(await outboxRows(id)).toHaveLength(0);
+      }
+    },
+  );
+
+  it.skipIf(installed)(
+    "legend-ix8i without a gateway, an approved refund that was never polled is stamped, then escalates as payout_stalled after 24 h of stall; a polled one is not stalled",
+    async () => {
+      const stuck = await stalledSeed({ decidedHoursAgo: 2 });
+      const polled = await seedRefund({
+        status: "approved",
+        decidedHoursAgo: 2,
+        polls: 3,
+      });
+
+      expect(await escalate()).toBe(0);
+      const stamped = await refundRow(stuck);
+      expect(stamped.payout_stall_detected_at).not.toBeNull();
+      expect(stamped.escalated_at).toBeNull();
+      expect(await audits(stuck)).toHaveLength(0);
+      expect((await refundRow(polled)).payout_stall_detected_at).toBeNull();
+
+      await backdateStall(stuck, 25);
+      expect(await escalate()).toBe(1);
+      expect((await refundRow(stuck)).escalation_reason).toBe("payout_stalled");
+      expect(await audits(stuck)).toHaveLength(1);
+      const events = await outboxRows(stuck);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.event.payload).toMatchObject({
+        reason: "payout_stalled",
+        thresholdHours: 24,
+      });
+      expect((await refundRow(polled)).escalated_at).toBeNull();
+
+      expect(await escalate()).toBe(0);
+      expect(await audits(stuck)).toHaveLength(1);
+      expect(await outboxRows(stuck)).toHaveLength(1);
+    },
+  );
+
+  it.skipIf(!installed)(
+    "legend-ix8i with a gateway, clearing the error flag (a retry) resets the stall clock, so the old stamp never escalates and a new stall starts fresh",
+    async () => {
+      const id = await stalledSeed();
+      expect(await escalate()).toBe(0);
+      expect((await refundRow(id)).payout_stall_detected_at).not.toBeNull();
+      await backdateStall(id, 30);
+
+      await owner.query(
+        "UPDATE payment_refunds SET last_payout_error = NULL WHERE id = $1",
+        [id],
+      );
+      expect(await escalate()).toBe(0);
+      const reset = await refundRow(id);
+      expect(reset.payout_stall_detected_at).toBeNull();
+      expect(reset.escalated_at).toBeNull();
+      expect(await audits(id)).toHaveLength(0);
+
+      // Stalls again: a fresh stamp, and no escalation off the old one.
+      await owner.query(
+        "UPDATE payment_refunds SET last_payout_error = 'PAYOUT_QUARANTINED' WHERE id = $1",
+        [id],
+      );
+      expect(await escalate()).toBe(0);
+      const restamped = await refundRow(id);
+      expect(restamped.payout_stall_detected_at).not.toBeNull();
+      expect(restamped.escalated_at).toBeNull();
+      expect(Date.now() - restamped.payout_stall_detected_at!.getTime()).toBeLessThan(
+        HOUR,
+      );
+    },
+  );
+
+  it("legend-ix8i a stalled refund that starts polling the provider, or leaves approved, gets its stall stamp cleared and is not escalated as payout_stalled", async () => {
+    const polling = await stalledSeed();
+    const closed = await stalledSeed();
+    expect(await escalate()).toBe(0);
+    expect((await refundRow(polling)).payout_stall_detected_at).not.toBeNull();
+    expect((await refundRow(closed)).payout_stall_detected_at).not.toBeNull();
+    await backdateStall(polling, 30);
+    await backdateStall(closed, 30);
+
+    await owner.query(
+      `UPDATE payment_refunds
+          SET payout_pending_polls = 3, payout_claimed_until = $2, payout_claim_token = $3
+        WHERE id = $1`,
+      [polling, new Date(Date.now() + 600 * HOUR), randomUUID()],
+    );
+    await owner.query(
+      "UPDATE payment_refunds SET status = 'completed' WHERE id = $1",
+      [closed],
+    );
+
+    expect(await escalate()).toBe(0);
+    for (const id of [polling, closed]) {
+      const row = await refundRow(id);
+      expect(row.payout_stall_detected_at).toBeNull();
+      expect(row.escalated_at).toBeNull();
+      expect(await audits(id)).toHaveLength(0);
+      expect(await outboxRows(id)).toHaveLength(0);
+    }
+  });
+
+  it("legend-ix8i a per-tenant payout_stalled_hours of 2 is honoured, the 24 h default is not", async () => {
+    const id = await stalledSeed();
+    expect(await escalate()).toBe(0);
+    await backdateStall(id, 3);
+    // Default 24 h: 3 h of stall is not enough.
+    expect(await escalate()).toBe(0);
+    expect((await refundRow(id)).escalated_at).toBeNull();
+
+    await owner.query(
+      `INSERT INTO payment_refund_escalation_settings (tenant_id, payout_stalled_hours)
+       VALUES ($1, 2)
+       ON CONFLICT (tenant_id) DO UPDATE SET payout_stalled_hours = 2`,
+      [tenantId],
+    );
+    await backdateStall(id, 1);
+    expect(await escalate()).toBe(0);
+    expect((await refundRow(id)).escalated_at).toBeNull();
+
+    await backdateStall(id, 3);
+    expect(await escalate()).toBe(1);
+    expect((await refundRow(id)).escalation_reason).toBe("payout_stalled");
+    const events = await outboxRows(id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.event.payload).toMatchObject({
+      reason: "payout_stalled",
+      thresholdHours: 2,
+    });
+  });
+
+  it("legend-ix8i payout_stalled escalation writes only the stall stamp and the escalation pair; every money and payout column is unchanged", async () => {
+    const id = await stalledSeed();
+    // A prior attempt and an expired lease make the payout columns non-trivial.
+    await owner.query(
+      `UPDATE payment_refunds
+          SET payout_attempts = 2, payout_claimed_until = $2, payout_claim_token = $3
+        WHERE id = $1`,
+      [id, new Date(Date.now() - 5 * HOUR), randomUUID()],
+    );
+    const before = await moneySnapshot(id);
+
+    expect(await escalate()).toBe(0);
+    expect(await moneySnapshot(id)).toEqual(before);
+
+    await backdateStall(id, 25);
+    expect(await escalate()).toBe(1);
+    expect((await refundRow(id)).escalation_reason).toBe("payout_stalled");
+    // status, amount_idr, updated_at, payout_attempts, payout_pending_polls,
+    // lease, last_payout_error, provider_ref, decided_at, ...
+    expect(await moneySnapshot(id)).toEqual(before);
+    const row = await refundRow(id);
+    expect(row.status).toBe("approved");
+    expect(row.amount_idr).toBe("75000");
+  });
+
+  it("legend-ix8i a payout_stalled refund that later polls the provider for 73 h escalates once as provider_pending and never goes back to payout_stalled", async () => {
+    const id = await stalledSeed();
+    expect(await escalate()).toBe(0);
+    await backdateStall(id, 25);
+    expect(await escalate()).toBe(1);
+    expect((await refundRow(id)).escalation_reason).toBe("payout_stalled");
+    expect(await audits(id)).toHaveLength(1);
+
+    await owner.query(
+      `UPDATE payment_refunds
+          SET decided_at = $2, payout_pending_polls = 3,
+              payout_claimed_until = $3, payout_claim_token = $4
+        WHERE id = $1`,
+      [
+        id,
+        new Date(Date.now() - 73 * HOUR),
+        new Date(Date.now() + 600 * HOUR),
+        randomUUID(),
+      ],
+    );
+
+    expect(await escalate()).toBe(1);
+    const row = await refundRow(id);
+    expect(row.escalation_reason).toBe("provider_pending");
+    expect(row.payout_stall_detected_at).toBeNull();
+    const auditRows = await audits(id);
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows[1]!.before).toHaveProperty("escalatedAt");
+    expect(auditRows[1]!.before?.escalatedAt).not.toBeNull();
+    expect(auditRows[1]!.after).toMatchObject({
+      escalationReason: "provider_pending",
+    });
+    expect(await outboxRows(id)).toHaveLength(2);
+
+    expect(await escalate()).toBe(0);
+    expect(await escalate()).toBe(0);
+    expect((await refundRow(id)).escalation_reason).toBe("provider_pending");
+    expect(await audits(id)).toHaveLength(2);
+    expect(await outboxRows(id)).toHaveLength(2);
+  });
+
+  it("legend-ix8i re-opening a stalled refund clears its stall stamp together with its escalation", async () => {
+    const id = await stalledSeed({ payoutError: "PAYOUT_QUARANTINED" });
+    expect(await escalate()).toBe(0);
+    await backdateStall(id, 25);
+    expect(await escalate()).toBe(1);
+    const stalled = await refundRow(id);
+    expect(stalled.escalation_reason).toBe("payout_stalled");
+    expect(stalled.payout_stall_detected_at).not.toBeNull();
+
+    const reopenKey = `esc-reopen-${randomUUID()}`;
+    const view = await reopenQuarantinedRefund(
+      tenantWide,
+      opsUser,
+      { refundId: id },
+      {
+        idempotencyKey: reopenKey,
+        note: "Persetujuan lama tidak sah, diputuskan ops.",
+      },
+      reopenKey,
+      { mfaVerified: true },
+    );
+    expect(view.status).toBe("pending");
+    const row = await refundRow(id);
+    expect(row.status).toBe("pending");
+    expect(row.payout_stall_detected_at).toBeNull();
+    expect(row.escalated_at).toBeNull();
+    expect(row.escalation_reason).toBeNull();
+  });
 });
 
 describe("legend-n9kn notification recipients for payment.refund_escalated", () => {
   const createdUsers: string[] = [];
-  const envelope = () =>
+  const envelope = (reason = "pending_unapproved") =>
     eventEnvelopeSchema.parse({
       ...eventFixture,
       id: createUlid(),
@@ -719,7 +1065,7 @@ describe("legend-n9kn notification recipients for payment.refund_escalated", () 
         refundId: randomUUID(),
         outletId: outletA,
         amountIdr: 75_000,
-        reason: "pending_unapproved",
+        reason,
         waitingSince: new Date(Date.now() - 30 * HOUR).toISOString(),
         thresholdHours: 24,
         escalatedAt: new Date().toISOString(),
@@ -778,6 +1124,24 @@ describe("legend-n9kn notification recipients for payment.refund_escalated", () 
 
     const ids = recipients.map((recipient) => recipient.userId);
     expect(recipients.length).toBeGreaterThan(0);
+    expect(ids).toContain(manager);
+    expect(ids).toContain(finance);
+    expect(ids).not.toContain(cashier);
+  });
+  it("legend-ix8i the payout_stalled alert reaches the outlet manager and finance, not a cashier, and the resolver does not throw", async () => {
+    const manager = await userWith("outlet_manager", "outlet");
+    const finance = await userWith("finance", "tenant");
+    const cashier = await userWith("cashier", "outlet");
+
+    const recipients = await withTenant(database, tenantWide, (tx) =>
+      createNotificationRecipientResolver({ email: false, push: false })(
+        tenantWide,
+        envelope("payout_stalled"),
+        tx,
+      ),
+    );
+
+    const ids = recipients.map((recipient) => recipient.userId);
     expect(ids).toContain(manager);
     expect(ids).toContain(finance);
     expect(ids).not.toContain(cashier);

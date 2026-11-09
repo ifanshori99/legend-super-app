@@ -1505,6 +1505,7 @@ export async function runRefundPayout(
 
 const ESCALATION_PENDING_UNAPPROVED_HOURS = 24;
 const ESCALATION_PROVIDER_PENDING_HOURS = 72;
+const ESCALATION_PAYOUT_STALLED_HOURS = 24;
 
 /**
  * Marks refunds that wait too long as escalated, once per reason, and tells
@@ -1512,10 +1513,17 @@ const ESCALATION_PROVIDER_PENDING_HOURS = 72;
  * `pending_unapproved`: `pending` with no approval chain, aged from
  * `created_at` (default 24 h). Case `provider_pending`: `approved` with the
  * provider still answering `pending`, aged from `decided_at` (default 72 h).
+ * Case `payout_stalled`: `approved` with no provider polls whose payout is
+ * stuck (with a gateway: `last_payout_error` is `MANUAL_RECONCILIATION`,
+ * `PAYOUT_QUARANTINED` or `EVIDENCE_MAPPING_REQUIRED`; without a gateway: any
+ * such refund, since nothing will pay it), aged from `payout_stall_detected_at`
+ * (default 24 h). That stall clock is owned here: it is stamped when a stall is
+ * first seen and cleared when the refund is no longer stalled. Polls never
+ * decrease, so `payout_stalled` and `provider_pending` cannot alternate.
  * Thresholds are per tenant (`payment_refund_escalation_settings`). It writes
- * only `escalated_at` and `escalation_reason`: it never cancels, pays, or
- * touches `status`, `updated_at` (the payout backoff reads it) or any payout
- * column. Returns the number of refunds escalated.
+ * only `payout_stall_detected_at`, `escalated_at` and `escalation_reason`: it
+ * never cancels, pays, or touches `status`, `updated_at` (the payout backoff
+ * reads it) or any payout column. Returns the number of refunds escalated.
  */
 export async function escalateStaleRefunds(
   context: ScopedTenantContext,
@@ -1528,6 +1536,59 @@ export async function escalateStaleRefunds(
       .select()
       .from(paymentRefundEscalationSettings)
       .where(eq(paymentRefundEscalationSettings.tenantId, tenantId));
+    const gatewayInstalled = refundGatewayInstalled();
+    // coalesce keeps NOT(stalled) two-valued when last_payout_error is NULL.
+    const stalled = and(
+      eq(paymentRefunds.status, "approved"),
+      sql`${paymentRefunds.payoutPendingPolls} = 0`,
+      gatewayInstalled
+        ? sql`coalesce(${paymentRefunds.lastPayoutError}, '') IN (${sql.join(
+            [
+              MANUAL_RECONCILIATION,
+              PAYOUT_QUARANTINED,
+              EVIDENCE_MAPPING_REQUIRED,
+            ].map((value) => sql`${value}`),
+            sql`, `,
+          )})`
+        : undefined,
+    );
+    // Stall clock: reset where no longer stalled, then stamp where newly stalled.
+    const resetGuard = and(
+      eq(paymentRefunds.tenantId, tenantId),
+      sql`${paymentRefunds.payoutStallDetectedAt} IS NOT NULL`,
+      sql`NOT (${stalled})`,
+    );
+    const stampGuard = and(
+      eq(paymentRefunds.tenantId, tenantId),
+      stalled,
+      isNull(paymentRefunds.payoutStallDetectedAt),
+      sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'payout_stalled'`,
+    );
+    for (const [guard, value] of [
+      [resetGuard, null],
+      [stampGuard, now],
+    ] as const) {
+      const rows = await tx
+        .select({ id: paymentRefunds.id })
+        .from(paymentRefunds)
+        .where(guard)
+        .orderBy(asc(paymentRefunds.id))
+        .limit(limit)
+        .for("update", { skipLocked: true });
+      if (rows.length === 0) continue;
+      await tx
+        .update(paymentRefunds)
+        .set({ payoutStallDetectedAt: value })
+        .where(
+          and(
+            guard,
+            inArray(
+              paymentRefunds.id,
+              rows.map((row) => row.id),
+            ),
+          ),
+        );
+    }
     const cases = [
       {
         reason: "pending_unapproved",
@@ -1550,6 +1611,16 @@ export async function escalateStaleRefunds(
           eq(paymentRefunds.status, "approved"),
           sql`${paymentRefunds.payoutPendingPolls} > 0`,
           sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'provider_pending'`,
+        ),
+      },
+      {
+        reason: "payout_stalled",
+        hours: settings?.payoutStalledHours ?? ESCALATION_PAYOUT_STALLED_HOURS,
+        age: sql`${paymentRefunds.payoutStallDetectedAt}`,
+        stale: and(
+          stalled,
+          sql`${paymentRefunds.payoutStallDetectedAt} IS NOT NULL`,
+          sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'payout_stalled'`,
         ),
       },
     ] as const;
@@ -1639,8 +1710,8 @@ export async function escalateStaleRefunds(
  * older than 72 hours, the refund stays `approved`, is flagged
  * `MANUAL_RECONCILIATION` and logged for ops. A round stops claiming new
  * refunds once `budgetMs` is spent. First it escalates refunds that wait too
- * long (`escalateStaleRefunds`, also without a gateway); a failure there is
- * logged and never blocks payouts.
+ * long or whose payout is stalled (`escalateStaleRefunds`, also without a
+ * gateway); a failure there is logged and never blocks payouts.
  */
 export async function sweepApprovedRefundPayouts(
   context: ScopedTenantContext,
@@ -1944,6 +2015,7 @@ async function actOnQuarantine(
             lastPayoutError: null,
             payoutClaimedUntil: null,
             payoutClaimToken: null,
+            payoutStallDetectedAt: null,
             // A reopened refund starts a new wait: it may escalate again (legend-n9kn).
             escalatedAt: null,
             escalationReason: null,

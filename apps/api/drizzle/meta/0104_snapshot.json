@@ -1,6 +1,6 @@
 {
-  "id": "aaa28855-e43f-4777-bc38-b7b5226bf538",
-  "prevId": "1ee600ec-1acc-410f-801f-4bada0273f24",
+  "id": "23b1d952-e208-4d2a-8e62-6179f82774bb",
+  "prevId": "1e86489a-1c61-4997-927f-072926a9a28a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -14591,6 +14591,13 @@
           "notNull": true,
           "default": 72
         },
+        "payout_stalled_hours": {
+          "name": "payout_stalled_hours",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 24
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -14626,6 +14633,10 @@
         "payment_refund_escalation_provider_hours_check": {
           "name": "payment_refund_escalation_provider_hours_check",
           "value": "\"payment_refund_escalation_settings\".\"provider_pending_hours\" BETWEEN 1 AND 720"
+        },
+        "payment_refund_escalation_stalled_hours_check": {
+          "name": "payment_refund_escalation_stalled_hours_check",
+          "value": "\"payment_refund_escalation_settings\".\"payout_stalled_hours\" BETWEEN 1 AND 720"
         }
       },
       "isRLSEnabled": false
@@ -14767,6 +14778,12 @@
         "escalation_reason": {
           "name": "escalation_reason",
           "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payout_stall_detected_at": {
+          "name": "payout_stall_detected_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -14999,7 +15016,7 @@
         },
         "payment_refunds_escalation_reason_check": {
           "name": "payment_refunds_escalation_reason_check",
-          "value": "\"payment_refunds\".\"escalation_reason\" IS NULL OR \"payment_refunds\".\"escalation_reason\" IN ('pending_unapproved','provider_pending')"
+          "value": "\"payment_refunds\".\"escalation_reason\" IS NULL OR \"payment_refunds\".\"escalation_reason\" IN ('pending_unapproved','provider_pending','payout_stalled')"
         },
         "payment_refunds_escalation_pair_check": {
           "name": "payment_refunds_escalation_pair_check",

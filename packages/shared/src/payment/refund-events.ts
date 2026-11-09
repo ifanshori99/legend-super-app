@@ -12,6 +12,7 @@ import { defineDomainEvent } from "../events/index.ts";
 export const refundEscalationReasonSchema = z.enum([
   "pending_unapproved",
   "provider_pending",
+  "payout_stalled",
 ]);
 export type RefundEscalationReason = z.infer<
   typeof refundEscalationReasonSchema

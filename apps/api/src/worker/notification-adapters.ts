@@ -51,7 +51,10 @@ import {
   type Reachability,
 } from "@starter/shared/notification";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
-import { paymentRefundEscalatedPayloadSchema } from "@starter/shared/payment";
+import {
+  paymentRefundEscalatedPayloadSchema,
+  type RefundEscalationReason,
+} from "@starter/shared/payment";
 import type * as schema from "../db/schema/index.ts";
 import {
   notificationPolicies,
@@ -521,6 +524,21 @@ async function checklistRule(
   };
 }
 
+function refundEscalatedBody(reason: RefundEscalationReason): string {
+  switch (reason) {
+    case "pending_unapproved":
+      return "Ada refund yang belum diproses dan sudah melewati batas waktu tunggu. Mohon ditinjau.";
+    case "provider_pending":
+      return "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.";
+    case "payout_stalled":
+      return "Ada refund yang sudah disetujui tetapi pembayarannya tertahan dan perlu ditangani manual. Mohon ditinjau.";
+    default: {
+      const unreachable: never = reason;
+      return unreachable;
+    }
+  }
+}
+
 /** A refund waited past its tenant threshold: outlet managers (their outlet)
  * and finance (tenant-wide) decide. Body carries no amount or customer data. */
 async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
@@ -556,10 +574,7 @@ async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
     content: {
       category: "approval_request",
       title: "Refund menunggu terlalu lama",
-      body:
-        payload.reason === "pending_unapproved"
-          ? "Ada refund yang belum diproses dan sudah melewati batas waktu tunggu. Mohon ditinjau."
-          : "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.",
+      body: refundEscalatedBody(payload.reason),
       link: null,
     },
   };

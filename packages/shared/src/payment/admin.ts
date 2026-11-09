@@ -22,6 +22,7 @@ import {
   uuidSchema,
   cafeLegendFixtures,
 } from "../core/index.ts";
+import { refundEscalationReasonSchema } from "./refund-events.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   edcTerminalSchema,
@@ -243,10 +244,7 @@ export const refundViewSchema = z.strictObject({
   lastPayoutError: z.string().max(100).nullable().optional(),
   /** Set once when the refund waited past the tenant threshold; never changes money state. */
   escalatedAt: isoDateTimeSchema.nullable().optional(),
-  escalationReason: z
-    .enum(["pending_unapproved", "provider_pending"])
-    .nullable()
-    .optional(),
+  escalationReason: refundEscalationReasonSchema.nullable().optional(),
   completedAt: isoDateTimeSchema.nullable().optional(),
 });
 export type RefundView = z.infer<typeof refundViewSchema>;
