@@ -52,6 +52,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import {
   AutoJournalPayloadInvalid,
+  AutoJournalReceiptPending,
   autoJournalFactOf,
   autoJournalKeyOf,
   invalidEventKeyOf,
@@ -87,6 +88,7 @@ const RETRYABLE_CODES = [
   "ACCOUNT_ENTITY_MISMATCH",
   "OUTLET_LEGAL_ENTITY_MISSING",
   "PERIOD_CLOSED",
+  "AUTO_JOURNAL_RECEIPT_PENDING",
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
@@ -111,6 +113,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof OutletLegalEntityMissing) return error.code;
   if (error instanceof AccountingError) return error.code;
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
+  if (error instanceof AutoJournalReceiptPending) return error.code;
   if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
 }
@@ -138,7 +141,8 @@ async function parkOutletOf(
 /**
  * Parks (or re-parks) one event under its key. The outlet is checked first:
  * a malformed envelope must not turn into a foreign-key error that rolls back
- * the caller; with no outlet to own the row it is only logged.
+ * the caller. With no outlet to own the row it throws, so the outbox retries
+ * or dead-letters the event instead of committing a lost money fact.
  */
 async function park(
   tx: Tx,
@@ -156,12 +160,10 @@ async function park(
   const { code } = row;
   const retryable = (RETRYABLE_CODES as readonly string[]).includes(code);
   const outletId = await parkOutletOf(tx, tenantId, row.outletCandidates);
-  if (outletId === null) {
-    console.error(
-      `Auto-journal ${row.eventName} ${row.eventId} not parked (${code}): no outlet`,
+  if (outletId === null)
+    throw new Error(
+      `Auto-journal ${row.eventName} ${row.eventId} has no outlet to park under (${code})`,
     );
-    return { status: "parked", code, retryable };
-  }
   const nextRetryAt = retryable
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
     : null;

@@ -12,7 +12,8 @@
 // receipt-first: payment.paid (one receipt per intent) and
 // payment.funds_unallocated (money no payment.paid counts: closed intent,
 // second payment) book the receipt into customer_deposit, order.paid moves the
-// intent-backed gateway tenders whose receipt is booked out of it. EDC-linked
+// intent-backed gateway tenders whose receipt is booked out of it and waits
+// (AutoJournalReceiptPending) while a receipt can still post. EDC-linked
 // intents are skipped (EDC money posts through edc_clearing on the sale); an
 // EDC-linked gateway tender fails closed.
 //
@@ -22,13 +23,14 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
 import {
   autoJournalParked,
+  domainEventOutbox,
   journalEntries,
   paymentIntents,
   paymentRefunds,
@@ -36,6 +38,7 @@ import {
   posOrderTenders,
 } from "../db/schema/index.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -55,6 +58,14 @@ export function isAutoJournalEvent(name: string): name is AutoJournalEventName {
 /** The event can never post as sent: parked, never retried. */
 export class AutoJournalPayloadInvalid extends Error {
   readonly code = "AUTO_JOURNAL_PAYLOAD_INVALID";
+}
+
+/**
+ * order.paid met a gateway tender whose receipt has not posted yet: parked
+ * retryable, the sweep posts the sale once the receipt is booked.
+ */
+export class AutoJournalReceiptPending extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
 }
 
 const idr = z.number().int().safe();
@@ -214,22 +225,34 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
   }
 }
 
+type ReceiptState = "posted" | "pending" | "none";
+
 /**
- * Intent ids among `intentIds` whose gateway receipt is booked or waiting
- * (journal or parked row under the receipt key). Cutover/ordering guard: an
- * intent paid before the auto-journal consumer went live, or whose
- * payment.paid booked nothing (accounting off then, payload invalid), never
- * credited customer_deposit, so its tender must not debit it either; it posts
- * the pre-deposit way, Dr gateway_clearing. Fails closed on an unknown or
- * EDC-linked intent (EDC money is not gateway money).
+ * Receipt state of each intent in `intentIds` (cutover/ordering guard):
+ * - "posted": the receipt journal exists, the tender debits customer_deposit;
+ * - "pending": payment.paid is still in the outbox (pending, retrying, dead
+ *   letter) or its receipt is parked retryable; the sale must wait, or the
+ *   gateway money would be counted twice;
+ * - "none": the receipt will never post by itself (payment.paid consumed
+ *   before the consumer went live or with accounting off, never emitted, or
+ *   parked non-retryable), so the tender books the money once, the
+ *   pre-deposit way, Dr gateway_clearing.
+ * The outbox is read first: the receipt journal and the outbox row's
+ * `delivered` status commit in one transaction, so under read committed a
+ * receipt that commits between the reads is seen as pending, never as none.
+ * Fails closed on an unknown or EDC-linked intent (EDC money is not gateway
+ * money).
  */
-async function receiptBookedIntents(
+async function receiptStatesOf(
   tx: Tx,
   tenantId: TenantId,
   intentIds: readonly string[],
-): Promise<Set<string>> {
+): Promise<Map<string, ReceiptState>> {
   const ids = [...new Set(intentIds)];
-  if (ids.length === 0) return new Set();
+  const states = new Map<string, ReceiptState>(
+    ids.map((intentId) => [intentId, "none"]),
+  );
+  if (ids.length === 0) return states;
   const intents = await tx
     .select({
       id: paymentIntents.id,
@@ -250,10 +273,26 @@ async function receiptBookedIntents(
     throw new AutoJournalPayloadInvalid(
       "Gateway tender is linked to an EDC transaction",
     );
+  // 1. Outbox first (see the ordering note above).
+  const undelivered = await tx
+    .select({ intentId: domainEventOutbox.aggregateId })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateType, "payment"),
+        inArray(domainEventOutbox.aggregateId, ids),
+        sql`${domainEventOutbox.event}->>'name' = 'payment.paid'`,
+        ne(domainEventOutbox.status, "delivered"),
+      ),
+    );
+  for (const row of undelivered) states.set(row.intentId, "pending");
   const intentByKey = new Map(
     ids.map((intentId) => [receiptKeyOf(intentId), intentId]),
   );
   const keys = [...intentByKey.keys()];
+  // 2. Then the receipt journals.
   const posted = await tx
     .select({ key: journalEntries.idempotencyKey })
     .from(journalEntries)
@@ -263,8 +302,17 @@ async function receiptBookedIntents(
         inArray(journalEntries.idempotencyKey, keys),
       ),
     );
+  const postedIds = new Set<string>();
+  for (const row of posted) {
+    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
+    if (intentId !== undefined) postedIds.add(intentId);
+  }
+  // 3. Then the parked receipts: only a retryable one can still post.
   const parked = await tx
-    .select({ key: autoJournalParked.idempotencyKey })
+    .select({
+      key: autoJournalParked.idempotencyKey,
+      retryable: autoJournalParked.retryable,
+    })
     .from(autoJournalParked)
     .where(
       and(
@@ -272,12 +320,13 @@ async function receiptBookedIntents(
         inArray(autoJournalParked.idempotencyKey, keys),
       ),
     );
-  const booked = new Set<string>();
-  for (const row of [...posted, ...parked]) {
-    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
-    if (intentId !== undefined) booked.add(intentId);
+  for (const row of parked) {
+    const intentId = intentByKey.get(row.key);
+    if (intentId !== undefined && row.retryable)
+      states.set(intentId, "pending");
   }
-  return booked;
+  for (const intentId of postedIds) states.set(intentId, "posted");
+  return states;
 }
 
 /** EDC-linked intents post through edc_clearing, never as gateway receipts. */
@@ -352,14 +401,20 @@ export async function autoJournalFactOf(
           "POSTING_AMOUNTS_MISMATCH",
           "Captured gateway tenders do not match paidGatewayIdr",
         );
-      const booked = await receiptBookedIntents(
+      const states = await receiptStatesOf(
         tx,
         tenantId,
         intentTenders.map((tender) => tender.intentId),
       );
       let withReceipt = 0;
-      for (const tender of intentTenders)
-        if (booked.has(tender.intentId)) withReceipt += tender.amountIdr;
+      for (const tender of intentTenders) {
+        const state = states.get(tender.intentId);
+        if (state === "pending")
+          throw new AutoJournalReceiptPending(
+            "Gateway receipt of a tender is not booked yet",
+          );
+        if (state === "posted") withReceipt += tender.amountIdr;
+      }
       return {
         ruleEvent: "order.paid",
         amounts: {

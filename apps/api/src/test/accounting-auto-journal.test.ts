@@ -977,7 +977,7 @@ describe("F19 order.paid cutover guard for gateway tenders with an intent", () =
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
-  it("AJ-CUTOVER-02 a gateway tender whose receipt is parked (not yet booked) debits customer_deposit; the receipt later nets it to 0", async () => {
+  it("AJ-CUTOVER-02 a gateway tender whose receipt is parked retryable waits (AUTO_JOURNAL_RECEIPT_PENDING); after mapping the sweep posts the receipt then the sale via customer_deposit", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant, { unmapped: ["gateway_clearing"] });
     const orderUlid = createUlid();
@@ -991,20 +991,32 @@ describe("F19 order.paid cutover guard for gateway tenders with an intent", () =
     ).toBe("parked");
     expect(await parkedOf(tenant, `aj:receipt:${intentId}`)).toHaveLength(1);
 
-    // The sale needs no gateway_clearing line: the tender settles the deposit.
-    const result = await post(world, orderPaid(world, orderUlid, sale));
-    expect(await linesOf(world, result.journalEntryId)).toEqual([
+    // The receipt can still post: the sale waits instead of guessing.
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    await mapRole(world, "gateway_clearing", world.accounts.gateway_clearing);
+    // Oldest first, then by key: aj:receipt:... sweeps before aj:sale:...
+    expect(await sweep(tenant)).toEqual({
+      posted: 2,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await journalCount(world)).toBe(2);
+    const { rows } = await owner.query<{ id: string }>(
+      "SELECT id FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2",
+      [tenant.id, `aj:sale:${orderUlid}`],
+    );
+    expect(rows).toHaveLength(1);
+    expect(await linesOf(world, rows[0]!.id)).toEqual([
       { role: "customer_deposit", debit: 110_000, credit: 0 },
       { role: "sales_revenue", debit: 0, credit: 100_000 },
       { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
     ]);
-
-    await mapRole(world, "gateway_clearing", world.accounts.gateway_clearing);
-    expect(await sweep(tenant)).toEqual({
-      posted: 1,
-      stillParked: 0,
-      failed: 0,
-    });
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
     expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
   });
@@ -1036,6 +1048,87 @@ describe("F19 order.paid cutover guard for gateway tenders with an intent", () =
       retryable: false,
       event_name: "order.paid",
     });
+  });
+
+  it("AJ-CUTOVER-04 order.paid before payment.paid (outbox pending) parks RECEIPT_PENDING, then books the money once", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    // payment.paid is emitted but not consumed yet.
+    const outboxId = randomUUID();
+    await owner.query(
+      `INSERT INTO domain_event_outbox
+         (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination)
+       VALUES ($1, $2, $3, $4, 'payment', $5, 1, $6, 'cloud-sync')`,
+      [
+        tenant.id,
+        outboxId,
+        world.outletId,
+        randomUUID(),
+        intentId,
+        JSON.stringify(paymentPaid(world, intentId, 110_000)),
+      ],
+    );
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    // The receipt is consumed (journal and delivered status commit together).
+    await owner.query(
+      "UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now() WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, outboxId],
+    );
+    await post(world, paymentPaid(world, intentId, 110_000));
+
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    const { rows } = await owner.query<{ id: string }>(
+      "SELECT id FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2",
+      [tenant.id, `aj:sale:${orderUlid}`],
+    );
+    expect(rows).toHaveLength(1);
+    expect(await linesOf(world, rows[0]!.id)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+  });
+
+  it("AJ-CUTOVER-05 a receipt parked non-retryable does not hold the sale", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    await owner.query(
+      `INSERT INTO auto_journal_parked
+         (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload, error_code,
+          retryable, first_failed_at, last_failed_at, next_retry_at)
+       VALUES ($1, $2, $3, $4, 'payment.paid', '{}', 'AUTO_JOURNAL_PAYLOAD_INVALID',
+               false, now(), now(), NULL)`,
+      [world.tenant.id, world.outletId, `aj:receipt:${intentId}`, createUlid()],
+    );
+
+    // The receipt never posts by itself: the sale books the money once.
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "gateway_clearing", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 });
 
@@ -1500,6 +1593,26 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
     expect(await parkedOf(world.tenant, `aj:receipt:${intentId}`)).toHaveLength(
       0,
     );
+  });
+
+  it("AJ-PARK-04 an unparkable event (no tenant outlet) throws instead of vanishing", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const bad: EventEnvelope = {
+      ...paymentPaid(world, randomUUID(), 10_000, {
+        payload: { receivedIdr: "bukan angka", intentId: "bukan-uuid" },
+      }),
+      outletId: randomUUID() as EventEnvelope["outletId"],
+    };
+
+    // Nothing owns a parked row: the outbox must retry or dead-letter it.
+    await expect(deliver(tenant, bad)).rejects.toThrow(
+      /has no outlet to park under \(AUTO_JOURNAL_PAYLOAD_INVALID\)/,
+    );
+    expect(await journalCount(world)).toBe(0);
+    expect(
+      await parkedByCode(tenant, "AUTO_JOURNAL_PAYLOAD_INVALID"),
+    ).toHaveLength(0);
   });
 
   it("AJ-PARK-03 a late fact that is also unmappable keeps its natural date: after mapping, the sweep posts it rolled forward and flagged", async () => {

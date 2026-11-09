@@ -34,6 +34,14 @@ payments on voided orders all get a journal on the day the money arrived, with n
 double payments awaiting refund, and gateway refunds awaiting payout. It should net to the open
 DP balance plus pending refunds; that is a usable control.
 
+Cutover/ordering guard (`order.paid`, per intent-backed gateway tender): the receipt under
+`aj:receipt:<intentId>` is **posted** (journal exists: Dr customer_deposit), **pending**
+(`payment.paid` not yet delivered in the `cloud-sync` outbox, or its receipt parked retryable:
+the sale parks retryable `AUTO_JOURNAL_RECEIPT_PENDING` and the sweep posts it later) or **none**
+(never emitted, consumed before wiring or with accounting off, or parked non-retryable: Dr
+gateway_clearing, so the money is booked once). The outbox is read before the journal, so a
+receipt committing between the reads is seen as pending, never as none.
+
 Why one role, not a separate "unapplied receipts" role: the CTO decision authorised exactly one
 liability role. A split can come later by mapping, without rule churn in consumers.
 
