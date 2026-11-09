@@ -1920,41 +1920,112 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
     120_000,
   );
 
-  it("R3: the cash out overflow bound ignores held refunds: after a held cash refund, a cash out of MAX_SAFE_INTEGER minus the shift's own cash out + drop total is still accepted (201)", async () => {
-    const drawer = await cashDrawer({ over: true });
-    expect((await cashRefund(drawer)).status).toBe(201);
-    expect(
-      (await correctionRows("refund", drawer.sales[0]!.orderId))[0]
-        ?.needs_approval,
-    ).toBe(true);
+  // R3 (updated for legend-q7jj F3): the overflow bound used to ignore refunds
+  // and voids, so a held refund plus a huge cash out made every count fail.
+  // It now sums every cash outflow of the shift (cash outs, drops, cash refund
+  // lines, voided cash). What R3 guards stays: the bound never reads the held
+  // flag, so no answer of the cash out tells the cashier whether a refund was
+  // held (legend-utqr). Held and normal refunds draw the same boundary.
+  it.each([
+    ["held", true],
+    ["normal (not held)", false],
+  ] as const)(
+    "R3: the cash out overflow bound counts a %s cash refund the same way: MAX_SAFE_INTEGER minus the shift's other outflows is accepted (201), one rupiah more is refused (400 VALIDATION_ERROR)",
+    async (_label, over) => {
+      const drawer = await cashDrawer({ over });
+      expect((await cashRefund(drawer)).status).toBe(201);
+      const refund = (await correctionRows("refund", drawer.sales[0]!.orderId))[0]!;
+      expect(refund.needs_approval).toBe(over);
 
-    const { rows } = await owner.query<{ own: string }>(
-      `SELECT COALESCE(sum(amount_idr), 0)::text AS own FROM cash_movements
-        WHERE tenant_id = $1 AND shift_id = $2 AND type IN ('cash_out', 'drop')`,
-      [tenant.tenantId, drawer.shiftId],
-    );
-    const own = Number(rows[0]!.own);
-    expect(own).toBeGreaterThan(0);
+      const { rows } = await owner.query<{ own: string }>(
+        `SELECT COALESCE(sum(amount_idr), 0)::text AS own FROM cash_movements
+          WHERE tenant_id = $1 AND shift_id = $2 AND type IN ('cash_out', 'drop')`,
+        [tenant.tenantId, drawer.shiftId],
+      );
+      const room = Number.MAX_SAFE_INTEGER - Number(rows[0]!.own) - refund.amount;
+      const cashOut = (amountIdr: number) =>
+        recordCashMovement(
+          scopedContext(),
+          callerOf(drawer.outlet),
+          outletIdSchema.parse(drawer.outlet.outletId),
+          drawer.shiftId,
+          {
+            type: "cash_out",
+            amountIdr: idr(amountIdr),
+            reasonNote: "Setoran besar ke bank",
+            idempotencyKey: randomUUID(),
+          } as Parameters<typeof recordCashMovement>[4],
+        );
 
-    // Would be refused (400) if the held KOPI_IDR refund counted toward it.
-    await recordCashMovement(
-      scopedContext(),
-      callerOf(drawer.outlet),
-      outletIdSchema.parse(drawer.outlet.outletId),
-      drawer.shiftId,
-      {
-        type: "cash_out",
-        amountIdr: idr(Number.MAX_SAFE_INTEGER - own),
-        reasonNote: "Setoran besar ke bank",
-        idempotencyKey: randomUUID(),
-      } as Parameters<typeof recordCashMovement>[4],
-    );
-    const stored = await owner.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM cash_movements
-        WHERE tenant_id = $1 AND shift_id = $2 AND type = 'cash_out'
-          AND amount_idr = $3`,
-      [tenant.tenantId, drawer.shiftId, Number.MAX_SAFE_INTEGER - own],
-    );
-    expect(stored.rows[0]?.n).toBe(1);
-  }, 90_000);
+      await expect(cashOut(room + 1)).rejects.toMatchObject({
+        code: "VALIDATION_ERROR",
+      });
+      await cashOut(room);
+      const stored = await owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM cash_movements
+          WHERE tenant_id = $1 AND shift_id = $2 AND type = 'cash_out'
+            AND amount_idr = $3`,
+        [tenant.tenantId, drawer.shiftId, room],
+      );
+      expect(stored.rows[0]?.n).toBe(1);
+      expect(
+        (
+          await owner.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM cash_movements
+              WHERE tenant_id = $1 AND shift_id = $2 AND amount_idr = $3`,
+            [tenant.tenantId, drawer.shiftId, room + 1],
+          )
+        ).rows[0]?.n,
+      ).toBe(0);
+    },
+    90_000,
+  );
+
+  // legend-q7jj F3 through the real writers: the cash a refund or void would
+  // pay out counts toward the same bound, so one that would push the shift's
+  // outflow past MAX_SAFE_INTEGER is refused (nothing stored), the exact
+  // boundary goes through, and the shift can still be counted afterwards.
+  it.each(["refund", "void"] as const)(
+    "F3: a cash %s whose cash would push the shift's outflow past MAX_SAFE_INTEGER is refused (400 VALIDATION_ERROR) and stores nothing; exactly at the bound it is accepted; the shift can still be counted",
+    async (kind) => {
+      const cashOut = (drawer: Drawer, amountIdr: number) =>
+        recordCashMovement(
+          scopedContext(),
+          callerOf(drawer.outlet),
+          outletIdSchema.parse(drawer.outlet.outletId),
+          drawer.shiftId,
+          {
+            type: "cash_out",
+            amountIdr: idr(amountIdr),
+            reasonNote: "Setoran besar ke bank",
+            idempotencyKey: randomUUID(),
+          } as Parameters<typeof recordCashMovement>[4],
+        );
+      // The cash the correction pays out: the refund's KOPI_IDR, the void's sale total.
+      const probe = await cashDrawer({ over: false });
+      expect((await correct(kind, probe)).status).toBe(201);
+      const cash = (await correctionRows(kind, probe.sales[0]!.orderId))[0]!.amount;
+
+      const refusedDrawer = await cashDrawer({ over: false });
+      await cashOut(refusedDrawer, Number.MAX_SAFE_INTEGER - cash + 1);
+      const refused = await correct(kind, refusedDrawer);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+      expect(errorCode(refused.body)).toBe("VALIDATION_ERROR");
+      expect(
+        await correctionRows(kind, refusedDrawer.sales[0]!.orderId),
+      ).toHaveLength(0);
+      // The shift is still usable: the blind count answers.
+      expect((await countAs(refusedDrawer, LEFT_IDR)).id).toBeTruthy();
+
+      const exactDrawer = await cashDrawer({ over: false });
+      await cashOut(exactDrawer, Number.MAX_SAFE_INTEGER - cash);
+      const exact = await correct(kind, exactDrawer);
+      expect(exact.status, JSON.stringify(exact.body)).toBe(201);
+      expect(
+        await correctionRows(kind, exactDrawer.sales[0]!.orderId),
+      ).toHaveLength(1);
+      expect((await countAs(exactDrawer, LEFT_IDR)).id).toBeTruthy();
+    },
+    120_000,
+  );
 });

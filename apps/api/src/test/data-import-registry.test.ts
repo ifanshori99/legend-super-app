@@ -88,6 +88,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills the two new posting roles (customer deposit and forfeited deposit) per legal entity: adds one chart account and one account mapping each, ON CONFLICT DO NOTHING; edits no existing row",
   "0140_refund_approval_policies_data.sql":
     "gives each tenant without a refund approval policy the default refund row (floor 0, level 1, supervisor template role); idempotent, never touches a tenant that configured refunds (legend-zi9o)",
+  "0141_cash_shift_close_approval_policies_data.sql":
+    "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -79,7 +79,9 @@ import { posReceiptGapsPort } from "./pos-shift-ports.ts";
 import {
   appendShiftEvent,
   assertOutletPermission,
+  assertShiftOutflowBound,
   auditShift,
+  cashWatermarkOf,
   computeShiftAggregates,
   countDto,
   countReceiptDto,
@@ -580,30 +582,12 @@ export async function recordCashMovement(
     // figures cannot move under this check.
     let needsApproval = false;
     if (input.type !== "cash_in") {
+      // Every cash outflow of the shift, held or not and whichever writer
+      // recorded it, stays a safe integer (held rows are no longer bounded by
+      // the drawer). The bound ignores the held flag, so it says nothing
+      // about the drawer (legend-utqr, legend-q7jj F3).
+      await assertShiftOutflowBound(tx, shift, input.amountIdr);
       const live = await computeShiftAggregates(tx, shift);
-      // Every cash out + drop of the shift, held or not, stays a safe integer
-      // (held rows are no longer bounded by the drawer). The bound sums the
-      // cash_movements rows only, ignoring the held flag, so it says nothing
-      // about the drawer: never the held sum, which also holds refunds and
-      // voids and would tell a held refund from a normal one (legend-utqr).
-      const [movementOut] = await tx
-        .select({
-          total: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
-        })
-        .from(cashMovements)
-        .where(
-          and(
-            eq(cashMovements.tenantId, tenantId),
-            eq(cashMovements.shiftId, shift.id),
-            sql`${cashMovements.type} <> 'cash_in'`,
-          ),
-        );
-      const outflow = BigInt(movementOut?.total ?? 0) + BigInt(input.amountIdr);
-      if (outflow > BigInt(Number.MAX_SAFE_INTEGER))
-        throw new CoreError(
-          "VALIDATION_ERROR",
-          "Jumlah kas keluar terlalu besar untuk shift ini.",
-        );
       const expected =
         Number(shift.openingFloatIdr) +
         live.cashSalesIdr -
@@ -792,6 +776,7 @@ export async function submitPosShiftCount(
     const aggregates = await computeShiftAggregates(tx, shift);
     const expectedIdr = expectedCashOf(shift, aggregates);
     const heldCashOutIdr = await heldCashOutIdrOf(tx, shift);
+    const cashWatermark = await cashWatermarkOf(tx, shift);
     const counts = request.counts.map((line) => ({
       denominationIdr: line.denominationIdr,
       quantity: line.quantity,
@@ -837,6 +822,7 @@ export async function submitPosShiftCount(
         expectedIdr: expectedIdr as Idr,
         varianceIdr: (countedIdr - expectedIdr) as Idr,
         heldCashOutIdr: heldCashOutIdr as Idr,
+        cashWatermark,
         submittedBy: caller.userId,
         submittedAt: now,
         forced,
@@ -1064,7 +1050,8 @@ async function verifyCloseApproval(
  * repeated counts reveal it. So the check uses no amount, which applies every
  * tier and lands on the top tier as the tenant's matrix stands now. A tenant
  * without a `cash_shift_close` rule relies on the approve permission alone
- * (checked by the caller).
+ * (checked by the caller), though a phone chain must still have the shape
+ * below (legend-q7jj F4).
  * - Phone approval: the chain was opened without an amount (a chain with an
  *   amount is an old one and is refused), its payload names exactly this
  *   variance, and it is approved at least at as many levels as the top tier
@@ -1105,14 +1092,12 @@ async function assertApprovalTier(
       requiresDistinctActor: true,
     }),
   );
-  if (policies.length === 0) return;
-  const requirement = approvalRequirementFor(
-    policies,
-    "cash_shift_close",
-    null,
-  );
-  if (!requirement.required) return;
   const { override } = input;
+  // legend-q7jj F4: the shape of a phone chain is checked before the matrix
+  // is read, so an old chain (opened with an amount, or a payload without
+  // this numeric variance) is refused even once the admin deleted every
+  // cash_shift_close rule. Only the level count depends on the matrix.
+  let approvedLevels: number | null = null;
   if (override.method === "supervisor_phone") {
     if (override.approvalRequestId === null) throw approvalRefused();
     const chain = await tx
@@ -1132,9 +1117,6 @@ async function assertApprovalTier(
         ),
       );
     const first = chain.find((row) => row.level === 1);
-    const approvedLevels = chain.filter(
-      (row) => row.status === "approved",
-    ).length;
     if (
       !first ||
       first.sourceModule !== POS_OVERRIDE_SOURCE_MODULE ||
@@ -1142,10 +1124,20 @@ async function assertApprovalTier(
       first.amountIdr !== null ||
       typeof first.payload.valueIdr !== "number" ||
       first.payload.valueIdr !== input.valueIdr ||
-      chain.some((row) => row.status !== "approved") ||
-      approvedLevels < requirement.steps.length
+      chain.some((row) => row.status !== "approved")
     )
       throw approvalRefused();
+    approvedLevels = chain.length;
+  }
+  if (policies.length === 0) return;
+  const requirement = approvalRequirementFor(
+    policies,
+    "cash_shift_close",
+    null,
+  );
+  if (!requirement.required) return;
+  if (approvedLevels !== null) {
+    if (approvedLevels < requirement.steps.length) throw approvalRefused();
     return;
   }
   if (requirement.steps.length !== 1)
@@ -1262,11 +1254,21 @@ export async function closePosShift(
         "FORBIDDEN",
         "Shift ini hanya dapat ditutup oleh supervisor.",
       );
+    // legend-q7jj F1: any cash row since the count (held or not) makes it
+    // stale, checked first and the same way for every row, so the answer
+    // never tells a held row from a normal one. A count made before the
+    // watermark existed is stale too.
+    if (
+      count.cashWatermark === null ||
+      (await cashWatermarkOf(tx, shift)) !== count.cashWatermark
+    )
+      throw new PosError("SHIFT_COUNT_STALE");
     const aggregates: ShiftAggregates = await computeShiftAggregates(tx, shift);
     // The variance is the server's: if the drawer moved since the count, the
     // approved value no longer describes it and the cashier counts again.
     // A cash out held for review moves no drawer figure, so it is checked
     // on its own: the supervisor approved the count with its held sum.
+    // Backstop of the watermark above.
     if (
       expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
       (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)
@@ -1542,9 +1544,16 @@ export async function forceClosePosShift(
       .limit(1);
     if (!latest || latest.id !== count.id)
       throw new PosError("SHIFT_COUNT_SUPERSEDED");
+    // legend-q7jj F1: same watermark check as the cashier close.
+    if (
+      count.cashWatermark === null ||
+      (await cashWatermarkOf(tx, shift)) !== count.cashWatermark
+    )
+      throw new PosError("SHIFT_COUNT_STALE");
     const aggregates: ShiftAggregates = await computeShiftAggregates(tx, shift);
     // A cash out held for review moves no drawer figure, so it is checked
     // on its own: the supervisor approved the count with its held sum.
+    // Backstop of the watermark above.
     if (
       expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
       (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)

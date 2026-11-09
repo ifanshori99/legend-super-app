@@ -65,6 +65,7 @@ import {
   type Locked,
   type PosCaller,
 } from "./pos-order-support.ts";
+import { assertShiftOutflowBound } from "./pos-shift-support.ts";
 
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
 type RefundInput = z.output<typeof refundEndpoint.body>;
@@ -262,6 +263,9 @@ export async function voidPosOrderCorrection(
               at: now,
             })
           : null;
+      // legend-q7jj F3: every outflow of the drawer stays a safe integer.
+      if (shift !== null)
+        await assertShiftOutflowBound(tx, shift, voidCashIdr);
       // Held, not refused: a refusal would let the cashier probe the expected
       // drawer cash (legend-utqr). Nothing the cashier reads shows the flag.
       const needsApproval =
@@ -649,6 +653,9 @@ export async function refundPosOrder(
               at: now,
             })
           : null;
+      // legend-q7jj F3: every outflow of the drawer stays a safe integer.
+      if (shift !== null)
+        await assertShiftOutflowBound(tx, shift, refundCashIdr);
       // Held, not refused: see the void above (legend-utqr).
       const needsApproval =
         shift !== null &&

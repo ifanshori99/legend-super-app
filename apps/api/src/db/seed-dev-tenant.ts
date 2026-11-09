@@ -274,8 +274,9 @@ try {
   );
 
   // Cash shift close approval default (legend-ccpn, Q28, PRD §3.10): same
-  // supervisor level-1 row from Rp0 and same no-cash_shift_close-row rule as
-  // seedTenantRoleTemplates and the data migration.
+  // level-1 rows from Rp0 (supervisor, outlet manager, general manager) and
+  // same no-cash_shift_close-row rule as seedTenantRoleTemplates and the data
+  // migration.
   await client.query(
     `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
      SELECT $1::uuid, 'cash_shift_close', d.threshold_idr, r.id, d.level, true

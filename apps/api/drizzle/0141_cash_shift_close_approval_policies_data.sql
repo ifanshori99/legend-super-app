@@ -11,22 +11,24 @@ ALTER TABLE public.roles NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.approval_policies NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 -- legend-ccpn: founder decision Q28 (2026-11-09) and PRD §3.10: every shift
--- close is approved by a supervisor, a PIN at the cashier is enough, whatever
--- the variance. Give every existing tenant the default cash shift close matrix
--- (same row as DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES in
+-- close needs one approval, a PIN at the cashier is enough, whatever the
+-- variance. Give every existing tenant the default cash shift close matrix
+-- (same rows as DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES in
 -- packages/shared/src/access/approval.ts and seedTenantRoleTemplates): floor 0,
--- level 1, supervisor. Floor 0 rather than NULL: both match an amount of 0, 0
--- states "from Rp0".
--- Only a tenant with no cash_shift_close policy row and a supervisor template
--- role gets the row; a tenant that configured its own matrix is never touched.
--- Idempotent.
+-- level 1, for supervisor, outlet_manager and general_manager. These are the
+-- templates that hold shift.cash.approve_close; the approver must hold the exact
+-- role the matrix names, so the default keeps who could approve a close before.
+-- Floor 0 rather than NULL: both match an amount of 0, 0 states "from Rp0".
+-- Only a tenant with no cash_shift_close policy row gets the rows (all in one
+-- statement; a template role that does not exist adds no row); a tenant that
+-- configured its own matrix is never touched. Idempotent.
 -- Spans every tenant because FORCE ROW LEVEL SECURITY is lifted above (the
 -- owner skips RLS without FORCE).
 INSERT INTO public.approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
 SELECT r.tenant_id, 'cash_shift_close', 0, r.id, 1, true
 FROM public.roles r
 WHERE r.is_template
-  AND r.template_key = 'supervisor'
+  AND r.template_key IN ('supervisor', 'outlet_manager', 'general_manager')
   AND NOT EXISTS (
     SELECT 1 FROM public.approval_policies p
     WHERE p.tenant_id = r.tenant_id AND p.action_type = 'cash_shift_close'

@@ -329,11 +329,13 @@ export async function seedTenantRoleTemplates(
       WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'refund'
     )
   `);
-  // legend-ccpn: every shift close is approved by a supervisor (Q28, PRD
-  // §3.10), PIN at the cashier is enough. Default matrix from Rp0
-  // (DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES; same row as the data
-  // migration): one supervisor level-1 row. Only when the tenant has no
-  // cash_shift_close row and a supervisor template role exists.
+  // legend-ccpn: every shift close needs one approval (Q28, PRD §3.10), PIN at
+  // the cashier is enough. Default matrix from Rp0
+  // (DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES; same rows as the data
+  // migration): level 1 for supervisor, outlet manager and general manager,
+  // the templates that hold shift.cash.approve_close. All rows land in one
+  // statement, only when the tenant has no cash_shift_close row; a template
+  // role that does not exist adds no row.
   const cashShiftCloseValues = sql.join(
     DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
       (row) =>
