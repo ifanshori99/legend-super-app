@@ -233,9 +233,7 @@ export function ScheduleDialog({
                   max={28}
                   // An emptied field stays empty (NaN) instead of showing 0;
                   // the schema rejects it on submit.
-                  value={
-                    Number.isNaN(draft.dayOfMonth) ? "" : draft.dayOfMonth
-                  }
+                  value={Number.isNaN(draft.dayOfMonth) ? "" : draft.dayOfMonth}
                   onChange={(event) =>
                     set({
                       dayOfMonth:

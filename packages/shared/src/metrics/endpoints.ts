@@ -33,17 +33,14 @@ export const METRIC_ENTITY_LEVEL_OUTLET = "entity_level";
 export const METRIC_ENTITY_LEVEL_LABEL = "Tingkat badan usaha";
 
 const csvList = <T extends z.ZodType>(item: T, max: number) =>
-  z.preprocess(
-    (value) => {
-      const parts = (Array.isArray(value) ? value : [value])
-        .filter((part) => part !== undefined && part !== null)
-        .flatMap((part) => String(part).split(","))
-        .map((part) => part.trim())
-        .filter((part) => part !== "");
-      return parts.length === 0 ? undefined : parts;
-    },
-    z.array(item).min(1).max(max),
-  );
+  z.preprocess((value) => {
+    const parts = (Array.isArray(value) ? value : [value])
+      .filter((part) => part !== undefined && part !== null)
+      .flatMap((part) => String(part).split(","))
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+    return parts.length === 0 ? undefined : parts;
+  }, z.array(item).min(1).max(max));
 
 const queryBoolean = z.preprocess((value) => {
   const single = Array.isArray(value) ? value.at(-1) : value;
