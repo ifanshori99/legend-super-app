@@ -988,6 +988,13 @@
       "when": 1794210573604,
       "tag": "0140_refund_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1794214031966,
+      "tag": "0141_cash_shift_close_approval_policies_data",
+      "breakpoints": true
     }
   ]
 }

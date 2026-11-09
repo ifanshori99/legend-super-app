@@ -146,6 +146,23 @@ export const DEFAULT_REFUND_APPROVAL_POLICIES: readonly {
   readonly roleTemplateKey: "supervisor";
 }[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" }];
 
+/**
+ * Default cash shift close approval matrix (legend-ccpn), the single source for
+ * new tenants (seedTenantRoleTemplates), the dev tenant and the data migration
+ * for existing tenants. Founder decision Q28 (2026-11-09) and PRD §3.10: every
+ * shift close is approved by a supervisor, a PIN at the cashier is enough, and
+ * the variance does not change that. So one row opens a one-step chain for the
+ * supervisor from Rp0 (floor 0 rather than null, as for refunds). Applied only
+ * to a tenant with no cash_shift_close row and a supervisor template role; a
+ * tenant that configured its own matrix is never touched. The row requires a
+ * distinct actor.
+ */
+export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "supervisor";
+}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" }];
+
 export type ApprovalStep = {
   readonly level: number;
   /** Any of these roles may decide this level. */
