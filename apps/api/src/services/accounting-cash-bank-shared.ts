@@ -124,7 +124,10 @@ export async function loadBankAccount(
     .select()
     .from(bankAccounts)
     .where(
-      and(eq(bankAccounts.tenantId, tenantId), eq(bankAccounts.id, bankAccountId)),
+      and(
+        eq(bankAccounts.tenantId, tenantId),
+        eq(bankAccounts.id, bankAccountId),
+      ),
     )
     .limit(1);
   const [row] = options.forUpdate ? await query.for("update") : await query;
@@ -149,7 +152,10 @@ export async function loadMatchesByLine(
         inArray(bankStatementLineMatches.lineId, [...lineIds]),
       ),
     )
-    .orderBy(asc(bankStatementLineMatches.matchedAt), asc(bankStatementLineMatches.id));
+    .orderBy(
+      asc(bankStatementLineMatches.matchedAt),
+      asc(bankStatementLineMatches.id),
+    );
   for (const row of rows) {
     const list = byLine.get(row.lineId) ?? [];
     list.push(row);

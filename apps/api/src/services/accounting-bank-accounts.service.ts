@@ -38,10 +38,7 @@ import {
   assertTenantScope,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
-import {
-  bankAccountDto,
-  notFound,
-} from "./accounting-cash-bank-shared.ts";
+import { bankAccountDto, notFound } from "./accounting-cash-bank-shared.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { recordAudit } from "./core-audit.ts";
 
@@ -124,7 +121,11 @@ export async function listBankAccounts(
           eq(bankAccounts.legalEntityId, legalEntityId),
         ),
       )
-      .orderBy(asc(bankAccounts.bank), asc(bankAccounts.accountName), asc(bankAccounts.id));
+      .orderBy(
+        asc(bankAccounts.bank),
+        asc(bankAccounts.accountName),
+        asc(bankAccounts.id),
+      );
     return rows.map(bankAccountDto);
   });
 }

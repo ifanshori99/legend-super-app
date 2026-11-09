@@ -11,7 +11,10 @@
 // Mounted by the squad lead under /api/accounting next to the core router.
 
 import { Router, type Request } from "express";
-import { createBankAccount, listBankAccounts } from "@starter/shared/accounting";
+import {
+  createBankAccount,
+  listBankAccounts,
+} from "@starter/shared/accounting";
 import type { PermissionCode } from "@starter/shared/access";
 import { userIdSchema } from "@starter/shared/core";
 import { getAuth, requireAuth } from "../middleware/auth";

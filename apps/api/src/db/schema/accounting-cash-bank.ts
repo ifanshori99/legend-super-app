@@ -42,7 +42,10 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import type { BankCsvMapping, ReconciliationRef } from "@starter/shared/accounting";
+import type {
+  BankCsvMapping,
+  ReconciliationRef,
+} from "@starter/shared/accounting";
 import type { OutletId } from "@starter/shared/core";
 import {
   businessDate,
@@ -296,7 +299,10 @@ export const bankReconciliationCaseEvents = pgTable(
     foreignKey({
       name: "bank_reconciliation_case_events_case_fk",
       columns: [t.tenantId, t.caseId],
-      foreignColumns: [bankReconciliationCases.tenantId, bankReconciliationCases.id],
+      foreignColumns: [
+        bankReconciliationCases.tenantId,
+        bankReconciliationCases.id,
+      ],
     }),
     check(
       "bank_reconciliation_case_events_action_check",
@@ -359,7 +365,10 @@ export const bankStatementLines = pgTable(
     foreignKey({
       name: "bank_statement_lines_case_fk",
       columns: [t.tenantId, t.reconciliationCaseId],
-      foreignColumns: [bankReconciliationCases.tenantId, bankReconciliationCases.id],
+      foreignColumns: [
+        bankReconciliationCases.tenantId,
+        bankReconciliationCases.id,
+      ],
     }),
     index("bank_statement_lines_account_posted_idx").on(
       t.tenantId,
@@ -494,7 +503,10 @@ export const cashDeposits = pgTable(
     foreignKey({
       name: "cash_deposits_case_fk",
       columns: [t.tenantId, t.reconciliationCaseId],
-      foreignColumns: [bankReconciliationCases.tenantId, bankReconciliationCases.id],
+      foreignColumns: [
+        bankReconciliationCases.tenantId,
+        bankReconciliationCases.id,
+      ],
     }),
     foreignKey({
       name: "cash_deposits_journal_fk",
@@ -516,10 +528,7 @@ export const cashDeposits = pgTable(
       t.status,
     ),
     check("cash_deposits_amount_check", sql`${t.amountIdr} > 0`),
-    check(
-      "cash_deposits_covers_check",
-      sql`${t.coversFrom} <= ${t.coversTo}`,
-    ),
+    check("cash_deposits_covers_check", sql`${t.coversFrom} <= ${t.coversTo}`),
     check(
       "cash_deposits_status_check",
       sql`${t.status} IN ('recorded','matched','discrepancy')`,

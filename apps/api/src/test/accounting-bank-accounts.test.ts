@@ -269,7 +269,9 @@ describe("legend-fnxl.2 bank accounts", () => {
     const sealed = row.account_number_encrypted.toString("base64");
     const aad = `bank:bank_accounts:${tenantId.toLowerCase()}:${account.id.toLowerCase()}:account_number:k1`;
     expect(openSecret(sealed, aad)).toBe(number);
-    expect(() => openSecret(sealed, aad.replace(account.id, randomUUID()))).toThrow();
+    expect(() =>
+      openSecret(sealed, aad.replace(account.id, randomUUID())),
+    ).toThrow();
 
     const audit = await owner.query<{ event: Record<string, unknown> }>(
       `SELECT event FROM audit_logs
@@ -363,9 +365,9 @@ describe("legend-fnxl.2 bank accounts", () => {
     expect(
       (await post(finance.cookie, body(entity, gl, "12ab56"))).status,
     ).toBe(422);
-    expect(
-      (await post(finance.cookie, body(entity, gl, "12345"))).status,
-    ).toBe(422);
+    expect((await post(finance.cookie, body(entity, gl, "12345"))).status).toBe(
+      422,
+    );
     expect(
       (
         await post(
@@ -383,10 +385,12 @@ describe("legend-fnxl.2 bank accounts", () => {
 
     // Seeded-tenant caller asks for the other tenant's entity / GL account.
     expect((await list(finance.cookie, otherEntity)).status).toBe(404);
-    expect((await post(finance.cookie, body(otherEntity, otherGl))).status).toBe(
+    expect(
+      (await post(finance.cookie, body(otherEntity, otherGl))).status,
+    ).toBe(404);
+    expect((await post(finance.cookie, body(entity, otherGl))).status).toBe(
       404,
     );
-    expect((await post(finance.cookie, body(entity, otherGl))).status).toBe(404);
 
     // The same finance user pinned to the other tenant has no role there (403),
     // and cannot reach this tenant's entity or its accounts either.
@@ -408,10 +412,9 @@ describe("legend-fnxl.2 bank accounts", () => {
     expect(JSON.stringify(mine.body)).not.toContain("Other");
     expect(
       (
-        await owner.query(
-          "SELECT 1 FROM bank_accounts WHERE tenant_id = $1",
-          [other],
-        )
+        await owner.query("SELECT 1 FROM bank_accounts WHERE tenant_id = $1", [
+          other,
+        ])
       ).rowCount,
     ).toBe(1);
   });
@@ -422,14 +425,20 @@ describe("legend-fnxl.2 bank accounts", () => {
     const denied = await post(stranger.cookie, body(entity, gl));
     expect(denied.status).toBe(403);
     expect(
-      (await owner.query("SELECT 1 FROM bank_accounts WHERE created_by = $1", [
-        stranger.userId,
-      ])).rowCount,
+      (
+        await owner.query("SELECT 1 FROM bank_accounts WHERE created_by = $1", [
+          stranger.userId,
+        ])
+      ).rowCount,
     ).toBe(0);
     expect((await request(host).get(listPath(entity))).status).toBe(401);
     expect(
-      (await request(host).post(CREATE_PATH).set(originHeader).send(body(entity, gl)))
-        .status,
+      (
+        await request(host)
+          .post(CREATE_PATH)
+          .set(originHeader)
+          .send(body(entity, gl))
+      ).status,
     ).toBe(401);
   });
 
@@ -452,7 +461,11 @@ describe("legend-fnxl.2 bank accounts", () => {
     ).rejects.toMatchObject({ code: "OUTLET_OUT_OF_SCOPE" });
     // And the tenant-scope service path works for the same input.
     await expect(
-      createBankAccount(scope(), body(entity, gl), userIdSchema.parse(finance.userId)),
+      createBankAccount(
+        scope(),
+        body(entity, gl),
+        userIdSchema.parse(finance.userId),
+      ),
     ).resolves.toMatchObject({ legalEntityId: entity });
   });
 });

@@ -126,8 +126,7 @@ function amountOf(
     refuse(`${at}: kolom debit dan kredit sama-sama terisi.`);
   if (debit === "" && credit === "")
     refuse(`${at}: kolom debit dan kredit sama-sama kosong.`);
-  const value =
-    credit !== "" ? read(credit, "kredit") : read(debit, "debit");
+  const value = credit !== "" ? read(credit, "kredit") : read(debit, "debit");
   // The column carries the direction; a signed value inside it is ambiguous.
   if (value < 0)
     refuse(
