@@ -47,6 +47,13 @@
 // - A ban is active when banned = true AND (ban_expires IS NULL OR ban_expires >
 //   now()), as Better Auth reads it. A person banned with an expiry in the past
 //   can be given a role again; one banned until a future time cannot.
+// - Banned accounts keep an assignment they already hold: the guard only lets
+//   an UPDATE end or shorten it (same user, tenant, role and scope; valid_from
+//   unchanged or later; valid_until unchanged, newly set, or not later). "A
+//   later date" is one past the current end, "valid_from earlier" is one hour
+//   before the current start. Ending it through the API sets valid_until to
+//   now, which is allowed. Raw SQL cases run in BEGIN ... ROLLBACK; the API
+//   case bans a fresh person for real (cleaned up with the suite's users).
 // - The sweep `sweepApprovedRefundPayouts(context, now, limit)` opens pending
 //   chains first; payout of approved refunds is covered in
 //   payment-refund-approval.test.ts.
@@ -1032,7 +1039,10 @@ describe("PAY-04 migration 0135 and its guards keep the system user locked down"
 });
 
 describe("PAY-04 an expired ban no longer blocks roles, an active one still does", () => {
-  type Run = (text: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
+  type Run = (
+    text: string,
+    values?: unknown[],
+  ) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
   async function inRolledBackTx(body: (run: Run) => Promise<void>) {
     const client = await owner.connect();
     try {
@@ -1080,7 +1090,9 @@ describe("PAY-04 an expired ban no longer blocks roles, an active one still does
         [expiredBanUserId],
       );
       const role = await failureOf(() =>
-        run("UPDATE \"user\" SET role = 'admin' WHERE id = $1", [expiredBanUserId]),
+        run("UPDATE \"user\" SET role = 'admin' WHERE id = $1", [
+          expiredBanUserId,
+        ]),
       );
       expect(role).toBeInstanceOf(Error);
       expect(role!.code).toBe("23514");
@@ -1359,7 +1371,11 @@ describe("PAY-04 TEN-02 a sweep cut short resumes where it stopped", () => {
       amountIdr: 50_000,
       tenant: fresh,
     });
-    ages.push([a.refundId, "3 days"], [b.refundId, "2 days"], [c.refundId, "1 day"]);
+    ages.push(
+      [a.refundId, "3 days"],
+      [b.refundId, "2 days"],
+      [c.refundId, "1 day"],
+    );
     for (const [id, age] of ages)
       await owner.query(
         "UPDATE payment_refunds SET created_at = now() - $2::interval WHERE id = $1",
@@ -1379,7 +1395,13 @@ describe("PAY-04 TEN-02 a sweep cut short resumes where it stopped", () => {
     resetPendingRefundChainCursor(fresh.tenantId);
     // Round 1 (short page: limit 50, 3 candidates): A is tried and fails; stop.
     expect(
-      await openPendingRefundChains(context, new Date(), 50, 60_000, stopAfterOne()),
+      await openPendingRefundChains(
+        context,
+        new Date(),
+        50,
+        60_000,
+        stopAfterOne(),
+      ),
     ).toBe(0);
     expect((await refundRow(a.refundId)).approval_chain_id).toBeNull();
     expect((await refundRow(b.refundId)).approval_chain_id).toBeNull();
@@ -1387,7 +1409,13 @@ describe("PAY-04 TEN-02 a sweep cut short resumes where it stopped", () => {
 
     // Round 2 resumes after A: B gets its chain, C waits for the next round.
     expect(
-      await openPendingRefundChains(context, new Date(), 50, 60_000, stopAfterOne()),
+      await openPendingRefundChains(
+        context,
+        new Date(),
+        50,
+        60_000,
+        stopAfterOne(),
+      ),
     ).toBe(1);
     expect((await refundRow(b.refundId)).approval_chain_id).not.toBeNull();
     expect(await requestsOf(b.refundId)).toMatchObject([
@@ -1483,5 +1511,221 @@ describe("PAY-04 a failing chain never rolls back the caller's transaction", () 
       reason: "Setelah chain gagal",
     });
     expect(await requestsOf(refundId)).toHaveLength(0);
+  });
+});
+
+describe("PAY-04 a ban placed after the grant keeps the assignment but only lets it end", () => {
+  type Run = (
+    text: string,
+    values?: unknown[],
+  ) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
+
+  async function inRolledBackTx(body: (run: Run) => Promise<void>) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await body((text, values) => client.query(text, values));
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  }
+  async function failureOf(run: () => Promise<unknown>) {
+    try {
+      await run();
+    } catch (error) {
+      return error as Error & { code?: string };
+    }
+    return null;
+  }
+  async function newPerson(label: string) {
+    const client = agent(app);
+    const email = await signUp(client, label);
+    await setRole(email, null);
+    const session = await client.get("/api/auth/get-session");
+    const id = session.body.user.id as string;
+    userIds.push(id);
+    return id;
+  }
+
+  // An outlet assignment of a person, valid from 2 hours ago until tomorrow.
+  const grant = `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+     VALUES ($1, $2, $3, 'outlet', $4, now() - interval '2 hours', now() + interval '1 day', $5)
+     RETURNING id`;
+  const ban =
+    "UPDATE \"user\" SET banned = true, ban_reason = 'test' WHERE id = $1";
+
+  let personId: string;
+  let cashierRole: string;
+  let supervisorRole: string;
+
+  beforeAll(async () => {
+    personId = await newPerson("Ban after grant person");
+    cashierRole = await roleIdOf("cashier");
+    supervisorRole = await roleIdOf("supervisor");
+  });
+
+  /** Grant, ban, then run `update` against the assignment. */
+  async function afterBan(update: string, values: (id: string) => unknown[]) {
+    let failure: (Error & { code?: string }) | null = null;
+    let updated: number | null = null;
+    await inRolledBackTx(async (run) => {
+      const { rows } = await run(grant, [
+        tenantId,
+        personId,
+        cashierRole,
+        outletA,
+        financeId,
+      ]);
+      await run(ban, [personId]);
+      const id = rows[0]!.id as string;
+      failure = await failureOf(async () => {
+        updated = (await run(update, values(id))).rowCount;
+      });
+    });
+    return { failure: failure as (Error & { code?: string }) | null, updated };
+  }
+
+  async function expectRefused(
+    update: string,
+    values: (id: string) => unknown[],
+  ) {
+    const { failure } = await afterBan(update, values);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure!.code).toBe("23514");
+    expect(failure!.message).toMatch(
+      /banned or system account cannot be given a role/,
+    );
+  }
+
+  async function expectAllowed(
+    update: string,
+    values: (id: string) => unknown[],
+  ) {
+    const { failure, updated } = await afterBan(update, values);
+    expect(failure).toBeNull();
+    expect(updated).toBe(1);
+  }
+
+  it("PAY-04 inserting an account under an active ban with a global role is refused", async () => {
+    const insertUser = `INSERT INTO "user" (id, name, email, email_verified, banned, ban_expires, role, created_at, updated_at)
+      VALUES ($1, 'Banned insert', $2, false, true, $3, $4, now(), now())`;
+    const fresh = () => randomUUID();
+    await inRolledBackTx(async (run) => {
+      const id = fresh();
+      const failure = await failureOf(() =>
+        run(insertUser, [id, `${id}@legend.invalid`, null, "admin"]),
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure!.code).toBe("23514");
+      expect(failure!.message).toMatch(/banned account cannot be given a role/);
+    });
+    // The ban expired yesterday: no longer an active ban, so a role is fine.
+    await inRolledBackTx(async (run) => {
+      const id = fresh();
+      const inserted = await run(insertUser, [
+        id,
+        `${id}@legend.invalid`,
+        new Date(Date.now() - 24 * 3600_000),
+        "admin",
+      ]);
+      expect(inserted.rowCount).toBe(1);
+    });
+    // Banned with no role: fine.
+    await inRolledBackTx(async (run) => {
+      const id = fresh();
+      const inserted = await run(insertUser, [
+        id,
+        `${id}@legend.invalid`,
+        null,
+        null,
+      ]);
+      expect(inserted.rowCount).toBe(1);
+    });
+  });
+
+  it("PAY-04 a banned person's assignment cannot be moved to another role", async () => {
+    await expectRefused(
+      "UPDATE role_assignments SET role_id = $2 WHERE id = $1",
+      (id) => [id, supervisorRole],
+    );
+  });
+
+  it("PAY-04 a banned person's assignment cannot be widened to tenant scope", async () => {
+    await expectRefused(
+      "UPDATE role_assignments SET scope_type = 'tenant', scope_id = NULL WHERE id = $1",
+      (id) => [id],
+    );
+  });
+
+  it("PAY-04 a banned person's assignment cannot lose its end date", async () => {
+    await expectRefused(
+      "UPDATE role_assignments SET valid_until = NULL WHERE id = $1",
+      (id) => [id],
+    );
+  });
+
+  it("PAY-04 a banned person's assignment cannot be extended to a later end", async () => {
+    await expectRefused(
+      "UPDATE role_assignments SET valid_until = valid_until + interval '1 day' WHERE id = $1",
+      (id) => [id],
+    );
+  });
+
+  it("PAY-04 a banned person's assignment cannot start earlier", async () => {
+    await expectRefused(
+      "UPDATE role_assignments SET valid_from = valid_from - interval '1 hour' WHERE id = $1",
+      (id) => [id],
+    );
+  });
+
+  it("PAY-04 a banned person's assignment can still be ended or shortened", async () => {
+    await expectAllowed(
+      "UPDATE role_assignments SET valid_until = now() WHERE id = $1",
+      (id) => [id],
+    );
+    await expectAllowed(
+      "UPDATE role_assignments SET valid_until = valid_until - interval '1 hour' WHERE id = $1",
+      (id) => [id],
+    );
+  });
+
+  it("PAY-04 an owner can end the assignment of a banned person over the API", async () => {
+    const bannedPerson = await newPerson("Ban after grant API");
+    const { rows } = await owner.query<{ id: string }>(grant, [
+      tenantId,
+      bannedPerson,
+      cashierRole,
+      outletA,
+      financeId,
+    ]);
+    await owner.query(ban, [bannedPerson]);
+    const response = await ownerClient
+      .post(`/api/access/role-assignments/${rows[0]!.id}/end`)
+      .set(originHeader)
+      .send({ reason: "Akun diblokir" });
+    expect(response.status).toBe(200);
+    const { rows: after } = await owner.query<{ ended: boolean }>(
+      "SELECT valid_until <= now() AS ended FROM role_assignments WHERE id = $1",
+      [rows[0]!.id],
+    );
+    expect(after).toEqual([{ ended: true }]);
+  });
+
+  it("PAY-04 a person who is not banned can still have an assignment moved to another role", async () => {
+    await inRolledBackTx(async (run) => {
+      const { rows } = await run(grant, [
+        tenantId,
+        personId,
+        cashierRole,
+        outletA,
+        financeId,
+      ]);
+      const updated = await run(
+        "UPDATE role_assignments SET role_id = $2 WHERE id = $1 RETURNING role_id",
+        [rows[0]!.id, supervisorRole],
+      );
+      expect(updated.rows).toEqual([{ role_id: supervisorRole }]);
+    });
   });
 });
