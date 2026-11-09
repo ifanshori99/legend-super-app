@@ -480,6 +480,60 @@ async function shiftRow(shiftId: string) {
     | undefined;
 }
 
+/** Cash movement rows of a shift as the database owner, oldest first. */
+async function movementRows(shiftId: string) {
+  const { rows } = await owner.query<{
+    id: string;
+    type: string;
+    amount: number;
+    needs_approval: boolean;
+    fingerprint: string;
+  }>(
+    `SELECT id, type, amount_idr::float8 AS amount, needs_approval,
+            request_fingerprint AS fingerprint
+       FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2
+      ORDER BY recorded_at, id`,
+    [tenant.tenantId, shiftId],
+  );
+  return rows;
+}
+
+type AuditEvent = {
+  actorId: string | null;
+  objectType: string;
+  objectId: string | null;
+  reason: string | null;
+  maskedChanges: { after: Record<string, unknown> };
+};
+
+/** `pos_shift.cash_movement_held` audit rows of the shift's movements. */
+async function heldAudits(shiftId: string): Promise<AuditEvent[]> {
+  const { rows } = await owner.query<{ event: AuditEvent }>(
+    `SELECT event FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_held'
+        AND event->'maskedChanges'->'after'->>'shiftId' = $2
+      ORDER BY created_at, id`,
+    [tenant.tenantId, shiftId],
+  );
+  return rows.map((row) => row.event);
+}
+
+/** A `cash_movement_refusals` history row, as an earlier release wrote it. */
+async function insertRefusal(
+  shiftId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+) {
+  return asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO cash_movement_refusals
+         (tenant_id, outlet_id, shift_id, idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [tenant.tenantId, tenant.outletId, shiftId, idempotencyKey, fingerprint],
+    ),
+  );
+}
+
 beforeAll(async () => {
   app = createApp();
   tenant = await createIsolatedTenant(`shift-${randomUUID().slice(0, 6)}`);
@@ -706,7 +760,7 @@ describe("POS-03 open a cashier shift", () => {
 // ---- Cash movements ---------------------------------------------------------------
 
 describe("POS-03 cash in, cash out and drops", () => {
-  it("refuses a cash out or drop larger than the drawer should hold (409), so the shift can still close", async () => {
+  it("records a cash out or drop larger than the drawer should hold (201, no refusal); an exact fit is a normal row, so the shift can still close", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier); // float Rp100.000, no sales
     const tooMuch = await move(cashier, shift.id, {
@@ -714,38 +768,34 @@ describe("POS-03 cash in, cash out and drops", () => {
       amountIdr: FLOAT_IDR + 1,
       reasonNote: "Beli gas elpiji",
     });
-    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(409);
-    expect(tooMuch.body.error.code).toBe("CONFLICT");
-    // Review K: the refusal never reveals the drawer (or any amount).
-    expect(tooMuch.body.error.message).toBe(
-      "Kas keluar ini perlu persetujuan supervisor.",
-    );
+    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(201);
     const dropTooMuch = await move(cashier, shift.id, {
       type: "drop",
       amountIdr: FLOAT_IDR + 1,
       reasonNote: "Setor ke brankas",
     });
-    expect(dropTooMuch.status).toBe(409);
-    // Two refusals used up the shift's allowance (review K round 2): even an
-    // exact fit is refused now. A fresh shift takes the exact amount.
-    const afterTwo = await move(cashier, shift.id, {
-      type: "drop",
-      amountIdr: FLOAT_IDR,
-      reasonNote: "Setor ke brankas",
-    });
-    expect(afterTwo.status, JSON.stringify(afterTwo.body)).toBe(409);
-    const fresh = await newCashier("Kasir Pas");
-    const freshShift = await openShift(fresh);
-    const exact = await move(fresh, freshShift.id, {
+    expect(dropTooMuch.status, JSON.stringify(dropTooMuch.body)).toBe(201);
+    // legend-67dt: held rows stay out of the drawer figures, so the drawer
+    // still holds exactly the float and an exact-fit drop is a normal row.
+    const exact = await move(cashier, shift.id, {
       type: "drop",
       amountIdr: FLOAT_IDR,
       reasonNote: "Setor ke brankas",
     });
     expect(exact.status, JSON.stringify(exact.body)).toBe(201);
-    expect(await outboxNames(freshShift.id)).toEqual([
+    expect((await movementRows(shift.id)).map((r) => r.needs_approval)).toEqual(
+      [true, true, false],
+    );
+    expect(await outboxNames(shift.id)).toEqual([
       "cashier_shift.opened",
       "cash_movement.recorded",
+      "cash_movement.recorded",
+      "cash_movement.recorded",
     ]);
+    // The expected cash is never negative: the exact drop leaves an empty drawer.
+    const closed = await closeShift(cashier, shift.id, 0);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data).toMatchObject({ expectedIdr: 0, varianceIdr: 0 });
   });
 
   it("records cash_in, cash_out and drop with a reason, lists them and emits cash_movement.recorded", async () => {
@@ -964,64 +1014,42 @@ describe("POS-03 cash in, cash out and drops", () => {
     expect(counted.status, JSON.stringify(counted.body)).toBe(201);
   });
 
-  it("answers a retried refused cash out with the same refusal and counts it once toward the 2-refusal limit (legend-uw47)", async () => {
+  it("legend-67dt (G): a retried held cash out answers the same DTO, stores one row and one held audit; another body under the same key is 409 IDEMPOTENCY_KEY_REUSED", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const key = randomUUID();
     const body = {
       type: "cash_out",
       amountIdr: FLOAT_IDR + 1,
       reasonNote: "Beli gas elpiji",
-      idempotencyKey: key,
+      idempotencyKey: randomUUID(),
     };
     const first = await move(cashier, shift.id, body);
-    expect(first.status, JSON.stringify(first.body)).toBe(409);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const retry = await move(cashier, shift.id, body);
-      expect(retry.status, JSON.stringify(retry.body)).toBe(409);
-      expect(retry.body.error.code).toBe(first.body.error.code);
-      expect(retry.body.error.message).toBe(first.body.error.message);
+      expect([200, 201], JSON.stringify(retry.body)).toContain(retry.status);
+      expect(retry.body).toEqual(first.body);
     }
-    const audit = () =>
-      owner.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM audit_logs
-          WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
-            AND event->>'objectId' = $2`,
-        [tenant.tenantId, shift.id],
-      );
-    expect((await audit()).rows[0]?.n).toBe(1);
-    // The same key with another payload keeps the conflict behaviour.
+    const rows = await movementRows(shift.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.needs_approval).toBe(true);
+    expect(await heldAudits(shift.id)).toHaveLength(1);
+    expect(
+      (await outboxNames(shift.id)).filter(
+        (n) => n === "cash_movement.recorded",
+      ),
+    ).toHaveLength(1);
+
     const changed = await move(cashier, shift.id, {
       ...body,
       amountIdr: FLOAT_IDR + 2,
     });
     expect(changed.status).toBe(409);
     expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
-    // One unique refusal so far: a cash out that fits is still recorded.
-    const fits = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: 10_000,
-      reasonNote: "Beli gas elpiji",
-    });
-    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
-    // A second unique refusal uses up the allowance; the third attempt is
-    // refused whatever the amount.
-    const second = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: FLOAT_IDR + 5,
-      reasonNote: "Beli gas elpiji",
-    });
-    expect(second.status).toBe(409);
-    expect((await audit()).rows[0]?.n).toBe(2);
-    const blocked = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: 1_000,
-      reasonNote: "Beli gas elpiji",
-    });
-    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+    expect(await movementRows(shift.id)).toHaveLength(1);
   });
 
-  it("a refused cash out retried with the same key is checked again: once the drawer holds enough it is recorded (legend-uw47)", async () => {
+  it("legend-67dt: a held cash out stays held when retried after the drawer grew (the stored row is replayed, never re-judged)", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier); // drawer Rp100.000
     const body = {
@@ -1030,67 +1058,79 @@ describe("POS-03 cash in, cash out and drops", () => {
       reasonNote: "Beli gas elpiji",
       idempotencyKey: randomUUID(),
     };
-    expect((await move(cashier, shift.id, body)).status).toBe(409);
+    const first = await move(cashier, shift.id, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
     const added = await move(cashier, shift.id, {
       type: "cash_in",
       amountIdr: 60_000,
     });
     expect(added.status, JSON.stringify(added.body)).toBe(201);
     const retry = await move(cashier, shift.id, body);
-    expect(retry.status, JSON.stringify(retry.body)).toBe(201);
-    expect(retry.body.data.amountIdr).toBe(FLOAT_IDR + 50_000);
-    // Later replays hit the stored movement, not a second row.
-    const again = await move(cashier, shift.id, body);
-    expect(again.status, JSON.stringify(again.body)).toBe(201);
-    expect(again.body.data.id).toBe(retry.body.data.id);
-    const { rows } = await owner.query(
-      "SELECT 1 FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2 AND type = 'cash_out'",
-      [tenant.tenantId, shift.id],
+    expect([200, 201], JSON.stringify(retry.body)).toContain(retry.status);
+    expect(retry.body.data.id).toBe(first.body.data.id);
+    const rows = (await movementRows(shift.id)).filter(
+      (r) => r.type === "cash_out",
     );
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.needs_approval).toBe(true);
   });
 
-  it("same-key retries while still short stay refused with one audit row and one refusal row, and a later new key still gets its normal check", async () => {
+  it("legend-67dt (G): a legacy refused key (a refusal row from before) with the same body now simply records; with another body it is 409 IDEMPOTENCY_KEY_REUSED", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const body = {
+    const base = {
       type: "cash_out",
-      amountIdr: FLOAT_IDR + 1,
+      amountIdr: FLOAT_IDR + 1_000,
       reasonNote: "Beli gas elpiji",
-      idempotencyKey: randomUUID(),
     };
-    for (let attempt = 0; attempt < 4; attempt += 1)
-      expect((await move(cashier, shift.id, body)).status).toBe(409);
-    const audit = await owner.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM audit_logs
-        WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
-          AND event->>'objectId' = $2`,
-      [tenant.tenantId, shift.id],
-    );
-    expect(audit.rows[0]?.n).toBe(1);
-    const refusals = await owner.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM cash_movement_refusals WHERE tenant_id = $1 AND shift_id = $2",
-      [tenant.tenantId, shift.id],
-    );
-    expect(refusals.rows[0]?.n).toBe(1);
-    // One unique refusal: a new key that fits is recorded.
-    const fits = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: 10_000,
-      reasonNote: "Beli gas elpiji",
+    // Assumption: the request fingerprint hashes the body, not the key, so
+    // the fingerprint a recorded movement stores is the one a legacy refusal
+    // of the same body would have stored.
+    const seed = await move(cashier, shift.id, {
+      ...base,
+      idempotencyKey: randomUUID(),
     });
-    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    expect(seed.status, JSON.stringify(seed.body)).toBe(201);
+    const fingerprint = (await movementRows(shift.id))[0]!.fingerprint;
+
+    const legacyKey = randomUUID();
+    await insertRefusal(shift.id, legacyKey, fingerprint);
+    const recorded = await move(cashier, shift.id, {
+      ...base,
+      idempotencyKey: legacyKey,
+    });
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
+    expect(recorded.body.data).toMatchObject({
+      type: "cash_out",
+      amountIdr: FLOAT_IDR + 1_000,
+    });
+    expect(await movementRows(shift.id)).toHaveLength(2);
+    const replay = await move(cashier, shift.id, {
+      ...base,
+      idempotencyKey: legacyKey,
+    });
+    expect([200, 201]).toContain(replay.status);
+    expect(replay.body.data.id).toBe(recorded.body.data.id);
+    expect(await movementRows(shift.id)).toHaveLength(2);
+
+    const otherKey = randomUUID();
+    await insertRefusal(shift.id, otherKey, fingerprint);
+    const changed = await move(cashier, shift.id, {
+      ...base,
+      amountIdr: FLOAT_IDR + 2_000,
+      idempotencyKey: otherKey,
+    });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(409);
+    expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(await movementRows(shift.id)).toHaveLength(2);
   });
 
   it("a refusal record is history: direct SQL UPDATE and DELETE are refused, the app role has no UPDATE/DELETE, and none lands on a closed shift", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const refused = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: FLOAT_IDR + 1,
-      reasonNote: "Beli gas elpiji",
-    });
-    expect(refused.status).toBe(409);
+    // legend-67dt: the service no longer writes refusals; seed one as the
+    // owner, the way an earlier release left it.
+    await insertRefusal(shift.id, randomUUID(), "a".repeat(64));
     const { rows } = await owner.query<{ id: string }>(
       "SELECT id FROM cash_movement_refusals WHERE tenant_id = $1 AND shift_id = $2",
       [tenant.tenantId, shift.id],
@@ -1119,20 +1159,7 @@ describe("POS-03 cash in, cash out and drops", () => {
     const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     await expect(
-      asOwnerTenant(tenant.tenantId, (client) =>
-        client.query(
-          `INSERT INTO cash_movement_refusals
-             (tenant_id, outlet_id, shift_id, idempotency_key, request_fingerprint)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            tenant.tenantId,
-            tenant.outletId,
-            shift.id,
-            randomUUID(),
-            "a".repeat(64),
-          ],
-        ),
-      ),
+      insertRefusal(shift.id, randomUUID(), "a".repeat(64)),
     ).rejects.toThrow(/POS-03/);
   });
 
@@ -2341,45 +2368,52 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
     expect(rows[0]).toEqual({ stored: expected, event: expected });
   });
 
-  it("refuses a cash out over the drawer with a generic message and keeps an audit row of the refusal (no expected figure)", async () => {
+  it("legend-67dt (B): a cash out over the drawer is stored with needs_approval = true and a pos_shift.cash_movement_held audit without any expected figure; one that fits is false with no held audit", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const refused = await move(cashier, shift.id, {
+    const fits = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 10_000,
+      reasonNote: "Beli es batu",
+    });
+    const over = await move(cashier, shift.id, {
       type: "cash_out",
       amountIdr: FLOAT_IDR + 1_000,
       reasonNote: "Beli gas elpiji",
     });
-    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(refused.body.error.code).toBe("CONFLICT");
-    expect(refused.body.error.message).toBe(
-      "Kas keluar ini perlu persetujuan supervisor.",
-    );
-    expect(refused.body.error.message).not.toMatch(/laci|\d/);
-    const { rows } = await owner.query<{
-      event: {
-        actorId: string;
-        objectType: string;
-        maskedChanges: { after: Record<string, unknown> };
-      };
-    }>(
-      `SELECT event FROM audit_logs
-        WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
-          AND event->>'objectId' = $2`,
-      [tenant.tenantId, shift.id],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.event.actorId).toBe(cashier.userId);
-    expect(rows[0]!.event.maskedChanges.after).toEqual({
+    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    expect(over.status, JSON.stringify(over.body)).toBe(201);
+
+    const rows = await movementRows(shift.id);
+    const fitsRow = rows.find((r) => r.amount === 10_000);
+    const overRow = rows.find((r) => r.amount === FLOAT_IDR + 1_000);
+    expect(fitsRow?.needs_approval).toBe(false);
+    expect(overRow?.needs_approval).toBe(true);
+
+    const held = await heldAudits(shift.id);
+    expect(held).toHaveLength(1);
+    const event = held[0]!;
+    expect(event.objectType).toBe("cash_movement");
+    expect(event.objectId).toBe(overRow?.id);
+    expect(event.actorId).toBe(cashier.userId);
+    expect(event.reason).toBe("Beli gas elpiji");
+    expect(event.maskedChanges.after).toEqual({
+      id: overRow?.id,
       shiftId: shift.id,
       type: "cash_out",
       amountIdr: FLOAT_IDR + 1_000,
     });
-    // Nothing was recorded as a movement.
-    const { rows: moved } = await owner.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
-      [tenant.tenantId, shift.id],
+    // Never an expected or variance figure, anywhere in the audit row.
+    expect(JSON.stringify(event)).not.toMatch(/expected|variance|drawer/i);
+
+    // Both movements keep the normal recorded audit.
+    const { rows: recorded } = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_recorded'
+          AND event->>'objectId' = ANY($2::text[])`,
+      [tenant.tenantId, [shift.id, fitsRow?.id, overRow?.id]],
     );
-    expect(moved[0]?.n).toBe(0);
+    expect(recorded[0]?.n).toBe(2);
   });
 
   it("a tier that needs several levels says only that the shift needs a supervisor over the phone, whatever the variance", async () => {
@@ -2444,57 +2478,49 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
   });
 
-  it("after 2 over-drawer cash-out refusals every further cash out is refused, whatever the amount; cash in, counts and close still work", async () => {
+  it("legend-67dt (C): any number of over-drawer cash outs are recorded (the 2-refusal limit is gone), and a small one that fits afterwards is a normal row", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const message = "Kas keluar ini perlu persetujuan supervisor.";
-    const refusals = () =>
-      owner.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM audit_logs
-          WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
-            AND event->>'objectId' = $2`,
-        [tenant.tenantId, shift.id],
-      );
-    const movements = () =>
-      owner.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
-        [tenant.tenantId, shift.id],
-      );
-    for (const over of [FLOAT_IDR + 1_000, FLOAT_IDR + 2_000]) {
-      const refused = await move(cashier, shift.id, {
-        type: "cash_out",
-        amountIdr: over,
+    for (const over of [1_000, 2_000, 3_000, 4_000]) {
+      const held = await move(cashier, shift.id, {
+        type: over % 2_000 === 0 ? "drop" : "cash_out",
+        amountIdr: FLOAT_IDR + over,
         reasonNote: "Beli gas elpiji",
       });
-      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(held.status, JSON.stringify(held.body)).toBe(201);
+      expect(held.body).not.toHaveProperty("error");
     }
-    expect((await refusals()).rows[0]?.n).toBe(2);
-
-    // A small cash out that fits the drawer is now refused as well, with the
-    // same message, and audited like any other refusal.
-    for (const [index, type] of (["cash_out", "drop"] as const).entries()) {
-      const refused = await move(cashier, shift.id, {
-        type,
-        amountIdr: 1,
-        reasonNote: "Beli gas elpiji",
-      });
-      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-      expect(refused.body.error.message).toBe(message);
-      expect((await refusals()).rows[0]?.n).toBe(3 + index);
-    }
-    expect((await movements()).rows[0]?.n).toBe(0);
-
-    // Cash in stays allowed.
+    // Expected cash excludes the held rows, so a small one still fits.
+    const small = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 10_000,
+      reasonNote: "Beli es batu",
+    });
+    expect(small.status, JSON.stringify(small.body)).toBe(201);
     const cashIn = await move(cashier, shift.id, {
       type: "cash_in",
       amountIdr: 10_000,
     });
     expect(cashIn.status, JSON.stringify(cashIn.body)).toBe(201);
-    expect((await movements()).rows[0]?.n).toBe(1);
 
-    // Counting and closing are untouched.
-    const closed = await closeShift(cashier, shift.id, FLOAT_IDR + 10_000);
+    const rows = await movementRows(shift.id);
+    expect(rows).toHaveLength(6);
+    expect(rows.filter((r) => r.needs_approval).map((r) => r.amount)).toEqual([
+      FLOAT_IDR + 1_000,
+      FLOAT_IDR + 2_000,
+      FLOAT_IDR + 3_000,
+      FLOAT_IDR + 4_000,
+    ]);
+    expect(
+      rows.find((r) => r.amount === 10_000 && r.type === "cash_out")
+        ?.needs_approval,
+    ).toBe(false);
+    expect(await heldAudits(shift.id)).toHaveLength(4);
+
+    // Counting and closing are untouched: drawer = float - 10.000 + 10.000.
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data.expectedIdr).toBe(FLOAT_IDR);
   });
 
   it("stores the verified override's approver, not the client's spelling of the id, on the shift, its event and the audit row", async () => {
@@ -3330,13 +3356,9 @@ describe("TEN-01 shifts are isolated per tenant", () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
     await move(cashier, shift.id);
-    // A refused cash out leaves one refusal record (legend-uw47).
-    const refused = await move(cashier, shift.id, {
-      type: "cash_out",
-      amountIdr: FLOAT_IDR + 20_001,
-      reasonNote: "Beli gas elpiji",
-    });
-    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    // legend-67dt: nothing writes refusal records any more, but the history
+    // table stays and must stay tenant and outlet isolated; seed one directly.
+    await insertRefusal(shift.id, randomUUID(), "a".repeat(64));
     await countDrawer(cashier, shift.id, FLOAT_IDR + 20_000);
 
     const count = async (
@@ -3378,6 +3400,367 @@ describe("TEN-01 shifts are isolated per tenant", () => {
         await count(tenant.tenantId, JSON.stringify([randomUUID()]), table),
         table,
       ).toBe("0");
+    }
+  });
+});
+
+// ---- legend-67dt: cash out without leaking the drawer balance ----------------------
+//
+// Design (sub-brief): a cash out or drop larger than the expected drawer cash
+// is recorded like any other (the cashier sees no difference, so the
+// accept/refuse answer is no longer an oracle for the blind count). It is
+// flagged `needs_approval`, excluded from the drawer figures, summed into
+// `heldCashOutIdr` on the count and shown only to supervisors.
+//
+// Assumptions: "supervisor" = the `supervisor` member (shift.cash.approve_close);
+// the view_all member is not asserted for `needsApproval`. The force-close
+// audit (`pos_shift.force_closed`) carries `heldCashOutIdr` like the cashier
+// close audit (`pos_shift.closed`).
+
+describe("legend-67dt cash out does not reveal the drawer balance", () => {
+  const HELD_IDR = FLOAT_IDR + 50_000;
+
+  async function recordedEventPayloads(shiftId: string) {
+    const { rows } = await owner.query<{
+      event: { payload: Record<string, unknown> } & Record<string, unknown>;
+    }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'cash_movement.recorded'
+          AND event->'payload'->>'shiftId' = $2
+        ORDER BY created_at, sequence, id`,
+      [tenant.tenantId, shiftId],
+    );
+    return rows.map((row) => row.event);
+  }
+
+  it("A: a cash out that fits and one over the drawer both answer 201 with the same shape; the cashier's list, report and outbox events show no difference", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const fits = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 10_000,
+      reasonNote: "Beli es batu",
+    });
+    const over = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: HELD_IDR,
+      reasonNote: "Beli gas elpiji",
+    });
+    for (const response of [fits, over]) {
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      expect(response.body).not.toHaveProperty("error");
+      expect(Object.keys(response.body).sort()).toEqual(["data"]);
+      expect(response.body.data).not.toHaveProperty("needsApproval");
+    }
+    expect(Object.keys(over.body.data).sort()).toEqual(
+      Object.keys(fits.body.data).sort(),
+    );
+    expect(over.body.data.approvedBy).toBe(fits.body.data.approvedBy);
+
+    // The cashier's own list and report: identical key sets, no flag.
+    const listed = await listMovements(cashier, shift.id);
+    expect(listed.status).toBe(200);
+    expect(listed.body.data).toHaveLength(2);
+    const keySets = (listed.body.data as object[]).map((row) =>
+      Object.keys(row).sort().join(","),
+    );
+    expect(new Set(keySets).size).toBe(1);
+    for (const row of listed.body.data)
+      expect(row).not.toHaveProperty("needsApproval");
+    const own = await report(cashier, shift.id);
+    expect(own.status).toBe(200);
+    for (const row of own.body.data.movements)
+      expect(row).not.toHaveProperty("needsApproval");
+
+    // The domain events are indistinguishable too.
+    const events = await recordedEventPayloads(shift.id);
+    expect(events).toHaveLength(2);
+    expect(Object.keys(events[1]!.payload).sort()).toEqual(
+      Object.keys(events[0]!.payload).sort(),
+    );
+    expect(Object.keys(events[1]!).sort()).toEqual(
+      Object.keys(events[0]!).sort(),
+    );
+    expect(JSON.stringify(events)).not.toMatch(/needsApproval|held/i);
+  });
+
+  it("D: the supervisor's count trail shows the expected cash without the held amount plus heldCashOutIdr; the cashier's receipt has no held figure and noteRequired follows the variance only", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const held = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: HELD_IDR,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(held.status, JSON.stringify(held.body)).toBe(201);
+    const normal = await move(cashier, shift.id, {
+      type: "drop",
+      amountIdr: 20_000,
+      reasonNote: "Setor ke brankas",
+    });
+    expect(normal.status, JSON.stringify(normal.body)).toBe(201);
+
+    // Drawer = float - the drop; the held cash out is not in it.
+    const even = await countDrawer(cashier, shift.id, FLOAT_IDR - 20_000);
+    const short = await countDrawer(cashier, shift.id, FLOAT_IDR - 25_000);
+    for (const receipt of [even, short]) {
+      expect(Object.keys(receipt).sort()).toEqual([
+        "countedIdr",
+        "id",
+        "noteRequired",
+        "sequence",
+        "shiftId",
+        "submittedAt",
+      ]);
+      expect(receipt).not.toHaveProperty("heldCashOutIdr");
+    }
+    // Held money must not change noteRequired (that would be an oracle).
+    expect(even.noteRequired).toBe(false);
+    expect(short.noteRequired).toBe(true);
+
+    const trail = await listCounts(supervisor, shift.id);
+    expect(trail.status, JSON.stringify(trail.body)).toBe(200);
+    const rows = (trail.body.data as unknown[]).map((row) =>
+      posShiftCountSchema.parse(row),
+    );
+    expect(
+      rows.map((row) => [
+        row.sequence,
+        row.expectedIdr,
+        row.varianceIdr,
+        row.heldCashOutIdr,
+      ]),
+    ).toEqual([
+      [1, FLOAT_IDR - 20_000, 0, HELD_IDR],
+      [2, FLOAT_IDR - 20_000, -5_000, HELD_IDR],
+    ]);
+
+    // A shift with no held cash out says 0, and a short count there asks for
+    // a note exactly like the shift above.
+    const plain = await newCashier("Kasir Biasa");
+    const plainShift = await openShift(plain);
+    const plainCount = await countDrawer(
+      plain,
+      plainShift.id,
+      FLOAT_IDR - 5_000,
+    );
+    expect(plainCount.noteRequired).toBe(short.noteRequired);
+    const plainTrail = await listCounts(supervisor, plainShift.id);
+    expect(
+      posShiftCountSchema.parse(plainTrail.body.data[0]).heldCashOutIdr,
+    ).toBe(0);
+    const { rows: stored } = await owner.query<{ held: number }>(
+      "SELECT held_cash_out_idr::int AS held FROM pos_shift_counts WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, short.id],
+    );
+    expect(stored[0]?.held).toBe(HELD_IDR);
+  });
+
+  it("F: a second held cash out that would push the shift's total cash out + drops (held or not) past the safe integer is refused with VALIDATION_ERROR before it is stored; the supervisor's count trail still answers 200", async () => {
+    // Assumption: the refusal is a CoreError VALIDATION_ERROR (400), like the
+    // cash-in overflow guard (legend-1hza).
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    // Each is far over the drawer (held); together they exceed MAX_SAFE_INTEGER.
+    const half = Math.floor(Number.MAX_SAFE_INTEGER / 2) + 1;
+    const first = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: half,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const second = await move(cashier, shift.id, {
+      type: "drop",
+      amountIdr: half,
+      reasonNote: "Setor ke brankas",
+    });
+    expect(second.status, JSON.stringify(second.body)).toBe(400);
+    expect(second.body.error.code).toBe("VALIDATION_ERROR");
+
+    const rows = await movementRows(shift.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.amount).toBe(half);
+
+    // The held figure stays the one stored row, and the trail still renders.
+    await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const trail = await listCounts(supervisor, shift.id);
+    expect(trail.status, JSON.stringify(trail.body)).toBe(200);
+    const counts = (trail.body.data as unknown[]).map((row) =>
+      posShiftCountSchema.parse(row),
+    );
+    expect(counts.map((row) => [row.expectedIdr, row.heldCashOutIdr])).toEqual([
+      [FLOAT_IDR, half],
+    ]);
+  });
+
+  it.each([
+    ["a held cash out", HELD_IDR, "cash_out", HELD_IDR, FLOAT_IDR],
+    ["a normal cash out", 10_000, "cash_out", 0, FLOAT_IDR - 10_000],
+    ["a held drop", HELD_IDR, "drop", HELD_IDR, FLOAT_IDR],
+  ] as const)(
+    "E: %s after the count makes the close SHIFT_COUNT_STALE; a recount with a fresh approval closes and the close audit carries heldCashOutIdr",
+    async (_label, amountIdr, type, heldIdr, recountIdr) => {
+      const cashier = await newCashier();
+      const shift = await openShift(cashier);
+      const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+      const approval = await approvalFor(cashier, count.id);
+      const moved = await move(cashier, shift.id, {
+        type,
+        amountIdr,
+        reasonNote: "Beli gas elpiji",
+      });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(201);
+
+      const stale = await close(cashier, shift.id, {
+        countId: count.id,
+        ...approval,
+      });
+      expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+      expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
+      expect((await shiftRow(shift.id))?.status).toBe("open");
+
+      const closed = await closeShift(cashier, shift.id, recountIdr);
+      expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+      expect(closed.body.data).toMatchObject({
+        status: "closed",
+        expectedIdr: recountIdr,
+        varianceIdr: 0,
+      });
+      const { rows } = await owner.query<{ held: string | null }>(
+        `SELECT event->'maskedChanges'->'after'->>'heldCashOutIdr' AS held
+           FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.closed'
+            AND event->>'objectId' = $2`,
+        [tenant.tenantId, shift.id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]?.held)).toBe(heldIdr);
+    },
+  );
+
+  it("E: a held cash out after a supervisor's forced count makes the force close stale; a fresh forced count closes and its audit carries heldCashOutIdr", async () => {
+    const cashier = await newCashier();
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Held");
+    const shift = await openShift(cashier);
+    const count = await forcedCount(caller, shift.id, FLOAT_IDR);
+    const { body: witness } = await witnessFor(caller, count.id);
+    const moved = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: HELD_IDR,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(201);
+    const note = "Kasir gagal menghitung kas tiga kali";
+    const stale = await forceClose(caller, shift.id, {
+      countId: count.id,
+      note,
+      ...witness,
+    });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+
+    const fresh = await forcedCount(caller, shift.id, FLOAT_IDR);
+    const { body: freshWitness } = await witnessFor(caller, fresh.id);
+    const closed = await forceClose(caller, shift.id, {
+      countId: fresh.id,
+      note,
+      ...freshWitness,
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const { rows } = await owner.query<{ held: string | null }>(
+      `SELECT event->'maskedChanges'->'after'->>'heldCashOutIdr' AS held
+         FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.force_closed'
+          AND event->>'objectId' = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.held)).toBe(HELD_IDR);
+  });
+
+  it("F: the supervisor's movement list and shift report show needsApproval true for the held cash out and false for the others; the cashier's own reads never carry the key", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const normal = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 10_000,
+      reasonNote: "Beli es batu",
+    });
+    const held = await move(cashier, shift.id, {
+      type: "drop",
+      amountIdr: HELD_IDR,
+      reasonNote: "Setor ke brankas",
+    });
+    const cashIn = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: 5_000,
+    });
+    for (const response of [normal, held, cashIn])
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const flags = (rows: { id: string; needsApproval?: boolean }[]) =>
+      Object.fromEntries(rows.map((row) => [row.id, row.needsApproval]));
+    const expected = {
+      [normal.body.data.id]: false,
+      [held.body.data.id]: true,
+      [cashIn.body.data.id]: false,
+    };
+
+    const listed = await listMovements(supervisor, shift.id);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(flags(listed.body.data)).toEqual(expected);
+    const filtered = await listMovements(supervisor, shift.id, "?type=drop");
+    expect(flags(filtered.body.data)).toEqual({ [held.body.data.id]: true });
+    const read = await report(supervisor, shift.id);
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(flags(read.body.data.movements)).toEqual(expected);
+
+    const mine = await listMovements(cashier, shift.id);
+    const mineReport = await report(cashier, shift.id);
+    for (const row of [...mine.body.data, ...mineReport.body.data.movements])
+      expect(row).not.toHaveProperty("needsApproval");
+    expect(mine.body.data).toHaveLength(3);
+    // The record response itself never carries the flag.
+    for (const response of [normal, held, cashIn])
+      expect(response.body.data).not.toHaveProperty("needsApproval");
+  });
+
+  it("H: staff of another tenant, or on another outlet's path, cannot list or read the held movements (403/404) and never see their ids", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const held = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: HELD_IDR,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(held.status, JSON.stringify(held.body)).toBe(201);
+    const movementId = held.body.data.id as string;
+
+    const attempts = [
+      // Another tenant's supervisor-level staff, on either host.
+      ...[other.hostname, tenant.hostname].flatMap((host) =>
+        [`/${shift.id}/cash-movements`, `/${shift.id}`].map((path) =>
+          outsider.client
+            .get(`${SHIFTS()}${path}`)
+            .set({ Host: host })
+            .set(originHeader),
+        ),
+      ),
+      // The tenant's supervisor, but another outlet's path.
+      ...[`/${shift.id}/cash-movements`, `/${shift.id}`].map((path) =>
+        supervisor.client
+          .get(`${SHIFTS(other.outletId)}${path}`)
+          .set(headers)
+          .set(originHeader),
+      ),
+    ];
+    for (const response of await Promise.all(attempts)) {
+      expect([403, 404], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+      expect(JSON.stringify(response.body)).not.toContain(movementId);
+      expect(JSON.stringify(response.body)).not.toContain("needsApproval");
     }
   });
 });

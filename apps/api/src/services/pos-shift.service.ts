@@ -62,7 +62,6 @@ import {
 import { db } from "../db/index.ts";
 import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
-import { auditLogs } from "../db/schema/core-audit.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
   cashMovementRefusals,
@@ -85,6 +84,7 @@ import {
   countDto,
   countReceiptDto,
   findShift,
+  heldCashOutIdrOf,
   loadOutletAccess,
   movementDto,
   movementsOf,
@@ -121,8 +121,6 @@ const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
 
 /** The cashier may submit this many counts per shift; then a supervisor closes. */
 const MAX_CASHIER_COUNTS = 3;
-/** Over-drawer cash-out refusals a shift gets before every cash-out is refused. */
-const MAX_CASH_OUT_REFUSALS = 2;
 const MIN_REASON_LENGTH = 4;
 
 const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -350,7 +348,9 @@ export async function getPosShiftReport(
     });
     return posShiftReportSchema.parse({
       shift: shiftDto(row, live),
-      movements: movements.map(movementDto),
+      movements: movements.map((movement) =>
+        movementDto(movement, { withApproval: seesLiveFigures }),
+      ),
       receiptGaps,
     });
   });
@@ -428,7 +428,13 @@ export async function listCashMovements(
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
     const row = await findShift(tx, context, outletId, shiftId);
-    await assertCanRead(tx, context, caller, outletId, row);
+    const { seesLiveFigures } = await assertCanRead(
+      tx,
+      context,
+      caller,
+      outletId,
+      row,
+    );
     const filters = [
       eq(cashMovements.tenantId, context.tenant.tenantId),
       eq(cashMovements.outletId, outletId),
@@ -453,7 +459,9 @@ export async function listCashMovements(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map(movementDto),
+      data: page.map((movement) =>
+        movementDto(movement, { withApproval: seesLiveFigures }),
+      ),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -528,11 +536,9 @@ export async function recordCashMovement(
         );
       return movementDto(replay);
     }
-    // A refused cash out is remembered by key (legend-uw47) so a retry does
-    // not use up the shift's refusal allowance. It is not frozen: the checks
-    // below run again (the cashier may have added cash since), and a refusal
-    // that repeats writes no new audit row and no new refusal row, since the
-    // attempt is already counted. Another body under the key is a conflict.
+    // Legacy (legend-uw47): a cash out refused before legend-67dt left a
+    // refusal row under its key. Same body now simply records; another body
+    // under the key is still a conflict.
     const [refusedBefore] = await tx
       .select()
       .from(cashMovementRefusals)
@@ -566,14 +572,29 @@ export async function recordCashMovement(
           "Jumlah kas masuk terlalu besar untuk shift ini.",
         );
     }
-    // Cash out and drops come out of the drawer: never more than the drawer
-    // should hold, or the shift could never close (contract expectedIdr ≥ 0,
-    // movements are insert-only so there is no correction path). The shift
-    // row is locked, so the figures cannot move under this check. The refusal
-    // is audited (no expected figure) and the transaction commits that row;
-    // the error is thrown after it, so the audit survives.
+    // Cash out and drops larger than the expected drawer cash are accepted
+    // like any other (the response is identical, so the cashier cannot probe
+    // the expected cash by being refused) but held for supervisor review
+    // (legend-67dt): the row is flagged, left out of the drawer figures, and
+    // audited without any expected figure. The shift row is locked, so the
+    // figures cannot move under this check.
+    let needsApproval = false;
     if (input.type !== "cash_in") {
       const live = await computeShiftAggregates(tx, shift);
+      // Every cash out + drop of the shift, held or not, stays a safe integer
+      // (held rows are no longer bounded by the drawer). The bound uses the
+      // cashier's own movements only, never the expected cash, so it leaks
+      // nothing about the drawer.
+      const outflow =
+        BigInt(live.cashOutIdr) +
+        BigInt(live.cashDropIdr) +
+        BigInt(await heldCashOutIdrOf(tx, shift)) +
+        BigInt(input.amountIdr);
+      if (outflow > BigInt(Number.MAX_SAFE_INTEGER))
+        throw new CoreError(
+          "VALIDATION_ERROR",
+          "Jumlah kas keluar terlalu besar untuk shift ini.",
+        );
       const expected =
         Number(shift.openingFloatIdr) +
         live.cashSalesIdr -
@@ -581,52 +602,7 @@ export async function recordCashMovement(
         live.cashInIdr -
         live.cashOutIdr -
         live.cashDropIdr;
-      // After MAX_CASH_OUT_REFUSALS refusals every cash out is refused whatever
-      // the amount, with the same message and audit row, so refusals cannot be
-      // used to binary-search the expected drawer cash.
-      const [refusals] = await tx
-        .select({ n: sql<number>`count(*)::int` })
-        .from(auditLogs)
-        .where(
-          and(
-            eq(auditLogs.tenantId, tenantId),
-            sql`${auditLogs.event}->>'action' = 'pos_shift.cash_movement_refused'`,
-            sql`${auditLogs.event}->>'objectId' = ${shift.id}`,
-          ),
-        );
-      if (
-        (refusals?.n ?? 0) >= MAX_CASH_OUT_REFUSALS ||
-        input.amountIdr > expected
-      ) {
-        if (refusedBefore) return { refused: true as const };
-        await auditShift(
-          tx,
-          context,
-          {
-            action: "pos_shift.cash_movement_refused",
-            outletId,
-            objectType: "pos_shift",
-            objectId: shift.id,
-            caller,
-            before: null,
-            after: {
-              shiftId: shift.id,
-              type: input.type,
-              amountIdr: input.amountIdr,
-            },
-            reason: reasonNote,
-          },
-          now,
-        );
-        await tx.insert(cashMovementRefusals).values({
-          tenantId,
-          outletId,
-          shiftId: shift.id,
-          idempotencyKey,
-          requestFingerprint: fingerprint,
-        });
-        return { refused: true as const };
-      }
+      needsApproval = input.amountIdr > expected;
     }
     const [row] = await tx
       .insert(cashMovements)
@@ -640,6 +616,7 @@ export async function recordCashMovement(
         recordedBy: caller.userId,
         recordedAt: now,
         approvedBy: null,
+        needsApproval,
         idempotencyKey,
         requestFingerprint: fingerprint,
       })
@@ -683,13 +660,29 @@ export async function recordCashMovement(
       },
       now,
     );
+    if (needsApproval)
+      await auditShift(
+        tx,
+        context,
+        {
+          action: "pos_shift.cash_movement_held",
+          outletId,
+          objectType: "cash_movement",
+          objectId: row.id,
+          caller,
+          before: null,
+          after: {
+            id: row.id,
+            shiftId: shift.id,
+            type: dto.type,
+            amountIdr: dto.amountIdr,
+          },
+          reason: dto.reasonNote,
+        },
+        now,
+      );
     return dto;
   });
-  if ("refused" in outcome)
-    throw new CoreError(
-      "CONFLICT",
-      "Kas keluar ini perlu persetujuan supervisor.",
-    );
   return outcome;
 }
 
@@ -789,6 +782,7 @@ export async function submitPosShiftCount(
     const now = new Date();
     const aggregates = await computeShiftAggregates(tx, shift);
     const expectedIdr = expectedCashOf(shift, aggregates);
+    const heldCashOutIdr = await heldCashOutIdrOf(tx, shift);
     const counts = request.counts.map((line) => ({
       denominationIdr: line.denominationIdr,
       quantity: line.quantity,
@@ -833,6 +827,7 @@ export async function submitPosShiftCount(
         countedIdr: countedIdr as Idr,
         expectedIdr: expectedIdr as Idr,
         varianceIdr: (countedIdr - expectedIdr) as Idr,
+        heldCashOutIdr: heldCashOutIdr as Idr,
         submittedBy: caller.userId,
         submittedAt: now,
         forced,
@@ -858,6 +853,7 @@ export async function submitPosShiftCount(
           countedIdr: Number(row.countedIdr),
           expectedIdr: Number(row.expectedIdr),
           varianceIdr: Number(row.varianceIdr),
+          heldCashOutIdr: Number(row.heldCashOutIdr),
         },
       },
       now,
@@ -1253,7 +1249,12 @@ export async function closePosShift(
     const aggregates: ShiftAggregates = await computeShiftAggregates(tx, shift);
     // The variance is the server's: if the drawer moved since the count, the
     // approved value no longer describes it and the cashier counts again.
-    if (expectedCashOf(shift, aggregates) !== Number(count.expectedIdr))
+    // A cash out held for review moves no drawer figure, so it is checked
+    // on its own: the supervisor approved the count with its held sum.
+    if (
+      expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
+      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)
+    )
       throw new PosError("SHIFT_COUNT_STALE");
     let closed: PosShift;
     try {
@@ -1417,7 +1418,11 @@ async function writeClose(
       objectId: row.id,
       caller,
       before: shiftAuditView(shift, aggregates),
-      after: { ...shiftAuditView(row), countId: count.id },
+      after: {
+        ...shiftAuditView(row),
+        countId: count.id,
+        heldCashOutIdr: Number(count.heldCashOutIdr),
+      },
       reason: dto.varianceNote,
     },
     now,
@@ -1516,7 +1521,12 @@ export async function forceClosePosShift(
     if (!latest || latest.id !== count.id)
       throw new PosError("SHIFT_COUNT_SUPERSEDED");
     const aggregates: ShiftAggregates = await computeShiftAggregates(tx, shift);
-    if (expectedCashOf(shift, aggregates) !== Number(count.expectedIdr))
+    // A cash out held for review moves no drawer figure, so it is checked
+    // on its own: the supervisor approved the count with its held sum.
+    if (
+      expectedCashOf(shift, aggregates) !== Number(count.expectedIdr) ||
+      (await heldCashOutIdrOf(tx, shift)) !== Number(count.heldCashOutIdr)
+    )
       throw new PosError("SHIFT_COUNT_STALE");
     let closed: PosShift;
     try {

@@ -992,6 +992,11 @@ export const posShiftCountSchema = z.strictObject({
   expectedIdr: nonnegativeIdr,
   /** counted − expected: negative is short, positive is over. */
   varianceIdr: idrSchema,
+  /**
+   * Cash outs / drops held for review at count time (left out of expectedIdr).
+   * Supervisor trail only; the cashier receipt never carries it.
+   */
+  heldCashOutIdr: nonnegativeIdr,
   submittedBy: userIdSchema,
   submittedAt: isoDateTimeSchema,
 });
@@ -1064,6 +1069,12 @@ export const posCashMovementSchema = z.strictObject({
   recordedBy: userIdSchema,
   recordedAt: isoDateTimeSchema,
   approvedBy: userIdSchema.nullable(),
+  /**
+   * Held for supervisor review: larger than the expected drawer cash when
+   * recorded. Set only for callers that see live figures (supervisor reads);
+   * never in the record response or for the shift's own cashier.
+   */
+  needsApproval: z.boolean().optional(),
 });
 export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
 

@@ -326,3 +326,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Sudah: `legend-2tcj` reject stock count kini mengunci kepala chain (`resolveApprovalChainOutcome`) sebelum membaca hasil approval; test balapan di `approval-expiry-race-modules.test.ts` (pg_locks, merah tanpa fix). `legend-t8xt` urutan outbox di `pos-shift.test.ts` kini `ORDER BY created_at, sequence, id` (sequence per agregat bisa sama); 3 run 62/62.
 - Ditahan: `legend-fbms` (order.paid total 0) butuh ubah skema `packages/shared` dan keputusan desain (A: order.paid total 0 tanpa tender, atau B: event baru `order.settled` plus konsumen recipe-deduction yang hanya ada di `integ/m1-batch3`). Menunggu CTO.
+
+## Brief 145 kasir menebak isi laci lewat kas keluar (engineer, cabang `ws/pos-drawer-guess`, 2026-11-09)
+
+- Sudah: kas keluar/setoran di atas saldo laci yang diharapkan tidak lagi ditolak (409 + batas 2 penolakan M1 dihapus). Dicatat 201 dengan bentuk respons sama, ditandai `cash_movements.needs_approval`, dikeluarkan dari angka laci, diaudit `pos_shift.cash_movement_held`. Supervisor melihat `needsApproval` di daftar kas dan `heldCashOutIdr` di jejak hitungan; tutup shift (kasir dan paksa) basi bila jumlah yang ditahan berubah setelah hitungan. Total kas keluar + setoran per shift dibatasi safe integer.
+- Basis: `ws/small-bugs-pos-stock` belum berisi M1, jadi `milestone/m1` digabung ke cabang (`a4e12810`).
+- Migrasi: `0113_little_random.sql` (bentrok nomor dengan `integ/m1-batch4` 0113-0119; regen di merge train).
+- Keputusan: tabel `cash_movement_refusals` dipertahankan sebagai riwayat; kunci lama yang pernah ditolak kini mencatat bila body sama. `noteRequired` tetap hanya dari variance (bukan dari jumlah ditahan) supaya tidak jadi oracle. Baris ditahan tidak boleh diposting ke pembukuan; uang yang benar keluar masuk lewat variance shift.
+- Lanjutan: `legend-pspy` (UI supervisor/kasir), `legend-utqr` (refund/void tunai masih menolak di atas saldo laci, oracle serupa).

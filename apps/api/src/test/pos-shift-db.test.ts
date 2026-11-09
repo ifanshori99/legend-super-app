@@ -305,3 +305,180 @@ describe("POS-03 pos_shift_counts.forced", () => {
     });
   });
 });
+
+// ---- legend-67dt: held cash out (needs_approval) and held_cash_out_idr ----------------
+
+/** A cash movement row as the service writes it; `needsApproval` is optional. */
+function movementSql(withFlag: boolean) {
+  return `INSERT INTO cash_movements
+      (tenant_id, outlet_id, shift_id, type, amount_idr, reason_note, recorded_by,
+       recorded_at, idempotency_key, request_fingerprint${withFlag ? ", needs_approval" : ""})
+    VALUES ($1, $2, $3, $4, $5, 'Beli gas elpiji', $6, now(), $7, $8${withFlag ? ", $9" : ""})`;
+}
+
+function movementValues(input: {
+  shiftId: string;
+  cashierId: string;
+  type: "cash_in" | "cash_out" | "drop";
+  amountIdr?: number;
+  needsApproval?: boolean;
+}): unknown[] {
+  const values: unknown[] = [
+    seededTenantId,
+    seededOutletA,
+    input.shiftId,
+    input.type,
+    input.amountIdr ?? 150_000,
+    input.cashierId,
+    randomUUID(),
+    "a".repeat(64),
+  ];
+  if (input.needsApproval !== undefined) values.push(input.needsApproval);
+  return values;
+}
+
+const HELD_COUNT_SQL = `INSERT INTO pos_shift_counts
+    (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
+     counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
+     idempotency_key, request_fingerprint, held_cash_out_idr)
+  VALUES ($1, $2, $3, $4, $5, '[]'::jsonb, $6, $7, $8, $9, $10, now(), $11, $12, $6, $13)`;
+
+describe("POS-03 cash_movements.needs_approval", () => {
+  it("defaults to false and is allowed on a cash_out or drop that exceeded the drawer", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      await client.query(
+        movementSql(false),
+        movementValues({ shiftId, cashierId: cashier, type: "cash_out" }),
+      );
+      for (const type of ["cash_out", "drop"] as const)
+        await client.query(
+          movementSql(true),
+          movementValues({
+            shiftId,
+            cashierId: cashier,
+            type,
+            needsApproval: true,
+          }),
+        );
+      const { rows } = await client.query<{
+        type: string;
+        needs_approval: boolean;
+      }>(
+        `SELECT type, needs_approval FROM cash_movements
+          WHERE tenant_id = $1 AND shift_id = $2 ORDER BY recorded_at, id`,
+        [seededTenantId, shiftId],
+      );
+      expect(rows.map((row) => row.needs_approval).sort()).toEqual([
+        false,
+        true,
+        true,
+      ]);
+      expect(
+        rows.filter((row) => row.type === "cash_out" && row.needs_approval),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("is refused on a cash_in (cash_movements_needs_approval_type_check)", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      await expectRefused(
+        client,
+        movementSql(true),
+        movementValues({
+          shiftId,
+          cashierId: cashier,
+          type: "cash_in",
+          needsApproval: true,
+        }),
+        /cash_movements_needs_approval_type_check/,
+      );
+      // A plain cash_in is fine.
+      const result = await client.query(
+        movementSql(true),
+        movementValues({
+          shiftId,
+          cashierId: cashier,
+          type: "cash_in",
+          needsApproval: false,
+        }),
+      );
+      expect(result.rowCount).toBe(1);
+    });
+  });
+
+  it("cannot be changed afterwards: the movement guard trigger refuses the UPDATE", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      await client.query(
+        movementSql(true),
+        movementValues({
+          shiftId,
+          cashierId: cashier,
+          type: "cash_out",
+          needsApproval: true,
+        }),
+      );
+      for (const flag of [false, true])
+        await expectRefused(
+          client,
+          "UPDATE cash_movements SET needs_approval = $3 WHERE tenant_id = $1 AND shift_id = $2",
+          [seededTenantId, shiftId, flag],
+          /POS-03/,
+        );
+      const { rows } = await client.query(
+        "SELECT needs_approval FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
+        [seededTenantId, shiftId],
+      );
+      expect(rows).toEqual([{ needs_approval: true }]);
+    });
+  });
+});
+
+describe("POS-03 pos_shift_counts.held_cash_out_idr", () => {
+  function heldValues(shiftId: string, submittedBy: string, held?: number) {
+    const values = countValues({ shiftId, submittedBy });
+    values.push(held ?? 0);
+    return values;
+  }
+
+  it("defaults to 0 when omitted", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      const countId = await newCount(client, { shiftId, submittedBy: cashier });
+      const { rows } = await client.query(
+        "SELECT held_cash_out_idr::int AS held FROM pos_shift_counts WHERE id = $1",
+        [countId],
+      );
+      expect(rows[0]).toEqual({ held: 0 });
+    });
+  });
+
+  it("stores a positive held sum and refuses a negative one (pos_shift_counts_held_cash_out_check)", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      const values = heldValues(shiftId, cashier, 150_000);
+      await client.query(HELD_COUNT_SQL, values);
+      const { rows } = await client.query(
+        "SELECT held_cash_out_idr::int AS held FROM pos_shift_counts WHERE id = $1",
+        [values[0]],
+      );
+      expect(rows[0]).toEqual({ held: 150_000 });
+
+      const negative = heldValues(shiftId, cashier, -1);
+      negative[4] = 2; // next sequence
+      await expectRefused(
+        client,
+        HELD_COUNT_SQL,
+        negative,
+        /pos_shift_counts_held_cash_out_check/,
+      );
+    });
+  });
+});
