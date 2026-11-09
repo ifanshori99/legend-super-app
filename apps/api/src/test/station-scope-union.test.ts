@@ -600,6 +600,10 @@ async function storedState(ticketId: string): Promise<string> {
   return JSON.stringify(found);
 }
 
+type RouteBody = {
+  data: { priority?: number; status?: string } & Record<string, unknown>;
+};
+
 type RouteCase = {
   name: string;
   state: State;
@@ -608,9 +612,9 @@ type RouteCase = {
     who: Member,
     outletId: string,
     ticketId: string,
-  ) => Promise<{ status: number; body: any }>;
+  ) => Promise<{ status: number; body: RouteBody }>;
   /** What a successful call leaves behind. */
-  verify: (ticketId: string, body: any) => Promise<void>;
+  verify: (ticketId: string, body: RouteBody) => Promise<void>;
 };
 
 const routeCases: RouteCase[] = [
