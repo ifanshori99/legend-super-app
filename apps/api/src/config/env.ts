@@ -5,6 +5,7 @@ import {
   deploymentEnvShape,
   deploymentPolicyCheck,
 } from "@starter/shared/env";
+import { normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
 
@@ -102,6 +103,24 @@ const schema = z
     COOKIE_DOMAIN: z
       .string()
       .regex(/^\.?[a-z0-9.-]+$/i, "Use a parent domain such as .example.com.")
+      .optional(),
+    // Hostname tenants' default subdomains live under (`<slug>.<platform
+    // domain>`). It and everything under it is reserved: no tenant may claim
+    // it as a custom domain (legend-t57t).
+    PLATFORM_DOMAIN: z
+      .string()
+      .trim()
+      .transform((value, ctx) => {
+        const host = normalizeHostname(value);
+        if (host === null) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Use a public hostname such as example.com.",
+          });
+          return z.NEVER;
+        }
+        return host;
+      })
       .optional(),
     // A hop count or subnet list. `true` would trust any X-Forwarded-For a
     // client sends, letting it pick the IP that rate limits are counted by.
@@ -332,6 +351,15 @@ export const env = {
   PORT: values.PORT ?? (Number(new URL(values.BETTER_AUTH_URL).port) || 4000),
   isProduction: values.NODE_ENV === "production",
   isTest: values.NODE_ENV === "test",
+  // Hostnames tenants may not claim as custom domains: the platform domain and
+  // the cookie parent domain (without its leading dot), whichever are set.
+  reservedDomains: [
+    ...new Set(
+      [values.PLATFORM_DOMAIN, values.COOKIE_DOMAIN?.replace(/^\./, "")]
+        .map((value) => (value ? normalizeHostname(value) : null))
+        .filter((value): value is string => value !== null),
+    ),
+  ],
   // Browser origins allowed to call the API with cookies.
   trustedOrigins: [
     ...new Set([

@@ -606,6 +606,50 @@ test("TEN-09 a template imports into a new tenant as a working configuration", (
   assert.equal(platform.canTransitionConfigImport("failed", "applying"), false);
 });
 
+test("legend-t57t resolveHost prefers the verified claim over unverified rows of other tenants", () => {
+  const tenantStatus = () => "active";
+  const verified = fx.domains.find(
+    (row) => row.verifiedAt !== null && row.kind === "custom",
+  );
+  const intruder = {
+    ...verified,
+    id: "d0a10000-0000-4000-8000-0000000000aa",
+    tenantId: fx.suspendedTenant.id,
+    verifiedAt: null,
+    verification: platform.domainVerificationRecord(verified.hostname, "t"),
+  };
+  for (const rows of [
+    [intruder, verified],
+    [verified, intruder],
+  ]) {
+    const hit = platform.resolveHost(verified.hostname, rows, tenantStatus);
+    assert.equal(hit.ok, true);
+    assert.equal(hit.tenantId, verified.tenantId);
+  }
+  assert.deepEqual(
+    platform.resolveHost(verified.hostname, [intruder], tenantStatus),
+    { ok: false, reason: "unverified" },
+  );
+});
+
+test("legend-t57t reserved hostnames and verification record", () => {
+  const base = ["platform.example", "app.example.com"];
+  assert.equal(platform.isReservedHostname("platform.example", base), true);
+  assert.equal(
+    platform.isReservedHostname("Kopi.Platform.Example", base),
+    true,
+  );
+  assert.equal(platform.isReservedHostname("a.b.app.example.com", base), true);
+  assert.equal(platform.isReservedHostname("notplatform.example", base), false);
+  assert.equal(platform.isReservedHostname("example.com", base), false);
+  assert.equal(platform.isReservedHostname("platform.example", []), false);
+  assert.deepEqual(platform.domainVerificationRecord("pesan.toko.id", "abc"), {
+    type: "TXT",
+    name: "_legend-verification.pesan.toko.id",
+    value: "legend-domain-verification=abc",
+  });
+});
+
 test("TEN-02 hostnames resolve to the tenant only when verified and active", () => {
   const tenantStatus = (id) =>
     [fx.tenant, fx.suspendedTenant].find((t) => t.id === id)?.status;

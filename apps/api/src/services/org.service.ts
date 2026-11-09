@@ -9,7 +9,8 @@
 // Creating a brand/outlet here is how TEN-06 holds at the tenant level: the
 // panel/tenant-admin API writes rows, no deploy.
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { resolveTxt } from "node:dns/promises";
 import {
   and,
   asc,
@@ -48,8 +49,8 @@ import {
   legalEntitySchema,
   outletRestoreStatusSchema,
   outletSchema,
-  tenantDomainSchema,
   canTransitionOutlet,
+  isReservedHostname,
 } from "@starter/shared/platform";
 import {
   assertOutletInScope,
@@ -77,7 +78,9 @@ import {
   provisionOutletStockLocations,
   provisionStandardUoms,
 } from "./inventory-provisioning.service";
+import { toTenantDomain } from "./org-resolve.service";
 import { provisionDefaultServiceChargeRule } from "./tax-provisioning.service";
+import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
@@ -90,6 +93,24 @@ function uniqueViolation(error: unknown, depth = 0): boolean {
   const candidate = error as { code?: unknown; cause?: unknown };
   return (
     candidate.code === "23505" || uniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Unique violation of one named constraint or index. */
+function uniqueViolationOn(
+  error: unknown,
+  constraint: string,
+  depth = 0,
+): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  return (
+    (candidate.code === "23505" && candidate.constraint === constraint) ||
+    uniqueViolationOn(candidate.cause, constraint, depth + 1)
   );
 }
 
@@ -154,19 +175,6 @@ function toLegalEntity(row: typeof legalEntities.$inferSelect): LegalEntity {
     // Bank accounts are the accounting contract's rows keyed by this entity
     // (WS-07 bead); until that table exists a new entity has none.
     bankAccountIds: [],
-    createdAt: row.createdAt.toISOString(),
-  });
-}
-
-function toDomain(row: typeof tenantDomains.$inferSelect): TenantDomain {
-  return tenantDomainSchema.parse({
-    id: row.id,
-    tenantId: row.tenantId,
-    brandId: row.brandId,
-    hostname: row.hostname,
-    kind: row.kind,
-    tlsStatus: row.tlsStatus,
-    verifiedAt: row.verifiedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   });
 }
@@ -670,7 +678,7 @@ export async function listDomains(
     return {
       data: rows
         .sort((a, b) => a.hostname.localeCompare(b.hostname))
-        .map(toDomain),
+        .map(toTenantDomain),
     };
   });
 }
@@ -679,6 +687,8 @@ export async function addDomain(
   context: ScopedTenantContext,
   input: AddDomainInput,
 ): Promise<TenantDomain> {
+  if (isReservedHostname(input.hostname, env.reservedDomains))
+    throw new PlatformError("DOMAIN_RESERVED");
   return withTenant(db, context, async (tx) => {
     await requireBrand(tx, input.brandId);
     try {
@@ -689,11 +699,86 @@ export async function addDomain(
           brandId: input.brandId,
           hostname: input.hostname,
           kind: "custom",
+          verificationToken: randomBytes(32).toString("hex"),
         })
         .returning();
-      return toDomain(row);
+      return toTenantDomain(row);
     } catch (error) {
-      if (uniqueViolation(error)) throw new PlatformError("DOMAIN_TAKEN");
+      if (uniqueViolationOn(error, "tenant_domains_tenant_hostname_key"))
+        throw new PlatformError("DOMAIN_TAKEN");
+      throw error;
+    }
+  });
+}
+
+/** Reads the TXT records at a name; each record is its chunk list. */
+export type DomainTxtResolver = (name: string) => Promise<string[][]>;
+
+let txtResolver: DomainTxtResolver = resolveTxt;
+
+/** Test seam: replace the DNS lookup; `null` restores the real resolver. */
+export function setDomainTxtResolver(resolver: DomainTxtResolver | null): void {
+  txtResolver = resolver ?? resolveTxt;
+}
+
+/** True when a TXT record at the verification name carries the exact value.
+ * Any lookup failure (ENODATA, ENOTFOUND, ESERVFAIL, timeout) is "not proven". */
+async function txtProvesOwnership(record: {
+  name: string;
+  value: string;
+}): Promise<boolean> {
+  try {
+    const records = await txtResolver(record.name);
+    return records.some((chunks) => chunks.join("") === record.value);
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyDomain(
+  context: ScopedTenantContext,
+  domainId: string,
+): Promise<TenantDomain> {
+  // Reads through the caller's own transaction, so the race path below never
+  // asks the pool for a second connection while holding one.
+  const loadIn = async (tx: Tx) => {
+    const [row] = await tx
+      .select()
+      .from(tenantDomains)
+      .where(
+        and(
+          eq(tenantDomains.id, domainId),
+          eq(tenantDomains.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Domain not found.");
+    return row;
+  };
+  const current = await withTenant(db, context, loadIn);
+  if (current.verifiedAt !== null) return toTenantDomain(current);
+  const record = toTenantDomain(current).verification;
+  // The lookup runs outside the transaction: DNS can be slow.
+  if (record === null || !(await txtProvesOwnership(record)))
+    throw new PlatformError("DOMAIN_VERIFICATION_FAILED");
+  return withTenant(db, context, async (tx) => {
+    try {
+      const [row] = await tx
+        .update(tenantDomains)
+        .set({ verifiedAt: sql`now()` })
+        .where(
+          and(
+            eq(tenantDomains.id, domainId),
+            eq(tenantDomains.tenantId, context.tenant.tenantId),
+            isNull(tenantDomains.verifiedAt),
+          ),
+        )
+        .returning();
+      // Verified by a concurrent request in the meantime: return it as is.
+      return toTenantDomain(row ?? (await loadIn(tx)));
+    } catch (error) {
+      if (uniqueViolationOn(error, "tenant_domains_verified_hostname_key"))
+        throw new PlatformError("DOMAIN_TAKEN");
       throw error;
     }
   });
