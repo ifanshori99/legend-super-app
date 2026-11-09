@@ -8,11 +8,11 @@ Mesin merata-ratakan nilai harian tersimpan tanpa bobot (`aggregation: average`)
 
 Minta: kode pembilang dan penyebut bertipe jumlah di katalog, lalu metrik asli menjadi `derived` (rasio, tidak disimpan):
 
-| Metrik | Pembilang | Penyebut | Skala |
-|---|---|---|---|
-| `shower_occupancy_pct` | `shower_used_minutes` (count, dimensi outlet/facility/unit) | `shower_available_minutes` | 100 |
-| `unit_utilization_pct` | `unit_used_minutes` (outlet/facility/unit/hour) | `unit_available_minutes` | 100 |
-| `facility_incident_response_seconds` | `facility_incident_response_total_seconds` (seconds) | `facility_incident_answered_count` (count) | 1 |
+| Metrik                               | Pembilang                                                   | Penyebut                                   | Skala |
+| ------------------------------------ | ----------------------------------------------------------- | ------------------------------------------ | ----- |
+| `shower_occupancy_pct`               | `shower_used_minutes` (count, dimensi outlet/facility/unit) | `shower_available_minutes`                 | 100   |
+| `unit_utilization_pct`               | `unit_used_minutes` (outlet/facility/unit/hour)             | `unit_available_minutes`                   | 100   |
+| `facility_incident_response_seconds` | `facility_incident_response_total_seconds` (seconds)        | `facility_incident_answered_count` (count) | 1     |
 
 Satuan `derived` perlu mengizinkan hasil `seconds` (bukan hanya percent atau rasio uang). Begitu kode ini ada, reader facility menulis dua jumlah per hari (menit terpakai dari tiket `in_use`/`completed` yang dipotong jam buka, menit tersedia dari jam operasi fasilitas) dan mengganti sumber `unavailable`.
 
@@ -38,6 +38,6 @@ Tidak ada tautan pesanan ke tiket akses. `shower_sessions_with_fnb` dan `shower_
 
 Model kursi zona WFC belum didefinisikan (pax atau kapasitas meja, pendapatan zona dari GL atau pesanan, jam buka zona). `revpash` dan `seat_occupancy_pct` butuh keputusan produk lebih dulu, lalu pasangan pembilang/penyebut seperti butir 1.
 
-## 7. Peta web
+## 7. Mock web
 
-`apps/web/src/features/facility-report/mock.ts` hanya data mock dan masih menampilkan angka untuk metrik yang di API kini `unavailable`. Menyelaraskannya (availability di mock) menunggu keputusan CTO; berkas itu di luar daftar berkas keluarga ini kecuali disetujui.
+`facility-report/mock.ts` dan `mock-families/facility.ts` kini meniru API: 15 metrik `unavailable` / `source_not_built` (availability + nilai null, laporan yang semua metriknya tidak tersedia tanpa baris), angka hanya untuk `shower_sessions`, `facility_overtime_sessions`, `facility_overtime_seconds`, `facility_incident_count`. Sisa selisih: enam run papan pemilik (facility.revenue, occupancy, revpash, dan variannya per zona) dilayani `ownerDashboardBoardRuns` di `packages/shared/src/dashboard/fixtures.ts` dan masih menampilkan angka untuk `shower_revenue`, `shower_occupancy_pct`, `revpash`, `seat_occupancy_pct`. Fixture itu milik thread `ws11-shared`: minta availability `unavailable` untuk kode-kode itu agar papan pemilik ikut meniru API.
