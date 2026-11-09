@@ -24,6 +24,7 @@ import {
   deliveryPlatformSchema,
   deliveryReconciliationQuerySchema,
   deliveryReconciliationSchema,
+  linkDeliveryChannelInputSchema,
   listDeliveryOrdersQuerySchema,
   setDeliveryChannelStateInputSchema,
   updateDeliveryOrderStatusInputSchema,
@@ -45,6 +46,15 @@ export const listDeliveryChannels = defineEndpoint({
   path: "/api/outlets/:outletId/delivery-channels",
   params: outletParams,
   response: dataResponseSchema(z.array(deliveryChannelSchema)),
+});
+
+/** Create the channel or change its store id (legend-cbd0); never calls the platform. */
+export const linkDeliveryChannel = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/delivery-channels/:platform",
+  params: channelParams,
+  body: linkDeliveryChannelInputSchema,
+  response: dataResponseSchema(deliveryChannelSchema),
 });
 
 /** Open or close the store on one platform. */

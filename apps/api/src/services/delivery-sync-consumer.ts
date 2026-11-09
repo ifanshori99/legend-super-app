@@ -20,23 +20,44 @@
 //   (`syncStatus` error) and never throws. Menu changes are brand-scoped: the
 //   event's outlet is only the brand's first outlet (or null), so the channels
 //   of every outlet of the brand are marked/pushed.
+// - `delivery_order.status_changed` of a staff step (legend-bk99): the stored
+//   intent of a platform order. Its `action` (accept_order, update_order,
+//   cancel_order) is pushed here, after the step committed, never inside the
+//   request transaction with the order row locked. The adapter reference
+//   `<order id>:<status>` makes a retry or an outbox replay idempotent. A call
+//   that throws (timeout, network) fails the consumption so the outbox retries
+//   it; a clear refusal is recorded as `delivery_order.platform_desync`
+//   (outcome `refused`) and settles the event, since a retry cannot change it.
+//   A step the platform started itself (webhook, system actor) is never pushed
+//   back.
 // - Other events: ignored.
 import { and, eq, inArray, lte, or, isNull } from "drizzle-orm";
-import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import {
+  createUlid,
+  toIsoDateTime,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import {
+  deliveryOrderStatusChangedPayloadSchema,
   deliveryPlatformSchema,
   type DeliveryPlatform,
 } from "@starter/shared/delivery";
 import { itemRestoredEvent, itemSoldOutEvent } from "@starter/shared/menu";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { deliveryChannels } from "../db/schema/delivery.ts";
+import {
+  deliveryChannelOrders,
+  deliveryChannels,
+} from "../db/schema/delivery.ts";
 import { outlets } from "../db/schema/index.ts";
 import { logger } from "../lib/logger.ts";
+import { recordAudit } from "./core-audit.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
 import {
   pushDeliveryMenu,
+  reopenDueDeliveryChannels,
   soldOutItemIds,
 } from "./delivery-channels.service.ts";
 import { outletsAffectedByEvent } from "./menu-print.service.ts";
@@ -246,6 +267,90 @@ async function deliverMenuChange(
   }
 }
 
+/**
+ * Pushes the adapter action stored by a staff status step (legend-bk99). The
+ * order is read without a lock: the push must not hold the row.
+ */
+async function deliverOrderStatusIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  now: Date,
+): Promise<void> {
+  if (event.actor.type !== "user" || !event.outletId) return;
+  const payload = deliveryOrderStatusChangedPayloadSchema.parse(event.payload);
+  if (payload.action === null) return;
+  const tenantId = context.tenant.tenantId;
+  const [order] = await tx
+    .select({ closeReason: deliveryChannelOrders.closeReason })
+    .from(deliveryChannelOrders)
+    .where(
+      and(
+        eq(deliveryChannelOrders.tenantId, tenantId),
+        eq(deliveryChannelOrders.id, payload.deliveryChannelOrderId),
+      ),
+    )
+    .limit(1);
+  // A thrown call may still have reached the platform, and failing the
+  // consumption would retry it and then dead-letter it, holding every later
+  // event of the order (the relay claims last_sequence + 1). It settles as an
+  // unknown outcome instead (legend-bk99).
+  let outcome: "refused" | "unknown";
+  try {
+    const result = await deliveryChannelAdapterFor(payload.platform).execute(
+      context,
+      {
+        tenantId,
+        outletId: event.outletId,
+        reference: `${payload.deliveryChannelOrderId}:${payload.to}`,
+        channel: payload.platform,
+        action: payload.action,
+        payload: {
+          externalOrderId: payload.externalOrderId,
+          status: payload.to,
+          reason: order?.closeReason ?? null,
+        },
+      },
+    );
+    if (result.accepted) return;
+    outcome = "refused";
+  } catch {
+    outcome = "unknown";
+  }
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId: event.outletId,
+      actorType: "user",
+      actorId: event.actor.id,
+      deviceId: null,
+      action: "delivery_order.platform_desync",
+      objectType: "delivery_channel_order",
+      objectId: payload.deliveryChannelOrderId,
+      reason:
+        outcome === "refused"
+          ? `Platform menolak ${payload.action}; status lokal sudah tersimpan.`
+          : `Hasil ${payload.action} ke platform tidak diketahui; status lokal sudah tersimpan.`,
+      maskedChanges: {
+        before: { platform: payload.platform, status: payload.from },
+        after: {
+          platform: payload.platform,
+          status: payload.to,
+          outcome,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    ["platform", "status", "outcome"],
+  );
+}
+
 export async function deliverDeliveryChannelEvent(
   context: ScopedTenantContext,
   event: EventEnvelope,
@@ -256,6 +361,8 @@ export async function deliverDeliveryChannelEvent(
     if (!event.outletId) return;
     return deliverSoldOut(tx, context, event, event.outletId, now);
   }
+  if (event.name === "delivery_order.status_changed")
+    return deliverOrderStatusIntent(tx, context, event, now);
   if (event.name === "price_list.updated") {
     if (!event.outletId) return;
     const platform = deliveryPlatformSchema.safeParse(event.payload.channel);
@@ -277,12 +384,15 @@ export async function deliverDeliveryChannelEvent(
 /**
  * Trailing edge of the debounce: pushes every open channel of the tenant that
  * is `stale` (or errored) and past the window. Returns the number pushed.
- * Run by the relay sweep in worker-main.ts (cloud only).
+ * Run by the relay sweep in worker-main.ts (cloud only). First reopens the
+ * channels whose pause (`closedUntil`) has lapsed (legend-cbd0), so a channel
+ * left stale while paused is pushed in the same tick.
  */
 export async function syncStaleDeliveryChannels(
   context: ScopedTenantContext,
   now = new Date(),
 ): Promise<number> {
+  await reopenDueDeliveryChannels(context, now);
   const cutoff = new Date(now.getTime() - DELIVERY_SYNC_DEBOUNCE_MS);
   return withTenant(db, context, async (tx) => {
     const due = await tx

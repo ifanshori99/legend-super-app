@@ -17,6 +17,8 @@ export function createRelayRuntime<Context>(options: {
   listActiveTenantIds: () => Promise<string[]>;
   resolveContext: (tenantId: string) => Promise<Context>;
   relay: (context: Context) => Promise<unknown>;
+  /** Liveness hook (legend-z649): called as the sweep makes progress. */
+  onProgress?: () => void;
 }) {
   let active: Promise<void> | undefined;
   let repeat = false;
@@ -30,12 +32,15 @@ export function createRelayRuntime<Context>(options: {
     active = (async () => {
       do {
         repeat = false;
-        for (const tenantId of await options.listActiveTenantIds()) {
+        const tenantIds = await options.listActiveTenantIds();
+        options.onProgress?.();
+        for (const tenantId of tenantIds) {
           try {
             await options.relay(await options.resolveContext(tenantId));
           } catch {
             console.error("Tenant outbox relay failed");
           }
+          options.onProgress?.();
         }
       } while (repeat && !stopping);
     })();

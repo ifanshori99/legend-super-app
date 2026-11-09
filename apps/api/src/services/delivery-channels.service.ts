@@ -15,9 +15,26 @@
 // - The menu pushed is the platform's own price list (`price_lists.channel` =
 //   platform) joined to active menu items of the outlet's brand, with the 86
 //   flag of this outlet. Prices come from the price list, never from a client.
+// - A channel is created (or its store id changed) by `linkDeliveryChannel`
+//   (legend-cbd0). It never calls the platform: the channel is born closed and
+//   stale, so the supervisor opens it and the sweep pushes the menu. A new store
+//   id on an existing channel closes it and marks it stale for the same reason.
+// - A channel paused with `closedUntil` reopens by itself: the relay sweep
+//   (`reopenDueDeliveryChannels`, run first by `syncStaleDeliveryChannels`)
+//   opens it on the platform once the instant has passed (legend-cbd0).
 // - Permission is checked by the route (requireOutletPermission); this module
 //   only enforces the outlet scope of the caller's context.
-import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+} from "drizzle-orm";
 import {
   assertOutletInScope,
   businessDateOf,
@@ -33,6 +50,7 @@ import {
   type DeliveryChannel,
   type DeliveryMenuSyncResult,
   type DeliveryPlatform,
+  type LinkDeliveryChannelInput,
   type SetDeliveryChannelStateInput,
 } from "@starter/shared/delivery";
 import { db } from "../db/index.ts";
@@ -49,8 +67,17 @@ import {
 import { readChannelPriceGrid } from "./menu-pricing.service.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import type { Tx } from "./permission-resolver.ts";
+import { uniqueViolationOf } from "./pos-shift-support.ts";
 
 type Json = DeliveryRequest["payload"];
+
+// Audit fields kept unmasked: none holds free text or personal data.
+const AUDIT_SAFE_FIELDS = [
+  "platform",
+  "isOpen",
+  "closedUntil",
+  "storeExternalId",
+] as const;
 
 function unknownChannel(): HttpError {
   return new HttpError(
@@ -285,6 +312,127 @@ export async function listDeliveryChannels(
   });
 }
 
+/** Create the channel of this outlet and platform, or change its store id. */
+export async function linkDeliveryChannel(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletId: string,
+  platform: DeliveryPlatform,
+  input: LinkDeliveryChannelInput,
+  now = new Date(),
+): Promise<DeliveryChannel> {
+  assertOutletInScope(context.outletScope, outletId);
+  return withTenant(db, context, async (tx) => {
+    const existing = await lockDeliveryChannel(tx, context, outletId, platform);
+    if (existing?.storeExternalId === input.storeExternalId)
+      return toDeliveryChannel(existing);
+    // A new store id would leave the old store open on the platform.
+    if (existing?.isOpen)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Kanal sedang buka. Tutup kanal dulu sebelum mengganti ID toko.",
+      );
+    let row: DeliveryChannelRow;
+    try {
+      // Savepoint: a taken store id must not abort the request transaction.
+      [row] = await tx.transaction((savepoint) =>
+        existing
+          ? savepoint
+              .update(deliveryChannels)
+              .set({
+                storeExternalId: input.storeExternalId,
+                isOpen: false,
+                closedUntil: null,
+                closedReason: null,
+                syncStatus: "stale",
+                syncError: null,
+                lastSyncedAt: null,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(deliveryChannels.tenantId, context.tenant.tenantId),
+                  eq(deliveryChannels.id, existing.id),
+                ),
+              )
+              .returning()
+          : savepoint
+              .insert(deliveryChannels)
+              .values({
+                tenantId: context.tenant.tenantId,
+                outletId: outletId as OutletId,
+                platform,
+                storeExternalId: input.storeExternalId,
+                updatedAt: now,
+              })
+              .returning(),
+      );
+    } catch (error) {
+      const constraint = uniqueViolationOf(error);
+      // A double submit of the first link: the other request created the row.
+      if (constraint === "delivery_channels_outlet_platform_key") {
+        const created = await lockDeliveryChannel(
+          tx,
+          context,
+          outletId,
+          platform,
+        );
+        if (created?.storeExternalId === input.storeExternalId)
+          return toDeliveryChannel(created);
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "Kanal ini baru saja dibuat dengan ID toko lain. Muat ulang lalu coba lagi.",
+        );
+      }
+      if (constraint !== null)
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "ID toko ini sudah terhubung ke kanal lain.",
+        );
+      throw error;
+    }
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "delivery_channel.linked",
+        objectType: "delivery_channel",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: existing
+            ? {
+                platform,
+                isOpen: existing.isOpen,
+                storeExternalId: existing.storeExternalId,
+              }
+            : null,
+          after: {
+            platform,
+            isOpen: row.isOpen,
+            storeExternalId: row.storeExternalId,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+    return toDeliveryChannel(row);
+  });
+}
+
 export async function setDeliveryChannelState(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -422,4 +570,105 @@ export async function syncDeliveryChannelMenu(
       "Platform tidak menerima sinkron menu. Coba lagi.",
     );
   return outcome.result;
+}
+
+/**
+ * Reopens every channel of the tenant that was paused with a `closedUntil`
+ * that has passed (legend-cbd0). Rows are locked FOR UPDATE like a manual
+ * open. Fail closed like it too: a refused platform call leaves the channel
+ * closed and the next sweep tick retries (the reference is stable, so a retry
+ * after a lost reply is idempotent). Returns the number reopened.
+ */
+export async function reopenDueDeliveryChannels(
+  context: ScopedTenantContext,
+  now = new Date(),
+): Promise<number> {
+  return withTenant(db, context, async (tx) => {
+    const due = await tx
+      .select()
+      .from(deliveryChannels)
+      .where(
+        and(
+          eq(deliveryChannels.tenantId, context.tenant.tenantId),
+          eq(deliveryChannels.isOpen, false),
+          isNotNull(deliveryChannels.closedUntil),
+          lte(deliveryChannels.closedUntil, now),
+        ),
+      )
+      .for("update");
+    let reopened = 0;
+    for (const channel of due) {
+      try {
+        const result = await deliveryChannelAdapterFor(
+          channel.platform,
+        ).execute(context, {
+          tenantId: context.tenant.tenantId,
+          outletId: channel.outletId,
+          reference: `reopen:${channel.id}:${channel.closedUntil?.getTime() ?? 0}`,
+          channel: channel.platform,
+          action: "open",
+          payload: {
+            storeExternalId: channel.storeExternalId,
+            closedUntil: null,
+            closedReason: null,
+          },
+        });
+        // A refusal leaves the channel closed; the next tick retries.
+        if (!result.accepted) continue;
+      } catch {
+        continue;
+      }
+      await tx
+        .update(deliveryChannels)
+        .set({
+          isOpen: true,
+          closedUntil: null,
+          closedReason: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(deliveryChannels.tenantId, context.tenant.tenantId),
+            eq(deliveryChannels.id, channel.id),
+          ),
+        );
+      await recordAudit(
+        tx,
+        context,
+        {
+          id: createUlid(now.getTime()),
+          tenantId: context.tenant.tenantId,
+          outletId: channel.outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: "delivery_channel.auto_reopened",
+          objectType: "delivery_channel",
+          objectId: channel.id,
+          reason: channel.closedReason,
+          maskedChanges: {
+            before: {
+              platform: channel.platform,
+              isOpen: false,
+              closedUntil: channel.closedUntil?.toISOString() ?? null,
+              storeExternalId: channel.storeExternalId,
+            },
+            after: {
+              platform: channel.platform,
+              isOpen: true,
+              closedUntil: null,
+              storeExternalId: channel.storeExternalId,
+            },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: now.toISOString(),
+        },
+        AUDIT_SAFE_FIELDS,
+      );
+      reopened += 1;
+    }
+    return reopened;
+  });
 }
