@@ -1,7 +1,13 @@
 // Query keys and options for the menu back office. `endpointQueryOptions`
 // keys by endpoint id + input, so invalidating `[endpoint.id]` refreshes every
 // page of that list (docs/frontend.md).
-import { endpointQueryOptions } from "@/lib/api/endpoint";
+import { queryOptions } from "@tanstack/react-query";
+import {
+  callEndpoint,
+  endpointQueryKey,
+  endpointQueryOptions,
+  type CallArgs,
+} from "@/lib/api/endpoint";
 import {
   getItem,
   getItemModifierGroups,
@@ -16,13 +22,52 @@ import {
   listStations,
   listVariants,
 } from "@starter/shared/menu";
-import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
+import type {
+  AnyEndpoint,
+  EndpointInput,
+  EndpointOutput,
+} from "@starter/shared/api";
+import { collectAllPages } from "./pages.ts";
 
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 
 /** Everything under one prefix, for a screen that opens a different area. */
 export const menuKeys = { all: ["menu"] as const };
+
+/**
+ * queryOptions for a cursor list that is read in full (printable menu, price
+ * grid): follows `meta.nextCursor` to the last page, so a menu over one page
+ * (100 rows, PAGE_LIMIT_MAX) is never silently truncated. Keyed under the
+ * endpoint id, so `invalidateQueries({ queryKey: [endpoint.id] })` still
+ * refreshes it.
+ */
+function allPagesQuery<E extends AnyEndpoint & { method: "GET" }>(
+  endpoint: E,
+  input: { params?: Params<E>; query: Query<E> },
+) {
+  type Page = EndpointOutput<E> & {
+    data: unknown[];
+    meta: { limit: number; nextCursor: string | null };
+  };
+  return queryOptions({
+    queryKey: [
+      ...endpointQueryKey(endpoint, ...([input] as unknown as CallArgs<E>)),
+      "all-pages",
+    ] as const,
+    queryFn: ({ signal }) =>
+      collectAllPages<unknown, Page>(
+        (cursor) =>
+          callEndpoint(
+            endpoint,
+            ...([
+              { ...input, query: { ...(input.query as object), cursor } },
+              { signal },
+            ] as unknown as CallArgs<E>),
+          ) as Promise<Page>,
+      ) as Promise<EndpointOutput<E>>,
+  });
+}
 
 export const itemsQuery = (query: Query<typeof listItems>) =>
   endpointQueryOptions(listItems, { query });
@@ -62,7 +107,17 @@ export const priceListsQuery = (query: Query<typeof listPriceLists>) =>
 export const priceListItemsQuery = (
   params: Params<typeof listPriceListItems>,
   query: Query<typeof listPriceListItems>,
-) => endpointQueryOptions(listPriceListItems, { params, query });
+) => allPagesQuery(listPriceListItems, { params, query });
+
+/** Full reads for the printable menu: no page limit on what gets printed. */
+export const allItemsQuery = (query: Query<typeof listItems>) =>
+  allPagesQuery(listItems, { query });
+
+export const allCategoriesQuery = (query: Query<typeof listCategories>) =>
+  allPagesQuery(listCategories, { query });
+
+export const allPriceListsQuery = (query: Query<typeof listPriceLists>) =>
+  allPagesQuery(listPriceLists, { query });
 
 export const availabilityQuery = (query: Query<typeof listAvailability>) =>
   endpointQueryOptions(listAvailability, { query });
