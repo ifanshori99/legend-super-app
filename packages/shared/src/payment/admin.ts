@@ -333,6 +333,45 @@ export type QuarantinedRefundActionInput = z.infer<
   typeof quarantinedRefundActionInputSchema
 >;
 
+/** Where finance paid a refund by hand (legend-xd2q). */
+export const manualRefundSettlementChannelSchema = z.enum([
+  "bank_transfer",
+  "cash",
+  "ewallet",
+  "provider_dashboard",
+  "other",
+]);
+export type ManualRefundSettlementChannel = z.infer<
+  typeof manualRefundSettlementChannelSchema
+>;
+
+/**
+ * Body of a manual refund settlement (legend-xd2q): finance paid the customer
+ * by hand and no provider payout is ever sent. `externalReference` is the
+ * transfer or receipt reference of that payment, never the customer's account
+ * number: it is stored in the audit trail as is.
+ */
+export const manualRefundSettlementInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  paidAt: isoDateTimeSchema,
+  channel: manualRefundSettlementChannelSchema,
+  externalReference: z
+    .string()
+    .trim()
+    .min(3)
+    .max(100)
+    .refine(
+      // eslint-disable-next-line no-control-regex
+      (value) => !/[\u0000-\u001f\u007f]/.test(value),
+      "Reference must not contain control characters.",
+    ),
+  amountIdr: positiveIdr,
+  note: quarantineNoteSchema,
+});
+export type ManualRefundSettlementInput = z.infer<
+  typeof manualRefundSettlementInputSchema
+>;
+
 // ---- Unallocated funds (PAY-04) -----------------------------------------
 
 export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
@@ -561,6 +600,23 @@ export const reopenQuarantinedRefund = defineEndpoint({
   path: `${ADMIN}/refunds/:refundId/quarantine/reopen`,
   params: refundParams,
   body: quarantinedRefundActionInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Closes an `approved` refund finance paid by hand (legend-xd2q): it ends
+ * `completed` with no provider payout, ever. Only a refund that never reached
+ * the provider (no provider ref, no poll; any attempt count or payout flag).
+ * Same actor as the quarantine actions (payment.reconcile plus
+ * pos.refund.approve at the outlet, never the requester, dashboard MFA). 409
+ * REFUND_NOT_SETTLEABLE, REFUND_AT_PROVIDER, REFUND_PAYOUT_IN_FLIGHT or
+ * SETTLEMENT_AMOUNT_MISMATCH; 422 when paidAt is before the refund or in the
+ * future. A later provider success on it is recorded as a conflict.
+ */
+export const settleRefundManually = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/settle-manually`,
+  params: refundParams,
+  body: manualRefundSettlementInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
 

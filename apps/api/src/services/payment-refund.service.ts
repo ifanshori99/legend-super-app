@@ -102,6 +102,18 @@ export const EVIDENCE_MAPPING_REQUIRED = "EVIDENCE_MAPPING_REQUIRED";
  * (legend-tvhq): it is never sent again by sweep or retry. Ops reconcile it.
  */
 export const PAYOUT_QUARANTINED = "PAYOUT_QUARANTINED";
+/**
+ * Marker of a `completed` refund finance paid by hand (settleRefundManually,
+ * legend-xd2q): no provider payout ever ran, so a later provider success on
+ * it means the customer was paid twice (recorded as a conflict).
+ */
+export const SETTLED_OUTSIDE_PROVIDER = "SETTLED_OUTSIDE_PROVIDER";
+/**
+ * The provider has no record of a refund an earlier attempt may have sent
+ * (legend-xd2q). It is never sent again: lookups continue, a later `pending`
+ * answer clears the flag, and ops close it with settle-manually once paid.
+ */
+export const PAYOUT_NOT_FOUND_MAYBE_SENT = "PAYOUT_NOT_FOUND_MAYBE_SENT";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
@@ -368,18 +380,32 @@ async function failRefund(
   return updated;
 }
 
-/** `approved` -> `completed`: only called on provider success. */
+/**
+ * `approved` -> `completed`: called on provider success, or by
+ * settleRefundManually (no provider ref, `marker` SETTLED_OUTSIDE_PROVIDER,
+ * the ops actor resolves the fund and owns the audit row).
+ */
 async function completeRefund(
   tx: Tx,
   context: ScopedTenantContext,
   locked: Locked,
-  providerRef: string,
+  providerRef: string | null,
   now: Date,
-  opts: { keepLease?: boolean } = {},
+  opts: {
+    keepLease?: boolean;
+    /** The user who closed it; null (system) on provider success. */
+    actorId?: string | null;
+    action?: string;
+    reason?: string | null;
+    /** Extra audit facts merged into `after`. */
+    detail?: Record<string, unknown>;
+    /** Written to last_payout_error (null on provider success). */
+    marker?: string | null;
+  } = {},
 ): Promise<Refund> {
   const { intent, fund, refund } = locked;
-  const approver = refund.approvedBy;
-  if (approver === null) throw new Error("approved refund has no approver");
+  const resolvedBy = opts.actorId ?? refund.approvedBy;
+  if (resolvedBy === null) throw new Error("approved refund has no approver");
   const [updated] = await tx
     .update(paymentRefunds)
     .set({
@@ -389,7 +415,7 @@ async function completeRefund(
       ...(opts.keepLease
         ? {}
         : { payoutClaimedUntil: null, payoutClaimToken: null }),
-      lastPayoutError: null,
+      lastPayoutError: opts.marker ?? null,
       updatedAt: now,
     })
     .where(
@@ -407,7 +433,7 @@ async function completeRefund(
       .update(paymentUnallocatedFunds)
       .set({
         resolution: "refund",
-        resolvedBy: approver,
+        resolvedBy,
         resolvedAt: now,
         approvalRef: refund.id,
       })
@@ -442,11 +468,17 @@ async function completeRefund(
       );
   }
   await refundAudit(tx, context, {
-    actorId: null,
+    actorId: opts.actorId ?? null,
     row: updated,
-    action: "payment.refund_completed",
+    action: opts.action ?? "payment.refund_completed",
     now,
+    reason: opts.reason,
     before: { status: "approved" },
+    after: {
+      amountIdr: updated.amountIdr,
+      status: updated.status,
+      ...opts.detail,
+    },
   });
   await appendPaymentEvent(tx, context, {
     name: "payment.refunded",
@@ -1015,11 +1047,12 @@ async function quarantinePayout(
     action: "payment.refund_payout_quarantined",
     now,
     reason: defect,
-    before: { status: refund.status },
+    // The flag it replaces (e.g. PAYOUT_NOT_FOUND_MAYBE_SENT) stays on record.
+    before: { status: refund.status, lastPayoutError: refund.lastPayoutError },
   });
   logger.error(
     { refundId: refund.id, defect },
-    "Refund payout quarantined: approval failed re-validation; reconcile manually (never release or re-open it after paying by hand at the provider)",
+    "Refund payout quarantined: approval failed re-validation; reconcile manually (after paying by hand, close it with settle-manually; never release or re-open it)",
   );
   return held;
 }
@@ -1070,7 +1103,7 @@ async function recordProviderConflict(
   tx: Tx,
   context: ScopedTenantContext,
   refund: Refund,
-  provider: "succeeded" | "failed",
+  provider: "succeeded" | "failed" | "pending",
   now: Date,
 ): Promise<void> {
   logger.error(
@@ -1091,10 +1124,23 @@ async function recordProviderConflict(
   });
 }
 
+/**
+ * A provider answer that a terminal refund cannot take. A refund finance paid
+ * by hand (SETTLED_OUTSIDE_PROVIDER) that the provider also paid means the
+ * customer was paid twice: a success on it is a conflict too.
+ */
 function contradicts(
-  status: Refund["status"],
+  refund: Refund,
   provider: GatewayRefundLookup["status"],
-): provider is "succeeded" | "failed" {
+): provider is "succeeded" | "failed" | "pending" {
+  const { status } = refund;
+  // Settled by hand: a provider decline is the expected (safe) answer; a
+  // success or a payout the provider still holds means paying twice.
+  if (
+    status === "completed" &&
+    refund.lastPayoutError === SETTLED_OUTSIDE_PROVIDER
+  )
+    return provider === "succeeded" || provider === "pending";
   return (
     (status === "failed" && provider === "succeeded") ||
     (status === "completed" && provider === "failed")
@@ -1105,6 +1151,49 @@ function contradicts(
 const keepQuarantine = (next: string | null) =>
   sql`CASE WHEN ${paymentRefunds.lastPayoutError} = ${PAYOUT_QUARANTINED} THEN ${PAYOUT_QUARANTINED} ELSE ${next}::text END`;
 
+/**
+ * An unknown outcome never erases a sticky flag already on the row: the
+ * quarantine, or a maybe-sent payout the provider did not find.
+ */
+const keepSticky = (next: string) =>
+  sql`CASE WHEN ${paymentRefunds.lastPayoutError} IN (${PAYOUT_QUARANTINED}, ${PAYOUT_NOT_FOUND_MAYBE_SENT}) THEN ${paymentRefunds.lastPayoutError} ELSE ${next}::text END`;
+
+/**
+ * Fencing check right before a send (legend-xd2q): the claim is still ours, the
+ * refund still `approved`, and the lease outlives the send deadline. A worker
+ * that stalled past its lease (ops may have settled the refund by hand
+ * meanwhile) never POSTs; its attempt stays counted, so later runs only look
+ * the refund up.
+ */
+async function stillHoldsSendLease(
+  context: ScopedTenantContext,
+  refund: Refund,
+  token: string,
+): Promise<boolean> {
+  const [row] = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        status: paymentRefunds.status,
+        token: paymentRefunds.payoutClaimToken,
+        until: paymentRefunds.payoutClaimedUntil,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, refund.tenantId),
+          eq(paymentRefunds.id, refund.id),
+        ),
+      ),
+  );
+  return (
+    row !== undefined &&
+    row.status === "approved" &&
+    row.token === token &&
+    row.until !== null &&
+    row.until.getTime() - Date.now() > PROVIDER_TIMEOUT_MS
+  );
+}
+
 /** False while the fail-closed default port is installed (no adapter). */
 function refundGatewayInstalled(): boolean {
   return paymentRefundGateway().provider !== UNCONFIGURED_REFUND_PROVIDER;
@@ -1113,9 +1202,12 @@ function refundGatewayInstalled(): boolean {
 /**
  * Pays an `approved` refund out through the refund port. The claim lease (with a
  * fencing token) makes concurrent callers skip; the provider dedupes on
- * `refund:<id>`, so a retry after an unknown outcome can never pay twice. After
- * an earlier attempt the provider is asked first and only a `not_found` answer
- * is re-sent. A throw or timeout is NOT a failure.
+ * `refund:<id>`. Only a refund with no attempt, no poll and no provider ref is
+ * ever sent (legend-xd2q tripwire): after an earlier attempt the provider is
+ * only looked up, and a `not_found` answer flags PAYOUT_NOT_FOUND_MAYBE_SENT
+ * instead of re-sending (a provider that forgot its key could pay twice). Ops
+ * close such a refund with settle-manually once it is paid. A throw or timeout
+ * is NOT a failure.
  */
 export async function runRefundPayout(
   context: ScopedTenantContext,
@@ -1378,9 +1470,14 @@ export async function runRefundPayout(
         }),
       );
     }
-    // Never seen by the provider (or first attempt): send with the same key.
-    // A quarantined refund is never sent.
-    if (claim.send && (result === null || result.status === "not_found")) {
+    // Tripwire (legend-xd2q): only a first attempt is sent. A refund an earlier
+    // attempt may have sent is never POSTed again, even on `not_found`. A
+    // quarantined refund is never sent.
+    if (
+      claim.send &&
+      !claim.lookupFirst &&
+      (await stillHoldsSendLease(context, refund, claim.token))
+    ) {
       const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
       result = await withDeadline(
         signal,
@@ -1416,7 +1513,7 @@ export async function runRefundPayout(
     // A webhook or another worker finished it meanwhile: never downgrade a
     // terminal state; a contradicting answer is only reported.
     if (locked.refund.status !== "approved") {
-      if (outcome !== null && contradicts(locked.refund.status, outcome.status))
+      if (outcome !== null && contradicts(locked.refund, outcome.status))
         await recordProviderConflict(
           tx,
           context,
@@ -1429,12 +1526,13 @@ export async function runRefundPayout(
     // A stale worker (its lease expired and another took over) may still report
     // what the provider said, but never touches the new holder's lease.
     const keepLease = locked.refund.payoutClaimToken !== claim.token;
-    if (outcome === null || outcome.status === "not_found") {
+    if (outcome === null) {
+      // Unknown outcome: record its code, but keep a sticky flag.
       if (keepLease) return locked.refund;
       const [updated] = await tx
         .update(paymentRefunds)
         .set({
-          lastPayoutError: keepQuarantine(unknownCode ?? "NOT_FOUND"),
+          lastPayoutError: keepSticky(unknownCode ?? "UNKNOWN"),
           payoutClaimedUntil: null,
           payoutClaimToken: null,
           updatedAt: recordedAt,
@@ -1447,6 +1545,50 @@ export async function runRefundPayout(
         )
         .returning();
       return updated ?? locked.refund;
+    }
+    if (outcome.status === "not_found") {
+      // The provider has no record of a refund that may have been sent: never
+      // re-send it (tripwire); ops reconcile it.
+      if (keepLease) return locked.refund;
+      const [updated] = await tx
+        .update(paymentRefunds)
+        .set({
+          lastPayoutError: keepQuarantine(PAYOUT_NOT_FOUND_MAYBE_SENT),
+          payoutClaimedUntil: null,
+          payoutClaimToken: null,
+          updatedAt: recordedAt,
+        })
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, refund.tenantId),
+            eq(paymentRefunds.id, refund.id),
+          ),
+        )
+        .returning();
+      if (!updated) return locked.refund;
+      if (
+        updated.lastPayoutError === PAYOUT_NOT_FOUND_MAYBE_SENT &&
+        locked.refund.lastPayoutError !== PAYOUT_NOT_FOUND_MAYBE_SENT
+      ) {
+        await refundAudit(tx, context, {
+          actorId: null,
+          row: updated,
+          action: "payment.refund_payout_not_found",
+          now: recordedAt,
+          reason: PAYOUT_NOT_FOUND_MAYBE_SENT,
+          before: { lastPayoutError: locked.refund.lastPayoutError },
+          after: {
+            amountIdr: updated.amountIdr,
+            status: updated.status,
+            lastPayoutError: updated.lastPayoutError,
+          },
+        });
+        logger.error(
+          { refundId: updated.id },
+          "Refund payout not found at the provider after an earlier attempt; it is never re-sent. Check the provider; once paid by hand, close it with settle-manually (only a refund without a provider ref or poll)",
+        );
+      }
+      return updated;
     }
     if (outcome.status === "succeeded")
       return completeRefund(
@@ -1548,8 +1690,10 @@ export async function sweepApprovedRefundPayouts(
           sql`(${paymentRefunds.payoutAttempts} >= ${PAYOUT_MAX_ATTEMPTS} OR ${pendingTooLong})`,
           leaseFree,
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${MANUAL_RECONCILIATION}`,
-          // A quarantine keeps its own (more specific) flag.
+          // A quarantine or a not-found maybe-sent payout keeps its own (more
+          // specific) flag.
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_QUARANTINED}`,
+          sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_NOT_FOUND_MAYBE_SENT}`,
         ),
       )
       .returning({ id: paymentRefunds.id });
@@ -1585,7 +1729,7 @@ const quarantined = () =>
   new HttpError(
     409,
     "PAYOUT_QUARANTINED",
-    "Refund approval failed re-validation; it cannot be paid out. Reconcile it manually; after paying by hand at the provider, never release or re-open it.",
+    "Refund approval failed re-validation; it cannot be paid out. Reconcile it manually; after paying by hand, close it with settle-manually (never release or re-open it).",
   );
 
 export async function retryRefundPayout(
@@ -1666,6 +1810,50 @@ function maybeSentOf(refund: Refund): boolean {
 type QuarantineAction = "release" | "reopen";
 
 /**
+ * Actor of an ops action on an approved refund (quarantine release/re-open,
+ * manual settlement): payment.reconcile and pos.refund.approve at the refund's
+ * outlet, never its requester, dashboard MFA when a role requires it.
+ */
+async function assertOpsActor(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: string,
+  refund: Refund,
+  opts: DecideOptions,
+  now: Date,
+): Promise<void> {
+  await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
+  if (
+    !(await holdsPermission(
+      tx,
+      context,
+      actor,
+      SUPERVISOR_PERMISSION,
+      refund.outletId,
+      now,
+    ))
+  )
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Your account cannot perform this action.",
+    );
+  if (actor.toLowerCase() === refund.requestedBy.toLowerCase())
+    throw new AccessError("APPROVER_IS_REQUESTER");
+  const access = await loadTenantAccessInTransaction(tx, context, actor);
+  assertSurfaceAccess({
+    principal: {
+      tenantId: context.tenant.tenantId,
+      userId: userIdSchema.parse(actor),
+      assignments: access.assignments,
+    },
+    roles: access.roles,
+    surface: "dashboard",
+    mfaVerified: opts.mfaVerified,
+    now,
+  });
+}
+
+/**
  * Withdraws the refund's own still-pending chain. Only a chain bound to this
  * refund (chainBound): a chain id pointing at another refund's live chain
  * (`chain_unbound`) is left alone, or that refund would fail as expired.
@@ -1721,35 +1909,7 @@ async function actOnQuarantine(
   await withTenant(db, context, async (tx) => {
     const locked = await lockRefundGraph(tx, context.tenant.tenantId, refundId);
     const { refund } = locked;
-    await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
-    if (
-      !(await holdsPermission(
-        tx,
-        context,
-        actor,
-        SUPERVISOR_PERMISSION,
-        refund.outletId,
-        now,
-      ))
-    )
-      throw new AccessError(
-        "PERMISSION_DENIED",
-        "Your account cannot perform this action.",
-      );
-    if (actor.toLowerCase() === refund.requestedBy.toLowerCase())
-      throw new AccessError("APPROVER_IS_REQUESTER");
-    const access = await loadTenantAccessInTransaction(tx, context, actor);
-    assertSurfaceAccess({
-      principal: {
-        tenantId: context.tenant.tenantId,
-        userId: userIdSchema.parse(actor),
-        assignments: access.assignments,
-      },
-      roles: access.roles,
-      surface: "dashboard",
-      mfaVerified: opts.mfaVerified,
-      now,
-    });
+    await assertOpsActor(tx, context, actor, refund, opts, now);
     return idempotentPaymentAdminWrite(
       tx,
       context,
@@ -1871,6 +2031,114 @@ export async function reopenQuarantinedRefund(
     key,
     opts,
   );
+}
+
+/** How far ahead of the server clock a manual paidAt may be (clock skew). */
+const SETTLEMENT_CLOCK_SKEW_MS = 5 * 60_000;
+/** How long after a claim's lease ends a manual settlement still waits. */
+const SETTLEMENT_STALL_MARGIN_MS = 10 * 60_000;
+
+/**
+ * Closes an `approved` refund finance paid by hand (legend-xd2q): it ends
+ * `completed` with no provider payout, ever, marked SETTLED_OUTSIDE_PROVIDER.
+ * The payment moves to (partially) refunded, a fund is resolved by the actor
+ * and `payment.refunded` is emitted, as on provider success. Only a refund the
+ * provider never saw (no provider ref, no poll) whose lease is free; any
+ * attempt count and payout flag (quarantine, MANUAL_RECONCILIATION,
+ * PAYOUT_NOT_FOUND_MAYBE_SENT). The approval defect, if any, is recorded in
+ * the audit row, not blocking: the money already left.
+ *
+ * Same actor and lock order as actOnQuarantine; the state checks run inside
+ * the idempotent write, so a same-key replay returns the stored result.
+ */
+export async function settleRefundManually(
+  context: ScopedTenantContext,
+  actor: string,
+  params: { refundId: string },
+  input: contract.ManualRefundSettlementInput,
+  key: string,
+  opts: DecideOptions,
+) {
+  const now = new Date();
+  const paidAt = new Date(input.paidAt);
+  const note = input.note.trim();
+  const evidence = {
+    paidAt: paidAt.toISOString(),
+    channel: input.channel,
+    externalReference: input.externalReference,
+    amountIdr: input.amountIdr,
+  };
+  await withTenant(db, context, async (tx) => {
+    const locked = await lockRefundGraph(
+      tx,
+      context.tenant.tenantId,
+      params.refundId,
+    );
+    const { refund } = locked;
+    await assertOpsActor(tx, context, actor, refund, opts, now);
+    // Money already left by hand: a second factor always, whatever the role.
+    if (!opts.mfaVerified) throw new AccessError("MFA_REQUIRED");
+    return idempotentPaymentAdminWrite(
+      tx,
+      context,
+      actor,
+      key,
+      "refund.settle_manually",
+      { refundId: refund.id, ...evidence, note },
+      async () => {
+        if (refund.status !== "approved")
+          throw new HttpError(
+            409,
+            "REFUND_NOT_SETTLEABLE",
+            "Only an approved refund can be settled manually.",
+          );
+        if (refund.providerRef !== null || refund.payoutPendingPolls > 0)
+          throw new HttpError(
+            409,
+            "REFUND_AT_PROVIDER",
+            "The provider has this refund; its provider lookup settles it.",
+          );
+        // A claim not yet cleared may belong to a stalled worker: wait out the
+        // lease plus a margin (its send re-checks the lease, stillHoldsSendLease).
+        if (
+          refund.payoutClaimToken !== null &&
+          refund.payoutClaimedUntil !== null &&
+          refund.payoutClaimedUntil.getTime() + SETTLEMENT_STALL_MARGIN_MS >
+            now.getTime()
+        )
+          throw new HttpError(
+            409,
+            "REFUND_PAYOUT_IN_FLIGHT",
+            "A payout attempt is running; try again in a few minutes.",
+          );
+        if (input.amountIdr !== refund.amountIdr)
+          throw new HttpError(
+            409,
+            "SETTLEMENT_AMOUNT_MISMATCH",
+            "The paid amount must equal the refund amount.",
+          );
+        if (
+          paidAt.getTime() < refund.createdAt.getTime() ||
+          paidAt.getTime() > now.getTime() + SETTLEMENT_CLOCK_SKEW_MS
+        )
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "paidAt must be between the refund request and now.",
+          );
+        const defect = await approvalDefectOf(tx, context, refund, now);
+        await completeRefund(tx, context, locked, null, now, {
+          actorId: actor,
+          action: "payment.refund_settled_manually",
+          reason: note,
+          detail: { ...evidence, approvalDefect: defect },
+          marker: SETTLED_OUTSIDE_PROVIDER,
+        });
+        return { settled: true };
+      },
+    );
+  });
+  return loadView(context, params.refundId, actor);
 }
 
 function isUniqueViolation(error: unknown, depth = 0): boolean {
@@ -2039,9 +2307,15 @@ export async function applyRefundProviderUpdate(
       refund.providerRef !== update.providerRef
     )
       throw conflict("Provider reference does not match the refund.");
-    if (update.amountIdr !== undefined && update.amountIdr !== refund.amountIdr)
+    // Settled by hand: any provider success means paying twice, whatever its
+    // amount, so it is recorded before the amount check can refuse it.
+    if (
+      update.amountIdr !== undefined &&
+      update.amountIdr !== refund.amountIdr &&
+      !contradicts(refund, update.status)
+    )
       throw conflict("Provider amount does not match the refund.");
-    if (contradicts(refund.status, update.status)) {
+    if (contradicts(refund, update.status)) {
       await recordProviderConflict(tx, context, refund, update.status, now);
       return "Refund is not awaiting a provider result.";
     }
@@ -2057,6 +2331,12 @@ export async function applyRefundProviderUpdate(
     if (
       refund.status === "failed" &&
       refund.failureReason === "provider_declined"
+    )
+      return null;
+    // Settled by hand and the provider declined its own payout: paid once.
+    if (
+      refund.status === "completed" &&
+      refund.lastPayoutError === SETTLED_OUTSIDE_PROVIDER
     )
       return null;
     if (refund.status !== "approved")

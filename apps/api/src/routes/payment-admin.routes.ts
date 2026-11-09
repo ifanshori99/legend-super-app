@@ -287,6 +287,24 @@ for (const [endpoint, run] of [
       });
     },
   );
+paymentAdminRouter.post(
+  route(contract.settleRefundManually.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.settleRefundManually.body.parse(req.body);
+    res.json({
+      data: await refunds.settleRefundManually(
+        scope(req),
+        actor(req),
+        contract.settleRefundManually.params.parse(req.params),
+        input,
+        input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
 paymentAdminRouter.get(
   route(contract.listUnallocatedFunds.path),
   reconcileQuery,

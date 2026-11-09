@@ -24,7 +24,9 @@
 //       ids to a file, one per line.
 //   (d) pnpm db:reset-preswitch-refunds --apply --touched-before <cutoff> --ids <file>
 //   (e) dry-run with --touched-before <t> --ids <file>; expect 0 rows. A plain
-//       dry-run must list only the ids finance kept out (close those by hand).
+//       dry-run must list only the ids finance kept out; close each with
+//       POST .../refunds/<id>/settle-manually (settleRefundManually: ends it
+//       `completed`, SETTLED_OUTSIDE_PROVIDER, no payout).
 //   (f) only then turn on DOIT_REFUNDS_ENABLED.
 //
 // Reads MIGRATION_DATABASE_URL or MIGRATION_DATABASE_URL_FILE (a path to a file
@@ -261,12 +263,13 @@ export async function run(options: {
           lastPayoutError: String(row.last_payout_error),
         });
       // Any trace of a real DOIT call: a provider ref, a poll, a DOIT_* or
-      // client-side DOIT error code, or a refund DOIT declined.
+      // client-side DOIT error code, a lookup DOIT answered `not_found`
+      // (PAYOUT_NOT_FOUND_MAYBE_SENT, legend-xd2q), or a refund DOIT declined.
       const evidence = await tx.execute(
         sql`SELECT count(*) AS n FROM payment_refunds
             WHERE provider_ref IS NOT NULL OR payout_pending_polls > 0
                OR last_payout_error LIKE 'DOIT\\_%' ESCAPE '\\'
-               OR last_payout_error IN ('VALIDATION_ERROR', 'IDEMPOTENCY_KEY_REUSED')
+               OR last_payout_error IN ('VALIDATION_ERROR', 'IDEMPOTENCY_KEY_REUSED', 'PAYOUT_NOT_FOUND_MAYBE_SENT')
                OR (status = 'failed' AND failure_reason = 'provider_declined')`,
       );
       switchEvidence += asNumber(evidence.rows[0]?.n);

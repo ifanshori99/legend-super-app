@@ -41,6 +41,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  ne,
   sql,
 } from "drizzle-orm";
 import { db } from "../db";
@@ -73,7 +74,10 @@ import {
   type DoitRefundFacts,
   type DoitRefundWebhookEvent,
 } from "./payment-doit-refund-webhook";
-import { applyRefundProviderUpdate } from "./payment-refund.service";
+import {
+  applyRefundProviderUpdate,
+  SETTLED_OUTSIDE_PROVIDER,
+} from "./payment-refund.service";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -677,6 +681,52 @@ async function findRefundTarget(
   });
 }
 
+/**
+ * legend-xd2q: a `refund.succeeded` that names no known refund may be for a
+ * refund finance settled by hand (no provider ref, so the `refund_id` and
+ * payment-object paths cannot find it): the customer would be paid twice. Only
+ * through the event's payment object, and only when the intent's one live
+ * (not `failed`) refund is a `completed` refund marked SETTLED_OUTSIDE_PROVIDER
+ * (another live refund may be the one the event is about); it is then
+ * reported as a provider conflict, never changed.
+ */
+async function findSettledOutsideTarget(
+  context: ScopedTenantContext,
+  payment: NonNullable<ReturnType<typeof readDoitRefundFacts>["payment"]>,
+): Promise<RefundTarget> {
+  const reference = uuidSchema.safeParse(payment.reference);
+  if (!reference.success) return { kind: "none" };
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx): Promise<RefundTarget> => {
+    const rows = await tx
+      .select({ refund: paymentRefunds, intent: paymentIntents })
+      .from(paymentRefunds)
+      .innerJoin(
+        paymentIntents,
+        and(
+          eq(paymentIntents.tenantId, paymentRefunds.tenantId),
+          eq(paymentIntents.id, paymentRefunds.paymentIntentId),
+        ),
+      )
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentIntents.id, reference.data),
+          eq(paymentIntents.provider, PROVIDER),
+          eq(paymentIntents.providerRef, payment.id),
+          ne(paymentRefunds.status, "failed"),
+        ),
+      )
+      .limit(2);
+    const [only] = rows;
+    return rows.length === 1 &&
+      only!.refund.status === "completed" &&
+      only!.refund.lastPayoutError === SETTLED_OUTSIDE_PROVIDER
+      ? { kind: "found", ...only! }
+      : { kind: "none" };
+  });
+}
+
 /** Provider payment the refund pays back, when known: the fund's evidence for
  * a fund refund (its money may come from another payment than the intent's
  * own), otherwise the intent's provider ref. `unknown` never rejects. */
@@ -801,11 +851,31 @@ async function processRefundEvent(
     const facts = readDoitRefundFacts(event.data);
     const status = event.type === "refund.succeeded" ? "succeeded" : "failed";
     const match = matchDoitRefundEvent(event.type, facts);
-    const target = await findRefundTarget(context, match);
+    let target = await findRefundTarget(context, match);
+    // A success no refund matches may hit one finance settled by hand. By
+    // refund id (or key) only after the retry window: until then the refund
+    // the event names may still be storing its provider ref.
+    const retryWindowOver =
+      now.getTime() - row.receivedAt.getTime() >=
+      WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+    const settledOutside =
+      target.kind === "none" &&
+      status === "succeeded" &&
+      facts.payment &&
+      (match.kind === "payment_object" || retryWindowOver)
+        ? await findSettledOutsideTarget(context, facts.payment)
+        : null;
+    if (settledOutside?.kind === "found") target = settledOutside;
+    const viaSettled = settledOutside?.kind === "found";
     const unmatched = async (): Promise<ProcessOutcome> => {
       const retryable =
         now.getTime() - row.receivedAt.getTime() <
         WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+      if (!retryable && status === "succeeded")
+        logger.warn(
+          { webhookEventId: row.id },
+          "Unmatched DOIT refund.succeeded ignored; check the provider for a refund Legend does not know (paid twice?)",
+        );
       await markRow(
         context,
         row.id,
@@ -855,7 +925,7 @@ async function processRefundEvent(
       await applyRefundProviderUpdate(
         context,
         {
-          ...(match.kind === "refund_id"
+          ...(match.kind === "refund_id" && !viaSettled
             ? {}
             : { idempotencyKey: `refund:${refund.id}` }),
           ...(providerRef ? { providerRef } : {}),

@@ -702,8 +702,12 @@ Run order, per environment:
    `#` lines are ignored).
 4. (d) Apply with `--apply --touched-before <cutoff> --ids <file>`.
 5. (e) Dry-run again with the same `--touched-before` and `--ids`: expect 0
-   rows. A plain dry-run must list only the ids finance kept out; close those
-   by hand.
+   rows. A plain dry-run must list only the ids finance kept out (paid by
+   hand): close each with `POST /api/payments/admin/refunds/<id>/settle-manually`
+   (payment.reconcile plus pos.refund.approve, not the requester; it records
+   paidAt, channel, transfer reference and amount, ends the refund `completed`
+   with `SETTLED_OUTSIDE_PROVIDER` and never pays it out). A dry-run then no
+   longer lists them.
 6. (f) Only then turn on `DOIT_REFUNDS_ENABLED`.
 
 Read the output of every run. A `SKIPPED refund=<id>` line means a listed id
