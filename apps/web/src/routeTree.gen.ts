@@ -17,7 +17,6 @@ import { Route as KitchenRouteImport } from './routes/_kitchen'
 import { Route as OpsRouteImport } from './routes/_ops'
 import { Route as OwnerRouteImport } from './routes/_owner'
 import { Route as PlatformRouteImport } from './routes/_platform'
-import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
@@ -32,8 +31,6 @@ import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as KelolaAuditRouteImport } from './routes/_kelola/audit'
 import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
 import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
-import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
-import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicMenuRouteImport } from './routes/_public/menu'
 import { Route as PublicReservasiRouteImport } from './routes/_public/reservasi'
@@ -363,10 +360,6 @@ const PlatformRoute = PlatformRouteImport.update({
   id: '/_platform',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProtectedRoute = ProtectedRouteImport.update({
-  id: '/_protected',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const PublicRoute = PublicRouteImport.update({
   id: '/_public',
   getParentRoute: () => rootRouteImport,
@@ -434,16 +427,6 @@ const KitchenPickupRoute = KitchenPickupRouteImport.update({
   id: '/pickup',
   path: '/pickup',
   getParentRoute: () => KitchenRoute,
-} as any)
-const ProtectedAdminRoute = ProtectedAdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => ProtectedRoute,
-} as any)
-const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
-  id: '/notes',
-  path: '/notes',
-  getParentRoute: () => ProtectedRoute,
 } as any)
 const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
@@ -2141,8 +2124,6 @@ export interface FileRoutesByFullPath {
   '/audit': typeof KelolaAuditRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
-  '/admin': typeof ProtectedAdminRoute
-  '/notes': typeof ProtectedNotesRoute
   '/menu': typeof PublicMenuRoute
   '/reservasi': typeof PublicReservasiRoute
   '/reservation': typeof PublicReservationRoute
@@ -2452,8 +2433,6 @@ export interface FileRoutesByTo {
   '/audit': typeof KelolaAuditRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
-  '/admin': typeof ProtectedAdminRoute
-  '/notes': typeof ProtectedNotesRoute
   '/menu': typeof PublicMenuRoute
   '/reservasi': typeof PublicReservasiRoute
   '/reservation': typeof PublicReservationRoute
@@ -2758,7 +2737,6 @@ export interface FileRoutesById {
   '/_ops': typeof OpsRouteWithChildren
   '/_owner': typeof OwnerRouteWithChildren
   '/_platform': typeof PlatformRouteWithChildren
-  '/_protected': typeof ProtectedRouteWithChildren
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
@@ -2773,8 +2751,6 @@ export interface FileRoutesById {
   '/_kelola/audit': typeof KelolaAuditRoute
   '/_kitchen/expo': typeof KitchenExpoRoute
   '/_kitchen/pickup': typeof KitchenPickupRoute
-  '/_protected/admin': typeof ProtectedAdminRoute
-  '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/menu': typeof PublicMenuRoute
   '/_public/reservasi': typeof PublicReservasiRoute
   '/_public/reservation': typeof PublicReservationRoute
@@ -3088,8 +3064,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/expo'
     | '/pickup'
-    | '/admin'
-    | '/notes'
     | '/menu'
     | '/reservasi'
     | '/reservation'
@@ -3399,8 +3373,6 @@ export interface FileRouteTypes {
     | '/audit'
     | '/expo'
     | '/pickup'
-    | '/admin'
-    | '/notes'
     | '/menu'
     | '/reservasi'
     | '/reservation'
@@ -3704,7 +3676,6 @@ export interface FileRouteTypes {
     | '/_ops'
     | '/_owner'
     | '/_platform'
-    | '/_protected'
     | '/_public'
     | '/_shareholder'
     | '/design-system'
@@ -3719,8 +3690,6 @@ export interface FileRouteTypes {
     | '/_kelola/audit'
     | '/_kitchen/expo'
     | '/_kitchen/pickup'
-    | '/_protected/admin'
-    | '/_protected/notes'
     | '/_public/menu'
     | '/_public/reservasi'
     | '/_public/reservation'
@@ -4028,7 +3997,6 @@ export interface RootRouteChildren {
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
   PlatformRoute: typeof PlatformRouteWithChildren
-  ProtectedRoute: typeof ProtectedRouteWithChildren
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
@@ -4094,13 +4062,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof PlatformRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/_protected': {
-      id: '/_protected'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof ProtectedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_public': {
@@ -4200,20 +4161,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/pickup'
       preLoaderRoute: typeof KitchenPickupRouteImport
       parentRoute: typeof KitchenRoute
-    }
-    '/_protected/admin': {
-      id: '/_protected/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof ProtectedAdminRouteImport
-      parentRoute: typeof ProtectedRoute
-    }
-    '/_protected/notes': {
-      id: '/_protected/notes'
-      path: '/notes'
-      fullPath: '/notes'
-      preLoaderRoute: typeof ProtectedNotesRouteImport
-      parentRoute: typeof ProtectedRoute
     }
     '/_public/': {
       id: '/_public/'
@@ -7023,20 +6970,6 @@ const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
   PlatformRouteChildren,
 )
 
-interface ProtectedRouteChildren {
-  ProtectedAdminRoute: typeof ProtectedAdminRoute
-  ProtectedNotesRoute: typeof ProtectedNotesRoute
-}
-
-const ProtectedRouteChildren: ProtectedRouteChildren = {
-  ProtectedAdminRoute: ProtectedAdminRoute,
-  ProtectedNotesRoute: ProtectedNotesRoute,
-}
-
-const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
-  ProtectedRouteChildren,
-)
-
 interface PublicRouteChildren {
   PublicMenuRoute: typeof PublicMenuRoute
   PublicReservasiRoute: typeof PublicReservasiRoute
@@ -7087,7 +7020,6 @@ const rootRouteChildren: RootRouteChildren = {
   OpsRoute: OpsRouteWithChildren,
   OwnerRoute: OwnerRouteWithChildren,
   PlatformRoute: PlatformRouteWithChildren,
-  ProtectedRoute: ProtectedRouteWithChildren,
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,

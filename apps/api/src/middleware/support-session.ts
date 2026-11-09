@@ -26,7 +26,8 @@ import { findTenantContext } from "./tenant";
  *      guardImpersonatedAuthRoutes) unless the path is in the allowlist
  *      (session read, exits, idle keep-alive).
  *   7. Lasting credentials (CREDENTIAL_PATHS: MCP authorization, device
- *      enrolment and tokens, staff PINs) are refused even with read_write:
+ *      enrolment and tokens, staff PINs, web push subscriptions) are refused
+ *      even with read_write:
  *      support never mints or changes a way to act as someone later.
  *
  * Errors are thrown as PlatformError so the error handler shapes the reply.
@@ -59,6 +60,10 @@ const CREDENTIAL_PATHS: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/edge-nodes\/[^/]+\/rotate-credential$/ },
   // Staff PIN set or reset.
   { method: "PUT", path: /^\/api\/staff-pins\/[^/]+\/[^/]+$/ },
+  // Web push: the subscription row belongs to the user, not the session, so
+  // it would keep sending the tenant user's notifications to the support
+  // browser after the session and grant end (legend-8bvin).
+  { method: "POST", path: /^\/api\/notifications\/push-subscriptions$/ },
 ];
 
 /**

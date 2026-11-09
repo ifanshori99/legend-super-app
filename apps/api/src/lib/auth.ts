@@ -22,6 +22,7 @@ import {
   IMPERSONATION_SESSION_MAX_SECONDS,
   ImpersonationRefused,
   impersonationSessionEnd,
+  isPlatformAdmin,
   recordImpersonationEnded,
   recordImpersonationStarted,
   type ImpersonationEndCause,
@@ -44,11 +45,29 @@ const authLog = logger.child({ module: "better-auth" });
  *     and never outlives the grant behind it (legend-npkpz);
  *   - start and end write a sensitive audit row in each matched tenant.
  *
- * The check runs twice: hooks.before (HTTP route, gives a clean 403) and
- * databaseHooks.session.create.before (also covers server-side
- * auth.api.impersonateUser, which skips hooks.before). The start audit fails
+ * The check runs twice: hooks.before (gives a clean 403 before the endpoint
+ * runs) and databaseHooks.session.create.before (the authoritative check on
+ * the session row itself, whatever path created it). The start audit fails
  * closed (the session row is deleted); the end audit never blocks an exit.
  * MFA is not bypassed by a grant (legend-cg071).
+ *
+ * Admin plugin lockdown (legend-imdzn). The plugin also serves list-users,
+ * set-user-password, set-role, update-user, remove-user, ban-user,
+ * create-user and session revocation to any `admin` role, across every
+ * tenant, with no grant, approval or audit, and a revoked platform admin
+ * keeps `user.role = admin`. hooks.before therefore refuses every /admin/*
+ * route (403 ADMIN_ENDPOINT_DISABLED) except the ones the product uses:
+ *
+ *   - impersonate-user: active platform_admins row checked first, then the
+ *     grant policy above;
+ *   - stop-impersonating: leaving is never blocked (the endpoint itself
+ *     refuses a session that is not impersonated);
+ *   - has-permission: server calls only (requirePermission calls
+ *     auth.api.userHasPermission without a request); over HTTP it is refused.
+ *
+ * Better Auth 1.7 runs hooks.before for auth.api.* calls as well, so a server
+ * call to another admin endpoint is refused too. The admin role in
+ * @starter/shared/permissions keeps only `user: ["impersonate"]` to match.
  */
 function refuse(error: unknown): never {
   if (error instanceof ImpersonationRefused)
@@ -84,7 +103,14 @@ export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", schema }),
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
-      if (ctx.path !== "/admin/impersonate-user") return;
+      if (!ctx.path.startsWith("/admin/")) return;
+      if (ctx.path === "/admin/stop-impersonating") return;
+      if (ctx.path === "/admin/has-permission" && !ctx.request) return;
+      if (ctx.path !== "/admin/impersonate-user")
+        throw new APIError("FORBIDDEN", {
+          code: "ADMIN_ENDPOINT_DISABLED",
+          message: "This admin endpoint is not available.",
+        });
       const current = await getSessionFromCtx(ctx);
       // No session: the endpoint answers 401 itself.
       if (!current) return;
@@ -93,14 +119,23 @@ export const auth = betterAuth({
           code: "IMPERSONATION_NOT_ALLOWED",
           message: "An impersonated session cannot impersonate another user.",
         });
+      // Registry first, whatever the body: a revoked admin keeps user.role.
+      if (!(await isPlatformAdmin(current.user.id)))
+        throw new APIError("FORBIDDEN", {
+          code: "SUPPORT_ACCESS_REQUIRED",
+          message:
+            "Only a platform admin with an active support access can impersonate.",
+        });
       const targetUserId = (ctx.body as { userId?: unknown } | undefined)
         ?.userId;
-      // Let the endpoint's own body validation reject a malformed request.
-      if (typeof targetUserId !== "string") return;
+      // A missing userId is left to the endpoint's own 400. Any other value
+      // is checked the way the endpoint will read it: its schema coerces
+      // userId with z.coerce.string(), so ["<id>"] reaches it as "<id>".
+      if (targetUserId === undefined || targetUserId === null) return;
       try {
         await assertImpersonationAllowed({
           adminUserId: current.user.id,
-          targetUserId,
+          targetUserId: String(targetUserId),
           now: new Date(),
         });
       } catch (error) {

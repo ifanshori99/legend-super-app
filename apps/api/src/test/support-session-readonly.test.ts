@@ -649,4 +649,43 @@ describe("legend-cg071 TEN-04 support session read-only", () => {
       "SUPPORT_ACCESS_READ_ONLY",
     );
   });
+
+  // legend-8bvin: a push subscription is a lasting credential (a device that
+  // keeps receiving the tenant user's notifications after the grant ends), so
+  // support must not register one for the impersonated user, even in read_write.
+  // Assumption: the notification router is mounted without ports in createApp()
+  // (every call ends 403 FORBIDDEN), so the guard must refuse BEFORE the router,
+  // like the edge-node credential routes above; the body is irrelevant to it.
+  it("TEN-04 registering a push subscription is refused under a read_write grant", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    await openWriteGrant(tenantId, admin.userId, tenant.userId);
+    const support = await impersonate(admin, tenant);
+
+    const deviceLabel = `Perangkat dukungan ${unique()}`;
+    const subscription = {
+      endpoint: `https://fcm.googleapis.com/fcm/send/${unique()}`,
+      keys: {
+        p256dh: randomBytes(65).toString("base64url"),
+        auth: randomBytes(16).toString("base64url"),
+      },
+      deviceLabel,
+    };
+    const rowsFor = async () =>
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM push_subscriptions WHERE tenant_id = $1 AND device_label = $2",
+          [tenantId, deviceLabel],
+        )
+      ).rows[0].n as number;
+
+    expectCode(
+      await support
+        .post("/api/notifications/push-subscriptions")
+        .set(originHeader)
+        .send(subscription),
+      "SUPPORT_ACCESS_READ_ONLY",
+    );
+    expect(await rowsFor()).toBe(0);
+  });
 });

@@ -314,9 +314,6 @@ const STARTER_PAGES = new Map([
     "components/sign-out-button.tsx",
     "Starter sign-out button; WS-01 converts it to catalog text.",
   ],
-  ["features/notes/components/note-form.tsx", "Starter Notes example feature."],
-  ["routes/_protected/admin.tsx", "Starter admin example page."],
-  ["routes/_protected/notes.tsx", "Starter Notes example page."],
 ]);
 
 test("the hardcoded-text rule flags literals and accepts catalog calls", () => {

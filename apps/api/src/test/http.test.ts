@@ -20,14 +20,14 @@ describe("HTTP plumbing", () => {
 
   it("allows CORS with credentials for the web origin only", async () => {
     const allowed = await request(app)
-      .options("/api/notes")
+      .options("/api/me/access")
       .set("Origin", WEB_ORIGIN)
       .set("Access-Control-Request-Method", "POST");
     expect(allowed.headers["access-control-allow-origin"]).toBe(WEB_ORIGIN);
     expect(allowed.headers["access-control-allow-credentials"]).toBe("true");
 
     const denied = await request(app)
-      .options("/api/notes")
+      .options("/api/me/access")
       .set("Origin", "https://evil.example")
       .set("Access-Control-Request-Method", "POST");
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
