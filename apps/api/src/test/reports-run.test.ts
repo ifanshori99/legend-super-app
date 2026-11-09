@@ -734,3 +734,105 @@ describe("POST /api/reports/builder/preview", () => {
     expect(JSON.stringify(response.body)).not.toContain("valueIdr");
   });
 });
+
+// ---- Scope and aggregate fallback (architect review) ------------------------
+
+type Assignment = {
+  permissions: string[];
+  scopeType: "tenant" | "outlet";
+  scopeId?: string;
+};
+
+/** One user holding several roles, each with its own scope. */
+async function viewerWithAssignments(
+  w: World,
+  label: string,
+  assignments: Assignment[],
+): Promise<Viewer> {
+  const client = agent(app);
+  const email = await signUp(client, label);
+  await setRole(email, null);
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  for (const [index, assignment] of assignments.entries()) {
+    const roleId = await insertRole(
+      w.tenantId,
+      `${label} ${index}`,
+      assignment.permissions,
+      [assignment.scopeType],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+      [
+        w.tenantId,
+        userId,
+        roleId,
+        assignment.scopeType,
+        assignment.scopeType === "tenant" ? null : (assignment.scopeId ?? null),
+      ],
+    );
+  }
+  await verifySessionMfa(email);
+  return { client, host: w.host };
+}
+
+describe("report scope: aggregate reach never widens a full report", () => {
+  it("reads an inventory metric only on the caller's outlet even when an aggregate report rides along", async () => {
+    // Operational reach on outlet1 only, plus tenant-wide aggregate view.
+    // finance.ebitda is an aggregate report; inventory.stock_value is not.
+    const viewer = await viewerWithAssignments(a, "Operasional+agregat", [
+      {
+        permissions: ["report.operational.view"],
+        scopeType: "outlet",
+        scopeId: a.outlet1,
+      },
+      { permissions: ["report.aggregate.view"], scopeType: "tenant" },
+    ]);
+    const result = resultOf(
+      await preview(viewer, {
+        metricCodes: ["stock_value", "ebitda"],
+        period: JUNE,
+      }),
+    );
+    expect(result.outletFilter).toEqual({
+      kind: "outlets",
+      outletIds: [a.outlet1],
+    });
+  });
+
+  it("refuses a non-aggregate metric the caller has no permission for, aggregate view or not", async () => {
+    const viewer = await viewerWithAssignments(a, "Hanya agregat", [
+      { permissions: ["report.aggregate.view"], scopeType: "tenant" },
+    ]);
+    const response = await preview(viewer, {
+      metricCodes: ["net_sales", "stock_value"],
+      period: JUNE,
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it("refuses a report whose permissions reach disjoint outlets instead of running tenant-wide", async () => {
+    // attendance.daily needs report.operational.view and hr.employee.view.
+    const viewer = await viewerWithAssignments(a, "Dua izin dua outlet", [
+      {
+        permissions: ["report.operational.view"],
+        scopeType: "outlet",
+        scopeId: a.outlet1,
+      },
+      {
+        permissions: ["hr.employee.view"],
+        scopeType: "outlet",
+        scopeId: a.outlet2,
+      },
+      { permissions: ["report.aggregate.view"], scopeType: "tenant" },
+    ]);
+    const response = await run(viewer, {
+      reportCode: "attendance.daily",
+      period: JUNE,
+    });
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).toContain("REPORT_NOT_PERMITTED");
+  });
+});

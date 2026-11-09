@@ -27,11 +27,13 @@ import {
   getReportEndpoint,
   listReportsEndpoint,
   previewReportBuilderEndpoint,
+  reportAcceptsAggregateView,
   reportByCode,
   reportMetricByCode,
   reportPermittedFor,
   runReportEndpoint,
   selectionContainsPersonalData,
+  type ReportDefinition,
 } from "@starter/shared/dashboard";
 import { jsonBody } from "../middleware/body";
 import { requireAuth, getAuth } from "../middleware/auth";
@@ -80,49 +82,72 @@ async function scopeOf(
   });
 }
 
-/** Outlets every one of `permissions` reaches; null when one reaches none. */
+/** Outlets both scopes reach; null when they share none. */
+function intersectScopes(
+  a: OutletScopeData,
+  b: OutletScopeData,
+): OutletScopeData | null {
+  if (a.kind === "tenant") return b;
+  if (b.kind === "tenant") return a;
+  const reach = new Set<string>(b.outletIds);
+  const outletIds: string[] = a.outletIds.filter((id) => reach.has(id));
+  return outletIds.length === 0 ? null : { kind: "outlets", outletIds };
+}
+
+/**
+ * Outlets every one of `permissions` reaches. `missing`: the caller holds one
+ * of them with no reach at all; `empty`: each reaches outlets but no outlet is
+ * reached by all (never widened to the tenant).
+ */
 async function commonScope(
   req: Request,
   permissions: readonly string[],
-): Promise<OutletScopeData | null> {
+): Promise<OutletScopeData | "missing" | "empty"> {
   let common: OutletScopeData = { kind: "tenant" };
   for (const permission of permissions) {
     const scope = await scopeOf(req, permission);
-    if (scope === null) return null;
-    if (scope.kind === "tenant") continue;
-    if (common.kind === "tenant") {
-      common = scope;
-      continue;
-    }
-    const reach = new Set<string>(scope.outletIds);
-    const outletIds = common.outletIds.filter((id) => reach.has(id));
-    if (outletIds.length === 0) return null;
-    common = { kind: "outlets", outletIds };
+    if (scope === null) return "missing";
+    const next = intersectScopes(common, scope);
+    if (next === null) return "empty";
+    common = next;
   }
   return common;
 }
 
 /**
- * Context and viewer for a query whose metrics live in reports needing
- * `required`: `full` when the caller holds them all, else the aggregate
- * permission (the caller was already admitted by `reportPermittedFor`).
+ * Context and viewer for a query whose metrics come from `sources` (the
+ * catalog reports that own them). Per source report: the caller's outlets for
+ * the permissions it requires (viewer `full`); when the caller lacks them, the
+ * `report.aggregate.view` reach, but only for a report that accepts the
+ * aggregate view (SH-01, `reportAcceptsAggregateView`). Otherwise 403. The
+ * query reads the outlets every source allows, and is `aggregate` as soon as
+ * one source needed the aggregate permission. An empty intersection is 403,
+ * never a tenant-wide read.
  */
 async function resolveReportViewer(
   req: Request,
-  required: readonly string[],
+  sources: readonly ReportDefinition[],
 ): Promise<{ context: ScopedTenantContext; viewer: MetricViewer }> {
-  const tenant = getTenantContext(req);
-  const full = await commonScope(req, required);
-  if (full !== null)
-    return {
-      context: establishScopedTenantContext(tenant, full),
-      viewer: "full",
-    };
-  const aggregate = await scopeOf(req, "report.aggregate.view");
-  if (aggregate === null) throw reportHttpError("REPORT_NOT_PERMITTED");
+  if (sources.length === 0) throw reportHttpError("REPORT_NOT_PERMITTED");
+  let scope: OutletScopeData | null = { kind: "tenant" };
+  let viewer: MetricViewer = "full";
+  let aggregate: OutletScopeData | null | undefined;
+  for (const source of sources) {
+    const full = await commonScope(req, source.requiredPermissions);
+    let reach: OutletScopeData;
+    if (typeof full === "object") reach = full;
+    else if (full === "missing" && reportAcceptsAggregateView(source)) {
+      aggregate ??= await scopeOf(req, "report.aggregate.view");
+      if (aggregate === null) throw reportHttpError("REPORT_NOT_PERMITTED");
+      reach = aggregate;
+      viewer = "aggregate";
+    } else throw reportHttpError("REPORT_NOT_PERMITTED");
+    scope = intersectScopes(scope, reach);
+    if (scope === null) throw reportHttpError("REPORT_NOT_PERMITTED");
+  }
   return {
-    context: establishScopedTenantContext(tenant, aggregate),
-    viewer: "aggregate",
+    context: establishScopedTenantContext(getTenantContext(req), scope),
+    viewer,
   };
 }
 
@@ -152,10 +177,7 @@ export function createReportsRouter() {
       selectionContainsPersonalData(input)
     )
       throw reportHttpError("REPORT_NOT_PERMITTED");
-    const { context, viewer } = await resolveReportViewer(
-      req,
-      report.requiredPermissions,
-    );
+    const { context, viewer } = await resolveReportViewer(req, [report]);
     res.json({ data: await runReport(context, input, { viewer }) });
   });
 
@@ -167,17 +189,18 @@ export function createReportsRouter() {
       const { permissions } = await loadRequestAccess(req);
       if (!builderQueryPermittedFor(query, permissions))
         throw reportHttpError("REPORT_NOT_PERMITTED");
-      // Every metric's source report must be open to the caller; the viewer
-      // is full only when the caller holds what all of them require.
-      const required = new Set<string>();
+      // Each metric is read under its source report's permissions.
+      const sources = new Map<string, ReportDefinition>();
       for (const metricCode of query.metricCodes) {
         const source = reportByCode(
           reportMetricByCode.get(metricCode)?.sourceReport.reportCode ?? "",
         );
-        for (const permission of source?.requiredPermissions ?? [])
-          required.add(permission);
+        if (source === undefined) throw reportHttpError("REPORT_NOT_PERMITTED");
+        sources.set(source.code, source);
       }
-      const { context, viewer } = await resolveReportViewer(req, [...required]);
+      const { context, viewer } = await resolveReportViewer(req, [
+        ...sources.values(),
+      ]);
       res.json({ data: await previewReport(context, query, { viewer }) });
     },
   );
