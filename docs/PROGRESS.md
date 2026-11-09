@@ -5,6 +5,7 @@ Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke 
 ## Serah terima CTO (2026-11-09 sore, sesi G6ifq compact 5x)
 
 Thread berjalan:
+
 - G9syc merge train (brief 114). Batch 1 sudah di m1 (0f7e4ff6). Batch 2 dan 3 di `integ/m1-batch2`, `integ/m1-batch3`. Tambahan yang sudah dikirim ke G9syc: ws/fix-receipt-codex df2d2bf2 (konflik app.ts dengan ws/fix-codex-procurement: ambil versi receipt), ws/hpp-pos 454e2403, ws/fix-9fhs 9150d968 (0103/0104 bentrok dengan hpp-pos: generate ulang yang kedua).
 - G7j2u edge fix (ddoy, 12ku, aor4). Laporan SHA diteruskan ke G9syc dan antrean Codex.
 - G8zuf DOIT refund adapter (legend-0ogy). Sama.
@@ -26,32 +27,33 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 
 ### Tingkat per cabang
 
-| Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
-|---|---|---|---|---|---|
-| ws/pos-shift | 69ddb9a4 | K | uang kas, 5 migration | DIGABUNG m1 `30a31a3c` (prep 1eda3a4b, migration diregen 0088-0090); gate prep 2d7fe62a hijau API 2289 / root 1427; kartu 6c0 xvyr ditutup | Codex R1 brief 59 (rentang 71751c8f..30a31a3c) |
-| ws/refund-approval | 09385266 | K | refund, approval, payout | DIGABUNG m1 `1056e208` (prep 55084e9c, migration diregen 0079); gate prep hijau API 1784 / root 1420; kartu rbjw hvvn ditutup | Codex R2 selesai: 2 P1 dibetulkan (ws 7c24b7b8) dan DIGABUNG m1 `baf6d615` (prep f5025cf9, migration 0091; gate API 2301 / root 1427) |
-| ws/journals | 4ec3babb | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih); regen 0075/0076 di atas m1 8e2e7bc0; DIGABUNG milestone/m1 4e0bacd4 (brief 89, 00:2x); gate: lint+typecheck hijau, API 1496 + 9 file timeout diulang 147/147, root 1419 + 1 artefak diulang 21/21 | Codex R3 brief 70 (SHA 4ec3babb) |
-| ws/payroll-pph21-tests | 461a94bf | K | uang PPh21 | DIGABUNG m1 `4a040820` (prep 53379722, migration diregen 0084/0085); gate prep hijau API 2147 / root 1426; kartu oo3q y4wp iwgb 5cnk ditutup; legend-s5c1 P1 prasyarat run service | Codex R4 (rentang 658b055b..4a040820; brief belum ditulis) |
-| ws/edc-framework | a6d022d3 | K | uang EDC, tagih dobel | DIGABUNG m1 `658b055b` (prep 81038feb, migration diregen 0082/0083); gate prep hijau API 1961 / root 1426; kartu apt ditutup | Codex R5 brief 60 (rentang fd2616f4..658b055b) |
-| ws/doit-provider | 8fed84ef | K | pembayaran, webhook | pasangan: FIX SELESAI (brief 80, G8x09; 2 review segar lolos) | Codex R5 brief 62 (SHA 8fed84ef) |
-| ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
-| ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38 | K | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40); gate milestone lulus 21:44 (check 1414 test, build ok; journal when monoton > 0067) | Codex R6 |
-| ws/stock-opname | 59e96f16 | K | nilai stok, akses counter | putaran 2 (brief 84) selesai, Opus reviewer bersih; DIGABUNG milestone/m1 7373f00b (migration 0070/0071); gate milestone lulus 22:30 | Codex R7 (SHA 59e96f16) |
-| ws/recipe-bom | f0cec09 | K | HPP | pasangan gelombang 2 | Codex R7 |
-| ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
-| ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
-| ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
-| ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 55d90ab3 (22:45); gate milestone lulus 23:05 | Codex R9 |
-| ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
-| ws/hris-leave | fa4ff73f (prep 05a14884) | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp); regen 0077/0078 di atas m1 4e0bacd4 (FK outlets/employees pola NO FORCE); DIGABUNG milestone/m1 e4938167 (brief 89); gate hijau: API 1723, root 1420 | selesai |
-| ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
-| ws/hris-sop | 37aa5cd9 | S | SOP | DIGABUNG m1 `fd2616f4` (prep 9b981051, migration diregen 0080/0081); gate prep hijau API 1858 / root 1420; kartu 7df1 ditutup | selesai |
-| ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
-| fix/worktree-shared | 4ab45cc | S | tooling | Sonnet: LOLOS | DIGABUNG milestone 4478360 |
-| ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
-| ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
+| Cabang                                           | SHA                      | Tingkat | Alasan                       | Review Claude                                                                                                                                                                                                                                           | Status                                                                                                                                |
+| ------------------------------------------------ | ------------------------ | ------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| ws/pos-shift                                     | 69ddb9a4                 | K       | uang kas, 5 migration        | DIGABUNG m1 `30a31a3c` (prep 1eda3a4b, migration diregen 0088-0090); gate prep 2d7fe62a hijau API 2289 / root 1427; kartu 6c0 xvyr ditutup                                                                                                              | Codex R1 brief 59 (rentang 71751c8f..30a31a3c)                                                                                        |
+| ws/refund-approval                               | 09385266                 | K       | refund, approval, payout     | DIGABUNG m1 `1056e208` (prep 55084e9c, migration diregen 0079); gate prep hijau API 1784 / root 1420; kartu rbjw hvvn ditutup                                                                                                                           | Codex R2 selesai: 2 P1 dibetulkan (ws 7c24b7b8) dan DIGABUNG m1 `baf6d615` (prep f5025cf9, migration 0091; gate API 2301 / root 1427) |
+| ws/journals                                      | 4ec3babb                 | K       | jurnal                       | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih); regen 0075/0076 di atas m1 8e2e7bc0; DIGABUNG milestone/m1 4e0bacd4 (brief 89, 00:2x); gate: lint+typecheck hijau, API 1496 + 9 file timeout diulang 147/147, root 1419 + 1 artefak diulang 21/21 | Codex R3 brief 70 (SHA 4ec3babb)                                                                                                      |
+| ws/payroll-pph21-tests                           | 461a94bf                 | K       | uang PPh21                   | DIGABUNG m1 `4a040820` (prep 53379722, migration diregen 0084/0085); gate prep hijau API 2147 / root 1426; kartu oo3q y4wp iwgb 5cnk ditutup; legend-s5c1 P1 prasyarat run service                                                                      | Codex R4 (rentang 658b055b..4a040820; brief belum ditulis)                                                                            |
+| ws/edc-framework                                 | a6d022d3                 | K       | uang EDC, tagih dobel        | DIGABUNG m1 `658b055b` (prep 81038feb, migration diregen 0082/0083); gate prep hijau API 1961 / root 1426; kartu apt ditutup                                                                                                                            | Codex R5 brief 60 (rentang fd2616f4..658b055b)                                                                                        |
+| ws/doit-provider                                 | 8fed84ef                 | K       | pembayaran, webhook          | pasangan: FIX SELESAI (brief 80, G8x09; 2 review segar lolos)                                                                                                                                                                                           | Codex R5 brief 62 (SHA 8fed84ef)                                                                                                      |
+| ws/pos-receipt                                   | d379023                  | K       | nomor struk, offline         | pasangan: PERLU FIX (brief 77)                                                                                                                                                                                                                          | fix, lalu Codex R6                                                                                                                    |
+| ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38                 | K       | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40); gate milestone lulus 21:44 (check 1414 test, build ok; journal when monoton > 0067)                                                                          | Codex R6                                                                                                                              |
+| ws/stock-opname                                  | 59e96f16                 | K       | nilai stok, akses counter    | putaran 2 (brief 84) selesai, Opus reviewer bersih; DIGABUNG milestone/m1 7373f00b (migration 0070/0071); gate milestone lulus 22:30                                                                                                                    | Codex R7 (SHA 59e96f16)                                                                                                               |
+| ws/recipe-bom                                    | f0cec09                  | K       | HPP                          | pasangan gelombang 2                                                                                                                                                                                                                                    | Codex R7                                                                                                                              |
+| ws/procurement                                   | ae09d1d                  | K       | approval, nilai PO           | architect sudah; fix brief 73                                                                                                                                                                                                                           | Codex R8                                                                                                                              |
+| ws/ai-tool-catalog                               | d15542a                  | K       | aksi AI berizin              | pasangan gelombang 2                                                                                                                                                                                                                                    | Codex R8                                                                                                                              |
+| ws/tenant-config-export                          | 1405f19                  | K       | data keluar                  | pasangan gelombang 2                                                                                                                                                                                                                                    | Codex R9                                                                                                                              |
+| ws/shareholder-docs                              | f2760e4b                 | K       | data pribadi, dokumen legal  | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 55d90ab3 (22:45); gate milestone lulus 23:05                                                                                                                                               | Codex R9                                                                                                                              |
+| ws/reservation-selfservice                       | (G2m46)                  | K       | token publik, deposit        | setelah lapor                                                                                                                                                                                                                                           | Codex R9                                                                                                                              |
+| ws/hris-leave                                    | fa4ff73f (prep 05a14884) | S       | cuti (Opus: domain rumit)    | brief 85 selesai (G5klp); regen 0077/0078 di atas m1 4e0bacd4 (FK outlets/employees pola NO FORCE); DIGABUNG milestone/m1 e4938167 (brief 89); gate hijau: API 1723, root 1420                                                                          | selesai                                                                                                                               |
+| ws/kds                                           | 4a1f613                  | S       | dapur                        | architect sudah; fix brief 74                                                                                                                                                                                                                           | gabung milestone                                                                                                                      |
+| ws/hris-sop                                      | 37aa5cd9                 | S       | SOP                          | DIGABUNG m1 `fd2616f4` (prep 9b981051, migration diregen 0080/0081); gate prep hijau API 1858 / root 1420; kartu 7df1 ditutup                                                                                                                           | selesai                                                                                                                               |
+| ws/checklist-engine                              | e3ac2ef                  | S       | checklist                    | Sonnet: PERLU FIX (board B11)                                                                                                                                                                                                                           | fix, lalu gabung                                                                                                                      |
+| fix/worktree-shared                              | 4ab45cc                  | S       | tooling                      | Sonnet: LOLOS                                                                                                                                                                                                                                           | DIGABUNG milestone 4478360                                                                                                            |
+| ws/print-agent                                   | cb385ab                  | S       | cetak (nomor dari receipt)   | Opus reviewer gelombang 2                                                                                                                                                                                                                               | gabung milestone                                                                                                                      |
+| ui/pos-kasir-shift                               | 91a6c5e                  | S       | UI mock                      | founder Q12 dilewati, tanya ulang                                                                                                                                                                                                                       | tunggu founder                                                                                                                        |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
+
 Urutan merge (23:00): edge → stock-opname → shareholder-docs (55d90ab3) → reservation (8e2e7bc0, migration 0074, when 1794153034313) sudah → antrean siap: journals (merge-prep subagent regen ke 0075+), hris-leave, refund, hris-sop, edc, pph21, pos-shift, doit, receipt. CTO merge sesuai urutan siap; cabang berikutnya regen ulang di atas head m1 terbaru. Keputusan founder cuti bersama: mulai 2027-01-01 (sudah default).
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
 
@@ -61,17 +63,17 @@ Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya
 
 Aturan: maks 1 run per akun ready, brief hanya rentang diff + berkas berisiko (±800 baris) + invariant PRD, tanpa temuan Claude. Codex hanya menahan gerbang rilis.
 
-| Run | Isi | Effort | Brief | Jadwal |
-|---|---|---|---|---|
-| R1 | pos-shift + struk | xhigh | 59, 68 | tunggu gate (6c1ec83, 1657797e) via merge train |
-| R2 | refund-approval | xhigh | 65 (SHA 09385266) | SELESAI 05:45 (G7110, akun 2): 2 temuan P1 yang terlewat review Claude: otorisasi refund di bawah ambang tanpa supervisor (:565), fund evidence_id NULL salah tujuan payout (:933). Fix brief 92 |
-| R3 | journals | xhigh | 70 | jendela berikut |
-| R4 | PPh21 | xhigh | menyusul | jendela berikut |
-| R5 | EDC + DOIT | high | 60, 62 | DOIT SELESAI 06:00 (G8d4v, akun 3): 2 P1 (retry POST yatim :477, rekonsiliasi berhenti 60 dtk setelah expiry :1741) + 1 P2 (paid_at dibuang :274), terlewat review Claude. Fix brief 95 (reopen G8x09). EDC belum |
-| R6 | struk + edge registry | high | 68, menyusul | |
-| R7 | stok opname + recipe/BOM | high | menyusul | |
-| R8 | procurement + AI tool catalog | high | menyusul | |
-| R9 | config export + shareholder docs + reservasi | high | menyusul | |
+| Run | Isi                                          | Effort | Brief             | Jadwal                                                                                                                                                                                                            |
+| --- | -------------------------------------------- | ------ | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | pos-shift + struk                            | xhigh  | 59, 68            | tunggu gate (6c1ec83, 1657797e) via merge train                                                                                                                                                                   |
+| R2  | refund-approval                              | xhigh  | 65 (SHA 09385266) | SELESAI 05:45 (G7110, akun 2): 2 temuan P1 yang terlewat review Claude: otorisasi refund di bawah ambang tanpa supervisor (:565), fund evidence_id NULL salah tujuan payout (:933). Fix brief 92                  |
+| R3  | journals                                     | xhigh  | 70                | jendela berikut                                                                                                                                                                                                   |
+| R4  | PPh21                                        | xhigh  | menyusul          | jendela berikut                                                                                                                                                                                                   |
+| R5  | EDC + DOIT                                   | high   | 60, 62            | DOIT SELESAI 06:00 (G8d4v, akun 3): 2 P1 (retry POST yatim :477, rekonsiliasi berhenti 60 dtk setelah expiry :1741) + 1 P2 (paid_at dibuang :274), terlewat review Claude. Fix brief 95 (reopen G8x09). EDC belum |
+| R6  | struk + edge registry                        | high   | 68, menyusul      |                                                                                                                                                                                                                   |
+| R7  | stok opname + recipe/BOM                     | high   | menyusul          |                                                                                                                                                                                                                   |
+| R8  | procurement + AI tool catalog                | high   | menyusul          |                                                                                                                                                                                                                   |
+| R9  | config export + shareholder docs + reservasi | high   | menyusul          |                                                                                                                                                                                                                   |
 
 Kuota: akun 2 dan 3 limit 5 jam (reset 23:36 dan 00:24), mingguan 32–37%. Perkiraan 9 run ≈ 5 jendela 5 jam.
 
@@ -80,6 +82,7 @@ Kuota: akun 2 dan 3 limit 5 jam (reset 23:36 dan 00:24), mingguan 32–37%. Perk
 CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread ada di `docs/briefs/` (42–58).
 
 ### Siap merge (menunggu gerbang founder)
+
 - `ws/db-role-provisioning` 4d08dac — 4 putaran review, terverifikasi Opus.
 - `ws/fiscal-close-lock` bfe16fb — Codex: tanpa blocker, setuju dengan architect.
 - `ws/edge-hardening` 2536ec6 — fix 0063 untuk migrator non-superuser (drop/restore FORCE RLS di transaksi), test 11/11, gerbang penuh hijau. Bead lanjutan `legend-jtnd` (role migrator production: superuser atau owner WITH BYPASSRLS; migrasi 0000–0062 butuh itu).
@@ -100,18 +103,20 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 - Architect second-opinion: procurement 2 Sedang (brief 73), stok opname 2 Tinggi (dikirim ke G8zyp), KDS 4 Sedang (brief 74).
 
 ### Thread berjalan
-| Thread | Kerja | Cabang |
-|---|---|---|
-| G2737 | Struk putaran 2 (brief 55) | ws/pos-receipt |
-| G70ms | PPh21 putaran 2 + config kebijakan pajak `legend-y4wp` (brief 54) | ws/payroll-pph21-tests |
-| G3pew | Refund approval legend-hvvn + rbjw (brief 51) | — |
-| G5klp | HRIS cuti legend-hggk (brief 53) | — |
-| G8zyp | Stok opname legend-j5x (brief 57) | ws/stock-opname |
-| G5psg | Jurnal manual/berulang legend-vmyg (brief 58) | ws/journals |
+
+| Thread | Kerja                                                             | Cabang                 |
+| ------ | ----------------------------------------------------------------- | ---------------------- |
+| G2737  | Struk putaran 2 (brief 55)                                        | ws/pos-receipt         |
+| G70ms  | PPh21 putaran 2 + config kebijakan pajak `legend-y4wp` (brief 54) | ws/payroll-pph21-tests |
+| G3pew  | Refund approval legend-hvvn + rbjw (brief 51)                     | —                      |
+| G5klp  | HRIS cuti legend-hggk (brief 53)                                  | —                      |
+| G8zyp  | Stok opname legend-j5x (brief 57)                                 | ws/stock-opname        |
+| G5psg  | Jurnal manual/berulang legend-vmyg (brief 58)                     | ws/journals            |
 
 Uang/PPh21/refund/shift/struk: setelah lapor, perlu reviewer + architect + second-opinion Codex.
 
 ### Menunggu second-opinion Codex (kuota habis)
+
 - PRIORITAS: POS shift `ws/pos-shift` 580d0db (putaran 2 selesai: 5 temuan + 2 temuan reviewer dibetulkan, check 1277 lulus, build hijau). Migration 0063–0067 di cabang ini. Kontrak berubah: close pakai `countId`, endpoint baru `.../shifts/:shiftId/counts`, tunai wajib shift terbuka (409 `SHIFT_NOT_OPEN`). Konflik merge diperkirakan dengan `ws/kds` dan `ws/pos-payment-fixes`. Ronde berikut ke agent baru (sesi G8pc7 compact 2x).
 - UI POS kasir perlu menyusul: buka shift sebelum terima tunai; tutup shift 2 langkah (hitung, lalu tutup).
 - Akun Codex 3 reset 23:36, akun 2 reset 00:24 (9 Nov). Cron 518b310d jam 23:40 (sesi lama; bila sesi lama mati, jadwalkan ulang): mulai maks 3 sekaligus.
@@ -119,15 +124,18 @@ Uang/PPh21/refund/shift/struk: setelah lapor, perlu reviewer + architect + secon
 - Cabang lain belum direview: ws/checklist-engine e3ac2ef, fix/worktree-shared 4ab45cc.
 
 ### Menunggu founder
+
 - Gerbang merge: db-role, fiscal, edge-hardening (dan payment setelah tes integrasi).
 - Review UI POS kasir (`ui/pos-kasir` 3f5c91e): page `scratchpad/pos-kasir-review.html` sesi lama, Q1 setuju/ubah, Q2 modal awal Rp0.
 - DOIT sandbox: base URL, link docs, webhook secret. Key sandbox di `~/.config/legend/doit-sandbox-api-key`.
 - Config PPh21: sementara ikut saran CTO, nanti disesuaikan konsultan (legend-y4wp).
 
 ### Biaya sesi CTO G4tde
+
 Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,07 jt).
 
 ## Sudah
+
 - Benchmark order pelanggan ESB + Richeese vs Legend: `design/benchmark/REPORT.md` (14 celah), `design/REFERENCES.md`. Cabang `ux/customer-order-benchmark`.
 - Keputusan founder:
   - Q3: "Bayar di kasir" boleh (kode ke kasir, pesanan masuk dapur setelah kasir terima uang).
@@ -139,9 +147,11 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 - Review legend-18qw: reviewer Claude (tanpa blocker) + second-opinion Codex (2 major). Semua temuan: `docs/briefs/06-fix-review-worker-transport.md`.
 
 ## Sedang
+
 - (kosong selain thread di bawah)
 
 ## Sesi CTO baru (2026-11-08, lanjutan)
+
 - SELESAI fix review legend-18qw (brief 07): `ws/worker-transport` = `262d012` (amend WIP). 9 fix + 3 temuan reviewer subagent dibetulkan. `heavy pnpm check` hijau (1192 test), build hijau, format/color/tenant-hardcode lulus. `legend-3a0y` ditutup. Bead baru: `legend-7h5s` (edge tanpa cloud-sync tenant-wide), `legend-z649` (healthcheck worker), `legend-k1np` P1 (cek backfill sequence sebelum deploy), `legend-j75w` P2 (alert terthrottle auth Brevo). Sisa risiko: dedup Brevo belum dites ke Brevo asli (tunggu `legend-wwuc`); at-least-once bila retry >30 menit. Biaya sesi engineer: ~933k (Opus 668k, Haiku 151k, Sonnet 114k).
 - SELESAI riset warna (brief 08, Codex): `design/COLOR-RESEARCH.md`, 10 `final-a-*` ditimpa, palet CTA #A83A17 / canvas #FAF6F0 / tinta #2B211B, upsell croissant opsional, 87 pasangan kontras lolos AA. Commit `13606fe` (sebagian artefak ikut tersapu commit CTO `b76fc75`; riwayat dibiarkan). Dikirim ke founder sebagai Q3 (setuju / ubah).
 - Founder Q2: merge disetujui. `main` = `b0695ba` (merge --no-ff `ws/worker-transport`, tree identik `262d012` yang sudah hijau). Cabang + worktree worker dihapus.
@@ -156,10 +166,12 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 - Berikutnya saat slot Claude kosong: ui-engineer POS kasir dari `design/mockups/pos/`, engineer KDS legend-4d5, engineer EDC legend-m0k.
 
 ## Keputusan founder Q6 (mockup final): UBAH DULU
+
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
 - Langkah: riset psikologi warna untuk F&B order (warna CTA/tombol, warna yang mendorong nafsu makan dan nilai pesanan lebih besar, bukti dari sumber kredibel, bedakan mitos vs bukti, tetap lolos kontras WCAG), tulis `design/COLOR-RESEARCH.md`, lalu designer (Codex) ulang `final-a-*` dengan palet baru, review founder lagi. Pola upsell/menambah pesanan (rekomendasi "tambah minuman", bundling) boleh diusulkan bersama.
 
 ## Langkah berikut
+
 1. (selesai) fix brief 06.
 2. (selesai, menunggu founder Q3) riset warna + ulang mockup.
 3. Setelah mockup disetujui: ui-engineer bangun UI order pelanggan dari `final-a-*`, update `DESIGN.md` sesuai usulan README mockup. Jangan sentuh area worker.
@@ -167,15 +179,18 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 5. Penghalang rilis lain (HANDOFF.md §7): legend-zoqc, legend-91i (layar ke API asli), POS FE, dsb.
 
 ## Catatan teknis
+
 - Coordinator Ghostex dijalankan di folder `legend super app` (bukan repo git): `start-thread --worktree` gagal. Buat worktree manual di `legend/.worktrees/<nama>` + `.claude/settings.local.json` pematik claude-mem, tulis path di brief.
 - Brief tim: `docs/briefs/01..06`.
 
 ## Vendor (gelombang ini)
+
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
 
-
 ## Serah terima kuota (22:45)
+
 Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Berjalan: G8x09 DOIT, G7cu9 EDC batch_no, G2tir PPh21 campuran, G5rd6 shift (ulang gate), G5klp cuti (brief 85), G9d1y struk (brief 77). Subagent: fix hris-sop (brief 86). Berikut: gate milestone setelah merge shareholder; merge journals → refund → hris-sop → edc → pph21 → shift → hris-leave (regen tiap cabang). Codex cron 23:41 & 00:27. Subagent merge-prep shareholder sempat menjalankan `pkill -f <id task>` (pelanggaran, cakupan sempit) — cek tidak ada test lain yang mati.
+
 ## Serah terima CTO 23:05 (sesi compact 2x)
 
 - milestone/m1 head 8e2e7bc0 (reservasi masuk). Gerbang penuh belum dijalankan ulang setelah merge reservasi; cabang reservasi sendiri sudah hijau di atas 55d90ab3 (API 1527, root 1420). Jalankan `heavy pnpm check` di worktree milestone sebelum merge berikut.
@@ -187,21 +202,25 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Jawaban founder "berapa task lagi": 440 kartu non-epic terbuka, 35 P0/P1 (7 P0 semua EXT pihak luar). Inti rilis: 10 cabang antrean merge, Codex R1–R9, jembatan inventori→GL (legend-w1vo), migrator role production (legend-jtnd, legend-k1np), e2e A–Z (legend-hmz2, legend-o2on), runbook (legend-71d), monitoring (legend-az9), review founder Q6 + Q12, akun production. Usulan ke founder: tetapkan daftar potong rilis (WS-12 AI, sebagian WS-09/WS-14 pascarilis).
 
 ### Keputusan founder 23:15
+
 - Fitur kamar mandi / smart lock ditunda (legend-3dm8, legend-bzih, legend-2ke, legend-s20 → deferred). Rilis menyusul.
 - Tidak ada transfer bank. Metode bayar: QRIS, virtual account, debit/kartu kredit, bayar di kasir (tunai, EDC). Transfer bank kode unik DOIT tetap mati; tidak perlu perluasan skema `hosted_url`. Cek apakah rail kartu (debit/CC online) DOIT sudah tercakup di `ws/doit-provider`.
 - Fitur AI, Wi-Fi, ojol: founder belum menunda, anggap tetap dalam cakupan.
 
 ### Rekonsiliasi papan 23:25
+
 - 8 kartu ditutup (kerja sudah di main/m1): sdet, xm30, 165, 2lp.7, meki, 69yq, o5gr, j5x.
 - 26 kartu ditutup saat cabangnya digabung ke m1: ai-tool-catalog 1zxo 9v9t; pph21 oo3q y4wp iwgb 5cnk; refund rbjw hvvn; kds s2dh 4d5; procurement 25a7 9yz; hris-leave hggk arj.1 arj.3 arj.4; checklist 5v69; pos-shift 6c0; hris-sop 7df1; receipt 93a; doit b9i; recipe-bom db6; journals vmyg; config-export 34c; print-agent 46p; edc apt.
 - Progres nyata ~43% (331 selesai, 435 tersisa). Terendah: WS-13 QA 8%, WS-12 AI 12%, WS-02 edge 23%.
 
 ### Keputusan founder 23:35 + perbaikan workflow
+
 - AI, Wi-Fi, ojol tetap masuk rilis pertama.
 - Diagnosis lambat: rata-rata ~1,6 subagent berjalan per agent (ram-guard: 11 subagent untuk 7 agent). Penyebab: brief per fix kecil (tak ada yang bisa diparalelkan), gate penuh diulang tiap langkah, merge serial dikerjakan CTO.
 - Perubahan: (1) agent baru menerima workstream 5–15 kartu dengan `docs/briefs/_TEMPLATE-workstream.md` (fan-out wajib di giliran pertama, test-writer paralel implementer, gate penuh sekali); (2) merge train dipegang thread sendiri (brief 89), persiapan konflik paralel per cabang di worktree, hanya regen migration yang serial; (3) e2e/QA (WS-13, 8%) dimulai sekarang, tidak di akhir; (4) laporan agent wajib menyebut jumlah subagent dan puncak paralel, dicatat tiap gelombang.
 
 ### Insiden 00:10 (9 Nov)
+
 - gxserver mati ~23:55, dinyalakan ulang CTO (`gx server start`). Colima "not running" sementara VM masih hidup: port container baru tidak diteruskan, semua test DB gagal "PostgreSQL is not reachable". Subagent CTO sedang memulihkan.
 - macOS menolak membuka terminal baru dari login ini ("macOS refused to start it from this login"): 3 thread gagal start (G58ni Codex refund, G0c95 WS-02 brief 90, G30x7 WS-13 brief 91). Butuh founder restart Ghostex / logout-login. Setelah itu: reopen/start ulang ketiganya.
 - Git identity global hilang setelah pindah akun; diset lokal di repo (`git config user.name/email`).
@@ -211,6 +230,7 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - 00:20 Semua akun Claude di Ghostex "needs sign-in" (keychain tidak terbaca, opendirectoryd rusak). Merge train G5dhx berhenti "Login expired". Founder diminta: `sudo launchctl kickstart -k system/com.apple.opendirectoryd` atau restart Mac, lalu login ulang akun #1–#3.
 
 ### Pulih 05:30 (9 Nov)
+
 - Founder restart Mac. whoami normal, akun Claude/Codex ready, Colima + port forward OK (probe 55432).
 - G5dhx merge train dan G9c40 inventori→GL dilanjutkan (DB pulih). G0c95 (brief 90) dan G30x7 (brief 91) di-reload lalu dikirimi brief. Codex refund berjalan di G7110 (akun 2, xhigh). G58ni = sesi Codex kosong sisa crash, abaikan/resolve.
 - Akar insiden: tekanan memori (8 thread + ~16 subagent menjalankan gate penuh bersamaan, swap 7 GB, 13 container DB test basi) → opendirectoryd macOS rusak setelah uptime 5 hari → user 501 tak dikenali → terminal baru ditolak, login akun tak terbaca, Colima/ssh gagal, gxserver mati.
@@ -226,6 +246,7 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - 07:10 WS-11 laporan (G2lso selesai): ws/ws11-reports 53e6b484, 11 kartu ditutup, 21 subagent (puncak 7). Tanpa migrasi. Gate penuh → merge train. Codex R11: 981abe32 (metrik GL + akses shareholder, ~800 baris, high). legend-5bjh: rute laporan agregat sendiri di area shareholder (keputusan CTO).
 
 ### Merge train 89 (lanjutan, 09-11)
+
 - m1 `982c2e0a` inventory-gl (0086/0087, gate API 2165 / root 1426, w1vo ditutup).
 - m1 `b49202b5` prettier 2 file refund (format:check tidak termasuk `pnpm check`; kini dijalankan per merge).
 - m1 `f77e18d8` deploy-prep (tanpa migration; gate prep 97f008cc API 2177 / root 1427 termasuk legend-zoqc DB; jtnd k1np ditutup).
@@ -275,6 +296,8 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `5e227f59` BATCH9: aj-fix142 d309b186 (konflik accounting-auto-journal-amounts.ts dan docs/design/auto-journals.md ambil sisi cabang; m1 hanya prettier 1b0a5571), pph21-overwithhold 1535d4d8 (legend-mmgd + 4ndx). edc-pan-fix 36599100 sempat masuk lalu dikeluarkan (P2 Codex 150b legend-ymhh di 0141), gate pertama dihentikan. Gate: API 5467 / 47 skip, root 1678/1678, EXIT 0. Log `gate-batch9b.log`. Worktree batch9 dihapus.
 - m1 `fee69d45` BATCH10: aj-qr-sale 6cc87dab, edge-access-apply 19087b75 (0141_great_firedrake, 0142_high_scrambler; NO FORCE staff_pins), edge-masters-guard d2beba65 (legend-8izz), aj-pos-intent da059c28, dp-intent-lock fdf2ad21, edc-pan-fix 6e31ce84 (0143_edc_pan_scrub_separators). Reviewer: regen setara, merge pos-order.service.ts/override.ts bersih. Catatan produk: audit cloud override `cash_shift_close` dari edge tanpa varians (`access-applier.ts` applyPosOverrideRecorded). Gate: API 5647 / 47 skip, root 1678/1678, EXIT 0. Log `gate-batch10.log`. Worktree batch10 dihapus.
 - Batch11 `integ/m1-batch11` dirakit: refund-tier 40800ce2 (0144_system_approval_requester), pos-refund-void aae97551, provisioning-race bd62055c, shift-close-fix 1c051167 (0141/0142 menjadi 0145/0146). pph21-overwithhold 7b486d73 dikembalikan ke G5qo3: root PAYR-02 gagal (`totals.pph21ReceivableIdr`/`pph21ReceivableCollectedIdr` undefined, fixture root belum ikut 4fa8159d). Log `fail-pph21-7b486d73.log`.
+- Batch11+12 lolos gate gabungan di `integ/m1-batch12` bddf8442 (API 5806 lulus, 47 skip; root 1699/1699), m1 FF ke bddf8442 (9 Nov). Gate batch11 sendiri merah deterministik: `edge-access-applier.test.ts` (legend-kyie) membuat user banned lalu memberi role, ditolak guard 0144 `legend_role_assignment_grantee_guard`; fix test 6b980801 (role dulu, ban sesudahnya). Batch12: doit-refund-parser 91de305d, pph21-overwithhold cfd76082 (fixture PAYR-02/ACC-01), tax-rule-overlap 4cc287f3. Worktree batch11/12 dihapus.
+- Batch13 `integ/m1-batch13` 9a2c1e86: payroll-journal 0705f12f (legend-s8a3, berisi pph21 cfd76082), migrasi custom 0134_accounting_coa_backfill_1204 menjadi 0147 (isi identik, when 1794220000000), entri registry 0147, test backfill membaca 0147. Gate jalan.
 - m1 `d6edb929` BATCH7: pos-drawer-guess 049501f9 (0136_public_turbo, 0137_pos_shifts_guard_held_cash) lalu 42e94ce7, dp-late-journal b714f7b6 (0138 NO FORCE outlets, 0139 NO FORCE legal_entities/chart_of_accounts/account_mappings; registry 0139), patch 141 wiring auto journals (6166bf72), m1 9126f624, ai-scope 4538a6e4, refund-tier 7620d1e6 (0140; test cari migrasi by nama), pph21-overwithhold baf5ca9e (6e20273a ditolak: regresi legend-4ndx), dp-refund-guard 41524fcb, station-printer b39cb392 (KDS station lain 403 menjadi 404). Reviewer regen 0136-0140: setara, NO FORCE sah. Gate: format bersih, API 5364 / 47 skip, root 1678/1678, EXIT 0. Log `gate-batch7.log`.
 - m1 `a8c90378` BATCH8: edge-event-class 2216e2b7 (tanpa konflik). Gate: format bersih, API 5371 / 47 skip, root 1678/1678, EXIT 0. Log `gate-batch8.log`.
 - Batch4 dirakit: doit-refund 5316426a, fix-edge-codex deb16fa2, provisioning-default d82041ee, edge-master-sync 3c131bda, pos-closed-day 2658750c.
@@ -282,6 +305,7 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 ## Serah terima CTO 9 Nov 15:10 (sesi G1aau compact 2x)
 
 Sudah (diverifikasi CTO, diteruskan ke merge train G9syc):
+
 - ws/data-import-guard 7a4296f7 (v4ld, rhwb) 74/74; ws/ci-isolation b9220d14 (wwsa); ws/pos-drawer-guess 42e94ce7 (67dt, utqr, ifnb, nib1, o0w6) 208/208; ws/doit-sandbox 3fe69082 (d21p, 8cf3, xd2q, 0yd1); ws/edc-pan-scrub d25cf41b (5gub) 165/165; ws/log-redact 26a0afea (8gsj, grm3, di atas edc-pan-scrub); ws/station-scope edab9370 (cot3) 97/97; ws/ai-scope 4538a6e4 (cot3 lanjutan, dak5); ws/dp-late-journal b714f7b6 (9pz9 slice 1-2, o9q9); ws/refund-tier 7620d1e6 (zi9o, migrasi data 0134); ws/pph21-overwithhold baf5ca9e (u1xq); ws/dp-refund-guard 41524fcb (e7zj, blocker rilis) 406 lulus; ws/station-printer b39cb392 (e087, qqvf) 78/78, KDS station lain 403 -> 404.
 - Gagal warisan batch5: `tests/payment-admin-contract.test.mjs:211` (EDC-06 / PAY-04) = legend-npwl P1. Belum ada pemilik bila G9syc belum membetulkan.
 - Keputusan CTO: matriks refund default satu tier Rp0 ke supervisor; gross_first (R50/51/74) diterima; 5zlz ai.ask tetap untuk user level station; h0q4 P3; DOIT_REFUNDS_ENABLED tetap mati sampai DOIT menjawab dan Codex 134 selesai; batas cap_exceeded e7zj diterima (bd comment).
@@ -289,6 +313,7 @@ Sudah (diverifikasi CTO, diteruskan ke merge train G9syc):
 - Retro 4 tercatat di `~/.agents/team/RETRO.md`; `heavy` sekarang menahan slot 2-5 selama HEAVY_START_GAP 30 detik; TEAM.md item 9: prettier di gate thread, maks 1 `pnpm check` di merge train, simpan 30 baris log gate gagal, Lighthouse `heavy --exclusive`. Aturan merge train belum dikirim ke G9syc: kirim saat G9syc melapor, jangan ganggu saat bekerja.
 
 Sedang (thread):
+
 - G9syc merge train: batch7 (pos-drawer-guess, dp-late-journal + patch 141, ai-scope, refund-tier, pph21-overwithhold baf5ca9e) plus antrean di atas.
 - G5qo3 legend-mmgd selesai di ws/pph21-overwithhold 6e20273a (saldo pembayar tanpa clamp; payroll 283 lulus menurut thread). CTO sedang verifikasi: test-runner + architect (review final architect thread terhenti). Lulus: kabari G9syc ganti baf5ca9e dengan 6e20273a di batch7, lalu resolve G5qo3. Bead baru legend-y2lf (gross_first beda skala, keputusan kebijakan architect). Pasal 21(1) refund saat T < 0: ikut legend-8463 (konsultan pajak).
 - G5xnj legend-2dnh (refund system chain backfill). Berikutnya legend-ccpn.
@@ -299,6 +324,7 @@ Sedang (thread):
 Antrean Codex (maks 3 sekaligus, maks 2 per akun, uang/pajak dulu): 142 (run D), 146 (run 1-4), 150, 152 (run 1-3), 159 (station-printer, baru), 158 (setelah ditulis), lalu 117, 119, 121, 122, 124, 126, 127, 130, 133, 134, 138, 144. Hasil ditulis ke `docs/briefs/<no>-...result.md`.
 
 Langkah berikut:
+
 1. Jadwalkan ulang cron di sesi baru (cron sesi tidak ikut pindah): retro berkala tiap 2 jam (brief `~/.agents/team/retro-brief.md`); 15:23 cek akun #1 lalu kirim G2wg9 slice 4 (dan slice 3 bila m1 sudah memuat batch 3/4).
 2. Setelah batch7 masuk m1: B9 UI pemilih item refund (82xq), dwrr + z83k, legend-6xcy, slice failover, fbms, jm5c, jwn6.
 3. legend-npwl: beri ke thread refund/payment bila G9syc belum membetulkan.
@@ -310,6 +336,7 @@ Catatan rilis: deploy cloud sebelum edge; API dan web bersamaan (DTO auto-journa
 Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Opus 1046k, Haiku 971k, Sonnet 533k), 58 subagent, compact 3.
 
 ### Tambahan serah terima 15:05
+
 - ws/edge-event-class 2216e2b7 (eadm, niq9) diverifikasi CTO 348/348, diteruskan ke G9syc (menyentuh edge/runtime.ts blok registrasi). G54my sekarang mengerjakan legend-kyie (P1 K, cloud menerapkan event PIN/override edge) di ws/edge-access-apply dari 2216e2b7; brief Codex 160 ditulis thread.
 - pph21: 6e20273a (mmgd) test 283/283 + kontrak 24/24, Codex 156 run 1+2 tanpa temuan, tetapi architect CTO menemukan regresi legend-4ndx (P1 K): proportional dengan T<0 bisa memotong karyawan melebihi gaji Desember (fuzz 394/12000). Keputusan CTO: potongan karyawan dibatasi gaji tersedia, kelebihan ditanggung perusahaan, setoran tetap T. Dikirim ke G5qo3 (Run 3 brief 156). Merge train tetap baf5ca9e.
 - Codex 154 refund-tier: run 1 tanpa temuan; run 2 (2dnh, sampai ceaab8fe) 4 temuan P2 (0135 email sistem bentrok signup, UUID sistem bisa diberi peran, refund gagal permanen memonopoli batch, lock intent menahan sweep) dikirim ke G5xnj. Codex 157 dp-refund-guard: tanpa temuan.
@@ -319,6 +346,7 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - Jadwalkan ulang: retro berkala tiap 2 jam (`~/.agents/team/retro-brief.md`).
 
 ### CTO G16xk mulai 15:05 (9 Nov)
+
 - legend-npwl ditutup: fix test sudah di m1 9126f624, test-runner 9/9 lulus (1 file). G3qi9 resolve, worktree dan cabang kosong dihapus.
 - G2wg9 dibuka lagi di akun #2 (15:08): slice 4 (settlement + MDR) lalu slice 3, dari m1 terbaru.
 - Cron sesi: retro tiap 2 jam di menit :13 (berikut ±16:19).
