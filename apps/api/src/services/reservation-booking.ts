@@ -543,7 +543,7 @@ export async function createReservation(
           policy.depositRequirement === "required" &&
           policy.depositAmountIdr > 0
         )
-          await reservationDepositPort().assertReady(context);
+          await reservationDepositPort().assertReady(context, outletId);
         const reservedFor = new Date(input.reservedFor);
         const duration = input.durationMinutes ?? policy.defaultDurationMinutes;
         if (reservedFor <= now)

@@ -22,6 +22,8 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
+import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import {
@@ -60,6 +62,9 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
+import { setPaymentGateway } from "./services/payment-gateway.ts";
+import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { logger } from "./lib/logger";
 
@@ -80,6 +85,9 @@ const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
+// pending intents whose webhook never arrived.
+setPaymentGateway(createDoitGateway());
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,
@@ -150,6 +158,9 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
+          // from the chain re-read under the row lock; replays are no-ops.
+          await handlePurchasingApprovalResolved(context, event);
           // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
           // the payout itself runs from the approve call or the payout sweep.
           await handleRefundApprovalResolved(context, event);
@@ -246,6 +257,13 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Depreciation job sweep failed");
     }
+    // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
+    // arrived and retry stored webhook events. Fail closed like the sweeps.
+    try {
+      await runPaymentGatewayPollJob(context, new Date());
+    } catch {
+      console.error("Payment gateway poll sweep failed");
+    }
     // PRD §3.19 (legend-w1vo), cloud only: retry stock sources whose journal
     // was blocked (closed period, missing mapping). Retry only, never another
     // period. A sweep error never blocks the relay.
@@ -290,6 +308,15 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // PRD §3.18 "Kirim PO" (legend-9yz): send queued PO emails. Logs carry only
+    // a masked address; an unconfigured provider fails the delivery closed.
+    try {
+      await runPurchasingPoEmailJob([context], {
+        email: handlers.notificationDelivery?.email ?? null,
+      });
+    } catch {
+      console.error("Purchasing PO email sweep failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:

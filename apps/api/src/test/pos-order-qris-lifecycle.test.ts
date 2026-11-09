@@ -18,7 +18,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   idr,
   outletIdSchema,
@@ -97,7 +97,7 @@ let supervisor: Member;
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
-  status: "pending" | "failed" = "pending";
+  status: "pending" | "failed" | "expired" = "pending";
   async health() {
     return { status: "available" as const };
   }
@@ -585,11 +585,17 @@ afterAll(async () => {
   await owner.end();
 });
 
+beforeEach(() => {
+  gateway.status = "pending";
+});
+
 describe("POS QRIS tender lifecycle (legend-b0au)", () => {
   it("an expired QRIS code fails its tender once, and a new QRIS can open", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     // The 10 minute code lapses; WS-05 emits payment.expired.
+    // DOIT got our expires_in, so it reports the lapsed code expired.
+    gateway.status = "expired";
     await getIntentView(
       contextOf(tenant.tenantId),
       await tokenOf(tender),
@@ -814,6 +820,8 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     expect((await linkRow(tender.payment_link_id!)).expired).toBe(false);
+    // DOIT got our expires_in, so it reports the lapsed code expired.
+    gateway.status = "expired";
     await getIntentView(
       contextOf(tenant.tenantId),
       await tokenOf(tender),
@@ -837,6 +845,8 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
   it("payment.expired consumed after the guest already paid keeps the tender authorized, then payment.paid captures it", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
+    // DOIT got our expires_in, so it reports the lapsed code expired.
+    gateway.status = "expired";
     await getIntentView(
       contextOf(tenant.tenantId),
       await tokenOf(tender),
@@ -953,6 +963,8 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
   it("a QRIS paid after its tender failed (expired code) is refunded too", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
+    // DOIT got our expires_in, so it reports the lapsed code expired.
+    gateway.status = "expired";
     await getIntentView(
       contextOf(tenant.tenantId),
       await tokenOf(tender),
@@ -1005,6 +1017,8 @@ describe("POS QRIS lifecycle tenant isolation (legend-b0au)", () => {
   it("events delivered under another tenant never touch this tenant's tender", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
+    // DOIT got our expires_in, so it reports the lapsed code expired.
+    gateway.status = "expired";
     await getIntentView(
       contextOf(tenant.tenantId),
       await tokenOf(tender),

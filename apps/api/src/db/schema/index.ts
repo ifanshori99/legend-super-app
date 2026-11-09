@@ -28,6 +28,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+export * from "./payment-gateway-webhook";
 // WS-01 generic approval requests (legend-y5q).
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
@@ -63,6 +64,10 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-04 KDS routing + ticket lifecycle (legend-4d5).
+export * from "./kds";
+// WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
+export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).

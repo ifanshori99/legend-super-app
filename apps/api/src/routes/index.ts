@@ -9,6 +9,12 @@ import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { createInventoryCountRouter } from "./inventory-count.routes.ts";
 import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
+import { createPurchasingSupplierRouter } from "./purchasing-supplier.routes.ts";
+import { createPurchasingOrderRouter } from "./purchasing-order.routes.ts";
+import {
+  createPurchasingSendRouter,
+  publicPurchaseOrderRouter,
+} from "./purchasing-send.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { meRouter } from "./me.routes";
@@ -55,6 +61,7 @@ import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { kdsRouter } from "./kds.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
@@ -113,6 +120,12 @@ apiRouter.use("/inventory", inventoryRouter);
 apiRouter.use("/inventory", createInventorySetupRouter());
 // Production, waste, transfers, expiry/par alerts, suggestions (WS-06, legend-ugo).
 apiRouter.use("/inventory", createInventoryOpsRouter());
+// Suppliers, contacts, price catalog (WS-06 purchasing, legend-9yz).
+apiRouter.use("/inventory", createPurchasingSupplierRouter());
+// Purchase requests + purchase orders with approval (PRD §3.18, legend-9yz).
+apiRouter.use("/inventory", createPurchasingOrderRouter());
+// Send PO by email or share link (PRD §3.18 "Kirim PO", legend-9yz).
+apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
 apiRouter.use("/inventory", createInventoryCountRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
@@ -127,6 +140,8 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+// WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
+apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
@@ -150,6 +165,9 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 apiRouter.use("/public/site", publicSiteRouter);
 // Staff editor of the brand website content (WS-08, legend-qgr6).
 apiRouter.use("/website", websiteAdminRouter);
+// Supplier-facing PO PDF by share token (legend-9yz): hashed token, rate
+// limited, token redacted from request logs.
+apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
 // Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.
