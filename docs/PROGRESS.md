@@ -327,6 +327,6 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Tenant dan outlet lama TIDAK di-backfill; `backfillTenantTaxDefaults` tidak menyentuh service. Mesin hitung tidak diubah. Takeaway dan delivery tanpa service.
 - Dampak: preview dine-in tenant baru Rp 100.000 menjadi service 5.000, pajak 10.500 (PBJT menghitung service dalam dasar), total 115.500. Test lama di `tax-provisioning`, `platform-org-api`, `platform-admin-provision` diperbarui.
 - Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/tax-service-default.test.ts` (14).
-- Review K reservasi: order POS `channel: reservation` dengan `serviceType` takeaway/delivery tidak ditolak dan kini kena service 5% (belum ada pemanggil di kode; jalur POS di luar scope): bead baru lihat di bawah.
+- Review K reservasi: order POS `channel: reservation` dengan `serviceType` takeaway/delivery tidak ditolak dan kini kena service 5% (belum ada pemanggil di kode; jalur POS di luar scope): diperbaiki di legend-6u81: `createPosOrder` menolak `reservation` selain `dine_in` (VALIDATION_ERROR). `posPriceChannel` dan `order.paid` tidak diubah. Review K: tidak ada jalur lain yang membuat order reservation.
 - Follow-up: legend-mdh0 (publish boleh membuat tie aturan, `TAX_RULE_AMBIGUOUS` memblokir checkout; lock seed di `createServiceChargeRule`; actor `createOutlet`), legend-9flj (pertanyaan founder: channel reservation).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.

@@ -527,6 +527,13 @@ export async function createPosOrder(
       "VALIDATION_ERROR",
       "Pesanan ojek online tidak makan di tempat.",
     );
+  // legend-6u81: the default service charge covers dine-in reservations, so a
+  // reservation order must be dine-in; takeaway and delivery carry no service.
+  if (input.channel === "reservation" && input.serviceType !== "dine_in")
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Pesanan reservasi hanya untuk makan di tempat.",
+    );
   const tableSessionId = input.tableSessionId ?? null;
   if (tableSessionId !== null && input.serviceType !== "dine_in")
     throw new CoreError(
