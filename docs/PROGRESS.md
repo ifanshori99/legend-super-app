@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-63l6 + legend-kz1m + legend-lvx2 paket kontrak kecil (engineer, cabang `ws/small-contracts-pack`, rebase ke m1 94d769c6, 2026-11-09)
+
+- Sudah: (63l6) respons order POS memuat `version`; body mutasi order (submit, fire, complete, void, void item, tender, diskon tambah/hapus) menerima `expectedVersion` opsional, setara `If-Match`; keduanya ada dan beda = 412; tulisan basi perangkat kedua pada status sama ditolak `PRECONDITION_FAILED`; klien lama tanpa keduanya tetap jalan (guard `expectedStatus` tetap). Salinan body dibuang sebelum fingerprint idempotency (retry header/body tetap replay); ETag diambil dari `version` respons. Fixture shared dan mock kasir web ikut `version`. (kz1m) kode `org.notification_policy.manage` (tanpa tag), owner otomatis lewat aturan katalog, `tenant_admin` eksplisit, label Indonesia; belum dipasang ke route. (lvx2) payload bertipe `checklist.completed`, `checklist.reminded`, `equipment_service.reminded`, `prep_list.created`.
+- Migrasi `0159_notification_policy_permission` (data saja, pola 0148; journal idx 155, when 1794238000000). Merge hanya setelah 0155-0158 cabang lain masuk journal, karena drizzle melewati `when` lebih tua yang datang belakangan.
+- Gate (di atas 94d769c6): tsc shared/api/web (heavy), eslint dan prettier 20 file, vitest 10 file 101 test, root DB-free 7 file 104 test, `db:generate` kosong.
+- Review K: reviewer Opus + architect (izin) dan reviewer Opus + architect (konkurensi); temuan nyata dibetulkan (fingerprint idempotency, ETag). Berikut: second-opinion Codex brief `docs/briefs/207b-second-opinion-small-contracts-pack.md` (folder utama), merge train. Keputusan founder terbuka: `tenant_admin` boleh mengatur batas biaya WhatsApp lewat izin ini.
+
 ## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
 
 - Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.
