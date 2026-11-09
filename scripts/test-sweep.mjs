@@ -17,6 +17,20 @@ import { fileURLToPath } from "node:url";
 export const PROJECT_PREFIX = "starter-pg-test-";
 export const OWNER_LABEL = "legend.test.owner";
 
+// Age (minutes) after which an unlabeled starter-pg-test-* resource is swept at
+// the start of a run. Unlabeled means made by hand or by an older
+// scripts/test.mjs. LEGEND_TEST_LEGACY_SWEEP_MIN overrides it; "off" disables.
+export const DEFAULT_LEGACY_SWEEP_MIN = 30;
+export function legacySweepMinutes(env = process.env) {
+  const raw = env.LEGEND_TEST_LEGACY_SWEEP_MIN;
+  if (raw === undefined || raw === "") return DEFAULT_LEGACY_SWEEP_MIN;
+  if (raw.toLowerCase() === "off") return undefined;
+  const minutes = Number(raw);
+  return Number.isFinite(minutes) && minutes >= 1
+    ? minutes
+    : DEFAULT_LEGACY_SWEEP_MIN;
+}
+
 // Tolerance for ps `lstart` (1 s resolution, derived from the wall clock): NTP
 // steps or a suspend can move it. A real PID reuse starts far later than this.
 export const START_TOLERANCE_SEC = 5;
@@ -176,7 +190,9 @@ function ageMinutes(createdAt, now) {
   // docker prints "2026-11-09 10:00:00 +0700 WIB" for both containers and
   // networks (networks: ISO-like with a "T" in some versions).
   const parsed = Date.parse(
-    createdAt.replace(/ [A-Z]{2,5}$/, "").replace(/^(\S+) (\S+) /, "$1T$2"),
+    createdAt
+      .replace(/ ([A-Z]{2,5}|[+-]\d{2,4})$/, "")
+      .replace(/^(\S+) (\S+) /, "$1T$2"),
   );
   return Number.isNaN(parsed) ? 0 : (now - parsed) / 60000;
 }

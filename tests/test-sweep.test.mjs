@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   START_TOLERANCE_SEC,
   currentNamespace,
+  legacySweepMinutes,
   ownerIsAlive,
   ownerLabelValue,
   parseOwner,
@@ -299,6 +300,67 @@ test("legacy unlabeled resources are swept only past the explicit age", () => {
   });
   assert.deepEqual(result.removed, [
     "container starter-pg-test-old-postgres-1",
+  ]);
+});
+
+test("legacySweepMinutes defaults to 30, honours override, off and bad values", () => {
+  assert.equal(legacySweepMinutes({}), 30);
+  assert.equal(legacySweepMinutes({ LEGEND_TEST_LEGACY_SWEEP_MIN: "" }), 30);
+  assert.equal(legacySweepMinutes({ LEGEND_TEST_LEGACY_SWEEP_MIN: "90" }), 90);
+  assert.equal(
+    legacySweepMinutes({ LEGEND_TEST_LEGACY_SWEEP_MIN: "off" }),
+    undefined,
+  );
+  assert.equal(
+    legacySweepMinutes({ LEGEND_TEST_LEGACY_SWEEP_MIN: "OFF" }),
+    undefined,
+  );
+  for (const bad of ["0", "-5", "abc"])
+    assert.equal(legacySweepMinutes({ LEGEND_TEST_LEGACY_SWEEP_MIN: bad }), 30);
+});
+
+test("default 30-minute legacy sweep takes a 31-minute unlabeled container, keeps a 10-minute one and a live labeled one", () => {
+  const mk = (id, mins, label = "") => ({
+    id,
+    name: `starter-pg-test-${id}-postgres-1`,
+    label,
+    createdAt: new Date(NOW - mins * 60000)
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d+Z$/, " +0000 UTC"),
+  });
+  const live = "100.x.h";
+  const docker = fakeDocker({
+    containers: [mk("a", 31), mk("b", 10), mk("c", 600, live)],
+  });
+  const result = sweepStaleTestResources({
+    ...host,
+    exec: docker.exec,
+    now: NOW,
+    legacyOlderThanMin: legacySweepMinutes({}),
+  });
+  assert.deepEqual(result.removed, ["container starter-pg-test-a-postgres-1"]);
+});
+
+test("legacy sweep parses a numeric zone name like +07", () => {
+  const docker = fakeDocker({
+    containers: [
+      {
+        id: "z1",
+        name: "starter-pg-test-zone-postgres-1",
+        label: "",
+        createdAt: "2026-11-09 06:00:00 +0700 +07",
+      },
+    ],
+  });
+  const result = sweepStaleTestResources({
+    ...host,
+    exec: docker.exec,
+    now: NOW,
+    legacyOlderThanMin: 30,
+  });
+  assert.deepEqual(result.removed, [
+    "container starter-pg-test-zone-postgres-1",
   ]);
 });
 

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pnpmCommand, root } from "./lib.mjs";
 import { provisionAppRole } from "./provision-app-role.mjs";
 import {
+  legacySweepMinutes,
   ownerLabelValue,
   removeProject,
   sweepStaleTestResources,
@@ -70,9 +71,13 @@ async function run(command, args, childEnv = env, capture = false) {
   });
 }
 
-// Remove what earlier killed runs left behind. Only projects whose owning
-// process is gone are touched, so runs of other agents stay alive.
-const swept = sweepStaleTestResources({ log: console.error });
+// Remove what earlier killed runs left behind. Labeled projects are touched only
+// when their owning process is gone, so runs of other agents stay alive.
+// Unlabeled ones (by hand, older script) go once older than 30 minutes.
+const swept = sweepStaleTestResources({
+  legacyOlderThanMin: legacySweepMinutes(),
+  log: console.error,
+});
 for (const item of swept.removed)
   console.log(`Removed leftover test resource: ${item}`);
 
