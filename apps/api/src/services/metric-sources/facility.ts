@@ -18,8 +18,16 @@
 // already existed (`created_at`; there is no retirement column, so a removed
 // unit is not detected), and used when it is available and an `in_use` or
 // `completed` ticket of the unit covers it, from `starts_at` to `ended_at`
-// (or `ends_at` while the ticket has no end). An incident is answered when it
-// has `responded_at`; it counts on the business day it was triggered.
+// (or, while the ticket has no end, up to the job's `now` capped at the day
+// end; never its planned `ends_at`). A unit under maintenance still counts
+// as available: its status has no history. Hours come from today's
+// `facilities.operating_hours`, which has no effective date yet (follow-up
+// card), so both minute readers set `keepFinal`: once a day is final, a later
+// change of hours never rewrites it.
+//
+// An incident is answered when it has `responded_at`; it counts on the
+// business day it was triggered. The response sums have their own reader
+// that holds the day (`pendingDay`) while any incident of it is unanswered.
 //
 // Unavailable (`source_not_built`), each for a missing table, link or
 // engine capability:
@@ -99,10 +107,11 @@ type Day = {
 
 const num = (value: unknown): number => Number(value);
 
-async function loadDay(
+/** The outlet's business day as a UTC range, plus the outlet's timezone. */
+async function dayRange(
   tx: Tx,
   { tenantId, outletId, businessDate }: DailyComputeInput,
-): Promise<Day> {
+) {
   const outlet = (
     await tx.execute(sql`
       SELECT timezone, business_day_cutoff FROM outlets
@@ -116,8 +125,17 @@ async function loadDay(
       businessDayCutoff: String(outlet.business_day_cutoff),
     }),
   );
+  return { ...range, timezone: String(outlet.timezone) };
+}
+
+async function loadDay(tx: Tx, input: DailyComputeInput): Promise<Day> {
+  const { tenantId, outletId } = input;
+  const range = await dayRange(tx, input);
   const startIso = range.start.toISOString();
   const endIso = range.end.toISOString();
+  // A running ticket is used up to the job's clock, never past the day end.
+  const runningTo = Math.min(input.now.getTime(), range.end.getTime());
+  const nowIso = input.now.toISOString();
 
   const units = (
     await tx.execute(sql`
@@ -159,16 +177,16 @@ async function loadDay(
     await tx.execute(sql`
       SELECT unit_id,
              extract(epoch FROM starts_at) * 1000 AS starts_at,
-             extract(epoch FROM coalesce(ended_at, ends_at)) * 1000 AS ends_at
+             extract(epoch FROM ended_at) * 1000 AS ended_at
         FROM access_tickets
        WHERE tenant_id = ${tenantId} AND outlet_id = ${outletId}
          AND status IN ('in_use', 'completed')
          AND starts_at < ${endIso}::timestamptz
-         AND coalesce(ended_at, ends_at) > ${startIso}::timestamptz`)
+         AND coalesce(ended_at, ${nowIso}::timestamptz) > ${startIso}::timestamptz`)
   ).rows.map((row: Row): Usage => ({
     unitId: String(row.unit_id),
     from: num(row.starts_at),
-    to: num(row.ends_at),
+    to: row.ended_at === null ? runningTo : num(row.ended_at),
   }));
 
   const incidents = (
@@ -189,7 +207,7 @@ async function loadDay(
   return {
     startMs: range.start.getTime(),
     endMs: range.end.getTime(),
-    timezone: String(outlet.timezone),
+    timezone: range.timezone,
     units,
     tickets,
     usages,
@@ -428,23 +446,46 @@ const FACILITY_UNIT_CODES = [
   "facility_overtime_sessions",
   "facility_overtime_seconds",
   "facility_incident_count",
-  "facility_incident_response_total_seconds",
-  "facility_incident_answered_count",
 ] as const;
 
-/** Total, facility and unit rows of the six sums above. */
+/** Total, facility and unit rows of the four sums above. */
 const facilityUnitReader: DailyMetricReader = {
   metricCodes: FACILITY_UNIT_CODES,
   dimensions: ["facility", "unit"],
   requiresDailyClose: false,
   async compute(input) {
     const day = await loadDay(input.tx, input);
-    return [
-      ...showerSessions(day),
-      ...overtime(day),
-      ...incidentCount(day),
-      ...incidentResponse(day),
-    ];
+    return [...showerSessions(day), ...overtime(day), ...incidentCount(day)];
+  },
+};
+
+const INCIDENT_RESPONSE_CODES = [
+  "facility_incident_response_total_seconds",
+  "facility_incident_answered_count",
+] as const;
+
+/**
+ * Response seconds and answered count: total, facility and unit rows. Held
+ * while an incident of the day is unanswered, since its answer still changes
+ * both sums.
+ */
+const incidentResponseReader: DailyMetricReader = {
+  metricCodes: INCIDENT_RESPONSE_CODES,
+  dimensions: ["facility", "unit"],
+  requiresDailyClose: false,
+  async pendingDay(input) {
+    const range = await dayRange(input.tx, input);
+    const open = await input.tx.execute(sql`
+      SELECT 1 FROM facility_incidents
+       WHERE tenant_id = ${input.tenantId} AND outlet_id = ${input.outletId}
+         AND triggered_at >= ${range.start.toISOString()}::timestamptz
+         AND triggered_at < ${range.end.toISOString()}::timestamptz
+         AND responded_at IS NULL
+       LIMIT 1`);
+    return open.rows.length > 0;
+  },
+  async compute(input) {
+    return incidentResponse(await loadDay(input.tx, input));
   },
 };
 
@@ -458,6 +499,7 @@ const showerMinutesReader: DailyMetricReader = {
   metricCodes: SHOWER_MINUTE_CODES,
   dimensions: ["facility", "unit"],
   requiresDailyClose: false,
+  keepFinal: true,
   async compute(input) {
     const day = await loadDay(input.tx, input);
     return minuteRows(
@@ -479,6 +521,7 @@ const unitMinutesReader: DailyMetricReader = {
   metricCodes: UNIT_MINUTE_CODES,
   dimensions: ["facility", "unit", "hour"],
   requiresDailyClose: false,
+  keepFinal: true,
   async compute(input) {
     const day = await loadDay(input.tx, input);
     return minuteRows(
@@ -519,6 +562,11 @@ export const facilitySources: MetricSourceFamilyModule = {
       kind: "daily",
       code,
       reader: facilityUnitReader,
+    })),
+    ...INCIDENT_RESPONSE_CODES.map((code): MetricSource => ({
+      kind: "daily",
+      code,
+      reader: incidentResponseReader,
     })),
     ...SHOWER_MINUTE_CODES.map((code): MetricSource => ({
       kind: "daily",

@@ -58,6 +58,10 @@ const NOW = new Date("2025-06-20T05:00:00Z");
 const DAY = "2025-06-10";
 const EMPTY_DAY = "2025-06-11";
 const NEVER_DAY = "2025-06-12";
+/** Day of the running-ticket check (round 3 fixes). */
+const RUN_DAY = "2025-06-13";
+/** Day of the incident-hold check (round 3 fixes). */
+const HOLD_DAY = "2025-06-14";
 let world: World;
 let other: World;
 
@@ -207,16 +211,22 @@ async function incident(
   w: World,
   outletId: string,
   facility: Facility,
-  input: { unit?: string; at: string; answeredAfterSeconds?: number },
-) {
-  const triggered = at(DAY, input.at);
+  input: {
+    unit?: string;
+    date?: string;
+    at: string;
+    answeredAfterSeconds?: number;
+  },
+): Promise<string> {
+  const id = randomUUID();
+  const triggered = at(input.date ?? DAY, input.at);
   await asOwner(w.tenantId, (client) =>
     client.query(
       `INSERT INTO facility_incidents (id, tenant_id, outlet_id, facility_id, unit_id, type, triggered_at,
                                        offline, responded_at)
        VALUES ($1, $2, $3, $4, $5, 'assist', $6, false, $7)`,
       [
-        randomUUID(),
+        id,
         w.tenantId,
         outletId,
         facility.id,
@@ -230,6 +240,7 @@ async function incident(
       ],
     ),
   );
+  return id;
 }
 
 async function makeWorld(label: string): Promise<World> {
@@ -611,6 +622,128 @@ describe("used and available minutes, derived ratios", () => {
       ],
     );
     expect(rows).toEqual([]);
+  });
+});
+
+describe("finality of facility rows (round 3 review fixes)", () => {
+  const dailyReader = (code: string) => {
+    const source = metricSourceOf(code);
+    if (source?.kind !== "daily") throw new Error(`${code} is not daily`);
+    return source.reader;
+  };
+  const recompute = (date: string, now: Date) =>
+    recomputeMetricsDaily(
+      context(world.tenantId),
+      world.outlet1,
+      businessDateSchema.parse(date),
+      businessDateSchema.parse(date),
+      { now },
+    );
+  /** Outlet 1's stored total row: the tenant-wide figure also waits on outlet 2. */
+  const stored = async (code: string, date: string) => {
+    const { rows } = await owner.query<{ value: string; finality: string }>(
+      `SELECT value_int::text AS value, finality FROM metrics_daily
+        WHERE tenant_id = $1 AND outlet_id = $2 AND metric_date = $3
+          AND metric_code = $4 AND dimension_key IS NULL`,
+      [world.tenantId, world.outlet1, date, code],
+    );
+    expect(rows, `${code} ${date}`).toHaveLength(1);
+    return { value: Number(rows[0]!.value), finality: rows[0]!.finality };
+  };
+
+  it("gives incident response its own held reader and keeps minute rows final", () => {
+    const response = dailyReader("facility_incident_response_total_seconds");
+    expect(dailyReader("facility_incident_answered_count")).toBe(response);
+    expect(response).not.toBe(dailyReader("facility_incident_count"));
+    expect(response.pendingDay).toBeTypeOf("function");
+    expect(dailyReader("facility_incident_count").pendingDay).toBeUndefined();
+    for (const code of [
+      "shower_used_minutes",
+      "shower_available_minutes",
+      "unit_used_minutes",
+      "unit_available_minutes",
+    ])
+      expect(dailyReader(code).keepFinal, code).toBe(true);
+    expect(dailyReader("shower_sessions").keepFinal).not.toBe(true);
+  });
+
+  it("holds response rows while an incident of the day is unanswered", async () => {
+    // DAY: W's incident is still open, so only the response sums wait.
+    expect(
+      (await stored("facility_incident_response_total_seconds", DAY)).finality,
+    ).toBe("estimate");
+    expect((await stored("facility_incident_count", DAY)).finality).toBe(
+      "final",
+    );
+    const open = await incident(world, world.outlet1, world.wfc, {
+      unit: "W1",
+      date: HOLD_DAY,
+      at: "09:00",
+    });
+    await recompute(HOLD_DAY, NOW);
+    const code = "facility_incident_response_total_seconds";
+    expect(await stored(code, HOLD_DAY)).toEqual({
+      value: 0,
+      finality: "estimate",
+    });
+    await asOwner(world.tenantId, (client) =>
+      client.query(
+        "UPDATE facility_incidents SET responded_at = triggered_at + interval '120 seconds' WHERE id = $1",
+        [open],
+      ),
+    );
+    await recompute(HOLD_DAY, NOW);
+    expect(await stored(code, HOLD_DAY)).toEqual({
+      value: 120,
+      finality: "final",
+    });
+  });
+
+  it("counts a running ticket as used up to now, not its planned end", async () => {
+    // A2, not W1: W1's ticket of DAY is still in use, so it runs on too.
+    await ticket(world, world.outlet1, world.shower, {
+      unit: "A2",
+      date: RUN_DAY,
+      from: "10:00",
+      to: "12:00",
+      status: "in_use",
+    });
+    const period = { start: RUN_DAY, end: RUN_DAY };
+    const a2 = unitDim(world.shower.units.A2!);
+    await recompute(RUN_DAY, new Date(at(RUN_DAY, "10:30")));
+    expect((await figure(world, "unit_used_minutes", a2, period)).value).toBe(
+      30,
+    );
+    // Still running after the day: used up to closing time (20:00).
+    await recompute(RUN_DAY, NOW);
+    expect((await figure(world, "unit_used_minutes", a2, period)).value).toBe(
+      600,
+    );
+  });
+
+  it("never rewrites the minutes of a closed day when hours change", async () => {
+    const setHours = (closesAt: string) =>
+      asOwner(world.tenantId, (client) =>
+        client.query(
+          "UPDATE facilities SET operating_hours = $2 WHERE id = $1",
+          [
+            world.shower.id,
+            JSON.stringify([
+              { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], opensAt: "08:00", closesAt },
+            ]),
+          ],
+        ),
+      );
+    await setHours("12:00");
+    try {
+      await recompute(DAY, NOW);
+    } finally {
+      await setHours("20:00");
+    }
+    expect(await stored("shower_available_minutes", DAY)).toEqual({
+      value: 1800,
+      finality: "final",
+    });
   });
 });
 
