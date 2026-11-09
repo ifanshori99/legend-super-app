@@ -1082,7 +1082,7 @@ export type PosShiftReport = z.infer<typeof posShiftReportSchema>;
 export const recordCashMovementInputSchema = clientInputSchema({
   type: cashMovementTypeSchema,
   amountIdr: positiveIdr,
-  reasonNote: z.string().min(4).max(500),
+  reasonNote: z.string().trim().min(4).max(500),
   idempotencyKey: idempotencyKeySchema,
 });
 

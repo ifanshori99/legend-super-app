@@ -847,6 +847,132 @@ describe("POS-03 cash in, cash out and drops", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("trims the reason before the length check: spaces alone are VALIDATION_ERROR and a padded reason is stored trimmed (legend-vor4)", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    for (const reasonNote of ["      ", "  ab  ", "\t\n  abc \n"]) {
+      const refused = await move(cashier, shift.id, { reasonNote });
+      expect(refused.status, JSON.stringify(reasonNote)).toBe(
+        VALIDATION_STATUS,
+      );
+    }
+    const padded = await move(cashier, shift.id, {
+      reasonNote: "   Beli gas elpiji  ",
+    });
+    expect(padded.status, JSON.stringify(padded.body)).toBe(201);
+    expect(padded.body.data.reasonNote).toBe("Beli gas elpiji");
+    const { rows } = await owner.query<{ reason_note: string }>(
+      "SELECT reason_note FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows.map((row) => row.reason_note)).toEqual(["Beli gas elpiji"]);
+  });
+
+  it("the database backstops a whitespace-only reason with btrim (legend-vor4)", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const insert = owner.query(
+      `INSERT INTO cash_movements
+         (tenant_id, outlet_id, shift_id, type, amount_idr, reason_note,
+          recorded_by, recorded_at, idempotency_key, request_fingerprint)
+       SELECT tenant_id, outlet_id, id, 'cash_in', 1000, '      ',
+              cashier_id, now(), $3, repeat('a', 64)
+         FROM pos_shifts WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, shift.id, randomUUID()],
+    );
+    await expect(insert).rejects.toThrow(/cash_movements_reason_check/);
+  });
+
+  it("refuses a cash in that would push the drawer figures past the safe integer, before it is stored (legend-1hza)", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier); // float Rp100.000
+    const overflow = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: Number.MAX_SAFE_INTEGER - FLOAT_IDR + 1,
+    });
+    // The service refuses (CoreError VALIDATION_ERROR = 400), not the schema.
+    expect(overflow.status, JSON.stringify(overflow.body)).toBe(400);
+    expect(overflow.body.error.code).toBe("VALIDATION_ERROR");
+    const { rows } = await owner.query(
+      "SELECT 1 FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows).toHaveLength(0);
+    // The exact bound is still allowed, and the shift can still be counted,
+    // but one more rupiah is not.
+    const exact = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: Number.MAX_SAFE_INTEGER - FLOAT_IDR,
+    });
+    expect(exact.status, JSON.stringify(exact.body)).toBe(201);
+    const over = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: 1,
+    });
+    expect(over.status, JSON.stringify(over.body)).toBe(400);
+    const counted = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(counted.status, JSON.stringify(counted.body)).toBe(201);
+  });
+
+  it("answers a retried refused cash out with the same refusal and counts it once toward the 2-refusal limit (legend-uw47)", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const key = randomUUID();
+    const body = {
+      type: "cash_out",
+      amountIdr: FLOAT_IDR + 1,
+      reasonNote: "Beli gas elpiji",
+      idempotencyKey: key,
+    };
+    const first = await move(cashier, shift.id, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(409);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const retry = await move(cashier, shift.id, body);
+      expect(retry.status, JSON.stringify(retry.body)).toBe(409);
+      expect(retry.body.error.code).toBe(first.body.error.code);
+      expect(retry.body.error.message).toBe(first.body.error.message);
+    }
+    const audit = () =>
+      owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
+            AND event->>'objectId' = $2`,
+        [tenant.tenantId, shift.id],
+      );
+    expect((await audit()).rows[0]?.n).toBe(1);
+    // The same key with another payload keeps the conflict behaviour.
+    const changed = await move(cashier, shift.id, {
+      ...body,
+      amountIdr: FLOAT_IDR + 2,
+    });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    // One unique refusal so far: a cash out that fits is still recorded.
+    const fits = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 10_000,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    // A second unique refusal uses up the allowance; the third attempt is
+    // refused whatever the amount.
+    const second = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: FLOAT_IDR + 5,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(second.status).toBe(409);
+    expect((await audit()).rows[0]?.n).toBe(2);
+    const blocked = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 1_000,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+  });
+
   it("refuses a movement by a cashier other than the shift cashier (403), even a supervisor", async () => {
     const owningCashier = await newCashier();
     const shift = await openShift(owningCashier);
