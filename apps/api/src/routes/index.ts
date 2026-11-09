@@ -61,11 +61,14 @@ import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
+import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -135,6 +138,9 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+// WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
+// the order router passes unmatched paths through.
+apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 // WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
@@ -151,6 +157,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);
+// Public e-receipt page and PDF by link token, tenant from the host (legend-93a).
+apiRouter.use("/public/receipts", publicReceiptRouter);
 // Supplier-facing PO PDF by share token (legend-9yz): hashed token, rate
 // limited, token redacted from request logs.
 apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
@@ -207,6 +215,8 @@ apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
 apiRouter.use("/devices", deviceRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
+apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
 
 // Registry-backed EdgeDeviceLookup for /api/edge/status `thisDevice`.
 installDeviceRegistryPorts();
