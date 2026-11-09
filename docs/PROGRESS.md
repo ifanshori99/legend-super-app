@@ -536,3 +536,13 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - Cron 20:47 dibatalkan (isinya sudah dikerjakan).
 - RAM kuning (Claude 8/4): 208 dan 209 menunggu slot Claude. G9syc (gate batch26), G6yu3 (tsc+test 201), G6o4c (gate e2e kasir), G5gti (tsc+test o839h) menunggu job latar.
 - Kuota Codex 7 hari: #2 sisa 14%, #3 sisa 23%.
+
+### 20:55 (CTO G8flk)
+- Codex 138 (G48jz): P1 `legend-76azz` (0135 `SET LOCAL lock_timeout TO DEFAULT`, belum rilis, perbaiki di tempat). Brief 213. Codex 134 (G77uw): reset produksi `--apply` aman; P1 `legend-2ol8g` (webhook DOIT nominal/payment tidak sah tetap settle), P1 `legend-3usn8` (worker refund bisa POST sesudah settle manual, bayar dua kali), P2 `legend-kl46s`. Brief 212. Keduanya resolved.
+- Terverifikasi test-runner: write-off 0hzqw (16 file, 358 lulus), npkpz (3 file, 36 lulus). Diantrekan ke merge train untuk batch27. G6yu3 resolved.
+- `legend-jcby0` (sinkron write-off ke edge) diputuskan wajib sebelum gerbang rilis; mulai sesudah hfq3z (file sama). Brief 210.
+- G93mi lanjut `legend-c9kbk` (brief 211, migrasi 0160 dipesan untuk cabang ini).
+- Mulai: G2ulr `legend-mks0q` (brief 208), Codex G01e8 (201b write-off), Codex G9vdi (144 multi-fund).
+- Lapor dan sedang diverifikasi: G5gti o839h (0157), G6o4c kasir-e2e-hydrate + ekaca, G5pst paket kontrak (0159). Pertanyaan founder: izin kebijakan notifikasi (batas biaya WhatsApp) untuk tenant_admin.
+- Urutan migrasi m1: 0155 payroll, 0156 write-off, 0157 edge PIN, 0158 self-heal, 0159 paket kontrak, 0160 c9kbk. Merge train menjaga `when` naik; migrasi yang datang terlambat dinaikkan `when`/idx-nya saat merge. jcby0 memakai nomor bebas berikut sesudah 0160 (brief 210 perlu disesuaikan saat mulai).
+- Antre slot Claude: 209 (xx22n), 212 (DOIT), 213 (0135), 210 (jcby0 sesudah hfq3z), umzos, paket triage berikut.
