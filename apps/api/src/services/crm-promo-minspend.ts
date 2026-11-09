@@ -13,9 +13,12 @@
 //   another outlet do not add up, and the once-per-day rule is per outlet.
 //   The facility is at the outlet, and outlet RLS (TEN-03) would hide another
 //   outlet's bills and rewards from an outlet-scoped checkout anyway.
-// - spend of a bill = `subtotal_idr - refunded_subtotal_idr` of every
-//   non-released promo application (the min_spend basis: bill value before
-//   promo, tax and service charge); a voided bill does not count.
+// - spend of a bill = the min_spend basis of every non-released promo
+//   application, less its refunded part; a voided bill does not count. The
+//   basis is the bill value before promo, tax and service charge (owner Q53):
+//   `subtotal_idr`, or for an outlet whose prices include tax the
+//   `minSpendSubtotalIdr` stored in the application `result`. The refunded
+//   part is proportional: floor(basis x (subtotal - refunded) / subtotal).
 //
 // How: the pure evaluator reads one bill's subtotal, so instead of changing it
 // this module rewrites the reward's `min_spend` amount to what is still
@@ -119,9 +122,17 @@ export async function sameDaySpendIdr(
     excludeOrderId?: string;
   },
 ): Promise<Idr> {
+  const subtotal = promotionOrderApplications.subtotalIdr;
+  const standing = sql`(${subtotal} - ${promotionOrderApplications.refundedSubtotalIdr})`;
+  const stored = sql`(${promotionOrderApplications.result} ->> 'minSpendSubtotalIdr')`;
   const [row] = await tx
     .select({
-      spend: sql<string>`coalesce(sum(${promotionOrderApplications.subtotalIdr} - ${promotionOrderApplications.refundedSubtotalIdr}), 0)`,
+      // No stored basis (older row, exclusive prices): the old formula.
+      spend: sql<string>`coalesce(sum(CASE
+        WHEN ${stored} IS NULL THEN ${standing}
+        WHEN ${subtotal} = 0 THEN 0
+        ELSE floor(${stored}::numeric * ${standing} / ${subtotal})
+      END), 0)`,
     })
     .from(promotionOrderApplications)
     .where(

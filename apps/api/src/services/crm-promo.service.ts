@@ -595,6 +595,9 @@ export async function updateStackingPolicy(
  * channel price list (ORD-03), the time from the server clock in the outlet
  * zone, no member context (the order service passes its own customer to the
  * engine ports). A presented code that is invalid is refused (422).
+ * No tax context here: `min_spend` compares the server-priced bill as given
+ * (no `minSpendSubtotalIdr`). The QR order service passes the pre-tax basis
+ * itself at inclusive outlets (Q53, bead legend-u5tkd).
  */
 export async function evaluateCheckoutPromotions(
   context: ScopedTenantContext,

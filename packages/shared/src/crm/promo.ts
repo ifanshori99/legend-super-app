@@ -75,7 +75,10 @@ export type PromotionOutletScope = z.infer<typeof promotionOutletScopeSchema>;
 
 /**
  * Conditions are ANDed. `min_spend` uses the bill value after item discounts
- * and before promo, tax and service charge, matching the loyalty earn basis.
+ * and before promo, tax and service charge (owner Q53). The evaluator reads it
+ * from `minSpendSubtotalIdr` when the caller supplies it (an outlet whose
+ * prices include tax and service, where `subtotalIdr` still carries them), and
+ * from `subtotalIdr` otherwise (exclusive pricing, where the two are equal).
  */
 export const promotionConditionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("min_spend"), amountIdr: positiveIdr }),
@@ -247,6 +250,13 @@ export const promoEvaluationInputSchema = z.strictObject({
   localDayOfWeek: z.number().int().min(0).max(6),
   localTime: timeOfDaySchema,
   subtotalIdr: nonnegativeIdr,
+  /**
+   * Bill value after item discounts, before promo, tax and service charge:
+   * the `min_spend` basis (owner Q53). Only an outlet whose prices include tax
+   * fills it; absent means `subtotalIdr` is already that value. The discount,
+   * `paidIdr` and revenue keep using `subtotalIdr`.
+   */
+  minSpendSubtotalIdr: nonnegativeIdr.optional(),
   lines: z.array(promoLineSchema).min(1),
   customer: promoCustomerSchema.nullable(),
   /** Set when the checkout presented a voucher for this promotion. */
@@ -370,7 +380,10 @@ function conditionFailure(
   for (const condition of promotion.conditions) {
     switch (condition.kind) {
       case "min_spend":
-        if (input.subtotalIdr < condition.amountIdr) return "min_spend_not_met";
+        if (
+          (input.minSpendSubtotalIdr ?? input.subtotalIdr) < condition.amountIdr
+        )
+          return "min_spend_not_met";
         break;
       case "channel":
         if (!condition.channels.includes(input.channel))
@@ -690,6 +703,12 @@ export const defaultPromoStackingPolicy: PromoStackingPolicy = Object.freeze({
 export const promotionApplicationResultSchema = z.strictObject({
   evaluations: z.array(promotionEvaluationSchema),
   totalDiscountIdr: nonnegativeIdr,
+  /**
+   * Stored with the application row only (never in a quote): the `min_spend`
+   * basis the order redeemed with, before tax and service (owner Q53). Absent
+   * on older rows and on exclusive-price orders: `subtotalIdr` is the basis.
+   */
+  minSpendSubtotalIdr: nonnegativeIdr.optional(),
 });
 export type PromotionApplicationResult = z.infer<
   typeof promotionApplicationResultSchema

@@ -497,6 +497,12 @@ export type PromoCheckoutInput = {
   readonly voucherCode: string | null;
   /** Server instant. */
   readonly at: Date;
+  /**
+   * Pre-promo bill before tax and service charge: the `min_spend` basis
+   * (owner Q53). Only an outlet whose prices include tax fills it; absent
+   * means the lines' total is that value.
+   */
+  readonly minSpendSubtotalIdr?: Idr;
 };
 
 type Prepared = {
@@ -794,6 +800,9 @@ async function prepare(
     localDayOfWeek: clock.localDayOfWeek,
     localTime: clock.localTime,
     subtotalIdr: idr(subtotal),
+    ...(checkout.minSpendSubtotalIdr === undefined
+      ? {}
+      : { minSpendSubtotalIdr: checkout.minSpendSubtotalIdr }),
     lines: [...checkout.lines],
     customer: checkout.customer,
     voucherPromotionId: voucherEvaluationId,
@@ -912,6 +921,8 @@ function fingerprintOf(checkout: PromoCheckoutInput): string {
           line.lineTotalIdr,
         ]),
         customer: checkout.customer,
+        // Omitted when absent, so older fingerprints stay valid.
+        minSpendSubtotalIdr: checkout.minSpendSubtotalIdr,
         code:
           checkout.voucherCode === null
             ? null
@@ -1085,7 +1096,12 @@ export async function redeemPromotions(
         "PROMO_APPLICATION_RELEASED",
         "Promo pesanan ini sudah dibatalkan.",
       );
-    return promotionApplicationResultSchema.parse(existing.result);
+    // The stored min_spend basis is bookkeeping, not part of the quote.
+    const stored = promotionApplicationResultSchema.parse(existing.result);
+    return {
+      evaluations: stored.evaluations,
+      totalDiscountIdr: stored.totalDiscountIdr,
+    };
   }
 
   const prepared = await prepare(tx, context, redeem, true);
@@ -1141,7 +1157,14 @@ export async function redeemPromotions(
     // Owner Q41: what the guest paid for the goods (payout ceiling).
     paidIdr: idr(prepared.input.subtotalIdr - result.totalDiscountIdr),
     rulesSnapshot: promotionRuleSnapshotSchema.parse(rulesSnapshot),
-    result,
+    // Q53: keep the min_spend basis for the same-day total and the refund recheck.
+    result:
+      prepared.input.minSpendSubtotalIdr === undefined
+        ? result
+        : {
+            ...result,
+            minSpendSubtotalIdr: prepared.input.minSpendSubtotalIdr,
+          },
     redeemedAt: now,
     redeemedBy:
       redeem.actorUserId === null

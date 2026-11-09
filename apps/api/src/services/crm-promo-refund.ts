@@ -438,12 +438,28 @@ export async function recomputeAfterPartialRefund(
   }
   const rules = await rulesOf(true);
 
+  const previous = promotionApplicationResultSchema.parse(application.result);
   const bill: PromoEvaluationInput = {
     at: application.redeemedAt.toISOString(),
     channel: application.channel,
     localDayOfWeek: 0,
     localTime: "00:00",
     subtotalIdr: idr(keptSubtotal),
+    // Q53: an application with a stored min_spend basis (prices include tax)
+    // is rechecked on the kept share of it, not on the kept gross.
+    ...(previous.minSpendSubtotalIdr === undefined
+      ? {}
+      : {
+          minSpendSubtotalIdr: idr(
+            application.subtotalIdr === 0
+              ? 0
+              : Number(
+                  (BigInt(previous.minSpendSubtotalIdr) *
+                    BigInt(keptSubtotal)) /
+                    BigInt(application.subtotalIdr),
+                ),
+          ),
+        }),
     lines: [...refund.keptLines],
     customer:
       customerId === null
@@ -455,7 +471,6 @@ export async function recomputeAfterPartialRefund(
   // Q19b: each line's ORIGINAL discount is its applied evaluation at
   // checkout (refunds never re-price evaluations, a withdrawal only flips
   // them to rejected). A value voucher's evaluation id is the voucher id.
-  const previous = promotionApplicationResultSchema.parse(application.result);
   const originalById = new Map<string, number>();
   for (const evaluation of previous.evaluations)
     if (evaluation.applied)
@@ -694,6 +709,10 @@ export async function recomputeAfterPartialRefund(
           : evaluation;
       }),
       totalDiscountIdr: totalDiscount,
+      // Keep the stored min_spend basis for the next recheck and same-day total.
+      ...(previous.minSpendSubtotalIdr === undefined
+        ? {}
+        : { minSpendSubtotalIdr: previous.minSpendSubtotalIdr }),
     });
   const refundedTotal = application.subtotalIdr - keptSubtotal;
   await tx
