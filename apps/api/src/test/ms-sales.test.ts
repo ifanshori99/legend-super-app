@@ -179,7 +179,7 @@ async function seedOrder(
     /** Method of the refund tender line; `null` stores a line without one. */
     refundMethod?: string | null;
   },
-) {
+): Promise<string> {
   const id = randomUUID();
   const discount = order.discount ?? 0;
   await owner.query(
@@ -245,6 +245,31 @@ async function seedOrder(
         `${D1}T06:00:00.000Z`,
       ],
     );
+  return id;
+}
+
+/** A captured tender line of a POS order (the order needs a `pos_orders` row). */
+async function seedTender(
+  w: World,
+  outlet: string,
+  orderId: string,
+  method: string,
+  amount: number,
+) {
+  await owner.query(
+    `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+       amount_idr, received_idr, change_idr, status, requested_at, resolved_at)
+     VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7, 'captured', now(), now())`,
+    [
+      w.tenantId,
+      outlet,
+      orderId,
+      method,
+      amount,
+      method === "cash" ? amount : null,
+      method === "cash" ? 0 : null,
+    ],
+  );
 }
 
 let world: World;
@@ -401,6 +426,8 @@ describe("sales metric source: stored figures", () => {
           hour: "10",
           employee: null,
           method: null,
+          tenders: [],
+          intentMethod: null,
         },
         {
           id: "2",
@@ -412,6 +439,8 @@ describe("sales metric source: stored figures", () => {
           hour: "11",
           employee: "e",
           method: null,
+          tenders: [],
+          intentMethod: null,
         },
       ],
       lines: [],
@@ -552,9 +581,146 @@ describe("sales metric source: backfill and registry", () => {
       "day_of_week",
       "menu_item",
       "menu_category",
+      "payment_method",
     ] as const)
       expect(metricSplitOf("net_sales", dimension), dimension).not.toBeNull();
     expect(metricSplitOf("discount_amount", "promo")).not.toBeNull();
+  });
+});
+
+describe("sales metric source: net_sales by payment method and category", () => {
+  const order = (
+    id: string,
+    net: number,
+    tenders: { method: string; amount: number }[],
+    intentMethod: string | null = null,
+  ) => ({
+    id,
+    channel: "pos",
+    subtotal: net,
+    discount: 0,
+    refund: 0,
+    net,
+    hour: "10",
+    employee: null,
+    method: null,
+    tenders,
+    intentMethod,
+  });
+  const amountOf = (
+    rows: ReturnType<typeof salesRows>,
+    key: string,
+    value: string,
+  ) =>
+    (
+      rows.find(
+        (row) => row.dimension?.key === key && row.dimension.value === value,
+      )?.value as { valueIdr: number } | undefined
+    )?.valueIdr;
+
+  it("pure: spreads an order net over its tenders, residual-free", () => {
+    const facts = {
+      orders: [
+        order("1", 100_000, [
+          { method: "cash", amount: 30_000 },
+          { method: "qris", amount: 70_000 },
+        ]),
+        order("2", 10_001, [
+          { method: "cash", amount: 1 },
+          { method: "qris", amount: 1 },
+        ]),
+        order("3", 20_000, [], "edc"),
+        order("4", 5_000, []),
+      ],
+      lines: [],
+      promos: [],
+      voids: [],
+      refundLines: [],
+      target: 0,
+    };
+    const rows = salesRows("net_sales", facts, D1);
+    expect(amountOf(rows, "payment_method", "cash")).toBe(30_000 + 5_001);
+    expect(amountOf(rows, "payment_method", "qris")).toBe(70_000 + 5_000);
+    expect(amountOf(rows, "payment_method", "edc")).toBe(20_000);
+    expect(amountOf(rows, "payment_method", "unassigned")).toBe(5_000);
+    const split = rows
+      .filter((row) => row.dimension?.key === "payment_method")
+      .reduce((a, row) => a + (row.value as { valueIdr: number }).valueIdr, 0);
+    expect(split).toBe(135_001);
+  });
+
+  it("pure: category parts of an order add up to its net exactly", () => {
+    const facts = {
+      orders: [order("1", 100, [{ method: "cash", amount: 100 }])],
+      lines: [
+        {
+          orderId: "1",
+          menuItemId: "a",
+          categoryId: "c1",
+          quantity: 1,
+          lineTotal: 1,
+        },
+        {
+          orderId: "1",
+          menuItemId: "b",
+          categoryId: "c2",
+          quantity: 1,
+          lineTotal: 1,
+        },
+        {
+          orderId: "1",
+          menuItemId: "c",
+          categoryId: "c3",
+          quantity: 1,
+          lineTotal: 1,
+        },
+      ],
+      promos: [],
+      voids: [],
+      refundLines: [],
+      target: 0,
+    };
+    const rows = salesRows("net_sales", facts, D1);
+    const parts = rows
+      .filter((row) => row.dimension?.key === "menu_category")
+      .reduce((a, row) => a + (row.value as { valueIdr: number }).valueIdr, 0);
+    expect(parts).toBe(100);
+  });
+
+  it("stored: payment_method rows add up to the net_sales total", async () => {
+    const w = await makeWorld();
+    const t1 = await seedOrder(w, w.outlet1, {
+      number: "T1",
+      channel: "pos",
+      subtotal: 100_000,
+      cashier: "cashier-t",
+      items: [{ menu: w.menuA, quantity: 1, unit: 100_000 }],
+    });
+    await seedTender(w, w.outlet1, t1, "cash", 30_000);
+    await seedTender(w, w.outlet1, t1, "qris", 70_000);
+    await seedOrder(w, w.outlet1, {
+      number: "T2",
+      channel: "gofood",
+      subtotal: 20_000,
+      items: [{ menu: w.menuB, quantity: 1, unit: 20_000 }],
+    });
+    await recomputeMetricsDaily(
+      context(w.tenantId),
+      w.outlet1,
+      date(D1),
+      date(D1),
+      { readers: salesReaders(), now: NOW },
+    );
+    const rows = await stored(w, w.outlet1);
+    expect(valueOf(rows, "net_sales")).toBe(120_000);
+    expect(valueOf(rows, "net_sales", "payment_method", "cash")).toBe(30_000);
+    expect(valueOf(rows, "net_sales", "payment_method", "qris")).toBe(70_000);
+    expect(valueOf(rows, "net_sales", "payment_method", "unassigned")).toBe(
+      20_000,
+    );
+    expect(valueOf(rows, "net_sales", "menu_category", w.category)).toBe(
+      120_000,
+    );
   });
 });
 

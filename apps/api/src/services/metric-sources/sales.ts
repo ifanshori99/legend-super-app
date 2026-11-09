@@ -5,7 +5,8 @@
 //   menu_sold_qty, sales_target) are computed per outlet-day from completed
 //   orders (`orders.status = 'completed'`, `orders.business_date`).
 // - Ledger codes (net_sales, discount_amount) keep their GL total (gl.ts); the
-//   splits here write operational rows plus a total row, and the engine adds
+//   splits here write operational rows plus a total row (`payment_method`
+//   spreads each order net over its captured tenders with `allocateByWeight`), and the engine adds
 //   the `__ledger_adjustment__` residual when it reads (never stored here).
 // - Net of one order = subtotal - discount - refunds (same definition as the
 //   AI helper `ai-metrics/sales.ts`, which imports its SQL from this file).
@@ -14,6 +15,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { idr } from "@starter/shared/core";
 import type { MetricValue } from "@starter/shared/metrics";
+import { allocateByWeight, PAYMENT_METHOD_UNASSIGNED } from "./payments-tax";
 import type {
   DailyComputeInput,
   DailyMetricReader,
@@ -75,6 +77,10 @@ type OrderFact = {
   hour: string;
   employee: string | null;
   method: string | null;
+  /** Captured tender lines (method, amount), in a fixed order. */
+  tenders: { method: string; amount: number }[];
+  /** Method of the paid payment intent (a QR order without a tender line). */
+  intentMethod: string | null;
 };
 type LineFact = {
   orderId: string;
@@ -112,10 +118,19 @@ async function loadFacts(
       (SELECT t.method FROM pos_order_tenders t
         WHERE t.tenant_id = o.tenant_id AND t.order_id = o.id
           AND t.status IN ('authorized', 'captured')
-        ORDER BY t.amount_idr DESC, t.id LIMIT 1) AS method
+        ORDER BY t.amount_idr DESC, t.id LIMIT 1) AS method,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('method', t.method,
+          'amount', t.amount_idr) ORDER BY t.method, t.id)
+        FROM pos_order_tenders t
+        WHERE t.tenant_id = o.tenant_id AND t.order_id = o.id
+          AND t.status = 'captured'), '[]'::jsonb) AS tenders,
+      pi.method AS intent_method
     FROM orders o
     JOIN outlets ou ON ou.tenant_id = o.tenant_id AND ou.id = o.outlet_id
     LEFT JOIN pos_orders po ON po.tenant_id = o.tenant_id AND po.order_id = o.id
+    LEFT JOIN payment_intents pi ON pi.tenant_id = o.tenant_id
+      AND pi.id = o.payment_intent_id
+      AND pi.status IN ('paid', 'partially_refunded', 'refunded')
     ${REFUNDS_JOIN}
     WHERE ${scope} AND o.status = 'completed'`);
   const lines = await tx.execute(sql`
@@ -161,6 +176,14 @@ async function loadFacts(
       hour: String(row.hour),
       employee: row.employee === null ? null : String(row.employee),
       method: row.method === null ? null : String(row.method),
+      tenders: (
+        (row.tenders ?? []) as { method: unknown; amount: unknown }[]
+      ).map((tender) => ({
+        method: String(tender.method),
+        amount: num(tender.amount),
+      })),
+      intentMethod:
+        typeof row.intent_method === "string" ? row.intent_method : null,
     })),
     lines: lines.rows.map((row) => ({
       orderId: String(row.order_id),
@@ -237,17 +260,49 @@ function rowsOf(
 const sum = (rows: readonly { amount: number }[]) =>
   rows.reduce((acc, row) => acc + row.amount, 0);
 
-/** Net sales of a line: the order net shared by line total (rounded). */
+/**
+ * Net sales of a line: the order net shared by line total (largest remainder),
+ * so the lines of one order add up to its net exactly.
+ */
 function lineNets(facts: SalesDayFacts): (LineFact & { net: number })[] {
   const orderById = new Map(facts.orders.map((order) => [order.id, order]));
-  return facts.lines.map((line) => {
-    const order = orderById.get(line.orderId);
-    const net =
-      order && order.subtotal > 0
-        ? Math.round((line.lineTotal * order.net) / order.subtotal)
-        : 0;
-    return { ...line, net };
-  });
+  const linesOf = new Map<string, LineFact[]>();
+  for (const line of facts.lines)
+    linesOf.set(line.orderId, [...(linesOf.get(line.orderId) ?? []), line]);
+  const nets = new Map<LineFact, number>();
+  for (const [orderId, lines] of linesOf) {
+    const order = orderById.get(orderId);
+    const parts = allocateByWeight(
+      order ? order.net : 0,
+      lines.map((line) => Math.max(0, line.lineTotal)),
+    );
+    lines.forEach((line, at) => nets.set(line, parts[at]!));
+  }
+  return facts.lines.map((line) => ({ ...line, net: nets.get(line) ?? 0 }));
+}
+
+/** Net of each order spread over its captured tenders by amount, per method. */
+function netByMethod(orders: readonly OrderFact[]): Entry[] {
+  const byMethod = new Map<string, number>();
+  for (const order of orders) {
+    // The same method on two tenders of one order is one share.
+    const merged = new Map<string, number>();
+    for (const tender of order.tenders)
+      merged.set(
+        tender.method,
+        (merged.get(tender.method) ?? 0) + tender.amount,
+      );
+    if (merged.size === 0)
+      merged.set(order.intentMethod ?? PAYMENT_METHOD_UNASSIGNED, 1);
+    const methods = [...merged.keys()];
+    const parts = allocateByWeight(order.net, [...merged.values()]);
+    methods.forEach((method, at) =>
+      byMethod.set(method, (byMethod.get(method) ?? 0) + parts[at]!),
+    );
+  }
+  return [...byMethod]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, amount]) => ({ key, amount }));
 }
 
 /** Pure part of the readers: the rows of one code from the day's facts. */
@@ -299,6 +354,7 @@ export function salesRows(
             (l) => l.categoryId,
             (l) => l.net,
           ),
+          payment_method: netByMethod(orders),
         },
       );
     }
@@ -492,6 +548,7 @@ const netSalesSplits = reader("net_sales", [
   "day_of_week",
   "menu_item",
   "menu_category",
+  "payment_method",
 ]);
 const discountSplits = reader("discount_amount", [
   "channel",
