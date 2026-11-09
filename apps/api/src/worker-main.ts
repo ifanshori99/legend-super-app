@@ -78,6 +78,7 @@ import {
 } from "./worker/relay";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
+import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
 import { runAiForecastJob } from "./worker/ai-forecast.job.ts";
 import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
@@ -371,6 +372,13 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // Parked staff PIN / POS override edge rows of outlets that never send
+    // another live access event (legend-0q3r); self-throttled.
+    try {
+      await sweepParkedAccessEvents(context);
+    } catch {
+      console.error("Parked access drain sweep failed");
     }
     // WS-12 AI-07 rule-based forecast, next 7 days per outlet (legend-hkd4);
     // self-throttled, never blocks the relay.

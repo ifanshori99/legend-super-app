@@ -50,6 +50,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   applyStaffPinLocked,
+  drainParkedAccessEvents,
   registerAccessEdgeApplier,
 } from "../edge/access-applier.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -86,6 +87,10 @@ import {
   STAFF_PIN_SYNC_LIMIT_DEFAULT,
 } from "../services/staff-pin-sync.ts";
 import { createBuiltinWorkerTransport } from "../worker/transport.ts";
+import {
+  resetAccessDrainSweepThrottle,
+  sweepParkedAccessEvents,
+} from "../worker/access-drain.job.ts";
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -1728,5 +1733,239 @@ describe("legend-kyie review K round 3 re-review", () => {
     const [row] = await pinRows(userId);
     expect(row!.pin_hash).toBe(material.pinHash);
     expect(await pinVerifies(userId, "482916", row!)).toBe(true);
+  });
+});
+
+// ----------------------------------------------------- sweep of parked rows
+
+// legend-0q3r: rows parked before the applier existed were only replayed when a
+// live access event of the same outlet arrived. A worker sweep replays them for
+// outlets that never send another one. All sweeps below pass `force: true` so
+// the per-tenant throttle never makes a test depend on timing.
+describe("legend-0q3r sweep of parked access rows", () => {
+  const tenantWide = (tid: string): ScopedTenantContext =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tid,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+  const sweep = (
+    options: {
+      batchLimit?: number;
+      maxBatches?: number;
+      outletLimit?: number;
+    } = {},
+    tid = tenantId,
+  ) => sweepParkedAccessEvents(tenantWide(tid), { ...options, force: true });
+
+  const whereA = () => ({
+    tenant: tenantId,
+    outlet: outletA,
+    edgeNodeId: node.scope.edgeNodeId,
+  });
+  const whereB = () => ({
+    tenant: tenantId,
+    outlet: outletB,
+    edgeNodeId: nodeB.scope.edgeNodeId,
+  });
+  const appliedCount = async (events: EventEnvelope[]) => {
+    let applied = 0;
+    for (const event of events)
+      if ((await parkedRow(event.id))!.applied_at !== null) applied += 1;
+    return applied;
+  };
+
+  beforeEach(async () => {
+    resetAccessDrainSweepThrottle();
+    // Assumption: earlier tests may leave pending access rows (for example the
+    // other-outlet rows of the replay test). Retire them with the owner so each
+    // test here counts only its own rows; they are not part of what is asserted.
+    await owner.query(
+      `UPDATE edge_deferred_events
+          SET applied_at = now(), apply_outcome = 'not_applicable'
+        WHERE tenant_id = ANY($1::uuid[]) AND applied_at IS NULL`,
+      [[tenantId, tenant2Id]],
+    );
+  });
+
+  it("applies a parked override and lock of an outlet that never sends a live event, once", async () => {
+    const requester = await newUser();
+    const approver = await newUser();
+    const lockedUser = await newUser();
+    await seedPin(lockedUser, "135790", { setAtMs: Date.now() - HOUR });
+    const override = overrideEvent({
+      requestedBy: requester,
+      approvedBy: approver,
+    });
+    const lock = pinLockedEvent({
+      userId: lockedUser,
+      lockedUntilMs: Date.now() + 10 * MINUTE,
+      occurredAtMs: Date.now() - MINUTE,
+    });
+    await seedParked(override, "deferred", whereA());
+    await seedParked(lock, "deferred", whereA());
+
+    // No live event arrives: the rows stay parked and nothing is applied.
+    expect((await parkedRow(override.id))!.applied_at).toBeNull();
+    expect((await parkedRow(lock.id))!.applied_at).toBeNull();
+    expect(
+      await overrideAudit(override.payload.overrideId as string),
+    ).toHaveLength(0);
+
+    const result = await sweep();
+
+    expect(result).not.toBeNull();
+    expect(result!.failedOutlets).toBe(0);
+    const appliedOverride = await parkedRow(override.id);
+    expect(appliedOverride!.apply_outcome).toBe("applied");
+    expect(appliedOverride!.applied_at).not.toBeNull();
+    expect((await parkedRow(lock.id))!.apply_outcome).toBe("applied");
+    const audit = await overrideAudit(override.payload.overrideId as string);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.outlet_id).toBe(outletA);
+    const [locked] = await pinRows(lockedUser);
+    expect(locked!.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
+
+    // A second sweep changes nothing: same timestamp, still one audit row.
+    await sweep();
+    const again = await parkedRow(override.id);
+    expect(again!.apply_outcome).toBe("applied");
+    expect(again!.applied_at!.toISOString()).toBe(
+      appliedOverride!.applied_at!.toISOString(),
+    );
+    expect(
+      await overrideAudit(override.payload.overrideId as string),
+    ).toHaveLength(1);
+  });
+
+  it("drains no more than batchLimit x maxBatches rows per call and finishes the rest over further sweeps", async () => {
+    const requester = await newUser();
+    const approver = await newUser();
+    const events: EventEnvelope[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const event = overrideEvent({
+        requestedBy: requester,
+        approvedBy: approver,
+      });
+      await seedParked(event, "deferred", whereA());
+      events.push(event);
+    }
+
+    const first = await sweep({ batchLimit: 2, maxBatches: 1 });
+    expect(first!.drained).toBeLessThanOrEqual(2);
+    expect(await appliedCount(events)).toBe(2);
+
+    await sweep({ batchLimit: 2, maxBatches: 1 });
+    expect(await appliedCount(events)).toBe(4);
+
+    await sweep({ batchLimit: 2, maxBatches: 1 });
+    expect(await appliedCount(events)).toBe(5);
+
+    for (const event of events)
+      expect(
+        await overrideAudit(event.payload.overrideId as string),
+      ).toHaveLength(1);
+  });
+
+  it("applies every row exactly once when sweeps and lazy drains run in parallel", async () => {
+    const requester = await newUser();
+    const approver = await newUser();
+    const events: EventEnvelope[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const event = overrideEvent({
+        requestedBy: requester,
+        approvedBy: approver,
+      });
+      await seedParked(event, "deferred", whereA());
+      events.push(event);
+    }
+
+    await Promise.all([
+      sweep(),
+      sweep(),
+      sweep(),
+      withTenant(db, node.context, (tx) =>
+        drainParkedAccessEvents(tx, meta(), outletIdSchema.parse(outletA)),
+      ),
+      withTenant(db, node.context, (tx) =>
+        drainParkedAccessEvents(tx, meta(), outletIdSchema.parse(outletA)),
+      ),
+      withTenant(db, node.context, (tx) =>
+        drainParkedAccessEvents(tx, meta(), outletIdSchema.parse(outletA)),
+      ),
+    ]);
+
+    expect(await appliedCount(events)).toBe(12);
+    for (const event of events) {
+      expect((await parkedRow(event.id))!.apply_outcome).toBe("applied");
+      expect(
+        await overrideAudit(event.payload.overrideId as string),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("stays inside the tenant and the outlet, and a refused row does not block the others", async () => {
+    const requester = await newUser();
+    const approver = await newUser();
+    // Refused (requester == approver) is seeded first so it is the oldest row.
+    const refused = overrideEvent({
+      requestedBy: approver,
+      approvedBy: approver,
+    });
+    const goodA = overrideEvent({
+      requestedBy: requester,
+      approvedBy: approver,
+    });
+    const goodB = overrideEvent({
+      requestedBy: requester,
+      approvedBy: approver,
+      outlet: outletB,
+    });
+    const otherTenant = overrideEvent({
+      requestedBy: requester,
+      approvedBy: approver,
+      tenant: tenant2Id,
+      outlet: outlet2,
+    });
+    await seedParked(refused, "deferred", whereA());
+    await seedParked(goodA, "deferred", whereA());
+    await seedParked(goodB, "deferred", whereB());
+    await seedParked(otherTenant, "deferred", {
+      tenant: tenant2Id,
+      outlet: outlet2,
+      edgeNodeId: node2.scope.edgeNodeId,
+    });
+
+    const result = await sweep();
+
+    expect(result).not.toBeNull();
+    expect(result!.failedOutlets).toBe(0);
+    // The refused row is marked refused, writes no audit row, and the good
+    // row of the same outlet is still applied.
+    const refusedRow = await parkedRow(refused.id);
+    expect(refusedRow!.apply_outcome).toBe("refused");
+    expect(refusedRow!.applied_at).not.toBeNull();
+    expect(
+      await overrideAudit(refused.payload.overrideId as string),
+    ).toHaveLength(0);
+    expect((await parkedRow(goodA.id))!.apply_outcome).toBe("applied");
+    const auditA = await overrideAudit(goodA.payload.overrideId as string);
+    expect(auditA).toHaveLength(1);
+    expect(auditA[0]!.outlet_id).toBe(outletA);
+
+    // The row of the other outlet is applied to its own outlet only.
+    expect((await parkedRow(goodB.id))!.apply_outcome).toBe("applied");
+    const auditB = await overrideAudit(goodB.payload.overrideId as string);
+    expect(auditB).toHaveLength(1);
+    expect(auditB[0]!.outlet_id).toBe(outletB);
+
+    // The sweep of tenant 1 never touches tenant 2.
+    expect((await parkedRow(otherTenant.id, tenant2Id))!.applied_at).toBeNull();
+    expect(
+      await overrideAudit(otherTenant.payload.overrideId as string, tenant2Id),
+    ).toHaveLength(0);
   });
 });
