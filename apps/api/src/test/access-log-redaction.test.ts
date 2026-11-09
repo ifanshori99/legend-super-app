@@ -71,10 +71,7 @@ describe("Access log redaction of public PO share tokens", () => {
   it.each([
     ["relative path", `/api/public/purchase-orders/${TOKEN}`],
     ["relative path with query", `/api/public/purchase-orders/${TOKEN}?x=1`],
-    [
-      "absolute URL",
-      `http://example.test/api/public/purchase-orders/${TOKEN}`,
-    ],
+    ["absolute URL", `http://example.test/api/public/purchase-orders/${TOKEN}`],
     [
       "absolute URL with query",
       `http://example.test:8080/api/public/purchase-orders/${TOKEN}?x=1`,
