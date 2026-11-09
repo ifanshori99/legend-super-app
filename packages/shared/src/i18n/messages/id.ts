@@ -3410,7 +3410,7 @@ export const id = {
   designSystem: {
     title: "Design System Platform",
     intro:
-      "Token, tema, dan komponen yang dipakai semua layar Legend Super App. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
+      "Token, tema, dan komponen yang dipakai semua layar aplikasi. Bangun layar hanya dari isi halaman ini, lalu baca DESIGN.md.",
     controls: "Pengaturan tampilan",
     sections: {
       colors: "Warna",
