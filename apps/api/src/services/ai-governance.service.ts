@@ -223,7 +223,13 @@ export async function getUsageSummary(
 ): Promise<AiUsageSummary> {
   const now = new Date();
   const month = usageMonthOf(now);
-  const canSeeBudget = access.permissions.includes("ai.governance.manage");
+  // Tenant-wide spend needs the permission at the tenant target, like the
+  // /governance routes (requireTenantPermission); `permissions` is the flat
+  // union over every scope, so an outlet or station grant would pass it
+  // (legend-cot3).
+  const canSeeBudget = access.allows("ai.governance.manage", {
+    type: "tenant",
+  });
   return withTenant(db, gatewayContext(access), async (tx) => {
     const row = await getAiSettingsRow(tx, access);
     const settings = row ? settingsRowToView(row) : defaultAiSettings(access);
