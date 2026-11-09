@@ -1045,7 +1045,8 @@ export async function orderDetail(
           ? (extra?.voidApprovalRequestId ?? null)
           : null,
         voidOverrideId: voided ? (extra?.voidOverrideId ?? null) : null,
-        costSnapshotIdr: item.costSnapshotIdr ?? 0,
+        // HPP is finance data (inventory.cost.view); the POS DTO never carries it.
+        costSnapshotIdr: null,
         createdAt: item.createdAt.toISOString(),
       };
     }),

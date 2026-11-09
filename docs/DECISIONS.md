@@ -76,9 +76,19 @@ terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
    dengan harga hari ini memalsukan "saat terjual". Baris lama tetap NULL dan
    tampil sebagai residual WS-11.
 
-Tindak lanjut yang dicatat: DTO `pos-order-support.ts` memetakan NULL ke 0
-(`?? 0`), dan `ai-metrics/sales.ts` menjumlah dengan `COALESCE`, sehingga HPP
-yang tidak diketahui terbaca 0 di dua tempat itu. Perbaikannya kartu terpisah.
+Tindak lanjut (legend-n8r5m, cabang `ws/cost-snapshot-edge`): DTO order POS
+(`pos-order-support.ts`) tidak lagi memetakan NULL ke 0. HPP adalah data
+finance (`inventory.cost.view`) sedangkan DTO POS bisa dibaca peran dengan
+`order.view` saja, jadi DTO POS selalu mengirim `costSnapshotIdr: null` (tidak
+diketahui / tidak ditampilkan); pembaca biaya memakai SQL. `ai-metrics/sales.ts`
+masih menjumlah dengan `COALESCE` (HPP tak diketahui terbaca 0); berkas itu
+milik alur WS-11 dan menunggu di sana.
+
+Pesanan lewat edge: cloud tidak punya titik ingest `order_items` untuk pesanan
+edge. Applier `qr_order.placed` hanya berjalan di edge (arah cloud_to_edge, baris
+itu salinan dari pesanan cloud yang sudah ber-HPP) dan event `order.*` dari edge
+hanya diparkir di `edge_deferred_events`. Pengisian HPP untuk pesanan POS edge
+menunggu applier backfill (legend-078n).
 
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
