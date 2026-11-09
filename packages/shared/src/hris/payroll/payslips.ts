@@ -103,6 +103,12 @@ export const payslipTaxSchema = z
     /** Lebih potong that returns to the employer (tax it bore earlier). */
     pph21EmployerRefundIdr: nonNegativeIdr,
     /**
+     * Part of `pph21EmployerRefundIdr` that returns an earlier gross-up tax
+     * allowance (journal: 6101 salary expense); the rest returns borne tax
+     * (6111). Absent = 0.
+     */
+    pph21EmployerAllowanceRefundIdr: nonNegativeIdr.optional(),
+    /**
      * The employee's PPh 21 above the pay left (withholding cap): deposited by
      * the employer and owed back by the employee as an employee receivable,
      * collected from later pay (founder decision B8, bead legend-kn3n). Not a
@@ -125,6 +131,13 @@ export const payslipTaxSchema = z
       tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr ===
       tax.taxableGrossIdr,
     { message: "scheme bases must sum to taxableGrossIdr" },
+  )
+  .refine(
+    (tax) =>
+      (tax.pph21EmployerAllowanceRefundIdr ?? 0) <= tax.pph21EmployerRefundIdr,
+    {
+      message: "employer allowance refund cannot exceed the employer refund",
+    },
   )
   .refine(
     (tax) => !((tax.pph21ReceivableIdr ?? 0) > 0 && tax.pph21RefundIdr > 0),
@@ -344,6 +357,12 @@ export const payrollRunTotalsSchema = z
     pph21RefundIdr: nonNegativeIdr,
     /** Lebih potong that returns to the employer (tax it bore earlier). */
     pph21EmployerRefundIdr: nonNegativeIdr,
+    /**
+     * Part of `pph21EmployerRefundIdr` that returns an earlier gross-up tax
+     * allowance. Journal: Cr salary_expense (the borne rest is Cr
+     * pph21_borne_expense).
+     */
+    pph21EmployerAllowanceRefundIdr: nonNegativeIdr,
     loanRepaymentIdr: nonNegativeIdr,
     /**
      * PPh 21 the employees could not have withheld this run, raised as an
@@ -397,6 +416,11 @@ export const payrollRunTotalsSchema = z
         "pph21Idr",
         "PPh 21 = withheld + employer borne + receivable - refund - employer refund",
       );
+    if (t.pph21EmployerAllowanceRefundIdr > t.pph21EmployerRefundIdr)
+      issue(
+        "pph21EmployerAllowanceRefundIdr",
+        "employer allowance refund cannot exceed the employer refund",
+      );
     if (t.serviceChargeIdr + t.reimbursementIdr + t.pph21RefundIdr > t.grossIdr)
       issue(
         "serviceChargeIdr",
@@ -431,6 +455,9 @@ export function sumPayrollRunTotals(
     pph21EmployerBorneIdr: total((s) => s.tax.pph21EmployerBorneIdr),
     pph21RefundIdr: total((s) => s.tax.pph21RefundIdr),
     pph21EmployerRefundIdr: total((s) => s.tax.pph21EmployerRefundIdr),
+    pph21EmployerAllowanceRefundIdr: total((s) =>
+      idr(s.tax.pph21EmployerAllowanceRefundIdr ?? 0),
+    ),
     loanRepaymentIdr: lineTotal((l) => l.category === "loan_installment"),
     pph21ReceivableIdr: total((s) => idr(s.tax.pph21ReceivableIdr ?? 0)),
     pph21ReceivableCollectedIdr: lineTotal(

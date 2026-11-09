@@ -2,6 +2,8 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+<<<<<<< HEAD
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
@@ -92,6 +94,19 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus dan architect, dua kali re-review; temuan nyata dibetulkan.
 - Berikut: legend-kyie (P1, cloud menerapkan event PIN dan override), legend-vw3d (kategori alarm sendiri), legend-tbl4 (index outbox, test tanpa supervisor). Brief second opinion: `docs/briefs/158-second-opinion-edge-event-class.md` (tidak di-commit).
   \=======
+  \=======
+
+## legend-4n3r + legend-w6vah: posting jurnal payroll ke buku besar, refund PPh21 perusahaan dipisah (engineer, cabang `ws/payroll-posting`, 2026-11-09)
+
+- Sudah: consumer `apps/api/src/services/payroll-gl-consumer.ts` dipasang di `worker-main.ts` (cloud saja). `payroll.locked` memposting jurnal run; `payroll.paid` (rule baru: Dr 2103, Cr 1103/1102) melunasi Utang Gaji; `payroll.reversed` membalik entri lock lewat `reverseJournalInTransaction` (kunci unik `journal_entries_reversal_once_key`); kasbon dan reimbursement tunai diposting; reimbursement payout payroll dilewati. Helper emit `payroll-events.ts` untuk layanan run (legend-07eg, belum ada).
+- Sudah: refund PPh21 perusahaan dipisah proporsional: bagian tunjangan gross-up kembali ke 6101, sisanya ke 6111 (`pph21EmployerAllowanceRefundIdr`). Payload `payroll.paid` membawa `bankTransferIdr`/`cashIdr`.
+- Review K: reviewer Opus (2 temuan: flag akuntansi dimatikan setelah lock, run nol) dan architect (tanggal kalender Jakarta, tanggal lock dan reversal, reversal manual, run sudah dibayar, cross-check per baris, batas bagian ditanggung). Semua dibetulkan dan diuji.
+- Untuk legend-07eg: lock harus menolak periode tutup di transaksi lock; jalur paid-lalu-reversed dilarang state machine run.
+- `docs/briefs/174-dfuzz.mts` tidak bisa jalan (impor `./sim.mts` tidak ada); fuzz 2500 kasus di `accounting-payroll-journal.test.ts` dipakai dengan pemisahan baru.
+- Second-opinion Codex: `docs/briefs/182b-second-opinion-payroll-posting.md` di folder utama (tidak di-commit).
+- Metrik sesi 4479e5 (16:40-17:54, tugas s8a3 + 4n3r/w6vah): biaya* 7478k, 25 subagent (Claude saja, Codex 0), puncak 4 jalan bersamaan, rata-rata 0.56 subagent jalan.
+
+> > > > > > > 0e26cf35
 
 ## legend-s8a3: jurnal payroll seimbang (engineer, cabang `ws/payroll-journal`, 2026-11-09)
 

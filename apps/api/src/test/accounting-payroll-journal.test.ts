@@ -10,6 +10,10 @@
 // 2. the reversal is the exact mirror of the lock;
 // 3. a seeded property test over payslips built with the real PPh 21 engine
 //    (`computePayslipTax`), summed by `sumPayrollRunTotals`.
+//
+// The employer refund is split (legend-w6vah): the part returning an earlier
+// gross-up tax allowance credits 6101 (the allowance was booked there), the
+// rest credits 6111 (employer-borne PPh 21).
 
 import { describe, expect, it } from "vitest";
 import {
@@ -124,7 +128,9 @@ type Parts = {
   borne?: number;
   receivable?: number;
   refund?: number;
+  /** Total employer refund; `employerAllowanceRefund` is the 6101 part of it. */
   employerRefund?: number;
+  employerAllowanceRefund?: number;
   loan?: number;
   collected?: number;
   other?: number;
@@ -140,6 +146,7 @@ function totalsOf(parts: Parts): PayrollRunTotals {
     receivable: 0,
     refund: 0,
     employerRefund: 0,
+    employerAllowanceRefund: 0,
     loan: 0,
     collected: 0,
     other: 0,
@@ -161,6 +168,7 @@ function totalsOf(parts: Parts): PayrollRunTotals {
     pph21EmployerBorneIdr: p.borne,
     pph21RefundIdr: p.refund,
     pph21EmployerRefundIdr: p.employerRefund,
+    pph21EmployerAllowanceRefundIdr: p.employerAllowanceRefund,
     loanRepaymentIdr: p.loan,
     pph21ReceivableIdr: p.receivable,
     pph21ReceivableCollectedIdr: p.collected,
@@ -231,11 +239,34 @@ const cases: [string, Parts, ByCode][] = [
     },
   ],
   [
-    "employer refund 40.000 credits 6111",
+    "employer refund 40.000 of borne tax credits 6111",
     { ...base, employerRefund: 40_000 },
     {
       "6101": { debit: 10_000_000, credit: 0 },
       "6111": { debit: 0, credit: 40_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 210_000 },
+    },
+  ],
+  [
+    "employer refund 40.000 of a gross-up allowance credits 6101, not 6111",
+    { ...base, employerRefund: 40_000, employerAllowanceRefund: 40_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 40_000 },
+      "6102": { debit: 400_000, credit: 0 },
+      "2103": { debit: 0, credit: 9_450_000 },
+      "2104": { debit: 0, credit: 700_000 },
+      "2202": { debit: 0, credit: 210_000 },
+    },
+  ],
+  [
+    "employer refund 40.000 split 30.000 allowance / 10.000 borne",
+    { ...base, employerRefund: 40_000, employerAllowanceRefund: 30_000 },
+    {
+      "6101": { debit: 10_000_000, credit: 30_000 },
+      "6111": { debit: 0, credit: 10_000 },
       "6102": { debit: 400_000, credit: 0 },
       "2103": { debit: 0, credit: 9_450_000 },
       "2104": { debit: 0, credit: 700_000 },
@@ -289,6 +320,7 @@ const cases: [string, Parts, ByCode][] = [
       receivable: 200_000,
       refund: 90_000,
       employerRefund: 40_000,
+      employerAllowanceRefund: 25_000,
       loan: 500_000,
       collected: 100_000,
       other: 75_000,
@@ -296,9 +328,10 @@ const cases: [string, Parts, ByCode][] = [
       reimbursement: 300_000,
     },
     {
-      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = other 75.000
-      "6101": { debit: 18_610_000, credit: 75_000 },
-      "6111": { debit: 124_062, credit: 40_000 },
+      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = other 75.000 +
+      // the allowance part 25.000 of the employer refund 40.000
+      "6101": { debit: 18_610_000, credit: 100_000 },
+      "6111": { debit: 124_062, credit: 15_000 },
       "2106": { debit: 1_000_000, credit: 0 },
       "6110": { debit: 300_000, credit: 0 },
       "6102": { debit: 400_000, credit: 0 },
@@ -342,11 +375,12 @@ describe("payroll.locked from run totals", () => {
   });
 
   it("maps totals to the documented amount keys", () => {
-    const [, parts] = cases[8]!;
+    const [, parts] = cases.find(([name]) => name === "everything at once")!;
     expect(payrollJournalAmounts(totalsOf(parts))).toEqual({
       salaryExpenseIdr: 18_610_000,
       pph21EmployerBorneIdr: 124_062,
-      pph21EmployerRefundIdr: 40_000,
+      pph21EmployerAllowanceRefundIdr: 25_000,
+      pph21EmployerBorneRefundIdr: 15_000,
       otherDeductionsIdr: 75_000,
       serviceChargeIdr: 1_000_000,
       reimbursementIdr: 300_000,
@@ -392,10 +426,45 @@ describe("payroll.reversed mirrors payroll.locked", () => {
   });
 
   it("locked and reversed net to zero per account", () => {
-    const totals = totalsOf(cases[8]![1]);
+    const everything = cases.find(([name]) => name === "everything at once")!;
+    const totals = totalsOf(everything[1]);
     const both = summarise([...lockLines(totals), ...reverseLines(totals)]);
     for (const row of Object.values(both.byCode))
       expect(row.debit).toBe(row.credit);
+  });
+});
+
+describe("payroll.paid settles the salaries payable", () => {
+  it("debits 2103 by the net and credits bank and petty cash by the split", () => {
+    const { byCode, debit, credit } = summarise(
+      build(rule("payroll.paid"), {
+        netIdr: 9_450_000,
+        bankTransferIdr: 9_000_000,
+        cashIdr: 450_000,
+      }),
+    );
+    expect(byCode).toEqual({
+      "2103": { debit: 9_450_000, credit: 0 },
+      "1103": { debit: 0, credit: 9_000_000 },
+      "1102": { debit: 0, credit: 450_000 },
+    });
+    expect(debit).toBe(credit);
+  });
+
+  it("lock then pay nets 2103 to zero", () => {
+    const totals = totalsOf({ ...base, employerRefund: 40_000 });
+    const both = summarise([
+      ...lockLines(totals),
+      ...build(rule("payroll.paid"), {
+        netIdr: totals.netIdr,
+        bankTransferIdr: totals.bankTransferIdr,
+        cashIdr: totals.cashIdr,
+      }),
+    ]);
+    expect(both.byCode["2103"]).toEqual({
+      debit: totals.netIdr,
+      credit: totals.netIdr,
+    });
   });
 });
 
@@ -490,6 +559,133 @@ describe("run totals schema guards the journal identities", () => {
         pph21Idr: -10,
       }).success,
     ).toBe(true);
+  });
+});
+
+// ---- legend-w6vah: employer refund split between 6101 and 6111 -------------
+
+/**
+ * December annual recalculation of a gross-up employee (10.000.000 a month,
+ * TK/0). `prior` is the Jan-Nov history the payroll run sums: eleven months of
+ * 10.000.000 plus the employer-funded tax inside it.
+ */
+function decemberTax(prior: { allowance: number; borne: number }) {
+  return computePayslipTax({
+    tables: REFERENCE_TABLES,
+    policy: DEFAULT_PPH21_POLICY,
+    ptkpStatus: "TK/0",
+    hasTaxId: true,
+    lastTaxPeriod: true,
+    monthsWorked: 12,
+    earnings: [{ amountIdr: 10_000_000, taxable: true, taxScheme: "gross_up" }],
+    employerBenefitIdr: 0,
+    contractTaxScheme: "gross_up",
+    employeeDeductibleIdr: 0,
+    prior: {
+      taxableGrossIdr: 110_000_000 + prior.allowance + prior.borne,
+      employeeDeductibleIdr: 0,
+      // The gross-up allowance is withheld from the pay and handed back as
+      // TAX_ALLOWANCE, so it is part of the withheld history.
+      pph21WithheldIdr: prior.allowance,
+      pph21EmployerBorneIdr: prior.borne,
+      taxAllowanceIdr: prior.allowance,
+    },
+  }).tax;
+}
+
+describe("employer refund split (legend-w6vah)", () => {
+  it("gross-up only history: the whole refund 150.000 credits 6101, 6111 untouched", () => {
+    // Jan-Nov allowance 3.705.750 (prior borne 0). The annual tax of the year
+    // is 3.555.750 lower, so December returns 150.000 to the company.
+    const tax = decemberTax({ allowance: 3_705_750, borne: 0 });
+    expect(tax.method).toBe("annual_recalculation");
+    expect(tax.pph21EmployerRefundIdr).toBe(150_000);
+    expect(tax.pph21EmployerAllowanceRefundIdr).toBe(150_000);
+    expect(tax.pph21WithheldIdr).toBe(0);
+    expect(tax.pph21EmployerBorneIdr).toBe(0);
+
+    const totals = totalsOf({
+      gross: 10_000_000,
+      employerRefund: tax.pph21EmployerRefundIdr,
+      employerAllowanceRefund: tax.pph21EmployerAllowanceRefundIdr ?? 0,
+    });
+    expect(totals.pph21Idr).toBe(-150_000);
+    expect(payrollJournalAmounts(totals)).toMatchObject({
+      pph21EmployerAllowanceRefundIdr: 150_000,
+      pph21EmployerBorneRefundIdr: 0,
+    });
+    const { byCode, debit, credit } = summarise(lockLines(totals));
+    expect(byCode["6101"]).toEqual({ debit: 10_000_000, credit: 150_000 });
+    expect(byCode["6111"]).toBeUndefined();
+    // The negative PPh 21 payable (-150.000) flips to the debit side.
+    expect(byCode["2202"]).toEqual({ debit: 150_000, credit: 0 });
+    expect(byCode["2103"]).toEqual({ debit: 0, credit: 10_000_000 });
+    expect(debit).toBe(credit);
+  });
+
+  it("mixed history splits proportionally: 300.000 allowance / 100.000 borne", () => {
+    // Allowance 3.000.000 + borne 1.000.000 of earlier employer tax; December
+    // returns 400.000, floor(400.000 x 3.000.000 / 4.000.000) = 300.000 of it
+    // for the allowance.
+    const tax = decemberTax({ allowance: 3_000_000, borne: 1_000_000 });
+    expect(tax.pph21EmployerRefundIdr).toBe(400_000);
+    expect(tax.pph21EmployerAllowanceRefundIdr).toBe(300_000);
+
+    const totals = totalsOf({
+      gross: 10_000_000,
+      employerRefund: tax.pph21EmployerRefundIdr,
+      employerAllowanceRefund: tax.pph21EmployerAllowanceRefundIdr ?? 0,
+    });
+    const amounts = payrollJournalAmounts(totals);
+    expect(amounts.pph21EmployerAllowanceRefundIdr).toBe(300_000);
+    expect(amounts.pph21EmployerBorneRefundIdr).toBe(100_000);
+    const { byCode, debit, credit } = summarise(lockLines(totals));
+    expect(byCode["6101"]).toEqual({ debit: 10_000_000, credit: 300_000 });
+    expect(byCode["6111"]).toEqual({ debit: 0, credit: 100_000 });
+    expect(debit).toBe(credit);
+  });
+
+  it("the parts sum exactly to the refund and the odd rupiah goes to the borne part", () => {
+    for (const [allowance, borne] of [
+      [3_000_001, 1_000_000],
+      [2_999_999, 1_000_003],
+      [1_234_567, 2_345_678],
+      [3_500_000, 400_000],
+    ] as const) {
+      const tax = decemberTax({ allowance, borne });
+      const erf = tax.pph21EmployerRefundIdr;
+      const part = tax.pph21EmployerAllowanceRefundIdr ?? 0;
+      expect(erf).toBeGreaterThan(0);
+      expect(part).toBe(Math.floor((erf * allowance) / (allowance + borne)));
+      expect(part).toBeLessThanOrEqual(allowance);
+      expect(part).toBeLessThanOrEqual(erf);
+      const amounts = payrollJournalAmounts(
+        totalsOf({
+          gross: 10_000_000,
+          employerRefund: erf,
+          employerAllowanceRefund: part,
+        }),
+      );
+      expect(
+        amounts.pph21EmployerAllowanceRefundIdr +
+          amounts.pph21EmployerBorneRefundIdr,
+      ).toBe(erf);
+    }
+  });
+
+  it("history without an allowance refunds only borne tax", () => {
+    const tax = decemberTax({ allowance: 0, borne: 4_000_000 });
+    expect(tax.pph21EmployerRefundIdr).toBeGreaterThan(0);
+    expect(tax.pph21EmployerAllowanceRefundIdr ?? 0).toBe(0);
+  });
+
+  it("the totals schema refuses an allowance refund above the employer refund", () => {
+    const good = totalsOf({ ...base, employerRefund: 40_000 });
+    const result = payrollRunTotalsSchema.safeParse({
+      ...good,
+      pph21EmployerAllowanceRefundIdr: 40_001,
+    });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -700,6 +896,19 @@ function fuzzSlip(rng: Rng) {
     prior,
   });
 
+  // legend-w6vah: the allowance part returns at most the earlier allowance and
+  // at most the employer refund; the borne part is what is left.
+  const allowanceRefund = tax.pph21EmployerAllowanceRefundIdr ?? 0;
+  expect(allowanceRefund).toBeLessThanOrEqual(prior.taxAllowanceIdr ?? 0);
+  expect(allowanceRefund).toBeLessThanOrEqual(tax.pph21EmployerRefundIdr);
+  // The borne part returns at most the earlier borne tax (6111 never inverts).
+  expect(tax.pph21EmployerRefundIdr - allowanceRefund).toBeLessThanOrEqual(
+    prior.pph21EmployerBorneIdr ?? 0,
+  );
+  expect(allowanceRefund + (tax.pph21EmployerRefundIdr - allowanceRefund)).toBe(
+    tax.pph21EmployerRefundIdr,
+  );
+
   const line = (
     code: string,
     category: PayslipLine["category"],
@@ -802,6 +1011,7 @@ describe("property: payroll journal balances for engine-built payslips", () => {
       withReceivable: 0,
       withBorne: 0,
       withEmployerRefund: 0,
+      withAllowanceRefund: 0,
       negativePph21: 0,
     };
     for (let i = 0; i < FUZZ_CASES; i += 1) {
@@ -845,9 +1055,27 @@ describe("property: payroll journal balances for engine-built payslips", () => {
         );
         expect(owed("2106")).toBe(totals.serviceChargeIdr);
         expect(owed("6110")).toBe(totals.reimbursementIdr);
-        expect(owed("6111")).toBe(
-          totals.pph21EmployerBorneIdr - totals.pph21EmployerRefundIdr,
+        // legend-w6vah: the allowance part of the employer refund credits
+        // 6101 next to LATE and the like, only the rest credits 6111.
+        const allowanceRefund = totals.pph21EmployerAllowanceRefundIdr;
+        const borneRefund = totals.pph21EmployerRefundIdr - allowanceRefund;
+        expect(allowanceRefund).toBeLessThanOrEqual(
+          totals.pph21EmployerRefundIdr,
         );
+        expect(borneRefund).toBeGreaterThanOrEqual(0);
+        expect(allowanceRefund + borneRefund).toBe(
+          totals.pph21EmployerRefundIdr,
+        );
+        expect(owed("6101")).toBe(
+          totals.grossIdr -
+            totals.pph21RefundIdr -
+            totals.serviceChargeIdr -
+            totals.reimbursementIdr -
+            totals.otherDeductionsIdr -
+            allowanceRefund,
+        );
+        expect(owed("6111")).toBe(totals.pph21EmployerBorneIdr - borneRefund);
+        if (allowanceRefund > 0) seen.withAllowanceRefund += 1;
 
         if (totals.pph21RefundIdr > 0) seen.withRefund += 1;
         if (totals.pph21ReceivableIdr > 0) seen.withReceivable += 1;
@@ -866,6 +1094,7 @@ describe("property: payroll journal balances for engine-built payslips", () => {
     expect(seen.withReceivable).toBeGreaterThan(0);
     expect(seen.withBorne).toBeGreaterThan(0);
     expect(seen.withEmployerRefund).toBeGreaterThan(0);
+    expect(seen.withAllowanceRefund).toBeGreaterThan(0);
     expect(seen.negativePph21).toBeGreaterThan(0);
   });
 });

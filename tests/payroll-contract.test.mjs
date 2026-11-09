@@ -120,6 +120,7 @@ const zeroTotals = {
   pph21EmployerBorneIdr: 0,
   pph21RefundIdr: 0,
   pph21EmployerRefundIdr: 0,
+  pph21EmployerAllowanceRefundIdr: 0,
   loanRepaymentIdr: 150_000,
   pph21ReceivableIdr: 0,
   pph21ReceivableCollectedIdr: 0,

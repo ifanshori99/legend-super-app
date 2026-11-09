@@ -146,7 +146,11 @@ const PAYROLL_JOURNAL_LINES: L[] = [
   ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
   ["employee_receivable", "credit", "loanRepaymentIdr"],
   ["salary_expense", "credit", "otherDeductionsIdr"],
-  ["pph21_borne_expense", "credit", "pph21EmployerRefundIdr"],
+  // Employer lebih potong (legend-w6vah): the part that returns an earlier
+  // gross-up allowance credits salary_expense (6101, where the allowance was
+  // booked); the part that returns borne tax credits pph21_borne_expense.
+  ["salary_expense", "credit", "pph21EmployerAllowanceRefundIdr"],
+  ["pph21_borne_expense", "credit", "pph21EmployerBorneRefundIdr"],
 ];
 
 /** Default rules (system data; tenants change accounts through mappings, not rules). */
@@ -347,12 +351,26 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     "payroll",
     "Payroll dibatalkan (jurnal balik)",
     `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-05`,
-    // Same amounts as the locked totals in the payload, sides swapped.
+    // Same amounts as the locked totals in the payload, sides swapped. Not
+    // posted by the payroll GL consumer: it reverses the locked entry itself
+    // (legend-4n3r), so the reversal mirrors what was really posted, after
+    // checking the payload amounts against that entry line by line.
     PAYROLL_JOURNAL_LINES.map(([role, side, amount]): L => [
       role,
       side === "debit" ? "credit" : "debit",
       amount,
     ]),
+  ),
+  rule(
+    { event: "payroll.paid" },
+    "payroll",
+    "Gaji dibayar",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04`,
+    [
+      ["salaries_payable", "debit", "netIdr"],
+      ["bank", "credit", "bankTransferIdr"],
+      ["petty_cash", "credit", "cashIdr"],
+    ],
   ),
   rule(
     { event: "employee_loan.disbursed" },

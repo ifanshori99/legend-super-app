@@ -38,6 +38,8 @@ import {
   deliverAutoJournalEvent,
   retryParkedAutoJournals,
 } from "./services/accounting-auto-journal-consumer.ts";
+
+import { deliverPayrollGlEvent } from "./services/payroll-gl-consumer.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -184,6 +186,9 @@ const runtime = createWorkerRuntime({
           // missing mapping parks the source for the sweep, never fails this.
           if (postsInventoryGl)
             await deliverInventoryGlEvent(context, event, tx);
+          // WS-07 (legend-4n3r), cloud only: payroll lock/paid/reversal, kasbon
+          // and cash reimbursement post their GL journals; errors retry.
+          if (postsInventoryGl) await deliverPayrollGlEvent(context, event, tx);
           // WS-08 (legend-5bn3), cloud only: 86 and menu/price changes reach
           // the open delivery channels through their adapters. A platform
           // failure never fails this event: the channel is marked error/stale

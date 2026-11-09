@@ -118,6 +118,7 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
       pph21EmployerBorneIdr: result.pph21EmployerBorneIdr,
       pph21RefundIdr: result.pph21RefundIdr,
       pph21EmployerRefundIdr: result.pph21EmployerRefundIdr,
+      pph21EmployerAllowanceRefundIdr: result.pph21EmployerAllowanceRefundIdr,
       pph21ReceivableIdr: result.pph21ReceivableIdr,
       noTaxIdSurchargeApplied: result.noTaxIdSurchargeApplied,
       grossSchemeBaseIdr,

@@ -71,6 +71,7 @@ function totalsOf(parts: {
     pph21EmployerBorneIdr: 0,
     pph21RefundIdr: 0,
     pph21EmployerRefundIdr: 0,
+    pph21EmployerAllowanceRefundIdr: 0,
     loanRepaymentIdr: 0,
     pph21ReceivableIdr: parts.receivable,
     pph21ReceivableCollectedIdr: parts.collected,

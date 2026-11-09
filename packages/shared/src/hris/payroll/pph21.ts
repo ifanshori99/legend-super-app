@@ -184,6 +184,13 @@ export type Pph21PeriodResult = {
   /** Lebih potong that returns to the employer (tax it bore). */
   pph21EmployerRefundIdr: Idr;
   /**
+   * The part of `pph21EmployerRefundIdr` that returns an earlier gross-up tax
+   * allowance (booked in 6101 salary expense); the rest returns tax the
+   * employer bore (6111). Split pro rata by the employer's earlier tax,
+   * allowance / (allowance + borne), rounded down; the odd rupiah is borne.
+   */
+  pph21EmployerAllowanceRefundIdr: Idr;
+  /**
    * The employee's tax above the withholding cap: deposited by the employer,
    * owed back by the employee (employee receivable, founder decision B8).
    * Not in X. Pass the sum of earlier periods as `prior.pph21ReceivableIdr`.
@@ -585,6 +592,22 @@ export function computePph21Period(
     if (allowance > employerNet) allowance = employerNet;
     borne = employerNet - allowance;
   } else employerRefund = -employerNet;
+  // Employer refund split (bead legend-w6vah): the allowance part returns the
+  // earlier gross-up allowance (booked in 6101), the rest the borne tax
+  // (6111). floor(refund x priorAllowance / priorEmployerTax), clamped to the
+  // prior allowance and the refund; the odd rupiah stays with the borne part.
+  let employerAllowanceRefund =
+    priorEmployerTax > 0n && priorAllowance
+      ? (employerRefund * priorAllowance) / priorEmployerTax
+      : 0n;
+  if (priorAllowance !== null && employerAllowanceRefund > priorAllowance)
+    employerAllowanceRefund = priorAllowance;
+  if (employerAllowanceRefund > employerRefund)
+    employerAllowanceRefund = employerRefund;
+  // The refund only returns tax the employer paid earlier this year, so the
+  // borne part never exceeds the earlier borne tax (6111 never inverts).
+  if (employerRefund - employerAllowanceRefund > priorBorne)
+    throw new RangeError("Employer refund exceeds the employer's earlier tax");
   const withheld = w + allowance;
 
   return {
@@ -599,6 +622,7 @@ export function computePph21Period(
     pph21EmployerBorneIdr: toIdr(borne),
     pph21RefundIdr: toIdr(employeeRefund),
     pph21EmployerRefundIdr: toIdr(employerRefund),
+    pph21EmployerAllowanceRefundIdr: toIdr(employerAllowanceRefund),
     pph21ReceivableIdr: toIdr(receivable),
     noTaxIdSurchargeApplied: surchargeApplies,
     annual: period.annual,
