@@ -33,7 +33,7 @@ import type {
   ReservationPolicySnapshot,
 } from "@starter/shared/reservation";
 import { cafeLegendFixtures } from "@starter/shared/core";
-import { cafeLegendQrOrderFixtures } from "@starter/shared/qr-order";
+import { cafeLegendQrOrderFixtures } from "@starter/shared/qr-order/sample";
 import type { FloorZone, Table } from "@starter/shared/qr-order";
 import { ApiError } from "../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";

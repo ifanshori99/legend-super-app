@@ -34,6 +34,7 @@
     "./text": "./src/text/index.ts",
     "./inventory": "./src/inventory/index.ts",
     "./qr-order": "./src/qr-order/index.ts",
+    "./qr-order/sample": "./src/qr-order/sample.ts",
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",

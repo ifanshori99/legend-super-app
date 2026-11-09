@@ -10,8 +10,6 @@
 // no `@/` alias) so the Node contract test can load it directly.
 import { createUlid, idr } from "@starter/shared/core";
 import {
-  cafeLegendQrOrderFixtures,
-  cafeLegendTaxRules,
   canApplyTableStatusAction,
   canCloseTableSession,
   computeQuote,
@@ -20,8 +18,6 @@ import {
   floorBoardSchema,
   floorZoneSchema,
   qrOrderSchema,
-  qrTokenTableCodes,
-  quoteConfigForZone,
   saveFloorLayoutInputSchema,
   sessionBillSchema,
   tableLiveStatusSchema,
@@ -43,6 +39,12 @@ import {
   type TableSession,
   type TableStatusAction,
 } from "@starter/shared/qr-order";
+import {
+  cafeLegendQrOrderFixtures,
+  cafeLegendTaxRules,
+  qrTokenTableCodes,
+  quoteConfigForZone,
+} from "@starter/shared/qr-order/sample";
 import type { z } from "zod";
 import { ApiError } from "../../api/errors.ts";
 import { newIdempotencyKey } from "../../idempotency.ts";

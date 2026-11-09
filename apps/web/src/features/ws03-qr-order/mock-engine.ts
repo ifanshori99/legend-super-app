@@ -12,15 +12,8 @@
 // Relative imports only: Node tests load it directly.
 import { allocateIdr, idr, type Idr } from "@starter/shared/core";
 import {
-  buildQrMenu,
-  cafeLegendTaxRules,
   computeQuote,
   GOOGLE_REVIEW_MIN_RATING,
-  guestOrderIssueFixtures,
-  hidePhotoLessMenuItems,
-  pointClaimFixture,
-  qrOrderFixtures as F,
-  quoteConfigForZone,
   splitBill,
   tableSessionTokenExpiresAt,
   type BillSplit,
@@ -40,6 +33,15 @@ import {
   type TableSession,
   type TableSessionView,
 } from "@starter/shared/qr-order";
+import {
+  buildQrMenu,
+  cafeLegendTaxRules,
+  guestOrderIssueFixtures,
+  hidePhotoLessMenuItems,
+  pointClaimFixture,
+  qrOrderFixtures as F,
+  quoteConfigForZone,
+} from "@starter/shared/qr-order/sample";
 import {
   legacyPhotoMissingItem,
   legacyPhotoMissingPrice,
