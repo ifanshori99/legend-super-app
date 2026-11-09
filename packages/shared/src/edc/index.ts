@@ -164,9 +164,13 @@ function referenceField(max: number) {
     .transform(dropPanLike);
 }
 
-/** A run of 12+ digits (split by spaces, tabs or dashes, repeated or mixed) looks
- * like a card number: the terminal's free text is masked before it is stored. */
-const cardNumberLike = /\d(?:[ \t-]*\d){11,}/g;
+/** A run of 12+ digits (split by whitespace of any kind, dashes, slashes or
+ * underscores, repeated or mixed) looks like a card number: the terminal's free
+ * text is masked before it is stored. `\s` covers newline, CRLF and NBSP
+ * (legend-deu7r). Only this free-text rule widened: the migration scrubs
+ * (0135/0141/0143) and the leftover rules below keep the narrow class.
+ * A date such as `2026/11/09 12:30:45` stays (colon ends the run, 10 digits). */
+const cardNumberLike = /\d(?:[\s/_-]*\d){11,}/g;
 /** Card digits the old single-separator scrub (0135, the write path before
  * legend-tjwb) left next to a mask: joined by a separator run it could not
  * cross (anything but exactly one space or dash), and more than the receipt

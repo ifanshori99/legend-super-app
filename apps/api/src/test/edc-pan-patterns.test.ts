@@ -39,6 +39,17 @@ const row = {
   completedAt: null,
 };
 
+// Separators beyond space, tab and dash (legend-deu7r): line breaks, NBSP
+// (U+00A0), slash and underscore also split a card number in free text.
+const oddSeparatorPans = [
+  "4111\n1111\n1111\n1111",
+  "4111\r\n1111\r\n1111\r\n1111",
+  "4111 1111 1111 1111",
+  "4111/1111/1111/1111",
+  "4111_1111_1111_1111",
+  "4111 \n 1111/1111_1111",
+];
+
 const spacedPans = [
   "4111 1111 1111 1111",
   "4111  1111  1111  1111",
@@ -73,6 +84,19 @@ describe("free-text message (write path)", () => {
     );
   });
 
+  it("masks a card number split by newline, CRLF, NBSP, slash or underscore", () => {
+    for (const pan of oddSeparatorPans) {
+      expect(write(`kartu ${pan} ditolak`)).toBe("kartu [disamarkan] ditolak");
+    }
+  });
+
+  it("keeps a date and a time written with slash or colon", () => {
+    expect(write("tgl 2026/11/09 12:30:45 ok")).toBe(
+      "tgl 2026/11/09 12:30:45 ok",
+    );
+    expect(write("ref 12345_67890 ok")).toBe("ref 12345_67890 ok");
+  });
+
   it("masks a tab-separated card number", () => {
     expect(write("kartu 4111\t1111\t1111\t1111 ditolak")).toBe(
       "kartu [disamarkan] ditolak",
@@ -105,6 +129,18 @@ describe("free-text message (read path)", () => {
     );
     expect(read("kartu 4111 1111 1111 ditolak")).toBe(
       "kartu [disamarkan] ditolak",
+    );
+  });
+
+  it("masks a card number split by newline, CRLF, NBSP, slash or underscore", () => {
+    for (const pan of oddSeparatorPans) {
+      expect(read(`kartu ${pan} ditolak`)).toBe("kartu [disamarkan] ditolak");
+    }
+  });
+
+  it("keeps a date and a time written with slash or colon", () => {
+    expect(read("tgl 2026/11/09 12:30:45 ok")).toBe(
+      "tgl 2026/11/09 12:30:45 ok",
     );
   });
 
