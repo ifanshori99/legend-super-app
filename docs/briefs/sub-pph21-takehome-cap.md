@@ -69,3 +69,26 @@ Angka K1 setelah perbaikan (architect): `proportional` Desember X 10.000.962, T 
 1. `payroll-pph21-takehome-cap.test.ts`: tambah K1 kedua kebijakan (Januari dan Desember, angka tepat, verifikasi sendiri; Januari: excess = `pph21CapExcessIdr`). Fuzz: akumulasi `pph21CapExcessIdr` ke prior; tambah bulan Jan–Nov dengan benefit > 0 dan sebagian bulan tanpa gaji (cap di bulan TER); cek invarian di tiap bulan (bukan hanya Desember) dan `pph21CapExcessIdr ≤ borne`. Perbaiki komentar header file yang menyebut cap hanya di periode terakhir.
 2. Test `buildPph21Prior` (file test payslip-tax/prior yang ada): menjumlahkan `pph21CapExcessIdr`, absen = 0, menolak bila > borne. `payslipTaxSchema` menolak cap excess > borne.
 3. Jalankan semua `apps/api/src/test/payroll-pph21-*` dan file yang kamu ubah.
+
+## Review putaran 2: excess tidak boleh jadi refund karyawan (reviewer Opus, sudah diimplementasi)
+
+Temuan: dengan varian C, H < 0 mengembalikan excess (dibayar perusahaan) ke karyawan sebagai uang tunai. Skenario K2: Januari hanya benefit 8 jt kontrak `gross` (B 121.827, excess 119.999/120.000), Februari–Desember gross 1 jt (di bawah PTKP). Varian C: refund karyawan 119.999, refund perusahaan 1.828, padahal W karyawan 0 setahun.
+
+Perbaikan (prinsip CTO legend-u1xq: kredit milik pembayar yang membayarnya): `priorEmployerTax = priorBorne + priorAllowance` (seperti 6e20273a). Setelah saldo dihitung: `employeeShortfall = H − employerBalance`; bila > 0, `employerBalance += min(priorCapExcess, employeeShortfall)`. Jadi excess hanya melunasi kekurangan karyawan sendiri, tidak pernah menjadi refund karyawan; sisanya tetap kredit perusahaan.
+
+Angka (engine): K2 kedua kebijakan: X 1.000.000, T −121.827, W 0, refund karyawan 0, refund perusahaan 121.827. K3 (Januari seperti K2, keluar Februari, gaji Februari 1 jt, `monthsWorked` 2, Februari periode terakhir): sama, refund perusahaan 121.827. K1 tidak berubah.
+
+## Tugas test-writer putaran 4
+
+1. `payroll-pph21-takehome-cap.test.ts`: tambah K2 dan K3 kedua kebijakan, angka tepat, verifikasi sendiri dengan hitung tangan singkat di komentar.
+2. Fuzz tahun penuh: tambah invarian "refund karyawan ≤ pajak yang dipotong dari karyawan sendiri di periode sebelumnya (Σ pph21WithheldIdr − Σ taxAllowanceIdr)" dan "refund perusahaan ≤ Σ borne + Σ allowance periode sebelumnya". Pastikan fuzz punya tahun dengan bulan benefit-only diikuti gaji kecil (H < 0).
+3. Jalankan semua `apps/api/src/test/payroll-pph21-*` (tanpa db).
+
+## Verifikasi architect putaran 2 (sudah diimplementasi)
+
+Settle di saldo history saja masih menarik balik excess lewat W Desember bila karyawan lebih potong Jan–Nov tetapi berutang di Desember (fuzz: W 4.880.258 vs varian C 4.821.381). Final: settle dipindah ke `netsAt`, hanya periode terakhir: `charge = employeePart + employeeBalance`; `settled = charge > 0 ? min(priorCapExcess, charge) : 0`; `own = charge − settled`; excess dari `own`; `employerNet = employerPart + employerBalance + settled + excess`. Allowance dihitung dari `covered − (settled + excess)`, dibatasi `employerNet − (settled + excess)`: bagian yang diambil alih perusahaan selalu borne. Sama persis dengan varian C di semua tahun tanpa refund karyawan C (architect: 73/73 proportional, 42/42 gross_first); K2 tetap.
+
+## Tugas test-writer putaran 5
+
+1. `payroll-pph21-takehome-cap.test.ts`: tambah K4 kedua kebijakan: history karyawan lebih potong Jan–Nov (mis. TER tinggi dari bonus awal tahun) + bulan benefit-only dengan excess + Desember karyawan masih berutang. Angka tepat; cek bahwa W Desember = W tanpa excess dikurangi excess (karyawan tidak menanggung excess) dan refund perusahaan tidak memuat excess.
+2. Jalankan semua `apps/api/src/test/payroll-pph21-*` (tanpa db).

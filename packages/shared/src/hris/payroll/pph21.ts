@@ -52,13 +52,15 @@
 //   above the cap (excess) moves to the employer, applied in every period
 //   (TER months too). Where the employer's net stays >= excess it is borne
 //   (enters X) and reported as `pph21CapExcessIdr`; a later annual
-//   recalculation counts that part as tax the employee already paid, so it is
-//   never charged back. Otherwise the excess first cancels the employer's
+//   recalculation uses it to settle the employee's own charge of that period
+//   (history balance plus their part of the month's tax), so it is never
+//   charged back, and never pays it out as an employee refund (what is left
+//   stays the employer's credit). Otherwise the excess first cancels the employer's
 //   credit (lower employer refund) (bead legend-4ndx). Excess 0: the result
 //   is unchanged.
 // S is the least fixed point of S = max(0, Dr(X(S)) + employer balance +
-// excess(X(S))), iterated from 0 (monotone, so it rises to the least
-// solution). A = (S - excess) x U / (U + N), capped at the employer's own
+// settled + excess(X(S))), iterated from 0 (monotone, so it rises to the least
+// solution). A = (S - settled - excess) x U / (U + N), capped at the employer's own
 // net, B = the rest: the excess never becomes a tax allowance. Withheld = W + A, so the employee's
 // take-home is exactly G + U + N - W + employee refund: the allowance
 // cancels out.
@@ -145,9 +147,9 @@ export type Pph21PeriodInput = {
     /**
      * Part of `pph21EmployerBorneIdr` that was the employee's own tax taken
      * over by the employer because the pay left was too small (results'
-     * `pph21CapExcessIdr`, default 0). The benefit was taxed in X, so the
-     * annual recalculation counts it as tax the employee already paid: it is
-     * never charged back to the employee (bead legend-4ndx).
+     * `pph21CapExcessIdr`, default 0). The annual recalculation uses it to
+     * settle the employee's own shortfall, so it is never charged back to the
+     * employee, and never refunds it to the employee (bead legend-4ndx).
      */
     pph21CapExcessIdr?: Idr | number;
   };
@@ -419,8 +421,8 @@ export function computePph21Period(
     throw new RangeError(
       "prior.taxAllowanceIdr is required for a history with employer-scheme pay",
     );
-  // Borne tax that was the employee's own above the cap (bead legend-4ndx)
-  // counts as the employee's tax paid, so December never charges it back.
+  // Borne tax that was the employee's own above the cap (bead legend-4ndx);
+  // see the payer balances below.
   const priorCapExcess = nonNegativeInt(
     input.prior.pph21CapExcessIdr ?? 0,
     "prior.pph21CapExcessIdr",
@@ -429,7 +431,7 @@ export function computePph21Period(
     throw new RangeError(
       "prior.pph21CapExcessIdr exceeds prior.pph21EmployerBorneIdr",
     );
-  const priorEmployerTax = priorBorne - priorCapExcess + (priorAllowance ?? 0n);
+  const priorEmployerTax = priorBorne + (priorAllowance ?? 0n);
   const priorEmployeeTax = priorTax - priorEmployerTax;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
@@ -562,18 +564,31 @@ export function computePph21Period(
   }
   const netsAt = (at: bigint) => {
     const { employeePart, employerPart } = addedSplit(at);
-    const own = employeePart + employeeBalance;
+    const charge = employeePart + employeeBalance;
+    // Tax the employer took over above the cap in earlier periods settles the
+    // employee's charge of the last period (history balance plus their part
+    // of this month's tax), so it is never charged back; it never becomes an
+    // employee refund: what it does not settle stays the employer's credit.
+    const settled =
+      input.lastTaxPeriod && charge > 0n
+        ? priorCapExcess < charge
+          ? priorCapExcess
+          : charge
+        : 0n;
+    const own = charge - settled;
     const excess = own > cap ? own - cap : 0n;
     return {
       employeeNet: own - excess,
-      employerNet: employerPart + employerBalance + excess,
+      employerNet: employerPart + employerBalance + settled + excess,
       excess,
+      // The employee's tax the employer takes over (never an allowance).
+      takenOver: settled + excess,
     };
   };
   // W is capped at the pay left (bead legend-4ndx); the excess over the cap
   // is the employer's. Employer-covered tax S = max(0, Dr(X(S)) + employer
-  // balance + excess(X(S))): least fixed point from 0. Dr and the employee
-  // part both rise with X, so the map is monotone (slope < 1). With the pro rata
+  // balance + settled + excess(X(S))): least fixed point from 0. Dr, the
+  // employee part and the settled prior excess all rise with X, so the map is monotone (slope < 1). With the pro rata
   // floor it can dip by a rupiah; stop on the first non-increase and let the
   // borne amount absorb the residual (take-home stays exact). Runs for
   // gross-only pay too: the employer's part of a shortfall is borne, hence
@@ -594,15 +609,15 @@ export function computePph21Period(
   // a negative one refunded to that payer. withheld + borne - both refunds =
   // T, so the deposit is exactly T, and withheld may exceed T beside an
   // employer refund (or borne stand beside an employee refund).
-  const { employeeNet, employerNet, excess } = netsAt(x);
+  const { employeeNet, employerNet, excess, takenOver } = netsAt(x);
   const w = employeeNet > 0n ? employeeNet : 0n;
   const employeeRefund = employeeNet < 0n ? -employeeNet : 0n;
   let allowance = 0n;
   let borne = 0n;
   let employerRefund = 0n;
   if (employerNet >= 0n) {
-    const ownNet = employerNet - excess;
-    const ownCovered = covered > excess ? covered - excess : 0n;
+    const ownNet = employerNet - takenOver;
+    const ownCovered = covered > takenOver ? covered - takenOver : 0n;
     allowance =
       coverU + coverN > 0n ? (ownCovered * coverU) / (coverU + coverN) : 0n;
     if (allowance > ownNet) allowance = ownNet > 0n ? ownNet : 0n;

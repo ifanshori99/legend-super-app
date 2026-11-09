@@ -13,11 +13,16 @@
 //   2. withheld + employer borne - refund - employer refund = pph21Idr;
 //   3. take-home = pay - W + refund - employeeDeductible >= 0;
 //   4. refunds >= 0 and no payer is both charged and refunded;
-//   5. pph21CapExcessIdr <= pph21EmployerBorneIdr (and >= 0).
+//   5. pph21CapExcessIdr <= pph21EmployerBorneIdr (and >= 0);
+//   6. the employee's refund <= the tax withheld from the employee in the
+//      earlier periods (sum pph21WithheldIdr - sum taxAllowanceIdr), so a tax
+//      the company paid (cap excess included) never comes back to the employee
+//      as cash;
+//   7. the employer's refund <= sum borne + sum allowance of the earlier periods.
 // The year fuzz also has months with only an employer benefit (no salary, cap
 // 0, so the employee's tax is taken over by the company in a TER month) and
 // months with a benefit beside the lines. Fixed cases (CTO S2, architect C2,
-// reviewer K1, caller cap lower / higher than the default) pin the exact
+// reviewer K1/K2/K3, caller cap lower / higher than the default) pin the exact
 // amounts, hand computed in the comments below from the brief's decisions (W
 // capped at the available pay, the excess is the company's: borne when the
 // employer's net stays >= 0, else it only lowers the employer refund; borne
@@ -82,6 +87,10 @@ type Outcome = {
   borne: number;
   allowance: number;
   capExcess: number;
+  /** Tax withheld from the employee in the earlier periods (withheld - allowance). */
+  priorEmployeeTax: number;
+  /** Tax the company paid in the earlier periods (borne + allowance). */
+  priorEmployerTax: number;
 };
 
 /** One month: its lines plus the optional extras the fuzz and K1 need. */
@@ -106,6 +115,7 @@ function simulate(
   deductibleIdr: number,
   allocation: Pph21PolicyParameters["mixedSchemeAllocation"],
   callerCapIdr?: number,
+  lastMonthsWorked = 12,
 ): Outcome[] {
   const policy = policyOf(allocation);
   const prior = {
@@ -162,6 +172,8 @@ function simulate(
       borne: r.pph21EmployerBorneIdr,
       allowance: r.taxAllowanceIdr,
       capExcess: r.pph21CapExcessIdr,
+      priorEmployeeTax: prior.pph21WithheldIdr - prior.taxAllowanceIdr,
+      priorEmployerTax: prior.pph21EmployerBorneIdr + prior.taxAllowanceIdr,
       chargedAndRefunded:
         (refund > 0 && w > 0) ||
         (employerRefund > 0 && r.pph21EmployerBorneIdr > 0),
@@ -182,7 +194,7 @@ function simulate(
     const spec = asSpec(month);
     run(spec, false, index + 1, spec.capIdr);
   });
-  run(asSpec(december), true, 12, callerCapIdr);
+  run(asSpec(december), true, lastMonthsWorked, callerCapIdr);
   return outcomes;
 }
 
@@ -216,6 +228,14 @@ function violationsOf(o: Outcome): string[] {
   if (o.chargedAndRefunded) found.push("a payer is charged and refunded");
   if (o.capExcess < 0 || o.capExcess > o.borne)
     found.push(`cap excess ${o.capExcess} outside 0..borne ${o.borne}`);
+  if (o.refund > o.priorEmployeeTax)
+    found.push(
+      `employee refund ${o.refund} > employee tax of earlier periods ${o.priorEmployeeTax}`,
+    );
+  if (o.employerRefund > o.priorEmployerTax)
+    found.push(
+      `employer refund ${o.employerRefund} > employer tax of earlier periods ${o.priorEmployerTax}`,
+    );
   return found;
 }
 
@@ -649,4 +669,152 @@ describe("legend-4ndx: K1 (reviewer round 1) a TER-month cap excess is not charg
     expect(dec.deposit).toBe(789_123);
     expect(dec.takeHome).toBe(10_000_000 - 785_000);
   });
+});
+
+// A year that starts with benefit-only months (the company takes over the
+// employee's tax, cap excess > 0) and then pays a small salary (1 jt to 5.3 jt,
+// below the TER 0% limit and below the PTKP when annualised). December's
+// annual tax is then below the tax already paid (H < 0), the case where the
+// refund must go to the right payer.
+function randomBenefitThenLowPayYear(next: () => number) {
+  const scheme = (): Scheme => SCHEMES[Math.floor(next() * SCHEMES.length)]!;
+  const benefitOnly = (): Spec => ({
+    lines: [],
+    benefitIdr: roundTo(500_000 + next() * 11_500_000, 1_000),
+    contract: scheme(),
+    deductibleIdr: 0,
+  });
+  const lowPay = (): Month => [
+    {
+      amountIdr: roundTo(1_000_000 + next() * 4_300_000, 1_000),
+      taxScheme: scheme(),
+    },
+  ];
+  const benefitMonths = 1 + Math.floor(next() * 4);
+  const months: Spec[] = Array.from({ length: 11 }, (_, index) =>
+    index < benefitMonths ? benefitOnly() : { lines: lowPay() },
+  );
+  const december: Month = [
+    {
+      amountIdr: roundTo(1_000_000 + next() * 4_300_000, 1_000),
+      taxScheme: scheme(),
+    },
+  ];
+  return { months, december, benefitMonths };
+}
+
+describe("legend-4ndx: benefit-only months then a small salary (H < 0), every period (seeded fuzz)", () => {
+  for (const allocation of ALLOCATIONS) {
+    it(`no refund exceeds the tax that payer paid in earlier periods; the other invariants hold (${allocation})`, () => {
+      const next = prng(SEED + 3);
+      const bad: string[] = [];
+      let employerRefunded = 0;
+      for (let index = 0; index < CASES; index += 1) {
+        const c = randomBenefitThenLowPayYear(next);
+        const outcomes = simulate(c.months, c.december, 0, allocation);
+        outcomes.forEach((o, month) => {
+          if (o.employerRefund > 0) employerRefunded += 1;
+          const found = violationsOf(o);
+          if (found.length > 0)
+            bad.push(
+              `month ${month + 1}: ${found.join("; ")} | case ${index}: months ${JSON.stringify(
+                c.months,
+              )}, december ${JSON.stringify(c.december)}`,
+            );
+        });
+      }
+      expect(
+        bad,
+        `${bad.length} period results violate an invariant (${allocation}, benefit then low pay). First: ${bad[0] ?? "none"}`,
+      ).toEqual([]);
+      // Guard: the fuzz must reach the case it is for (a refund to the
+      // company for the tax it took over).
+      expect(employerRefunded).toBeGreaterThan(0);
+    });
+  }
+});
+
+describe("legend-4ndx: K2 (reviewer round 2) the company's cap excess is never refunded to the employee", () => {
+  // TK/0 with a tax id. January: only an employer benefit of 8_000_000 under a
+  // `gross` agreement (same as K1: X 8_121_827, borne B = T = 121_827, W 0,
+  // cap excess 119_999 proportional / 120_000 gross_first). February-December:
+  // gross 1_000_000 a month, below the TER 0% limit (5_400_000), no deductible.
+  //
+  // February-November: TER 0%, nothing withheld. Prior at December: X =
+  // 8_121_827 + 10 x 1_000_000 = 18_121_827, withheld 0, borne 121_827.
+  // December: X = 1_000_000, annual(18_121_827): cost 5% = 906_091, net
+  // 17_215_736 < PTKP 54_000_000, PKP 0, annual tax 0. So H = 0 - priorTax
+  // (121_827) = -121_827, D = 0, T = H + D = -121_827 (the January tax the
+  // company paid on its own benefit is given back: the year's tax is 0).
+  // Employee: W = 0 all year, so the employee has nothing to get back, even
+  // though the cap excess (119_999) was part of the January borne tax. The
+  // whole 121_827 goes to the company, which paid it. Deposit: 0 - 121_827 =
+  // T. December take-home = the 1_000_000 pay.
+  const january: Spec = { lines: [], benefitIdr: 8_000_000, contract: "gross" };
+  const months: Spec[] = [
+    january,
+    ...Array.from({ length: 10 }, (): Spec => ({
+      lines: [{ amountIdr: 1_000_000, taxScheme: "gross" }],
+    })),
+  ];
+  const december: Month = [{ amountIdr: 1_000_000, taxScheme: "gross" }];
+
+  for (const [allocation, januaryExcess] of [
+    ["proportional", 119_999],
+    ["gross_first", 120_000],
+  ] as const) {
+    it(`December: X 1_000_000, T -121_827, W 0, employee refund 0, company refund 121_827 (${allocation})`, () => {
+      const all = simulate(months, december, 0, allocation);
+      const jan = all[0];
+      const dec = all.at(-1);
+      if (jan === undefined || dec === undefined) throw new Error("no outcome");
+      for (const o of all) expect(violationsOf(o)).toEqual([]);
+      expect(jan.borne).toBe(121_827);
+      expect(jan.capExcess).toBe(januaryExcess);
+      expect(jan.w).toBe(0);
+      for (const o of all.slice(1, 11)) expect(o.w).toBe(0);
+      expect(dec.x).toBe(1_000_000);
+      expect(dec.taxIdr).toBe(-121_827);
+      expect(dec.w).toBe(0);
+      expect(dec.borne).toBe(0);
+      expect(dec.allowance).toBe(0);
+      expect(dec.refund).toBe(0);
+      expect(dec.employerRefund).toBe(121_827);
+      expect(dec.capExcess).toBe(0);
+      expect(dec.deposit).toBe(-121_827);
+      expect(dec.takeHome).toBe(1_000_000);
+    });
+  }
+});
+
+describe("legend-4ndx: K3 (reviewer round 2) the employee leaves in February (monthsWorked 2, last period)", () => {
+  // Same January as K2 (benefit-only 8_000_000, `gross` agreement, borne
+  // 121_827, cap excess 119_999 / 120_000). February is the last tax period
+  // (monthsWorked 2): gross pay 1_000_000, X = 1_000_000.
+  // Cumulated X = 8_121_827 + 1_000_000 = 9_121_827, nowhere near the PTKP
+  // (54_000_000 for the year), so the tax of the period is 0 and H = 0 -
+  // 121_827 = -121_827, D = 0, T = -121_827. The employee was withheld
+  // nothing, so, as in K2, the whole refund 121_827 is the company's.
+  const january: Spec = { lines: [], benefitIdr: 8_000_000, contract: "gross" };
+  const february: Month = [{ amountIdr: 1_000_000, taxScheme: "gross" }];
+
+  for (const allocation of ALLOCATIONS) {
+    it(`February: X 1_000_000, T -121_827, W 0, employee refund 0, company refund 121_827 (${allocation})`, () => {
+      const all = simulate([january], february, 0, allocation, undefined, 2);
+      expect(all).toHaveLength(2);
+      const [jan, feb] = all;
+      if (jan === undefined || feb === undefined) throw new Error("no outcome");
+      for (const o of all) expect(violationsOf(o)).toEqual([]);
+      expect(jan.borne).toBe(121_827);
+      expect(jan.w).toBe(0);
+      expect(feb.x).toBe(1_000_000);
+      expect(feb.taxIdr).toBe(-121_827);
+      expect(feb.w).toBe(0);
+      expect(feb.borne).toBe(0);
+      expect(feb.refund).toBe(0);
+      expect(feb.employerRefund).toBe(121_827);
+      expect(feb.deposit).toBe(-121_827);
+      expect(feb.takeHome).toBe(1_000_000);
+    });
+  }
 });
