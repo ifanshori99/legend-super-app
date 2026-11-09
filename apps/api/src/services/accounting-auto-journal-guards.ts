@@ -93,7 +93,8 @@ const posRefundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'
  *   order.refunded) is still in the outbox (pending, retrying, dead letter) or the journal is
  *   parked retryable: it can still post;
  * - "none": it will never post by itself (event consumed before the consumer
- *   went live or with accounting off, never emitted, or parked non-retryable).
+ *   went live or with accounting off, never emitted, or parked non-retryable;
+ *   except a POS refund parked AUTO_JOURNAL_SALE_MISSING, which is pending).
  * Read order outbox, parked, journals: each later source is written by the
  * same transaction that clears the earlier one (consumption marks the outbox
  * row delivered with the journal or its parked row; the sweep inserts the
@@ -194,11 +195,22 @@ export async function backingStatesOf(
       );
   }
   const keys = [...states.keys()];
-  // 2. Then the parked journals: only a retryable one can still post.
+  // 2. Then the parked journals: only a retryable one can still post. A POS
+  // refund (order.refunded) parked non-retryable AUTO_JOURNAL_SALE_MISSING
+  // can too: once its sale posts, the consumer requeues it (legend-3bsyh,
+  // requeueSaleDependents). Read as "none", a payout or sale waiting on it
+  // would park POSTING_AMOUNTS_MISMATCH non-retryable and stay parked after
+  // the refund posts; as "pending" it parks retryable and the sweep ends it.
+  const posRefundKeys = new Set(
+    [...posRefundIds].map((refundId) =>
+      backingKeyOf({ kind: "posRefund", refundId }),
+    ),
+  );
   const parked = await tx
     .select({
       key: autoJournalParked.idempotencyKey,
       retryable: autoJournalParked.retryable,
+      errorCode: autoJournalParked.errorCode,
     })
     .from(autoJournalParked)
     .where(
@@ -207,7 +219,13 @@ export async function backingStatesOf(
         inArray(autoJournalParked.idempotencyKey, keys),
       ),
     );
-  for (const row of parked) if (row.retryable) states.set(row.key, "pending");
+  for (const row of parked)
+    if (
+      row.retryable ||
+      (posRefundKeys.has(row.key) &&
+        row.errorCode === "AUTO_JOURNAL_SALE_MISSING")
+    )
+      states.set(row.key, "pending");
   // 3. Last the journals themselves (they win over pending).
   const posted = await tx
     .select({ key: journalEntries.idempotencyKey })

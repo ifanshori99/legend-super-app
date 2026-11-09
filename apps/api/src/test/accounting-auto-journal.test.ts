@@ -5538,6 +5538,79 @@ describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => 
     // receipt + sale + POS refund
     expect(await journalCount(world)).toBe(3);
   });
+
+  it("AJ-HXPD5-06 the sale parked mismatch, its POS refund parked SALE_MISSING: a 30k payout parks retryable, not mismatch; once the sale is fixed the sweeps post the refund, then the payout", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: [{ method: "qris", amountIdr: 100_000, intentId }],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    // The event claims cash; the tender row holds QRIS on the intent.
+    const wrongClaim: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: [{ method: "cash", amountIdr: 100_000 }],
+    };
+    expect(
+      await deliver(tenant, orderPaid(world, orderUlid, wrongClaim)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    const lines = [{ method: "qris" as const, amountIdr: 30_000 }];
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      lines,
+      T_POS_REFUND,
+    );
+    const refundKey = `aj:order-refund:${posRefundId}`;
+    expect(
+      await deliver(
+        tenant,
+        orderRefunded(
+          world,
+          orderUlid,
+          posRefundId,
+          { grossSalesIdr: 30_000, pbjtIdr: 0, lines },
+          T_POS_REFUND,
+        ),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    const refundId = await seedRefund(world, intentId, 30_000);
+    const payoutKey = `aj:payout:${refundId}`;
+
+    expect(
+      await deliver(tenant, paymentRefunded(world, refundId, intentId, 30_000)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+
+    // Data corrected: the replay of order.paid matches the tender rows.
+    await post(world, orderPaid(world, orderUlid, sale));
+    await sweep(tenant);
+    await journalIdOf(world, refundKey);
+    expect(await parkedOf(tenant, refundKey)).toHaveLength(0);
+    await sweep(tenant);
+    await journalIdOf(world, payoutKey);
+    expect(await parkedOf(tenant, payoutKey)).toHaveLength(0);
+    // receipt + sale + POS refund + payout
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
 });
 
 describe("legend-3bsyh parked SALE_MISSING dependents retry once the sale posts", () => {
