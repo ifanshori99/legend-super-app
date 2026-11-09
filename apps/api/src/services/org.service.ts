@@ -68,7 +68,12 @@ import {
   tenants,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { provisionStandardChart } from "./accounting-provisioning.service";
 import { recordAudit } from "./core-audit";
+import {
+  provisionOutletStockLocations,
+  provisionStandardUoms,
+} from "./inventory-provisioning.service";
 import { HttpError } from "../lib/http-error";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
@@ -306,6 +311,7 @@ export async function createLegalEntity(
 ): Promise<LegalEntity> {
   const id = randomUUID();
   return withTenant(db, context, async (tx) => {
+    let inserted: typeof legalEntities.$inferSelect;
     try {
       const [row] = await tx
         .insert(legalEntities)
@@ -318,7 +324,7 @@ export async function createLegalEntity(
           address: input.address,
         })
         .returning();
-      return toLegalEntity(row);
+      inserted = row;
     } catch (error) {
       if (uniqueViolation(error))
         throw new HttpError(
@@ -328,6 +334,11 @@ export async function createLegalEntity(
         );
       throw error;
     }
+    // Outside the NPWP catch, same transaction: a provisioning failure rolls
+    // the entity back instead of being read as a duplicate NPWP (PRD v1.7
+    // §3.19, legend-a7x7).
+    await provisionStandardChart(tx, context, inserted.id, null);
+    return toLegalEntity(inserted);
   });
 }
 
@@ -443,6 +454,7 @@ export async function createOutlet(
   return withTenant(db, context, async (tx) => {
     await requireBrand(tx, input.brandId);
     await requireLegalEntity(tx, input.legalEntityId);
+    let inserted: typeof outlets.$inferSelect;
     const [count] = await tx
       .select({ value: sql<number>`count(*)::int` })
       .from(outlets);
@@ -478,6 +490,7 @@ export async function createOutlet(
           openingHours: input.openingHours,
         })
         .returning();
+      inserted = row;
       // legend-2nb9: a new outlet starts with an availability row for every
       // existing item of its brand, so its 86 screen lists them on day one
       // (the item-create path seeds only the outlets that exist then).
@@ -508,12 +521,16 @@ export async function createOutlet(
           )
           .onConflictDoNothing();
       }
-      return toOutlet(row);
     } catch (error) {
       if (uniqueViolation(error))
         throw new HttpError(409, "CONFLICT", "That outlet code is taken.");
       throw error;
     }
+    // Same transaction (PRD v1.7 §3.19, §16 Lokasi Stok, legend-4ryw): older
+    // tenants without UOMs get them here too; both calls are idempotent.
+    await provisionStandardUoms(tx, context, null);
+    await provisionOutletStockLocations(tx, context, inserted.id, null);
+    return toOutlet(inserted);
   });
 }
 

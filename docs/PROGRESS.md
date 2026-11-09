@@ -435,3 +435,12 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Review K: reviewer Opus (3 bug refund dana tak teralokasi + intent manual + kebocoran kill switch) dan architect (kill switch, `pending` saat payment masih `paid`, cek reference) dibetulkan semua.
 - Sebelum switch dinyalakan: verifikasi sandbox DOIT (bentuk respons, payload webhook, masa simpan kunci) dan putuskan reset satu kali `payout_attempts` refund lama yang sempat di-claim gateway kosong.
 - Gate penuh: oleh merge train. Second opinion Codex: antre.
+
+## legend-a7x7 + legend-4ryw provisioning default (engineer, cabang `ws/provisioning-default`, 2026-11-09)
+
+- Entitas legal baru (`createLegalEntity`) langsung mendapat bagan akun standar F&B (58 akun) + 39 mapping default dalam transaksi yang sama, satu audit `accounting.chart.provisioned`. Entitas yang sudah punya akun tidak disentuh (`already_present`); jumlah role tanpa mapping dilaporkan sebagai `missingRoles`.
+- Outlet baru (`createOutlet`) mendapat enam lokasi stok (Gudang Utama, Chiller, Freezer, Bar, Dapur, Pastry) + katalog UOM standar tenant (12 satuan, `STANDARD_UOM_CATALOG` di `@starter/shared/inventory`). Tenant baru (`createTenant`) mendapat katalog UOM. Semua idempoten, tidak mengubah baris lama; lokasi yang namanya bentrok dilewati. Kunci per outlet sama dengan route lokasi.
+- Backfill: `pnpm db:backfill-defaults [--tenant <uuid>]` (`apps/api/src/db/backfill-tenant-defaults.ts`). Jalankan di luar jam operasional, satu tenant sekali jalan: backfill bersamaan dengan admin membuat akun pertama di entitas kosong bisa mencampur template dan akun custom (catatan reviewer, diterima brief).
+- Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/provisioning-defaults.test.ts`.
+- Follow-up: legend-9ppw (lokasi, UOM, CoA belum ikut ke edge node; celah sudah ada sebelumnya).
+- Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
