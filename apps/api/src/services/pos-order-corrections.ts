@@ -69,6 +69,7 @@ import {
   type Locked,
   type PosCaller,
 } from "./pos-order-support.ts";
+import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
 import { assertShiftOutflowBound } from "./pos-shift-support.ts";
 
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
@@ -826,6 +827,16 @@ export async function refundPosOrder(
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");
+      // legend-ghgei: the gateway part goes back through a WS-05 refund
+      // request (nothing pays here). A Rp0 return has no lines.
+      if (!goodsReturnOnly)
+        await requestPosRefundGatewayPart(tx, context, {
+          order,
+          caller,
+          posRefundId: row.id,
+          lines,
+          now,
+        });
       const split = refundSplit(order, payout);
       // Goods part of the payout goes onto the promo application's ledger.
       if (promoApplication && !goodsReturnOnly)

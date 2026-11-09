@@ -311,6 +311,58 @@ async function heldAt(
 // ------------------------------------------------------------ transitions
 
 /**
+ * Four-eyes for a gateway refund the POS filed itself (`system:pos`, key
+ * `pos-refund-gateway:<posRefundId>:<intentId>`): the cashier and the approver
+ * of the POS refund must not also approve its payout. Fails closed: a filed
+ * refund whose POS refund cannot be read counts everyone as a party.
+ */
+async function isPosRefundParty(
+  tx: Tx,
+  refund: Refund,
+  userId: string,
+): Promise<boolean> {
+  // Only the POS filer (pos-refund-gateway.ts) writes these keys.
+  if (refund.requestedBy !== "system:pos") return false;
+  const { rows } = await tx.execute<{ key: string }>(
+    sql`SELECT key FROM payment_admin_idempotency
+        WHERE tenant_id = ${refund.tenantId}
+          AND key LIKE 'pos-refund-gateway:%'
+          AND response->>'refundId' = ${refund.id}`,
+  );
+  for (const { key } of rows) {
+    const posRefundId = key.split(":")[1] ?? "";
+    const { rows: parties } = UUID_PATTERN.test(posRefundId)
+      ? await tx.execute<{ requested_by: string; approved_by: string }>(
+          sql`SELECT requested_by, approved_by FROM pos_order_refunds
+              WHERE tenant_id = ${refund.tenantId} AND id = ${posRefundId}`,
+        )
+      : { rows: [] };
+    const party = parties[0];
+    if (
+      !party ||
+      [party.requested_by, party.approved_by].some(
+        (user) => user.toLowerCase() === userId.toLowerCase(),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+/** isPosRefundParty for a direct approval: refused with APPROVER_IS_REQUESTER. */
+async function assertNotPosRefundParty(
+  tx: Tx,
+  refund: Refund,
+  approver: string,
+): Promise<void> {
+  if (await isPosRefundParty(tx, refund, approver))
+    throw new AccessError("APPROVER_IS_REQUESTER");
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * `pending` -> `approved` under the locks. Fails closed: when the cap (or the
  * fund) no longer allows the refund, it ends `failed` (`cap_exceeded`) and that
  * failed row is returned, so the refund is never stuck `pending` forever.
@@ -325,6 +377,7 @@ async function applyApproval(
   const { intent, fund, refund } = locked;
   if (approvedBy.toLowerCase() === refund.requestedBy.toLowerCase())
     throw new AccessError("APPROVER_IS_REQUESTER");
+  await assertNotPosRefundParty(tx, refund, approvedBy);
   // A user-filed refund of a sale is never paid from here: the owning module
   // refunds it (order.refunded). Legacy pending rows fail closed. System
   // requesters and unallocated funds (never journalled) are exempt.
@@ -917,6 +970,17 @@ async function settleLocked(
     let supervisorApproved = false;
     for (const row of rows) {
       if (row.status !== "approved" || !row.decidedBy) continue;
+      // Four-eyes on a POS-filed refund covers every level (the inbox never
+      // goes through decideRefund). Fail closed, never throw: the chain is
+      // resolved, so a throw would leave it pending and the consumer retrying.
+      if (await isPosRefundParty(tx, refund, row.decidedBy))
+        return failRefund(tx, context, refund, {
+          reason: "approver_unauthorized",
+          action: "payment.refund_failed",
+          actorId: null,
+          note: "pos_refund_party",
+          now,
+        });
       const supervisor = await holdsPermission(
         tx,
         context,
@@ -1075,6 +1139,9 @@ async function decideRefund(
       await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
       if (refund.requestedBy === actor)
         throw new AccessError("APPROVER_IS_REQUESTER");
+      // Before any chain decision is recorded (the settle step runs after it).
+      if (decision === "approved")
+        await assertNotPosRefundParty(tx, refund, actor);
       // Idempotent by key, in this same transaction: a retried call (also a
       // submit-only call or a direct reject, which leave no keyed chain row)
       // replays the first step; the same key with another body is refused.
@@ -1343,7 +1410,8 @@ async function approvalDefectOf(
   const approver = refund.approvedBy;
   if (
     approver === null ||
-    approver.toLowerCase() === refund.requestedBy.toLowerCase()
+    approver.toLowerCase() === refund.requestedBy.toLowerCase() ||
+    (await isPosRefundParty(tx, refund, approver))
   )
     return "approver_unauthorized";
   const holds = (userId: string, permission: PermissionCode, at: Date) =>
@@ -1366,6 +1434,8 @@ async function approvalDefectOf(
   let supervisorApproved = false;
   for (const row of rows) {
     if (row.status !== "approved" || !row.decidedBy) continue;
+    if (await isPosRefundParty(tx, refund, row.decidedBy))
+      return "approver_unauthorized";
     const decidedAt = row.decidedAt ?? now;
     const supervisor = await holds(
       row.decidedBy,
