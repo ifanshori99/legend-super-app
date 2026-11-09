@@ -14,3 +14,7 @@ Cek: batas sisa tagihan bisa dilewati (race antar pesanan, split tender, deposit
 Cek: tamu membaca data sesi/meja/outlet lain, scan meja sekunder, rate limit bisa diakali (IP header), media outlet lain (403).
 
 Laporan: jumlah temuan per tingkat, 3 teratas, path berkas review.
+
+## Run C (uang): VA tamu QR dan harga nett
+Cabang `ws/ws03-pay` b99fb741, diff `git diff d06b163c b99fb741`. Fokus: penerbitan/ganti VA (idempotensi, VA lama tetap bisa dibayar, auto-refund pembayaran telat/dobel), `orderNetSubtotalIdr` dan CHECK total per mode harga, mode campuran 409.
+Tulis ke `docs/reviews/codex-ws03-pay.md`.
