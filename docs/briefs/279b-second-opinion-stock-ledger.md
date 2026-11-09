@@ -6,8 +6,8 @@ Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
 
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/stock-ledger-sequence`, cabang `ws/stock-ledger-sequence`, SHA `__SHA__`.
-Rentang diff: `git diff 3517283b __SHA__` (isi cabang saja di atas `milestone/m1` 3517283b; abaikan `apps/api/drizzle/meta/0186_snapshot.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/stock-ledger-sequence`, cabang `ws/stock-ledger-sequence`, SHA `3f30797e`.
+Rentang diff: `git diff 3517283b 3f30797e` (isi cabang saja di atas `milestone/m1` 3517283b; abaikan `apps/api/drizzle/meta/0186_snapshot.json`).
 
 ## Berkas berisiko
 
