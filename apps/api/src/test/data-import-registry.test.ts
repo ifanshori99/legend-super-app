@@ -112,6 +112,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends org.notification_policy.manage to the stored owner and tenant_admin template role rows of existing tenants (legend-63l6); idempotent, never touches a custom role, FORCE RLS lifted for that one statement and restored",
   "0160_support_access_requests.sql":
     "appends org.support_access.approve to the stored owner template role rows of every tenant, one tenant context at a time (legend-c9kbk); idempotent, never touches a custom role or another template",
+  "0174_finance_policy_asset_register.sql":
+    "backfills fixed_assets.code of existing assets (FA-nnnnn per entity)",
 };
 
 // Entrypoints that open a database pool but import no data.

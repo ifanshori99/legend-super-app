@@ -105,11 +105,15 @@ describe("0174 fixed_assets.code backfill", () => {
     const restore = at(
       /^ALTER TABLE public\.fixed_assets FORCE ROW LEVEL SECURITY/i,
     );
-    const notNull = at(/"code" SET NOT NULL/i);
+    // Every later statement that scans fixed_assets (FK validation, unique key)
+    // must still run with FORCE lifted, or a non-BYPASSRLS owner hits 42501.
+    const lastScan = at(/fixed_assets_code_check/i);
+    const fkScan = at(/fixed_assets_category_fk/i);
     expect(lift).toBeGreaterThanOrEqual(0);
     expect(lift).toBeLessThan(update);
-    expect(update).toBeLessThan(restore);
-    expect(restore).toBeLessThan(notNull);
+    expect(fkScan).toBeGreaterThan(update);
+    expect(restore).toBeGreaterThan(lastScan);
+    expect(restore).toBeGreaterThan(fkScan);
   });
 
   it("numbers each (tenant, entity) FA-00001.. by created_at then id, without gaps or duplicates", async () => {

@@ -27,7 +27,9 @@ CREATE TABLE "finance_policies" (
 ALTER TABLE "fixed_assets" ADD COLUMN "code" varchar(40);--> statement-breakpoint
 -- The migrator may be a plain table owner (no BYPASSRLS): FORCE RLS would apply
 -- the tenant policy to the backfill and raise 42501 (no app.tenant_id). Lift it
--- for this transaction only and restore it right after (same pattern as 0139).
+-- for this transaction only (same pattern as 0139) and restore it after the last
+-- statement that scans fixed_assets: ADD CONSTRAINT ... FOREIGN KEY validates the
+-- existing rows, and with FORCE on it would hit the same 42501.
 ALTER TABLE public.fixed_assets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 UPDATE "fixed_assets" fa SET "code" = 'FA-' || lpad(n.seq::text, 5, '0')
 FROM (
@@ -35,7 +37,6 @@ FROM (
   FROM "fixed_assets"
 ) n
 WHERE fa."id" = n."id";--> statement-breakpoint
-ALTER TABLE public.fixed_assets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "fixed_assets" ALTER COLUMN "code" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "fixed_assets" ADD COLUMN "category_id" uuid;--> statement-breakpoint
 ALTER TABLE "asset_categories" ADD CONSTRAINT "asset_categories_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -44,6 +45,7 @@ CREATE UNIQUE INDEX "asset_categories_tenant_name_key" ON "asset_categories" USI
 ALTER TABLE "fixed_assets" ADD CONSTRAINT "fixed_assets_category_fk" FOREIGN KEY ("tenant_id","category_id") REFERENCES "public"."asset_categories"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fixed_assets" ADD CONSTRAINT "fixed_assets_tenant_entity_code_key" UNIQUE("tenant_id","legal_entity_id","code");--> statement-breakpoint
 ALTER TABLE "fixed_assets" ADD CONSTRAINT "fixed_assets_code_check" CHECK (length(btrim("fixed_assets"."code")) > 0);--> statement-breakpoint
+ALTER TABLE public.fixed_assets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 -- Tenant RLS on the two new tables, same call as schema/accounting-ap-fa.custom.sql.
 SELECT app.enforce_tenant_rls('public.asset_categories'::regclass);--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.finance_policies'::regclass);
