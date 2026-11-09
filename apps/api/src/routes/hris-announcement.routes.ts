@@ -13,6 +13,7 @@
 
 import { Router, type Request, type RequestHandler } from "express";
 import type { PermissionCode } from "@starter/shared/access";
+import type { TenantContext } from "@starter/shared/core";
 import {
   createAnnouncement as createAnnouncementEndpoint,
   listAnnouncementReceipts as listAnnouncementReceiptsEndpoint,
@@ -28,6 +29,7 @@ import {
   requireTenantContext,
 } from "../middleware/tenant.ts";
 import * as announcementService from "../services/hris-announcement.service.ts";
+import type { AccessSnapshot } from "../services/permission-resolver.ts";
 import {
   hrisLearningActor,
   hrisLearningContext,
@@ -43,6 +45,25 @@ const FEED: PermissionCode[] = ["self.sop.read", "hr.sop.manage"];
 
 const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
 
+/**
+ * Surface of the shared feed: back office only when the manage code has real
+ * reach (tenant, brand or outlet). The flat union is not used: a station-only
+ * grant has no manage reach and reads the self feed (legend-dak5).
+ */
+export async function feedSurfaceOf(
+  snapshot: AccessSnapshot,
+  tenant: TenantContext,
+  userId: string,
+): Promise<"back_office" | "hris"> {
+  const manage = await resolveHrisLearningContext(
+    snapshot,
+    tenant,
+    userId,
+    MANAGE,
+  );
+  return manage ? "back_office" : "hris";
+}
+
 export function createHrisAnnouncementRouter(): Router {
   const router = Router();
   const backOffice = requireBackOfficeSurface();
@@ -52,16 +73,12 @@ export function createHrisAnnouncementRouter(): Router {
   // A manager reads the feed through the back office, everyone else through
   // the employee surface.
   const feedSurface: RequestHandler = async (req, res, next) => {
-    const snapshot = await loadRequestAccess(req);
-    // Real reach of the manage code, not the flat union: a station-only grant
-    // has no outlet reach and reads the self feed (legend-dak5).
-    const manageContext = await resolveHrisLearningContext(
-      snapshot,
+    const kind = await feedSurfaceOf(
+      await loadRequestAccess(req),
       getTenantContext(req),
       getAuth(req).user.id,
-      MANAGE,
     );
-    const surface = manageContext ? backOffice : employeeSurface;
+    const surface = kind === "back_office" ? backOffice : employeeSurface;
     return surface(req, res, next);
   };
 

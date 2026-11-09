@@ -17,6 +17,7 @@ import {
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { feedSurfaceOf } from "../routes/hris-announcement.routes.ts";
 import { resolveHrisLearningContext } from "../routes/hris-sop-gate.ts";
 import {
   loadTenantAccess,
@@ -308,6 +309,24 @@ describe("legend-dak5 announcement feed surface follows the reach of the manage 
         "self.sop.read",
       ]),
     ).not.toBeNull();
+  });
+
+  it("legend-dak5 the feed picks back office for real managers and the employee surface for a station-only manage grant", async () => {
+    for (const actor of [tenantManager, outletManager])
+      expect(
+        await feedSurfaceOf(
+          await snapshotOf(actor.userId),
+          tenant,
+          actor.userId,
+        ),
+      ).toBe("back_office");
+    expect(
+      await feedSurfaceOf(
+        await snapshotOf(stationOnly.userId),
+        tenant,
+        stationOnly.userId,
+      ),
+    ).toBe("hris");
   });
 
   it("legend-dak5 the outlet manager still gets the manager feed over HTTP (positive control)", async () => {
