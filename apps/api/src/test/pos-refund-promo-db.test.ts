@@ -55,6 +55,7 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { getEndOfDayRecap } from "../services/pos-day.service.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -899,12 +900,14 @@ describe("legend-q1e0 refund of a promo order that also carries a manual discoun
 // re-evaluated on the kept lines. Promo: "buy 2 coffee, get 1 croissant free"
 // (free_items, one croissant per 2 coffee). Coffee 30k, croissant 25k, juice 30k.
 //
-// Assumptions (see docs/briefs/sub-115-refund-promo.md "Q19"):
-// - A refund that has nothing due (BOGO) is refused at the POS with 422
-//   REFUND_NOTHING_DUE inside the refund transaction, so nothing is written:
-//   the stored application keeps the original discount (50k) until a refund
-//   that actually pays something is accepted. The "kept discount 25k" of the
-//   brief is the crm-level result, not observable through a refused POS call.
+// Assumptions (see docs/briefs/sub-115-refund-promo.md "Q19" and
+// docs/briefs/sub-wkl3-rp0-return.md):
+// - Returning a free item (payout Rp0) is NOT refused: it is accepted with 201
+//   and recorded as a refund row of Rp0 with the returned items (record of the
+//   goods returned). No gateway call, no stock reversal, no order.refunded
+//   event, and the day recap does not count it as a refund. The CRM port still
+//   runs, so the kept discount drops to 25k and the released 25k goes back to
+//   the promo budget.
 // - A request asking for more than is due is paid at the due amount.
 // - The free croissants are named in the stored discount (50k = 2 x 25k).
 
@@ -1026,10 +1029,69 @@ async function bogoSale(
   return { orderId, promotionId, paidIdr, lineOf };
 }
 
+/** Stock the Q19 items reserved: a refund must leave it as it is. */
+async function q19Stock() {
+  const { rows } = await asOwnerTenant((client) =>
+    client.query(
+      `SELECT menu_item_id, quantity FROM menu_item_daily_usage
+        WHERE tenant_id = $1 AND menu_item_id = ANY($2::uuid[])
+        ORDER BY menu_item_id`,
+      [tenant.tenantId, [q19.coffee, q19.croissant, q19.juice]],
+    ),
+  );
+  return rows.map((row) => `${row.menu_item_id}:${row.quantity}`);
+}
+
+async function orderEventTypes(orderId: string) {
+  const { rows } = await owner.query<{ type: string }>(
+    `SELECT type FROM order_events WHERE tenant_id = $1 AND order_id = $2::uuid`,
+    [tenant.tenantId, ulidToUuid(orderId as never)],
+  );
+  return rows.map((row) => row.type);
+}
+
+async function outboxEventNames(orderId: string) {
+  const { rows } = await owner.query<{ name: string }>(
+    `SELECT event->>'name' AS name FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->'payload'->>'orderId' = $2`,
+    [tenant.tenantId, orderId],
+  );
+  return rows.map((row) => row.name);
+}
+
+async function businessDateOf(orderId: string) {
+  const { rows } = await owner.query<{ business_date: string }>(
+    `SELECT business_date::text AS business_date FROM orders
+      WHERE tenant_id = $1 AND id = $2::uuid`,
+    [tenant.tenantId, ulidToUuid(orderId as never)],
+  );
+  return rows[0]?.business_date as string;
+}
+
+/** End-of-day recap read as an outlet manager (pos.day.close). */
+let recapReader: Member | null = null;
+async function recapOf(businessDate: string) {
+  if (!recapReader) {
+    const roleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Manajer Recap Refund Promo', false, NULL, $3, false, '["tenant"]')`,
+      [roleId, tenant.tenantId, JSON.stringify(["pos.day.close"])],
+    );
+    recapReader = await member(roleId, "Manajer RP");
+  }
+  return getEndOfDayRecap(
+    tenantScope(),
+    { userId: userIdSchema.parse(recapReader.userId) },
+    outletIdSchema.parse(tenant.outletId),
+    businessDate,
+  );
+}
+
 describe("legend-15by Q19 kept discount is capped by what the promo still gives", () => {
   beforeAll(seedQ19Menu);
 
-  it("BOGO: 4 coffee + 2 croissant (170k, 50k off, paid 120k), returning 1 free croissant pays Rp0 and is refused with nothing written", async () => {
+  it("BOGO: 4 coffee + 2 croissant (170k, 50k off, paid 120k), returning 1 free croissant is recorded as a Rp0 goods return", async () => {
     const sale = await bogoSale(
       [
         { menuItemId: q19.coffee, quantity: 4 },
@@ -1037,30 +1099,175 @@ describe("legend-15by Q19 kept discount is capped by what the promo still gives"
       ],
       { subtotalIdr: 170_000, discountIdr: 50_000 },
     );
-    const stockBefore = await dailyStock();
+    const stockBefore = await q19Stock();
+    const croissantLine = sale.lineOf(q19.croissant);
 
-    const refused = await pos().refund(
+    const returned = await pos().refund(
       sale.orderId,
       await refundBody(sale.orderId, {
         // Even a request for the full croissant price pays nothing: the kept
         // lines still earn 25k, exactly what the returned croissant carried.
         amountIdr: CROISSANT_IDR,
-        items: [{ itemId: sale.lineOf(q19.croissant), quantity: 1 }],
+        items: [{ itemId: croissantLine, quantity: 1 }],
       }),
     );
-    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
-    expect(JSON.stringify(refused.body)).toContain("REFUND_NOTHING_DUE");
+    expect(returned.status, JSON.stringify(returned.body)).toBe(201);
+    expect(returned.body.data.amountIdr).toBe(0);
+    expect(returned.body.data.lines).toEqual([]);
+    expect(returned.body.data.items).toEqual([
+      { itemId: croissantLine, quantity: 1 },
+    ]);
 
-    // Nothing paid, nothing recorded, budget untouched.
-    expect(await refundRows(sale.orderId)).toHaveLength(0);
+    // One Rp0 row naming the croissant; nothing paid out.
+    expect(await refundRows(sale.orderId)).toEqual([
+      { amount: 0, items: [{ itemId: croissantLine, quantity: 1 }] },
+    ]);
     expect(await application(sale.orderId)).toMatchObject({
       paid: 120_000,
       refundedPaid: 0,
-      totalDiscount: 50_000,
-      refundedSubtotal: 0,
+      totalDiscount: 25_000,
+      refundedSubtotal: 25_000,
     });
-    expect(await spentOf(sale.promotionId)).toBe(50_000);
-    expect(await dailyStock()).toEqual(stockBefore);
+    // The free croissant is no longer given: its 25k goes back to the budget.
+    expect(await spentOf(sale.promotionId)).toBe(25_000);
+    expect(await q19Stock()).toEqual(stockBefore);
+
+    // Audit trail says it was a goods return only.
+    const audit = await asOwnerTenant((client) =>
+      client.query<{ event: unknown }>(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'pos_order.refunded'`,
+        [tenant.tenantId],
+      ),
+    );
+    const forOrder = audit.rows.filter((row) =>
+      JSON.stringify(row.event).includes(sale.orderId),
+    );
+    expect(forOrder).toHaveLength(1);
+    expect(forOrder[0]?.event).toMatchObject({
+      objectType: "pos_order_refund",
+      maskedChanges: { after: { amountIdr: 0, goodsReturnOnly: true } },
+    });
+
+    // No money moved: no order.refunded event, in the order stream or the outbox.
+    // (order.paid is asserted too so the queries are known to see this order.)
+    expect(await orderEventTypes(sale.orderId)).toContain("order.paid");
+    expect(await orderEventTypes(sale.orderId)).not.toContain("order.refunded");
+    expect(await outboxEventNames(sale.orderId)).toContain("order.paid");
+    expect(await outboxEventNames(sale.orderId)).not.toContain(
+      "order.refunded",
+    );
+  });
+
+  it("resending the same idempotency key returns the same Rp0 response and writes nothing more", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 4 },
+        { menuItemId: q19.croissant, quantity: 2 },
+      ],
+      { subtotalIdr: 170_000, discountIdr: 50_000 },
+    );
+    const body = await refundBody(sale.orderId, {
+      amountIdr: CROISSANT_IDR,
+      items: [{ itemId: sale.lineOf(q19.croissant), quantity: 1 }],
+      idempotencyKey: randomUUID(),
+    });
+
+    const first = await pos().refund(sale.orderId, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const again = await pos().refund(sale.orderId, body);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    expect(again.body.data).toEqual(first.body.data);
+
+    expect(await refundRows(sale.orderId)).toHaveLength(1);
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 120_000,
+      refundedPaid: 0,
+      totalDiscount: 25_000,
+      refundedSubtotal: 25_000,
+    });
+    expect(await spentOf(sale.promotionId)).toBe(25_000);
+  });
+
+  it("the end-of-day recap is the same before and after a Rp0 goods return", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 4 },
+        { menuItemId: q19.croissant, quantity: 2 },
+      ],
+      { subtotalIdr: 170_000, discountIdr: 50_000 },
+    );
+    const businessDate = await businessDateOf(sale.orderId);
+    const before = await recapOf(businessDate);
+    // Guard: the day holds the sale, so "unchanged" is not an empty-day pass.
+    expect(before.totalSalesIdr).toBeGreaterThanOrEqual(sale.paidIdr);
+
+    const returned = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: CROISSANT_IDR,
+        items: [{ itemId: sale.lineOf(q19.croissant), quantity: 1 }],
+      }),
+    );
+    expect(returned.status, JSON.stringify(returned.body)).toBe(201);
+
+    const after = await recapOf(businessDate);
+    // id and generatedAt differ on every read; everything else must match.
+    const stable = (recap: typeof before) => ({
+      ...recap,
+      id: null,
+      generatedAt: null,
+    });
+    expect(stable(after)).toEqual(stable(before));
+  });
+
+  it("path independence: after the Rp0 croissant return, returning 1 coffee pays Rp30.000, the same as returning 1 coffee + 1 croissant at once", async () => {
+    const lines = [
+      { menuItemId: q19.coffee, quantity: 4 },
+      { menuItemId: q19.croissant, quantity: 2 },
+    ];
+    const bill = { subtotalIdr: 170_000, discountIdr: 50_000 };
+
+    const stepwise = await bogoSale(lines, bill);
+    const croissant = await pos().refund(
+      stepwise.orderId,
+      await refundBody(stepwise.orderId, {
+        amountIdr: CROISSANT_IDR,
+        items: [{ itemId: stepwise.lineOf(q19.croissant), quantity: 1 }],
+      }),
+    );
+    expect(croissant.status, JSON.stringify(croissant.body)).toBe(201);
+    expect(croissant.body.data.amountIdr).toBe(0);
+    // Kept 3 coffee + 1 croissant = 115k, 25k off, 90k payable; paid 120k.
+    const coffee = await pos().refund(
+      stepwise.orderId,
+      await refundBody(stepwise.orderId, {
+        amountIdr: COFFEE_IDR,
+        items: [{ itemId: stepwise.lineOf(q19.coffee), quantity: 1 }],
+      }),
+    );
+    expect(coffee.status, JSON.stringify(coffee.body)).toBe(201);
+    expect(coffee.body.data.amountIdr).toBe(30_000);
+    expect(await application(stepwise.orderId)).toMatchObject({
+      paid: 120_000,
+      refundedPaid: 30_000,
+      totalDiscount: 25_000,
+    });
+    expect(await spentOf(stepwise.promotionId)).toBe(25_000);
+
+    const atOnce = await bogoSale(lines, bill);
+    const both = await pos().refund(
+      atOnce.orderId,
+      await refundBody(atOnce.orderId, {
+        amountIdr: COFFEE_IDR + CROISSANT_IDR,
+        items: [
+          { itemId: atOnce.lineOf(q19.coffee), quantity: 1 },
+          { itemId: atOnce.lineOf(q19.croissant), quantity: 1 },
+        ],
+      }),
+    );
+    expect(both.status, JSON.stringify(both.body)).toBe(201);
+    expect(both.body.data.amountIdr).toBe(30_000);
   });
 
   it("Mixed A: same bill, returning 1 coffee keeps 25k off (3 coffee + 2 croissant = 140k) and pays Rp5.000", async () => {
@@ -1224,5 +1431,54 @@ describe("legend-15by Q19b path-independent, stack-ordered, per-line kept discou
       { promotionId: sale.promotionId, discount: 25_000 },
     ]);
     await expectRowsMatchApplication(sale.orderId);
+  });
+});
+
+// ---- Review fix (brief sub-wkl3-rp0-return "Review fix"): Rp0 only when nothing is owed ----
+describe("legend-wkl3 Rp0 goods return only when nothing is owed on the bill", () => {
+  it("money still owed but tenders used up (deposit paid part of the bill): 80k refund pays, the next 1k is 422 REFUND_NOTHING_DUE and writes nothing", async () => {
+    // 2 x 50k, 20k off, paid 80k cash. Artificial deposit of 50k on the order:
+    // dueBill = 90k, the tenders only hold 80k, so the first refund is capped at 80k.
+    const sale = await promoSale();
+    // The order is completed (final), so the final-order immutability trigger
+    // would reject the UPDATE: replica role skips user triggers for this
+    // transaction only (test setup, owner connection).
+    await asOwnerTenant(async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "UPDATE orders SET deposit_applied_idr = 50000 WHERE tenant_id = $1 AND id = $2::uuid",
+        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
+      );
+    });
+
+    const first = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 80_000,
+        items: [{ itemId: sale.itemA, quantity: 1 }],
+      }),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body.data.amountIdr).toBe(80_000);
+    expect(await refundRows(sale.orderId)).toHaveLength(1);
+
+    const applicationBefore = await application(sale.orderId);
+    const spentBefore = await spentOf(sale.promotionId);
+
+    const refused = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 1_000,
+        items: [{ itemId: sale.itemB, quantity: 1 }],
+      }),
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error?.code ?? refused.body.code).toBe(
+      "REFUND_NOTHING_DUE",
+    );
+    // Whole transaction rolled back: not a Rp0 goods return.
+    expect(await refundRows(sale.orderId)).toHaveLength(1);
+    expect(await application(sale.orderId)).toEqual(applicationBefore);
+    expect(await spentOf(sale.promotionId)).toBe(spentBefore);
   });
 });

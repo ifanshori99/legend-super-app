@@ -474,6 +474,10 @@ export async function refundPosOrder(
       // what the guest paid minus what the kept items still cost. A failing
       // port aborts the refund.
       let payout = input.amountIdr;
+      // legend-wkl3 (CTO): nothing due (e.g. a returned free item, founder Q19)
+      // still records the return as a Rp0 row: items, reason and audit, no
+      // payment line, no event, no gateway, no stock reversal.
+      let goodsReturnOnly = false;
       const promoApplication = await livePromoApplicationOf(
         tx,
         context,
@@ -518,9 +522,7 @@ export async function refundPosOrder(
             (sum, line) => sum + Number(line.lineTotalIdr),
             0,
           );
-          const manualDiscount = (
-            await liveDiscountsOf(tx, context, order.id)
-          )
+          const manualDiscount = (await liveDiscountsOf(tx, context, order.id))
             .filter((row) => row.source === "manual")
             .reduce((sum, row) => sum + Number(row.amountIdr), 0);
           const keptManualShare =
@@ -547,20 +549,25 @@ export async function refundPosOrder(
               : 0;
           const paidIn = paid + Number(order.depositAppliedIdr);
           const dueBill = Math.max(0, paidIn - refunded - keptPayableBill);
+          // Rp0 return only when the guest is owed nothing; owed but no tender
+          // left to pay it from stays refused below.
+          goodsReturnOnly = dueBill === 0;
           payout = Math.min(
             input.amountIdr,
             dueBill,
             Math.max(0, paid - refunded),
           );
         }
-        if (payout <= 0)
+        if (goodsReturnOnly) payout = 0;
+        else if (payout <= 0)
           throw new HttpError(
             422,
             "REFUND_NOTHING_DUE",
             "Tidak ada dana yang perlu dikembalikan.",
           );
       }
-      assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
+      if (!goodsReturnOnly)
+        assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
       const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
@@ -574,10 +581,12 @@ export async function refundPosOrder(
         minValueIdr: payout,
         now,
       });
-      const allocation = refundAllocation(
-        stillRefundableByMethod(tenders, refunds),
-        idr(payout),
-      );
+      const allocation = goodsReturnOnly
+        ? []
+        : refundAllocation(
+            stillRefundableByMethod(tenders, refunds),
+            idr(payout),
+          );
       const lines = allocation.map((line) => ({
         method: line.method,
         amountIdr: Number(line.amountIdr),
@@ -625,7 +634,7 @@ export async function refundPosOrder(
       if (!row) throw new Error("Refund insert returned no row");
       const split = refundSplit(order, payout);
       // Goods part of the payout goes onto the promo application's ledger.
-      if (promoApplication)
+      if (promoApplication && !goodsReturnOnly)
         await posPromoRefundPort().recordPartialRefundPayout(tx, context, {
           orderId: order.id,
           payoutIdr: split.grossSalesIdr - split.discountIdr,
@@ -657,19 +666,23 @@ export async function refundPosOrder(
         })),
         refundedAt: now.toISOString(),
       };
-      await appendPosEvent(tx, context, "order.refunded", {
-        order,
-        payload,
-        caller,
-        now,
-      });
-      await appendOrderEvent(tx, context, {
-        order,
-        type: "order.refunded",
-        payload,
-        caller,
-        now,
-      });
+      // No money moved on a Rp0 return: order.refunded (journals, loyalty,
+      // revenue) is not emitted; the row and its audit are the record.
+      if (!goodsReturnOnly) {
+        await appendPosEvent(tx, context, "order.refunded", {
+          order,
+          payload,
+          caller,
+          now,
+        });
+        await appendOrderEvent(tx, context, {
+          order,
+          type: "order.refunded",
+          payload,
+          caller,
+          now,
+        });
+      }
       await auditPos(
         tx,
         context,
@@ -685,6 +698,13 @@ export async function refundPosOrder(
             amountIdr: row.amountIdr,
             requestedAmountIdr: input.amountIdr,
             items: requested,
+            ...(goodsReturnOnly
+              ? {
+                  goodsReturnOnly: true,
+                  goodsReturnNote:
+                    "Retur barang tanpa dana: tidak ada yang perlu dikembalikan (item gratis atau tetap tercakup promo).",
+                }
+              : {}),
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,

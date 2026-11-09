@@ -743,6 +743,13 @@
       "when": 1794199319460,
       "tag": "0105_natural_kylun",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794202530874,
+      "tag": "0106_slim_human_cannonball",
+      "breakpoints": true
     }
   ]
 }

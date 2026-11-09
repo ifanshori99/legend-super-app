@@ -112,6 +112,13 @@ const AUDIT_SAFE_FIELDS = [
   "overrideId",
   "receiptNumber",
   "version",
+  // Refund of returned items (legend-q1e0, legend-wkl3): no PII.
+  "requestedAmountIdr",
+  "items",
+  "itemId",
+  "quantity",
+  "goodsReturnOnly",
+  "goodsReturnNote",
 ] as const;
 
 export function notFound(message = "Pesanan tidak ditemukan."): CoreError {

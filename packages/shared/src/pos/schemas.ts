@@ -773,10 +773,12 @@ export const posRefundSchema = z
     id: posRefundIdSchema,
     ...scope,
     orderId: orderIdSchema,
-    amountIdr: positiveIdr,
+    /** Rp0 only for a goods return with nothing to pay back (legend-wkl3). */
+    amountIdr: nonnegativeIdr,
     reason: refundReasonSchema,
     reasonNote: z.string().min(4).max(500),
-    lines: z.array(posRefundLineSchema).min(1),
+    /** Empty exactly when the refund pays Rp0. */
+    lines: z.array(posRefundLineSchema),
     items: z.array(posRefundItemSchema),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
@@ -794,6 +796,18 @@ export const posRefundSchema = z
         code: "custom",
         path: ["lines"],
         message: "Refund lines must sum to the refund amount",
+      });
+    if (refund.lines.length > 0 !== Number(refund.amountIdr) > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["lines"],
+        message: "A paid refund has payment lines; a Rp0 return has none",
+      });
+    if (Number(refund.amountIdr) === 0 && refund.items.length === 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "A Rp0 refund records the items returned (legend-wkl3)",
       });
     if (refund.requestedBy === refund.approvedBy)
       ctx.addIssue({

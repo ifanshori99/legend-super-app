@@ -506,7 +506,12 @@ export const posOrderRefunds = pgTable(
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
     index("pos_order_refunds_order_idx").on(table.tenantId, table.orderId),
-    check("pos_order_refunds_amount_check", sql`${table.amountIdr} > 0`),
+    // legend-wkl3: a Rp0 row records goods returned with nothing to pay back
+    // (a returned free item, founder Q19); it must name those items.
+    check(
+      "pos_order_refunds_amount_check",
+      sql`${table.amountIdr} > 0 OR (${table.amountIdr} = 0 AND jsonb_array_length(${table.items}) > 0)`,
+    ),
     // legend-0gy1: every correction names its approval (override row, or the
     // phone chain id on rows written before the override id was recorded).
     check(
@@ -515,7 +520,7 @@ export const posOrderRefunds = pgTable(
     ),
     check(
       "pos_order_refunds_lines_check",
-      sql`jsonb_typeof(${table.lines}) = 'array' AND jsonb_array_length(${table.lines}) > 0`,
+      sql`jsonb_typeof(${table.lines}) = 'array' AND (jsonb_array_length(${table.lines}) > 0) = (${table.amountIdr} > 0)`,
     ),
     check(
       "pos_order_refunds_approver_check",
