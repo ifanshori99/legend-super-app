@@ -1074,3 +1074,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Idempoten: pickup di `picked_up` dan diantar di tiket yang sudah diantar menjawab 200 tanpa ubah (stempel pertama dipakai). `assigned -> picked_up` ditolak `PICKUP_CALL_NOT_CALLED`; `call` dari `picked_up` ditolak `PICKUP_CALL_CLOSED`.
 - Bukti: `tests/kitchen-contract.test.mjs` 15/15 (3 test baru), tsc shared/api/web lewat heavy bersih, eslint, prettier. Review S: 1 reviewer, 2 temuan dibetulkan (refine deliveredAt tanpa isComplete, helper kode tolak pickup).
 - Belum: mock web (`ws04-expo/mock.ts`) tanpa handler picked-up/delivered dan kode `PICKUP_CALL_CLOSED` (UI belum memakai); event realtime pickup/delivered tidak ada.
+
+## legend-wt33, legend-9by4, legend-wq3f jejak audit RBAC dan login staf (engineer, cabang `ws/auth-audit-trail` di atas d8ea5e0b, 2026-11-10)
+
+- RBAC: writer `coreAuditWriter` sudah terpasang di `app.ts`; sisa kerja hanya test. `rbac-audit-writer.test.ts` (10 test): audit ikut commit, ikut rollback bersama tulis domain, fail closed tanpa writer, tenant lain tidak bisa membaca. Writer uji di `platform-access-api.test.ts` dihapus, diganti `coreAuditWriter` plus baca `audit_logs`.
+- Login: `services/identity-wa-audit.ts` (baru) dan panggilan audit di `identity-login.service.ts` / `identity-wa-inbound.service.ts`: `login_challenge.created|completed|rejected|expired|cancelled|rate_limited|claimed|claim_failed`. Tanpa migrasi, tanpa kode OTP/token/nomor penuh (nomor tersamar, IP digest berkunci).
+- Bukti: gagal-dulu (12 dari 13 test login audit gagal di sumber basis), 5 file / 66 test hijau, tsc api bersih lewat heavy, eslint, prettier. Review K: satu architect, 1 temuan nyata (banjir baris rate_limited) dibetulkan dengan throttle satu baris per tenant+perangkat per 15 menit.
+- Celah yang diketahui: pesan webhook tanpa challenge cocok dan batas per-nomor tidak punya tenant, jadi tidak diaudit (tetap tercatat di `wa_inbound_messages`). Brief Codex: `docs/briefs/265b-second-opinion-auth-audit.md`.
