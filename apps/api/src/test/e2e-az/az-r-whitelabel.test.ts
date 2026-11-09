@@ -35,7 +35,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../../app";
+import { signDeviceToken } from "../../lib/device-token";
+import { setDeviceOutletResolver } from "../../services/device-pin.service";
 import { createBrevoEmailProvider } from "../../worker/notification-adapters";
 import {
   agent,
@@ -374,6 +377,7 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
             "order.view",
             "pos.sale.create",
             "pos.payment.accept",
+            "shift.cash.operate",
           ]),
         ],
       );
@@ -406,6 +410,40 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
           "INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr) VALUES ($1,$2,$3,$4,25000)",
           [randomUUID(), t.tenantId, priceList, item],
         );
+        // Published tax settings and PBJT 10% rule (pos-receipt.test.ts):
+        // the receipt prints its tax lines from them.
+        await client.query(
+          `INSERT INTO tax_settings
+             (id, tenant_id, outlet_id, calculation_order, prices_include_tax, service_rounding_mode,
+              tax_rounding_mode, inclusive_base_rounding_mode, bill_rounding, package_allocation,
+              version, effective_from, status, published_at, published_by)
+           VALUES ($1, $2, NULL, 'discount_service_tax', false, 'half_up', 'half_up', 'half_up', NULL,
+                   'fixed_bp', 1, '2026-01-01', 'published', now(), $3)`,
+          [randomUUID(), t.tenantId, userId],
+        );
+        await client.query(
+          `INSERT INTO tax_rules
+             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+              price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+              published_at, published_by)
+           VALUES ($1, $2, NULL, 'PBJT-WL', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
+                   '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+                   false, true, true, 1, '2026-01-01', 'published', now(), $3)`,
+          [randomUUID(), t.tenantId, userId],
+        );
+      });
+      // Cash goes into the drawer of an open shift on a verified terminal
+      // (ws/pos-shift), so the cashier signs in on a device and opens a shift.
+      const deviceId = randomUUID();
+      setDeviceOutletResolver(async ({ tenantId, deviceId: id }) =>
+        tenantId === t.tenantId && id === deviceId ? t.outletId : null,
+      );
+      const deviceToken = signDeviceToken({
+        version: 1,
+        tenantId: t.tenantId,
+        brandId: null,
+        deviceId,
+        issuedAt: Math.floor(Date.now() / 1000) - 5,
       });
       const base = `/api/outlets/${t.outletId}/pos`;
       const post = (path: string, body: Record<string, unknown>) =>
@@ -413,7 +451,10 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
           .post(`${base}${path}`)
           .set("Host", t.hostname)
           .set(originHeader)
+          .set(DEVICE_TOKEN_HEADER, deviceToken)
           .send({ idempotencyKey: randomUUID(), ...body });
+      const shift = await post("/shifts", { openingFloatIdr: 100_000 });
+      expect(shift.status, JSON.stringify(shift.body)).toBe(201);
       const order = await post("/orders", {
         channel: "pos",
         serviceType: "takeaway",
@@ -444,7 +485,7 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
       expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
 
       // Staff document and the customer's e-receipt carry the brand's outlet.
-      expect(issued.body.data.receipt.outletName).toBe("Kopi Senja Dago");
+      expect(issued.body.data.document.outletName).toBe("Kopi Senja Dago");
       expect(platformLeaks(issued.body)).toEqual([]);
       const token = String(issued.body.data.link.url).split("/r/")[1];
       const publicDoc = await request(app)
@@ -472,6 +513,7 @@ describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
       }
     } finally {
       setPosReceiptPort(null);
+      setDeviceOutletResolver(null);
     }
   });
 });

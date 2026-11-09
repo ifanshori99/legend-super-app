@@ -284,6 +284,11 @@ beforeAll(async () => {
   } as never);
 
   tenant = await createIsolatedTenant(`az-e-${randomUUID().slice(0, 6)}`);
+  // POS-07: a receipt is only issued for an outlet with a printed address.
+  await owner.query("UPDATE outlets SET address = $2 WHERE id = $1", [
+    tenant.outletId,
+    "Jl. Braga 12, Bandung",
+  ]);
   headers = { Host: tenant.hostname };
   setDeviceOutletResolver(
     async ({ tenantId, deviceId }) =>
@@ -1325,8 +1330,10 @@ describe("Alur E struk setelah penjualan", () => {
       post(cashier, `/orders/${orderId}/receipts`, { deliveries: ["print"] });
     const r1 = await issue(first.orderId);
     const r2 = await issue(second.orderId);
-    expect(r1.status, JSON.stringify(r1.body)).toBe(201);
-    expect(r2.status, JSON.stringify(r2.body)).toBe(201);
+    // The number is allocated with the order; this call issues or reprints
+    // its deliveries and answers 200 (pos-receipt.routes.ts).
+    expect(r1.status, JSON.stringify(r1.body)).toBe(200);
+    expect(r2.status, JSON.stringify(r2.body)).toBe(200);
     expect(r2.body.data.receipt.sequenceNumber).toBe(
       r1.body.data.receipt.sequenceNumber + 1,
     );
