@@ -32,7 +32,9 @@ import {
   type AuditEvent,
   type AuditEventView,
 } from "@starter/shared/audit";
+import { POS_SHIFT_BLIND_FIELDS } from "@starter/shared/pos";
 import {
+  businessDateSchema,
   decodeCursor,
   encodeCursor,
   type CursorPage,
@@ -43,6 +45,7 @@ import { db } from "../db/index.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { stockCountLines, stockCounts } from "../db/schema/inventory-count.ts";
 import { outlets } from "../db/schema/platform-org.ts";
+import { posShiftCounts, posShifts } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
@@ -192,6 +195,270 @@ async function hiddenBlindCountIds(
   return hidden;
 }
 
+// ---- Own drawer figures (legend-mxxev, POS-03 blind rule) -------------------
+
+const SHIFT_DRAWER_FIELDS: readonly string[] = [
+  ...POS_SHIFT_BLIND_FIELDS,
+  "differenceIdr",
+  "heldCashOutIdr",
+  "expiredCashOutIdr",
+];
+// A cash_shift_close override is worth the server's |variance| (valueIdr).
+const OVERRIDE_DRAWER_FIELDS: readonly string[] = [
+  ...SHIFT_DRAWER_FIELDS,
+  "valueIdr",
+];
+const DAY_CLOSE_DRAWER_FIELDS: readonly string[] = ["totalVarianceIdr"];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type AuditSide = AuditEvent["maskedChanges"]["before"];
+type DrawerRef =
+  | { kind: "day"; outletId: AuditEvent["outletId"]; date: string | null }
+  | {
+      kind: "shift";
+      outletId: AuditEvent["outletId"];
+      shiftId: string | null;
+      countId: string | null;
+      requestedBy: string | null;
+      fields: readonly string[];
+    };
+
+function sideRecord(side: AuditSide): Record<string, unknown> | null {
+  return side !== null && typeof side === "object" && !Array.isArray(side)
+    ? side
+    : null;
+}
+
+function redactFields(side: AuditSide, fields: readonly string[]) {
+  if (side === null || typeof side !== "object" || Array.isArray(side))
+    return side;
+  const copy = { ...side };
+  for (const field of fields) if (field in copy) copy[field] = AUDIT_REDACTED;
+  return copy;
+}
+
+/**
+ * The drawer an audit row speaks about, when it carries drawer figures: a
+ * business day (`pos_daily_close`: totalVarianceIdr) or one shift
+ * (`pos_shift`, `pos_shift_count`, and a `pos_override` that recorded the
+ * shift close figures).
+ */
+function drawerRef(event: AuditEvent): DrawerRef | null {
+  const after = sideRecord(event.maskedChanges.after);
+  const before = sideRecord(event.maskedChanges.before);
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  switch (event.objectType) {
+    case "pos_daily_close": {
+      const date = businessDateSchema.safeParse(after?.businessDate);
+      return {
+        kind: "day",
+        outletId: event.outletId,
+        date: date.success ? date.data : null,
+      };
+    }
+    case "pos_shift":
+      return {
+        kind: "shift",
+        outletId: event.outletId,
+        shiftId: event.objectId === null ? null : String(event.objectId),
+        countId: null,
+        requestedBy: null,
+        fields: SHIFT_DRAWER_FIELDS,
+      };
+    case "pos_shift_count":
+      return {
+        kind: "shift",
+        outletId: event.outletId,
+        shiftId: text(after?.shiftId) ?? text(before?.shiftId),
+        countId: event.objectId === null ? null : String(event.objectId),
+        requestedBy: null,
+        fields: SHIFT_DRAWER_FIELDS,
+      };
+    case "pos_override": {
+      // A shift-close approval (recorded, or requested on the phone chain):
+      // it names the blind count (objectType pos_shift_count, objectId = the
+      // count id) or, for a forced close, the shift.
+      const action = text(after?.action) ?? text(before?.action);
+      const carriesFigures = [after, before].some(
+        (side) =>
+          side !== null && ("expectedIdr" in side || "varianceIdr" in side),
+      );
+      if (action !== "cash_shift_close" && !carriesFigures) return null;
+      const objectType = text(after?.objectType) ?? text(before?.objectType);
+      const objectId = text(after?.objectId) ?? text(before?.objectId);
+      return {
+        kind: "shift",
+        outletId: event.outletId,
+        shiftId: objectType === "pos_shift" ? objectId : null,
+        countId: objectType === "pos_shift_count" ? objectId : null,
+        // The requested row records the requester only as its actor.
+        requestedBy:
+          text(after?.requestedBy) ??
+          text(before?.requestedBy) ??
+          (event.action === "pos_override.requested" ? event.actorId : null),
+        fields: OVERRIDE_DRAWER_FIELDS,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Audit ids whose drawer figures the reader may NOT see, with the fields to
+ * redact (legend-mxxev). Same rule as the day report (legend-awg5p): a reader
+ * without `pos.day.close` at the outlet does not read the drawer figures of
+ * their own shift (they ran it) nor the day close total of a day they held a
+ * shift on. A row whose outlet, date or shift cannot be resolved is hidden
+ * from a reader without `pos.day.close` (fail closed).
+ */
+async function hiddenDrawerFields(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  events: readonly AuditEvent[],
+): Promise<Map<string, readonly string[]>> {
+  const hidden = new Map<string, readonly string[]>();
+  const refs = events.flatMap((event) => {
+    const ref = drawerRef(event);
+    return ref === null ? [] : [{ event, ref }];
+  });
+  if (refs.length === 0) return hidden;
+  const snapshot = await accessSnapshotInTransaction(
+    tx,
+    context,
+    actorUserId,
+    new Date(),
+  );
+  const closes = (outletId: AuditEvent["outletId"]) =>
+    outletId !== null &&
+    snapshot.allows("pos.day.close", outletTarget(outletId));
+  const reader = actorUserId.toLowerCase();
+
+  const days: Array<{
+    id: string;
+    outletId: NonNullable<AuditEvent["outletId"]>;
+    date: string;
+  }> = [];
+  type Pending = {
+    id: string;
+    outletId: AuditEvent["outletId"];
+    fields: readonly string[];
+  };
+  const shiftRefs: Array<Pending & { shiftId: string }> = [];
+  const countRefs: Array<Pending & { countId: string }> = [];
+  const uuid = (value: string | null) =>
+    value !== null && UUID.test(value) ? value.toLowerCase() : null;
+  for (const { event, ref } of refs) {
+    if (ref.kind === "day") {
+      if (closes(ref.outletId)) continue;
+      if (ref.outletId === null || ref.date === null)
+        hidden.set(event.id, DAY_CLOSE_DRAWER_FIELDS);
+      else days.push({ id: event.id, outletId: ref.outletId, date: ref.date });
+      continue;
+    }
+    const pending = {
+      id: event.id,
+      outletId: ref.outletId,
+      fields: ref.fields,
+    };
+    const shiftId = uuid(ref.shiftId);
+    const countId = uuid(ref.countId);
+    // Shift rows decide on the shift's own outlet (below); the event outlet
+    // only decides a row whose requester is the reader or whose shift is gone.
+    if (
+      ref.requestedBy !== null &&
+      ref.requestedBy.toLowerCase() === reader &&
+      !closes(ref.outletId)
+    )
+      hidden.set(event.id, ref.fields);
+    else if (shiftId !== null) shiftRefs.push({ ...pending, shiftId });
+    else if (countId !== null) countRefs.push({ ...pending, countId });
+    else if (!closes(ref.outletId)) hidden.set(event.id, ref.fields);
+  }
+
+  if (countRefs.length > 0) {
+    const counts = await tx
+      .select({ id: posShiftCounts.id, shiftId: posShiftCounts.shiftId })
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          inArray(posShiftCounts.id, [
+            ...new Set(countRefs.map((row) => row.countId)),
+          ]),
+        ),
+      );
+    const shiftOf = new Map(
+      counts.map((row) => [row.id.toLowerCase(), row.shiftId.toLowerCase()]),
+    );
+    for (const ref of countRefs) {
+      const shiftId = shiftOf.get(ref.countId);
+      if (shiftId === undefined) {
+        if (!closes(ref.outletId)) hidden.set(ref.id, ref.fields);
+      } else shiftRefs.push({ ...ref, shiftId });
+    }
+  }
+
+  if (days.length > 0) {
+    const shifts = await tx
+      .selectDistinct({
+        outletId: posShifts.outletId,
+        businessDate: posShifts.businessDate,
+      })
+      .from(posShifts)
+      .where(
+        and(
+          eq(posShifts.tenantId, context.tenant.tenantId),
+          inArray(posShifts.outletId, [
+            ...new Set(days.map((row) => row.outletId)),
+          ]),
+          inArray(posShifts.businessDate, [
+            ...new Set(days.map((row) => row.date)),
+          ]),
+          // Ids compare case-insensitively, as sameUser does in pos-shift.
+          eq(sql`lower(${posShifts.cashierId})`, reader),
+        ),
+      );
+    const own = new Set(
+      shifts.map((row) => `${row.outletId.toLowerCase()}|${row.businessDate}`),
+    );
+    for (const row of days)
+      if (own.has(`${row.outletId.toLowerCase()}|${row.date}`))
+        hidden.set(row.id, DAY_CLOSE_DRAWER_FIELDS);
+  }
+
+  if (shiftRefs.length > 0) {
+    const shifts = await tx
+      .select({
+        id: posShifts.id,
+        outletId: posShifts.outletId,
+        cashierId: posShifts.cashierId,
+      })
+      .from(posShifts)
+      .where(
+        and(
+          eq(posShifts.tenantId, context.tenant.tenantId),
+          inArray(posShifts.id, [
+            ...new Set(shiftRefs.map((row) => row.shiftId)),
+          ]),
+        ),
+      );
+    const byId = new Map(shifts.map((row) => [row.id.toLowerCase(), row]));
+    for (const ref of shiftRefs) {
+      const shift = byId.get(ref.shiftId);
+      if (shift === undefined) {
+        if (!closes(ref.outletId)) hidden.set(ref.id, ref.fields);
+      } else if (
+        !closes(shift.outletId) &&
+        shift.cashierId.toLowerCase() === reader
+      )
+        hidden.set(ref.id, ref.fields);
+    }
+  }
+  return hidden;
+}
+
 export async function listAuditEvents(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -263,8 +530,15 @@ export async function listAuditEvents(
     const hidden = await hiddenBlindCountIds(tx, context, actorUserId, [
       ...blindIds,
     ]);
+    const hiddenDrawers = await hiddenDrawerFields(
+      tx,
+      context,
+      actorUserId,
+      events.map(({ event }) => event),
+    );
     const data: AuditEventView[] = [];
     for (const { row, event: stored } of events) {
+      const drawerFields = hiddenDrawers.get(stored.id);
       const event =
         isBlindCountEvent(stored) && hidden.has(String(stored.objectId))
           ? {
@@ -274,7 +548,18 @@ export async function listAuditEvents(
                 after: redactVariance(stored.maskedChanges.after),
               },
             }
-          : stored;
+          : drawerFields !== undefined
+            ? {
+                ...stored,
+                maskedChanges: {
+                  before: redactFields(
+                    stored.maskedChanges.before,
+                    drawerFields,
+                  ),
+                  after: redactFields(stored.maskedChanges.after, drawerFields),
+                },
+              }
+            : stored;
       data.push({
         event,
         actorName: row.actorName,
