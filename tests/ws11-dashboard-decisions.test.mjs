@@ -378,7 +378,9 @@ describe("decision 3: schedule recipients are tenant user ids", () => {
     assert.ok(Array.isArray(schedule.recipientUserIds));
     assert.equal("recipients" in schedule, false);
     assert.ok(dashboard.createReportScheduleInputSchema.parse(input));
-    const { savedReportId: _id, ...settings } = input;
+    const settings = Object.fromEntries(
+      Object.entries(input).filter(([key]) => key !== "savedReportId"),
+    );
     assert.ok(
       dashboard.updateReportScheduleInputSchema.parse({
         ...settings,
