@@ -488,6 +488,7 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
             sourceReport: definition.sourceReport,
           }),
       ),
+      availability: [{ metricCode: "net_sales", status: "available" }],
       groupBy: [],
       rows: [
         {

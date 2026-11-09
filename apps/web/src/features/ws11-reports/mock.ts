@@ -79,6 +79,17 @@ import {
   type Atoms,
   type SplitSpec,
 } from "./mock-day-model.ts";
+import { type Cell, type DerivedSpec } from "./mock-families/cells.ts";
+import * as facility from "./mock-families/facility.ts";
+import * as finance from "./mock-families/finance.ts";
+import * as hr from "./mock-families/hr.ts";
+import * as inventoryPurchasing from "./mock-families/inventory-purchasing.ts";
+import * as loyaltyCrm from "./mock-families/loyalty-crm.ts";
+import * as menuCogs from "./mock-families/menu-cogs.ts";
+import * as paymentsTax from "./mock-families/payments-tax.ts";
+import * as reservationDelivery from "./mock-families/reservation-delivery.ts";
+import * as sales from "./mock-families/sales.ts";
+import * as trafficOperations from "./mock-families/traffic-operations.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
 
@@ -129,55 +140,18 @@ function splitFor(key: string, range: DateRange): SplitSpec | null {
 // (cogs, payroll, tax, profit) all hang off the same net sales as the sales
 // reports (I1/I4).
 
-type DerivedSpec = {
-  from: AtomKey;
-  ratio?: number;
-  /** Amount on the open business day; scaled by weekday for other days. */
-  snapshot?: number;
-};
-
+// Each family owns its derived columns (`mock-families/<family>.ts`).
 const DERIVED = {
-  // Cost and profit lines of the day.
-  cogs: { from: "net", ratio: 0.34 },
-  labor: { from: "net", ratio: 0.27 },
-  opex: { from: "net", ratio: 0.22 },
-  below: { from: "net", ratio: 0.04 },
-  // Tax, fees and settlement.
-  tax: { from: "net", ratio: 0.1 },
-  service: { from: "net", ratio: 0.05 },
-  fee: { from: "net", ratio: 0.007 },
-  edc: { from: "net", ratio: 0.15 },
-  gateway: { from: "net", ratio: 0.55 },
-  cashVariance: { from: "net", ratio: 25_000 / 7_420_000 },
-  promo: { from: "discount", ratio: 0.55 },
-  // Purchasing and stock.
-  // Purchases of a business day are about a third of its net sales; 1 Nov is
-  // Rp2.597.000, the management KPI strip's figure (I4).
-  purchase: { from: "net", ratio: 0.35 },
-  waste: { from: "net", ratio: 0.02 },
-  // Counts of the day.
-  newMembers: { from: "pax", ratio: 24 / 148 },
-  returning: { from: "pax", ratio: 0.46 },
-  reviews: { from: "tx", ratio: 0.1 },
-  points: { from: "tx", ratio: 35 },
-  bookings: { from: "tx", ratio: 0.2 },
-  noShows: { from: "tx", ratio: 0.02 },
-  late: { from: "tx", ratio: 3 / 96 },
-  overtimeTenths: { from: "tx", ratio: 65 / 96 },
-  failedPayments: { from: "tx", ratio: 0.03 },
-  failedItems: { from: "tx", ratio: 3 / 96 },
-  remakes: { from: "tx", ratio: 4 / 96 },
-  comps: { from: "tx", ratio: 2 / 96 },
-  // Balances on the last day of the period (the management KPI strip's day).
-  cash: { from: "net", snapshot: 8_250_000 },
-  bank: { from: "net", snapshot: 96_500_000 },
-  pendingSettlement: { from: "net", snapshot: 2_915_000 },
-  supplierDue: { from: "net", snapshot: 12_400_000 },
-  stockValue: { from: "net", snapshot: 18_900_000 },
-  members: { from: "pax", snapshot: 1_320 },
-  criticalStock: { from: "net", snapshot: 4 },
-  soldOut: { from: "net", snapshot: 3 },
-  queue: { from: "net", snapshot: 12 },
+  ...sales.derived,
+  ...trafficOperations.derived,
+  ...menuCogs.derived,
+  ...paymentsTax.derived,
+  ...inventoryPurchasing.derived,
+  ...finance.derived,
+  ...loyaltyCrm.derived,
+  ...reservationDelivery.derived,
+  ...hr.derived,
+  ...facility.derived,
 } as const satisfies Record<string, DerivedSpec>;
 
 type DerivedKey = keyof typeof DERIVED;
@@ -291,152 +265,30 @@ export function periodFigures(range: DateRange): Figures {
 
 // ---- Metric cells ------------------------------------------------------------
 
-function decimal4(numerator: number, denominator: number): string {
-  return ((numerator * 100) / denominator).toFixed(4);
-}
-
-// Plain wire values; the registry and the node test validate them against the
-// branded schema, so no brand is faked here.
-type Cell = { unit: string; valueIdr?: number; value?: number | string } | null;
-
-/** Mock-only averages: nothing in the day model moves them. */
-const AVERAGE_SERVING_SECONDS = 780;
-const AVERAGE_REVIEW_RATING = "4.6000";
-const CHECKLIST_COMPLIANCE_PCT = "87.5000";
+/** Each family owns the cells of its metrics (`mock-families/<family>.ts`). */
+const FAMILY_CELLS: readonly ((
+  metricCode: string,
+  atoms: Figures,
+  totals: Figures,
+) => Cell | undefined)[] = [
+  sales.cellFor,
+  trafficOperations.cellFor,
+  menuCogs.cellFor,
+  paymentsTax.cellFor,
+  inventoryPurchasing.cellFor,
+  finance.cellFor,
+  loyaltyCrm.cellFor,
+  reservationDelivery.cellFor,
+  hr.cellFor,
+  facility.cellFor,
+];
 
 function cellFor(metricCode: string, atoms: Figures, totals: Figures): Cell {
-  const ratio = (num: number, den: number) =>
-    den === 0 ? null : { unit: "percent" as const, value: decimal4(num, den) };
-  const idr = (valueIdr: number) => ({ unit: "idr" as const, valueIdr });
-  const count = (value: number) => ({ unit: "count" as const, value });
-  const grossProfit = atoms.net - atoms.cogs;
-  const ebitda = grossProfit - atoms.labor - atoms.opex;
-  switch (metricCode) {
-    case "net_sales":
-      return idr(atoms.net);
-    case "gross_sales":
-      return idr(atoms.gross);
-    case "discount_amount":
-      return idr(atoms.discount);
-    case "refund_amount":
-      return idr(atoms.refund);
-    case "void_amount":
-      return idr(atoms.voided);
-    case "transaction_count":
-      return count(atoms.tx);
-    case "pax":
-      return count(atoms.pax);
-    case "menu_sold_qty":
-      return count(atoms.qty);
-    case "avg_ticket":
-      return atoms.tx === 0 ? null : idr(Math.round(atoms.net / atoms.tx));
-    case "avg_spend_per_pax":
-      return atoms.pax === 0 ? null : idr(Math.round(atoms.net / atoms.pax));
-    case "discount_rate_pct":
-      return ratio(atoms.discount, atoms.gross);
-    case "refund_rate_pct":
-      return ratio(atoms.refund, atoms.net);
-    case "void_rate_pct":
-      return ratio(atoms.voided, atoms.net);
-    // Cost, profit and payroll: net sales less the day's cost lines.
-    case "cogs":
-      return idr(atoms.cogs);
-    case "menu_gross_margin":
-    case "gross_profit":
-      return idr(grossProfit);
-    case "ebitda":
-      return idr(ebitda);
-    case "net_profit":
-      return idr(ebitda - atoms.below);
-    case "gross_payroll":
-      return idr(atoms.labor);
-    case "food_cost_pct":
-      return ratio(atoms.cogs, atoms.net);
-    case "gross_margin_pct":
-      return ratio(grossProfit, atoms.net);
-    case "labor_cost_pct":
-      return ratio(atoms.labor, atoms.net);
-    case "prime_cost_pct":
-      return ratio(atoms.cogs + atoms.labor, atoms.net);
-    // Tax, payments and settlement.
-    case "tax_collected":
-    case "tax_payable":
-      return idr(atoms.tax);
-    case "service_charge_collected":
-      return idr(atoms.service);
-    case "payment_fee":
-      return idr(atoms.fee);
-    case "edc_settlement":
-      return idr(atoms.edc);
-    case "gateway_settlement":
-      return idr(atoms.gateway);
-    case "cash_variance":
-      return idr(atoms.cashVariance);
-    case "failed_payment_count":
-      return count(atoms.failedPayments);
-    case "pending_settlement":
-      return idr(atoms.pendingSettlement);
-    case "promo_cost":
-      return idr(atoms.promo);
-    // Purchasing, stock and balances.
-    case "purchase_total":
-      return idr(atoms.purchase);
-    case "supplier_due":
-      return idr(atoms.supplierDue);
-    case "stock_value":
-      return idr(atoms.stockValue);
-    case "waste_cost":
-      return idr(atoms.waste);
-    case "waste_cost_pct":
-      return ratio(atoms.waste, atoms.net);
-    case "critical_stock_count":
-      return count(atoms.criticalStock);
-    case "sold_out_menu_count":
-      return count(atoms.soldOut);
-    case "cash_balance":
-      return idr(atoms.cash);
-    case "bank_balance":
-      return idr(atoms.bank);
-    case "menu_popularity_pct":
-      return ratio(atoms.qty, totals.qty);
-    // Members, reservations, staff and service.
-    case "new_customers":
-      return count(atoms.newMembers);
-    case "active_members":
-      return count(atoms.members);
-    case "returning_customers":
-      return count(atoms.returning);
-    case "review_count":
-      return count(atoms.reviews);
-    case "review_rating":
-      return { unit: "decimal", value: AVERAGE_REVIEW_RATING };
-    case "points_redeemed":
-      return count(atoms.points);
-    case "reservation_count":
-      return count(atoms.bookings);
-    case "no_show_reservations":
-      return count(atoms.noShows);
-    case "reservation_no_show_pct":
-      return ratio(atoms.noShows, atoms.bookings);
-    case "attendance_late_count":
-      return count(atoms.late);
-    case "overtime_hours":
-      return { unit: "decimal", value: (atoms.overtimeTenths / 10).toFixed(4) };
-    case "failed_item_count":
-      return count(atoms.failedItems);
-    case "remake_count":
-      return count(atoms.remakes);
-    case "comp_count":
-      return count(atoms.comps);
-    case "order_queue_count":
-      return count(atoms.queue);
-    case "avg_serving_time":
-      return { unit: "seconds", value: AVERAGE_SERVING_SECONDS };
-    case "checklist_compliance_pct":
-      return { unit: "percent", value: CHECKLIST_COMPLIANCE_PCT };
-    default:
-      return null;
+  for (const familyCell of FAMILY_CELLS) {
+    const cell = familyCell(metricCode, atoms, totals);
+    if (cell !== undefined) return cell;
   }
+  return null;
 }
 
 function metricRef(code: string) {
@@ -530,6 +382,10 @@ function buildRun(
     },
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy: groupBy === null ? [] : [groupBy],
     rows,
     generatedAt: "2026-11-01T04:40:00.000Z",
@@ -545,89 +401,23 @@ function buildRun(
  * crm, reservation, attendance, payroll, performance). Each has a route file
  * (); the rest of the catalog adds its own.
  */
-const SALES_REPORTS = [
-  "sales.daily",
-  "sales.per_hour",
-  "sales.per_channel",
-  "sales.per_menu",
-  "sales.per_employee",
-  "sales.transactions",
-  "sales.per_pax",
-  "sales.void",
-  "sales.discount",
-  "sales.refund",
-] as const;
+const SALES_REPORTS = sales.SALES_REPORTS;
 
 const SERVED_REPORTS: readonly string[] = [
   ...SALES_REPORTS,
-  "menu.best_sellers",
-  "menu.category_sales",
-  "menu.engineering",
-  "menu.margin",
-  "menu.recipe_cost",
-  "menu.slow_movers",
-  "menu.sold_out",
-  "payments.cash_variance",
-  "payments.edc_settlement",
-  "payments.failed",
-  "payments.fees",
-  "payments.gateway_settlement",
-  "payments.methods",
-  "tax.by_rule",
-  "tax.pbjt",
-  "tax.receivable",
-  "tax.service_charge",
-  "inventory.critical_stock",
-  "inventory.food_cost",
-  "inventory.movement",
-  "inventory.stock_usage",
-  "inventory.stock_value",
-  "inventory.waste",
-  "inventory.waste_by_category",
-  "cogs.per_menu",
-  "cogs.production",
-  "cogs.recipe",
-  "cogs.trend",
-  "purchasing.orders",
-  "purchasing.price_history",
-  "purchasing.receipts",
-  "purchasing.requests",
-  "purchasing.supplier_due",
-  "finance.cash_position",
-  "finance.ebitda",
-  "finance.gross_margin",
-  "finance.income_statement",
-  "finance.pending_settlement",
-  "finance.prime_cost",
-  "finance.profit_trend",
-  "finance.supplier_due",
-  "loyalty.members",
-  "loyalty.new_members",
-  "loyalty.points",
-  "loyalty.tier_mix",
-  "loyalty.visits",
-  "crm.campaign_performance",
-  "crm.customers",
-  "crm.promo_cost",
-  "crm.repeat_visit",
-  "crm.reviews",
-  "crm.segments",
-  "reservation.bookings",
-  "reservation.by_zone",
-  "reservation.no_show",
-  "reservation.peak_hours",
-  "attendance.by_station",
-  "attendance.daily",
-  "attendance.late",
-  "attendance.overtime",
-  "payroll.cost_trend",
-  "payroll.gross",
-  "payroll.labor_cost",
-  "payroll.overtime",
-  "performance.checklist",
-  "performance.employee",
-  "performance.service_quality",
-  "performance.station",
+  ...menuCogs.reportsByPrefix.menu,
+  ...paymentsTax.reportsByPrefix.payments,
+  ...paymentsTax.reportsByPrefix.tax,
+  ...inventoryPurchasing.reportsByPrefix.inventory,
+  ...menuCogs.reportsByPrefix.cogs,
+  ...inventoryPurchasing.reportsByPrefix.purchasing,
+  ...finance.reportsByPrefix.finance,
+  ...loyaltyCrm.reportsByPrefix.loyalty,
+  ...loyaltyCrm.reportsByPrefix.crm,
+  ...reservationDelivery.reportsByPrefix.reservation,
+  ...hr.reportsByPrefix.attendance,
+  ...hr.reportsByPrefix.payroll,
+  ...hr.reportsByPrefix.performance,
 ];
 
 /**

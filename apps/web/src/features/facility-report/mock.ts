@@ -781,6 +781,10 @@ function buildRun(
     },
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy: groupBy === null ? [] : [groupBy],
     rows,
     generatedAt: GENERATED_AT,

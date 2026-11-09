@@ -63,6 +63,10 @@ function run(
     },
     outletFilter: { kind: "outlets", outletIds: [...layout.availableOutlets] },
     definitions: report.metrics.map(ref),
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy: [],
     rows: [
       {
