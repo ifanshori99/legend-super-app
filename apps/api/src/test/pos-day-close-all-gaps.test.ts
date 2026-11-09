@@ -74,6 +74,13 @@ let manager: Member;
 
 const errorCode = (body: { error?: { code?: string }; code?: string }) =>
   body.error?.code ?? body.code;
+// Assumption: the API returns the message as body.error.message (like the code).
+const errorMessage = (body: {
+  error?: { message?: string };
+  message?: string;
+}) => body.error?.message ?? body.message;
+const holeMessage = (...numbers: string[]) =>
+  `Ada nomor struk yang hilang di outlet ini: ${numbers.join(", ")}.`;
 
 async function asOwnerTenant<T>(
   tenantId: string,
@@ -267,7 +274,7 @@ type RunSeed = {
 async function seedDevice(
   outletId: string,
   runs: RunSeed[],
-  options: { deviceId?: string; daysBefore?: number } = {},
+  options: { deviceId?: string; daysBefore?: number; revoked?: boolean } = {},
 ): Promise<{ deviceId: string; businessDate: string }> {
   const deviceId = options.deviceId ?? randomUUID();
   const daysBefore = options.daysBefore ?? 0;
@@ -277,6 +284,12 @@ async function seedDevice(
   let next = 0;
   const businessDate = await asOwnerTenant(tenant.tenantId, async (client) => {
     let date = "";
+    if (options.revoked)
+      await client.query(
+        `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status, revoked_at)
+         VALUES ($1, $2, $3, 'pos', 'Kasir Dicabut', 'revoked', now())`,
+        [deviceId, tenant.tenantId, outletId],
+      );
     for (const run of runs) {
       const sequenceId = randomUUID();
       await client.query(
@@ -387,6 +400,9 @@ describe("Tutup Hari checks every receipt run of the outlet (legend-6b0ld)", () 
     const refused = await closeDay(outletId, active.businessDate);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(errorMessage(refused.body)).toBe(
+      holeMessage(formatReceiptNumber("ID", 2)),
+    );
     expect(await dailyCloseCount(outletId)).toBe(0);
   });
 
@@ -421,6 +437,41 @@ describe("Tutup Hari checks every receipt run of the outlet (legend-6b0ld)", () 
     const refused = await closeDay(outletId, active.businessDate);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(errorMessage(refused.body)).toBe(
+      holeMessage(formatReceiptNumber("C", 2)),
+    );
+    expect(await dailyCloseCount(outletId)).toBe(0);
+  });
+
+  it("a revoked device with a hole still blocks the close", async () => {
+    const outletId = await freshOutlet();
+    const active = await seedActiveDevice(outletId);
+    const revoked = await seedDevice(
+      outletId,
+      [{ prefix: "RV", lastNumber: 3, present: [1, 3], ageMinutes: 30 }],
+      { daysBefore: 1, revoked: true },
+    );
+    // Precondition: the device is revoked (status and revoked_at set).
+    const { rows } = await owner.query(
+      `SELECT status, revoked_at FROM devices WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, revoked.deviceId],
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        status: "revoked",
+        revoked_at: expect.any(Date),
+      }),
+    ]);
+    expect(await outletGaps(outletId)).toEqual([
+      expect.objectContaining({ prefix: "RV", missing: [2] }),
+    ]);
+
+    const refused = await closeDay(outletId, active.businessDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(errorMessage(refused.body)).toBe(
+      holeMessage(formatReceiptNumber("RV", 2)),
+    );
     expect(await dailyCloseCount(outletId)).toBe(0);
   });
 
