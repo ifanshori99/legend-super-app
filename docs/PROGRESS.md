@@ -259,7 +259,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sudah: 7 berkas tes integrasi `apps/api/src/test/e2e-az/` (A/Y, E/W, D, J, K+cuti, H, R) + `e2e/az-whitelabel.spec.ts`. API: 57 lulus, 64 skip (`PENDING-BRANCH`/`PENDING-CARD`/`PENDING-DECISION`), 0 gagal. Laporan: `docs/qa/2026-11-09-e2e-az.md`.
 - Bug P1 dibuat: legend-vj37 (bundel API crash di boot karena `sharp`, `pnpm test:e2e` m1 merah), legend-ozud (manifest PWA nama platform), legend-ww29 (`/design-system` nama platform).
 - Langkah berikut: tiap merge train menggabungkan cabang di daftar `PENDING-BRANCH`, ganti `describeUntilMerged` → `describe` di berkas terkait lalu jalankan. Spec Playwright jalan setelah legend-vj37 fix.
-- Keputusan perlu CTO: kartu online (PRD 223: P1 Duitku, bukan DOIT); teks transfer bank di PRD 223/257/680/1754; aksi approval EDC-04 berdiri sendiri.
+- Merge train m1 (`prep/e2e-az`, setelah unskip 6 cabang): 83 lulus, 38 skip, 0 gagal (run gabungan lewat `heavy`). Perbaikan tes 263ce1ec: polling PAY-02 pakai `GET` status intent; refund PAY-04 diajukan keuangan, disetujui supervisor, kebijakan approval di-seed.
+- Keputusan CTO: legend-dahk (port tender EDC) disambung; legend-m4fv aksi `edc_standalone` izin `pos.edc_standalone.approve`. Dikerjakan G106p; EDC-01/02/04 tetap skip sampai masuk.
+- Keputusan perlu CTO: kartu online (PRD 223: P1 Duitku, bukan DOIT); teks transfer bank di PRD 223/257/680/1754.
 - Biaya sesi: utama Opus 95 req, subagent Sonnet 443 req, total biaya* 8008k; 18 subagent, maks ~8 bersamaan.
 
 ## WS-02 edge hardening (engineer, cabang `ws/ws02-edge`, kartu legend-x3lv, 0835, wqc6, khu5, 2lp.8, 2lp.9, s4r6)
