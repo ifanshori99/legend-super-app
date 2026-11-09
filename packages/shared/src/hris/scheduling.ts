@@ -53,6 +53,30 @@ export const shiftTemplateSegmentSchema = z
   });
 export type ShiftTemplateSegment = z.infer<typeof shiftTemplateSegmentSchema>;
 
+/** The segment list of a template, with the ordering and midnight rules. */
+export const shiftTemplateSegmentsSchema = z
+  .array(shiftTemplateSegmentSchema)
+  .min(1)
+  .max(2)
+  .superRefine((segments, ctx) => {
+    if (segments.length === 2) {
+      const [first, second] = segments;
+      if (second.startTime < first.endTime)
+        ctx.addIssue({
+          code: "custom",
+          message: "Split-shift segments must be ordered and not overlap",
+        });
+    }
+    const crossesMidnight = segments.some(
+      (segment) => segment.endTime <= segment.startTime,
+    );
+    if (crossesMidnight && segments.length > 1)
+      ctx.addIssue({
+        code: "custom",
+        message: "Only a single-segment shift can cross midnight",
+      });
+  });
+
 export const shiftTemplateSchema = z
   .strictObject({
     id: shiftTemplateIdSchema,
@@ -223,31 +247,76 @@ export function transitionShiftAssignment(
  * Working-time limits. Every value is tenant configuration (PRD F26 "dengan
  * aturan yang dapat dikonfigurasi"); `outletId: null` is the tenant default.
  */
-export const shiftCompliancePolicySchema = z
-  .strictObject({
-    tenantId: tenantIdSchema,
-    outletId: outletIdSchema.nullable(),
-    maxShiftMinutes: z.number().int().min(60).max(1_440),
-    maxDailyMinutes: z.number().int().min(60).max(2_880),
-    maxWeeklyMinutes: z.number().int().min(60).max(10_080),
-    minRestMinutesBetweenShifts: z.number().int().min(0).max(1_440),
-    maxConsecutiveWorkDays: z.number().int().min(1).max(31),
-  })
-  .superRefine((policy, ctx) => {
-    if (policy.maxDailyMinutes < policy.maxShiftMinutes)
-      ctx.addIssue({
-        code: "custom",
-        path: ["maxDailyMinutes"],
-        message: "The daily limit cannot be lower than one shift",
-      });
-    if (policy.maxWeeklyMinutes < policy.maxDailyMinutes)
-      ctx.addIssue({
-        code: "custom",
-        path: ["maxWeeklyMinutes"],
-        message: "The weekly limit cannot be lower than one day",
-      });
-  });
+export const shiftCompliancePolicyBaseSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema.nullable(),
+  maxShiftMinutes: z.number().int().min(60).max(1_440),
+  maxDailyMinutes: z.number().int().min(60).max(2_880),
+  maxWeeklyMinutes: z.number().int().min(60).max(10_080),
+  minRestMinutesBetweenShifts: z.number().int().min(0).max(1_440),
+  maxConsecutiveWorkDays: z.number().int().min(1).max(31),
+});
+
+/** Shared cross-field rule for every shape that carries the three limits. */
+export function refineShiftCompliancePolicyLimits(
+  policy: Pick<
+    z.infer<typeof shiftCompliancePolicyBaseSchema>,
+    "maxShiftMinutes" | "maxDailyMinutes" | "maxWeeklyMinutes"
+  >,
+  ctx: z.RefinementCtx,
+): void {
+  if (policy.maxDailyMinutes < policy.maxShiftMinutes)
+    ctx.addIssue({
+      code: "custom",
+      path: ["maxDailyMinutes"],
+      message: "The daily limit cannot be lower than one shift",
+    });
+  if (policy.maxWeeklyMinutes < policy.maxDailyMinutes)
+    ctx.addIssue({
+      code: "custom",
+      path: ["maxWeeklyMinutes"],
+      message: "The weekly limit cannot be lower than one day",
+    });
+}
+
+export const shiftCompliancePolicySchema =
+  shiftCompliancePolicyBaseSchema.superRefine(
+    refineShiftCompliancePolicyLimits,
+  );
 export type ShiftCompliancePolicy = z.infer<typeof shiftCompliancePolicySchema>;
+
+/** Limits applied when neither an outlet nor a tenant policy row exists. */
+export const DEFAULT_SHIFT_COMPLIANCE_LIMITS = {
+  maxShiftMinutes: 600,
+  maxDailyMinutes: 720,
+  maxWeeklyMinutes: 2_700,
+  minRestMinutesBetweenShifts: 660,
+  maxConsecutiveWorkDays: 6,
+} as const satisfies Pick<
+  ShiftCompliancePolicy,
+  | "maxShiftMinutes"
+  | "maxDailyMinutes"
+  | "maxWeeklyMinutes"
+  | "minRestMinutesBetweenShifts"
+  | "maxConsecutiveWorkDays"
+>;
+
+/** Effective policy plus where it came from (outlet row, tenant row or default). */
+export const shiftCompliancePolicySourceSchema = z.enum([
+  "outlet",
+  "tenant",
+  "default",
+]);
+export type ShiftCompliancePolicySource = z.infer<
+  typeof shiftCompliancePolicySourceSchema
+>;
+
+export const shiftCompliancePolicyViewSchema = shiftCompliancePolicyBaseSchema
+  .extend({ source: shiftCompliancePolicySourceSchema })
+  .superRefine(refineShiftCompliancePolicyLimits);
+export type ShiftCompliancePolicyView = z.infer<
+  typeof shiftCompliancePolicyViewSchema
+>;
 
 export const shiftComplianceIssueCodeSchema = z.enum([
   "shift_too_long",
@@ -695,6 +764,16 @@ export const rosterPublicationSchema = z.strictObject({
   publishedAt: isoDateTimeSchema,
 });
 export type RosterPublication = z.infer<typeof rosterPublicationSchema>;
+
+/** One outlet-week as the manager sees it: drafts included, with warnings. */
+export const rosterViewSchema = z.strictObject({
+  outletId: outletIdSchema,
+  weekStart: businessDateSchema,
+  published: z.boolean(),
+  assignments: z.array(shiftAssignmentSchema),
+  complianceIssues: z.array(shiftComplianceIssueSchema),
+});
+export type RosterView = z.infer<typeof rosterViewSchema>;
 
 /** True when every assignment of a week is published or swapped. */
 export function isRosterPublished(

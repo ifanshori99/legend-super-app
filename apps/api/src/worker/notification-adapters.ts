@@ -51,6 +51,7 @@ import {
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
+import { shiftPublished } from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
@@ -67,6 +68,7 @@ import {
   whatsappReservations,
 } from "../db/schema/notification.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
+import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -818,6 +820,30 @@ async function tenantOwnerChangedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** F26 "Notifikasi Jadwal": the employee who owns a published (or swapped)
+ * shift hears about it. Ids only in the event; the name never leaves the DB. */
+async function shiftPublishedRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftPublished.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: "Jadwal shift diperbarui",
+      body: `Jadwal shift kamu untuk ${payload.businessDate} sudah tersedia atau berubah. Buka Jadwal untuk melihat jamnya.`,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -833,6 +859,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "shift.published":
+      return shiftPublishedRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
     case "ai_insight.anomaly_detected":
