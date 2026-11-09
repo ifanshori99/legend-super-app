@@ -20,6 +20,12 @@ export type OrderPromoInput = {
   readonly customer: PromoCustomer | null;
   readonly voucherCode: string | null;
   readonly at: Date;
+  /**
+   * Pre-promo bill before tax and service charge: the `min_spend` basis
+   * (owner Q53). Only an outlet whose prices include tax fills it; absent
+   * means the lines' total is already that value.
+   */
+  readonly minSpendSubtotalIdr?: Idr;
 };
 
 export type OrderPromoQuote = {
