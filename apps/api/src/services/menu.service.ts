@@ -94,7 +94,11 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
-import { assertStationPermission, permittedStationIds } from "./station-access";
+import {
+  assertStationPermission,
+  permittedStationIds,
+  stationScopeCondition,
+} from "./station-access";
 
 export type { MenuMediaUrls } from "./menu-internals";
 
@@ -542,7 +546,7 @@ export async function listStations(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           isNull(stations.deletedAt),
-          inArray(stations.id, stationIds),
+          stationScopeCondition(stations.id, stationIds),
           scope.kind === "outlets"
             ? inArray(stations.outletId, [...scope.outletIds])
             : undefined,
