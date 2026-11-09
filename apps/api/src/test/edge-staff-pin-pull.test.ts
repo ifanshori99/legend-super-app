@@ -186,7 +186,12 @@ async function runPull(
   return result;
 }
 
+// legend-oark: this file plays the edge; applyStaffPinRecords refuses to run
+// anywhere else.
+const previousEdgeMode = process.env.EDGE_MODE;
+
 beforeAll(async () => {
+  process.env.EDGE_MODE = "true";
   setAuditWriter({ record: async () => {} });
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
@@ -207,6 +212,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (previousEdgeMode === undefined) delete process.env.EDGE_MODE;
+  else process.env.EDGE_MODE = previousEdgeMode;
   setAuditWriter(null);
   try {
     for (const [text, params] of [

@@ -38,10 +38,16 @@ import {
   revokeEdgeNode,
 } from "../services/edge-node.service.ts";
 import {
-  applyStaffPinRecords,
+  applyStaffPinRecords as applyStaffPinRecordsRaw,
   listStaffPinRecordsSince,
   type VerifiedEdgeNode,
 } from "../services/staff-pin-sync.ts";
+import { withEdgeModeEnv } from "./edge-mode-env.ts";
+
+// legend-oark: the edge applier refuses to run outside EDGE_MODE.
+const applyStaffPinRecords = (
+  ...args: Parameters<typeof applyStaffPinRecordsRaw>
+) => withEdgeModeEnv(() => applyStaffPinRecordsRaw(...args));
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const bandung = cafeLegendAccessFixtures.outletIds.bandung;

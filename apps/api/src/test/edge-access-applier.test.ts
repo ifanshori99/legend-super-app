@@ -83,7 +83,7 @@ import {
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
 import {
-  applyStaffPinRecords,
+  applyStaffPinRecords as applyStaffPinRecordsRaw,
   listStaffPinRecordsSince,
   STAFF_PIN_SYNC_LIMIT_DEFAULT,
 } from "../services/staff-pin-sync.ts";
@@ -92,6 +92,12 @@ import {
   resetAccessDrainSweepThrottle,
   sweepParkedAccessEvents,
 } from "../worker/access-drain.job.ts";
+import { withEdgeModeEnv } from "./edge-mode-env.ts";
+
+// legend-oark: the edge applier refuses to run outside EDGE_MODE.
+const applyStaffPinRecords = (
+  ...args: Parameters<typeof applyStaffPinRecordsRaw>
+) => withEdgeModeEnv(() => applyStaffPinRecordsRaw(...args));
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
