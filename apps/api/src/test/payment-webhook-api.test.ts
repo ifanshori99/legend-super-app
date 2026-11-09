@@ -578,6 +578,23 @@ async function unallocatedRows(intentId: string) {
     amountIdr: Number(row.amount_idr),
   }));
 }
+/**
+ * Every parked fund of the intent must point at the evidence row just recorded
+ * for it (`evidence_id`), so the money can be traced to the gateway proof.
+ */
+async function expectFundsLinkedToEvidence(intentId: string) {
+  const funds = await owner.query<{ evidence_id: string | null }>(
+    "SELECT evidence_id FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [tenantA, intentId],
+  );
+  const evidence = await owner.query<{ id: string }>(
+    "SELECT id FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [tenantA, intentId],
+  );
+  expect(evidence.rows).toHaveLength(1);
+  expect(funds.rows).toHaveLength(1);
+  expect(funds.rows[0]?.evidence_id).toBe(evidence.rows[0]?.id);
+}
 async function linkPaidIdr(linkId: string): Promise<number> {
   const { rows } = await owner.query<{ paid_idr: string }>(
     "SELECT paid_idr::text AS paid_idr FROM payment_links WHERE id = $1",
@@ -828,6 +845,7 @@ describe("PAY-02 a verified webhook settles the intent", () => {
       expect.objectContaining({ amountIdr: BILL_TOTAL - 1_000 }),
     ]);
     expect(await evidenceCount(bill.intentId)).toBe(1);
+    await expectFundsLinkedToEvidence(bill.intentId);
   });
 
   it("PAY-02 a paid event with a zero amount does not settle (fail closed)", async () => {
@@ -1426,6 +1444,7 @@ describe("PAY-03 a verified event must name the intent it settles", () => {
     expect(await unallocatedRows(bill.intentId)).toEqual([
       expect.objectContaining({ amountIdr: BILL_TOTAL - 5_000 }),
     ]);
+    await expectFundsLinkedToEvidence(bill.intentId);
   });
 
   it("TEN-01 a secret of outlet B cannot settle an intent of outlet A", async () => {
@@ -2355,6 +2374,7 @@ describe("PAY-02 the poll parks an underpayment whose webhook was lost", () => {
       { reason: "double_payment", amountIdr: underpaid },
     ]);
     expect(await evidenceSources(bill.intentId)).toEqual(["gateway_status"]);
+    await expectFundsLinkedToEvidence(bill.intentId);
     // Polling again, and the late webhook of the same DOIT payment, add nothing.
     await pollLater();
     const late = await deliver(
@@ -2375,6 +2395,7 @@ describe("PAY-02 the poll parks an underpayment whose webhook was lost", () => {
     expect(await unallocatedRows(bill.intentId)).toEqual([
       { reason: "double_payment", amountIdr: underpaid },
     ]);
+    await expectFundsLinkedToEvidence(bill.intentId);
   });
 
   it("PAY-02 the webhook first, then the poll of the same payment: still one row", async () => {

@@ -1326,7 +1326,10 @@ export async function runRefundPayout(
         // intent's providerRef. A fund without one resolves only when the intent
         // has exactly one evidence row (the mapping is certain), else it holds.
         const [fund] = await tx
-          .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
+          .select({
+            evidenceId: paymentUnallocatedFunds.evidenceId,
+            amountIdr: paymentUnallocatedFunds.amountIdr,
+          })
           .from(paymentUnallocatedFunds)
           .where(
             and(
@@ -1338,6 +1341,7 @@ export async function runRefundPayout(
           .select({
             id: paymentEvidence.id,
             providerRef: paymentEvidence.providerRef,
+            amountIdr: paymentEvidence.amountIdr,
           })
           .from(paymentEvidence)
           .where(
@@ -1351,8 +1355,16 @@ export async function runRefundPayout(
           )
           .limit(2);
         let evidence: (typeof evidenceRows)[number] | undefined;
-        if (fund?.evidenceId) evidence = evidenceRows[0];
-        else if (fund && evidenceRows.length === 1) {
+        // legend-knev: a refund never asks the provider for more than the
+        // transaction it reverses brought in. A smaller evidence holds.
+        const covers = (row: (typeof evidenceRows)[number] | undefined) =>
+          !!row &&
+          !!fund &&
+          Number(row.amountIdr) >= Number(fund.amountIdr) &&
+          Number(row.amountIdr) >= Number(refund.amountIdr);
+        if (fund?.evidenceId)
+          evidence = covers(evidenceRows[0]) ? evidenceRows[0] : undefined;
+        else if (fund && evidenceRows.length === 1 && covers(evidenceRows[0])) {
           // The single evidence is certain only while no other fund owns it and
           // no other unmapped fund of this intent could claim it too (legacy rows).
           const [owned] = await tx
@@ -2408,7 +2420,7 @@ async function mapFundEvidence(
     .for("update");
   if (!fund) throw missing();
   const [evidence] = await tx
-    .select({ id: paymentEvidence.id })
+    .select({ id: paymentEvidence.id, amountIdr: paymentEvidence.amountIdr })
     .from(paymentEvidence)
     .where(
       and(
@@ -2418,6 +2430,13 @@ async function mapFundEvidence(
       ),
     );
   if (!evidence) throw conflict("Evidence does not belong to this payment.");
+  // legend-knev: a fund maps only to a transaction that brought in at least
+  // its amount; otherwise the provider would be asked to over-refund it.
+  if (
+    Number(fund.amountIdr) > Number(evidence.amountIdr) ||
+    Number(refund.amountIdr) > Number(evidence.amountIdr)
+  )
+    throw conflict("Evidence is smaller than the fund.");
   if (fund.evidenceId === evidenceId) return;
   if (fund.evidenceId) throw conflict("Fund is already mapped to evidence.");
   const [used] = await tx

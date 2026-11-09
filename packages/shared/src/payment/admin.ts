@@ -395,10 +395,13 @@ export const unallocatedFundViewSchema = z
     resolvedAt: isoDateTimeSchema.nullable(),
     note: z.string().max(500).nullable(),
   })
-  // PAY-04: the unallocated amount is exactly what arrived above the bill.
-  .refine((f) => f.paidAmountIdr - f.billTotalIdr === f.amountIdr, {
+  // PAY-04: a fund holds money that arrived but was not applied to the bill
+  // (overpaid, double-paid or underpaid). A bill may carry several funds, one
+  // per provider evidence (legend-knev); the server refuses a bill whose funds
+  // do not add up to exactly what arrived minus what was applied.
+  .refine((f) => f.amountIdr <= f.paidAmountIdr, {
     path: ["amountIdr"],
-    message: "amount must equal paid − bill total",
+    message: "amount must not exceed the amount paid",
   });
 export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
 

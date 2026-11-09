@@ -1049,6 +1049,8 @@ export async function recordUnsettledGatewayFunds(
       tenantId: context.tenant.tenantId,
       outletId: intent.outletId,
       paymentIntentId: intent.id,
+      // The payout refunds exactly this transaction (legend-knev).
+      evidenceId: inserted.id,
       amountIdr: idr(paid),
       reason,
     });
