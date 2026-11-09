@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
+  encodeCursor,
 } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -641,5 +642,56 @@ describe("kasbon API: tenant isolation", () => {
       db.query("SELECT status FROM employee_loans WHERE id = $1", [loan.id]),
     );
     expect(stillApproved.rows[0].status).toBe("approved");
+  });
+});
+
+describe("kasbon API: review fixes", () => {
+  it("refuses a resigned or terminated employee a new loan with 422", async () => {
+    for (const status of ["resigned", "terminated"]) {
+      const leaver = await signedInClient(`Loan ${status} API`);
+      await grantRole(tenant.id, leaver.userId, ["self.profile.view"]);
+      const employeeId = await seedEmployee(tenant.id, outletId, leaver.userId);
+      await asTenant((db) =>
+        db.query("UPDATE employees SET status = $2 WHERE id = $1", [
+          employeeId,
+          status,
+        ]),
+      );
+      const response = await leaver.client
+        .post(ME)
+        .set(originHeader)
+        .send(newLoan());
+      expect(response.status, status).toBe(422);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    }
+  });
+
+  it("answers 422, not 500, to a crafted cursor", async () => {
+    for (const keys of [
+      ["not-a-date", "x"],
+      [new Date().toISOString(), "x"],
+    ]) {
+      const cursor = encodeURIComponent(encodeCursor(keys));
+      expect((await viewerClient.get(`${HR}?cursor=${cursor}`)).status).toBe(
+        422,
+      );
+      expect((await staffClient.get(`${ME}?cursor=${cursor}`)).status).toBe(
+        422,
+      );
+    }
+  });
+
+  it("keeps the approver on cancelling an approved loan", async () => {
+    const second = await signedInClient("Loan HR two API");
+    await grantRole(tenant.id, second.userId, ["hr.loan.approve"]);
+    const loan = await request(staffClient);
+    const approved = await decide(hrClient, loan.id, "approve");
+    expect(approved.status).toBe(200);
+    const cancel = await decide(second.client, loan.id, "cancel");
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.data.status).toBe("cancelled");
+    expect(cancel.body.data.decidedBy).toBe(approved.body.data.decidedBy);
+    expect(cancel.body.data.decidedAt).toBe(approved.body.data.decidedAt);
+    expect(cancel.body.data.decidedBy).not.toBe(second.userId);
   });
 });

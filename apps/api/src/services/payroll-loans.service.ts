@@ -27,6 +27,7 @@ import {
 import {
   PayrollError,
   decideEmployeeLoan as decideEmployeeLoanEndpoint,
+  employeeLoanIdSchema,
   disburseEmployeeLoan as disburseEmployeeLoanEndpoint,
   employeeLoanSchema,
   listEmployeeLoans as listEmployeeLoansEndpoint,
@@ -132,14 +133,15 @@ async function loadPage(
   if (query.cursor) {
     const [requestedAt, id] = cursorPair(query.cursor);
     const at = new Date(requestedAt);
-    if (Number.isNaN(at.getTime()))
+    const beforeId = employeeLoanIdSchema.safeParse(id);
+    if (Number.isNaN(at.getTime()) || !beforeId.success)
       throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
     filters.push(
       or(
         lt(employeeLoans.requestedAt, at),
         and(
           eq(employeeLoans.requestedAt, at),
-          sql`${employeeLoans.id} < ${id}`,
+          sql`${employeeLoans.id} < ${beforeId.data}`,
         ),
       )!,
     );
@@ -216,7 +218,10 @@ export async function createMyLoan(
         // so no limit is enforced here.
         const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
         const [home] = await tx
-          .select({ homeOutletId: employees.homeOutletId })
+          .select({
+            homeOutletId: employees.homeOutletId,
+            status: employees.status,
+          })
           .from(employees)
           .where(
             and(
@@ -226,6 +231,12 @@ export async function createMyLoan(
           )
           .limit(1);
         if (!home) throw notFound();
+        if (home.status !== "active" && home.status !== "onboarding")
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Karyawan yang sudah tidak aktif tidak bisa mengajukan kasbon.",
+          );
         const [row] = await tx
           .insert(employeeLoans)
           .values({
@@ -349,7 +360,10 @@ async function applyTransition(
   const changes =
     action === "disburse"
       ? { status: next, disbursedAt: now, updatedAt: now }
-      : { status: next, decidedBy: actor, decidedAt: now, updatedAt: now };
+      : action === "cancel" && row.decidedBy !== null
+        ? // Keep the approver of an approved loan; the audit entry names the canceller.
+          { status: next, updatedAt: now }
+        : { status: next, decidedBy: actor, decidedAt: now, updatedAt: now };
   const [updated] = await tx
     .update(employeeLoans)
     .set(changes)

@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
+  encodeCursor,
   tenantIdSchema,
   userIdSchema,
   type BusinessDate,
@@ -977,5 +978,57 @@ describe("reimbursements API: tenant isolation", () => {
       db.query("SELECT status FROM reimbursements WHERE id = $1", [claim.id]),
     );
     expect(stored.rows[0].status).toBe("submitted");
+  });
+});
+
+describe("reimbursements API: review fixes", () => {
+  it("[SoD] refuses a payer who is the claimant", async () => {
+    const claim = await submit(selfApproverClient, defaultCategoryId, {
+      amountIdr: 26_000,
+    });
+    expect((await decide(approverClient, claim.id)).status).toBe(200);
+    const own = await payCash(selfApproverClient, claim.id);
+    expect(own.status).toBe(403);
+    expect(own.body.error.code).toBe("PAYROLL_APPROVER_NOT_DISTINCT");
+    expect((await payCash(approverClient, claim.id)).status).toBe(200);
+  });
+
+  it("refuses a resigned or terminated employee a new claim with 422", async () => {
+    for (const status of ["resigned", "terminated"]) {
+      const leaver = await signedInClient(`Reimb ${status} API`);
+      await grantRole(tenant.id, leaver.userId, ["self.reimbursement.request"]);
+      const employeeId = await seedEmployee(
+        tenant.id,
+        outletId,
+        leaver.userId,
+        null,
+      );
+      await asTenant(tenant.id, (db) =>
+        db.query("UPDATE employees SET status = $2 WHERE id = $1", [
+          employeeId,
+          status,
+        ]),
+      );
+      const response = await leaver.client
+        .post(ME)
+        .set(originHeader)
+        .send(claimBody(defaultCategoryId));
+      expect(response.status, status).toBe(422);
+      expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    }
+  });
+
+  it("answers 422, not 500, to a crafted cursor", async () => {
+    for (const keys of [
+      ["not-a-date", "x"],
+      [today, "x"],
+      ["2025-02-30", randomUUID()],
+    ]) {
+      const cursor = encodeURIComponent(encodeCursor(keys));
+      expect(
+        (await approverClient.get(`${CLAIMS}?cursor=${cursor}`)).status,
+      ).toBe(422);
+      expect((await selfClient.get(`${ME}?cursor=${cursor}`)).status).toBe(422);
+    }
   });
 });

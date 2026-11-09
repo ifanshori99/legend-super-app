@@ -22,6 +22,7 @@ import {
 import type { PermissionCode } from "@starter/shared/access";
 import {
   businessDateOf,
+  businessDateSchema,
   CoreError,
   createUlid,
   DEFAULT_BUSINESS_DAY_CLOCK,
@@ -324,13 +325,16 @@ async function listClaims(
   ];
   if (query.cursor) {
     const [expenseDate, id] = cursorPair(query.cursor);
-    const beforeId = reimbursementIdSchema.parse(id);
+    const date = businessDateSchema.safeParse(expenseDate);
+    const beforeId = reimbursementIdSchema.safeParse(id);
+    if (!date.success || !beforeId.success)
+      throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
     filters.push(
       or(
-        lt(reimbursements.expenseDate, expenseDate),
+        lt(reimbursements.expenseDate, date.data),
         and(
-          eq(reimbursements.expenseDate, expenseDate),
-          lt(reimbursements.id, beforeId),
+          eq(reimbursements.expenseDate, date.data),
+          lt(reimbursements.id, beforeId.data),
         ),
       )!,
     );
@@ -426,6 +430,7 @@ export async function createMyReimbursement(
           .select({
             positionId: employees.positionId,
             homeOutletId: employees.homeOutletId,
+            status: employees.status,
           })
           .from(employees)
           .where(
@@ -436,6 +441,10 @@ export async function createMyReimbursement(
           )
           .limit(1);
         if (!employee) throw notFound();
+        if (employee.status !== "active" && employee.status !== "onboarding")
+          throw unprocessable(
+            "Karyawan yang sudah tidak aktif tidak bisa mengajukan reimbursement.",
+          );
         // Per-claim limit of the employee's position (or the default row).
         // TODO legend-8399r: the per-month cap needs the approved+paid sum of
         // the month; 0 is passed until then, so only one claim above the
@@ -620,6 +629,19 @@ export async function payReimbursementCash(
       { actor, reimbursementId },
       async () => {
         const row = await lockClaim(tx, context, reimbursementId);
+        // Separation of duties: nobody pays their own claim.
+        const [own] = await tx
+          .select({ id: employees.id })
+          .from(employees)
+          .where(
+            and(
+              eq(employees.tenantId, context.tenant.tenantId),
+              eq(employees.userId, actor),
+            ),
+          )
+          .limit(1);
+        if (own && own.id === row.employeeId)
+          throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
         // A payroll payout is paid by the run lock, never by hand.
         if (row.payout !== "cash")
           throw new PayrollError("PAYROLL_INVALID_TRANSITION");
