@@ -547,7 +547,7 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - Urutan migrasi m1: 0155 payroll, 0156 write-off, 0157 edge PIN, 0158 self-heal, 0159 paket kontrak, 0160 c9kbk. Merge train menjaga `when` naik; migrasi yang datang terlambat dinaikkan `when`/idx-nya saat merge. jcby0 memakai nomor bebas berikut sesudah 0160 (brief 210 perlu disesuaikan saat mulai).
 - Antre slot Claude: 209 (xx22n), 212 (DOIT), 213 (0135), 210 (jcby0 sesudah hfq3z), umzos, paket triage berikut.
 
-### 21:05 (CTO G8flk)
+### 20:56 (CTO G8flk)
 - Terverifikasi: edge PIN o839h (14 file, 205 lulus) masuk batch27 (3205133d, 0157 sesudah 0156). Paket kontrak (13 file API, 123 lulus; test root menunggu gate) diantrekan, ditahan sampai 0158. G5gti, G5pst resolved.
 - Mulai: G0w7h `legend-xx22n` (209), G3chm DOIT hardening (212), Codex G2fs0 (203b), Codex G2ldx (207b).
 - Codex 144 multi-fund bersih: `legend-knev` ditutup. Codex 201b write-off: P1 `legend-l56xd` (owner-only bisa ditembus lewat custom role), P2 `legend-xlvvl` (rollback custom role, GET di edge, helper lambat, runbook). Brief 214, rencana: buka lagi G6yu3 saat ada slot.
