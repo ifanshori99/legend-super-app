@@ -288,17 +288,13 @@ async function loadRunRow(
   return row;
 }
 
-/**
- * OPS-01: `assignedTo` must hold a live grant on the tenant or that outlet.
- * With `roleId` (template role) the grant must be for that role.
- */
+/** OPS-01: `assignedTo` must hold a live grant on the tenant or that outlet. */
 async function assertAssigneeInOutlet(
   tx: Tx,
   tenantId: string,
   outletId: string,
   assignedTo: UserId,
   now: Date,
-  roleId?: string | null,
 ): Promise<void> {
   const [assignment] = await tx
     .select({ id: roleAssignments.id })
@@ -307,7 +303,6 @@ async function assertAssigneeInOutlet(
       and(
         eq(roleAssignments.tenantId, tenantId),
         eq(roleAssignments.userId, assignedTo),
-        roleId ? eq(roleAssignments.roleId, roleId) : undefined,
         lte(roleAssignments.validFrom, now),
         or(
           isNull(roleAssignments.validUntil),
@@ -327,9 +322,7 @@ async function assertAssigneeInOutlet(
     throw new HttpError(
       422,
       "VALIDATION_ERROR",
-      roleId
-        ? "Penanggung jawab tidak memegang peran checklist ini"
-        : "Penanggung jawab di luar outlet",
+      "Penanggung jawab di luar outlet",
     );
 }
 
@@ -687,7 +680,6 @@ export async function createChecklistRun(
       input.outletId,
       input.assignedTo,
       now,
-      template.roleId,
     );
     const [outlet] = await tx
       .select({ timezone: outlets.timezone })

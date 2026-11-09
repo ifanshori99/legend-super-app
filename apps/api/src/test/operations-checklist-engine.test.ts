@@ -19,7 +19,15 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { outletIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -157,10 +165,12 @@ async function seedTemplate(
     shiftTemplateId?: string | null;
     /** Fixed id, so a test can control the order templates are stored in. */
     id?: string;
+    /** Raw items JSON, to store a template the contract schema rejects. */
+    rawItems?: unknown;
   },
 ) {
   const id = options.id ?? randomUUID();
-  const items = [
+  const items = options.rawItems ?? [
     {
       id: randomUUID(),
       label: "Kasir dibuka dan dihitung",
@@ -660,24 +670,28 @@ describe("Manual run assignment rules (legend-5v69)", () => {
     return { roleId, holder };
   }
 
-  it("[legend-5v69][OPS-01] a template with a role accepts only an assignee who holds that role", async () => {
+  it("[legend-5v69][B11-3][OPS-01] a manual run on a role template accepts any assignee in the outlet, with or without the role", async () => {
     const { roleId, holder } = await roleHolder();
     const template = await postTemplate({ roleId });
 
-    // staff is an owner, not a holder of this role: 422.
-    const refused = await requestRun(template.id, { assignedTo: staff.userId });
-    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
-    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    // staff is an owner in the outlet but does not hold this role: accepted
+    // (the role only picks the assignee of scheduled runs).
+    const lacking = await postRun(template.id, { assignedTo: staff.userId });
+    expect(lacking.assignedTo).toBe(staff.userId);
 
-    // A user with no role at all is refused as well.
+    const ok = await postRun(template.id, {
+      assignedTo: holder.userId,
+      shiftDate: "2030-03-02",
+    });
+    expect(ok.assignedTo).toBe(holder.userId);
+
+    // Being in the outlet is still required: a user with no grant is refused,
+    // and so is a former holder whose assignment already ended.
     const nobody = await seedUser();
     const none = await requestRun(template.id, { assignedTo: nobody });
     expect(none.status, JSON.stringify(none.body)).toBe(422);
+    expect(none.body.error.code).toBe("VALIDATION_ERROR");
 
-    const ok = await postRun(template.id, { assignedTo: holder.userId });
-    expect(ok.assignedTo).toBe(holder.userId);
-
-    // A holder whose assignment already ended no longer counts.
     const former = await seedUser();
     await assignRole(seededTenant.id, {
       userId: former,
@@ -1013,6 +1027,51 @@ describe("Scheduled checklist runs (legend-5v69)", () => {
     const runs = await readRuns(tenantA.id);
     expect(runs.map((run) => run.template_id)).toEqual([due.id]);
     expect(runs[0].assigned_to).toBe(holder);
+  });
+
+  it("[legend-5v69][B11-2] malformed templates sorting first neither starve a healthy template nor log more than once each per tick", async () => {
+    const roleId = await seedRole(tenantA.id, "kasir");
+    const holder = await seedUser();
+    await assignRole(tenantA.id, {
+      userId: holder,
+      roleId,
+      outletId: tenantA.jakarta,
+      validFrom: daysBefore(NOW, 1),
+    });
+    // Three templates pass the SQL filter but fail the contract schema (a
+    // malformed item). They sort before the healthy one and exceed the injected limit.
+    const malformedIds = [1, 2, 3].map(
+      (n) => `00000000-0000-4000-8000-00000000000${n}`,
+    );
+    for (const id of malformedIds)
+      await seedTemplate(tenantA.id, tenantA.jakarta, {
+        id,
+        name: `Rusak ${id.slice(-1)}`,
+        roleId,
+        dueTime: "08:00",
+        rawItems: [{ id: "bukan-uuid", label: "Rusak" }],
+      });
+    const healthy = await seedTemplate(tenantA.id, tenantA.jakarta, {
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      name: "Sehat",
+      roleId,
+      dueTime: "08:00",
+    });
+
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const context = tenantScope(tenantA.id);
+      const created = await withTenant(db, context, (tx) =>
+        generateScheduledChecklistRuns(tx, context, NOW, { templateLimit: 2 }),
+      );
+      expect(created).toBe(1);
+      const runs = await readRuns(tenantA.id);
+      expect(runs.map((run) => run.template_id)).toEqual([healthy.id]);
+      // One log line per malformed template in this tick, none repeated.
+      expect(logged).toHaveBeenCalledTimes(malformedIds.length);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("[legend-5v69][OPS-01] a template without a role is manual-only and never generated", async () => {
