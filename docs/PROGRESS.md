@@ -382,3 +382,4 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - 16:55: G0fu7 selesai ws/provisioning-race bd62055c (legend-dq0n, legend-hd1m; tenant-config-locks.ts, urutan kunci CoA > lokasi > pajak > service charge; tanpa migrasi). legend-de3b (P1) diputuskan CTO ikut pola service charge, brief 177 ke G0fu7. Worktree sementara test-writer dihapus (hanya beda format). Antrean Codex ditambah 173b. Test-runner CTO memverifikasi shift-close-fix dan provisioning-race.
 - 16:55: Test-runner CTO ws/provisioning-race bd62055c: 17 file, 216 lulus. Diteruskan ke G9syc.
 - 16:56: Test-runner CTO ws/shift-close-fix 1c051167: 11 file, 241 lulus. Diteruskan ke G9syc setelah edc-pan-fix.
+- 17:01: Founder Q29 = B: retur sebagian yang menggugurkan promo ditolak (legend-ob9o naik P1), dikirim ke G8qtg setelah r7g2.
