@@ -318,3 +318,7 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - G2wg9 dibuka lagi di akun #2 (15:08): slice 4 (settlement + MDR) lalu slice 3, dari m1 terbaru.
 - Cron sesi: retro tiap 2 jam di menit :13 (berikut ±16:19).
 - Antrean Codex penuh (G8ffh 142, G7mxn 150, G1634 146). Sisa: 152, 158, 159, 160, lalu 117, 119, 121, 122, 124, 126, 127, 130, 133, 134, 138, 144.
+- 15:15 G2wg9 compact 3x, serah terima di `.worktrees/aj-settlement/docs/PROGRESS.md`. Diganti G0bgs (brief 162): langkah 0 perbaiki 4 temuan High Codex 142 di cabang `ws/aj-fix142` dari ujung ws/dp-late-journal, lapor, lalu slice 4 dan 3.
+- Codex 142 (auto-journal slice 1-2) selesai: 4 High (payout tanpa receipt, void penjualan selesai tanpa pembalikan, DP hangus direfund lagi, guard DP tergantung urutan event). Ke G0bgs.
+- Codex 150 (edc-pan-scrub) selesai: P1 pemisah berulang lolos scrub (`4111  1111  1111  1111`), P2 runbook harus satu transaksi (`psql -1 -v ON_ERROR_STOP=1`), P2 ambang test 13+ global. Belum ada pemilik: papan To do, mulai saat slot Claude kosong.
+- Codex baru: G0lh5 brief 152 (station-scope, akun 2), G5t1n brief 158 (edge-event-class, akun 2), G1634 brief 146 masih jalan (akun 3). Antrean: 159, 160, lalu 117, 119, 121, 122, 124, 126, 127, 130, 133, 134, 138, 144.
