@@ -47,6 +47,7 @@ import {
   desc,
   eq,
   gt,
+  gte,
   isNotNull,
   isNull,
   lt,
@@ -65,6 +66,7 @@ import {
   paymentLinkTokens,
   paymentUnallocatedFunds,
 } from "../db/schema";
+import { auditLogs } from "../db/schema/core-audit";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
@@ -73,6 +75,10 @@ import {
   decidePaymentConfirmation,
   type PaymentConfirmation,
 } from "./payment-lifecycle";
+import {
+  failOverLinkSafely,
+  syncGatewayHealthSafely,
+} from "./payment-failover.service";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
   paymentGateway,
@@ -396,6 +402,17 @@ export async function getPaymentLinkView(
     paymentGateway().health(context, link.outletId),
     onlineMethods(context, link),
   ]);
+  // PRD §3.13 Failover: a down gateway moves this bill to the cashier on its
+  // own (one audit row per bill and incident, one supervisor alert per
+  // incident); a healthy reading closes an open incident.
+  const incident = await syncGatewayHealthSafely(
+    context,
+    link.outletId,
+    health,
+    now,
+  );
+  if (incident?.openIncident != null && outstandingIdr(link) > 0)
+    await failOverLinkSafely(context, link, incident.openIncident, now);
   const { activeIntent, timeZone } = await withTenant(
     db,
     context,
@@ -641,12 +658,21 @@ export async function createIntent(
 
   const gateway = paymentGateway();
   const health = await gateway.health(context, plan.link.outletId);
-  if (health.status === "down")
+  if (health.status === "down") {
+    const incident = await syncGatewayHealthSafely(
+      context,
+      plan.link.outletId,
+      health,
+      now,
+    );
+    if (incident?.openIncident != null)
+      await failOverLinkSafely(context, plan.link, incident.openIncident, now);
     throw new HttpError(
       503,
       "SERVICE_UNAVAILABLE",
       "The payment gateway is unavailable; pay at the cashier.",
     );
+  }
 
   // The caller may shorten the lifetime (a QR guest's session ends sooner);
   // never lengthen it past the method default.
@@ -1756,8 +1782,11 @@ async function applyConfirmation(
 /**
  * PRD §3.13 "Failover": when the gateway is unusable the guest is told to pay
  * at the cashier. The acknowledgement is all the caller needs; the audit row
- * records the request for the opening supervisor (the in-app notification
- * needs a WS-05 notification event — follow-up bead).
+ * records the request for the cashier. Asking twice answers the first time and
+ * writes nothing more. No money column is touched, and it never waits on the
+ * gateway: the cashier fallback must work exactly when the gateway hangs. The
+ * incident and its supervisor alert come from the bill screen's own health
+ * reading (payment-failover.service.ts).
  */
 export async function requestPayAtCashier(
   context: ScopedTenantContext,
@@ -1768,7 +1797,25 @@ export async function requestPayAtCashier(
   const link = await loadLink(context, parsedToken, now);
   if (outstandingIdr(link) <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
-  await withTenant(db, context, async (tx) => {
+  const requestedAt = await withTenant(db, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`legend:pay-at-cashier:${context.tenant.tenantId}:${link.id}`}, 0))`,
+    );
+    const [first] = await tx
+      .select({ requestedAt: sql<string>`${auditLogs.event}->>'createdAt'` })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, context.tenant.tenantId),
+          eq(auditLogs.outletId, link.outletId),
+          gte(auditLogs.createdAt, link.createdAt),
+          sql`${auditLogs.event}->>'action' = 'payment.pay_at_cashier_requested'`,
+          sql`${auditLogs.event}->>'objectId' = ${link.id}`,
+        ),
+      )
+      .orderBy(asc(auditLogs.createdAt))
+      .limit(1);
+    if (first) return new Date(first.requestedAt);
     await recordAudit(
       tx,
       context,
@@ -1791,9 +1838,10 @@ export async function requestPayAtCashier(
       },
       ["reference"],
     );
+    return now;
   });
   return payAtCashierAcknowledgementSchema.parse({
-    requestedAt: now.toISOString(),
+    requestedAt: requestedAt.toISOString(),
   });
 }
 

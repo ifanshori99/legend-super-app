@@ -44,6 +44,10 @@ export type GatewayMethodAvailability = {
 
 export type GatewayHealth = {
   readonly status: PaymentGatewayStatus;
+  /** `unconfigured`: the outlet has no usable gateway account (never set up).
+   * It reads as `down` for the guest, but it is not an outage, so it opens no
+   * failover incident and alerts nobody. */
+  readonly reason?: "unconfigured";
 };
 
 export type GatewayIntentRequest = {
@@ -149,7 +153,7 @@ export interface PaymentGatewayPort {
 export const unconfiguredPaymentGateway: PaymentGatewayPort = {
   provider: "unconfigured",
   async health() {
-    return { status: "down" };
+    return { status: "down", reason: "unconfigured" };
   },
   async createIntent() {
     throw new CoreError(

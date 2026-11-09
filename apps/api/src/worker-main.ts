@@ -80,6 +80,7 @@ import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
+import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
 import { runAiForecastJob } from "./worker/ai-forecast.job.ts";
 import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
@@ -404,6 +405,11 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Parked access drain sweep failed");
     }
+    // Probe the payment gateway of outlets with an open failover incident, so
+    // a recovery is recorded without guest traffic and a long outage does not
+    // alert again (legend-5ffks). Started, not awaited: probes can wait on the
+    // gateway for seconds and must not hold up the relay. Self-throttled.
+    void startGatewayProbeSweep(context);
     // WS-12 AI-07 rule-based forecast, next 7 days per outlet (legend-hkd4);
     // self-throttled, never blocks the relay.
     try {

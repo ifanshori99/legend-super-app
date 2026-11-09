@@ -29,7 +29,10 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
-import { notificationPolicySchema } from "@starter/shared/notification";
+import {
+  notificationPolicySchema,
+  type NotificationCategory,
+} from "@starter/shared/notification";
 import {
   notificationOutbox,
   notificationPolicies,
@@ -124,8 +127,10 @@ async function supervisorIds(
     : holders(eq(roles.templateKey, "owner"), "tenant");
 }
 
-type SupervisorAlert = {
+export type SupervisorAlert = {
   tenantId: TenantId;
+  /** Notification category; defaults to `edge_sync_conflict`. */
+  category?: NotificationCategory;
   outletId: OutletId;
   /** ULID; the notification consumer dedupes on it. */
   id: string;
@@ -142,7 +147,7 @@ type SupervisorAlert = {
  * `edge_sync_conflict`: shared catalog, staff audience, realtime). The rows
  * and the realtime `pg_notify` commit with the caller's transaction.
  */
-async function notifyOutletSupervisors(
+export async function notifyOutletSupervisors(
   tx: EdgeTx,
   context: ScopedTenantContext,
   alert: SupervisorAlert,
@@ -195,7 +200,7 @@ async function notifyOutletSupervisors(
   );
   const recipients: NotificationRecipient[] = userIds.map((userId) => ({
     userId,
-    category: "edge_sync_conflict",
+    category: alert.category ?? "edge_sync_conflict",
     title: alert.title,
     body: alert.body,
     link: null,

@@ -50,6 +50,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   payslip: FileText,
   daily_summary: Sun,
   operational_anomaly: TriangleAlert,
+  payment_failover: TriangleAlert,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

@@ -288,11 +288,13 @@ export function createDoitGateway(
     { at: number; value: readonly GatewayMethodAvailability[] }
   >();
 
-  async function resolve(
+  /** Why no account resolved: `unconfigured` (no integration or incomplete
+   * credentials, so never set up) or `error` (the loader failed). */
+  async function resolveDetailed(
     context: ScopedTenantContext,
     outletId?: string,
     integrationId?: string | null,
-  ): Promise<Resolved | null> {
+  ): Promise<Resolved | "unconfigured" | "error"> {
     let loaded: Awaited<ReturnType<DoitCredentialLoader>>;
     try {
       // A payment already minted is checked with the account that minted it.
@@ -306,9 +308,9 @@ export function createDoitGateway(
         { errName: error instanceof Error ? error.name : "unknown" },
         "DOIT credentials could not be loaded",
       );
-      return null;
+      return "error";
     }
-    if (!loaded) return null;
+    if (!loaded) return "unconfigured";
     const { apiKey } = loaded.credentials;
     const override = loaded.integration.config.baseUrl;
     // No override means the one DOIT host; a malformed override fails closed.
@@ -316,8 +318,18 @@ export function createDoitGateway(
       override === undefined || override === null || override === ""
         ? DOIT_BASE_URL
         : parseDoitBaseUrl(override);
-    if (!apiKey || !loaded.credentials.webhookSecret || !baseUrl) return null;
+    if (!apiKey || !loaded.credentials.webhookSecret || !baseUrl)
+      return "unconfigured";
     return { integrationId: loaded.integration.id, baseUrl, apiKey };
+  }
+
+  async function resolve(
+    context: ScopedTenantContext,
+    outletId?: string,
+    integrationId?: string | null,
+  ): Promise<Resolved | null> {
+    const resolved = await resolveDetailed(context, outletId, integrationId);
+    return typeof resolved === "string" ? null : resolved;
   }
 
   async function requireCredentials(
@@ -480,8 +492,10 @@ export function createDoitGateway(
     provider: "doit",
 
     async health(context, outletId): Promise<GatewayHealth> {
-      const resolved = await resolve(context, outletId);
-      if (!resolved) return { status: "down" };
+      const resolved = await resolveDetailed(context, outletId);
+      if (resolved === "unconfigured")
+        return { status: "down", reason: "unconfigured" };
+      if (resolved === "error") return { status: "down" };
       try {
         await loadMethods(resolved);
         return { status: "available" };
