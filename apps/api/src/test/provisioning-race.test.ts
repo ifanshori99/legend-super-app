@@ -421,6 +421,8 @@ describe("provisioning vs owner writers share one lock", () => {
     expect(before.accounts.length).toBe(63);
     expect(before.mappings.length).toBeGreaterThan(0);
 
+    // The cloud chart is account 9999 only: no template code is in the
+    // snapshot, so the template accounts are not replaceable forks.
     await expect(
       applyEdgeMasterSnapshot(claims, snapshot),
     ).rejects.toMatchObject({ code: "LOCAL_CONFLICT" });

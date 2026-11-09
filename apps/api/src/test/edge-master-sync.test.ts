@@ -1394,17 +1394,20 @@ describe("legend-9ppw 5 isolation", () => {
       "LOCAL_CONFLICT",
     );
 
-    // An account (a leaf, referenced by mappings) with the same
-    // (tenant, entity, code) but a different id.
+    // Two accounts whose codes are swapped against the local chart: both ids
+    // are in the snapshot, so neither is a fork, and each code is held locally
+    // under the other id. (An account with a code under a snapshot-unknown id
+    // is a replaceable fork since legend-ht6fu, see its describe below.)
     const parents = new Set(snapshot.chartOfAccounts.map((a) => a.parentId));
-    const leaf = snapshot.chartOfAccounts.find((a) => !parents.has(a.id))!;
-    const accountCollision = withOtherChanges(
-      replaceId(snapshot, leaf.id, randomUUID()),
+    const [first, second] = snapshot.chartOfAccounts.filter(
+      (a) => !parents.has(a.id),
     );
-    await expectRefusedAndUnchanged(
-      signed(accountCollision, main),
-      "LOCAL_CONFLICT",
-    );
+    const swapped = withOtherChanges(structuredClone(snapshot));
+    for (const row of swapped.chartOfAccounts) {
+      if (row.id === first!.id) row.code = second!.code;
+      else if (row.id === second!.id) row.code = first!.code;
+    }
+    await expectRefusedAndUnchanged(signed(swapped, main), "LOCAL_CONFLICT");
     expect(await dbView(main)).toEqual(before);
     expect(
       await count(
@@ -1777,5 +1780,201 @@ describe("Codex 124 masters read failure is a fixed 503 without the raw error", 
     await expect(
       buildEdgeMasterSnapshot(verified!, main.credential),
     ).rejects.toBe(bug);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-ht6fu: a local migration (0147) or a local template backfill gave the
+// edge accounts under ids the cloud does not know. A local account outside the
+// snapshot whose code the snapshot holds under another id is a fork and is
+// replaced by the cloud's row when nothing references it. Anything else
+// outside the snapshot, or a referenced fork, stays refused.
+// ---------------------------------------------------------------------------
+describe("legend-ht6fu edge chart forked from the cloud's ids", () => {
+  const FORKED_CODES = ["1204", "6110", "6111"];
+
+  /** The cloud's snapshot with `codes` carrying other ids than the edge's. */
+  async function cloudWithOtherIds(f: Fixture, codes = FORKED_CODES) {
+    const { snapshot } = await captureMasters(f);
+    let text = JSON.stringify(snapshot);
+    const localIds = new Map<string, string>();
+    for (const code of codes) {
+      const account = snapshot.chartOfAccounts.find((a) => a.code === code)!;
+      expect(account).toBeDefined();
+      localIds.set(code, account.id);
+      text = text.replaceAll(account.id, randomUUID());
+    }
+    return { forged: JSON.parse(text) as EdgeMasterSnapshot, localIds };
+  }
+
+  async function expectRefusedUnchanged(f: Fixture, body: unknown) {
+    const before = await dbView(f);
+    spyCloud({ masters: () => json(body) });
+    const code = await failureCode(syncEdgeMasters(config(f)));
+    vi.restoreAllMocks();
+    expect(code).toBe("LOCAL_CONFLICT");
+    expect(await dbView(f)).toEqual(before);
+  }
+
+  const dropRows = (f: Fixture, tables: string[]) =>
+    deleteRows(tables, [f.tenantId]);
+
+  it("replaces the unreferenced forked accounts and their mappings with the cloud's rows", async () => {
+    const f = await createFixture("Fork");
+    const { forged, localIds } = await cloudWithOtherIds(f);
+    expect(forged.accountMappings.length).toBeGreaterThanOrEqual(3);
+    spyCloud({ masters: () => json(signed(forged, f)) });
+    await syncEdgeMasters(config(f));
+    vi.restoreAllMocks();
+
+    const after = await dbView(f);
+    expect(after).toEqual(viewOf(forged));
+    for (const code of FORKED_CODES) {
+      const cloudId = forged.chartOfAccounts.find((a) => a.code === code)!.id;
+      expect(
+        after.accounts.filter((a) => a.code === code).map((a) => a.id),
+      ).toEqual([cloudId]);
+      expect(after.accounts.map((a) => a.id)).not.toContain(localIds.get(code));
+    }
+  });
+
+  it("replay: a local account whose code no snapshot account has is never deleted", async () => {
+    const f = await createFixture("Replay");
+    const { snapshot: older } = await captureMasters(f);
+    // A real cloud account the replayed older snapshot predates.
+    await owner.query(
+      `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $2, '7777', 'Akun Baru Cloud', 'asset', 'current_asset')`,
+      [f.tenantId, f.entityA],
+    );
+    await expectRefusedUnchanged(f, signed(older, f));
+    // An empty chart in the snapshot holds no code either.
+    const empty = structuredClone(older);
+    empty.chartOfAccounts = [];
+    empty.accountMappings = [];
+    await expectRefusedUnchanged(f, signed(empty, f));
+  });
+
+  describe("a fork that other rows still reference stays refused, nothing written", () => {
+    it("budgets", async () => {
+      const f = await createFixture("ForkBudget");
+      const { forged, localIds } = await cloudWithOtherIds(f);
+      await owner.query(
+        `INSERT INTO budgets (tenant_id, legal_entity_id, account_id, period, amount_idr)
+         VALUES ($1, $2, $3, '2026-01', 1000)`,
+        [f.tenantId, f.entityA, localIds.get("6110")],
+      );
+      try {
+        await expectRefusedUnchanged(f, signed(forged, f));
+      } finally {
+        await dropRows(f, ["budgets"]);
+      }
+    });
+
+    it("journal_lines", async () => {
+      const f = await createFixture("ForkJournal");
+      const { forged, localIds } = await cloudWithOtherIds(f);
+      const other = forged.chartOfAccounts.find((a) => a.code === "1101")!;
+      const period = randomUUID();
+      const entry = randomUUID();
+      await owner.query(
+        `INSERT INTO fiscal_periods (id, tenant_id, legal_entity_id, period) VALUES ($1, $2, $3, '2026-11')`,
+        [period, f.tenantId, f.entityA],
+      );
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO journal_entries (id, tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type, description, idempotency_key, request_fingerprint)
+           VALUES ($1, $2, $3, '2026-11-05', $4, 'manual', 'Fork uji', $5, $6)`,
+          [
+            entry,
+            f.tenantId,
+            f.entityA,
+            period,
+            `fork-${randomUUID()}`,
+            "a".repeat(64),
+          ],
+        );
+        await client.query(
+          `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+           VALUES ($1, $2, $3, 1, 100, 0), ($1, $2, $4, 2, 0, 100)`,
+          [f.tenantId, entry, localIds.get("6110"), other.id],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+      try {
+        await expectRefusedUnchanged(f, signed(forged, f));
+      } finally {
+        await dropRows(f, [
+          "journal_lines",
+          "journal_entries",
+          "fiscal_periods",
+        ]);
+      }
+    });
+
+    it("fiscal_period_snapshot_lines", async () => {
+      const f = await createFixture("ForkPeriod");
+      const { forged, localIds } = await cloudWithOtherIds(f);
+      const period = randomUUID();
+      const snapshotId = randomUUID();
+      await owner.query(
+        `INSERT INTO fiscal_periods (id, tenant_id, legal_entity_id, period) VALUES ($1, $2, $3, '2026-11')`,
+        [period, f.tenantId, f.entityA],
+      );
+      await owner.query(
+        `INSERT INTO fiscal_period_snapshots (id, tenant_id, legal_entity_id, fiscal_period_id, period, version, taken_by, taken_at)
+         VALUES ($1, $2, $3, $4, '2026-11', 1, 'uji', now())`,
+        [snapshotId, f.tenantId, f.entityA, period],
+      );
+      await owner.query(
+        `INSERT INTO fiscal_period_snapshot_lines (tenant_id, snapshot_id, account_id, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, 100, 0)`,
+        [f.tenantId, snapshotId, localIds.get("6110")],
+      );
+      try {
+        await expectRefusedUnchanged(f, signed(forged, f));
+      } finally {
+        await dropRows(f, [
+          "fiscal_period_snapshot_lines",
+          "fiscal_period_snapshots",
+          "fiscal_periods",
+        ]);
+      }
+    });
+  });
+
+  it("an in-snapshot local child of a forked parent ends under the cloud parent", async () => {
+    const f = await createFixture("ForkChild");
+    const { snapshot } = await captureMasters(f);
+    const parent = snapshot.chartOfAccounts.find((a) =>
+      snapshot.chartOfAccounts.some((c) => c.parentId === a.id),
+    )!;
+    const children = snapshot.chartOfAccounts
+      .filter((c) => c.parentId === parent.id)
+      .map((c) => c.id);
+    // The cloud holds this parent under another id; its children keep theirs
+    // and still point at the local parent here.
+    const cloudParent = randomUUID();
+    const forged = JSON.parse(
+      JSON.stringify(snapshot).replaceAll(parent.id, cloudParent),
+    ) as EdgeMasterSnapshot;
+    spyCloud({ masters: () => json(signed(forged, f)) });
+    await syncEdgeMasters(config(f));
+    vi.restoreAllMocks();
+
+    const after = await dbView(f);
+    expect(after).toEqual(viewOf(forged));
+    expect(after.accounts.map((a) => a.id)).not.toContain(parent.id);
+    for (const id of children)
+      expect(after.accounts.find((a) => a.id === id)!.parentId).toBe(
+        cloudParent,
+      );
   });
 });

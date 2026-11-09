@@ -15,13 +15,25 @@
 //   `id`. A local row with the same natural key (uoms tenant+code, accounts
 //   tenant+entity+code) but another id is never overwritten or re-keyed: the
 //   whole apply aborts with LOCAL_CONFLICT (ids must never fork), nothing is
-//   written. The same holds for a local chart_of_accounts id of the outlet's
-//   entity that the snapshot does not list (the snapshot is the cloud's full
-//   chart and the cloud never hard-deletes accounts, so it is a fork, e.g. the
-//   standard template provisioned locally before the import; legend-usa4b).
+//   written.
+// - A local chart_of_accounts id of the outlet's entity that the snapshot does
+//   not list, but whose code the snapshot holds under another id, is a fork:
+//   the standard template provisioned locally before the import
+//   (legend-usa4b), or accounts a local migration inserted under random ids
+//   (0147, legend-ht6fu). The cloud never hard-deletes accounts, so the cloud's
+//   row replaces it: its mappings are deleted, the in-snapshot local accounts
+//   that have it as parent are detached (parent_id null; the upsert below sets
+//   the cloud parent), then the fork is deleted, all before the natural-key
+//   pre-check. A local id outside the snapshot whose code the snapshot does not
+//   hold (an empty chart included) is never deleted: a replayed older signed
+//   snapshot (the signature carries no version) may simply predate it. That,
+//   and a fork that a foreign key still names (journal line, budget, period
+//   snapshot), abort the apply with LOCAL_CONFLICT, nothing is written. A
+//   replacement logs its count and the legal entity id at info, nothing else.
 // - uoms, stock_locations and chart_of_accounts rows missing from the snapshot
-//   are NEVER deleted locally: ledger and stock rows reference them by foreign
-//   key. A deactivated location or account arrives as `isActive: false`.
+//   are never deleted locally when referenced: ledger and stock rows reference
+//   them by foreign key (chart_of_accounts: see the fork rule above). A
+//   deactivated location or account arrives as `isActive: false`.
 //   account_mappings are the exception: the cloud's set per legal entity is
 //   authoritative, so local mappings whose role is not in the snapshot are
 //   deleted (nothing references a mapping row).
@@ -160,6 +172,16 @@ function assertScope(claims: Claims, snapshot: EdgeMasterSnapshot): void {
 
 type Account = EdgeMasterSnapshot["chartOfAccounts"][number];
 
+/** SQLSTATE 23503, also when drizzle wraps the driver error as `cause`. */
+function isForeignKeyViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23503" ||
+    isForeignKeyViolation(candidate.cause, depth + 1)
+  );
+}
+
 /** Parents before children. A cycle or a missing parent is a bad snapshot. */
 function parentsFirst(accounts: readonly Account[]): Account[] {
   const placed = new Set<string>();
@@ -224,16 +246,23 @@ export async function applyEdgeMasterSnapshotInTransaction(
   if (!outlet || !sameId(outlet.legalEntityId, legalEntityId))
     throw new EdgeMasterSyncError("SCOPE_MISMATCH");
 
-  // The snapshot is the cloud's whole chart for this entity and the cloud never
-  // hard-deletes accounts, so a local account id outside it is a fork (e.g. the
-  // standard template a backfill committed before this import got the CoA
-  // lock): refuse before any write, otherwise the cloud accounts would sit
-  // beside it and the mapping replace below would delete its mappings.
+  // A local account id outside the snapshot is replaced only when the snapshot
+  // holds its code under another id (a fork, see the header). Any other
+  // outside id is refused before any write: it may be a real cloud account
+  // that a replayed older snapshot predates. Replacement, inside a savepoint:
+  // delete the forked accounts' mappings, detach the in-snapshot local
+  // children of a fork (parent_id null; the upsert below sets the cloud
+  // parent), then delete the forks in ONE statement (the foreign keys are NO
+  // ACTION and checked at statement end, so a forked parent and its forked
+  // children go together). A foreign key violation means ledger, budget or
+  // period snapshot rows still name a fork, so nothing is written and the
+  // apply is refused.
   const snapshotAccountIds = new Set(
     accounts.map((row) => row.id.toLowerCase()),
   );
+  const snapshotCodes = new Set(accounts.map((row) => row.code));
   const localAccounts = await tx
-    .select({ id: chartOfAccounts.id })
+    .select({ id: chartOfAccounts.id, code: chartOfAccounts.code })
     .from(chartOfAccounts)
     .where(
       and(
@@ -241,10 +270,55 @@ export async function applyEdgeMasterSnapshotInTransaction(
         eq(chartOfAccounts.legalEntityId, legalEntityId),
       ),
     );
-  if (
-    localAccounts.some((row) => !snapshotAccountIds.has(row.id.toLowerCase()))
-  )
+  const outside = localAccounts.filter(
+    (row) => !snapshotAccountIds.has(row.id.toLowerCase()),
+  );
+  if (outside.some((row) => !snapshotCodes.has(row.code)))
     throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+  const forkedIds = outside.map((row) => row.id);
+  if (forkedIds.length > 0) {
+    try {
+      await tx.transaction(async (savepoint) => {
+        await savepoint
+          .delete(accountMappings)
+          .where(
+            and(
+              eq(accountMappings.tenantId, tenantId),
+              eq(accountMappings.legalEntityId, legalEntityId),
+              inArray(accountMappings.accountId, forkedIds),
+            ),
+          );
+        await savepoint
+          .update(chartOfAccounts)
+          .set({ parentId: null })
+          .where(
+            and(
+              eq(chartOfAccounts.tenantId, tenantId),
+              eq(chartOfAccounts.legalEntityId, legalEntityId),
+              inArray(chartOfAccounts.parentId, forkedIds),
+              notInArray(chartOfAccounts.id, forkedIds),
+            ),
+          );
+        await savepoint
+          .delete(chartOfAccounts)
+          .where(
+            and(
+              eq(chartOfAccounts.tenantId, tenantId),
+              eq(chartOfAccounts.legalEntityId, legalEntityId),
+              inArray(chartOfAccounts.id, forkedIds),
+            ),
+          );
+      });
+    } catch (error) {
+      if (isForeignKeyViolation(error))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+      throw error;
+    }
+    logger.info(
+      { legalEntityId, replacedForks: forkedIds.length },
+      "Edge master sync replaced forked chart accounts",
+    );
+  }
 
   // Natural-key collisions under another id: refuse, never fork ids.
   if (snapshot.uoms.length > 0) {
