@@ -100,3 +100,87 @@ if "$root/deploy.sh" --env-file relative --dry-run >/dev/null 2>&1; then
   exit 1
 fi
 echo 'legend-8br: deploy dry-run and ordering checks passed'
+# legend-8cf3: the pre-switch refund reset wrapper reads DOIT_REFUNDS_ENABLED
+# from api.env, worker.env and the api and worker containers, refuses --apply
+# when any has it on or a service has no container, and passes the value to
+# the job. The stub lists one container per service (no worker when
+# TEST_NO_WORKER is set) and answers docker inspect from TEST_*_CONTAINER_ENV,
+# next to a URL that must never be printed.
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+case "$*" in
+  *" ps -a -q api") echo legend-api-1 ;;
+  *" ps -a -q worker") [ -n "${TEST_NO_WORKER:-}" ] || echo legend-worker-1 ;;
+  "inspect "*" legend-api-1") printf 'APP_DATABASE_URL=%s\n%s\n' "$TEST_APP_URL" "$TEST_API_CONTAINER_ENV" ;;
+  "inspect "*" legend-worker-1") printf 'APP_DATABASE_URL=%s\n%s\n' "$TEST_APP_URL" "$TEST_WORKER_CONTAINER_ENV" ;;
+esac
+STUB
+reset="$root/reset-preswitch-refunds.sh"
+printf '0193a5b0-0000-7000-8000-000000000001\n' > "$tmp/ids.txt"
+chmod 0644 "$tmp/ids.txt"
+cp "$tmp/api.env" "$tmp/api.env.orig"
+cp "$tmp/worker.env" "$tmp/worker.env.orig"
+export TEST_APP_URL="$app"
+export TEST_API_CONTAINER_ENV='DOIT_REFUNDS_ENABLED=false'
+export TEST_WORKER_CONTAINER_ENV='WORKER_TRANSPORT=builtin'
+printf 'DOIT_REFUNDS_ENABLED=false\n' >> "$tmp/api.env"
+apply_reset() {
+  "$reset" --env-file "$tmp/compose.env" --apply --touched-before 2026-11-09T03:00:00Z --ids "$tmp/ids.txt"
+}
+: > "$TEST_LOG"
+apply_reset >/dev/null 2>"$tmp/err"
+grep -F -- "--profile migration run --rm -e DOIT_REFUNDS_ENABLED=false -e LEGEND_RESET_WRAPPER=1 -v $tmp/ids.txt:/tmp/refund-ids.txt:ro migrate node dist/reset-preswitch-refunds.js --apply --touched-before 2026-11-09T03:00:00Z --ids /tmp/refund-ids.txt" "$TEST_LOG" >/dev/null || {
+  echo 'legend-8cf3: the reset job did not get the switch value and the read-only --ids mount' >&2
+  exit 1
+}
+refused() {
+  : > "$TEST_LOG"
+  if apply_reset >/dev/null 2>"$tmp/err"; then
+    echo "legend-8cf3: --apply ran with the switch on in $1" >&2
+    exit 1
+  fi
+  if grep -F 'reset-preswitch-refunds.js' "$TEST_LOG" >/dev/null; then
+    echo "legend-8cf3: the reset job started with the switch on in $1" >&2
+    exit 1
+  fi
+  grep -F "$1" "$tmp/err" >/dev/null || {
+    echo "legend-8cf3: the refusal does not name $1" >&2
+    exit 1
+  }
+  if grep -F "$password" "$tmp/err" >/dev/null; then
+    echo 'legend-8cf3: the wrapper printed a password' >&2
+    exit 1
+  fi
+}
+printf 'DOIT_REFUNDS_ENABLED=true\n' >> "$tmp/api.env"
+refused api.env
+cp "$tmp/api.env.orig" "$tmp/api.env"
+printf 'export DOIT_REFUNDS_ENABLED = "1"\n' >> "$tmp/worker.env"
+refused worker.env
+cp "$tmp/worker.env.orig" "$tmp/worker.env"
+TEST_API_CONTAINER_ENV='DOIT_REFUNDS_ENABLED=true'
+refused 'the api container'
+TEST_API_CONTAINER_ENV=''
+TEST_WORKER_CONTAINER_ENV='DOIT_REFUNDS_ENABLED=1'
+refused 'the worker container'
+TEST_WORKER_CONTAINER_ENV=''
+# A bare key after KEY=false takes the value from Compose's shell.
+printf 'DOIT_REFUNDS_ENABLED=false\nDOIT_REFUNDS_ENABLED\n' >> "$tmp/worker.env"
+refused 'worker.env (its last DOIT_REFUNDS_ENABLED line is a bare key)'
+cp "$tmp/worker.env.orig" "$tmp/worker.env"
+# Another project's containers (or none) would hide the switch.
+COMPOSE_PROJECT_NAME=other-project
+export COMPOSE_PROJECT_NAME
+refused 'COMPOSE_PROJECT_NAME'
+unset COMPOSE_PROJECT_NAME
+export TEST_NO_WORKER=1
+refused 'No worker container'
+# A dry-run still runs, with the switch passed as on so the job warns.
+: > "$TEST_LOG"
+"$reset" --env-file "$tmp/compose.env" --dry-run --touched-before 2026-11-09T03:00:00Z >/dev/null 2>&1
+grep -F -- '--profile migration run --rm -e DOIT_REFUNDS_ENABLED=true -e LEGEND_RESET_WRAPPER=1 migrate node dist/reset-preswitch-refunds.js --dry-run --touched-before 2026-11-09T03:00:00Z' "$TEST_LOG" >/dev/null || {
+  echo 'legend-8cf3: the dry-run did not pass the switch as on' >&2
+  exit 1
+}
+echo 'legend-8cf3: pre-switch refund reset wrapper checks passed'
