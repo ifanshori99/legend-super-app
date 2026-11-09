@@ -1,5 +1,5 @@
 import { createAccessControl } from "better-auth/plugins/access";
-import { adminAc, defaultStatements } from "better-auth/plugins/admin/access";
+import { defaultStatements } from "better-auth/plugins/admin/access";
 
 // Shared by the API (authoritative checks) and the web app (UI-only checks).
 // Keep this file free of secrets and server-only imports.
@@ -38,8 +38,12 @@ export const ac = createAccessControl(statement);
 // signed-in default should be able to do nothing beyond its own records.
 export const roles = {
   user: ac.newRole({ notes: [] }),
+  // Platform admin: only the Better Auth admin action the product uses
+  // (impersonation, behind a support grant). The plugin's other user and
+  // session management endpoints are refused in apps/api/src/lib/auth.ts
+  // (legend-imdzn), and this role no longer grants them either.
   admin: ac.newRole({
-    ...adminAc.statements,
+    user: ["impersonate"],
     notes: ["read-any", "delete-any"],
   }),
 } as const;
