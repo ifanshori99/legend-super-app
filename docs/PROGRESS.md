@@ -2,6 +2,17 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Merge train batch33 + batch34 (engineer, sesi c81d48a4, 2026-11-09 malam)
+
+- `milestone/m1` = `d8ea5e0b` (batch34, fast-forward dari 4c818489; batch33 73af1bd0 ikut di dalamnya). Isi batch34: gn17x 04d2836a (+imdzn 814bc779, atwse 6b2fedbf), a9iby 4e100246, drzaf f3e4108d (migrasi 0166), ghgei 3b90a9bd, usw3 4fe23687, 76azz dac509f3, EDC fixtures 0c959539.
+- Konflik: `_journal.json` 0166 (simpan 0165 + 0166); snapshot 0166 dibangun ulang di atas snapshot 0165 (id tetap ba41bcc6, prevId dba5d106; 0166 hanya SQL custom, jadi isi = 0165); `docs/PROGRESS.md` (simpan kedua bagian). `db:generate` kosong. Reviewer sonnet: bersih.
+- Gate batch34: tsc (typecheck turbo) 3/3 hijau; `pnpm test` API 6816 lulus (427 file, 44 skip, 0 gagal), root 1724/0. Gate batch33 terpisah terbunuh SIGTERM (bukan gagal tes); batch34 adalah superset, jadi tercakup.
+- e2e (`pnpm test:e2e`): 19-20 lulus, 4 GAGAL: `e2e/az-whitelabel.spec.ts:80` TEN-08 /sign-in, /sign-up, /karyawan, /kelola bocor "express tanstack postgres" (`siteConfig.name` dari `starter.config.json`, dipakai `components/brand.tsx` dan title sign-in/sign-up dari template 6b698ebf). SAMA di basis batch33 73af1bd0, jadi bukan regresi batch34; spec dari 3bf9e8d1 (WS-13 e2e-az). Pemilik: WS-13 / white-label (TEN-08). Perlu kartu fix: ganti nama starter atau hapus brand di layar publik.
+- Bersih: worktree dan cabang batch33/34 serta 8 cabang ws yang sudah di m1 dihapus (receipt-writeoff-edge-runs dibiarkan: ada berkas tak terlacak docs/briefs/sub-writeoff-edge-runs.md).
+- Nomor migrasi berikut: 0169 (0167 payroll gfcr dan 0168 expo pickup aiksz sedang di batch35).
+- Antrean batch35 (`integ/m1-batch35`, worktree `.worktrees/integ-b35`): a2d54c63 (fmpgz+307w3+cz6aq+md0zx, di atas 783e3bbf ktc4d), ddb0240e sgh4l, ee7632cf xtzpb+9vzvs, 3aa1cb6b 8vgid+5ffks, f99d9d2e 0167 payroll, 6f916193 0168 expo. Belum: 854075b4 pickup-feed (mzhr0) menunggu SHA akhir; c81e214d jangan diambil; hapus `hold/ktc4d-qr1uv-b33` setelah batch35 masuk m1; jangan merge ws/grant-role-lock 82778a8a.
+- Biaya sesi sampai batch34: ~1378k unit biaya, 8 subagent, puncak paralel 3.
+
 ## Serah terima CTO (2026-11-09 sore, sesi G6ifq compact 5x)
 
 Thread berjalan:
