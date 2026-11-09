@@ -16,6 +16,8 @@ import {
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  assetCategorySchema,
+  createAssetCategoryInputSchema,
   fixedAssetSchema,
   createFixedAssetInputSchema,
   depreciationRunSchema,
@@ -45,6 +47,10 @@ import {
   budgetVsActualRowSchema,
   upsertBudgetsInputSchema,
 } from "./budgets.ts";
+import {
+  financePolicySchema,
+  putFinancePolicyInputSchema,
+} from "./finance-policy.ts";
 import {
   accountCodeSchema,
   accountMappingSchema,
@@ -561,6 +567,17 @@ export const revalueFixedAsset = defineEndpoint({
   body: revalueFixedAssetInputSchema,
   response: dataResponseSchema(fixedAssetSchema),
 });
+export const listAssetCategories = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/asset-categories`,
+  response: list(assetCategorySchema),
+});
+export const createAssetCategory = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/asset-categories`,
+  body: createAssetCategoryInputSchema,
+  response: dataResponseSchema(assetCategorySchema),
+});
 export const listDepreciationRuns = defineEndpoint({
   method: "GET",
   path: `${BASE}/legal-entities/:legalEntityId/depreciation-runs`,
@@ -601,6 +618,21 @@ export const getBudgetVsActual = defineEndpoint({
     outletId: outletIdSchema.optional(),
   }),
   response: list(budgetVsActualRowSchema),
+});
+
+// ---- Finance policy ----------------------------------------------------------
+
+/** Tenant policy: bank matching date tolerance + ACC-05 undeposited-cash limit. */
+export const getFinancePolicy = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/finance-policy`,
+  response: dataResponseSchema(financePolicySchema),
+});
+export const putFinancePolicy = defineEndpoint({
+  method: "PUT",
+  path: `${BASE}/finance-policy`,
+  body: putFinancePolicyInputSchema,
+  response: dataResponseSchema(financePolicySchema),
 });
 
 // ---- Statements --------------------------------------------------------------
@@ -740,11 +772,15 @@ export const accountingEndpoints = Object.freeze({
   getFixedAsset,
   disposeFixedAsset,
   revalueFixedAsset,
+  listAssetCategories,
+  createAssetCategory,
   listDepreciationRuns,
   runDepreciation,
   listBudgets,
   upsertBudgets,
   getBudgetVsActual,
+  getFinancePolicy,
+  putFinancePolicy,
   getTrialBalance,
   getBalanceSheet,
   getProfitAndLoss,

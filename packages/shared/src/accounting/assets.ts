@@ -35,15 +35,40 @@ const nonNegativeIdr = idrSchema.refine((v) => v >= 0, "Amount must be >= 0");
 
 export const depreciationMethodSchema = z.enum(["straight_line"]);
 
+export const assetCodeSchema = z.string().trim().min(1).max(40);
+export const assetCategoryNameSchema = z.string().trim().min(1).max(80);
+
+export const assetCategorySchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: tenantIdSchema,
+  name: assetCategoryNameSchema,
+});
+export type AssetCategory = z.infer<typeof assetCategorySchema>;
+
+export const createAssetCategoryInputSchema = z.strictObject({
+  name: assetCategoryNameSchema,
+});
+
 export const fixedAssetSchema = z
   .strictObject({
     id: fixedAssetIdSchema,
     tenantId: tenantIdSchema,
     legalEntityId: legalEntityIdSchema,
     outletId: outletIdSchema.nullable(),
+    /** Register number, unique per tenant + legal entity (`FA-00001` when generated). */
+    code: assetCodeSchema,
+    categoryId: uuidSchema.nullable(),
+    categoryName: assetCategoryNameSchema.nullable(),
     name: z.string().trim().min(1).max(150),
     acquiredOn: businessDateSchema,
+    /** Current basis; a revaluation restates it (elimination method). */
     costIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),
+    /** Cost before the first revaluation (= `costIdr` when never revalued). */
+    originalCostIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),
+    /** Sum of upward revaluation deltas, derived from the revaluation history. */
+    revaluationSurplusIdr: nonNegativeIdr,
+    /** Sum of downward revaluation deltas (absolute), derived the same way. */
+    revaluationLossIdr: nonNegativeIdr,
     residualValueIdr: nonNegativeIdr,
     usefulLifeMonths: z.number().int().min(1).max(600),
     method: depreciationMethodSchema,
@@ -78,6 +103,9 @@ export type FixedAsset = z.infer<typeof fixedAssetSchema>;
 export const createFixedAssetInputSchema = z.strictObject({
   legalEntityId: legalEntityIdSchema,
   outletId: outletIdSchema.nullable(),
+  /** Empty or omitted: the server assigns the next `FA-nnnnn` of the entity. */
+  code: z.string().trim().max(40).optional(),
+  categoryId: uuidSchema.nullable().optional(),
   name: z.string().trim().min(1).max(150),
   acquiredOn: businessDateSchema,
   costIdr: idrSchema.refine((v) => v > 0, "Cost must be > 0"),

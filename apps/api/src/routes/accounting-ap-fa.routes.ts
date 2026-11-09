@@ -16,11 +16,13 @@
 
 import { Router, type Request, type RequestHandler } from "express";
 import {
+  createAssetCategory,
   createFixedAsset,
   disposeFixedAsset,
   getAgingReport,
   getBudgetVsActual,
   getFixedAsset,
+  listAssetCategories,
   listBudgets,
   listDepreciationRuns,
   listFixedAssets,
@@ -40,6 +42,10 @@ import {
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import { getAgingReport as getAgingReportService } from "../services/accounting-open-items.service.ts";
+import {
+  createAssetCategory as createAssetCategoryService,
+  listAssetCategories as listAssetCategoriesService,
+} from "../services/accounting-asset-categories.service.ts";
 import {
   createFixedAsset as createFixedAssetService,
   disposeFixedAsset as disposeFixedAssetService,
@@ -177,6 +183,26 @@ export function createAccountingApFaRouter(): Router {
           actorId(req),
         ),
       });
+    },
+  );
+
+  // Asset categories are tenant-level: tenant-wide permission, no outlet.
+  router.get(route(listAssetCategories.path), view, async (req, res) => {
+    res.json(await listAssetCategoriesService(getScopedTenantContext(req)));
+  });
+
+  router.post(
+    route(createAssetCategory.path),
+    manageAssets,
+    jsonBody,
+    async (req, res) => {
+      const input = createAssetCategory.body.parse(req.body);
+      const category = await createAssetCategoryService(
+        getScopedTenantContext(req),
+        input,
+        actorId(req),
+      );
+      res.status(201).json({ data: category });
     },
   );
 

@@ -820,6 +820,11 @@ const assetRow = (n: number, extra: Record<string, unknown>) =>
     tenantId,
     legalEntityId,
     outletId: bandung,
+    code: `FA-${String(n).padStart(5, "0")}`,
+    categoryId: null,
+    categoryName: null,
+    revaluationSurplusIdr: idr(0),
+    revaluationLossIdr: idr(0),
     method: "straight_line",
     depreciationStartPeriod: "2026-10",
     sourceDocumentId: null,
@@ -827,6 +832,7 @@ const assetRow = (n: number, extra: Record<string, unknown>) =>
     disposedOn: null,
     disposalProceedsIdr: null,
     ...extra,
+    originalCostIdr: extra.costIdr,
   });
 const fixedAssets = [
   assetRow(1, {

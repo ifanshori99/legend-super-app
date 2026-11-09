@@ -14,6 +14,7 @@ export * from "./banking.ts";
 export * from "./payables.ts";
 export * from "./assets.ts";
 export * from "./budgets.ts";
+export * from "./finance-policy.ts";
 export * from "./statements.ts";
 export * from "./tax.ts";
 export * from "./posting-rules.ts";

@@ -1354,8 +1354,8 @@ describe("legend-hpgo tenant and outlet isolation", () => {
       [otherAccount, otherTenant, otherEntity],
     );
     await owner.query(
-      `INSERT INTO fixed_assets (id, tenant_id, legal_entity_id, name, acquired_on, cost_idr, useful_life_months, depreciation_start_period)
-       VALUES ($1, $2, $3, 'Aset lain', '2026-01-01', 1000000, 12, '2026-01')`,
+      `INSERT INTO fixed_assets (id, tenant_id, legal_entity_id, code, name, acquired_on, cost_idr, useful_life_months, depreciation_start_period)
+       VALUES ($1, $2, $3, 'FA-00001', 'Aset lain', '2026-01-01', 1000000, 12, '2026-01')`,
       [otherAsset, otherTenant, otherEntity],
     );
     await owner.query(
