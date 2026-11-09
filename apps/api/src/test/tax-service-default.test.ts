@@ -297,7 +297,7 @@ function provisionInTx(
 
 function previewBody(
   outletId: string,
-  channel: "dine_in" | "takeaway",
+  channel: "dine_in" | "reservation" | "takeaway",
   businessDate = today(),
 ) {
   return {
@@ -348,7 +348,7 @@ describe("legend-2qz7 tenant created in the Platform panel gets a default 5% din
       outlet_id: null,
       code: SERVICE_CODE,
       rate_bp: 500,
-      order_types: ["dine_in"],
+      order_types: ["dine_in", "reservation"],
       item_classes: ["food_beverage"],
       is_active: true,
       status: "published",
@@ -387,6 +387,36 @@ describe("legend-2qz7 tenant created in the Platform panel gets a default 5% din
     expect(preview.body.data.totalIdr).toBe(expected.total);
   });
 
+  it("preview of a dine-in reservation bill gets the same 5% service charge (legend-9flj)", async () => {
+    const tenantId = await createTenantViaPanel();
+    const ownerClient = await tenantOwnerClient(tenantId);
+    const { outletId } = await createOutletApi(ownerClient);
+
+    const preview = await ownerClient.client
+      .post("/api/tax/preview")
+      .set(originHeader)
+      .send(previewBody(outletId, "reservation"));
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+
+    const expected = await expectedTotals(tenantId, true);
+    expect(preview.body.data.serviceChargeIdr).toBe(5_000);
+    expect(preview.body.data.taxIdr).toBe(expected.tax);
+    expect(preview.body.data.totalIdr).toBe(expected.total);
+  });
+
+  it("an outlet default in an old tenant also covers reservation bills (legend-9flj)", async () => {
+    const tenantId = await makeOldTenant();
+    const ownerClient = await tenantOwnerClient(tenantId);
+    const { outletId } = await createOutletApi(ownerClient);
+
+    const preview = await ownerClient.client
+      .post("/api/tax/preview")
+      .set(originHeader)
+      .send(previewBody(outletId, "reservation"));
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body.data.serviceChargeIdr).toBe(5_000);
+  });
+
   it("preview of a takeaway bill has no service charge", async () => {
     const tenantId = await createTenantViaPanel();
     const ownerClient = await tenantOwnerClient(tenantId);
@@ -419,7 +449,7 @@ describe("legend-2qz7 outlet created in a tenant without service charge rules", 
       outlet_id: outletId,
       code: SERVICE_CODE,
       rate_bp: 500,
-      order_types: ["dine_in"],
+      order_types: ["dine_in", "reservation"],
       item_classes: ["food_beverage"],
       is_active: true,
       status: "published",

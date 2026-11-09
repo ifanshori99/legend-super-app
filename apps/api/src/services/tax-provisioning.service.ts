@@ -6,7 +6,7 @@
 // defaults cannot drift: PBJT-FNB 10% tenant-wide, prices exclusive, half_up
 // rounding, fixed_bp package allocation. The service-charge default is separate
 // (`provisionDefaultServiceChargeRule`, bead legend-2qz7, founder decision Q25
-// 9 Nov 2026): 5% on dine-in (QR dine-in included), food and beverage lines, for
+// 9 Nov 2026): 5% on dine-in (QR dine-in and reservation included), food and beverage lines, for
 // NEW tenants and NEW outlets only. Takeaway and delivery carry no service.
 // Existing tenants and outlets are never backfilled: a running bill must not
 // change silently, so `backfillTenantTaxDefaults` does not seed it.
@@ -41,7 +41,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { cafeLegendTaxFixtures } from "@starter/shared/tax";
+import { cafeLegendTaxFixtures, type TaxChannel } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import {
   serviceChargeRules,
@@ -231,9 +231,14 @@ export async function provisionDefaultTaxConfig(
   return { rulesInserted, settingsInserted };
 }
 
-/** Founder decision Q25: 5% service charge, dine-in only. */
+/** Founder decision Q25: 5% service charge, on-site orders only. */
 export const DEFAULT_SERVICE_CHARGE_CODE = "SC-DINE-IN";
 export const DEFAULT_SERVICE_CHARGE_RATE_BP = 500;
+/** Dine-in and dine-in reservations (guests eat on site; CTO decision legend-9flj). */
+export const DEFAULT_SERVICE_CHARGE_ORDER_TYPES: TaxChannel[] = [
+  "dine_in",
+  "reservation",
+];
 
 /**
  * Seeds the default 5% dine-in service charge as an owner-editable v1 row.
@@ -281,7 +286,7 @@ export async function provisionDefaultServiceChargeRule(
     name: "Service charge dine-in",
     rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
     zoneId: null,
-    orderTypes: ["dine_in"],
+    orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
     itemClasses: ["food_beverage"],
     isActive: true,
     version: 1,
@@ -297,7 +302,7 @@ export async function provisionDefaultServiceChargeRule(
     after: {
       ruleCodes: [DEFAULT_SERVICE_CHARGE_CODE],
       rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
-      orderTypes: ["dine_in"],
+      orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
       itemClasses: ["food_beverage"],
       scope: outletId === null ? "tenant" : "outlet",
       effectiveFrom: DEFAULT_EFFECTIVE_FROM,
