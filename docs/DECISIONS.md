@@ -174,6 +174,10 @@ in parallel. Reviewed with an architect consult before implementation.
      which accepts the aggregate view, already lists `cogs` per outlet to a
      shareholder and `gross_profit` is `net_sales - cogs`; the per-menu split
      is the only detail no path shows (architect review 2026-11-10).
+   - Q61 (2026-11-10): a shareholder may see the income statement per
+     outlet, including each outlet's `cogs`, through the
+     `finance.income_statement` report run. The per-menu `cogs` breakdown
+     stays closed. The current behaviour already matches; no code change.
    - Q60: widening `report.operational.view` to `cogs`, `food_cost_pct`,
      `waste_cost`, `payment_fee` and `stock_value` is approved only within
      the outlets the role reaches. An outlet-scoped holder reads their own
