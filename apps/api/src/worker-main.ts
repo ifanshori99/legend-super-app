@@ -58,6 +58,9 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
+import { setPaymentGateway } from "./services/payment-gateway.ts";
+import { createDoitGateway } from "./services/payment-doit.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { logger } from "./lib/logger";
 
@@ -78,6 +81,9 @@ const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
+// pending intents whose webhook never arrived.
+setPaymentGateway(createDoitGateway());
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,
@@ -240,6 +246,13 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
+    // arrived and retry stored webhook events. Fail closed like the sweeps.
+    try {
+      await runPaymentGatewayPollJob(context, new Date());
+    } catch {
+      console.error("Payment gateway poll sweep failed");
     }
     // PRD §3.19 (legend-w1vo), cloud only: retry stock sources whose journal
     // was blocked (closed period, missing mapping). Retry only, never another

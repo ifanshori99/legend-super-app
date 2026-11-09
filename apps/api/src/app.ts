@@ -31,6 +31,7 @@ import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
+import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
@@ -232,6 +233,8 @@ export function createApp({
     "/api/webhooks/whatsapp",
     createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
   );
+  // Payment provider webhooks: tenant in the URL, signature per tenant secret.
+  app.use("/api/webhooks/payments", createPaymentWebhookRouter());
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the
