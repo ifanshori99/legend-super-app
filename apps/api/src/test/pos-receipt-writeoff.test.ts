@@ -1,0 +1,779 @@
+// Audited write-off of a lost receipt number (bead legend-0hzqw).
+//
+// Since legend-6b0ld Tutup Hari refuses (RECEIPT_SEQUENCE_GAP) while any run of
+// the outlet misses an ordinal, with no way out. The tenant owner may mark one
+// number (prefix + ordinal) as permanently lost, with a reason; gap checks then
+// count it as present and the shift report lists it under `writtenOff`.
+//
+// Assumptions (the brief is the spec; no document exists yet):
+// - POST /api/outlets/:outletId/pos/receipt-writeoffs answers 201 { data }; GET
+//   on the same path answers 200 { data: [...] } newest first. The DTO fields
+//   are id, outletId, prefix, sequenceNumber, number, reason, writtenOffBy,
+//   createdAt.
+// - "Owner" is a tenant member holding pos.receipt.writeoff. An isolated tenant
+//   has no role templates, so the owner is a custom role (mfa_required false,
+//   like the other POS tests here) holding exactly that permission; the manager
+//   role holds only pos.day.close and must be refused (403).
+// - A body that fails validation (reason shorter than 10 characters) answers
+//   422 VALIDATION_ERROR; an outlet of another tenant answers 403 or 404 (either hides it).
+// - The audit row is read from audit_logs: event.action, actorId, reason and
+//   maskedChanges.after carry outletId, prefix, sequenceNumber and number.
+// - An open shift does not block the close; as in pos-receipt-gaps-prefix.test.ts
+//   the shift is opened (owner SQL) only to read the shift report.
+// - The DB backstop (BEFORE INSERT trigger) refuses a number that has a receipt
+//   or lies past last_number with SQLSTATE 23514, like the append-only trigger.
+//
+// Real Express app, Better Auth, RBAC and PostgreSQL with RLS in a fresh
+// isolated tenant; helpers are copied from pos-day-close-all-gaps.test.ts.
+// Each scenario uses its own outlet.
+//
+// Run just this file:
+//   LEGEND_TEST_FILES="src/test/pos-receipt-writeoff.test.ts" pnpm test
+
+import { randomUUID } from "node:crypto";
+import type { Express } from "express";
+import type { PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ROLE_TEMPLATES } from "@starter/shared/access";
+import { ulidToUuid } from "@starter/shared/core";
+import { formatReceiptNumber } from "@starter/shared/pos";
+import { createApp } from "../app.ts";
+import {
+  setPosOutletReceiptGapsPort,
+  setPosReceiptGapsPort,
+} from "../services/pos-shift-ports.ts";
+import {
+  receiptGapsForDevice,
+  receiptGapsForOutletFast,
+} from "../services/pos-receipt.service.ts";
+import { agent, originHeader, signUp } from "./helpers.ts";
+import {
+  createIsolatedTenant,
+  fixtures,
+  owner,
+  type IsolatedTenant,
+} from "./floor-test-helpers.ts";
+
+const KOPI_IDR = 25_000;
+const SEED_SNAPSHOT = JSON.stringify({
+  outletName: "Cafe Legend Senopati",
+  outletAddress: "Jl. Kopi Legenda No. 12, Jakarta Selatan",
+  legalName: null,
+  npwpLast4: null,
+});
+
+const ids = {
+  category: randomUUID(),
+  kopi: randomUUID(),
+  cashierRole: randomUUID(),
+  managerRole: randomUUID(),
+  ownerRole: randomUUID(),
+  otherOwnerRole: randomUUID(),
+};
+
+let app: Express;
+let tenant: IsolatedTenant;
+let headers: { Host: string };
+type Member = { client: ReturnType<typeof agent>; userId: string };
+let cashier: Member;
+let manager: Member;
+let ownerA: Member;
+// A second tenant whose owner must never reach tenant A.
+let otherTenant: IsolatedTenant;
+let otherHeaders: { Host: string };
+let ownerB: Member;
+
+const errorCode = (body: { error?: { code?: string }; code?: string }) =>
+  body.error?.code ?? body.code;
+// Assumption: the API returns the message as body.error.message (like the code).
+const errorMessage = (body: {
+  error?: { message?: string };
+  message?: string;
+}) => body.error?.message ?? body.message;
+const holeMessage = (...numbers: string[]) =>
+  `Ada nomor struk yang hilang di outlet ini: ${numbers.join(", ")}.`;
+
+async function asOwnerTenant<T>(
+  tenantId: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function member(
+  roleId: string,
+  label: string,
+  tenantId: string = tenant.tenantId,
+): Promise<Member> {
+  const client = agent(app);
+  await signUp(client, label);
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [tenantId, userId, roleId],
+  );
+  return { client, userId };
+}
+
+/** An outlet with its own price list, so a draft can be made there. */
+async function freshOutlet(): Promise<string> {
+  const outletId = randomUUID();
+  const priceListId = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Cafe Legend Senopati', 'Jl. Kopi Legenda No. 12, Jakarta Selatan', 'Asia/Jakarta', $6, 'active')`,
+    [
+      outletId,
+      tenant.tenantId,
+      tenant.brandId,
+      tenant.legalEntityId,
+      `G${outletId.slice(0, 8)}`.toUpperCase(),
+      JSON.stringify(fixtures.outlets[0].openingHours),
+    ],
+  );
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+       VALUES ($1, $2, $3, 'takeaway', '2026-01-01')`,
+      [priceListId, tenant.tenantId, outletId],
+    );
+    await client.query(
+      `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [randomUUID(), tenant.tenantId, priceListId, ids.kopi, KOPI_IDR],
+    );
+  });
+  return outletId;
+}
+
+async function draftOrder(outletId: string): Promise<string> {
+  const created = await cashier.client
+    .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/orders`)
+    .set(headers)
+    .set(originHeader)
+    .send({
+      idempotencyKey: randomUUID(),
+      channel: "pos",
+      serviceType: "takeaway",
+      items: [{ menuItemId: ids.kopi, quantity: 1, modifierIds: [] }],
+    });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return created.body.data.id as string;
+}
+
+function closeDay(outletId: string, businessDate: string) {
+  return manager.client
+    .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/day/close`)
+    .set(headers)
+    .set(originHeader)
+    .send({
+      businessDate,
+      inventoryDeduction: false,
+      idempotencyKey: randomUUID(),
+    });
+}
+
+async function dailyCloseCount(outletId: string): Promise<number> {
+  const { rows } = await owner.query(
+    `SELECT 1 FROM pos_daily_closes WHERE tenant_id = $1 AND outlet_id = $2`,
+    [tenant.tenantId, outletId],
+  );
+  return rows.length;
+}
+
+beforeAll(async () => {
+  app = createApp();
+  // Same wiring as app.ts (legend-ain0); other test files reset it to null.
+  setPosReceiptGapsPort(receiptGapsForDevice);
+  setPosOutletReceiptGapsPort((tx, context, { outletId }) =>
+    receiptGapsForOutletFast(tx, context, outletId),
+  );
+  tenant = await createIsolatedTenant(`wo-${randomUUID().slice(0, 6)}`);
+  otherTenant = await createIsolatedTenant(`wob-${randomUUID().slice(0, 6)}`);
+  headers = { Host: tenant.hostname };
+  otherHeaders = { Host: otherTenant.hostname };
+  const roles: [string, string, string, string[]][] = [
+    [
+      ids.cashierRole,
+      tenant.tenantId,
+      "Kasir Write-off",
+      ["order.view", "pos.sale.create", "shift.cash.operate"],
+    ],
+    [ids.managerRole, tenant.tenantId, "Manajer Write-off", ["pos.day.close"]],
+    [
+      ids.ownerRole,
+      tenant.tenantId,
+      "Pemilik Write-off",
+      ["pos.receipt.writeoff"],
+    ],
+    [
+      ids.otherOwnerRole,
+      otherTenant.tenantId,
+      "Pemilik Tenant Lain",
+      ["pos.receipt.writeoff"],
+    ],
+  ];
+  for (const [id, tenantId, name, permissions] of roles)
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant"]')`,
+      [id, tenantId, name, JSON.stringify(permissions)],
+    );
+  cashier = await member(ids.cashierRole, "Kasir Writeoff");
+  manager = await member(ids.managerRole, "Manajer Writeoff");
+  ownerA = await member(ids.ownerRole, "Pemilik Writeoff");
+  ownerB = await member(
+    ids.otherOwnerRole,
+    "Pemilik Lain",
+    otherTenant.tenantId,
+  );
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
+       VALUES ($1, $2, $3, 'Write-off Uji', 0)`,
+      [ids.category, tenant.tenantId, tenant.brandId],
+    );
+    await client.query(
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+       VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5)`,
+      [ids.kopi, tenant.tenantId, tenant.brandId, ids.category, randomUUID()],
+    );
+    // A draft needs published tax settings and a rule for the item.
+    await client.query(
+      `INSERT INTO tax_settings
+         (id, tenant_id, outlet_id, calculation_order, prices_include_tax, service_rounding_mode,
+          tax_rounding_mode, inclusive_base_rounding_mode, bill_rounding, package_allocation,
+          version, effective_from, status, published_at, published_by)
+       VALUES ($1, $2, NULL, 'discount_service_tax', false, 'half_up', 'half_up', 'half_up', NULL,
+               'fixed_bp', 1, '2026-01-01', 'published', now(), $3)`,
+      [randomUUID(), tenant.tenantId, cashier.userId],
+    );
+    await client.query(
+      `INSERT INTO tax_rules
+         (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+          price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+          published_at, published_by)
+       VALUES ($1, $2, NULL, 'PBJT-WO', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
+               '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+               false, true, true, 1, '2026-01-01', 'published', now(), $3)`,
+      [randomUUID(), tenant.tenantId, cashier.userId],
+    );
+  });
+}, 120_000);
+
+afterAll(async () => {
+  setPosReceiptGapsPort(null);
+  setPosOutletReceiptGapsPort(null);
+  // Final orders and audit rows are immutable, so the isolated tenants stay in
+  // the disposable database; give them a valid creator for the tenant list.
+  for (const tenantId of [tenant.tenantId, otherTenant.tenantId])
+    await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
+      tenantId,
+      randomUUID(),
+    ]);
+  await owner.end();
+});
+type RunSeed = {
+  prefix: string;
+  lastNumber: number;
+  present: number[];
+  /** Offset in minutes before now, so runs have a stable age order. */
+  ageMinutes: number;
+  /** Set for a retired run; omitted for the current run. */
+  retired?: { reason: string; edgeReportedNumber: number };
+};
+
+/**
+ * Owner-side seed: one device (or the outlet-owned cloud sequence when
+ * `deviceId` is the outlet id) with several runs. Every receipt gets its own
+ * zero-value completed order. `daysBefore` moves those orders to an earlier
+ * business date, so the device has no activity on the closing date.
+ */
+async function seedDevice(
+  outletId: string,
+  runs: RunSeed[],
+  options: { deviceId?: string; daysBefore?: number; revoked?: boolean } = {},
+): Promise<{ deviceId: string; businessDate: string }> {
+  const deviceId = options.deviceId ?? randomUUID();
+  const daysBefore = options.daysBefore ?? 0;
+  const total = runs.reduce((sum, run) => sum + run.present.length, 0);
+  const orderIds: string[] = [];
+  for (let n = 0; n < total; n += 1) orderIds.push(await draftOrder(outletId));
+  let next = 0;
+  const businessDate = await asOwnerTenant(tenant.tenantId, async (client) => {
+    let date = "";
+    if (options.revoked)
+      await client.query(
+        `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status, revoked_at)
+         VALUES ($1, $2, $3, 'pos', 'Kasir Dicabut', 'revoked', now())`,
+        [deviceId, tenant.tenantId, outletId],
+      );
+    for (const run of runs) {
+      const sequenceId = randomUUID();
+      await client.query(
+        `INSERT INTO receipt_sequences
+           (id, tenant_id, outlet_id, device_id, prefix, last_number,
+            edge_reported_number, retired_at, retired_reason, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
+                 CASE WHEN $8::text IS NULL THEN NULL ELSE now() END,
+                 $8::text,
+                 now() - ($9::int * interval '1 minute'))`,
+        [
+          sequenceId,
+          tenant.tenantId,
+          outletId,
+          deviceId,
+          run.prefix,
+          run.lastNumber,
+          run.retired?.edgeReportedNumber ?? 0,
+          run.retired?.reason ?? null,
+          run.ageMinutes,
+        ],
+      );
+      for (const ordinal of run.present) {
+        const orderUuid = ulidToUuid(orderIds[next]!);
+        next += 1;
+        await client.query(
+          `UPDATE pos_orders SET device_id = $3 WHERE tenant_id = $1 AND order_id = $2::uuid`,
+          [tenant.tenantId, orderUuid, deviceId],
+        );
+        const done = await client.query<{ business_date: string }>(
+          `UPDATE orders
+              SET subtotal_idr = 0, discount_idr = 0, service_charge_idr = 0,
+                  tax_idr = 0, rounding_idr = 0, total_idr = 0, status = 'completed',
+                  business_date = business_date - $3::int
+            WHERE tenant_id = $1 AND id = $2::uuid
+            RETURNING business_date::text AS business_date`,
+          [tenant.tenantId, orderUuid, daysBefore],
+        );
+        date = done.rows[0]!.business_date;
+        await client.query(
+          `INSERT INTO pos_receipts
+             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
+          [
+            tenant.tenantId,
+            outletId,
+            orderUuid,
+            sequenceId,
+            deviceId,
+            formatReceiptNumber(run.prefix, ordinal),
+            ordinal,
+            SEED_SNAPSHOT,
+          ],
+        );
+      }
+    }
+    return date;
+  });
+  return { deviceId, businessDate };
+}
+
+/** The active device: one clean run, completed orders on the closing date. */
+function seedActiveDevice(outletId: string) {
+  return seedDevice(outletId, [
+    { prefix: "AC", lastNumber: 2, present: [1, 2], ageMinutes: 10 },
+  ]);
+}
+
+/** An open shift of the device (owner SQL; the shift report reads it). */
+async function openShift(
+  outletId: string,
+  deviceId: string,
+  businessDate: string,
+): Promise<string> {
+  const shiftId = randomUUID();
+  await owner.query(
+    `INSERT INTO pos_shifts
+       (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+        opened_at, opening_float_idr, open_key, open_fingerprint)
+     VALUES ($1, $2, $3, $4, $5, $6, 'open', now(), 100000, $7, $8)`,
+    [
+      shiftId,
+      tenant.tenantId,
+      outletId,
+      deviceId,
+      cashier.userId,
+      businessDate,
+      randomUUID(),
+      "0".repeat(64),
+    ],
+  );
+  return shiftId;
+}
+
+async function shiftReportGaps(
+  outletId: string,
+  deviceId: string,
+  businessDate: string,
+) {
+  const shiftId = await openShift(outletId, deviceId, businessDate);
+  const report = await cashier.client
+    .get(
+      `/api/outlets/${encodeURIComponent(outletId)}/pos/shifts/${encodeURIComponent(shiftId)}`,
+    )
+    .set(headers)
+    .set(originHeader);
+  expect(report.status, JSON.stringify(report.body)).toBe(200);
+  return report.body.data.receiptGaps as unknown;
+}
+
+const writeoffPath = (outletId: string) =>
+  `/api/outlets/${encodeURIComponent(outletId)}/pos/receipt-writeoffs`;
+
+function writeOff(
+  who: Member,
+  outletId: string,
+  body: { prefix: string; sequenceNumber: number; reason: string },
+  host: { Host: string } = headers,
+) {
+  return who.client
+    .post(writeoffPath(outletId))
+    .set(host)
+    .set(originHeader)
+    .send(body);
+}
+
+function listWriteOffs(
+  who: Member,
+  outletId: string,
+  host: { Host: string } = headers,
+) {
+  return who.client.get(writeoffPath(outletId)).set(host).set(originHeader);
+}
+
+async function writeoffRows(outletId: string) {
+  const { rows } = await owner.query<{
+    id: string;
+    prefix: string;
+    sequence_number: number;
+    reason: string;
+  }>(
+    `SELECT id, prefix, sequence_number, reason FROM receipt_number_writeoffs
+      WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY sequence_number`,
+    [tenant.tenantId, outletId],
+  );
+  return rows;
+}
+
+async function sequenceIdOf(outletId: string, prefix: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM receipt_sequences
+      WHERE tenant_id = $1 AND outlet_id = $2 AND prefix = $3`,
+    [tenant.tenantId, outletId, prefix],
+  );
+  return rows[0]!.id;
+}
+
+const REASON = "Struk hilang bersama printer yang rusak";
+
+/** An outlet with an idle device whose retired run `prefix` misses #2. */
+async function outletWithHole(prefix: string) {
+  const outletId = await freshOutlet();
+  const active = await seedActiveDevice(outletId);
+  const idle = await seedDevice(
+    outletId,
+    [
+      {
+        prefix,
+        lastNumber: 3,
+        present: [1, 3],
+        ageMinutes: 60,
+        retired: { reason: "claim_rotated", edgeReportedNumber: 0 },
+      },
+    ],
+    { daysBefore: 1 },
+  );
+  return { outletId, closingDate: active.businessDate, idle };
+}
+
+describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
+  it("only the owner role template holds pos.receipt.writeoff", () => {
+    const holders = ROLE_TEMPLATES.filter((template) =>
+      template.permissions.includes("pos.receipt.writeoff"),
+    ).map((template) => template.key);
+    expect(holders).toEqual(["owner"]);
+  });
+
+  it("repro: the owner writes off the hole, Tutup Hari then closes, and the write-off is audited and reported", async () => {
+    const { outletId, closingDate, idle } = await outletWithHole("WA");
+
+    const refused = await closeDay(outletId, closingDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(errorMessage(refused.body)).toBe(
+      holeMessage(formatReceiptNumber("WA", 2)),
+    );
+
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WA",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data).toMatchObject({
+      outletId,
+      prefix: "WA",
+      sequenceNumber: 2,
+      number: formatReceiptNumber("WA", 2),
+      reason: REASON,
+      writtenOffBy: ownerA.userId,
+    });
+    const writeoffId = created.body.data.id as string;
+
+    const closed = await closeDay(outletId, closingDate);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(await dailyCloseCount(outletId)).toBe(1);
+
+    const { rows: audit } = await owner.query<{
+      actor_id: string | null;
+      reason: string | null;
+      after: unknown;
+    }>(
+      `SELECT event->>'actorId' AS actor_id, event->>'reason' AS reason,
+              event->'maskedChanges'->'after' AS after
+         FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'pos.receipt.written_off'
+          AND event->>'objectId' = $2`,
+      [tenant.tenantId, writeoffId],
+    );
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.actor_id).toBe(ownerA.userId);
+    expect(audit[0]!.reason).toBe(REASON);
+    expect(audit[0]!.after).toMatchObject({
+      outletId,
+      prefix: "WA",
+      sequenceNumber: 2,
+      number: formatReceiptNumber("WA", 2),
+    });
+
+    expect(await shiftReportGaps(outletId, idle.deviceId, closingDate)).toEqual(
+      [
+        {
+          prefix: "WA",
+          missing: [],
+          lostRange: null,
+          writtenOff: [formatReceiptNumber("WA", 2)],
+        },
+      ],
+    );
+  });
+
+  it("a manager with pos.day.close but without pos.receipt.writeoff is refused (403) and nothing is written", async () => {
+    const { outletId, closingDate } = await outletWithHole("WB");
+    const refused = await writeOff(manager, outletId, {
+      prefix: "WB",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(await writeoffRows(outletId)).toEqual([]);
+    const stillBlocked = await closeDay(outletId, closingDate);
+    expect(stillBlocked.status).toBe(409);
+    expect(errorCode(stillBlocked.body)).toBe("RECEIPT_SEQUENCE_GAP");
+  });
+
+  it("a number that already has a receipt cannot be written off (409)", async () => {
+    const { outletId } = await outletWithHole("WC");
+    const refused = await writeOff(ownerA, outletId, {
+      prefix: "WC",
+      sequenceNumber: 3,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
+  it("an ordinal above the last issued number cannot be written off (409)", async () => {
+    const { outletId } = await outletWithHole("WD");
+    const refused = await writeOff(ownerA, outletId, {
+      prefix: "WD",
+      sequenceNumber: 4,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
+  it("writing off the same number twice: the second call is refused (409) and one row remains", async () => {
+    const { outletId } = await outletWithHole("WE");
+    const body = { prefix: "WE", sequenceNumber: 2, reason: REASON };
+    const first = await writeOff(ownerA, outletId, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const second = await writeOff(ownerA, outletId, body);
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(await writeoffRows(outletId)).toHaveLength(1);
+  });
+
+  it("the owner of another tenant cannot write off tenant A's number nor list its write-offs", async () => {
+    const { outletId } = await outletWithHole("WF");
+    const own = await writeOff(ownerA, outletId, {
+      prefix: "WF",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+
+    // Tenant B's host and tenant A's host: either way the outlet is out of reach.
+    for (const host of [otherHeaders, headers]) {
+      const attempt = await writeOff(
+        ownerB,
+        outletId,
+        { prefix: "WF", sequenceNumber: 1, reason: REASON },
+        host,
+      );
+      expect([403, 404], JSON.stringify(attempt.body)).toContain(
+        attempt.status,
+      );
+      const listing = await listWriteOffs(ownerB, outletId, host);
+      expect([403, 404], JSON.stringify(listing.body)).toContain(
+        listing.status,
+      );
+    }
+    expect(await writeoffRows(outletId)).toHaveLength(1);
+
+    // B's own outlet lists nothing of A.
+    const ownList = await listWriteOffs(
+      ownerB,
+      otherTenant.outletId,
+      otherHeaders,
+    );
+    expect(ownList.status, JSON.stringify(ownList.body)).toBe(200);
+    expect(ownList.body.data).toEqual([]);
+  });
+
+  it("an unknown prefix answers 404", async () => {
+    const { outletId } = await outletWithHole("WG");
+    const refused = await writeOff(ownerA, outletId, {
+      prefix: "NOPE",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(404);
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
+  it("a reason shorter than 10 characters answers 422", async () => {
+    const { outletId } = await outletWithHole("WH");
+    const refused = await writeOff(ownerA, outletId, {
+      prefix: "WH",
+      sequenceNumber: 2,
+      reason: "hilang",
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
+  it("the table is append-only: even the database owner cannot UPDATE or DELETE a row (23514)", async () => {
+    const { outletId } = await outletWithHole("WI");
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WI",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `UPDATE receipt_number_writeoffs SET reason = 'diubah diam-diam'
+            WHERE tenant_id = $1 AND outlet_id = $2`,
+          [tenant.tenantId, outletId],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `DELETE FROM receipt_number_writeoffs WHERE tenant_id = $1 AND outlet_id = $2`,
+          [tenant.tenantId, outletId],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    expect(await writeoffRows(outletId)).toEqual([
+      expect.objectContaining({ prefix: "WI", reason: REASON }),
+    ]);
+  });
+
+  it("the database itself refuses a write-off of a number that has a receipt or lies past last_number (23514)", async () => {
+    const { outletId } = await outletWithHole("WJ");
+    const sequenceId = await sequenceIdOf(outletId, "WJ");
+    for (const ordinal of [3, 4]) {
+      await expect(
+        asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(
+            `INSERT INTO receipt_number_writeoffs
+               (id, tenant_id, outlet_id, sequence_id, prefix, sequence_number, reason, written_off_by)
+             VALUES ($1, $2, $3, $4, 'WJ', $5, $6, $7)`,
+            [
+              randomUUID(),
+              tenant.tenantId,
+              outletId,
+              sequenceId,
+              ordinal,
+              REASON,
+              ownerA.userId,
+            ],
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
+  it("GET lists the outlet's write-offs, newest first", async () => {
+    const outletId = await freshOutlet();
+    await seedActiveDevice(outletId);
+    await seedDevice(
+      outletId,
+      [{ prefix: "WK", lastNumber: 5, present: [1, 3, 5], ageMinutes: 30 }],
+      { daysBefore: 1 },
+    );
+
+    const empty = await listWriteOffs(ownerA, outletId);
+    expect(empty.status, JSON.stringify(empty.body)).toBe(200);
+    expect(empty.body.data).toEqual([]);
+
+    for (const sequenceNumber of [2, 4]) {
+      const created = await writeOff(ownerA, outletId, {
+        prefix: "WK",
+        sequenceNumber,
+        reason: REASON,
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+    }
+    const listed = await listWriteOffs(ownerA, outletId);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(
+      (listed.body.data as { number: string }[]).map((row) => row.number),
+    ).toEqual([formatReceiptNumber("WK", 4), formatReceiptNumber("WK", 2)]);
+    expect(listed.body.data[0]).toMatchObject({
+      outletId,
+      prefix: "WK",
+      reason: REASON,
+      writtenOffBy: ownerA.userId,
+    });
+
+    // A manager without the permission cannot read the list either.
+    const denied = await listWriteOffs(manager, outletId);
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+  });
+});

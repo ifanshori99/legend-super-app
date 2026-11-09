@@ -364,6 +364,9 @@ export async function getPosShiftReport(
       receiptGaps: receiptGaps.map((run) => ({
         prefix: run.prefix,
         missing: run.missing.map((n) => formatReceiptNumber(run.prefix, n)),
+        writtenOff: run.writtenOff.map((n) =>
+          formatReceiptNumber(run.prefix, n),
+        ),
         lostRange: run.lost
           ? {
               from: formatReceiptNumber(run.prefix, run.lost.from),

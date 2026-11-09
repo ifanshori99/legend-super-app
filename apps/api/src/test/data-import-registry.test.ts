@@ -106,6 +106,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "clears stations.printer_device_id where it does not point at an active, unrevoked printer of the same tenant and outlet (legend-4xai); idempotent, edits no other column, a manager binds a valid printer again",
   "0155_payroll_custom_deduction_role.sql":
     "maps the payroll_custom_deduction role to the same account as salary_expense for every legal entity that has a salary_expense mapping and no payroll_custom_deduction mapping (legend-75kr); idempotent, never updates or deletes, FORCE RLS lifted for that one statement and restored",
+  "0156_receipt_number_writeoffs.sql":
+    "appends pos.receipt.writeoff to the stored owner template role rows of every tenant (legend-0hzqw); idempotent, never touches a custom role or another template",
 };
 
 // Entrypoints that open a database pool but import no data.

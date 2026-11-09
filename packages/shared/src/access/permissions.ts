@@ -114,6 +114,9 @@ const entries = [
   // Founder Q9 (2026-11-08): the business day is closed by the outlet
   // manager, not by a shift supervisor (POS-05, legend-6c0).
   ["pos.day.close", ["approve", "payment"]],
+  // Writes off one lost receipt number so Tutup Hari can proceed (legend-0hzqw,
+  // owner only: it removes a gap from the audit trail of numbered receipts).
+  ["pos.receipt.writeoff", ["approve"]],
   ["wifi.voucher.issue", []],
 
   // Kitchen (§3.11, F9, F40)
