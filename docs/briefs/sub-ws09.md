@@ -56,3 +56,10 @@ PRD: `../../../PRD_Legend_Super_App_v1.7.md` baris 841-890 (§25 Akses Fasilitas
 
 ### T1 — test-writer e2e Wi-Fi (legend-emcy)
 - Spec Playwright mock baru `e2e/legend-emcy-wifi-policy.mock.spec.ts`: buka konfigurasi fasilitas → tab Wi-Fi (`features/facility-admin/components/wifi-tab.tsx`), ubah jam ramai / minimum spend / kuota, simpan, reload/refetch → nilai bertahan (FAC-14); input tidak valid (jam akhir < jam mulai, angka negatif) ditolak dengan pesan. Contoh pola: `e2e/legend-er32.mock.spec.ts`. Jangan jalankan Playwright (agent menjalankan lewat `heavy` setelah S3 selesai). Hanya file spec baru.
+
+## F1 — fix review Opus (setelah commit 1796b072)
+1. `GET /api/facility/subscription-plans` dipakai portal Wi-Fi pelanggan (`apps/web/src/routes/_customer/wifi.tsx`, `features/ws09-wifi/api.ts:47`). Pindahkan ke `facility-customer.routes.ts` sebagai publik (tenant dari host, rate limit, masukkan ke `PUBLIC_RATE_LIMIT_PATHS`), pakai mapper allow-list yang sama dengan plan di catalog (tanpa `providerPlanId`). Hapus versi gate `operate` di `facility-incidents.routes.ts`. Sesuaikan test (`facility-incidents-api.test.ts`, `facility-customer-api.test.ts`).
+2. Balapan sweeper vs klaim: `facility-slots.service.ts` `expireStaleQueueNotifications` ambil `lockFacilitySlots(tx, tenantId, facilityId)` per fasilitas sebelum mengekspirasi; DAN update `converted` di `holdFacilitySlot` diberi predikat status (`waiting`/`notified`), 0 baris → tolak klaim (409 klaim kedaluwarsa). Tambah test.
+3. Stale write: samakan dengan konvensi repo `CoreError("PRECONDITION_FAILED", ...)` (lihat `inventory.service.ts:529`) menggantikan 409 `FACILITY_CONFIG_STALE`; sesuaikan test dan penanganan pesan di `features/facility-admin` bila memeriksa kode.
+4. Web: panggilan raise incident (facility-staff, cari `raiseFacilityIncident` di `apps/web/src/features`) selalu kirim header `Idempotency-Key` (pola mint key yang ada di web).
+Bukti: tsc api+web, vitest file terdampak lewat `LEGEND_TEST_FILES=... heavy pnpm test`.
