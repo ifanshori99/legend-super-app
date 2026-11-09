@@ -2174,6 +2174,10 @@ describe("KDS isolation and authorization", () => {
       await asBarista.item(kitchenLine!.id, "start"),
       await asBarista.item(kitchenLine!.id, "serve"),
       await asBarista.item(kitchenLine!.id, "void"),
+      // Permission runs before the state machine, so bump and recall of a
+      // ticket that is not started/done still answer 403, not 409.
+      await asBarista.bump(kitchenTicket),
+      await asBarista.recall(kitchenTicket, { reason: "Uji" }),
     ];
     for (const response of denied) {
       expect(response.status, JSON.stringify(response.body)).toBe(403);

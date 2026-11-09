@@ -185,7 +185,8 @@ function stationIds(response: { body: unknown }): string[] {
 
 /** What a caller can observe of a refusal, minus the per-request id. */
 function observed(response: { status: number; body: unknown }) {
-  const { requestId: _requestId, ...error } = body(response).error ?? {};
+  const error = { ...body(response).error };
+  delete error.requestId;
   return { status: response.status, error };
 }
 

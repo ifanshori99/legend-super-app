@@ -537,8 +537,7 @@ export async function listStations(
       MENU_VIEW_PERMISSION,
       now,
     );
-    if (stationIds.length === 0)
-      return { data: [], meta: { limit: query.limit, nextCursor: null } };
+    // An empty reach becomes `false` in the filter: no rows (fail closed).
     const rows = await tx
       .select()
       .from(stations)
@@ -649,6 +648,22 @@ export async function updateStation(
       existing.id,
       now,
     );
+    // Name and type decide which station of the outlet KDS routing picks
+    // (first active station of a type, by name): changing them moves tickets
+    // between stations, so it is outlet configuration, not this station's
+    // own (legend-cot3). A station-scoped grant keeps target time and printer.
+    const reroutes =
+      (input.name !== undefined && input.name !== existing.name) ||
+      (input.type !== undefined && input.type !== existing.type);
+    if (reroutes)
+      await assertOutletPermission(
+        tx,
+        context,
+        actorUserId,
+        MENU_ITEM_PERMISSION,
+        existing.outletId,
+        now,
+      );
     const [row] = await tx
       .update(stations)
       .set({
@@ -688,14 +703,24 @@ export async function deleteStation(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
-    // Station-bound config record: same station target as updateStation
-    // (legend-fsb7).
+    // Station target first, so another or unknown station answers the same
+    // station denial as updateStation (legend-fsb7). Removing a station also
+    // changes KDS routing for the whole outlet, so it needs the outlet
+    // permission too, like createStation (legend-cot3).
     await assertStationPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
       existing.id,
+      now,
+    );
+    await assertOutletPermission(
+      tx,
+      context,
+      actorUserId,
+      MENU_ITEM_PERMISSION,
+      existing.outletId,
       now,
     );
     const [usedItem] = await tx

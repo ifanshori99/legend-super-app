@@ -149,8 +149,13 @@ function stationIds(response: { body: unknown }): string[] {
 
 async function stationRow(id: string) {
   const { rows } = await asOwnerTenant(tenantId, (client) =>
-    client.query<{ target_seconds: number | null; deleted_at: Date | null }>(
-      "SELECT target_seconds, deleted_at FROM stations WHERE id = $1",
+    client.query<{
+      name: string;
+      type: string;
+      target_seconds: number | null;
+      deleted_at: Date | null;
+    }>(
+      "SELECT name, type, target_seconds, deleted_at FROM stations WHERE id = $1",
       [id],
     ),
   );
@@ -202,7 +207,7 @@ afterAll(async () => {
 });
 
 describe("legend-cot3 station-scoped routes, same outlet", () => {
-  it("legend-cot3 the outlet-scoped user lists and patches every station (positive control)", async () => {
+  it("legend-cot3 the outlet-scoped user lists every station of its outlet (positive control)", async () => {
     const list = await o.client.get("/api/menu/stations?limit=100");
     expect(list.status).toBe(200);
     expect(stationIds(list)).toEqual(
@@ -306,13 +311,67 @@ describe("legend-cot3 station-scoped services", () => {
     ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
     expect((await stationRow(stationB)).deleted_at).toBeNull();
 
-    // Positive control: delete of its own, unused station resolves.
+    // Positive control: the outlet user deletes an unused station...
     const spare = await createStation(outletA, "pastry");
-    const spareUser = await roleClient(roleId, { type: "station", id: spare });
     await expect(
-      deleteStation(tenantContext(), spareUser.userId, spare),
+      deleteStation(tenantContext(), o.userId, spare),
     ).resolves.toBeUndefined();
     expect((await stationRow(spare)).deleted_at).not.toBeNull();
+    // ...but a station-only grant cannot delete even its own station:
+    // removing it reroutes the outlet's KDS tickets (legend-cot3).
+    const ownStation = await createStation(outletA, "pastry");
+    const ownUser = await roleClient(roleId, {
+      type: "station",
+      id: ownStation,
+    });
+    await expect(
+      deleteStation(tenantContext(), ownUser.userId, ownStation),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect((await stationRow(ownStation)).deleted_at).toBeNull();
+  });
+
+  it("legend-cot3 a station-only grant cannot rename or retype its station (KDS routing is outlet config)", async () => {
+    const own = await createStation(outletA, "pastry");
+    const other = await createStation(outletA, "hot_kitchen");
+    const ownUser = await roleClient(roleId, { type: "station", id: own });
+    const before = await stationRow(own);
+
+    // Positive control: its own target time, and an unchanged name/type
+    // echoed back by a form, still save.
+    await expect(
+      updateStation(tenantContext(), ownUser.userId, own, {
+        targetSeconds: 210,
+        name: before.name,
+        type: before.type,
+      }),
+    ).resolves.toMatchObject({ id: own });
+
+    // Taking another station's type or a name that sorts first would steal
+    // that station's tickets: refused, row unchanged.
+    for (const change of [
+      { type: "hot_kitchen" },
+      { name: "0 Pertama" },
+    ] as const) {
+      await expect(
+        updateStation(tenantContext(), ownUser.userId, own, change),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      const response = await ownUser.client
+        .patch(`/api/menu/stations/${own}`)
+        .set(originHeader)
+        .send(change);
+      expect(response.status).toBe(403);
+    }
+    const after = await stationRow(own);
+    expect(after.type).toBe("pastry");
+    expect(after.name).toBe(before.name);
+
+    // Positive control: the outlet user may rename and retype.
+    await expect(
+      updateStation(tenantContext(), o.userId, other, {
+        name: `${before.name} B`,
+        type: "cold_kitchen",
+      }),
+    ).resolves.toMatchObject({ type: "cold_kitchen" });
   });
 });
 

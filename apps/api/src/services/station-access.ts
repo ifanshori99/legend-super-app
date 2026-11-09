@@ -13,8 +13,8 @@
 //   outlet/brand/tenant scopes cover every station they contain. A resource
 //   whose station cannot be determined (null/blank id, a row without a
 //   station) is denied — fail closed, never "all stations".
-// - `stationScopeFilter` / `stationScopeCondition` (legend-cot3): the SQL
-//   filter for a list over a station-bound table, `station_id IN (reach)`,
+// - `stationScopeCondition` (legend-cot3): the SQL filter for a list over a
+//   station-bound table, built from `permittedStationIds`: `station_id IN (reach)`,
 //   `false` for an empty reach. Outlet/tenant RLS cannot express this, so a
 //   list without it shows a station-only caller every station of the outlet.
 // - `permittedStationIds`: the stations a list may show for the permission,
@@ -82,25 +82,6 @@ export function stationScopeCondition(
   return stationIds.length === 0
     ? sql`false`
     : inArray(column, [...stationIds]);
-}
-
-/**
- * `stationScopeCondition` for the caller's own reach on `permission`, read
- * from the same snapshot as `permittedStationIds`. Use it in every list or
- * bulk read of a station-bound table that a station-scoped grant can reach.
- */
-export async function stationScopeFilter(
-  tx: Tx,
-  context: ScopedTenantContext,
-  actorUserId: string,
-  permission: PermissionCode,
-  column: AnyPgColumn,
-  now: Date,
-): Promise<SQL> {
-  return stationScopeCondition(
-    column,
-    await permittedStationIds(tx, context, actorUserId, permission, now),
-  );
 }
 
 /**
