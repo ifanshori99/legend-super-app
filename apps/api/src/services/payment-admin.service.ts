@@ -115,7 +115,10 @@ export async function refundableBalance(
  * a tender, so it counts for the intent only when every captured tender of
  * that method on the order is paid by this intent; otherwise the intent keeps
  * the whole amount held (fail closed: no refund of money a sale may still
- * hold). Read under the intent row lock the writers hold.
+ * hold), unless the POS refunds returned the whole method (nothing left to
+ * attribute). A voided sale (`pos_order_voids`) holds nothing: the void keeps
+ * the tenders captured and the QRIS part goes back through an intent refund.
+ * Read under the intent row lock the writers hold.
  */
 async function posSaleInUseOfIntent(
   tx: Tx,
@@ -135,6 +138,10 @@ async function posSaleInUseOfIntent(
             WHERE u.tenant_id = ${tenantId}
               AND u.payment_intent_id = ${intentId}::uuid
               AND u.status = 'captured')
+         AND NOT EXISTS (
+           SELECT 1 FROM pos_order_voids v
+            WHERE v.tenant_id = ${tenantId}
+              AND v.order_id = t.order_id)
        GROUP BY t.order_id, t.method
     ), returned AS (
       SELECT r.order_id, l.value->>'method' AS method,
@@ -147,6 +154,7 @@ async function posSaleInUseOfIntent(
     )
     SELECT coalesce(sum(
              u.on_intent - CASE
+               WHEN coalesce(f.amount, 0) >= u.on_method THEN u.on_intent
                WHEN u.on_intent = u.on_method
                  THEN least(coalesce(f.amount, 0), u.on_intent)
                ELSE 0

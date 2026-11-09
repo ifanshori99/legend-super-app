@@ -181,6 +181,23 @@ async function posQrisRefund(orderId: string, amountIdr: number) {
   );
 }
 
+/** A POS void (POS-04) of the completed order; the tenders stay captured. */
+async function posVoid(orderId: string, amountIdr: number) {
+  await owner.query(
+    `INSERT INTO pos_order_voids (tenant_id, outlet_id, order_id, receipt_number, amount_idr,
+        reason, reason_note, requested_by, approved_by, approval_request_id, voided_at)
+     VALUES ($1, $2, $3, $4, $5, 'wrong_order', 'Uji', 'kasir-uji', 'supervisor-uji', $6, now())`,
+    [
+      seededTenantId,
+      seededOutletA,
+      orderId,
+      `TG-V-${randomUUID().slice(0, 8)}`,
+      amountIdr,
+      randomUUID(),
+    ],
+  );
+}
+
 const requestRefund = (intentId: string, amountIdr: number) =>
   staff.client
     .post(`${ADMIN}/refunds`)
@@ -434,6 +451,40 @@ describe("PAY-04 POS-03 an intent a captured POS tender uses cannot be refunded"
     const response = await requestRefund(intentId, 100_000);
 
     expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+});
+
+describe("PAY-04 review fixes: voided sales and fully returned methods hold nothing", () => {
+  it("PAY-04 R6 a voided POS sale holds nothing: the QRIS intent is refundable in full", async () => {
+    const intentId = await paidIntent(100_000);
+    const orderId = await posOrder(100_000);
+    await qrisTender(orderId, intentId, 100_000);
+    await posVoid(orderId, 100_000);
+
+    const response = await requestRefund(intentId, 100_000);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data.status).toBe("pending");
+  });
+
+  it("PAY-04 R7 two QRIS intents on one order: a partial POS refund keeps both held, a full one frees both", async () => {
+    const first = await paidIntent(60_000);
+    const second = await paidIntent(40_000);
+    const orderId = await posOrder(100_000);
+    await qrisTender(orderId, first, 60_000);
+    await qrisTender(orderId, second, 40_000);
+    await posQrisRefund(orderId, 30_000);
+
+    const held = await requestRefund(first, 1);
+    expect(held.status, JSON.stringify(held.body)).toBe(409);
+    expect(held.body.error.code).toBe(GUARD_CODE);
+
+    await posQrisRefund(orderId, 70_000);
+
+    const one = await requestRefund(first, 60_000);
+    expect(one.status, JSON.stringify(one.body)).toBe(201);
+    const two = await requestRefund(second, 40_000);
+    expect(two.status, JSON.stringify(two.body)).toBe(201);
   });
 });
 
