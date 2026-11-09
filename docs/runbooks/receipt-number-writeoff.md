@@ -61,6 +61,8 @@ Kemungkinan penolakan:
 
 Untuk run yang dimiliki edge, cloud tidak menomori struk (edge yang menomori), jadi batas nomor write-off adalah nomor tertinggi yang sudah dilaporkan edge ke cloud saat sinkronisasi (legend-drzaf). Edge harus sudah sinkron (pull) setelah nomor itu terbit. Jika belum, write-off ditolak `409` "Nomor struk di luar rentang yang sudah terbit.": tunggu edge sinkron, lalu ulangi.
 
+Struk run edge belum dikirim ke cloud (legend-ol6v belum ada), jadi cloud tidak bisa memeriksa apakah nomor itu sudah punya struk di edge. Write-off hanya nomor yang disebut hilang oleh penolakan Tutup Hari di edge. Write-off untuk nomor yang ternyata punya struk di edge tidak disalin ke edge, tetapi tetap tercatat di riwayat cloud dan tidak bisa dihapus.
+
 1. Buat write-off di cloud seperti di atas.
 2. Tunggu sinkronisasi edge berikutnya (edge harus online sebentar). Write-off yang dibuat saat edge offline baru sampai setelah edge tersambung lagi.
 3. Jalankan Tutup Hari di edge.
