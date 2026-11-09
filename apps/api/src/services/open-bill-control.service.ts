@@ -14,7 +14,7 @@
 // waiter call (`zone_waiter_assignments`, `waiter_call` category, pg_notify at
 // commit). They are never service_request rows.
 
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
@@ -50,6 +50,7 @@ import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import { createNotificationConsumer } from "./notification-consumer";
 import { remainingIdr } from "./pos-order-support";
+import { depositCreditFor } from "./qr-order-ports";
 import {
   buildRecipients,
   SERVICE_REQUEST_OVERDUE_SECONDS,
@@ -354,6 +355,38 @@ async function unpaidExposureOfSession(
   return idr(exposure);
 }
 
+/**
+ * Reservation DP credit (WS-08) no order of the session has applied yet: the
+ * credit minus what live orders took (`deposit_applied_idr`, the same used
+ * sum as the QR pay-first checkout and the POS bill). An open-bill QR order
+ * applies no deposit itself; the bill settles against the session credit, so
+ * the unused part is already paid and offsets the exposure, the new order
+ * included (`assertOpenBillWithinLimit`). Read without the
+ * deposit lock: this check runs before the promo redeem, and the lock order
+ * is promo, then deposit (legend-94qt).
+ */
+async function unusedDepositOfSession(
+  tx: Tx,
+  tenantId: TenantId,
+  sessionId: string,
+): Promise<number> {
+  const credit = await depositCreditFor(tx, tenantId, sessionId);
+  if (credit <= 0) return 0;
+  const [used] = await tx
+    .select({
+      used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, sessionId),
+        ne(orders.status, "voided"),
+      ),
+    );
+  return Math.max(0, credit - Number(used?.used ?? 0));
+}
+
 export type OpenBillPlacement = {
   sessionId: string;
   outletId: string;
@@ -398,12 +431,17 @@ export async function assertOpenBillWithinLimit(
 ): Promise<void> {
   if (placement.paymentMode !== "open_bill") return;
   const policy = await policyIn(tx, context, placement.outletId);
-  const current = await unpaidExposureOfSession(
+  const owed = await unpaidExposureOfSession(tx, context, placement.sessionId);
+  const credit = await unusedDepositOfSession(
     tx,
-    context,
+    context.tenant.tenantId,
     placement.sessionId,
   );
-  if (current + placement.orderTotalIdr <= policy.maxBillValueIdr) return;
+  // The unused deposit pays the bill first, the new order included.
+  const current = idr(Math.max(0, owed - credit));
+  const creditLeft = Math.max(0, credit - owed);
+  const added = Math.max(0, placement.orderTotalIdr - creditLeft);
+  if (current + added <= policy.maxBillValueIdr) return;
   throw new OpenBillLimitExceeded({
     placement,
     currentBillIdr: current,

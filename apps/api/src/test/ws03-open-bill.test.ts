@@ -23,6 +23,7 @@ import {
   sweepInactiveOpenBillSessions,
   upsertOpenBillPolicy,
 } from "../services/open-bill-control.service.ts";
+import { setQrOrderDepositCreditLookup } from "../services/qr-order-ports.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -568,6 +569,29 @@ describe("open-bill value limit", () => {
       [tenant.tenantId, guest.sessionId],
     );
     expect(audit.rows).toHaveLength(1);
+  });
+
+  it("the session's unused reservation deposit offsets the bill, the new order included", async () => {
+    await setLimit(100_000);
+    setQrOrderDepositCreditLookup(async () => 60_000);
+    try {
+      const guest = await seat("open_bill");
+      await confirm(guest);
+      const first = await place(guest);
+      expect(first.status).toBe(201);
+      const total = first.body.data.order.totalIdr as number;
+      // Two orders less the Rp60.000 deposit fit; without it they would not.
+      expect(total * 2).toBeGreaterThan(100_000);
+      expect(total * 2 - 60_000).toBeLessThanOrEqual(100_000);
+      expect((await place(guest)).status).toBe(201);
+      // A third order passes the limit; the breach records the bill after the deposit.
+      expect((await place(guest)).status).toBe(409);
+      expect(await breachedBills(guest.sessionId)).toEqual([
+        total * 2 - 60_000,
+      ]);
+    } finally {
+      setQrOrderDepositCreditLookup(null);
+    }
   });
 
   it("does not limit a pay-first session", async () => {
