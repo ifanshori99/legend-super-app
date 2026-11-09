@@ -260,3 +260,17 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+
+## WS-08 website brand + pelanggan + delivery (brief 99, cabang `ws/ws08-site`, worktree `.worktrees/ws08-site`)
+
+Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
+
+- legend-qgr6: `GET /api/public/site` + staff `GET/PUT /api/website/brands/:brandId/content` (tabel `brand_websites`, restrictive policy `tenant_wide_only`, `assertTenantWide` di semua jalur staff; syarat CTO terpenuhi: test 403 outlet-scope, tanpa kolom internal, reviewer Opus + architect: semua jalur terjaga).
+- legend-o9fc + a8up (kontrak CRM: hash WhatsApp HMAC, referral + anti-fraud), gbkw (kirim ulang tautan DP), u0q8 (admin kebijakan reservasi), nloi + jh27 (Idempotency-Key promo, allowlist outlet promo).
+- legend-5bn3 delivery: channel + sinkron menu/86, webhook ingest HMAC + idempoten, suntik ke POS/KDS, API pesanan, rekonsiliasi komisi, test penerimaan. Review Opus 3x + architect; semua blocker dibetulkan (void POS saat platform batal + event `order.voided`, kunci race KDS, indeks toko lewat fungsi SECURITY DEFINER).
+- Kontrak berubah: `orderVoidedPayloadSchema.approvedBy` nullable (void sistem). Event baru `delivery_order.updated`.
+- milestone/m1 sudah di-merge ke cabang (`a2dfc4ea`); migration WS-08 di-regen di atas 0098 m1.
+- Tabel `delivery_store_index` masuk daftar pengecualian TEN-02 (`provision-roles.ts`, `rls.test.ts`): menunggu persetujuan CTO.
+- Follow-up: legend-cbd0 (celah channel), legend-bk99 (panggilan platform setelah commit), legend-5d76 (selesaikan needs_review), kriteria keamanan di legend-im8n (penautan store id).
+- Parkir (keputusan owner): legend-q1e0 + 9be7 (recompute promo saat refund parsial).
+- Biaya sesi: ~21,5M token tertimbang (Opus utama 4,6M; subagent Opus 5,8M, Sonnet 11,0M, Haiku 0,2M); 54 subagent, puncak 7 bersamaan, rata-rata 1,65.

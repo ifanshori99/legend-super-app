@@ -77,7 +77,7 @@ let cashier: Awaited<ReturnType<typeof staffWithRole>>;
 let outletManager: Awaited<ReturnType<typeof staffWithRole>>;
 
 async function asOwner<T>(
-  run: (query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>) => Promise<T>,
+  run: (query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>) => Promise<T>,
 ): Promise<T> {
   const client = await owner.connect();
   try {
