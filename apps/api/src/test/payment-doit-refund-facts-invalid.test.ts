@@ -447,6 +447,113 @@ describe("legend-2ol8g PAY-04 a refund event with an unreadable amount or paymen
   });
 });
 
+describe("legend-2ol8g PAY-04 a keyed or refund-object event without amount or payment id never settles", () => {
+  const unsettled = async (
+    refundId: string,
+    sent: ReturnType<typeof deliver>,
+    invalid: string[],
+  ) => {
+    const response = await sent.response;
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("ignored");
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFUND_FACTS_INVALID",
+      }),
+    ]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      completed_at: null,
+    });
+    const audits = await invalidAudits(sent.eventId);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.event).toMatchObject({
+      maskedChanges: { after: { refundId, invalid } },
+    });
+  };
+
+  describe.each(["refund.succeeded", "refund.failed"])("%s", (type) => {
+    it("PAY-04 a keyed refund object without an amount is not settled", async () => {
+      const { refundId, providerRef, paymentId } = await seedApprovedRefund();
+      const sent = deliver(type, {
+        object: "refund",
+        id: providerRef,
+        idempotency_key: `refund:${refundId}`,
+        payment_id: paymentId,
+      });
+      await unsettled(refundId, sent, ["amount"]);
+    });
+
+    it("PAY-04 a refund object matched by refund id without an amount is not settled", async () => {
+      const { refundId, providerRef, paymentId } = await seedApprovedRefund();
+      const sent = deliver(type, {
+        refund: { id: providerRef, payment_id: paymentId },
+      });
+      await unsettled(refundId, sent, ["amount"]);
+    });
+
+    it("PAY-04 a keyed refund object with an amount but no payment id is not settled", async () => {
+      const { refundId, providerRef } = await seedApprovedRefund();
+      const sent = deliver(type, {
+        object: "refund",
+        id: providerRef,
+        idempotency_key: `refund:${refundId}`,
+        amount: REFUND_IDR,
+      });
+      await unsettled(refundId, sent, ["payment_id"]);
+    });
+
+    it("PAY-04 a keyed refund object with neither is not settled", async () => {
+      const { refundId, providerRef } = await seedApprovedRefund();
+      const sent = deliver(type, {
+        object: "refund",
+        id: providerRef,
+        idempotency_key: `refund:${refundId}`,
+      });
+      await unsettled(refundId, sent, ["amount", "payment_id"]);
+    });
+
+    it("PAY-04 a keyed refund object with a valid amount and payment id settles", async () => {
+      const { refundId, providerRef, paymentId } = await seedApprovedRefund();
+      const sent = deliver(type, {
+        object: "refund",
+        id: providerRef,
+        idempotency_key: `refund:${refundId}`,
+        amount: REFUND_IDR,
+        payment_id: paymentId,
+        ...(type === "refund.failed" ? { failure_code: "declined" } : {}),
+      });
+      expect((await sent.response).body.status).toBe("processed");
+      expect(await refundRow(refundId)).toMatchObject({
+        status: type === "refund.succeeded" ? "completed" : "failed",
+      });
+      expect(await invalidAudits(sent.eventId)).toHaveLength(0);
+    });
+  });
+
+  it("PAY-04 a refund object without an amount, for a refund settled by hand, is parked and audits the conflict", async () => {
+    const { refundId, paymentId } = await seedSettledByHandRefund();
+    const before = await refundRow(refundId);
+    const sent = deliver("refund.succeeded", {
+      object: "refund",
+      id: `rf_${hex(6)}`,
+      idempotency_key: `refund:${refundId}`,
+      payment_id: paymentId,
+    });
+    const response = await sent.response;
+    expect(response.body.status).toBe("ignored");
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFUND_FACTS_INVALID",
+      }),
+    ]);
+    expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
+    expect(await refundRow(refundId)).toEqual(before);
+  });
+});
+
 describe("legend-2ol8g PAY-04 the parser marks present-but-invalid facts", () => {
   const flat = { refund_id: "rf_abc", amount: 4000, payment_id: PAYMENT };
 
@@ -457,9 +564,16 @@ describe("legend-2ol8g PAY-04 the parser marks present-but-invalid facts", () =>
   it.each(["3999.0", null, -1, 1.5, true, {}])(
     "PAY-04 refund.amount %j is marked invalid amount",
     (amount) => {
-      expect(readDoitRefundFacts({ refund: { id: "rf_abc", amount } })).toEqual(
-        { refundId: "rf_abc", invalid: ["amount"] },
-      );
+      expect(
+        readDoitRefundFacts({
+          refund: { id: "rf_abc", amount },
+          payment_id: PAYMENT,
+        }),
+      ).toEqual({
+        refundId: "rf_abc",
+        paymentId: PAYMENT,
+        invalid: ["amount"],
+      });
     },
   );
 
@@ -491,18 +605,65 @@ describe("legend-2ol8g PAY-04 the parser marks present-but-invalid facts", () =>
     ]);
   });
 
-  it("PAY-04 a refund object or keyed event does not require payment_id or amount", () => {
-    expect(
-      readDoitRefundFacts({ refund: { id: "rf_abc" } }).invalid,
-    ).toBeUndefined();
+  it("PAY-04 a refund object or keyed event requires amount and payment_id", () => {
+    const both = ["amount", "payment_id"];
+    expect(readDoitRefundFacts({ refund: { id: "rf_abc" } }).invalid).toEqual(
+      both,
+    );
     expect(
       readDoitRefundFacts({
         refund_id: "rf_abc",
         idempotency_key: "refund:3875dc37-0d8e-4f4e-9a8e-5c2b1f6d7e90",
       }).invalid,
-    ).toBeUndefined();
+    ).toEqual(both);
+    expect(
+      readDoitRefundFacts({
+        idempotency_key: "refund:3875dc37-0d8e-4f4e-9a8e-5c2b1f6d7e90",
+      }).invalid,
+    ).toEqual(both);
     expect(
       readDoitRefundFacts({ object: "refund", id: "rf_abc" }).invalid,
+    ).toEqual(both);
+  });
+
+  it("PAY-04 a keyed or refund-object event with amount and a payment id is valid", () => {
+    expect(
+      readDoitRefundFacts({
+        object: "refund",
+        id: "rf_abc",
+        amount: 4000,
+        payment_id: PAYMENT,
+      }).invalid,
+    ).toBeUndefined();
+    expect(
+      readDoitRefundFacts({
+        refund: { id: "rf_abc", amount: 4000, payment_id: PAYMENT },
+      }).invalid,
+    ).toBeUndefined();
+    // A valid payment object's id also names the payment.
+    expect(
+      readDoitRefundFacts({
+        object: "refund",
+        id: "rf_abc",
+        amount: 4000,
+        payment: {
+          id: PAYMENT,
+          reference: "r",
+          status: "refunded",
+          amount: 10_000,
+        },
+      }).invalid,
+    ).toBeUndefined();
+  });
+
+  it("PAY-04 a pure payment-object event (no key, no refund id) is unchanged", () => {
+    expect(
+      readDoitRefundFacts({
+        id: PAYMENT,
+        reference: "0b0f8f8e-6a3e-4c1e-9c55-2f1d1f0c1a01",
+        status: "refunded",
+        amount: 10_000,
+      }).invalid,
     ).toBeUndefined();
   });
 

@@ -62,10 +62,11 @@ describe("legend-2ol8g an unreadable payment object", () => {
       status: "refunded",
       amount: 500,
     };
-    const facts = readDoitRefundFacts({ refund_id: "rf_1", payment });
+    const data = { refund_id: "rf_1", amount: 500, payment };
+    const facts = readDoitRefundFacts(data);
     expect(facts.payment).toEqual(payment);
     expect(facts.invalid).toBeUndefined();
-    expectStableRoundTrip({ refund_id: "rf_1", payment });
+    expectStableRoundTrip(data);
   });
 });
 
@@ -134,6 +135,76 @@ describe("legend-2ol8g refund.payment_id", () => {
     const facts = readDoitRefundFacts(data);
     expect(facts.paymentId).toBeUndefined();
     expect(facts.invalid).toEqual(["payment_id"]);
+    expectStableRoundTrip(data);
+  });
+});
+
+describe("legend-2ol8g a keyed or refund-id event requires amount and a payment id", () => {
+  const key = "refund:3875dc37-0d8e-4f4e-9a8e-5c2b1f6d7e90";
+  const payment = {
+    id: PAYMENT_ID,
+    reference: "r",
+    status: "refunded",
+    amount: 500,
+  };
+
+  it.each([
+    [
+      "keyed refund object",
+      { object: "refund", id: "rf_1", idempotency_key: key },
+    ],
+    [
+      "nested refund with key",
+      { refund: { id: "rf_1", idempotency_key: key } },
+    ],
+    ["key only", { idempotency_key: key }],
+    ["nested refund id only", { refund: { id: "rf_1" } }],
+  ])("PAY-04 a %s without amount or payment id is invalid", (_name, data) => {
+    expect(readDoitRefundFacts(data).invalid).toEqual(["amount", "payment_id"]);
+    expectStableRoundTrip(data);
+  });
+
+  it("PAY-04 a keyed refund object without an amount is invalid amount only", () => {
+    const data = {
+      object: "refund",
+      id: "rf_1",
+      idempotency_key: key,
+      payment_id: PAYMENT_ID,
+    };
+    expect(readDoitRefundFacts(data).invalid).toEqual(["amount"]);
+    expectStableRoundTrip(data);
+  });
+
+  it("PAY-04 a keyed refund object with an amount but no payment id is invalid payment_id only", () => {
+    const data = {
+      object: "refund",
+      id: "rf_1",
+      idempotency_key: key,
+      amount: 500,
+    };
+    expect(readDoitRefundFacts(data).invalid).toEqual(["payment_id"]);
+    expectStableRoundTrip(data);
+  });
+
+  it("PAY-04 amount and a payment id (flat, refund-level or the payment object's) are valid", () => {
+    for (const data of [
+      { object: "refund", id: "rf_1", amount: 500, payment_id: PAYMENT_ID },
+      { refund: { id: "rf_1", amount: 500, payment_id: PAYMENT_ID } },
+      { refund: { id: "rf_1", amount: 500 }, payment },
+    ]) {
+      expect(readDoitRefundFacts(data).invalid).toBeUndefined();
+      expectStableRoundTrip(data);
+    }
+  });
+
+  it("PAY-04 a pure payment-object event (no key, no refund id) stays valid", () => {
+    const data = {
+      id: PAYMENT_ID,
+      reference: "r",
+      status: "refunded",
+      amount: 500,
+    };
+    expect(readDoitRefundFacts(data).invalid).toBeUndefined();
     expectStableRoundTrip(data);
   });
 });

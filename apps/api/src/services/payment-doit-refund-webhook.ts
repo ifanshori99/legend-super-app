@@ -59,8 +59,8 @@ export type DoitRefundFacts = {
   /** Intent reference carried by a refund object (legend-r7g2): checked
    * against the refund's intent like a payment object's `reference`. */
   reference?: string;
-  /** legend-2ol8g: facts the event carries but we could not read (or, on the
-   * flat sandbox shape, that it must carry and does not). Sorted, unique. The
+  /** legend-2ol8g: facts the event carries but we could not read (or, on an
+   * event matched by key or refund id, that it must carry and does not). Sorted, unique. The
    * caller never settles on such an event. */
   invalid?: DoitRefundInvalidFact[];
 };
@@ -176,17 +176,16 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
   // we cannot trust.
   if (!payment && (record.payment !== undefined || paymentShaped))
     invalid.add("payment_id");
-  // The flat sandbox shape (only `refund_id`, no refund object, key or payment)
-  // must carry both: a missing one is as bad as an unreadable one.
-  const flatSandbox =
-    !paymentShaped &&
-    !isRefundObject &&
-    !payment &&
-    !facts.idempotencyKey &&
-    asRecord(record.refund) === null &&
-    text(record.refund_id) !== undefined;
-  if (flatSandbox && refundAmount === undefined) invalid.add("amount");
-  if (flatSandbox && !paymentId) invalid.add("payment_id");
+  // An event that would match by idempotency key or provider refund id (flat
+  // sandbox shape, refund object, keyed) must carry both a refund amount and a
+  // payment id (flat/refund-level, or the payment object's): a missing one is
+  // as bad as an unreadable one. Pure payment-object events (no key, no refund
+  // id) are unchanged.
+  const matchesByKeyOrRefundId = !!facts.idempotencyKey || !!facts.refundId;
+  if (matchesByKeyOrRefundId && refundAmount === undefined)
+    invalid.add("amount");
+  if (matchesByKeyOrRefundId && !paymentId && !payment)
+    invalid.add("payment_id");
   // A stored event keeps its marker in `data.invalid` (see the schema below).
   if (Array.isArray(record.invalid))
     for (const known of DOIT_REFUND_INVALID_FACTS)
