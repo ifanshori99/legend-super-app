@@ -12,15 +12,28 @@
 // summary, audit rows, tenant isolation (404) and permissions (403).
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { db } from "../db";
+import { bankAccounts } from "../db/schema/accounting-cash-bank";
+import { withTenant } from "../db/tenant";
 import { errorHandler, notFound } from "../middleware/error-handler";
 import { tenantContext } from "../middleware/tenant";
 import { createAccountingBankLinesRouter } from "../routes/accounting-bank-lines.routes";
+import {
+  autoMatchBankAccount,
+  entityLock,
+} from "../services/accounting-bank-matching";
 import { originHeader } from "./helpers";
 
 const authApp = createApp();
@@ -403,6 +416,10 @@ afterAll(async () => {
   await owner.query(
     "DELETE FROM bank_reconciliation_cases WHERE legal_entity_id = $1",
     [fx.entity],
+  );
+  await owner.query(
+    "DELETE FROM bank_reconciliation_cases WHERE tenant_id = $1 AND owner_id = ANY($2::text[])",
+    [tenantId, createdUserIds],
   );
   await owner.query("DELETE FROM bank_accounts WHERE id = ANY($1::uuid[])", [
     accountIds,
@@ -1009,5 +1026,179 @@ describe("legend-fnxl.4 bank statement lines", () => {
       .send({ reason: "x" });
     expect(response.status).toBe(403);
     expect((await dbLine(line)).match_status).toBe("unmatched");
+  });
+});
+
+// ------------------------------------------------- auto-match guards (review)
+
+function scopedContext(): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+}
+
+/** Runs the auto-matcher for one account the way import / deposit do. */
+async function runAutoMatch(f: Fixture, bankAccountId: string) {
+  const context = scopedContext();
+  return withTenant(db, context, async (tx) => {
+    const [account] = await tx
+      .select()
+      .from(bankAccounts)
+      .where(eq(bankAccounts.id, bankAccountId));
+    await entityLock(tx, tenantId, f.entity);
+    return autoMatchBankAccount(
+      tx,
+      context,
+      account!,
+      { dateToleranceDays: 2 },
+      finance.userId,
+    );
+  });
+}
+
+async function newRefCase(
+  f: Fixture,
+  refs: unknown[],
+  status: "open" | "in_progress" | "resolved" = "open",
+): Promise<string> {
+  const closed = status === "resolved";
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO bank_reconciliation_cases
+       (tenant_id, legal_entity_id, type, difference_idr, owner_id, status, due_at,
+        refs, opened_by, resolved_by, resolved_at, resolution_note)
+     VALUES ($1, $2, 'bank_statement', 1000, $3, $4, now() + interval '7 days',
+             $5::jsonb, $3, $6, $7, $8)
+     RETURNING id`,
+    [
+      tenantId,
+      f.entity,
+      finance.userId,
+      status,
+      JSON.stringify(refs),
+      closed ? finance.userId : null,
+      closed ? new Date() : null,
+      closed ? "selesai" : null,
+    ],
+  );
+  return rows[0]!.id;
+}
+
+const rejectionRows = async (lineId: string) =>
+  (
+    await owner.query(
+      "SELECT ref_type, ref_id FROM bank_statement_match_rejections WHERE tenant_id = $1 AND line_id = $2",
+      [tenantId, lineId],
+    )
+  ).rows;
+
+describe("legend-fnxl review A: auto-match candidate guards", () => {
+  it("A1: two bank accounts sharing a GL account each with a line equal to one journal: nobody gets it", async () => {
+    const f = await newFixture();
+    const journal = await newJournal(f, 70_000);
+    const a = await newLine(f, { postedOn: "2026-11-04", amountIdr: 70_000 });
+    const b = await newLine(f, {
+      postedOn: "2026-11-04",
+      amountIdr: 70_000,
+      account: f.otherAccount,
+    });
+    expect((await runAutoMatch(f, f.account)).matched).toBe(0);
+    expect((await runAutoMatch(f, f.otherAccount)).matched).toBe(0);
+    expect((await dbLine(a)).match_status).toBe("unmatched");
+    expect((await dbLine(b)).match_status).toBe("unmatched");
+
+    // Control: once the sibling's line is out of the way the journal is unique.
+    await owner.query(
+      "UPDATE bank_statement_lines SET match_status = 'excluded', excluded_reason = 'x' WHERE id = $1",
+      [b],
+    );
+    expect((await runAutoMatch(f, f.account)).matched).toBe(1);
+    expect(await matchRows(a)).toEqual([
+      { ref_type: "journal_entry", ref_id: journal, source: "auto" },
+    ]);
+  });
+
+  it("A2: an unmatched pair is remembered: auto-match skips it for that line, another line may still take the document", async () => {
+    const f = await newFixture();
+    const journal = await newJournal(f, 80_000);
+    const l1 = await newLine(f, { postedOn: "2026-11-04", amountIdr: 80_000 });
+    expect(
+      (await match(finance.cookie, l1, [ref("journal_entry", journal)])).status,
+    ).toBe(200);
+    expect((await unmatch(finance.cookie, l1)).status).toBe(200);
+    expect(await rejectionRows(l1)).toEqual([
+      { ref_type: "journal_entry", ref_id: journal },
+    ]);
+
+    expect((await runAutoMatch(f, f.account)).matched).toBe(0);
+    expect((await dbLine(l1)).match_status).toBe("unmatched");
+
+    const l2 = await newLine(f, { postedOn: "2026-11-04", amountIdr: 80_000 });
+    expect((await runAutoMatch(f, f.account)).matched).toBe(1);
+    expect((await dbLine(l1)).match_status).toBe("unmatched");
+    expect((await dbLine(l2)).match_status).toBe("auto_matched");
+  });
+
+  it("A2: a manual match of a rejected pair is allowed and clears the rejection", async () => {
+    const f = await newFixture();
+    const journal = await newJournal(f, 85_000);
+    const l1 = await newLine(f, { postedOn: "2026-11-04", amountIdr: 85_000 });
+    await match(finance.cookie, l1, [ref("journal_entry", journal)]);
+    await unmatch(finance.cookie, l1);
+    expect(await rejectionRows(l1)).toHaveLength(1);
+    const again = await match(finance.cookie, l1, [
+      ref("journal_entry", journal),
+    ]);
+    expect(again.status).toBe(200);
+    expect(await rejectionRows(l1)).toEqual([]);
+  });
+
+  it("A3: a journal named in an open case is not an auto candidate and a manual match is refused; closed case frees it", async () => {
+    const f = await newFixture();
+    const journal = await newJournal(f, 90_000);
+    const line = await newLine(f, {
+      postedOn: "2026-11-04",
+      amountIdr: 90_000,
+    });
+    const caseId = await newRefCase(f, [ref("journal_entry", journal)]);
+    expect((await runAutoMatch(f, f.account)).matched).toBe(0);
+    const refused = await match(finance.cookie, line, [
+      ref("journal_entry", journal),
+    ]);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    expect(refused.body.error.message).toBe(
+      "Dokumen ini sedang dibahas di kasus rekonsiliasi yang masih terbuka.",
+    );
+    expect(await matchRows(line)).toEqual([]);
+
+    await owner.query(
+      "UPDATE bank_reconciliation_cases SET status = 'in_progress' WHERE id = $1",
+      [caseId],
+    );
+    expect((await runAutoMatch(f, f.account)).matched).toBe(0);
+
+    await owner.query("DELETE FROM bank_reconciliation_cases WHERE id = $1", [
+      caseId,
+    ]);
+    await newRefCase(f, [ref("journal_entry", journal)], "resolved");
+    expect((await runAutoMatch(f, f.account)).matched).toBe(1);
+  });
+
+  it("A3: a cash deposit named in an open case is not an auto candidate and a manual match is refused", async () => {
+    const f = await newFixture();
+    const deposit = await newDeposit(f, 95_000);
+    const line = await newLine(f, {
+      postedOn: "2026-11-04",
+      amountIdr: 95_000,
+    });
+    await newRefCase(f, [ref("cash_deposit", deposit)]);
+    expect((await runAutoMatch(f, f.account)).matched).toBe(0);
+    const refused = await match(finance.cookie, line, [
+      ref("cash_deposit", deposit),
+    ]);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    expect((await dbDeposit(deposit)).status).toBe("recorded");
   });
 });

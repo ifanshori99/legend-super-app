@@ -10,8 +10,15 @@
 // - Automatic match only on an exact amount inside the tenant's
 //   `matchingPolicy.dateToleranceDays`, and only when it is unique both ways:
 //   the line has exactly one candidate (shared `findStatementMatch`) and that
-//   document has exactly one candidate line. Anything else stays unmatched
-//   for a person; nothing is guessed.
+//   document has exactly one candidate line, counted across every bank
+//   account of the entity that shares the GL account. Anything else stays
+//   unmatched for a person; nothing is guessed.
+// - A pair a person unmatched is remembered in
+//   `bank_statement_match_rejections` and never auto-matched again for that
+//   line; a manual match of it is still allowed and clears the rejection.
+// - A document named in an open / in-progress reconciliation case is not a
+//   candidate (auto) and is refused (manual): the case is where it is
+//   being discussed.
 // - A document matches at most one line: UNIQUE (tenant, ref_type, ref_id) on
 //   `bank_statement_line_matches`. Auto inserts use ON CONFLICT DO NOTHING so
 //   one collision never aborts an import; manual matches map it to
@@ -59,6 +66,22 @@ const rowsOf = (result: unknown): Row[] =>
   (result as { rows: Row[] }).rows ?? [];
 
 const refKey = (ref: ReconciliationRef) => `${ref.type}:${ref.id}`;
+
+/** Case statuses that still hold their documents (`reconciliationCaseStatusSchema`). */
+const OPEN_CASE_STATUSES = sql`('open', 'in_progress')`;
+
+/** True when no open case names the document (jsonb `refs` array of {type, id}). */
+function notInOpenCase(
+  tenantId: string,
+  type: string,
+  column: ReturnType<typeof sql>,
+) {
+  return sql`AND NOT EXISTS (SELECT 1 FROM bank_reconciliation_cases c
+                        WHERE c.tenant_id = ${tenantId}
+                          AND c.status IN ${OPEN_CASE_STATUSES}
+                          AND c.refs @> jsonb_build_array(jsonb_build_object(
+                                'type', ${type}::text, 'id', (${column})::text)))`;
+}
 
 /** Journals that may back a bank movement of this account (see header). */
 function journalCandidateSql(
@@ -122,7 +145,8 @@ async function loadFreeCandidates(
   const free = (type: string, column: ReturnType<typeof sql>) =>
     sql`AND NOT EXISTS (SELECT 1 FROM bank_statement_line_matches m
                         WHERE m.tenant_id = ${tenantId} AND m.ref_type = ${type}
-                          AND m.ref_id = ${column})`;
+                          AND m.ref_id = ${column})
+        ${notInOpenCase(tenantId, type, column)}`;
   const journals = rowsOf(
     await tx.execute(
       journalCandidateSql(
@@ -206,6 +230,24 @@ export async function resolveRefs(
   );
   if (taken.length > 0)
     throw new AccountingError("STATEMENT_LINE_ALREADY_MATCHED");
+  const inCase = rowsOf(
+    await tx.execute(sql`
+      SELECT 1 FROM bank_reconciliation_cases c
+      WHERE c.tenant_id = ${tenantId} AND c.status IN ${OPEN_CASE_STATUSES}
+        AND (${sql.join(
+          refs.map(
+            (ref) =>
+              sql`c.refs @> ${JSON.stringify([{ type: ref.type, id: ref.id }])}::jsonb`,
+          ),
+          sql` OR `,
+        )})
+      LIMIT 1`),
+  );
+  if (inCase.length > 0)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Dokumen ini sedang dibahas di kasus rekonsiliasi yang masih terbuka.",
+    );
 
   const resolved: MatchCandidate[] = [];
   for (const ref of refs) {
@@ -313,6 +355,16 @@ export async function applyMatch(
         throw new AccountingError("STATEMENT_LINE_ALREADY_MATCHED");
       throw error;
     }
+    // A person chose this pair again: forget an earlier "not this one".
+    await tx.execute(sql`
+      DELETE FROM bank_statement_match_rejections
+      WHERE tenant_id = ${tenantId} AND line_id = ${input.lineId}
+        AND (ref_type, ref_id) IN (${sql.join(
+          input.documents.map(
+            (doc) => sql`(${doc.ref.type}::varchar, ${doc.ref.id}::uuid)`,
+          ),
+          sql`, `,
+        )})`);
   }
   const status = input.source === "auto" ? "auto_matched" : "manually_matched";
   const updated = rowsOf(
@@ -391,19 +443,67 @@ export async function autoMatchBankAccount(
   const candidates = await loadFreeCandidates(tx, tenantId, account, window);
   if (candidates.length === 0) return { matched: 0, byImport };
 
+  // Unmatched lines of the other bank accounts of this entity on the same GL
+  // account compete for the same journals (deposits belong to one account).
+  const siblings = rowsOf(
+    await tx.execute(sql`
+      SELECT l.id, l.posted_on::text AS posted_on, l.amount_idr::text AS amount
+      FROM bank_statement_lines l
+      JOIN bank_accounts b ON b.tenant_id = l.tenant_id AND b.id = l.bank_account_id
+      WHERE l.tenant_id = ${tenantId} AND l.match_status = 'unmatched'
+        AND b.id <> ${account.id}
+        AND b.legal_entity_id = ${account.legalEntityId}
+        AND b.gl_account_id = ${account.glAccountId}
+        AND l.posted_on BETWEEN ${shiftDate(window.from, -tolerance)}::date
+                            AND ${shiftDate(window.to, tolerance)}::date`),
+  ).map((row) => ({
+    id: row.id as string,
+    postedOn: row.posted_on as string,
+    amountIdr: Number(row.amount),
+  }));
+
+  // Pairs a person already rejected (per line).
+  const rejected = new Set<string>();
+  const lineIds = [...lines, ...siblings].map((line) => line.id);
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT line_id, ref_type, ref_id FROM bank_statement_match_rejections
+      WHERE tenant_id = ${tenantId}
+        AND line_id IN (${sql.join(
+          lineIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`),
+  ))
+    rejected.add(`${row.line_id}|${row.ref_type}:${row.ref_id}`);
+  const allowed = (lineId: string, candidate: MatchCandidate) =>
+    !rejected.has(`${lineId}|${refKey(candidate.ref)}`);
+
   // Line side: the shared matcher. Document side: how many lines want it.
   const outcomes = lines.map((line) => ({
     line,
-    outcome: findStatementMatch(line, candidates, policy),
+    outcome: findStatementMatch(
+      line,
+      candidates.filter((candidate) => allowed(line.id, candidate)),
+      policy,
+    ),
   }));
   const wanted = new Map<string, number>();
-  for (const { line } of outcomes)
+  const want = (
+    line: (typeof lines)[number] | (typeof siblings)[number],
+    candidate: MatchCandidate,
+  ) => {
+    if (!allowed(line.id, candidate)) return;
+    if (findStatementMatch(line, [candidate], policy).kind !== "auto") return;
+    wanted.set(
+      refKey(candidate.ref),
+      (wanted.get(refKey(candidate.ref)) ?? 0) + 1,
+    );
+  };
+  for (const line of lines)
+    for (const candidate of candidates) want(line, candidate);
+  for (const line of siblings)
     for (const candidate of candidates)
-      if (findStatementMatch(line, [candidate], policy).kind === "auto")
-        wanted.set(
-          refKey(candidate.ref),
-          (wanted.get(refKey(candidate.ref)) ?? 0) + 1,
-        );
+      if (candidate.ref.type === "journal_entry") want(line, candidate);
 
   let matched = 0;
   for (const { line, outcome } of outcomes) {

@@ -44,6 +44,7 @@ import { db } from "../db";
 import {
   bankStatementLineMatches,
   bankStatementLines,
+  bankStatementMatchRejections,
   cashDeposits,
   type BankAccountRow,
   type BankStatementLineRow,
@@ -321,7 +322,8 @@ const unmatchInputSchema = z.strictObject({
 /**
  * Unmatch (matched or excluded → unmatched), idempotent. Deletes the match
  * rows and puts the cash deposits that were matched to the line back to
- * `recorded`. A line in a case is refused (INVALID_TRANSITION).
+ * `recorded`. Each removed (line, document) pair is remembered as a rejection
+ * so auto-match skips it. A line in a case is refused (INVALID_TRANSITION).
  */
 export async function unmatchStatementLine(
   context: ScopedTenantContext,
@@ -357,7 +359,25 @@ export async function unmatchStatementLine(
               eq(bankStatementLineMatches.lineId, line.id),
             ),
           )
-          .returning({ id: bankStatementLineMatches.id });
+          .returning({
+            refType: bankStatementLineMatches.refType,
+            refId: bankStatementLineMatches.refId,
+          });
+        // Remember "not this one" so auto-match does not put it back.
+        if (removed.length > 0)
+          await tx
+            .insert(bankStatementMatchRejections)
+            .values(
+              removed.map((row) => ({
+                tenantId,
+                bankAccountId: line.bankAccountId,
+                lineId: line.id,
+                refType: row.refType,
+                refId: row.refId,
+                rejectedBy: actorId,
+              })),
+            )
+            .onConflictDoNothing();
         const restored = await tx
           .update(cashDeposits)
           .set({
