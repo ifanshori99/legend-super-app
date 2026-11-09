@@ -466,7 +466,7 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     expect(r.annual?.annualTaxIdr).toBe(3_502_800);
     expect(r.annual?.priorPph21Idr).toBe(2_503_490);
     // The employee's own tax W = withheld - allowance = 0; he is refunded
-    // 1_000_000 of his over-payment. withheld + borne - refund = T.
+    // 1_087_500 of his over-payment. withheld + borne - refund = T.
     expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBe(0);
     expect(
       r.pph21WithheldIdr +
