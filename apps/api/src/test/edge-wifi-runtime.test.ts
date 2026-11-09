@@ -77,6 +77,8 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
       },
       role: "primary",
       intervalMs: 3_600_000,
+      retentionIntervalMs: 3_600_000,
+      purge: async () => 0,
       retryDelayMs: () => 5,
       agent,
       ...extra,
@@ -213,5 +215,106 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
       lockNameOf(outletId),
     ]);
     expect(result.rows[0].locked).toBe(true);
+  });
+
+  it("purges expired grants once after the lock is taken and again on the interval", async () => {
+    const outletId = randomUUID();
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 3,
+    );
+    const handle = await start(outletId, stubAgent(), {
+      purge,
+      retentionIntervalMs: 20,
+    });
+    expect(handle).not.toBeNull();
+    // Right after the acquire, before the first interval tick can fire.
+    expect(purge).toHaveBeenCalledTimes(1);
+    expect(purge.mock.calls[0]![0]).toMatchObject({
+      tenant: { tenantId: seededTenantId },
+    });
+    expect(purge.mock.calls[0]![1]).toBeInstanceOf(Date);
+    await vi.waitFor(() => expect(purge.mock.calls.length).toBeGreaterThan(2));
+  });
+
+  it("does not purge while another process owns the lock", async () => {
+    const outletId = randomUUID();
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 0,
+    );
+    const other = await hold(outletId);
+    await start(outletId, stubAgent(), { purge, retentionIntervalMs: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(purge).not.toHaveBeenCalled();
+
+    await free(other, outletId);
+    await vi.waitFor(() => expect(purge).toHaveBeenCalled());
+  });
+
+  it("a failing purge is logged and retried, never stops the agent", async () => {
+    const outletId = randomUUID();
+    const stub = stubAgent();
+    const purge = vi
+      .fn<() => Promise<number>>()
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValue(0);
+    await start(outletId, stub, { purge, retentionIntervalMs: 20 });
+    await vi.waitFor(() => expect(purge.mock.calls.length).toBeGreaterThan(1));
+    expect(installed(stub)).toBe(true);
+  });
+
+  it("stop() ends the purge schedule and waits for a purge in flight", async () => {
+    const outletId = randomUUID();
+    let release!: () => void;
+    let finished = false;
+    const purge = vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          release = () => {
+            finished = true;
+            resolve(0);
+          };
+        }),
+    );
+    const handle = await start(outletId, stubAgent(), {
+      purge,
+      retentionIntervalMs: 10,
+    });
+    expect(purge).toHaveBeenCalledTimes(1);
+    const stopping = handle!.stop();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(finished).toBe(false);
+    release();
+    await stopping;
+    expect(finished).toBe(true);
+    const calls = purge.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(purge.mock.calls.length).toBe(calls);
+  });
+
+  it("a lost lock connection ends the purge schedule until the lock is taken again", async () => {
+    const outletId = randomUUID();
+    const clients: PoolClient[] = [];
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 0,
+    );
+    await start(outletId, stubAgent(), {
+      purge,
+      retentionIntervalMs: 10_000,
+      // Hold the retry back so the gap with no lock is observable.
+      retryDelayMs: () => 150,
+      connect: async () => {
+        const client = await pool.connect();
+        clients.push(client);
+        return client;
+      },
+    });
+    expect(purge).toHaveBeenCalledTimes(1);
+    clients[0]!.emit("error", new Error("connection terminated"));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(clients).toHaveLength(1);
+    expect(purge).toHaveBeenCalledTimes(1);
+    // The reacquire runs its own post-acquire purge.
+    await vi.waitFor(() => expect(clients.length).toBe(2));
+    await vi.waitFor(() => expect(purge).toHaveBeenCalledTimes(2));
   });
 });

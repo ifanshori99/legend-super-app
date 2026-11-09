@@ -19,6 +19,9 @@
 //   own base rate, so this holds even when kmd3 is late).
 // - The raw controller id (MAC) is kept only while a row is live and scrubbed
 //   on every terminal row. Views expose an 8-hex tag of the device hash only.
+// - A grant that lands after its row was revoked is revoked again. The row
+//   keeps `revoke_retry_at` (the only column a terminal row may change) until
+//   a revoke succeeds; the loop retries it with backoff (legend-nffy).
 // - Provider calls use the edge node's own server-minted context
 //   (`contextFor`), never a caller's; its tenant must equal the caller's.
 //
@@ -79,11 +82,16 @@ const DEFAULT_PROVIDER_TIMEOUT_MS = 5_000;
 /** A pending/unknown row untouched this long is retried by the loop. */
 const INFLIGHT_RETRY_AFTER_MS = 10_000;
 const RECONCILE_BATCH = 100;
+/** Backoff bounds for re-sending the revoke of a terminal row. The delay is
+ * the row's age since `ended_at` (frozen), so it roughly doubles per try. */
+const REVOKE_RETRY_MIN_SECONDS = 30;
+const REVOKE_RETRY_MAX_SECONDS = 300;
 const LIST_LIMIT = 500;
 /** An active grant within this much of the wanted expiry is reused. */
 const REUSE_TOLERANCE_SECONDS = 60;
 const LIVE = ["pending", "active", "unknown"] as const;
 const INFLIGHT = ["pending", "unknown"] as const;
+const TERMINAL = ["superseded", "revoked", "failed"] as const;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type GrantRow = typeof wifiDeviceGrants.$inferSelect;
@@ -325,7 +333,22 @@ export function createWifiAgent(options: {
           .select({ id: wifiDeviceGrants.id })
           .from(wifiDeviceGrants)
           .where(stillInFlight);
-        if (!inflight) return [];
+        if (!inflight) {
+          // Landed after its revoke: mark the revoke as owed before sending
+          // it, so a crash or a failed call still leaves it for the loop.
+          await tx
+            .update(wifiDeviceGrants)
+            .set({ revokeRetryAt: at })
+            .where(
+              scoped(
+                tenantId,
+                outletId,
+                eq(wifiDeviceGrants.id, row.id),
+                eq(wifiDeviceGrants.status, "revoked"),
+              ),
+            );
+          return [];
+        }
         await tx
           .update(wifiDeviceGrants)
           .set({
@@ -402,9 +425,10 @@ export function createWifiAgent(options: {
     if (
       authorized === true &&
       updated.length === 0 &&
-      current.status === "revoked"
+      current.status === "revoked" &&
+      current.revokeRetryAt !== null
     )
-      await revokeLateGrant(ctx, current);
+      await retryTerminalRevoke(ctx, current);
     if (current.status !== "pending" && current.status !== "unknown")
       inFlightGarden.delete(row.id);
     if (current.status === "active") return { outcome: "active", row: current };
@@ -412,25 +436,57 @@ export function createWifiAgent(options: {
     return { outcome: "unknown", row: current };
   }
 
-  /** Revokes at the controller a grant whose row is already `revoked`. The
-   * row is terminal, so nothing is written; a failure is logged only. */
-  async function revokeLateGrant(ctx: ScopedTenantContext, row: GrantRow) {
+  /**
+   * Re-sends the controller revoke of a terminal row that owes one
+   * (`revoke_retry_at` set). Success clears the marker; a failure moves it
+   * out by the backoff. Only `revoke_retry_at` is written: every other
+   * column of a terminal row is frozen.
+   */
+  async function retryTerminalRevoke(
+    ctx: ScopedTenantContext,
+    row: GrantRow,
+  ): Promise<boolean> {
     const tenantId = ctx.tenant.tenantId;
     const outletId = row.outletId as OutletId;
+    let failure: unknown = null;
     try {
       const node = providerContext(ctx, outletId);
       await withTimeout(() =>
         provider.revoke(node, { tenantId, outletId, reference: row.id }),
       );
     } catch (error) {
+      failure = error;
+    }
+    const at = now();
+    const delay = Math.min(
+      REVOKE_RETRY_MAX_SECONDS,
+      Math.max(
+        REVOKE_RETRY_MIN_SECONDS,
+        seconds(at.getTime() - (row.endedAt ?? at).getTime()),
+      ),
+    );
+    await withTenant(db, ctx, (tx) =>
+      tx
+        .update(wifiDeviceGrants)
+        .set({ revokeRetryAt: failure === null ? null : addSeconds(at, delay) })
+        .where(
+          scoped(
+            tenantId,
+            outletId,
+            eq(wifiDeviceGrants.id, row.id),
+            isNotNull(wifiDeviceGrants.revokeRetryAt),
+          ),
+        ),
+    );
+    if (failure !== null)
       logger.warn(
         {
           module: "edge-wifi",
-          err: { name: (error as Error)?.name, code: errorCode(error) },
+          err: { name: (failure as Error)?.name, code: errorCode(failure) },
         },
-        "Wi-Fi revoke of a late grant failed.",
+        "Wi-Fi revoke of an ended grant failed; the reconcile loop retries it.",
       );
-    }
+    return failure === null;
   }
 
   /** Revokes one live row at the controller; success makes it `revoked`. */
@@ -466,6 +522,10 @@ export function createWifiAgent(options: {
             endedAt: at,
             controllerDeviceId: null,
             lastErrorCode: null,
+            // An in-flight authorize may still land after this revoke (a
+            // timed-out call, or one still running): owe one delayed
+            // confirming revoke. Step 1b sends it and clears the marker.
+            revokeRetryAt: sql`CASE WHEN ${inArray(wifiDeviceGrants.status, [...INFLIGHT])} THEN ${addSeconds(at, REVOKE_RETRY_MIN_SECONDS).toISOString()}::timestamptz END`,
             updatedAt: at,
           })
           .where(where);
@@ -822,6 +882,30 @@ export function createWifiAgent(options: {
       budget -= 1;
       if (await revokeRow(ctx, row)) counts.revoked += 1;
     }
+    // Ended rows that still owe a controller revoke (a grant that landed
+    // after its revoke), once their backoff is due.
+    if (budget > 0)
+      for (const row of await withTenant(db, ctx, (tx) =>
+        tx
+          .select()
+          .from(wifiDeviceGrants)
+          .where(
+            scoped(
+              tenantId,
+              outletId,
+              inArray(wifiDeviceGrants.status, [...TERMINAL]),
+              lte(wifiDeviceGrants.revokeRetryAt, at),
+            ),
+          )
+          .orderBy(
+            asc(wifiDeviceGrants.revokeRetryAt),
+            asc(wifiDeviceGrants.id),
+          )
+          .limit(budget),
+      )) {
+        budget -= 1;
+        if (await retryTerminalRevoke(ctx, row)) counts.revoked += 1;
+      }
 
     // 2. In-flight rows left by a timeout or crash: repeat the identical
     //    request (same reference, idempotent at the controller).

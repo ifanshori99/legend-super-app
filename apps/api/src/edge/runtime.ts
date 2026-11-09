@@ -61,6 +61,7 @@ import {
   createWifiAgent,
   type WifiAgent,
 } from "../services/edge-wifi-agent.service.ts";
+import { purgeExpiredWifiGrants } from "../services/edge-wifi-retention.service.ts";
 import {
   createDeviceRecordsFetcher,
   EdgeCloudHttpError,
@@ -314,6 +315,9 @@ export type EdgeRuntimeHandle = { stop(): Promise<void> };
 
 export type WifiAgentHandle = { stop(): Promise<void> };
 
+/** Expired Wi-Fi grants are purged this often while the agent holds its lock. */
+export const WIFI_RETENTION_INTERVAL_MS = 3_600_000;
+
 /** Default lock retry backoff: 1 s, doubling, capped at 30 s. */
 export function defaultWifiLockRetryDelayMs(attempt: number): number {
   return Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
@@ -340,8 +344,12 @@ export async function startWifiAgent(options: {
   production?: boolean;
   /** Defaults to WIFI_RECONCILE_INTERVAL_MS. */
   intervalMs?: number;
+  /** Defaults to WIFI_RETENTION_INTERVAL_MS. */
+  retentionIntervalMs?: number;
   /** Test seam: use this agent instead of building one from the registry. */
   agent?: WifiAgent;
+  /** Test seam: replaces purgeExpiredWifiGrants. */
+  purge?: (context: ScopedTenantContext, now: Date) => Promise<number>;
   /** Test seam: delay before retry number `attempt` (0-based), in ms. */
   retryDelayMs?: (attempt: number) => number;
   /** Test seam: the dedicated lock connection. Defaults to `pool.connect()`. */
@@ -384,7 +392,9 @@ export async function startWifiAgent(options: {
   type Owned = {
     client: PoolClient;
     timer?: ReturnType<typeof setInterval>;
+    purgeTimer?: ReturnType<typeof setInterval>;
     inflight: Promise<void>;
+    purgeInflight: Promise<void>;
     released: boolean;
     ended: boolean;
     lost(): void;
@@ -429,12 +439,14 @@ export async function startWifiAgent(options: {
     const session: Owned = {
       client,
       inflight: Promise.resolve(),
+      purgeInflight: Promise.resolve(),
       released: false,
       ended: false,
       lost: () => {
         if (session.ended) return;
         session.ended = true;
         if (session.timer) clearInterval(session.timer);
+        if (session.purgeTimer) clearInterval(session.purgeTimer);
         if (owned === session) owned = null;
         uninstall();
         release(session, true);
@@ -504,6 +516,35 @@ export async function startWifiAgent(options: {
         });
     }, options.intervalMs ?? WIFI_RECONCILE_INTERVAL_MS);
     session.timer.unref();
+    const purge =
+      options.purge ??
+      ((purgeContext: ScopedTenantContext, at: Date) =>
+        purgeExpiredWifiGrants(db, purgeContext, at));
+    let purging = false;
+    const runPurge = () => {
+      if (purging || stopped || session.ended) return;
+      purging = true;
+      session.purgeInflight = purge(context, new Date())
+        .then(
+          (count) => {
+            if (count > 0)
+              logger.info({ count }, "Expired Wi-Fi grants purged");
+          },
+          (error: unknown) =>
+            logger.warn(safeError(error), "Wi-Fi grant purge failed"),
+        )
+        .finally(() => {
+          purging = false;
+        });
+    };
+    // One purge right after the lock is taken (a node that restarts often
+    // would otherwise never reach the first hourly tick), then on the interval.
+    runPurge();
+    session.purgeTimer = setInterval(
+      runPurge,
+      options.retentionIntervalMs ?? WIFI_RETENTION_INTERVAL_MS,
+    );
+    session.purgeTimer.unref();
   }
 
   acquiring = acquire();
@@ -520,8 +561,10 @@ export async function startWifiAgent(options: {
       if (!session) return;
       session.ended = true;
       if (session.timer) clearInterval(session.timer);
+      if (session.purgeTimer) clearInterval(session.purgeTimer);
       uninstall();
       await session.inflight;
+      await session.purgeInflight;
       let broken = false;
       try {
         await session.client.query(
