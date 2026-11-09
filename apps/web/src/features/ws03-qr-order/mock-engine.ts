@@ -22,6 +22,7 @@ import {
   type GuestOrderIssue,
   type GuestPayment,
   type GuestPaymentMethod,
+  type GuestPaymentOptions,
   type GuestPaymentTarget,
   type PointClaim,
   type QrMenu,
@@ -60,6 +61,14 @@ const STAFF_USER = "00000000-0000-4000-8000-000000009001";
 const EARN_SPEND_IDR = 10_000; // fixture loyalty program earnRate: 1 point / Rp10.000
 /** A mock payment settles this long after it is created (webhook stand-in). */
 export const MOCK_PAYMENT_SETTLE_MS = 4000;
+/** Mock stand-in for DOIT's VA channel list (prefix shapes the number). */
+const MOCK_VA_BANKS = [
+  { code: "bmri", name: "Mandiri", prefix: "8890" },
+  { code: "bnia", name: "BNI", prefix: "8808" },
+  { code: "brin", name: "BRI", prefix: "2620" },
+  { code: "permata", name: "Permata", prefix: "8528" },
+] as const;
+const VA_WINDOW_MS = 24 * 60 * 60_000;
 
 type Clock = () => number;
 
@@ -734,7 +743,7 @@ export function createEngine(
       taxIdr: q.taxIdr,
       roundingIdr: q.rounding.adjustmentIdr,
       totalIdr: q.totalIdr,
-      pricesIncludeTaxAndService: false,
+      pricesIncludeTaxAndService: q.pricesIncludeTaxAndService,
       status: payFirst ? "awaiting_payment" : "sent",
       items,
       createdAt: iso(now),
@@ -905,11 +914,47 @@ export function createEngine(
     return outstanding;
   }
 
+  /**
+   * VA is on unless `vaDown` (cookie switch in mock.ts); `emptyBanks` is the
+   * provider listing no VA bank (`no_channels`).
+   */
+  function paymentOptions(
+    sessionId: string,
+    flags: { vaDown?: boolean; emptyBanks?: boolean } = {},
+  ): GuestPaymentOptions {
+    sessionOf(sessionId);
+    const off = flags.vaDown
+      ? ("gateway_down" as const)
+      : flags.emptyBanks
+        ? ("no_channels" as const)
+        : null;
+    return {
+      methods: [
+        { method: "qris", enabled: true, unavailableReason: null, banks: [] },
+        off
+          ? { method: "va", enabled: false, unavailableReason: off, banks: [] }
+          : {
+              method: "va",
+              enabled: true,
+              unavailableReason: null,
+              banks: MOCK_VA_BANKS.map(({ code, name }) => ({ code, name })),
+            },
+      ],
+    };
+  }
+
+  /** 16 digits: bank prefix + 12 digits of the target (same order, same number). */
+  function mockVaNumber(prefix: string, seed: string) {
+    const digits = seed.replace(/\D/g, "").padStart(12, "0").slice(-12);
+    return `${prefix}${digits}`;
+  }
+
   function startPayment(
     sessionId: string,
     body: {
       target: GuestPaymentTarget;
       method: GuestPaymentMethod;
+      bankCode?: string | null;
       idempotencyKey: string;
     },
   ) {
@@ -921,7 +966,40 @@ export function createEngine(
         (entry.payment as { idemKey?: string }).idemKey === body.idempotencyKey
       )
         return paymentView(entry);
+    const bank =
+      body.method === "va"
+        ? MOCK_VA_BANKS.find((item) => item.code === body.bankCode)
+        : undefined;
+    if (body.method === "va" && !bank)
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Bank virtual account ini tidak tersedia; pilih bank lain.",
+      );
     const amount = amountFor(session, body.target);
+    // Like the API: the same VA bank returns the live VA; another choice
+    // supersedes it (QRIS after QRIS keeps the older mock behaviour).
+    const targetKey = JSON.stringify(body.target);
+    for (const entry of rec.payments.values()) {
+      const live = entry.payment;
+      if (
+        live.status !== "pending" ||
+        JSON.stringify(live.target) !== targetKey
+      )
+        continue;
+      if (live.method === "va" && bank && live.bankCode === bank.code)
+        return paymentView(entry);
+      if (live.method === "va" || body.method === "va")
+        entry.payment = { ...live, status: "expired" };
+    }
+    const target = body.target;
+    const seed =
+      target.kind === "order"
+        ? (floor.ordersOf(session.id).find((o) => o.id === target.orderId)
+            ?.number ?? target.orderId)
+        : target.kind === "split"
+          ? target.billSplitId
+          : session.id;
     const now = clock();
     const payment = {
       id: uuid(),
@@ -934,7 +1012,10 @@ export function createEngine(
           ? `00020101021226610016ID.CO.QRIS.WWW01189360091400${rand("0123456789", 10)}5204581253033605802ID5913Cafe Legend6007Bandung6304${rand("ABCDEF0123456789", 4)}`
           : null,
       redirectUrl: null,
-      expiresAt: iso(now + 15 * 60_000),
+      vaNumber: bank ? mockVaNumber(bank.prefix, seed) : null,
+      bankCode: bank?.code ?? null,
+      bankName: bank?.name ?? null,
+      expiresAt: iso(now + (bank ? VA_WINDOW_MS : 15 * 60_000)),
       paidAt: null,
       idemKey: body.idempotencyKey,
     } as unknown as GuestPayment;
@@ -1003,7 +1084,11 @@ export function createEngine(
     if (!entry)
       throw new ApiError(404, "NOT_FOUND", "Pembayaran tidak ditemukan.");
     const now = clock();
-    if (!entry.applied && now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS)
+    if (
+      !entry.applied &&
+      entry.payment.status === "pending" &&
+      now - entry.createdMs >= MOCK_PAYMENT_SETTLE_MS
+    )
       settle(rec, entry, now);
     return paymentView(entry);
   }
@@ -1307,6 +1392,7 @@ export function createEngine(
     bill,
     createSplits,
     createRequest,
+    paymentOptions,
     startPayment,
     getPayment,
     issues,

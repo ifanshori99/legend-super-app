@@ -24,6 +24,8 @@ export const qrOrdersBillMessages = {
   tax: "Pajak",
   serviceIncluded: "Termasuk service charge",
   taxIncluded: "Termasuk pajak",
+  // Mixed bill: marks an amount already inside the subtotal.
+  includedMark: "(termasuk)",
   rounding: "Pembulatan",
   total: "Total",
   paid: "Sudah dibayar",

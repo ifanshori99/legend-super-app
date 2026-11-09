@@ -25,7 +25,9 @@ export const qrGlassCheckoutMessages = {
     qrisHint: "Scan dari bank atau aplikasi e-wallet",
     va: "Virtual Account",
     vaHint: "Transfer dari m-banking / ATM",
-    unavailableHint: "Belum tersedia untuk pesanan meja",
+    unavailableHint: "Sedang tidak tersedia",
+    vaReset:
+      "Virtual Account sedang tidak tersedia, jadi metode bayar diganti ke QRIS.",
     cashier: "Bayar di kasir",
     cashierHint: "Tunjukkan kode ke kasir",
     kitchenNote: "Pesanan masuk dapur setelah pembayaran diterima.",

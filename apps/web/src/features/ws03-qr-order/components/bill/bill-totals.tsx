@@ -48,7 +48,18 @@ export function BillTotals({ bill }: { bill: SessionBill }) {
   const includedTax = sumOf(included, "taxIdr");
   const addedService = sumOf(added, "serviceChargeIdr");
   const addedTax = sumOf(added, "taxIdr");
-  const allIncluded = added.length === 0 && included.length > 0;
+  const hasIncluded = included.length > 0;
+  // Added-on-top rows: any exclusive order, or no order at all (zero rows).
+  const showAdded = added.length > 0 || !hasIncluded;
+  const allIncluded = !showAdded;
+  // Mixed session: included amounts are muted and marked, never read as extra.
+  const mixed = added.length > 0 && hasIncluded;
+  const includedAmount = (amount: number) => (
+    <span className={cn(mixed && "text-muted-foreground")}>
+      <Money amount={amount} />
+      {mixed && <> {t("qrOrders.bill.includedMark")}</>}
+    </span>
+  );
   // One paper panel: the totals, then the tax/service note under a hairline
   // (owner rule 12: menu prices exclude tax and service charge, both shown).
   return (
@@ -74,25 +85,25 @@ export function BillTotals({ bill }: { bill: SessionBill }) {
             <Money amount={-totals.discountIdr} />
           </Row>
         )}
-        {(added.length > 0 || included.length === 0) && (
-          <Row label={t("qrOrders.bill.service")}>
-            <Money amount={addedService} />
-          </Row>
+        {showAdded && (
+          <>
+            <Row label={t("qrOrders.bill.service")}>
+              <Money amount={addedService} />
+            </Row>
+            <Row label={t("qrOrders.bill.tax")}>
+              <Money amount={addedTax} />
+            </Row>
+          </>
         )}
-        {(added.length > 0 || included.length === 0) && (
-          <Row label={t("qrOrders.bill.tax")}>
-            <Money amount={addedTax} />
-          </Row>
-        )}
-        {included.length > 0 && (
-          <Row label={t("qrOrders.bill.serviceIncluded")}>
-            <Money amount={includedService} />
-          </Row>
-        )}
-        {included.length > 0 && (
-          <Row label={t("qrOrders.bill.taxIncluded")}>
-            <Money amount={includedTax} />
-          </Row>
+        {hasIncluded && (
+          <>
+            <Row label={t("qrOrders.bill.serviceIncluded")}>
+              {includedAmount(includedService)}
+            </Row>
+            <Row label={t("qrOrders.bill.taxIncluded")}>
+              {includedAmount(includedTax)}
+            </Row>
+          </>
         )}
         {totals.roundingIdr !== 0 && (
           <Row label={t("qrOrders.bill.rounding")}>

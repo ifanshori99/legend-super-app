@@ -55,14 +55,8 @@ export const qrGlassPayMessages = {
     errorTitle: "Pesanan belum bisa dimuat",
     errorHint: "Periksa koneksi internet Anda, lalu coba lagi.",
   },
-  // VA page opened while the real API serves the table (bookmark,
-  // shared link): the table contract cannot take these methods yet.
-  online: {
-    unavailableTitle: "Metode ini belum tersedia untuk pesanan meja",
-    unavailableHint:
-      "Pesanan tersimpan dan belum masuk dapur. Pilih QRIS atau bayar di kasir.",
-    toCheckout: "Pilih metode lain",
-  },
+  // Virtual Account through the gateway (legend-3160): the bank list comes
+  // from the payment options, the number and deadline from the payment.
   va: {
     title: "Virtual Account",
     back: "Kembali ke ringkasan pesanan",
@@ -70,11 +64,10 @@ export const qrGlassPayMessages = {
     heading: "Transfer ke Virtual Account",
     saved: "Pesanan tersimpan, belum masuk dapur.",
     bankLegend: "Pilih bank",
-    bankBca: "BCA",
-    bankBni: "BNI",
-    bankBri: "BRI",
-    bankMandiri: "Mandiri",
-    bankName: "Bank {bank}",
+    bankHint: "Nomor Virtual Account dibuat untuk bank yang Anda pilih.",
+    create: "Buat nomor Virtual Account",
+    creating: "Membuat nomor Virtual Account…",
+    loading: "Memuat daftar bank…",
     numberLabel: "Nomor Virtual Account",
     copy: "Salin",
     copyLabel: "Salin nomor Virtual Account",
@@ -82,22 +75,42 @@ export const qrGlassPayMessages = {
     copyFailed: "Nomor belum bisa disalin. Salin langsung dari layar.",
     amountLabel: "Jumlah transfer",
     timeLeft: "Sisa waktu {time}",
-    timeNote: "Hitung mundur contoh: 24 jam sejak halaman ini dibuka.",
+    timeNote: "Transfer sebelum waktu habis. Setelah itu, buat VA baru.",
     stepsLabel: "Langkah transfer Virtual Account",
     step1: "Buka aplikasi m-banking atau datangi ATM.",
     step2: "Pilih menu Transfer.",
     step3: "Pilih Virtual Account.",
     step4: "Masukkan nomor Virtual Account di atas.",
     step5: "Pastikan jumlahnya sesuai total, lalu konfirmasi.",
-    demoNoticeTitle: "Nomor ini contoh dari mode demo",
-    demoNoticeBody: "Nomor belum berasal dari gateway pembayaran.",
-    check: "Periksa pembayaran",
-    checking: "Memeriksa pembayaran…",
-    stillWaiting:
-      "Belum ada pembayaran yang tercatat. Coba lagi setelah transfer.",
-    checkFailed:
-      "Pembayaran belum bisa diperiksa. Periksa koneksi Anda, lalu coba lagi.",
+    autoUpdate: "Status pembayaran diperbarui otomatis.",
+    statusFailed:
+      "Status pembayaran belum bisa diperiksa. Periksa koneksi Anda, lalu coba lagi.",
+    statusRetry: "Periksa lagi",
+    changeBank: "Ganti bank",
     changeMethod: "Ganti metode bayar",
+    expiredTitle: "Nomor Virtual Account sudah tidak berlaku",
+    expiredHint:
+      "Waktu bayar habis atau nomornya sudah diganti. Buat VA baru untuk melanjutkan.",
+    failedTitle: "Pembayaran tidak berhasil",
+    failedHint: "Belum ada uang yang tercatat. Buat VA baru, lalu coba lagi.",
+    missingTitle: "Nomor Virtual Account belum tersedia",
+    missingHint:
+      "Gateway belum mengirim nomornya. Buat VA baru untuk mencoba lagi.",
+    renew: "Buat VA baru",
+    errorNetwork:
+      "Nomor Virtual Account belum bisa dibuat. Periksa koneksi Anda, lalu coba lagi.",
+    errorConflict: "Pesanan ini sudah tidak menunggu pembayaran.",
+    errorBank: "Bank ini sedang tidak bisa dipakai. Pilih bank lain.",
+    optionsErrorTitle: "Daftar bank belum bisa dimuat",
+    optionsErrorHint: "Periksa koneksi internet Anda, lalu coba lagi.",
+    unavailableTitle: "Virtual Account sedang tidak tersedia",
+    unavailableGatewayDown:
+      "Layanan pembayaran sedang gangguan. Pesanan tetap tersimpan: pilih QRIS atau bayar di kasir.",
+    unavailableRoutingDisabled:
+      "Outlet ini belum menerima Virtual Account. Pesanan tetap tersimpan: pilih QRIS atau bayar di kasir.",
+    unavailableNoChannels:
+      "Belum ada bank yang bisa dipakai saat ini. Pesanan tetap tersimpan: pilih QRIS atau bayar di kasir.",
+    toCheckout: "Pilih metode lain",
   },
   success: {
     back: "Kembali ke menu",

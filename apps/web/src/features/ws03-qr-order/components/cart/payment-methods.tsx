@@ -1,14 +1,16 @@
 // Payment method picker of "Keranjang & bayar" (founder Q3, legend-2re1):
 // QRIS goes through the gateway (e-wallet apps pay by scanning it), "Bayar di
-// kasir" holds the order until the cashier takes the money. Virtual Account has no table
-// payment in the contract yet: it is a demo flow in mock mode and shown
-// disabled with the real API. Radix radio group = real radio inputs.
+// kasir" holds the order until the cashier takes the money. Virtual Account
+// follows the payment options (legend-3160): disabled when the gateway says it
+// is off or lists no bank. Radix radio group = real radio inputs.
+import { useEffect, useState } from "react";
 import { Landmark, QrCode, Store } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
-import { API_MOCK } from "@/lib/api/mock-flag";
+import { useTableJourney } from "../../context";
+import { useGuestPaymentOptions } from "../../hooks";
 
 export type PayMethod = "qris" | "va" | "cashier";
 
@@ -24,7 +26,7 @@ const METHODS = [
     icon: Landmark,
     label: "qrGlass.checkout.method.va",
     hint: "qrGlass.checkout.method.vaHint",
-    demoOnly: true,
+    gated: true,
   },
   {
     value: "cashier",
@@ -55,6 +57,18 @@ export function PaymentMethods({
   disabled?: boolean;
 }) {
   const t = useT();
+  const { sessionId } = useTableJourney();
+  const options = useGuestPaymentOptions(sessionId);
+  // Unknown (loading, error) stays selectable: the VA page shows its own state.
+  const va = options.data?.data.methods.find((item) => item.method === "va");
+  const vaOff =
+    options.data !== undefined && (!va?.enabled || va.banks.length === 0);
+  // VA turned off while chosen: fall back to QRIS and say so.
+  const [vaReset, setVaReset] = useState(false);
+  if (vaOff && value === "va" && !vaReset) setVaReset(true);
+  useEffect(() => {
+    if (vaOff && value === "va") onChange("qris");
+  }, [vaOff, value, onChange]);
   return (
     <section aria-labelledby="method-title" className="grid gap-2">
       <h2 id="method-title" className="type-heading">
@@ -69,8 +83,7 @@ export function PaymentMethods({
       >
         {METHODS.map((entry) => {
           const { value: method, icon: Icon, label } = entry;
-          // No VA number page exists for table payments yet.
-          const unavailable = "demoOnly" in entry && !API_MOCK;
+          const unavailable = "gated" in entry && vaOff;
           return (
             <RadioGroup.Item
               key={method}
@@ -106,6 +119,13 @@ export function PaymentMethods({
       </RadioGroup.Root>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("qrGlass.checkout.method.kitchenNote")}
+      </p>
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-sm leading-5 empty:hidden"
+      >
+        {vaReset && vaOff ? t("qrGlass.checkout.method.vaReset") : null}
       </p>
     </section>
   );

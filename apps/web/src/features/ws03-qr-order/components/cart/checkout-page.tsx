@@ -222,10 +222,9 @@ export function CheckoutPage() {
     });
 
   // Pay an order that is already placed: gateway for QRIS, the
-  // cashier code screen for "Bayar di kasir", the demo VA screen
-  // (mock mode only: the picker disables them with the real API, and that
-  // screen itself shows "not available" there, so neither ever reaches
-  // useStartPayment, whose contract takes only the gateway methods).
+  // cashier code screen for "Bayar di kasir", the VA screen for Virtual
+  // Account (it lists the provider's banks and opens the VA itself, since
+  // the VA needs a bank before useStartPayment can run).
   const payOrder = (orderId: OrderId, fresh = false) => {
     if (method === "va") {
       void navigate({

@@ -1,4 +1,5 @@
-// Checkout with a voucher code charges the plain quote (bead legend-2re1).
+// Checkout with a voucher code charges the plain quote (bead legend-2re1),
+// and the Virtual Account path from checkout to success (legend-3160).
 // The place-order contract has no code field, so the order is charged without
 // the voucher: the breakdown, the total and the pay button keep the plain
 // amount, a warning says the code discount is not part of this payment, and
@@ -189,6 +190,37 @@ test("F10 checkout with a voucher code blocks payment while the plain quote is u
       .getByText("Total pembayaran", { exact: true })
       .filter({ visible: true }),
   ).toBeVisible();
+});
+
+// Virtual Account (legend-3160): the bank list comes from the payment
+// options, the VA number from the created payment; the mock gateway settles
+// it a few seconds later, which the page picks up by polling.
+test("F10 pay by Virtual Account: pick a bank, see the VA number, then success", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openCheckout(page);
+
+  await page.getByRole("radio", { name: /Virtual Account/ }).click();
+  await page
+    .getByRole("button", { name: "Buat nomor Virtual Account" })
+    .filter({ visible: true })
+    .click();
+
+  await expect(page).toHaveURL(/\/bayar\//);
+  await page.getByRole("radio", { name: "Mandiri" }).click();
+  await page
+    .getByRole("button", { name: "Buat nomor Virtual Account" })
+    .click();
+
+  await expect(page.getByText(/Mandiri · Nomor Virtual Account/)).toBeVisible();
+  await expect(page.getByText(/^8890 \d{4} \d{4} \d{4}$/)).toBeVisible();
+  await expect(page.getByText(/^Sisa waktu \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+
+  await expect(
+    page.getByRole("heading", { name: "Pembayaran berhasil" }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Virtual Account").first()).toBeVisible();
 });
 
 function escape(text: string) {
