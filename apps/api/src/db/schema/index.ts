@@ -100,3 +100,5 @@ export * from "./open-bill";
 export * from "./website";
 // WS-08 delivery channel framework (legend-5bn3).
 export * from "./delivery";
+// WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
+export * from "./recipe";

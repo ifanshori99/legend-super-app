@@ -16,6 +16,7 @@ import {
   publicPurchaseOrderRouter,
 } from "./purchasing-send.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
+import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
@@ -139,6 +140,8 @@ apiRouter.use("/inventory", createPurchasingOrderRouter());
 apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
 apiRouter.use("/inventory", createInventoryCountRouter());
+// Recipes / BOM, modifier rules, auto stock deduction, duty meals (WS-06, legend-db6).
+apiRouter.use("/inventory", createRecipeRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);

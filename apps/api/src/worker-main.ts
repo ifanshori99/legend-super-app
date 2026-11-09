@@ -42,6 +42,9 @@ import {
   deliverDeliveryChannelEvent,
   syncStaleDeliveryChannels,
 } from "./services/delivery-sync-consumer.ts";
+import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -98,6 +101,8 @@ const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// INV-02 (legend-db6): recipe source for the stock deduction consumer.
+setInventoryRecipeSource(recipeBomSource);
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
 // pending intents whose webhook never arrived.
 setPaymentGateway(createDoitGateway());
@@ -168,6 +173,9 @@ const runtime = createWorkerRuntime({
           // for the delivery sync sweep below.
           if (postsInventoryGl)
             await deliverDeliveryChannelEvent(context, event, tx);
+          // INV-02/KDS-07 (legend-db6): a paid order, a remake/comp and the
+          // day close deduct recipe stock in this consumption transaction.
+          await deliverRecipeDeductionEvent(context, event, tx);
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);

@@ -22,6 +22,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect, semua temuan nyata sudah dibetulkan. Follow-up pra-ada: issue bd backup login `postgres`.
 - Belum: test DB terakhir dan `heavy pnpm check` belum hijau karena forwarding port Colima untuk container baru mati (ECONNREFUSED), bukan karena kode. Jalankan ulang setelah Colima dipulihkan. Second-opinion Codex (tingkat K) masih perlu diantre CTO.
 
+## legend-9w46 HPP penjualan POS ke stok (engineer, cabang `ws/hpp-pos`, 2026-11-09)
+
+- Sudah: ws/recipe-bom (legend-db6) digabung ke cabang ini di atas m1 fb46602d; migrasi resep diregenerasi jadi 0103_recipe_bom + 0104_recipe_bom_rls. Penjualan POS lunas (`order.paid`) memotong stok lewat resep → `stock.moved` → jurnal HPP (Dr HPP / Cr persediaan).
+- Sudah: void final setelah bayar membalik potongan stok sekali (gerakan `return/order` pada biaya asli per baris, jurnal HPP terbalik persis). Refund (penuh maupun sebagian) tidak menggerakkan stok (keputusan CTO 9 Nov 2026: makanan sudah dikonsumsi). Void sebelum pembayaran: tidak ada. Pembalikan yang ditolak aturan stok diparkir (`reversal_failed_at`) dan dicoba ulang saat `day.closed`.
+- Test: `src/test/recipe-pos-hpp.test.ts` 10 kasus (jalur POS asli, replay, biaya asli, refund tidak menggerakkan stok, void final, tutup hari, tombstone, remake tidak ikut, parkir+ulang).
+- Keputusan: hanya void yang membalik stok (CTO, 9 Nov 2026). Lanjutan: legend-078n, legend-9fhs.
+
 ## Sedang
 
 - (kosong selain thread di bawah)
@@ -397,3 +404,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - legend-ain0: port celah nomor (POS-06) disambungkan di `app.ts`: Tutup Hari menolak `RECEIPT_SEQUENCE_GAP`, laporan shift menampilkan nomor hilang. Bagian edge sync merge dipisah ke legend-ol6v (terblokir legend-kai, legend-9fhs).
 - Kartu lanjutan: legend-ol6v (applier run struk), legend-zsdd (urutan terikat satu edge node, release-gate), legend-19gb (e-receipt dari edge).
 - Urutan rilis: cloud dulu, baru edge (edge baru selalu kirim `receiptSequences=1`; cloud lama menolak dengan 400 sehingga pull registri berhenti).
+
+## legend-db6 resep/BOM + potong stok otomatis (engineer, cabang `ws/recipe-bom`)
+
+- Selesai di worktree `.worktrees/recipe-bom`: tabel `recipes`, `recipe_lines`, `modifier_recipe_rules`, `outlet_inventory_settings`, `recipe_deductions`, `recipe_deduction_lines` (migration 0063 + RLS 0064; nomor dirapikan saat merge). Mesin ledakan resep bertingkat (sub-resep tanpa output diledakkan, sub-resep dengan output item diambil dari stok semi-finished), varian, modifier add/replace/remove, konversi satuan, waste gross-up. Mode real-time / tutup hari per outlet (override atas setelan tenant). Consumer `order.paid`, `day.closed`, `order_issue.recorded` (event baru) lewat worker cloud-sync; idempoten per order/issue/kunci. Duty meal via `POST /api/inventory/duty-meals`. CRUD resep memakai kontrak yang sudah ada (`/api/inventory/recipes`, `/versions`).
+- Keputusan: semua bahan diambil dari `sale_location_id` outlet; konfigurasi kurang (tanpa resep, tanpa lokasi, resep nonaktif) dicatat `skipped`, tidak melempar error (supaya outbox tidak macet). Comp = barang gratis yang tidak ada di baris tertagih.
+- Bead lanjutan: `legend-p4z1` (KDS emit order_issue.recorded), `legend-fbms` (order total 0 tidak emit order.paid), `legend-q55i` (repost skipped), `legend-3kdd` (FK menu → recipes), `legend-89zm` (rute lokasi per item).
+- Berikut: review CTO, merge ke `main` (rapikan nomor migration).

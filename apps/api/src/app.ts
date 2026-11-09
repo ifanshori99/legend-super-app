@@ -53,6 +53,8 @@ import {
 } from "./services/pos-receipt.service.ts";
 import { setPosReceiptGapsPort } from "./services/pos-shift-ports.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -78,6 +80,8 @@ setPosShiftLookup(findOpenShiftId);
 // WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
 // of the EDC agent. Points tenders keep their fail-closed default.
 setPosEdcTenderPort(edcTenderSettlement);
+// INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
+setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
