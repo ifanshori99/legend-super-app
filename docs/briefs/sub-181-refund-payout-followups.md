@@ -3,6 +3,7 @@
 Worktree `.worktrees/refund-payout-followups`, cabang `ws/refund-payout-followups` dari `ws/refund-intent-guard` 27ba1fb9. Konteks: `docs/briefs/sub-179-refund-intent-guard.md`, `git log fee69d45..27ba1fb9`. Semua path di bawah relatif ke `apps/api/src`.
 
 Aturan bersama:
+
 - Hanya file di potonganmu. Jangan sentuh `pos-shift.service.ts`, `tax.service.ts`, `pos-order.service.ts` (baca saja), `app.ts`, `routes/index.ts`, `worker-main.ts`, `edge/runtime.ts`.
 - Test reproduksi dulu, harus GAGAL di 27ba1fb9. Untuk membuktikannya, jangan mengembalikan berkas service: tulis test, jalankan sebelum mengubah service (atau pakai `git worktree add --detach <scratchpad>/old 27ba1fb9`). Laporkan nama test + baris gagal.
 - Jalankan test: dari root worktree, `LEGEND_TEST_FILES="src/test/<file>.test.ts" pnpm test > <scratchpad>/<nama>.log 2>&1; tail -40 <scratchpad>/<nama>.log`. Jangan `pnpm test` penuh, jangan tsc (engineer menjalankannya lewat `heavy`).
@@ -24,10 +25,11 @@ File: `services/pos-intent-attribution.ts` (baru), `services/payment-admin.servi
 `handlePosPaymentPaid` (`services/pos-order-payment.ts:575`) menangkap tender QRIS (UPDATE ~:702, `paymentIntentId: paid.id`) tanpa mengunci `payment_intents` dan tanpa membaca refund. Urutan kunci sekarang: orders FOR UPDATE → pos_orders → tender → (baca link/intent tanpa kunci) → capture. Jalur refund (`payment-refund.service.ts` `lockRefundGraph`, approve :308, complete :437): `lockIntentsForFact` (payment_intents ORDER BY id FOR UPDATE) → fund → payment_refunds; refund TIDAK mengunci orders/tenders. `completePosOrder` (pos-order.service.ts:1177): order → intent.
 Fix: setelah kunci tender, kunci intent yang dibayar dengan `lockIntentsForFact` (`services/payment-refund-fact-time.ts:53`); pakai waktu fakta yang dikembalikannya untuk capture bila masuk akal (jelaskan). Lalu baca `refundableBalance(tx, intent)` (`payment-admin.service.ts:65`, export; setelah P1, tender authorized pesanan ini sudah ikut `posSaleInUse`): bila `reserved > cap` (refund yang sudah disetujui/pending memakai uang yang dibutuhkan tender), tolak capture: pakai jalur yang ada `voidTendersAndRefundPaidQris` (:508). Periksa `requestPosLatePaymentRefund` (`pos-order-late-payment.ts`) tidak membayar dua kali uang yang sudah direfund (cap refund); bila bisa, laporkan dan usulkan. Jangan ubah P1 file; P1 mengubah `posSaleInUseOfIntent` secara paralel, jadi andalkan kontrak `refundableBalance` saja.
 Test (berkas baru `src/test/pos-qris-capture-refund-race.test.ts`, pola `dp-intent-lock-race.test.ts` :1-40, :582, :632 dengan klien `pg` + trigger penahan advisory + `pg_locks`):
+
 - C1 urutan refund dulu: refund intent disetujui (insert mentah pending + `/approve`, atau refund dibuat sebelum tender dipasang) lalu webhook paid → tender tidak captured (void), pesanan tidak lunas, jalur refund late payment dipicu tanpa membayar lebih dari yang diterima.
 - C2 race dua urutan: (a) capture memegang kunci intent, approve refund menunggu (`pg_locks` menunjukkan approve menunggu kunci `payment_intents`), lalu approve → 409; (b) approve memegang kunci intent, capture menunggu, lalu capture → ditolak (void). Tidak ada deadlock.
 - C3 tanpa refund: capture seperti biasa (regresi).
-File: `services/pos-order-payment.ts` (jalur capture saja), test baru itu.
+  File: `services/pos-order-payment.ts` (jalur capture saja), test baru itu.
 
 ## P3. legend-3bsyh (satu implementer, Sonnet)
 
