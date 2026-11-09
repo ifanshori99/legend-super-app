@@ -167,6 +167,8 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       grossSchemeBaseIdr: 0,
       employerSchemeBaseIdr: 94_532_487,
       taxAllowanceIdr: 1_532_487,
+      // bead legend-4ndx: always reported, 0 without a cap excess.
+      pph21CapExcessIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -260,6 +262,8 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       grossSchemeBaseIdr: 0,
       employerSchemeBaseIdr: 194_407_053,
       taxAllowanceIdr: 24_407_053,
+      // bead legend-4ndx: always reported, 0 without a cap excess.
+      pph21CapExcessIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -333,6 +337,8 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       grossSchemeBaseIdr: 0,
       employerSchemeBaseIdr: 59_400_000,
       taxAllowanceIdr: 0,
+      // bead legend-4ndx: always reported, 0 without a cap excess.
+      pph21CapExcessIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -392,24 +398,38 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
     //   employerSchemeBase = 6 x 3_189_145 = 19_134_870.
     //   69_599_996 + 19_134_870 = 88_734_866 = Σ X.
     // December (proportional, same lines as Jan-Jun): X = 9_400_000 + S, eG = 6_266_666.
-    //   History split (legend-6q7o rules A-C): prior tax = 1_089_614 + 223_248 = 1_312_862;
-    //   H = tax(88_734_866) - 1_312_862: cost floor(5%) = 4_436_743, net 84_298_123,
-    //   PKP 30_298_000, tax 1_514_900 => H = 202_038.
-    //   pET = priorBorne + priorAllowance = 223_248 + 111_618 = 334_866; mix = 88_734_866;
-    //   employerHistory = clamp(floor(1_514_900 x 19_134_870 / 88_734_866) - 334_866, 0, H)
-    //     = clamp(326_674 - 334_866, 0, H) = 0 (the employer already paid more than its
-    //     scheme share of the annual tax); employeeHistory = 202_038.
-    //   W = employeeHistory + floor((T - H) x eG / X); S = T - W (S_{k+1}):
-    //   0 -> 148_834 -> 155_897 -> 156_237 -> 156_248 -> 156_248 stable.
-    //   S = 156_248, X = 9_556_248; gross = 88_734_866 + 9_556_248 = 98_291_114;
-    //   cost = floor(5% x 98_291_114) = 4_914_555; net = 93_376_559;
-    //   PKP = 39_376_559 -> 39_376_000; annual tax = 5% x 39_376_000 = 1_968_800;
-    //   T = 1_968_800 - 1_312_862 = 655_938.
-    //   W = 202_038 + floor((655_938 - 202_038) x 6_266_666 / 9_556_248) = 202_038 + 297_652 = 499_690
-    //   (S = 655_938 - 499_690 = 156_248, stable).
-    //   Allowance = floor(156_248 / 3) = 52_082; borne = 156_248 - 52_082 = 104_166;
-    //   withheld = 499_690 + 52_082 = 551_772.
-    //   (Old, before legend-6q7o: S 230_328, T 659_438, withheld 505_886, allowance 76_776, borne 153_552.)
+    //   Unclamped payer balances (bead legend-mmgd; brief sub-pph21-unclamped):
+    //   prior tax = 1_089_614 + 223_248 = 1_312_862;
+    //   aP = tax(88_734_866): cost floor(5%) = 4_436_743, net 84_298_123,
+    //   PKP 30_298_000, tax 1_514_900 => H = 1_514_900 - 1_312_862 = 202_038.
+    //   pET = priorBorne + priorAllowance = 223_248 + 111_618 = 334_866;
+    //   pEeT = 1_312_862 - 334_866 = 977_996; mix = 88_734_866.
+    //   proportional: bR = floor(1_514_900 x 19_134_870 / 88_734_866) - pET =
+    //     326_674 - 334_866 = -8_192 (the employer already paid MORE than its
+    //     scheme share); bE = H - bR = 202_038 + 8_192 = 210_230.
+    //     (Old clamp to [0, H]: employerHistory 0, employeeHistory 202_038,
+    //     the employee's December absorbed the employer's 8_192 over-payment.)
+    //   eG = 6_266_666, X0 = 9_400_000, U = 1_000_000, N = 2_000_000 (the
+    //   allowance share of the employer part is u/(u+n) = 1/3).
+    //   De = floor(D x eG / X), D = annual(prior + X) - 1_514_900; Dr = D - De;
+    //   covered_{k+1} = max(0, Dr + bR):
+    //   S0=0       X 9_400_000 annual 1_961_400 D 446_500 De 297_666 Dr 148_834 next 140_642
+    //   S1=140_642 X 9_540_642 annual 1_968_050 D 453_150 De 297_646 Dr 155_504 next 147_312
+    //   S2=147_312 X 9_547_312 annual 1_968_400 D 453_500 De 297_668 Dr 155_832 next 147_640
+    //   S3=147_640 X 9_547_640 annual 1_968_400 D 453_500 De 297_658 Dr 155_842 next 147_650
+    //   S4=147_650 X 9_547_650 annual 1_968_400 D 453_500 De 297_657 Dr 155_843 next 147_651
+    //   S5=147_651 X 9_547_651 annual 1_968_400 D 453_500 De 297_657 Dr 155_843 next 147_651 stop.
+    //   X = 9_547_651; gross = 88_734_866 + 9_547_651 = 98_282_517;
+    //   cost = floor(5% x 98_282_517) = 4_914_125; net = 93_368_392;
+    //   PKP = 39_368_392 -> 39_368_000; annual tax = 5% x 39_368_000 = 1_968_400;
+    //   T = 1_968_400 - 1_312_862 = 655_538.
+    //   Employee: e = De + bE = 297_657 + 210_230 = 507_887 = W.
+    //   Company: r = Dr + bR = 155_843 - 8_192 = 147_651 (= covered, no refund).
+    //   Allowance = floor(147_651 x 1/3) = 49_217; borne = 147_651 - 49_217 =
+    //   98_434; withheld = W + allowance = 507_887 + 49_217 = 557_104.
+    //   Check: 557_104 + 98_434 = 655_538 = T.
+    //   (Old, before legend-mmgd: S 156_248, T 655_938, withheld 551_772,
+    //   allowance 52_082, borne 104_166.)
     const mixLines = [
       earning(6_000_000, "gross"),
       earning(2_000_000, "net"),
@@ -453,6 +473,8 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       grossSchemeBaseIdr: 69_599_996,
       employerSchemeBaseIdr: 19_134_870,
       taxAllowanceIdr: 111_618,
+      // bead legend-4ndx: always reported, 0 without a cap excess.
+      pph21CapExcessIdr: 0,
     });
     expect(prior.grossSchemeBaseIdr + prior.employerSchemeBaseIdr).toBe(
       prior.taxableGrossIdr,
@@ -464,26 +486,29 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       "proportional",
     );
     expect(result.method).toBe("annual_recalculation");
-    expect(result.taxableGrossIdr).toBe(9_556_248);
-    expect(result.pph21Idr).toBe(655_938);
-    expect(result.taxAllowanceIdr).toBe(52_082);
-    expect(result.pph21WithheldIdr).toBe(551_772);
-    expect(result.pph21EmployerBorneIdr).toBe(104_166);
+    expect(result.taxableGrossIdr).toBe(9_547_651);
+    expect(result.pph21Idr).toBe(655_538);
+    expect(result.taxAllowanceIdr).toBe(49_217);
+    expect(result.pph21WithheldIdr).toBe(557_104);
+    expect(result.pph21EmployerBorneIdr).toBe(98_434);
     expect(result.pph21RefundIdr).toBe(0);
     expect(result.pph21EmployerRefundIdr).toBe(0);
-    // Withheld + borne = total tax of the period.
-    expect(result.pph21WithheldIdr + result.pph21EmployerBorneIdr).toBe(
-      result.pph21Idr,
-    );
+    // Withheld + borne - refunds = total tax of the period (bead legend-mmgd).
+    expect(
+      result.pph21WithheldIdr +
+        result.pph21EmployerBorneIdr -
+        result.pph21RefundIdr -
+        result.pph21EmployerRefundIdr,
+    ).toBe(result.pph21Idr);
     expect(result.annual).toEqual({
-      grossIdr: 98_291_114,
-      occupationalCostIdr: 4_914_555,
+      grossIdr: 98_282_517,
+      occupationalCostIdr: 4_914_125,
       deductibleIdr: 0,
-      netIdr: 93_376_559,
-      annualizedNetIdr: 93_376_559,
+      netIdr: 93_368_392,
+      annualizedNetIdr: 93_368_392,
       ptkpIdr: 54_000_000,
-      taxableIncomeIdr: 39_376_000,
-      annualTaxIdr: 1_968_800,
+      taxableIncomeIdr: 39_368_000,
+      annualTaxIdr: 1_968_400,
       priorPph21Idr: 1_312_862,
     });
   });
@@ -497,6 +522,8 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       grossSchemeBaseIdr: 0,
       employerSchemeBaseIdr: 0,
       taxAllowanceIdr: 0,
+      // bead legend-4ndx: always reported, 0 without a cap excess.
+      pph21CapExcessIdr: 0,
     });
   });
 });

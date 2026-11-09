@@ -18,6 +18,7 @@ import {
   DEFAULT_PPH21_POLICY,
   buildPph21Prior,
   computePayslipTax,
+  payslipTaxSchema,
   type PayslipTaxEarning,
   type Pph21PolicyParameters,
   type Pph21PriorPeriod,
@@ -157,6 +158,8 @@ describe("buildPph21Prior: sums and scheme mix", () => {
       pph21WithheldIdr: 0,
       pph21EmployerBorneIdr: 0,
       taxAllowanceIdr: 0,
+      // Always reported since bead legend-4ndx, 0 when no period had one.
+      pph21CapExcessIdr: 0,
       grossSchemeBaseIdr: 0,
       employerSchemeBaseIdr: 0,
     });
@@ -186,6 +189,7 @@ describe("buildPph21Prior: sums and scheme mix", () => {
       pph21WithheldIdr: 3 * first.tax.pph21WithheldIdr,
       pph21EmployerBorneIdr: 3 * first.tax.pph21EmployerBorneIdr,
       taxAllowanceIdr: 0,
+      pph21CapExcessIdr: 0,
       grossSchemeBaseIdr: 3 * 6_150_000,
       employerSchemeBaseIdr: 3 * (x - 6_150_000),
     });
@@ -312,5 +316,185 @@ describe("buildPph21Prior: refuses an inconsistent history", () => {
     expect(() =>
       buildPph21Prior([{ ...base, employeeDeductibleIdr: 0.5 }]),
     ).toThrow(RangeError);
+  });
+});
+
+/** A stored tax as an older payslip had it: no pph21CapExcessIdr key. */
+function withoutCapExcess<T extends { pph21CapExcessIdr?: unknown }>(
+  tax: T,
+): Omit<T, "pph21CapExcessIdr"> {
+  const copy = { ...tax };
+  delete copy.pph21CapExcessIdr;
+  return copy;
+}
+
+describe("buildPph21Prior: pph21CapExcessIdr (bead legend-4ndx)", () => {
+  const grossMonth = (amountIdr: number): Month => ({
+    earnings: [{ amountIdr, taxable: true, taxScheme: "gross" }],
+  });
+  // A net month: the company bears all of the tax, so there is room for a cap
+  // excess (part of the borne tax) of any size up to the borne tax.
+  const netMonth: Month = {
+    earnings: [{ amountIdr: 10_000_000, taxable: true, taxScheme: "net" }],
+  };
+  const [base] = earlierPeriods([netMonth], DEFAULT_PPH21_POLICY);
+  if (base === undefined) throw new Error("no period");
+  const borne = base.tax.pph21EmployerBorneIdr;
+  const withCapExcess = (value: number | undefined): Pph21PriorPeriod => {
+    const rest = withoutCapExcess(base.tax);
+    return {
+      ...base,
+      tax:
+        value === undefined ? rest : { ...rest, pph21CapExcessIdr: idr(value) },
+    };
+  };
+
+  it("has a borne tax to attach the excess to", () => {
+    expect(borne).toBeGreaterThan(300);
+  });
+
+  it("sums the cap excess of the earlier periods", () => {
+    const prior = buildPph21Prior([
+      withCapExcess(100),
+      withCapExcess(250),
+      withCapExcess(0),
+    ]);
+    expect(prior.pph21CapExcessIdr).toBe(350);
+    expect(prior.pph21EmployerBorneIdr).toBe(3 * borne);
+  });
+
+  it("reads an absent cap excess as 0", () => {
+    expect(buildPph21Prior([withCapExcess(undefined)]).pph21CapExcessIdr).toBe(
+      0,
+    );
+    expect(
+      buildPph21Prior([withCapExcess(undefined), withCapExcess(40)])
+        .pph21CapExcessIdr,
+    ).toBe(40);
+  });
+
+  it("accepts a cap excess equal to the borne tax", () => {
+    expect(buildPph21Prior([withCapExcess(borne)]).pph21CapExcessIdr).toBe(
+      borne,
+    );
+  });
+
+  it("refuses a cap excess above the borne tax of its period", () => {
+    expect(() => buildPph21Prior([withCapExcess(borne + 1)])).toThrow(
+      RangeError,
+    );
+    // The sum may not hide it: period 2's excess alone is above its borne tax.
+    expect(() =>
+      buildPph21Prior([withCapExcess(0), withCapExcess(borne + 1)]),
+    ).toThrow(RangeError);
+  });
+
+  it("refuses a negative or fractional cap excess", () => {
+    expect(() => buildPph21Prior([withCapExcess(-1)])).toThrow(RangeError);
+    expect(() => buildPph21Prior([withCapExcess(0.5)])).toThrow(RangeError);
+  });
+
+  for (const allocation of ["proportional", "gross_first"] as const) {
+    it(`a January with only a benefit (cap 0) is not charged back in December (${allocation})`, () => {
+      // K1 of the take-home cap brief: January has an 8_000_000 benefit and no
+      // salary under a gross agreement, February-December 10_000_000 gross.
+      // The stored January tax carries the cap excess; the builder passes it
+      // on, so December charges W 788_011 / 785_000, not 908_006 / 905_000.
+      const policy = policyOf(allocation);
+      const january = computePayslipTax({
+        tables: REFERENCE_TABLES,
+        policy,
+        ptkpStatus: "TK/0",
+        hasTaxId: true,
+        lastTaxPeriod: false,
+        monthsWorked: 1,
+        earnings: [],
+        employerBenefitIdr: 8_000_000,
+        contractTaxScheme: "gross",
+        employeeDeductibleIdr: 0,
+        prior: buildPph21Prior([]),
+      }).tax;
+      const expectedExcess = allocation === "proportional" ? 119_999 : 120_000;
+      expect(january.pph21CapExcessIdr).toBe(expectedExcess);
+      expect(january.pph21EmployerBorneIdr).toBe(121_827);
+      expect(january.pph21WithheldIdr).toBe(0);
+      const months = [
+        { tax: january, employeeDeductibleIdr: 0 },
+        ...earlierPeriods(
+          Array.from({ length: 10 }, () => grossMonth(10_000_000)),
+          policy,
+        ),
+      ];
+      const prior = buildPph21Prior(months);
+      expect(prior.pph21CapExcessIdr).toBe(expectedExcess);
+      const december = lastPeriod(grossMonth(10_000_000), prior, policy, 12);
+      const expected =
+        allocation === "proportional"
+          ? { x: 10_000_962, w: 788_011, borne: 962 }
+          : { x: 10_004_123, w: 785_000, borne: 4_123 };
+      expect(december.taxableGrossIdr).toBe(expected.x);
+      expect(december.pph21WithheldIdr).toBe(expected.w);
+      expect(december.pph21EmployerBorneIdr).toBe(expected.borne);
+      expect(december.pph21RefundIdr).toBe(0);
+      expect(december.pph21EmployerRefundIdr).toBe(0);
+
+      // Dropping the field (an old payslip) charges the excess back.
+      const januaryOld = withoutCapExcess(january);
+      const old = lastPeriod(
+        grossMonth(10_000_000),
+        buildPph21Prior([
+          { ...months[0]!, tax: januaryOld },
+          ...months.slice(1),
+        ]),
+        policy,
+        12,
+      );
+      expect(old.pph21WithheldIdr).toBeGreaterThan(december.pph21WithheldIdr);
+    });
+  }
+});
+
+describe("payslipTaxSchema: pph21CapExcessIdr (bead legend-4ndx)", () => {
+  const [base] = earlierPeriods(
+    [
+      {
+        earnings: [{ amountIdr: 10_000_000, taxable: true, taxScheme: "net" }],
+      },
+    ],
+    DEFAULT_PPH21_POLICY,
+  );
+  if (base === undefined) throw new Error("no period");
+  const borne = base.tax.pph21EmployerBorneIdr;
+  const withoutField = withoutCapExcess(base.tax);
+
+  it("accepts a stored tax without the field, with 0, and equal to the borne tax", () => {
+    expect(payslipTaxSchema.safeParse(withoutField).success).toBe(true);
+    expect(
+      payslipTaxSchema.safeParse({ ...withoutField, pph21CapExcessIdr: 0 })
+        .success,
+    ).toBe(true);
+    expect(
+      payslipTaxSchema.safeParse({ ...withoutField, pph21CapExcessIdr: borne })
+        .success,
+    ).toBe(true);
+  });
+
+  it("rejects a cap excess above the employer borne tax", () => {
+    const result = payslipTaxSchema.safeParse({
+      ...withoutField,
+      pph21CapExcessIdr: borne + 1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a negative or fractional cap excess", () => {
+    expect(
+      payslipTaxSchema.safeParse({ ...withoutField, pph21CapExcessIdr: -1 })
+        .success,
+    ).toBe(false);
+    expect(
+      payslipTaxSchema.safeParse({ ...withoutField, pph21CapExcessIdr: 0.5 })
+        .success,
+    ).toBe(false);
   });
 });

@@ -43,6 +43,8 @@ export type PayslipTaxInput = {
   /** Scheme of the employment agreement this period (see pph21.ts). */
   contractTaxScheme?: TaxScheme;
   employeeDeductibleIdr: Idr | number;
+  /** Cap on the employee's PPh 21 (see pph21.ts `employeeWithholdingCapIdr`). */
+  employeeWithholdingCapIdr?: Idr | number;
   prior: Pph21PeriodInput["prior"];
 };
 
@@ -70,6 +72,9 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
       ? {}
       : { contractTaxScheme: input.contractTaxScheme }),
     employeeDeductibleIdr: input.employeeDeductibleIdr,
+    ...(input.employeeWithholdingCapIdr === undefined
+      ? {}
+      : { employeeWithholdingCapIdr: input.employeeWithholdingCapIdr }),
     prior: input.prior,
   });
   const grossSchemeBaseIdr = pph21GrossSchemeBase(
@@ -91,6 +96,7 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
       pph21EmployerBorneIdr: result.pph21EmployerBorneIdr,
       pph21RefundIdr: result.pph21RefundIdr,
       pph21EmployerRefundIdr: result.pph21EmployerRefundIdr,
+      pph21CapExcessIdr: result.pph21CapExcessIdr,
       noTaxIdSurchargeApplied: result.noTaxIdSurchargeApplied,
       grossSchemeBaseIdr,
       employerSchemeBaseIdr: idr(result.taxableGrossIdr - grossSchemeBaseIdr),
@@ -135,6 +141,7 @@ export function buildPph21Prior(
   let withheld = 0n;
   let borne = 0n;
   let allowance = 0n;
+  let capExcess = 0n;
   let grossScheme = 0n;
   let employerScheme = 0n;
   periods.forEach((period, index) => {
@@ -161,6 +168,14 @@ export function buildPph21Prior(
       tax.pph21EmployerBorneIdr,
       `${at} pph21EmployerBorneIdr`,
     );
+    const periodCapExcess = wholeRupiah(
+      tax.pph21CapExcessIdr ?? 0,
+      `${at} pph21CapExcessIdr`,
+    );
+    if (periodCapExcess > periodBorne)
+      throw new RangeError(
+        `${at} pph21CapExcessIdr exceeds pph21EmployerBorneIdr`,
+      );
     const periodGrossScheme = wholeRupiah(
       tax.grossSchemeBaseIdr,
       `${at} grossSchemeBaseIdr`,
@@ -193,6 +208,7 @@ export function buildPph21Prior(
     withheld += periodWithheld;
     borne += periodBorne;
     allowance += periodAllowance;
+    capExcess += periodCapExcess;
     grossScheme += periodGrossScheme;
     employerScheme += periodEmployerScheme;
   });
@@ -207,6 +223,7 @@ export function buildPph21Prior(
     pph21WithheldIdr: out(withheld, "pph21WithheldIdr"),
     pph21EmployerBorneIdr: out(borne, "pph21EmployerBorneIdr"),
     taxAllowanceIdr: out(allowance, "taxAllowanceIdr"),
+    pph21CapExcessIdr: out(capExcess, "pph21CapExcessIdr"),
     grossSchemeBaseIdr: out(grossScheme, "grossSchemeBaseIdr"),
     employerSchemeBaseIdr: out(employerScheme, "employerSchemeBaseIdr"),
   };

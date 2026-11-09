@@ -329,7 +329,8 @@ const MIXED_BASES = {
 };
 
 // Bounds of the new invariant for one case: the employee's tax W (withheld
-// less allowance) <= De, the refunds <= the credit parts.
+// less allowance) <= its bound (De, or De + bE when the employee is short,
+// bead legend-mmgd), the refunds <= what each payer over-paid.
 const expectBounds = (r: Result, b: { de: number; ce: number; cr: number }) => {
   expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBeLessThanOrEqual(b.de);
   expect(r.pph21RefundIdr).toBeLessThanOrEqual(b.ce);
@@ -354,6 +355,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       de: number;
       ce: number;
       cr: number;
+      employerRefund?: number; // bead legend-mmgd: default 0
     };
     const lines = [
       { amountIdr: 5_000_000, taxScheme: "gross" as const },
@@ -378,7 +380,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         expect(r.pph21WithheldIdr).toBe(c.w + c.s);
         expect(r.pph21EmployerBorneIdr).toBe(0);
         expect(r.pph21RefundIdr).toBe(0);
-        expect(r.pph21EmployerRefundIdr).toBe(0);
+        expect(r.pph21EmployerRefundIdr).toBe(c.employerRefund ?? 0);
         expect(r.annual?.annualTaxIdr).toBe(c.annual);
         expect(r.annual?.priorPph21Idr).toBe(20_000_000);
         expectAccounting(r);
@@ -391,27 +393,31 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         ).toBe(25_000_000 - c.w);
       });
 
-    // with scheme base, proportional: Cr = 2_000_000, Ce = 0; De = floor(D x
-    //   5_000_000 / X).
-    //   S0=0       X 25_000_000 gross 245_000_000 annual 21_750_000 D 3_750_000 De 750_000 Dr 3_000_000 next 1_000_000
-    //   S1=1_000_000 X 26_000_000 annual 21_900_000 D 3_900_000 De 750_000 Dr 3_150_000 next 1_150_000
-    //   S2=1_150_000 X 26_150_000 annual 21_922_500 D 3_922_500 De 750_000 Dr 3_172_500 next 1_172_500
-    //   S3=1_172_500 X 26_172_500 annual 21_925_800 D 3_925_800 De 749_985 Dr 3_175_815 next 1_175_815
-    //   S4=1_175_815 X 26_175_815 annual 21_926_250 D 3_926_250 De 749_976 Dr 3_176_274 next 1_176_274
-    //   S5=1_176_274 X 26_176_274 annual 21_926_400 D 3_926_400 De 749_992 Dr 3_176_408 next 1_176_408
-    //   S6=1_176_408 X 26_176_408 annual 21_926_400 D 3_926_400 De 749_988 Dr 3_176_412 next 1_176_412
-    //   S7=1_176_412 X 26_176_412 annual 21_926_400 D 3_926_400 De 749_988 Dr 3_176_412 next 1_176_412 stop.
-    //   W = max(0, 749_988 - 0) = 749_988, S = 3_176_412 - 2_000_000 = 1_176_412.
-    //   T = 21_926_400 - 20_000_000 = 1_926_400 = W + S.
+    // with scheme base, proportional (updated for bead legend-mmgd: signed
+    //   balances, no clamp to [0, C]): aP = 18_000_000, pET = 17_450_000,
+    //   pEeT = 2_550_000, bR = floor(18_000_000 x 120_000_000 / 220_000_000) -
+    //   17_450_000 = 9_818_181 - 17_450_000 = -7_631_819 (the company
+    //   over-paid by more than the whole credit); bE = H - bR = -2_000_000 +
+    //   7_631_819 = 5_631_819 (the employee is SHORT). The old clamp gave
+    //   Cr = 2_000_000, Ce = 0 and let the company's over-payment cover the
+    //   employee's shortfall (old W 749_988, S 1_176_412).
+    //   De = floor(D x 5_000_000 / X). Dr + bR < 0 at the first step, so
+    //   covered stays 0 (no allowance):
+    //   S0=0       X 25_000_000 gross 245_000_000 annual 21_750_000 T 1_750_000 D 3_750_000 De 750_000 Dr 3_000_000 next max(0, 3_000_000 - 7_631_819) = 0 stop.
+    //   Employee: e = De + bE = 750_000 + 5_631_819 = 6_381_819 = W.
+    //   Company: r = Dr + bR = 3_000_000 - 7_631_819 = -4_631_819 => company
+    //   refund 4_631_819. T = 21_750_000 - 20_000_000 = 1_750_000.
+    //   Check: 6_381_819 - 4_631_819 = 1_750_000 = T. W <= De + bE.
     check("with scheme base", MIXED_BASES, "proportional", {
-      x: 26_176_412,
-      annual: 21_926_400,
-      t: 1_926_400,
-      w: 749_988,
-      s: 1_176_412,
-      de: 749_988,
+      x: 25_000_000,
+      annual: 21_750_000,
+      t: 1_750_000,
+      w: 6_381_819,
+      s: 0,
+      de: 6_381_819, // De 750_000 + bE 5_631_819 (bound on W)
       ce: 0,
-      cr: 2_000_000,
+      cr: 7_631_819, // max(0, -bR)
+      employerRefund: 4_631_819,
     });
     // with scheme base, gross_first: Ce = 500_000, Cr = 1_500_000, De = 750_000.
     //   S0=0       X 25_000_000 annual 21_750_000 D 3_750_000 Dr 3_000_000 next 1_500_000
@@ -493,6 +499,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       employerRefund: number;
       ce: number;
       cr: number;
+      de?: number; // bound on W; default De = 150_000 (bead legend-mmgd)
     };
     const lines = [
       { amountIdr: 1_000_000, taxScheme: "gross" as const },
@@ -520,18 +527,30 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         expect(r.annual?.annualTaxIdr).toBe(18_300_000);
         expect(r.annual?.priorPph21Idr).toBe(20_000_000);
         expectAccounting(r);
-        expectBounds(r, { de: 150_000, ce: c.ce, cr: c.cr });
+        expectBounds(r, { de: c.de ?? 150_000, ce: c.ce, cr: c.cr });
       });
 
-    // with base, proportional: Ce = 0, Cr = 2_000_000. Employee: De - Ce =
-    //   150_000 -> W = 150_000, no refund. Company: Dr - Cr = -1_850_000 ->
-    //   refund 1_850_000. Check: 150_000 - 1_850_000 = -1_700_000 = T.
+    // with base, proportional (updated for bead legend-mmgd: signed balances,
+    //   and bead legend-4ndx: W is capped at the available pay, the excess is
+    //   the company's):
+    //   bR = 9_818_181 - 17_450_000 = -7_631_819, bE = -2_000_000 + 7_631_819 =
+    //   5_631_819 (as O5: the employee is short, the company over-paid).
+    //   Employee's own amount De + bE = 150_000 + 5_631_819 = 5_781_819, but
+    //   the cap is gross lines + gross_up + net lines - deductible =
+    //   1_000_000 + 1_000_000 + 0 - 0 = 2_000_000 (the allowance is 0 here), so
+    //   excess = 5_781_819 - 2_000_000 = 3_781_819 and W = 2_000_000 (no
+    //   refund). Company: r = Dr + bR + excess = 150_000 - 7_631_819 +
+    //   3_781_819 = -3_700_000 < 0 => company refund 3_700_000, borne 0 (the
+    //   excess only reduces the refund). Check: 2_000_000 - 3_700_000 =
+    //   -1_700_000 = T. (Without the cap: W 5_781_819, company refund
+    //   7_481_819.)
     check("with scheme base", MIXED_BASES, "proportional", {
-      w: 150_000,
+      w: 2_000_000,
       refund: 0,
-      employerRefund: 1_850_000,
+      employerRefund: 3_700_000,
       ce: 0,
-      cr: 2_000_000,
+      cr: 7_631_819,
+      de: 2_000_000, // the available pay (bead legend-4ndx), below De + bE 5_781_819
     });
     // with base, gross_first: Ce = 500_000, Cr = 1_500_000. Employee: 150_000
     //   - 500_000 < 0 -> W = 0, refund 350_000. Company: 150_000 - 1_500_000
