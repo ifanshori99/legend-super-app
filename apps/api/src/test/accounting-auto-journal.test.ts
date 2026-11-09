@@ -36,6 +36,12 @@
 // - Journal lines are compared per role with each side summed, so a rule that
 //   splits one role over two lines (customer_deposit on order.paid) still
 //   matches.
+// - Slice 2: order.paid carries `paidDepositIdr` (the reservation DP applied,
+//   equal to `orders.deposit_applied_idr`); the DP is found through
+//   `reservation_deposit_allocations` of the order's table session and its
+//   intents (`payment_intents.reservation_id`). reservation.cancelled /
+//   reservation.no_show read the closed reservation row, cashier_shift.closed
+//   the closed shift row; those rows are seeded with raw SQL.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
@@ -97,7 +103,8 @@ type Role =
   | "sales_discount"
   | "service_charge"
   | "rounding"
-  | "deposit_forfeit_income";
+  | "deposit_forfeit_income"
+  | "cash_over_short";
 
 const CHART: [Role, string, string, string, string][] = [
   ["cash_on_hand", "1101", "Kas", "asset", "current_asset"],
@@ -135,6 +142,7 @@ const CHART: [Role, string, string, string, string][] = [
     "revenue",
     "other_income",
   ],
+  ["cash_over_short", "6108", "Selisih Kas", "expense", "operating_expense"],
 ];
 
 type Tenant = { id: string; brandId: string };
@@ -390,6 +398,10 @@ type SaleAmounts = {
   serviceChargeIdr?: number;
   pbjtIdr?: number;
   roundingIdr?: number;
+  /** Reservation DP applied (order.paid paidDepositIdr); tenders pay the rest. */
+  depositIdr?: number;
+  /** Table session the DP is credited to. */
+  tableSessionId?: string;
   tenders: Tender[];
 };
 
@@ -422,9 +434,9 @@ async function seedPosOrder(
       `INSERT INTO orders
          (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
           subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
-          status, business_date, placed_at)
+          status, business_date, placed_at, deposit_applied_idr, table_session_id)
        VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, $6, $7, $8, $9, $10,
-               'completed', '2026-10-15', now())`,
+               'completed', '2026-10-15', now(), $11, $12)`,
       [
         orderId,
         world.tenant.id,
@@ -436,6 +448,8 @@ async function seedPosOrder(
         sale.pbjtIdr ?? 0,
         sale.roundingIdr ?? 0,
         totalOf(sale),
+        sale.depositIdr ?? 0,
+        sale.tableSessionId ?? null,
       ],
     );
     await client.query(
@@ -610,6 +624,9 @@ function orderPaid(
       paidGatewayIdr: sum("paidGatewayIdr"),
       paidEdcIdr: sum("paidEdcIdr"),
       paidPointsIdr: 0,
+      ...(sale.depositIdr === undefined
+        ? {}
+        : { paidDepositIdr: sale.depositIdr }),
       tenders: sale.tenders.map((tender) => ({
         method: tender.method,
         amountIdr: tender.amountIdr,
@@ -665,6 +682,339 @@ function orderRefunded(
       refundedAt,
     },
   });
+}
+
+// ---- slice 2 seeding: reservation DP, table session, cashier shift ---------
+
+/** An open table session (zone + table) the DP of a reservation is credited to. */
+async function seedSession(world: World): Promise<string> {
+  const zoneId = randomUUID();
+  const tableId = randomUUID();
+  const sessionId = randomUUID();
+  await asTenant(world.tenant, async (client) => {
+    await client.query(
+      `INSERT INTO floor_zones (id, tenant_id, outlet_id, name, payment_mode, hours)
+       VALUES ($1, $2, $3, $4, 'pay_first', '[]')`,
+      [zoneId, world.tenant.id, world.outletId, `Zona AJ ${short()}`],
+    );
+    await client.query(
+      `INSERT INTO tables (id, tenant_id, outlet_id, zone_id, code, capacity, type, layout)
+       VALUES ($1, $2, $3, $4, $5, 4, 'regular', '{}')`,
+      [
+        tableId,
+        world.tenant.id,
+        world.outletId,
+        zoneId,
+        `T${short()}`.toUpperCase(),
+      ],
+    );
+    await client.query(
+      `INSERT INTO table_sessions (id, tenant_id, outlet_id, table_id, pax, payment_mode, status,
+         session_token_hash, session_token_sealed)
+       VALUES ($1, $2, $3, $4, 2, 'pay_first', 'open', $5, 'sealed')`,
+      [
+        sessionId,
+        world.tenant.id,
+        world.outletId,
+        tableId,
+        randomBytes(32).toString("hex"),
+      ],
+    );
+  });
+  return sessionId;
+}
+
+type ReservationRow = {
+  id: string;
+  status: "seated" | "cancelled" | "no_show";
+  depositIdr: number;
+  depositPaymentId: string;
+  tableSessionId?: string;
+  refundIdr?: number;
+  forfeitedIdr?: number;
+};
+
+async function seedReservation(
+  world: World,
+  row: ReservationRow,
+): Promise<void> {
+  const closed = row.status !== "seated";
+  await asTenant(world.tenant, (client) =>
+    client.query(
+      `INSERT INTO reservations
+         (id, tenant_id, outlet_id, guest_name, reserved_for, duration_minutes, pax, deposit_idr,
+          deposit_payment_id, policy_snapshot, status, source, seated_at, table_session_id,
+          closed_at, deposit_refund_idr, deposit_forfeited_idr)
+       VALUES ($1, $2, $3, 'Tamu AJ', $4, 90, 2, $5, $6, '{}', $7, 'staff', $8, $9, $10, $11, $12)`,
+      [
+        row.id,
+        world.tenant.id,
+        world.outletId,
+        DAY,
+        row.depositIdr,
+        row.depositPaymentId,
+        row.status,
+        closed ? null : DAY,
+        row.tableSessionId ?? null,
+        closed ? DAY : null,
+        closed ? (row.refundIdr ?? 0) : null,
+        closed ? (row.forfeitedIdr ?? 0) : null,
+      ],
+    ),
+  );
+}
+
+/**
+ * A seated reservation whose paid DP is credited to a fresh table session
+ * (RSV-02 allocation). Extra DP intents of the same reservation are optional.
+ */
+async function seedSeatedDeposit(
+  world: World,
+  depositIdr: number,
+): Promise<{ reservationId: string; sessionId: string; intentId: string }> {
+  const reservationId = randomUUID();
+  const intentId = await seedIntent(world, {
+    amountIdr: depositIdr,
+    reservationId,
+  });
+  const sessionId = await seedSession(world);
+  await seedReservation(world, {
+    id: reservationId,
+    status: "seated",
+    depositIdr,
+    depositPaymentId: intentId,
+    tableSessionId: sessionId,
+  });
+  await asTenant(world.tenant, (client) =>
+    client.query(
+      `INSERT INTO reservation_deposit_allocations
+         (tenant_id, outlet_id, reservation_id, table_session_id, payment_intent_id, amount_idr)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        world.tenant.id,
+        world.outletId,
+        reservationId,
+        sessionId,
+        intentId,
+        depositIdr,
+      ],
+    ),
+  );
+  return { reservationId, sessionId, intentId };
+}
+
+/** A cancelled / no-show reservation with its DP intent and stored split. */
+async function seedClosedReservation(
+  world: World,
+  input: {
+    kind: "cancelled" | "no_show";
+    paidIdr: number;
+    forfeitedIdr: number;
+  },
+): Promise<{ reservationId: string; intentId: string }> {
+  const reservationId = randomUUID();
+  const intentId = await seedIntent(world, {
+    amountIdr: input.paidIdr,
+    reservationId,
+  });
+  await seedReservation(world, {
+    id: reservationId,
+    status: input.kind,
+    depositIdr: input.paidIdr,
+    depositPaymentId: intentId,
+    refundIdr: input.paidIdr - input.forfeitedIdr,
+    forfeitedIdr: input.forfeitedIdr,
+  });
+  return { reservationId, intentId };
+}
+
+function reservationClosed(
+  world: World,
+  reservationId: string,
+  kind: "cancelled" | "no_show",
+  deposit: { paidIdr: number; forfeitedIdr: number },
+  extra: { id?: string; occurredAt?: string } = {},
+): EventEnvelope {
+  return envelope(world, {
+    ...(extra.id === undefined ? {} : { id: extra.id }),
+    name: `reservation.${kind}`,
+    aggregateType: "reservation",
+    aggregateId: reservationId,
+    occurredAt: extra.occurredAt ?? DAY,
+    payload: {
+      reservationId,
+      closedBy: "staff",
+      reason: "Tamu tidak datang.",
+      depositPaidIdr: deposit.paidIdr,
+      depositRefundIdr: deposit.paidIdr - deposit.forfeitedIdr,
+      depositForfeitedIdr: deposit.forfeitedIdr,
+      policyVersion: "v1",
+    },
+  });
+}
+
+const SHIFT_FLOAT_IDR = 500_000;
+
+async function seedUser(): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
+    [id, "Kasir AJ", `${id}@example.com`],
+  );
+  return id;
+}
+
+/**
+ * A closed shift with no movement: expected = opening float, variance =
+ * counted - expected (the closed-check and the count guard of 0089 hold).
+ */
+async function seedClosedShift(
+  world: World,
+  countedIdr: number,
+): Promise<string> {
+  const cashierId = await seedUser();
+  const approverId = await seedUser();
+  const shiftId = randomUUID();
+  const countId = randomUUID();
+  const varianceIdr = countedIdr - SHIFT_FLOAT_IDR;
+  await asTenant(world.tenant, async (client) => {
+    await client.query(
+      `INSERT INTO pos_shifts
+         (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+          opened_at, opening_float_idr, open_key, open_fingerprint)
+       VALUES ($1, $2, $3, $4, $5, '2026-10-15', 'open', $6, $7, $8, $9)`,
+      [
+        shiftId,
+        world.tenant.id,
+        world.outletId,
+        randomUUID(),
+        cashierId,
+        DAY,
+        SHIFT_FLOAT_IDR,
+        randomUUID(),
+        "a".repeat(64),
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_shift_counts
+         (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
+          counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
+          idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, $6, $7, $8, $9, now(), false, $10, $5)`,
+      [
+        countId,
+        world.tenant.id,
+        world.outletId,
+        shiftId,
+        "b".repeat(64),
+        countedIdr,
+        SHIFT_FLOAT_IDR,
+        varianceIdr,
+        cashierId,
+        randomUUID(),
+      ],
+    );
+    await client.query(
+      `UPDATE pos_shifts SET status = 'closed', expected_idr = $3, counted_idr = $4,
+          variance_idr = $5, variance_note = $6, counts = '[]'::jsonb, count_id = $7,
+          approved_by = $8, approval_request_id = $9, approval_override_id = $10,
+          approved_at = $11, closed_at = $11, closed_by = $12, close_key = $13,
+          close_fingerprint = $14, version = version + 1
+        WHERE tenant_id = $1 AND id = $2`,
+      [
+        world.tenant.id,
+        shiftId,
+        SHIFT_FLOAT_IDR,
+        countedIdr,
+        varianceIdr,
+        varianceIdr === 0 ? null : "Selisih hitung",
+        countId,
+        approverId,
+        randomUUID(),
+        randomUUID(),
+        DAY,
+        cashierId,
+        randomUUID(),
+        "c".repeat(64),
+      ],
+    );
+  });
+  return shiftId;
+}
+
+function shiftClosed(
+  world: World,
+  shiftId: string,
+  differenceIdr: number,
+  extra: { id?: string; closedAt?: string } = {},
+): EventEnvelope {
+  const closedAt = extra.closedAt ?? DAY;
+  return envelope(world, {
+    ...(extra.id === undefined ? {} : { id: extra.id }),
+    name: "cashier_shift.closed",
+    aggregateType: "cashier_shift",
+    aggregateId: shiftId,
+    occurredAt: closedAt,
+    payload: {
+      shiftId,
+      outletId: world.outletId,
+      deviceId: randomUUID(),
+      cashierId: randomUUID(),
+      businessDate: "2026-10-15",
+      openingFloatIdr: SHIFT_FLOAT_IDR,
+      cashSalesIdr: 0,
+      cashRefundsIdr: 0,
+      cashInIdr: 0,
+      cashOutIdr: 0,
+      cashDropIdr: 0,
+      expectedIdr: SHIFT_FLOAT_IDR,
+      countedIdr: SHIFT_FLOAT_IDR + differenceIdr,
+      differenceIdr,
+      varianceNote: differenceIdr === 0 ? null : "Selisih hitung",
+      approvedBy: randomUUID(),
+      approvalRequestId: randomUUID(),
+      closedAt,
+    },
+  });
+}
+
+/** payment.paid emitted to cloud-sync but not consumed yet (receipt pending). */
+async function seedUndeliveredReceipt(
+  world: World,
+  intentId: string,
+  receivedIdr: number,
+): Promise<string> {
+  const outboxId = randomUUID();
+  await owner.query(
+    `INSERT INTO domain_event_outbox
+       (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination)
+     VALUES ($1, $2, $3, $4, 'payment', $5, 1, $6, 'cloud-sync')`,
+    [
+      world.tenant.id,
+      outboxId,
+      world.outletId,
+      randomUUID(),
+      intentId,
+      JSON.stringify(paymentPaid(world, intentId, receivedIdr)),
+    ],
+  );
+  return outboxId;
+}
+
+async function markDelivered(world: World, outboxId: string): Promise<void> {
+  await owner.query(
+    "UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now() WHERE tenant_id = $1 AND id = $2",
+    [world.tenant.id, outboxId],
+  );
+}
+
+async function journalIdOf(world: World, key: string): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2",
+    [world.tenant.id, key],
+  );
+  expect(rows, key).toHaveLength(1);
+  return rows[0]!.id;
 }
 
 function deliver(
@@ -1798,6 +2148,372 @@ describe("F19 the accounting module gate and unhandled events", () => {
     expect(await deliver(world.tenant, dayClosed)).toEqual({
       status: "ignored",
     });
+    expect(await journalCount(world)).toBe(0);
+  });
+});
+
+describe("F19 slice 2 order.paid applies the reservation DP", () => {
+  /** 100k + 10% PBJT = 110k, fully covered by the DP (no tender). */
+  const dpSale = (sessionId: string, depositIdr = 110_000): SaleAmounts => ({
+    grossSalesIdr: 100_000,
+    pbjtIdr: 10_000,
+    depositIdr,
+    tableSessionId: sessionId,
+    tenders:
+      depositIdr < 110_000
+        ? [{ method: "cash", amountIdr: 110_000 - depositIdr }]
+        : [],
+  });
+
+  it("AJ-DPA-01 a DP whose receipt is booked: the sale debits customer_deposit, the DP nets to 0 after receipt + sale", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+  });
+
+  it("AJ-DPA-02 a DP paid before the cutover (no receipt, no outbox row) books the DP part as gateway_clearing; the cash part stays cash", async () => {
+    const world = await makeWorld();
+    const { sessionId } = await seedSeatedDeposit(world, 60_000);
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId, 60_000);
+    await seedPosOrder(world, orderUlid, sale);
+
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 50_000, credit: 0 },
+      { role: "gateway_clearing", debit: 60_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-DPA-03 a DP receipt still in the outbox parks the sale RECEIPT_PENDING; after the receipt the sweep posts it via customer_deposit", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    await markDelivered(world, outboxId);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    const saleId = await journalIdOf(world, `aj:sale:${orderUlid}`);
+    expect(await linesOf(world, saleId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await parkedOf(tenant, `aj:sale:${orderUlid}`)).toHaveLength(0);
+  });
+
+  it("AJ-DPA-04 paidDepositIdr different from the order's DP applied parks non-retryable POSTING_AMOUNTS_MISMATCH, nothing posted", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, dpSale(sessionId));
+
+    // The event claims 100k DP + 10k cash; the order row applied 110k.
+    expect(
+      await deliver(
+        world.tenant,
+        orderPaid(world, orderUlid, dpSale(sessionId, 100_000)),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toMatchObject([
+      { retryable: false, event_name: "order.paid" },
+    ]);
+  });
+
+  it("AJ-DPA-05 a DP with one booked and one pre-cutover receipt parks non-retryable AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED", async () => {
+    const world = await makeWorld();
+    const { reservationId, sessionId, intentId } = await seedSeatedDeposit(
+      world,
+      110_000,
+    );
+    await post(world, paymentPaid(world, intentId, 110_000));
+    // A second DP intent of the reservation, paid before the cutover.
+    await seedIntent(world, { amountIdr: 50_000, reservationId });
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    expect(
+      await deliver(world.tenant, orderPaid(world, orderUlid, sale)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toMatchObject([
+      { retryable: false },
+    ]);
+  });
+});
+
+describe("F19 slice 2 a forfeited DP moves to deposit_forfeit_income", () => {
+  it("AJ-FORFEIT-01 a no-show forfeits the whole DP: Dr customer_deposit / Cr deposit_forfeit_income (source customer_deposit); replay and a new event id post once", async () => {
+    const world = await makeWorld();
+    const deposit = { paidIdr: 200_000, forfeitedIdr: 200_000 };
+    const { reservationId, intentId } = await seedClosedReservation(world, {
+      kind: "no_show",
+      ...deposit,
+    });
+    await post(world, paymentPaid(world, intentId, 200_000));
+
+    const event = reservationClosed(world, reservationId, "no_show", deposit);
+    const result = await post(world, event);
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 200_000, credit: 0 },
+      { role: "deposit_forfeit_income", debit: 0, credit: 200_000 },
+    ]);
+    const entry = await entryOf(world, result.journalEntryId);
+    expect(entry.source_type).toBe("customer_deposit");
+    expect(entry.entry_date).toBe("2026-10-15");
+    expect(entry.outlet_id).toBe(world.outletId);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(200_000);
+
+    expect(await deliver(world.tenant, event)).toEqual({
+      status: "already_posted",
+      journalEntryId: result.journalEntryId,
+    });
+    expect(
+      await deliver(
+        world.tenant,
+        reservationClosed(world, reservationId, "no_show", deposit),
+      ),
+    ).toEqual({
+      status: "already_posted",
+      journalEntryId: result.journalEntryId,
+    });
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-FORFEIT-02 a late cancel forfeits part: the forfeit and the refund payout (payment.refunded) book separately and customer_deposit ends at 0", async () => {
+    const world = await makeWorld();
+    const deposit = { paidIdr: 200_000, forfeitedIdr: 80_000 };
+    const { reservationId, intentId } = await seedClosedReservation(world, {
+      kind: "cancelled",
+      ...deposit,
+    });
+    await post(world, paymentPaid(world, intentId, 200_000));
+
+    const forfeit = await post(
+      world,
+      reservationClosed(world, reservationId, "cancelled", deposit),
+    );
+    expect(await linesOf(world, forfeit.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 80_000, credit: 0 },
+      { role: "deposit_forfeit_income", debit: 0, credit: 80_000 },
+    ]);
+    const refundId = await seedRefund(world, intentId, 120_000);
+    await post(world, paymentRefunded(world, refundId, intentId, 120_000));
+
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(80_000);
+    expect(await balanceOf(world, "deposit_forfeit_income")).toBe(-80_000);
+    expect(await journalCount(world)).toBe(3);
+  });
+
+  it("AJ-FORFEIT-03 a close with nothing forfeited (full refund or unpaid DP) is ignored", async () => {
+    const world = await makeWorld();
+    const deposit = { paidIdr: 200_000, forfeitedIdr: 0 };
+    const { reservationId } = await seedClosedReservation(world, {
+      kind: "cancelled",
+      ...deposit,
+    });
+
+    expect(
+      await deliver(
+        world.tenant,
+        reservationClosed(world, reservationId, "cancelled", deposit),
+      ),
+    ).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-FORFEIT-04 a DP paid before the cutover (no receipt) forfeits out of gateway_clearing", async () => {
+    const world = await makeWorld();
+    const deposit = { paidIdr: 150_000, forfeitedIdr: 150_000 };
+    const { reservationId } = await seedClosedReservation(world, {
+      kind: "no_show",
+      ...deposit,
+    });
+
+    const result = await post(
+      world,
+      reservationClosed(world, reservationId, "no_show", deposit),
+    );
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "deposit_forfeit_income", debit: 0, credit: 150_000 },
+      { role: "gateway_clearing", debit: 150_000, credit: 0 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-FORFEIT-05 mixed cutover (one DP intent booked, one not) parks non-retryable AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED", async () => {
+    const world = await makeWorld();
+    const deposit = { paidIdr: 200_000, forfeitedIdr: 200_000 };
+    const { reservationId, intentId } = await seedClosedReservation(world, {
+      kind: "no_show",
+      ...deposit,
+    });
+    await post(world, paymentPaid(world, intentId, 200_000));
+    await seedIntent(world, { amountIdr: 50_000, reservationId });
+
+    expect(
+      await deliver(
+        world.tenant,
+        reservationClosed(world, reservationId, "no_show", deposit),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED",
+      retryable: false,
+    });
+    expect(
+      await parkedOf(world.tenant, `aj:dp-forfeit:${reservationId}`),
+    ).toMatchObject([{ retryable: false, event_name: "reservation.no_show" }]);
+    expect(await journalCount(world)).toBe(1);
+  });
+
+  it("AJ-FORFEIT-06 a forfeit different from the stored reservation split parks non-retryable POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const { reservationId, intentId } = await seedClosedReservation(world, {
+      kind: "cancelled",
+      paidIdr: 200_000,
+      forfeitedIdr: 80_000,
+    });
+    await post(world, paymentPaid(world, intentId, 200_000));
+
+    expect(
+      await deliver(
+        world.tenant,
+        reservationClosed(world, reservationId, "cancelled", {
+          paidIdr: 200_000,
+          forfeitedIdr: 100_000,
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+  });
+});
+
+describe("F19 slice 2 cashier_shift.closed books the drawer difference", () => {
+  it("AJ-SHIFT-01 cash over (+): Dr cash_on_hand / Cr cash_over_short, source cashier_shift, on the close day", async () => {
+    const world = await makeWorld();
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR + 20_000);
+
+    const result = await post(world, shiftClosed(world, shiftId, 20_000));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 20_000, credit: 0 },
+      { role: "cash_over_short", debit: 0, credit: 20_000 },
+    ]);
+    const entry = await entryOf(world, result.journalEntryId);
+    expect(entry.source_type).toBe("cashier_shift");
+    expect(entry.entry_date).toBe("2026-10-15");
+  });
+
+  it("AJ-SHIFT-02 cash short (-): Dr cash_over_short / Cr cash_on_hand", async () => {
+    const world = await makeWorld();
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR - 15_000);
+
+    const result = await post(world, shiftClosed(world, shiftId, -15_000));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 0, credit: 15_000 },
+      { role: "cash_over_short", debit: 15_000, credit: 0 },
+    ]);
+  });
+
+  it("AJ-SHIFT-03 a shift that closes exact (difference 0) is ignored", async () => {
+    const world = await makeWorld();
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR);
+
+    expect(await deliver(world.tenant, shiftClosed(world, shiftId, 0))).toEqual(
+      { status: "ignored" },
+    );
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-SHIFT-04 replaying the close, or the close under a new event id, posts once", async () => {
+    const world = await makeWorld();
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR + 5_000);
+    const event = shiftClosed(world, shiftId, 5_000);
+    const result = await post(world, event);
+
+    for (const again of [event, shiftClosed(world, shiftId, 5_000)])
+      expect(await deliver(world.tenant, again)).toEqual({
+        status: "already_posted",
+        journalEntryId: result.journalEntryId,
+      });
+    expect(await journalCount(world)).toBe(1);
+  });
+
+  it("AJ-SHIFT-05 a close in a closed month rolls to the first open day, flagged, with an audit row", async () => {
+    const world = await makeWorld();
+    await closePeriods(world, ["2026-10"]);
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR - 7_000);
+
+    const result = await post(world, shiftClosed(world, shiftId, -7_000));
+    expect(result.entryDate).toBe("2026-11-01");
+    expect(result.lateAdjustmentFrom).toBe("2026-10-15");
+    expect(
+      (await entryOf(world, result.journalEntryId)).late_adjustment_from,
+    ).toBe("2026-10-15");
+    expect(await lateAuditCount(world.tenant, result.journalEntryId)).toBe(1);
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-SHIFT-06 a difference that disagrees with the stored variance parks non-retryable POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const shiftId = await seedClosedShift(world, SHIFT_FLOAT_IDR + 20_000);
+
+    expect(
+      await deliver(world.tenant, shiftClosed(world, shiftId, 25_000)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await parkedOf(world.tenant, `aj:shift:${shiftId}`)).toHaveLength(1);
     expect(await journalCount(world)).toBe(0);
   });
 });

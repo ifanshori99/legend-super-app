@@ -20,7 +20,7 @@ Gateway money uses a **receipt-first** model with one liability role, `customer_
 | Sale paid | `order.paid` | Dr cash / customer_deposit (intent-backed gateway + DP applied) / gateway_clearing (gateway without intent) / edc_clearing / loyalty_liability / sales_discount; Cr sales_revenue, service_charge, tax_payable_pbjt, rounding |
 | Sale refunded | `order.refunded` | mirror; gateway part Cr customer_deposit (owed to guest until payout) |
 | Gateway money paid back | `payment.refunded` | Dr customer_deposit / Cr gateway_clearing |
-| DP forfeited | `reservation.cancelled`, `reservation.no_show` (depositForfeitedIdr > 0) | Dr customer_deposit / Cr deposit_forfeit_income |
+| DP forfeited | `reservation.cancelled`, `reservation.no_show` (depositForfeitedIdr > 0) | Dr customer_deposit (gateway_clearing if the DP predates the cutover) / Cr deposit_forfeit_income |
 | Cash over/short | `cashier_shift.closed` | existing rule (differenceIdr) |
 | Gateway settlement + MDR | `settlement.reconciled` | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross) |
 | EDC settlement + MDR | `edc_transaction.settled` | existing rule (Cr edc_clearing gross) |
@@ -69,7 +69,8 @@ liability role. A split can come later by mapping, without rule churn in consume
 - New `payment.paid` (sourceType `customer_deposit`): `gateway_clearing Dr receivedIdr`, `customer_deposit Cr receivedIdr`.
 - New `payment.refunded` (sourceType `refund`): `customer_deposit Dr amountIdr`, `gateway_clearing Cr amountIdr`.
 - New `reservation.cancelled` and `reservation.no_show` (sourceType `customer_deposit`):
-  `customer_deposit Dr forfeitedIdr`, `deposit_forfeit_income Cr forfeitedIdr`.
+  `customer_deposit Dr forfeitedIdr`, `gateway_clearing Dr forfeitedGatewayIdr` (slice 2: DP paid
+  before the cutover), `deposit_forfeit_income Cr forfeitedIdr`, `deposit_forfeit_income Cr forfeitedGatewayIdr`.
 - Settlement, EDC settlement, cashier shift, cash deposit rules: unchanged.
 
 Event catalog (`events/catalog.ts`): no new names needed; every trigger above is already
@@ -86,8 +87,8 @@ not strict, so emitter additions do not break it). Amounts are whole rupiah.
 | `order.refunded` | refundId, orderId, gross/discount/serviceCharge/pbjtIdr, refundCash/Gateway/Edc/PointsIdr, refundedAt | refundedAt | none |
 | `payment.paid` | intentId, method, provider, receivedIdr, paidAt, late; envelope outletId | paidAt | `payment_intents.edc_transaction_id`; skip EDC-linked intents (**TBD-verify** EDC intents emit payment.paid) |
 | `payment.refunded` | refundId, paymentIntentId, amountIdr | `payment_refunds.completed_at` (payload lacks it) | read refund row; skip EDC-linked intents |
-| `reservation.cancelled/no_show` | reservationId, depositForfeitedIdr, outletId | envelope occurredAt (closedAt) | none (**TBD-verify** payload schema) |
-| `cashier_shift.closed` | shiftId, differenceIdr, closedAt | closedAt | none (**TBD-verify** field names) |
+| `reservation.cancelled/no_show` | reservationId, depositForfeitedIdr; envelope outletId | envelope occurredAt (closedAt) | `reservations` row (outlet, status, depositForfeitedIdr must match); DP intents (`payment_intents.reservation_id`) |
+| `cashier_shift.closed` | shiftId, outletId, differenceIdr, closedAt | closedAt | `pos_shifts` row (closed, same outlet, varianceIdr must match) |
 | `settlement.reconciled` v1 (new schema) | settlementId, provider, outletId, settledOn, grossIdr, feeIdr, netSettledIdr; refine gross = net + fee | settledOn | none |
 | `edc_transaction.settled` v1 (new schema) | settlementBatchId, terminalId, outletId, settledOn, grossIdr, feeIdr, netSettledIdr | settledOn | none |
 | `cash_deposit.recorded` v1 (new schema) | cashDepositId, outletId, amountIdr, depositedOn | depositedOn | none |
@@ -95,6 +96,20 @@ not strict, so emitter additions do not break it). Amounts are whole rupiah.
 `order.paid` schema changes (`packages/shared/src/pos/events.ts`):
 - Slice 2: add `paidDepositIdr: nonnegativeIdr` (default 0) to the bucket sum refine; tenders sum = total - paidDepositIdr.
 - Slice 3 (fbms design A): `totalIdr` nonnegative, `tenders` may be empty, refine allows 0.
+
+Slice 2, verified 9 Nov (resolves the TBD-verify notes above):
+- `reservation.*` payload (`reservation-lifecycle.ts:498`, `reservation-public.ts:586`) is
+  {reservationId, closedBy, reason, depositPaidIdr, depositRefundIdr, depositForfeitedIdr,
+  policyVersion}; the system cancels (`reservation-booking.ts:416`, `reservation-core.ts:761`)
+  always send 0 and post nothing. forfeited = held DP - refund, written to the row with the event.
+- `cashier_shift.closed` (`pos-shift.service.ts:1384`): differenceIdr = countedIdr - expectedIdr
+  (= `pos_shifts.variance_idr`), signed; 0 posts nothing.
+- DP placement (`depositReceiptOf`): every DP intent's receipt posted -> customer_deposit; none ->
+  gateway_clearing (`paidGatewayIdr` on order.paid, `forfeitedGatewayIdr` on the forfeit); any
+  pending -> `AUTO_JOURNAL_RECEIPT_PENDING`; mixed -> `AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED`
+  (not retryable). order.paid reaches the DP through `orders.table_session_id` ->
+  `reservation_deposit_allocations` and requires paidDepositIdr = `orders.deposit_applied_idr`.
+- `order.refunded` has no DP leg (`pos-order-corrections.ts:520`): no refund split needed.
 
 Legal entity: `outlets.legal_entity_id` of the event outlet (same query as inventory-gl :414).
 Null -> park `OUTLET_LEGAL_ENTITY_MISSING`. Tenants without the accounting module: `ignored`.
@@ -185,7 +200,7 @@ No historical journal backfill: auto-journals start at deploy. Opening balances 
 | Slice | Content | Gate |
 |---|---|---|
 | 1 | Roles, rules, source type, late-adjustment, parking, backfill, consumer for order.paid (POS), order.refunded, payment.paid, payment.refunded; wiring patch | now |
-| 2 | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, DP refund split on order.refunded (**TBD-verify** refundSplit); forfeit handler; `cashier_shift.closed` handler | after 1 |
+| 2 | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, no DP leg on order.refunded (verified); forfeit handler; `cashier_shift.closed` handler | after 1 |
 | 3 | kej3: emit `order.paid` from QR fire path (`qr-order-consumers.ts` ~:341), gateway intent tender, paidAt = intent.paidAt, paidDepositIdr = depositApplied; shared `order-revenue.ts` `orderRevenueSplit()` (exclusive if subtotal - discount + svc + tax + rounding = total, gross = subtotal; inclusive if subtotal - discount + rounding = total, gross = subtotal - svc - tax; else fail closed). fbms design A: schema nonnegative, drop `if (order.totalIdr > 0)` (:1220), consumer skips all-zero amounts | after batch3 + batch4 are in m1 (inclusive QR, recipe deduction, qr-order-consumers +167 lines) |
 | 4 | Settlement + MDR: payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events. Emitters need a settlement import ledger (new WS-05 bead; `payment-admin-reconciliation.service.ts:144`) | after 1 |
 | 5 | Cash deposit: `accounting-cash-deposit.service.ts` posting document `cash_deposit` + emitting `cash_deposit.recorded`; route registration through a second wiring patch | after 1 |

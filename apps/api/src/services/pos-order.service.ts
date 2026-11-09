@@ -1138,14 +1138,6 @@ export async function completePosOrder(
       const paid = captured.reduce((sum, tender) => sum + tender.amountIdr, 0);
       if (paid + order.depositAppliedIdr !== order.totalIdr)
         throw new PosError("TENDER_TOTAL_MISMATCH");
-      // Decision (contract gap): order.paid has no deposit bucket, so a sale
-      // part-paid by a reservation deposit cannot post a balanced journal.
-      // Fail closed until the contract carries the deposit (follow-up bead).
-      if (order.depositAppliedIdr > 0)
-        throw new CoreError(
-          "CONFLICT",
-          "Tagihan dengan deposit reservasi belum dapat diselesaikan di POS.",
-        );
       // legend-b0au: a pending QRIS tender is voided and its WS-05 link
       // cancelled in this transaction (no new intent, pending intents
       // expired); a payment the gateway still lands later is refunded by
@@ -1206,6 +1198,8 @@ export async function completePosOrder(
         paidGatewayIdr: bucket("gateway"),
         paidEdcIdr: bucket("edc"),
         paidPointsIdr: bucket("points"),
+        // legend-9pz9: the DP applied to the sale (Dr customer_deposit).
+        paidDepositIdr: order.depositAppliedIdr,
         tenders: captured.map((tender) => ({
           method: tender.method,
           amountIdr: tender.amountIdr,
@@ -1216,7 +1210,10 @@ export async function completePosOrder(
         paidAt: now.toISOString(),
       };
       // A fully discounted sale (staff meal, comp) settles nothing: order.paid
-      // requires a positive total and a tender, so only the log records it.
+      // requires a positive total, so only the log records it. Decision
+      // (legend-9pz9): a sale fully covered by the reservation DP (no tender,
+      // totalIdr > 0) still emits order.paid with empty tenders, so the
+      // deposit leaves customer_deposit into the sale.
       if (order.totalIdr > 0)
         await appendPosEvent(tx, context, "order.paid", {
           order,

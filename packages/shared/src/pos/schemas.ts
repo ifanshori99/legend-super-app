@@ -30,6 +30,7 @@ import {
   tenantIdSchema,
   outletIdSchema,
   userIdSchema,
+  idr,
   idrSchema,
   basisPointsSchema,
   isoDateTimeSchema,
@@ -273,6 +274,11 @@ export const posOrderShape = {
   /** §6 `orders.rounding_idr`: a signed cash-rounding adjustment. */
   roundingIdr: idrSchema,
   totalIdr: nonnegativeIdr,
+  /**
+   * legend-9pz9: the reservation DP applied to this order (the table
+   * session's credit, `orders.deposit_applied_idr`). Tenders settle the rest.
+   */
+  depositAppliedIdr: nonnegativeIdr.default(idr(0)),
   status: posOrderStatusSchema,
   createdBy: userIdSchema.nullable(),
   createdAt: isoDateTimeSchema,
@@ -298,9 +304,16 @@ function checkOrderMoney(
     taxIdr: Idr;
     roundingIdr: Idr;
     totalIdr: Idr;
+    depositAppliedIdr: Idr;
   },
   ctx: z.RefinementCtx,
 ): void {
+  if (Number(order.depositAppliedIdr) > Number(order.totalIdr))
+    ctx.addIssue({
+      code: "custom",
+      path: ["depositAppliedIdr"],
+      message: "depositAppliedIdr must not exceed totalIdr",
+    });
   const expected =
     Number(order.subtotalIdr) -
     Number(order.discountIdr) +
@@ -1394,13 +1407,16 @@ export const posOrderDetailSchema = posOrderBaseSchema
     );
     // A split payment is still in progress until the last tender lands, so the
     // tenders must merely never exceed the bill; a completed sale is exact.
-    if (captured.length > 0 && paid > Number(order.totalIdr))
+    // The bill the tenders settle is the total less the applied DP.
+    const due = Number(order.totalIdr) - Number(order.depositAppliedIdr);
+    if (captured.length > 0 && paid > due)
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
-        message: "Captured tenders must not exceed the order total",
+        message:
+          "Captured tenders must not exceed the order total less the deposit",
       });
-    if (order.status === "completed" && paid !== Number(order.totalIdr))
+    if (order.status === "completed" && paid !== due)
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],

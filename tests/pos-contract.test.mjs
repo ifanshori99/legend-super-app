@@ -835,6 +835,27 @@ test("F8 tenders: cash change, multi-tender coverage and refund allocation are s
     false,
     "tenders never exceed the bill",
   );
+  // legend-9pz9: the applied DP settles part of the bill. A completed sale
+  // fully covered by the DP has no tender; DP plus full tenders overpays.
+  const completed = parsed.orderDetails[0];
+  assert.equal(pos.posOrderDetailSchema.parse(completed).depositAppliedIdr, 0);
+  pos.posOrderDetailSchema.parse({
+    ...completed,
+    depositAppliedIdr: completed.totalIdr,
+    tenders: [],
+  });
+  for (const [label, order] of [
+    ["DP plus full tenders", { ...completed, depositAppliedIdr: 1_000 }],
+    [
+      "DP above the total",
+      { ...completed, depositAppliedIdr: completed.totalIdr + 1, tenders: [] },
+    ],
+  ])
+    assert.equal(
+      pos.posOrderDetailSchema.safeParse(order).success,
+      false,
+      label,
+    );
 
   // Every fixture tender is complete and captured once.
   for (const order of parsed.orders) {
@@ -1111,6 +1132,55 @@ test("F8 events: POS event names are registered on the WS-04 catalog line", () =
     }).success,
     false,
   );
+  // legend-9pz9: the reservation DP applied to the sale is its own amount,
+  // not a tender. Absent means 0 (an older payload), so tenders = totalIdr.
+  assert.equal(
+    pos.posEvents["order.paid"].envelopeSchema.parse(envelope).payload
+      .paidDepositIdr,
+    0,
+  );
+  // Part-paid by DP: the tenders settle totalIdr - paidDepositIdr.
+  const partDp = {
+    ...envelope.payload,
+    paidDepositIdr: 50_000,
+    paidCashIdr: 60_100,
+    tenders: [
+      { method: "points", amountIdr: 10_000 },
+      { method: "cash", amountIdr: 60_100 },
+    ],
+  };
+  pos.posEventSchema.parse({ ...envelope, payload: partDp });
+  // A DP that covers the whole total leaves no tender and still parses.
+  pos.posEventSchema.parse({
+    ...envelope,
+    payload: {
+      ...envelope.payload,
+      paidDepositIdr: 120_100,
+      paidCashIdr: 0,
+      paidPointsIdr: 0,
+      tenders: [],
+    },
+  });
+  for (const [label, payload] of [
+    // DP is not counted on top of tenders that already cover the total.
+    ["DP on top of full tenders", { ...envelope.payload, paidDepositIdr: 50_000 }],
+    ["DP above the total", { ...envelope.payload, paidDepositIdr: 120_101 }],
+    ["negative DP", { ...partDp, paidDepositIdr: -1 }],
+    [
+      "no tender and no DP",
+      {
+        ...envelope.payload,
+        paidCashIdr: 0,
+        paidPointsIdr: 0,
+        tenders: [],
+      },
+    ],
+  ])
+    assert.equal(
+      pos.posEventSchema.safeParse({ ...envelope, payload }).success,
+      false,
+      label,
+    );
   assert.equal(
     pos.posEventSchema.safeParse({ ...envelope, name: "kitchen_ticket.bumped" })
       .success,

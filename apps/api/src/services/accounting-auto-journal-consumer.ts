@@ -1,6 +1,7 @@
 // Auto-journal consumer (F19, legend-9pz9; design docs/design/auto-journals.md).
 // Cloud only, wired in worker-main.ts next to the inventory GL bridge: every
-// automatic money journal (sale, sale refund, gateway receipt, gateway payout)
+// automatic money journal (sale, sale refund, gateway receipt, gateway payout,
+// forfeited reservation DP, cashier shift over/short)
 // posts through `postJournalFromRuleInTransaction` inside the outbox
 // consumption transaction. Tenants without the accounting module: `ignored`.
 //
@@ -15,8 +16,9 @@
 //   consumption still commits, so cloud-sync is never held back by the GL.
 // - a deterministic non-accounting failure (unreadable payload, missing row,
 //   unknown tender method, EDC-linked gateway tender) parks as non-retryable
-//   AUTO_JOURNAL_PAYLOAD_INVALID: it never throws, because the consumer runs
-//   inside the cloud-sync delivery transaction (with no outlet to park under:
+//   AUTO_JOURNAL_PAYLOAD_INVALID (a DP split between booked and pre-cutover
+//   receipts: AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED): it never throws, because
+//   the consumer runs inside the cloud-sync delivery transaction (with no outlet to park under:
 //   an `accounting.auto_journal.unparkable` audit row). Any other error (database, transient)
 //   propagates (outbox retry, dead letter, replayOutbox).
 //
@@ -52,6 +54,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  AutoJournalDepositCutoverMixed,
   AutoJournalPayloadInvalid,
   AutoJournalReceiptPending,
   autoJournalFactOf,
@@ -117,6 +120,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AccountingError) return error.code;
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
+  if (error instanceof AutoJournalDepositCutoverMixed) return error.code;
   if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
 }

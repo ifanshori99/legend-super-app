@@ -1090,9 +1090,29 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
 
   test("reservation.cancelled and reservation.no_show move a forfeited DP to income", () => {
     for (const eventName of ["reservation.cancelled", "reservation.no_show"]) {
-      const lines = linesFor(eventName, { forfeitedIdr: 200_000 });
+      const lines = linesFor(eventName, {
+        forfeitedIdr: 200_000,
+        forfeitedGatewayIdr: 0,
+      });
       assert.equal(sum(lines, "2107", "debitIdr"), 200_000);
       assert.equal(sum(lines, "7103", "creditIdr"), 200_000);
+      assert.equal(lines.length, 2);
+      // A DP paid before the cutover never reached customer_deposit: it is
+      // forfeited out of gateway_clearing.
+      const early = linesFor(eventName, {
+        forfeitedIdr: 0,
+        forfeitedGatewayIdr: 150_000,
+      });
+      assert.equal(sum(early, "1202", "debitIdr"), 150_000);
+      assert.equal(sum(early, "2107", "debitIdr"), 0);
+      assert.equal(sum(early, "7103", "creditIdr"), 150_000);
+      assert.equal(early.length, 2);
+      assert.deepEqual(
+        acc.postingRuleAmountKeys(
+          acc.resolvePostingRule(acc.defaultPostingRules, { eventName }),
+        ),
+        ["forfeitedGatewayIdr", "forfeitedIdr"],
+      );
     }
   });
 

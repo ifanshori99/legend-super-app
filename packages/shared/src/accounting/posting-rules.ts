@@ -24,7 +24,8 @@
 // customer_deposit for the gateway part (owed to the guest until payout) and
 // `payment.refunded` pays it out of gateway_clearing. A forfeited DP moves
 // from customer_deposit to deposit_forfeit_income on reservation.cancelled /
-// reservation.no_show. Gateway and EDC fees post on settlement.
+// reservation.no_show (from gateway_clearing when its receipt predates the
+// cutover). Gateway and EDC fees post on settlement.
 // Gateway switching changes only which clearing amount is filled (PAY-05).
 
 import { z } from "zod";
@@ -139,7 +140,8 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["cash_on_hand", "debit", "paidCashIdr"],
       // Gateway tender backed by a payment intent: its receipt already sits in
       // customer_deposit (payment.paid). Tender without an intent: straight to
-      // gateway_clearing. DP applied to the order also leaves customer_deposit.
+      // gateway_clearing. DP applied to the order also leaves customer_deposit
+      // (a DP whose receipt predates the cutover counts as paidGatewayIdr).
       ["customer_deposit", "debit", "paidGatewayIntentIdr"],
       ["customer_deposit", "debit", "paidDepositIdr"],
       ["gateway_clearing", "debit", "paidGatewayIdr"],
@@ -207,8 +209,12 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     "Uang muka reservasi hangus (batal)",
     `${AUTO}; §3.25 Reservasi (uang muka)`,
     [
+      // DP whose receipt is booked leaves customer_deposit; a DP paid before
+      // the auto-journal cutover (no receipt) leaves gateway_clearing.
       ["customer_deposit", "debit", "forfeitedIdr"],
+      ["gateway_clearing", "debit", "forfeitedGatewayIdr"],
       ["deposit_forfeit_income", "credit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedGatewayIdr"],
     ],
   ),
   rule(
@@ -218,7 +224,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO}; §3.25 Reservasi (uang muka)`,
     [
       ["customer_deposit", "debit", "forfeitedIdr"],
+      ["gateway_clearing", "debit", "forfeitedGatewayIdr"],
       ["deposit_forfeit_income", "credit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedGatewayIdr"],
     ],
   ),
   rule(

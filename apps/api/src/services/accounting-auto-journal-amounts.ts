@@ -17,6 +17,13 @@
 // intents are skipped (EDC money posts through edc_clearing on the sale); an
 // EDC-linked gateway tender fails closed.
 //
+// Slice 2 adds the reservation DP and the cashier shift: order.paid moves the
+// DP applied (paidDepositIdr, checked against the order row) out of
+// customer_deposit when the DP receipt is booked, or books it as gateway money
+// when the DP was paid before the cutover; reservation.cancelled /
+// reservation.no_show book the forfeited DP the same way; cashier_shift.closed
+// books the signed drawer difference checked against the shift row.
+//
 // A payload, row or method that can never post as sent throws
 // AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
 // non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
@@ -34,8 +41,12 @@ import {
   journalEntries,
   paymentIntents,
   paymentRefunds,
+  orders,
   paymentUnallocatedFunds,
   posOrderTenders,
+  posShifts,
+  reservationDepositAllocations,
+  reservations,
 } from "../db/schema/index.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
@@ -48,6 +59,9 @@ export const AUTO_JOURNAL_EVENTS = [
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
+  "reservation.cancelled",
+  "reservation.no_show",
+  "cashier_shift.closed",
 ] as const;
 export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
 
@@ -66,6 +80,15 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * A reservation DP whose intents are partly receipt-booked and partly
+ * pre-cutover: no single account holds it, finance must decide. Parked, never
+ * retried.
+ */
+export class AutoJournalDepositCutoverMixed extends Error {
+  readonly code = "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED";
 }
 
 const idr = z.number().int().safe();
@@ -88,8 +111,8 @@ const orderPaidSchema = z.object({
   paidGatewayIdr: idr,
   paidEdcIdr: idr,
   paidPointsIdr: idr,
-  /** Slice 2 adds it to order.paid; absent means no DP applied. */
-  paidDepositIdr: idr.default(0),
+  /** Reservation DP applied (slice 2); absent means no DP applied. */
+  paidDepositIdr: idr.nonnegative().default(0),
   paidAt: time,
 });
 
@@ -125,6 +148,19 @@ const paymentRefundedSchema = z.object({
   refundId: z.string().uuid(),
   paymentIntentId: z.string().uuid(),
   amountIdr: idr,
+});
+
+const reservationClosedSchema = z.object({
+  reservationId: z.string().uuid(),
+  depositForfeitedIdr: idr.nonnegative(),
+});
+
+const shiftClosedSchema = z.object({
+  shiftId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  /** countedIdr - expectedIdr: positive = over, negative = short. */
+  differenceIdr: idr,
+  closedAt: time,
 });
 
 const PAYMENT_SCHEMAS = {
@@ -185,6 +221,19 @@ export function storedEventOf(event: {
         );
       return { ...base, outletId: event.outletId, occurredAt, payload };
     }
+    case "reservation.cancelled":
+    case "reservation.no_show": {
+      const payload = reservationClosedSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "cashier_shift.closed": {
+      const payload = shiftClosedSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
   }
 }
 
@@ -222,6 +271,11 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:receipt-fund:${String(p.unallocatedFundId)}`);
     case "payment.refunded":
       return boundedKey(`aj:payout:${String(p.refundId)}`);
+    case "reservation.cancelled":
+    case "reservation.no_show":
+      return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
+    case "cashier_shift.closed":
+      return boundedKey(`aj:shift:${String(p.shiftId)}`);
   }
 }
 
@@ -331,6 +385,108 @@ async function receiptStatesOf(
   return states;
 }
 
+/** DP intents that took money: their receipts decide where the DP sits. */
+const DP_INTENT_STATUSES = ["paid", "partially_refunded", "refunded"] as const;
+
+/**
+ * Where a reservation's DP is booked (the cutover guard of receiptStatesOf,
+ * applied to every DP intent of the reservation):
+ * - "deposit": every receipt posted, the DP sits in customer_deposit;
+ * - "gateway": no receipt will ever post (DP paid before the cutover), the DP
+ *   was never booked and still sits in gateway_clearing only;
+ * - any receipt pending: AutoJournalReceiptPending (retryable);
+ * - posted and none mixed: AutoJournalDepositCutoverMixed (not retryable);
+ * - no DP intent that took money: AutoJournalPayloadInvalid.
+ */
+export async function depositReceiptOf(
+  tx: Tx,
+  tenantId: TenantId,
+  reservationId: string,
+): Promise<"deposit" | "gateway"> {
+  const intents = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.reservationId, reservationId),
+        inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
+      ),
+    );
+  if (intents.length === 0)
+    throw new AutoJournalPayloadInvalid(
+      "Reservation has no paid DP payment intent",
+    );
+  const states = [
+    ...(
+      await receiptStatesOf(
+        tx,
+        tenantId,
+        intents.map((intent) => intent.id),
+      )
+    ).values(),
+  ];
+  if (states.includes("pending"))
+    throw new AutoJournalReceiptPending("DP receipt is not booked yet");
+  if (states.every((state) => state === "posted")) return "deposit";
+  if (states.every((state) => state === "none")) return "gateway";
+  throw new AutoJournalDepositCutoverMixed(
+    "DP receipts are partly booked and partly before the cutover",
+  );
+}
+
+/**
+ * Where the DP applied to an order is booked: the order row must carry exactly
+ * the DP the event reports, and every reservation credited to its table
+ * session must agree (depositReceiptOf).
+ */
+async function orderDepositReceiptOf(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  paidDepositIdr: number,
+): Promise<"deposit" | "gateway"> {
+  const [order] = await tx
+    .select({
+      depositAppliedIdr: orders.depositAppliedIdr,
+      tableSessionId: orders.tableSessionId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!order)
+    throw new AutoJournalPayloadInvalid("Order of the event not found");
+  if (Number(order.depositAppliedIdr) !== paidDepositIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "paidDepositIdr does not match the DP applied to the order",
+    );
+  if (order.tableSessionId === null)
+    throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
+  const allocations = await tx
+    .select({ reservationId: reservationDepositAllocations.reservationId })
+    .from(reservationDepositAllocations)
+    .where(
+      and(
+        eq(reservationDepositAllocations.tenantId, tenantId),
+        eq(reservationDepositAllocations.tableSessionId, order.tableSessionId),
+      ),
+    );
+  if (allocations.length === 0)
+    throw new AutoJournalPayloadInvalid(
+      "Order with a DP has no reservation deposit on its session",
+    );
+  const sources = new Set<"deposit" | "gateway">();
+  for (const reservationId of new Set(
+    allocations.map((row) => row.reservationId),
+  ))
+    sources.add(await depositReceiptOf(tx, tenantId, reservationId));
+  if (sources.size > 1)
+    throw new AutoJournalDepositCutoverMixed(
+      "DP receipts of the session are partly booked and partly before the cutover",
+    );
+  return [...sources][0]!;
+}
+
 /** EDC-linked intents post through edc_clearing, never as gateway receipts. */
 async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
   const [intent] = await tx
@@ -354,7 +510,8 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
 
 /**
  * Rule input of one stored event, or null when the event books nothing
- * (EDC-linked intent on a payment event, zero receipt). Re-reads only rows that are final once
+ * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
+ * shift difference). Re-reads only rows that are final once
  * the event exists (captured tenders, the intent, the completed refund).
  */
 export async function autoJournalFactOf(
@@ -417,13 +574,27 @@ export async function autoJournalFactOf(
           );
         if (state === "posted") withReceipt += tender.amountIdr;
       }
+      // DP applied: out of customer_deposit when its receipt is booked, else
+      // (paid before the cutover) gateway money like a tender without receipt.
+      let paidDepositIdr = 0;
+      let depositGatewayIdr = 0;
+      if (p.paidDepositIdr > 0) {
+        const source = await orderDepositReceiptOf(
+          tx,
+          tenantId,
+          p.orderId,
+          p.paidDepositIdr,
+        );
+        if (source === "deposit") paidDepositIdr = p.paidDepositIdr;
+        else depositGatewayIdr = p.paidDepositIdr;
+      }
       return {
         ruleEvent: "order.paid",
         amounts: {
           paidCashIdr: p.paidCashIdr,
           paidGatewayIntentIdr: withReceipt,
-          paidDepositIdr: p.paidDepositIdr,
-          paidGatewayIdr: gatewayIdr - withReceipt,
+          paidDepositIdr,
+          paidGatewayIdr: gatewayIdr - withReceipt + depositGatewayIdr,
           paidEdcIdr: p.paidEdcIdr,
           paidPointsIdr: p.paidPointsIdr,
           discountIdr: p.discountIdr,
@@ -532,6 +703,85 @@ export async function autoJournalFactOf(
         sourceId: p.refundId,
         outletId: refund.outletId,
         moneyTime: refund.completedAt ?? new Date(stored.occurredAt),
+      };
+    }
+    case "reservation.cancelled":
+    case "reservation.no_show": {
+      const p = reservationClosedSchema.parse(stored.payload);
+      if (p.depositForfeitedIdr === 0) return null;
+      const [reservation] = await tx
+        .select({
+          outletId: reservations.outletId,
+          status: reservations.status,
+          depositForfeitedIdr: reservations.depositForfeitedIdr,
+        })
+        .from(reservations)
+        .where(
+          and(
+            eq(reservations.tenantId, tenantId),
+            eq(reservations.id, p.reservationId),
+          ),
+        );
+      const closedAs =
+        stored.eventName === "reservation.cancelled" ? "cancelled" : "no_show";
+      if (
+        !reservation ||
+        reservation.outletId !== stored.outletId ||
+        reservation.status !== closedAs
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Reservation of the event not found, of another outlet or not closed so",
+        );
+      // The close writes the forfeit to the row in the same transaction as
+      // the event, and nothing changes it afterwards.
+      if (Number(reservation.depositForfeitedIdr) !== p.depositForfeitedIdr)
+        throw new AccountingError(
+          "POSTING_AMOUNTS_MISMATCH",
+          "depositForfeitedIdr does not match the reservation",
+        );
+      const source = await depositReceiptOf(tx, tenantId, p.reservationId);
+      return {
+        ruleEvent: stored.eventName,
+        amounts: {
+          forfeitedIdr: source === "deposit" ? p.depositForfeitedIdr : 0,
+          forfeitedGatewayIdr: source === "gateway" ? p.depositForfeitedIdr : 0,
+        },
+        sourceId: p.reservationId,
+        outletId: stored.outletId,
+        moneyTime: new Date(stored.occurredAt),
+      };
+    }
+    case "cashier_shift.closed": {
+      const p = shiftClosedSchema.parse(stored.payload);
+      if (p.differenceIdr === 0) return null;
+      const [shift] = await tx
+        .select({
+          outletId: posShifts.outletId,
+          status: posShifts.status,
+          varianceIdr: posShifts.varianceIdr,
+        })
+        .from(posShifts)
+        .where(
+          and(eq(posShifts.tenantId, tenantId), eq(posShifts.id, p.shiftId)),
+        );
+      if (!shift || shift.status !== "closed" || shift.outletId !== p.outletId)
+        throw new AutoJournalPayloadInvalid(
+          "Shift of the event not found, open or of another outlet",
+        );
+      if (
+        shift.varianceIdr === null ||
+        Number(shift.varianceIdr) !== p.differenceIdr
+      )
+        throw new AccountingError(
+          "POSTING_AMOUNTS_MISMATCH",
+          "differenceIdr does not match the shift variance",
+        );
+      return {
+        ruleEvent: "cashier_shift.closed",
+        amounts: { differenceIdr: p.differenceIdr },
+        sourceId: p.shiftId,
+        outletId: shift.outletId,
+        moneyTime: new Date(p.closedAt),
       };
     }
   }
