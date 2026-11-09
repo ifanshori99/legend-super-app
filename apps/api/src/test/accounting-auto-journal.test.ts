@@ -5342,7 +5342,13 @@ describe("legend-6bq2 POS intent sale check", () => {
 async function seedPosRefund(
   world: World,
   orderUlid: string,
-  lines: { method: TenderMethod; amountIdr: number }[],
+  lines: {
+    method: TenderMethod;
+    amountIdr: number;
+    /** Per-tender line (ws/pos-refund-promo); absent = legacy per-method line. */
+    tenderId?: string;
+    paymentIntentId?: string | null;
+  }[],
   refundedAt: string,
 ): Promise<string> {
   return asTenant(world.tenant, async (client) => {
@@ -5613,6 +5619,298 @@ describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => 
     expect(await journalCount(world)).toBe(4);
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
+});
+
+describe("legend-9z1vm a payout after a per-tender POS refund line of a two-intent order", () => {
+  const T_SALE = "2026-10-15T05:00:00.000Z";
+  const T_POS_REFUND = "2026-10-15T08:00:00.000Z"; // before REFUND_DAY
+  const MISMATCH = {
+    status: "parked",
+    code: "POSTING_AMOUNTS_MISMATCH",
+    retryable: false,
+  } as const;
+
+  /**
+   * One POS order of 100k paid by two QRIS tenders on two intents (first 60k,
+   * second 40k), both receipts and the sale posted.
+   */
+  async function twoIntentOrder() {
+    const world = await makeWorld();
+    const first = await seedIntent(world, { amountIdr: 60_000 });
+    const second = await seedIntent(world, { amountIdr: 40_000 });
+    await post(world, paymentPaid(world, first, 60_000));
+    await post(world, paymentPaid(world, second, 40_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: [
+        { method: "qris", amountIdr: 60_000, intentId: first },
+        { method: "qris", amountIdr: 40_000, intentId: second },
+      ],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    const tenderOf = (intentId: string) =>
+      asTenant(world.tenant, async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          `SELECT id FROM pos_order_tenders WHERE order_id = $1 AND payment_intent_id = $2`,
+          [ulidToUuid(orderUlid), intentId],
+        );
+        return rows[0]!.id;
+      });
+    return {
+      world,
+      orderUlid,
+      first,
+      second,
+      firstTender: await tenderOf(first),
+      secondTender: await tenderOf(second),
+    };
+  }
+
+  /** The POS refund row and its posted order.refunded journal (Cr customer_deposit). */
+  async function posRefundWith(
+    world: World,
+    orderUlid: string,
+    lines: Parameters<typeof seedPosRefund>[2],
+  ) {
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      lines,
+      T_POS_REFUND,
+    );
+    const eventLines = lines.map(({ method, amountIdr }) => ({
+      method,
+      amountIdr,
+    }));
+    await post(
+      world,
+      orderRefunded(
+        world,
+        orderUlid,
+        posRefundId,
+        {
+          grossSalesIdr: eventLines.reduce((t, l) => t + l.amountIdr, 0),
+          pbjtIdr: 0,
+          lines: eventLines,
+        },
+        T_POS_REFUND,
+      ),
+    );
+  }
+
+  // The guard orders payouts by (completedAt, id). An over-amount payout must
+  // complete AFTER the exact ones, or a random uuid can sort it first.
+  const LATER = new Date(Date.parse(REFUND_DAY) + 3_600_000).toISOString();
+
+  /** Deliver a cash-out of `amountIdr` over `intentId`. */
+  async function payout(
+    world: World,
+    intentId: string,
+    amountIdr: number,
+    completedAt: string = REFUND_DAY,
+  ) {
+    const refundId = await seedRefund(
+      world,
+      intentId,
+      amountIdr,
+      undefined,
+      completedAt,
+    );
+    return deliver(
+      world.tenant,
+      paymentRefunded(world, refundId, intentId, amountIdr),
+    );
+  }
+
+  it("AJ-9Z1VM-01 a 30k qris line naming the first intent's tender frees 30k for the first intent only: 30001 parks, 30000 posts, the second intent stays fully held", async () => {
+    const { world, orderUlid, first, second, firstTender } =
+      await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+    ]);
+
+    // Exact amount first: the guard orders payouts by (completedAt, id), so a
+    // parked over-amount row posted earlier could sort before the exact one.
+    expect(await payout(world, first, 30_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, first, 1, LATER)).toEqual(MISMATCH);
+    expect(await payout(world, second, 1, LATER)).toEqual(MISMATCH);
+    // receipts + sale + POS refund + the first payout
+    expect(await journalCount(world)).toBe(5);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-9Z1VM-02 lines naming both tenders (20k first, 10k second) free exactly 20k and 10k: one more each parks, the exact amounts post", async () => {
+    const { world, orderUlid, first, second, firstTender, secondTender } =
+      await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 20_000,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    // Exact amounts first (see AJ-9Z1VM-01), then one more each parks.
+    expect(await payout(world, first, 20_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, second, 10_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, first, 1, LATER)).toEqual(MISMATCH);
+    expect(await payout(world, second, 1, LATER)).toEqual(MISMATCH);
+    expect(await journalCount(world)).toBe(6);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-9Z1VM-03 a legacy line without a tender id still frees nothing for either intent when only part of the method came back (30k of 100k)", async () => {
+    const { world, orderUlid, first, second } = await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 30_000 },
+    ]);
+
+    expect(await payout(world, first, 1)).toEqual(MISMATCH);
+    expect(await payout(world, second, 1)).toEqual(MISMATCH);
+  });
+
+  it("AJ-9Z1VM-05 a legacy 50k row plus a second row naming both tenders (10k first, 40k second) returns the whole method: the first intent pays out its full 60k and the second its full 40k", async () => {
+    const { world, orderUlid, first, second, firstTender, secondTender } =
+      await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 50_000 },
+    ]);
+    await posRefundWith(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+      {
+        method: "qris",
+        amountIdr: 40_000,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    expect(await payout(world, first, 60_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, second, 40_000)).toMatchObject({
+      status: "posted",
+    });
+    // receipts + sale + two POS refunds + two payouts
+    expect(await journalCount(world)).toBe(7);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-9Z1VM-06 a legacy 50k row plus one line naming the first tender (10k) leaves the method partly kept: the first intent frees only 10k, the second stays fully held", async () => {
+    const { world, orderUlid, first, second, firstTender } =
+      await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 50_000 },
+    ]);
+    await posRefundWith(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+    ]);
+
+    expect(await payout(world, first, 10_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, first, 1, LATER)).toEqual(MISMATCH);
+    expect(await payout(world, second, 1, LATER)).toEqual(MISMATCH);
+    // receipts + sale + two POS refunds + the first payout
+    expect(await journalCount(world)).toBe(6);
+  });
+
+  it("AJ-9Z1VM-07 a legacy 60k row plus a separate row naming only the second tender (40k) returns the whole method: the first intent pays out its full 60k and the second its full 40k", async () => {
+    const { world, orderUlid, first, second, secondTender } =
+      await twoIntentOrder();
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 60_000 },
+    ]);
+    await posRefundWith(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 40_000,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    expect(await payout(world, first, 60_000)).toMatchObject({
+      status: "posted",
+    });
+    expect(await payout(world, second, 40_000)).toMatchObject({
+      status: "posted",
+    });
+    // receipts + sale + two POS refunds + two payouts
+    expect(await journalCount(world)).toBe(7);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  for (const variant of [
+    "unknown-tender-id",
+    "tender-of-another-order",
+    "intent-id-mismatch",
+  ] as const) {
+    it(`AJ-9Z1VM-04 (${variant}) a per-tender line that does not match a tender of the intent on this order frees nothing: both intents stay held`, async () => {
+      const { world, orderUlid, first, second, firstTender } =
+        await twoIntentOrder();
+      let line: { tenderId: string; paymentIntentId: string };
+      if (variant === "unknown-tender-id") {
+        line = { tenderId: randomUUID(), paymentIntentId: first };
+      } else if (variant === "intent-id-mismatch") {
+        // The tender is the first intent's, the line claims the second.
+        line = { tenderId: firstTender, paymentIntentId: second };
+      } else {
+        // A qris tender (no intent) of another order of the same outlet.
+        const otherUlid = createUlid();
+        await seedPosOrder(world, otherUlid, {
+          grossSalesIdr: 20_000,
+          completedAt: T_SALE,
+          tenders: [{ method: "qris", amountIdr: 20_000 }],
+        });
+        const otherTender = await asTenant(world.tenant, async (client) => {
+          const { rows } = await client.query<{ id: string }>(
+            `SELECT id FROM pos_order_tenders WHERE order_id = $1`,
+            [ulidToUuid(otherUlid)],
+          );
+          return rows[0]!.id;
+        });
+        line = { tenderId: otherTender, paymentIntentId: first };
+      }
+      await posRefundWith(world, orderUlid, [
+        { method: "qris", amountIdr: 30_000, ...line },
+      ]);
+
+      expect(await payout(world, first, 1)).toEqual(MISMATCH);
+      expect(await payout(world, second, 1)).toEqual(MISMATCH);
+    });
+  }
 });
 
 describe("legend-3bsyh parked SALE_MISSING dependents retry once the sale posts", () => {
