@@ -847,6 +847,14 @@ async function activeOwnerAssignments(
  * requests from a second account. At least one of the approver's owner
  * assignments must predate (or follow) every such grant window.
  */
+/**
+ * legend-w1due: a support request that passed the guard just before its grant
+ * ended can still commit an Owner assignment a moment after the end (the end
+ * time is read before the assignment's own lock). Assignments within this
+ * margin after a window closes still count as made during it.
+ */
+const SUPPORT_WINDOW_GRACE_MS = 5 * 60 * 1000;
+
 async function hasIndependentOwnerStanding(
   tx: Tx,
   tenantId: string,
@@ -871,7 +879,9 @@ async function hasIndependentOwnerStanding(
     if (assignment.assignedBy.toLowerCase() === requester) return false;
     const at = assignment.assignedAt.getTime();
     return windows.every((window) => {
-      const end = (window.endedAt ?? window.expiresAt).getTime();
+      const end =
+        (window.endedAt ?? window.expiresAt).getTime() +
+        SUPPORT_WINDOW_GRACE_MS;
       return at < window.startedAt.getTime() || at >= end;
     });
   });
@@ -1669,6 +1679,9 @@ export async function endImpersonationSessionsWithoutGrant(input: {
     .where(
       and(
         eq(session.impersonatedBy, input.adminUserId),
+        // An already expired row is dead anyway (Better Auth refuses it) and
+        // must not be audited as grant_ended.
+        gt(session.expiresAt, now),
         input.sessionId === undefined
           ? undefined
           : eq(session.id, input.sessionId),
@@ -1686,8 +1699,10 @@ export async function endImpersonationSessionsWithoutGrant(input: {
       });
       if (live.length > 0) continue;
     }
-    // A direct delete skips Better Auth's delete hook, so the end is audited
-    // once, here. Only the call that actually deleted the row audits it.
+    // A direct delete skips Better Auth's delete hook. Among these cleanups
+    // only the call that actually deleted the row audits it; a stop or
+    // sign-out racing this delete may still write its own end row (Better
+    // Auth runs delete.after even when its delete removed nothing).
     const deleted = await db
       .delete(session)
       .where(eq(session.id, row.id))
