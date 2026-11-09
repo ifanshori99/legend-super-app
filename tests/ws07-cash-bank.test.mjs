@@ -736,7 +736,44 @@ describe("CSV import helpers", () => {
       debit_credit: "accounting.cash.import.preview.errorDebitCredit",
       description: "accounting.cash.import.preview.errorDescription",
       reference: "accounting.cash.import.preview.errorReference",
+      dedupe_key: "accounting.cash.import.preview.errorDedupeKey",
     });
+  });
+
+  test("CSV: preview refuses a row whose dedupe key passes the server limit", () => {
+    const mapping = cash.defaultCsvMapping();
+    assert.equal(cash.MAX_DEDUPE_KEY_LENGTH, 400);
+    // "ß".toUpperCase() is "SS": 250 characters become 500 in the key.
+    const long = cash.buildImportPreview(
+      [
+        "Tanggal,Keterangan,Nominal",
+        `01/11/2026,${"ß".repeat(250)},250000`,
+        "01/11/2026,Setoran kas,250000",
+      ].join("\n"),
+      mapping,
+    );
+    assert.equal(long.rows[0].status, "error");
+    assert.equal(long.rows[0].errorCode, "dedupe_key");
+    assert.equal(long.rows[1].status, "ready");
+    assert.equal(long.readyCount, 1);
+    assert.equal(long.errorCount, 1);
+  });
+
+  test("open case: one idempotency key per dialog session", () => {
+    let n = 0;
+    const session = cash.createIdempotencyKeySession(() => `key-${(n += 1)}`);
+    const first = session.current();
+    // A resend from the same dialog (failed or slow first attempt) reuses it.
+    assert.equal(session.current(), first);
+    // Success or close ends the session; the next dialog gets a new key.
+    session.reset();
+    assert.notEqual(session.current(), first);
+    // The default factory mints real, distinct ULIDs.
+    const real = cash.createIdempotencyKeySession();
+    const a = real.current();
+    assert.equal(real.current(), a);
+    real.reset();
+    assert.notEqual(real.current(), a);
   });
 
   test("CSV: the contract parsers refuse impossible dates and fractional rupiah", () => {

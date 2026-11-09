@@ -3,9 +3,10 @@
 // from their `{ data }` envelope; components never call these directly, they
 // use ./hooks.ts which owns cache keys and invalidation.
 //
-// Every write mints an idempotency key here (createUlid, the same pattern as
+// Writes mint an idempotency key here (createUlid, the same pattern as
 // ws07-accounting/api.ts): a retried click replays the first result instead of
-// importing the same CSV or opening a second case.
+// importing the same CSV twice. Opening a case is the exception: its dialog
+// owns the key (lib.ts createIdempotencyKeySession).
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { createUlid } from "@starter/shared/core";
 import {
@@ -231,11 +232,13 @@ export async function fetchReconciliationCase(
   return response.data;
 }
 
+// The key comes from the caller: the dialog keeps one per open session so a
+// resend replays on the server instead of opening a second case.
 export async function openReconciliationCase(
-  body: Omit<Body<typeof openReconciliationCaseEndpoint>, "idempotencyKey">,
+  body: Body<typeof openReconciliationCaseEndpoint>,
 ) {
   const response = await callEndpoint(openReconciliationCaseEndpoint, {
-    body: { ...body, idempotencyKey: createUlid() },
+    body,
   });
   return response.data;
 }

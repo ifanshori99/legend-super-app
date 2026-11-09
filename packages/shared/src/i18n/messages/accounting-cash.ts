@@ -147,6 +147,8 @@ export const accountingCashMessages = {
       errorDebitCredit: "Isi hanya salah satu dari debit atau kredit.",
       errorDescription: "Keterangan wajib diisi, maksimal 255 karakter.",
       errorReference: "Referensi maksimal 100 karakter.",
+      errorDedupeKey:
+        "Keterangan atau referensi terlalu panjang setelah dinormalisasi.",
       fixErrors: "Perbaiki {count} baris bermasalah sebelum mengimpor.",
       empty: "Tidak ada baris data yang bisa dibaca.",
     },

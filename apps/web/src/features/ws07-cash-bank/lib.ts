@@ -33,6 +33,7 @@ import {
   type ReconciliationRef,
   type UndepositedCashAlert,
 } from "@starter/shared/accounting";
+import { createUlid } from "@starter/shared/core";
 import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -287,7 +288,20 @@ export function defaultCsvMapping(): BankCsvMapping {
 // ---- CSV: import preview --------------------------------------------------
 
 export type ImportRowErrorCode =
-  "columns" | "date" | "amount" | "debit_credit" | "description" | "reference";
+  | "columns"
+  | "date"
+  | "amount"
+  | "debit_credit"
+  | "description"
+  | "reference"
+  | "dedupe_key";
+
+/**
+ * The server refuses a row whose normalised dedupe key is longer than this
+ * (parseStatementCsv); the preview applies the same limit so a row it shows as
+ * ready is never refused on import.
+ */
+export const MAX_DEDUPE_KEY_LENGTH = 400;
 
 export const IMPORT_ROW_ERROR_KEYS: Record<ImportRowErrorCode, MessageKey> = {
   columns: "accounting.cash.import.preview.errorColumns",
@@ -296,6 +310,7 @@ export const IMPORT_ROW_ERROR_KEYS: Record<ImportRowErrorCode, MessageKey> = {
   debit_credit: "accounting.cash.import.preview.errorDebitCredit",
   description: "accounting.cash.import.preview.errorDescription",
   reference: "accounting.cash.import.preview.errorReference",
+  dedupe_key: "accounting.cash.import.preview.errorDedupeKey",
 };
 
 export type ImportRowStatus = "ready" | "duplicate" | "error";
@@ -521,6 +536,12 @@ export function buildImportPreview(
       externalRef,
       occurrence,
     });
+    if (dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
+      preview.push(
+        errorRow(rowNumber, description, "dedupe_key", postedOn, amountIdr),
+      );
+      continue;
+    }
     preview.push({
       rowNumber,
       postedOn,
@@ -537,6 +558,26 @@ export function buildImportPreview(
     readyCount: preview.filter((row) => row.status === "ready").length,
     duplicateCount: preview.filter((row) => row.status === "duplicate").length,
     errorCount: preview.filter((row) => row.status === "error").length,
+  };
+}
+
+// ---- Idempotency key per dialog -------------------------------------------
+
+/**
+ * One idempotency key for the life of a dialog. A resend after a failed or
+ * slow first attempt must carry the same key so the server replays instead of
+ * opening a second case; `reset` (success or close) gives the next dialog a
+ * new key.
+ */
+export function createIdempotencyKeySession(
+  newKey: () => string = createUlid,
+): { current: () => string; reset: () => void } {
+  let key: string | null = null;
+  return {
+    current: () => (key ??= newKey()),
+    reset: () => {
+      key = null;
+    },
   };
 }
 

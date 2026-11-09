@@ -27,7 +27,12 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useAssignablePeople } from "@/features/ws01-access/people";
 import { useOpenReconciliationCase } from "../hooks";
-import { REF_TYPE_KEYS, shortId, type ReconciliationCaseType } from "../lib";
+import {
+  REF_TYPE_KEYS,
+  createIdempotencyKeySession,
+  shortId,
+  type ReconciliationCaseType,
+} from "../lib";
 
 export function OpenCaseDialog({
   open,
@@ -84,6 +89,9 @@ function OpenCaseForm({
   const options = people.data?.people ?? [];
   const [ownerId, setOwnerId] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  // OpenCaseForm lives inside DialogContent, so it mounts once per opened
+  // dialog: the key is stable across resends and new for the next dialog.
+  const [keySession] = React.useState(() => createIdempotencyKeySession());
   const effectiveOwner = ownerId || options[0]?.id || "";
   const unavailable = people.data?.unavailable ?? false;
 
@@ -98,9 +106,11 @@ function OpenCaseForm({
         differenceIdr,
         ownerId: effectiveOwner as UserId,
         refs: [...refs],
+        idempotencyKey: keySession.current(),
       },
       {
         onSuccess: () => {
+          keySession.reset();
           toast({
             title: t("accounting.cash.case.done"),
             tone: "success",
