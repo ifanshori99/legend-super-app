@@ -147,6 +147,8 @@ async function seed(world: World, outletId: string): Promise<Seed> {
       ["t2", 2, "closed", `${DAY}T05:30:00Z`, `${DAY}T06:00:00Z`], // 30 min
       ["t4", 4, "open", `${DAY}T06:10:00Z`, null],
       ["t3", 5, "voided", `${DAY}T05:00:00Z`, `${DAY}T05:05:00Z`],
+      // Waiting for a waiter to confirm: nobody was seated yet.
+      ["t5", 6, "pending_confirmation", `${DAY}T06:20:00Z`, null],
     ];
     for (const [table, pax, status, openedAt, closedAt] of sessions) {
       const id = randomUUID();
@@ -155,7 +157,7 @@ async function seed(world: World, outletId: string): Promise<Seed> {
       await client.query(
         `INSERT INTO table_sessions (id, tenant_id, outlet_id, table_id, pax, payment_mode, status,
            session_token_hash, session_token_sealed, opened_at, last_activity_at, closed_at, closed_reason)
-         VALUES ($1, $2, $3, $4, $5, 'pay_first', $6, $7, 'sealed', $8, $8, $9, $10)`,
+         VALUES ($1, $2, $3, $4, $5, $11, $6, $7, 'sealed', $8, $8, $9, $10)`,
         [
           id,
           t,
@@ -167,6 +169,7 @@ async function seed(world: World, outletId: string): Promise<Seed> {
           openedAt,
           closedAt,
           closed ? (status === "voided" ? "voided" : "paid_and_cleaned") : null,
+          status === "pending_confirmation" ? "open_bill" : "pay_first",
         ],
       );
     }
@@ -202,6 +205,8 @@ async function seed(world: World, outletId: string): Promise<Seed> {
       [ids.stationB, `${DAY}T06:00:00Z`, `${DAY}T06:05:00Z`, null], // 300 s
       [ids.stationA, `${DAY}T05:00:00Z`, null, `${DAY}T05:01:00Z`], // cancelled
       [ids.stationA, `${DAY}T06:30:00Z`, null, null], // still queued
+      // Fired days before and never closed: too old to be in the queue.
+      [ids.stationA, "2025-07-10T05:00:00Z", null, null],
     ];
     for (const [station, firedAt, doneAt, cancelledAt] of tickets)
       await client.query(
@@ -357,7 +362,7 @@ describe("traffic-operations daily rows", () => {
     const rows = await stored(a, a.outlet1, DAY);
     const value = (k: string) => rows.get(k)?.value;
 
-    // pax: voided session excluded (3 + 2 + 4).
+    // pax: voided and pending_confirmation sessions excluded (3 + 2 + 4).
     expect(value(key("pax"))).toBe("9");
     expect(value(key("pax", "zone", seedA.zone1))).toBe("5");
     expect(value(key("pax", "zone", seedA.zone2))).toBe("4");
@@ -380,6 +385,7 @@ describe("traffic-operations daily rows", () => {
     expect(value(key("waiter_call_count", "zone", seedA.zone2))).toBe("1");
 
     // kitchen: queue at day end, serving seconds (600 + 1200 + 300) / 3.
+    // The ticket fired on 2025-07-10 is older than the day: not counted.
     expect(value(key("order_queue_count"))).toBe("1");
     expect(value(key("order_queue_count", "station", seedA.stationA))).toBe(
       "1",
@@ -429,6 +435,13 @@ describe("traffic-operations daily rows", () => {
     expect(rows.get(key("remake_count"))?.value).toBe("0");
     expect(rows.get(key("table_turnover"))?.value).toBe("0.0000");
     expect(rows.get(key("order_queue_count"))?.value).toBe("0");
+    // Averages store 0 on a quiet day (total-row rule); the multi-day mean is
+    // not weighted (see the file header of the source).
+    expect(rows.get(key("avg_serving_time"))?.value).toBe("0");
+    expect(rows.get(key("avg_dwell_minutes"))?.value).toBe("0.0000");
+    expect(rows.has(key("avg_serving_time", "station", seedA.stationA))).toBe(
+      false,
+    );
     // No pos_daily_closes row: point-of-sale readers stay estimates.
     expect(rows.get(key("pax"))?.finality).toBe("estimate");
     expect(rows.get(key("remake_count"))?.finality).toBe("estimate");

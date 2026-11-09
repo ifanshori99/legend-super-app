@@ -4,21 +4,28 @@
 //
 // Built (daily readers, one outlet-day each, total row always written, zero
 // when nothing happened):
-// - pax: guests of the table sessions opened on the business day (voided
-//   sessions excluded); split zone and hour.
+// - pax: guests of the table sessions opened on the business day, only
+//   sessions that were seated (`open`, `bill_requested`, `closed`); a
+//   `pending_confirmation` or `voided` session is not counted; split zone
+//   and hour.
 // - table_turnover: sessions closed on the day / tables not inactive now
 //   (the table count has no history); split zone.
 // - avg_dwell_minutes: mean minutes between opened_at and closed_at of the
 //   sessions closed on the day; split zone.
 // - waiter_call_count: `call_waiter` service requests created on the day,
 //   cancelled ones excluded; split zone.
-// - order_queue_count: kitchen tickets fired but not done or cancelled at the
-//   end of the day (or now, on the open day); split station.
+// - order_queue_count: kitchen tickets fired on the business day and not done
+//   or cancelled at the end of the day (or now, on the open day); split
+//   station. A ticket fired before the day started is not counted, so a
+//   forgotten ticket never inflates the queue of later days.
 // - avg_serving_time: mean seconds fired_at to done_at of the tickets done on
 //   the day; split station and hour.
 // - remake_count / comp_count: `recipe_deductions` of that kind on the
-//   business date. The row carries no menu item or station, so no station
-//   split is built (the engine answers `dimension_not_supported`).
+//   business date. One row is one issue: the row stores no menu quantity
+//   (the event's quantity is not kept, and `recipe_deduction_lines` hold
+//   ingredient quantities, none for a skipped row), so the count is of
+//   issues, not items. The row carries no menu item or station, so no
+//   station split is built (the engine answers `dimension_not_supported`).
 //
 // Not built, answered `unavailable` / `source_not_built` (there is no stored
 // source for them in the schema today):
@@ -32,7 +39,11 @@
 //
 // Dimension values are ids: zone id, station id, hour "00".."23" in the
 // outlet's time zone. Averages are stored per outlet-day; the engine takes
-// the mean of those outlet-days (not weighted by volume).
+// the mean of those outlet-days (not weighted by volume). A day without
+// activity stores 0 for `avg_serving_time` and `avg_dwell_minutes` (the
+// total-row rule), so a multi-day mean over quiet days is pulled down: a
+// weighted average needs stored numerator and denominator, which is a
+// `ws11-shared` change (new bead), not built here.
 
 import { sql } from "drizzle-orm";
 import { businessDayRange } from "@starter/shared/core";
@@ -120,7 +131,7 @@ const paxReader: DailyMetricReader = {
       JOIN tables t ON t.tenant_id = s.tenant_id AND t.id = s.table_id
      WHERE s.tenant_id = ${input.tenantId}::uuid
        AND s.outlet_id = ${input.outletId}::uuid
-       AND s.status <> 'voided'
+       AND s.status IN ('open', 'bill_requested', 'closed')
        AND s.opened_at >= ${window.start}::timestamptz
        AND s.opened_at < ${window.end}::timestamptz`;
     const byZone = await grouped(
@@ -260,6 +271,7 @@ const queueReader: DailyMetricReader = {
             FROM kitchen_tickets
            WHERE tenant_id = ${input.tenantId}::uuid
              AND outlet_id = ${input.outletId}::uuid
+             AND fired_at >= ${window.start}::timestamptz
              AND fired_at < least(${window.end}::timestamptz, now())
              AND (done_at IS NULL OR done_at >= least(${window.end}::timestamptz, now()))
              AND (cancelled_at IS NULL OR cancelled_at >= least(${window.end}::timestamptz, now()))
