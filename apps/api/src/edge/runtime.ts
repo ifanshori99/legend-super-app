@@ -56,6 +56,7 @@ import {
 import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
 import {
   registerEdgeDeferredFallback,
+  registerAccessDeferredEdgeApplier,
   registerPosDeferredEdgeApplier,
 } from "./deferred-event-applier.ts";
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
@@ -765,6 +766,8 @@ export async function registerEdgeLink(
   registerStockMovedEdgeApplier();
   // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
   registerPosDeferredEdgeApplier();
+  // legend-eadm: pos_override.* / staff_pin.* parked (known, not unclassified).
+  registerAccessDeferredEdgeApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

@@ -50,6 +50,7 @@ import {
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import {
   registerEdgeDeferredFallback,
+  registerAccessDeferredEdgeApplier,
   registerPosDeferredEdgeApplier,
 } from "../edge/deferred-event-applier.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
@@ -331,6 +332,7 @@ beforeEach(() => {
   resetEdgeApplierRegistryForTests();
   registerStockMovedEdgeApplier();
   registerPosDeferredEdgeApplier();
+  registerAccessDeferredEdgeApplier(); // legend-eadm
   registerEdgeDeferredFallback(); // after the explicit registrations, as runtime.ts does
 });
 
@@ -573,7 +575,7 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
   });
 
   // ---- Round 2: generic edge->cloud fallback --------------------------------
-  const fallbackNames = ["table_session.opened", "pos_override.recorded"];
+  const fallbackNames = ["table_session.opened", "zz_unknown.recorded"];
 
   for (const name of fallbackNames) {
     it(`r2) ${name} is parked as unclassified, the cursor advances and the next stock.moved applies`, async () => {
@@ -620,7 +622,7 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
 
   it("r2) explicit WS-04 rows stay 'deferred' next to unclassified rows in one batch", async () => {
     const paid = orderEvent();
-    const override = orderEvent({ name: "pos_override.recorded" });
+    const override = orderEvent({ name: "zz_unknown.recorded" });
     const link = store();
     const before = await link.lastReceivedInbound();
     await deliver([paid, override]);
