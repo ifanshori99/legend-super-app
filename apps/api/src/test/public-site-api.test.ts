@@ -405,6 +405,8 @@ describe("GET /api/public/site (published website)", () => {
     const raw = JSON.stringify(response.body);
     expect(raw).not.toContain(alpha.tenantId);
     expect(raw).not.toContain('"seed"');
+    for (const name of PLATFORM_NAMES)
+      expect(raw.toLowerCase()).not.toContain(name);
   });
 
   it("WS08-S1: the member login link points at /member", async () => {

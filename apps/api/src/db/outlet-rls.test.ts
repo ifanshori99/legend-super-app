@@ -318,11 +318,12 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
     }
     try {
       const policy = await ownerPool.query(
-        `SELECT 1 FROM pg_policy p
+        `SELECT pg_get_expr(p.polqual, p.polrelid) AS qual FROM pg_policy p
          WHERE p.polrelid = 'public.brand_websites'::regclass
            AND p.polname = 'tenant_wide_only' AND NOT p.polpermissive`,
       );
       expect(policy.rowCount).toBe(1);
+      expect(policy.rows[0].qual).toContain("outlet_scope_is_tenant");
       const seen = await withTenant(appDb, outletScope(outletA), (tx) =>
         tx.execute(
           sql`SELECT id FROM brand_websites WHERE brand_id = ${brandId}`,
