@@ -20,3 +20,11 @@ EDC adalah satu-satunya jalur kartu saat rilis (keputusan founder 2026-11-09), j
 - Tiap temuan: test merah dulu, lalu fix. Empat temuan bisa dikerjakan paralel oleh subagent bila file tidak bertumpuk; temuan 1–3 di `agent.ts` sebaiknya satu implementer berurutan.
 - Basis: worktree `.worktrees/fix-edc-codex`, cabang `ws/fix-edc-codex` dari `milestone/m1` terbaru.
 - Review: reviewer Opus dan architect. Gate sekali lewat `heavy`. Commit lokal, lalu handoff ke merge train.
+
+## Tambahan (CTO 9 Nov 09:20): celah produk dari e2e A–Z, P1
+- legend-dahk: `setPosEdcTenderPort` belum tersambung, sehingga POS menjawab 503 untuk EDC-01 dan EDC-02. Sambungkan di composition root produk.
+- legend-m4fv (EDC-04, EDC standalone saat agent EDC mati):
+  - Tambah action `edc_standalone` ke `POS_OVERRIDE_ACTIONS` dan `ApprovalActionType`.
+  - Permission: `pos.edc_standalone.approve`.
+  - Wajib PIN supervisor, nomor referensi EDC, dan flag rekonsiliasi.
+- Setelah selesai, buka skip test EDC-01, EDC-02, dan EDC-04 di e2e-az (`prep/e2e-az` 263ce1ec, file az-*). Koordinasikan lewat merge train.
