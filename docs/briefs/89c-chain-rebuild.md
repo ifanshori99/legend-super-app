@@ -45,3 +45,4 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - e2e-az sekarang c01e9c63 (docs QA di atas 263ce1ec).
 - Urutan: ws11, ws02, whitelabel, receipt, e2e-az.
 - ws-09-ws 1e94f33f (WS-09 fasilitas + Wi-Fi, tingkat K; gate lulus di cabang; second-opinion brief 105 paralel, tidak menahan). Antre setelah e2e-az. Stage A + regen migrasi saat giliran.
+- 09-11 antrean CTO (setelah ws09-wifi, lompati yang tertahan): (1) ws/ai-tool-catalog d15542a8 (kontrak katalog AI, wajib dulu), (2) ws/ws12-ai 9f6d680e (basis katalog + m1 4a040820). Migrasi 0086-0091 diregen saat merge. Handoff: docs/PROGRESS.md bagian 'Handoff merge train WS-12' di cabang ws12-ai. Gate penuh belum pernah lulus di HEAD itu (tes terarah 817/817).
