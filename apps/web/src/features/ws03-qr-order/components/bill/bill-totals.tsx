@@ -1,5 +1,7 @@
 // The bill in rows: every amount comes from the server bill (ORD-03). Menu
 // prices exclude tax and service charge, so both appear here (owner rule).
+// Orders with inclusive prices carry them inside the subtotal: their service
+// and tax are listed as "termasuk" rows and are never added on top.
 import type { ReactNode } from "react";
 import { cn } from "cn";
 import { CircleCheck, TriangleAlert } from "lucide-react";
@@ -34,6 +36,19 @@ function Row({
 export function BillTotals({ bill }: { bill: SessionBill }) {
   const t = useT();
   const { totals } = bill;
+  // The bill totals sum every order, so split the service charge and tax by
+  // how each order priced them (a session can hold both kinds).
+  const included = bill.orders.filter((o) => o.pricesIncludeTaxAndService);
+  const added = bill.orders.filter((o) => !o.pricesIncludeTaxAndService);
+  const sumOf = (
+    list: typeof bill.orders,
+    key: "serviceChargeIdr" | "taxIdr",
+  ) => list.reduce((sum, order) => sum + order[key], 0);
+  const includedService = sumOf(included, "serviceChargeIdr");
+  const includedTax = sumOf(included, "taxIdr");
+  const addedService = sumOf(added, "serviceChargeIdr");
+  const addedTax = sumOf(added, "taxIdr");
+  const allIncluded = added.length === 0 && included.length > 0;
   // One paper panel: the totals, then the tax/service note under a hairline
   // (owner rule 12: menu prices exclude tax and service charge, both shown).
   return (
@@ -59,12 +74,26 @@ export function BillTotals({ bill }: { bill: SessionBill }) {
             <Money amount={-totals.discountIdr} />
           </Row>
         )}
-        <Row label={t("qrOrders.bill.service")}>
-          <Money amount={totals.serviceChargeIdr} />
-        </Row>
-        <Row label={t("qrOrders.bill.tax")}>
-          <Money amount={totals.taxIdr} />
-        </Row>
+        {(added.length > 0 || included.length === 0) && (
+          <Row label={t("qrOrders.bill.service")}>
+            <Money amount={addedService} />
+          </Row>
+        )}
+        {(added.length > 0 || included.length === 0) && (
+          <Row label={t("qrOrders.bill.tax")}>
+            <Money amount={addedTax} />
+          </Row>
+        )}
+        {included.length > 0 && (
+          <Row label={t("qrOrders.bill.serviceIncluded")}>
+            <Money amount={includedService} />
+          </Row>
+        )}
+        {included.length > 0 && (
+          <Row label={t("qrOrders.bill.taxIncluded")}>
+            <Money amount={includedTax} />
+          </Row>
+        )}
         {totals.roundingIdr !== 0 && (
           <Row label={t("qrOrders.bill.rounding")}>
             <Money amount={totals.roundingIdr} />
@@ -81,7 +110,11 @@ export function BillTotals({ bill }: { bill: SessionBill }) {
         </Row>
       </dl>
       <p className="border-t border-border pt-3 text-sm leading-5 text-muted-foreground">
-        {t("qrOrders.bill.taxNote")}
+        {t(
+          allIncluded
+            ? "qrOrders.bill.taxNoteInclusive"
+            : "qrOrders.bill.taxNote",
+        )}
       </p>
     </section>
   );

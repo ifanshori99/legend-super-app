@@ -143,12 +143,39 @@ function seedState(clock: () => number): FloorState {
     const template = fixtures.orders[0];
     if (template) {
       const orderId = createUlid() as QrOrder["id"];
+      // W02 runs inclusive prices (harga nett, legend-zmc2) so the guest bill
+      // and receipt show service and tax as "termasuk" in mock mode.
+      const inclusiveQuote = computeQuote({
+        sessionId: extra.id,
+        cartVersion: 1,
+        lines: template.items.map((item, index) => ({
+          cartLineId: `seed-${item.menuItemId}-${index}`,
+          menuItemId: item.menuItemId,
+          name: item.name,
+          quantity: item.quantity,
+          unitPriceIdr: item.unitPriceIdr,
+          modifiersTotalIdr: item.modifiersTotalIdr,
+          taxRuleId: cafeLegendTaxRules[0].id,
+        })),
+        config: {
+          ...quoteConfigForZone(zones[0]),
+          pricesIncludeTaxAndService: true,
+        },
+        computedAt: new Date(nowMs).toISOString(),
+      });
       orders[extra.id] = [
         qrOrderSchema.parse({
           ...structuredClone(template),
           id: orderId,
           number: "QR-20261101-0043",
           tableSessionId: extra.id,
+          subtotalIdr: inclusiveQuote.subtotalIdr,
+          discountIdr: inclusiveQuote.discountIdr,
+          serviceChargeIdr: inclusiveQuote.serviceCharge.amountIdr,
+          taxIdr: inclusiveQuote.taxIdr,
+          roundingIdr: inclusiveQuote.rounding.adjustmentIdr,
+          totalIdr: inclusiveQuote.totalIdr,
+          pricesIncludeTaxAndService: true,
           items: template.items.map((item) => ({
             ...structuredClone(item),
             id: createUlid() as QrOrderItem["id"],
@@ -302,7 +329,10 @@ export function createWs03Engine(clock: () => number = Date.now) {
         modifiersTotalIdr: item.modifiersTotalIdr,
         taxRuleId: cafeLegendTaxRules[0].id,
       })),
-      config: quoteConfigForZone(zoneOf(table)),
+      config: {
+        ...quoteConfigForZone(zoneOf(table)),
+        pricesIncludeTaxAndService: order.pricesIncludeTaxAndService,
+      },
       computedAt: nowIso(),
     });
     return qrOrderSchema.parse({
