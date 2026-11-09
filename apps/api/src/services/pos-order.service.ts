@@ -59,7 +59,7 @@ import {
   type PosOrderEvent,
   type PosOrderSummary,
 } from "@starter/shared/pos";
-import { resolveTaxSettings } from "@starter/shared/tax";
+import { orderNetSubtotalIdr, resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { tableSessions } from "../db/schema/index.ts";
 import {
@@ -1145,7 +1145,9 @@ export async function completePosOrder(
         businessDate: order.businessDate,
         channel: order.channel,
         serviceType: order.serviceType,
-        grossSalesIdr: order.subtotalIdr,
+        // legend-zmc2: gross sales exclude the service charge and tax an
+        // inclusive order's subtotal already contains.
+        grossSalesIdr: orderNetSubtotalIdr(order),
         discountIdr: order.discountIdr,
         serviceChargeIdr: order.serviceChargeIdr,
         pbjtIdr: order.taxIdr,

@@ -1,5 +1,5 @@
 {
-  "id": "f942032e-9167-449d-8047-9b96dd59d5ce",
+  "id": "e370f991-cee7-44f4-b33f-8a56991e94b9",
   "prevId": "4cbd1f6a-cbd5-4d3d-b803-82ba05789d8a",
   "version": "7",
   "dialect": "postgresql",
@@ -18786,7 +18786,7 @@
         },
         "orders_total_check": {
           "name": "orders_total_check",
-          "value": "(\"orders\".\"prices_include_tax\" = false AND \"orders\".\"total_idr\" = \"orders\".\"subtotal_idr\" - \"orders\".\"discount_idr\" + \"orders\".\"service_charge_idr\" + \"orders\".\"tax_idr\" + \"orders\".\"rounding_idr\") OR (\"orders\".\"prices_include_tax\" = true AND \"orders\".\"total_idr\" = \"orders\".\"subtotal_idr\" - \"orders\".\"discount_idr\" + \"orders\".\"rounding_idr\")"
+          "value": "(\"orders\".\"prices_include_tax\" = false AND \"orders\".\"total_idr\" = \"orders\".\"subtotal_idr\" - \"orders\".\"discount_idr\" + \"orders\".\"service_charge_idr\" + \"orders\".\"tax_idr\" + \"orders\".\"rounding_idr\") OR (\"orders\".\"prices_include_tax\" = true AND \"orders\".\"total_idr\" = \"orders\".\"subtotal_idr\" - \"orders\".\"discount_idr\" + \"orders\".\"rounding_idr\" AND \"orders\".\"service_charge_idr\" + \"orders\".\"tax_idr\" <= \"orders\".\"subtotal_idr\" - \"orders\".\"discount_idr\")"
         },
         "orders_payment_link_pair_check": {
           "name": "orders_payment_link_pair_check",

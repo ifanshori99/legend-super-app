@@ -7,6 +7,9 @@
 // an exclusive order is unchanged, a mixed cart is refused, the pay-first
 // payment asks exactly the order total, and the PBJT snapshot that feeds the
 // tax report holds the backed-out tax, not tax on top of the gross price.
+// Fix round: the shared net-subtotal helper, the inclusive branch of
+// orders_total_check keeps service + tax inside subtotal - discount, and one
+// table session holds one pricing mode.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -14,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { ulidToUuid } from "@starter/shared/core";
 import type { PaymentInstructions } from "@starter/shared/payment";
+import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { createApp } from "../app.ts";
 import {
   setPaymentGateway,
@@ -164,12 +168,17 @@ function as(guest: Guest) {
         idempotencyKey: randomUUID(),
       }),
     bill: () => auth(client.get(`${base}/bill`)),
+    view: () => auth(client.get(base)),
   };
 }
 
 /** Adds the items in order; returns the cart version after the last one. */
-async function fill(guest: Guest, items: readonly string[]): Promise<number> {
-  let version = 0;
+async function fill(
+  guest: Guest,
+  items: readonly string[],
+  fromVersion = 0,
+): Promise<number> {
+  let version = fromVersion;
   for (const item of items) {
     const added = await as(guest).add(item, version);
     expect(added.status).toBe(201);
@@ -415,5 +424,108 @@ describe("inclusive-price QR orders (legend-zmc2)", () => {
     // Net revenue = subtotal - discount - service - tax = the backed-out base.
     const stored = await storedOrder(orderId);
     expect(stored.subtotal - stored.service - stored.tax).toBe(21_645);
+  });
+
+  it("orderNetSubtotalIdr: inclusive backs service and tax out, exclusive keeps the subtotal", () => {
+    expect(
+      orderNetSubtotalIdr({
+        subtotalIdr: KOPI.gross,
+        serviceChargeIdr: KOPI.service,
+        taxIdr: KOPI.tax,
+        pricesIncludeTax: true,
+      }),
+    ).toBe(21_645);
+    expect(
+      orderNetSubtotalIdr({
+        subtotalIdr: 18_000,
+        serviceChargeIdr: 900,
+        taxIdr: 1_890,
+        pricesIncludeTax: false,
+      }),
+    ).toBe(18_000);
+  });
+
+  it("orders_total_check refuses an inclusive row whose service + tax exceed subtotal - discount", async () => {
+    const guest = await seat("pay_first");
+    const version = await fill(guest, [ids.kopi]);
+    const placed = await as(guest).checkout(version);
+    expect(placed.status).toBe(201);
+    const source = ulidToUuid(placed.body.data.order.id as string);
+    // Copy the stored inclusive order with a fresh id and number. Subtotal
+    // 25.000, discount 5.000, total 20.000 balances the total formula, but
+    // service 10.000 + tax 11.000 = 21.000 does not fit in the 20.000 net.
+    const copy = (service: number, tax: number) =>
+      `INSERT INTO orders
+       SELECT (jsonb_populate_record(NULL::orders, to_jsonb(o) || jsonb_build_object(
+         'id', gen_random_uuid(),
+         'number', o.number || '-X' || ${service},
+         'payment_link_id', NULL,
+         'payment_link_token_sealed', NULL,
+         'subtotal_idr', 25000,
+         'discount_idr', 5000,
+         'service_charge_idr', ${service},
+         'tax_idr', ${tax},
+         'rounding_idr', 0,
+         'total_idr', 20000,
+         'deposit_applied_idr', 0
+       ))).*
+         FROM orders o WHERE o.tenant_id = $1 AND o.id = $2`;
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      // Control: the same copy with parts that fit is accepted.
+      await client.query("SAVEPOINT fits");
+      await client.query(copy(KOPI.service, KOPI.tax), [
+        tenant.tenantId,
+        source,
+      ]);
+      await client.query("ROLLBACK TO SAVEPOINT fits");
+      await expect(
+        client.query(copy(10_000, 11_000), [tenant.tenantId, source]),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "orders_total_check",
+      });
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+
+  it("refuses an order whose pricing mode differs from the session's earlier order", async () => {
+    const guest = await seat("open_bill");
+    const confirmed = await staff.client
+      .post(`/api/table-sessions/${guest.sessionId}/confirm`)
+      .set(headers)
+      .set(originHeader);
+    expect(confirmed.status).toBe(200);
+    const first = await as(guest).checkout(await fill(guest, [ids.kopi]));
+    expect(first.status).toBe(201);
+    expect(first.body.data.order.pricesIncludeTaxAndService).toBe(true);
+
+    const cartVersion = async () => {
+      const view = await as(guest).view();
+      expect(view.status).toBe(200);
+      return view.body.data.cart.version as number;
+    };
+
+    // The same mode joins the session.
+    const second = await as(guest).checkout(
+      await fill(guest, [ids.kopi], await cartVersion()),
+    );
+    expect(second.status).toBe(201);
+
+    // An exclusive order does not.
+    const refused = await as(guest).checkout(
+      await fill(guest, [ids.roti], await cartVersion()),
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("QR_ORDER_PRICING_MODE_MIXED");
+    const { rows } = await owner.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM orders
+        WHERE tenant_id = $1 AND table_session_id = $2`,
+      [tenant.tenantId, guest.sessionId],
+    );
+    expect(rows[0]?.count).toBe("2");
   });
 });

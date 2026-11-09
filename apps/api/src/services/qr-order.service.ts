@@ -58,6 +58,9 @@ import {
   placeOrderInputSchema,
   placeOrderResultSchema,
   planQrOrderPlacement,
+  QR_ORDER_PRICING_MODE_MIXED,
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
   qrOrderEvents,
   qrOrderSchema,
   quoteInputSchema,
@@ -1616,6 +1619,27 @@ async function checkout(
   });
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
+  // legend-zmc2: one session, one pricing mode. The quote already refuses a
+  // cart mixing inclusive and exclusive rules; an order may not mix with the
+  // session's earlier non-voided orders either (the bill has one formula).
+  const [otherMode] = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, session.id),
+        ne(orders.status, "voided"),
+        ne(orders.pricesIncludeTax, quote.pricesIncludeTaxAndService),
+      ),
+    )
+    .limit(1);
+  if (otherMode)
+    throw new HttpError(
+      qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
+      QR_ORDER_PRICING_MODE_MIXED,
+      qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
+    );
   // ORD-10 / F43: an open-bill order may not push the session over its limit.
   await assertOpenBillWithinLimit(tx, context, {
     sessionId: session.id,

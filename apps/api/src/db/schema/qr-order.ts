@@ -286,7 +286,7 @@ export const orders = pgTable(
     ),
     check(
       "orders_total_check",
-      sql`(${table.pricesIncludeTax} = false AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}) OR (${table.pricesIncludeTax} = true AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.roundingIdr})`,
+      sql`(${table.pricesIncludeTax} = false AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.serviceChargeIdr} + ${table.taxIdr} + ${table.roundingIdr}) OR (${table.pricesIncludeTax} = true AND ${table.totalIdr} = ${table.subtotalIdr} - ${table.discountIdr} + ${table.roundingIdr} AND ${table.serviceChargeIdr} + ${table.taxIdr} <= ${table.subtotalIdr} - ${table.discountIdr})`,
     ),
     check(
       "orders_payment_link_pair_check",
