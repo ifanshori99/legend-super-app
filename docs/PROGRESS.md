@@ -553,3 +553,9 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - Codex 144 multi-fund bersih: `legend-knev` ditutup. Codex 201b write-off: P1 `legend-l56xd` (owner-only bisa ditembus lewat custom role), P2 `legend-xlvvl` (rollback custom role, GET di edge, helper lambat, runbook). Brief 214, rencana: buka lagi G6yu3 saat ada slot.
 - Kuota Codex: sekitar 12 pemeriksaan tersisa sampai reset 15 Nov, antrean sekitar 45. Pertanyaan founder Q42. Slot Codex ketiga sengaja dikosongkan sampai Q42 dijawab.
 - Antre slot Claude: 214 (G6yu3), 213 (0135), 210 (jcby0 sesudah hfq3z), umzos, paket triage berikut.
+
+### 21:05 (CTO G8flk)
+- Codex 203b edge PIN: P1 `legend-nd3cu` (cursor link per node+arah, event baru sesudah rebuild DB di-ack tanpa dikirim; runbook "daftarkan sebagai node baru" tetap berlaku). Brief 215 untuk G5gti saat ada slot. Codex 207b paket kontrak: P2 `legend-3k8no` (replay idempotency lama tanpa `version`). Keduanya resolved.
+- kasir-e2e-hydrate terverifikasi (15 spec mock, 142 lulus lewat heavy), masuk batch27 (77c6b24c). G6o4c resolved. Merge train diminta menjalankan ulang 15 spec mock sesudah paket kontrak masuk (paket itu mengubah data mock kasir).
+- Batch27 tertahan: 0156 write-off gagal "applies the full migration folder as the non-superuser owner" (FK ke tabel FORCE RLS, 42501). Dikirim ke G6yu3 sebagai prioritas sebelum brief 214. Pelajaran CTO: verifikasi cabang bermigrasi wajib menyertakan `edge-received-events-migration.test.ts` dan `migration-fk-force-rls.test.ts`. 0157 dan 0159 dicek ulang: 18/18 lulus masing-masing. G93mi dan G878y sudah diingatkan.
+- Gate batch26 dijalankan ulang (run pertama kena SIGTERM dari luar).
