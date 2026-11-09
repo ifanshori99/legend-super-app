@@ -98,6 +98,18 @@ CREATE TABLE "kitchen_tickets" (
 );
 --> statement-breakpoint
 ALTER TABLE "menu_items" ADD COLUMN "station_type" varchar(20);--> statement-breakpoint
+-- legend-wg5t: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated against outlets, stations, orders and order_items. Lift FORCE
+-- on those four for this transaction only; it is restored right after the
+-- foreign keys, before commit (drizzle applies pending migrations in one
+-- transaction, so no other session ever sees the lifted state). tenants never
+-- had FORCE, so it is left alone.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.stations NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.order_items NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -121,6 +133,10 @@ ALTER TABLE "kitchen_tickets" ADD CONSTRAINT "kitchen_tickets_outlet_id_outlets_
 ALTER TABLE "kitchen_tickets" ADD CONSTRAINT "kitchen_tickets_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_tickets" ADD CONSTRAINT "kitchen_tickets_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_tickets" ADD CONSTRAINT "kitchen_tickets_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.order_items FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.orders FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.stations FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "kitchen_station_feed_ticket_idx" ON "kitchen_station_feed" USING btree ("tenant_id","station_id","ticket_id");--> statement-breakpoint
 CREATE INDEX "kitchen_ticket_items_ticket_idx" ON "kitchen_ticket_items" USING btree ("tenant_id","ticket_id");--> statement-breakpoint
 CREATE INDEX "kitchen_ticket_status_changes_ticket_idx" ON "kitchen_ticket_status_changes" USING btree ("tenant_id","ticket_id","occurred_at");--> statement-breakpoint
