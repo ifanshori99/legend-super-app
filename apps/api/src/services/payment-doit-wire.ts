@@ -22,6 +22,10 @@ import {
   type PaymentChannel,
   type PaymentInstructions,
 } from "@starter/shared/payment";
+import type {
+  PaymentResult,
+  ProviderPaymentStatus,
+} from "@starter/shared/adapters";
 import { z } from "zod";
 import type {
   GatewayMethodAvailability,
@@ -297,6 +301,42 @@ export function doitPaymentToGatewayStatus(
       paid && payment.paid_at !== null
         ? new Date(payment.paid_at).toISOString()
         : null,
+  };
+}
+
+/**
+ * DOIT status -> the provider contract's status. All five DOIT statuses are
+ * listed; `refunded` stays `refunded` (unlike the lifecycle mapping above).
+ * Anything else is a provider fault and throws, so an unknown value can never
+ * become `paid`.
+ */
+export function doitPaymentToProviderStatus(
+  status: DoitPaymentStatus,
+): ProviderPaymentStatus {
+  switch (status) {
+    case "pending":
+      return "pending";
+    case "paid":
+      return "paid";
+    case "expired":
+      return "expired";
+    case "failed":
+      return "failed";
+    case "refunded":
+      return "refunded";
+    default:
+      throw malformedProviderAnswer();
+  }
+}
+
+/** Provider-contract result for a DOIT payment: our reference, DOIT's id. */
+export function doitPaymentToProviderResult(
+  payment: DoitPayment,
+): PaymentResult {
+  return {
+    reference: payment.reference,
+    providerReference: payment.id,
+    status: doitPaymentToProviderStatus(payment.status),
   };
 }
 

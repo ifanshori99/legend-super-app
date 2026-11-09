@@ -17,7 +17,7 @@
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { isPublicHttpsUrl } from "@starter/shared/adapters";
+import { isPublicHttpsUrl, type PaymentResult } from "@starter/shared/adapters";
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 import type { PaymentChannel } from "@starter/shared/payment";
 import { z } from "zod";
@@ -33,6 +33,7 @@ import {
   doitPaymentSchema,
   doitPaymentToGatewayStatus,
   doitPaymentToInstructions,
+  doitPaymentToProviderResult,
   doitRefundDeclineCode,
   malformedProviderAnswer,
   mapDoitMethods,
@@ -109,6 +110,15 @@ export type DoitGateway = PaymentGatewayPort &
       secrets: readonly string[];
       now?: Date;
     }): boolean;
+    /** Read-only `GET /v1/payments/{providerRef}` in the provider contract's
+     * shape. The answer must carry the same DOIT id and Legend reference. */
+    lookupPayment(input: {
+      context: ScopedTenantContext;
+      outletId?: string;
+      integrationId?: string | null;
+      providerRef: string;
+      reference: string;
+    }): Promise<PaymentResult>;
   };
 
 type Resolved = {
@@ -467,7 +477,17 @@ export function createDoitGateway(
       throw malformedProviderAnswer();
     }
     const parsed = schema.safeParse(payload);
-    if (!parsed.success) throw malformedProviderAnswer();
+    if (!parsed.success) {
+      // Paths only: never the offending value or the body.
+      logger.warn(
+        {
+          integrationId: resolved.integrationId,
+          paths: parsed.error.issues.map((issue) => issue.path.join(".")),
+        },
+        "DOIT answer failed validation",
+      );
+      throw malformedProviderAnswer();
+    }
     return parsed.data;
   }
 
@@ -618,6 +638,26 @@ export function createDoitGateway(
       if (input.intentId !== undefined && payment.reference !== input.intentId)
         throw malformedProviderAnswer();
       return doitPaymentToGatewayStatus(payment);
+    },
+
+    async lookupPayment(input): Promise<PaymentResult> {
+      const resolved = await requireCredentials(
+        input.context,
+        input.outletId,
+        input.integrationId,
+      );
+      const payment = await call(
+        resolved,
+        {
+          method: "GET",
+          path: `/v1/payments/${encodeURIComponent(input.providerRef)}`,
+        },
+        doitPaymentSchema,
+      );
+      if (payment.id !== input.providerRef) throw malformedProviderAnswer();
+      if (payment.reference !== input.reference)
+        throw malformedProviderAnswer();
+      return doitPaymentToProviderResult(payment);
     },
 
     async refund(input: GatewayRefundRequest): Promise<GatewayRefundResult> {
