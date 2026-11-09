@@ -17,13 +17,17 @@ import { and, eq } from "drizzle-orm";
 import { CoreError, isOutletInScope } from "@starter/shared/core";
 import { eventCatalog } from "@starter/shared/events";
 import type { EventEnvelope } from "@starter/shared/events";
+import { logger } from "../lib/logger.ts";
 import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
   registerEdgeAggregateKind,
   registerEdgeEventHandler,
+  setEdgeDefaultAggregateKind,
+  setEdgeUnhandledEventHandler,
 } from "./applier-registry.ts";
+import type { EdgeEventHandler } from "./applier-registry.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
 /** Aggregate type of the POS order events (`order.paid`, ...). */
@@ -37,11 +41,19 @@ export function catalogEventNamesOf(aggregateType: string): string[] {
     .filter((name) => name.startsWith(prefix));
 }
 
-/** Parks one edge event in the deferred inbox; replays write nothing. */
+/** Why an event sits in the deferred inbox. */
+export type EdgeParkedReason = "deferred" | "unclassified";
+
+/**
+ * Parks one edge event in the deferred inbox; replays write nothing.
+ * `parkedReason`: "deferred" for an explicit WS-04 registration,
+ * "unclassified" for the generic fallback.
+ */
 export async function applyEdgeDeferredEvent(
   tx: EdgeTx,
   event: EventEnvelope,
   meta: EdgeApplyMeta,
+  parkedReason: EdgeParkedReason = "deferred",
 ): Promise<void> {
   if (meta.direction !== "edge_to_cloud")
     throw new CoreError(
@@ -52,7 +64,9 @@ export async function applyEdgeDeferredEvent(
   if (event.tenantId !== tenantId)
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
   const outletId = event.outletId;
-  if (!outletId || !isOutletInScope(meta.context.outletScope, outletId))
+  if (!outletId)
+    throw new CoreError("CONFLICT", "Event has no outlet; it cannot be parked");
+  if (!isOutletInScope(meta.context.outletScope, outletId))
     throw new CoreError("FORBIDDEN", "Event outlet is outside the node scope");
   const [node] = await tx
     .select({ outletId: edgeNodes.outletId })
@@ -78,11 +92,28 @@ export async function applyEdgeDeferredEvent(
       aggregateSequence: event.sequence,
       eventName: event.name,
       envelope: event,
+      parkedReason,
     })
     .onConflictDoNothing({
       target: [edgeDeferredEvents.tenantId, edgeDeferredEvents.eventId],
     });
 }
+
+// Stable identities: the registry treats a different handler as a wiring bug.
+const applyExplicitDeferred: EdgeEventHandler = (tx, event, meta) =>
+  applyEdgeDeferredEvent(tx, event, meta, "deferred");
+
+const applyUnclassified: EdgeEventHandler = async (tx, event, meta) => {
+  logger.warn(
+    {
+      eventName: event.name,
+      aggregateType: event.aggregateType,
+      tenantId: event.tenantId,
+    },
+    "Edge event parked as unclassified",
+  );
+  await applyEdgeDeferredEvent(tx, event, meta, "unclassified");
+};
 
 /**
  * Routes every catalog event of `aggregateType` (edge -> cloud) to the
@@ -94,11 +125,7 @@ export function registerDeferredEdgeAggregate(
   eventNames: readonly string[] = catalogEventNamesOf(aggregateType),
 ): void {
   for (const eventName of eventNames)
-    registerEdgeEventHandler(
-      "edge_to_cloud",
-      eventName,
-      applyEdgeDeferredEvent,
-    );
+    registerEdgeEventHandler("edge_to_cloud", eventName, applyExplicitDeferred);
   registerEdgeAggregateKind(aggregateType, "transaction_event");
 }
 
@@ -121,4 +148,16 @@ export function posDeferredAggregates(): string[] {
 export function registerPosDeferredEdgeApplier(): void {
   for (const aggregateType of posDeferredAggregates())
     registerDeferredEdgeAggregate(aggregateType);
+}
+
+/**
+ * Generic edge -> cloud fallback: any aggregate or event no domain registered
+ * is classified as an append-only transaction event and parked with
+ * `parked_reason='unclassified'`, so one unknown event never stalls the link.
+ * Call after the explicit registrations (explicit handlers and kinds win).
+ * Logs the event name, aggregate type and tenant only, never the payload.
+ */
+export function registerEdgeDeferredFallback(): void {
+  setEdgeDefaultAggregateKind("edge_to_cloud", "transaction_event");
+  setEdgeUnhandledEventHandler("edge_to_cloud", applyUnclassified);
 }

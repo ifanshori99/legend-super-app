@@ -8,8 +8,10 @@ CREATE TABLE "edge_deferred_events" (
 	"aggregate_sequence" bigint NOT NULL,
 	"event_name" varchar(255) NOT NULL,
 	"envelope" jsonb NOT NULL,
+	"parked_reason" varchar(20) NOT NULL,
 	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "edge_deferred_events_tenant_id_event_id_pk" PRIMARY KEY("tenant_id","event_id")
+	CONSTRAINT "edge_deferred_events_tenant_id_event_id_pk" PRIMARY KEY("tenant_id","event_id"),
+	CONSTRAINT "edge_deferred_events_parked_reason_check" CHECK ("edge_deferred_events"."parked_reason" IN ('deferred', 'unclassified'))
 );
 --> statement-breakpoint
 ALTER TABLE "edge_deferred_events" ADD CONSTRAINT "edge_deferred_events_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

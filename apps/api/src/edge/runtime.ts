@@ -53,7 +53,10 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
-import { registerPosDeferredEdgeApplier } from "./deferred-event-applier.ts";
+import {
+  registerEdgeDeferredFallback,
+  registerPosDeferredEdgeApplier,
+} from "./deferred-event-applier.ts";
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import {
@@ -470,6 +473,8 @@ export async function registerEdgeLink(
   registerStockMovedEdgeApplier();
   // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
   registerPosDeferredEdgeApplier();
+  // Last: anything still unregistered is parked as unclassified, not a stall.
+  registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;
   const hardening = parseEdgeHardeningEnv(process.env);
   const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {

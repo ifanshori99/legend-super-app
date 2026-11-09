@@ -249,8 +249,8 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
         options.applier ?? edgeEventApplier(inbound);
       const classifyOption = options.classify;
       const classify = (event: EventEnvelope): EdgeEventKind => {
-        if (!classifyOption) return classifyEdgeEvent(event);
-        const kind = classifyOption(event);
+        if (!classifyOption) return classifyEdgeEvent(event, inbound);
+        const kind = classifyOption(event, inbound);
         if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
         return kind;
       };

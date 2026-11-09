@@ -9,8 +9,10 @@
 // Tenant + outlet owned: the migration must call `app.enforce_tenant_rls(...)`
 // and then `app.enforce_outlet_rls(...)` for this table
 // (edge-deferred-event.custom.sql).
+import { sql } from "drizzle-orm";
 import {
   bigint,
+  check,
   foreignKey,
   index,
   jsonb,
@@ -40,6 +42,8 @@ export const edgeDeferredEvents = pgTable(
     eventName: varchar("event_name", { length: 255 }).notNull(),
     /** The full event as the edge sent it. */
     envelope: jsonb("envelope").$type<EventEnvelope>().notNull(),
+    /** "deferred": explicit WS-04 registration; "unclassified": generic fallback. */
+    parkedReason: varchar("parked_reason", { length: 20 }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -51,6 +55,10 @@ export const edgeDeferredEvents = pgTable(
       columns: [table.tenantId, table.outletId, table.edgeNodeId],
       foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
     }),
+    check(
+      "edge_deferred_events_parked_reason_check",
+      sql`${table.parkedReason} IN ('deferred', 'unclassified')`,
+    ),
     index("edge_deferred_events_aggregate_idx").on(
       table.tenantId,
       table.aggregateType,

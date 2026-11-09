@@ -16,6 +16,12 @@
 //   link; the 4xx refusal is asserted on the registered handler directly.
 // - A refusal is a 4xx error (CoreError) from the registered handler; through
 //   the link it must become an `applier_refused` conflict, not a stall.
+// - (Round 2) The generic fallback parks any edge->cloud event of an aggregate
+//   without an explicit handler with parked_reason='unclassified'; explicit WS-04
+//   registrations (order.*) park with 'deferred'. The cloud_to_edge "unchanged"
+//   check goes through the registered cloud_to_edge dispatcher (the classifier's
+//   direction parameter is not pinned by the brief): an unknown aggregate must
+//   never be parked, whatever the legacy fallback does with it.
 // Fixtures: two disposable tenants (A with two outlets, B with one), removed in
 // afterAll. Same fixture style as edge-stock-moved-applier.test.ts.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -42,7 +48,10 @@ import {
   resetEdgeApplierRegistryForTests,
 } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
-import { registerPosDeferredEdgeApplier } from "../edge/deferred-event-applier.ts";
+import {
+  registerEdgeDeferredFallback,
+  registerPosDeferredEdgeApplier,
+} from "../edge/deferred-event-applier.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
 import { registerStockMovedEdgeApplier } from "../edge/stock-moved-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -154,7 +163,7 @@ function orderEvent(
   overrides: {
     name?: string;
     tenantId?: string;
-    outletId?: string;
+    outletId?: string | null;
     aggregateId?: string;
     sequence?: number;
   } = {},
@@ -164,7 +173,9 @@ function orderEvent(
   return {
     id: createUlid(clock),
     tenantId: (overrides.tenantId ?? tenantId) as EventEnvelope["tenantId"],
-    outletId: (overrides.outletId ?? outletA) as EventEnvelope["outletId"],
+    outletId: (overrides.outletId === undefined
+      ? outletA
+      : overrides.outletId) as EventEnvelope["outletId"],
     name,
     version: 1,
     aggregateType: name.split(".")[0]!,
@@ -268,9 +279,10 @@ async function deferredRows(eventId: string) {
     event_id: string;
     aggregate_type: string;
     event_name: string;
+    parked_reason: string;
     envelope: EventEnvelope;
   }>(
-    "SELECT tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, event_name, envelope FROM edge_deferred_events WHERE event_id = $1::uuid",
+    "SELECT tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, event_name, parked_reason, envelope FROM edge_deferred_events WHERE event_id = $1::uuid",
     [ulidToUuid(eventId)],
   );
   return rows;
@@ -319,6 +331,7 @@ beforeEach(() => {
   resetEdgeApplierRegistryForTests();
   registerStockMovedEdgeApplier();
   registerPosDeferredEdgeApplier();
+  registerEdgeDeferredFallback(); // after the explicit registrations, as runtime.ts does
 });
 
 afterAll(async () => {
@@ -395,6 +408,7 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
       edge_node_id: node.scope.edgeNodeId,
       aggregate_type: "order",
       event_name: "order.paid",
+      parked_reason: "deferred",
     });
     expect(row!.event_id).toBe(ulidToUuid(paid.id));
     expect(row!.envelope).toMatchObject({
@@ -424,6 +438,10 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
       expect((await deferredRows(event.id)).map((r) => r.event_name)).toEqual([
         name,
       ]);
+      expect(
+        (await deferredRows(event.id)).map((r) => r.parked_reason),
+        name,
+      ).toEqual(["deferred"]);
     }
   });
 
@@ -507,8 +525,8 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
       await seed.query("BEGIN");
       await seed.query("SET LOCAL session_replication_role = replica");
       await seed.query(
-        `INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id, aggregate_sequence, event_name, envelope)
-         SELECT $1::uuid, $2::uuid, edge_node_id, $3::uuid, aggregate_type, aggregate_id, aggregate_sequence, event_name, envelope
+        `INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id, aggregate_sequence, event_name, parked_reason, envelope)
+         SELECT $1::uuid, $2::uuid, edge_node_id, $3::uuid, aggregate_type, aggregate_id, aggregate_sequence, event_name, parked_reason, envelope
            FROM edge_deferred_events WHERE event_id = $4::uuid`,
         [
           otherTenantId,
@@ -547,10 +565,117 @@ describe("legend-9fhs edge order.* events are deferred, never stall the link", (
     await expect(
       withTenant(db, scopeOf(tenantId, "tenant"), (tx) =>
         tx.execute(sql`
-          INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id, aggregate_sequence, event_name, envelope)
-          SELECT ${otherTenantId}::uuid, ${otherTenantOutlet}::uuid, edge_node_id, ${ulidToUuid(createUlid(clock + 2))}::uuid, aggregate_type, aggregate_id, aggregate_sequence, event_name, envelope
+          INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id, aggregate_sequence, event_name, parked_reason, envelope)
+          SELECT ${otherTenantId}::uuid, ${otherTenantOutlet}::uuid, edge_node_id, ${ulidToUuid(createUlid(clock + 2))}::uuid, aggregate_type, aggregate_id, aggregate_sequence, event_name, parked_reason, envelope
             FROM edge_deferred_events WHERE event_id = ${ulidToUuid(mine.id)}::uuid`),
       ),
     ).rejects.toThrow();
+  });
+
+  // ---- Round 2: generic edge->cloud fallback --------------------------------
+  const fallbackNames = ["table_session.opened", "pos_override.recorded"];
+
+  for (const name of fallbackNames) {
+    it(`r2) ${name} is parked as unclassified, the cursor advances and the next stock.moved applies`, async () => {
+      const unknown = orderEvent({ name });
+      const { event: moved, ledgerEntryId } = stockMoved();
+      const link = store();
+      const before = await link.lastReceivedInbound();
+      const ledgerBefore = await ledgerCount();
+
+      await deliver([unknown, moved]);
+
+      expect(await link.lastReceivedInbound()).toBe(before + 2);
+      const rows = await deferredRows(unknown.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        tenant_id: tenantId,
+        outlet_id: outletA,
+        edge_node_id: node.scope.edgeNodeId,
+        aggregate_type: unknown.aggregateType,
+        event_name: name,
+        parked_reason: "unclassified",
+      });
+      expect(rows[0]!.envelope).toMatchObject({ id: unknown.id, name });
+      expect(await ledgerRows(ledgerEntryId)).toBe(1);
+      // Parking applies nothing: only the stock.moved ledger row is new, and
+      // the parked event never reaches the cloud outbox (stock.moved's own
+      // outbox row is expected, so the total is not compared).
+      expect(await ledgerCount()).toBe(ledgerBefore + 1);
+      expect(await orderOutboxRows(unknown.id)).toBe(0);
+    });
+  }
+
+  it("r2) a resend of an unclassified event keeps one row and its reason", async () => {
+    const unknown = orderEvent({ name: "table_session.opened" });
+    await deliver([unknown]);
+    const outboxBefore = await cloudOutboxCount();
+    await deliver([unknown]);
+    expect(await applyDirect(unknown)).toBeNull();
+    const rows = await deferredRows(unknown.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parked_reason).toBe("unclassified");
+    expect(await cloudOutboxCount()).toBe(outboxBefore);
+  });
+
+  it("r2) explicit WS-04 rows stay 'deferred' next to unclassified rows in one batch", async () => {
+    const paid = orderEvent();
+    const override = orderEvent({ name: "pos_override.recorded" });
+    const link = store();
+    const before = await link.lastReceivedInbound();
+    await deliver([paid, override]);
+    expect(await link.lastReceivedInbound()).toBe(before + 2);
+    expect((await deferredRows(paid.id))[0]!.parked_reason).toBe("deferred");
+    expect((await deferredRows(override.id))[0]!.parked_reason).toBe(
+      "unclassified",
+    );
+  });
+
+  it("r2) an explicit handler (stock.moved) still wins over the fallback", async () => {
+    const { event: moved, ledgerEntryId } = stockMoved();
+    await deliver([moved]);
+    expect(await ledgerRows(ledgerEntryId)).toBe(1);
+    expect(await deferredRows(moved.id)).toHaveLength(0);
+  });
+
+  it("r2) fallback refusals are 4xx: other tenant, other outlet, no outlet", async () => {
+    const name = "table_session.opened";
+    const cases = {
+      "other tenant": orderEvent({
+        name,
+        tenantId: otherTenantId,
+        outletId: otherTenantOutlet,
+      }),
+      "other outlet": orderEvent({ name, outletId: outletB }),
+      "no outlet": orderEvent({ name, outletId: null }),
+    };
+    for (const [label, event] of Object.entries(cases)) {
+      const status = await applyDirect(event);
+      expect(status, label).toBeGreaterThanOrEqual(400);
+      expect(status, label).toBeLessThan(500);
+      expect(await deferredRows(event.id), label).toHaveLength(0);
+    }
+  });
+
+  it("r2) cloud_to_edge is unchanged: an unknown aggregate is never parked", async () => {
+    const unknown = orderEvent({ name: "table_session.opened" });
+    try {
+      await withTenant(db, node.context, (tx) =>
+        edgeEventApplier("cloud_to_edge").apply(tx, unknown, {
+          ...meta(),
+          direction: "cloud_to_edge",
+        }),
+      );
+    } catch {
+      // The legacy fallback may refuse it; only the absence of a parked row
+      // is part of the contract here.
+    }
+    expect(await deferredRows(unknown.id)).toHaveLength(0);
+    // The default kind is edge_to_cloud only; other directions stay fail closed.
+    expect(registeredEdgeEventClassifier(unknown, "cloud_to_edge")).toBeNull();
+    expect(registeredEdgeEventClassifier(unknown)).toBeNull();
+    expect(registeredEdgeEventClassifier(unknown, "edge_to_cloud")).toBe(
+      "transaction_event",
+    );
   });
 });

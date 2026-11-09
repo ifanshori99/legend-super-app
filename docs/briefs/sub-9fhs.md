@@ -25,3 +25,16 @@ Reuse fixtures from `src/test/edge-stock-moved-applier.test.ts` (real DB, `creat
 - (d) Event of another outlet/tenant → refused as conflict (`applier_refused`), link not stalled, later events apply.
 - (e) Cross-tenant RLS isolation for `edge_deferred_events`.
 - Run `LEGEND_TEST_FILES="src/test/edge-order-deferred.test.ts src/test/edge-stock-moved-applier.test.ts src/test/edge-link.test.ts" pnpm test` from worktree root after the engineer has generated the migration.
+
+## Round 2 (review K): generic edge→cloud fallback (architect option B)
+
+Reviewer + architect: the edge sends many non-WS-04 aggregates on `cloud-sync` (`table_session.*` table-session.service.ts:812,954; `pos_override.recorded` staff-override.service.ts:215; `staff_pin.*` device-pin.service.ts:251,353; `payment.refund_requested` pos-order-late-payment.ts:125; ...). Any one still stalls the link. A list always lags; filtering in transport loses events.
+
+Implementer:
+
+1. `apps/api/src/edge/applier-registry.ts`: add a per-direction default aggregate kind (`setEdgeDefaultAggregateKind(direction?, kind)` or equivalent) used by `registeredEdgeEventClassifier` only when no explicit kind exists AND the event arrives edge_to_cloud. If the classifier cannot see the direction, check how `classifyEdgeEvent` is called in `db-link-store.ts` (~~:252) and pass the direction minimally. Add a per-direction "unhandled" handler in the dispatcher (~~:59-64): explicit handler first, then unhandled handler, then the old `fallback`. Clear both in the test reset helper (~:126-132). cloud_to_edge behaviour must be unchanged.
+2. `apps/api/src/edge/deferred-event-applier.ts`: `applyEdgeDeferredEvent` takes a `parkedReason` ("deferred" for explicit WS-04, "unclassified" for the fallback). Add `registerEdgeDeferredFallback()`, which installs the fallback kind `transaction_event` + an unhandled handler for edge_to_cloud that parks with `parked_reason='unclassified'` and logs `logger.warn` (event name, aggregate type, tenant, no payload). Keep the explicit WS-04 registration. Same tenant/outlet checks. An event without an outletId → CoreError refusal (conflict, not a stall).
+3. `apps/api/src/db/schema/edge-deferred-event.ts`: add `parked_reason varchar(20) NOT NULL` + a CHECK IN ('deferred','unclassified'). Do NOT touch drizzle files; the engineer regenerates 0103.
+4. `apps/api/src/edge/runtime.ts` registerEdgeLink: call `registerEdgeDeferredFallback()` after the explicit registrations.
+
+Test-writer (`apps/api/src/test/edge-order-deferred.test.ts`): `table_session.opened` and `pos_override.recorded` through the link, each followed by `stock.moved` → both parked with `parked_reason='unclassified'`, cursor advanced, stock.moved applied; WS-04 rows have `parked_reason='deferred'`; an explicit handler (stock.moved) still wins over the fallback; the cloud_to_edge classifier for an unknown aggregate still returns null (unchanged).

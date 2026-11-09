@@ -1,6 +1,6 @@
 {
-  "id": "e2bab2c0-23cb-4ad9-9b0d-2cf657c26500",
-  "prevId": "651c1fee-443b-4aee-be37-5fed257ca8c0",
+  "id": "fb1a347d-68c5-40d1-8723-bcd447d01a20",
+  "prevId": "bd10ad69-5980-4ae6-85df-8b29cdaa487a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -32848,6 +32848,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "parked_reason": {
+          "name": "parked_reason",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "received_at": {
           "name": "received_at",
           "type": "timestamp with time zone",
@@ -32941,7 +32947,12 @@
       },
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "edge_deferred_events_parked_reason_check": {
+          "name": "edge_deferred_events_parked_reason_check",
+          "value": "\"edge_deferred_events\".\"parked_reason\" IN ('deferred', 'unclassified')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.edge_inbound_events": {

@@ -12,6 +12,11 @@
 // - an aggregate type no domain registered classifies as null
 //   (EdgeEventUnclassifiedError, same outcome).
 //
+// A direction may also get a default aggregate kind and an "unhandled" handler
+// (legend-9fhs): events no domain registered are then classified and applied
+// by that default instead of stalling the link. Explicit registrations always
+// win; the default applies only when the classifier is told the direction.
+//
 // Registration is idempotent: the same handler again is a no-op, a different
 // handler for a taken event type throws (a wiring bug). Every register call
 // re-installs the dispatcher if something replaced it (tests reset the ports
@@ -40,12 +45,15 @@ export type EdgeEventHandler = (
 type DirectionEntry = {
   readonly handlers: Map<string, EdgeEventHandler>;
   readonly dispatcher: EdgeEventApplier;
+  /** Applies event types with no explicit handler; before `fallback`. */
+  unhandled: EdgeEventHandler | null;
   /** What was installed before the dispatcher; unknown event types go here. */
   fallback: EdgeEventApplier | null;
 };
 
 const directions = new Map<SyncDirection, DirectionEntry>();
 const aggregateKinds = new Map<string, EdgeEventKind>();
+const defaultAggregateKinds = new Map<SyncDirection, EdgeEventKind>();
 
 function entryFor(direction: SyncDirection): DirectionEntry {
   const existing = directions.get(direction);
@@ -53,11 +61,13 @@ function entryFor(direction: SyncDirection): DirectionEntry {
   const handlers = new Map<string, EdgeEventHandler>();
   const entry: DirectionEntry = {
     handlers,
+    unhandled: null,
     fallback: null,
     dispatcher: {
       async apply(tx, event, meta) {
         const handler = handlers.get(event.name);
         if (handler) return handler(tx as EdgeTx, event, meta);
+        if (entry.unhandled) return entry.unhandled(tx as EdgeTx, event, meta);
         // Fallback is the refusing default unless another applier was there.
         if (!entry.fallback) throw new EdgeApplierUnavailableError(direction);
         return entry.fallback.apply(tx, event, meta);
@@ -84,8 +94,13 @@ function installDispatcher(direction: SyncDirection): void {
 }
 
 /** Receiver-side classification from the registered aggregate types only. */
-export const registeredEdgeEventClassifier: EdgeEventClassifier = (event) =>
-  aggregateKinds.get(event.aggregateType) ?? null;
+export const registeredEdgeEventClassifier: EdgeEventClassifier = (
+  event,
+  direction,
+) =>
+  aggregateKinds.get(event.aggregateType) ??
+  (direction ? defaultAggregateKinds.get(direction) : undefined) ??
+  null;
 
 function installClassifier(): void {
   setEdgeEventClassifier(registeredEdgeEventClassifier);
@@ -121,6 +136,38 @@ export function registerEdgeAggregateKind(
   installClassifier();
 }
 
+/**
+ * Classifies every aggregate type with no explicit kind as `kind` when it
+ * arrives on `direction`. Other directions are unchanged.
+ */
+export function setEdgeDefaultAggregateKind(
+  direction: SyncDirection,
+  kind: EdgeEventKind,
+): void {
+  const existing = defaultAggregateKinds.get(direction);
+  if (existing && existing !== kind)
+    throw new Error(
+      `A ${direction} default aggregate kind (${existing}) is already set`,
+    );
+  defaultAggregateKinds.set(direction, kind);
+  installClassifier();
+}
+
+/**
+ * Applies `direction` events no explicit handler claimed, before the old
+ * fallback applier.
+ */
+export function setEdgeUnhandledEventHandler(
+  direction: SyncDirection,
+  handler: EdgeEventHandler,
+): void {
+  const entry = entryFor(direction);
+  if (entry.unhandled && entry.unhandled !== handler)
+    throw new Error(`A ${direction} unhandled handler is already registered`);
+  entry.unhandled = handler;
+  installDispatcher(direction);
+}
+
 /** Clears every registration and restores the ports defaults. */
 export function resetEdgeApplierRegistryForTests(): void {
   for (const [direction, entry] of directions)
@@ -128,5 +175,6 @@ export function resetEdgeApplierRegistryForTests(): void {
       setEdgeEventApplier(direction, entry.fallback);
   directions.clear();
   aggregateKinds.clear();
+  defaultAggregateKinds.clear();
   setEdgeEventClassifier(null);
 }
