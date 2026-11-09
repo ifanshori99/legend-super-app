@@ -694,6 +694,10 @@ async function cleanupSeededPayments() {
       args,
     );
     await owner.query(
+      `DELETE FROM gateway_webhook_events WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      args,
+    );
+    await owner.query(
       "DELETE FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
       args,
     );

@@ -782,8 +782,17 @@ async function makeGlWorld(): Promise<GlWorld> {
   );
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
-     VALUES ($1, $2, $3, $4, $5, 'Outlet Opname', 'Jl. Opname', 'Asia/Jakarta', '04:00', '{}', 'active')`,
-    [outletId, tenantId, brandId, entity, `OP-${short()}`.toUpperCase()],
+     VALUES ($1, $2, $3, $4, $5, 'Outlet Opname', 'Jl. Opname', 'Asia/Jakarta', '04:00', $6::jsonb, 'active')`,
+    [
+      outletId,
+      tenantId,
+      brandId,
+      entity,
+      `OP-${short()}`.toUpperCase(),
+      // Ledger rows are append-only, so this outlet outlives the file. Give it
+      // the seeded outlet's valid hours so later outlet-list tests still parse it.
+      JSON.stringify(cafeLegendPlatformFixtures.outlets[0]!.openingHours),
+    ],
   );
   const chart: Array<
     [role: string, code: string, name: string, type: string, group: string]
