@@ -133,6 +133,20 @@ function eventFor(
         name: "points.redeemed",
         payload: { ...base, redemptionId: entry.sourceId, ...extra },
       };
+    // legend-m4p5
+    case "adjust":
+      return {
+        name: "points.adjusted",
+        payload: {
+          ...base,
+          kind: entry.reversesEntryId ? "restore" : "manual",
+          reversesEntryId: entry.reversesEntryId,
+          sourceType: entry.sourceType,
+          sourceId: entry.sourceId,
+          reason: entry.reason,
+          ...extra,
+        },
+      };
     case "expire":
       return { name: "points.expired", payload: { ...base, ...extra } };
     default:

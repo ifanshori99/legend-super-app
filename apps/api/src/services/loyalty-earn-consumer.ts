@@ -504,6 +504,8 @@ async function reverseForOrder(
     .where(recordWhere)
     .limit(1);
   if (!record || record.state !== "booked") return;
+  // legend-wa4hp: replay guard for a refund or void already applied.
+  if (record.appliedReversalIds.includes(input.sourceId)) return;
 
   // Replay guard for a refund or void that posted no ledger row: its
   // shortfall anomaly names the source.
@@ -523,13 +525,11 @@ async function reverseForOrder(
 
   const eligible = Number(record.eligibleSpendIdr);
   const booked = Number(record.bookedPoints);
+  const previousRefunded = Number(record.refundedEligibleIdr);
   const refunded =
     input.refundEligibleIdr === null
       ? eligible
-      : Math.min(
-          eligible,
-          Number(record.refundedEligibleIdr) + input.refundEligibleIdr,
-        );
+      : Math.min(eligible, previousRefunded + input.refundEligibleIdr);
   // Cumulative target, rounded up against the member (full refund = all).
   const target =
     eligible === 0
@@ -571,7 +571,49 @@ async function reverseForOrder(
     reversedPoints: reversed,
     reversalShortfallPoints: shortfall,
     state: reversed === booked ? "reversed" : "booked",
+    appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
   });
+
+  // legend-wa4hp: a void or refund also lowers the visit count and spend.
+  const spendDelta = refunded - previousRefunded;
+  const visitRemovedBefore = eligible > 0 && previousRefunded >= eligible;
+  const removesVisit =
+    !visitRemovedBefore &&
+    (input.refundEligibleIdr === null ||
+      (eligible > 0 && refunded >= eligible));
+  if (spendDelta > 0 || removesVisit) {
+    await tx
+      .update(customerProfiles)
+      .set({
+        lifetimeSpendIdr: sql`GREATEST(0, ${customerProfiles.lifetimeSpendIdr} - ${spendDelta})`,
+        ...(removesVisit
+          ? {
+              visitsCount: sql`GREATEST(0, ${customerProfiles.visitsCount} - 1)`,
+            }
+          : {}),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId as never),
+          eq(customerProfiles.id, profile.id),
+        ),
+      );
+  }
+  const visitWhere = and(
+    eq(customerVisits.tenantId, tenantId as never),
+    eq(customerVisits.orderId, input.orderId),
+  );
+  if (removesVisit) {
+    await tx.delete(customerVisits).where(visitWhere);
+  } else if (spendDelta > 0) {
+    await tx
+      .update(customerVisits)
+      .set({
+        spendIdr: sql`GREATEST(0, ${customerVisits.spendIdr} - ${spendDelta})`,
+      })
+      .where(visitWhere);
+  }
   if (delta > posted)
     await recordLoyaltyAnomaly(tx, {
       tenantId,
