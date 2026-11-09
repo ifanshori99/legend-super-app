@@ -340,6 +340,15 @@ async function tenantMember(tenantId: string, kind: "tenant_admin" | "custom") {
 }
 
 afterAll(async () => {
+  // Owners appointed by invite are WhatsApp accounts (@wa.invalid) that grant
+  // roles to others, so rows keep them as assigned_by. Remove those rows, or a
+  // later file that deletes the accounts hits role_assignments_assigned_by_user_id_fk.
+  await owner.query(
+    `DELETE FROM role_assignments
+      WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)
+         OR assigned_by IN (SELECT id FROM "user" WHERE email LIKE $1)`,
+    ["%@wa.invalid"],
+  );
   await owner.query(
     "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
     [platformAdminIds],
