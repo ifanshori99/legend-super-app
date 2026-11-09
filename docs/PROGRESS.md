@@ -654,3 +654,28 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Review K: Opus reviewer + architect. Temuan nyata (High, keduanya sama): penutup mengunci sebelum `reconcileDeposit` → dibetulkan + T2b. Tidak ada deadlock.
 - Brief Codex: `docs/briefs/168b-second-opinion-dp-intent-lock.md` (main checkout, tidak di-commit).
 - Sisa: QR tidak punya `pos_orders.completed_at` (U3, kartu lain). Tanggal bisnis jurnal forfeit memakai `occurredAt` event (`now`), selisih ms dari `closed_at`.
+
+## legend-tjwb perbaikan temuan Codex 150 EDC PAN scrub (engineer, cabang `ws/edc-pan-fix` dari `milestone/m1` a8c90378, 2026-11-09)
+
+- Masalah: pola PAN hanya menerima satu pemisah, jadi `4111  1111  1111  1111` atau `4111 - 1111-1111 1111` lolos di migrasi 0135, query deteksi runbook, dan scrub JS. Oracle test memakai ambang 13+ global, jadi PAN 12 digit di kolom teks bebas tidak tertangkap.
+- Keputusan migrasi (dengan architect): migrasi baru `0143_edc_pan_scrub_separators.sql`, 0135 tidak diubah. Migrator drizzle hanya menjalankan file dengan `when` di atas migrasi terakhir yang tercatat dan tidak memeriksa hash; 0135 yang diedit tidak akan jalan ulang di dev/staging yang sudah menerapkannya, dan AGENTS.md melarang menulis ulang migrasi yang sudah diterapkan. 0143 mengulang scrub penuh; DB baru menjalankan 0135 lalu 0143 dalam satu batch.
+- Pola: digit dengan spasi, tab, atau strip berulang/campuran (`[ \t-]*`). Titik tidak (nominal Rp). Ambang tetap: 13+ di rrn/invoice_no/batch_no/dispatch_batch_no, 12+ di card_type/message/masked_pan. 0141 juga melipat digit yang menempel ke `[disamarkan]` (sisa 0135 bisa menyisakan sampai 7 digit kartu).
+- 0141 satu blok DO: NO FORCE, UPDATE, FORCE berhasil atau gagal bersama walau dijalankan autocommit, jadi FORCE RLS tidak bisa tertinggal mati. `lock_timeout` 5s lokal, dikembalikan.
+- JS `packages/shared/src/edc/index.ts`: `cardNumberLike` (message tulis dan baca) dan `panLikeReference` (rrn/invoice/batch saat baca) memakai pola baru. `hasPanLengthDigits` (guard tender POS) sengaja tetap 13-19 digit beruntun: pola lebar menandai nomor order sendiri (`P261109-12345678`).
+- Runbook: deteksi pola baru per kolom, eksekusi manual wajib `psql -v ON_ERROR_STOP=1 --single-transaction`, jangan jalankan 0135 manual, run manual akan diulang migrator (lock lagi), cek read-only `pos_order_tenders.reference`, catatan nomor ulang 0141.
+- Test reproduksi gagal dulu: patterns 5/10 gagal, logs 10/10 gagal, migrasi 7/14 gagal (0141 kosong), lipatan sisa 0135 2 gagal sebelum fix.
+- Review K: reviewer Opus 2 putaran + architect. Dibetulkan: sisa 7 digit dari 0135, false positive nomor order di guard tender, snapshot 0141 ikut di-commit, catatan runbook run ulang. Diterima: newline/NBSP sebagai pemisah tidak ditangkap; read path tidak melipat (migrator jalan sebelum API).
+- Gate: tsc api dan shared, eslint, prettier lulus; 14 file test EDC/POS EDC 186 lulus; kontrak `edc-contract` 6/6; `node --test tests/*.test.mjs` 1661 lulus, 3 gagal karena butuh DB `pnpm test` (database, db-role-provisioning; jalan di merge train); `db:generate` kosong.
+- Bead baru: `legend-2z04` (P3, oracle satu pemisah di edc-agent, edc-simulator, edc-contract).
+- Biaya sesi a311d4dc (15:34-15:53 UTC+7 sebagian): total biaya* 3357k (utama Opus 1617k, subagent Opus 1269k, Sonnet 292k, Haiku 180k); parallel-report: 13 spawn, maks 3, rata 1,34 subagent berjalan.
+- Berikut: CTO tentukan urutan merge (0141 bentrok nomor dengan `ws/shift-close-fix`), second opinion Codex brief 150b, merge train.
+
+## legend-ymhh 0141 tidak lagi menghapus kode respons sah (engineer, cabang `ws/edc-pan-fix` di atas 36599100, 2026-11-09)
+
+- Masalah (Codex 150b P2): 0141 melipat semua digit yang menempel ke `[disamarkan]`, jadi baris bersih `Kartu [disamarkan] - 51` kehilangan kode respons.
+- Aturan baru, sama di SQL 0141, JS `maskCardNumbers` (tulis dan baca), dan query deteksi runbook: digit di samping mask dilipat hanya bila (a) disambung pemisah yang tidak bisa dilewati pola lama 0135 (2+ spasi/strip atau tab) dan (b) melebihi aturan struk: 7+ digit sebelum mask atau 5+ sesudah. `[disamarkan] - 51`, `[disamarkan] 05`, `- 1111`, `4111 - [disamarkan]` tetap.
+- Efek yang diterima dan dicatat di runbook: angka sah 5+ digit sesudah mask dengan `-` (mis. kode approval `- 123456`) ikut terhapus, tidak bisa dikembalikan.
+- Review K: reviewer Opus + architect paralel, keduanya setuju aturan lengkap (fuzz 300k-500k PAN, paritas SQL Postgres vs JS 3000 input, idempoten). Dibetulkan: catatan "tidak bisa dikembalikan" dikembalikan ke runbook dan header SQL, fixture `- 123456`.
+- Gate: test gagal dulu (migrasi 2/14, pola 1/20), lalu 3 file `edc-pan*` 44/44; 14 file EDC/POS EDC 189/189; `edc-contract` 6/6; tsc api dan shared lewat heavy, eslint, prettier lulus.
+- Bead baru: `legend-lg45` (P2, sisa PAN di pesan yang terpotong 200 karakter oleh jalur tulis lama; celah lama, bukan dari diff ini).
+- Berikut: second opinion Codex run 2 (brief 150b, bagian Run 2), urutan merge 0141 vs `ws/shift-close-fix`.

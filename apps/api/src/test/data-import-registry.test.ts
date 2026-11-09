@@ -92,6 +92,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "sets pin_set_at of existing staff_pins rows to their updated_at (legend-kyie); FORCE RLS lifted for that one statement and restored; edits no other column",
   "0142_high_scrambler.sql":
     "sets pin_generation_at of existing staff_pins rows to their pin_set_at (legend-kyie, Codex 160); FORCE RLS lifted for that one statement and restored; edits no other column",
+  "0143_edc_pan_scrub_separators.sql":
+    "second pass of the 0135 scrub: masks card-number-like digit runs split by repeated or mixed separators in existing edc_transactions rows (legend-tjwb); idempotent, edits no other column",
 };
 
 // Entrypoints that open a database pool but import no data.

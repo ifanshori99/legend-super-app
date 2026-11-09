@@ -139,14 +139,22 @@ function normaliseCardType(raw: string): EdcCardType {
 }
 const cardTypeSchema = z.string().transform(normaliseCardType);
 
-/** Reference-style field (RRN, invoice, batch): any value that holds a run of
- * 13-19 digits (the length of a card number), alone or with letters around
- * it, is dropped rather than stored. */
+/** Reference-style field (RRN, invoice, batch): any value that holds 13 or
+ * more digits (the length of a card number), alone or with letters around it,
+ * is dropped rather than stored or returned. The digits may be split by
+ * spaces, tabs or dashes, repeated or mixed (`4111  1111 - 1111`): rows
+ * written before the provider boundary filter can hold that form. */
+const panLikeReference = /\d(?:[ \t-]*\d){12,}/;
+const dropPanLike = (value: string | null): string | null =>
+  value !== null && panLikeReference.test(value) ? null : value;
+/** 13-19 digits in a row. Used on values that only ever hold letters and
+ * digits once stored (the write path keeps reference fields alphanumeric and
+ * migrations 0135/0141 removed older split forms). Deliberately contiguous:
+ * a split form would also flag our own order numbers (`P261109-12345678` is
+ * 14 digits across the dash). */
 const panLengthDigits = /\d{13,19}/;
 export const hasPanLengthDigits = (value: string): boolean =>
   panLengthDigits.test(value);
-const dropPanLike = (value: string | null): string | null =>
-  value !== null && panLengthDigits.test(value) ? null : value;
 function referenceField(max: number) {
   return z
     .string()
@@ -156,11 +164,23 @@ function referenceField(max: number) {
     .transform(dropPanLike);
 }
 
-/** A run of 12+ digits (optionally split by spaces or dashes) looks like a
- * card number: the terminal's free text is masked before it is stored. */
-const cardNumberLike = /\d(?:[ -]?\d){11,}/g;
+/** A run of 12+ digits (split by spaces, tabs or dashes, repeated or mixed) looks
+ * like a card number: the terminal's free text is masked before it is stored. */
+const cardNumberLike = /\d(?:[ \t-]*\d){11,}/g;
+/** Card digits the old single-separator scrub (0135, the write path before
+ * legend-tjwb) left next to a mask: joined by a separator run it could not
+ * cross (anything but exactly one space or dash), and more than the receipt
+ * rule shows (7+ before = past the first 6, 5+ after = past the last 4).
+ * Same rule as migration 0141; shorter groups such as a response code after
+ * the mask (`[disamarkan] - 51`) stay. */
+const leftoverBeforeMask =
+  /\d(?:[ \t-]*\d){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]/g;
+const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
 const maskCardNumbers = (text: string): string =>
-  text.replace(cardNumberLike, "[disamarkan]");
+  text
+    .replace(cardNumberLike, "[disamarkan]")
+    .replace(leftoverBeforeMask, "[disamarkan]")
+    .replace(leftoverAfterMask, "[disamarkan]");
 const safeMessage = z
   .string()
   .transform((text) => maskCardNumbers(text).slice(0, 200));
