@@ -90,7 +90,6 @@ const ALL_DAY = [
   { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "00:00" },
 ];
 const ADMIN = "/api/payments/admin";
-const GUARD_CODE = "REFUND_INTENT_IN_QR_SALE";
 
 /** QRIS gateway double (the guest pays by QRIS). */
 class FakeGateway implements PaymentGatewayPort {
@@ -276,16 +275,6 @@ async function orderRow(orderId: string) {
     [tenant.tenantId, ulidToUuid(orderId)],
   );
   return rows[0]!;
-}
-
-async function orderPaidEventCount(orderId: string): Promise<number> {
-  const { rows } = await owner.query<{ n: string }>(
-    `SELECT count(*)::text AS n FROM domain_event_outbox
-      WHERE tenant_id = $1 AND event->>'name' = 'order.paid'
-        AND event->'payload'->>'orderId' = $2`,
-    [tenant.tenantId, orderId],
-  );
-  return Number(rows[0]!.n);
 }
 
 type RefundRow = {
