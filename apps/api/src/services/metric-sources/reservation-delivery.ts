@@ -17,19 +17,24 @@
 // - `delivery_orders`: count, split by channel (the platform).
 // - `delivery_sales`: gross - commission whole rupiah, split by channel and by
 //   menu item. It reads the delivery order rows directly: the ledger does not
-//   post it yet (it is in NON_GL_MONEY_METRICS), so there is no GL total to
+//   post it yet (not a ledger figure), so there is no GL total to
 //   reconcile and no residual row. A menu split row is the order net shared
 //   across the lines by line total (remainder to the biggest line), so the
 //   menu rows add up to the total; a line with no menu match is "unmapped".
+// - Finality hold (`pendingDay`): both codes stay an estimate while any order
+//   of the outlet-day is still in flight (`received`..`picked_up`, CHECK
+//   delivery_channel_orders_status_check): it can still end delivered (counts)
+//   or cancelled/rejected (drops out).
 // Tables are only read; the delivery services are not touched.
 
-import { and, eq, gte, lt, ne, notInArray } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, ne, notInArray } from "drizzle-orm";
 import {
   businessDayRange,
   idr,
   type OutletId,
   type TenantId,
 } from "@starter/shared/core";
+import type { DeliveryOrderStatus } from "@starter/shared/delivery";
 import { deliveryChannelOrders } from "../../db/schema/delivery";
 import { outlets } from "../../db/schema/platform-org";
 import { reservations } from "../../db/schema/reservation";
@@ -177,10 +182,39 @@ async function deliveryOrdersOfDay(input: DailyComputeInput) {
     );
 }
 
+/** Order statuses that can still end delivered or cancelled (schema CHECK). */
+const IN_FLIGHT_STATUSES: DeliveryOrderStatus[] = [
+  "received",
+  "accepted",
+  "preparing",
+  "ready",
+  "picked_up",
+];
+
+/** True while any delivery order of the outlet-day is still in flight. */
+async function deliveryDayPending(input: DailyComputeInput): Promise<boolean> {
+  const { start, end } = await dayRange(input);
+  const [row] = await input.tx
+    .select({ id: deliveryChannelOrders.id })
+    .from(deliveryChannelOrders)
+    .where(
+      and(
+        eq(deliveryChannelOrders.tenantId, input.tenantId as TenantId),
+        eq(deliveryChannelOrders.outletId, input.outletId as OutletId),
+        gte(deliveryChannelOrders.receivedAt, start),
+        lt(deliveryChannelOrders.receivedAt, end),
+        inArray(deliveryChannelOrders.status, IN_FLIGHT_STATUSES),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 const deliveryOrdersReader: DailyMetricReader = {
   metricCodes: ["delivery_orders"],
   dimensions: ["channel"],
   requiresDailyClose: false,
+  pendingDay: deliveryDayPending,
   async compute(input) {
     const rows = await deliveryOrdersOfDay(input);
     const byChannel = new Map<string, number>();
@@ -214,6 +248,7 @@ const deliverySalesReader: DailyMetricReader = {
   metricCodes: ["delivery_sales"],
   dimensions: ["channel", "menu_item"],
   requiresDailyClose: false,
+  pendingDay: deliveryDayPending,
   async compute(input) {
     const rows = await deliveryOrdersOfDay(input);
     let total = 0;

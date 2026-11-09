@@ -146,6 +146,7 @@ async function compute(
   businessDate: string,
   outlet: string = w.outlet1,
   tenantId: string = w.tenantId,
+  now: Date = new Date(),
 ): Promise<Record<string, number>> {
   const values = await withTenant(db, context(tenantId), (tx) =>
     reader.compute({
@@ -153,6 +154,7 @@ async function compute(
       tenantId,
       outletId: outlet,
       businessDate: date(businessDate),
+      now,
     }),
   );
   const out: Record<string, number> = {};
@@ -942,6 +944,25 @@ describe("stock_value and critical_stock_count (point in time)", () => {
     await expect(
       compute(world, reader(), D1, world.outlet1, other.tenantId),
     ).rejects.toThrow("Outlet not found");
+  });
+
+  it("tells the live day from the job's clock, not the wall clock", async () => {
+    // At noon of D1 (outlet clock) D1 is the live day: the reader reads the
+    // live balances, like today, instead of replaying the D1 ledger.
+    const duringD1 = new Date("2025-06-10T05:00:00Z");
+    const today = businessDateOf(new Date(), world.clock);
+    const asLive = await compute(
+      world,
+      reader(),
+      D1,
+      world.outlet2,
+      world.tenantId,
+      duringD1,
+    );
+    expect(asLive).toEqual(
+      await compute(world, reader(), today, world.outlet2),
+    );
+    expect(asLive.stock_value).not.toBe(500 * 9999);
   });
 });
 

@@ -674,6 +674,88 @@ describe("finality and empty days", () => {
       new Set((await rowsOf(w, w.outlet1, DAY)).map((row) => row.finality)),
     ).toEqual(new Set(["final"]));
   });
+
+  it("a delivery order in flight keeps the delivery rows an estimate until it ends", async () => {
+    const w = await makeWorld("hold");
+    await reservation(w, w.outlet1, {
+      reservedFor: "2025-06-10T05:30:00Z",
+      status: "confirmed",
+    });
+    const order = (status: "received" | "delivered") =>
+      deliveryOrder(w, w.outlet1, {
+        platform: "gofood",
+        status,
+        grossIdr: 50_000,
+        commissionIdr: 10_000,
+        receivedAt: "2025-06-10T05:00:00Z",
+        lines: [{ menuItemId: MENU_A, lineTotalIdr: 50_000 }],
+      });
+    await order("delivered");
+    await order("received");
+    // An in-flight order of outlet 2 never holds outlet 1.
+    await deliveryOrder(w, w.outlet2, {
+      platform: "grabfood",
+      status: "received",
+      grossIdr: 1_000,
+      commissionIdr: 0,
+      receivedAt: "2025-06-10T05:00:00Z",
+      lines: [{ menuItemId: MENU_A, lineTotalIdr: 1_000 }],
+    });
+    const recompute = () =>
+      recomputeMetricsDaily(
+        context(w.tenantId),
+        w.outlet1,
+        date(DAY),
+        date(DAY),
+        { now: LATE },
+      );
+    const finalityByCode = async () => {
+      const out: Record<string, Set<string>> = {};
+      for (const row of await rowsOf(w, w.outlet1, DAY))
+        (out[row.metric_code] ??= new Set()).add(row.finality);
+      return out;
+    };
+    const setStatus = (from: string, to: string) =>
+      owner.query(
+        `UPDATE delivery_channel_orders SET status = $3
+          WHERE tenant_id = $1 AND outlet_id = $2 AND status = $4`,
+        [w.tenantId, w.outlet1, to, from],
+      );
+
+    await recompute();
+    expect(await finalityByCode()).toEqual({
+      delivery_orders: new Set(["estimate"]),
+      delivery_sales: new Set(["estimate"]),
+      no_show_reservations: new Set(["final"]),
+      reservation_count: new Set(["final"]),
+    });
+
+    // Every in-flight status holds the day.
+    await setStatus("received", "picked_up");
+    await recompute();
+    expect((await finalityByCode()).delivery_sales).toEqual(
+      new Set(["estimate"]),
+    );
+
+    await setStatus("picked_up", "delivered");
+    await recompute();
+    expect((await finalityByCode()).delivery_sales).toEqual(new Set(["final"]));
+    expect((await finalityByCode()).delivery_orders).toEqual(
+      new Set(["final"]),
+    );
+
+    // A late order that is then cancelled lets the day go final again.
+    await order("received");
+    await recompute();
+    expect((await finalityByCode()).delivery_orders).toEqual(
+      new Set(["estimate"]),
+    );
+    await setStatus("received", "cancelled");
+    await recompute();
+    expect((await finalityByCode()).delivery_orders).toEqual(
+      new Set(["final"]),
+    );
+  });
 });
 
 describe("backfill is idempotent", () => {

@@ -646,6 +646,86 @@ describe("finality of a stored row (design §2.4)", () => {
       ),
     ).toEqual(new Set(["final"]));
   });
+
+  it("a reader's pendingDay keeps a settled day an estimate until it lets go", async () => {
+    let pending = true;
+    const seen: Date[] = [];
+    const base = trafficReader({ dine_in: 2 });
+    const reader: DailyMetricReader = {
+      ...base,
+      async pendingDay(input) {
+        seen.push(input.now);
+        return pending;
+      },
+    };
+    const finalities = async () =>
+      new Set(
+        (await rowsOf(world.tenantId, world.outlet1, "2025-06-15")).map(
+          (r) => r.finality,
+        ),
+      );
+    await refresh(world, "2025-06-15", LATE, [{ family: "hr", reader }]);
+    expect(await finalities()).toEqual(new Set(["estimate"]));
+    expect(seen).toEqual([LATE]);
+
+    pending = false;
+    await refresh(world, "2025-06-15", LATE, [{ family: "hr", reader }]);
+    expect(await finalities()).toEqual(new Set(["final"]));
+  });
+
+  it("a held reader does not hold another reader of the same day", async () => {
+    await refresh(world, "2025-06-16", LATE, [
+      {
+        family: "reservation-delivery",
+        reader: {
+          ...makeReader({
+            metricCodes: ["delivery_orders"],
+            rows: () => [
+              {
+                metricCode: "delivery_orders",
+                dimension: null,
+                value: count(1),
+              },
+            ],
+          }),
+          pendingDay: async () => true,
+        },
+      },
+      { family: "hr", reader: trafficReader({ dine_in: 2 }) },
+    ]);
+    const rows = await rowsOf(world.tenantId, world.outlet1, "2025-06-16");
+    expect(
+      Object.fromEntries(
+        rows
+          .filter((r) => r.dimension_key === null)
+          .map((r) => [r.metric_code, r.finality]),
+      ),
+    ).toEqual({ delivery_orders: "estimate", transaction_count: "final" });
+  });
+
+  it("hands the job's clock to every reader as `now`", async () => {
+    const seen: Date[] = [];
+    const now = new Date("2025-06-17T05:00:00Z");
+    await refresh(world, "2025-06-17", now, [
+      {
+        family: "hr",
+        reader: {
+          ...trafficReader({ dine_in: 1 }),
+          async compute(input) {
+            seen.push(input.now);
+            return [
+              {
+                metricCode: "transaction_count",
+                dimension: null,
+                value: count(1),
+              },
+            ];
+          },
+        },
+      },
+    ]);
+    expect(seen).toEqual([now]);
+  });
 });
 
 describe("recomputeMetricsDaily", () => {

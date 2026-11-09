@@ -113,7 +113,11 @@ async function writeFamily(
   finality: "estimate" | "final",
   now: Date,
 ): Promise<{ written: number; unchanged: number; deleted: number }> {
-  const values = await reader.compute({ tx, ...scope });
+  const input = { tx, ...scope, now };
+  const values = await reader.compute(input);
+  // A reader's hold downgrades a final day to estimate (finality hook).
+  if (finality === "final" && (await reader.pendingDay?.(input)))
+    finality = "estimate";
   validate(reader, values);
 
   const records = values.map((entry) => {

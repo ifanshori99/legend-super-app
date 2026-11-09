@@ -324,8 +324,7 @@ const stockReader: DailyMetricReader = {
   requiresDailyClose: false,
   async compute(input) {
     const { end } = await dayRange(input.tx, input);
-    // The reader has no clock seam (DailyComputeInput carries no `now`).
-    const live = end.getTime() > Date.now();
+    const live = end.getTime() > input.now.getTime();
     const positions = await positionsAtDayEnd(input.tx, input, end, live);
     let value = 0;
     for (const position of positions.values())
