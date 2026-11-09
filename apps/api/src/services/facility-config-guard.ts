@@ -10,6 +10,10 @@
 //   caller's tenant transaction (operations-idempotency.ts). A replay returns
 //   the first row; the same key with another payload answers
 //   IDEMPOTENCY_KEY_REUSED (409).
+// - `storeFacilityIdempotentResult`: the key is unique per tenant, but the
+//   lookup is narrowed to the caller's outlets by RLS. A key first used on
+//   another outlet is invisible to the lookup, so the store hits the unique
+//   constraint; that is the same reuse error (409), never a 500.
 import { sql } from "drizzle-orm";
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 import {
@@ -63,6 +67,42 @@ export async function lockConfigRow(
   );
 }
 
+type StoreInput = Parameters<typeof storeIdempotentResult>[2];
+
+/** Postgres unique violation, bare or wrapped by drizzle (`cause`). */
+function isUniqueViolation(error: unknown): boolean {
+  for (let cause = error; cause && typeof cause === "object";) {
+    const record = cause as { code?: unknown; cause?: unknown };
+    if (record.code === "23505") return true;
+    cause = record.cause;
+  }
+  return false;
+}
+
+/**
+ * `storeIdempotentResult` for the facility writers: a key already bound to
+ * another outlet (hidden from the lookup by outlet RLS) answers
+ * IDEMPOTENCY_KEY_REUSED (409) instead of a 500. The insert runs in a
+ * savepoint, so the caller's transaction stays usable until it rolls back.
+ */
+export async function storeFacilityIdempotentResult(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: StoreInput,
+): Promise<void> {
+  try {
+    await tx.transaction((savepoint) =>
+      storeIdempotentResult(savepoint, context, input),
+    );
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempotensi sudah dipakai permintaan lain.",
+    );
+  }
+}
+
 /**
  * Runs one create once per idempotency key. Call after the permission check,
  * so a replay never answers a caller that may not write. `load` reads the row
@@ -98,7 +138,7 @@ export async function createOnce<Row extends { id: string }, Mapped>(
     return args.map(prior);
   }
   const row = await args.create();
-  await storeIdempotentResult(tx, context, {
+  await storeFacilityIdempotentResult(tx, context, {
     key: args.idempotencyKey,
     fingerprint,
     outletId: args.outletId,

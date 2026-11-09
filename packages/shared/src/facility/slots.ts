@@ -198,6 +198,22 @@ export function minutesOfDay(time: string): number {
   return hours * 60 + minutes;
 }
 
+/**
+ * Window end: `24:00` (end of day, exclusive) is accepted here only, so a
+ * window can cover 23:59. Every other time-of-day field stays 00:00–23:59.
+ */
+export const END_OF_DAY = "24:00";
+
+export const windowEndSchema = z.union([
+  timeOfDaySchema,
+  z.literal(END_OF_DAY),
+]);
+
+/** Window end as minutes since midnight; `24:00` is 1440. */
+export function windowEndMinutes(time: string): number {
+  return time === END_OF_DAY ? 1440 : minutesOfDay(time);
+}
+
 /** Opening hours per weekday (PRD §6 K `facilities.operating_hours`). */
 export const facilityDayHoursSchema = z
   .strictObject({
