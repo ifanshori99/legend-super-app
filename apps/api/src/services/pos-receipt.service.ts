@@ -52,6 +52,7 @@ import {
   eq,
   inArray,
   isNull,
+  notExists,
   notInArray,
   or,
   sql,
@@ -96,6 +97,7 @@ import {
   type PosReceiptOutletSnapshot,
   type ReceiptSequenceRetiredReason,
 } from "../db/schema/pos-receipt.ts";
+import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -1609,13 +1611,22 @@ export async function receiptGapsForOutlet(
     list.push({ sequenceNumber: row.sequenceNumber });
     bySequence.set(row.sequenceId, list);
   }
+  // legend-0hzqw: a written-off number counts as present.
+  const writeoffs = await writeoffOrdinalsBySequence(
+    tx,
+    tenantId,
+    sequences.map((sequence) => sequence.id),
+  );
   return sequences
     .map((sequence) => ({
       sequenceId: sequence.id,
       deviceId: sequence.deviceId,
       prefix: sequence.prefix,
       lastNumber: sequence.lastNumber,
-      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
+      missing: receiptGaps(sequence, [
+        ...(bySequence.get(sequence.id) ?? []),
+        ...asOrdinals(writeoffs.get(sequence.id)),
+      ]),
     }))
     .filter((entry) => entry.missing.length > 0);
 }
@@ -1674,8 +1685,19 @@ export async function receiptGapsForOutletFast(
     )
     .groupBy(receiptSequences.id)
     .orderBy(asc(receiptSequences.prefix));
+  // legend-0hzqw: a written-off number counts as present. The write-offs
+  // returned have no receipt, so receipts + write-offs never overlap and the
+  // count fast path stays exact.
+  const writeoffs = await writeoffOrdinalsBySequence(
+    tx,
+    tenantId,
+    counted.map((row) => row.sequence.id),
+  );
   const suspect = counted.filter(
-    (row) => row.issued !== row.sequence.lastNumber,
+    (row) =>
+      row.issued +
+        countUpTo(writeoffs.get(row.sequence.id), row.sequence.lastNumber) !==
+      row.sequence.lastNumber,
   );
   if (suspect.length === 0) return [];
   const issued = await tx
@@ -1705,7 +1727,10 @@ export async function receiptGapsForOutletFast(
       deviceId: sequence.deviceId,
       prefix: sequence.prefix,
       lastNumber: sequence.lastNumber,
-      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
+      missing: receiptGaps(sequence, [
+        ...(bySequence.get(sequence.id) ?? []),
+        ...asOrdinals(writeoffs.get(sequence.id)),
+      ]),
     }))
     .filter((entry) => entry.missing.length > 0);
 }
@@ -1721,7 +1746,9 @@ export async function receiptGapsForOutletFast(
  * with a missing ordinal or a lost range, oldest run first, so P1 missing #3
  * and P2 missing #3 stay distinct. legend-yd0h8: `lost` is set for a run
  * retired as `edge_regressed` whose edge high-water is above the cloud
- * lastNumber.
+ * lastNumber. legend-0hzqw: ordinals written off by the owner count as present
+ * and are listed in `writtenOff`; a run with only write-offs is still emitted
+ * so the report shows them.
  */
 export async function receiptGapsForDevice(
   tx: Tx,
@@ -1742,25 +1769,35 @@ export async function receiptGapsForDevice(
     .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
   const runs: PosReceiptGapRun[] = [];
   for (const sequence of sequences) {
-    const missing = await receiptGapsOfRun(tx, tenantId, sequence);
+    const { missing, writtenOff } = await receiptGapsOfRun(
+      tx,
+      tenantId,
+      sequence,
+    );
     const lost =
       sequence.retiredReason === "edge_regressed" &&
       sequence.edgeReportedNumber > sequence.lastNumber
         ? { from: sequence.lastNumber + 1, to: sequence.edgeReportedNumber }
         : null;
-    if (missing.length > 0 || lost !== null)
-      runs.push({ prefix: sequence.prefix, missing, lost });
+    if (missing.length > 0 || lost !== null || writtenOff.length > 0)
+      runs.push({ prefix: sequence.prefix, missing, writtenOff, lost });
   }
   return runs;
 }
 
-/** Missing ordinals of one run; fast path when the count matches lastNumber. */
+/**
+ * Missing and written-off ordinals of one run; fast path when receipts plus
+ * write-offs cover lastNumber. The write-offs are read AFTER the receipt
+ * count (as in `receiptGapsForOutletFast`): under READ COMMITTED a receipt
+ * committed in between then drops its write-off from the list (NOT EXISTS),
+ * so the sum can only fall short (a false gap, the slow path re-checks),
+ * never hide a number that has neither a receipt nor a write-off.
+ */
 async function receiptGapsOfRun(
   tx: Tx,
   tenantId: TenantId,
   sequence: SequenceRow,
-): Promise<number[]> {
-  if (sequence.lastNumber === 0) return [];
+): Promise<{ missing: number[]; writtenOff: number[] }> {
   const [counted] = await tx
     .select({
       issued:
@@ -1775,7 +1812,16 @@ async function receiptGapsOfRun(
         eq(posReceipts.sequenceId, sequence.id),
       ),
     );
-  if (counted?.issued === sequence.lastNumber) return [];
+  const writtenOff =
+    (await writeoffOrdinalsBySequence(tx, tenantId, [sequence.id])).get(
+      sequence.id,
+    ) ?? [];
+  if (sequence.lastNumber === 0) return { missing: [], writtenOff };
+  if (
+    (counted?.issued ?? 0) + countUpTo(writtenOff, sequence.lastNumber) ===
+    sequence.lastNumber
+  )
+    return { missing: [], writtenOff };
   const issued = await tx
     .select({ sequenceNumber: posReceipts.sequenceNumber })
     .from(posReceipts)
@@ -1785,5 +1831,67 @@ async function receiptGapsOfRun(
         eq(posReceipts.sequenceId, sequence.id),
       ),
     );
-  return receiptGaps(sequence, issued);
+  return {
+    missing: receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]),
+    writtenOff,
+  };
+}
+
+/**
+ * Written-off ordinals (legend-0hzqw) per sequence id, ascending, that still
+ * have no receipt. A receipt that arrives later for a written-off number (late
+ * sync) makes the write-off moot: the number is present through the receipt,
+ * is not listed as written off, and is not counted twice by the fast paths.
+ */
+async function writeoffOrdinalsBySequence(
+  tx: Tx,
+  tenantId: TenantId,
+  sequenceIds: string[],
+): Promise<Map<string, number[]>> {
+  const bySequence = new Map<string, number[]>();
+  if (sequenceIds.length === 0) return bySequence;
+  const rows = await tx
+    .select({
+      sequenceId: receiptNumberWriteoffs.sequenceId,
+      sequenceNumber: receiptNumberWriteoffs.sequenceNumber,
+    })
+    .from(receiptNumberWriteoffs)
+    .where(
+      and(
+        eq(receiptNumberWriteoffs.tenantId, tenantId),
+        inArray(receiptNumberWriteoffs.sequenceId, sequenceIds),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(posReceipts)
+            .where(
+              and(
+                eq(posReceipts.tenantId, receiptNumberWriteoffs.tenantId),
+                eq(posReceipts.sequenceId, receiptNumberWriteoffs.sequenceId),
+                eq(
+                  posReceipts.sequenceNumber,
+                  receiptNumberWriteoffs.sequenceNumber,
+                ),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(asc(receiptNumberWriteoffs.sequenceNumber));
+  for (const row of rows) {
+    const list = bySequence.get(row.sequenceId) ?? [];
+    list.push(row.sequenceNumber);
+    bySequence.set(row.sequenceId, list);
+  }
+  return bySequence;
+}
+
+function countUpTo(numbers: number[] | undefined, lastNumber: number): number {
+  return (numbers ?? []).filter((n) => n <= lastNumber).length;
+}
+
+function asOrdinals(
+  numbers: number[] | undefined,
+): { sequenceNumber: number }[] {
+  return (numbers ?? []).map((sequenceNumber) => ({ sequenceNumber }));
 }

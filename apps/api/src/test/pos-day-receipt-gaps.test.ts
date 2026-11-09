@@ -366,7 +366,12 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
     expect(report.status, JSON.stringify(report.body)).toBe(200);
     // legend-nhmct: gaps are listed per run, with the printed number and prefix.
     expect(report.body.data.receiptGaps).toEqual([
-      { prefix: "SHFT", missing: ["SHFT-000003"], lostRange: null },
+      {
+        prefix: "SHFT",
+        missing: ["SHFT-000003"],
+        lostRange: null,
+        writtenOff: [],
+      },
     ]);
   });
 

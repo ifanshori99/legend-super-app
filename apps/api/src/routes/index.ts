@@ -73,6 +73,7 @@ import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
+import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
@@ -158,6 +159,7 @@ apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.
 apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
+apiRouter.use("/outlets/:outletId/pos", posReceiptWriteoffRouter);
 // WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.

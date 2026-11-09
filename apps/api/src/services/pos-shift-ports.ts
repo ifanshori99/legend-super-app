@@ -26,6 +26,12 @@ export type PosReceiptGapRun = {
   /** Missing ordinals 1..lastNumber of this run, ascending. */
   missing: number[];
   /**
+   * legend-0hzqw: ordinals the tenant owner wrote off as permanently lost,
+   * ascending. They count as present (not in `missing`) and the day close
+   * ignores them; the shift report shows them.
+   */
+  writtenOff: number[];
+  /**
    * legend-yd0h8: run retired as edge_regressed whose high-water
    * (edge_reported_number) is above the cloud lastNumber: ordinals
    * lastNumber+1..edgeReportedNumber the edge reported issuing but the cloud
@@ -35,7 +41,7 @@ export type PosReceiptGapRun = {
 };
 
 /**
- * One entry per run with a missing ordinal or a lost range, oldest run first;
+ * One entry per run with a missing ordinal, a lost range or a write-off, oldest run first;
  * a gap-free device returns [].
  */
 export type PosReceiptGapsPort = (

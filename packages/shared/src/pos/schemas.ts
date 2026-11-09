@@ -1184,6 +1184,8 @@ export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
 export const posReceiptGapRunSchema = z.strictObject({
   prefix: receiptPrefixSchema,
   missing: z.array(receiptNumberSchema),
+  /** legend-0hzqw: numbers the owner wrote off as lost; not in `missing`. */
+  writtenOff: z.array(receiptNumberSchema),
   lostRange: z
     .strictObject({ from: receiptNumberSchema, to: receiptNumberSchema })
     .nullable(),
