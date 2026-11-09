@@ -40,6 +40,7 @@ import {
   CoreError,
   createUlid,
   idr,
+  outletIdSchema,
   toIsoDateTime,
   ulidToUuid,
   uuidSchema,
@@ -50,6 +51,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { defineDomainEvent } from "@starter/shared/events";
+import { PosError } from "@starter/shared/pos";
 import {
   addCartLineInputSchema,
   cartLineSchema,
@@ -72,6 +74,7 @@ import {
   transitionTableSession,
   updateCartLineInputSchema,
   EDGE_LINK_DOWN,
+  QR_OUTLET_CLOSED_MESSAGE,
   type Cart,
   type CartLine,
   type CartMutationResult,
@@ -125,6 +128,7 @@ import {
 import type { Tx } from "./menu-internals.ts";
 import type { OrderPromoInput, OrderPromoQuote } from "./order-promo-port.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
+import { isBusinessDayClosed } from "./pos-cash-guard.ts";
 import {
   depositCreditFor,
   lockSessionDeposit,
@@ -1596,6 +1600,21 @@ async function checkout(
       qrOrderErrorMessages[EDGE_LINK_DOWN],
     );
   const businessDate = businessDateFor(outlet, now);
+  // Tutup Hari (bead legend-2o1b): an order on an already-closed business day
+  // is refused before anything is priced or reserved. The shared day lock is
+  // held to transaction end, so closePosDay (exclusive, same key) cannot slip
+  // in between this check and the insert. Lock order: session row ->
+  // idempotency advisory lock -> cart row -> day lock (shared); closePosDay
+  // takes no row locks, so there is no cycle. This runs inside the idempotent
+  // body, so a replay of an already-placed order returns the stored result
+  // without reaching the guard.
+  if (
+    await isBusinessDayClosed(tx, context, {
+      outletId: outletIdSchema.parse(outlet.id),
+      businessDates: [businessDate],
+    })
+  )
+    throw new PosError("BUSINESS_DAY_ALREADY_CLOSED", QR_OUTLET_CLOSED_MESSAGE);
   const priced = await priceCartLines(tx, context, outlet, lines, now);
 
   // ORD-05: reserve each line's daily stock inside this transaction. A line

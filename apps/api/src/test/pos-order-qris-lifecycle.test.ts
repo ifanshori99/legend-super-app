@@ -224,8 +224,17 @@ function contextOf(tenantId: string): ScopedTenantContext {
   );
 }
 
-function pos() {
-  const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`;
+/** The till a request comes from: outlet plus the device registered there. */
+type Till = { outletId: string; deviceId: string };
+const mainTill = (): Till => ({
+  outletId: tenant.outletId,
+  deviceId: ids.device,
+});
+/** Extra devices (own outlets) the resolver knows besides `ids.device`. */
+const extraDevices = new Map<string, string>();
+
+function pos(till: Till = mainTill()) {
+  const base = `/api/outlets/${encodeURIComponent(till.outletId)}/pos/orders`;
   const send = (path: string, body: Record<string, unknown>) =>
     cashier.client
       .post(`${base}${path}`)
@@ -239,7 +248,7 @@ function pos() {
           issuedAt: Math.floor(Date.now() / 1000),
           tenantId: tenant.tenantId,
           brandId: null,
-          deviceId: ids.device,
+          deviceId: till.deviceId,
         }),
       )
       .send({ idempotencyKey: randomUUID(), ...body });
@@ -269,8 +278,11 @@ function pos() {
   };
 }
 
-async function statusOf(orderId: string): Promise<string> {
-  const read = await pos().get(orderId);
+async function statusOf(
+  orderId: string,
+  till: Till = mainTill(),
+): Promise<string> {
+  const read = await pos(till).get(orderId);
   expect(read.status, JSON.stringify(read.body)).toBe(200);
   return read.body.data.status as string;
 }
@@ -278,12 +290,12 @@ async function statusOf(orderId: string): Promise<string> {
 type OpenOrder = { orderId: string; totalIdr: number };
 
 /** create → submit: a payable POS order for Rp55.000. */
-async function payableOrder(): Promise<OpenOrder> {
-  const created = await pos().create();
+async function payableOrder(till: Till = mainTill()): Promise<OpenOrder> {
+  const created = await pos(till).create();
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   const orderId = created.body.data.id as string;
   if (created.body.data.status === "draft") {
-    const submitted = await pos().submit(orderId, "draft");
+    const submitted = await pos(till).submit(orderId, "draft");
     expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
   }
   return { orderId, totalIdr: created.body.data.totalIdr as number };
@@ -312,10 +324,13 @@ async function tendersOfOrder(orderId: string): Promise<TenderRow[]> {
 }
 
 /** Opens a QRIS tender through the API and returns its stored row. */
-async function openQris(order: OpenOrder): Promise<TenderRow> {
-  const response = await pos().qris(
+async function openQris(
+  order: OpenOrder,
+  till: Till = mainTill(),
+): Promise<TenderRow> {
+  const response = await pos(till).qris(
     order.orderId,
-    await statusOf(order.orderId),
+    await statusOf(order.orderId, till),
   );
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   const tender = (await tendersOfOrder(order.orderId)).find(
@@ -473,9 +488,11 @@ beforeAll(async () => {
   other = await createIsolatedTenant(`qro-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
-    tenantId === tenant.tenantId && deviceId === ids.device
-      ? tenant.outletId
-      : null,
+    tenantId !== tenant.tenantId
+      ? null
+      : deviceId === ids.device
+        ? tenant.outletId
+        : (extraDevices.get(deviceId) ?? null),
   );
   const roles: [string, string, string[]][] = [
     [
@@ -1056,4 +1073,168 @@ describe("POS QRIS lifecycle tenant isolation (legend-b0au)", () => {
     expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(0);
     expect(await orderEventCount(order.orderId, "order.tender_failed")).toBe(0);
   });
+});
+
+/** A fresh outlet of the tenant with the Kopi takeaway price and a device. */
+async function addOutlet(): Promise<Till> {
+  const outletId = randomUUID();
+  const deviceId = randomUUID();
+  const suffix = randomUUID().slice(0, 8);
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     SELECT $1, tenant_id, brand_id, legal_entity_id, $3, $4, address, timezone, opening_hours, status
+     FROM outlets WHERE tenant_id = $2 AND id = $5`,
+    [
+      outletId,
+      tenant.tenantId,
+      `Q-${suffix}`.toUpperCase(),
+      `Outlet QRIS ${suffix}`,
+      tenant.outletId,
+    ],
+  );
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    const listId = randomUUID();
+    await client.query(
+      `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+       VALUES ($1, $2, $3, 'takeaway', '2026-01-01')`,
+      [listId, tenant.tenantId, outletId],
+    );
+    await client.query(
+      `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [randomUUID(), tenant.tenantId, listId, ids.kopi, KOPI_IDR],
+    );
+  });
+  extraDevices.set(deviceId, outletId);
+  return { outletId, deviceId };
+}
+
+/** The order's stored business day (what the day close is keyed on). */
+async function businessDateOf(orderId: string): Promise<string> {
+  const { rows } = await owner.query<{ business_date: string }>(
+    `SELECT business_date::text AS business_date FROM orders
+     WHERE tenant_id = $1 AND id = $2::uuid`,
+    [tenant.tenantId, ulidToUuid(orderId)],
+  );
+  return rows[0]!.business_date;
+}
+
+/** Same SQL as pos-cash-guard.test.ts insertDayClose, with a marker recap. */
+async function insertDayClose(outletId: string, businessDate: string) {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO pos_daily_closes
+         (tenant_id, outlet_id, business_date, order_count, total_sales_idr,
+          total_refunds_idr, total_voids_idr, total_variance_idr,
+          inventory_deduction_applied, recap, closed_by, closed_at,
+          idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, 0, 0, 0, 0, 0, false, '{"marker":"frozen"}', $4, now(), $5, $6)`,
+      [
+        tenant.tenantId,
+        outletId,
+        businessDate,
+        cashier.userId,
+        randomUUID(),
+        "0".repeat(64),
+      ],
+    ),
+  );
+}
+
+async function dayCloseRows(
+  outletId: string,
+  businessDate: string,
+): Promise<string[]> {
+  const { rows } = await owner.query<{ row: string }>(
+    `SELECT to_jsonb(c)::text AS row FROM pos_daily_closes c
+     WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3`,
+    [tenant.tenantId, outletId, businessDate],
+  );
+  return rows.map((row) => row.row);
+}
+
+describe("POS QRIS paid on a closed business day (legend-mf0.1)", () => {
+  // Assumption: a payment.paid event for a QRIS whose order's business day is
+  // already closed must not capture (the order can never complete); the
+  // tender is voided and the guest's money refunded once. The consumer never
+  // throws for it (that would retry forever).
+  it("payment.paid after the day was closed voids the tender, refunds once and leaves the close untouched", async () => {
+    // Own outlet: a day close is immutable, so closing the shared outlet's
+    // today would break every other test regardless of order.
+    const till = await addOutlet();
+    const order = await payableOrder(till);
+    const tender = await openQris(order, till);
+    const businessDate = await businessDateOf(order.orderId);
+    await insertDayClose(till.outletId, businessDate);
+    const closeBefore = await dayCloseRows(till.outletId, businessDate);
+    expect(closeBefore).toHaveLength(1);
+
+    await settle(tender.payment_intent_id!, order.totalIdr);
+    const event = await onlyPaymentEvent(
+      "payment.paid",
+      tender.payment_intent_id!,
+    );
+    await deliver(event);
+
+    const rows = await tendersOfOrder(order.orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: tender.id, status: "voided" });
+    expect(rows.filter((row) => row.status === "captured")).toHaveLength(0);
+    expect(await orderEventCount(order.orderId, "order.tender_captured")).toBe(
+      0,
+    );
+    expect(await orderEventCount(order.orderId, "order.tender_voided")).toBe(1);
+    const { rows: events } = await owner.query<{ event: string }>(
+      `SELECT to_jsonb(e)::text AS event FROM order_events e
+       WHERE tenant_id = $1 AND order_id = $2::uuid AND type = 'order.tender_voided'`,
+      [tenant.tenantId, ulidToUuid(order.orderId)],
+    );
+    expect(events[0]!.event).toContain("business_day_closed");
+    expect(
+      await auditCount("pos_order.tender_voided", [
+        order.orderId,
+        ulidToUuid(order.orderId),
+        tender.id,
+      ]),
+    ).toBe(1);
+    expect(await statusOf(order.orderId, till)).not.toBe("completed");
+
+    const refunds = await refundsOfIntent(tender.payment_intent_id!);
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({
+      amount_idr: String(order.totalIdr),
+      status: "pending",
+      requested_by: "system:pos",
+    });
+    expect(
+      await auditCount("pos_order.late_payment_refund_requested", [
+        refunds[0]!.id,
+      ]),
+    ).toBe(1);
+    expect(await dayCloseRows(till.outletId, businessDate)).toEqual(
+      closeBefore,
+    );
+
+    // Replay, sequential and concurrent: nothing changes.
+    await deliver(event);
+    await Promise.all([deliver(event), deliver(event)]);
+    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(1);
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
+    expect(await orderEventCount(order.orderId, "order.tender_voided")).toBe(1);
+    expect(
+      await auditCount("pos_order.tender_voided", [
+        order.orderId,
+        ulidToUuid(order.orderId),
+        tender.id,
+      ]),
+    ).toBe(1);
+    expect(
+      await auditCount("pos_order.late_payment_refund_requested", [
+        refunds[0]!.id,
+      ]),
+    ).toBe(1);
+    expect(await dayCloseRows(till.outletId, businessDate)).toEqual(
+      closeBefore,
+    );
+  }, 60_000);
 });

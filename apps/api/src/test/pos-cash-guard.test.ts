@@ -296,6 +296,8 @@ function pos(
       }),
     complete: (orderId: string, expectedStatus: string) =>
       send(`/${orderId}/complete`, { expectedStatus }),
+    void: (orderId: string, body: Record<string, unknown>) =>
+      send(`/${orderId}/void`, body),
     correctionVoid: (orderId: string, body: Record<string, unknown>) =>
       send(`/${orderId}/corrections/void`, body),
     refund: (orderId: string, body: Record<string, unknown>) =>
@@ -435,26 +437,45 @@ async function shiftCloseApproval(
   return { approvedBy: supervisor.userId, approvalRequestId: id };
 }
 
+/** Marks `businessDate` closed for the outlet on an open owner transaction. */
+function insertDayCloseOn(
+  client: PoolClient,
+  outletId: string,
+  businessDate: string,
+) {
+  return client.query(
+    `INSERT INTO pos_daily_closes
+       (tenant_id, outlet_id, business_date, order_count, total_sales_idr,
+        total_refunds_idr, total_voids_idr, total_variance_idr,
+        inventory_deduction_applied, recap, closed_by, closed_at,
+        idempotency_key, request_fingerprint)
+     VALUES ($1, $2, $3, 0, 0, 0, 0, 0, false, '{}', $4, now(), $5, $6)`,
+    [
+      tenant.tenantId,
+      outletId,
+      businessDate,
+      manager.userId,
+      randomUUID(),
+      "0".repeat(64),
+    ],
+  );
+}
+
 /** Marks `businessDate` closed for the outlet as the database owner. */
 async function insertDayClose(outletId: string, businessDate: string) {
   await asOwnerTenant(tenant.tenantId, (client) =>
-    client.query(
-      `INSERT INTO pos_daily_closes
-         (tenant_id, outlet_id, business_date, order_count, total_sales_idr,
-          total_refunds_idr, total_voids_idr, total_variance_idr,
-          inventory_deduction_applied, recap, closed_by, closed_at,
-          idempotency_key, request_fingerprint)
-       VALUES ($1, $2, $3, 0, 0, 0, 0, 0, false, '{}', $4, now(), $5, $6)`,
-      [
-        tenant.tenantId,
-        outletId,
-        businessDate,
-        manager.userId,
-        randomUUID(),
-        "0".repeat(64),
-      ],
-    ),
+    insertDayCloseOn(client, outletId, businessDate),
   );
+}
+
+/** Void rows on record for the outlet (unpaid-order voids and corrections). */
+async function voidRowCount(outletId: string): Promise<number> {
+  const { rows } = await owner.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM pos_order_voids
+     WHERE tenant_id = $1 AND outlet_id = $2`,
+    [tenant.tenantId, outletId],
+  );
+  return Number(rows[0]?.count ?? 0);
 }
 
 async function storedRecap(outletId: string): Promise<EndOfDayRecap | null> {
@@ -478,6 +499,25 @@ async function waitForDayLockWaiters(min: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`No ${min} request(s) waited on the business-day lock`);
+}
+
+/**
+ * Waits (polling pg_locks, at most 3 s) until a backend waits, not granted, on
+ * the advisory lock of the outlet's business day of `today`.
+ */
+async function waitForDayLockWaiterInPgLocks(outletId: string): Promise<void> {
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const { rows } = await owner.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM pg_locks
+       WHERE locktype = 'advisory' AND NOT granted
+         AND classid::bigint = ((hashtext($1)::bigint >> 32) & 4294967295)
+         AND objid::bigint = (hashtext($1)::bigint & 4294967295)`,
+      [`pos-day:${tenant.tenantId}:${outletId}:${today}`],
+    );
+    if (Number(rows[0]?.count ?? 0) >= 1) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("No request waited on the business-day advisory lock");
 }
 
 beforeAll(async () => {
@@ -789,6 +829,113 @@ describe("POS-05 a closed business day refuses order writes (legend-6c0 finding 
       expect(rows[0]?.total).toBe(refund.status < 300 ? KOPI_IDR : 0);
     }
   }, 180_000);
+});
+
+// ---- legend-mf0.1: voids on a closed day and the tender vs close race ----------
+
+describe("POS-05 closed business day: voids and the close race (legend-mf0.1)", () => {
+  it("voiding an unpaid submitted order after the day is closed is refused with 409 BUSINESS_DAY_ALREADY_CLOSED; recap and void rows stay as they were", async () => {
+    const outlet = await addOutlet();
+    const unpaid = await submittedOrder(outlet.outletId);
+    // An unfinished order blocks the real close, so the day is marked closed
+    // directly (the recap row is '{}': it must stay exactly that).
+    await insertDayClose(outlet.outletId, today);
+    const recapBefore = await storedRecap(outlet.outletId);
+    const voidsBefore = await voidRowCount(outlet.outletId);
+
+    // Assumption: an unpaid-order void takes the same supervisor PIN approval
+    // fields as the correction void (approvedBy + overrideId).
+    const refused = await pos(outlet.outletId).void(unpaid.orderId, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan batal pesan",
+      expectedStatus: unpaid.status,
+      ...(await pinApproval({
+        outletId: outlet.outletId,
+        action: "void",
+        orderId: unpaid.orderId,
+        valueIdr: unpaid.totalIdr,
+      })),
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("BUSINESS_DAY_ALREADY_CLOSED");
+
+    expect(await storedRecap(outlet.outletId)).toEqual(recapBefore);
+    expect(await voidRowCount(outlet.outletId)).toBe(voidsBefore);
+    const { rows } = await owner.query<{ status: string }>(
+      `SELECT status FROM orders WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, ulidToUuid(unpaid.orderId)],
+    );
+    expect(rows[0]?.status).toBe(unpaid.status);
+  }, 60_000);
+
+  it("a correction void of a completed sale after the real day close is refused with 409 BUSINESS_DAY_ALREADY_CLOSED; the stored recap and void rows stay as they were", async () => {
+    const outlet = await addOutlet();
+    const sale = await completedSale(outlet.outletId, "edc");
+    const close = await closeDay(outlet.outletId);
+    expect(close.status, JSON.stringify(close.body)).toBeLessThan(300);
+    const recapBefore = await storedRecap(outlet.outletId);
+    expect(recapBefore).not.toBeNull();
+    const voidsBefore = await voidRowCount(outlet.outletId);
+
+    const refused = await pos(outlet.outletId).correctionVoid(sale.orderId, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan salah pesan",
+      ...(await pinApproval({
+        outletId: outlet.outletId,
+        action: "void",
+        orderId: sale.orderId,
+        valueIdr: sale.totalIdr,
+      })),
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("BUSINESS_DAY_ALREADY_CLOSED");
+
+    expect(await storedRecap(outlet.outletId)).toEqual(recapBefore);
+    expect(await voidRowCount(outlet.outletId)).toBe(voidsBefore);
+  }, 60_000);
+
+  it("a tender racing Tutup Hari waits on the day lock, then is refused with 409 BUSINESS_DAY_ALREADY_CLOSED once the close commits; no tender is captured", async () => {
+    const outlet = await addOutlet();
+    const order = await submittedOrder(outlet.outletId);
+    const holder = await owner.connect();
+    let settled = false;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.tenantId],
+      );
+      // The close holds the day lock exclusively while it writes its row.
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `pos-day:${tenant.tenantId}:${outlet.outletId}:${today}`,
+      ]);
+      const tender = pos(outlet.outletId)
+        .edc(order.orderId, order.status)
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      try {
+        await waitForDayLockWaiterInPgLocks(outlet.outletId);
+        expect(settled).toBe(false);
+        await insertDayCloseOn(holder, outlet.outletId, today);
+      } finally {
+        await holder.query("COMMIT");
+      }
+      const response = await tender;
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(errorCode(response.body)).toBe("BUSINESS_DAY_ALREADY_CLOSED");
+    } finally {
+      holder.release();
+    }
+
+    const { rows } = await owner.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM pos_order_tenders
+       WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenant.tenantId, outlet.outletId],
+    );
+    expect(rows[0]?.count).toBe(0);
+  }, 60_000);
 });
 
 // ---- Finding 5: a shift across the cutoff blocks today's close ------------------

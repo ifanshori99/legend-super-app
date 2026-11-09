@@ -53,3 +53,11 @@ export const qrOrderErrorMessages: Record<QrOrderErrorCode, string> = {
   QR_ORDER_PRICING_MODE_MIXED:
     "Pesanan ini memakai mode harga (termasuk atau belum termasuk pajak) yang berbeda dari pesanan lain di meja ini. Minta bantuan kasir.",
 };
+
+/**
+ * Guest message when a QR order lands on a business day already closed by
+ * Tutup Hari. The API refuses it as a PosError BUSINESS_DAY_ALREADY_CLOSED
+ * (409) carrying this text (bead legend-2o1b).
+ */
+export const QR_OUTLET_CLOSED_MESSAGE =
+  "Outlet sudah tutup untuk hari ini. Pesanan belum bisa dibuat, silakan hubungi staf.";

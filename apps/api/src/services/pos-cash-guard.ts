@@ -15,6 +15,9 @@
 //
 // Lock order: idempotency lock -> order row -> day lock (shared) -> shift row
 // (share). The day and shift closes take no order row locks, so no cycle.
+// The QRIS webhook capture (`handlePosPaymentPaid`, legend-mf0.1) follows
+// orders row -> pos_orders row -> tender row -> day lock (shared), through
+// `isBusinessDayClosed`; it decides instead of throwing.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -28,18 +31,19 @@ import type { Tx } from "./menu-internals.ts";
 import { liveExpectedCashIdr, type ShiftRow } from "./pos-shift-support.ts";
 
 /**
- * Refuses with BUSINESS_DAY_ALREADY_CLOSED when any of `businessDates` is
- * closed for the outlet; otherwise holds the day locks (shared) until the
- * transaction ends, so the day cannot close underneath the caller's write.
+ * Takes the day locks (shared) for `businessDates` and returns whether any of
+ * them is closed for the outlet. The locks are held until the transaction
+ * ends, so the day cannot close underneath the caller's write. Callers that
+ * must not throw (an outbox consumer) decide on the result.
  */
-export async function assertBusinessDayOpen(
+export async function isBusinessDayClosed(
   tx: Tx,
   context: ScopedTenantContext,
   input: { outletId: OutletId; businessDates: readonly string[] },
-): Promise<void> {
+): Promise<boolean> {
   const tenantId = context.tenant.tenantId;
   const dates = [...new Set(input.businessDates)].sort();
-  if (dates.length === 0) return;
+  if (dates.length === 0) return false;
   // Same key and hash as closePosDay's exclusive lock (pos-day.service.ts).
   for (const date of dates)
     await tx.execute(
@@ -56,7 +60,21 @@ export async function assertBusinessDayOpen(
       ),
     )
     .limit(1);
-  if (closed) throw new PosError("BUSINESS_DAY_ALREADY_CLOSED");
+  return Boolean(closed);
+}
+
+/**
+ * Refuses with BUSINESS_DAY_ALREADY_CLOSED when any of `businessDates` is
+ * closed for the outlet; otherwise holds the day locks (shared) until the
+ * transaction ends, so the day cannot close underneath the caller's write.
+ */
+export async function assertBusinessDayOpen(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; businessDates: readonly string[] },
+): Promise<void> {
+  if (await isBusinessDayClosed(tx, context, input))
+    throw new PosError("BUSINESS_DAY_ALREADY_CLOSED");
 }
 
 /**
