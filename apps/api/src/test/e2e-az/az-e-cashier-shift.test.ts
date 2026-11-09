@@ -47,7 +47,7 @@ import {
   owner,
   type IsolatedTenant,
 } from "../floor-test-helpers.ts";
-import { describeUntilMerged } from "./pending-branch.ts";
+import { describeUntilMerged, itUntilBuilt } from "./pending-branch.ts";
 
 const PIN = "582914";
 const CASHIER_PIN = "719364";
@@ -68,6 +68,7 @@ const ids = {
   cashierRole: randomUUID(),
   supervisorRole: randomUUID(),
   viewerRole: randomUUID(),
+  financeRole: randomUUID(),
 };
 
 type Member = {
@@ -82,6 +83,7 @@ let cashier: Member; // terminal A, used by the m1 sale stories
 let shiftCashier: Member; // terminal B, owns the shift story
 let supervisor: Member;
 let viewer: Member;
+let finance: Member;
 const devices = new Map<string, string>();
 
 // ---- Fixtures ----------------------------------------------------------------------
@@ -310,9 +312,18 @@ beforeAll(async () => {
         "pos.discount.approve",
         "shift.cash.approve_close",
         "shift.cash.view_all",
+        // PAY-04 (brief 65): a gateway refund is decided by someone holding both
+        // supervisor authority and payment.reconcile, never the requester.
+        "payment.reconcile",
+        // The approval inbox decides the gateway refund step (platform-approval).
+        "approval.inbox.view",
+        "approval.request.decide",
       ],
     ],
     [ids.viewerRole, "AZ Tanpa POS", ["floor.table.view"]],
+    // Finance requests gateway refunds (POST /payments/admin/refunds needs
+    // payment.reconcile); the cashier path is the POS correction refund above.
+    [ids.financeRole, "AZ Keuangan", ["payment.reconcile"]],
   ];
   for (const [id, name, permissions] of roles)
     await owner.query(
@@ -324,6 +335,7 @@ beforeAll(async () => {
   shiftCashier = await member(ids.cashierRole, "AZ Kasir B");
   supervisor = await member(ids.supervisorRole, "AZ Supervisor");
   viewer = await member(ids.viewerRole, "AZ Tamu");
+  finance = await member(ids.financeRole, "AZ Keuangan");
   await setStaffPin(
     ctx(),
     supervisor.userId,
@@ -998,60 +1010,83 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     return { edc, scoped, sims, terminals, charge };
   }
 
-  it("EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code", async () => {
-    const f = await edcFixture();
-    try {
-      const order = await newOrder();
-      const tx = await f.charge("bca", `BILL-${order.orderId}`, order.totalIdr);
-      expect(tx.status).toBe("approved");
-      expect(tx.amountIdr).toBe(order.totalIdr);
-      expect(tx.approvalCode).toBeTruthy();
-      const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
-        method: "edc_card",
-        edcTransactionId: tx.id,
-        reference: tx.approvalCode,
-        expectedStatus: order.status,
-      });
-      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-      expect(paid.body.data.tender).toMatchObject({
-        method: "edc_card",
-        amountIdr: order.totalIdr,
-        status: "captured",
-        reference: tx.approvalCode,
-      });
-      expect(paid.body.data.remainingIdr).toBe(0);
-    } finally {
-      await f.edc.stop(f.scoped);
-    }
-  });
+  // legend-dahk: setPosEdcTenderPort is not wired outside tests, so the running
+  // app answers 503 for an EDC tender. Awaiting CTO decision; do not stub here.
+  itUntilBuilt(
+    "legend-dahk",
+    "EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code",
+    async () => {
+      const f = await edcFixture();
+      try {
+        const order = await newOrder();
+        const tx = await f.charge(
+          "bca",
+          `BILL-${order.orderId}`,
+          order.totalIdr,
+        );
+        expect(tx.status).toBe("approved");
+        expect(tx.amountIdr).toBe(order.totalIdr);
+        expect(tx.approvalCode).toBeTruthy();
+        const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
+          method: "edc_card",
+          edcTransactionId: tx.id,
+          reference: tx.approvalCode,
+          expectedStatus: order.status,
+        });
+        expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+        expect(paid.body.data.tender).toMatchObject({
+          method: "edc_card",
+          amountIdr: order.totalIdr,
+          status: "captured",
+          reference: tx.approvalCode,
+        });
+        expect(paid.body.data.remainingIdr).toBe(0);
+      } finally {
+        await f.edc.stop(f.scoped);
+      }
+    },
+  );
 
-  it("EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai", async () => {
-    const f = await edcFixture();
-    try {
-      const order = await newOrder();
-      f.sims.bca.next(f.terminals.bca, "decline");
-      const tx = await f.charge("bca", `BILL-${order.orderId}`, order.totalIdr);
-      expect(tx.status).toBe("declined");
-      const attempt = await post(cashier, `/orders/${order.orderId}/tenders`, {
-        method: "edc_card",
-        edcTransactionId: tx.id,
-        reference: "DECLINED",
-        expectedStatus: order.status,
-      });
-      expect(attempt.status).toBeGreaterThanOrEqual(400);
-      const unpaid = await get(cashier, `/orders/${order.orderId}`);
-      expect(unpaid.body.data.status).not.toBe("completed");
-      const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
-        method: "cash",
-        receivedIdr: order.totalIdr,
-        expectedStatus: order.status,
-      });
-      expect(cash.status, JSON.stringify(cash.body)).toBe(201);
-      expect(cash.body.data.remainingIdr).toBe(0);
-    } finally {
-      await f.edc.stop(f.scoped);
-    }
-  });
+  // legend-dahk: with the port unwired a 503 would satisfy the refusal check.
+  itUntilBuilt(
+    "legend-dahk",
+    "EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai",
+    async () => {
+      const f = await edcFixture();
+      try {
+        const order = await newOrder();
+        f.sims.bca.next(f.terminals.bca, "decline");
+        const tx = await f.charge(
+          "bca",
+          `BILL-${order.orderId}`,
+          order.totalIdr,
+        );
+        expect(tx.status).toBe("declined");
+        const attempt = await post(
+          cashier,
+          `/orders/${order.orderId}/tenders`,
+          {
+            method: "edc_card",
+            edcTransactionId: tx.id,
+            reference: "DECLINED",
+            expectedStatus: order.status,
+          },
+        );
+        expect(attempt.status).toBeGreaterThanOrEqual(400);
+        const unpaid = await get(cashier, `/orders/${order.orderId}`);
+        expect(unpaid.body.data.status).not.toBe("completed");
+        const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
+          method: "cash",
+          receivedIdr: order.totalIdr,
+          expectedStatus: order.status,
+        });
+        expect(cash.status, JSON.stringify(cash.body)).toBe(201);
+        expect(cash.body.data.remainingIdr).toBe(0);
+      } finally {
+        await f.edc.stop(f.scoped);
+      }
+    },
+  );
 
   it("EDC-03 koneksi putus setelah kartu tergesek: ulangi bayar tidak menagih dua kali", async () => {
     const f = await edcFixture();
@@ -1072,57 +1107,67 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     }
   });
 
-  it("EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak", async () => {
-    const order = await newOrder();
-    const noRef = await post(cashier, `/orders/${order.orderId}/tenders`, {
-      method: "edc_card",
-      expectedStatus: order.status,
-    });
-    expect(noRef.status).toBeGreaterThanOrEqual(400);
-    const noApprover = await post(cashier, `/orders/${order.orderId}/tenders`, {
-      method: "edc_card",
-      reference: "MANUAL-123456",
-      expectedStatus: order.status,
-    });
-    expect(noApprover.status).toBeGreaterThanOrEqual(400);
-    expect(
-      (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
-    ).not.toBe("completed");
+  // legend-m4fv: no override action for standalone EDC in
+  // POS_OVERRIDE_APPROVE_PERMISSION; `edc_standalone` below is a placeholder.
+  itUntilBuilt(
+    "legend-m4fv",
+    "EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak",
+    async () => {
+      const order = await newOrder();
+      const noRef = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "edc_card",
+        expectedStatus: order.status,
+      });
+      expect(noRef.status).toBeGreaterThanOrEqual(400);
+      const noApprover = await post(
+        cashier,
+        `/orders/${order.orderId}/tenders`,
+        {
+          method: "edc_card",
+          reference: "MANUAL-123456",
+          expectedStatus: order.status,
+        },
+      );
+      expect(noApprover.status).toBeGreaterThanOrEqual(400);
+      expect(
+        (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
+      ).not.toBe("completed");
 
-    // Positive case: supervisor PIN + reference settle it and flag it for
-    // reconciliation. Assumption: the PRD names no override action for
-    // this, so `edc_standalone` is used; the tender is booked with the
-    // supervisor as approver and an edc_transactions row in standalone
-    // mode with needs_reconciliation set.
-    const reference = `MANUAL-${randomUUID().slice(0, 8)}`;
-    const approval = await pinApproval({
-      action: "edc_standalone",
-      objectId: order.orderId,
-      valueIdr: order.totalIdr,
-    });
-    const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
-      method: "edc_card",
-      reference,
-      expectedStatus: order.status,
-      ...approval,
-    });
-    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-    expect(paid.body.data.tender).toMatchObject({
-      method: "edc_card",
-      reference,
-      status: "captured",
-      approvedBy: supervisor.userId,
-    });
-    expect(paid.body.data.remainingIdr).toBe(0);
-    const flagged = await owner.query(
-      `SELECT mode, needs_reconciliation FROM edc_transactions
+      // Positive case: supervisor PIN + reference settle it and flag it for
+      // reconciliation. Assumption: the PRD names no override action for
+      // this, so `edc_standalone` is used; the tender is booked with the
+      // supervisor as approver and an edc_transactions row in standalone
+      // mode with needs_reconciliation set.
+      const reference = `MANUAL-${randomUUID().slice(0, 8)}`;
+      const approval = await pinApproval({
+        action: "edc_standalone",
+        objectId: order.orderId,
+        valueIdr: order.totalIdr,
+      });
+      const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "edc_card",
+        reference,
+        expectedStatus: order.status,
+        ...approval,
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      expect(paid.body.data.tender).toMatchObject({
+        method: "edc_card",
+        reference,
+        status: "captured",
+        approvedBy: supervisor.userId,
+      });
+      expect(paid.body.data.remainingIdr).toBe(0);
+      const flagged = await owner.query(
+        `SELECT mode, needs_reconciliation FROM edc_transactions
          WHERE tenant_id = $1 AND reference = $2`,
-      [tenant.tenantId, reference],
-    );
-    expect(flagged.rows).toEqual([
-      { mode: "standalone", needs_reconciliation: true },
-    ]);
-  });
+        [tenant.tenantId, reference],
+      );
+      expect(flagged.rows).toEqual([
+        { mode: "standalone", needs_reconciliation: true },
+      ]);
+    },
+  );
 
   it("EDC-07 dua bank aktif bersamaan di satu outlet menerima transaksi masing-masing", async () => {
     const f = await edcFixture();
@@ -1188,6 +1233,13 @@ describe("Alur E refund pembayaran gateway butuh orang kedua", () => {
     const fake = new FakeRefundGateway();
     setPaymentRefundGateway(fake);
     try {
+      // Matriks Approval (brief 65): this isolated tenant has no refund row yet;
+      // one level, decided by the supervisor role, never the requester.
+      await owner.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+         VALUES ($1, 'refund', NULL, $2, 1)`,
+        [tenant.tenantId, ids.supervisorRole],
+      );
       // A QRIS bill already paid (settled) in the isolated tenant.
       const linkId = randomUUID();
       const intentId = randomUUID();
@@ -1222,7 +1274,7 @@ describe("Alur E refund pembayaran gateway butuh orang kedua", () => {
         );
       });
       const ADMIN = "/api/payments/admin";
-      const requested = await cashier.client
+      const requested = await finance.client
         .post(`${ADMIN}/refunds`)
         .set(headers)
         .set(originHeader)
@@ -1236,12 +1288,13 @@ describe("Alur E refund pembayaran gateway butuh orang kedua", () => {
       expect(requested.body.data.status).toBe("pending");
       expect(fake.calls).toHaveLength(0);
       const refundId = requested.body.data.id as string;
-      const selfApprove = await cashier.client
+      const selfApprove = await finance.client
         .post(`${ADMIN}/refunds/${refundId}/approve`)
         .set(headers)
         .set(originHeader)
         .send({ idempotencyKey: randomUUID() });
-      expect(selfApprove.status).toBeGreaterThanOrEqual(400);
+      expect(selfApprove.status).toBe(403);
+      expect(selfApprove.body.error.code).toBe("APPROVER_IS_REQUESTER");
       expect(fake.calls).toHaveLength(0);
       const approved = await supervisor.client
         .post(`${ADMIN}/refunds/${refundId}/approve`)

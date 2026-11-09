@@ -937,13 +937,16 @@ describe("Alur A webhook DOIT asli", () => {
     expect(settled.rows[0]?.paid_idr).toBe("144375");
   });
 
+  // Polling fallback (PRD D11): reading the intent status syncs a pending intent
+  // with the gateway. POST .../refresh only replaces an expired code.
   it("PAY-02 polling ke gateway melunasi intent yang webhooknya terlambat", async () => {
     const { token } = await openLink();
     const created = await createIntent(token, "qris");
     gateway.settle(gateway.lastCreated!);
     const polled = await agent(app).get(
-      `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`,
+      `/api/payments/links/${token}/intents/${created.body.data.id}`,
     );
+    expect(polled.status, JSON.stringify(polled.body)).toBe(200);
     expect(polled.body.data.status).toBe("paid");
   });
 });
