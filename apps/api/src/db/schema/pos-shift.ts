@@ -236,6 +236,14 @@ export const posShiftCounts = pgTable(
      * fails as stale when it changes after the count (legend-67dt).
      */
     heldCashOutIdr: idrColumn("held_cash_out_idr").notNull().default(idr(0)),
+    /**
+     * legend-q7jj F1: number of the shift's cash rows (cash movements,
+     * refunds, voids; held or not) at count time. The close refuses the count
+     * as stale when any cash row landed since, before any approval is judged,
+     * so the answer never depends on the held status. Null on counts made
+     * before it: stale. Never in any DTO.
+     */
+    cashWatermark: integer("cash_watermark"),
     submittedBy: text("submitted_by")
       .notNull()
       .references(() => user.id),

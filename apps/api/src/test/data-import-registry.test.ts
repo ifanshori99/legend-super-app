@@ -96,6 +96,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "second pass of the 0135 scrub: masks card-number-like digit runs split by repeated or mixed separators in existing edc_transactions rows (legend-tjwb); idempotent, edits no other column",
   "0144_system_approval_requester.sql":
     "inserts the reserved banned system user (id 00000000-0000-4000-8000-000000000002, no role, no sign-in account) that opens system refund approval chains, ON CONFLICT DO NOTHING with a check that an existing row is that account; adds the user and role-assignment guard triggers (legend-2dnh)",
+  "0145_cash_shift_close_approval_policies_data.sql":
+    "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
 };
 
 // Entrypoints that open a database pool but import no data.

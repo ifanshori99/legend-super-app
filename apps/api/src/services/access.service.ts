@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AccessError,
+  DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
   approvalPolicyChangedEvent,
   approvalMatrixSchema,
@@ -327,6 +328,33 @@ export async function seedTenantRoleTemplates(
     WHERE NOT EXISTS (
       SELECT 1 FROM approval_policies p
       WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'refund'
+    )
+  `);
+  // legend-ccpn: every shift close needs one approval (Q28, PRD §3.10), PIN at
+  // the cashier is enough. Default matrix from Rp0
+  // (DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES; same rows as the data
+  // migration): level 1 for supervisor, outlet manager and general manager,
+  // the templates that hold shift.cash.approve_close. All rows land in one
+  // statement, only when the tenant has no cash_shift_close row; a template
+  // role that does not exist adds no row.
+  const cashShiftCloseValues = sql.join(
+    DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'cash_shift_close', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${cashShiftCloseValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'cash_shift_close'
     )
   `);
 }

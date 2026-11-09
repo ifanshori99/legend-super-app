@@ -1,0 +1,1 @@
+ALTER TABLE "pos_shift_counts" ADD COLUMN "cash_watermark" integer;

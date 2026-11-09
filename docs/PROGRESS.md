@@ -2,6 +2,11 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
+
+- Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
+- Berikut: gate batch11, lalu merge ke `milestone/m1`.
+
 ## legend-2dnh refund sistem membuka rantai approval (merge train batch11, cabang `ws/refund-tier` 40800ce2, 2026-11-09)
 
 - Sudah: refund buatan sistem (late payment POS dan QR, deposit reservasi) membuka rantai approval lewat akun sistem terkunci (banned, tanpa role, tanpa akun login). Migrasi `0135_system_approval_requester` diurutkan ulang menjadi `0144_system_approval_requester` (custom, isi apa adanya), terdaftar di `MIGRATION_DATA_STATEMENTS`.
