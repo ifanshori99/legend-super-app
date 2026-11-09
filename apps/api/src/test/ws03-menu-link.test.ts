@@ -38,6 +38,11 @@ const ownerPool = new Pool({
 });
 
 const createdUserIds: string[] = [];
+// Items and categories land on the shared seeded brand, so they are removed
+// again (items before categories) or the guest QR menu would list them.
+const createdItemIds: string[] = [];
+const createdCategoryIds: string[] = [];
+let cleanupClient: ReturnType<typeof agent> | null = null;
 const tag = randomBytes(3).toString("hex");
 let foreignTenant: IsolatedTenant | null = null;
 
@@ -47,6 +52,14 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  if (cleanupClient) {
+    for (const [kind, ids] of [
+      ["items", createdItemIds],
+      ["categories", createdCategoryIds],
+    ] as const)
+      for (const id of ids)
+        await cleanupClient.delete(`/api/menu/${kind}/${id}`).set(originHeader);
+  }
   if (foreignTenant) await dropIsolatedTenant(foreignTenant);
   if (createdUserIds.length > 0)
     await ownerPool.query(
@@ -69,6 +82,7 @@ async function ownerClient() {
     [tenantId, userId],
   );
   createdUserIds.push(userId);
+  cleanupClient ??= client;
   return { client, userId };
 }
 
@@ -77,12 +91,16 @@ type Client = ReturnType<typeof agent>;
 async function post(client: Client, path: string, send: object) {
   const response = await client.post(path).set(originHeader).send(send);
   expect(response.status).toBe(201);
-  return (response.body as { data: { id: string } }).data.id;
+  const id = (response.body as { data: { id: string } }).data.id;
+  if (path === "/api/menu/items") createdItemIds.push(id);
+  if (path === "/api/menu/categories") createdCategoryIds.push(id);
+  return id;
 }
 
 describe("legend-un0j shared link contract", () => {
   it("fixture links match the table shape and point at fixture rows", () => {
-    const { itemModifierGroups, items, modifierGroups } = cafeLegendMenuFixtures;
+    const { itemModifierGroups, items, modifierGroups } =
+      cafeLegendMenuFixtures;
     expect(itemModifierGroups.length).toBeGreaterThan(0);
     const keys = new Set<string>();
     for (const link of itemModifierGroups) {
@@ -248,8 +266,7 @@ describe("legend-dcz0 media outlet scope", () => {
 
   const scoped = (
     assignment:
-      | { kind: "tenant" }
-      | { kind: "outlets"; outletIds: (typeof outletA)[] },
+      { kind: "tenant" } | { kind: "outlets"; outletIds: (typeof outletA)[] },
   ) =>
     establishScopedTenantContext(
       establishTenantContext({ tenantId, brandId: null, source: "session" }),
@@ -333,7 +350,11 @@ describe("legend-dcz0 media outlet scope", () => {
   it("an explicit outlet the caller does not reach is 403", async () => {
     const { userId } = await ownerClient();
     await expect(
-      upload(scoped({ kind: "outlets", outletIds: [outletA] }), userId, outletB),
+      upload(
+        scoped({ kind: "outlets", outletIds: [outletA] }),
+        userId,
+        outletB,
+      ),
     ).rejects.toMatchObject({ status: 403 });
     // Tenant-wide reach still refuses an outlet that is not in the tenant.
     await expect(
