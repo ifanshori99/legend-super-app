@@ -201,6 +201,7 @@ function run(
     ],
     generatedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 

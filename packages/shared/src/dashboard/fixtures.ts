@@ -183,6 +183,7 @@ function kpiRun(
     ],
     generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 
@@ -388,6 +389,7 @@ export const reportRunResultFixture = reportResultSchema.parse({
   ],
   generatedAt: "2026-11-01T22:46:00.000Z",
   rowLimit: 100,
+  truncated: false,
 });
 
 export const reportBuilderQueryFixture = reportBuilderQuerySchema.parse({
@@ -639,6 +641,7 @@ function ownerBoardRun(
     })),
     generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 

@@ -794,6 +794,7 @@ function buildRun(
     rows,
     generatedAt: GENERATED_AT,
     rowLimit: 100,
+    truncated: false,
   } as unknown as ReportResult;
 }
 

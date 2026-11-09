@@ -138,6 +138,24 @@ function numericOf(value: MetricValue | null): number | null {
   return value.unit === "idr" ? Number(value.valueIdr) : Number(value.value);
 }
 
+/** Calendar months (YYYY-MM) a bucket touches. */
+function monthsOf(start: string, end: string): string[] {
+  const months: string[] = [];
+  let year = Number(start.slice(0, 4));
+  let month = Number(start.slice(5, 7));
+  const last = end.slice(0, 7);
+  for (;;) {
+    const key = `${year}-${String(month).padStart(2, "0")}`;
+    months.push(key);
+    if (key >= last) return months;
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+}
+
 type Cell = { value: MetricValue | null; finality: MetricFinality };
 
 function dimensionValueOf(
@@ -241,8 +259,11 @@ async function buildResult(
     ),
   );
 
-  const periodClosed = evaluated.period.status === "closed";
-  const accountingPeriodClosed = evaluated.period.accountingPeriodClosed;
+  const closedMonths = new Set(
+    evaluated.accountingPeriods
+      .filter((period) => period.closed)
+      .map((period) => period.period),
+  );
 
   // Pivot: one row per (bucket, dimension values), one cell per requested metric.
   const rowsByKey = new Map<
@@ -282,13 +303,9 @@ async function buildResult(
     }
   };
   for (const series of evaluated.series) addSeries(series);
-  // A table without a split always shows one row per bucket, even with no data.
-  if (selection.groupBy.length === 0) {
-    if (buckets.size === 0)
-      buckets.set(range.start, {
-        bucketStart: range.start,
-        bucketEnd: range.end,
-      });
+  // A table without a split shows one row per bucket the engine returned a
+  // series for, even where a metric has no data in it.
+  if (selection.groupBy.length === 0)
     for (const bucket of buckets.values())
       if (!rowsByKey.has(`${bucket.bucketStart}|`))
         rowsByKey.set(`${bucket.bucketStart}|`, {
@@ -296,7 +313,6 @@ async function buildResult(
           dimensions: [],
           cells: new Map(),
         });
-  }
 
   const unavailable = new Set(
     evaluated.availability
@@ -312,13 +328,16 @@ async function buildResult(
       const value = unavailable.has(definition.code)
         ? null
         : (cell?.value ?? null);
-      // SH-02: a figure is final only for a closed period, and for
-      // closed-period-only metrics or reports only once the books are closed.
+      // SH-02: finality is the engine's verdict per bucket, so a closed past
+      // day inside a running month stays final and the open bucket stays an
+      // estimate. A closed-period-only report adds one rule the engine cannot
+      // see: its figures are final only once the books of every month the
+      // bucket touches are closed.
       const mayBeFinal =
-        periodClosed &&
-        (accountingPeriodClosed ||
-          (definition.officiality !== "closed_period_only" &&
-            report?.closedPeriodOnly !== true));
+        report?.closedPeriodOnly !== true ||
+        monthsOf(row.bucketStart, row.bucketEnd).every((month) =>
+          closedMonths.has(month),
+        );
       return {
         metricCode: definition.code,
         value,
@@ -327,6 +346,7 @@ async function buildResult(
     }),
   }));
 
+  const sorted = sortRows(rows, selection.sort);
   return reportResultSchema.parse({
     reportCode: report?.code ?? null,
     period: evaluated.period,
@@ -335,9 +355,10 @@ async function buildResult(
     definitions: evaluated.definitions,
     availability: evaluated.availability,
     groupBy: selection.groupBy,
-    rows: sortRows(rows, selection.sort).slice(0, selection.limit),
+    rows: sorted.slice(0, selection.limit),
     generatedAt: now.toISOString(),
     rowLimit: selection.limit,
+    truncated: sorted.length > selection.limit,
   });
 }
 

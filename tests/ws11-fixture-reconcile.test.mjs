@@ -507,6 +507,7 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
       ],
       generatedAt: dashboard.ownerBoardGeneratedAt,
       rowLimit: 100,
+      truncated: false,
     });
   const body = (outletIds) => ({
     reportCode: "sales.target",

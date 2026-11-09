@@ -395,6 +395,7 @@ function buildRun(
     rows,
     generatedAt: "2026-11-01T04:40:00.000Z",
     rowLimit: 100,
+    truncated: false,
   } as unknown as ReportResult;
 }
 

@@ -324,6 +324,8 @@ export const reportResultSchema = z
     rows: z.array(reportResultRowSchema).max(REPORT_BUILDER_MAX_ROWS),
     generatedAt: isoDateTimeSchema,
     rowLimit: z.number().int().min(1).max(REPORT_BUILDER_MAX_ROWS),
+    /** True when `rowLimit` cut rows off; false when every row is here. */
+    truncated: z.boolean(),
   })
   .superRefine((result, ctx) => {
     const report =
@@ -339,6 +341,18 @@ export const reportResultSchema = z
         code: "custom",
         message: "bucket must match the period bucket",
         path: ["bucket"],
+      });
+    if (result.rows.length > result.rowLimit)
+      ctx.addIssue({
+        code: "custom",
+        message: "rows must not exceed rowLimit",
+        path: ["rows"],
+      });
+    if (result.truncated && result.rows.length !== result.rowLimit)
+      ctx.addIssue({
+        code: "custom",
+        message: "A truncated result fills rowLimit",
+        path: ["truncated"],
       });
     const codes = result.definitions.map((definition) => definition.code);
     if (new Set(codes).size !== codes.length)
@@ -367,7 +381,22 @@ export const reportResultSchema = z
       result.definitions.map((definition) => [definition.code, definition]),
     );
     let previousBucketStart: string | null = null;
+    const endOfBucket = new Map<string, string>();
     for (const [index, row] of result.rows.entries()) {
+      if (result.bucket === "day" && row.bucketStart !== row.bucketEnd)
+        ctx.addIssue({
+          code: "custom",
+          message: "A day row starts and ends on the same date",
+          path: ["rows", index, "bucketEnd"],
+        });
+      const knownEnd = endOfBucket.get(row.bucketStart);
+      if (knownEnd !== undefined && knownEnd !== row.bucketEnd)
+        ctx.addIssue({
+          code: "custom",
+          message: "Rows of one bucket share its end date",
+          path: ["rows", index, "bucketEnd"],
+        });
+      endOfBucket.set(row.bucketStart, row.bucketEnd);
       if (
         row.bucketStart < result.period.startDate ||
         row.bucketEnd > result.period.endDate
@@ -438,21 +467,30 @@ export const reportResultSchema = z
             message: `Cell value unit must be ${definition.unit}`,
             path: ["rows", index, "values", position, "value", "unit"],
           });
-        // SH-02: a figure is final only when its period is closed and, for
-        // closed-period-only metrics or reports, the books are closed too.
-        if (
-          cell.finality === "final" &&
-          (result.period.status === "open" ||
-            (!result.period.accountingPeriodClosed &&
-              (definition.officiality === "closed_period_only" ||
-                report?.closedPeriodOnly === true)))
-        )
-          ctx.addIssue({
-            code: "custom",
-            message:
-              "An open or not-yet-closed period can only report estimates (SH-02)",
-            path: ["rows", index, "values", position, "finality"],
-          });
+        // SH-02: a figure is final only when its bucket is closed and, for
+        // closed-period-only metrics or reports, its books are closed too.
+        // A total bucket is the whole period, so the period decides. A split
+        // bucket is ruled by the engine per bucket (a closed month can sit in
+        // a longer period); the schema only knows the last bucket of an open
+        // period is still running.
+        if (cell.finality === "final") {
+          const wholePeriod = result.bucket === "total";
+          const running =
+            result.period.status === "open" &&
+            (wholePeriod || row.bucketEnd >= result.period.endDate);
+          const booksOpen =
+            wholePeriod &&
+            !result.period.accountingPeriodClosed &&
+            (definition.officiality === "closed_period_only" ||
+              report?.closedPeriodOnly === true);
+          if (running || booksOpen)
+            ctx.addIssue({
+              code: "custom",
+              message:
+                "An open or not-yet-closed bucket can only report estimates (SH-02)",
+              path: ["rows", index, "values", position, "finality"],
+            });
+        }
       }
     }
   });

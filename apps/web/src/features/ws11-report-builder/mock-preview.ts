@@ -289,10 +289,15 @@ export function buildPreviewResult(
     startDate: query.period.startDate,
     endDate: query.period.endDate,
   };
-  // SH-02, same rule as the viewer: final once the period is closed, and for
-  // closed-period-only figures once the books of that month are closed.
+  // SH-02, same rule as the service, per bucket: final once the bucket is
+  // closed, and for closed-period-only figures once its months are closed.
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
+  const finalityOf = (bucketEnd: string, officiality: string) =>
+    bucketEnd < BUSINESS_DATE &&
+    (bucketEnd < MONTH_START || officiality !== "closed_period_only")
+      ? ("final" as const)
+      : ("estimate" as const);
 
   const toRow = (
     bucketRange: DateRange,
@@ -307,11 +312,7 @@ export function buildPreviewResult(
     values: definitions.map((definition) => ({
       metricCode: definition.code,
       value: cellFor(definition.code, row.atoms),
-      finality:
-        closed &&
-        (accountingClosed || definition.officiality !== "closed_period_only")
-          ? ("final" as const)
-          : ("estimate" as const),
+      finality: finalityOf(bucketRange.endDate, definition.officiality),
     })),
   });
 
@@ -376,5 +377,6 @@ export function buildPreviewResult(
     rows: rows.slice(0, query.limit),
     generatedAt: (options.now ?? new Date()).toISOString(),
     rowLimit: query.limit,
+    truncated: rows.length > query.limit,
   });
 }
