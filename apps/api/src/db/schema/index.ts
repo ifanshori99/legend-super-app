@@ -72,6 +72,8 @@ export * from "./pos-receipt-writeoff";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
 export * from "./expo-pickup";
+// WS-04 remake / comp / complaint log (legend-4b5).
+export * from "./kds-issues";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).

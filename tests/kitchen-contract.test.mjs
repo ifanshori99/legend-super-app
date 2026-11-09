@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as kitchen from "../packages/shared/src/kitchen/index.ts";
+import * as qrOrder from "../packages/shared/src/qr-order/index.ts";
 import * as menu from "../packages/shared/src/menu/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import * as api from "../packages/shared/src/api/index.ts";
@@ -186,6 +187,68 @@ test("PRD §6 kitchen_capacity_rules + KDS-05: pacing levels derive from capacit
   );
   assert.ok(
     fixtures.pacing.stations.some((row) => row.status === "at_capacity"),
+  );
+});
+
+test("legend-rutl: a ticket detail carries the table label and channel of its order", () => {
+  for (const board of fixtures.stationBoards)
+    for (const ticket of board.tickets) {
+      assert.ok(
+        "tableLabel" in ticket && "channel" in ticket,
+        "board tickets carry both fields",
+      );
+      kitchen.kitchenTicketDetailSchema.parse(ticket);
+    }
+  const base = fixtures.stationBoards[0].tickets[0];
+  const parse = (patch) =>
+    kitchen.kitchenTicketDetailSchema.safeParse({ ...base, ...patch }).success;
+  assert.equal(parse({ tableLabel: null, channel: "takeaway" }), true);
+  assert.equal(parse({ tableLabel: "A3", channel: "gofood" }), true);
+  assert.equal(parse({ tableLabel: "", channel: "dine_in" }), false);
+  assert.equal(parse({ tableLabel: "A3", channel: "pos" }), false);
+  assert.equal(
+    kitchen.kitchenTicketDetailSchema.safeParse({
+      ...base,
+      tableLabel: undefined,
+    }).success,
+    false,
+    "the table label is explicit: null when the order has no table",
+  );
+});
+
+test("legend-tsp5: the station summary is one open-ticket count per station", () => {
+  const summary = fixtures.stationSummary;
+  kitchen.stationSummarySchema.parse(summary);
+  assert.equal(
+    kitchen.getKitchenStationSummary.path,
+    "/api/outlets/:outletId/kitchen/station-summary",
+  );
+  const stationIds = summary.stations.map((row) => row.stationId);
+  assert.equal(new Set(stationIds).size, stationIds.length, "one row each");
+  // Open means new, in progress or recalled; done and cancelled do not count.
+  for (const row of summary.stations) {
+    const open = fixtures.tickets.filter(
+      (ticket) =>
+        ticket.stationId === row.stationId &&
+        ["new", "in_progress", "recalled"].includes(ticket.status),
+    ).length;
+    assert.equal(row.openTickets, open, "fixture count matches the tickets");
+  }
+  assert.equal(
+    kitchen.stationSummarySchema.safeParse({
+      ...summary,
+      stations: [summary.stations[0], summary.stations[0]],
+    }).success,
+    false,
+    "a station appears once",
+  );
+  assert.equal(
+    kitchen.stationSummarySchema.safeParse({
+      ...summary,
+      stations: [{ ...summary.stations[0], openTickets: -1 }],
+    }).success,
+    false,
+    "a count is never negative",
   );
 });
 
@@ -481,6 +544,113 @@ test("KDS-07 + F41 + R25: remake and comp record reason, staff and ingredient co
   );
 });
 
+test("legend-d60m: kitchen and qr-order share ONE order_issues record shape", () => {
+  assert.equal(
+    qrOrder.orderIssueSchema,
+    kitchen.orderIssueSchema,
+    "qr-order re-exports the kitchen record, no second definition",
+  );
+  // Every kitchen fixture parses under the QR entry point and carries the QR lifecycle.
+  for (const issue of fixtures.orderIssues) {
+    assert.equal(qrOrder.orderIssueSchema.safeParse(issue).success, true);
+    assert.ok(["open", "resolved", "cancelled"].includes(issue.status));
+  }
+  // And every QR fixture parses under the kitchen entry point.
+  for (const issue of qrOrder.cafeLegendQrOrderFixtures?.orderIssues ?? []) {
+    assert.equal(kitchen.orderIssueSchema.safeParse(issue).success, true);
+  }
+  const resolved = fixtures.orderIssues.find((i) => i.resolution === "swap");
+  assert.ok(resolved);
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...resolved, replacementItemId: null })
+      .success,
+    false,
+    "a swap names the replacement item",
+  );
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...resolved, resolvedAt: null })
+      .success,
+    false,
+    "a resolved issue has resolvedAt",
+  );
+  const refund = fixtures.orderIssues.find(
+    (i) => i.resolution === "manual_refund",
+  );
+  assert.ok(refund);
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...refund, reasonNote: "salah" })
+      .success,
+    false,
+    "a manual refund needs a written reason of 10+ characters (ORD-09)",
+  );
+  // remake and comp need an employeeId the QR input lacks: refused here.
+  for (const type of ["remake", "comp"])
+    assert.equal(
+      qrOrder.createOrderIssueInputSchema.safeParse({
+        type,
+        reason: "quality",
+        reasonNote: "Dibuat ulang",
+      }).success,
+      false,
+      `QR input refuses ${type}`,
+    );
+  // The QR staff-report input now speaks the unified vocabulary.
+  assert.equal(
+    qrOrder.createOrderIssueInputSchema.safeParse({
+      type: "unfulfillable",
+      reason: "out_of_stock",
+      reasonNote: "Bahan habis",
+    }).success,
+    true,
+  );
+});
+
+test("legend-0eq7: listOrderIssues rows carry order label, item name and staff names", () => {
+  assert.equal(kitchen.orderIssueViews.length, fixtures.orderIssues.length);
+  for (const view of kitchen.orderIssueViews) {
+    assert.equal(kitchen.orderIssueViewSchema.safeParse(view).success, true);
+    assert.ok(view.orderLabel.length > 0 && view.itemName.length > 0);
+    assert.ok(view.reportedByName.length > 0);
+  }
+  const withStaff = kitchen.orderIssueViews.find(
+    (view) => view.employeeId !== null && view.approvedBy !== null,
+  );
+  assert.ok(withStaff);
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...withStaff, itemName: "" })
+      .success,
+    false,
+  );
+  // A staff name exists exactly when its id does.
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...withStaff, employeeName: null })
+      .success,
+    false,
+  );
+  const noStaff = kitchen.orderIssueViews.find(
+    (view) => view.employeeId === null,
+  );
+  assert.ok(noStaff);
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...noStaff, employeeName: "Budi" })
+      .success,
+    false,
+  );
+  // The stored record stays strict: the labels belong to the projection only.
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...withStaff }).success,
+    false,
+  );
+  // The labels are required on the list response.
+  assert.equal(
+    kitchen.listOrderIssues.response.safeParse({
+      data: fixtures.orderIssues,
+      meta: { limit: 25, nextCursor: null },
+    }).success,
+    false,
+  );
+});
+
 test("F12 events: kitchen event names are registered on the WS-04 catalog line", () => {
   const catalog = new Map(
     events.eventCatalog.map((entry) => [entry.name, entry]),
@@ -589,10 +759,13 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   const ticket = fixtures.tickets[0];
   const detail = {
     ...ticket,
+    tableLabel: "A3",
+    channel: "dine_in",
     items: fixtures.ticketItems.filter((item) => item.ticketId === ticket.id),
   };
   respond(kitchen.listKitchenStations, fixtures.stationConfigs);
   respond(kitchen.getKitchenBoard, fixtures.stationBoards[0]);
+  respond(kitchen.getKitchenStationSummary, fixtures.stationSummary);
   respond(kitchen.startKitchenTicket, detail);
   respond(kitchen.bumpKitchenTicket, detail);
   respond(kitchen.recallKitchenTicket, { ...detail, status: "recalled" });
@@ -629,7 +802,7 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   respond(kitchen.getServingTimeSummary, fixtures.servingTimeSummaries);
   respond(kitchen.reportOrderIssue, fixtures.orderIssues[0]);
   kitchen.listOrderIssues.response.parse({
-    data: fixtures.orderIssues,
+    data: kitchen.orderIssueViews,
     meta: { limit: 25, nextCursor: null },
   });
 
@@ -645,6 +818,7 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
       resolution: null,
       voucherId: null,
       approvedBy: null,
+      idempotencyKey: "issue-key-0001",
       tenantId: fixtures.tickets[0].tenantId,
     }).success,
     false,
@@ -659,11 +833,28 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
     resolution: null,
     voucherId: null,
     approvedBy: null,
+    idempotencyKey: "issue-key-0002",
   };
   assert.equal(
     kitchen.reportOrderIssue.body.safeParse(validIssueInput).success,
     true,
   );
+  // A retried report needs a key; a malformed key is refused.
+  const keyless = { ...validIssueInput };
+  delete keyless.idempotencyKey;
+  for (const [body, label] of [
+    [keyless, "missing idempotencyKey"],
+    [{ ...validIssueInput, idempotencyKey: "short" }, "key under 8 chars"],
+    [
+      { ...validIssueInput, idempotencyKey: "bad key with spaces" },
+      "bad chars",
+    ],
+  ])
+    assert.equal(
+      kitchen.reportOrderIssue.body.safeParse(body).success,
+      false,
+      label,
+    );
   // KDS-07: ingredient cost is computed by the API, never client input.
   assert.equal(
     kitchen.reportOrderIssue.body.safeParse({ ...validIssueInput, costIdr: 0 })

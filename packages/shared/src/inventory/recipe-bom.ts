@@ -278,6 +278,8 @@ export const orderIssueReasonSchema = z.enum([
   "quality",
   "late",
   "complaint",
+  "out_of_stock",
+  "other",
 ]);
 export type OrderIssueReason = z.infer<typeof orderIssueReasonSchema>;
 

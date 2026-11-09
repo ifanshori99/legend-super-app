@@ -33,6 +33,7 @@ import {
   kitchenTicketItemSchema,
   orderIdSchema,
   orderIssueSchema,
+  orderIssueViewSchema,
   orderIssueTypeSchema,
   pacingSnapshotSchema,
   pickupCallSchema,
@@ -43,6 +44,7 @@ import {
   stationBoardSchema,
   stationConfigSchema,
   stationIdSchema,
+  stationSummarySchema,
 } from "./schemas.ts";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
@@ -73,6 +75,17 @@ export const getKitchenBoard = defineEndpoint({
   path: "/api/outlets/:outletId/kitchen/stations/:stationId/board",
   params: stationParams,
   response: dataResponseSchema(stationBoardSchema),
+});
+
+/**
+ * KDS station switch: open-ticket count per station in one small payload, so
+ * the tablet does not poll every station's board (legend-tsp5).
+ */
+export const getKitchenStationSummary = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-summary",
+  params: outletParams,
+  response: dataResponseSchema(stationSummarySchema),
 });
 
 /** "Aksi Tiket": start, bump, recall, void. */
@@ -296,7 +309,10 @@ export const reportOrderIssue = defineEndpoint({
   response: dataResponseSchema(orderIssueSchema),
 });
 
-/** Remake/comp log for the kitchen analytics screen. */
+/**
+ * Remake/comp log for the kitchen analytics screen. Rows carry the order label,
+ * item name and staff names (legend-0eq7), so the UI shows no id.
+ */
 export const listOrderIssues = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/order-issues",
@@ -305,5 +321,5 @@ export const listOrderIssues = defineEndpoint({
     type: orderIssueTypeSchema.optional(),
     stationId: stationIdSchema.optional(),
   }),
-  response: cursorPageSchema(orderIssueSchema),
+  response: cursorPageSchema(orderIssueViewSchema),
 });

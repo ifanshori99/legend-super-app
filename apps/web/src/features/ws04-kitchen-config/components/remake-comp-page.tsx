@@ -60,6 +60,7 @@ const REASON_LABEL: Record<OrderIssue["reason"], MessageKey> = {
   quality: "kitchenConfig.remake.reasons.quality",
   late: "kitchenConfig.remake.reasons.late",
   complaint: "kitchenConfig.remake.reasons.complaint",
+  out_of_stock: "kitchenConfig.remake.reasons.out_of_stock",
   other: "kitchenConfig.remake.reasons.other",
 };
 

@@ -91,6 +91,7 @@ import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
+import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -187,6 +188,9 @@ apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 apiRouter.use("/outlets/:outletId", pickupRouter);
 // WS-04 expo board, runner assignment and delivered (legend-him8j), same prefix.
 apiRouter.use("/outlets/:outletId", expoRouter);
+// WS-04 remake / comp log (legend-4b5): /api/outlets/:outletId/orders/:orderId/issues
+// and /api/outlets/:outletId/order-issues; per-route middleware (shared prefix).
+apiRouter.use("/outlets/:outletId", orderIssuesRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).

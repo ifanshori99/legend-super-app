@@ -8,7 +8,7 @@
 // three contracts reference the same records.
 
 import { z, cafeLegendFixtures } from "../core/index.ts";
-import { kitchenFixtureSchema } from "./schemas.ts";
+import { kitchenFixtureSchema, orderIssueViewSchema } from "./schemas.ts";
 
 // Fixtures are written as plain data (`z.input`): branded ids appear only after
 // the schema parses them, which is what the fixture test and the API do.
@@ -60,6 +60,17 @@ const orderIds = {
   dineInPastry: "01JBQ7Z8K0A1B2C3D4E5F6G7HA",
   takeaway: "01JBQ7Z8K0A1B2C3D4E5F6G7HB",
   takeawayDone: "01JBQ7Z8K0A1B2C3D4E5F6G7HC",
+};
+/** Table label and channel the KDS header shows per order (legend-rutl). */
+export const orderHeaders: Record<
+  string,
+  { tableLabel: string | null; channel: "dine_in" | "takeaway" | "gofood" }
+> = {
+  [orderIds.dineIn]: { tableLabel: "A3", channel: "dine_in" },
+  [orderIds.gofood]: { tableLabel: null, channel: "gofood" },
+  [orderIds.dineInPastry]: { tableLabel: "B7", channel: "dine_in" },
+  [orderIds.takeaway]: { tableLabel: null, channel: "takeaway" },
+  [orderIds.takeawayDone]: { tableLabel: null, channel: "takeaway" },
 };
 const orderItemIds = [
   "01JBQ7Z8K3M4N5P6Q7R8S9T0VY",
@@ -1114,10 +1125,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.cook,
     reportedBy: staffId.supervisor,
     resolution: "swap",
+    replacementItemId: menuItemId.kentangGoreng,
     voucherId: null,
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 12_500,
     createdAt: "2026-11-01T04:06:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T04:07:00.000Z",
   },
   {
     ...scope,
@@ -1131,10 +1146,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.pastry,
     reportedBy: staffId.supervisor,
     resolution: "voucher",
+    replacementItemId: null,
     voucherId: id(900),
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 4_000,
     createdAt: "2026-11-01T03:52:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T03:53:00.000Z",
   },
   {
     ...scope,
@@ -1148,10 +1167,14 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: staffId.cook,
     reportedBy: staffId.cashier,
     resolution: "manual_refund",
+    replacementItemId: null,
     voucherId: null,
     approvedBy: staffId.supervisor,
+    priceDifferenceIdr: null,
     costIdr: 0,
     createdAt: "2026-11-01T04:08:00.000Z",
+    status: "resolved",
+    resolvedAt: "2026-11-01T04:09:00.000Z",
   },
   {
     ...scope,
@@ -1165,12 +1188,46 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     employeeId: null,
     reportedBy: staffId.supervisor,
     resolution: null,
+    replacementItemId: null,
     voucherId: null,
     approvedBy: null,
+    priceDifferenceIdr: null,
     costIdr: 0,
     createdAt: "2026-11-01T04:09:00.000Z",
+    status: "open",
+    resolvedAt: null,
   },
 ];
+
+const staffNames: Record<string, string> = {
+  [staffId.cook]: "Budi Santoso",
+  [staffId.barista]: "Sari Wulandari",
+  [staffId.pastry]: "Dewi Lestari",
+  [staffId.supervisor]: "Rina Pratama",
+  [staffId.cashier]: "Agus Hartono",
+};
+const orderLabels: Record<string, string> = {
+  [orderIds.dineIn]: "A-0101",
+  [orderIds.gofood]: "GF-0102",
+  [orderIds.dineInPastry]: "A-0103",
+};
+
+/** `listOrderIssues` rows: each record plus order label, item and staff names (legend-0eq7). */
+export const orderIssueViews: z.input<typeof orderIssueViewSchema>[] =
+  orderIssues.map((issue) => ({
+    ...issue,
+    orderLabel: orderLabels[issue.orderId] ?? "A-0100",
+    itemName:
+      ticketItems.find((item) => item.orderItemId === issue.orderItemId)
+        ?.name ?? "Menu",
+    reportedByName: staffNames[issue.reportedBy] ?? "Staf",
+    employeeName: issue.employeeId
+      ? (staffNames[issue.employeeId] ?? "Staf")
+      : null,
+    approvedByName: issue.approvedBy
+      ? (staffNames[issue.approvedBy] ?? "Staf")
+      : null,
+  }));
 
 export const channelPauses: KitchenFixtureInput["channelPauses"] = [
   {
@@ -1198,6 +1255,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...kitchenDoneTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.kitchenDone,
         ),
@@ -1213,6 +1272,8 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
     tickets: [
       {
         ...coffeeInProgressTicket,
+        tableLabel: "A3",
+        channel: "dine_in",
         items: ticketItems.filter(
           (item) => item.ticketId === ticketIds.coffeeInProgress,
         ),
@@ -1236,6 +1297,21 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
   },
 ];
 
+const OPEN_TICKET_STATUSES = ["new", "in_progress", "recalled"];
+
+export const stationSummary: KitchenFixtureInput["stationSummary"] = {
+  ...scope,
+  generatedAt: "2026-11-01T04:10:00.000Z",
+  stations: stationConfigs.map((config) => ({
+    stationId: config.stationId,
+    openTickets: tickets.filter(
+      (ticket) =>
+        ticket.stationId === config.stationId &&
+        OPEN_TICKET_STATUSES.includes(ticket.status),
+    ).length,
+  })),
+};
+
 export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   stationConfigs,
   menuLoads,
@@ -1254,4 +1330,5 @@ export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   orderIssues,
   channelPauses,
   stationBoards,
+  stationSummary,
 };

@@ -22,6 +22,7 @@ import {
   tenantIdSchema,
   outletIdSchema,
   userIdSchema,
+  idempotencyKeySchema,
   idrSchema,
   basisPointsSchema,
   businessDateSchema,
@@ -247,7 +248,16 @@ export const kitchenTicketSchema = ticketSchemaBase
 
 /** What the KDS renders: one ticket per station with its item lines. */
 export const kitchenTicketDetailSchema = ticketSchemaBase
-  .extend({ items: z.array(kitchenTicketItemSchema).min(1) })
+  .extend({
+    /**
+     * legend-rutl: read from the order for the KDS header. The table code when
+     * the order sits on a table session, else null (takeaway, delivery).
+     */
+    tableLabel: z.string().min(1).max(20).nullable(),
+    /** The order's menu channel (dine-in or takeaway for own orders). */
+    channel: channelSchema,
+    items: z.array(kitchenTicketItemSchema).min(1),
+  })
   .refine(startedTicketRule, {
     path: ["startedAt"],
     message: "A started ticket records startedAt (KDS-04)",
@@ -772,12 +782,13 @@ export const orderIssueTypeSchema = z.enum([
   "comp",
   "complaint",
 ]);
-/** F41 standard reasons: salah pesanan, kualitas, terlambat, keluhan. */
+/** F41 standard reasons: salah pesanan, kualitas, terlambat, keluhan, bahan habis. */
 export const orderIssueReasonSchema = z.enum([
   "wrong_order",
   "quality",
   "late",
   "complaint",
+  "out_of_stock",
   "other",
 ]);
 /** PRD §6 `order_issues.resolution`. */
@@ -786,70 +797,170 @@ export const orderIssueResolutionSchema = z.enum([
   "voucher",
   "manual_refund",
 ]);
+/** Lifecycle of one issue: guest/staff resolution moves `open` to `resolved`. */
+export const ORDER_ISSUE_STATUSES = ["open", "resolved", "cancelled"] as const;
+export const orderIssueStatusSchema = z.enum(ORDER_ISSUE_STATUSES);
 
 /**
- * KDS-07: every remake and comp records the standard reason, station, staff
- * member and the ingredient cost (`cost_idr`, whole rupiah — D-CORE-2).
- * PRD R25: a manual refund needs supervisor approval and a written reason, so
- * `resolution: "manual_refund"` requires `approvedBy`; a voucher resolution
- * requires the voucher.
+ * Cross-field rules shared by the stored record and the staff input, so the
+ * KDS form, the QR recovery flow and the table agree (legend-d60m).
  */
-export const orderIssueSchema = z
-  .strictObject({
-    ...outletScope,
-    id: uuidSchema,
-    orderId: orderIdSchema,
-    orderItemId: orderItemIdSchema,
-    type: orderIssueTypeSchema,
-    reason: orderIssueReasonSchema,
-    /** Written reason, mandatory for R25 ("alasan tertulis"). */
-    reasonNote: z.string().min(1).max(500),
-    stationId: stationIdSchema.nullable(),
-    /** Staff member whose station produced the remake/comp (KDS-07). */
-    employeeId: userIdSchema.nullable(),
-    reportedBy: userIdSchema,
-    resolution: orderIssueResolutionSchema.nullable(),
-    voucherId: uuidSchema.nullable(),
-    approvedBy: userIdSchema.nullable(),
-    /** Ingredient cost of the remake/comp, whole rupiah (KDS-07). */
-    costIdr: idrSchema.refine((amount) => amount >= 0, {
-      message: "Ingredient cost cannot be negative",
-    }),
-    createdAt: isoDateTimeSchema,
-  })
-  .refine(
-    (issue) =>
-      issue.resolution !== "manual_refund" || issue.approvedBy !== null,
-    {
-      path: ["approvedBy"],
-      message: "A manual refund requires supervisor approval (R25)",
-    },
-  )
-  .refine(
-    (issue) => issue.resolution !== "voucher" || issue.voucherId !== null,
-    {
-      path: ["voucherId"],
-      message: "A voucher resolution records the voucher",
-    },
-  )
-  .refine(
-    (issue) =>
-      (issue.type !== "remake" && issue.type !== "comp") ||
-      issue.employeeId !== null,
-    {
-      path: ["employeeId"],
-      message: "A remake or comp records the staff member (KDS-07)",
-    },
+type OrderIssueRuleFields = {
+  type: z.infer<typeof orderIssueTypeSchema>;
+  resolution: z.infer<typeof orderIssueResolutionSchema> | null;
+  voucherId: string | null;
+  replacementItemId: string | null;
+  approvedBy: string | null;
+  employeeId: string | null;
+  reasonNote: string;
+};
+const orderIssueRules = (
+  issue: OrderIssueRuleFields,
+  ctx: z.RefinementCtx,
+): void => {
+  const add = (path: string, message: string, invalid: boolean) => {
+    if (invalid) ctx.addIssue({ code: "custom", path: [path], message });
+  };
+  add(
+    "approvedBy",
+    "A manual refund requires supervisor approval (R25, ORD-09)",
+    issue.resolution === "manual_refund" && issue.approvedBy === null,
   );
+  add(
+    "reasonNote",
+    "A manual refund needs a written reason of at least 10 characters (R25, ORD-09)",
+    issue.resolution === "manual_refund" && issue.reasonNote.trim().length < 10,
+  );
+  add(
+    "voucherId",
+    "A voucher resolution records the voucher",
+    issue.resolution === "voucher" && issue.voucherId === null,
+  );
+  add(
+    "replacementItemId",
+    "A swap needs the replacement menu item",
+    issue.resolution === "swap" && issue.replacementItemId === null,
+  );
+  add(
+    "employeeId",
+    "A remake or comp records the staff member (KDS-07)",
+    (issue.type === "remake" || issue.type === "comp") &&
+      issue.employeeId === null,
+  );
+};
+
+/**
+ * THE `order_issues` record (PRD §6 C, F41, KDS-07, R25, ORD-08/09). One shape
+ * for the KDS remake/comp log and the QR recovery flow (legend-d60m):
+ * - `reason` is the standard enum, `reasonNote` the written reason (the QR
+ *   free-text reason lives there);
+ * - `stationId`/`employeeId` are KDS-07 attribution, null for an issue no
+ *   station produced (a stock-out found at the pass);
+ * - `status`/`resolvedAt`/`replacementItemId`/`priceDifferenceIdr` are the QR
+ *   recovery lifecycle; a staff-recorded remake or comp is born `resolved`.
+ * `costIdr` is whole rupiah (D-CORE-2) computed server-side from the recipe.
+ */
+const orderIssueFields = {
+  ...outletScope,
+  id: uuidSchema,
+  orderId: orderIdSchema,
+  orderItemId: orderItemIdSchema,
+  type: orderIssueTypeSchema,
+  reason: orderIssueReasonSchema,
+  /** Written reason, mandatory for R25 ("alasan tertulis"). */
+  reasonNote: z.string().min(1).max(500),
+  stationId: stationIdSchema.nullable(),
+  /** Staff member whose station produced the remake/comp (KDS-07). */
+  employeeId: userIdSchema.nullable(),
+  reportedBy: userIdSchema,
+  resolution: orderIssueResolutionSchema.nullable(),
+  replacementItemId: uuidSchema.nullable(),
+  voucherId: uuidSchema.nullable(),
+  /** Positive: the guest pays the difference; negative: the guest is credited. */
+  priceDifferenceIdr: idrSchema.nullable(),
+  approvedBy: userIdSchema.nullable(),
+  /** Ingredient cost of the remake/comp, whole rupiah (KDS-07). */
+  costIdr: idrSchema.refine((amount) => amount >= 0, {
+    message: "Ingredient cost cannot be negative",
+  }),
+  status: orderIssueStatusSchema,
+  createdAt: isoDateTimeSchema,
+  resolvedAt: isoDateTimeSchema.nullable(),
+};
+
+/** Lifecycle rules of the stored record, shared with the read projection. */
+type OrderIssueStateFields = OrderIssueRuleFields & {
+  status: z.infer<typeof orderIssueStatusSchema>;
+  resolvedAt: string | null;
+};
+const orderIssueStateRules = (
+  issue: OrderIssueStateFields,
+  ctx: z.RefinementCtx,
+): void => {
+  orderIssueRules(issue, ctx);
+  const add = (path: string, message: string, invalid: boolean) => {
+    if (invalid) ctx.addIssue({ code: "custom", path: [path], message });
+  };
+  add(
+    "resolution",
+    "An open issue has no resolution yet",
+    issue.status === "open" && issue.resolution !== null,
+  );
+  add(
+    "resolvedAt",
+    "A resolved issue needs a resolution and resolvedAt",
+    issue.status === "resolved" &&
+      (issue.resolution === null || issue.resolvedAt === null),
+  );
+  add(
+    "resolvedAt",
+    "A cancelled issue is not resolved",
+    issue.status === "cancelled" && issue.resolvedAt !== null,
+  );
+};
+
+export const orderIssueSchema = z
+  .strictObject(orderIssueFields)
+  .superRefine(orderIssueStateRules);
+
+/**
+ * `listOrderIssues` row (legend-0eq7): the record plus the readable labels the
+ * log shows, so the UI never renders an id. `orderLabel` is the order number
+ * (`orders.number`), `itemName` the name snapshotted on the order line, and
+ * the staff names come from the user table; each is null only when the
+ * matching id is null.
+ */
+export const orderIssueViewSchema = z
+  .strictObject({
+    ...orderIssueFields,
+    orderLabel: z.string().min(1).max(30),
+    itemName: name,
+    reportedByName: z.string().min(1).max(100),
+    employeeName: z.string().min(1).max(100).nullable(),
+    approvedByName: z.string().min(1).max(100).nullable(),
+  })
+  .superRefine(orderIssueStateRules)
+  .superRefine((issue, ctx) => {
+    for (const [id, label, path] of [
+      [issue.employeeId, issue.employeeName, "employeeName"],
+      [issue.approvedBy, issue.approvedByName, "approvedByName"],
+    ] as const)
+      if ((id === null) !== (label === null))
+        ctx.addIssue({
+          code: "custom",
+          path: [path],
+          message: "A staff name is present exactly when its id is",
+        });
+  });
 
 /**
  * What the POS/KDS submits. `costIdr` is NOT client input: the API computes
  * the ingredient cost from the recipe/BOM at the time of the issue (KDS-07
  * "biaya bahan"), so a client cannot under-report it. The same cross-field
  * rules as the stored record apply, so the FE form fails before the request.
- * `approvedBy` names the supervisor who approved a manual refund (R25); the API
- * must verify that approval server-side (approval flow / supervisor PIN) and
- * reject an unverified id — the field alone is never proof of approval.
+ * `approvedBy` names the supervisor who approved a manual refund (R25); the
+ * field alone is never proof of approval, so `reportOrderIssue` refuses
+ * `manual_refund` until a real approval flow exists (422).
  */
 export const createOrderIssueInputSchema = z
   .strictObject({
@@ -860,33 +971,13 @@ export const createOrderIssueInputSchema = z
     stationId: stationIdSchema.nullable(),
     employeeId: userIdSchema.nullable(),
     resolution: orderIssueResolutionSchema.nullable(),
+    replacementItemId: uuidSchema.nullable().default(null),
     voucherId: uuidSchema.nullable(),
     approvedBy: userIdSchema.nullable(),
+    /** A resend of the same key returns the stored issue, never a second one. */
+    idempotencyKey: idempotencyKeySchema,
   })
-  .refine(
-    (issue) =>
-      issue.resolution !== "manual_refund" || issue.approvedBy !== null,
-    {
-      path: ["approvedBy"],
-      message: "A manual refund requires supervisor approval (R25)",
-    },
-  )
-  .refine(
-    (issue) => issue.resolution !== "voucher" || issue.voucherId !== null,
-    {
-      path: ["voucherId"],
-      message: "A voucher resolution records the voucher",
-    },
-  )
-  .refine(
-    (issue) =>
-      (issue.type !== "remake" && issue.type !== "comp") ||
-      issue.employeeId !== null,
-    {
-      path: ["employeeId"],
-      message: "A remake or comp records the staff member (KDS-07)",
-    },
-  );
+  .superRefine(orderIssueRules);
 
 /* ------------------------------------------------------------- KDS board */
 
@@ -899,6 +990,29 @@ export const stationBoardSchema = z.strictObject({
   allDay: allDayCountSchema,
   pacing: stationPacingSchema,
 });
+
+/**
+ * legend-tsp5: the light poll behind the KDS station switch. One row per
+ * station the caller may see; `openTickets` counts new, in progress and
+ * recalled tickets (done and cancelled do not count).
+ */
+export const stationSummarySchema = z
+  .strictObject({
+    ...outletScope,
+    generatedAt: isoDateTimeSchema,
+    stations: z.array(
+      z.strictObject({
+        stationId: stationIdSchema,
+        openTickets: z.number().int().nonnegative(),
+      }),
+    ),
+  })
+  .refine(
+    (summary) =>
+      new Set(summary.stations.map((row) => row.stationId)).size ===
+      summary.stations.length,
+    { path: ["stations"], message: "A station appears once in the summary" },
+  );
 
 /* ------------------------------------------------------------- fixture set */
 
@@ -921,8 +1035,10 @@ export const kitchenFixtureSchema = z.strictObject({
   orderIssues: z.array(orderIssueSchema),
   channelPauses: z.array(channelPauseSchema),
   stationBoards: z.array(stationBoardSchema),
+  stationSummary: stationSummarySchema,
 });
 
+export type StationSummary = z.infer<typeof stationSummarySchema>;
 export type StationConfig = z.infer<typeof stationConfigSchema>;
 export type MenuLoad = z.infer<typeof menuLoadSchema>;
 export type CapacitySchedule = z.infer<typeof capacityScheduleSchema>;
@@ -946,8 +1062,10 @@ export type ServingTimeGroup = z.infer<typeof servingTimeGroupSchema>;
 export type ServingTimeSummary = z.infer<typeof servingTimeSummarySchema>;
 export type OrderIssueType = z.infer<typeof orderIssueTypeSchema>;
 export type OrderIssueReason = z.infer<typeof orderIssueReasonSchema>;
+export type OrderIssueStatus = z.infer<typeof orderIssueStatusSchema>;
 export type OrderIssueResolution = z.infer<typeof orderIssueResolutionSchema>;
 export type OrderIssue = z.infer<typeof orderIssueSchema>;
+export type OrderIssueView = z.infer<typeof orderIssueViewSchema>;
 export type CreateOrderIssueInput = z.infer<typeof createOrderIssueInputSchema>;
 export type KitchenTicket = z.infer<typeof kitchenTicketSchema>;
 export type KitchenTicketDetail = z.infer<typeof kitchenTicketDetailSchema>;

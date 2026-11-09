@@ -1258,3 +1258,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: gagal-dulu (3 source dikembalikan ke basis: 14 dari 21 tes `ipv6-rate-limit-key.test.ts` gagal; 38 tes unit helper lulus karena helper file baru). 8 file / 137 tes hijau (2 baru + 6 lama), tsc api via heavy bersih, eslint, prettier.
 - Sisa kunci IP mentah di luar cakupan: `edge/link-server.ts`, `routes/staff-pin-sync.routes.ts`, `routes/edge-bootstrap.routes.ts`, `routes/payment-webhook.routes.ts`, `routes/mcp.routes.ts`, rate limit Better Auth via `CLIENT_IP_HEADER`.
 - Review K: satu architect, tanpa temuan nyata (fuzz 200 ribu IPv6 valid, tidak ada yang jatuh ke kunci teks mentah). 3 catatan dipakai: digest `::ffff:a.b.c.d` ikut berubah (dicatat di brief 265b), komentar helper dibetulkan, sisa risiko /48 atau /56 dicatat (invariant 22).
+
+## WS-04 KDS issues dan stasiun (engineer, cabang `ws/kds-issues-station` di atas d8ea5e0b, 2026-11-10)
+
+- Sudah: legend-d60m `d73a19a4` (satu bentuk `order_issues`, dimiliki kontrak kitchen, qr-order re-export), legend-tsp5 `cb63b7d9` (GET station-summary), legend-4b5 `2a75a8c4` + perbaikan review `6bbcb6cc` (tabel `order_issues`, migrasi 0180 idx 167 when 1794259000000, route report/list), legend-rutl `3bf87664` (tableLabel + channel di tiket), legend-0eq7 `3795a148` (proyeksi nama order/item/staf).
+- Diparkir: legend-44jm (tidak ada tabel capacity rules di API) jadi kartu legend-w4nq4. Baru: legend-uyw0v (alur persetujuan refund manual; kini 422), legend-o8quo (validasi voucher/replacement), legend-xz3ll (UI).
+- Bukti: API 10 file 142 tes lulus, root 6 file 86 tes lulus, tsc shared/api/web bersih, db:generate kosong dua kali. Review K: 1 architect, 4 temuan nyata dan 2 lebih ringan, dibetulkan (kecuali voucher/replacement jadi kartu).
