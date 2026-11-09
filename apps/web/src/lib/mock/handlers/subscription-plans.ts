@@ -13,5 +13,16 @@ registerMock(listSubscriptionPlans, ({ query, scenario }) => {
   const plans = cafeLegendSubscriptionPlans.filter(
     (plan) => plan.facilityId === query.facilityId && plan.isActive,
   );
-  return { data: { plans } };
+  return {
+    data: {
+      plans: plans.map((plan) => ({
+        id: plan.id,
+        name: plan.name,
+        priceIdr: plan.priceIdr,
+        quotaPerPeriod: plan.quotaPerPeriod,
+        interval: plan.interval,
+        maxPerDay: plan.maxPerDay,
+      })),
+    },
+  };
 });

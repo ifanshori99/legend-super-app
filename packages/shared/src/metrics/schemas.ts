@@ -93,6 +93,8 @@ export const CORE_METRIC_DIMENSIONS = [
   "customer_tier",
   "supplier",
   "facility",
+  "unit",
+  "product",
   "promo",
 ] as const;
 export const metricDimensionKeySchema = z

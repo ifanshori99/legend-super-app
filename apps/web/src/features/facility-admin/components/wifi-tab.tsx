@@ -35,6 +35,7 @@ import {
   clockMinutes,
   dayShortKeys,
   parseInteger,
+  parsePutDraft,
   shortId,
   zodFieldErrors,
 } from "../lib.ts";
@@ -439,7 +440,7 @@ function WifiDialog({
         tiers.map((tier) => [tier.key, tier.minutes]),
       ),
     };
-    const parsed = putWifiPolicySchema.safeParse(body);
+    const parsed = parsePutDraft(putWifiPolicySchema, body);
     if (!parsed.success) {
       setErrors(zodFieldErrors(parsed.error));
       setFormError(
@@ -453,6 +454,7 @@ function WifiDialog({
       id: policy.id,
       tenantId: policy.tenantId,
       outletId: policy.outletId,
+      updatedAt: policy.updatedAt,
     });
     if (!stored.success) {
       setErrors(zodFieldErrors(stored.error));
@@ -463,7 +465,11 @@ function WifiDialog({
     }
 
     putPolicy.mutate(
-      { policyId: policy.id, body: parsed.data },
+      {
+        policyId: policy.id,
+        body: parsed.data,
+        expectedUpdatedAt: policy.updatedAt,
+      },
       {
         onSuccess: () => {
           toast({

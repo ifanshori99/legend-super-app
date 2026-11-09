@@ -38,6 +38,7 @@ import {
   type PushProvider,
 } from "@starter/shared/adapters";
 import type { EventEnvelope } from "@starter/shared/events";
+import { facilityIncidentRaisedEvent } from "@starter/shared/facility";
 import {
   approvalRequestedEvent,
   approvalResolvedEvent,
@@ -58,6 +59,7 @@ import {
   pushSubscriptions,
   whatsappReservations,
 } from "../db/schema/notification.ts";
+import { facilityIncidents } from "../db/schema/facility.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -76,6 +78,7 @@ const DEFAULT_TIME_ZONE = "Asia/Jakarta";
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 const BREVO_TIMEOUT_MS = 10_000;
 const SETTINGS_MANAGE_PERMISSION = "org.settings.manage";
+const FACILITY_BOOTH_OPERATE_PERMISSION = "facility.booth.operate";
 const OPS_ALERT_TEMPLATE_KEYS = ["supervisor", "outlet_manager"];
 
 /** Channels whose provider is configured; a disabled channel is never planned. */
@@ -520,6 +523,58 @@ async function checklistRule(
   };
 }
 
+/** FAC-08: the staff on duty answer the emergency button. No on-duty source
+ * exists yet, so the audience is active holders of `facility.booth.operate`
+ * whose scope covers the incident's outlet. The `emergency` category is the
+ * urgent lane: it bypasses quiet hours. Nobody holds it: owners take it. */
+async function facilityIncidentRaisedRule(input: RuleInput): Promise<Rule> {
+  const payload = facilityIncidentRaisedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Facility incident notification requires an outlet");
+  const [row] = await input.tx
+    .select({
+      outletId: facilityIncidents.outletId,
+      respondedAt: facilityIncidents.respondedAt,
+    })
+    .from(facilityIncidents)
+    .where(
+      and(
+        eq(facilityIncidents.tenantId, input.tenantId),
+        eq(facilityIncidents.id, payload.incidentId),
+      ),
+    );
+  if (!row) throw new Error("Facility incident not found for notification");
+  if (row.outletId !== input.event.outletId)
+    throw new Error("Facility incident outlet does not match the event");
+  const content: Content = {
+    category: "emergency",
+    title: "Tombol darurat ditekan",
+    body: "Ada tombol darurat fasilitas yang ditekan di outlet Anda. Segera tanggapi.",
+    link: null,
+  };
+  // A delayed event for an incident someone already answered pages nobody.
+  if (row.respondedAt !== null) return { userIds: [], content };
+  const audience = await audienceOf(input.tx, input.event);
+  const operators = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([FACILITY_BOOTH_OPERATE_PERMISSION])}::jsonb`,
+    audience,
+  );
+  const userIds =
+    operators.length > 0
+      ? operators
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return { userIds, content };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -533,6 +588,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "facility_incident.raised":
+      return facilityIncidentRaisedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

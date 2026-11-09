@@ -36,7 +36,9 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useCreateArea, useCreateUnit, useUpdateArea } from "../hooks.ts";
 import {
+  parseCreateDraft,
   parseInteger,
+  parseUpdateDraft,
   unitStatusLabel,
   unitStatusTone,
   zodFieldErrors,
@@ -279,7 +281,7 @@ function AreaDialog({
     setFormError(undefined);
 
     if (area) {
-      const parsed = updateFacilityAreaSchema.safeParse({
+      const parsed = parseUpdateDraft(updateFacilityAreaSchema, {
         name: trimmed,
         sortOrder: sort,
       });
@@ -291,7 +293,11 @@ function AreaDialog({
         return;
       }
       updateArea.mutate(
-        { areaId: area.id, body: parsed.data },
+        {
+          areaId: area.id,
+          body: parsed.data,
+          expectedUpdatedAt: area.updatedAt,
+        },
         {
           onSuccess: () => {
             toast({
@@ -311,7 +317,7 @@ function AreaDialog({
       return;
     }
 
-    const parsed = createFacilityAreaSchema.safeParse({
+    const parsed = parseCreateDraft(createFacilityAreaSchema, {
       facilityId,
       name: trimmed,
       sortOrder: sort,
@@ -441,7 +447,7 @@ function UnitDialog({
     }
     setFormError(undefined);
 
-    const parsed = createFacilityUnitSchema.safeParse({
+    const parsed = parseCreateDraft(createFacilityUnitSchema, {
       facilityId,
       areaId,
       code: trimmed,

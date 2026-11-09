@@ -56,6 +56,8 @@ const uid = (n: number) =>
 const ulid = (suffix: string) => `01JBQ7Z8K3M4N5P6Q7R8S9T0${suffix}`;
 const digest = (n: number) => n.toString(16).padStart(64, "0");
 const scopeFixture = { tenantId: tenant.id, outletId: outlet.id };
+/** Config rows of the seed share one version stamp (bead legend-6jms). */
+const configStampFixture = { updatedAt: "2026-11-01T00:00:00.000Z" };
 
 const showerFacilityId = uid(9001);
 const wfcFacilityId = uid(9002);
@@ -104,6 +106,7 @@ export const cafeLegendFacilities = [
   facilitySchema.parse({
     id: showerFacilityId,
     ...scopeFixture,
+    ...configStampFixture,
     name: "Shower Room Legend",
     type: "shower",
     sessionMinutes: 20,
@@ -131,6 +134,7 @@ export const cafeLegendFacilities = [
   facilitySchema.parse({
     id: wfcFacilityId,
     ...scopeFixture,
+    ...configStampFixture,
     name: "Zona WFC Legend",
     type: "coworking",
     sessionMinutes: 60,
@@ -161,6 +165,7 @@ export const cafeLegendFacilityAreas = [
   facilityAreaSchema.parse({
     id: areaPriaId,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Area Pria",
     entranceLockDeviceId: uid(9209),
@@ -169,6 +174,7 @@ export const cafeLegendFacilityAreas = [
   facilityAreaSchema.parse({
     id: areaWanitaId,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Area Wanita",
     entranceLockDeviceId: uid(9210),
@@ -177,6 +183,7 @@ export const cafeLegendFacilityAreas = [
   facilityAreaSchema.parse({
     id: areaWfcId,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     name: "Zona WFC",
     entranceLockDeviceId: null,
@@ -188,6 +195,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitP1,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     areaId: areaPriaId,
     code: "P1",
@@ -199,6 +207,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitP2,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     areaId: areaPriaId,
     code: "P2",
@@ -210,6 +219,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitW1,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     areaId: areaWanitaId,
     code: "W1",
@@ -221,6 +231,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitW2,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     areaId: areaWanitaId,
     code: "W2",
@@ -232,6 +243,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitS1,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     areaId: areaWfcId,
     code: "S1",
@@ -243,6 +255,7 @@ export const cafeLegendFacilityUnits = [
   facilityUnitSchema.parse({
     id: unitS2,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     areaId: areaWfcId,
     code: "S2",
@@ -257,6 +270,7 @@ export const cafeLegendFacilityProducts = [
   facilityProductSchema.parse({
     id: uid(9601),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Shower Sekali Pakai",
     type: "single",
@@ -270,6 +284,7 @@ export const cafeLegendFacilityProducts = [
   facilityProductSchema.parse({
     id: uid(9602),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Paket Sarapan + Shower",
     type: "package_component",
@@ -283,6 +298,7 @@ export const cafeLegendFacilityProducts = [
   facilityProductSchema.parse({
     id: uid(9603),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Langganan Shower 10 Sesi",
     type: "subscription_plan",
@@ -296,6 +312,7 @@ export const cafeLegendFacilityProducts = [
   facilityProductSchema.parse({
     id: uid(9604),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     name: "Day Pass WFC",
     type: "single",
@@ -309,6 +326,7 @@ export const cafeLegendFacilityProducts = [
   facilityProductSchema.parse({
     id: uid(9605),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     name: "Reservasi Kursi WFC per Jam",
     type: "single",
@@ -325,6 +343,7 @@ export const cafeLegendFacilityAddons = [
   facilityAddonSchema.parse({
     id: uid(9701),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Handuk",
     priceIdr: 10_000,
@@ -335,6 +354,7 @@ export const cafeLegendFacilityAddons = [
   facilityAddonSchema.parse({
     id: uid(9702),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Amenities Kit",
     priceIdr: 15_000,
@@ -345,6 +365,7 @@ export const cafeLegendFacilityAddons = [
   facilityAddonSchema.parse({
     id: uid(9703),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Locker",
     priceIdr: 5_000,
@@ -355,6 +376,7 @@ export const cafeLegendFacilityAddons = [
   facilityAddonSchema.parse({
     id: uid(9704),
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Hair Dryer",
     priceIdr: 5_000,
@@ -372,6 +394,7 @@ export const cafeLegendEntitlementRules = [
   entitlementRuleSchema.parse({
     id: ruleMinSpend,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     type: "min_spend",
     condition: { minSpendIdr: 50_000 },
@@ -382,6 +405,7 @@ export const cafeLegendEntitlementRules = [
   entitlementRuleSchema.parse({
     id: ruleTier,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     type: "tier_benefit",
     condition: { tierKeys: ["gold", "platinum"] },
@@ -392,6 +416,7 @@ export const cafeLegendEntitlementRules = [
   entitlementRuleSchema.parse({
     id: rulePackage,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     type: "package",
     condition: { menuItemId: menuPackageId },
@@ -409,6 +434,7 @@ export const cafeLegendSubscriptionPlans = [
   subscriptionPlanSchema.parse({
     id: planShower10,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Shower 10 Sesi / Bulan",
     priceIdr: 250_000,
@@ -421,6 +447,7 @@ export const cafeLegendSubscriptionPlans = [
   subscriptionPlanSchema.parse({
     id: planShower20,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: showerFacilityId,
     name: "Shower 20 Sesi / Bulan",
     priceIdr: 400_000,
@@ -433,6 +460,7 @@ export const cafeLegendSubscriptionPlans = [
   subscriptionPlanSchema.parse({
     id: planWfc,
     ...scopeFixture,
+    ...configStampFixture,
     facilityId: wfcFacilityId,
     name: "WFC Bulanan",
     priceIdr: 400_000,
@@ -952,6 +980,7 @@ export const cafeLegendWifiPolicies = [
   wifiPolicySchema.parse({
     id: wifiPolicyWfc,
     ...scopeFixture,
+    ...configStampFixture,
     zoneId: zoneWfcId,
     freeMinutes: 120,
     peakFreeMinutes: 60,
@@ -971,6 +1000,7 @@ export const cafeLegendWifiPolicies = [
   wifiPolicySchema.parse({
     id: wifiPolicyReguler,
     ...scopeFixture,
+    ...configStampFixture,
     zoneId: zoneRegulerId,
     freeMinutes: 120,
     peakFreeMinutes: 60,

@@ -104,8 +104,10 @@ export function useUpdateFacilityUnit() {
 export function useRaiseFacilityIncident() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: api.RaiseFacilityIncidentBody) =>
-      api.raiseIncident(body),
+    mutationFn: (input: {
+      body: api.RaiseFacilityIncidentBody;
+      idempotencyKey: string;
+    }) => api.raiseIncident(input.body, input.idempotencyKey),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: staffKeys.incidentLists() }),
   });

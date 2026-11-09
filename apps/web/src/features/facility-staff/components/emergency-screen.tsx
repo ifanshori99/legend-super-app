@@ -3,6 +3,7 @@
 // the signals list shows elapsed seconds and a one-press Tangani, and the
 // acknowledgement (who reached the booth, how many seconds it took) stays
 // visible because it is also the incident log entry.
+import { useRef } from "react";
 import { RefreshCw, ShieldAlert, Siren, WifiOff } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
@@ -15,6 +16,7 @@ import type {
   FacilityIncident,
   FacilityUnitBoardRow,
 } from "@starter/shared/facility";
+import { newIdempotencyKey } from "@/lib/idempotency.ts";
 import { useOutletClock } from "@/lib/tenant-context";
 import {
   useIncidents,
@@ -148,6 +150,9 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
   const incidents = useIncidents(facility?.id ?? null);
   const raise = useRaiseFacilityIncident();
   const respond = useRespondFacilityIncident();
+  // One key per booth until its raise succeeds: a failed press that is pressed
+  // again replays the same key instead of risking a second incident.
+  const raiseKeys = useRef(new Map<string, string>());
 
   const loading =
     facilities.isPending ||
@@ -176,16 +181,22 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
     );
 
   const raisePanic = (row: FacilityUnitBoardRow) => {
+    const unitId = row.unit.id;
+    const idempotencyKey =
+      raiseKeys.current.get(unitId) ?? newIdempotencyKey();
+    raiseKeys.current.set(unitId, idempotencyKey);
     raise.mutate(
-      { type: "panic", unitId: row.unit.id },
+      { body: { type: "panic", unitId }, idempotencyKey },
       {
-        onSuccess: () =>
+        onSuccess: () => {
+          raiseKeys.current.delete(unitId);
           toast({
             title: t("facilityStaff.emergency.raised", {
               unit: row.unit.code,
             }),
             tone: "success",
-          }),
+          });
+        },
         onError: (error) =>
           toast({
             title: t("facilityStaff.emergency.raiseFailed"),
@@ -382,7 +393,7 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
                       })}
                       loading={
                         raise.isPending &&
-                        raise.variables?.unitId === row.unit.id
+                        raise.variables?.body.unitId === row.unit.id
                       }
                       className="h-auto min-h-28 w-full flex-col gap-1 border-danger py-4 text-danger hover:bg-danger-subtle"
                       onClick={() => raisePanic(row)}

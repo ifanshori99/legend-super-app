@@ -19,6 +19,8 @@ const DIMENSION_KEYS = {
   customer_tier: "reportViewer.dimensions.customer_tier",
   supplier: "reportViewer.dimensions.supplier",
   facility: "reportViewer.dimensions.facility",
+  unit: "reportViewer.dimensions.unit",
+  product: "reportViewer.dimensions.product",
   promo: "reportViewer.dimensions.promo",
 } as const;
 
