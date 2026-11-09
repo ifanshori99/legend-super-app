@@ -461,5 +461,32 @@
         "created_at": "2026-11-09T06:48:10.832Z"
       }
     }
-  ]
+  ],
+  "e2e_matched_webhook": {
+    "date": "2026-11-09",
+    "api_commit": "ff4dac27",
+    "payment": "pay_3N-1K5igG03DWXKD",
+    "why_not_pay_k5xyzGW_UZgCwbDh": "already fully refunded at DOIT (409 payment_not_refundable)",
+    "legend_refund_id": "946d3e48-5bde-467a-b751-0ead9cc247f1",
+    "amount_idr": 1000,
+    "payout": {
+      "path": "runRefundPayout (real DOIT adapter)",
+      "status": "completed",
+      "provider_ref": "rf_UptAadAvh77BHLEh",
+      "payout_attempts": 1,
+      "last_payout_error": null
+    },
+    "webhook": {
+      "event_id": "evt_iReTbPK6LlKCPhaf",
+      "event_type": "refund.succeeded",
+      "signature_valid": true,
+      "status": "processed",
+      "last_error_code": null,
+      "provider_ref": "rf_UptAadAvh77BHLEh",
+      "matched_to_legend_intent": true,
+      "received_after_payout_s": 1.6
+    },
+    "intent_status_after": "partially_refunded",
+    "note": "Approval written directly (dev DB has no approval_policies, approveRefund -> APPROVAL_POLICY_MISSING); approval-matrix path not exercised here."
+  }
 }

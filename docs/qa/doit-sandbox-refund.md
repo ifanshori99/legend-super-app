@@ -198,6 +198,14 @@ Catatan tambahan:
 - Event `webhook.test` valid.
 - Tombol "Webhook test" di portal bisa mengirim tanda tangan yang salah. Satu kiriman tercatat `SIGNATURE_INVALID`.
 
+### Bukti webhook nyata cocok ke refund Legend (setelah ff4dac27)
+
+- API lokal port 4610 menjalankan ff4dac27. Payment yang dipakai: `pay_3N-1K5igG03DWXKD`. Payment `pay_k5xyzGW_UZgCwbDh` tidak bisa dipakai karena sudah refund penuh (DOIT 409 `payment_not_refundable`).
+- Refund Legend 1000 dibuat lewat `createRefund`, lalu dikirim lewat `runRefundPayout` dengan adapter DOIT asli. Hasil: `completed`, `provider_ref` `rf_UptAadAvh77BHLEh`, satu percobaan, tanpa error.
+- Webhook `refund.succeeded` `evt_iReTbPK6LlKCPhaf` masuk sekitar 1,6 detik kemudian. Signature sah, status `processed`, tanpa kode error, cocok ke intent dan refund Legend (bukan `REFUND_UNMATCHED`). Intent menjadi `partially_refunded`.
+- Batasan: DB dev belum punya `approval_policies`, sehingga `approveRefund` gagal `APPROVAL_POLICY_MISSING`. Persetujuan ditulis langsung seperti seed test. Jalur matriks persetujuan tidak diuji di sini.
+- Event `REFUND_UNMATCHED` yang tersisa di DB lokal semuanya diterima sebelum fix (06:48 UTC).
+
 ### Perubahan kode yang dibutuhkan
 
 - Parser webhook refund membaca `refund_id`, `amount`, dan `payment_id` dari level flat `data`.
