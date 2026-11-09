@@ -698,29 +698,43 @@
     {
       "idx": 99,
       "version": "7",
-      "when": 1794189891917,
-      "tag": "0099_wifi_device_grants",
+      "when": 1794184650436,
+      "tag": "0099_nosy_warbird",
       "breakpoints": true
     },
     {
       "idx": 100,
       "version": "7",
-      "when": 1794189914674,
-      "tag": "0100_wifi_device_grants_rls",
+      "when": 1794184657439,
+      "tag": "0100_ws02_edge_rls",
       "breakpoints": true
     },
     {
       "idx": 101,
       "version": "7",
-      "when": 1794191977046,
-      "tag": "0101_wifi_device_grants_hardening",
+      "when": 1794186332324,
+      "tag": "0101_reflective_sue_storm",
       "breakpoints": true
     },
     {
       "idx": 102,
       "version": "7",
-      "when": 1794192719231,
-      "tag": "0102_wifi_device_grants_revoke_retry_check",
+      "when": 1794186357711,
+      "tag": "0102_pos_receipts_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1794192374698,
+      "tag": "0103_broad_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1794192396030,
+      "tag": "0104_ws09_wifi_rls",
       "breakpoints": true
     }
   ]

@@ -222,13 +222,22 @@ test("F5: the edge endpoints keep client input strict and free of tenant ids", (
     true,
   );
   assert.equal(
-    edge.setDeviceTrainingMode.body.safeParse({ trainingMode: true }).success,
+    edge.setOutletDeviceTrainingMode.body.safeParse({ trainingMode: true })
+      .success,
     true,
   );
   assert.equal(
-    edge.setDeviceTrainingMode.body.safeParse({ trainingMode: "yes" }).success,
+    edge.setOutletDeviceTrainingMode.body.safeParse({ trainingMode: "yes" })
+      .success,
     false,
   );
+  assert.equal(
+    edge.setOutletDeviceTrainingMode.path,
+    "/api/devices/:deviceId/training-mode",
+  );
+  assert.equal(edge.revokeDevice.path, "/api/devices/:deviceId/revoke");
+  // The unrouted edge-side training contract is gone (legend-2lp.9).
+  assert.equal(edge.setDeviceTrainingMode, undefined);
   assert.equal(
     edge.printJobListQuerySchema.safeParse({ limit: 20, status: "printing" })
       .success,

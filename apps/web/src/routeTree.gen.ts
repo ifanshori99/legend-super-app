@@ -21,6 +21,7 @@ import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
+import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
 import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as VerifikasiRouteImport } from './routes/verifikasi'
@@ -308,6 +309,11 @@ const ShareholderRoute = ShareholderRouteImport.update({
 const DesignSystemRoute = DesignSystemRouteImport.update({
   id: '/design-system',
   path: '/design-system',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ManifestDotwebmanifestRoute = ManifestDotwebmanifestRouteImport.update({
+  id: '/manifest.webmanifest',
+  path: '/manifest.webmanifest',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
@@ -1647,6 +1653,7 @@ const KelolaKelolaPengadaanPoIdCetakRoute =
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -1889,6 +1896,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -2139,6 +2147,7 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/robots.txt': typeof RobotsDottxtRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
@@ -2384,6 +2393,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -2626,6 +2636,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -2875,6 +2886,7 @@ export interface FileRouteTypes {
     | '/_public'
     | '/_shareholder'
     | '/design-system'
+    | '/manifest.webmanifest'
     | '/robots.txt'
     | '/sitemap.xml'
     | '/verifikasi'
@@ -3129,6 +3141,7 @@ export interface RootRouteChildren {
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
   RobotsDottxtRoute: typeof RobotsDottxtRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   VerifikasiRoute: typeof VerifikasiRoute
@@ -3218,6 +3231,13 @@ declare module '@tanstack/react-router' {
       path: '/design-system'
       fullPath: '/design-system'
       preLoaderRoute: typeof DesignSystemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/manifest.webmanifest': {
+      id: '/manifest.webmanifest'
+      path: '/manifest.webmanifest'
+      fullPath: '/manifest.webmanifest'
+      preLoaderRoute: typeof ManifestDotwebmanifestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/robots.txt': {
@@ -5546,6 +5566,7 @@ const rootRouteChildren: RootRouteChildren = {
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
   RobotsDottxtRoute: RobotsDottxtRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   VerifikasiRoute: VerifikasiRoute,

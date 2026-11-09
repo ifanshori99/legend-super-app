@@ -128,23 +128,6 @@ export const listEdgeDevices = defineEndpoint({
 
 export const deviceParams = z.strictObject({ deviceId: uuidSchema });
 
-/**
- * Training mode is per device and sandboxed from reports (F5 Mode Latihan).
- *
- * Security (review legend-cyu.12): a device in training mode keeps its sales
- * out of reports, so the toggle is fraud-sensitive. The API requires
- * `device.registry.manage` (the screen gates on the same code), checks the
- * device belongs to the edge node's outlet, and writes an audit event for
- * every change. A cashier session can never switch its own device.
- */
-export const setDeviceTrainingMode = defineEndpoint({
-  method: "PATCH",
-  path: "/api/edge/devices/:deviceId/training-mode",
-  params: deviceParams,
-  body: clientInputSchema({ trainingMode: z.boolean() }),
-  response: dataResponseSchema(deviceSchema),
-});
-
 // Cloud device registry (bead legend-165; PRD §3 F5 Registri Perangkat). Back
 // office only: `device.registry.manage` (list, enroll, token, training mode)
 // and `device.registry.revoke` (revoke) on the device's outlet. The tenant
@@ -206,7 +189,15 @@ export const revokeDevice = defineEndpoint({
   response: dataResponseSchema(deviceSchema),
 });
 
-/** Back-office twin of `setDeviceTrainingMode` (same security rules). */
+/**
+ * Training mode is per device and sandboxed from reports (F5 Mode Latihan).
+ *
+ * Security (review legend-cyu.12): a device in training mode keeps its sales
+ * out of reports, so the toggle is fraud-sensitive. The API requires
+ * `device.registry.manage` (the screen gates on the same code), checks the
+ * device belongs to the caller's tenant and outlet, and writes an audit event
+ * for every change. A cashier session can never switch its own device.
+ */
 export const setOutletDeviceTrainingMode = defineEndpoint({
   method: "PATCH",
   path: "/api/devices/:deviceId/training-mode",

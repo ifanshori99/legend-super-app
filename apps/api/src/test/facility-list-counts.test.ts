@@ -180,7 +180,12 @@ async function insertChildren(
 beforeAll(async () => {
   await asTenant(async (client) => {
     await insertFacility(client, busyFacilityId, outletA.id, "AAA Counts 34fu");
-    await insertFacility(client, emptyFacilityId, outletA.id, "BBB Counts 34fu");
+    await insertFacility(
+      client,
+      emptyFacilityId,
+      outletA.id,
+      "BBB Counts 34fu",
+    );
     await insertFacility(
       client,
       otherOutletFacilityId,

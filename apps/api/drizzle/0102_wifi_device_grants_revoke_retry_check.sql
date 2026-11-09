@@ -1,1 +1,0 @@
-ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_revoke_retry_check" CHECK ("wifi_device_grants"."revoke_retry_at" IS NULL OR "wifi_device_grants"."status" IN ('superseded','revoked','failed'));

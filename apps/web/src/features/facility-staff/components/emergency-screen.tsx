@@ -182,8 +182,7 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
 
   const raisePanic = (row: FacilityUnitBoardRow) => {
     const unitId = row.unit.id;
-    const idempotencyKey =
-      raiseKeys.current.get(unitId) ?? newIdempotencyKey();
+    const idempotencyKey = raiseKeys.current.get(unitId) ?? newIdempotencyKey();
     raiseKeys.current.set(unitId, idempotencyKey);
     raise.mutate(
       { body: { type: "panic", unitId }, idempotencyKey },
