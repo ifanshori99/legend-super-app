@@ -54,3 +54,18 @@ Berkas: `apps/api/src/services/metrics-gl-sources.ts`, `apps/api/src/services/me
 
 ### S8 keputusan lead (2026-11-10)
 Bobot = metrik katalog baru yang nyata, bukan kode internal: `served_ticket_count` (jumlah tiket tersaji per hari, bobot `avg_serving_time`) dan `closed_session_count` (jumlah sesi meja ditutup per hari, bobot `avg_dwell_minutes`), unit `count`, laporan sumber sama dengan metrik rata-ratanya, ditulis pembaca traffic-operations. Berkas tambahan untuk S8: `packages/shared/src/dashboard/metric-catalog.ts`, test root kontrak/katalog yang menghitung metrik (`tests/metrics-contract.test.mjs`, `tests/dashboard-contract.test.mjs`, `tests/ws11-*.test.mjs` bila perlu), mock keluarga traffic-operations bila validasi katalog memintanya. Sekalian: teks formula katalog `tax_collected` dan `service_charge_collected` menyebut hanya jurnal `sale` dan `refund` (S9).
+
+## Perbaikan review architect (R-A dan R-B paralel, berkas tidak bertumpuk)
+Aturan sama. Gagal-dulu tiap temuan (sebut merah), lalu hijau. Jangan commit.
+
+### R-A engine (Opus). Berkas: `apps/api/src/services/metrics-query.service.ts`, `apps/api/src/services/metrics-gl-sources.ts`, `apps/api/src/test/metrics-runtime.test.ts`, `apps/api/src/test/ms-payments-tax.test.ts`, `apps/api/src/test/ms-traffic-operations.test.ts`.
+1. Rata-rata tertimbang (~1500, ~1524): baris bobot yang tidak ada (`undefined`, bukan `0n`) untuk hari yang punya rata-rata → bucket itu memakai rata-rata biasa hari-hari tersebut, tidak null. Bobot 0 nyata tetap dikeluarkan.
+3. Finality per outlet (~1313): tanpa filter outlet, outlet yang punya baris jurnal (`index.outletKeys(...)`, kecuali `ENTITY_LEVEL`) tetapi tanpa baris tersimpan ikut diperiksa, jadi pecahan tidak `final`.
+4. `tax_payable` (balance) per outlet: periksa apakah jurnal setoran PBJT selalu membawa outlet (`accounting-journal`/posting setoran). Bila bisa tanpa outlet: filter outlet / jangkauan outlet / split outlet pada metrik `balance` → `dimension_not_supported` (tetap angka tenant tanpa filter). Sebut temuanmu.
+5. `weightCode` (~1064): plan rata-rata hanya mengikuti plan bobot bila bobot `unavailable`; bila bobot bukan `daily` → tidak didukung.
+
+### R-B registry, sales, kontrak (Sonnet). Berkas: `apps/api/src/services/metric-sources/index.ts`, `apps/api/src/services/metric-sources/types.ts`, `apps/api/src/services/metrics-daily.service.ts`, `apps/api/src/services/metric-sources/sales.ts`, `packages/shared/src/dashboard/dashboards.ts` (komentar saja), `apps/api/src/test/metric-sources-registry.test.ts`, `apps/api/src/test/metrics-daily-job.test.ts`, `apps/api/src/test/ms-sales.test.ts`.
+2. Pemilikan baris total: pembaca yang menulis baris total (tanpa dimensi) dinyatakan eksplisit (`writesTotal`, default true untuk pembaca tanpa dimensi; pembaca split yang juga menulis total menyatakannya); `assertRegistry` menolak dua pembaca yang sama-sama menulis total kode yang sama; job memakai flag yang sama untuk kepemilikan hapus baris total. Pastikan pembaca yang ada lolos (mis. `netSalesByMethodReader` di `payments-tax.ts` tidak terdaftar bersama `netSalesSplits`; jangan ubah `payments-tax.ts`, lapor bila bentrok).
+5. `assertRegistry` memvalidasi `weightCode`: terdaftar, jenis `daily`, unit `count`, ditulis pembaca yang sama, sumber metrik rata-rata beragregasi `average`.
+6. `checkShare`: unit metrik share harus percent. `sales.ts` ~295: tender tertangkap berjumlah 0 → jatuh ke `intentMethod` lalu `unassigned`, bukan residual.
+7. `dashboards.ts:298`: komentar menyebut 422 untuk `managerRole` tak dikenal (sesuai API).
