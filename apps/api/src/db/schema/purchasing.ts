@@ -559,6 +559,12 @@ export const purchaseOrderEmailDeliveries = pgTable(
     sentAt: timestamp("sent_at", { withTimezone: true }),
     /** Earliest time the worker may try again; null means now. */
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    /**
+     * Set (committed) before the provider is called, cleared when the outcome
+     * is recorded. Still set when the row is claimed again = the worker died
+     * mid-send and the provider may hold the email: never resent blindly.
+     */
+    sendStartedAt: timestamp("send_started_at", { withTimezone: true }),
   },
   (table) => [
     unique("purchase_order_email_deliveries_tenant_id_id_key").on(

@@ -1327,3 +1327,125 @@ describe("proc-fix PO email stops after revoke, close, cancel", () => {
     });
   });
 });
+
+// legend-8a9w: a worker that dies after the provider took the email must not
+// resend blindly on recovery (the provider's dedup window is only 30 minutes).
+describe("8a9w ambiguous email attempt", () => {
+  async function queued() {
+    const order = await seedOrder("approved");
+    const address = `amb-${randomBytes(4).toString("hex")}@supplier-test.example`;
+    const response = await send(sender.client, order.id, {
+      channel: "email",
+      email: address,
+    });
+    expect(response.status).toBe(200);
+    return { order, address };
+  }
+
+  const rowOf = async (orderId: string) =>
+    (
+      await owner.query<{
+        id: string;
+        status: string;
+        attempts: number;
+        last_error: string | null;
+        send_started_at: Date | null;
+      }>(
+        "SELECT id, status, attempts, last_error, send_started_at FROM purchase_order_email_deliveries WHERE purchase_order_id = $1",
+        [orderId],
+      )
+    ).rows[0]!;
+
+  it("[8a9w] a crash after the provider call is not resent after the lease; it is failed for manual review", async () => {
+    const { order, address } = await queued();
+    const now = new Date();
+    let firstCalls = 0;
+    let markerDuringCall: Date | null = null;
+    let reachedProvider!: () => void;
+    const providerReached = new Promise<void>((resolve) => {
+      reachedProvider = resolve;
+    });
+    // The provider took the message, but the worker never gets to step 3.
+    const dying = {
+      send: async (_context: unknown, message: { to: string }) => {
+        if (message.to === address) {
+          firstCalls += 1;
+          const { rows } = await owner.query<{ send_started_at: Date | null }>(
+            "SELECT send_started_at FROM purchase_order_email_deliveries WHERE purchase_order_id = $1",
+            [order.id],
+          );
+          markerDuringCall = rows[0]!.send_started_at;
+          reachedProvider();
+          return new Promise(() => {});
+        }
+        return { accepted: true, reference: "x" };
+      },
+    };
+    void runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: dying as never },
+      now,
+    );
+    await providerReached;
+    expect(firstCalls).toBe(1);
+    // The attempt is recorded before the provider is called.
+    expect(markerDuringCall).not.toBeNull();
+
+    // Recovery well after the 30 minute dedup window and the lease.
+    await owner.query(
+      "UPDATE purchase_order_email_deliveries SET next_attempt_at = $2 WHERE purchase_order_id = $1",
+      [order.id, new Date(now.getTime() - 1000)],
+    );
+    const fake = new FakeEmailProvider();
+    const result = await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: fake },
+      new Date(now.getTime() + 3 * 60 * 60_000),
+    );
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect(result).toMatchObject({ sent: 0, failed: 1 });
+    const row = await rowOf(order.id);
+    expect(row).toMatchObject({ status: "failed", attempts: 1 });
+    expect(row.last_error).toContain("tidak pasti");
+    expect(row.last_error).not.toContain(address);
+  });
+
+  it("[8a9w] the normal path still sends once and clears the marker; a failed attempt retries", async () => {
+    const { order, address } = await queued();
+    let calls = 0;
+    const flaky = {
+      send: async (
+        _context: unknown,
+        message: { to: string; reference: string },
+      ) => {
+        if (message.to === address) {
+          calls += 1;
+          if (calls === 1) throw new Error("smtp down");
+        }
+        return { accepted: true, reference: message.reference };
+      },
+    };
+    const now = new Date();
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: flaky as never },
+      now,
+    );
+    expect(await rowOf(order.id)).toMatchObject({
+      status: "queued",
+      attempts: 1,
+      send_started_at: null,
+    });
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: flaky as never },
+      new Date(now.getTime() + 61_000),
+    );
+    expect(await rowOf(order.id)).toMatchObject({
+      status: "sent",
+      attempts: 2,
+      send_started_at: null,
+    });
+    expect(calls).toBe(2);
+  });
+});

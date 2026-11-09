@@ -18,8 +18,11 @@
 // plain read plus the link insert (a KEY SHARE on the order) could deadlock
 // (40P01). When the order is locked (55P03) the attempt is a plain transient
 // retry and the revoke goes first. A crash between (1)
-// and (3) leaves the row queued; it is retried after the lease and the provider
-// dedupes by reference. A failed attempt counts and waits
+// and (3) leaves the row marked `send_started_at` (set with the lease, cleared
+// by every recorded outcome). After the lease such a row is NOT resent: the
+// provider may already hold the email and its dedup window (Brevo: 30 min) can
+// be over, and the port has no lookup to reconcile. It is failed for good with
+// an "uncertain" reason, for manual review and a manual resend. A failed attempt counts and waits
 // PURCHASING_PO_EMAIL_BACKOFF_SECONDS (1 min, 5 min, 30 min, 2 h, 6 h) via
 // `next_attempt_at`; after PURCHASING_PO_EMAIL_MAX_ATTEMPTS the row is
 // `failed`. An order that is no longer sent (closed, cancelled, missing) or a
@@ -76,6 +79,8 @@ const GENERIC = "Pengiriman email gagal.";
 const ORDER_NOT_SENDABLE = "Purchase order tidak lagi dikirim.";
 const LINK_UNAVAILABLE = "Tautan PDF tidak tersedia lagi.";
 const ORDER_BUSY = "Purchase order sedang diproses, dicoba lagi.";
+const AMBIGUOUS =
+  "Status pengiriman tidak pasti (proses berhenti saat mengirim). Periksa penyedia email, lalu kirim ulang manual.";
 
 /** A failure no retry can fix: the delivery is `failed` at once. */
 class PermanentFailure extends Error {}
@@ -148,6 +153,7 @@ async function recordFailure(
       attempts,
       lastError: failure,
       nextAttemptAt: final ? null : new Date(now.getTime() + wait * 1000),
+      sendStartedAt: null,
     })
     .where(
       and(
@@ -191,6 +197,15 @@ async function claimOne(
       .limit(1)
       .for("update", { skipLocked: true });
     if (!row) return { kind: "none" };
+
+    // The previous attempt marked "sending" and never recorded an outcome: the
+    // worker died around the provider call, which may have taken the email.
+    // The port has no lookup to reconcile and the provider's dedup window is
+    // short, so do not resend: fail for manual review.
+    if (row.sendStartedAt !== null) {
+      const outcome = await recordFailure(tx, row, now, AMBIGUOUS, true);
+      return { kind: "done", id: row.id, outcome };
+    }
 
     let failure: string | null = null;
     let permanent = false;
@@ -261,6 +276,7 @@ async function claimOne(
       // wall clock at claim time, not the run's `now`: a long run (many
       // tenants, slow provider) would otherwise hand out a lease that has
       // already expired, and an overlapping run could claim the row again.
+      // The same commit marks the attempt as "sending" (see sendStartedAt).
       await tx
         .update(purchaseOrderEmailDeliveries)
         .set({
@@ -268,6 +284,7 @@ async function claimOne(
             Math.max(now.getTime(), Date.now()) +
               PURCHASING_PO_EMAIL_LEASE_SECONDS * 1000,
           ),
+          sendStartedAt: new Date(),
         })
         .where(
           and(
@@ -333,6 +350,7 @@ async function sendOne(
         attempts: row.attempts + 1,
         lastError: null,
         nextAttemptAt: null,
+        sendStartedAt: null,
       })
       .where(
         and(

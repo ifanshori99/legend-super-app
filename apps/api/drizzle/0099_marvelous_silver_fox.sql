@@ -1,0 +1,1 @@
+ALTER TABLE "purchase_order_email_deliveries" ADD COLUMN "send_started_at" timestamp with time zone;
