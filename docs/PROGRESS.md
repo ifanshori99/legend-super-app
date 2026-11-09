@@ -321,3 +321,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keputusan: pemilik dianggap mati hanya bila PID tidak ada atau waktu start beda (Linux `/proc/<pid>/stat`; lainnya `ps lstart`, toleransi 5 dtk); label dari namespace lain atau format lama tidak pernah disapu; sumber daya tanpa label (skrip lama) tidak disapu otomatis.
 - Diperiksa: `tests/test-sweep.test.mjs` 15/15; eslint + prettier bersih; simulasi `kill -9` lalu run ulang menyapu sisa tanpa menyentuh run lain.
 - Belum diuji: `mem_limit` 512m (`STARTER_TEST_PG_MEM` mengganti) hanya dicoba dengan satu file DB, belum suite penuh. Naikkan default ke 768m bila gate merge train kena `connection terminated`.
+
+## legend-9pz9 jurnal otomatis F19 (o9q9 di dalamnya), cabang `ws/dp-late-journal` (2026-11-09)
+
+- Sudah: desain `docs/design/auto-journals.md` (5fc862cb); slice 1 (fondasi, penjualan POS, penerimaan gateway, dana tak teralokasi, payout, DP, bayar telat, parkir + sweep) b6ca419d..a9c8ca14. Migrasi 0113 (DDL) + 0114 (RLS + backfill 2107/7103), wajib diberi nomor ulang di merge train (batch4 memakai 0113-0132).
+- Review K: Opus + architect tiga putaran. Temuan nyata dibetulkan: dana tak teralokasi tanpa receipt, FK outlet, error non-akuntansi, kunci receipt per intent, EDC fail-closed, guard backfill, fingerprint, guard cutover/urutan (order.paid sebelum payment.paid sekarang parkir AUTO_JOURNAL_RECEIPT_PENDING; urutan baca outbox, parked, jurnal), event tanpa outlet tidak melempar (audit `accounting.auto_journal.unparkable`).
+- Patch wiring worker: `docs/briefs/141-auto-journals-wiring.patch` (main checkout), dipasang setelah batch 3 masuk m1. Brief Codex: `docs/briefs/142-second-opinion-auto-journals.md` (3 run, maks 800 baris).
+- Bead turunan: legend-2jyr (refund dipecah per intent), legend-3a5m (bukti settlement nol), legend-tgb3 (GL persediaan parkir PERIOD_CLOSED), legend-27mt (payout uang pra-cutover).
+- Berikut: tunggu CTO. Slice 2 (DP dipakai, hangus, tutup shift), slice 3 setelah batch 3/4 (QR kej3, total 0 fbms), slice 4 settlement + MDR, slice 5 setoran kas.
+- Biaya sesi ee66d9 (05:55-06:42 UTC): total biaya* 9262k (utama Opus 3374k, subagent Opus 3582k, Sonnet 2187k, Haiku 119k), 28 subagent, maks 4 paralel, rata 1.34 berjalan.
