@@ -11,6 +11,7 @@
 // mixed with the template. Prints counts per tenant id, no personal data.
 import "../load-env";
 import { eq } from "drizzle-orm";
+import { guardDataImport } from "../config/data-import";
 import { backfillTenantCharts } from "../services/accounting-provisioning.service";
 import { backfillTenantInventoryDefaults } from "../services/inventory-provisioning.service";
 import { backfillTenantTaxDefaults } from "../services/tax-provisioning.service";
@@ -36,6 +37,10 @@ if (args.length > 0) {
     process.exit(1);
   }
 }
+
+// Data import guard (legend-v4ld): the defaults are inserted into this
+// deployment's own tenants, so the source follows the deployment's classification.
+guardDataImport("backfill.tenant-defaults");
 
 try {
   const rows = onlyTenant

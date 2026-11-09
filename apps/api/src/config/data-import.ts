@@ -66,9 +66,18 @@ export const DATA_IMPORT_SOURCES = {
     classification: "deployment",
     file: "apps/api/src/edge/bootstrap.ts",
     entry: "export async function bootstrapEdgeNodeIfNeeded(",
-    beforeWrite: "insertBundle(claims",
+    beforeWrite: "insertBundleRows(tx, bundle)",
     description:
       "Edge node first start: tenant, legal entity, brand and outlet rows from the signed cloud bundle.",
+  },
+  "backfill.tenant-defaults": {
+    // Standard chart, UOM, stock location and tax defaults for the
+    // deployment's own existing tenants (insert-only, from code templates).
+    classification: "deployment",
+    file: "apps/api/src/db/backfill-tenant-defaults.ts",
+    beforeWrite: "await db",
+    description:
+      "pnpm db:backfill-defaults: standard defaults inserted for tenants created before provisioning existed.",
   },
 } as const satisfies Record<string, DataImportSource>;
 

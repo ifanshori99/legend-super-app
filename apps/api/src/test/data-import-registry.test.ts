@@ -74,12 +74,22 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "derives station_type of existing menu items from stations",
   "0104_edc_standalone_permission.sql":
     "adds a permission string to each tenant's existing roles",
+  "0115_ai_role_templates_data.sql":
+    "adds the ai.ask and ai.action.propose permission strings to existing role templates",
+  "0116_ai_approval_policies_data.sql":
+    "inserts default approval policies for each tenant's existing roles",
+  "0120_ws03_roles_zone_manage.sql":
+    "adds a permission string to each tenant's existing roles",
+  "0126_ws08_delivery_store_index_rls.sql":
+    "trigger body and backfill of the delivery store index from existing delivery channels",
 };
 
 // Entrypoints that open a database pool but import no data.
 const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
   "apps/api/src/migrate.ts": "applies DDL migrations only",
   "apps/api/src/set-role.ts": "single admin UPDATE of one user's role",
+  "apps/api/src/db/reset-preswitch-refund-payouts.ts":
+    "one-off repair of refunds already in the database (UPDATE of payout state, dry-run by default), imports nothing",
   "apps/api/src/worker-main.ts":
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",
@@ -90,7 +100,12 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
 
 // package.json script names matching /seed|import|backfill/ that are not
 // importers outside the registry. Empty on purpose: add an entry with a reason.
-const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {};
+const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {
+  "package.json#db:backfill-defaults":
+    "runs the registered, guarded source backfill.tenant-defaults (root alias)",
+  "apps/api/package.json#db:backfill-defaults":
+    "runs the registered, guarded source backfill.tenant-defaults",
+};
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
