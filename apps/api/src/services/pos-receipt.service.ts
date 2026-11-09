@@ -1654,7 +1654,7 @@ export async function receiptGapsForOutletFast(
     .select({
       sequence: receiptSequences,
       issued:
-        sql<number>`count(${posReceipts.id}) filter (where ${posReceipts.sequenceNumber} <= ${receiptSequences.lastNumber})`.mapWith(
+        sql<number>`count(${posReceipts.sequenceNumber}) filter (where ${posReceipts.sequenceNumber} <= ${receiptSequences.lastNumber})`.mapWith(
           Number,
         ),
     })
