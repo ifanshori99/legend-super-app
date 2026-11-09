@@ -33,3 +33,14 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - prep/e2e-az 263ce1ec (di atas f7497336, basis chain fef266fe ws02-edge). Hasil G4k8i: 7 file, 83 lulus, 38 skip, 0 gagal.
 - Skip EDC-01/02/04 menunggu legend-dahk/m4fv (G106p, brief 102). Jangan unskip di merge train.
 - Urutan: setelah ws02-edge, ws11-reports, fix-whitelabel, pos-receipt. Merge chain head terakhir, unskip skenario pos-receipt (az-e:1301, az-r:338/342), jalankan e2e-az + gate penuh, lalu merge ke m1.
+
+## Rantai 3 (09-11, tanpa head-of-line blocking)
+
+- CTO: jangan biarkan satu cabang menahan antrean.
+- prep3/ws11-reports ae5ed5c1 = stage A 4d6b48a7 + m1 13425b65 + cherry-pick prettier 332a09dd dan fix lint 7f1bc9c5 (G8kmx).
+- prep/ws02-edge 5f768fb7 = fix training 9f1c40af (G0h5c) + chain prep3/ws11-reports. Migrasi tetap 0099/0100.
+- prep3/fix-whitelabel 0c977a95 = 36647d4a + chain prep3/ws11-reports. Saat giliran: merge chain head ws02.
+- pos-receipt: prep2/pos-receipt 883858e5 (regen 0101/0102 di atas ws02 fef266fe) tetap berlaku. Saat giliran: merge chain head.
+- m1 1e2ab930: cherry-pick PRD d6a223d9 (docs/PRD.md saja). Cek tree identity setelah merge: selisih yang boleh hanya docs/PRD.md.
+- e2e-az sekarang c01e9c63 (docs QA di atas 263ce1ec).
+- Urutan: ws11, ws02, whitelabel, receipt, e2e-az.
