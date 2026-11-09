@@ -543,3 +543,14 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: tsc api, eslint, prettier, 34 file test API (reservation*, payment-admin*, payment-refund*, qr-order*, pos-order*, table-session*, RLS) 478 lulus 8 skip, kontrak node 39 lulus.
 - Brief Codex: `docs/briefs/157-second-opinion-dp-refund-guard.md` (main checkout, tidak di-commit).
 - Berikut: tunggu CTO. Guard sementara di consumer jurnal otomatis (legend-9pz9, 226f1155) tetap dipakai sebagai pengaman kedua.
+
+## legend-e087 + legend-qqvf: printer station dan 404 tiket KDS (engineer, cabang `ws/station-printer`, 2026-11-09)
+
+- Basis `integ/m1-batch7` 6f3063c7. `ws/print-agent` belum masuk batch integ mana pun; tabel `devices` (tipe `printer`) sudah ada di batch7, jadi validasi tidak menunggu print-agent.
+- legend-e087 (8663be44, 5864a36c): `printerDeviceId` station harus device `printer` aktif (tidak revoked) di tenant dan outlet station. Semua kasus tidak valid (outlet lain, tenant lain, bukan printer, revoked, UUID acak) menjawab 422 yang sama. Nilai yang tidak berubah (echo, beda huruf besar-kecil) tidak divalidasi dan tidak ditulis, jadi form lama tidak menimpa perubahan manager. Baris device dibaca `FOR SHARE`.
+- legend-qqvf (91db56eb): tiket dan item dari station lain menjawab 404 `NOT_FOUND`, sama dengan tiket yang tidak ada (detail, aksi tiket, prioritas, aksi item). Perubahan kontrak 403 ke 404 di `kds.test.ts` dan `e2e-az/az-d-kds.test.ts`. List dan feed station tidak berubah (sudah 403 untuk station asing maupun tidak ada).
+- Review: reviewer Opus (5 Low, 3 dibetulkan, 2 diterima) dan architect (qqvf disetujui, 1 Medium e087 race echo dibetulkan dengan test yang gagal di kode lama).
+- Gate: 8 file test 131 lulus 8 skip; setelah fix review station-printer, station-scope, kds 66/66; tsc api, eslint, prettier bersih. Suite penuh belum.
+- Bead baru: `legend-z76q` (P2, dispatcher print cek ulang printer saat cetak), `legend-4qon` (P3, oracle 404 vs 422 station brand lain di `menu.service`).
+- Biaya sesi 8d51c681 (06:43-07:53 UTC, termasuk akhir dak5): total biaya* 9922k (utama Opus 4869k, subagent Opus 2089k, Sonnet 2865k, Haiku 99k), 37 subagent sesi, task ini 6 subagent, maks 2 paralel.
+- Berikut: verifikasi CTO, second opinion Codex rentang 6f3063c7..5864a36c sebelum gerbang rilis, merge train.

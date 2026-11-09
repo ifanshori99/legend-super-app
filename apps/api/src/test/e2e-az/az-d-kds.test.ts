@@ -940,7 +940,8 @@ describe("Alur D langkah 1-2: pesanan dipecah per stasiun, barista/cook mulai la
     // PRD baris 573: barista/cook hanya KDS stasiun yang ditugaskan.
     expect((await kdsOf(barista).snapshot(ids.kitchen)).status).toBe(403);
     const kitchenTicket = await ticketOf(ids.kitchen, placed.orderId);
-    expect((await kdsOf(barista).start(kitchenTicket.id)).status).toBe(403);
+    // Another station's ticket answers like an unknown ticket (legend-qqvf).
+    expect((await kdsOf(barista).start(kitchenTicket.id)).status).toBe(404);
     expect((await ticketDetail(kitchenTicket.id)).status).toBe("new");
   });
 });
