@@ -41,6 +41,7 @@ import {
   dashboardValuesSchema,
   DASHBOARD_CATALOG,
   DASHBOARD_TITLES,
+  reportAcceptsAggregateView,
   reportByCode,
   reportMetricByCode,
   reportPermittedFor,
@@ -139,7 +140,7 @@ export function viewerReportsOf(
   const byShape = new Map<string, ReportDefinition>();
   for (const tile of tiles)
     for (const report of reportsOfTile(tile)) {
-      const shape = [...report.requiredPermissions].sort().join(",");
+      const shape = `${[...report.requiredPermissions].sort().join(",")}|${reportAcceptsAggregateView(report)}`;
       if (!byShape.has(shape)) byShape.set(shape, report);
     }
   return [...byShape.values()];

@@ -36,9 +36,11 @@ import {
   type JournalLineInput,
 } from "@starter/shared/accounting";
 import {
+  DASHBOARD_CATALOG,
   dashboardLayoutSchema,
   dashboardQueueRowsSchema,
   dashboardValuesSchema,
+  reportAcceptsAggregateView,
   reportByCode,
   reportResultSchema,
 } from "@starter/shared/dashboard";
@@ -46,7 +48,10 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import { closeFiscalPeriod } from "../services/accounting-period-close.service";
-import { setDashboardCacheTtlMs } from "../services/dashboard-run.service";
+import {
+  setDashboardCacheTtlMs,
+  viewerReportsOf,
+} from "../services/dashboard-run.service";
 import {
   agent,
   originHeader,
@@ -537,6 +542,27 @@ describe("shareholder dashboard (SH-01, SH-02, legend-5bjh)", () => {
       (await get(a.shareholder, "/api/dashboards/queues/facility-scope"))
         .status,
     ).toBe(403);
+  });
+});
+
+describe("viewerReportsOf: dedup key", () => {
+  it("keeps a shareholder-linked report and an owner-only report apart when their permissions match", () => {
+    const tile = (key: string) => {
+      const found = DASHBOARD_CATALOG.find((item) => item.key === key);
+      if (found === undefined) throw new Error(`no tile ${key}`);
+      return found;
+    };
+    // Both reports require report.sales.view; only sales.daily accepts
+    // report.aggregate.view.
+    const reports = viewerReportsOf([
+      tile("shareholder.revenue"),
+      tile("owner.sales_by_channel"),
+    ]);
+    const sales = reports.filter((report) =>
+      report.requiredPermissions.includes("report.sales.view"),
+    );
+    expect(sales.map(reportAcceptsAggregateView).sort()).toEqual([false, true]);
+    expect(sales.map((report) => report.code)).toContain("sales.daily");
   });
 });
 
