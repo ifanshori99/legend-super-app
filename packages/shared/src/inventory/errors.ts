@@ -99,6 +99,7 @@ export const inventoryErrorHttpStatus = {
   PRODUCTION_INVALID_TRANSITION: 409,
   INSUFFICIENT_STOCK: 409,
   PRODUCTION_LOCATION_UNRESOLVED: 422,
+  WASTE_MEDIA_NOT_FOUND: 422,
 } as const satisfies Record<InventoryErrorCode, number>;
 
 /**
@@ -145,4 +146,5 @@ export const inventoryErrorMessages: Record<InventoryErrorCode, string> = {
   INSUFFICIENT_STOCK: "Stok di lokasi ini tidak mencukupi.",
   PRODUCTION_LOCATION_UNRESOLVED:
     "Lokasi dapur untuk produksi di outlet ini tidak dapat ditentukan.",
+  WASTE_MEDIA_NOT_FOUND: "Foto atau berkas waste tidak ditemukan.",
 };
