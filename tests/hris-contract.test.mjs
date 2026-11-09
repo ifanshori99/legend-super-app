@@ -712,6 +712,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   assert.deepEqual(hris.hrisEventNames, [
     "attendance.logged",
     "shift.published",
+    "shift.cancelled",
     "leave.approved",
   ]);
   for (const name of hris.hrisEventNames) {
@@ -724,6 +725,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   const events = fixtures.events;
   hris.attendanceLogged.envelopeSchema.parse(events.attendanceLogged);
   hris.shiftPublished.envelopeSchema.parse(events.shiftPublished);
+  hris.shiftCancelled.envelopeSchema.parse(events.shiftCancelled);
   hris.leaveApproved.envelopeSchema.parse(events.leaveApproved);
 
   for (const event of Object.values(events)) {

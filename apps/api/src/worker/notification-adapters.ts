@@ -51,7 +51,7 @@ import {
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
-import { shiftPublished } from "@starter/shared/hris";
+import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
@@ -844,6 +844,33 @@ async function shiftPublishedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** F26: the employee who no longer works a shift hears it too, whether the
+ * manager cancelled it or an approved swap/cover moved it to someone else. */
+async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
+  const payload = shiftCancelled.payloadSchema.parse(input.event.payload);
+  const [row] = await input.tx
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  const swapped = payload.cause === "swapped_away";
+  return {
+    userIds: row?.userId ? [row.userId] : [],
+    content: {
+      category: "schedule_update",
+      title: swapped ? "Shift kamu dialihkan" : "Shift dibatalkan",
+      body: swapped
+        ? `Shift kamu untuk ${payload.businessDate} dialihkan lewat tukar atau gantikan shift. Kamu tidak perlu masuk di shift itu.`
+        : `Shift kamu untuk ${payload.businessDate} dibatalkan. Kamu tidak perlu masuk di shift itu.`,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -861,6 +888,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return checklistRule(input, input.event.name);
     case "shift.published":
       return shiftPublishedRule(input);
+    case "shift.cancelled":
+      return shiftCancelledRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
     case "ai_insight.anomaly_detected":

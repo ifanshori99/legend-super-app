@@ -518,6 +518,32 @@ async function publishedEvents(assignmentId: string): Promise<OutboxEvent[]> {
   return rows.map((row) => row.event);
 }
 
+type CancelledEvent = {
+  sequence: number;
+  payload: {
+    employeeId: string;
+    shiftAssignmentId: string;
+    reason: string;
+    cancelledBy: string;
+  };
+};
+async function cancelledEvents(
+  assignmentId: string,
+  destination: "cloud-sync" | "notification" = "cloud-sync",
+): Promise<CancelledEvent[]> {
+  const { rows } = await asTenant((db) =>
+    db.query<{ event: CancelledEvent }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND destination = $3
+          AND event->>'name' = 'shift.cancelled'
+          AND event->'payload'->>'shiftAssignmentId' = $2
+        ORDER BY (event->>'sequence')::int`,
+      [tenant.id, assignmentId, destination],
+    ),
+  );
+  return rows.map((row) => row.event);
+}
+
 // ---- authentication and input -------------------------------------------
 
 const withoutIdempotencyKey = (body: Record<string, unknown>) =>
@@ -715,6 +741,105 @@ describe("Tukar & Ganti Shift: approval without violations", () => {
       employeeId: employeeR,
       status: "published",
     });
+  });
+});
+
+describe("Tukar & Ganti Shift: shift.cancelled untuk pemilik lama", () => {
+  it("[F26 notifikasi] an approved cover emits shift.cancelled (swapped_away) for the requester on both destinations, before the new owner's shift.published", async () => {
+    const [shift] = await publishedWeek(40, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+    ]);
+    const swap = await openCover(shift, employeeT);
+    expect(await cancelledEvents(shift)).toHaveLength(0);
+    expect((await decide(hr.client, swap.id, "approve")).status).toBe(200);
+
+    for (const destination of ["cloud-sync", "notification"] as const) {
+      const cancelled = await cancelledEvents(shift, destination);
+      expect(cancelled, destination).toHaveLength(1);
+      expect(cancelled[0].payload).toMatchObject({
+        shiftAssignmentId: shift,
+        employeeId: employeeR,
+        cause: "swapped_away",
+        cancelledBy: hr.userId,
+      });
+    }
+    // One per-assignment sequence: v1 published, v2 cancelled, v3 published.
+    const published = await publishedEvents(shift);
+    const cancelled = await cancelledEvents(shift);
+    expect(published).toHaveLength(2);
+    expect(cancelled[0].sequence).toBeGreaterThan(published[0].sequence);
+    expect(published[1].sequence).toBeGreaterThan(cancelled[0].sequence);
+    expect(published[1].payload.employeeId).toBe(employeeT);
+  });
+
+  it("[F26 notifikasi] an approved swap emits shift.cancelled for both parties and shift.published for both new owners; a rejection emits no cancel", async () => {
+    const [mine, theirs, other] = await publishedWeek(41, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 2, templateId: pagiId },
+      { employeeId: employeeR, day: 4, templateId: pagiId },
+    ]);
+    const swap = await requestSwap(requester.client, {
+      fromAssignmentId: mine,
+      toEmployeeId: employeeT,
+      toAssignmentId: theirs,
+    });
+    expect(swap.status, JSON.stringify(swap.body)).toBe(201);
+    expect((await decide(hr.client, swap.body.data.id, "approve")).status).toBe(
+      200,
+    );
+    for (const destination of ["cloud-sync", "notification"] as const) {
+      const fromMine = await cancelledEvents(mine, destination);
+      const fromTheirs = await cancelledEvents(theirs, destination);
+      expect(fromMine, destination).toHaveLength(1);
+      expect(fromTheirs, destination).toHaveLength(1);
+      expect(fromMine[0].payload).toMatchObject({
+        employeeId: employeeR,
+        cause: "swapped_away",
+      });
+      expect(fromTheirs[0].payload).toMatchObject({
+        employeeId: employeeT,
+        cause: "swapped_away",
+      });
+    }
+    expect((await publishedEvents(mine))[1].payload.employeeId).toBe(employeeT);
+    expect((await publishedEvents(theirs))[1].payload.employeeId).toBe(
+      employeeR,
+    );
+
+    const rejectedCover = await openCover(other, employeeT);
+    expect((await decide(hr.client, rejectedCover.id, "reject")).status).toBe(
+      200,
+    );
+    expect(await cancelledEvents(other)).toHaveLength(0);
+  });
+
+  it("[F26 swap] a swapped shift cannot be swapped or covered again: 409 with a clear message, as source or as target", async () => {
+    const [shift, mineAgain] = await publishedWeek(42, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeR, day: 2, templateId: pagiId },
+    ]);
+    const swap = await openCover(shift, employeeT);
+    expect((await decide(hr.client, swap.id, "approve")).status).toBe(200);
+    expect(await shiftNow(42, shift)).toMatchObject({
+      employeeId: employeeT,
+      status: "swapped",
+    });
+
+    const again = await requestSwap(target.client, {
+      fromAssignmentId: shift,
+      toEmployeeId: employeeR,
+    });
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    expect(JSON.stringify(again.body)).toContain("tidak dapat ditukar lagi");
+
+    const asTarget = await requestSwap(requester.client, {
+      fromAssignmentId: mineAgain,
+      toEmployeeId: employeeT,
+      toAssignmentId: shift,
+    });
+    expect(asTarget.status, JSON.stringify(asTarget.body)).toBe(409);
+    expect(JSON.stringify(asTarget.body)).toContain("tidak dapat ditukar lagi");
+    expect(await swapStatusOfAssignment(shift)).toBe("approved");
   });
 });
 
@@ -1038,6 +1163,49 @@ describe("pengajuan tukar/ganti", () => {
     });
     expect([409, 422]).toContain(toSelf.status);
     expect(await swapStatusOfAssignment(shift)).toBeUndefined();
+  });
+
+  it("[F26 swap] swapping two shifts of the same day and template is refused when filed (422), not left to fail on approval", async () => {
+    const [mine, theirs] = await publishedWeek(50, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 1, templateId: pagiId },
+    ]);
+    const refused = await requestSwap(requester.client, {
+      fromAssignmentId: mine,
+      toEmployeeId: employeeT,
+      toAssignmentId: theirs,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await swapStatusOfAssignment(mine)).toBeUndefined();
+  });
+
+  it("[F26 swap] a cover approved with override to a colleague who already holds that day and template is 409 SHIFT_DUPLICATE; the swap stays pending and nothing moves", async () => {
+    const [mine, held] = await publishedWeek(51, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 1, templateId: pagiId },
+    ]);
+    const swap = await openCover(mine, employeeT);
+
+    const refused = await decide(
+      hr.client,
+      swap.id,
+      "approve_with_override",
+      "Dua shift pagi di hari yang sama disetujui manajer",
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("SHIFT_DUPLICATE");
+    expect(await swapStatus(swap.id)).toBe("pending");
+    expect(await shiftNow(51, mine)).toMatchObject({
+      employeeId: employeeR,
+      status: "published",
+    });
+    expect(await shiftNow(51, held)).toMatchObject({
+      employeeId: employeeT,
+      status: "published",
+    });
+    expect(await publishedEvents(mine)).toHaveLength(1);
+    expect(await cancelledEvents(mine)).toHaveLength(0);
   });
 
   it("[F26 swap] the list shows a requester only their own requests; an employee with no request sees an empty list", async () => {

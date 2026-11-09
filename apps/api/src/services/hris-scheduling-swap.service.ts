@@ -11,9 +11,13 @@
 //   needs a reason (both enforced by `transitionShiftSwap`). Unlike leave there
 //   is no approval matrix and no MFA step: this module decides by itself.
 // - Approval moves `employee_id` on the assignment(s), marks them `swapped` and
-//   re-emits `shift.published` per changed assignment in the same transaction
-//   (outbox). The event carries the approver and decision time as publisher;
-//   the assignment row keeps its original `published_by` / `published_at`.
+//   emits, per changed assignment and in the same transaction (outbox),
+//   `shift.cancelled` (cause `swapped_away`) for the previous owner and then
+//   `shift.published` for the new one (hris-scheduling-events.ts). The
+//   published event carries the approver and decision time as publisher; the
+//   assignment row keeps its original `published_by` / `published_at`.
+// - A `swapped` shift cannot be swapped or covered again (only `published` ones
+//   can; decision recorded 2026-11, default until product says otherwise).
 // - Repeating the same decision returns the stored request; a different action
 //   on a decided request answers 409.
 // - Responses carry employee ids only: no names, NIK or pay (personal data).
@@ -31,10 +35,8 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
-  createUlid,
   encodeCursor,
   isOutletInScope,
-  userIdSchema,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -45,7 +47,6 @@ import {
   decideShiftSwapRequest as decideShiftSwapRequestEndpoint,
   evaluateShiftSwapCompliance,
   listShiftSwapRequests as listShiftSwapRequestsEndpoint,
-  shiftPublished,
   transitionShiftAssignment,
   transitionShiftSwap,
   type ShiftAssignment,
@@ -56,7 +57,6 @@ import type { z } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
-import { domainEventOutbox } from "../db/schema/core-events.ts";
 import {
   shiftAssignments,
   shiftSwapRequests,
@@ -64,7 +64,6 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
-import { appendOutbox } from "./core-outbox.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -76,6 +75,10 @@ import {
   type HrisAccess,
   type Tx,
 } from "./hris-access.ts";
+import {
+  appendShiftCancelled,
+  appendShiftPublished,
+} from "./hris-scheduling-events.ts";
 import {
   resolveCompliancePolicy,
   toShiftAssignment,
@@ -96,7 +99,6 @@ type Page<T> = {
   meta: { limit: number; nextCursor: string | null };
 };
 
-const SHIFT_EVENT_DESTINATIONS = ["cloud-sync", "notification"] as const;
 // Drafts are unpublished plans: compliance never counts them, so a swap
 // diff cannot leak or be blocked by a colleague's draft.
 const COMPLIANCE_STATUSES = ["published", "swapped"] as const;
@@ -322,85 +324,6 @@ async function tenantWideSwapCompliance(
   );
 }
 
-async function nextShiftEventSequence(
-  tx: Tx,
-  tenantId: string,
-  destination: string,
-  assignmentId: string,
-): Promise<number> {
-  const [row] = await tx
-    .select({
-      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
-    })
-    .from(domainEventOutbox)
-    .where(
-      and(
-        eq(domainEventOutbox.tenantId, tenantId),
-        eq(domainEventOutbox.destination, destination),
-        eq(domainEventOutbox.aggregateType, shiftPublished.entry.aggregateType),
-        eq(domainEventOutbox.aggregateId, assignmentId),
-      ),
-    );
-  return Number(row?.last ?? 0) + 1;
-}
-
-/**
- * Re-emits `shift.published` for an assignment whose owner changed, in the
- * caller's transaction. The caller holds the assignment row lock, which
- * serialises the per-aggregate sequence; the sequence is part of the
- * idempotency key so each version of the shift is delivered once.
- */
-async function appendShiftPublished(
-  tx: Tx,
-  context: ScopedTenantContext,
-  row: AssignmentRow,
-  actor: string,
-  now: Date,
-): Promise<void> {
-  const publishedBy = userIdSchema.parse(actor);
-  for (const destination of SHIFT_EVENT_DESTINATIONS) {
-    const sequence = await nextShiftEventSequence(
-      tx,
-      row.tenantId,
-      destination,
-      row.id,
-    );
-    const event = shiftPublished.envelopeSchema.parse({
-      id: createUlid(now.getTime()),
-      tenantId: row.tenantId,
-      outletId: row.outletId,
-      name: shiftPublished.name,
-      version: shiftPublished.version,
-      aggregateType: shiftPublished.entry.aggregateType,
-      aggregateId: row.id,
-      sequence,
-      occurredAt: now.toISOString(),
-      actor: { type: "user", id: publishedBy },
-      deviceId: null,
-      idempotencyKey: `${shiftPublished.name}:${row.id}:${sequence}`,
-      payloadSchemaRef: shiftPublished.payloadSchemaRef,
-      payload: {
-        shiftAssignmentId: row.id,
-        employeeId: row.employeeId,
-        outletId: row.outletId,
-        shiftTemplateId: row.shiftTemplateId,
-        stationId: row.stationId,
-        businessDate: row.businessDate,
-        segments: row.segments,
-        publishedBy,
-        publishedAt: now.toISOString(),
-      },
-    });
-    await appendOutbox(tx, context, {
-      id: createUlid(now.getTime()),
-      event,
-      destination,
-      direction: null,
-      peerId: null,
-    });
-  }
-}
-
 async function auditSwap(
   tx: Tx,
   context: ScopedTenantContext,
@@ -581,6 +504,11 @@ export async function createShiftSwapRequest(
       !same(from.outletId, input.outletId)
     )
       throw notFound("Jadwal shift");
+    if (from.status === "swapped")
+      throw conflict(
+        "CONFLICT",
+        "Shift ini sudah pernah ditukar dan tidak dapat ditukar lagi.",
+      );
     if (from.status !== "published")
       throw conflict(
         "CONFLICT",
@@ -607,10 +535,26 @@ export async function createShiftSwapRequest(
         !same(to.outletId, input.outletId)
       )
         throw notFound("Jadwal shift tujuan");
+      if (to.status === "swapped")
+        throw conflict(
+          "CONFLICT",
+          "Shift tujuan sudah pernah ditukar dan tidak dapat ditukar lagi.",
+        );
       if (to.status !== "published" || hasStarted(to, now))
         throw conflict(
           "CONFLICT",
           "Shift tujuan harus sudah dipublikasikan dan belum dimulai.",
+        );
+      // The first move would hand each side a second row for the same
+      // (day, template) while the old one is still active, which the
+      // shift_assignments_active_employee_day_template_key index rejects.
+      if (
+        from.shiftTemplateId !== null &&
+        from.shiftTemplateId === to.shiftTemplateId &&
+        from.businessDate === to.businessDate
+      )
+        throw invalid(
+          "Shift asal dan shift tujuan memakai template yang sama pada hari yang sama; tukar tidak diperlukan, ubah stasiun lewat roster.",
         );
     }
 
@@ -817,22 +761,40 @@ export async function decideShiftSwapRequest(
       { row: from, employeeId: row.toEmployeeId },
       ...(to ? [{ row: to, employeeId: row.requestedBy }] : []),
     ];
-    const changed: AssignmentRow[] = [];
+    const changed: Array<{ row: AssignmentRow; previousEmployeeId: string }> =
+      [];
     for (const move of moves) {
+      // The savepoint keeps a unique violation from aborting the whole
+      // transaction; the 409 below then rolls everything back, so the swap
+      // stays pending and no assignment changes.
       const [updated] = await tx
-        .update(shiftAssignments)
-        .set({
-          employeeId: move.employeeId,
-          status: transitionShiftAssignment(
-            move.row.status as ShiftAssignment["status"],
-            "swap",
-          ),
-          updatedAt: now,
-        })
-        .where(eq(shiftAssignments.id, move.row.id))
-        .returning();
+        .transaction(async (savepoint) =>
+          savepoint
+            .update(shiftAssignments)
+            .set({
+              employeeId: move.employeeId,
+              status: transitionShiftAssignment(
+                move.row.status as ShiftAssignment["status"],
+                "swap",
+              ),
+              updatedAt: now,
+            })
+            .where(eq(shiftAssignments.id, move.row.id))
+            .returning(),
+        )
+        .catch((error: unknown) => {
+          if (
+            uniqueViolation(error)?.constraint ===
+            "shift_assignments_active_employee_day_template_key"
+          )
+            throw conflict(
+              "SHIFT_DUPLICATE",
+              "Karyawan penerima sudah punya jadwal dengan template yang sama pada hari ini.",
+            );
+          throw error;
+        });
       if (!updated) throw new Error("Shift assignment update returned no row");
-      changed.push(updated);
+      changed.push({ row: updated, previousEmployeeId: move.row.employeeId });
     }
 
     const [approved] = await tx
@@ -849,8 +811,19 @@ export async function decideShiftSwapRequest(
       .returning();
     if (!approved) throw new Error("Shift swap update returned no row");
 
-    for (const assignment of changed) {
-      await appendShiftPublished(tx, context, assignment, actor, now);
+    // Per moved assignment, in sequence order: the old owner's shift is
+    // cancelled (`swapped_away`), then published again for the new owner.
+    for (const { row: assignment, previousEmployeeId } of changed) {
+      await appendShiftCancelled(
+        tx,
+        context,
+        assignment,
+        previousEmployeeId,
+        "swapped_away",
+        actor,
+        now,
+      );
+      await appendShiftPublished(tx, context, assignment, actor, now, now);
       await auditAssignment(tx, context, actor, now, assignment);
     }
     await auditSwap(

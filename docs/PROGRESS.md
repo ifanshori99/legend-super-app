@@ -1340,3 +1340,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Default yang bisa diubah (perlu konfirmasi founder): batas kepatuhan 600 menit per shift, 720 per hari, 2700 per minggu, istirahat 660 menit, maks 6 hari beruntun; karyawan hanya boleh dijadwalkan di outlet asalnya.
 - Bukti: API 7 file 125 tes lulus (3 file baru + guard migrasi/RLS), root hris+payroll 39 tes lulus, tsc shared dan api lewat heavy bersih, eslint + prettier bersih, `db:generate` kedua kosong. Review S (reviewer) 8 temuan dan K (architect) 5 temuan: HR-05 lintas outlet, bocor draft, idempotensi, urutan lock, cursor sudah dibetulkan.
 - Belum dikerjakan (lihat laporan): event/notifikasi saat shift terpublikasi dibatalkan, notifikasi untuk peminta cover, id assignment per publikasi, FK outlet komposit, aturan siapa boleh melonggarkan kebijakan outlet.
+
+### legend-jstx babak 2 (keputusan CTO, 2026-11-10)
+
+- Selesai: event `shift.cancelled` (payload `cause` = `cancelled` atau `swapped_away`, tanpa PII) ke outbox cloud-sync dan notification, penerima pemilik lama; cover/tukar disetujui memberi notifikasi ke peminta; `roster_publications` menyimpan `assignment_ids` dan `snapshot`, replay publikasi mengembalikan snapshot; kunci idempoten (unik tenant+kunci) untuk create shift dan copy minggu (tabel `roster_copies`), pencocokan replay lewat karyawan+hari+template dihapus; kebijakan jam kerja hanya bisa diubah pemegang `hr.schedule.manage` tingkat tenant dan tiap ubah diaudit; FK komposit (tenant, outlet, id) untuk swap ke assignment dan assignment ke template.
+- Alasan tanpa FK outlet komposit untuk stasiun: tabel `stations` tidak punya unique (tenant, outlet, id), jadi FK tetap (tenant, id).
+- Shift berstatus `swapped` tetap tidak bisa ditukar lagi (default, dicatat di bd comment). Angka batas jam bawaan tetap, menunggu founder.
+- Review architect delta: 3 temuan nyata dibetulkan (kunci idempoten outlet lain bocor 500 menjadi 409, approve tukar hari+template sama 500 menjadi 422/409, check cardinality di `roster_publications`) plus 1 temuan rendah (replay create dengan data beda 409).
+- Bukti: tes terarah 128 lulus di 6 berkas (setup 23, roster 52, swap 35, konkurensi 5, guard migrasi/RLS 13); root hris+payroll+core 95 lulus; tsc shared dan api lewat heavy bersih; eslint dan prettier bersih; `db:generate` kedua kosong.

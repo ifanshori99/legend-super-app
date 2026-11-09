@@ -31,6 +31,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type {
+  ShiftAssignment,
   ShiftAssignmentSegment,
   ShiftAssignmentSource,
   ShiftAssignmentStatus,
@@ -72,6 +73,12 @@ export const shiftTemplates = pgTable(
   },
   (table) => [
     unique("shift_templates_tenant_id_key").on(table.tenantId, table.id),
+    // Target of the composite (tenant, outlet) FK from shift_assignments.
+    unique("shift_templates_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
     unique("shift_templates_tenant_outlet_name_key").on(
       table.tenantId,
       table.outletId,
@@ -129,11 +136,35 @@ export const shiftAssignments = pgTable(
     publishedBy: text("published_by").$type<UserId>(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdBy: text("created_by").$type<UserId>().notNull(),
+    createIdempotencyKey: varchar("create_idempotency_key", { length: 100 }),
     createdAt,
     updatedAt,
   },
   (table) => [
     unique("shift_assignments_tenant_id_key").on(table.tenantId, table.id),
+    // Target of the composite (tenant, outlet) FK from shift_swap_requests.
+    unique("shift_assignments_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    // A retried create returns the stored row (NULLs stay distinct: copies).
+    unique("shift_assignments_tenant_idempotency_key").on(
+      table.tenantId,
+      table.createIdempotencyKey,
+    ),
+    // One live row per employee, day and template, whatever the key: stops a
+    // create racing a copy from duplicating a shift.
+    uniqueIndex("shift_assignments_active_employee_day_template_key")
+      .on(
+        table.tenantId,
+        table.employeeId,
+        table.businessDate,
+        table.shiftTemplateId,
+      )
+      .where(
+        sql`${table.status} <> 'cancelled' AND ${table.shiftTemplateId} IS NOT NULL`,
+      ),
     index("shift_assignments_tenant_outlet_date_idx").on(
       table.tenantId,
       table.outletId,
@@ -156,8 +187,12 @@ export const shiftAssignments = pgTable(
     }),
     foreignKey({
       name: "shift_assignments_template_fk",
-      columns: [table.tenantId, table.shiftTemplateId],
-      foreignColumns: [shiftTemplates.tenantId, shiftTemplates.id],
+      columns: [table.tenantId, table.outletId, table.shiftTemplateId],
+      foreignColumns: [
+        shiftTemplates.tenantId,
+        shiftTemplates.outletId,
+        shiftTemplates.id,
+      ],
     }),
     foreignKey({
       name: "shift_assignments_station_fk",
@@ -208,6 +243,9 @@ export const rosterPublications = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     assignmentCount: integer("assignment_count").notNull(),
+    /** Assignments this publication published, and how they looked then. */
+    assignmentIds: uuid("assignment_ids").array().notNull(),
+    snapshot: jsonb("snapshot").$type<ShiftAssignment[]>().notNull(),
     publishedBy: text("published_by").$type<UserId>().notNull(),
     publishedAt: timestamp("published_at", { withTimezone: true })
       .notNull()
@@ -229,7 +267,52 @@ export const rosterPublications = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
-    check("roster_publications_count_check", sql`${table.assignmentCount} > 0`),
+    check(
+      "roster_publications_count_check",
+      sql`${table.assignmentCount} > 0 AND cardinality(${table.assignmentIds}) = ${table.assignmentCount}`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------ roster copies
+
+/**
+ * Idempotency ledger for "salin minggu": one row per accepted copy request, so
+ * a retried key returns the drafts the first call created.
+ */
+export const rosterCopies = pgTable(
+  "roster_copies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: uuid("outlet_id").notNull(),
+    fromWeekStart: businessDate("from_week_start").notNull(),
+    toWeekStart: businessDate("to_week_start").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
+    assignmentIds: uuid("assignment_ids").array().notNull(),
+    createdBy: text("created_by").$type<UserId>().notNull(),
+    createdAt,
+  },
+  (table) => [
+    unique("roster_copies_tenant_id_key").on(table.tenantId, table.id),
+    unique("roster_copies_tenant_idempotency_key").on(
+      table.tenantId,
+      table.idempotencyKey,
+    ),
+    index("roster_copies_tenant_outlet_week_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.toWeekStart,
+    ),
+    foreignKey({
+      name: "roster_copies_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    check(
+      "roster_copies_count_check",
+      sql`cardinality(${table.assignmentIds}) > 0 AND ${table.toWeekStart} <> ${table.fromWeekStart}`,
+    ),
   ],
 );
 
@@ -286,13 +369,21 @@ export const shiftSwapRequests = pgTable(
     }),
     foreignKey({
       name: "shift_swap_requests_from_fk",
-      columns: [table.tenantId, table.fromAssignmentId],
-      foreignColumns: [shiftAssignments.tenantId, shiftAssignments.id],
+      columns: [table.tenantId, table.outletId, table.fromAssignmentId],
+      foreignColumns: [
+        shiftAssignments.tenantId,
+        shiftAssignments.outletId,
+        shiftAssignments.id,
+      ],
     }),
     foreignKey({
       name: "shift_swap_requests_to_fk",
-      columns: [table.tenantId, table.toAssignmentId],
-      foreignColumns: [shiftAssignments.tenantId, shiftAssignments.id],
+      columns: [table.tenantId, table.outletId, table.toAssignmentId],
+      foreignColumns: [
+        shiftAssignments.tenantId,
+        shiftAssignments.outletId,
+        shiftAssignments.id,
+      ],
     }),
     foreignKey({
       name: "shift_swap_requests_requester_fk",

@@ -470,7 +470,9 @@ export async function getShiftCompliancePolicy(
 
 /**
  * PUT /api/hris/shift-compliance-policy — upserts the outlet row, or the
- * tenant default row (`outletId` null, tenant-wide reach). Serialised per
+ * tenant default row (`outletId` null). Either needs tenant-wide
+ * hr.schedule.manage reach; every change is audited (outlet id and limit
+ * values only, no personal data). Serialised per
  * (tenant, outlet) so two first writes cannot both insert.
  */
 export async function updateShiftCompliancePolicy(
@@ -481,13 +483,14 @@ export async function updateShiftCompliancePolicy(
 ): Promise<ShiftCompliancePolicyView> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
-    if (input.outletId === null) {
-      if (access.reach([HRIS_SCHEDULE_MANAGE_CODE])?.kind !== "tenant")
-        throw forbidden();
-    } else {
-      assertOutletManageable(access, input.outletId);
+    // Working-time limits are a tenant-level (labour-law) decision: only a
+    // tenant-wide hr.schedule.manage holder may change them, for the tenant
+    // row and for any outlet row. An outlet manager may read the effective
+    // policy but gets 403 here, even for its own outlet.
+    if (access.reach([HRIS_SCHEDULE_MANAGE_CODE])?.kind !== "tenant")
+      throw forbidden();
+    if (input.outletId !== null)
       await assertOutletExists(tx, context, input.outletId);
-    }
     const limits = {
       maxShiftMinutes: input.maxShiftMinutes,
       maxDailyMinutes: input.maxDailyMinutes,

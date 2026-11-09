@@ -70,6 +70,25 @@ export const shiftPublished = defineDomainEvent({
   }),
 });
 
+/**
+ * Emitted when a published shift stops being the employee's: the manager
+ * cancelled it (`cancelled`) or an approved swap/cover handed it to someone
+ * else (`swapped_away`, `employeeId` is the previous owner). The new owner
+ * hears about a swap through `shift.published`.
+ */
+export const shiftCancelled = defineDomainEvent({
+  name: "shift.cancelled",
+  payload: z.strictObject({
+    shiftAssignmentId: shiftAssignmentIdSchema,
+    employeeId: employeeIdSchema,
+    outletId: outletIdSchema,
+    businessDate: businessDateSchema,
+    cause: z.enum(["cancelled", "swapped_away"]),
+    cancelledBy: userIdSchema,
+    cancelledAt: isoDateTimeSchema,
+  }),
+});
+
 /** Emitted when a leave request is approved; balance deduction follows (F27). */
 export const leaveApproved = defineDomainEvent({
   name: "leave.approved",
@@ -88,6 +107,7 @@ export const leaveApproved = defineDomainEvent({
 export const hrisDomainEvents = [
   attendanceLogged,
   shiftPublished,
+  shiftCancelled,
   leaveApproved,
 ] as const;
 

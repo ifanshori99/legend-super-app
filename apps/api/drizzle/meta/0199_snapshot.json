@@ -1,5 +1,5 @@
 {
-  "id": "b9ca27ee-947e-4b63-86be-94e3dea483c6",
+  "id": "9f64bc61-b515-4139-9c61-359a015b8ed7",
   "prevId": "8948ed96-6289-4fe9-b7a9-ad1ee9ef60a3",
   "version": "7",
   "dialect": "postgresql",
@@ -27105,6 +27105,154 @@
       },
       "isRLSEnabled": false
     },
+    "public.roster_copies": {
+      "name": "roster_copies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_week_start": {
+          "name": "from_week_start",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "to_week_start": {
+          "name": "to_week_start",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assignment_ids": {
+          "name": "assignment_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "roster_copies_tenant_outlet_week_idx": {
+          "name": "roster_copies_tenant_outlet_week_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "to_week_start",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "roster_copies_tenant_id_tenants_id_fk": {
+          "name": "roster_copies_tenant_id_tenants_id_fk",
+          "tableFrom": "roster_copies",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "roster_copies_outlet_fk": {
+          "name": "roster_copies_outlet_fk",
+          "tableFrom": "roster_copies",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "roster_copies_tenant_id_key": {
+          "name": "roster_copies_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "roster_copies_tenant_idempotency_key": {
+          "name": "roster_copies_tenant_idempotency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "roster_copies_count_check": {
+          "name": "roster_copies_count_check",
+          "value": "cardinality(\"roster_copies\".\"assignment_ids\") > 0 AND \"roster_copies\".\"to_week_start\" <> \"roster_copies\".\"from_week_start\""
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.roster_publications": {
       "name": "roster_publications",
       "schema": "",
@@ -27150,6 +27298,18 @@
         "assignment_count": {
           "name": "assignment_count",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assignment_ids": {
+          "name": "assignment_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot": {
+          "name": "snapshot",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
@@ -27249,7 +27409,7 @@
       "checkConstraints": {
         "roster_publications_count_check": {
           "name": "roster_publications_count_check",
-          "value": "\"roster_publications\".\"assignment_count\" > 0"
+          "value": "\"roster_publications\".\"assignment_count\" > 0 AND cardinality(\"roster_publications\".\"assignment_ids\") = \"roster_publications\".\"assignment_count\""
         }
       },
       "isRLSEnabled": false
@@ -27346,6 +27506,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "create_idempotency_key": {
+          "name": "create_idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -27362,6 +27528,40 @@
         }
       },
       "indexes": {
+        "shift_assignments_active_employee_day_template_key": {
+          "name": "shift_assignments_active_employee_day_template_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "business_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "shift_template_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"shift_assignments\".\"status\" <> 'cancelled' AND \"shift_assignments\".\"shift_template_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "shift_assignments_tenant_outlet_date_idx": {
           "name": "shift_assignments_tenant_outlet_date_idx",
           "columns": [
@@ -27467,10 +27667,12 @@
           "tableTo": "shift_templates",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "shift_template_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -27500,6 +27702,23 @@
           "columns": [
             "tenant_id",
             "id"
+          ]
+        },
+        "shift_assignments_tenant_outlet_id_key": {
+          "name": "shift_assignments_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ]
+        },
+        "shift_assignments_tenant_idempotency_key": {
+          "name": "shift_assignments_tenant_idempotency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "create_idempotency_key"
           ]
         }
       },
@@ -27882,10 +28101,12 @@
           "tableTo": "shift_assignments",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "from_assignment_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -27897,10 +28118,12 @@
           "tableTo": "shift_assignments",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "to_assignment_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -28123,6 +28346,15 @@
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
+            "id"
+          ]
+        },
+        "shift_templates_tenant_outlet_id_key": {
+          "name": "shift_templates_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
             "id"
           ]
         },

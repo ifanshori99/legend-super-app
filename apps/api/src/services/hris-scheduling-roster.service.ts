@@ -13,13 +13,19 @@
 //   day the shift starts, so a night shift keeps the day it begins.
 // - Publishing a week turns every draft of the outlet-week into `published`
 //   and appends one `shift.published` per assignment in the same transaction
-//   (transactional outbox, destination `cloud-sync`). Compliance (F26) is a
-//   warning on publish; HR-05 only blocks swaps.
-// - `shift_assignments` and the copy have no idempotency column. A replayed
-//   create returns the matching active assignment; a replayed copy meets the
-//   non-empty target week and answers 409. Publish has its own ledger
-//   (`roster_publications`), so a replayed key returns the first result and
-//   emits nothing twice.
+//   (transactional outbox, destinations `cloud-sync` and `notification`).
+//   Cancelling a published or swapped shift appends `shift.cancelled` for its
+//   owner; a draft was never announced, so it emits nothing. Compliance (F26)
+//   is a warning on publish; HR-05 only blocks swaps.
+// - Idempotency is by the body's `idempotencyKey`, never by matching the data:
+//   a create stores it in `shift_assignments.create_idempotency_key`, a copy
+//   in the `roster_copies` ledger and a publish in `roster_publications`. A
+//   replayed key returns the first result (the ledger rows keep the assignment
+//   ids, a publication also its snapshot) and writes or emits nothing twice. A
+//   new key with the same data is a 409: the partial unique index on
+//   (employee, day, template) for live rows answers `SHIFT_DUPLICATE`, a copy
+//   onto a week with live shifts `ROSTER_NOT_EMPTY`. The key is tenant-wide, so
+//   a replay for another outlet is `IDEMPOTENCY_KEY_REUSED`.
 // - Responses carry employee ids only, never names, ID numbers or pay.
 
 import {
@@ -37,7 +43,6 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
-  createUlid,
   encodeCursor,
   userIdSchema,
   type ScopedTenantContext,
@@ -51,7 +56,6 @@ import {
   isRosterPublished,
   listShiftAssignments as listShiftAssignmentsEndpoint,
   publishRoster as publishRosterEndpoint,
-  shiftPublished,
   transitionShiftAssignment,
   updateShiftAssignment as updateShiftAssignmentEndpoint,
   weekStartOf,
@@ -66,6 +70,7 @@ import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import { leaveRequests } from "../db/schema/hris-leave.ts";
 import {
+  rosterCopies,
   rosterPublications,
   shiftAssignments,
   shiftSwapRequests,
@@ -73,11 +78,9 @@ import {
 } from "../db/schema/hris-scheduling.ts";
 import { stations } from "../db/schema/menu.ts";
 import { outlets } from "../db/schema/platform-org.ts";
-import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
-import { appendOutbox } from "./core-outbox.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -95,6 +98,10 @@ import {
   toShiftAssignment,
   toShiftTemplate,
 } from "./hris-scheduling-common.ts";
+import {
+  appendShiftCancelled,
+  appendShiftPublished,
+} from "./hris-scheduling-events.ts";
 
 export const HRIS_SCHEDULE_MANAGE_CODE = "hr.schedule.manage";
 export const HRIS_SHIFT_OBJECT_TYPE = "shift_assignment";
@@ -127,11 +134,11 @@ function isCalendarDate(value: string): boolean {
   );
 }
 
-/**
- * `shift.published` goes to cloud sync and to the notification consumer; the
- * notification rule for it lives in worker/notification-adapters.ts `ruleFor`.
- */
-export const SHIFT_EVENT_DESTINATIONS = ["cloud-sync", "notification"] as const;
+const SHIFT_KEY_CONSTRAINT = "shift_assignments_tenant_idempotency_key";
+const SHIFT_ACTIVE_CONSTRAINT =
+  "shift_assignments_active_employee_day_template_key";
+const COPY_KEY_CONSTRAINT = "roster_copies_tenant_idempotency_key";
+const PUBLICATION_KEY_CONSTRAINT = "roster_publications_tenant_idempotency_key";
 
 /** Days of other weeks loaded around a week so rest and run limits see them. */
 const COMPLIANCE_CONTEXT_DAYS = 7;
@@ -143,6 +150,36 @@ function validation(message: string): HttpError {
 
 function conflict(code: string, message: string): HttpError {
   return new HttpError(409, code, message);
+}
+
+/**
+ * Constraint name of a PostgreSQL unique violation (23505), directly or
+ * wrapped by drizzle's cause chain; null for any other error.
+ */
+function uniqueViolation(error: unknown, depth = 0): string | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  if (candidate.code === "23505")
+    return typeof candidate.constraint === "string" ? candidate.constraint : "";
+  return uniqueViolation(candidate.cause, depth + 1);
+}
+
+function keyReused(): CoreError {
+  return new CoreError(
+    "IDEMPOTENCY_KEY_REUSED",
+    "Idempotency key already used for a different request.",
+  );
+}
+
+function shiftDuplicate(): HttpError {
+  return conflict(
+    "SHIFT_DUPLICATE",
+    "Karyawan sudah punya jadwal dengan template yang sama pada hari ini.",
+  );
 }
 
 function scheduleNotFound(): HttpError {
@@ -359,89 +396,6 @@ async function buildRoster(
   } as RosterView;
 }
 
-// ----------------------------------------------------------------- events
-
-async function nextShiftEventSequence(
-  tx: Tx,
-  tenantId: string,
-  destination: string,
-  assignmentId: string,
-): Promise<number> {
-  const [row] = await tx
-    .select({
-      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
-    })
-    .from(domainEventOutbox)
-    .where(
-      and(
-        eq(domainEventOutbox.tenantId, tenantId),
-        eq(domainEventOutbox.destination, destination),
-        eq(domainEventOutbox.aggregateType, shiftPublished.entry.aggregateType),
-        eq(domainEventOutbox.aggregateId, assignmentId),
-      ),
-    );
-  return Number(row?.last ?? 0) + 1;
-}
-
-/**
- * Appends `shift.published` in the caller's transaction, once per destination.
- * The aggregate is the assignment, so a later change (swap) re-emits with the
- * next sequence and a sequence-bound idempotency key. The assignment row lock
- * (or the outlet-week lock on publish) serialises the sequence. Segments and
- * ids only: no employee name or pay in the payload.
- */
-export async function appendShiftPublished(
-  tx: Tx,
-  context: ScopedTenantContext,
-  row: ShiftRow,
-  now: Date,
-): Promise<void> {
-  if (!row.publishedBy || !row.publishedAt)
-    throw new Error("shift.published needs a published assignment");
-  const publishedBy = userIdSchema.parse(row.publishedBy);
-  for (const destination of SHIFT_EVENT_DESTINATIONS) {
-    const sequence = await nextShiftEventSequence(
-      tx,
-      row.tenantId,
-      destination,
-      row.id,
-    );
-    const event = shiftPublished.envelopeSchema.parse({
-      id: createUlid(now.getTime()),
-      tenantId: row.tenantId,
-      outletId: row.outletId,
-      name: shiftPublished.name,
-      version: shiftPublished.version,
-      aggregateType: shiftPublished.entry.aggregateType,
-      aggregateId: row.id,
-      sequence,
-      occurredAt: now.toISOString(),
-      actor: { type: "user", id: publishedBy },
-      deviceId: null,
-      idempotencyKey: `${shiftPublished.name}:${row.id}:${sequence}`,
-      payloadSchemaRef: shiftPublished.payloadSchemaRef,
-      payload: {
-        shiftAssignmentId: row.id,
-        employeeId: row.employeeId,
-        outletId: row.outletId,
-        shiftTemplateId: row.shiftTemplateId,
-        stationId: row.stationId,
-        businessDate: row.businessDate,
-        segments: row.segments,
-        publishedBy,
-        publishedAt: row.publishedAt.toISOString(),
-      },
-    });
-    await appendOutbox(tx, context, {
-      id: createUlid(now.getTime()),
-      event,
-      destination,
-      direction: null,
-      peerId: null,
-    });
-  }
-}
-
 // ----------------------------------------------------------------- reads
 
 /**
@@ -582,8 +536,9 @@ async function materialise(
 }
 
 /**
- * POST /api/hris/shifts — a draft assignment. A replay (same employee, day and
- * template still active) returns the stored assignment.
+ * POST /api/hris/shifts — a draft assignment. The body's idempotency key is
+ * stored on the row: a replay returns the stored assignment. The same data
+ * under a new key hits the live-row unique index and is a 409.
  */
 export async function createShiftAssignment(
   context: ScopedTenantContext,
@@ -595,24 +550,37 @@ export async function createShiftAssignment(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     assertManage(access, input.outletId);
     const tenantId = context.tenant.tenantId;
+
+    const storedByKey = async (): Promise<ShiftAssignment | null> => {
+      const [row] = await tx
+        .select()
+        .from(shiftAssignments)
+        .where(
+          and(
+            eq(shiftAssignments.tenantId, tenantId),
+            eq(shiftAssignments.createIdempotencyKey, input.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!row) return null;
+      // The key is tenant-wide: another outlet's row is never handed back, and
+      // neither is a row made from other data under the same key.
+      if (
+        lower(row.outletId) !== lower(input.outletId) ||
+        lower(row.employeeId) !== lower(input.employeeId) ||
+        row.businessDate !== input.businessDate ||
+        lower(row.shiftTemplateId ?? "") !== lower(input.shiftTemplateId)
+      )
+        throw keyReused();
+      return toShiftAssignment(row);
+    };
+    const early = await storedByKey();
+    if (early) return early;
+
     const zone = await loadOutletZone(tx, tenantId, input.outletId);
     await lockKey(tx, `hris:shift:${tenantId}:${input.employeeId}`);
-
-    const [replayed] = await tx
-      .select()
-      .from(shiftAssignments)
-      .where(
-        and(
-          eq(shiftAssignments.tenantId, tenantId),
-          eq(shiftAssignments.outletId, input.outletId),
-          eq(shiftAssignments.employeeId, input.employeeId),
-          eq(shiftAssignments.businessDate, input.businessDate),
-          eq(shiftAssignments.shiftTemplateId, input.shiftTemplateId),
-          ne(shiftAssignments.status, "cancelled"),
-        ),
-      )
-      .limit(1);
-    if (replayed) return toShiftAssignment(replayed);
+    const locked = await storedByKey();
+    if (locked) return locked;
 
     await assertSchedulable(tx, tenantId, input.employeeId, input.outletId);
     const snapshot = await materialise(
@@ -622,24 +590,43 @@ export async function createShiftAssignment(
       zone,
       input,
     );
-    const [inserted] = await tx
-      .insert(shiftAssignments)
-      .values({
-        tenantId,
-        outletId: input.outletId,
-        employeeId: input.employeeId,
-        shiftTemplateId: snapshot.shiftTemplateId,
-        stationId: snapshot.stationId,
-        businessDate: input.businessDate,
-        segments: snapshot.segments,
-        breakMinutes: snapshot.breakMinutes,
-        status: "draft",
-        source: "user",
-        createdBy: access.actorUserId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    let inserted: ShiftRow;
+    try {
+      // A savepoint keeps the transaction usable after a unique violation.
+      [inserted] = await tx.transaction((savepoint) =>
+        savepoint
+          .insert(shiftAssignments)
+          .values({
+            tenantId,
+            outletId: input.outletId,
+            employeeId: input.employeeId,
+            shiftTemplateId: snapshot.shiftTemplateId,
+            stationId: snapshot.stationId,
+            businessDate: input.businessDate,
+            segments: snapshot.segments,
+            breakMinutes: snapshot.breakMinutes,
+            status: "draft",
+            source: "user",
+            createdBy: access.actorUserId,
+            createIdempotencyKey: input.idempotencyKey,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning(),
+      );
+    } catch (error) {
+      const constraint = uniqueViolation(error);
+      if (constraint === SHIFT_KEY_CONSTRAINT) {
+        // A concurrent create with this key won: its row is the replay.
+        const raced = await storedByKey();
+        if (raced) return raced;
+        // RLS hides the row of an outlet outside the caller's reach: the key
+        // is taken tenant-wide all the same.
+        throw keyReused();
+      }
+      if (constraint === SHIFT_ACTIVE_CONSTRAINT) throw shiftDuplicate();
+      throw error;
+    }
     await auditShift(
       tx,
       context,
@@ -707,24 +694,31 @@ export async function updateShiftAssignment(
     if (!resnapshot && snapshot.stationId)
       await assertStation(tx, tenantId, current.outletId, snapshot.stationId);
 
-    const [updated] = await tx
-      .update(shiftAssignments)
-      .set({
-        employeeId,
-        businessDate,
-        shiftTemplateId: snapshot.shiftTemplateId,
-        stationId: snapshot.stationId,
-        segments: snapshot.segments,
-        breakMinutes: snapshot.breakMinutes,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(shiftAssignments.tenantId, tenantId),
-          eq(shiftAssignments.id, current.id),
-        ),
-      )
-      .returning();
+    let updated: ShiftRow;
+    try {
+      [updated] = await tx
+        .update(shiftAssignments)
+        .set({
+          employeeId,
+          businessDate,
+          shiftTemplateId: snapshot.shiftTemplateId,
+          stationId: snapshot.stationId,
+          segments: snapshot.segments,
+          breakMinutes: snapshot.breakMinutes,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(shiftAssignments.tenantId, tenantId),
+            eq(shiftAssignments.id, current.id),
+          ),
+        )
+        .returning();
+    } catch (error) {
+      // The request fails whole, so no savepoint: the transaction rolls back.
+      if (uniqueViolation(error) !== null) throw shiftDuplicate();
+      throw error;
+    }
     await auditShift(
       tx,
       context,
@@ -739,8 +733,9 @@ export async function updateShiftAssignment(
 
 /**
  * POST /api/hris/shifts/:assignmentId/cancel — repeating it returns the
- * cancelled row. A pending swap on the shift is withdrawn with it. No
- * `shift.published` is emitted for a cancel (the event has no cancel shape).
+ * cancelled row. A pending swap on the shift is withdrawn with it. A published
+ * or swapped shift emits `shift.cancelled` for its owner (the employee was
+ * told about it); a draft was never announced, so nothing is emitted.
  */
 export async function cancelShiftAssignment(
   context: ScopedTenantContext,
@@ -813,6 +808,16 @@ export async function cancelShiftAssignment(
           HRIS_SWAP_OBJECT_TYPE,
         );
     }
+    if (current.status === "published" || current.status === "swapped")
+      await appendShiftCancelled(
+        tx,
+        context,
+        updated,
+        current.employeeId,
+        "cancelled",
+        access.actorUserId,
+        now,
+      );
     await auditShift(
       tx,
       context,
@@ -825,6 +830,38 @@ export async function cancelShiftAssignment(
   });
 }
 
+/** The roster as the first copy left it: the ledger's ids, whatever their status now. */
+async function presentCopy(
+  tx: Tx,
+  copy: typeof rosterCopies.$inferSelect,
+): Promise<RosterView> {
+  const rows = await tx
+    .select()
+    .from(shiftAssignments)
+    .where(
+      and(
+        eq(shiftAssignments.tenantId, copy.tenantId),
+        inArray(shiftAssignments.id, copy.assignmentIds),
+      ),
+    )
+    .orderBy(asc(shiftAssignments.businessDate), asc(shiftAssignments.id));
+  const assignments = rows.map(toShiftAssignment);
+  const live = assignments.filter((row) => row.status !== "cancelled");
+  return {
+    outletId: copy.outletId,
+    weekStart: copy.toWeekStart,
+    published: isRosterPublished(live),
+    assignments,
+    complianceIssues: await weekCompliance(
+      tx,
+      copy.tenantId as TenantId,
+      copy.outletId,
+      copy.toWeekStart,
+      live,
+    ),
+  } as RosterView;
+}
+
 function shiftInstant(iso: string, days: number): string {
   return new Date(Date.parse(iso) + days * DAY_MS).toISOString();
 }
@@ -833,9 +870,10 @@ function shiftInstant(iso: string, days: number): string {
  * POST /api/hris/rosters/copy — non-cancelled shifts of the source week become
  * drafts in the target week (dates shifted, segments re-derived from the
  * template in the outlet zone). Employees who are no longer active at the
- * outlet, or on approved leave that day, are skipped. A non-empty target week is a
- * 409 unless it already holds every assignment this copy would create, in which
- * case it is a replay and returns the current roster without writing.
+ * outlet, or on approved leave that day, are skipped. The key is kept in
+ * `roster_copies` with the created ids, in the same transaction as the drafts:
+ * a replay returns the roster of those ids and writes nothing. A target week
+ * that already holds live shifts (and no copy under this key) is a 409.
  */
 export async function copyRosterWeek(
   context: ScopedTenantContext,
@@ -862,6 +900,31 @@ export async function copyRosterWeek(
       tx,
       `hris:roster:${tenantId}:${input.outletId}:${input.toWeekStart}`,
     );
+    // The key is tenant-wide, so a replay on another week must serialise too.
+    await lockKey(
+      tx,
+      `hris:roster-copy-key:${tenantId}:${input.idempotencyKey}`,
+    );
+
+    const [replayed] = await tx
+      .select()
+      .from(rosterCopies)
+      .where(
+        and(
+          eq(rosterCopies.tenantId, tenantId),
+          eq(rosterCopies.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (replayed) {
+      if (
+        lower(replayed.outletId) !== lower(input.outletId) ||
+        replayed.fromWeekStart !== input.fromWeekStart ||
+        replayed.toWeekStart !== input.toWeekStart
+      )
+        throw keyReused();
+      return presentCopy(tx, replayed);
+    }
 
     const existing = await loadWeek(
       tx,
@@ -874,16 +937,15 @@ export async function copyRosterWeek(
         "ROSTER_NOT_EMPTY",
         "Minggu tujuan sudah berisi jadwal; kosongkan atau batalkan dulu.",
       );
+    if (existing.length > 0) throw notEmpty();
     const source = await loadWeek(
       tx,
       tenantId,
       input.outletId,
       input.fromWeekStart,
     );
-    if (source.length === 0) {
-      if (existing.length > 0) throw notEmpty();
+    if (source.length === 0)
       throw validation("Minggu asal tidak punya jadwal untuk disalin.");
-    }
 
     const employeeIds = [...new Set(source.map((row) => row.employeeId))];
     const eligible = await tx
@@ -971,42 +1033,37 @@ export async function copyRosterWeek(
         updatedAt: now,
       });
     }
-    if (existing.length > 0) {
-      // Replay: every assignment this copy would create is already there, so
-      // return the current roster without writing rows or events.
-      const key = (
-        employeeId: string,
-        shiftTemplateId: string | null,
-        businessDate: string,
-      ) => `${lower(employeeId)}|${shiftTemplateId ?? ""}|${businessDate}`;
-      const present = new Set(
-        existing.map((row) =>
-          key(row.employeeId, row.shiftTemplateId, row.businessDate),
-        ),
-      );
-      const replay =
-        values.length > 0 &&
-        values.every((value) =>
-          present.has(
-            key(
-              value.employeeId,
-              value.shiftTemplateId ?? null,
-              value.businessDate,
-            ),
-          ),
-        );
-      if (!replay) throw notEmpty();
-      return buildRoster(tx, tenantId, input.outletId, input.toWeekStart);
-    }
     if (values.length === 0)
       throw validation(
         "Tidak ada jadwal yang bisa disalin: karyawan tidak aktif atau sedang cuti.",
       );
 
-    const inserted = await tx
-      .insert(shiftAssignments)
-      .values(values)
-      .returning();
+    let inserted: ShiftRow[];
+    try {
+      inserted = await tx.insert(shiftAssignments).values(values).returning();
+    } catch (error) {
+      // A create racing this copy took one of the slots: the week is not empty.
+      if (uniqueViolation(error) === SHIFT_ACTIVE_CONSTRAINT) throw notEmpty();
+      throw error;
+    }
+    try {
+      await tx.transaction((savepoint) =>
+        savepoint.insert(rosterCopies).values({
+          tenantId,
+          outletId: input.outletId,
+          fromWeekStart: input.fromWeekStart,
+          toWeekStart: input.toWeekStart,
+          idempotencyKey: input.idempotencyKey,
+          assignmentIds: inserted.map((row) => row.id),
+          createdBy: access.actorUserId,
+          createdAt: now,
+        }),
+      );
+    } catch (error) {
+      // RLS hid the ledger row of an outlet outside the caller's reach.
+      if (uniqueViolation(error) === COPY_KEY_CONSTRAINT) throw keyReused();
+      throw error;
+    }
     await recordAudit(
       tx,
       context,
@@ -1025,27 +1082,14 @@ export async function copyRosterWeek(
 
 // ---------------------------------------------------------------- publish
 
-async function presentPublication(
-  tx: Tx,
+/** The publication as first answered: the stored snapshot, not today's rows. */
+function presentPublication(
   publication: typeof rosterPublications.$inferSelect,
-): Promise<RosterPublication> {
-  // The batch is the rows stamped with this publication's instant; later
-  // cancellations stay visible (status) instead of silently shrinking it.
-  const rows = await tx
-    .select()
-    .from(shiftAssignments)
-    .where(
-      and(
-        eq(shiftAssignments.tenantId, publication.tenantId),
-        eq(shiftAssignments.outletId, publication.outletId),
-        eq(shiftAssignments.publishedAt, publication.publishedAt),
-      ),
-    )
-    .orderBy(asc(shiftAssignments.businessDate), asc(shiftAssignments.id));
+): RosterPublication {
   return {
     outletId: publication.outletId,
     weekStart: publication.weekStart,
-    assignments: rows.map(toShiftAssignment),
+    assignments: publication.snapshot,
     complianceIssues: publication.complianceIssues,
     publishedBy: userIdSchema.parse(publication.publishedBy),
     publishedAt: publication.publishedAt.toISOString(),
@@ -1055,8 +1099,10 @@ async function presentPublication(
 /**
  * POST /api/hris/rosters/publish — every draft of the outlet-week becomes
  * published, with compliance warnings frozen on the publication and one
- * `shift.published` event per assignment, all in one transaction. The same
- * idempotency key returns the first result and emits nothing again.
+ * `shift.published` event per assignment, all in one transaction. The
+ * publication keeps the ids and a snapshot of what was published; the same
+ * idempotency key returns that snapshot and emits nothing again, even after a
+ * later cancel.
  */
 export async function publishRoster(
   context: ScopedTenantContext,
@@ -1092,11 +1138,8 @@ export async function publishRoster(
         lower(replayed.outletId) !== lower(input.outletId) ||
         replayed.weekStart !== input.weekStart
       )
-        throw new CoreError(
-          "IDEMPOTENCY_KEY_REUSED",
-          "Idempotency key already used for a different request.",
-        );
-      return presentPublication(tx, replayed);
+        throw keyReused();
+      return presentPublication(replayed);
     }
 
     const drafts = await tx
@@ -1151,22 +1194,41 @@ export async function publishRoster(
       input.weekStart,
       week,
     );
-    const [publication] = await tx
-      .insert(rosterPublications)
-      .values({
-        tenantId,
-        outletId: input.outletId,
-        weekStart: input.weekStart,
-        idempotencyKey: input.idempotencyKey,
-        complianceIssues,
-        assignmentCount: published.length,
-        publishedBy: access.actorUserId,
-        publishedAt: now,
-      })
-      .returning();
+    let publication: typeof rosterPublications.$inferSelect;
+    try {
+      [publication] = await tx.transaction((savepoint) =>
+        savepoint
+          .insert(rosterPublications)
+          .values({
+            tenantId,
+            outletId: input.outletId,
+            weekStart: input.weekStart,
+            idempotencyKey: input.idempotencyKey,
+            complianceIssues,
+            assignmentCount: published.length,
+            assignmentIds: published.map((row) => row.id),
+            snapshot: published.map(toShiftAssignment),
+            publishedBy: access.actorUserId,
+            publishedAt: now,
+          })
+          .returning(),
+      );
+    } catch (error) {
+      // RLS hid the publication of an outlet outside the caller's reach.
+      if (uniqueViolation(error) === PUBLICATION_KEY_CONSTRAINT)
+        throw keyReused();
+      throw error;
+    }
 
     for (const row of published)
-      await appendShiftPublished(tx, context, row, now);
+      await appendShiftPublished(
+        tx,
+        context,
+        row,
+        access.actorUserId,
+        now,
+        now,
+      );
     await recordAudit(
       tx,
       context,
@@ -1179,6 +1241,6 @@ export async function publishRoster(
       }),
       HRIS_AUDIT_SAFE_FIELDS,
     );
-    return presentPublication(tx, publication);
+    return presentPublication(publication);
   });
 }

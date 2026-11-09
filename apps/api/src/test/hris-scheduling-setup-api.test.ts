@@ -220,6 +220,24 @@ async function listAll(client: Client, path: string) {
   return seen;
 }
 
+async function auditCount(): Promise<number> {
+  const { rows } = await owner.query(
+    "SELECT count(*)::int AS n FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'hris.shift_policy.updated'",
+    [tenant.id],
+  );
+  return rows[0].n;
+}
+
+async function policyAuditRows(): Promise<
+  { outlet_id: string | null; event: Record<string, unknown> }[]
+> {
+  const { rows } = await owner.query(
+    "SELECT outlet_id, event FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'hris.shift_policy.updated' ORDER BY created_at, id",
+    [tenant.id],
+  );
+  return rows;
+}
+
 async function clearPolicies(tenantId: string) {
   await ownerTx(tenantId, (db) =>
     db.query("DELETE FROM shift_compliance_policies WHERE tenant_id = $1", [
@@ -840,31 +858,25 @@ describe("shift compliance policy", () => {
     expect(view.body.data.source).toBe("default");
   });
 
-  it("[TEN-03] an outlet-scoped manager sets its own outlet policy, gets 404 for another outlet and cannot set the tenant default", async () => {
+  it("[TEN-03] an outlet-scoped manager reads its own outlet policy but cannot change any policy (403)", async () => {
     await clearPolicies(tenant.id);
-    const own = await put(
-      managerOutletA,
-      "/api/hris/shift-compliance-policy",
-      policyBody({ outletId: outlet.id, maxShiftMinutes: 500 }),
-    );
-    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    const before = await auditCount();
+    for (const outletId of [outlet.id, secondOutlet.id, null]) {
+      const denied = await put(
+        managerOutletA,
+        "/api/hris/shift-compliance-policy",
+        policyBody({ outletId, maxShiftMinutes: 500 }),
+      );
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    }
+    expect(await auditCount()).toBe(before);
+
+    // Reading the effective policy stays allowed within the outlet reach.
     const view = await managerOutletA.get(
       `/api/hris/shift-compliance-policy?outletId=${outlet.id}`,
     );
-    expect(view.body.data).toMatchObject({
-      source: "outlet",
-      maxShiftMinutes: 500,
-    });
-
-    expect(
-      (
-        await put(
-          managerOutletA,
-          "/api/hris/shift-compliance-policy",
-          policyBody({ outletId: secondOutlet.id }),
-        )
-      ).status,
-    ).toBe(404);
+    expect(view.status, JSON.stringify(view.body)).toBe(200);
+    expect(view.body.data.source).toBe("default");
     expect(
       (
         await managerOutletA.get(
@@ -872,20 +884,50 @@ describe("shift compliance policy", () => {
         )
       ).status,
     ).toBe(404);
-    expect([403, 404]).toContain(
-      (
-        await put(
-          managerOutletA,
-          "/api/hris/shift-compliance-policy",
-          policyBody({ outletId: null, maxShiftMinutes: 400 }),
-        )
-      ).status,
-    );
-    // Nothing leaked into the other outlet or the tenant default.
+    // Nothing was written.
     const other = await managerAll.get(
-      `/api/hris/shift-compliance-policy?outletId=${secondOutlet.id}`,
+      `/api/hris/shift-compliance-policy?outletId=${outlet.id}`,
     );
     expect(other.body.data.source).toBe("default");
+  });
+
+  it("[HR-05 Audit] a tenant-wide holder changing the policy is audited with outlet id and limits only", async () => {
+    await clearPolicies(tenant.id);
+    const before = await auditCount();
+    const tenantRow = await put(
+      managerAll,
+      "/api/hris/shift-compliance-policy",
+      policyBody({ maxShiftMinutes: 540, maxDailyMinutes: 600 }),
+    );
+    expect(tenantRow.status, JSON.stringify(tenantRow.body)).toBe(200);
+    const outletRow = await put(
+      managerAll,
+      "/api/hris/shift-compliance-policy",
+      policyBody({ outletId: outlet.id, maxShiftMinutes: 500 }),
+    );
+    expect(outletRow.status, JSON.stringify(outletRow.body)).toBe(200);
+
+    const rows = (await policyAuditRows()).slice(before);
+    expect(rows).toHaveLength(2);
+    const tenantAudit = rows.find((row) => row.outlet_id === null);
+    const outletAudit = rows.find((row) => row.outlet_id === outlet.id);
+    expect(tenantAudit?.event).toMatchObject({
+      action: "hris.shift_policy.updated",
+      objectType: "shift_compliance_policy",
+      actorId: managerAllUserId,
+      maskedChanges: {
+        before: null,
+        after: { maxShiftMinutes: 540, maxDailyMinutes: 600 },
+      },
+    });
+    expect(outletAudit?.event).toMatchObject({
+      action: "hris.shift_policy.updated",
+      actorId: managerAllUserId,
+      maskedChanges: { before: null, after: { maxShiftMinutes: 500 } },
+    });
+    expect(JSON.stringify(rows.map((row) => row.event))).not.toMatch(
+      /name|email|phone/i,
+    );
   });
 });
 
@@ -954,13 +996,15 @@ describe("scheduling setup tenant isolation", () => {
       );
       await db.query(
         `INSERT INTO roster_publications
-           (id, tenant_id, outlet_id, week_start, idempotency_key, assignment_count, published_by)
-         VALUES ($1, $2, $3, '2033-03-07', $4, 1, $5)`,
+           (id, tenant_id, outlet_id, week_start, idempotency_key, assignment_count,
+            assignment_ids, snapshot, published_by)
+         VALUES ($1, $2, $3, '2033-03-07', $4, 1, ARRAY[$5]::uuid[], '[]'::jsonb, $6)`,
         [
           seed.publicationId,
           tenantId,
           outletId,
           `sched-iso-${randomUUID()}`,
+          seed.assignmentId,
           actorUserId,
         ],
       );

@@ -16,6 +16,10 @@ SELECT app.enforce_tenant_rls('public.roster_publications'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.roster_publications'::regclass);
 --> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.roster_copies'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.roster_copies'::regclass);
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.shift_swap_requests'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.shift_swap_requests'::regclass);

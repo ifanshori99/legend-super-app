@@ -17,7 +17,12 @@
 //    outlet, an inactive template or a template of another outlet is refused
 //    with 404, 409 or 422 (the spec does not name the code).
 //  - Replays of a create, cancel, copy or publish with the same idempotency
-//    key answer the first result with a 2xx status and change nothing.
+//    key answer the first result with a 2xx status and change nothing. The
+//    same data under a NEW key is a 409 (SHIFT_DUPLICATE for a create or an
+//    edit, ROSTER_NOT_EMPTY for a copy): replay is by key, never by data.
+//  - A replayed publish returns the snapshot taken at publication, even after
+//    a shift in it was cancelled. Cancelling a published shift appends
+//    `shift.cancelled` (cloud-sync and notification); a draft emits nothing.
 //  - Cancelling an already cancelled shift with a new key is a 409 conflict
 //    (transitionShiftAssignment); updating a published shift is a 409.
 //  - Creating a shift inside an already published week gives a draft, and a
@@ -103,6 +108,31 @@ async function signedInClient(name: string, options: { mfa?: boolean } = {}) {
   createdUsers.push(userId);
   if (options.mfa) await verifySessionMfa(email);
   return { client, userId };
+}
+
+/** Tenant-wide role: only this scope may change the compliance policy. */
+async function grantTenantRole(userId: string, permissions: string[]) {
+  const roleId = randomUUID();
+  createdRoles.push(roleId);
+  await asTenant(async (client) => {
+    await client.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenant.id,
+        `Roster API ${roleId.slice(0, 8)}`,
+        JSON.stringify(permissions),
+        JSON.stringify(["tenant"]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+      [tenant.id, userId, roleId],
+    );
+  });
 }
 
 async function grantOutletRole(
@@ -253,6 +283,7 @@ let policyOutlet: string;
 let mgr: Client;
 let mgrUserId: string;
 let mgrWita: Client;
+let policyAdmin: Client;
 let staffA: Client;
 let staffAUserId: string;
 let staffB: Client;
@@ -341,7 +372,11 @@ async function roster(outletId: string, weekStart: string, client = mgr) {
 const activeOf = (rows: Assignment[]) =>
   rows.filter((row) => row.status !== "cancelled");
 
-async function shiftEvents(assignmentId: string, destination = "cloud-sync") {
+async function shiftEvents(
+  assignmentId: string,
+  destination = "cloud-sync",
+  name = "shift.published",
+) {
   return asTenant(async (client) => {
     const { rows } = await client.query<{
       destination: string;
@@ -350,11 +385,11 @@ async function shiftEvents(assignmentId: string, destination = "cloud-sync") {
     }>(
       `SELECT destination, sequence::int AS sequence, event
          FROM domain_event_outbox
-        WHERE tenant_id = $1 AND event->>'name' = 'shift.published'
+        WHERE tenant_id = $1 AND event->>'name' = $4
           AND event->'payload'->>'shiftAssignmentId' = $2
           AND destination = $3
         ORDER BY sequence`,
-      [tenant.id, assignmentId, destination],
+      [tenant.id, assignmentId, destination, name],
     );
     return rows;
   });
@@ -378,6 +413,12 @@ beforeAll(async () => {
   const managerWita = await signedInClient("Manajer WITA API", { mfa: true });
   await grantOutletRole(managerWita.userId, ["hr.schedule.manage"], [wita]);
   mgrWita = managerWita.client;
+
+  const admin = await signedInClient("Admin Kebijakan Jadwal API", {
+    mfa: true,
+  });
+  await grantTenantRole(admin.userId, ["hr.schedule.manage"]);
+  policyAdmin = admin.client;
 
   const a = await signedInClient("Staf A Jadwal API");
   await grantOutletRole(
@@ -486,6 +527,7 @@ afterAll(async () => {
     for (const table of [
       "shift_swap_requests",
       "roster_publications",
+      "roster_copies",
       "shift_assignments",
       "shift_templates",
       "shift_compliance_policies",
@@ -873,6 +915,77 @@ describe("§28 Roster Mingguan: draft shifts", () => {
     expect(view.published).toBe(false);
   });
 
+  it("[§28 Roster Mingguan] the same key with other data is a conflict (409 IDEMPOTENCY_KEY_REUSED), never the first draft", async () => {
+    const reusedKey = key();
+    const first = await post(
+      mgr,
+      "/api/hris/shifts",
+      shiftBody(jkt, empA, day(0, 5), tplPagi, reusedKey),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    for (const other of [
+      shiftBody(jkt, empB, day(0, 5), tplPagi, reusedKey),
+      shiftBody(jkt, empA, day(0, 6), tplPagi, reusedKey),
+      shiftBody(jkt, empA, day(0, 5), tplSiang, reusedKey),
+    ]) {
+      const replay = await post(mgr, "/api/hris/shifts", other);
+      expect(replay.status, JSON.stringify(replay.body)).toBe(409);
+      expect(replay.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    }
+    const view = await roster(jkt, week(0));
+    expect(
+      view.assignments.filter(
+        (row) => row.employeeId === empA && row.businessDate === day(0, 5),
+      ),
+    ).toEqual([expect.objectContaining({ id: first.body.data.id })]);
+  });
+
+  it("[§28 Roster Mingguan] the same employee, day and template under a new key is a conflict (409 SHIFT_DUPLICATE), not a replay", async () => {
+    const first = await makeShift(jkt, empC, day(0, 3), tplPagi);
+    const again = await post(
+      mgr,
+      "/api/hris/shifts",
+      shiftBody(jkt, empC, day(0, 3), tplPagi),
+    );
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    expect(again.body.error.code).toBe("SHIFT_DUPLICATE");
+    const view = await roster(jkt, week(0));
+    expect(
+      activeOf(view.assignments).filter(
+        (row) => row.employeeId === empC && row.businessDate === day(0, 3),
+      ),
+    ).toEqual([expect.objectContaining({ id: first.id })]);
+    // Once the first one is cancelled the slot is free again.
+    expect(
+      (
+        await post(mgr, `/api/hris/shifts/${first.id}/cancel`, {
+          idempotencyKey: key(),
+        })
+      ).status,
+    ).toBe(200);
+    const reused = await post(
+      mgr,
+      "/api/hris/shifts",
+      shiftBody(jkt, empC, day(0, 3), tplPagi),
+    );
+    expect(reused.status, JSON.stringify(reused.body)).toBe(201);
+    expect(reused.body.data.id).not.toBe(first.id);
+  });
+
+  it("[§28 Roster Mingguan] editing a draft onto a taken employee, day and template is a conflict (409 SHIFT_DUPLICATE)", async () => {
+    await makeShift(jkt, empB, day(0, 4), tplPagi);
+    const other = await makeShift(jkt, empB, day(0, 5), tplPagi);
+    const moved = await patch(mgr, `/api/hris/shifts/${other.id}`, {
+      businessDate: day(0, 4),
+    });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(409);
+    expect(moved.body.error.code).toBe("SHIFT_DUPLICATE");
+    const view = await roster(jkt, week(0));
+    expect(view.assignments.find((row) => row.id === other.id)).toMatchObject({
+      businessDate: day(0, 5),
+    });
+  });
+
   it("[§28 Roster Mingguan] a night shift crosses midnight and belongs to the day it starts; the same template in WITA gives other instants", async () => {
     const date = day(1, 0);
     const jakarta = await makeShift(jkt, empA, date, tplMalam);
@@ -1035,6 +1148,12 @@ describe("§28 Roster Mingguan: draft shifts", () => {
         (row) => row.id === draft.id && row.status !== "cancelled",
       ),
     ).toEqual([]);
+    // A draft was never announced: no shift.cancelled to anyone.
+    for (const destination of ["cloud-sync", "notification"])
+      expect(
+        await shiftEvents(draft.id, destination, "shift.cancelled"),
+        destination,
+      ).toEqual([]);
   });
 
   it("[§28 Roster Mingguan] an unknown shift answers 404", async () => {
@@ -1174,16 +1293,55 @@ describe("§28 Roster Mingguan: copy previous week", () => {
     expect(activeOf(view.assignments)).toHaveLength(3);
   });
 
-  it("[§28 Roster Mingguan] copying onto a week that already has different shifts is refused (409) and changes nothing", async () => {
-    await makeShift(jkt, empB, day(7, 1), tplPagi);
+  it("[§28 Roster Mingguan] a new key onto the week the first copy filled is refused (409 ROSTER_NOT_EMPTY) and adds nothing", async () => {
     const refused = await post(mgr, "/api/hris/rosters/copy", {
       outletId: jkt,
       fromWeekStart: week(4),
-      toWeekStart: week(7),
+      toWeekStart: week(5),
+      idempotencyKey: key(),
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("ROSTER_NOT_EMPTY");
+    expect(activeOf((await roster(jkt, week(5))).assignments)).toHaveLength(3);
+  });
+
+  it("[§28 Roster Mingguan] the copy key is kept with the drafts it made: a replay after one draft was cancelled still answers the first result", async () => {
+    const [first] = copied;
+    expect(
+      (
+        await post(mgr, `/api/hris/shifts/${first!.id}/cancel`, {
+          idempotencyKey: key(),
+        })
+      ).status,
+    ).toBe(200);
+    const replay = await post(mgr, "/api/hris/rosters/copy", {
+      outletId: jkt,
+      fromWeekStart: week(4),
+      toWeekStart: week(5),
+      idempotencyKey: copyKey,
+    });
+    expect(replay.status, JSON.stringify(replay.body)).toBeLessThan(300);
+    expect(ids(replay.body.data.assignments).sort()).toEqual(
+      ids(copied).sort(),
+    );
+    expect(
+      replay.body.data.assignments.find(
+        (row: Assignment) => row.id === first!.id,
+      ).status,
+    ).toBe("cancelled");
+    expect(activeOf((await roster(jkt, week(5))).assignments)).toHaveLength(2);
+  });
+
+  it("[§28 Roster Mingguan] copying onto a week that already has different shifts is refused (409) and changes nothing", async () => {
+    await makeShift(jkt, empB, day(16, 1), tplPagi);
+    const refused = await post(mgr, "/api/hris/rosters/copy", {
+      outletId: jkt,
+      fromWeekStart: week(4),
+      toWeekStart: week(16),
       idempotencyKey: key(),
     });
     expect(refused.status).toBe(409);
-    const view = await roster(jkt, week(7));
+    const view = await roster(jkt, week(16));
     expect(activeOf(view.assignments)).toHaveLength(1);
   });
 
@@ -1300,14 +1458,18 @@ describe("§28 Kepatuhan", () => {
     await makeShift(policyOutlet, empPolicy, date, tplPolicyPagi);
     expect((await roster(policyOutlet, week(9))).complianceIssues).toEqual([]);
 
-    const updated = await put(mgr, "/api/hris/shift-compliance-policy", {
-      outletId: policyOutlet,
-      maxShiftMinutes: 360,
-      maxDailyMinutes: 720,
-      maxWeeklyMinutes: 2700,
-      minRestMinutesBetweenShifts: 660,
-      maxConsecutiveWorkDays: 6,
-    });
+    const updated = await put(
+      policyAdmin,
+      "/api/hris/shift-compliance-policy",
+      {
+        outletId: policyOutlet,
+        maxShiftMinutes: 360,
+        maxDailyMinutes: 720,
+        maxWeeklyMinutes: 2700,
+        minRestMinutesBetweenShifts: 660,
+        maxConsecutiveWorkDays: 6,
+      },
+    );
     expect(updated.status, JSON.stringify(updated.body)).toBeLessThan(300);
     expect(updated.body.data).toMatchObject({
       outletId: policyOutlet,
@@ -1338,7 +1500,7 @@ describe("§28 Kepatuhan", () => {
     });
   });
 
-  it("[§28 Kepatuhan] an inconsistent policy is refused (422); a manager outside the outlet gets 404", async () => {
+  it("[§28 Kepatuhan] an inconsistent policy is refused (422); an outlet manager cannot change the policy at all (403)", async () => {
     const valid = {
       outletId: policyOutlet,
       maxShiftMinutes: 600,
@@ -1356,21 +1518,15 @@ describe("§28 Kepatuhan", () => {
       { ...valid, tenantId: tenant.id },
     ])
       expect(
-        (await put(mgr, "/api/hris/shift-compliance-policy", bad)).status,
+        (await put(policyAdmin, "/api/hris/shift-compliance-policy", bad))
+          .status,
         JSON.stringify(bad),
       ).toBe(422);
-    expect(
-      (await put(mgrWita, "/api/hris/shift-compliance-policy", valid)).status,
-    ).toBe(404);
-    // A manager scoped to outlets only cannot change the tenant-wide policy.
-    expect([403, 404]).toContain(
-      (
-        await put(mgr, "/api/hris/shift-compliance-policy", {
-          ...valid,
-          outletId: null,
-        })
-      ).status,
-    );
+    // Outlet-scoped managers read the policy but never change it.
+    for (const client of [mgr, mgrWita])
+      expect(
+        (await put(client, "/api/hris/shift-compliance-policy", valid)).status,
+      ).toBe(403);
   });
 });
 
@@ -1707,6 +1863,128 @@ describe("§28 Roster Mingguan: publication, events and notifications", () => {
   });
 });
 
+// ---- cancelling a published shift ----------------------------------------------
+
+describe("§28 Notifikasi Jadwal: cancelling a published shift", () => {
+  it("[§28 Notifikasi Jadwal] cancelling a published shift emits shift.cancelled to cloud-sync and notification, the owner is notified, and a replayed publish still shows the first snapshot", async () => {
+    const draft = await makeShift(jkt, empB, day(15, 0), tplPagi);
+    const shift = await makeShift(jkt, empB, day(15, 1), tplPagi);
+    const publishKey = key();
+    const published = await post(mgr, "/api/hris/rosters/publish", {
+      outletId: jkt,
+      weekStart: week(15),
+      idempotencyKey: publishKey,
+    });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    const firstSnapshot = published.body.data as {
+      publishedAt: string;
+      assignments: Assignment[];
+    };
+    expect(ids(firstSnapshot.assignments).sort()).toEqual(
+      [draft.id, shift.id].sort(),
+    );
+    for (const destination of ["cloud-sync", "notification"])
+      expect(
+        await shiftEvents(shift.id, destination, "shift.cancelled"),
+      ).toEqual([]);
+
+    const cancelled = await post(mgr, `/api/hris/shifts/${shift.id}/cancel`, {
+      idempotencyKey: key(),
+    });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(cancelled.body.data.status).toBe("cancelled");
+
+    for (const destination of ["cloud-sync", "notification"]) {
+      const rows = await shiftEvents(shift.id, destination, "shift.cancelled");
+      expect(rows, destination).toHaveLength(1);
+      // The same aggregate: published was sequence 1, cancelled is 2.
+      expect(rows[0]).toMatchObject({ destination, sequence: 2 });
+      expect(eventEnvelopeSchema.parse(rows[0]!.event).name).toBe(
+        "shift.cancelled",
+      );
+      expect(rows[0]!.event.payload).toMatchObject({
+        shiftAssignmentId: shift.id,
+        employeeId: empB,
+        outletId: jkt,
+        businessDate: day(15, 1),
+        cause: "cancelled",
+        cancelledBy: mgrUserId,
+      });
+      const serialized = JSON.stringify(rows[0]!.event);
+      expect(serialized).not.toContain("Karyawan Jadwal API");
+      expect(serialized).not.toMatch(/nik|salary|gaji|fullName/i);
+    }
+
+    // A replayed cancel adds no second event.
+    const again = await post(mgr, `/api/hris/shifts/${shift.id}/cancel`, {
+      idempotencyKey: key(),
+    });
+    expect(again.status).toBe(200);
+    expect(
+      await shiftEvents(shift.id, "cloud-sync", "shift.cancelled"),
+    ).toHaveLength(1);
+
+    // The notification consumer tells the former owner.
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenant.id,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const deliver = createNotificationConsumer(
+      context,
+      createNotificationRecipientResolver({ email: false, push: true }),
+    );
+    const countFor = async (userId: string) =>
+      asTenant(async (client) => {
+        const { rows } = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM notifications
+            WHERE tenant_id = $1 AND user_id::text = $2
+              AND title = 'Shift dibatalkan'`,
+          [tenant.id, userId],
+        );
+        return rows[0]!.n;
+      });
+    const before = await countFor(staffBUserId);
+    const [notice] = await shiftEvents(
+      shift.id,
+      "notification",
+      "shift.cancelled",
+    );
+    await withTenant(db, context, (tx) =>
+      deliver(
+        notice!.event as never,
+        String(notice!.event.idempotencyKey),
+        tx as never,
+      ),
+    );
+    expect(await countFor(staffBUserId)).toBe(before + 1);
+    expect(await countFor(staffAUserId)).toBe(0);
+
+    // Replaying the publish returns the snapshot as first answered: the shift
+    // is still `published` there although it is cancelled now, and nothing is
+    // emitted again.
+    const replay = await post(mgr, "/api/hris/rosters/publish", {
+      outletId: jkt,
+      weekStart: week(15),
+      idempotencyKey: publishKey,
+    });
+    expect(replay.status, JSON.stringify(replay.body)).toBeLessThan(300);
+    expect(replay.body.data).toEqual(firstSnapshot);
+    expect(
+      replay.body.data.assignments.find(
+        (row: Assignment) => row.id === shift.id,
+      ).status,
+    ).toBe("published");
+    expect(await shiftEvents(shift.id)).toHaveLength(1);
+    expect(
+      await shiftEvents(shift.id, "cloud-sync", "shift.cancelled"),
+    ).toHaveLength(1);
+  });
+});
+
 // ---- outlet scope and tenant isolation ---------------------------------------
 
 describe("outlet scope and tenant isolation", () => {
@@ -1755,6 +2033,70 @@ describe("outlet scope and tenant isolation", () => {
       employeeId: empA,
       status: "draft",
     });
+  });
+
+  it("[TEN-03] an outlet-only manager reusing a key of another outlet gets 409 IDEMPOTENCY_KEY_REUSED, not a 500, on create, copy and publish", async () => {
+    // The key is tenant-wide, but RLS hides the other outlet's row from the
+    // manager of WITA: the insert, not the lookup, meets the first use.
+    const createKey = key();
+    expect(
+      (
+        await post(
+          mgr,
+          "/api/hris/shifts",
+          shiftBody(jkt, empA, day(21, 0), tplPagi, createKey),
+        )
+      ).status,
+    ).toBe(201);
+    const created = await post(
+      mgrWita,
+      "/api/hris/shifts",
+      shiftBody(wita, empWita, day(21, 0), tplWitaMalam, createKey),
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(409);
+    expect(created.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(activeOf((await roster(wita, week(21))).assignments)).toEqual([]);
+
+    await makeShift(jkt, empA, day(22, 0), tplPagi);
+    await makeShift(wita, empWita, day(22, 0), tplWitaMalam);
+    const copyKey = key();
+    const copyBody = (outletId: string) => ({
+      outletId,
+      fromWeekStart: week(22),
+      toWeekStart: week(23),
+      idempotencyKey: copyKey,
+    });
+    expect(
+      (await post(mgr, "/api/hris/rosters/copy", copyBody(jkt))).status,
+    ).toBe(200);
+    const copied = await post(
+      mgrWita,
+      "/api/hris/rosters/copy",
+      copyBody(wita),
+    );
+    expect(copied.status, JSON.stringify(copied.body)).toBe(409);
+    expect(copied.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect((await roster(wita, week(23))).assignments).toEqual([]);
+
+    await makeShift(jkt, empA, day(24, 0), tplPagi);
+    await makeShift(wita, empWita, day(24, 0), tplWitaMalam);
+    const publishKey = key();
+    const publishBody = (outletId: string) => ({
+      outletId,
+      weekStart: week(24),
+      idempotencyKey: publishKey,
+    });
+    expect(
+      (await post(mgr, "/api/hris/rosters/publish", publishBody(jkt))).status,
+    ).toBe(200);
+    const published = await post(
+      mgrWita,
+      "/api/hris/rosters/publish",
+      publishBody(wita),
+    );
+    expect(published.status, JSON.stringify(published.body)).toBe(409);
+    expect(published.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect((await roster(wita, week(24))).published).toBe(false);
   });
 
   it("[TEN-01] another tenant's outlet, employee and shifts are not reachable and RLS hides this tenant's rows from it", async () => {
