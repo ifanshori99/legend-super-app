@@ -1333,3 +1333,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## legend-rfiof DOIT poller: kunci kerja antar worker (engineer, cabang `ws/doit-pending-poller` dari d2080951, 2026-11-10)
+
+- Arah (keputusan CTO): poller yang ada (`pollPendingGatewayIntents`, legend-b9i) ditambah, bukan poller baru. Resolver id DOIT dan pemanggil `createDoitPaymentReader` tidak dibangun: id DOIT selalu tersimpan di `provider_ref`, pembayaran yatim tidak bisa dicari lewat reference (DOIT hanya `GET /v1/payments/{id}`), dan reader tanpa jumlah uang tidak cukup untuk melunasi.
+- Sudah: kolom `payment_intents.gateway_poll_lease_until` (migrasi 0190, when 1794269000000), klaim atomik `FOR UPDATE SKIP LOCKED`, lease 2 menit dari jam dinding, dilepas di `finally` hanya bila masih milik run itu. Tes baru `payment-poll-lease.test.ts` (10) dan `payment-terminal-paid.test.ts` (15).
+- Status akhir: poller hanya memilih `pending` dan `expired`. `failed`/`refunded`/`partially_refunded` tidak pernah ditanyakan. Webhook `paid` untuk `refunded` dengan id DOIT sama = `duplicate` (tidak ada catatan baru), id berbeda ditolak `REFERENCE_MISMATCH`. Webhook `paid` untuk `failed` hari ini menyelesaikan sebagai late payment (tes PAY-03, keputusan founder menunggu); `syncExpiredIntentPayment` tidak disentuh.
+- Review architect: dua temuan diperbaiki (lepas lease tanpa cek pemilik; lease dari `now` pemanggil). Risiko urutan merge migrasi 0190 vs 0187-0189 dicatat di laporan.
+- Langkah berikut: second opinion Codex (`docs/briefs/283b-second-opinion-doit-poller.md`, belum dijalankan), merge train.

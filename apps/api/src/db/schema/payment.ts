@@ -205,6 +205,12 @@ export const paymentIntents = pgTable(
     /** Last time the polling fallback asked the gateway; null = never. Lets
      * the poller rotate so an erroring intent cannot starve the others. */
     gatewayPolledAt: timestamp("gateway_polled_at", { withTimezone: true }),
+    /** Poller lease: a worker that claimed this intent holds it until then, so
+     * two workers never ask the gateway about the same intent at once. Null or
+     * in the past = free. A crashed worker's lease simply lapses. */
+    gatewayPollLeaseUntil: timestamp("gateway_poll_lease_until", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
