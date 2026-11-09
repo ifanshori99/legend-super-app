@@ -10,6 +10,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: db:generate kedua kosong; tes terarah 5 file 74/74 (finance-policy, fixed-asset-register, backfill, data-import-registry, edge-received-events-migration); `pnpm test` penuh 427/430 file: sisa gagal hanya `ai-gateway.test.ts` (kuota harian, tidak terkait, gagal juga sendirian, kemungkinan batas tanggal WIB); tsc shared+api+web exit 0 (heavy); eslint + prettier bersih.
 - Review S: satu reviewer sonnet, 1 temuan nyata (backfill di bawah FORCE RLS) dibetulkan, plus tes penuh menangkap FK scan dan registry data-import, dibetulkan.
 
+## legend-3nfc9, legend-fr62g, legend-bd1fj WS-11 shared putaran 3 (engineer, cabang `ws/ws11-shared-3` dari a92b9bac, brief 284, 2026-11-10)
+
+- Sudah: F5 F8 F10 digabung `--no-ff` tanpa konflik teks (54a24341, 11e69a8d, bc5c94ad); reader mereka sudah sesuai kontrak putaran 2. Satu konflik makna: test tile dashboard yang belum dibangun kini dipilih dari registry (fc0b0448). m1 94995dad tidak digabung (migrasi 0167-0186 bentrok dengan 0181 F1); replay stok `posting_seq` dicatat saja.
+- Sudah: kait finalitas `pendingDay` + `now` (5f4680ff), kode jumlah fasilitas dan rasio turunan (ca89c135), daftar NON_GL (666d1a66), mock mengikuti registry + test drift semua keluarga (dde00960), pesanan latihan keluar dari metrik penjualan (7bc36d67, 706ac5e1).
+- Review architect (K): 1 tinggi, 3 sedang, 3 rendah. Dibetulkan: hold sebelum compute, pass susulan 90 hari, `keepFinal` (3bd8e577), reader fasilitas (9366429f). Kartu baru: legend-gkc6b (jurnal pesanan latihan), legend-4us1a (jam operasi berlaku-sejak).
+- Bukti: api 22 file 414/414, root node 230/230, db:generate kosong, typecheck shared/api/web lulus, eslint dan prettier bersih. Gagal-dulu per butir: 22 test baru, 18 merah, 4 hijau (penjaga atau butir 7 yang memang sudah tercakup).
+- Berikut: backfill riwayat (legend-ka1hg, termasuk kode jumlah fasilitas), second-opinion Codex (`docs/briefs/ws11b-second-opinion-ws11.md`).
+
 ## legend-iwsrp, legend-obwwi, legend-ip4v6, legend-nko71 WS-11 shared putaran 2 (engineer, cabang `ws/ws11-shared-2` dari 18455b7a, brief 272, 2026-11-10)
 
 - Sudah: keluarga F2 F3 F4 F1 F11 digabung `--no-ff` tanpa konflik teks; konflik makna (contoh `pax` di test engine, assert net_sales payments-tax, konstanta mock DASH-02) dibetulkan di 8531d4df. routeTree diregenerasi tanpa beda.

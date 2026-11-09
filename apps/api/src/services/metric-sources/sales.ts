@@ -43,6 +43,16 @@ export function outletIn(column: SQL, outletIds: readonly string[]): SQL {
   )})`;
 }
 
+/**
+ * Training orders (`pos_orders.is_training`, legend-fr62g) are till practice,
+ * not sales: every sales query over `orders o` excludes them. Only
+ * `pos_orders` carries the stamp, so the check is NOT EXISTS on it.
+ */
+export const NOT_TRAINING_SQL = sql`NOT EXISTS (
+    SELECT 1 FROM pos_orders tpo
+    WHERE tpo.tenant_id = o.tenant_id AND tpo.order_id = o.id
+      AND tpo.is_training)`;
+
 /** Paid orders of the tenant over the outlets and business dates. */
 export function paidOrdersWhere(
   tenantId: string,
@@ -52,6 +62,7 @@ export function paidOrdersWhere(
 ): SQL {
   return sql`o.tenant_id = ${tenantId}::uuid
     AND o.status = 'completed'
+    AND ${NOT_TRAINING_SQL}
     AND o.business_date BETWEEN ${from}::date AND ${to}::date
     AND ${outletIn(sql`o.outlet_id`, outletIds)}`;
 }
@@ -107,7 +118,8 @@ async function loadFacts(
 ): Promise<SalesDayFacts> {
   const { tx, tenantId, outletId, businessDate } = input;
   const scope = sql`o.tenant_id = ${tenantId}::uuid AND o.outlet_id = ${outletId}::uuid
-    AND o.business_date = ${businessDate}::date`;
+    AND o.business_date = ${businessDate}::date
+    AND ${NOT_TRAINING_SQL}`;
   const orders = await tx.execute(sql`
     SELECT o.id::text AS id, o.channel, o.subtotal_idr AS subtotal,
       o.discount_idr AS discount, COALESCE(r.amount, 0) AS refund,

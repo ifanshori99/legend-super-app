@@ -156,6 +156,18 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
  * operational sources (orders, settlements, stock) or balances, so the runtime
  * answers null for them rather than a figure that bypasses the ledger (I1).
  * Moving one into GL_METRIC_SOURCES removes it from this list.
+ *
+ * Not listed on purpose: a money metric a registered daily reader owns is
+ * neither a ledger source nor a ledger gap. Reasons, per code:
+ * - stock_value: stock is a point-in-time quantity x cost of the outlet
+ *   (inventory-purchasing reader); the ledger has no per-outlet stock subledger.
+ * - purchase_total: approved purchase orders of the business day, before any
+ *   goods receipt or bill, so no journal exists for it yet.
+ * - supplier_due: open payable items due on or before the day (point in
+ *   time); the ledger answers the payable balance, not the due schedule.
+ * - delivery_sales: gross - commission of delivery orders (reservation-delivery
+ *   reader); the ledger does not post delivery orders yet, so there is no GL
+ *   total to reconcile against.
  */
 export const NON_GL_MONEY_METRICS: readonly string[] = [
   "avg_spend_per_pax",
@@ -171,12 +183,8 @@ export const NON_GL_MONEY_METRICS: readonly string[] = [
   "promo_cost",
   "cash_balance",
   "bank_balance",
-  "supplier_due",
   "pending_settlement",
   "cash_variance",
-  "delivery_sales",
-  "stock_value",
-  "purchase_total",
   "gateway_settlement",
   "edc_settlement",
 ];

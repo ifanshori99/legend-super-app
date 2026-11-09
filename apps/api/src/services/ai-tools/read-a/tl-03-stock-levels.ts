@@ -8,7 +8,7 @@ import {
   resolveOutletScope,
   todayBusinessDate,
 } from "../../ai-metrics/scope.ts";
-import { queryStockLevels } from "../../ai-metrics/stock.ts";
+import { queryStockLevels } from "../../metric-sources/inventory-purchasing.ts";
 import type { AiToolHandler } from "../types.ts";
 import { makeSource, maxRowsOf } from "./shared.ts";
 

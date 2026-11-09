@@ -47,3 +47,11 @@ export const reportsByPrefix = {
     "performance.station",
   ],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "attendance_late_count",
+  "checklist_compliance_pct",
+  "failed_item_count",
+  "overtime_hours",
+]);

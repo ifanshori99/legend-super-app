@@ -174,6 +174,8 @@ async function seedOrder(
     discount?: number;
     status?: string;
     cashier?: string;
+    /** `pos_orders.is_training`: a till-practice order, never a sale. */
+    training?: boolean;
     items: { menu: string; quantity: number; unit: number }[];
     refund?: number;
     /** Method of the refund tender line; `null` stores a line without one. */
@@ -220,8 +222,9 @@ async function seedOrder(
     );
   if (order.cashier)
     await owner.query(
-      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, cashier_id) VALUES ($1, $2, $3, 'pos', $4)`,
-      [id, w.tenantId, outlet, order.cashier],
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, cashier_id, is_training)
+       VALUES ($1, $2, $3, 'pos', $4, $5)`,
+      [id, w.tenantId, outlet, order.cashier, order.training ?? false],
     );
   if (order.refund)
     await owner.query(
@@ -304,6 +307,18 @@ beforeAll(async () => {
     subtotal: 999_000,
     status: "awaiting_payment",
     items: [{ menu: world.menuA, quantity: 1, unit: 999_000 }],
+  });
+  // A training order (legend-fr62g) is paid and has a discount, a refund and a
+  // cashier, yet it must change no sales metric above.
+  await seedOrder(world, world.outlet1, {
+    number: "T1",
+    channel: "pos",
+    subtotal: 300_000,
+    discount: 20_000,
+    cashier: "trainee-1",
+    training: true,
+    refund: 3_000,
+    items: [{ menu: world.menuA, quantity: 3, unit: 100_000 }],
   });
   // Outlet 2 and another tenant hold orders that must never leak.
   await seedOrder(world, world.outlet2, {
@@ -398,6 +413,17 @@ describe("sales metric source: stored figures", () => {
     expect(valueOf(rows, "discount_amount")).toBe(10_000);
     expect(valueOf(rows, "discount_amount", "channel", "pos")).toBe(10_000);
     expect(valueOf(rows, "sales_target")).toBe(0);
+  });
+
+  it("a training order changes no sales metric", async () => {
+    const rows = await stored(world, world.outlet1);
+    expect(valueOf(rows, "gross_sales")).toBe(150_000);
+    expect(valueOf(rows, "transaction_count")).toBe(2);
+    expect(valueOf(rows, "menu_sold_qty")).toBe(4);
+    expect(valueOf(rows, "refund_amount")).toBe(5_000);
+    expect(valueOf(rows, "discount_amount")).toBe(10_000);
+    expect(valueOf(rows, "net_sales", "employee", "trainee-1")).toBeNaN();
+    expect(rows.some((r) => r.dimension_value === "trainee-1")).toBe(false);
   });
 
   it("never reads another outlet or tenant", async () => {

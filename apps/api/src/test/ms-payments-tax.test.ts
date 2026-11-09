@@ -364,6 +364,7 @@ async function computeNetSales(
       tenantId: w.tenantId,
       outletId: outlet,
       businessDate: date(day),
+      now: new Date(),
     }),
   );
   return values.map((value) => [

@@ -920,9 +920,10 @@ describe("review K: one formula source", () => {
     const mapped = new Set(Object.keys(GL_METRIC_SOURCES));
     const nonGl = new Set(NON_GL_MONEY_METRICS);
     for (const code of nonGl) expect(mapped.has(code), code).toBe(false);
-    // A rupiah metric a family card claims as a non-ledger source (stored,
-    // derived, or unavailable with its own reason, such as
-    // menu_gross_margin) is neither ledger-mapped nor a ledger gap.
+    // A rupiah metric a family card claims as a non-ledger source (a
+    // registered daily reader with its reason written next to
+    // NON_GL_MONEY_METRICS, derived, or unavailable with its own reason, such
+    // as menu_gross_margin) is neither ledger-mapped nor a ledger gap.
     const familyClaimed = new Set(
       METRIC_SOURCE_MODULES.filter((module) => module.family !== "gl").flatMap(
         (module) => module.sources.map((source) => source.code),

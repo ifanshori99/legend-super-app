@@ -37,3 +37,9 @@ export const reportsByPrefix = {
   ],
   cogs: ["cogs.per_menu", "cogs.production", "cogs.recipe", "cogs.trend"],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "menu_gross_margin",
+  "sold_out_menu_count",
+]);

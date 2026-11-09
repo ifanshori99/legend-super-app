@@ -302,6 +302,29 @@ itu salinan dari pesanan cloud yang sudah ber-HPP) dan event `order.*` dari edge
 hanya diparkir di `edge_deferred_events`. Pengisian HPP untuk pesanan POS edge
 menunggu applier backfill (legend-078n).
 
+10. **Shared round 3 (brief 284, 2026-11-10).**
+    - Readers get the job's clock (`DailyComputeInput.now`) and never read
+      the wall clock.
+    - Finality hold: a reader may declare `pendingDay`; the job asks it
+      before computing, and while it holds the reader's rows stay
+      estimates. Delivery holds while an order of the day is
+      `received`..`picked_up`; incident response holds while an incident of
+      the day has no `responded_at`. Each sweep also revisits held days up
+      to 90 days back, so a late end turns the day final and its value
+      follows.
+    - `keepFinal`: a reader whose inputs are configuration without history
+      (facility operating hours) keeps its closed days as they are. Hours
+      with an effective date are a follow-up (legend-4us1a).
+    - Facility occupancy, unit utilization and incident response time are
+      derived ratios over new stored sums, so multi-day values are weighted
+      by volume.
+    - `stock_value`, `purchase_total`, `supplier_due` and `delivery_sales`
+      are owned by daily readers and are no longer listed as ledger gaps.
+    - Training orders change no sales metric. Their sales journals are a
+      separate bug (legend-gkc6b).
+    - Mocks follow the registry: every family mock lists its unavailable
+      metrics and a drift test pins the list to the registry.
+
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
 Context: the production worker refused to start without an operator-supplied

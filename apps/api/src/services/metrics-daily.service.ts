@@ -10,7 +10,10 @@
 //   returns are deleted (its own metric codes and dimensions only, and the
 //   total row only when it declares `writesTotal`).
 // - Finality of a stored row: settled (day end + settle delay) and, for point
-//   of sale readers, closed (`pos_daily_closes`).
+//   of sale readers, closed (`pos_daily_closes`), and no `pendingDay` hold
+//   (asked before `compute`).
+// - A `keepFinal` reader's final rows are left as they are (no rewrite, no
+//   delete); a day without rows is still written.
 import { and, eq, sql } from "drizzle-orm";
 import {
   addBusinessDays,
@@ -113,24 +116,11 @@ async function writeFamily(
   finality: "estimate" | "final",
   now: Date,
 ): Promise<{ written: number; unchanged: number; deleted: number }> {
-  const values = await reader.compute({ tx, ...scope });
-  validate(reader, values);
-
-  const records = values.map((entry) => {
-    const definition = reportMetricByCode.get(entry.metricCode)!;
-    const stored = storedValue(entry.value);
-    return {
-      metric_code: entry.metricCode,
-      definition_id: definition.id,
-      definition_version: definition.version,
-      dimension_key: entry.dimension?.key ?? null,
-      dimension_value: entry.dimension?.value ?? null,
-      unit: stored.unit,
-      value_int: stored.valueInt,
-      value_decimal: stored.valueDecimal,
-      finality,
-    };
-  });
+  const input = { tx, ...scope, now };
+  // A reader's hold downgrades a final day to estimate (finality hook). Asked
+  // before compute: an order that ends after the check only delays finality.
+  if (finality === "final" && (await reader.pendingDay?.(input)))
+    finality = "estimate";
 
   // Rows this reader owns: its split dimensions, and the total row when it
   // declares `writesTotal`. Another reader of the same code in another
@@ -168,6 +158,28 @@ async function writeFamily(
     ),
     finality: String(row.finality),
   }));
+
+  // keepFinal: a closed day of this reader is never rewritten or deleted.
+  if (reader.keepFinal && existing.some((row) => row.finality === "final"))
+    return { written: 0, unchanged: existing.length, deleted: 0 };
+
+  const values = await reader.compute(input);
+  validate(reader, values);
+  const records = values.map((entry) => {
+    const definition = reportMetricByCode.get(entry.metricCode)!;
+    const stored = storedValue(entry.value);
+    return {
+      metric_code: entry.metricCode,
+      definition_id: definition.id,
+      definition_version: definition.version,
+      dimension_key: entry.dimension?.key ?? null,
+      dimension_value: entry.dimension?.value ?? null,
+      unit: stored.unit,
+      value_int: stored.valueInt,
+      value_decimal: stored.valueDecimal,
+      finality,
+    };
+  });
 
   let written = 0;
   if (records.length > 0) {

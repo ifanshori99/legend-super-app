@@ -646,6 +646,165 @@ describe("finality of a stored row (design §2.4)", () => {
       ),
     ).toEqual(new Set(["final"]));
   });
+
+  it("a reader's pendingDay keeps a settled day an estimate until it lets go", async () => {
+    let pending = true;
+    const seen: Date[] = [];
+    const base = trafficReader({ dine_in: 2 });
+    const reader: DailyMetricReader = {
+      ...base,
+      async pendingDay(input) {
+        seen.push(input.now);
+        return pending;
+      },
+    };
+    const finalities = async () =>
+      new Set(
+        (await rowsOf(world.tenantId, world.outlet1, "2025-06-15")).map(
+          (r) => r.finality,
+        ),
+      );
+    await refresh(world, "2025-06-15", LATE, [{ family: "hr", reader }]);
+    expect(await finalities()).toEqual(new Set(["estimate"]));
+    expect(seen).toEqual([LATE]);
+
+    pending = false;
+    await refresh(world, "2025-06-15", LATE, [{ family: "hr", reader }]);
+    expect(await finalities()).toEqual(new Set(["final"]));
+  });
+
+  it("a held reader does not hold another reader of the same day", async () => {
+    await refresh(world, "2025-06-16", LATE, [
+      {
+        family: "reservation-delivery",
+        reader: {
+          ...makeReader({
+            metricCodes: ["delivery_orders"],
+            rows: () => [
+              {
+                metricCode: "delivery_orders",
+                dimension: null,
+                value: count(1),
+              },
+            ],
+          }),
+          pendingDay: async () => true,
+        },
+      },
+      { family: "hr", reader: trafficReader({ dine_in: 2 }) },
+    ]);
+    const rows = await rowsOf(world.tenantId, world.outlet1, "2025-06-16");
+    expect(
+      Object.fromEntries(
+        rows
+          .filter((r) => r.dimension_key === null)
+          .map((r) => [r.metric_code, r.finality]),
+      ),
+    ).toEqual({ delivery_orders: "estimate", transaction_count: "final" });
+  });
+
+  it("asks pendingDay before compute, so a hold that ends mid-run keeps the row an estimate", async () => {
+    // The order completes while compute runs: compute already saw the old
+    // state, so the row it returns must not be labelled final.
+    let pending = true;
+    const calls: string[] = [];
+    const reader: DailyMetricReader = {
+      ...trafficReader({ dine_in: 2 }),
+      async pendingDay() {
+        calls.push("pendingDay");
+        return pending;
+      },
+      async compute() {
+        calls.push("compute");
+        pending = false;
+        return [
+          {
+            metricCode: "transaction_count",
+            dimension: null,
+            value: count(2),
+          },
+        ];
+      },
+    };
+    await refresh(world, "2025-07-01", LATE, [{ family: "hr", reader }]);
+    expect(calls).toEqual(["pendingDay", "compute"]);
+    expect(
+      (await rowsOf(world.tenantId, world.outlet1, "2025-07-01")).map(
+        (r) => r.finality,
+      ),
+    ).toEqual(["estimate"]);
+  });
+
+  it("keepFinal: final rows are neither rewritten nor deleted; estimates and empty days are written", async () => {
+    let rows = [
+      {
+        metricCode: "transaction_count",
+        dimension: null,
+        value: count(1),
+      },
+    ];
+    const reader: DailyMetricReader = {
+      ...makeReader({ metricCodes: ["transaction_count"], rows: () => rows }),
+      keepFinal: true,
+    };
+    const readers = [{ family: "facility", reader }];
+    const snapshot = async () =>
+      (await rowsOf(world.tenantId, world.outlet1, "2025-07-02")).map((r) => ({
+        id: r.id,
+        value: r.value_int,
+        finality: r.finality,
+        updatedAt: r.updated_at.getTime(),
+      }));
+
+    // No rows yet, day still open: written as an estimate.
+    await refresh(
+      world,
+      "2025-07-02",
+      new Date("2025-07-02T05:00:00Z"),
+      readers,
+    );
+    expect((await snapshot()).map((r) => [r.value, r.finality])).toEqual([
+      ["1", "estimate"],
+    ]);
+
+    // An estimate is still rewritten, and turns final once settled.
+    rows = [{ ...rows[0]!, value: count(2) }];
+    await refresh(world, "2025-07-02", LATE, readers);
+    const final = await snapshot();
+    expect(final.map((r) => [r.value, r.finality])).toEqual([["2", "final"]]);
+
+    // A new value later changes nothing, and an empty answer deletes nothing.
+    rows = [{ ...rows[0]!, value: count(3) }];
+    await refresh(world, "2025-07-02", LATE, readers);
+    expect(await snapshot()).toEqual(final);
+    rows = [];
+    await refresh(world, "2025-07-02", LATE, readers);
+    expect(await snapshot()).toEqual(final);
+  });
+
+  it("hands the job's clock to every reader as `now`", async () => {
+    const seen: Date[] = [];
+    const now = new Date("2025-06-17T05:00:00Z");
+    await refresh(world, "2025-06-17", now, [
+      {
+        family: "hr",
+        reader: {
+          ...trafficReader({ dine_in: 1 }),
+          async compute(input) {
+            seen.push(input.now);
+            return [
+              {
+                metricCode: "transaction_count",
+                dimension: null,
+                value: count(1),
+              },
+            ];
+          },
+        },
+      },
+    ]);
+    expect(seen).toEqual([now]);
+  });
 });
 
 describe("recomputeMetricsDaily", () => {
@@ -761,6 +920,62 @@ describe("runMetricsDailyJob", () => {
       [other.tenantId, oldest, today],
     );
     expect(rows[0]!.n).toBe(0);
+    resetMetricsDailyJobThrottle();
+  });
+
+  it("catch-up: a day held past the window turns final once its hold ends, with the new value", async () => {
+    const held = await makeWorld("catchup");
+    const day = "2026-01-05";
+    let pending = true;
+    let orders = 2; // one order is cancelled later
+    const computed: string[] = [];
+    const isHeldDay = (input: { outletId: string; businessDate: string }) =>
+      input.outletId === held.outlet1 && input.businessDate === day;
+    const reader: DailyMetricReader = {
+      ...makeReader({ metricCodes: ["delivery_orders"], rows: () => [] }),
+      async pendingDay(input) {
+        return isHeldDay(input) && pending;
+      },
+      async compute(input) {
+        computed.push(`${input.outletId}:${input.businessDate}`);
+        return [
+          {
+            metricCode: "delivery_orders",
+            dimension: null,
+            value: count(isHeldDay(input) ? orders : 0),
+          },
+        ];
+      },
+    };
+    const run = (now: string) =>
+      runMetricsDailyJob(context(held.tenantId), new Date(now), {
+        force: true,
+        readers: [{ family: "reservation-delivery", reader }],
+      });
+    const heldRow = async () =>
+      (await rowsOf(held.tenantId, held.outlet1, day)).map((r) => [
+        r.value_int,
+        r.finality,
+      ]);
+
+    await run("2026-01-06T05:00:00Z");
+    expect(await heldRow()).toEqual([["2", "estimate"]]);
+
+    // Ten days later the day is outside the 7-day window and still held.
+    computed.length = 0;
+    await run("2026-01-15T05:00:00Z");
+    expect(computed).toContain(`${held.outlet1}:${day}`);
+    expect(await heldRow()).toEqual([["2", "estimate"]]);
+
+    // The order is cancelled and the hold ends: the next run finalizes it.
+    pending = false;
+    orders = 1;
+    computed.length = 0;
+    await run("2026-01-16T05:00:00Z");
+    expect(await heldRow()).toEqual([["1", "final"]]);
+    // A final day outside the window (no estimate rows) is not recomputed.
+    expect(computed).not.toContain(`${held.outlet1}:2026-01-04`);
+    expect(computed).not.toContain(`${held.outlet2}:${day}`);
     resetMetricsDailyJobThrottle();
   });
 });

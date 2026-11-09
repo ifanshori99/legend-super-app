@@ -564,13 +564,13 @@ describe("menu_popularity_pct: share of the period total", () => {
     );
 
   it("one day: portions of a menu over portions of all menus", async () => {
-    // The sales reader of menu_sold_qty counts every completed order, the
-    // training one too: outlet 1 Kopi 2 + 1 + 7, Nasi 1, Teh 1; outlet 2
-    // Kopi 4 -> Kopi 14, Nasi 1, Teh 1 of 16.
+    // The sales reader of menu_sold_qty leaves the training order (Kopi 7)
+    // out (legend-fr62g): outlet 1 Kopi 2 + 1, Nasi 1, Teh 1; outlet 2
+    // Kopi 4 -> Kopi 7, Nasi 1, Teh 1 of 9.
     const shares = await popularity({ groupBy: ["menu_item"] });
-    expect(shares.get(world.kopi)).toBe(87.5);
-    expect(shares.get(world.nasi)).toBe(6.25);
-    expect(shares.get(world.teh)).toBe(6.25);
+    expect(shares.get(world.kopi)).toBe(77.7778);
+    expect(shares.get(world.nasi)).toBe(11.1111);
+    expect(shares.get(world.teh)).toBe(11.1111);
   });
 
   it("several days: share of the summed portions, not the mean of daily percents", async () => {
@@ -613,7 +613,7 @@ describe("menu_popularity_pct: share of the period total", () => {
         )!.points[0]!,
       );
     expect(share(world.outlet2, world.kopi)).toBe(100);
-    expect(share(world.outlet1, world.kopi)).toBe(83.3333); // 10 of 12
+    expect(share(world.outlet1, world.kopi)).toBe(60); // 3 of 5, training out
   });
 
   it("without a menu_item split there is nothing to share: dimension_not_supported", async () => {

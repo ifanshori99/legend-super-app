@@ -44,6 +44,8 @@ export type DailyComputeInput = {
   readonly tenantId: string;
   readonly outletId: string;
   readonly businessDate: BusinessDate;
+  /** The job's clock; a reader never reads the wall clock itself. */
+  readonly now: Date;
 };
 
 /**
@@ -69,6 +71,23 @@ export type DailyMetricReader = {
   readonly writesTotal?: boolean;
   /** POS metrics: final needs a pos_daily_closes row for the outlet-date. */
   readonly requiresDailyClose: boolean;
+  /**
+   * Finality hold: true while the outlet-day may still change (e.g. a
+   * delivery order still in flight). The job keeps the reader's rows an
+   * estimate while it holds, on top of the settle delay and the day close.
+   * Asked only once the day would otherwise be final, and before `compute`,
+   * so a hold that ends during the run never labels older values final.
+   * The job's catch-up pass revisits held days older than its refresh window
+   * (up to 90 days back) until they turn final. Default: no hold.
+   */
+  pendingDay?(input: DailyComputeInput): Promise<boolean>;
+  /**
+   * Once this reader's rows for an outlet-date are final, the job neither
+   * rewrites nor deletes them (inputs without an effective date, e.g. today's
+   * operating hours, must not rewrite a closed day). An outlet-date without
+   * rows yet is written normally, so a backfill still works. Default false.
+   */
+  readonly keepFinal?: boolean;
   compute(input: DailyComputeInput): Promise<readonly DailyMetricValue[]>;
 };
 

@@ -67,3 +67,8 @@ export const SALES_REPORTS = [
 export const reportsByPrefix = {
   sales: SALES_REPORTS,
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "avg_spend_per_pax",
+]);

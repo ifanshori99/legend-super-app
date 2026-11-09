@@ -267,14 +267,18 @@ describe("builder mock · same figures as the viewer · DASH-02", () => {
       });
       if (!parsed.success) continue;
       const preview = buildPreviewResult(parsed.data);
+      // The viewer shows no number for a metric the API answers unavailable
+      // (brief 284 T4); the preview's own list is not this test's concern.
+      const shown = (_, index) =>
+        run.availability[index].status === "available";
       assert.deepEqual(
         preview.rows.map((row) => ({
           dimensions: row.dimensions,
-          values: row.values.map((cell) => cell.value),
+          values: row.values.filter(shown).map((cell) => cell.value),
         })),
         run.rows.map((row) => ({
           dimensions: row.dimensions,
-          values: row.values.map((cell) => cell.value),
+          values: row.values.filter(shown).map((cell) => cell.value),
         })),
         `${run.reportCode} ${run.groupBy.join(",")} ${run.period.startDate}..${run.period.endDate}`,
       );
