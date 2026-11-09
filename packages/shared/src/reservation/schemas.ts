@@ -463,6 +463,15 @@ export const markNoShowInputSchema = clientInputSchema({
 });
 export type MarkNoShowInput = z.infer<typeof markNoShowInputSchema>;
 
+/**
+ * Staff resend of the DP link: no fields, the server reuses the stored link or
+ * opens a new one inside the frozen payment window.
+ */
+export const resendDepositLinkInputSchema = clientInputSchema({});
+export type ResendDepositLinkInput = z.infer<
+  typeof resendDepositLinkInputSchema
+>;
+
 // ---- Table slots (RSV-01) -------------------------------------------------
 
 /**

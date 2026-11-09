@@ -29,11 +29,13 @@ import {
   reservationAvailabilitySchema,
   reservationCloseResultSchema,
   reservationCreatedSchema,
+  reservationDepositLinkSchema,
   reservationDetailSchema,
   reservationIdSchema,
   reservationPackageSchema,
   reservationPreOrderSchema,
   reservationSchema,
+  resendDepositLinkInputSchema,
   resolveWaitlistEntryInputSchema,
   resolveWaitlistEntryResultSchema,
   seatReservationInputSchema,
@@ -142,6 +144,19 @@ export const markReservationNoShow = defineEndpoint({
   params: reservationParams,
   body: markNoShowInputSchema,
   response: dataResponseSchema(reservationCloseResultSchema),
+});
+
+/**
+ * RSV-02: staff resend the DP payment link of a `pending_deposit` booking while
+ * the frozen payment window is open. The stored link is reused while valid,
+ * otherwise a new one is opened. The `paymentPath` is a guest credential.
+ */
+export const resendReservationDepositLink = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservations/:reservationId/deposit-link",
+  params: reservationParams,
+  body: resendDepositLinkInputSchema,
+  response: dataResponseSchema(reservationDepositLinkSchema),
 });
 
 /** §3.22 "Pre-order Event": attach or replace the group's menu package. */

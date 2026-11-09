@@ -134,6 +134,7 @@ export const reservationMessages = {
       noShow: "Tandai tidak datang",
       preOrder: "Pilih paket",
       changePreOrder: "Ganti paket",
+      resendDeposit: "Kirim ulang tautan DP",
       close: "Tutup",
       seatWithTable: "Dudukkan di meja {codes}",
     },
@@ -180,6 +181,12 @@ export const reservationMessages = {
     error: "Tamu gagal didudukkan. Coba lagi.",
     unpaid: "DP reservasi belum dibayar.",
     transitionError: "Reservasi ini belum bisa didudukkan.",
+  },
+  depositLink: {
+    label: "Tautan pembayaran DP",
+    copy: "Salin tautan",
+    copied: "Tautan DP disalin.",
+    expires: "Berlaku sampai {time}",
   },
   cancel: {
     title: "Batalkan reservasi",

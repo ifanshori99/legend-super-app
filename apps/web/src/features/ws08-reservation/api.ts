@@ -15,11 +15,13 @@ import {
   listWaitlist as listWaitlistEndpoint,
   markReservationNoShow as markReservationNoShowEndpoint,
   placeReservationPreOrder as placeReservationPreOrderEndpoint,
+  resendReservationDepositLink as resendReservationDepositLinkEndpoint,
   resolveWaitlistEntry as resolveWaitlistEntryEndpoint,
   seatReservation as seatReservationEndpoint,
 } from "@starter/shared/reservation";
 import { getFloorBoard as getFloorBoardEndpoint } from "@starter/shared/qr-order";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { newIdempotencyKey } from "@/lib/idempotency";
 import type { CallOptions } from "@/lib/api/endpoint";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
@@ -86,6 +88,22 @@ export const markNoShow = async (
 ) =>
   (await callEndpoint(markReservationNoShowEndpoint, { params, body }, options))
     .data;
+
+/** RSV-02: the link is a guest credential; the host copies or sends it once. */
+export const resendDepositLink = async (
+  params: Params<typeof resendReservationDepositLinkEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      resendReservationDepositLinkEndpoint,
+      { params, body: {} },
+      {
+        ...options,
+        headers: { "Idempotency-Key": newIdempotencyKey() },
+      },
+    )
+  ).data;
 
 export const placePreOrder = async (
   params: Params<typeof placeReservationPreOrderEndpoint>,

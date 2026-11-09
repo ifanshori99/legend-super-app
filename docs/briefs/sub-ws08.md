@@ -9,7 +9,7 @@ Repo/worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/w
 - Edit ONLY files of your slice. Need another file: stop and report.
 - Do NOT edit `e2e/acceptance/`, `e2e/visual/`, or another slice's files. Do not commit; the agent commits.
 - Heavy commands (build, playwright, docker build, full `pnpm check`) only via `heavy <cmd>`. Do not kill other sessions' processes (no pkill vitest/node).
-- Run only affected tests: `pnpm --filter @starter/api exec vitest run src/test/<file>` (DB tests use the test Postgres; see `scripts/test.mjs` / `docs/local-development.md` for env; `~/.claude/scripts/colima-up` if Docker is down). Shared: `pnpm --filter @starter/shared exec vitest run <file>` if tests exist. Typecheck the touched package.
+- Run only affected tests: `LEGEND_TEST_FILES="src/test/a.test.ts src/test/b.test.ts" node scripts/test.mjs unit` from the worktree root (sets DB env, migrates a disposable DB, seeds `src/db/seed-dev-tenant.ts`; bare vitest fails on missing DATABASE_URL; `~/.claude/scripts/colima-up` if Docker is down). Shared: `pnpm --filter @starter/shared exec vitest run <file>` if tests exist. RAM rule (9 Nov): tsc/typecheck, lint, full suites and `pnpm check` ONLY via `heavy <cmd>`; between steps run targeted `vitest run <path>` only (no heavy needed). Prefer leaving typecheck to the agent's gate.
 - Migrations: `pnpm db:generate` (inspect SQL; RLS goes in a `*.custom.sql` like neighbours). Latest on base is 0090. Slices in isolated worktrees also generate 0091; the agent renumbers at merge.
 - Report: files changed, tests run + result, open questions. Max 40 lines.
 

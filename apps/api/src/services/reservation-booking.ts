@@ -305,7 +305,8 @@ function snapshotOf(
   });
 }
 
-const linkAad = (tenantId: string, reservationId: string) =>
+/** Sealing context (AAD) of a stored DP link; shared with reservation-deposit-resend.ts. */
+export const linkAad = (tenantId: string, reservationId: string) =>
   `reservation-deposit:${tenantId}:${reservationId}`;
 
 function createdFrom(
