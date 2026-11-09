@@ -8,7 +8,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sudah: registry satu reader per kode+dimensi dan `writesTotal`; pecahan net_sales per payment_method dan menu_category; kind `share`, GL `balance` dan `sourceTypes`; sumber pajak, `splitFrom` food_cost_pct, rata-rata tertimbang (`served_ticket_count`, `closed_session_count`); finalitas split GL per outlet; dashboard `managerRole`, `availability`, antrean 200; mock sales_target, day_of_week, SALES_REPORTS, SERVED_REPORTS.
 - Review architect (K): 7 temuan tanpa kritis, semua dibetulkan (af0290e1, 1470d397). tax_payable per outlet sekarang `dimension_not_supported`.
 - Bukti: api 16 file 312/312, root node 225/225, db:generate kosong, typecheck shared/api/web lewat heavy lulus, eslint dan prettier bersih.
-- Bukti gagal-dulu per butir (test tiap commit dijalankan pada kode induknya): 50 test baru, 41 merah, 9 tetap hijau dan semuanya kontrol positif atau penjaga regresi. Satu test diperkuat (unknown managerRole, 6d65729f).
+- Bukti gagal-dulu per butir (test tiap commit dijalankan pada kode induknya): 54 test baru, 46 merah, 8 tetap hijau dan semuanya kontrol positif atau penjaga regresi. Test unknown managerRole diperkuat sampai merah di kode lama (6d65729f).
 - Berikut: backfill riwayat bobot sebelum rilis (legend-ka1hg); bug pesanan latihan di `menu_sold_qty` (legend-fr62g).
 - Biaya sesi (seluruh sesi ff8f7a53, beberapa brief): 19.4M token-biaya; subagent 49, puncak bersamaan sekitar 6.
 
