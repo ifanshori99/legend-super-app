@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti. Read-only: jangan edit atau commit.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/prep-ws02-edge`, cabang `prep3/ws02-edge` HEAD `5cb07d8d` (isi `ws/ws02-edge` 756b45ae, rantai tanpa ws11). Cabang ini BELUM digabung ke `milestone/m1`.
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/prep-ws02-edge`, cabang `prep3/ws02-edge` HEAD `5cb07d8d` (isi `ws/ws02-edge` 756b45ae, rantai tanpa ws11). Sudah digabung ke `milestone/m1` sebagai merge `e8efc11d` (09-11, gate 2885 + 1433 lulus); rentang di m1: `git diff 1e2ab930 e8efc11d` (isi sama dengan rentang di bawah).
 Rentang diff: `git diff 1e2ab930 5cb07d8d` (merge-base dengan m1 `1e2ab930`; 70 file; abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`. Brief engineer asal: `docs/briefs/90-ws02-edge-hardening.md`.
 Migration 0099/0100 (diregen di atas chain doit; nomor bentrok bukan temuan).
 

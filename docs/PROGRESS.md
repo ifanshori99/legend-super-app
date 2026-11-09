@@ -223,3 +223,6 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `9f446f9b` procurement (0092/0093; NO FORCE outlets/inventory_items/uoms; gate prep a94ea4f3 API 2379 / root 1432; 25a7 9yz ditutup; brief 61 rentang b8fed67b..9f446f9b).
 - m1 `5c04f1b2` kds (0094-0096; gate prep 07130a4e API 2447 / root 1432; s2dh 4d5 ditutup; brief 63 rentang 9f446f9b..5c04f1b2).
 - m1 `13425b65` doit-provider (96df32a8 + fix Codex brief 95; 0097/0098; gate prep 1836c2f4 API 2777 / root 1432; b9i ditutup; brief 62 rentang 5c04f1b2..13425b65).
+- m1 `1e2ab930` cherry-pick PRD d6a223d9 (metode bayar: tanpa transfer bank, kartu online Duitku pascarilis; docs/PRD.md saja).
+- Rantai 3 (tanpa head-of-line blocking): ws11 gagal tripwire audit inventory-count (reopen G8kmx), jadi ws02 → whitelabel → receipt dibangun langsung di atas m1; gate paralel di heavy (adaptif 4 jalur).
+- m1 `e8efc11d` ws02-edge (fix tes training 9f1c40af dari G0h5c; 0099/0100; gate prep3 5cb07d8d API 2885 / root 1433; 7 kartu sudah ditutup thread asal; brief 108 rentang 1e2ab930..e8efc11d).
