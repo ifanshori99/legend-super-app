@@ -17,6 +17,7 @@ import {
 } from "./link-peer.ts";
 import {
   LINK_CLOSE,
+  LINK_INSTANCE_HEADER,
   LINK_MAX_FRAME_BYTES,
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
@@ -50,6 +51,8 @@ export type EdgeLinkClientOptions = {
   /** wss://<cloud>/api/edge-link */
   url: string;
   credential: string;
+  /** This edge database's instance id, sent as `x-edge-instance`. */
+  instanceId?: string | null;
   scope: LinkScope;
   store: LinkStore;
   version: string;
@@ -97,7 +100,12 @@ export function createEdgeLinkClient(
   function connect() {
     if (stopped) return;
     const ws = new WebSocket(options.url, {
-      headers: { authorization: `Bearer ${options.credential}` },
+      headers: {
+        authorization: `Bearer ${options.credential}`,
+        ...(options.instanceId
+          ? { [LINK_INSTANCE_HEADER]: options.instanceId }
+          : {}),
+      },
       maxPayload: LINK_MAX_FRAME_BYTES,
       handshakeTimeout: 10_000,
     });

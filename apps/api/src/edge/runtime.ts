@@ -83,7 +83,7 @@ import {
   type EdgeLinkClientState,
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
-import { createEdgeLinkServer } from "./link-server.ts";
+import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
 import { createDefaultWifiProvider } from "./wifi/registry.ts";
 import {
@@ -632,6 +632,7 @@ export async function startEdgeRuntime(
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
+    instanceId: local.instanceId,
     scope: local.scope,
     version: config.version,
     store: createDbLinkStore({
@@ -833,7 +834,10 @@ export async function registerEdgeLink(
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;
   const hardening = parseEdgeHardeningEnv(process.env);
-  const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {
+  // The server adds the `x-edge-instance` header value (legend-o839h).
+  const linkServer = createEdgeLinkServer<
+    AuthenticatedEdgeNode & EdgeLinkIdentity
+  >(server, {
     version,
     clientAddress: options.clientAddress,
     authFailureLimit: {
@@ -847,6 +851,7 @@ export async function registerEdgeLink(
         database: db,
         context: identity.context,
         node: identity.scope,
+        edgeInstanceId: identity.edgeInstanceId,
         outboundDirection: "cloud_to_edge",
       }),
     onHeartbeat: (identity, frame) =>

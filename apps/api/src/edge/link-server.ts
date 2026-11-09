@@ -43,6 +43,7 @@ import { bearerToken, parseEdgeCredential } from "./credential.ts";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import {
   LINK_CLOSE,
+  LINK_INSTANCE_HEADER,
   LINK_MAX_FRAME_BYTES,
   LINK_PATH,
   LINK_REFUSED_CREDENTIAL,
@@ -72,7 +73,21 @@ const LINK_KNOWN_CREDENTIAL_CAPACITY = 10_000;
 /** Heartbeat DB writes per link: the client sends one every 15 s. */
 export const LINK_HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 
-export type EdgeLinkIdentity = { readonly scope: LinkScope };
+export type EdgeLinkIdentity = {
+  readonly scope: LinkScope;
+  /** From the `x-edge-instance` upgrade header (valid uuid), else null. */
+  readonly edgeInstanceId?: string | null;
+};
+
+const INSTANCE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A single well-formed uuid header, lowercased; anything else is null. */
+function instanceIdFromHeader(value: string | string[] | undefined) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return INSTANCE_ID_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
+}
 
 export type EdgeLinkServerDeps<Identity extends EdgeLinkIdentity> = {
   /** Verify the bearer credential; null for anything not accepted. */
@@ -341,7 +356,15 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
         slot?.release();
         rememberCredential(credentialKey, now());
         if (socket.destroyed) return;
-        wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));
+        const authenticated: Identity = {
+          ...identity,
+          edgeInstanceId: instanceIdFromHeader(
+            request.headers[LINK_INSTANCE_HEADER],
+          ),
+        };
+        wss.handleUpgrade(request, socket, head, (ws) =>
+          attach(ws, authenticated),
+        );
       } catch (error) {
         deps.onError?.(error);
         // A cloud-side failure (database blip, pool exhausted) is transient:

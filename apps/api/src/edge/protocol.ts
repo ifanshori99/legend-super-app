@@ -96,3 +96,9 @@ export const LINK_CLOSE = {
  */
 export const LINK_REFUSED_HEADER = "x-edge-link-refused";
 export const LINK_REFUSED_CREDENTIAL = "credential";
+/**
+ * Upgrade header carrying the sending edge database's `edge_nodes.instance_id`
+ * (legend-o839h). Informational: the cloud ignores a missing or malformed
+ * value and never refuses the connection for it.
+ */
+export const LINK_INSTANCE_HEADER = "x-edge-instance";

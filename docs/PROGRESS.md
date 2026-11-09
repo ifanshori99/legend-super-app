@@ -12,6 +12,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus (1 Low: memo memakai baris grant lama, grant diakhiri di tengah request tetap dipercaya; dibetulkan, memo kini hanya tenant id) + architect (setuju; Low test dua tenant, Info akhir per tenant, Nit tipe: semua dibetulkan). Follow-up: legend-edjgj (fungsi SECURITY DEFINER, migrasi).
 - Berikut: second-opinion Codex (brief `docs/briefs/206b-second-opinion-impersonate-expiry-cap.md` di folder utama), merge train.
 
+## legend-o839h PIN edge membedakan DB edge yang dibangun ulang lewat instance_id (engineer, cabang `ws/edge-pin-instance` dari integ/m1-batch24 94d769c6, 2026-11-09)
+
+- Sudah: edge mengirim `edge_nodes.instance_id` sebagai header upgrade link `x-edge-instance`; cloud menyimpannya di `staff_pins.generation_edge_instance_id` di samping node dan sequence. Sequence hanya dibandingkan untuk node + instance yang sama; instance lain (DB dibangun ulang) dan baris lama berinstance null dibandingkan dengan kunci, jadi set PIN baru diterima tanpa runbook. Instance tak diketahui (edge lama, drain parkir, replay konflik) memakai aturan node-saja seperti sebelumnya; drain parkir tidak meminjam instance link hidup.
+- Migrasi `0157_staff_pin_generation_instance` (journal idx 155, when 1794236000000; 0155 payroll dan 0156 write-off struk di cabang lain). Merge train: 0155 dan 0156 harus masuk lebih dulu atau when-nya dinaikkan di atas 0157, karena migrator drizzle melewati migrasi dengan when lebih kecil dari yang sudah diterapkan.
+- Rilis: migrasi + cloud dulu, lalu edge (urutan lain juga aman: header diabaikan cloud lama).
+- Batas: celah saat upgrade (baris node+null yang kuncinya di depan jam edge menolak satu set/lock); restore/clone tetap sequence (lanjutan legend-g1799).
+
 ## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
 
 - Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.

@@ -1100,6 +1100,13 @@
       "when": 1794235000000,
       "tag": "0156_receipt_number_writeoffs",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1794236000000,
+      "tag": "0157_staff_pin_generation_instance",
+      "breakpoints": true
     }
   ]
 }
