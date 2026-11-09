@@ -62,6 +62,13 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
 $$;
 --> statement-breakpoint
 
+-- Integration (merge train): the migrator may be a plain table owner (no
+-- SUPERUSER, no BYPASSRLS), and FORCE ROW LEVEL SECURITY would apply the tenant
+-- policy to it with no app.tenant_id set (42501 "tenant context is required").
+-- Lift FORCE on tenant_integrations for the duplicate check below and restore
+-- it right after (same pattern as 0171).
+ALTER TABLE public.tenant_integrations NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 -- Existing data: two tenants may already share a number. Creating the unique
 -- index would then fail with a bare "could not create unique index". Fail
 -- first with the tenants named, so the operator can disable the wrong row
@@ -95,6 +102,8 @@ BEGIN
   END IF;
 END
 $$;
+--> statement-breakpoint
+ALTER TABLE public.tenant_integrations FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "tenant_domains" DROP CONSTRAINT "tenant_domains_hostname_unique";--> statement-breakpoint
 ALTER TABLE "tenant_domains" ADD COLUMN "verification_token" varchar(64);--> statement-breakpoint
