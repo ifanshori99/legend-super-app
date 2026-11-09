@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-6bq2 + legend-x9w2 cek intent penjualan POS, daftar provider settlement, penjaga fire QR (engineer, cabang `ws/aj-pos-intent` dari 6cc87dab, 2026-11-09)
+
+- Sudah (6bq2): `order.paid` POS kini memanggil `assertSaleWithinReceipt` per intent ber-receipt posted dengan batas `saleBoundOf` (sama seperti penjualan QR), jadi refund intent yang selesai sebelum penjualan tidak bisa mendebit customer_deposit dua kali. Penjualan yang melebihi saldo intent parkir `POSTING_AMOUNTS_MISMATCH`. Test AJ-POSI-01..05 gagal dulu (6 dari 12), lalu lulus. `pos-order.service.ts` tidak disentuh.
+- Sudah (x9w2): `settlement.reconciled.provider` jadi allow-list `GATEWAY_SETTLEMENT_PROVIDERS = ["doit", "duitku"]` (provider gateway di `payment/admin.ts`); kode bank EDC dan `edc_<bank>` ditolak. `fireQrOrder` mensyaratkan status `awaiting_payment` di WHERE dan melempar bila tidak ada baris. Test baru `settlement-events.unit.test.ts`, QR-PAID-05.
+- Bukti: gate 73 file (1557 lulus, 11 skip; 3 gagal lalu dibetulkan: 2 test duitku, 1 POS-01 timing yang lulus saat diulang sendiri), ulang 4 file terdampak 186 lulus. tsc api dan shared bersih, eslint bersih, kontrak node 228 lulus.
+- Review K: reviewer Opus dan architect tanpa bug nyata. Temuan architect duitku dibetulkan. Risiko lama dicatat sebagai legend-ni6o (order.refunded tidak cek jurnal penjualan) dan legend-riqu (refund boleh untuk intent yang dipakai tender POS; jendela jam aplikasi sebelum commit).
+- Berikut: second opinion Codex `docs/briefs/169b-second-opinion-aj-pos-intent.md` (tidak di-commit). Belum ada test untuk penjualan dua intent, intent plus DP, campuran receipt posted dan pending.
+- Biaya sesi engineer (sejak slice 4): total 13792k, 42 subagent, compact 2.
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.

@@ -20,6 +20,7 @@
 //   old intent is the one pinned.
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
@@ -52,7 +53,11 @@ import {
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
 import { confirmPayment } from "../services/payment.service.ts";
-import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
+import { orders } from "../db/schema/qr-order.ts";
+import {
+  fireQrOrder,
+  qrOrderSettlementLookup,
+} from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
@@ -507,5 +512,32 @@ describe("QR pay-first sale emits order.paid (legend-9pz9)", () => {
 
     expect(await orderPaidEvents(orderId)).toHaveLength(0);
     expect((await orderRow(orderId)).fired_at).toBeNull();
+  });
+
+  it("QR-PAID-05 firing an order that is already sent throws and leaves one order.paid", async () => {
+    const { orderId } = await payAndFire("qris");
+    const firedAt = (await orderRow(orderId)).fired_at!.getTime();
+    const context = contextOf(tenant.tenantId);
+
+    await expect(
+      withTenant(db, context, async (tx) => {
+        const [row] = await tx
+          .select()
+          .from(orders)
+          .where(
+            and(
+              eq(orders.tenantId, context.tenant.tenantId),
+              eq(orders.id, orderId),
+            ),
+          );
+        return fireQrOrder(tx, context, row!, {
+          now: new Date(),
+          reason: "verified_payment",
+        });
+      }),
+    ).rejects.toThrow("Order is not awaiting payment; not fired again");
+
+    expect(await orderPaidEvents(orderId)).toHaveLength(1);
+    expect((await orderRow(orderId)).fired_at!.getTime()).toBe(firedAt);
   });
 });

@@ -162,8 +162,10 @@ the consumer and the sweep.
 Emitter contract for settlement events (beads legend-3a5m, legend-jlqi, legend-cs7):
 
 - Each bank payout has exactly one emitter and one event. EDC payouts (stored as provider
-  `edc_<bank>`) are emitted only as `edc_transaction.settled`; `settlement.reconciled` rejects
-  a provider starting with `edc_`.
+  `edc_<bank>`) are emitted only as `edc_transaction.settled`. `settlement.reconciled.provider`
+  is an allow-list of gateway providers (`GATEWAY_SETTLEMENT_PROVIDERS`, today `doit` and `duitku`); EDC bank
+  codes (bca, mandiri, bni, bjb) and `edc_<bank>` are rejected. A new gateway provider is added
+  to that list (a schema change).
 - One event per outlet. `settlementId` / `settlementBatchId` is unique per tenant: the emitter
   dedupes by provider + bank statement line or provider reference, so a re-imported bank file
   never makes a new id.
