@@ -2298,6 +2298,22 @@ test("legend-usyi job provisions the audit retention login: group only, no table
       ["DROP FUNCTION app.usyi_extra()"],
       /functions beyond its two/,
     ],
+    [
+      "a SECURITY DEFINER function in schema app left open to PUBLIC",
+      [
+        "CREATE FUNCTION app.usyi_secdef() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'",
+      ],
+      ["DROP FUNCTION app.usyi_secdef()"],
+      /may run SECURITY DEFINER functions beyond its two/,
+    ],
+    [
+      "a SECURITY DEFINER function in schema public left open to PUBLIC",
+      [
+        "CREATE FUNCTION public.usyi_secdef() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'",
+      ],
+      ["DROP FUNCTION public.usyi_secdef()"],
+      /may run SECURITY DEFINER functions beyond its two/,
+    ],
   ];
   for (const [name, breakIt, fix, message] of drift)
     await t.test(`provisioning and audit refuse ${name}`, async () => {

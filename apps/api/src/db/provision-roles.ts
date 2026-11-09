@@ -994,6 +994,27 @@ async function assertMaintenanceFunctions(client: ClientBase, user: string) {
     throw new ProvisionError(
       `The maintenance role may run functions beyond its two: ${extra.rows[0].names.slice(0, 5).join(", ")}${extra.rows[0].names.length > 5 ? ", ..." : ""}.`,
     );
+  // The check above skips PUBLIC's rights, but a SECURITY DEFINER function
+  // runs as its owner: one that kept PUBLIC's default EXECUTE (or got a direct
+  // grant) lets the login act beyond its two functions. Any schema the login
+  // can reach counts, not only app: PUBLIC keeps USAGE on schema public.
+  const secdef = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND has_schema_privilege($1, n.oid, 'USAGE')
+         AND p.prosecdef
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, MAINT_FUNCTIONS],
+  );
+  if (secdef.rows[0].names.length)
+    throw new ProvisionError(
+      `The maintenance role may run SECURITY DEFINER functions beyond its two: ${secdef.rows[0].names.slice(0, 5).join(", ")}${secdef.rows[0].names.length > 5 ? ", ..." : ""}. Revoke EXECUTE from PUBLIC and the role, then re-run.`,
+    );
   const schema = await client.query(
     "SELECT has_schema_privilege($1, 'app', 'USAGE') AS usage",
     [user],
