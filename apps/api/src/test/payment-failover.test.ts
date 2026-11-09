@@ -27,10 +27,16 @@ import {
   type CreatePaymentLinkInput,
 } from "../services/payment.service";
 import {
+  listOutletsWithOpenIncident,
   probeGatewayHealth,
   resetGatewayHealthCache,
   syncGatewayHealth,
 } from "../services/payment-failover.service";
+import {
+  GATEWAY_PROBE_INTERVAL_MS,
+  startGatewayProbeSweep,
+  sweepGatewayHealth,
+} from "../worker/payment-failover-probe.job";
 import { agent, signUp } from "./helpers";
 
 const app = createApp();
@@ -83,7 +89,14 @@ async function openBill(
 class HealthGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   healthValue: PaymentGatewayStatus = "available";
-  async health() {
+  /** Outlets the gateway was asked about, in order. */
+  readonly probed: Array<string | undefined> = [];
+  /** Outlets whose health call throws (a gateway that hangs or errors). */
+  readonly throwFor = new Set<string>();
+  async health(_context?: unknown, outletId?: string) {
+    this.probed.push(outletId);
+    if (outletId && this.throwFor.has(outletId))
+      throw new Error("gateway timed out");
     return { status: this.healthValue };
   }
   async createIntent(): Promise<never> {
@@ -422,5 +435,105 @@ describe("gateway failover to the cashier", () => {
     expect(
       (await probeGatewayHealth(contextFor(), outletA, at())).transition,
     ).toBe("recovered");
+  });
+});
+
+describe("scheduled gateway probe (legend-5ffks)", () => {
+  const tenantWide = () =>
+    establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "session" }),
+      { kind: "tenant" },
+    ) as ScopedTenantContext;
+  const down = { status: "down" } as const;
+
+  it("records the recovery with no guest traffic", async () => {
+    await syncGatewayHealth(contextFor(), outletA, down, at(0));
+    const recovered = await auditCount("payment.gateway_recovered");
+    gateway.healthValue = "available";
+    const result = await sweepGatewayHealth(tenantWide(), {
+      force: true,
+      now: at(5),
+    });
+    expect(result).toMatchObject({ recovered: 1, failed: 0 });
+    expect(await auditCount("payment.gateway_recovered")).toBe(recovered + 1);
+    // Closed: a second sweep probes nothing for this outlet.
+    gateway.probed.length = 0;
+    await sweepGatewayHealth(tenantWide(), { force: true, now: at(6) });
+    expect(gateway.probed).not.toContain(outletA);
+  });
+
+  it("probes only outlets with an open incident", async () => {
+    await syncGatewayHealth(contextFor(), outletA, down, at(0));
+    gateway.healthValue = "down";
+    await sweepGatewayHealth(tenantWide(), { force: true, now: at(5) });
+    expect(gateway.probed).toContain(outletA);
+    expect(gateway.probed).not.toContain(outletB);
+  });
+
+  it("a long outage alerts once: the sweep keeps the incident alive past six hours", async () => {
+    const alerts = await alertCount(supervisorId);
+    const beats = await auditCount("payment.gateway_still_down");
+    gateway.healthValue = "down";
+    await syncGatewayHealth(contextFor(), outletA, down, at(0));
+    for (const hour of [2, 4, 6, 8, 10, 12])
+      await sweepGatewayHealth(tenantWide(), {
+        force: true,
+        now: at(hour * 60),
+      });
+    expect(await alertCount(supervisorId)).toBe(alerts + 1);
+    // A heartbeat only every few hours, not at every sweep.
+    const written = (await auditCount("payment.gateway_still_down")) - beats;
+    expect(written).toBeGreaterThanOrEqual(3);
+    expect(written).toBeLessThanOrEqual(5);
+  });
+
+  it("one failing outlet does not stop the others", async () => {
+    await syncGatewayHealth(contextFor(), outletA, down, at(0));
+    await syncGatewayHealth(contextFor([outletB]), outletB, down, at(0));
+    const recoveredB = await auditCount("payment.gateway_recovered", outletB);
+    gateway.throwFor.add(outletA);
+    gateway.healthValue = "available";
+    const result = await sweepGatewayHealth(tenantWide(), {
+      force: true,
+      now: at(5),
+    });
+    expect(result).toMatchObject({ failed: 1, recovered: 1 });
+    expect(await auditCount("payment.gateway_recovered", outletB)).toBe(
+      recoveredB + 1,
+    );
+  });
+
+  it("is throttled per tenant", async () => {
+    await sweepGatewayHealth(tenantWide(), { force: true, now: at(0) });
+    expect(await sweepGatewayHealth(tenantWide(), { now: at(1) })).toBeNull();
+    expect(
+      await sweepGatewayHealth(tenantWide(), {
+        now: new Date(at(0).getTime() + GATEWAY_PROBE_INTERVAL_MS + 1000),
+      }),
+    ).not.toBeNull();
+  });
+
+  it("does not spend a probe slot on an incident that went stale", async () => {
+    await syncGatewayHealth(contextFor(), outletA, down, at(0));
+    expect(
+      await listOutletsWithOpenIncident(tenantWide(), at(5 * 60)),
+    ).toContain(outletA);
+    expect(
+      await listOutletsWithOpenIncident(tenantWide(), at(7 * 60)),
+    ).not.toContain(outletA);
+  });
+
+  it("the relay entry runs one sweep per tenant and never blocks or rejects", async () => {
+    await syncGatewayHealth(contextFor(), outletA, down, new Date());
+    gateway.healthValue = "down";
+    const first = startGatewayProbeSweep(tenantWide());
+    const second = startGatewayProbeSweep(tenantWide());
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+    await first;
+    // Free again once the first one finished (throttle may skip the work).
+    const third = startGatewayProbeSweep(tenantWide());
+    expect(third).not.toBeNull();
+    await third;
   });
 });

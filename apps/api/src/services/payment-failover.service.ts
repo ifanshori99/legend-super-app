@@ -25,7 +25,7 @@
 // cashier and leaves intents, payments and `paidIdr` alone. A code that is paid
 // at the gateway anyway is settled once by its verified webhook (the existing
 // idempotent confirmation path), never twice.
-import { and, desc, eq, gt, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   createUlid,
   outletIdSchema,
@@ -43,6 +43,7 @@ import { paymentGateway, type GatewayHealth } from "./payment-gateway";
 import type { Tx } from "./permission-resolver";
 
 const FAILOVER_STARTED = "payment.gateway_failover_started";
+const STILL_DOWN = "payment.gateway_still_down";
 const GATEWAY_RECOVERED = "payment.gateway_recovered";
 const LINK_FAILOVER = "payment.link_failover_to_cashier";
 const ALERT_EVENT = "payment_gateway.failover_started";
@@ -58,14 +59,19 @@ const INCIDENT_FIELDS = [
 const MARKER_WINDOW_MS = 7 * 24 * 60 * 60_000;
 /** Down again this soon after recovery: the same incident, no new alert. */
 export const REOPEN_MS = 10 * 60_000;
-/** An open incident this old is closed implicitly; the next `down` alerts. */
+/** An open incident whose newest row is this old is closed implicitly; the
+ * next `down` alerts. */
 export const STALE_OPEN_MS = 6 * 60 * 60_000;
+/** A `down` reading that finds the newest row this old renews it
+ * (`payment.gateway_still_down`), so a long outage that is being observed
+ * never goes stale. Written at most once per interval, however many readings. */
+export const HEARTBEAT_MS = 3 * 60 * 60_000;
 /** What this process learned from the database is trusted this long, so the
  * hot payment-screen path does not query the audit log on every request. */
 const TRUST_MS = 60_000;
 
 export type GatewayTransition =
-  "failover_started" | "reopened" | "recovered" | "none";
+  "failover_started" | "heartbeat" | "reopened" | "recovered" | "none";
 
 export type GatewayIncidentResult = {
   readonly transition: GatewayTransition;
@@ -127,7 +133,7 @@ async function latestMarker(
         eq(auditLogs.tenantId, context.tenant.tenantId),
         eq(auditLogs.outletId, outletId),
         gt(auditLogs.createdAt, new Date(now.getTime() - MARKER_WINDOW_MS)),
-        sql`${auditLogs.event}->>'action' IN (${FAILOVER_STARTED}, ${GATEWAY_RECOVERED})`,
+        sql`${auditLogs.event}->>'action' IN (${FAILOVER_STARTED}, ${STILL_DOWN}, ${GATEWAY_RECOVERED})`,
       ),
     )
     .orderBy(
@@ -141,12 +147,12 @@ async function latestMarker(
   return {
     incident: Number(row.incident),
     seq: Number(row.seq),
-    open: row.action === FAILOVER_STARTED,
+    open: row.action !== GATEWAY_RECOVERED,
     at: Date.parse(row.at),
   };
 }
 
-type Step = "none" | "recover" | "reopen" | "start";
+type Step = "none" | "recover" | "reopen" | "start" | "heartbeat";
 
 /** What a reading means given the newest marker. Pure. */
 function decide(
@@ -156,8 +162,11 @@ function decide(
 ): Step {
   if (!isDown) return marker?.open ? "recover" : "none";
   if (!marker) return "start";
-  if (marker.open)
-    return now.getTime() - marker.at > STALE_OPEN_MS ? "start" : "none";
+  if (marker.open) {
+    const age = now.getTime() - marker.at;
+    if (age > STALE_OPEN_MS) return "start";
+    return age > HEARTBEAT_MS ? "heartbeat" : "none";
+  }
   return now.getTime() - marker.at < REOPEN_MS ? "reopen" : "start";
 }
 
@@ -205,6 +214,57 @@ async function writeIncidentRow(
       createdAt: toIsoDateTime(input.now),
     },
     INCIDENT_FIELDS,
+  );
+}
+
+/**
+ * Outlets of the tenant whose newest marker says an incident is open (the
+ * scheduled probe's work list). Oldest incident first. Scoped by tenant row
+ * level security plus the explicit tenant filter.
+ */
+export async function listOutletsWithOpenIncident(
+  context: ScopedTenantContext,
+  now = new Date(),
+  limit = 10,
+): Promise<string[]> {
+  const incident = sql`(${auditLogs.event}->'maskedChanges'->'after'->>'incident')::int`;
+  const seq = sql`(${auditLogs.event}->'maskedChanges'->'after'->>'seq')::int`;
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .selectDistinctOn([auditLogs.outletId], {
+        outletId: auditLogs.outletId,
+        action: sql<string>`${auditLogs.event}->>'action'`,
+        at: sql<string>`${auditLogs.event}->>'createdAt'`,
+      })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, context.tenant.tenantId),
+          isNotNull(auditLogs.outletId),
+          gt(auditLogs.createdAt, new Date(now.getTime() - MARKER_WINDOW_MS)),
+          inArray(sql`${auditLogs.event}->>'action'`, [
+            FAILOVER_STARTED,
+            STILL_DOWN,
+            GATEWAY_RECOVERED,
+          ]),
+        ),
+      )
+      .orderBy(auditLogs.outletId, desc(incident), desc(seq)),
+  );
+  return (
+    rows
+      // An incident whose NEWEST row is older than STALE_OPEN_MS is implicitly
+      // closed (`decide`), so it is not worth a probe slot. Filtered here, after
+      // the newest row per outlet is chosen, never before it.
+      .filter(
+        (row) =>
+          row.outletId !== null &&
+          row.action !== GATEWAY_RECOVERED &&
+          Date.parse(row.at) > now.getTime() - STALE_OPEN_MS,
+      )
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+      .slice(0, limit)
+      .map((row) => row.outletId as string)
   );
 }
 
@@ -267,6 +327,19 @@ export async function syncGatewayHealth(
           now,
         });
         return { transition: "recovered", openIncident: null };
+      }
+
+      if (step === "heartbeat" && marker) {
+        await writeIncidentRow(tx, context, {
+          id: createUlid(now.getTime()),
+          outletId,
+          action: STILL_DOWN,
+          incident: marker.incident,
+          seq: marker.seq + 1,
+          status: health.status,
+          now,
+        });
+        return { transition: "heartbeat", openIncident: marker.incident };
       }
 
       if (step === "reopen" && marker) {

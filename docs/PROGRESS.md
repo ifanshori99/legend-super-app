@@ -1052,3 +1052,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Sudah ada: `GatewayHealth` (tipe, dibaca live tiap request), metode online nonaktif saat `down`, `requestPayAtCashier` (hanya audit), kolom `fallbackProvider`. Dibangun: `payment-failover.service.ts` (insiden per outlet di `audit_logs`, tanpa tabel), satu alert supervisor per insiden (kategori baru `payment_failover`), penanda per bill per insiden, `requestPayAtCashier` idempoten dan tidak menunggu gateway, `reason: "unconfigured"` agar outlet tanpa akun gateway tidak dianggap gangguan.
 - Review K (architect): 6 temuan, 1-4 dan 6 dibetulkan (unconfigured, ack tanpa health, query dibatasi outlet+waktu dan baca tanpa lock, gateway naik-turun membuka ulang insiden yang sama tanpa alert baru, bill lunas tidak ditandai). Sisa: probe terjadwal di worker, indeks audit_logs (butuh migrasi).
 - Bukti: 5 file API 270/270 (payment-failover 13 baru, payment-api, payment-doit, ai-anomaly-summary, ws03-guest-va), `pnpm typecheck` lewat heavy exit 0, eslint, prettier.
+
+## legend-5ffks probe terjadwal + test dua tenant failover (engineer, lanjutan `ws/gateway-failover-cashier`, 2026-11-09)
+
+- Baru `apps/api/src/worker/payment-failover-probe.job.ts`: `sweepGatewayHealth` memeriksa hanya outlet dengan insiden terbuka (maks 10, 5 paralel, throttle 5 menit per tenant); `startGatewayProbeSweep` dijalankan tanpa menunggu dari relay `worker-main.ts` (satu sweep per tenant). Pemulihan tercatat tanpa trafik tamu.
+- `payment-failover.service.ts`: heartbeat `payment.gateway_still_down` (tiap 3 jam, hanya saat ada pembacaan `down`) menjaga insiden panjang tidak basi, jadi tidak alert ulang tiap 6 jam; `listOutletsWithOpenIncident`.
+- Bukti merah dulu: modul probe belum ada (suite gagal impor); setelah modul ada tanpa heartbeat, test gangguan panjang gagal (alert 15 vs 14), lalu hijau.
+- Review K (architect, diff baru): 3 temuan, semua dibetulkan: sweep tidak lagi menahan relay, daftar probe memakai usia baris terbaru (bukan 7 hari) dan dipilih sesudah baris terbaru per outlet, `now` per outlet sesudah `health()`.
+- Test: `payment-failover.test.ts` 20, `payment-failover-tenants.test.ts` 4 (isolasi dua tenant: insiden, penanda bill, penerima alert, sweep per tenant). 6 file API 272/272, `pnpm typecheck` heavy exit 0, eslint, prettier.
