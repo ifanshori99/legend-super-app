@@ -15,7 +15,7 @@
 // - Keyset paging on (sync_xid, id), opaque cursor
 //   `[spin2, epoch, sync_xid, id]`. `sync_xid` is the id of the transaction
 //   that last wrote the row (column default on insert, trigger on update;
-//   migration 0147). A row is exported only when its `sync_xid` is below
+//   migration 0151). A row is exported only when its `sync_xid` is below
 //   `pg_snapshot_xmin(pg_current_snapshot())`: every older transaction has
 //   finished, so a watermark can never pass a writer that commits late. No
 //   clock and no settle window are involved, the order is the commit horizon.

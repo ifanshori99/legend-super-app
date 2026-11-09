@@ -231,7 +231,7 @@ On Pro and above, split the paths into separate rules with a longer period and a
 
 ## Staff device PIN down-sync runbook
 
-The cloud sends staff PIN changes to each outlet's edge in commit order, using `staff_pins.sync_xid` (migration `0147_staff_pin_sync_xid`). Follow these rules when you operate the cloud database or release the API.
+The cloud sends staff PIN changes to each outlet's edge in commit order, using `staff_pins.sync_xid` (migration `0151_staff_pin_sync_xid`). Follow these rules when you operate the cloud database or release the API.
 
 1. **Durability.** The cloud database must run with `synchronous_commit = on` and `fsync = on`. A commit that was exported but then lost in a crash could have its transaction id reused, and the edge would skip the change. Do not turn either setting off, even for load tests.
 2. **Dump and restore.** After a dump/restore into a new cluster, restamp `sync_xid` on every `staff_pins` row. Run it as the migration owner, the same way as migration `0141_great_firedrake`: lift `FORCE ROW LEVEL SECURITY` for the statement, touch every row, then force it again. Example: `UPDATE "staff_pins" SET "sync_xid" = pg_current_xact_id()`. Point-in-time recovery, promotion, and restart need no action: a new epoch makes each edge do one idempotent full resync per outlet.
