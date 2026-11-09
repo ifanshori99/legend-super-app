@@ -123,7 +123,6 @@ export const NON_GL_MONEY_METRICS: readonly string[] = [
   "supplier_due",
   "pending_settlement",
   "cash_variance",
-  "menu_gross_margin",
   "delivery_sales",
   "stock_value",
   "purchase_total",
