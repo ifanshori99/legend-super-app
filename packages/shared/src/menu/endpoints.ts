@@ -93,6 +93,12 @@ export const menuImageUploadInputSchema = clientInputSchema({
     .regex(/^[A-Za-z0-9+/]+={0,2}$/, "Data gambar harus base64"),
   width: z.number().int().positive().max(4096),
   height: z.number().int().positive().max(4096),
+  /**
+   * Outlet that hosts the stored object (media is outlet-level storage, TEN-02).
+   * Optional: missing means the caller's first reachable outlet. An outlet the
+   * caller does not reach is refused with 403.
+   */
+  outletId: uuidSchema.optional(),
 });
 export const menuImageSchema = z.strictObject({
   mediaId: uuidSchema,
@@ -119,7 +125,13 @@ export const updateCategoryInputSchema = clientInputSchema({
   sortOrder: z.number().int().nonnegative().optional(),
 });
 
-/** Display order (PRD §8 "urutan tampil"): the full ordered id list. */
+/**
+ * Display order (PRD §8 "urutan tampil"). `orderedIds` is the position list:
+ * the id at index i gets `sortOrder = i`. Ids must all exist and share one
+ * parent (one brand for categories, one category for items), else 404 / 422.
+ * Rows not in the list keep their sortOrder, so send the full sibling list to
+ * get a dense order. Rows already at their index are not written (no event).
+ */
 export const reorderInputSchema = clientInputSchema({
   orderedIds: z.array(uuidSchema).min(1).max(500),
 });

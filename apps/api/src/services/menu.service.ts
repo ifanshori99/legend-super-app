@@ -443,7 +443,10 @@ export async function deleteCategory(
   });
 }
 
-/** Display order (PRD §8 "urutan tampil"): the full ordered id list. */
+/**
+ * Display order (PRD §8 "urutan tampil"): id at index i gets sortOrder i.
+ * Ids outside the list keep their sortOrder; unchanged rows emit no event.
+ */
 export async function reorderCategories(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -1287,7 +1290,10 @@ export async function deleteItem(
   });
 }
 
-/** Display order inside one category: the full ordered id list. */
+/**
+ * Display order inside one category: id at index i gets sortOrder i. Ids
+ * outside the list keep their sortOrder; unchanged rows emit no event.
+ */
 export async function reorderItems(
   context: ScopedTenantContext,
   actorUserId: string,

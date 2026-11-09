@@ -98,6 +98,11 @@ export const cafeLegendMenuFixtures = menuFixtureSchema.parse({
       stationId: stations[0].id,
     },
   ],
+  // Two drinks carry the sugar-level group (the back-office demo link).
+  itemModifierGroups: [
+    { itemId: items[0].id, groupId: id(4100), sortOrder: 0 },
+    { itemId: items[4].id, groupId: id(4100), sortOrder: 0 },
+  ],
   combos: [
     {
       ...base(4300),

@@ -72,6 +72,16 @@ export const modifierSchema = z.strictObject({
   recipeId: uuidSchema.nullable(),
   stationId: uuidSchema.nullable(),
 });
+/**
+ * Item ↔ modifier group link: one row of `menu_item_modifier_groups`. The
+ * table has no id of its own; (itemId, groupId) is unique and `sortOrder` is
+ * the display position inside the item (0-based, dense after every write).
+ */
+export const itemModifierGroupLinkSchema = z.strictObject({
+  itemId: uuidSchema,
+  groupId: uuidSchema,
+  sortOrder: z.number().int().nonnegative(),
+});
 export const comboComponentSchema = z.strictObject({
   menuItemId: uuidSchema,
   options: z.array(uuidSchema),
@@ -161,6 +171,7 @@ export const menuFixtureSchema = z.strictObject({
   variants: z.array(variantSchema),
   modifierGroups: z.array(modifierGroupSchema),
   modifiers: z.array(modifierSchema),
+  itemModifierGroups: z.array(itemModifierGroupLinkSchema),
   combos: z.array(comboSchema),
   priceLists: z.array(priceListSchema),
   priceListItems: z.array(priceListItemSchema),
@@ -186,6 +197,7 @@ export type MenuItem = z.infer<typeof menuItemSchema>;
 export type Variant = z.infer<typeof variantSchema>;
 export type ModifierGroup = z.infer<typeof modifierGroupSchema>;
 export type Modifier = z.infer<typeof modifierSchema>;
+export type ItemModifierGroupLink = z.infer<typeof itemModifierGroupLinkSchema>;
 export type Combo = z.infer<typeof comboSchema>;
 export type PriceList = z.infer<typeof priceListSchema>;
 export type PriceListItem = z.infer<typeof priceListItemSchema>;

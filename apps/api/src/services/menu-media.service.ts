@@ -3,10 +3,11 @@
 // the WS-00 storage service (scan, EXIF strip, WebP) and answers a media id
 // plus its public URL (`POST /api/menu/media`).
 //
-// The contract body has no outlet: a menu photo belongs to the brand, but
-// storage keys are tenant/outlet paths. The API therefore hosts the object
-// under the first outlet the caller may reach (a single-outlet caller's own),
-// never under an outlet from request input.
+// Media is outlet-level storage (storage keys are tenant/outlet paths). The
+// contract body carries an optional `outletId`: when present it must be an
+// outlet the caller reaches (403 otherwise); when missing the API hosts the
+// object under the first outlet the caller may reach (a single-outlet
+// caller's own), the TEN-02 fallback.
 //
 // Reads resolve `mediaUrl` for stored objects while a provider is configured;
 // with no provider the URL is null instead of a fabricated link.
@@ -44,13 +45,52 @@ export type MenuImageUploadInput = {
   dataBase64: string;
   width: number;
   height: number;
+  /** Optional host outlet; must be reachable by the caller (403 otherwise). */
+  outletId?: string;
 };
 
+const outletNotReachable = () =>
+  new HttpError(
+    403,
+    "FORBIDDEN",
+    "Anda tidak memiliki akses ke outlet ini.",
+  );
+
 /**
- * The outlet a menu photo is stored under: the caller's own outlet when scoped
- * to one, else the first outlet they reach (or the tenant's first outlet).
+ * The outlet a menu photo is stored under: the requested outlet when it is
+ * reachable, else the caller's own outlet when scoped to one, else the first
+ * outlet they reach (or the tenant's first outlet).
  */
-async function mediaOutlet(context: ScopedTenantContext): Promise<OutletId> {
+async function mediaOutlet(
+  context: ScopedTenantContext,
+  requested?: string,
+): Promise<OutletId> {
+  if (requested !== undefined) {
+    const outletId = outletIdSchema.parse(requested);
+    if (context.outletScope.kind === "outlets") {
+      if (!context.outletScope.outletIds.includes(outletId))
+        throw outletNotReachable();
+      return outletId;
+    }
+    // Tenant-wide reach: the outlet must still belong to this tenant (RLS
+    // hides other tenants' rows, so a foreign id looks the same as a missing
+    // one and answers the same 403).
+    const found = await withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select({ id: outlets.id })
+        .from(outlets)
+        .where(
+          and(
+            eq(outlets.tenantId, context.tenant.tenantId),
+            eq(outlets.id, outletId),
+          ),
+        )
+        .limit(1);
+      return row;
+    });
+    if (!found) throw outletNotReachable();
+    return outletId;
+  }
   if (context.outletScope.kind === "outlets") {
     const [first] = context.outletScope.outletIds;
     if (first) return first;
@@ -81,7 +121,7 @@ export async function uploadMenuPhoto(
       "PAYLOAD_TOO_LARGE",
       "Gambar masih terlalu besar setelah diperkecil.",
     );
-  const outletId = await mediaOutlet(context);
+  const outletId = await mediaOutlet(context, input.outletId);
   await withTenant(db, context, async (tx) => {
     await assertPermission(
       tx,
