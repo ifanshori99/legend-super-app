@@ -293,6 +293,7 @@ const accessBaseMessages = {
     menu: "Menu",
     floor: "Denah & meja",
     order: "Pesanan",
+    service_request: "Panggilan pelayanan",
     pos: "POS & kasir",
     shift: "Shift kasir",
     wifi: "Wi-Fi",
@@ -376,6 +377,9 @@ const accessBaseMessages = {
       create: "Buat pesanan",
       recovery: { handle: "Tangani pemulihan pesanan" },
       apology_voucher: { issue: "Terbitkan voucher permintaan maaf" },
+    },
+    service_request: {
+      zone: { manage: "Atur penerima panggilan per zona" },
     },
     pos: {
       sale: { create: "Buat penjualan di POS" },

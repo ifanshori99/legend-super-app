@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 import * as domain from "../apps/web/src/features/ws03-qr-order/domain.ts";
 
 const bill = qr.qrOrderFixtures.sessionBills[0];
@@ -211,7 +212,7 @@ describe("failed-item recovery and review (ORD-08)", () => {
   });
 
   test("ORD-08 the guest issue view carries no cost and no refund option", () => {
-    const issue = qr.guestOrderIssueFixtures[0];
+    const issue = sample.guestOrderIssueFixtures[0];
     assert.equal("costIdr" in issue, false);
     assert.deepEqual(Object.keys(issue.options).sort(), ["swap", "voucher"]);
   });
