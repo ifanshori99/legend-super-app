@@ -1333,3 +1333,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## legend-bjy6 snapshot pajak checkout (engineer, cabang `ws/tax-snapshot-facility` dari d2080951, 2026-11-10)
+
+- Temuan: `recordTaxSnapshots` sudah dipanggil di QR (`qr-order.service.ts:1548`, `:2038`) dan POS (`pos-order.service.ts:1225`). Checkout fasilitas belum ada di kode: `holdFacilitySlot` tanpa pemanggil, bayar tiket fasilitas ditunda ke `legend-bzih` (DEFERRED). Jadi tidak ada panggilan fasilitas yang ditambahkan; arsitek mengonfirmasi tidak ada jalur lain yang perlu mencatat `facility_ticket`.
+- Dibangun: `qr-tax-snapshot.test.ts` (2 tes) dan `pos-tax-snapshot.test.ts` (4 tes): snapshot tertulis sekali per aturan, jumlah cocok dengan total order dan per aturan, tidak ada baris sebelum bayar, ulang bayar/`payment.paid` tidak mengubah baris. Tanpa perubahan kode sumber, tanpa migrasi.
+- Bukti: mutasi (panggilan dimatikan) membuat tes gagal (POS 3 dari 4, QR tiap panggilan gagal di tesnya); 6 dari 6 hijau setelah perubahan terakhir; tsc api, eslint, prettier bersih. Review K (architect): 4 temuan nyata dibetulkan.
+- Sisa: pemasangan di checkout fasilitas menunggu `legend-bzih`.
