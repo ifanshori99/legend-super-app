@@ -226,7 +226,7 @@ export const vouchers = pgTable(
     ),
     check(
       "vouchers_source_check",
-      sql`${table.source} IN ('promo_code', 'apology', 'birthday', 'referral', 'campaign', 'manual')`,
+      sql`${table.source} IN ('promo_code', 'apology', 'birthday', 'referral', 'campaign', 'manual', 'loyalty_reward')`,
     ),
     check(
       "vouchers_code_hash_check",

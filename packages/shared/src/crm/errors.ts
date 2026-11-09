@@ -27,6 +27,9 @@ export const crmErrorHttpStatus = {
   CONSENT_POLICY_OUTDATED: 409,
   /** A cashier used up the daily phone-number lookups (use the member QR). */
   PHONE_LOOKUP_CAP_REACHED: 429,
+  // legend-m4p5
+  /** The redemption is not pending, or its voucher was already used. */
+  REDEMPTION_NOT_CANCELLABLE: 409,
 } as const satisfies Record<string, number>;
 
 export type CrmErrorCode = keyof typeof crmErrorHttpStatus;
@@ -57,4 +60,6 @@ export const crmErrorMessages: Record<CrmErrorCode, string> = {
     "Versi kebijakan sudah diperbarui. Muat ulang lalu setujui versi terbaru.",
   PHONE_LOOKUP_CAP_REACHED:
     "Batas cari nomor hari ini tercapai. Pakai QR member.",
+  // legend-m4p5
+  REDEMPTION_NOT_CANCELLABLE: "Penukaran ini tidak bisa dibatalkan.",
 };

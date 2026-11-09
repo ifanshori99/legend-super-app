@@ -34,6 +34,7 @@ import {
   pointLedgerEntrySchema,
   rewardObjectSchema,
   rewardRedemptionSchema,
+  redemptionCodeSchema,
   rewardSchema,
   customerConsentSchema,
 } from "./loyalty.ts";
@@ -87,6 +88,8 @@ const customerProfileIdParams = z.strictObject({
   customerProfileId: uuidSchema,
 });
 const rewardIdParams = z.strictObject({ rewardId: uuidSchema });
+// legend-m4p5
+const redemptionIdParams = z.strictObject({ redemptionId: uuidSchema });
 const tierIdParams = z.strictObject({ tierId: uuidSchema });
 const missionIdParams = z.strictObject({ missionId: uuidSchema });
 const promotionIdParams = z.strictObject({ promotionId: uuidSchema });
@@ -130,6 +133,22 @@ export const redeemReward = defineEndpoint({
   path: "/api/member/rewards/:rewardId/redemptions",
   params: rewardIdParams,
   body: redeemRewardInputSchema,
+  response: dataResponseSchema(rewardRedemptionSchema),
+});
+
+// legend-m4p5
+export const listMemberRedemptions = defineEndpoint({
+  method: "GET",
+  path: "/api/member/redemptions",
+  query: cursorPageQuerySchema,
+  response: page(rewardRedemptionSchema),
+});
+
+// legend-m4p5
+export const cancelMemberRedemption = defineEndpoint({
+  method: "POST",
+  path: "/api/member/redemptions/:redemptionId/cancel",
+  params: redemptionIdParams,
   response: dataResponseSchema(rewardRedemptionSchema),
 });
 
@@ -409,9 +428,27 @@ export const listRewards = defineEndpoint({
   response: page(rewardSchema),
 });
 
-export const createRewardInputSchema = clientInputSchema(
-  rewardObjectSchema.omit({ id: true, tenantId: true }).shape,
-);
+export const createRewardInputSchema = clientInputSchema({
+  ...rewardObjectSchema.omit({ id: true, tenantId: true }).shape,
+  // legend-m4p5
+  perCustomerLimit: rewardObjectSchema.shape.perCustomerLimit.optional(),
+  redemptionValidDays: rewardObjectSchema.shape.redemptionValidDays.optional(),
+});
+
+// legend-m4p5
+export const fulfilRedemptionInputSchema = clientInputSchema({
+  redemptionCode: redemptionCodeSchema,
+  outletId: uuidSchema,
+  orderId: ulidIdSchema<"OrderId">().optional(),
+});
+
+// legend-m4p5
+export const fulfilRedemption = defineEndpoint({
+  method: "POST",
+  path: "/api/loyalty/redemptions/fulfil",
+  body: fulfilRedemptionInputSchema,
+  response: dataResponseSchema(rewardRedemptionSchema),
+});
 
 export const createReward = defineEndpoint({
   method: "POST",
@@ -722,6 +759,9 @@ export const crmEndpoints = [
   listMemberPoints,
   listMemberRewards,
   redeemReward,
+  // legend-m4p5
+  listMemberRedemptions,
+  cancelMemberRedemption,
   listMemberMissions,
   listMemberVouchers,
   listMemberVisits,
@@ -744,6 +784,8 @@ export const crmEndpoints = [
   listRewards,
   createReward,
   updateReward,
+  // legend-m4p5
+  fulfilRedemption,
   listMissions,
   createMission,
   updateMission,
@@ -773,6 +815,9 @@ export const memberEndpoints = {
   listMemberPoints,
   listMemberRewards,
   redeemReward,
+  // legend-m4p5
+  listMemberRedemptions,
+  cancelMemberRedemption,
   listMemberMissions,
   listMemberVouchers,
   listMemberVisits,
@@ -796,6 +841,8 @@ export const crmAdminEndpoints = {
   listRewards,
   createReward,
   updateReward,
+  // legend-m4p5
+  fulfilRedemption,
   listMissions,
   createMission,
   updateMission,

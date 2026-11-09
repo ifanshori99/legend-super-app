@@ -129,6 +129,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-111j
   "0203_member_loyalty_ledger.sql":
     "appends crm.loyalty.manage, crm.loyalty.review, crm.loyalty.fulfil, crm.customer.pii.read and crm.feedback.manage to the stored template role rows of existing tenants (legend-111j); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored; the other INSERT/UPDATE text is inside trigger function bodies (ledger balance, point value lock, profile index), no rows written at migration time",
+  // legend-m4p5
+  "0207_loyalty_rewards_missions.sql":
+    "no rows written at migration time (legend-m4p5): creates the rewards, redemptions and missions tables, adds the vouchers foreign key to customer_profiles with FORCE RLS lifted on vouchers and customer_profiles for that one statement and restored in the same file, and the other INSERT/UPDATE text is inside the redemption status guard trigger function body",
 };
 
 // Entrypoints that open a database pool but import no data.

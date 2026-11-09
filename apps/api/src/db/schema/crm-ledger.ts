@@ -202,6 +202,11 @@ export const pointEarnRecords = pgTable(
       .notNull()
       .default(0),
     earnEntryId: char("earn_entry_id", { length: 26 }),
+    /** legend-wa4hp: refund/void ids already applied to this record. */
+    appliedReversalIds: text("applied_reversal_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt,
     updatedAt,
   },

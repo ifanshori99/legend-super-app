@@ -122,3 +122,5 @@ export * from "./sales-targets";
 // ledger, earn records, visits, anomalies (legend-111j).
 export * from "./crm-member";
 export * from "./crm-ledger";
+// WS-08 rewards, redemptions, missions (legend-m4p5).
+export * from "./crm-rewards";
