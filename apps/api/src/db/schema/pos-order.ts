@@ -88,6 +88,11 @@ export const posOrders = pgTable(
     cashierId: text("cashier_id"),
     /** The cashier asked for every line to start held (F8 hold & fire). */
     holdItems: boolean("hold_items").notNull().default(false),
+    /**
+     * Training stamp (legend-2lp.8): copy of `devices.training_mode` at
+     * creation. Written once by createPosOrder, never changed afterwards.
+     */
+    isTraining: boolean("is_training").notNull().default(false),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
