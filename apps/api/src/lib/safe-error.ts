@@ -71,7 +71,8 @@ function scrubQueryError(error: DrizzleQueryErrorLike, depth: number): Error {
   safe.name = "DrizzleQueryError";
   (safe as Error & { query: string }).query = error.query;
   safe.stack = safeStack(error.stack, `${safe.name}: ${safe.message}`);
-  if (error.cause !== undefined) safe.cause = toLoggableError(error.cause, depth + 1);
+  if (error.cause !== undefined)
+    safe.cause = toLoggableError(error.cause, depth + 1);
   return safe;
 }
 
@@ -106,6 +107,7 @@ export function toLoggableError(error: unknown, depth = 0): unknown {
   copy.message = error.message;
   copy.stack = error.stack;
   if (error.cause !== undefined) copy.cause = cause;
-  if (errors !== undefined) (copy as Error & { errors: unknown[] }).errors = errors;
+  if (errors !== undefined)
+    (copy as Error & { errors: unknown[] }).errors = errors;
   return copy;
 }

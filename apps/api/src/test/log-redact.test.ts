@@ -130,9 +130,10 @@ describe("Log redaction of database errors and card fields", () => {
     const contextIndex = router.stack.findIndex(
       (layer) => layer.handle.name === "requestContext",
     );
-    expect(contextIndex, "requestContext layer in app.router.stack").toBeGreaterThan(
-      -1,
-    );
+    expect(
+      contextIndex,
+      "requestContext layer in app.router.stack",
+    ).toBeGreaterThan(-1);
     router.stack.splice(contextIndex + 2, 0, probeLayer);
 
     const response = await agent(app).get("/__log-probe");
@@ -244,7 +245,9 @@ describe("Log redaction of database errors and card fields", () => {
     const err = errOf(lines[0]);
     expect(err?.message).toBe("plain failure: cache miss for key abc");
     expect(err?.type).toBe("Error");
-    expect(String(err?.stack)).toContain("plain failure: cache miss for key abc");
+    expect(String(err?.stack)).toContain(
+      "plain failure: cache miss for key abc",
+    );
     expect(String(err?.stack)).toContain("at ");
   });
 
