@@ -59,6 +59,8 @@ const entries = [
   ["org.integration.manage", []],
   ["org.theme.manage", []],
   ["org.config.export", []],
+  // owner only (Q37, legend-c9kbk)
+  ["org.support_access.approve", ["approve"]],
   ["org.tax_config.manage", []],
   // Covers PUT /api/notifications/policy and the notification template
   // endpoints in notification/endpoints.ts (legend-kz1m). Not wired to a route yet.

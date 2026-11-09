@@ -29,17 +29,24 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   cafeLegendPlatformFixtures,
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   type RequestSupportAccessInput,
 } from "@starter/shared/platform";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { createApp } from "../app.ts";
 import { db as appDb } from "../db/index.ts";
 import { requestContext } from "../lib/request-context.ts";
 import {
+  approveSupportAccessRequest,
   assertImpersonationAllowed,
   endSupportAccess,
   impersonationSessionEnd,
   type ImpersonationMatch,
   requestSupportAccess,
+  requestSupportWriteAccess,
   SUPPORT_ACCESS_WRITE_MAX_MINUTES,
 } from "../services/platform-support.service.ts";
 import {
@@ -157,6 +164,49 @@ function openGrant(
     mfaVerifiedAt: now.toISOString(),
     now,
   });
+}
+
+/**
+ * read_write support access needs the tenant owner's approval (legend-c9kbk,
+ * founder Q37/Q38): the Super Admin files a request, then a real owner of the
+ * tenant approves it, which is what creates the read_write grant. Returns the
+ * created grant's id. Assumption: the approval service takes the tenant
+ * context, the approving owner's user id and the request id.
+ */
+async function openWriteGrant(
+  forTenantId: string,
+  adminUserId: string,
+  approverUserId: string,
+  durationMinutes: number = SUPPORT_ACCESS_WRITE_MAX_MINUTES,
+  now: Date = new Date(),
+) {
+  const request = await requestSupportWriteAccess({
+    tenantId: forTenantId,
+    actorUserId: adminUserId,
+    request: requestSupportWriteAccessInputSchema.parse({
+      reason: REASON,
+      mfaCode: "123456",
+      durationMinutes,
+    }),
+    mfaVerifiedAt: now.toISOString(),
+    now,
+  });
+  const approved = await approveSupportAccessRequest(
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: forTenantId,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    ),
+    { userId: approverUserId },
+    request.id,
+    now,
+  );
+  expect(approved.status).toBe("approved");
+  expect(approved.grantId).toBeTruthy();
+  return { id: approved.grantId as string };
 }
 
 function tryImpersonate(admin: Admin, targetUserId: string) {
@@ -559,10 +609,7 @@ describe("legend-6yfhc TEN-04 writes during a support session are attributed to 
   it("legend-6yfhc TEN-04 a read_write mutation is audited as the admin with a support tag; the tenant's own session is not", async () => {
     const tenant = await newTenantOwner();
     const admin = await newSuperAdmin();
-    const grant = await openGrant(tenantId, admin.userId, {
-      accessMode: "read_write",
-      durationMinutes: SUPPORT_ACCESS_WRITE_MAX_MINUTES,
-    });
+    const grant = await openWriteGrant(tenantId, admin.userId, tenant.userId);
     const support = await impersonate(admin, tenant);
 
     const bySupport = await support

@@ -84,6 +84,7 @@ const DEFAULT_TIME_ZONE = "Asia/Jakarta";
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 const BREVO_TIMEOUT_MS = 10_000;
 const SETTINGS_MANAGE_PERMISSION = "org.settings.manage";
+const SUPPORT_ACCESS_APPROVE_PERMISSION = "org.support_access.approve";
 const FACILITY_BOOTH_OPERATE_PERMISSION = "facility.booth.operate";
 const OPS_ALERT_TEMPLATE_KEYS = ["supervisor", "outlet_manager"];
 
@@ -486,6 +487,27 @@ async function supportAccessRule(
   };
 }
 
+/** legend-c9kbk: a read_write request pages only those who can decide it:
+ * tenant-wide owner-template holders of `org.support_access.approve` (the
+ * service refuses anyone else). */
+async function supportAccessRequestedRule(input: RuleInput): Promise<Rule> {
+  const approvers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.templateKey} = 'owner' AND ${roles.permissions} @> ${JSON.stringify([SUPPORT_ACCESS_APPROVE_PERMISSION])}::jsonb`,
+    { kind: "tenant" },
+  );
+  return {
+    userIds: approvers,
+    content: {
+      category: "security",
+      title: "Permintaan akses dukungan",
+      body: "Tim dukungan meminta akses ubah data sementara. Setujui atau tolak dalam 24 jam.",
+      link: null,
+    },
+  };
+}
+
 async function checklistRule(
   input: RuleInput,
   name: "checklist.missed" | "checklist.failed",
@@ -720,6 +742,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return supportAccessRule(input, false);
     case "support_access.ended":
       return supportAccessRule(input, true);
+    case "support_access.requested":
+      return supportAccessRequestedRule(input);
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);

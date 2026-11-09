@@ -239,6 +239,15 @@ The cloud sends staff PIN changes to each outlet's edge in commit order, using `
 4. **Release order.** Release the cloud (API and database migrations) before the edge.
 5. **One machine per edge node (legend-rucdm).** The cloud adopts a node's later PIN set by that node's event sequence, so two machines must never send under one edge node id. The standby keeps its own credential: never start it from a copy of the primary's credential or disk. A node restored from a backup or snapshot may run only after the old machine can no longer reach the cloud. An edge database rebuilt from empty under the same node id restarts its event sequences: the cloud then refuses that node's PIN sets until a cloud reset of the pin, and the edge takes the cloud PIN back. Enroll a rebuilt edge as a new node instead.
 
+## Support read_write owner approval release (legend-c9kbk)
+
+From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:
+
+1. **Order.** Apply the migration first, then roll out the API and the worker together. Between the two steps, an old API instance can still try to open a read_write grant directly. The database refuses it, because new read_write grants must name an approved request (`support_access_grant_write_approved_check`). Read_only grants keep working as before.
+2. **Grants already open.** Read_write grants that were open before the migration keep working until they expire, at most 30 minutes. The check is added `NOT VALID`, so those rows are not checked.
+3. **Owner permission.** The migration adds `org.support_access.approve` to the owner role of every existing tenant. A tenant created by an old API instance after the migration and before the rollout misses it, so its owners get 403 when they approve. Rerun the backfill block at the end of `0160` once the rollout finishes (it is idempotent).
+4. **Web.** Until UI card legend-8r77t ships, the platform request dialog can only open read_only sessions. A read_write request answers 409 `SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED`. Use `POST /api/platform/tenants/:tenantId/support-access-requests` instead, and have the owner answer with `POST /api/org/support-access/requests/:requestId/approve`.
+
 ## Security checklist
 
 Built in: authenticated and origin-checked API routes, ownership filtered in SQL, sign-in/sign-up rate limits, 100 kB request bodies (including Better Auth's), `httpOnly` `SameSite=Lax` session cookies, helmet on the API, and frame/nosniff/referrer headers (plus HSTS in production) on the web app. Before launch, confirm:

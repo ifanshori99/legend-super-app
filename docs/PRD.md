@@ -4,7 +4,7 @@
 
 **Nama Proyek:** Legend Super App — Sistem Operasional Terpadu untuk Cafe Legend
 
-**Versi Dokumen:** 1.7 · 30 Oktober 2026 · Arsitektur dibuat general untuk dijual ke cafe lain: Design System Platform dua lapis (Base Theme dan Tenant Theme), aturan tanpa kode khusus tenant, whitelabel, kamus istilah, dan template tenant dari konfigurasi Legend; memuat keputusan final D1–D44 dan register risiko R01–R27.
+**Versi Dokumen:** 1.8 · 9 November 2026 · Akses support read-write memerlukan persetujuan owner tenant (F4, TEN-04, Q37/Q38). Arsitektur dibuat general untuk dijual ke cafe lain: Design System Platform dua lapis (Base Theme dan Tenant Theme), aturan tanpa kode khusus tenant, whitelabel, kamus istilah, dan template tenant dari konfigurasi Legend; memuat keputusan final D1–D44 dan register risiko R01–R27.
 
 **Pemilik Platform:** PT Sultan Solusi Nusantara. Cafe Legend (selanjutnya Legend) adalah tenant pertama dan untuk sementara juga dioperasikan oleh PT Sultan Solusi Nusantara. Operator cafe atau restoran lain dapat memakai platform yang sama sebagai tenant berbayar (whitelabel).
 
@@ -490,7 +490,7 @@ Workstream WS-00 s.d. WS-05.
 - **Kuota & Plafon [P0]** — Jumlah outlet, jumlah karyawan aktif (default Legend minimal 30 dan dapat diubah), jumlah perangkat, kuota AI, serta plafon biaya WhatsApp dan AI per bulan.
 - **Integrasi per Tenant [P0]** — Kredensial gateway pembayaran, nomor WhatsApp, email pengirim, dan akun ojek online disimpan terenkripsi per tenant atau per outlet, dikelola melalui halaman Integrasi.
 - **Super Admin [P0]** — Role tingkat platform yang dipegang Ilham dan satu akun cadangan break-glass, keduanya wajib MFA. Super Admin membuat dan menonaktifkan tenant, mengatur paket, feature flag, kuota, gateway yang tersedia, dan plafon, melihat kesehatan sistem dan audit lintas tenant, serta menunjuk admin pertama tenant.
-- **Support Access [P0]** — Data pribadi dan keuangan tenant hanya dapat dibuka Super Admin melalui sesi berjangka (default 60 menit) dengan alasan wajib, read-only secara default, tercatat di audit log, dan memicu notifikasi ke admin tenant.
+- **Support Access [P0]** — Data pribadi dan keuangan tenant hanya dapat dibuka Super Admin melalui sesi berjangka (default 60 menit) dengan alasan wajib, read-only secara default, tercatat di audit log, dan memicu notifikasi ke admin tenant. Akses read-write hanya aktif setelah disetujui owner tenant (Q37): owner harus sudah melewati 2FA, Super Admin tidak dapat menyetujui permintaannya sendiri, dan permintaan kedaluwarsa bila tidak diputuskan dalam 24 jam. Jendela akses dihitung sejak disetujui. Durasi 15, 30, 60, atau 120 menit dengan default 60; read-write maksimal 30 menit (Q38). Sesi hasil impersonasi tetap dibatasi 60 menit. Setiap transisi (diminta, disetujui, ditolak, kedaluwarsa) tercatat di audit log dan owner mendapat notifikasi. Akses read-only tidak berubah. Layar persetujuan owner dikerjakan pada kartu terpisah.
 - **Tanpa Kode Khusus Tenant [P0]** — Seluruh kebutuhan tenant, termasuk Cafe Legend, dipenuhi melalui pengaturan, feature flag, atau data konfigurasi. Kode tidak boleh berisi percabangan berdasarkan ID, nama, atau domain tenant tertentu; aturan ini diperiksa otomatis di CI.
 - **Whitelabel [P0]** — Pelanggan dan karyawan hanya melihat brand tenant: nama, logo, domain, nomor WhatsApp, email pengirim, struk, dokumen, dan notifikasi. Nama platform hanya tampil di Panel Platform.
 - **Teks & Kamus Istilah [P0]** — Seluruh teks antarmuka diambil dari katalog teks, bukan ditulis langsung di kode. Tenant dapat mengganti istilah tertentu (misalnya nama tier, nama stasiun, "Zona WFC", atau "Shower Room") melalui kamus istilah. Pada rilis awal kamus diisi untuk Legend oleh Super Admin; editornya di panel tenant menyusul pada P1.
@@ -502,7 +502,7 @@ Workstream WS-00 s.d. WS-05.
 | TEN-01 | Pengguna tenant A tidak dapat membaca, mencari, mengunduh, menerima notifikasi, atau memanggil tool AI dan MCP yang berisi data tenant B, termasuk melalui API langsung, cache, file, embedding, dan token MCP (diuji otomatis di CI) |
 | TEN-02 | Query tanpa konteks tenant ditolak oleh RLS; tenant ditentukan dari domain atau token, bukan dari parameter klien |
 | TEN-03 | Role dengan cakupan outlet hanya melihat data outlet yang ditugaskan, termasuk dalam laporan, ekspor, Tanya AI, dan MCP |
-| TEN-04 | Super Admin tidak dapat membuka data pribadi atau keuangan tenant tanpa support access aktif; setiap sesi tercatat dan terlihat oleh admin tenant |
+| TEN-04 | Super Admin tidak dapat membuka data pribadi atau keuangan tenant tanpa support access aktif; akses read-write hanya aktif setelah disetujui owner tenant; setiap sesi dan setiap transisi permintaan tercatat dan terlihat oleh admin tenant |
 | TEN-05 | Modul yang dimatikan melalui feature flag tidak dapat diakses lewat UI, API, Tanya AI, maupun MCP |
 | TEN-06 | Tenant, brand, dan outlet baru dapat dibuat dari panel tanpa redeploy |
 | TEN-07 | Pemeriksaan CI gagal bila kode berisi percabangan berdasarkan ID, nama, atau domain tenant tertentu |
@@ -1581,6 +1581,7 @@ Berikut tabel-tabel yang dibutuhkan beserta kolom penting, tipe data, dan keguna
 | `payment_routes` (T) | outlet_id, method, primary_provider, fallback_provider | Routing gateway per metode |
 | `platform_admins` (global) | user_id, is_break_glass, granted_at, revoked_at | Super Admin |
 | `support_access_grants` (global) | tenant_id, super_admin_user_id, reason, access_mode, expires_at, tenant_admin_notified_at | Akses dukungan berjangka |
+| `support_access_requests` (T) | tenant_id, super_admin_user_id, reason, access_mode (`read_write`), duration_minutes, status (`pending`/`approved`/`rejected`/`expired`), decided_by, grant_id, approval_expires_at | Permintaan read-write yang menunggu persetujuan owner tenant; grant dibuat saat disetujui |
 | `edge_nodes` (T) | outlet_id, role (`primary`/`standby`), version, last_heartbeat_at, last_sync_cursor | Registri edge node |
 | `devices` (T, E) | outlet_id, type (`pos`/`kds`/`waiter_phone`/`printer`/`display`/`smart_lock`/`panic_button`), station_id, label, last_seen_at, revoked_at | Registri perangkat outlet |
 | `regions` (global) | code, name, type, parent_id | Wilayah administrasi |

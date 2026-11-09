@@ -32,6 +32,7 @@ import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
   legalEntityIdSchema,
   supportAccessGrantIdSchema,
+  supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   tenantIntegrationIdSchema,
   tenantThemeIdSchema,
@@ -67,8 +68,11 @@ import {
   updateOutletInputSchema,
 } from "./org.ts";
 import {
+  decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   supportAccessGrantSchema,
+  supportAccessRequestSchema,
 } from "./support-access.ts";
 import {
   createThemeDraftInputSchema,
@@ -180,6 +184,13 @@ export const platformEndpoints = {
     params: tenantParams,
     body: requestSupportAccessInputSchema,
     response: dataResponseSchema(supportAccessGrantSchema),
+  }),
+  requestSupportWriteAccess: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/support-access-requests",
+    params: tenantParams,
+    body: requestSupportWriteAccessInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
   }),
   listSupportAccess: defineEndpoint({
     method: "GET",
@@ -375,6 +386,26 @@ export const orgEndpoints = {
     path: "/api/org/support-access",
     query: cursorPageQuerySchema,
     response: cursorPageSchema(supportAccessGrantSchema),
+  }),
+  listSupportAccessRequests: defineEndpoint({
+    method: "GET",
+    path: "/api/org/support-access/requests",
+    query: cursorPageQuerySchema,
+    response: cursorPageSchema(supportAccessRequestSchema),
+  }),
+  approveSupportAccessRequest: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/requests/:requestId/approve",
+    params: z.strictObject({ requestId: supportAccessRequestIdSchema }),
+    body: decideSupportAccessRequestInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
+  }),
+  rejectSupportAccessRequest: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/requests/:requestId/reject",
+    params: z.strictObject({ requestId: supportAccessRequestIdSchema }),
+    body: decideSupportAccessRequestInputSchema,
+    response: dataResponseSchema(supportAccessRequestSchema),
   }),
   exportConfig: defineEndpoint({
     method: "POST",
