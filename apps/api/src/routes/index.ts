@@ -70,6 +70,7 @@ import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
@@ -166,6 +167,8 @@ apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 pickup display feed and call/picked-up (legend-mzhr0): per-route auth,
 // the prefix is shared with other outlet routers.
 apiRouter.use("/outlets/:outletId", pickupRouter);
+// WS-04 expo board, runner assignment and delivered (legend-him8j), same prefix.
+apiRouter.use("/outlets/:outletId", expoRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
