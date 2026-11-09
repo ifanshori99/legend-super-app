@@ -43,6 +43,7 @@ import {
   paymentRefunds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
+import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -511,7 +512,69 @@ async function failRefund(
       ...input.detail,
     },
   });
+  await refileQrLatePaymentAfterFailure(tx, context, updated, input.now);
   return updated;
+}
+
+/**
+ * legend-p61pe: a QR order voided because a refund already took the payment's
+ * money (`refund_committed`) files its late-payment refund once per intent
+ * (qr-order-late-payment.ts), and that request may have found nothing left.
+ * When the refund that took the money fails, the guest is owed it again: file
+ * a new request under its own key. A failed late-payment refund is not
+ * re-filed (no loop: it stays failed for a person to settle), nor is a fund
+ * refund or an intent that has no QR late-payment request on a voided order.
+ * Lazy import: qr-order-late-payment imports this module (cycle).
+ */
+async function refileQrLatePaymentAfterFailure(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<void> {
+  if (refund.unallocatedFundId !== null) return;
+  const base = `qr-late-payment-refund:${refund.paymentIntentId}`;
+  const keys = await tx.execute(sql`
+    SELECT key, response->>'refundId' AS refund_id
+      FROM payment_admin_idempotency
+     WHERE tenant_id = ${refund.tenantId}
+       AND (key = ${base} OR key LIKE ${`${base}:%`})
+  `);
+  if (keys.rows.length === 0) return;
+  if (keys.rows.some((row) => row.refund_id === refund.id)) return;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, refund.tenantId),
+        eq(paymentIntents.id, refund.paymentIntentId),
+      ),
+    );
+  if (!intent) return;
+  // `orders.id` is a ULID stored in a uuid column: read it through Drizzle.
+  const [order] = await tx
+    .select({ id: orders.id, outletId: orders.outletId })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, refund.tenantId),
+        eq(orders.paymentLinkId, intent.paymentLinkId),
+        eq(orders.channel, "qr"),
+        eq(orders.status, "voided"),
+      ),
+    )
+    .limit(1);
+  if (!order) return;
+  const { requestQrLatePaymentRefund } =
+    await import("./qr-order-late-payment.ts");
+  await requestQrLatePaymentRefund(tx, context, {
+    order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId: refund.paymentIntentId,
+    now,
+    keySuffix: refund.id,
+  });
 }
 
 /**
