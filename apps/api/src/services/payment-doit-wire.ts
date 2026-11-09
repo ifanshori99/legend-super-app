@@ -418,41 +418,66 @@ function refundAmount(value: unknown): number | undefined {
   return typeof value === "string" ? parseDoitIntegerString(value) : undefined;
 }
 
-/** Loose reading of the 2xx answer of `POST …/refunds`. Extra fields (the
- * replay adds `idempotency_key`, `provider_ref`, `created_at`) are ignored. */
+/** Reading of the 2xx answer of `POST …/refunds`. Extra fields (`reason`,
+ * `provider_ref`, `created_at`) are ignored.
+ *
+ * legend-r7g2 (Codex 117 Run A): an answer counts only when it proves it is
+ * about THIS request. A payment object must be our payment (id and
+ * `reference` = our intent). A refund object (DOIT sandbox: 201 `{id: "rf_…",
+ * payment_id, amount, status, reason}`, the 200 replay adds `idempotency_key`)
+ * must name our payment in `payment_id` and our amount; `idempotency_key` and
+ * `reference`, when sent, must be ours. Anything else is an UNKNOWN outcome
+ * (`DOIT_REFUND_IDENTITY_MISMATCH` or `DOIT_REFUND_UNRECOGNIZED`): never a
+ * success or a failure, and the payout sweep stops after its attempt cap. */
 export function parseDoitRefundAnswer(
   payload: unknown,
   expected: {
     paymentProviderRef: string;
     paymentIntentId: string;
     amountIdr: number;
+    /** The `Idempotency-Key` header of the request (`refund:<refundId>`). */
+    idempotencyKey: string;
   },
 ): GatewayRefundResult {
   const unrecognized = () =>
     new DoitRefundUnknownError("DOIT_REFUND_UNRECOGNIZED");
+  const mismatch = () =>
+    new DoitRefundUnknownError("DOIT_REFUND_IDENTITY_MISMATCH");
   if (typeof payload !== "object" || payload === null || Array.isArray(payload))
     throw unrecognized();
   const body = payload as Record<string, unknown>;
-  const { id, status, reference } = body;
+  const { id, status, reference, object } = body;
   if (typeof id !== "string" || id === "" || id.length > 100)
+    throw unrecognized();
+  if (object !== undefined && object !== "payment" && object !== "refund")
     throw unrecognized();
   const amount =
     body.amount === undefined ? undefined : refundAmount(body.amount);
-  if (body.amount !== undefined && amount !== expected.amountIdr)
-    throw unrecognized();
+  if (body.amount !== undefined && amount === undefined) throw unrecognized();
+  if (amount !== undefined && amount !== expected.amountIdr) throw mismatch();
   // The payment object (the refund moved it to `refunded`).
-  if (id === expected.paymentProviderRef) {
-    if (reference !== expected.paymentIntentId) throw unrecognized();
+  if (
+    object === "payment" ||
+    (object === undefined && id === expected.paymentProviderRef)
+  ) {
+    if (id !== expected.paymentProviderRef) throw mismatch();
+    if (reference !== expected.paymentIntentId) throw mismatch();
     if (status === "refunded" && amount === expected.amountIdr)
       return { status: "succeeded", providerRef: id };
     throw unrecognized();
   }
-  // A refund object. When it names its payment, that must be ours.
+  // A refund object: it must name our payment, our amount and (when sent)
+  // our idempotency key and intent.
+  if (id === expected.paymentProviderRef) throw mismatch();
+  if (body.payment_id !== expected.paymentProviderRef) throw mismatch();
+  if (amount === undefined) throw mismatch();
   if (
-    typeof body.payment_id === "string" &&
-    body.payment_id !== expected.paymentProviderRef
+    body.idempotency_key !== undefined &&
+    body.idempotency_key !== expected.idempotencyKey
   )
-    throw unrecognized();
+    throw mismatch();
+  if (reference !== undefined && reference !== expected.paymentIntentId)
+    throw mismatch();
   if (typeof status !== "string") throw unrecognized();
   if (REFUND_SUCCEEDED_STATUSES.includes(status))
     return { status: "succeeded", providerRef: id };

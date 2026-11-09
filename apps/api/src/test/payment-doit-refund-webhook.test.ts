@@ -198,8 +198,10 @@ class FakeDoit {
       const known = this.refundsByKey.get(key);
       if (known) return send(200, known);
       const input = JSON.parse(raw) as { amount: number };
+      // Sandbox shape (legend-r7g2): DOIT names the payment in `payment_id`.
       const refund = {
         id: `rf_${hex(8)}`,
+        payment_id: decodeURIComponent(refundPath[1]!),
         status: "succeeded",
         amount: input.amount,
       };
@@ -983,6 +985,98 @@ describe("PAY-04 refund.succeeded carrying only the payment object (path c)", ()
       status: "approved",
       failure_reason: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex 117 Run B (sub-brief 175, P2): refund object with `reference`, and the
+// payment-object path against a refund whose providerRef is DOIT's refund id
+// ---------------------------------------------------------------------------
+
+describe("PAY-04 refund webhooks with real sandbox identities (Codex 117 Run B)", () => {
+  // (a) Assumption: `refund.failed` carries the refund object flat, with
+  // `reference` = the payment intent id (as the sandbox does). `object:
+  // "refund"` wins over `reference`: it must not be read as a payment object.
+  it("PAY-04 refund.failed with object refund, idempotency key and reference fails the refund", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, { attempts: 1 });
+    const body = refundEvent(
+      "refund.failed",
+      flatRefund(refundId, intent.amountIdr, {
+        id: "rf_actual",
+        reference: intent.intentId,
+        status: "failed",
+      }),
+    );
+
+    const response = await deliver(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ received: true, status: "processed" });
+    expect(await eventRows(body.id)).toEqual([
+      expect.objectContaining({ status: "processed" }),
+    ]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "provider_declined",
+    });
+    expect(await intentStatus(intent.intentId)).toBe("paid");
+  });
+
+  // (a') A refund object whose `reference` names another intent is not ours,
+  // even when its idempotency key matches: REFERENCE_MISMATCH, refund kept.
+  it("PAY-04 refund.failed with object refund naming another intent's reference is a REFERENCE_MISMATCH", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, { attempts: 1 });
+    const body = refundEvent(
+      "refund.failed",
+      flatRefund(refundId, intent.amountIdr, {
+        id: "rf_actual",
+        reference: randomUUID(),
+        status: "failed",
+      }),
+    );
+
+    const response = await deliver(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("ignored");
+    expect(await eventRows(body.id)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFERENCE_MISMATCH",
+      }),
+    ]);
+    expect((await refundRow(refundId)).status).toBe("approved");
+  });
+
+  // (b) Assumption: event type `refund.succeeded`; the refund was approved and
+  // already got DOIT's refund id (`rf_actual`) from the POST answer; the
+  // webhook carries only the payment object (`pay_actual` = intent.paymentId).
+  // The refund id must not be overwritten with the payment id.
+  it("PAY-04 refund.succeeded with a payment object completes a refund whose providerRef is the refund id, keeping that id", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, {
+      attempts: 1,
+      providerRef: "rf_actual",
+    });
+    const body = refundEvent(
+      "refund.succeeded",
+      paymentData(intent, "refunded", intent.amountIdr),
+    );
+
+    const response = await deliver(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ received: true, status: "processed" });
+    expect(await eventRows(body.id)).toEqual([
+      expect.objectContaining({ status: "processed" }),
+    ]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "completed",
+      provider_ref: "rf_actual",
+    });
+    expect(await intentStatus(intent.intentId)).toBe("refunded");
   });
 });
 
