@@ -1361,3 +1361,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Merge train: `when` 0191 harus tetap paling besar sesudah 0187–0190 digabung (drizzle melewati migrasi dengan `when` lebih kecil tanpa error).
 - Gangguan: disk Mac penuh (ENOSPC) di tengah gelombang; tes, tsc dan review diulang sesudah CTO membebaskan 23 GB.
 - Gelombang: sesi `9cb2a25e` 36 menit tercatat sesudah compact, 21 subagent (implementer, test-writer, architect, test-runner, Explore), puncak 6 bersamaan, biaya* 8712k; `parallel-report` 05:00: rata-rata 1,34 subagent berjalan, 27 langkah tanpa subagent.
+
+## legend-o032 WS-14 peralatan dan perawatan (engineer, cabang `ws/equipment-maintenance` dari d2080951, 2026-11-10)
+
+- Temuan: registri peralatan, jadwal, tiket kerusakan dengan auto-86 (`disabled_item_ids`), dan gerbang serah terima (OPS-05) sudah ada di m1. Kurang: pengingat servis (event `equipment_service.reminded` ada di kontrak tetapi tidak dipancarkan siapa pun), aksi "servis selesai", tes isolasi tenant perilaku, tes izin, assert `disabled_item_ids`.
+- Dibangun: kolom `maintenance_schedules.reminded_for_due_at` (migrasi 0198, `when` 1794277000000, satu ALTER ADD COLUMN nullable); `sweepEquipmentServiceReminders` (horizon 7 hari, sekali per tanggal jatuh tempo, SKIP LOCKED, batas 200, peralatan retired dilewati) dipasang di relay worker; aturan notifikasi `equipment_service.reminded` (supervisor outlet, cadangan owner; tanpa aturan event dead-letter); `POST /api/operations/maintenance-schedules/:scheduleId/complete` (majukan `next_due_at`, idempoten, audit, `completedAt` masa depan dipotong ke sekarang).
+- Bukti: API 9 file 113 tes lulus (sebelum klem; sesudahnya 2 file 17 tes lulus), root `operations-contract.test.mjs` 13 lulus, tsc shared dan api lewat heavy bersih (api diulang setelah klem), eslint dan prettier bersih, `db:generate` kedua kosong, tes guard RLS migrasi lulus. Review S: 1 reviewer, 1 catatan nyata (completedAt masa depan membungkam pengingat), dibetulkan.
+- Biaya sesi dca0a2b2: total biaya* 1688k (utama 562k, subagent 1127k), 7 subagent (3 Explore, 2 implementer, 1 test-writer, 1 reviewer), puncak 3 bersamaan.

@@ -537,6 +537,42 @@ async function checklistRule(
   };
 }
 
+/** OPS-04: a maintenance schedule is coming due. Same audience as the
+ * checklist alerts: active supervisor and outlet-manager holders whose scope
+ * covers the outlet, owners (tenant-wide) when nobody holds those roles. */
+async function equipmentServiceRemindedRule(input: RuleInput): Promise<Rule> {
+  operationsEventPayloadSchemas["equipment_service.reminded"].parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Equipment service notification requires an outlet");
+  const audience = await audienceOf(input.tx, input.event);
+  const supervisors = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, OPS_ALERT_TEMPLATE_KEYS as never[]),
+    audience,
+  );
+  const userIds =
+    supervisors.length > 0
+      ? supervisors
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "schedule_update",
+      title: "Servis peralatan segera jatuh tempo",
+      body: "Ada peralatan outlet yang jadwal servisnya jatuh tempo dalam 7 hari. Hubungi vendor servis.",
+      link: null,
+    },
+  };
+}
+
 /** FAC-08: the staff on duty answer the emergency button. No on-duty source
  * exists yet, so the audience is active holders of `facility.booth.operate`
  * whose scope covers the incident's outlet. The `emergency` category is the
@@ -833,6 +869,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "equipment_service.reminded":
+      return equipmentServiceRemindedRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
     case "ai_insight.anomaly_detected":

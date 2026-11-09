@@ -73,6 +73,7 @@ import { sweepOverdueServiceRequests } from "./services/service-request.service.
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
+import { sweepEquipmentServiceReminders } from "./services/operations-equipment-reminder.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
 import { createPgBoss, createWorkerRuntime } from "./worker/runtime";
 import {
@@ -502,6 +503,16 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Checklist missed-run sweep failed");
+    }
+    // OPS-04 (legend-o032): remind the outlet supervisors once per due date
+    // when a maintenance schedule is within 7 days of service. Fail closed
+    // like the other sweeps.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepEquipmentServiceReminders(tx, context),
+      );
+    } catch {
+      console.error("Equipment service reminder sweep failed");
     }
     // OPS-03 (legend-sdet): raise the expiry alert for prep labels past their
     // use-by exactly once. Fail closed like the other sweeps.

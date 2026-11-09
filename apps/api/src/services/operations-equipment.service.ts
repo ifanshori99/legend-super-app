@@ -54,6 +54,7 @@ import {
 import {
   acknowledgeShiftHandover,
   assertMaintenanceTicketHasPhoto,
+  completeMaintenanceScheduleInputSchema,
   createEquipmentInputSchema,
   createMaintenanceScheduleInputSchema,
   createMaintenanceTicketInputSchema,
@@ -108,6 +109,9 @@ type UpdateEquipmentInput = z.infer<typeof updateEquipmentInputSchema>;
 type EquipmentTransitionInput = z.infer<typeof transitionEquipmentInputSchema>;
 type CreateMaintenanceScheduleInput = z.infer<
   typeof createMaintenanceScheduleInputSchema
+>;
+type CompleteMaintenanceScheduleInput = z.infer<
+  typeof completeMaintenanceScheduleInputSchema
 >;
 type CreateMaintenanceTicketInput = z.infer<
   typeof createMaintenanceTicketInputSchema
@@ -1074,6 +1078,98 @@ export async function createMaintenanceSchedule(
         intervalDays: row.intervalDays,
         nextDueAt: row.nextDueAt.toISOString(),
         vendorId: row.vendorId,
+      },
+    });
+    await storeIdempotentResult(tx, context, {
+      key: input.idempotencyKey,
+      fingerprint,
+      outletId: row.outletId,
+      resultTable: "maintenance_schedule",
+      resultId: row.id,
+    });
+    return toMaintenanceSchedule(row);
+  });
+}
+
+/** WS-14: a finished service moves the due date one interval past the later of
+ * the completion time and now. `reminded_for_due_at` stays as it was, so the
+ * reminder sweep fires again for the new (different) due date. */
+export async function completeMaintenanceSchedule(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  scheduleId: string,
+  input: CompleteMaintenanceScheduleInput,
+): Promise<MaintenanceSchedule> {
+  const actor = userIdSchema.parse(actorUserId);
+  const fingerprint = requestFingerprint(input, scheduleId);
+  return withTenant(db, context, async (tx) => {
+    const now = new Date();
+    const [located] = await tx
+      .select({ outletId: maintenanceSchedules.outletId })
+      .from(maintenanceSchedules)
+      .where(
+        and(
+          eq(maintenanceSchedules.tenantId, context.tenant.tenantId),
+          eq(maintenanceSchedules.id, scheduleId),
+        ),
+      )
+      .limit(1);
+    if (!located) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_SCHEDULE);
+    assertOutletInScope(context.outletScope, located.outletId);
+    await assertOutletPermission(
+      tx,
+      context,
+      actor,
+      EQUIPMENT_PERMISSION,
+      located.outletId,
+      now,
+    );
+    const [locked] = await tx
+      .select()
+      .from(maintenanceSchedules)
+      .where(
+        and(
+          eq(maintenanceSchedules.tenantId, context.tenant.tenantId),
+          eq(maintenanceSchedules.id, scheduleId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!locked) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_SCHEDULE);
+    const replay = await replayMaintenanceSchedule(
+      tx,
+      context,
+      input.idempotencyKey,
+      fingerprint,
+    );
+    if (replay) return replay;
+    const completedAt = input.completedAt ? new Date(input.completedAt) : now;
+    // A service cannot be completed in the future: a far-future completedAt
+    // would push next_due_at out and silence the reminder (legend-o032).
+    const base = completedAt.getTime() > now.getTime() ? now : completedAt;
+    const nextDueAt = new Date(
+      base.getTime() + locked.intervalDays * 86_400_000,
+    );
+    const [row] = await tx
+      .update(maintenanceSchedules)
+      .set({ nextDueAt, updatedAt: now })
+      .where(
+        and(
+          eq(maintenanceSchedules.tenantId, context.tenant.tenantId),
+          eq(maintenanceSchedules.id, scheduleId),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("Jadwal perawatan gagal diperbarui.");
+    await auditOperations(tx, context, actor, now, {
+      action: "maintenance_schedule.completed",
+      objectType: "maintenance_schedule",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: { nextDueAt: locked.nextDueAt.toISOString() },
+      after: {
+        nextDueAt: row.nextDueAt.toISOString(),
+        completedAt: completedAt.toISOString(),
       },
     });
     await storeIdempotentResult(tx, context, {

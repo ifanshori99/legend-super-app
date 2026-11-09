@@ -1296,6 +1296,13 @@
       "when": 1794270000000,
       "tag": "0191_cash_bank_recon",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1794277000000,
+      "tag": "0198_equipment_service_reminder",
+      "breakpoints": true
     }
   ]
 }
