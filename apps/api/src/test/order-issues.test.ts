@@ -36,7 +36,10 @@ import {
   type EventEnvelope,
 } from "@starter/shared/events";
 import { orderPaidPayloadSchema } from "@starter/shared/pos";
-import { orderIssueSchema } from "@starter/shared/kitchen";
+import {
+  orderIssueSchema,
+  orderIssueViewSchema,
+} from "@starter/shared/kitchen";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -754,6 +757,51 @@ describe("permissions, tenant and outlet isolation", () => {
     expect(await count(tenant.tenantId, "*")).toBeGreaterThan(0);
     expect(await count(tenantB.tenantId, "*")).toBe(0);
     expect(await count(tenant.tenantId, JSON.stringify([ids.outletB]))).toBe(0);
+  });
+});
+
+describe("listOrderIssues projection (legend-0eq7)", () => {
+  it("returns the order label, item name and staff names with each row", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const remake = await api(recorder).report(order.ulid, issueBody(order));
+    const refund = await api(recorder).report(
+      order.ulid,
+      issueBody(order, {
+        type: "complaint",
+        reason: "complaint",
+        employeeId: null,
+        resolution: "manual_refund",
+        approvedBy: supervisor.userId,
+        reasonNote: "Pelanggan kecewa, refund manual disetujui",
+      }),
+    );
+    expect(remake.status).toBe(201);
+    expect(refund.status).toBe(201);
+    const res = await api(recorder).list("?limit=100");
+    expect(res.status).toBe(200);
+    const byId = new Map<string, Record<string, unknown>>(
+      res.body.data.map((row: { id: string }) => [row.id, row]),
+    );
+    const orderNumber = (
+      await owner.query<{ number: string }>(
+        "SELECT number FROM orders WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, order.uuid],
+      )
+    ).rows[0]!.number;
+    expect(byId.get(remake.body.data.id)).toMatchObject({
+      orderLabel: orderNumber,
+      itemName: "Latte",
+      reportedByName: "Pencatat",
+      employeeName: "Koki",
+      approvedByName: null,
+    });
+    expect(byId.get(refund.body.data.id)).toMatchObject({
+      employeeName: null,
+      approvedByName: "Supervisor",
+    });
+    expect(
+      orderIssueViewSchema.safeParse(byId.get(remake.body.data.id)).success,
+    ).toBe(true);
   });
 });
 

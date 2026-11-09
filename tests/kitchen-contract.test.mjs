@@ -594,6 +594,52 @@ test("legend-d60m: kitchen and qr-order share ONE order_issues record shape", ()
   );
 });
 
+test("legend-0eq7: listOrderIssues rows carry order label, item name and staff names", () => {
+  assert.equal(kitchen.orderIssueViews.length, fixtures.orderIssues.length);
+  for (const view of kitchen.orderIssueViews) {
+    assert.equal(kitchen.orderIssueViewSchema.safeParse(view).success, true);
+    assert.ok(view.orderLabel.length > 0 && view.itemName.length > 0);
+    assert.ok(view.reportedByName.length > 0);
+  }
+  const withStaff = kitchen.orderIssueViews.find(
+    (view) => view.employeeId !== null && view.approvedBy !== null,
+  );
+  assert.ok(withStaff);
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...withStaff, itemName: "" })
+      .success,
+    false,
+  );
+  // A staff name exists exactly when its id does.
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...withStaff, employeeName: null })
+      .success,
+    false,
+  );
+  const noStaff = kitchen.orderIssueViews.find(
+    (view) => view.employeeId === null,
+  );
+  assert.ok(noStaff);
+  assert.equal(
+    kitchen.orderIssueViewSchema.safeParse({ ...noStaff, employeeName: "Budi" })
+      .success,
+    false,
+  );
+  // The stored record stays strict: the labels belong to the projection only.
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...withStaff }).success,
+    false,
+  );
+  // The labels are required on the list response.
+  assert.equal(
+    kitchen.listOrderIssues.response.safeParse({
+      data: fixtures.orderIssues,
+      meta: { limit: 25, nextCursor: null },
+    }).success,
+    false,
+  );
+});
+
 test("F12 events: kitchen event names are registered on the WS-04 catalog line", () => {
   const catalog = new Map(
     events.eventCatalog.map((entry) => [entry.name, entry]),
@@ -745,7 +791,7 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   respond(kitchen.getServingTimeSummary, fixtures.servingTimeSummaries);
   respond(kitchen.reportOrderIssue, fixtures.orderIssues[0]);
   kitchen.listOrderIssues.response.parse({
-    data: fixtures.orderIssues,
+    data: kitchen.orderIssueViews,
     meta: { limit: 25, nextCursor: null },
   });
 

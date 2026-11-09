@@ -8,7 +8,7 @@
 // three contracts reference the same records.
 
 import { z, cafeLegendFixtures } from "../core/index.ts";
-import { kitchenFixtureSchema } from "./schemas.ts";
+import { kitchenFixtureSchema, orderIssueViewSchema } from "./schemas.ts";
 
 // Fixtures are written as plain data (`z.input`): branded ids appear only after
 // the schema parses them, which is what the fixture test and the API do.
@@ -1190,6 +1190,36 @@ export const orderIssues: KitchenFixtureInput["orderIssues"] = [
     resolvedAt: null,
   },
 ];
+
+const staffNames: Record<string, string> = {
+  [staffId.cook]: "Budi Santoso",
+  [staffId.barista]: "Sari Wulandari",
+  [staffId.pastry]: "Dewi Lestari",
+  [staffId.supervisor]: "Rina Pratama",
+  [staffId.cashier]: "Agus Hartono",
+};
+const orderLabels: Record<string, string> = {
+  [orderIds.dineIn]: "A-0101",
+  [orderIds.gofood]: "GF-0102",
+  [orderIds.dineInPastry]: "A-0103",
+};
+
+/** `listOrderIssues` rows: each record plus order label, item and staff names (legend-0eq7). */
+export const orderIssueViews: z.input<typeof orderIssueViewSchema>[] =
+  orderIssues.map((issue) => ({
+    ...issue,
+    orderLabel: orderLabels[issue.orderId] ?? "A-0100",
+    itemName:
+      ticketItems.find((item) => item.orderItemId === issue.orderItemId)
+        ?.name ?? "Menu",
+    reportedByName: staffNames[issue.reportedBy] ?? "Staf",
+    employeeName: issue.employeeId
+      ? (staffNames[issue.employeeId] ?? "Staf")
+      : null,
+    approvedByName: issue.approvedBy
+      ? (staffNames[issue.approvedBy] ?? "Staf")
+      : null,
+  }));
 
 export const channelPauses: KitchenFixtureInput["channelPauses"] = [
   {

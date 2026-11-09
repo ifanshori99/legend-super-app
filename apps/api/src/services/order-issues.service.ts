@@ -17,6 +17,7 @@
 //   the outlet and who is not the reporter. The id alone is never proof.
 
 import { and, desc, eq, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -35,8 +36,10 @@ import {
 } from "@starter/shared/inventory";
 import {
   orderIssueSchema,
+  orderIssueViewSchema,
   type CreateOrderIssueInput,
   type OrderIssue,
+  type OrderIssueView,
   type OrderIssueType,
 } from "@starter/shared/kitchen";
 import { db } from "../db/index.ts";
@@ -45,6 +48,7 @@ import { orderIssues } from "../db/schema/kds-issues.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
+import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -404,7 +408,7 @@ export async function listOrderIssues(
   outletIdRaw: string,
   query: ListOrderIssuesQuery,
   now: Date,
-): Promise<CursorPage<OrderIssue>> {
+): Promise<CursorPage<OrderIssueView>> {
   const outletId = outletIdSchema.parse(outletIdRaw);
   assertOutletInScope(context.outletScope, outletId);
   const limit = query.limit ?? DEFAULT_LIMIT;
@@ -453,16 +457,54 @@ export async function listOrderIssues(
         )!,
       );
     }
+    // Readable labels (legend-0eq7): the order number, the line name snapshot
+    // and the staff names, joined inside the caller's tenant transaction.
+    const reporter = alias(user, "issue_reporter");
+    const employee = alias(user, "issue_employee");
+    const approver = alias(user, "issue_approver");
     const rows = await tx
-      .select()
+      .select({
+        issue: orderIssues,
+        orderLabel: orders.number,
+        itemName: orderItems.name,
+        reportedByName: reporter.name,
+        employeeName: employee.name,
+        approvedByName: approver.name,
+      })
       .from(orderIssues)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, orderIssues.tenantId),
+          eq(orders.id, orderIssues.orderId),
+        ),
+      )
+      .innerJoin(
+        orderItems,
+        and(
+          eq(orderItems.tenantId, orderIssues.tenantId),
+          eq(orderItems.id, orderIssues.orderItemId),
+        ),
+      )
+      .innerJoin(reporter, eq(reporter.id, orderIssues.reportedBy))
+      .leftJoin(employee, eq(employee.id, orderIssues.employeeId))
+      .leftJoin(approver, eq(approver.id, orderIssues.approvedBy))
       .where(and(...filters))
       .orderBy(desc(orderIssues.createdAt), desc(orderIssues.id))
       .limit(limit + 1);
     const page = rows.slice(0, limit);
-    const last = page.at(-1);
+    const last = page.at(-1)?.issue;
     return {
-      data: page.map(toIssue),
+      data: page.map((row) =>
+        orderIssueViewSchema.parse({
+          ...toIssue(row.issue),
+          orderLabel: row.orderLabel,
+          itemName: row.itemName,
+          reportedByName: row.reportedByName,
+          employeeName: row.employeeName,
+          approvedByName: row.approvedByName,
+        }),
+      ),
       meta: {
         limit,
         nextCursor:

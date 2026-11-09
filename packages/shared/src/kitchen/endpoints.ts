@@ -33,6 +33,7 @@ import {
   kitchenTicketItemSchema,
   orderIdSchema,
   orderIssueSchema,
+  orderIssueViewSchema,
   orderIssueTypeSchema,
   pacingSnapshotSchema,
   pickupCallSchema,
@@ -308,7 +309,10 @@ export const reportOrderIssue = defineEndpoint({
   response: dataResponseSchema(orderIssueSchema),
 });
 
-/** Remake/comp log for the kitchen analytics screen. */
+/**
+ * Remake/comp log for the kitchen analytics screen. Rows carry the order label,
+ * item name and staff names (legend-0eq7), so the UI shows no id.
+ */
 export const listOrderIssues = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/order-issues",
@@ -317,5 +321,5 @@ export const listOrderIssues = defineEndpoint({
     type: orderIssueTypeSchema.optional(),
     stationId: stationIdSchema.optional(),
   }),
-  response: cursorPageSchema(orderIssueSchema),
+  response: cursorPageSchema(orderIssueViewSchema),
 });
