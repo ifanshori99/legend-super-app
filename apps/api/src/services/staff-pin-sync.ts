@@ -213,6 +213,12 @@ export const staffPinSyncQuerySchema = z.strictObject({
     .min(1)
     .max(PAGE_LIMIT_MAX)
     .default(STAFF_PIN_SYNC_LIMIT_DEFAULT),
+  // legend-r11j7: opt-in. An edge on the code before the revision parses the
+  // page with a strict record schema and refuses any record that carries
+  // `attemptRevision`, and the cloud is released first (docs/deployment.md),
+  // so the cloud only sends it to an edge that asks. A new edge always asks,
+  // so it needs a cloud that knows this flag (cloud first, as documented).
+  revision: z.literal("1").optional(),
 });
 export type StaffPinSyncQuery = z.infer<typeof staffPinSyncQuerySchema>;
 
@@ -308,7 +314,7 @@ export async function listStaffPinRecordsSince(
   query: StaffPinSyncQuery,
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
-  const { limit } = staffPinSyncQuerySchema.parse(query);
+  const { limit, revision } = staffPinSyncQuerySchema.parse(query);
   const stored = parseWatermark(query.since);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
@@ -402,7 +408,10 @@ export async function listStaffPinRecordsSince(
         lockedUntil: row.lockedUntil?.toISOString() ?? null,
         updatedAt: row.updatedAt.toISOString(),
         pinGenerationAt: generation,
-        attemptRevision: Number(row.attemptRevision),
+        // legend-r11j7: only for an edge that asked (`revision=1`).
+        ...(revision === "1"
+          ? { attemptRevision: Number(row.attemptRevision) }
+          : {}),
       }),
     ),
     meta: {
@@ -603,7 +612,8 @@ export async function applyStaffPinRecords(
       // resync) keeps the same revision and still changes nothing. Without a
       // revision on either side (older cloud export, or the first pull after
       // the upgrade: null baseline) the value comparison above applies once,
-      // and the revision is stored as the baseline. The raise still needs
+      // and the revision is stored as the baseline (a record without one
+      // stores null: the baseline revision is unknown again). The raise still needs
       // the record above the local counter, the lock logic stays by value.
       const revisionKnown =
         record.attemptRevision !== undefined &&
@@ -621,9 +631,10 @@ export async function applyStaffPinRecords(
         (local.lockedUntil === null ||
           recordLock.getTime() > local.lockedUntil.getTime());
       const baselineMoved =
-        (record.attemptRevision !== undefined &&
-          (local.cloudAttemptRevision === null ||
-            record.attemptRevision !== Number(local.cloudAttemptRevision))) ||
+        (record.attemptRevision ?? null) !==
+          (local.cloudAttemptRevision === null
+            ? null
+            : Number(local.cloudAttemptRevision)) ||
         local.cloudFailedAttempts !== record.failedAttempts ||
         (local.cloudLockedUntil?.getTime() ?? null) !==
           (recordLock?.getTime() ?? null);
@@ -640,8 +651,10 @@ export async function applyStaffPinRecords(
           ...(lockRaised ? { lockedUntil: recordLock } : {}),
           cloudFailedAttempts: record.failedAttempts,
           cloudLockedUntil: recordLock,
-          cloudAttemptRevision:
-            record.attemptRevision ?? local.cloudAttemptRevision,
+          // A record without a revision leaves the baseline revision unknown
+          // (null), as on the insert and replace paths: keeping the old one
+          // would compare the next record against a stale revision.
+          cloudAttemptRevision: record.attemptRevision ?? null,
           pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
           cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
         })

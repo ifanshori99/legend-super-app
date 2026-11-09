@@ -252,6 +252,8 @@ export async function setStaffPin(
       // merge drop a cloud failure that equals the old baseline value.
       cloudFailedAttempts: null,
       cloudLockedUntil: null,
+      // legend-r11j7: the cloud revision baseline belongs to the old pin too.
+      cloudAttemptRevision: null,
     };
     // Order key of the generation (Codex 160 C1), never below the current
     // one (round 3 R2): a clock stepping back still makes a newer key. The

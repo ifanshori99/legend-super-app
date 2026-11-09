@@ -109,7 +109,7 @@ async function staffWithPin(
 async function pullAll(
   node: VerifiedEdgeNode,
   since: string | undefined,
-  options: { limit?: number } = {},
+  options: { limit?: number; revision?: "1" } = {},
 ) {
   const records: StaffPinEdgeRecord[] = [];
   let cursor = since;
@@ -118,6 +118,7 @@ async function pullAll(
     const result = await listStaffPinRecordsSince(node, {
       since: cursor,
       limit: options.limit ?? 100,
+      revision: options.revision,
     });
     records.push(...result.data);
     watermark = result.meta.watermark;
@@ -246,10 +247,11 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
     ])
       expect(serialized).not.toContain(secret);
     const record = page.records.find((row) => row.userId === user)!;
+    // legend-r11j7: no `attemptRevision` unless the edge asked for it (an old
+    // edge's strict record schema refuses the extra key).
     expect(Object.keys(record).sort()).toEqual(
       [
         "algorithm",
-        "attemptRevision",
         "failedAttempts",
         "id",
         "lockedUntil",
@@ -263,6 +265,11 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
         "updatedAt",
         "userId",
       ].sort(),
+    );
+    const flagged = await pullAll(bandungNode, undefined, { revision: "1" });
+    const withRevision = flagged.records.find((row) => row.userId === user)!;
+    expect(Object.keys(withRevision).sort()).toEqual(
+      [...Object.keys(record), "attemptRevision"].sort(),
     );
     const offline = await verifyStaffPinOffline({
       record,
@@ -386,6 +393,19 @@ describe("legend-obh5 GET /api/edge-sync/staff-pin-records", () => {
       .query({ limit: 0 })
       .set(bearer(BANDUNG_CREDENTIAL));
     expect(limit.status).toBe(422);
+    // legend-r11j7: `revision` is an opt-in flag, only "1" is accepted.
+    const flag = await request(app)
+      .get(path)
+      .query({ revision: "1" })
+      .set(bearer(BANDUNG_CREDENTIAL));
+    expect(flag.status).toBe(200);
+    for (const row of flag.body.data as StaffPinEdgeRecord[])
+      expect(typeof row.attemptRevision).toBe("number");
+    const badFlag = await request(app)
+      .get(path)
+      .query({ revision: "2" })
+      .set(bearer(BANDUNG_CREDENTIAL));
+    expect(badFlag.status).toBe(422);
     domainTenant = randomUUID();
     const mismatch = await request(app)
       .get(path)

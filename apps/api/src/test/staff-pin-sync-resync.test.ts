@@ -104,15 +104,17 @@ async function cloudRecord(
   // A transaction of another test file that is open holds the export horizon
   // back for a moment, so poll instead of reading once.
   for (let attempt = 0; attempt < 50; attempt++) {
-    const page = await listStaffPinRecordsSince(node, { limit: 100 });
+    const page = await listStaffPinRecordsSince(node, {
+      limit: 100,
+      revision: withRevision ? "1" : undefined,
+    });
     const found = page.data.find((row) => row.userId === userId);
     if (found) {
       await owner.query(
         "DELETE FROM staff_pins WHERE tenant_id = $1 AND user_id = $2",
         [tenantId, userId],
       );
-      if (withRevision) return found;
-      return { ...found, attemptRevision: undefined };
+      return found;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -403,6 +405,51 @@ describe("legend-r11j7 counter ABA between two pulls", () => {
     const row = await pinRow(userId);
     expect(row.failed_attempts).toBe(0);
     expect(row.cloud_attempt_revision).toBe(String(r + 3));
+  });
+
+  it("a record without a revision resets the revision baseline to unknown, so the next pull compares by value (legend-r11j7)", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId, true);
+    const r = record.attemptRevision!;
+    await applyStaffPinRecords(edgeContext, [record]);
+    expect((await pinRow(userId)).cloud_attempt_revision).toBe(String(r));
+
+    // An old cloud (no flag support) sends no revision: the stored revision
+    // would be stale after this merge, so the baseline becomes unknown.
+    const legacy: StaffPinEdgeRecord = { ...record };
+    delete legacy.attemptRevision;
+    await applyStaffPinRecords(edgeContext, [{ ...legacy, failedAttempts: 3 }]);
+    const merged = await pinRow(userId);
+    expect(merged.failed_attempts).toBe(3);
+    expect(merged.cloud_attempt_revision).toBeNull();
+    await clearOnEdge(userId);
+
+    // The cloud is upgraded; its revision for the same value 3 is new. The
+    // value equals the baseline value: a replay, nothing restored, and the
+    // revision is stored now.
+    await applyStaffPinRecords(edgeContext, [
+      { ...record, failedAttempts: 3, attemptRevision: r + 3 },
+    ]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(0);
+    expect(row.cloud_attempt_revision).toBe(String(r + 3));
+  });
+
+  it("a new local PIN clears the cloud revision baseline with the other cloud baselines (legend-r11j7)", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId, true);
+    await applyStaffPinRecords(edgeContext, [record]);
+    expect((await pinRow(userId)).cloud_attempt_revision).not.toBeNull();
+    await setStaffPin(
+      tenant,
+      userId,
+      { outletId: bandung, userId },
+      { pin: "730418" },
+      { now: new Date(Date.now() - 5 * MINUTE) },
+    );
+    const row = await pinRow(userId);
+    expect(row.cloud_failed_attempts).toBeNull();
+    expect(row.cloud_attempt_revision).toBeNull();
   });
 
   it("the trigger bumps attempt_revision on a counter, lock or hash change only, and a writer cannot set it", async () => {
