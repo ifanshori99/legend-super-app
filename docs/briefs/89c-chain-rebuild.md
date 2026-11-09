@@ -63,3 +63,4 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - testdb-cleanup: S30:P9mkl:G7h0a
 - Ditolak hook RAM: lapor ke CTO saja.
 - 09-11 antrean CTO (prioritas rendah): ws/testdb-cleanup bd04eef1 (tanpa migrasi; compose.test.yaml mem_limit 512m; bila 'connection terminated' naikkan STARTER_TEST_PG_MEM default ke 768m). Pemilik G7h0a.
+- 09-11 antrean CTO (basis m1 cc3e778c, pemilik G3dvi): fix-codex-refund bcd745e6 (P1 uang), fix-po-pdf-font 72c15e21 (pdf-lib 1.17.1 + @pdf-lib/fontkit 1.1.1, pnpm-lock berubah; font ke dist/fonts lewat tsup publicDir; cek build API).
