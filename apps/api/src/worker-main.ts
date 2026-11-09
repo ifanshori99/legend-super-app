@@ -22,9 +22,12 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import {
+  expireStaleQueueNotifications,
+  releaseExpiredSlotHolds,
+} from "./services/facility-slots.service.ts";
 import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
 import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
-import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import {
   deliverInventoryGlEvent,
@@ -224,6 +227,15 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Facility hold expiry sweep failed");
+    }
+    // FAC-02 (legend-ke4z): a notified queue guest who did not claim the unit
+    // in time expires and the next guest is notified.
+    try {
+      await withTenant(db, context, (tx) =>
+        expireStaleQueueNotifications(tx, context),
+      );
+    } catch {
+      console.error("Facility queue claim expiry sweep failed");
     }
     // RSV-01/RSV-02 (legend-t8bz): release DP holds whose link expired unpaid
     // or was never attached, and retry pending DP refund requests. Same

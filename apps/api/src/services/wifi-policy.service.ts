@@ -26,6 +26,7 @@ import { floorZones } from "../db/schema/floor.ts";
 import { wifiPolicies } from "../db/schema/facility.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { assertConfigFresh } from "./facility-config-guard.ts";
 import {
   assertFacilityPermission,
   auditFacility,
@@ -73,6 +74,7 @@ export function toWifiPolicy(row: PolicyRow): WifiPolicy {
     fullSpeedKbps: row.fullSpeedKbps,
     minSpendPerHourIdr: row.minSpendPerHourIdr,
     tierBonusMinutes: row.tierBonusMinutes,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -156,6 +158,7 @@ export async function putWifiPolicy(
       fullSpeedKbps: input.fullSpeedKbps,
       minSpendPerHourIdr: input.minSpendPerHourIdr,
       tierBonusMinutes: input.tierBonusMinutes,
+      updatedAt: now.toISOString(),
     });
     const [existing] = await tx
       .select()
@@ -178,6 +181,9 @@ export async function putWifiPolicy(
         CONFIG_PERMISSION,
         existing.outletId,
       );
+    // Optimistic lock (legend-6jms): `null` = create, a stamp = replace that
+    // exact version; anything else is a 409.
+    assertConfigFresh(existing?.updatedAt ?? null, input.expectedUpdatedAt);
     const values = {
       tenantId: context.tenant.tenantId,
       outletId: zone.outletId,
@@ -217,13 +223,27 @@ export async function putWifiPolicy(
       objectType: "wifi_policy",
       objectId: row.id,
       outletId: row.outletId,
-      before: existing
-        ? { id: existing.id, facilityId: existing.facilityId }
-        : null,
-      after: { id: row.id, facilityId: row.facilityId },
+      before: existing ? policyAuditValues(existing) : null,
+      after: policyAuditValues(row),
     });
     return toWifiPolicy(row);
   });
+}
+
+/** Quota numbers of a policy, kept readable in the audit (old + new). */
+function policyAuditValues(row: PolicyRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    facilityId: row.facilityId,
+    freeMinutes: row.freeMinutes,
+    peakFreeMinutes: row.peakFreeMinutes,
+    spendPerExtraHourIdr: row.spendPerExtraHourIdr,
+    extraMinutes: row.extraMinutes,
+    maxDevices: row.maxDevices,
+    minSpendPerHourIdr: row.minSpendPerHourIdr,
+    baseSpeedKbps: row.baseSpeedKbps,
+    fullSpeedKbps: row.fullSpeedKbps,
+  };
 }
 
 /** The floor zone a policy applies to; RLS hides other outlets (TEN-03). */

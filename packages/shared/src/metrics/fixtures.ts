@@ -332,7 +332,7 @@ const definitionInputs = [
     },
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet", "facility"],
+    dimensions: ["outlet", "facility", "unit"],
     grain: "day",
     officiality: "live",
     sourceReport: {

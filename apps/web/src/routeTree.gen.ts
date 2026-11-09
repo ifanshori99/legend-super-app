@@ -200,11 +200,16 @@ import { Route as KelolaKelolaPromoVoucherRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaRosterIndexRouteImport } from './routes/_kelola/kelola.roster.index'
 import { Route as KelolaKelolaRosterTemplateRouteImport } from './routes/_kelola/kelola.roster.template'
 import { Route as KelolaKelolaSopIndexRouteImport } from './routes/_kelola/kelola.sop.index'
+import { Route as KelolaReportsFacilityCleaningTimeRouteImport } from './routes/_kelola/reports.facility.cleaning-time'
 import { Route as KelolaReportsFacilityFnbConversionRouteImport } from './routes/_kelola/reports.facility.fnb-conversion'
+import { Route as KelolaReportsFacilityIncidentsRouteImport } from './routes/_kelola/reports.facility.incidents'
 import { Route as KelolaReportsFacilityOccupancyRouteImport } from './routes/_kelola/reports.facility.occupancy'
+import { Route as KelolaReportsFacilityOvertimeRouteImport } from './routes/_kelola/reports.facility.overtime'
+import { Route as KelolaReportsFacilityProductRevenueRouteImport } from './routes/_kelola/reports.facility.product-revenue'
 import { Route as KelolaReportsFacilityRevenueRouteImport } from './routes/_kelola/reports.facility.revenue'
 import { Route as KelolaReportsFacilityRevpashRouteImport } from './routes/_kelola/reports.facility.revpash'
 import { Route as KelolaReportsFacilitySubscriptionsRouteImport } from './routes/_kelola/reports.facility.subscriptions'
+import { Route as KelolaReportsFacilityUnitUtilizationRouteImport } from './routes/_kelola/reports.facility.unit-utilization'
 import { Route as KelolaReportsFacilityWifiRouteImport } from './routes/_kelola/reports.facility.wifi'
 import { Route as KelolaReportsSalesDailyRouteImport } from './routes/_kelola/reports.sales.daily'
 import { Route as KelolaReportsSalesDiscountRouteImport } from './routes/_kelola/reports.sales.discount'
@@ -1284,16 +1289,40 @@ const KelolaKelolaSopIndexRoute = KelolaKelolaSopIndexRouteImport.update({
   path: '/kelola/sop/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaReportsFacilityCleaningTimeRoute =
+  KelolaReportsFacilityCleaningTimeRouteImport.update({
+    id: '/reports/facility/cleaning-time',
+    path: '/reports/facility/cleaning-time',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityFnbConversionRoute =
   KelolaReportsFacilityFnbConversionRouteImport.update({
     id: '/reports/facility/fnb-conversion',
     path: '/reports/facility/fnb-conversion',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsFacilityIncidentsRoute =
+  KelolaReportsFacilityIncidentsRouteImport.update({
+    id: '/reports/facility/incidents',
+    path: '/reports/facility/incidents',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityOccupancyRoute =
   KelolaReportsFacilityOccupancyRouteImport.update({
     id: '/reports/facility/occupancy',
     path: '/reports/facility/occupancy',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityOvertimeRoute =
+  KelolaReportsFacilityOvertimeRouteImport.update({
+    id: '/reports/facility/overtime',
+    path: '/reports/facility/overtime',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityProductRevenueRoute =
+  KelolaReportsFacilityProductRevenueRouteImport.update({
+    id: '/reports/facility/product-revenue',
+    path: '/reports/facility/product-revenue',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaReportsFacilityRevenueRoute =
@@ -1312,6 +1341,12 @@ const KelolaReportsFacilitySubscriptionsRoute =
   KelolaReportsFacilitySubscriptionsRouteImport.update({
     id: '/reports/facility/subscriptions',
     path: '/reports/facility/subscriptions',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsFacilityUnitUtilizationRoute =
+  KelolaReportsFacilityUnitUtilizationRouteImport.update({
+    id: '/reports/facility/unit-utilization',
+    path: '/reports/facility/unit-utilization',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaReportsFacilityWifiRoute =
@@ -1771,11 +1806,16 @@ export interface FileRoutesByFullPath {
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
@@ -2006,11 +2046,16 @@ export interface FileRoutesByTo {
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
@@ -2256,11 +2301,16 @@ export interface FileRoutesById {
   '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
   '/_kelola/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/_kelola/kelola/roster/template': typeof KelolaKelolaRosterTemplateRoute
+  '/_kelola/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/_kelola/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
+  '/_kelola/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
   '/_kelola/reports/facility/occupancy': typeof KelolaReportsFacilityOccupancyRoute
+  '/_kelola/reports/facility/overtime': typeof KelolaReportsFacilityOvertimeRoute
+  '/_kelola/reports/facility/product-revenue': typeof KelolaReportsFacilityProductRevenueRoute
   '/_kelola/reports/facility/revenue': typeof KelolaReportsFacilityRevenueRoute
   '/_kelola/reports/facility/revpash': typeof KelolaReportsFacilityRevpashRoute
   '/_kelola/reports/facility/subscriptions': typeof KelolaReportsFacilitySubscriptionsRoute
+  '/_kelola/reports/facility/unit-utilization': typeof KelolaReportsFacilityUnitUtilizationRoute
   '/_kelola/reports/facility/wifi': typeof KelolaReportsFacilityWifiRoute
   '/_kelola/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/_kelola/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
@@ -2496,11 +2546,16 @@ export interface FileRouteTypes {
     | '/kelola/promo/tumpang-tindih'
     | '/kelola/promo/voucher'
     | '/kelola/roster/template'
+    | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
+    | '/reports/facility/incidents'
     | '/reports/facility/occupancy'
+    | '/reports/facility/overtime'
+    | '/reports/facility/product-revenue'
     | '/reports/facility/revenue'
     | '/reports/facility/revpash'
     | '/reports/facility/subscriptions'
+    | '/reports/facility/unit-utilization'
     | '/reports/facility/wifi'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
@@ -2731,11 +2786,16 @@ export interface FileRouteTypes {
     | '/kelola/promo/tumpang-tindih'
     | '/kelola/promo/voucher'
     | '/kelola/roster/template'
+    | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
+    | '/reports/facility/incidents'
     | '/reports/facility/occupancy'
+    | '/reports/facility/overtime'
+    | '/reports/facility/product-revenue'
     | '/reports/facility/revenue'
     | '/reports/facility/revpash'
     | '/reports/facility/subscriptions'
+    | '/reports/facility/unit-utilization'
     | '/reports/facility/wifi'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
@@ -2980,11 +3040,16 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/promo/tumpang-tindih'
     | '/_kelola/kelola/promo/voucher'
     | '/_kelola/kelola/roster/template'
+    | '/_kelola/reports/facility/cleaning-time'
     | '/_kelola/reports/facility/fnb-conversion'
+    | '/_kelola/reports/facility/incidents'
     | '/_kelola/reports/facility/occupancy'
+    | '/_kelola/reports/facility/overtime'
+    | '/_kelola/reports/facility/product-revenue'
     | '/_kelola/reports/facility/revenue'
     | '/_kelola/reports/facility/revpash'
     | '/_kelola/reports/facility/subscriptions'
+    | '/_kelola/reports/facility/unit-utilization'
     | '/_kelola/reports/facility/wifi'
     | '/_kelola/reports/sales/daily'
     | '/_kelola/reports/sales/discount'
@@ -4421,6 +4486,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaSopIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/facility/cleaning-time': {
+      id: '/_kelola/reports/facility/cleaning-time'
+      path: '/reports/facility/cleaning-time'
+      fullPath: '/reports/facility/cleaning-time'
+      preLoaderRoute: typeof KelolaReportsFacilityCleaningTimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/fnb-conversion': {
       id: '/_kelola/reports/facility/fnb-conversion'
       path: '/reports/facility/fnb-conversion'
@@ -4428,11 +4500,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsFacilityFnbConversionRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/facility/incidents': {
+      id: '/_kelola/reports/facility/incidents'
+      path: '/reports/facility/incidents'
+      fullPath: '/reports/facility/incidents'
+      preLoaderRoute: typeof KelolaReportsFacilityIncidentsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/occupancy': {
       id: '/_kelola/reports/facility/occupancy'
       path: '/reports/facility/occupancy'
       fullPath: '/reports/facility/occupancy'
       preLoaderRoute: typeof KelolaReportsFacilityOccupancyRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/overtime': {
+      id: '/_kelola/reports/facility/overtime'
+      path: '/reports/facility/overtime'
+      fullPath: '/reports/facility/overtime'
+      preLoaderRoute: typeof KelolaReportsFacilityOvertimeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/product-revenue': {
+      id: '/_kelola/reports/facility/product-revenue'
+      path: '/reports/facility/product-revenue'
+      fullPath: '/reports/facility/product-revenue'
+      preLoaderRoute: typeof KelolaReportsFacilityProductRevenueRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/reports/facility/revenue': {
@@ -4454,6 +4547,13 @@ declare module '@tanstack/react-router' {
       path: '/reports/facility/subscriptions'
       fullPath: '/reports/facility/subscriptions'
       preLoaderRoute: typeof KelolaReportsFacilitySubscriptionsRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/facility/unit-utilization': {
+      id: '/_kelola/reports/facility/unit-utilization'
+      path: '/reports/facility/unit-utilization'
+      fullPath: '/reports/facility/unit-utilization'
+      preLoaderRoute: typeof KelolaReportsFacilityUnitUtilizationRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/reports/facility/wifi': {
@@ -5037,11 +5137,16 @@ interface KelolaRouteChildren {
   KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
   KelolaKelolaPromoVoucherRoute: typeof KelolaKelolaPromoVoucherRoute
   KelolaKelolaRosterTemplateRoute: typeof KelolaKelolaRosterTemplateRoute
+  KelolaReportsFacilityCleaningTimeRoute: typeof KelolaReportsFacilityCleaningTimeRoute
   KelolaReportsFacilityFnbConversionRoute: typeof KelolaReportsFacilityFnbConversionRoute
+  KelolaReportsFacilityIncidentsRoute: typeof KelolaReportsFacilityIncidentsRoute
   KelolaReportsFacilityOccupancyRoute: typeof KelolaReportsFacilityOccupancyRoute
+  KelolaReportsFacilityOvertimeRoute: typeof KelolaReportsFacilityOvertimeRoute
+  KelolaReportsFacilityProductRevenueRoute: typeof KelolaReportsFacilityProductRevenueRoute
   KelolaReportsFacilityRevenueRoute: typeof KelolaReportsFacilityRevenueRoute
   KelolaReportsFacilityRevpashRoute: typeof KelolaReportsFacilityRevpashRoute
   KelolaReportsFacilitySubscriptionsRoute: typeof KelolaReportsFacilitySubscriptionsRoute
+  KelolaReportsFacilityUnitUtilizationRoute: typeof KelolaReportsFacilityUnitUtilizationRoute
   KelolaReportsFacilityWifiRoute: typeof KelolaReportsFacilityWifiRoute
   KelolaReportsSalesDailyRoute: typeof KelolaReportsSalesDailyRoute
   KelolaReportsSalesDiscountRoute: typeof KelolaReportsSalesDiscountRoute
@@ -5188,13 +5293,21 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,
   KelolaKelolaPromoVoucherRoute: KelolaKelolaPromoVoucherRoute,
   KelolaKelolaRosterTemplateRoute: KelolaKelolaRosterTemplateRoute,
+  KelolaReportsFacilityCleaningTimeRoute:
+    KelolaReportsFacilityCleaningTimeRoute,
   KelolaReportsFacilityFnbConversionRoute:
     KelolaReportsFacilityFnbConversionRoute,
+  KelolaReportsFacilityIncidentsRoute: KelolaReportsFacilityIncidentsRoute,
   KelolaReportsFacilityOccupancyRoute: KelolaReportsFacilityOccupancyRoute,
+  KelolaReportsFacilityOvertimeRoute: KelolaReportsFacilityOvertimeRoute,
+  KelolaReportsFacilityProductRevenueRoute:
+    KelolaReportsFacilityProductRevenueRoute,
   KelolaReportsFacilityRevenueRoute: KelolaReportsFacilityRevenueRoute,
   KelolaReportsFacilityRevpashRoute: KelolaReportsFacilityRevpashRoute,
   KelolaReportsFacilitySubscriptionsRoute:
     KelolaReportsFacilitySubscriptionsRoute,
+  KelolaReportsFacilityUnitUtilizationRoute:
+    KelolaReportsFacilityUnitUtilizationRoute,
   KelolaReportsFacilityWifiRoute: KelolaReportsFacilityWifiRoute,
   KelolaReportsSalesDailyRoute: KelolaReportsSalesDailyRoute,
   KelolaReportsSalesDiscountRoute: KelolaReportsSalesDiscountRoute,

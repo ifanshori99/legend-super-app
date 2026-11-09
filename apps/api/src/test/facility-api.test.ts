@@ -315,31 +315,51 @@ describe("Facility configuration API", () => {
     const area = await client
       .post("/api/facility/areas")
       .set(originHeader)
-      .send({ facilityId, name: "Area Wanita", sortOrder: 1 });
+      .send({
+        facilityId,
+        name: "Area Wanita",
+        sortOrder: 1,
+        idempotencyKey: randomUUID(),
+      });
     expect(area.status, JSON.stringify(area.body)).toBe(201);
     createFacilityArea.response.parse(area.body);
     const duplicateArea = await client
       .post("/api/facility/areas")
       .set(originHeader)
-      .send({ facilityId, name: "Area Wanita" });
+      .send({ facilityId, name: "Area Wanita", idempotencyKey: randomUUID() });
     expect(duplicateArea.status).toBe(409);
     const unit = await client
       .post("/api/facility/units")
       .set(originHeader)
-      .send({ facilityId, areaId: area.body.data.id, code: "W1" });
+      .send({
+        facilityId,
+        areaId: area.body.data.id,
+        code: "W1",
+        idempotencyKey: randomUUID(),
+      });
     expect(unit.status, JSON.stringify(unit.body)).toBe(201);
     createFacilityUnit.response.parse(unit.body);
     expect(unit.body.data.status).toBe("available");
     const duplicateUnit = await client
       .post("/api/facility/units")
       .set(originHeader)
-      .send({ facilityId, areaId: area.body.data.id, code: "W1" });
+      .send({
+        facilityId,
+        areaId: area.body.data.id,
+        code: "W1",
+        idempotencyKey: randomUUID(),
+      });
     expect(duplicateUnit.status).toBe(409);
     // An area of another facility is refused (not a silent re-parent).
     const wrongArea = await client
       .post("/api/facility/units")
       .set(originHeader)
-      .send({ facilityId, areaId: randomUUID(), code: "W2" });
+      .send({
+        facilityId,
+        areaId: randomUUID(),
+        code: "W2",
+        idempotencyKey: randomUUID(),
+      });
     expect(wrongArea.status).toBe(404);
     const audit = await owner.query(
       `SELECT count(*)::int AS n FROM audit_logs
@@ -352,10 +372,19 @@ describe("Facility configuration API", () => {
 
   it("updates the session length, which changes the slot grid (PUT /facilities/:id)", async () => {
     const { client } = await ownerClient();
+    // The editor echoes the stamp it read (legend-6jms).
+    const config = await client.get(
+      `/api/facility/config?facilityId=${facilityId}`,
+    );
+    expect(config.status, JSON.stringify(config.body)).toBe(200);
     const response = await client
       .put(`/api/facility/facilities/${facilityId}`)
       .set(originHeader)
-      .send({ sessionMinutes: 30, cleaningMinutes: 15 });
+      .send({
+        sessionMinutes: 30,
+        cleaningMinutes: 15,
+        expectedUpdatedAt: config.body.data.facility.updatedAt,
+      });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data.sessionMinutes).toBe(30);
     const availability = await client.get(availabilityPath());
@@ -368,7 +397,7 @@ describe("Facility configuration API", () => {
         await client
           .put(`/api/facility/facilities/${facilityId}`)
           .set(originHeader)
-          .send({})
+          .send({ expectedUpdatedAt: response.body.data.updatedAt })
       ).status,
     ).toBe(422);
     expect(
@@ -376,7 +405,10 @@ describe("Facility configuration API", () => {
         await client
           .put(`/api/facility/facilities/${facilityId}`)
           .set(originHeader)
-          .send({ sessionMinutes: 481 })
+          .send({
+            sessionMinutes: 481,
+            expectedUpdatedAt: response.body.data.updatedAt,
+          })
       ).status,
     ).toBe(422);
   });

@@ -176,6 +176,7 @@ export const facilityUnits = pgTable(
       .default("available"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt,
+    /** Configuration stamp only; a status transition does not move it. */
     updatedAt,
   },
   (table) => [

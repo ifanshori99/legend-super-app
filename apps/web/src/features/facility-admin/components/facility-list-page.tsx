@@ -31,13 +31,12 @@ import {
 } from "@/components/ui/table";
 import { ApiError } from "@/lib/api/errors";
 import { useTenantContext } from "@/lib/tenant-context";
-import { useFacilities, useFacilityConfigSummaries } from "../hooks.ts";
+import { useFacilities } from "../hooks.ts";
 import {
   facilityStatusKey,
   facilityTypeLabel,
   LIST_PAGE_LIMIT,
   summarizeOperatingHours,
-  summarizeUnits,
 } from "../lib.ts";
 
 export function FacilityListPage() {
@@ -47,22 +46,9 @@ export function FacilityListPage() {
 
   const listQuery = useFacilities({ limit: LIST_PAGE_LIMIT });
   const facilities = listQuery.data?.data ?? [];
-  const configQueries = useFacilityConfigSummaries(
-    facilities.map((facility) => facility.id),
-  );
 
-  const rows = facilities.map((facility, index) => ({
-    facility,
-    config: configQueries[index]?.data,
-  }));
-  const configsPending = configQueries.some((query) => query.isPending);
-  const configsFailed = configQueries.some((query) => query.isError);
-  const firstError =
-    listQuery.error ?? configQueries.find((query) => query.isError)?.error;
-
-  const loading =
-    listQuery.isPending || (facilities.length > 0 && configsPending);
-  const failed = listQuery.isError || configsFailed;
+  const loading = listQuery.isPending;
+  const failed = listQuery.isError;
   const empty = !loading && !failed && facilities.length === 0;
   const state: DataState = loading
     ? "loading"
@@ -73,22 +59,20 @@ export function FacilityListPage() {
         : "ready";
 
   const offline =
-    firstError instanceof ApiError && firstError.code === "NETWORK_ERROR";
+    listQuery.error instanceof ApiError &&
+    listQuery.error.code === "NETWORK_ERROR";
 
   const needle = search.trim().toLocaleLowerCase("id-ID");
-  const filtered = rows.filter((row) =>
-    row.facility.name.toLocaleLowerCase("id-ID").includes(needle),
+  const filtered = facilities.filter((facility) =>
+    facility.name.toLocaleLowerCase("id-ID").includes(needle),
   );
 
-  const totals = rows.reduce(
-    (sum, row) => {
-      const units = summarizeUnits(row.config?.units ?? []);
-      return {
-        areas: sum.areas + (row.config?.areas.length ?? 0),
-        units: sum.units + units.total,
-        activeUnits: sum.activeUnits + units.active,
-      };
-    },
+  const totals = facilities.reduce(
+    (sum, facility) => ({
+      areas: sum.areas + facility.areaCount,
+      units: sum.units + facility.unitCount,
+      activeUnits: sum.activeUnits + facility.activeUnitCount,
+    }),
     { areas: 0, units: 0, activeUnits: 0 },
   );
 
@@ -96,7 +80,6 @@ export function FacilityListPage() {
 
   function retry() {
     void listQuery.refetch();
-    for (const query of configQueries) void query.refetch();
   }
 
   return (
@@ -194,8 +177,11 @@ export function FacilityListPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map(({ facility, config }) => {
-                const units = summarizeUnits(config?.units ?? []);
+              {filtered.map((facility) => {
+                const units = {
+                  total: facility.unitCount,
+                  active: facility.activeUnitCount,
+                };
                 const statusKey = facilityStatusKey(units);
                 const statusTone =
                   units.total === 0
@@ -209,9 +195,10 @@ export function FacilityListPage() {
                     : units.active > 0
                       ? CircleCheck
                       : CircleSlash;
-                const hours = config
-                  ? summarizeOperatingHours(config.facility.operatingHours, t)
-                  : [];
+                const hours = summarizeOperatingHours(
+                  facility.operatingHours,
+                  t,
+                );
                 return (
                   <TableRow
                     key={facility.id}
@@ -226,10 +213,8 @@ export function FacilityListPage() {
                         </Badge>
                       </div>
                     </TableCell>
-                    <TableCell numeric>
-                      {config ? config.areas.length : "—"}
-                    </TableCell>
-                    <TableCell numeric>{config ? units.total : "—"}</TableCell>
+                    <TableCell numeric>{facility.areaCount}</TableCell>
+                    <TableCell numeric>{units.total}</TableCell>
                     <TableCell>
                       {t("facilityAdmin.list.sessionSummary", {
                         session: facility.sessionMinutes,

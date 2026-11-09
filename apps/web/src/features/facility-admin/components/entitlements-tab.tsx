@@ -47,12 +47,13 @@ import { usePutRule } from "../hooks.ts";
 import {
   menuItemLabel,
   parseInteger,
+  parsePutDraft,
   ruleTypeLabel,
   shortId,
+  type ValidityKind,
   validityKindKeys,
   validityLabel,
   zodFieldErrors,
-  type ValidityKind,
 } from "../lib.ts";
 import { ConfigSection } from "./config-section";
 import { FormError } from "./form-error";
@@ -145,7 +146,11 @@ export function EntitlementsTab({
 
   function toggle(rule: EntitlementRule, isEnabled: boolean) {
     putRule.mutate(
-      { ruleId: rule.id, body: ruleInput(rule, isEnabled) },
+      {
+        ruleId: rule.id,
+        body: ruleInput(rule, isEnabled),
+        expectedUpdatedAt: rule.updatedAt,
+      },
       {
         onSuccess: () =>
           toast({
@@ -409,7 +414,7 @@ function RuleDialog({
         throw new Error("Unsupported entitlement rule type");
     }
 
-    const parsed = putEntitlementRuleSchema.safeParse(body);
+    const parsed = parsePutDraft(putEntitlementRuleSchema, body);
     if (!parsed.success) {
       setErrors(zodFieldErrors(parsed.error));
       setFormError(
@@ -419,7 +424,11 @@ function RuleDialog({
     }
 
     putRule.mutate(
-      { ruleId: rule.id, body: parsed.data },
+      {
+        ruleId: rule.id,
+        body: parsed.data,
+        expectedUpdatedAt: rule.updatedAt,
+      },
       {
         onSuccess: () => {
           toast({

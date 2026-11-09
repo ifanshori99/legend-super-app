@@ -67,6 +67,8 @@ export const reportViewerMessages = {
     customer_tier: "Tingkat member",
     supplier: "Pemasok",
     facility: "Fasilitas",
+    unit: "Unit",
+    product: "Produk",
     promo: "Promo",
   },
   values: {
