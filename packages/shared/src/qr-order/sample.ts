@@ -13,8 +13,6 @@ import {
   type GuestOrderIssue,
   type PointClaim,
   type QrMenu,
-  type QrMenuItem,
-  type QrMenuModifierGroup,
   qrMenuModifierGroupSchema,
 } from "./guest.ts";
 import type { FloorZone, Table } from "./schemas.ts";
