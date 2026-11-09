@@ -5437,3 +5437,189 @@ describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => 
     expect(await balanceOf(world, "customer_deposit")).toBe(-30_000);
   });
 });
+
+describe("legend-3bsyh parked SALE_MISSING dependents retry once the sale posts", () => {
+  const cashSale: SaleAmounts = {
+    grossSalesIdr: 100_000,
+    tenders: [{ method: "cash", amountIdr: 100_000 }],
+  };
+  // The event claims 60k cash + 40k gateway; the tender rows hold 100k cash.
+  const wrongClaim: SaleAmounts = {
+    grossSalesIdr: 100_000,
+    tenders: [
+      { method: "cash", amountIdr: 60_000 },
+      { method: "qris", amountIdr: 40_000 },
+    ],
+  };
+
+  async function seedVoidRow(
+    world: World,
+    orderUlid: string,
+    amountIdr: number,
+  ): Promise<string> {
+    const voidId = randomUUID();
+    await asTenant(world.tenant, (client) =>
+      client.query(
+        `INSERT INTO pos_order_voids
+           (id, tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+            requested_by, approved_by, approval_request_id, voided_at)
+         VALUES ($1, $2, $3, $4, 'AJ-0001', $7, 'wrong_order', 'Pesanan salah',
+                 'requester', 'approver', $6, $5)`,
+        [
+          voidId,
+          world.tenant.id,
+          world.outletId,
+          ulidToUuid(orderUlid),
+          REFUND_DAY,
+          randomUUID(),
+          amountIdr,
+        ],
+      ),
+    );
+    return voidId;
+  }
+
+  function voidEvent(
+    world: World,
+    orderUlid: string,
+    voidId: string,
+    amountIdr: number,
+  ): EventEnvelope {
+    return envelope(world, {
+      name: "order.voided",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      occurredAt: REFUND_DAY,
+      payload: {
+        orderId: orderUlid,
+        outletId: world.outletId,
+        businessDate: "2026-10-15",
+        amountIdr,
+        reason: "wrong_order",
+        reasonNote: "Pesanan salah",
+        approvedBy: randomUUID(),
+        overrideId: null,
+        approvalRequestId: null,
+        voidedFinalOrder: true,
+        voidId,
+        receiptNumber: "AJ-0001",
+        voidedAt: REFUND_DAY,
+      },
+    });
+  }
+
+  /** Parks the sale (mismatch) and its void and refund (SALE_MISSING). */
+  async function parkSaleVoidAndRefund(world: World) {
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, cashSale);
+    expect(
+      await deliver(world.tenant, orderPaid(world, orderUlid, wrongClaim)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    const voidId = await seedVoidRow(world, orderUlid, 100_000);
+    const refundId = createUlid();
+    expect(
+      await deliver(world.tenant, voidEvent(world, orderUlid, voidId, 100_000)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    expect(
+      await deliver(
+        world.tenant,
+        orderRefunded(world, orderUlid, refundId, {
+          grossSalesIdr: 10_000,
+          pbjtIdr: 0,
+          lines: [{ method: "cash", amountIdr: 10_000 }],
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    return { orderUlid, voidId, refundId };
+  }
+
+  async function retryStateOf(
+    tenant: Tenant,
+    key: string,
+  ): Promise<{ retryable: boolean; next_retry_at: Date | null }[]> {
+    return asTenant(tenant, async (client) => {
+      const { rows } = await client.query<{
+        retryable: boolean;
+        next_retry_at: Date | null;
+      }>(
+        `SELECT retryable, next_retry_at FROM auto_journal_parked
+          WHERE tenant_id = $1 AND idempotency_key = $2`,
+        [tenant.id, key],
+      );
+      return rows;
+    });
+  }
+
+  it("AJ-3BSYH-01 the sale posts after its data is fixed: the parked void and refund turn retryable and due, and the sweep posts both", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const { orderUlid, refundId } = await parkSaleVoidAndRefund(world);
+    const voidKey = `aj:sale-void:${orderUlid}`;
+    const refundKey = `aj:order-refund:${refundId}`;
+    // Nothing is due while the sale is missing.
+    expect(await sweep(tenant)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+
+    // Data corrected: the replay of order.paid now matches the tender rows.
+    await post(world, orderPaid(world, orderUlid, cashSale));
+    for (const key of [voidKey, refundKey]) {
+      const [row] = await retryStateOf(tenant, key);
+      expect(row?.retryable).toBe(true);
+      expect(row?.next_retry_at).not.toBeNull();
+    }
+
+    expect(await sweep(tenant)).toEqual({
+      posted: 2,
+      stillParked: 0,
+      failed: 0,
+    });
+    await journalIdOf(world, voidKey);
+    await journalIdOf(world, refundKey);
+    expect(await parkedOf(tenant, voidKey)).toHaveLength(0);
+    expect(await parkedOf(tenant, refundKey)).toHaveLength(0);
+  });
+
+  it("AJ-3BSYH-02 parked rows of another order or another tenant stay untouched", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const mine = await parkSaleVoidAndRefund(world);
+    const other = await parkSaleVoidAndRefund(world);
+    const foreignTenant = await makeTenant();
+    const foreignWorld = await makeWorld(foreignTenant);
+    const foreign = await parkSaleVoidAndRefund(foreignWorld);
+
+    await post(world, orderPaid(world, mine.orderUlid, cashSale));
+
+    expect(
+      await retryStateOf(tenant, `aj:sale-void:${mine.orderUlid}`),
+    ).toEqual([expect.objectContaining({ retryable: true })]);
+    expect(
+      await retryStateOf(tenant, `aj:order-refund:${mine.refundId}`),
+    ).toEqual([expect.objectContaining({ retryable: true })]);
+    for (const [t, key] of [
+      [tenant, `aj:sale-void:${other.orderUlid}`],
+      [tenant, `aj:order-refund:${other.refundId}`],
+      [foreignTenant, `aj:sale-void:${foreign.orderUlid}`],
+      [foreignTenant, `aj:order-refund:${foreign.refundId}`],
+    ] as const) {
+      expect(await retryStateOf(t, key)).toEqual([
+        { retryable: false, next_retry_at: null },
+      ]);
+    }
+  });
+});

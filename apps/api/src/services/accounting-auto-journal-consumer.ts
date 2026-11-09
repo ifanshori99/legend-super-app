@@ -29,7 +29,7 @@
 // closed one, with `late_adjustment_from` = the natural date, a description
 // suffix and an `accounting.journal.late_adjusted` audit row.
 
-import { and, asc, eq, lte, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, max, sql } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import {
   AccountingError,
@@ -332,6 +332,7 @@ async function settleAutoJournal(
     .limit(1);
   if (existing) {
     await clearParked(tx, tenantId, key);
+    await requeueSaleDependents(tx, tenantId, stored, now);
     return { status: "already_posted", journalEntryId: existing.id };
   }
   let result: AutoJournalResult;
@@ -358,7 +359,40 @@ async function settleAutoJournal(
   }
   // Posted, or nothing to book any more: either way no longer parked.
   await clearParked(tx, tenantId, key);
+  if (result.status === "posted")
+    await requeueSaleDependents(tx, tenantId, stored, now);
   return result;
+}
+
+/**
+ * legend-3bsyh: a void or refund of order X parks non-retryable
+ * `AUTO_JOURNAL_SALE_MISSING` while the sale journal of X is not posted, and
+ * the sweep never looks at such a row. Once `aj:sale:X` is posted (here, or
+ * replayed over a sale finance posted by hand), those rows become retryable
+ * and due now, so the next sweep books them. Tenant-scoped; the orderId is read
+ * from the stored payload, the same value the sale key is built from.
+ */
+async function requeueSaleDependents(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+  now: Date,
+): Promise<void> {
+  if (stored.eventName !== "order.paid") return;
+  await tx
+    .update(autoJournalParked)
+    .set({ retryable: true, nextRetryAt: now })
+    .where(
+      and(
+        eq(autoJournalParked.tenantId, tenantId),
+        eq(autoJournalParked.errorCode, "AUTO_JOURNAL_SALE_MISSING"),
+        inArray(autoJournalParked.eventName, [
+          "order.voided",
+          "order.refunded",
+        ]),
+        sql`${autoJournalParked.payload}->>'orderId' = ${String(stored.payload.orderId)}`,
+      ),
+    );
 }
 
 async function clearParked(
