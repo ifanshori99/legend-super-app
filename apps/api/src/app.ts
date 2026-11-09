@@ -40,7 +40,11 @@ import {
   setPosReceiptPort,
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
-import { createPosReceiptPort } from "./services/pos-receipt.service.ts";
+import {
+  createPosReceiptPort,
+  receiptGapsForDevice,
+} from "./services/pos-receipt.service.ts";
+import { setPosReceiptGapsPort } from "./services/pos-shift-ports.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
@@ -58,6 +62,10 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // (pos-order-ports.ts) until those beads land.
 setPosOrderPromoPort(orderPromoPort);
 setPosReceiptPort(createPosReceiptPort());
+// POS-06 (legend-ain0): the real gap lookup, so Tutup Hari refuses with
+// RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before
+// this the port kept its "no gaps" default and the contract never fired.
+setPosReceiptGapsPort(receiptGapsForDevice);
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 
