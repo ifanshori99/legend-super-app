@@ -3,7 +3,7 @@
 // (WORKER_TRANSPORT=builtin, channels explicitly disabled), then the relay and
 // consumption run the real outbox functions.
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -131,6 +131,38 @@ describe("legend-18qw production worker delivery", () => {
       relayOutbox(database, context, enqueue, (gap) =>
         handlers.requestMissing(context, gap),
       );
+    // relayOutbox is a periodic sweep, so a sweep that finds nothing yet is
+    // normal. Under heavy machine load the first sweep after a commit
+    // occasionally claimed 0 (legend-06qw0; ~1 in 150 looped runs, never alone).
+    // The exact cause is not proven, so wait for the claim as a condition and
+    // dump the outbox row state on every empty sweep: the next flake then
+    // explains itself. A sweep that claims nothing changes nothing, so retrying
+    // is safe, and the exact count and order below still hold.
+    const relayClaimed = () =>
+      vi.waitFor(
+        async () => {
+          const claimed = await relay();
+          if (claimed === 0) {
+            const state = await withTenant(
+              database,
+              context,
+              async (tx) =>
+                (
+                  await tx.execute(
+                    sql`SELECT sequence, dispatch_state, status, available_at, now() AS db_now, dispatch_lease_until FROM domain_event_outbox ORDER BY sequence`,
+                  )
+                ).rows,
+            );
+            console.warn(
+              "legend-06qw0 relay claimed nothing",
+              JSON.stringify(state),
+            );
+            throw new Error("relay claimed nothing yet");
+          }
+          return claimed;
+        },
+        { timeout: 10_000, interval: 50 },
+      );
     // Sequence 1 is missing: nothing is claimable, the gap is recorded in one
     // durable row (counted at most once a minute, so two quick sweeps = 1).
     expect(await relay()).toBe(0);
@@ -140,10 +172,10 @@ describe("legend-18qw production worker delivery", () => {
     await expect(deliver(second)).rejects.toThrow("Aggregate sequence gap");
 
     const first = await append(1);
-    expect(await relay()).toBe(1);
+    expect(await relayClaimed()).toBe(1);
     expect(enqueued).toEqual([first]);
     expect(await deliver(first)).toBe(true);
-    expect(await relay()).toBe(1);
+    expect(await relayClaimed()).toBe(1);
     expect(enqueued).toEqual([first, second]);
     expect(await deliver(second)).toBe(true);
 
