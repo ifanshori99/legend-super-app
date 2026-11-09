@@ -185,6 +185,7 @@ const BRAVO_BRAND = "Teh Priangan";
 let photoItemId = "";
 let adminStaff: Awaited<ReturnType<typeof staffOfIsolatedTenant>>;
 let limitedStaff: { client: ReturnType<typeof agent> };
+let outletScopedStaff: { client: ReturnType<typeof agent> };
 
 beforeAll(async () => {
   const make = async (label: string) => {
@@ -305,6 +306,29 @@ beforeAll(async () => {
   );
   expect(email).toContain("@");
   limitedStaff = { client: limitedClient };
+
+  // org.theme.manage granted at OUTLET scope only, never tenant-wide.
+  const outletRoleId = randomUUID();
+  await asTenant(admin.tenantId, (db) =>
+    db.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Outlet Theme Manager', false, NULL, $3, false, '["tenant","outlet"]')`,
+      [outletRoleId, admin.tenantId, JSON.stringify(["org.theme.manage"])],
+    ),
+  );
+  const outletClient = agent(app);
+  await signUp(outletClient, "Outlet Theme Staff");
+  const outletSession = await outletClient.get("/api/auth/get-session");
+  const outletUserId = outletSession.body.user.id as string;
+  await asTenant(admin.tenantId, (db) =>
+    db.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+      [admin.tenantId, outletUserId, outletRoleId, admin.outletId],
+    ),
+  );
+  outletScopedStaff = { client: outletClient };
 });
 
 afterAll(async () => {
@@ -327,6 +351,60 @@ describe("GET /api/public/site (published website)", () => {
       "https://img.example/hero-alpha.jpg",
     );
     expect(response.body.data.pricesExcludeTaxAndService).toBe(true);
+  });
+
+  it("WS08-S1: the body leaks no internal fields", async () => {
+    const response = await getSite(alpha.hostname).expect(200);
+    const data = response.body.data as Record<string, unknown>;
+    expect(Object.keys(data).sort()).toEqual(
+      Object.keys(publicSiteSchema.shape).sort(),
+    );
+
+    const forbiddenKeys = new Set([
+      "tenantid",
+      "tenant_id",
+      "updatedby",
+      "updated_by",
+      "publishedat",
+      "published_at",
+      "brandid",
+      "brand_id",
+      "outletid",
+      "outlet_id",
+    ]);
+    const uuidPaths: string[] = [];
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const walk = (value: unknown, at: string) => {
+      if (typeof value === "string") {
+        if (uuid.test(value)) uuidPaths.push(at);
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((entry, i) => walk(entry, `${at}.${i}`));
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [key, entry] of Object.entries(value)) {
+          expect(forbiddenKeys.has(key.toLowerCase()), `${at}.${key}`).toBe(
+            false,
+          );
+          walk(entry, `${at}.${key}`);
+        }
+      }
+    };
+    walk(data, "$");
+
+    // publicSiteSchema itself exposes brand.id, outlet.id and menu/promotion
+    // ids; no other uuid-shaped value may appear.
+    for (const at of uuidPaths) {
+      expect(at).toMatch(
+        /^\$\.(brand\.id|outlet\.id|featuredMenuItems\.\d+\.id|promotions\.\d+\.id)$/,
+      );
+    }
+    const raw = JSON.stringify(response.body);
+    expect(raw).not.toContain(alpha.tenantId);
+    expect(raw).not.toContain('"seed"');
   });
 
   it("WS08-S1: the member login link points at /member", async () => {
@@ -473,6 +551,23 @@ describe("staff content endpoints /api/website/brands/:brandId/content", () => {
       .send({ content: siteContent("nope", admin.hostname), publish: true });
     expect(put.status).toBe(403);
     const get = await limitedStaff.client.get(path(admin)).set(headers);
+    expect(get.status).toBe(403);
+  });
+
+  it("WS08-S1: org.theme.manage granted only at outlet scope gets 403 on every staff path", async () => {
+    const headers = { ...originHeader, Host: admin.hostname };
+    const content = siteContent("outlet-scope", admin.hostname);
+    const draft = await outletScopedStaff.client
+      .put(path(admin))
+      .set(headers)
+      .send({ content, publish: false });
+    expect(draft.status).toBe(403);
+    const publish = await outletScopedStaff.client
+      .put(path(admin))
+      .set(headers)
+      .send({ content, publish: true });
+    expect(publish.status).toBe(403);
+    const get = await outletScopedStaff.client.get(path(admin)).set(headers);
     expect(get.status).toBe(403);
   });
 
