@@ -364,7 +364,10 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
       .set(headers)
       .set(originHeader);
     expect(report.status, JSON.stringify(report.body)).toBe(200);
-    expect(report.body.data.receiptGaps).toEqual([3]);
+    // legend-nhmct: gaps are listed per run, with the printed number and prefix.
+    expect(report.body.data.receiptGaps).toEqual([
+      { prefix: "SHFT", missing: ["SHFT-000003"], lostRange: null },
+    ]);
   });
 
   it("a gap-free run closes the day, and a hole elsewhere in the outlet does not matter to other outlets", async () => {
@@ -379,7 +382,7 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
     expect(await dailyCloseCount(outletId)).toBe(1);
   });
 
-  it("the port returns [] for a device with no sequence and for an empty run", async () => {
+  it("the port returns [] for a device with no sequence and for an empty run (legend-nhmct: no run entries)", async () => {
     const outletId = await freshOutlet();
     const none = await setAndAsk(outletId, randomUUID());
     expect(none).toEqual([]);

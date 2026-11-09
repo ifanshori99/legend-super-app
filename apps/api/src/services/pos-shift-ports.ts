@@ -3,10 +3,12 @@
 // has a default and a setter the API bootstrap or a test installs.
 //
 // - Receipt gaps (POS-06, legend-93a). The shift report shows the device's
-//   missing receipt ordinals and the day close refuses while any device has a
-//   gap. Default: no receipt has been issued yet, so no gap (the order service
-//   cannot complete a sale until the numbering bead installs its allocator,
-//   see pos-order-ports.ts), and the numbering bead replaces this lookup.
+//   missing receipt ordinals per run (prefix) and the day close refuses while
+//   any device has a missing ordinal (a lost range, legend-yd0h8, is shown
+//   but does not block). Default: no receipt has been issued yet, so no gap
+//   (the order service cannot complete a sale until the numbering bead
+//   installs its allocator, see pos-order-ports.ts), and the numbering bead
+//   replaces this lookup.
 // - Inventory deduction (WS-06, F8 "pemotongan stok akhir hari bila
 //   dipilih"). Default: refused, so a day close that asks for it fails closed
 //   instead of claiming a deduction nobody made.
@@ -16,11 +18,29 @@ import type { Tx } from "./permission-resolver.ts";
 
 // ---- Receipt gaps (POS-06) --------------------------------------------------
 
+/** Gaps of one receipt run (one `receipt_sequences` row) of a device. */
+export type PosReceiptGapRun = {
+  prefix: string;
+  /** Missing ordinals 1..lastNumber of this run, ascending. */
+  missing: number[];
+  /**
+   * legend-yd0h8: run retired as edge_regressed whose high-water
+   * (edge_reported_number) is above the cloud lastNumber: ordinals
+   * lastNumber+1..edgeReportedNumber the edge reported issuing but the cloud
+   * never received. null otherwise.
+   */
+  lost: { from: number; to: number } | null;
+};
+
+/**
+ * One entry per run with a missing ordinal or a lost range, oldest run first;
+ * a gap-free device returns [].
+ */
 export type PosReceiptGapsPort = (
   tx: Tx,
   context: ScopedTenantContext,
   input: { outletId: string; deviceId: string },
-) => Promise<number[]>;
+) => Promise<PosReceiptGapRun[]>;
 
 const noReceiptGaps: PosReceiptGapsPort = async () => [];
 let receiptGaps: PosReceiptGapsPort = noReceiptGaps;

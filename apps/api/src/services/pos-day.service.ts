@@ -824,7 +824,10 @@ export async function closePosDay(
         outletId,
         deviceId: device.deviceId,
       });
-      if (gaps.length > 0) throw new PosError("RECEIPT_SEQUENCE_GAP");
+      // A lost range (legend-yd0h8) is for reconciliation display only; it has
+      // no resolution path, so it must not block the close.
+      if (gaps.some((run) => run.missing.length > 0))
+        throw new PosError("RECEIPT_SEQUENCE_GAP");
     }
 
     if (body.inventoryDeduction)

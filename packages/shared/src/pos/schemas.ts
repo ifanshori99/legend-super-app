@@ -1175,15 +1175,31 @@ export const posCashMovementSchema = z.strictObject({
 });
 export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
 
+/**
+ * Receipt gaps of one run (prefix) of the device. `missing` are receipt
+ * numbers (`P2-000003`) the device never delivered; `lostRange` (legend-yd0h8)
+ * is the span of a run retired after the edge regressed that the edge reported
+ * issuing but the cloud never received, null otherwise.
+ */
+export const posReceiptGapRunSchema = z.strictObject({
+  prefix: receiptPrefixSchema,
+  missing: z.array(receiptNumberSchema),
+  lostRange: z
+    .strictObject({ from: receiptNumberSchema, to: receiptNumberSchema })
+    .nullable(),
+});
+export type PosShiftReceiptGapRun = z.infer<typeof posReceiptGapRunSchema>;
+
 /** Shift screen: the shift, its cash movements and the device's receipt gaps. */
 export const posShiftReportSchema = z.strictObject({
   shift: posShiftSchema,
   movements: z.array(posCashMovementSchema),
   /**
-   * POS-06: ordinals the device has not delivered. Empty means the day may be
-   * closed; the API recomputes this at close, the screen only explains it.
+   * POS-06: receipt numbers the device has not delivered, per run (prefix).
+   * No run with `missing` means the day may be closed (a lost range does not
+   * block); the API recomputes this at close, the screen only explains it.
    */
-  receiptGaps: z.array(z.number().int().positive()),
+  receiptGaps: z.array(posReceiptGapRunSchema),
 });
 export type PosShiftReport = z.infer<typeof posShiftReportSchema>;
 
