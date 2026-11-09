@@ -48,6 +48,7 @@ import {
   refundReasonSchema,
   serviceTypeSchema,
   voidReasonSchema,
+  storedApprovalIdSchema,
 } from "./schemas.ts";
 
 const deviceIdSchema = uuidSchema;
@@ -305,7 +306,7 @@ export const cashierShiftClosedPayloadSchema = z
     differenceIdr: idrSchema,
     varianceNote: z.string().min(4).max(500).nullable(),
     approvedBy: userIdSchema,
-    approvalRequestId: uuidSchema,
+    approvalRequestId: storedApprovalIdSchema,
     closedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {

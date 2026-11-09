@@ -111,6 +111,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
+import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
@@ -1408,6 +1409,15 @@ export async function fireQrOrder(
       ),
     )
     .returning({ id: orderItems.id });
+  await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: items.map((item) => item.id),
+    actor: null,
+    now: input.now,
+    // Never fail a paid or placed guest order on a missing station.
+    onUnresolved: "skip",
+  });
   if (order.taxResult)
     await recordTaxSnapshots(tx, context, {
       sourceType: "order",
@@ -1811,6 +1821,15 @@ async function checkout(
   let finalOrder = order;
   let kitchenFire: "fired" | "held_for_payment" = plan.kitchenFire;
   if (!payFirst) {
+    // Open bill: items were inserted `fired`; route them to the stations.
+    await routeFiredItemsToKitchen(tx, context, {
+      outletId: outlet.id,
+      orderId,
+      itemIds: itemRows.map((row) => row.id),
+      actor: null,
+      now,
+      onUnresolved: "skip",
+    });
     // Open bill: fired now; the sale is recorded for PBJT at once.
     await recordTaxSnapshots(tx, context, {
       sourceType: "order",

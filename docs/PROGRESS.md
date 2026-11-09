@@ -72,6 +72,19 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Masih menunggu founder: potongan cuti bersama mundur ke 2026 atau mulai 2027-01-01 (default sekarang 2027-01-01, bisa diubah HR).
 - Biaya putaran ini (d11154ca, 14:14–15:52 UTC, 2 compact, 45 subagent total sesi): sekitar 5239k unit biaya (total sesi 18395k). Vendor: Claude saja.
 
+## legend-9yz procurement: perbaikan second-opinion architect (engineer, cabang `ws/procurement`, 2026-11-08)
+
+- Sudah:
+  - Tanpa policy approval, submit PR/PO sekarang 409 `APPROVAL_POLICY_MISSING`. Tidak ada lagi approve manual satu orang.
+  - Revoke link, close, dan cancel PO menggagalkan email supplier yang masih antre.
+  - Worker email kirim hanya untuk PO `sent`/`partially_received`. Retry memakai link yang sama. Provider dipanggil di luar transaksi DB, dengan lease 10 menit dari jam dinding.
+  - Order dibaca dengan `FOR SHARE NOWAIT`, supaya worker tidak deadlock dengan revoke.
+  - PDF publik menolak PO `closed`.
+  - Kolom nominal PDF muat 10 digit.
+  - Test 42501 untuk UPDATE/DELETE riwayat harga oleh `legend_app`.
+  - Keputusan Q11: batal/tutup PO dan batal PR hanya pembuat atau pemegang `purchasing.order.approve` di outlet. Gerbang route menerima create ATAU approve; service tetap memutuskan.
+- Keputusan teknis: PO `received` tidak lagi mengirim email antre (sesuai brief). Dedupe `reference` bergantung adapter Brevo (30 menit).
+
 ## legend-2re1 UI order pelanggan (ui-engineer, cabang `ui/customer-order`)
 
 - Selesai di worktree `.worktrees/customer-order-ui`: semua layar `/t/$token/*` dibangun ulang ke tema QR (`[data-surface="qr"]`, palet Q6, kaca hanya di lapisan mengambang, maks 2 blur), jumlah tamu inline (Q5), "Bayar di kasir" (Q3) via route `/t/$token/kasir/$orderId`, satu saran pendamping. `DESIGN.md` §9 baru.
@@ -81,6 +94,24 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti akhir: `heavy pnpm build` lulus; e2e mock `/t/` 33/33; suite mock penuh 739 lulus, 4 gagal di luar `/t/` (d6g5, er32, oye8, uq2; diff cabang ini di luar QR hanya tambahan); capture 52 state, 0 serious/critical kecuali 1 artefak posisi scroll (target-size link tertutup bar atas saat capture), tanpa overflow, maks 2 blur.
 - Biaya sesi ui-engineer (transkrip fe7d1815, 07:57–09:41 UTC, 2 compact, 19 subagent): Opus utama 6128k, Sonnet 5723k, Opus subagent 257k, Haiku 114k; total 12223k unit biaya.
 - Kebutuhan kontrak (belum dikerjakan): metode bayar kasir / kode bayar eksplisit + POS terima pembayaran order tertahan; ubah pax sesi; foto cover outlet; patch opsi baris keranjang; kode promo/voucher ikut `placeOrder`; metode guest `va` dan `card` (nomor VA + channel + kedaluwarsa, URL halaman kartu penyedia di `guestPaymentSchema`).
+
+## legend-b9i DOIT PaymentProvider (engineer, cabang `ws/doit-provider`)
+
+- Adapter DOIT di belakang `PaymentGatewayPort`: QRIS, VA, transfer bank kode unik, daftar metode dari endpoint DOIT (cache 60 dtk), Bearer + `Idempotency-Key` di tiap POST, kredensial per tenant/outlet dari `tenant_integrations` (terenkripsi), gagal tertutup bila tidak ada. Port diperluas `ewallet`/`card` + `methods()` opsional, jadi gateway lain bisa menambah tanpa ubah kontrak.
+- Webhook `POST /api/webhooks/payments/doit/:tenantId`: verifikasi `PayBridge-Signature` atas byte mentah, simpan dulu ke `gateway_webhook_events` (migration 0068-0069 setelah merge main 1f0b6d2, RLS), dedupe per event id, status payload sebagai kebenaran, terikat ke intent (provider ref + reference + nominal + integrasi penanda tangan). Uang yang tidak bisa dilunasi (intent gagal, nominal beda) dicatat sebagai dana belum teralokasi. Limiter hanya menghitung verifikasi gagal per IP.
+- Polling cadangan + ulang event tersimpan: job worker `payment-gateway-poll.job.ts` (per outlet, anggaran 20 dtk, backoff waktu, window 24 jam), purge baris ditolak > 30 hari.
+- Format wire DOIT (path, payload, header tanda tangan `t=,v1=`) masih ASUMSI di `payment-doit-wire.ts` sampai dokumen sandbox DOIT ada (legend-saov, legend-s5c).
+- Brief subagent: `docs/briefs/sub-doit-provider.md`. Smoke test sandbox opsional `apps/api/src/test/payment-doit-sandbox.test.ts` (dilewati tanpa `DOIT_API_KEY` + `DOIT_SANDBOX_BASE_URL`).
+- Metrik gelombang (17.22-18.03): biaya* sesi 6064k (Opus utama 1819k, Opus subagent 238k, Sonnet subagent 4007k), 20 subagent (Claude saja, 0 Codex), puncak konteks 228k, 0 compact. Satu review lagi menemukan 5 temuan setelah fix wave 1; dua gelombang perbaikan.
+- Gate akhir (setelah merge `main` c9e0c62): vitest API 1436 lulus / 0 gagal; test root 1384 lulus (gabungan dua run, satu kegagalan `api-client` akibat symlink `node_modules` ke checkout utama, sudah dibuktikan lulus); build, format, color, tenant-hardcode lulus. Status: review CTO.
+- Perbaikan review K (reviewer Opus + architect, 2026-11-08): kredensial DOIT dipilih dari outlet tagihan/intent (bukan cakupan pemanggil, termasuk cek DP reservasi); polling mencatat dana kurang/lebih bayar (409 AMOUNT_MISMATCH) sebelum expire, lewat `recordUnsettledGatewayFunds` bersama webhook; poller urut `gateway_polled_at` (kolom baru) supaya intent yang error tidak menahan yang lain; poller juga cek intent yang di-supersede tapi kodenya masih bisa dibayar di DOIT (dulu uang hilang bila webhook hilang); webhook gagal proses dijawab 500 agar DOIT kirim ulang; `readPaidAt` pakai `now`; cache secret webhook dikosongkan saat integrasi diubah; tanda tangan tidak sah dicatat satu baris penghitung per tenant per menit.
+- Format wire DOIT kini mengikuti dokumen resmi https://doit.id/docs/en/ dan adapter 119connect yang sudah dipakai: base `https://pay.doit.id` (sandbox lewat key `pb_test_`), `POST /v1/payments` {amount, rail, va_bank, reference, expires_in}, `GET /v1/methods`, status pending/paid/refunded/expired/failed, nominal lunas = `amount` (tanpa `paid_amount`), hanya event `payment.paid`/`payment.expired` yang menggerakkan intent, toleransi tanda tangan 25 jam ke belakang / 5 menit ke depan (retry DOIT sampai 24 jam). Transfer bank kode unik dimatikan: API DOIT tidak mengembalikan rekening tujuan.
+- Review ronde 2 (konteks segar): intent menyimpan `gateway_integration_id` (akun DOIT pembuat) untuk cek status dan pengikatan webhook; kiriman bertanda tangan sah tapi tak terbaca dijawab 500; kunci refresh memuat sisa tagihan; limiter per IP + tenant; cache secret dengan penghitung generasi. Review ronde 3: tidak ada bug jalur uang. Migration 0068 mengangkat FORCE RLS sementara (pola 0065) supaya pemilik tabel non-superuser bisa memvalidasi FK.
+- Gate (2026-11-08): `heavy pnpm check` 1608 lulus, 3 gagal di test migrasi 0065 (FK 0068 di bawah FORCE RLS), lalu diperbaiki dan file terdampak diulang 136/136 lulus; `heavy pnpm build` dan `pnpm format:check` lulus; 3 warning eslint di kode web dari main. DB dev cabang ini yang pernah menjalankan 0063-0065 lama harus di-reset.
+- Metrik sesi engineer (403a3ca9, 2 akun, 0 compact, 20+ subagent): Opus utama 2051k, Opus subagent 2961k, Sonnet 1534k, Haiku 96k; total biaya* 6641k (bagian setelah pindah akun).
+- Brief 95 (second-opinion Codex atas 8fed84ef, 2026-11-09): P1 id intent deterministik UUIDv5(tenant + idempotency key), jadi retry setelah jawaban DOIT hilang atau insert lokal gagal memakai pembayaran DOIT yang sama (tanpa migrasi; 9a2a9fe8). P2 lewat kedaluwarsa, error gateway, DOIT masih `pending`, atau gagal simpan non-409 tidak lagi meng-expire intent: tetap `pending` (tamu melihat expired), ditanya ulang dengan backoff sampai 1 jam, tutup setelah 24 jam dengan audit `payment.reconciliation_timed_out` (858f2284, b80001ff). P3 `paid_at` DOIT ikut lewat polling, jadi bayar tepat waktu tidak ditandai `late_payment`.
+- Review brief 95 (reviewer Opus + architect): `cancelPaymentLinkInTx` (kasir ganti tunai) tidak lagi meng-expire kode DOIT yang sudah lewat waktu dan menunggu jawaban; `paid_at` DOIT wajib ISO berzona (spasi diterima) dan dicek masuk akal (dibuat-5 menit sampai sekarang+5 menit, kalau tidak pakai waktu poll) di poll dan webhook (3416231a, f410ea27). Test lifecycle QRIS POS: gateway palsu kini menjawab `expired` saat kode lewat waktu, seperti DOIT asli yang menerima `expires_in` kita.
+- Sisa dicatat sebagai kartu legend-3wpf (P2); `updated_at` sebagai penanda disetujui CTO sampai migrasi berikut; transfer bank DOIT tetap mati (keputusan founder). Gate penuh 96df32a8 diambil merge train. Sisa: `expireDueIntents` belum dipanggil di produksi tapi meng-expire kode DOIT tanpa bertanya; kode yang di-supersede dan habis 24 jam tidak menulis audit; status DOIT `refunded` dipetakan `pending` (label audit `gateway_unconfirmed` keliru); `updated_at` dipakai penanda "provider sudah menjawab" untuk kode yang di-supersede, sebaiknya kolom sendiri di migrasi berikut; perilaku replay Idempotency-Key DOIT (sidik body, jendela replay) belum dicek di sandbox.
 
 ## legend-vmyg jurnal manual & berulang (engineer, cabang `ws/journals`)
 
@@ -132,6 +163,41 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
 
+## legend-4d5 KDS backend (engineer, cabang `ws/kds`)
+
+- Selesai: routing tiket POS/QR ke stasiun, siklus tiket + jejak status, feed per stasiun + WebSocket resync (migrasi 0063/0064).
+- Keputusan CTO 2026-11-08 dikerjakan: QR masuk KDS (QR tidak pernah gagal karena stasiun kosong; baris tanpa stasiun diaudit `kitchen_ticket.unrouted`); menu menyimpan tipe stasiun per brand, diselesaikan per outlet, `station_id` hanya override di outletnya (legend-s2dh, migrasi 0065 + backfill); void di KDS tetap hanya dapur, kasir dapat order event `order.kitchen_voided`.
+- Bukti: `heavy pnpm check` 138 file / 1246 test lulus, build lulus, format/color/tenant-hardcode lulus, 2 reviewer konteks segar (1 temuan High dibetulkan).
+- Lanjutan (bead): legend-0ixe (UI POS tampilkan void KDS), legend-0frf (UI admin menu tipe stasiun), legend-078b (alert baris QR tanpa stasiun + notifikasi void untuk order QR).
+- Menunggu: review CTO, merge ke `main` oleh gerbang founder.
+- 2026-11-08 malam, perbaikan second-opinion architect (8 butir): merge `main` (1f0b6d2) = `2e56c5a8`, migrasi KDS di-renumber 0068_lame_tusk (generate, SQL identik) / 0069_kds_rls (custom) / 0070_menu_station_type_backfill (custom). Fix = `a9897e90` + `792a08aa` (temuan reviewer).
+  - Keputusan: `after` klien tidak dipercaya; lebih maju dari cursor, tertinggal > 2000 (`KITCHEN_FEED_MAX_LAG`), atau baris sesudahnya sudah dipangkas: HTTP 409 `KDS_RESYNC_REQUIRED`, WebSocket frame `resync` lalu close 4409. Klien: muat ulang snapshot, sambung ulang dengan `after = snapshot.sequence`.
+  - Feed dipangkas tiap sequence ke-500: hanya baris > 24 jam DAN > 2000 di belakang cursor; trigger DB hanya mengizinkan delete itu (legend_app dapat DELETE lagi di tabel feed saja).
+  - POS fire tidak pernah gagal karena stasiun kosong (skip + audit `kitchen_ticket.unrouted` + warn).
+  - Bukti: test per bagian lulus (kds + kds-realtime 63/63, menu-api 17/17). Gerbang penuh pertama gagal lint saja (helper tak terpakai, dibetulkan). Gerbang penuh setelah commit terakhir BELUM selesai: dihentikan sistem karena memori Mac kritis.
+
+## legend-6c0 shift kasir, putaran 2 (engineer, cabang `ws/pos-shift`)
+
+- Fix 3 P1 + 2 P2 second-opinion (brief `docs/briefs/46-fix-pos-shift-round2.md`) plus 2 temuan reviewer konteks segar (variance bocor ke kasir lewat approval; jam kas sebelum shift dibuka).
+- Hari usaha tertutup: `assertBusinessDayOpen` (kunci advisory bersama, kunci sama dengan tutup hari) di buat/ubah/bayar/selesai/void/refund. Kas wajib shift kasir terbuka (`lockCashierShiftForCash`, FOR SHARE vs FOR UPDATE di tutup shift). Tutup shift dua langkah: hitungan kas disimpan permanen (`pos_shift_counts`), approval terikat ke hitungan dan nilai |selisih| dari server, tingkat matriks dicek saat dipakai. Tutup hari diblokir shift terbuka lintas jam 04.00.
+- Migrasi baru 0066/0067 (bernomor setelah 0063-0065 putaran 1; perlu dinomori ulang bila `main` lebih dulu memakai nomor itu).
+- Status bead: review. Belum merge, belum push.
+
+## legend-6c0 shift kasir, perbaikan review K (engineer, cabang `ws/pos-shift`, 2026-11-08)
+
+- `main` digabung (c87fb5e). Migrasi cabang lama 0063-0067 dihapus, dibuat ulang setelah 0067 milik main: `0068_pos_shift` (skema), `0069_pos_shift_rls` (SQL custom dari `pos-shift.custom.sql`), `0070_pos_day_close_permission` (backfill izin, terpisah supaya bisa dijalankan ulang di test).
+- Tunai per perangkat: tender/refund/void tunai wajib `X-Device-Token` dan shift kasir yang terbuka di perangkat itu, selain itu `SHIFT_NOT_OPEN`. Baris tunai menyimpan `shift_id`; angka shift dijumlah per `shift_id`.
+- Refund/void tunai melebihi isi laci: 409 dengan pesan umum, tidak ada yang tersimpan.
+- Hitung buta: penolakan kas keluar diaudit dengan pesan umum, maksimal 3 hitungan kasir (`SHIFT_COUNT_LIMIT`), pesan persetujuan dibuat umum.
+- Tutup paksa (U9): pemegang `shift.cash.approve_close` mengirim hitungan paksa, saksi menyetujui lewat PIN, lalu `POST /shifts/:id/force-close`.
+- DB: FK `count_id`, open check mewajibkan `count_id IS NULL`, trigger mencocokkan hitungan penutup.
+- Kontrak berubah untuk UI `ui/pos-kasir-shift`: header perangkat wajib untuk tunai, endpoint force-close, error `SHIFT_COUNT_LIMIT`.
+- Putaran 2 (reviewer konteks segar): setelah 2 kali kas keluar/setor ditolak, semua kas keluar/setor di shift itu ditolak, supaya kasir tidak bisa menebak isi laci; `approved_by` diambil dari override yang terverifikasi; batas 3 hitungan hanya menghitung hitungan kasir sendiri (bukan hitungan paksa).
+- Akibat merge main: mock web POS kasir mengikuti alur hitung lalu tutup (`countId`); test QRIS dan rekap main membuka shift dan mengirim token perangkat; 0068 melepas FORCE RLS sementara (pola 0065) supaya bisa dijalankan pemilik tabel tanpa BYPASSRLS.
+- Commit: c87fb5e (merge), a67d4cb, 5db5f47, 788e32e, 4195d5c, 78a274a, e1674b1. Gerbang penuh hijau di e1674b1: API 1411 lulus (1 skip), root 1414 lulus, lint 0 error (3 warning), build lulus.
+- Sisa: second-opinion Codex (tingkat K) sebelum gerbang rilis; celah ULID/UUID `approvalRequestId` di body tutup; trigger DB belum mengecek `expected_idr`/`recorded_by` (layanan sudah).
+- Belum merge, belum push.
+
 ## legend-5cnk + legend-y4wp PPh 21 round 2 (engineer, cabang `ws/payroll-pph21-tests`)
 
 - Selesai: engine PPh 21 v2 (`apps/api/src/services/payroll-pph21.ts`) membetulkan 3 P1 + 3 P2 temuan Codex, ditambah 2 bug dari reviewer (Desember tanpa bayaran, gross_first menagih karyawan atas kurang bayar riwayat net). Kebijakan PPh 21 per tenant: kontrak `packages/shared/src/hris/payroll/pph21-policy.ts`, tabel `payroll_pph21_policies` (migrasi 0068/0069 setelah dinomori ulang, RLS FORCE, append-only), service + route `/api/hris/payroll/pph21-policies` (payroll.view / payroll.run, idempotency, audit).
@@ -159,6 +225,19 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Migrasi `0068_refund_approval_payout` (dulu 0063, digenerate ulang setelah merge main 0063–0067).
 - Bead lanjutan: `legend-0ogy` (adapter + webhook DOIT), `legend-kfkt` (UI tolak/ulangi + alasan gagal), `legend-n9kn` (refund pending yang tak pernah diputuskan).
 - Perbaikan review K (8 Nov 2026): main digabung, migration lama 0063 dihapus dan digenerate ulang jadi `0068_refund_approval_payout`. Refund admin atas pembayaran yang terikat dokumen penjualan (`orderId`, `accessTicketId`, `subscriptionInvoiceId`) ditolak 409 `REFUND_SOURCE_DOCUMENT`; refund penjualan lewat modul pemilik (`order.refunded`, yang memposting jurnal). Pengecualian: peminta `system:*` (dana telat/DP yang tidak pernah dijurnal) dan dana tak teralokasi. Refund lama yang terlanjur pending gagal `source_document`. Approve/tolak idempoten per kunci di transaksi langkah pertama (`refund.approved` / `refund.rejected` di `payment_admin_idempotency`). Approver rantai tanpa `payment.reconcile` di outlet → refund `failed` `approver_unauthorized`, tidak dibayar. Sweep payout keluar dari tick relay ke loop sendiri (30 detik, anggaran 20 detik per tenant, berhenti saat shutdown). Jawaban provider `pending` tidak menghabiskan 8 percobaan (`payout_pending_polls`); tandai manual hanya bila pending lebih dari 72 jam. Refund dana memakai evidence milik dana (`payment_unallocated_funds.evidence_id`, baris lama memakai perilaku lama).
+- Perbaikan second-opinion Codex (brief 92, 9 Nov 2026, tingkat K):
+  - Temuan 1 (otorisasi): PRD §3.6 `docs/PRD.md:541` ("refund ... memerlukan PIN supervisor atau approval dari ponsel supervisor") dan D14 (`:260`) mewajibkan supervisor. Kewenangan supervisor = `pos.refund.approve` di outlet refund.
+    - Jalur satu penyetuju (di bawah semua tier matriks) sekarang butuh `payment.reconcile` DAN `pos.refund.approve`. Tanpa keduanya: 403 `PERMISSION_DENIED`, dan refund tetap pending.
+    - Rantai: tiap penyetuju butuh `payment.reconcile` ATAU `pos.refund.approve` di outlet, dan minimal satu `pos.refund.approve`. Bila tidak: `failed` `approver_unauthorized` dengan catatan `supervisor_required`.
+    - Finance sesama finance tidak lagi bisa membayar refund.
+  - Temuan 2 (evidence): payout dana tak teralokasi tidak pernah jatuh ke evidence terbaru atau ke `intent.providerRef`.
+    - Dana ber-`evidence_id` memakai evidence itu saja.
+    - Dana NULL hanya otomatis bila intent punya tepat 1 evidence, tidak dimiliki dana lain, dan tidak ada dana NULL lain di intent itu.
+    - Selain itu payout ditahan: `last_payout_error = EVIDENCE_MAPPING_REQUIRED`, tanpa klaim, tanpa panggilan gateway, percobaan tidak bertambah.
+    - Retry menerima `sourceEvidenceId` untuk memetakan evidence asal sekali, tanpa remap. Retry mengunci intent, menolak evidence intent lain atau evidence milik dana lain dengan 409, dan mencatat audit `payment.refund_fund_evidence_mapped`. Retry tanpa pemetaan menjawab 409 `EVIDENCE_MAPPING_REQUIRED`.
+  - Migration `0069_refund_fund_evidence_unique`: unique index parsial `(tenant_id, evidence_id) WHERE evidence_id IS NOT NULL`. Diregenerasi saat merge.
+  - Test: `payment-refund-codex-fix.test.ts` (11 skenario baru). Test approval dan review-fix disesuaikan: penyetuju finance diberi role supervisor di outlet. Review F diubah ke aturan baru, ditambah kasus negatif outlet lain.
+  - Dampak operasional: refund di bawah tier kini hanya bisa disetujui owner (atau finance yang juga supervisor). Saran kartu: tier matriks refund mulai Rp0 dengan langkah supervisor lewat inbox.
 
 ## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
 

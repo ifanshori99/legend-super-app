@@ -44,7 +44,7 @@ test("the admin page renders only for a permitted role and can delete any note",
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/notes$/);
   await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
 
   await page.goto("/admin");

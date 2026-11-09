@@ -617,6 +617,83 @@
       "when": 1794180208182,
       "tag": "0087_inventory_gl_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1794180938369,
+      "tag": "0088_complex_newton_destine",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794180948267,
+      "tag": "0089_pos_shift_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794180950152,
+      "tag": "0090_pos_day_close_permission",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794181612859,
+      "tag": "0091_milky_mysterio",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794183188880,
+      "tag": "0092_nasty_roxanne_simpson",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794183195165,
+      "tag": "0093_procurement_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794183382167,
+      "tag": "0094_curious_living_tribunal",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794183396373,
+      "tag": "0095_kds_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794183398460,
+      "tag": "0096_menu_station_type_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794184032694,
+      "tag": "0097_cuddly_aaron_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1794184044028,
+      "tag": "0098_doit_webhook_events_rls",
+      "breakpoints": true
     }
   ]
 }
