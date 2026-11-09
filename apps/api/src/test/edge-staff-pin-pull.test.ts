@@ -19,7 +19,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
+import {
+  createStaffPinRecordsFetcher,
+  EdgeCloudHttpError,
+} from "../edge/cloud-http.ts";
 import { createStaffPinPull, pullStaffPins } from "../edge/staff-pin-pull.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -365,6 +368,29 @@ describe("legend-yvhw8 the edge pulls staff pins from the cloud", () => {
       ),
     ).rejects.toThrow(/HTTP_400/);
     expect(restarts).toBe(0);
+  });
+
+  it("legend-r11j7 the pull client asks the cloud for the attempt revision (revision=1) on every page", async () => {
+    const urls: string[] = [];
+    const fetchPage = createStaffPinRecordsFetcher({
+      cloudUrl: "wss://cloud.example.test/edge",
+      credential: "edge-credential",
+      limit: 7,
+      fetchImpl: (async (input: string | URL | Request) => {
+        urls.push(String(input));
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    });
+    const signal = new AbortController().signal;
+    await fetchPage(null, signal);
+    await fetchPage("cursor-1", signal);
+    expect(urls).toHaveLength(2);
+    for (const url of urls) {
+      const query = new URL(url).searchParams;
+      expect(query.get("revision")).toBe("1");
+      expect(query.get("limit")).toBe("7");
+    }
+    expect(new URL(urls[1]!).searchParams.get("since")).toBe("cursor-1");
   });
 
   it("an unreadable page fails without quoting its content", async () => {

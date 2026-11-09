@@ -55,8 +55,16 @@ export type StaffPinResendResult = { readonly resent: number };
 
 /**
  * Appends one material-carrying `staff_pin.set` per local pin of the outlet
- * whose latest set event has none. One transaction under an advisory lock, so
- * two runs on the same outlet never both read "no material" and double-send.
+ * whose latest set event has none. Each pin gets its own transaction under an
+ * advisory lock, so two runs on the same outlet never both read "no material"
+ * and double-send, and under that one pin's row lock (legend-gauz3):
+ * `appendDevicePinEvent` requires the caller to hold the aggregate's row lock,
+ * and a concurrent reset must not slip between the read and the append.
+ *
+ * At most one `staff_pins` row lock is held at a time (legend-gauz3 follow-up):
+ * the PIN pull locks rows in cloud id order and startup runs it together with
+ * this job, so holding several rows here in local id order could form a lock
+ * cycle (40P01) that this one-shot job never retries.
  */
 export async function resendMateriallessStaffPinSets(
   tenant: TenantContext,
@@ -66,25 +74,43 @@ export async function resendMateriallessStaffPinSets(
   const now = options.now ?? new Date();
   const context = outletContext(tenant, outletId);
   const tenantId = tenant.tenantId;
-  return withoutSecretErrorDetail("Staff pin resend failed", () =>
-    withTenant(db, context, async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`staff-pin-resend:${tenantId}:${outletId}`}, 0))`,
-      );
-      const rows = await tx
-        .select()
+  const outlet = outletIdSchema.parse(outletId);
+  const pinFilter = and(
+    eq(staffPins.tenantId, tenantId),
+    eq(staffPins.outletId, outlet),
+    // Another pepper generation would never verify on the cloud.
+    eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
+  );
+  return withoutSecretErrorDetail("Staff pin resend failed", async () => {
+    // Candidates only: ids read without a lock. Each one is read again under
+    // its own row lock below, so a row changed since is judged on its new values.
+    const candidates = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: staffPins.id })
         .from(staffPins)
-        .where(
-          and(
-            eq(staffPins.tenantId, tenantId),
-            eq(staffPins.outletId, outletIdSchema.parse(outletId)),
-            // Another pepper generation would never verify on the cloud.
-            eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
-          ),
-        )
-        .orderBy(asc(staffPins.id));
-      let resent = 0;
-      for (const row of rows) {
+        .where(pinFilter)
+        .orderBy(asc(staffPins.id)),
+    );
+    let resent = 0;
+    for (const { id } of candidates) {
+      const sent = await withTenant(db, context, async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`staff-pin-resend:${tenantId}:${outletId}`}, 0))`,
+        );
+        // legend-gauz3: the row lock is taken before the material and the
+        // latest set event are read, and held until the append. A reset
+        // (setStaffPin, which locks one row) then either commits first and
+        // is read here, or waits until this event is appended; the old
+        // material can never get a sequence above a newer set. This is the
+        // only row lock of the transaction, so there is no lock-order cycle
+        // with the pull, a reset or a PIN check.
+        const [row] = await tx
+          .select()
+          .from(staffPins)
+          .where(and(pinFilter, eq(staffPins.id, id)))
+          .for("update");
+        // Gone, or moved to another pepper generation, since the candidate read.
+        if (!row) return false;
         const [latest] = await tx
           .select({ event: domainEventOutbox.event })
           .from(domainEventOutbox)
@@ -100,13 +126,13 @@ export async function resendMateriallessStaffPinSets(
           .orderBy(sql`${domainEventOutbox.sequence} desc`)
           .limit(1);
         // No local set event: the row came from the cloud, which has it.
-        if (!latest) continue;
+        if (!latest) return false;
         const parsed = staffPinSetEvent.payloadSchema.safeParse(
           latest.event.payload,
         );
         // An unreadable payload is not ours to repair; one bad row must not
         // stop the others.
-        if (!parsed.success || parsed.data.material) continue;
+        if (!parsed.success || parsed.data.material) return false;
         const old = latest.event as EventEnvelope;
         await appendDevicePinEvent(tx, context, staffPinSetEvent, {
           aggregateId: row.id,
@@ -141,9 +167,10 @@ export async function resendMateriallessStaffPinSets(
             },
           },
         });
-        resent += 1;
-      }
-      return { resent };
-    }),
-  );
+        return true;
+      });
+      if (sent) resent += 1;
+    }
+    return { resent };
+  });
 }

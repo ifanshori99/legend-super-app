@@ -267,7 +267,11 @@ export function createStaffPinRecordsFetcher(
   const limit = options.limit ?? DEFAULT_LIMIT;
 
   return (since, signal) => {
-    const query = new URLSearchParams({ limit: String(limit) });
+    // legend-r11j7: `revision=1` opts in to the cloud attempt revision per
+    // record (an older edge's strict parse would refuse it, so the cloud only
+    // sends it on request). This edge needs a cloud that knows the flag: the
+    // cloud is released first (docs/deployment.md).
+    const query = new URLSearchParams({ limit: String(limit), revision: "1" });
     if (since !== null) query.set("since", since);
     return cloudGetJson({
       ...options,

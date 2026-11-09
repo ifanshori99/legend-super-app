@@ -51,6 +51,7 @@ import { withTenant } from "../db/tenant.ts";
 import {
   applyStaffPinLocked,
   drainParkedAccessEvents,
+  applyStaffPinSet,
   registerAccessEdgeApplier,
 } from "../edge/access-applier.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -1967,5 +1968,122 @@ describe("legend-0q3r sweep of parked access rows", () => {
     expect(
       await overrideAudit(otherTenant.payload.overrideId as string, tenant2Id),
     ).toHaveLength(0);
+  });
+});
+
+describe("legend-lhffb staff_pin.locked of the node that gave the generation", () => {
+  /** A lock of the pin's aggregate stream at a chosen sequence. */
+  function streamLock(input: {
+    userId: string;
+    staffPinId: string;
+    sequence: number;
+    occurredAtMs: number;
+    lockedUntilMs: number;
+  }): EventEnvelope {
+    return {
+      ...envelope({
+        name: "staff_pin.locked",
+        aggregateType: "staff_pin",
+        aggregateId: input.staffPinId,
+        occurredAtMs: input.occurredAtMs,
+        payload: {
+          staffPinId: input.staffPinId,
+          userId: input.userId,
+          lockedUntil: new Date(input.lockedUntilMs).toISOString(),
+        },
+      }),
+      sequence: input.sequence,
+    };
+  }
+
+  const applyLock = (event: EventEnvelope, m: EdgeApplyMeta = meta()) =>
+    withTenant(db, m.context, (tx) => applyStaffPinLocked(tx, event, m));
+  const applySet = (event: EventEnvelope) =>
+    withTenant(db, node.context, (tx) => applyStaffPinSet(tx, event, meta()));
+
+  /** Set seq 1, then a reset seq 4 whose key is older (edge clock stepped back). */
+  async function setThenReset(userId: string) {
+    const staffPinId = randomUUID();
+    const first = await pinMaterial(userId, "482916", Date.now() - HOUR);
+    const reset = await pinMaterial(userId, "246801", Date.now() - 2 * HOUR);
+    expect(
+      await applySet(pinSetEvent({ userId, material: first, staffPinId })),
+    ).toBe("applied");
+    expect(
+      await applySet({
+        ...pinSetEvent({ userId, material: reset, staffPinId }),
+        sequence: 4,
+      }),
+    ).toBe("applied");
+    return staffPinId;
+  }
+
+  it("a backlog lock with a lower sequence than the reset is not applicable, although its timestamp is newer than the generation key", async () => {
+    const userId = await newUser();
+    const staffPinId = await setThenReset(userId);
+    const [before] = await pinRows(userId);
+
+    const lock = streamLock({
+      userId,
+      staffPinId,
+      sequence: 2,
+      occurredAtMs: Date.now() - 10 * MINUTE,
+      lockedUntilMs: Date.now() + 10 * MINUTE,
+    });
+
+    expect(await applyLock(lock)).toBe("not_applicable");
+    const [after] = await pinRows(userId);
+    expect(after!.failed_attempts).toBe(before!.failed_attempts);
+    expect(after!.locked_until).toBeNull();
+  });
+
+  it("a lock of the same node with a higher sequence still applies", async () => {
+    const userId = await newUser();
+    const staffPinId = await setThenReset(userId);
+
+    const lockedUntilMs = Date.now() + 10 * MINUTE;
+    expect(
+      await applyLock(
+        streamLock({
+          userId,
+          staffPinId,
+          sequence: 5,
+          occurredAtMs: Date.now() - 10 * MINUTE,
+          lockedUntilMs,
+        }),
+      ),
+    ).toBe("applied");
+    const [row] = await pinRows(userId);
+    expect(row!.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
+    expect(row!.locked_until!.getTime()).toBe(lockedUntilMs);
+  });
+
+  it("a lock of another node with a newer timestamp still applies", async () => {
+    const userId = await newUser();
+    const staffPinId = await setThenReset(userId);
+    // A standby of the same outlet: another node, same outlet scope.
+    const registered = await registerEdgeNode(
+      scopeFor(tenantId, [outletA]),
+      actor,
+      { outletId: outletA, role: "standby", label: "Siaga Akses A lock" },
+    );
+    const other = await authenticateEdgeCredential(registered.credential);
+    if (!other) throw new Error("Edge node did not authenticate");
+
+    const lockedUntilMs = Date.now() + 10 * MINUTE;
+    expect(
+      await applyLock(
+        streamLock({
+          userId,
+          staffPinId,
+          sequence: 2,
+          occurredAtMs: Date.now() - 10 * MINUTE,
+          lockedUntilMs,
+        }),
+        meta(other.context, other.scope.edgeNodeId),
+      ),
+    ).toBe("applied");
+    const [row] = await pinRows(userId);
+    expect(row!.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
   });
 });

@@ -92,7 +92,10 @@
 //   only when the record is above the last cloud values this edge received
 //   (`cloud_failed_attempts`, `cloud_locked_until`; legend-7vv8h: a full
 //   resync replays old values the edge may have cleared), never lower it, keep
-//   the later key; nothing to change writes nothing.
+//   the later key; nothing to change writes nothing. "Moved" is the cloud
+//   `attempt_revision` when the record and the stored baseline both carry one
+//   (legend-r11j7: a counter 3 -> 0 -> 3 between two pulls has the same value
+//   but a new revision), the counter value otherwise.
 // Every insert, replace and merge also raises `cloud_generation_at` to the
 // record key (the highest cloud key this edge has seen). The next edge set is
 // stamped `GREATEST(edge now, LEAST(key, GREATEST(edge now,
@@ -210,6 +213,12 @@ export const staffPinSyncQuerySchema = z.strictObject({
     .min(1)
     .max(PAGE_LIMIT_MAX)
     .default(STAFF_PIN_SYNC_LIMIT_DEFAULT),
+  // legend-r11j7: opt-in. An edge on the code before the revision parses the
+  // page with a strict record schema and refuses any record that carries
+  // `attemptRevision`, and the cloud is released first (docs/deployment.md),
+  // so the cloud only sends it to an edge that asks. A new edge always asks,
+  // so it needs a cloud that knows this flag (cloud first, as documented).
+  revision: z.literal("1").optional(),
 });
 export type StaffPinSyncQuery = z.infer<typeof staffPinSyncQuerySchema>;
 
@@ -305,7 +314,7 @@ export async function listStaffPinRecordsSince(
   query: StaffPinSyncQuery,
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
-  const { limit } = staffPinSyncQuerySchema.parse(query);
+  const { limit, revision } = staffPinSyncQuerySchema.parse(query);
   const stored = parseWatermark(query.since);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
@@ -399,6 +408,10 @@ export async function listStaffPinRecordsSince(
         lockedUntil: row.lockedUntil?.toISOString() ?? null,
         updatedAt: row.updatedAt.toISOString(),
         pinGenerationAt: generation,
+        // legend-r11j7: only for an edge that asked (`revision=1`).
+        ...(revision === "1"
+          ? { attemptRevision: Number(row.attemptRevision) }
+          : {}),
       }),
     ),
     meta: {
@@ -538,6 +551,7 @@ export async function applyStaffPinRecords(
             cloudGenerationAt: key,
             cloudFailedAttempts: record.failedAttempts,
             cloudLockedUntil: material.lockedUntil,
+            cloudAttemptRevision: record.attemptRevision ?? null,
             createdAt: version,
             updatedAt: version,
           }),
@@ -561,6 +575,7 @@ export async function applyStaffPinRecords(
               // so it is the baseline of the next same-material merge.
               cloudFailedAttempts: record.failedAttempts,
               cloudLockedUntil: material.lockedUntil,
+              cloudAttemptRevision: record.attemptRevision ?? null,
               updatedAt: version,
             })
             .where(eq(staffPins.id, local.id)),
@@ -589,10 +604,26 @@ export async function applyStaffPinRecords(
       // when it is above the local value. A null baseline (a row from before
       // the columns existed, or a new pin) treats the record as new. The
       // record's values always become the new baseline.
+      // The value alone cannot see a cloud counter that went 3 -> 0 -> 3
+      // between two pulls (legend-r11j7): the record equals the baseline and
+      // was dropped as a replay. The cloud `attempt_revision` moves on every
+      // counter or hash change (not a lock-only one), so when both sides carry one, the
+      // revision decides whether the counter moved; a replay (cloud restart
+      // resync) keeps the same revision and still changes nothing. Without a
+      // revision on either side (older cloud export, or the first pull after
+      // the upgrade: null baseline) the value comparison above applies once,
+      // and the revision is stored as the baseline (a record without one
+      // stores null: the baseline revision is unknown again). The raise still needs
+      // the record above the local counter, the lock logic stays by value.
+      const revisionKnown =
+        record.attemptRevision !== undefined &&
+        local.cloudAttemptRevision !== null;
+      const counterMoved = revisionKnown
+        ? record.attemptRevision !== Number(local.cloudAttemptRevision)
+        : record.failedAttempts !== (local.cloudFailedAttempts ?? -1);
       const recordLock = material.lockedUntil;
       const counterRaised =
-        record.failedAttempts !== (local.cloudFailedAttempts ?? -1) &&
-        record.failedAttempts > local.failedAttempts;
+        counterMoved && record.failedAttempts > local.failedAttempts;
       const lockRaised =
         recordLock !== null &&
         (local.cloudLockedUntil === null ||
@@ -600,6 +631,10 @@ export async function applyStaffPinRecords(
         (local.lockedUntil === null ||
           recordLock.getTime() > local.lockedUntil.getTime());
       const baselineMoved =
+        (record.attemptRevision ?? null) !==
+          (local.cloudAttemptRevision === null
+            ? null
+            : Number(local.cloudAttemptRevision)) ||
         local.cloudFailedAttempts !== record.failedAttempts ||
         (local.cloudLockedUntil?.getTime() ?? null) !==
           (recordLock?.getTime() ?? null);
@@ -616,6 +651,10 @@ export async function applyStaffPinRecords(
           ...(lockRaised ? { lockedUntil: recordLock } : {}),
           cloudFailedAttempts: record.failedAttempts,
           cloudLockedUntil: recordLock,
+          // A record without a revision leaves the baseline revision unknown
+          // (null), as on the insert and replace paths: keeping the old one
+          // would compare the next record against a stale revision.
+          cloudAttemptRevision: record.attemptRevision ?? null,
           pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
           cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
         })
