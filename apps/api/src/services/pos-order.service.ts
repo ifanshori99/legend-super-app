@@ -70,6 +70,7 @@ import {
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { reservationDepositAllocations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -128,6 +129,7 @@ import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
 type SubmitInput = z.output<typeof submitEndpoint.body>;
@@ -1112,7 +1114,7 @@ export async function completePosOrder(
   outletId: OutletId,
   orderId: string,
   input: CompleteInput,
-  now = new Date(),
+  requestedAt = new Date(),
 ): Promise<PosOrderDetail> {
   const { idempotencyKey, ...request } = input;
   return mutatePosOrder(
@@ -1146,6 +1148,38 @@ export async function completePosOrder(
       const paid = captured.reduce((sum, tender) => sum + tender.amountIdr, 0);
       if (paid + order.depositAppliedIdr !== order.totalIdr)
         throw new PosError("TENDER_TOTAL_MISMATCH");
+      // legend-em6p: lock the intents this sale draws on (DP allocations of
+      // the table session, captured gateway tenders) after the orders and
+      // pos_orders rows mutatePosOrder holds, then take the completion time
+      // under that lock so it follows commit order against refunds and
+      // forfeits on the same intents (payment-refund-fact-time.ts).
+      const intentIds = new Set<string>();
+      if (order.tableSessionId !== null) {
+        const allocations = await tx
+          .select({
+            paymentIntentId: reservationDepositAllocations.paymentIntentId,
+          })
+          .from(reservationDepositAllocations)
+          .where(
+            and(
+              eq(reservationDepositAllocations.tenantId, tenantId),
+              eq(
+                reservationDepositAllocations.tableSessionId,
+                order.tableSessionId,
+              ),
+            ),
+          );
+        for (const row of allocations) intentIds.add(row.paymentIntentId);
+      }
+      for (const tender of captured)
+        if (tender.paymentIntentId !== null)
+          intentIds.add(tender.paymentIntentId);
+      const now = await lockIntentsForFact(
+        tx,
+        tenantId,
+        intentIds,
+        requestedAt,
+      );
       // legend-b0au: a pending QRIS tender is voided and its WS-05 link
       // cancelled in this transaction (no new intent, pending intents
       // expired); a payment the gateway still lands later is refunded by
