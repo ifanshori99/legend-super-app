@@ -52,6 +52,7 @@ import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
 } from "./menu-availability.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { uniqueViolationOf } from "./pos-shift-support.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
@@ -408,8 +409,23 @@ async function injectOrLink(
     createdAt: now,
     updatedAt: now,
   });
+  // HPP per line at sale time; null = unknown (never 0).
+  const toNullableIdr = (value: number | null | undefined) =>
+    value == null ? null : idr(value);
+  const costSnapshots = await computeLineCostSnapshots(
+    tx,
+    context,
+    outletId,
+    itemRows.map(({ line }) => ({
+      menuItemId: line.menuItemId,
+      variantId: line.variantId,
+      // Platform modifiers carry no menu ids, so they add no recipe cost.
+      modifierIds: [],
+      quantity: line.quantity,
+    })),
+  );
   await tx.insert(orderItems).values(
-    itemRows.map(({ id, line, menu: item }) => ({
+    itemRows.map(({ id, line, menu: item }, index) => ({
       id,
       tenantId,
       outletId,
@@ -428,6 +444,7 @@ async function injectOrLink(
       // snapshots; their names print on the ticket through the note and their
       // price is in modifiersTotalIdr (the delivery row keeps the full list).
       modifiers: [],
+      costSnapshotIdr: toNullableIdr(costSnapshots[index]),
       note: kitchenNote(line),
       course: item.course,
       fireStatus: "fired" as const,

@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-u4js6 HPP per baris pesanan saat penjualan (engineer, cabang `ws/cost-snapshot-at-sale` dari milestone/m1 3517283b, 2026-11-10)
+
+- Keputusan lengkap di `docs/DECISIONS.md` (entri teratas). `order_items.cost_snapshot_idr` = HPP total baris (qty x HPP porsi), rupiah bulat, setengah ke atas sekali per baris; biaya = `stock_balances.avg_cost_idr` lokasi jual saat baris dimasukkan. NULL (bukan 0) bila tanpa resep, resep tak aktif/rusak, tanpa lokasi jual, qty < 1, atau satu bahan tanpa biaya.
+- Helper bersama `services/order-cost-snapshot.service.ts` (`computeLineCostSnapshots`, savepoint, galat -> NULL + warn) dipakai POS, QR, delivery; `recipe-bom.service.ts` mendapat `explodeMenuLinesEach` (perilaku `explodeMenuLines` tetap). Applier edge tetap NULL. Tanpa migrasi (0183 dilepas), tanpa backfill.
+- Bukti: gagal-dulu 10/12 gagal tanpa pemanggil; akhir `order-cost-snapshot.test.ts` 15/15; set terarah 7 file 115/115; tsc api, eslint, prettier bersih. Review K architect: 1 temuan kode (kode galat di log) dibetulkan, 2 celah tes ditutup.
+- Risiko: `pos-order-support.ts:1048` dan `ai-metrics/sales.ts` masih membaca NULL sebagai 0 (kartu terpisah).
+
 ## legend-umzos pulihkan tenant diarsip / outlet ditutup dalam 30 hari (engineer, cabang `ws/platform-restore-archived` dari integ/m1-batch31 d7a95d0c, 2026-11-09)
 
 - Keputusan founder Q40. Super Admin memulihkan tenant `archived` ke status sebelumnya (`active`/`suspended`) dan outlet `closed` ke status sebelumnya (`preopening`/`active`) dalam 30 hari sejak transisi (batas inklusif); sesudahnya 409 `RESTORE_WINDOW_EXPIRED`. Peta transisi tetap final (`archived -> []`, `closed -> []`); endpoint status umum tetap 409 `INVALID_TRANSITION`. Pulih hanya lewat aksi khusus.
