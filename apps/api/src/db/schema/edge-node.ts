@@ -79,6 +79,16 @@ export const edgeNodes = pgTable(
     })
       .notNull()
       .defaultNow(),
+    /**
+     * Rotation grace (legend-x3lv): the digest the last rotation replaced,
+     * accepted until `previous_credential_expires_at`. Both null or both set.
+     */
+    previousCredentialHash: varchar("previous_credential_hash", {
+      length: 64,
+    }),
+    previousCredentialExpiresAt: timestamp("previous_credential_expires_at", {
+      withTimezone: true,
+    }),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     lastSyncCursor: varchar("last_sync_cursor", { length: 1024 }),
     /** Better Auth user id; null for the edge's own provisioning row. */
@@ -120,6 +130,10 @@ export const edgeNodes = pgTable(
     check(
       "edge_nodes_credential_hash_check",
       sql`${table.credentialHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "edge_nodes_previous_credential_check",
+      sql`(${table.previousCredentialHash} IS NULL AND ${table.previousCredentialExpiresAt} IS NULL) OR (${table.previousCredentialHash} ~ '^[0-9a-f]{64}$' AND ${table.previousCredentialExpiresAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -360,6 +374,11 @@ export const edgeSyncConflicts = pgTable(
       .notNull(),
     /** Highest aggregate sequence this side already held. */
     existingSequence: bigint("existing_sequence", { mode: "number" }).notNull(),
+    /**
+     * Why the applier refused (reason `applier_refused`: the domain's own
+     * message, max 500 characters); null for the rule-based reasons.
+     */
+    detail: varchar("detail", { length: 500 }),
     event: jsonb("event").$type<EventEnvelope>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

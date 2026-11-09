@@ -28,6 +28,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+export * from "./payment-gateway-webhook";
 // WS-01 generic approval requests (legend-y5q).
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
@@ -61,8 +62,16 @@ export * from "./consents";
 export * from "./operations";
 // WS-02 edge node registry + cloud <-> edge link (legend-2pi).
 export * from "./edge-node";
+export * from "./edge-sync-conflict";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+export * from "./pos-receipt";
+// WS-04 KDS routing + ticket lifecycle (legend-4d5).
+export * from "./kds";
+// WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
+export * from "./purchasing";
+// WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
+export * from "./pos-shift";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
 export * from "./payroll-pph21-policy";
 // EDC agent framework (legend-apt).
@@ -81,3 +90,5 @@ export * from "./device";
 export * from "./ai";
 // WS-12 AI insights: forecasts, anomaly alerts, daily summaries (legend-hkd4, legend-lely).
 export * from "./ai-insights";
+// WS-06 inventory -> GL bridge tracking (legend-w1vo).
+export * from "./inventory-gl";

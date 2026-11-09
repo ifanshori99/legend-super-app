@@ -16,6 +16,10 @@
 // no-op that returns the original sequence (idempotent). After commit a
 // NOTIFY wakes the link so an online peer receives it at once; an offline
 // queue simply waits and drains on reconnect.
+//
+// `pruneAckedEdgeQueue` (legend-x3lv) deletes acknowledged rows past their
+// retention, hourly, on both sides. Pending rows are never touched (and the
+// edge_outbound_queue_guard trigger refuses to delete them anyway).
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
@@ -26,11 +30,18 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { parseEdgeHardeningEnv } from "@starter/shared/env";
+import {
   eventEnvelopeSchema,
   syncDirectionSchema,
   type SyncDirection,
 } from "@starter/shared/events";
+import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
+import { tenants } from "../db/schema/platform-org.ts";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
 import { queueOrderViolation } from "../edge/conflict.ts";
@@ -165,4 +176,81 @@ export async function edgeQueueBacklog(
       lastAckedAt: lastAckedAt ? new Date(lastAckedAt as string | Date) : null,
     };
   });
+}
+
+/** How often the runtimes prune acknowledged queue rows. */
+export const EDGE_QUEUE_PRUNE_INTERVAL_MS = 3_600_000;
+const PRUNE_DEFAULT_BATCH_SIZE = 1_000;
+
+export type PruneAckedEdgeQueueResult = {
+  deleted: number;
+  /** Tenants whose prune failed; the next run retries them. */
+  failedTenants: number;
+};
+
+/**
+ * Deletes `acked` rows of edge_outbound_queue whose `acked_at` is older than
+ * the retention (EDGE_QUEUE_ACKED_RETENTION_DAYS, default 7), in batches of
+ * `batchSize` (one short transaction each) until none is left. Pending rows
+ * are never touched.
+ *
+ * System job, cross-tenant on the cloud: instead of an RLS-bypassing owner
+ * role, it lists the tenants (the tenants table is not tenant-scoped; the
+ * credential check reads it the same way) and prunes each one under its own
+ * tenant-wide `job` context through withTenant, so RLS keeps applying and a
+ * batch can only ever delete the current tenant's rows. One failing tenant
+ * does not stop the others.
+ *
+ * The newest row of each aggregate (tenant, node, direction, aggregate type +
+ * id) is never pruned, whatever its age: `enqueueEdgeEvent`'s order check
+ * (`queueOrderViolation` lastQueued) and the link store's
+ * `defaultLastSequence` read MAX(aggregate_sequence) from this table, so
+ * deleting it would turn the next event of a long-lived aggregate into a
+ * false sequence gap. Only rows with a newer row of the same aggregate are
+ * eligible; the unique (..., aggregate_sequence) key serves that lookup.
+ *
+ * Dedupe window: `enqueueEdgeEvent` answers "duplicate" from this table, so
+ * for a pruned (older than retention, not newest) event id that answer turns
+ * into a CONFLICT: its aggregate sequence is not above the kept newest row, so
+ * the order check refuses it and it is never queued again. Delivery stays
+ * exactly-once regardless: the receivers keep append-only, never-pruned
+ * registries by event id (edge_inbound_events per node + direction, and
+ * edge_received_events tenant-wide on the cloud), so even an event that did
+ * get re-sent would be recorded as a duplicate, not applied twice.
+ */
+export async function pruneAckedEdgeQueue(
+  options: { now?: Date; retentionDays?: number; batchSize?: number } = {},
+): Promise<PruneAckedEdgeQueueResult> {
+  const now = options.now ?? new Date();
+  const retentionDays =
+    options.retentionDays ??
+    parseEdgeHardeningEnv(process.env).EDGE_QUEUE_ACKED_RETENTION_DAYS;
+  const batchSize = Math.max(
+    1,
+    Math.floor(options.batchSize ?? PRUNE_DEFAULT_BATCH_SIZE),
+  );
+  const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
+  const tenantRows = await db.select({ id: tenants.id }).from(tenants);
+  const result: PruneAckedEdgeQueueResult = { deleted: 0, failedTenants: 0 };
+  for (const { id: tenantId } of tenantRows) {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "job" }),
+      { kind: "tenant" },
+    );
+    try {
+      for (;;) {
+        const deleted = await withTenant(db, context, async (tx) => {
+          const removed = await tx.execute(
+            sql`DELETE FROM edge_outbound_queue WHERE tenant_id = ${tenantId}::uuid AND status = 'acked' AND (tenant_id, edge_node_id, direction, link_seq) IN (SELECT old.tenant_id, old.edge_node_id, old.direction, old.link_seq FROM edge_outbound_queue old WHERE old.tenant_id = ${tenantId}::uuid AND old.status = 'acked' AND old.acked_at < ${cutoff.toISOString()}::timestamptz AND EXISTS (SELECT 1 FROM edge_outbound_queue newer WHERE newer.tenant_id = old.tenant_id AND newer.edge_node_id = old.edge_node_id AND newer.direction = old.direction AND newer.aggregate_type = old.aggregate_type AND newer.aggregate_id = old.aggregate_id AND newer.aggregate_sequence > old.aggregate_sequence) LIMIT ${batchSize})`,
+          );
+          return removed.rowCount ?? 0;
+        });
+        result.deleted += deleted;
+        if (deleted < batchSize) break;
+      }
+    } catch {
+      result.failedTenants += 1;
+    }
+  }
+  return result;
 }

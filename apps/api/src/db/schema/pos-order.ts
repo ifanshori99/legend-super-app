@@ -56,6 +56,7 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { posShifts } from "./pos-shift";
 import { orderItems, orders } from "./qr-order";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
@@ -87,6 +88,11 @@ export const posOrders = pgTable(
     cashierId: text("cashier_id"),
     /** The cashier asked for every line to start held (F8 hold & fire). */
     holdItems: boolean("hold_items").notNull().default(false),
+    /**
+     * Training stamp (legend-2lp.8): copy of `devices.training_mode` at
+     * creation. Written once by createPosOrder, never changed afterwards.
+     */
+    isTraining: boolean("is_training").notNull().default(false),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
@@ -241,11 +247,18 @@ export const posOrderTenders = pgTable(
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     capturedBy: text("captured_by"),
     approvedBy: text("approved_by"),
+    /** The drawer (shift) a cash tender went into; null for non-cash. */
+    shiftId: uuid("shift_id"),
     createdAt,
     updatedAt,
   },
   (table) => [
     unique("pos_order_tenders_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_tenders_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     foreignKey({
       name: "pos_order_tenders_pos_order_fk",
       columns: [table.tenantId, table.orderId],
@@ -400,10 +413,17 @@ export const posOrderVoids = pgTable(
     /** legend-0gy1: the `pos_overrides` row that approved this action. */
     overrideId: ulidInUuid("override_id"),
     voidedAt: timestamp("voided_at", { withTimezone: true }).notNull(),
+    /** The drawer (shift) a cash void paid out of; null when no cash tender. */
+    shiftId: uuid("shift_id"),
     createdAt,
   },
   (table) => [
     unique("pos_order_voids_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_voids_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     // A completed sale is voided by correction at most once.
     unique("pos_order_voids_order_key").on(table.tenantId, table.orderId),
     foreignKey({
@@ -449,10 +469,17 @@ export const posOrderRefunds = pgTable(
     /** legend-0gy1: the `pos_overrides` row that approved this action. */
     overrideId: ulidInUuid("override_id"),
     refundedAt: timestamp("refunded_at", { withTimezone: true }).notNull(),
+    /** The drawer (shift) a cash refund paid out of; null when no cash line. */
+    shiftId: uuid("shift_id"),
     createdAt,
   },
   (table) => [
     unique("pos_order_refunds_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "pos_order_refunds_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
     foreignKey({
       name: "pos_order_refunds_pos_order_fk",
       columns: [table.tenantId, table.orderId],

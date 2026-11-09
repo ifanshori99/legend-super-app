@@ -14,20 +14,32 @@ import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
+  CoreError,
   createUlid,
+  outletIdSchema,
+  tenantIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { conflictResolution } from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
   type SyncDirection,
 } from "@starter/shared/events";
 import type * as schema from "../db/schema/index.ts";
-import type { EdgeEventKind } from "../db/schema/edge-node.ts";
+import type {
+  EdgeConflictResolution,
+  EdgeEventKind,
+} from "../db/schema/edge-node.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  notifyEdgeSyncConflictRecorded,
+  type NewEdgeSyncConflict,
+} from "../services/edge-sync-conflict-alert.ts";
 import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
-import { decideInbound } from "./conflict.ts";
+import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
@@ -53,17 +65,29 @@ export type DbLinkStoreOptions = {
   classify?: EdgeEventClassifier;
 };
 
-async function defaultLastSequence(
+/**
+ * A receipt counts as held when the event was applied, or when it was refused
+ * as a conflict and a supervisor later replayed it successfully
+ * (edge_sync_conflict_resolutions outcome 'applied', legend-wqc6). Without the
+ * second branch the next sequence after a replayed one would be a gap again.
+ */
+const heldReceipt = (receipt: string) =>
+  sql.raw(
+    `(${receipt}.outcome = 'applied' OR (${receipt}.outcome = 'conflict' AND EXISTS (SELECT 1 FROM edge_sync_conflicts c JOIN edge_sync_conflict_resolutions r ON r.tenant_id = c.tenant_id AND r.conflict_id = c.id AND r.outcome = 'applied' WHERE c.tenant_id = ${receipt}.tenant_id AND c.edge_node_id = ${receipt}.edge_node_id AND c.direction = ${receipt}.direction AND c.event_id = ${receipt}.event_id)))`,
+  );
+
+/** Highest aggregate sequence this side holds for the event's aggregate. */
+export async function defaultLastSequence(
   tx: EdgeTx,
   edgeNodeId: string,
   direction: SyncDirection,
   kind: EdgeEventKind,
-  event: EventEnvelope,
+  event: Pick<EventEnvelope, "aggregateType" | "aggregateId">,
 ): Promise<number> {
   if (kind === "master_data") {
     // Cloud wins: only what the cloud already sent counts.
     const result = await tx.execute(
-      sql`SELECT COALESCE(MAX(aggregate_sequence), 0) AS last FROM edge_inbound_events WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = ${direction} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId} AND outcome = 'applied'`,
+      sql`SELECT COALESCE(MAX(i.aggregate_sequence), 0) AS last FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.direction = ${direction} AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}`,
     );
     return Number(result.rows[0]?.last ?? 0);
   }
@@ -71,11 +95,48 @@ async function defaultLastSequence(
   // (sent down) continues on the edge (sent up), so both directions count.
   const result = await tx.execute(
     sql`SELECT GREATEST(
-      (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_inbound_events WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId} AND outcome = 'applied'),
+      (SELECT COALESCE(MAX(i.aggregate_sequence), 0) FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}),
       (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId})
     ) AS last`,
   );
   return Number(result.rows[0]?.last ?? 0);
+}
+
+/**
+ * A refusal by the domain itself: a CoreError or HttpError that is a client
+ * error (4xx). Rate limits and timeouts are transient, so they are not.
+ */
+function isDomainRefusal(error: unknown): boolean {
+  const status =
+    error instanceof CoreError || error instanceof HttpError
+      ? error.status
+      : null;
+  return (
+    status !== null &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 429
+  );
+}
+
+/**
+ * Runs the applier in a savepoint. Returns null when it applied, or the
+ * refusal text (max 500 characters) after rolling the savepoint back.
+ */
+async function applyOrRefuse(
+  tx: EdgeTx,
+  applier: EdgeEventApplier<EdgeTx>,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+): Promise<string | null> {
+  try {
+    await tx.transaction((savepoint) => applier.apply(savepoint, event, meta));
+    return null;
+  } catch (error) {
+    if (!isDomainRefusal(error)) throw error;
+    return (error as Error).message.slice(0, 500);
+  }
 }
 
 export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
@@ -97,6 +158,52 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
       );
       return Number(result.rows[0]?.[column] ?? 0);
     });
+  }
+
+  /**
+   * Supervisor alert for a conflict this call just recorded. It runs in a
+   * savepoint and never fails the batch: a missing alert must not stop the
+   * sync (the conflict row is the durable evidence).
+   */
+  async function alertNewConflict(tx: EdgeTx, conflict: NewEdgeSyncConflict) {
+    try {
+      await tx.transaction((savepoint) =>
+        notifyEdgeSyncConflictRecorded(savepoint, context, conflict),
+      );
+    } catch {
+      // Intentionally silent: no payload or ids in logs (ports.ts rule).
+    }
+  }
+
+  /** Records a conflict (idempotent) and alerts only when it is NEW. */
+  async function recordConflict(
+    tx: EdgeTx,
+    input: {
+      event: EventEnvelope;
+      eventUuid: string;
+      kind: EdgeEventKind;
+      reason: EdgeConflictReason;
+      resolution: EdgeConflictResolution;
+      lastSequence: number;
+      detail: string | null;
+    },
+  ) {
+    const { event } = input;
+    const conflictId = createUlid();
+    const inserted = await tx.execute(
+      sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${input.eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${input.reason}, ${input.resolution}, ${input.lastSequence}, ${input.detail}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+    );
+    // Cloud side only (the edge database has no staff to alert), and only
+    // when this call really inserted the row (legend-wqc6).
+    if (inbound === "edge_to_cloud" && inserted.rows.length > 0)
+      await alertNewConflict(tx, {
+        id: conflictId,
+        tenantId: tenantIdSchema.parse(node.tenantId),
+        outletId: outletIdSchema.parse(node.outletId),
+        edgeNodeId: nodeId,
+        aggregateType: event.aggregateType,
+        reason: input.reason,
+      });
   }
 
   return {
@@ -210,15 +317,39 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
             continue;
           let outcome: "applied" | "superseded" | "conflict";
           if (decision.action === "apply") {
-            await applier.apply(tx, event, meta);
-            outcome = "applied";
+            // Savepoint: a domain refusal (CoreError / 4xx) must not roll
+            // back the whole batch and stall the node's sync forever
+            // (legend-wqc6). It becomes a conflict a supervisor can review;
+            // anything else (unwired applier, unclassified event, database
+            // failure) still aborts the batch so the sender keeps it queued.
+            const refusal = await applyOrRefuse(tx, applier, event, meta);
+            if (refusal === null) {
+              outcome = "applied";
+            } else {
+              outcome = "conflict";
+              await recordConflict(tx, {
+                event,
+                eventUuid,
+                kind,
+                reason: "applier_refused",
+                resolution: conflictResolution(kind),
+                lastSequence,
+                detail: refusal,
+              });
+            }
           } else if (decision.action === "skip") {
             outcome = "superseded";
           } else {
             outcome = "conflict";
-            await tx.execute(
-              sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, event) VALUES (${ulidToUuid(createUlid())}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${decision.reason}, ${decision.resolution}, ${lastSequence}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING`,
-            );
+            await recordConflict(tx, {
+              event,
+              eventUuid,
+              kind,
+              reason: decision.reason,
+              resolution: decision.resolution,
+              lastSequence,
+              detail: null,
+            });
           }
           if (inbound === "edge_to_cloud")
             await tx.execute(

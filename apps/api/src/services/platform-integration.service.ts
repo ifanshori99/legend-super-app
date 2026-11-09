@@ -48,6 +48,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { newSecretRef, openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
+import { clearDoitWebhookSecretCache } from "./payment-webhook.service.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -324,7 +325,7 @@ export async function upsertIntegration(
   input: UpsertIntegrationInput,
   actorUserId: string,
 ): Promise<TenantIntegration> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     if (input.outletId !== null) {
       assertOutletInScope(context.outletScope, input.outletId);
@@ -410,6 +411,9 @@ export async function upsertIntegration(
     });
     return toIntegration(row);
   });
+  // After commit: the webhook secret cache must not outlive a change.
+  clearDoitWebhookSecretCache(context.tenant.tenantId);
+  return result;
 }
 
 /**
@@ -423,7 +427,7 @@ export async function setIntegrationStatus(
   input: { status: "active" | "disabled" },
   actorUserId: string,
 ): Promise<TenantIntegration> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const [current] = await tx
       .select()
@@ -469,6 +473,9 @@ export async function setIntegrationStatus(
     });
     return toIntegration(row);
   });
+  // After commit: a disabled or activated secret applies at once.
+  clearDoitWebhookSecretCache(context.tenant.tenantId);
+  return result;
 }
 
 /**
@@ -581,5 +588,57 @@ export async function loadActiveIntegrationCredentials(
     const row = chosen && rows.find((candidate) => candidate.id === chosen.id);
     if (!chosen || !row) return null;
     return { integration: chosen, credentials: openCredentials(row) };
+  });
+}
+
+/**
+ * Credentials of one integration row by id, whatever its status: a payment
+ * already minted on this row is still checked (and its webhook verified) with
+ * the account that created it after the row is disabled or an outlet row
+ * starts to win. Never use it to pick credentials for new work; that is
+ * `loadActiveIntegrationCredentials`. A withdrawn provider, an unknown id, a
+ * row of another provider or outlet outside the caller's scope, or a row
+ * without stored credentials = null.
+ */
+export async function loadIntegrationCredentialsById(
+  context: ScopedTenantContext,
+  provider: IntegrationProvider,
+  integrationId: string,
+): Promise<{
+  integration: TenantIntegration;
+  credentials: Record<string, string>;
+} | null> {
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    try {
+      await assertProviderAvailable(tx, tenantId, provider);
+    } catch (error) {
+      if (error instanceof PlatformError) return null;
+      throw error;
+    }
+    const [row] = await tx
+      .select()
+      .from(tenantIntegrations)
+      .where(
+        and(
+          eq(tenantIntegrations.tenantId, tenantId),
+          eq(tenantIntegrations.id, integrationId),
+          eq(tenantIntegrations.provider, provider),
+        ),
+      )
+      .limit(1);
+    if (!row || !row.credentialsEncrypted) return null;
+    if (
+      row.outletId !== null &&
+      context.outletScope.kind === "outlets" &&
+      !(context.outletScope.outletIds as readonly string[]).includes(
+        row.outletId,
+      )
+    )
+      return null;
+    return {
+      integration: toIntegration(row),
+      credentials: openCredentials(row),
+    };
   });
 }

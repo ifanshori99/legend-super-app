@@ -47,6 +47,7 @@ import {
   createIntent,
   createPaymentLink,
 } from "./payment.service.ts";
+import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
 import { requestPosLatePaymentRefund } from "./pos-order-late-payment.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
@@ -287,10 +288,18 @@ export async function addPosTender(
           if (input.receivedIdr === undefined)
             throw new PosError("CASH_TENDER_MISMATCH");
           const plan = planCashTender(idr(remaining), idr(input.receivedIdr));
+          const shift = await lockCashierShiftForCash(tx, context, {
+            outletId,
+            cashierId: caller.userId,
+            deviceId: caller.deviceId,
+            mode: "in",
+            at: now,
+          });
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({
               ...base,
+              shiftId: shift.id,
               provider: "manual",
               amountIdr: plan.amountIdr,
               receivedIdr: plan.receivedIdr,
