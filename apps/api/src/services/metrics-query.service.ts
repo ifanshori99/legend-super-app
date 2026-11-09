@@ -4,11 +4,13 @@
 // code means, this service says what its value is.
 //
 // Rules:
-// - I1: money metrics are sums of posted journal lines (journal_entries holds
-//   posted entries only; reversals are their own entries and net out), picked
-//   by statement section or posting role (metrics-gl-sources.ts). Orders and
-//   payments are never read for a money figure. A money metric without a
-//   ledger source answers null ("no data"), never a number from elsewhere.
+// - I1 (narrowed by DECISIONS 2026-11-10 point 1): a money total the ledger
+//   posts is a sum of posted journal lines (journal_entries holds posted
+//   entries only; reversals are their own entries and net out), picked by
+//   statement section or posting role (metrics-gl-sources.ts), and never comes
+//   from operational rows. A split the ledger cannot carry (channel, menu,
+//   ...) reads `metrics_daily` rows and is followed by one residual row
+//   (METRIC_LEDGER_ADJUSTMENT) so the rows add up to the ledger total.
 // - I2 / SH-02: a ledger figure is `final` only when its bucket is over AND
 //   every month it touches is closed with a balance snapshot at the period's
 //   current version, for every legal entity with books in that month (a
@@ -29,10 +31,16 @@
 //   puts them in their own "Tingkat badan usaha" series.
 // - SH-01: an aggregate-only viewer (shareholder) may not split or filter by
 //   a person (employee, customer, member).
-// - Non-money metrics wait for `metrics_daily` (not built yet): they answer
-//   null points with the right finality label.
+// - The registry (`metric-sources/`) gives every code one source: `gl`,
+//   `daily` (summed `metrics_daily` rows, null without rows), `derived` (a
+//   ratio of two codes per bucket) or `unavailable` (null points and an
+//   `availability` entry, "belum tersedia", never a zero). `evaluateMetrics`
+//   is the only path from codes to values (DECISIONS 2026-11-10 point 2).
+// - Finality of stored values (design §2.4): final only when the read-time
+//   rule says final and every stored row behind the value is final. Split and
+//   residual rows take the finality of the ledger total of their bucket.
 
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   businessDateOf,
@@ -41,27 +49,37 @@ import {
   formatDecimal4,
   idr,
   outletIdsForQuery,
+  parseDecimal4,
   type BusinessDate,
+  type OutletQueryFilter,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import {
   compareMetricValues,
   METRIC_ENTITY_LEVEL_OUTLET,
+  METRIC_LEDGER_ADJUSTMENT,
+  METRIC_UNAVAILABLE_MESSAGES,
   metricDefinitionRefSchema,
   metricQueryResponseSchema,
   metricValueFinality,
   type MetricAccountingPeriod,
+  type MetricAvailability,
   type MetricBucket,
   type MetricDefinition,
   type MetricDefinitionRef,
+  type MetricDimensionFilter,
+  type MetricDimensionKey,
   type MetricDimensionValue,
   type MetricFinality,
   type MetricOfficiality,
+  type MetricPeriod,
   type MetricPoint,
   type MetricQueryRequest,
   type MetricQueryResponse,
   type MetricSeries,
+  type MetricUnavailableReason,
+  type MetricUnit,
   type MetricValue,
 } from "@starter/shared/metrics";
 import { reportMetricByCode } from "@starter/shared/dashboard";
@@ -73,15 +91,22 @@ import {
   fiscalPeriodSnapshots,
   journalEntries,
   journalLines,
+  metricsDaily,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import {
-  GL_METRIC_SOURCES,
   glComponentsOf,
   type GlComponent,
   type GlMetricSource,
 } from "./metrics-gl-sources";
+import {
+  metricSourceOf,
+  metricSplitOf,
+  type DailyMetricReader,
+  type MetricSource,
+  type MetricSplitSource,
+} from "./metric-sources";
 
 /** `full`: report.financial.view / operational roles; `aggregate`: shareholder. */
 export type MetricViewer = "full" | "aggregate";
@@ -223,19 +248,6 @@ function resolveDefinitions(codes: readonly string[]): MetricDefinition[] {
   });
 }
 
-/** The ledger source of a definition, when its unit matches the source kind. */
-function glSourceOf(definition: MetricDefinition): GlMetricSource | null {
-  const source = GL_METRIC_SOURCES[definition.code];
-  if (!source) return null;
-  if (source.kind === "amount" && definition.unit !== "idr") return null;
-  if (source.kind === "ratio" && definition.unit !== "percent") return null;
-  return source;
-}
-
-function officialityOf(definition: MetricDefinition): MetricOfficiality {
-  return glSourceOf(definition) ? "closed_period_only" : definition.officiality;
-}
-
 function definitionRef(definition: MetricDefinition): MetricDefinitionRef {
   return metricDefinitionRefSchema.parse({
     id: definition.id,
@@ -261,15 +273,16 @@ function unsupportedDimension(code: string, key: string): HttpError {
   );
 }
 
+/**
+ * SH-01 and the registry: an aggregate-only viewer never splits or filters by
+ * a person, and a key the definition does not declare at all is a 400. A
+ * declared split no source reads yet is `dimension_not_supported` instead.
+ */
 function assertDimensions(
   definitions: readonly MetricDefinition[],
-  request: MetricQueryRequest,
+  keys: readonly string[],
   viewer: MetricViewer,
 ) {
-  const keys = [
-    ...(request.groupBy ? [request.groupBy] : []),
-    ...(request.filters ?? []).map((filter) => filter.key),
-  ];
   if (
     viewer === "aggregate" &&
     keys.some((key) =>
@@ -280,17 +293,10 @@ function assertDimensions(
       "PERMISSION_DENIED",
       "Pemegang saham hanya melihat angka agregat, tanpa rincian per orang.",
     );
-  for (const definition of definitions) {
+  for (const definition of definitions)
     for (const key of keys)
       if (!definition.dimensions.includes(key))
         throw unsupportedDimension(definition.code, key);
-    if (!glSourceOf(definition)) continue;
-    // The ledger only carries the outlet of a line.
-    if (request.groupBy && request.groupBy !== "outlet")
-      throw unsupportedDimension(definition.code, request.groupBy);
-    for (const filter of request.filters ?? [])
-      throw unsupportedDimension(definition.code, filter.key);
-  }
 }
 
 // ---- Ledger reads -----------------------------------------------------------
@@ -547,6 +553,31 @@ const ENTITY_LEVEL = "";
 const outletKeyOf = (outletId: string | null) => outletId ?? ENTITY_LEVEL;
 
 /**
+ * The range a date falls in: binary search over the current buckets (date
+ * order), then the comparison range if any; -1 outside all of them.
+ */
+function rangeIndexOf(
+  ranges: readonly Range[],
+  currentCount: number,
+  date: string,
+): number {
+  let low = 0;
+  let high = currentCount - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const range = ranges[mid]!;
+    if (date < range.start) high = mid - 1;
+    else if (date > range.end) low = mid + 1;
+    else return mid;
+  }
+  for (let at = currentCount; at < ranges.length; at++) {
+    const range = ranges[at]!;
+    if (date >= range.start && date <= range.end) return at;
+  }
+  return -1;
+}
+
+/**
  * Signed sums per (component, bucket, outlet), built in one pass over the
  * ledger rows: each row lands in its bucket by binary search and adds to every
  * component that reads its account. Evaluating a point is then a lookup, not
@@ -560,7 +591,7 @@ class LedgerIndex {
     accounts: ReadonlyMap<GlComponent, ComponentAccounts>,
     rows: readonly LedgerRow[],
     /** Current buckets, in date order, then the comparison range if any. */
-    private readonly ranges: readonly Range[],
+    ranges: readonly Range[],
     currentCount: number,
   ) {
     const byAccount = new Map<
@@ -581,7 +612,7 @@ class LedgerIndex {
     for (const row of rows) {
       const targets = byAccount.get(row.accountId);
       if (!targets) continue;
-      const bucket = this.rangeIndexOf(row.date, currentCount);
+      const bucket = rangeIndexOf(ranges, currentCount, row.date);
       if (bucket < 0) continue;
       for (const { component, sign } of targets) {
         const byOutlet = this.sums.get(component)![bucket]!;
@@ -593,23 +624,6 @@ class LedgerIndex {
         }
       }
     }
-  }
-
-  private rangeIndexOf(date: string, currentCount: number): number {
-    let low = 0;
-    let high = currentCount - 1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      const range = this.ranges[mid]!;
-      if (date < range.start) high = mid - 1;
-      else if (date > range.end) low = mid + 1;
-      else return mid;
-    }
-    for (let at = currentCount; at < this.ranges.length; at++) {
-      const range = this.ranges[at]!;
-      if (date >= range.start && date <= range.end) return at;
-    }
-    return -1;
   }
 
   sum(component: GlComponent, range: number, outletKey: string): Sum {
@@ -661,6 +675,814 @@ function evaluate(
   };
 }
 
+// ---- Native values ----------------------------------------------------------
+
+const DECIMAL4_SCALE = 10_000n;
+
+/** A value in its unit's native integer scale (Decimal4 × 10^4). */
+function nativeOf(value: MetricValue): bigint {
+  switch (value.unit) {
+    case "idr":
+      return BigInt(value.valueIdr);
+    case "count":
+    case "seconds":
+      return BigInt(value.value);
+    case "percent":
+    case "decimal":
+      return parseDecimal4(value.value);
+  }
+}
+
+/** Denominator that turns a native value into its real number. */
+const nativeScaleOf = (unit: MetricUnit) =>
+  unit === "percent" || unit === "decimal" ? DECIMAL4_SCALE : 1n;
+
+function safeNumber(native: bigint): number {
+  if (
+    native > BigInt(Number.MAX_SAFE_INTEGER) ||
+    native < BigInt(Number.MIN_SAFE_INTEGER)
+  )
+    throw new RangeError("Metric value exceeds the safe integer range");
+  return Number(native);
+}
+
+function valueOf(unit: MetricUnit, native: bigint): MetricValue {
+  switch (unit) {
+    case "idr":
+      return idrValue(native);
+    case "count":
+    case "seconds":
+      return { unit, value: safeNumber(native) };
+    case "percent":
+    case "decimal":
+      return { unit, value: formatDecimal4(native) };
+  }
+}
+
+/** numerator / denominator × scale in `unit`; null for no data or a zero denominator. */
+function ratioValue(
+  numerator: MetricValue | null,
+  denominator: MetricValue | null,
+  scale: 1 | 100,
+  unit: MetricUnit,
+): MetricValue | null {
+  if (numerator === null || denominator === null) return null;
+  const den = nativeOf(denominator);
+  if (den === 0n) return null;
+  return valueOf(
+    unit,
+    divideRounded(
+      nativeOf(numerator) *
+        nativeScaleOf(denominator.unit) *
+        BigInt(scale) *
+        nativeScaleOf(unit),
+      nativeScaleOf(numerator.unit) * den,
+      "half_up",
+    ),
+  );
+}
+
+// ---- metrics_daily ----------------------------------------------------------
+
+type DailyRow = {
+  code: string;
+  outletId: string;
+  date: string;
+  dimensionKey: string | null;
+  dimensionValue: string | null;
+  unit: MetricUnit;
+  native: bigint;
+  final: boolean;
+  /** Index into the evaluation ranges (current buckets, then previous). */
+  range: number;
+};
+
+/** One read of `metrics_daily` for every stored code of the call. */
+async function dailyRows(
+  tx: Tx,
+  tenantId: string,
+  codes: readonly string[],
+  dimensionKeys: readonly string[],
+  range: Range,
+  outletFilter: OutletQueryFilter,
+): Promise<Omit<DailyRow, "range">[]> {
+  if (codes.length === 0) return [];
+  const rows = await tx
+    .select({
+      code: metricsDaily.metricCode,
+      outletId: metricsDaily.outletId,
+      date: metricsDaily.metricDate,
+      dimensionKey: metricsDaily.dimensionKey,
+      dimensionValue: metricsDaily.dimensionValue,
+      unit: metricsDaily.unit,
+      valueInt: metricsDaily.valueInt,
+      valueDecimal: metricsDaily.valueDecimal,
+      finality: metricsDaily.finality,
+    })
+    .from(metricsDaily)
+    .where(
+      and(
+        eq(metricsDaily.tenantId, tenantId),
+        inArray(metricsDaily.metricCode, [...codes]),
+        gte(metricsDaily.metricDate, range.start),
+        lte(metricsDaily.metricDate, range.end),
+        outletFilter.kind === "outlets"
+          ? inArray(metricsDaily.outletId, [...outletFilter.outletIds])
+          : undefined,
+        dimensionKeys.length === 0
+          ? isNull(metricsDaily.dimensionKey)
+          : or(
+              isNull(metricsDaily.dimensionKey),
+              inArray(metricsDaily.dimensionKey, [...dimensionKeys]),
+            ),
+      ),
+    );
+  return rows.map((row) => {
+    const unit = row.unit as MetricUnit;
+    return {
+      code: row.code,
+      outletId: row.outletId,
+      date: row.date,
+      dimensionKey: row.dimensionKey,
+      dimensionValue: row.dimensionValue,
+      unit,
+      native:
+        unit === "percent" || unit === "decimal"
+          ? parseDecimal4(row.valueDecimal ?? "0")
+          : (row.valueInt ?? 0n),
+      final: row.finality === "final",
+    };
+  });
+}
+
+// ---- Engine -----------------------------------------------------------------
+
+/** Where the engine finds sources; tests inject their own. */
+export type SourceLookup = {
+  sourceOf(code: string): MetricSource;
+  splitOf(
+    code: string,
+    dimension: MetricSplitSource["dimension"],
+  ): MetricSplitSource | null;
+};
+
+const REGISTRY_SOURCES: SourceLookup = {
+  sourceOf: metricSourceOf,
+  splitOf: metricSplitOf,
+};
+
+export type EvaluateMetricsRequest = {
+  metricCodes: readonly string[];
+  period: { start: BusinessDate; end: BusinessDate };
+  bucket: MetricBucket;
+  /** From outletIdsForQuery: the requested outlets within the caller's scope. */
+  outletFilter: OutletQueryFilter;
+  /** The outlet and at most one other key; deeper answers dimension_not_supported. */
+  groupBy: readonly MetricDimensionKey[];
+  filters: readonly MetricDimensionFilter[];
+  comparePrevious: boolean;
+  viewer: MetricViewer;
+  /** SH-02: refuse with PERIOD_NOT_CLOSED before any value is read. */
+  requireFinal?: boolean;
+};
+
+export type EvaluateMetricsOptions = { sources?: SourceLookup };
+
+/**
+ * A series of the engine. `dimensions` lists the split values, the outlet
+ * first, then the one other key (empty for the total). `dimension` is the
+ * public single split: the only entry, or null for a total or a two-key split.
+ */
+export type EvaluatedSeries = MetricSeries & {
+  dimensions: MetricDimensionValue[];
+};
+
+export type EvaluatedMetrics = {
+  /** One per distinct requested code, in request order. */
+  definitions: MetricDefinitionRef[];
+  series: EvaluatedSeries[];
+  /** One per definition, same order. */
+  availability: MetricAvailability[];
+  period: MetricPeriod;
+  outletFilter: OutletQueryFilter;
+  accountingPeriods: MetricAccountingPeriod[];
+  dataThrough: BusinessDate;
+};
+
+/** The split and filter a call asks for, or why the engine cannot read it. */
+type Shape = {
+  byOutlet: boolean;
+  splitKey: Exclude<MetricDimensionKey, "outlet"> | null;
+  filter: { key: string; values: ReadonlySet<string> } | null;
+  supported: boolean;
+};
+
+function shapeOf(
+  groupBy: readonly MetricDimensionKey[],
+  filters: readonly MetricDimensionFilter[],
+): Shape {
+  const splitKeys = groupBy.filter((key) => key !== "outlet");
+  const shape: Shape = {
+    byOutlet: groupBy.includes("outlet"),
+    splitKey: splitKeys[0] ?? null,
+    filter: null,
+    supported:
+      new Set(groupBy).size === groupBy.length && splitKeys.length <= 1,
+  };
+  // A stored row carries one dimension, so a filter must be on the split key
+  // (or on the only key read). Outlets are filtered by `outletFilter`.
+  const filterKeys = new Set(filters.map((filter) => filter.key));
+  if (filterKeys.size > 1) return { ...shape, supported: false };
+  const [first, ...rest] = filters;
+  if (first) {
+    if (
+      first.key === "outlet" ||
+      (shape.splitKey !== null && first.key !== shape.splitKey)
+    )
+      return { ...shape, supported: false };
+    const values = new Set(
+      first.values.filter((value) =>
+        rest.every((filter) => filter.values.includes(value)),
+      ),
+    );
+    shape.filter = { key: first.key, values };
+  }
+  return shape;
+}
+
+type Plan =
+  | { kind: "unavailable"; reason: MetricUnavailableReason }
+  | { kind: "gl"; gl: GlMetricSource; split: MetricSplitSource | null }
+  | { kind: "daily"; reader: DailyMetricReader }
+  | {
+      kind: "derived";
+      numerator: string;
+      denominator: string;
+      scale: 1 | 100;
+    };
+
+const NOT_SUPPORTED: Plan = {
+  kind: "unavailable",
+  reason: "dimension_not_supported",
+};
+
+function planOf(
+  code: string,
+  shape: Shape,
+  sources: SourceLookup,
+  plans: Map<string, Plan>,
+  visiting: Set<string> = new Set(),
+): Plan {
+  const known = plans.get(code);
+  if (known) return known;
+  if (visiting.has(code))
+    throw new Error(`Metric engine: derived metric "${code}" refers to itself`);
+  visiting.add(code);
+  const plan = ((): Plan => {
+    if (!shape.supported) return NOT_SUPPORTED;
+    const source = sources.sourceOf(code);
+    switch (source.kind) {
+      case "unavailable":
+        return { kind: "unavailable", reason: source.reason };
+      case "gl": {
+        // The ledger cannot filter by a non-outlet dimension.
+        if (shape.filter) return NOT_SUPPORTED;
+        if (shape.splitKey === null)
+          return { kind: "gl", gl: source.gl, split: null };
+        // A percent split is recomputed from split numerator and denominator
+        // (DECISIONS 2026-11-10 point 1); no card builds one yet.
+        if (source.gl.kind !== "amount") return NOT_SUPPORTED;
+        const split = sources.splitOf(code, shape.splitKey);
+        return split ? { kind: "gl", gl: source.gl, split } : NOT_SUPPORTED;
+      }
+      case "daily": {
+        // Stored ratios never add up across days or outlets: a ratio is a
+        // `derived` source.
+        if (reportMetricByCode.get(code)?.aggregation === "ratio")
+          return { kind: "unavailable", reason: "source_not_built" };
+        const keys = [shape.splitKey, shape.filter?.key].filter(
+          (key): key is string => key != null,
+        );
+        if (
+          keys.some(
+            (key) =>
+              !(source.reader.dimensions as readonly string[]).includes(key),
+          )
+        )
+          return NOT_SUPPORTED;
+        return { kind: "daily", reader: source.reader };
+      }
+      case "derived": {
+        for (const input of [source.numerator, source.denominator]) {
+          const inputPlan = planOf(input, shape, sources, plans, visiting);
+          if (inputPlan.kind === "unavailable") return inputPlan;
+        }
+        return {
+          kind: "derived",
+          numerator: source.numerator,
+          denominator: source.denominator,
+          scale: source.scale,
+        };
+      }
+    }
+  })();
+  visiting.delete(code);
+  plans.set(code, plan);
+  return plan;
+}
+
+type Cell = { value: MetricValue | null; final: boolean };
+/** One split of a metric: its dimension values and one cell per range. */
+type Group = { dims: MetricDimensionValue[]; cells: Cell[] };
+
+const EMPTY_CELL: Cell = { value: null, final: true };
+const groupKeyOf = (dims: readonly MetricDimensionValue[]) =>
+  dims.map((dim) => `${dim.key}=${dim.value}`).join("|");
+
+function definitionOf(code: string): MetricDefinition {
+  const definition = reportMetricByCode.get(code);
+  if (!definition)
+    throw new HttpError(
+      404,
+      "METRIC_NOT_FOUND",
+      `Metrik "${code}" tidak terdaftar.`,
+    );
+  return definition;
+}
+
+/**
+ * Evaluates registry metrics inside the caller's snapshot transaction (the
+ * single path from codes to values, DECISIONS 2026-11-10 point 2). One ledger
+ * read and one `metrics_daily` read per call, whatever the number of codes.
+ */
+export async function evaluateMetrics(
+  tx: Tx,
+  context: ScopedTenantContext,
+  request: EvaluateMetricsRequest,
+  now: Date,
+  options: EvaluateMetricsOptions = {},
+): Promise<EvaluatedMetrics> {
+  const sources = options.sources ?? REGISTRY_SOURCES;
+  const definitions = resolveDefinitions(request.metricCodes);
+  assertDimensions(
+    definitions,
+    [...request.groupBy, ...request.filters.map((filter) => filter.key)],
+    request.viewer,
+  );
+  const tenantId = context.tenant.tenantId;
+  const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
+  const range: Range = request.period;
+  const buckets = bucketsOf(range, request.bucket);
+  if (monthsBetween(range.start, range.end).length > MAX_POINTS)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Periode terlalu panjang; pilih rentang yang lebih pendek.",
+    );
+  const previous = request.comparePrevious ? previousMetricRange(range) : null;
+  const ranges = previous ? [...buckets, previous] : buckets;
+  const currentCount = buckets.length;
+  const outletFilter = request.outletFilter;
+
+  const shape = shapeOf(request.groupBy, request.filters);
+  const plans = new Map<string, Plan>();
+  for (const definition of definitions)
+    planOf(definition.code, shape, sources, plans);
+  const officialityOf = (code: string): MetricOfficiality => {
+    const plan = plans.get(code);
+    if (plan?.kind === "gl") return "closed_period_only";
+    if (plan?.kind === "derived") {
+      const inputs = [plan.numerator, plan.denominator].map(officialityOf);
+      if (inputs.includes("closed_period_only")) return "closed_period_only";
+    }
+    return definitionOf(code).officiality;
+  };
+
+  const books = await bookState(
+    tx,
+    tenantId,
+    monthsBetween(range.start, range.end),
+  );
+  const closed = books.closed;
+  const finalityOf = (
+    bucket: Range,
+    officiality: MetricOfficiality,
+  ): MetricFinality => {
+    const periodClosed = bucket.end < today;
+    return metricValueFinality({
+      officiality,
+      periodClosed,
+      accountingPeriodClosed:
+        periodClosed &&
+        monthsBetween(bucket.start, bucket.end).every((month) =>
+          closed.has(month),
+        ),
+    });
+  };
+  /** The read-time rule of a range; the comparison range is never final. */
+  const ruleFinal = (at: number, officiality: MetricOfficiality) =>
+    at < currentCount && finalityOf(ranges[at]!, officiality) === "final";
+  const periodStatus = range.end < today ? "closed" : "open";
+  const accountingPeriodClosed =
+    periodStatus === "closed" &&
+    monthsBetween(range.start, range.end).every((month) => closed.has(month));
+
+  // SH-02: refuse before reading any value, so no estimate can leak. An
+  // unavailable metric has no value to refuse.
+  if (request.requireFinal)
+    for (const definition of definitions)
+      if (
+        plans.get(definition.code)?.kind !== "unavailable" &&
+        finalityOf(range, officialityOf(definition.code)) !== "final"
+      )
+        throw new HttpError(
+          409,
+          "PERIOD_NOT_CLOSED",
+          "Angka resmi hanya tersedia untuk periode yang sudah ditutup.",
+        );
+
+  // One ledger read for every ledger code (inputs of derived codes included).
+  const glPlans = [...plans.values()].flatMap((plan) =>
+    plan.kind === "gl" ? [plan] : [],
+  );
+  const accounts = await componentAccounts(
+    tx,
+    tenantId,
+    glPlans.flatMap((plan) => glComponentsOf(plan.gl)),
+  );
+  const accountIds = [
+    ...new Set([...accounts.values()].flatMap((map) => [...map.keys()])),
+  ];
+  const ledger = await ledgerRows(
+    tx,
+    tenantId,
+    accountIds,
+    { start: previous?.start ?? range.start, end: range.end },
+    outletFilter,
+  );
+  const index = new LedgerIndex(accounts, ledger, ranges, currentCount);
+
+  // One metrics_daily read for every stored code and ledger split.
+  const storedCodes = [...plans.entries()].flatMap(([code, plan]) =>
+    plan.kind === "daily" || (plan.kind === "gl" && plan.split) ? [code] : [],
+  );
+  const dimensionKeys = [
+    ...new Set(
+      [shape.splitKey, shape.filter?.key].filter(
+        (key): key is string => key != null,
+      ),
+    ),
+  ];
+  const rowsByCode = new Map<string, DailyRow[]>();
+  for (const row of await dailyRows(
+    tx,
+    tenantId,
+    storedCodes,
+    dimensionKeys,
+    { start: previous?.start ?? range.start, end: range.end },
+    outletFilter,
+  )) {
+    const at = rangeIndexOf(ranges, currentCount, row.date);
+    if (at < 0) continue;
+    const list = rowsByCode.get(row.code) ?? [];
+    list.push({ ...row, range: at });
+    rowsByCode.set(row.code, list);
+  }
+
+  // Entity-level lines get their own series only when they are in the query
+  // at all: a tenant-wide reader without an outlet filter.
+  const entityLevelVisible = outletFilter.kind === "all";
+  const outletDim = (outletId: string): MetricDimensionValue => ({
+    key: "outlet",
+    value: outletId === ENTITY_LEVEL ? METRIC_ENTITY_LEVEL_OUTLET : outletId,
+  });
+
+  /** Ledger metric: total or outlet split, plus split rows and residual. */
+  const ledgerGroups = (
+    code: string,
+    plan: Extract<Plan, { kind: "gl" }>,
+  ): Group[] => {
+    const splitRows = plan.split
+      ? (rowsByCode.get(code) ?? []).filter(
+          (row) => row.dimensionKey === shape.splitKey && row.unit === "idr",
+        )
+      : [];
+    // groupBy outlet: one group per outlet with lines or split rows, sorted,
+    // then the entity-level lines (outlet null) as "Tingkat badan usaha", so
+    // the groups add up to the total (DASH-02).
+    let outletGroups: { dim: MetricDimensionValue | null; key: string }[] = [
+      { dim: null, key: ALL_OUTLETS },
+    ];
+    if (shape.byOutlet) {
+      const keys = new Set<string>();
+      for (const component of glComponentsOf(plan.gl))
+        for (const key of index.outletKeys(component, currentCount))
+          keys.add(key);
+      for (const row of splitRows)
+        if (row.range < currentCount) keys.add(row.outletId);
+      outletGroups = [...keys]
+        .filter((key) => key !== ENTITY_LEVEL)
+        .sort()
+        .map((key) => ({ dim: outletDim(key), key }));
+      if (entityLevelVisible && keys.has(ENTITY_LEVEL))
+        outletGroups.push({ dim: outletDim(ENTITY_LEVEL), key: ENTITY_LEVEL });
+    }
+    const groups: Group[] = [];
+    for (const outlet of outletGroups) {
+      const totals: Cell[] = ranges.map((_, at) => ({
+        value: evaluate(plan.gl, index, at, outlet.key),
+        final: ruleFinal(at, "closed_period_only"),
+      }));
+      const head = outlet.dim ? [outlet.dim] : [];
+      if (!plan.split || shape.splitKey === null) {
+        groups.push({ dims: head, cells: totals });
+        continue;
+      }
+      // Split rows carry the finality of the ledger total of their bucket;
+      // the residual row makes them add up to that total.
+      const sums = new Map<string, (bigint | null)[]>();
+      for (const row of splitRows) {
+        if (outlet.key !== ALL_OUTLETS && row.outletId !== outlet.key) continue;
+        const perRange =
+          sums.get(row.dimensionValue!) ?? ranges.map(() => null);
+        perRange[row.range] = (perRange[row.range] ?? 0n) + row.native;
+        sums.set(row.dimensionValue!, perRange);
+      }
+      const splitKey = shape.splitKey;
+      for (const value of [...sums.keys()].sort())
+        groups.push({
+          dims: [...head, { key: splitKey, value }],
+          cells: sums.get(value)!.map((sum, at) => ({
+            value: sum === null ? null : idrValue(sum),
+            final: totals[at]!.final,
+          })),
+        });
+      const residual = totals.map((total, at) => {
+        const rowSum = [...sums.values()].reduce<bigint | null>(
+          (acc, perRange) =>
+            perRange[at] == null ? acc : (acc ?? 0n) + perRange[at]!,
+          null,
+        );
+        if (total.value === null && rowSum === null) return null;
+        return (total.value ? nativeOf(total.value) : 0n) - (rowSum ?? 0n);
+      });
+      if (
+        residual.some(
+          (value, at) => at < currentCount && value !== null && value !== 0n,
+        )
+      )
+        groups.push({
+          dims: [...head, { key: splitKey, value: METRIC_LEDGER_ADJUSTMENT }],
+          cells: residual.map((value, at) => ({
+            value: value === null ? null : idrValue(value),
+            final: totals[at]!.final,
+          })),
+        });
+    }
+    return groups;
+  };
+
+  /** Stored metric: sum (or latest/average) of metrics_daily rows per group. */
+  const storedGroups = (code: string): Group[] => {
+    const definition = definitionOf(code);
+    const officiality = officialityOf(code);
+    const readKey = shape.splitKey ?? shape.filter?.key ?? null;
+    type Acc = {
+      sum: bigint;
+      count: bigint;
+      final: boolean;
+      latest: Map<string, { date: string; native: bigint }>;
+    };
+    const byGroup = new Map<
+      string,
+      { dims: MetricDimensionValue[]; accs: (Acc | null)[] }
+    >();
+    if (!shape.byOutlet && shape.splitKey === null)
+      byGroup.set("", { dims: [], accs: ranges.map(() => null) });
+    for (const row of rowsByCode.get(code) ?? []) {
+      if (row.dimensionKey !== readKey || row.unit !== definition.unit)
+        continue;
+      if (shape.filter && !shape.filter.values.has(row.dimensionValue ?? ""))
+        continue;
+      const dims: MetricDimensionValue[] = [];
+      if (shape.byOutlet) dims.push(outletDim(row.outletId));
+      if (shape.splitKey !== null)
+        dims.push({ key: shape.splitKey, value: row.dimensionValue! });
+      const key = groupKeyOf(dims);
+      let group = byGroup.get(key);
+      if (!group) {
+        // A split exists only when it has a row in the current period.
+        if (row.range >= currentCount) continue;
+        byGroup.set(key, (group = { dims, accs: ranges.map(() => null) }));
+      }
+      const acc = (group.accs[row.range] ??= {
+        sum: 0n,
+        count: 0n,
+        final: true,
+        latest: new Map(),
+      });
+      acc.sum += row.native;
+      acc.count += 1n;
+      acc.final &&= row.final;
+      const latestKey = `${row.outletId}|${row.dimensionValue ?? ""}`;
+      const latest = acc.latest.get(latestKey);
+      if (!latest || latest.date < row.date)
+        acc.latest.set(latestKey, { date: row.date, native: row.native });
+    }
+    const aggregate = (acc: Acc): bigint => {
+      switch (definition.aggregation) {
+        // A balance: the last day of the bucket per outlet and split value.
+        case "latest":
+          return [...acc.latest.values()].reduce(
+            (sum, entry) => sum + entry.native,
+            0n,
+          );
+        // Mean of the stored outlet-days.
+        case "average":
+          return divideRounded(acc.sum, acc.count, "half_up");
+        default:
+          return acc.sum;
+      }
+    };
+    return [...byGroup.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([, group]) => ({
+        dims: group.dims,
+        cells: group.accs.map((acc, at) => ({
+          // An absent row is no data; it does not downgrade finality.
+          value: acc ? valueOf(definition.unit, aggregate(acc)) : null,
+          final: ruleFinal(at, officiality) && (acc?.final ?? true),
+        })),
+      }));
+  };
+
+  const groupsByCode = new Map<string, Group[]>();
+  const groupsOf = (code: string): Group[] => {
+    const known = groupsByCode.get(code);
+    if (known) return known;
+    const plan = plans.get(code)!;
+    let groups: Group[];
+    switch (plan.kind) {
+      case "unavailable":
+        groups = [];
+        break;
+      case "gl":
+        groups = ledgerGroups(code, plan);
+        break;
+      case "daily":
+        groups = storedGroups(code);
+        break;
+      case "derived": {
+        // Recomputed per bucket and group from its two inputs; final only
+        // when both inputs are final.
+        const unit = definitionOf(code).unit;
+        const officiality = definitionOf(code).officiality;
+        const numerator = new Map(
+          groupsOf(plan.numerator).map((group) => [
+            groupKeyOf(group.dims),
+            group,
+          ]),
+        );
+        const denominator = new Map(
+          groupsOf(plan.denominator).map((group) => [
+            groupKeyOf(group.dims),
+            group,
+          ]),
+        );
+        const keys = [
+          ...numerator.keys(),
+          ...[...denominator.keys()].filter((key) => !numerator.has(key)),
+        ];
+        groups = keys.map((key) => {
+          const num = numerator.get(key);
+          const den = denominator.get(key);
+          return {
+            dims: (num ?? den)!.dims,
+            cells: ranges.map((_, at) => {
+              const n = num?.cells[at] ?? EMPTY_CELL;
+              const d = den?.cells[at] ?? EMPTY_CELL;
+              return {
+                value: ratioValue(n.value, d.value, plan.scale, unit),
+                final: n.final && d.final && ruleFinal(at, officiality),
+              };
+            }),
+          };
+        });
+        break;
+      }
+    }
+    groupsByCode.set(code, groups);
+    return groups;
+  };
+
+  const series: EvaluatedSeries[] = [];
+  const availability: MetricAvailability[] = [];
+  for (const definition of definitions) {
+    const plan = plans.get(definition.code)!;
+    const ref = definitionRef(definition);
+    if (plan.kind === "unavailable") {
+      availability.push({
+        metricCode: definition.code,
+        status: "unavailable",
+        reason: plan.reason,
+        message: METRIC_UNAVAILABLE_MESSAGES[plan.reason],
+      });
+      // "Belum tersedia": null points, never a zero.
+      if (request.groupBy.length === 0) {
+        const officiality = officialityOf(definition.code);
+        series.push({
+          metricCode: definition.code,
+          definition: ref,
+          dimension: null,
+          dimensions: [],
+          points: buckets.map((bucket) => ({
+            bucketStart: bucket.start,
+            bucketEnd: bucket.end,
+            value: null,
+            finality: finalityOf(bucket, officiality),
+            comparison: null,
+          })),
+        });
+      }
+      continue;
+    }
+    availability.push({ metricCode: definition.code, status: "available" });
+    for (const group of groupsOf(definition.code)) {
+      const points: MetricPoint[] = buckets.map((bucket, at) => {
+        const cell = group.cells[at]!;
+        const before = previous ? group.cells[currentCount]! : null;
+        return {
+          bucketStart: bucket.start,
+          bucketEnd: bucket.end,
+          value: cell.value,
+          finality: cell.final ? "final" : "estimate",
+          comparison:
+            request.bucket === "total" &&
+            cell.value !== null &&
+            before?.value != null
+              ? compareMetricValues(cell.value, before.value)
+              : null,
+        };
+      });
+      series.push({
+        metricCode: definition.code,
+        definition: ref,
+        dimension: group.dims.length === 1 ? group.dims[0]! : null,
+        dimensions: group.dims,
+        points,
+      });
+    }
+  }
+
+  let latest: string | null = null;
+  for (const row of ledger)
+    if (row.date >= range.start && (latest === null || row.date > latest))
+      latest = row.date;
+  for (const rows of rowsByCode.values())
+    for (const row of rows)
+      if (row.range < currentCount && (latest === null || row.date > latest))
+        latest = row.date;
+  return {
+    definitions: definitions.map(definitionRef),
+    series,
+    availability,
+    period: {
+      startDate: range.start,
+      endDate: range.end,
+      bucket: request.bucket,
+      status: periodStatus,
+      accountingPeriodClosed,
+    },
+    outletFilter,
+    accountingPeriods: books.periods,
+    dataThrough: (latest ??
+      (range.end < today ? range.end : today)) as BusinessDate,
+  };
+}
+
+/**
+ * GET /api/metrics/query predates `dimension_not_supported`: it keeps
+ * answering 400 for a ledger metric split by a dimension no split source
+ * reads, or filtered at all (the ledger carries the outlet only).
+ */
+function assertLedgerDimensions(
+  definitions: readonly MetricDefinition[],
+  request: MetricQueryRequest,
+  sources: SourceLookup,
+) {
+  for (const definition of definitions) {
+    if (sources.sourceOf(definition.code).kind !== "gl") continue;
+    if (
+      request.groupBy &&
+      request.groupBy !== "outlet" &&
+      !sources.splitOf(definition.code, request.groupBy)
+    )
+      throw unsupportedDimension(definition.code, request.groupBy);
+    for (const filter of request.filters ?? [])
+      throw unsupportedDimension(definition.code, filter.key);
+  }
+}
+
 export type QueryMetricsOptions = {
   viewer: MetricViewer;
   /** Clock for "today" (tests); defaults to the current instant. */
@@ -670,6 +1492,7 @@ export type QueryMetricsOptions = {
 /**
  * Answers a metric query for the caller's scoped context. The context's
  * outlet scope is the TEN-03 boundary; the request never carries a tenant.
+ * A thin wrapper over `evaluateMetrics` in one snapshot transaction.
  */
 export async function queryMetrics(
   context: ScopedTenantContext,
@@ -678,194 +1501,60 @@ export async function queryMetrics(
 ): Promise<MetricQueryResponse> {
   const now = options.now ?? new Date();
   const definitions = resolveDefinitions(request.metricCodes);
-  assertDimensions(definitions, request, options.viewer);
+  const groupBy = request.groupBy ? [request.groupBy] : [];
+  const filters = request.filters ?? [];
+  assertDimensions(
+    definitions,
+    [...groupBy, ...filters.map((filter) => filter.key)],
+    options.viewer,
+  );
+  assertLedgerDimensions(definitions, request, REGISTRY_SOURCES);
   const outletFilter = outletIdsForQuery(
     context.outletScope,
     request.outletIds,
   );
-  const tenantId = context.tenant.tenantId;
-  const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const range: Range = {
     start: request.period.startDate,
     end: request.period.endDate,
   };
-  const buckets = bucketsOf(range, request.bucket);
-  if (monthsBetween(range.start, range.end).length > MAX_POINTS)
-    throw new HttpError(
-      422,
-      "VALIDATION_ERROR",
-      "Periode terlalu panjang; pilih rentang yang lebih pendek.",
-    );
-  const previous = request.comparePrevious ? previousMetricRange(range) : null;
+  // Validated before the transaction, as the period limits always were.
+  bucketsOf(range, request.bucket);
 
-  return withTenantSnapshot(context, async (tx) => {
-    const books = await bookState(
+  const evaluated = await withTenantSnapshot(context, (tx) =>
+    evaluateMetrics(
       tx,
-      tenantId,
-      monthsBetween(range.start, range.end),
-    );
-    const closed = books.closed;
-    const finalityOf = (
-      bucket: Range,
-      officiality: MetricOfficiality,
-    ): MetricFinality => {
-      const periodClosed = bucket.end < today;
-      return metricValueFinality({
-        officiality,
-        periodClosed,
-        accountingPeriodClosed:
-          periodClosed &&
-          monthsBetween(bucket.start, bucket.end).every((month) =>
-            closed.has(month),
-          ),
-      });
-    };
-    const periodStatus = range.end < today ? "closed" : "open";
-    const accountingPeriodClosed =
-      periodStatus === "closed" &&
-      monthsBetween(range.start, range.end).every((month) => closed.has(month));
-
-    // SH-02: refuse before reading any value, so no estimate can leak.
-    if (request.requireFinal)
-      for (const definition of definitions)
-        if (finalityOf(range, officialityOf(definition)) !== "final")
-          throw new HttpError(
-            409,
-            "PERIOD_NOT_CLOSED",
-            "Angka resmi hanya tersedia untuk periode yang sudah ditutup.",
-          );
-
-    const sources = new Map(
-      definitions.map((definition) => [definition, glSourceOf(definition)]),
-    );
-    const components = [...sources.values()].flatMap((source) =>
-      source ? glComponentsOf(source) : [],
-    );
-    const accounts = await componentAccounts(tx, tenantId, components);
-    const accountIds = [
-      ...new Set([...accounts.values()].flatMap((map) => [...map.keys()])),
-    ];
-    const rows = await ledgerRows(
-      tx,
-      tenantId,
-      accountIds,
-      { start: previous?.start ?? range.start, end: range.end },
-      outletFilter,
-    );
-    const index = new LedgerIndex(
-      accounts,
-      rows,
-      previous ? [...buckets, previous] : buckets,
-      buckets.length,
-    );
-    const previousIndex = buckets.length;
-    // Entity-level lines get their own series only when they are in the query
-    // at all: a tenant-wide reader without an outlet filter.
-    const entityLevelVisible = outletFilter.kind === "all";
-
-    const series: MetricSeries[] = [];
-    for (const definition of definitions) {
-      const source = sources.get(definition) ?? null;
-      const ref = definitionRef(definition);
-      const officiality = officialityOf(definition);
-      if (!source) {
-        // No ledger source and no metrics_daily yet: honest "no data".
-        if (!request.groupBy)
-          series.push({
-            metricCode: definition.code,
-            definition: ref,
-            dimension: null,
-            points: buckets.map((bucket) => ({
-              bucketStart: bucket.start,
-              bucketEnd: bucket.end,
-              value: null,
-              finality: finalityOf(bucket, officiality),
-              comparison: null,
-            })),
-          });
-        continue;
-      }
-      // groupBy outlet: one series per outlet with lines, sorted, then the
-      // entity-level lines (outlet null) as "Tingkat badan usaha", so the
-      // series add up to the total (DASH-02).
-      let groups: {
-        dimension: MetricDimensionValue | null;
-        outletKey: string;
-      }[] = [{ dimension: null, outletKey: ALL_OUTLETS }];
-      if (request.groupBy === "outlet") {
-        const keys = new Set<string>();
-        for (const component of glComponentsOf(source))
-          for (const key of index.outletKeys(component, buckets.length))
-            keys.add(key);
-        groups = [...keys]
-          .filter((key) => key !== ENTITY_LEVEL)
-          .sort()
-          .map((outletId) => ({
-            dimension: { key: "outlet", value: outletId },
-            outletKey: outletId,
-          }));
-        if (entityLevelVisible && keys.has(ENTITY_LEVEL))
-          groups.push({
-            dimension: { key: "outlet", value: METRIC_ENTITY_LEVEL_OUTLET },
-            outletKey: ENTITY_LEVEL,
-          });
-      }
-      for (const group of groups) {
-        const points: MetricPoint[] = buckets.map((bucket, at) => {
-          const value = evaluate(source, index, at, group.outletKey);
-          let comparison = null;
-          if (previous && request.bucket === "total" && value !== null) {
-            const before = evaluate(
-              source,
-              index,
-              previousIndex,
-              group.outletKey,
-            );
-            if (before !== null)
-              comparison = compareMetricValues(value, before);
-          }
-          return {
-            bucketStart: bucket.start,
-            bucketEnd: bucket.end,
-            value,
-            finality: finalityOf(bucket, officiality),
-            comparison,
-          };
-        });
-        series.push({
-          metricCode: definition.code,
-          definition: ref,
-          dimension: group.dimension,
-          points,
-        });
-      }
-    }
-
-    const latest = rows.reduce<string | null>(
-      (max, row) =>
-        row.date >= range.start && (max === null || row.date > max)
-          ? row.date
-          : max,
-      null,
-    );
-    return metricQueryResponseSchema.parse({
-      data: {
-        period: {
-          startDate: range.start,
-          endDate: range.end,
-          bucket: request.bucket,
-          status: periodStatus,
-          accountingPeriodClosed,
-        },
+      context,
+      {
+        metricCodes: request.metricCodes,
+        period: range,
+        bucket: request.bucket,
         outletFilter,
-        definitions: definitions.map(definitionRef),
-        series,
+        groupBy,
+        filters,
+        comparePrevious: request.comparePrevious,
+        viewer: options.viewer,
+        requireFinal: request.requireFinal,
       },
-      meta: {
-        generatedAt: now.toISOString(),
-        dataThrough: latest ?? (range.end < today ? range.end : today),
-        accountingPeriods: books.periods,
-      },
-    });
+      now,
+    ),
+  );
+  return metricQueryResponseSchema.parse({
+    data: {
+      period: evaluated.period,
+      outletFilter: evaluated.outletFilter,
+      definitions: evaluated.definitions,
+      series: evaluated.series.map((series): MetricSeries => ({
+        metricCode: series.metricCode,
+        definition: series.definition,
+        dimension: series.dimension,
+        points: series.points,
+      })),
+      availability: evaluated.availability,
+    },
+    meta: {
+      generatedAt: now.toISOString(),
+      dataThrough: evaluated.dataThrough,
+      accountingPeriods: evaluated.accountingPeriods,
+    },
   });
 }
