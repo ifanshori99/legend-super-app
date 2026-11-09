@@ -467,6 +467,7 @@ const templates: readonly RoleTemplate[] = [
     permissions: [
       "inventory.stock.view",
       "inventory.stock.receive",
+      "inventory.item.manage",
       "inventory.stock.transfer",
       "inventory.opname.count",
       "inventory.waste.record",

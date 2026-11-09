@@ -39,6 +39,7 @@ import {
 } from "../columns.ts";
 import { inventoryItems, stockBatches, stockLocations } from "./inventory.ts";
 import { outlets, tenants } from "./platform-org.ts";
+import { recipes } from "./recipe.ts";
 import { user } from "./user.ts";
 
 /**
@@ -46,8 +47,7 @@ import { user } from "./user.ts";
  * (PRD §17 "Produksi Batch", §6 E). `location_id` is where the components are
  * drawn and the output is put away; `output_item_id` is the recipe's output
  * snapshotted at creation, so completion cannot post into a different item.
- * `recipe_id` has no foreign key yet: the recipe tables belong to legend-db6
- * (follow-up in the bead report).
+ * `recipe_id` references `recipes` per tenant (legend-tk7i, migration 0172).
  */
 export const productionOrders = pgTable(
   "production_orders",
@@ -98,6 +98,11 @@ export const productionOrders = pgTable(
         stockLocations.outletId,
         stockLocations.id,
       ],
+    }),
+    foreignKey({
+      name: "production_orders_recipe_fk",
+      columns: [table.tenantId, table.recipeId],
+      foreignColumns: [recipes.tenantId, recipes.id],
     }),
     foreignKey({
       name: "production_orders_output_item_fk",
