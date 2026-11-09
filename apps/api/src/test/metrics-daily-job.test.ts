@@ -366,6 +366,42 @@ describe("refreshMetricsDaily: idempotent writes", () => {
     ]);
   });
 
+  it("keeps rows of another reader with the same code in another dimension", async () => {
+    const byChannel = makeReader({
+      metricCodes: ["transaction_count"],
+      dimensions: ["channel"],
+      rows: () => [
+        {
+          metricCode: "transaction_count",
+          dimension: { key: "channel", value: "dine_in" },
+          value: count(4),
+        },
+      ],
+    });
+    const total = makeReader({
+      metricCodes: ["transaction_count"],
+      rows: () => [
+        { metricCode: "transaction_count", dimension: null, value: count(4) },
+      ],
+    });
+    const readers = [
+      { family: "traffic-operations", reader: byChannel },
+      { family: "sales", reader: total },
+    ];
+    await refresh(world, "2025-06-25", LATE, readers);
+    const result = await refresh(world, "2025-06-25", LATE, readers);
+    expect(result.deleted).toBe(0);
+    expect(
+      (await rowsOf(world.tenantId, world.outlet1, "2025-06-25")).map((r) => [
+        r.dimension_key,
+        r.dimension_value,
+      ]),
+    ).toEqual([
+      [null, null],
+      ["channel", "dine_in"],
+    ]);
+  });
+
   it("writes only the outlet-date asked for", async () => {
     await refresh(world, "2025-06-05", LATE, [
       { family: "sales", reader: trafficReader({ dine_in: 1 }) },

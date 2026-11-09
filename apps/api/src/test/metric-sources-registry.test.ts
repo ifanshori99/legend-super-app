@@ -54,6 +54,22 @@ function splittableGlCode(): { code: string; dimension: string } {
   throw new Error("no ledger metric has a non-outlet dimension");
 }
 
+/** First ledger code with two non-outlet dimensions. */
+function twiceSplittableGlCode(): {
+  code: string;
+  first: string;
+  second: string;
+} {
+  for (const code of GL_CODES) {
+    const dimensions = (reportMetricByCode.get(code)?.dimensions ?? []).filter(
+      (key) => key !== "outlet",
+    );
+    if (dimensions.length >= 2)
+      return { code, first: dimensions[0]!, second: dimensions[1]! };
+  }
+  throw new Error("no ledger metric has two non-outlet dimensions");
+}
+
 describe("metric source registry", () => {
   it("loads: gl module first, then the 10 families in order", () => {
     expect(METRIC_SOURCE_MODULES.map((module) => module.family)).toEqual([
@@ -315,5 +331,42 @@ describe("assertRegistry", () => {
       ]),
     ).toThrow(/does not list its own code|unknown code/);
     expect(glSource(code).kind).toBe("gl");
+  });
+
+  it("refuses two readers that write the same code in the same dimension", () => {
+    const { code, first, second } = twiceSplittableGlCode();
+    const overlapping = readerFor(code, [first, second]);
+    expect(() =>
+      assertRegistry([
+        glModule,
+        moduleOf({
+          sources: [],
+          splits: [
+            { code, dimension: first, reader: readerFor(code, [first]) },
+            { code, dimension: second, reader: overlapping },
+          ],
+        }),
+      ]),
+    ).toThrow(
+      new RegExp(
+        `"${code}" is written by two readers.*split "${code}" / "${first}".*split "${code}" / "${second}"`,
+      ),
+    );
+  });
+
+  it("accepts two readers of one code that write different dimensions", () => {
+    const { code, first, second } = twiceSplittableGlCode();
+    expect(() =>
+      assertRegistry([
+        glModule,
+        moduleOf({
+          sources: [],
+          splits: [
+            { code, dimension: first, reader: readerFor(code, [first]) },
+            { code, dimension: second, reader: readerFor(code, [second]) },
+          ],
+        }),
+      ]),
+    ).not.toThrow();
   });
 });

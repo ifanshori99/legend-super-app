@@ -76,17 +76,56 @@ function checkReader(
   }
 }
 
+/** Dimensions a reader writes; a reader without any writes the total only. */
+function writtenDimensions(reader: DailyMetricReader): readonly string[] {
+  return reader.dimensions.length > 0 ? reader.dimensions : ["(total)"];
+}
+
+/**
+ * Throws when two different readers write the same code in the same dimension
+ * (the daily job would then overwrite or delete each other's rows). Readers
+ * of one code with disjoint dimensions are fine.
+ */
+function checkWriterOverlap(
+  writers: readonly { label: string; reader: DailyMetricReader }[],
+): void {
+  const byCode = new Map<
+    string,
+    { label: string; reader: DailyMetricReader }[]
+  >();
+  for (const writer of writers)
+    for (const code of writer.reader.metricCodes) {
+      const list = byCode.get(code) ?? [];
+      if (!list.some((entry) => entry.reader === writer.reader))
+        list.push(writer);
+      byCode.set(code, list);
+    }
+  for (const [code, list] of byCode)
+    for (let i = 0; i < list.length; i++)
+      for (let j = i + 1; j < list.length; j++) {
+        const first = list[i]!;
+        const second = list[j]!;
+        const taken = new Set(writtenDimensions(first.reader));
+        if (writtenDimensions(second.reader).some((key) => taken.has(key)))
+          throw new Error(
+            `Metric registry: code "${code}" is written by two readers, ${first.label} and ${second.label}`,
+          );
+      }
+}
+
 /**
  * Throws when the modules break a registry rule: a code claimed twice, a code
  * missing from the catalog, a unit that does not fit the source kind, a
  * derived source with an unregistered input, a split on a code that is not
- * `gl` (or on a dimension the definition lacks), or a reader that does not
- * list the code it writes.
+ * `gl` (or on a dimension the definition lacks), a reader that does not
+ * list the code it writes, or two readers that write the same code in the
+ * same dimension.
  */
 export function assertRegistry(
   modules: readonly MetricSourceModule[] = METRIC_SOURCE_MODULES,
 ): void {
   const sources = new Map<string, MetricSource>();
+  const writers: { label: string; reader: DailyMetricReader }[] = [];
   for (const module of modules) {
     for (const source of module.sources) {
       if (sources.has(source.code)) {
@@ -114,6 +153,7 @@ export function assertRegistry(
       }
     } else if (source.kind === "daily") {
       checkReader(source.reader, `"${source.code}"`, source.code);
+      writers.push({ label: `"${source.code}"`, reader: source.reader });
       for (const dimension of source.reader.dimensions) {
         if (!definition.dimensions.includes(dimension)) {
           throw new Error(
@@ -160,6 +200,10 @@ export function assertRegistry(
       }
       splits.add(key);
       checkReader(split.reader, `split "${split.code}"`, split.code);
+      writers.push({
+        label: `split "${split.code}" / "${split.dimension}"`,
+        reader: split.reader,
+      });
       if (!split.reader.dimensions.includes(split.dimension)) {
         throw new Error(
           `Metric registry: split "${split.code}" reader does not write "${split.dimension}"`,
@@ -167,6 +211,7 @@ export function assertRegistry(
       }
     }
   }
+  checkWriterOverlap(writers);
 }
 
 assertRegistry();
