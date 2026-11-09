@@ -57,6 +57,8 @@ let salesOutlet1: Client; // report.sales.view, outlet1 only
 let shareholder: Client; // report.aggregate.view, tenant
 let disjoint: Client; // sales on outlet1, operational on outlet2
 let nobody: Client; // no report permission
+let operationalTenant: Client; // report.operational.view only, tenant
+let mixed: Client; // operational on outlet1, report.aggregate.view tenant
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -152,8 +154,15 @@ async function viewer(
   return client;
 }
 
-const query = (client: Client, metricCodes: string[]) =>
-  client.get(PATH).set("Host", host).query({ metricCodes, period: JUNE });
+const query = (
+  client: Client,
+  metricCodes: string[],
+  extra: Record<string, unknown> = {},
+) =>
+  client
+    .get(PATH)
+    .set("Host", host)
+    .query({ metricCodes, period: JUNE, ...extra });
 
 /** Total-bucket rupiah of a metric (no dimension). */
 function idrOf(body: unknown, metricCode: string): number {
@@ -279,6 +288,16 @@ beforeAll(async () => {
       ["report.operational.view"],
       ["outlet"],
     ),
+    operationalTenant: await insertRole(
+      "Operasional tenant",
+      ["report.operational.view"],
+      ["tenant"],
+    ),
+    aggregate: await insertRole(
+      "Agregat tenant",
+      ["report.aggregate.view"],
+      ["tenant"],
+    ),
     shareholder: await insertRole(
       "Shareholder",
       ["dashboard.shareholder.view", "report.aggregate.view"],
@@ -301,6 +320,13 @@ beforeAll(async () => {
     [roles.operational, "outlet", outlet2],
   ]);
   nobody = await viewer("Tanpa izin akses metrik", []);
+  operationalTenant = await viewer("Operasional tenant akses metrik", [
+    [roles.operationalTenant, "tenant", null],
+  ]);
+  mixed = await viewer("Campuran akses metrik", [
+    [roles.operational, "outlet", outlet1],
+    [roles.aggregate, "tenant", null],
+  ]);
 });
 
 afterAll(async () => {
@@ -361,5 +387,39 @@ describe("GET /api/metrics/query: code without a source report", () => {
     expect(unknown.status).toBe(404);
     expect(unknown.body.error?.code).toBe("METRIC_NOT_FOUND");
     expectNotPermitted(await query(nobody, ["no_such_metric"]));
+  });
+});
+
+// ---- Review fixes (R1) ----------------------------------------------------------
+
+describe("GET /api/metrics/query: report-run rule edge cases", () => {
+  it("opens cogs to report.operational.view alone (access widened from report.financial.view)", async () => {
+    const response = await query(operationalTenant, ["cogs"]);
+    expect(response.status).toBe(200);
+    expect(idrOf(response.body, "cogs")).toBe(420_000);
+  });
+
+  it("reads the outlet intersection when one request mixes a full-permission metric and an aggregate-only metric", async () => {
+    // cogs: operational on outlet1 only. net_sales: no sales permission, so
+    // the tenant-wide aggregate view applies. The read covers outlet1 only.
+    const response = await query(mixed, ["cogs", "net_sales"]);
+    expect(response.status).toBe(200);
+    expect(idrOf(response.body, "cogs")).toBe(300_000);
+    expect(idrOf(response.body, "net_sales")).toBe(950_000);
+    expect(JSON.stringify(response.body)).not.toContain("1350000");
+  });
+
+  it("answers 403 for an outlet filter outside the caller's reach", async () => {
+    const response = await query(salesOutlet1, ["net_sales"], {
+      outletIds: outlet2,
+    });
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toContain("400000");
+  });
+
+  it("records what a catalog code plus an unknown code in one request does", async () => {
+    const response = await query(full, ["net_sales", "no_such_metric"]);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error?.code).toBe("METRIC_NOT_FOUND");
   });
 });

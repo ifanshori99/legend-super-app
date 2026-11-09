@@ -150,7 +150,13 @@ in parallel. Reviewed with an architect consult before implementation.
    fallback. The shared logic lives in `routes/report-viewer.ts`. Callers
    that passed through the aggregate before without the source report now
    get 403: a shareholder asking for `cogs` (source `inventory.food_cost`,
-   not whitelisted) is refused.
+   not whitelisted) is refused. The rule also widens access: money metrics
+   no longer all need `report.financial.view`; each needs its source
+   report's permission, so `report.operational.view` reads `cogs`,
+   `food_cost_pct`, `waste_cost`, `payment_fee` and `stock_value`, and
+   `report.sales.view` reads `net_sales` and `discount_amount`. The same
+   figures were already readable through a report run (architect review
+   2026-11-10).
 
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
