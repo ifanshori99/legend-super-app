@@ -217,15 +217,26 @@ describe("supersede and revoke", () => {
     expect(sim.cuts()).toEqual([]);
   });
 
-  it("answers an unknown reference like the fake: no-op", async () => {
+  it("revoke of an unknown reference is a no-op that refuses a later authorize of it", async () => {
     const { sim } = setup();
     expect(await sim.revoke(ctxA, ref("never-seen"))).toEqual({
       reference: "never-seen",
       authorized: false,
     });
-    // An unknown reference is not poisoned: it can still be authorized.
+    // A grant that lands after its revoke (authorize still in flight) never
+    // authorizes: a revoked reference never authorizes again.
     expect(
       await sim.authorize(ctxA, request({ reference: "never-seen" })),
+    ).toEqual({ reference: "never-seen", authorized: false });
+    expect(access(sim)).toEqual({ state: "blocked" });
+    expect(sim.requests).toEqual([]);
+    // Another outlet's reference with the same name is not affected.
+    const both = ctx(tenantA, [outletA1, outletA2]);
+    expect(
+      await sim.authorize(
+        both,
+        request({ reference: "never-seen", outletId: outletA2 }),
+      ),
     ).toEqual({ reference: "never-seen", authorized: true });
   });
 });

@@ -83,6 +83,10 @@ export class WifiControllerSimulator
   readonly #now: () => Date;
   /** Every grant by (tenant, outlet, reference). */
   readonly #grants = new Map<string, GrantRecord>();
+  /** References revoked before the controller ever saw them (same key as
+   * `#grants`). A revoked reference never authorizes again, even one the
+   * controller first hears of later (provider contract). */
+  readonly #revokedUnknown = new Set<string>();
   /** Key (in `#grants`) of the grant currently applied to a device. */
   readonly #current = new Map<string, string>();
   /** Pre-auth allowlist by (tenant, outlet); outlet null = tenant-wide scope. */
@@ -122,7 +126,7 @@ export class WifiControllerSimulator
     const fingerprint = stableStringify(v);
     const existing = this.#grants.get(key);
     if (existing && existing.fingerprint !== fingerprint) throw reused();
-    if (outcome === "reject" && !existing)
+    if ((outcome === "reject" || this.#revokedUnknown.has(key)) && !existing)
       return wifiResultSchema.parse({
         reference: v.reference,
         authorized: false,
@@ -159,7 +163,9 @@ export class WifiControllerSimulator
   }
 
   /** Revoking the current reference blocks the device; a superseded or unknown
-   * reference changes nothing on the device. Always answers `authorized: false`. */
+   * reference changes nothing on the device. An unknown reference is
+   * remembered: a later authorize of it is refused. Always answers
+   * `authorized: false`. */
   async revoke(
     context: ScopedTenantContext,
     input: ScopedReference,
@@ -175,6 +181,7 @@ export class WifiControllerSimulator
     // A superseded grant is no longer the device's: revoking it changes nothing
     // on the device, but the reference never authorizes again.
     if (grant) grant.revoked = true;
+    else this.#revokedUnknown.add(keyOf(v.tenantId, v.outletId, v.reference));
     if (outcome === "applied_then_timeout") throw timeoutError();
     return wifiResultSchema.parse({
       reference: v.reference,

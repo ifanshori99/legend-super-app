@@ -41,6 +41,7 @@ import {
   assertTrustedScopedContext,
   CoreError,
   outletIdSchema,
+  tenantIdSchema,
   uuidSchema,
   type OutletId,
   type ScopedTenantContext,
@@ -199,8 +200,8 @@ async function lockDevice(
 
 const scoped = (tenantId: string, outletId: string, ...rest: SQL[]) =>
   and(
-    eq(wifiDeviceGrants.tenantId, tenantId),
-    eq(wifiDeviceGrants.outletId, outletId),
+    eq(wifiDeviceGrants.tenantId, tenantIdSchema.parse(tenantId)),
+    eq(wifiDeviceGrants.outletId, outletIdSchema.parse(outletId)),
     ...rest,
   );
 
@@ -222,6 +223,10 @@ export function createWifiAgent(options: {
    * (IDEMPOTENCY_KEY_REUSED) and the row fails; the old grant stays and the
    * next tick or apply asks for a new grant. */
   const inFlightGarden = new Map<string, readonly string[]>();
+  /** Last walled garden built without error, per tenant:outlet. The loop
+   * falls back to it when a build fails, so one bad input never stops
+   * renewals (FAC-13). */
+  const lastGoodGarden = new Map<string, readonly string[]>();
 
   function providerContext(
     ctx: ScopedTenantContext,
@@ -313,6 +318,14 @@ export function createWifiAgent(options: {
         inArray(wifiDeviceGrants.status, [...INFLIGHT]),
       );
       if (authorized === true) {
+        // Supersede the old grant only while this row is still in flight. A
+        // row revoked meanwhile must not end the old row: the old row may
+        // still wait for its own revoke.
+        const [inflight] = await tx
+          .select({ id: wifiDeviceGrants.id })
+          .from(wifiDeviceGrants)
+          .where(stillInFlight);
+        if (!inflight) return [];
         await tx
           .update(wifiDeviceGrants)
           .set({
@@ -336,7 +349,10 @@ export function createWifiAgent(options: {
           .set({
             status: "active",
             authorizedAt: at,
-            expiresAt: addSeconds(at, row.durationSeconds),
+            // The controller counts from its first apply, never earlier than
+            // requested_at. A replay must not push the expiry later than the
+            // controller's, or renewal comes too late and the device is cut.
+            expiresAt: addSeconds(row.requestedAt, row.durationSeconds),
             attemptCount: sql`${wifiDeviceGrants.attemptCount} + 1`,
             lastErrorCode: null,
             updatedAt: at,
@@ -381,11 +397,40 @@ export function createWifiAgent(options: {
         "Wi-Fi authorize failed.",
       );
     const current = updated[0] ?? (await readRow(ctx, outletId, row.id));
+    // The grant landed after its revoke: the controller may have had no
+    // record to revoke then, so the device is online. Revoke it again.
+    if (
+      authorized === true &&
+      updated.length === 0 &&
+      current.status === "revoked"
+    )
+      await revokeLateGrant(ctx, current);
     if (current.status !== "pending" && current.status !== "unknown")
       inFlightGarden.delete(row.id);
     if (current.status === "active") return { outcome: "active", row: current };
     if (current.status === "failed") return { outcome: "failed", row: current };
     return { outcome: "unknown", row: current };
+  }
+
+  /** Revokes at the controller a grant whose row is already `revoked`. The
+   * row is terminal, so nothing is written; a failure is logged only. */
+  async function revokeLateGrant(ctx: ScopedTenantContext, row: GrantRow) {
+    const tenantId = ctx.tenant.tenantId;
+    const outletId = row.outletId as OutletId;
+    try {
+      const node = providerContext(ctx, outletId);
+      await withTimeout(() =>
+        provider.revoke(node, { tenantId, outletId, reference: row.id }),
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          module: "edge-wifi",
+          err: { name: (error as Error)?.name, code: errorCode(error) },
+        },
+        "Wi-Fi revoke of a late grant failed.",
+      );
+    }
   }
 
   /** Revokes one live row at the controller; success makes it `revoked`. */
@@ -735,8 +780,30 @@ export function createWifiAgent(options: {
           .orderBy(asc(wifiDeviceGrants.updatedAt), asc(wifiDeviceGrants.id))
           .limit(limit),
       );
+    const gardenKey = `${tenantId}:${outletId}`;
     let garden: { hosts: string[]; version: string } | null = null;
-    const hosts = async () => (garden ??= await walledGarden(ctx)).hosts;
+    let gardenFailed = false;
+    // A failed build never stops renewals: fall back to the last good list
+    // (a retry reuses its in-flight list in authorizeRow anyway).
+    const hosts = async (): Promise<readonly string[]> => {
+      if (garden) return garden.hosts;
+      if (!gardenFailed)
+        try {
+          garden = await walledGarden(ctx);
+          lastGoodGarden.set(gardenKey, garden.hosts);
+          return garden.hosts;
+        } catch (error) {
+          gardenFailed = true;
+          logger.warn(
+            {
+              module: "edge-wifi",
+              err: { name: (error as Error)?.name, code: errorCode(error) },
+            },
+            "Wi-Fi walled-garden build failed; the last good list is used.",
+          );
+        }
+      return lastGoodGarden.get(gardenKey) ?? [];
+    };
     const tally = (outcome: Outcome["outcome"], key: keyof typeof counts) => {
       if (outcome === "active") counts[key] += 1;
       else if (outcome === "failed") counts.failed += 1;
@@ -874,10 +941,13 @@ export function createWifiAgent(options: {
     }
 
     // 6. Pre-auth allowlist at the controller, when the adapter can set it.
-    if (supportsWalledGardenSync(provider)) {
-      const key = `${tenantId}:${outletId}`;
+    //    Skipped when the build failed this tick: a fallback list is never
+    //    pushed (it could wipe the controller's allowlist).
+    if (supportsWalledGardenSync(provider) && !gardenFailed) {
+      const key = gardenKey;
       try {
         const current = garden ?? (await walledGarden(ctx));
+        lastGoodGarden.set(key, current.hosts);
         if (syncedGarden.get(key) !== current.version) {
           await withTimeout(() =>
             provider.syncWalledGarden(

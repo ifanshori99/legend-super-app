@@ -42,7 +42,7 @@ async function asAppRole<T>(
 async function asOwner(
   text: string,
   params: unknown[] = [],
-  tenant = tenantId,
+  tenant: string = tenantId,
 ) {
   const client = await owner.connect();
   try {

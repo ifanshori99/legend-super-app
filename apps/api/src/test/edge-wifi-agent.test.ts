@@ -17,6 +17,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import type { WifiProvider } from "@starter/shared/adapters";
 import type { ApplyWifiSessionInput } from "@starter/shared/edge";
 import { WifiControllerSimulator } from "../edge/wifi/simulator.ts";
 import {
@@ -103,7 +104,13 @@ const mac = () =>
   randomUUID().replace(/-/g, "").slice(0, 12).match(/../g)!.join(":");
 
 /** One tenant, one simulator, one agent and a clock the test moves. */
-async function fixture(options: { providerTimeoutMs?: number } = {}) {
+async function fixture(
+  options: {
+    providerTimeoutMs?: number;
+    /** Wraps the simulator, e.g. to hold a call in flight. */
+    provider?: (sim: WifiControllerSimulator) => WifiProvider;
+  } = {},
+) {
   const tenant = await createIsolatedTenant(`wifi-${randomUUID().slice(0, 8)}`);
   tenantIds.push(tenant.tenantId);
   let clock = new Date("2026-11-09T02:00:00.000Z");
@@ -114,7 +121,7 @@ async function fixture(options: { providerTimeoutMs?: number } = {}) {
     [tenant.outletId, ctx],
   ]);
   const agent = createWifiAgent({
-    provider: sim,
+    provider: options.provider?.(sim) ?? sim,
     contextFor: (outletId: OutletId) => {
       const found = contexts.get(outletId);
       if (!found) throw new Error("No node context for outlet");
@@ -351,6 +358,90 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     });
   });
 
+  it("a replayed authorize keeps the expiry of the first attempt, never later than the controller's", async () => {
+    const f = await fixture();
+    const input = f.input();
+    const controllerExpiry = new Date(
+      f.now().getTime() + (3600 + WIFI_FULL_GRACE_SECONDS) * 1000,
+    );
+    f.sim.script("authorize", "applied_then_timeout");
+    const view = await f.agent.applySession(f.ctx, input);
+    expect(view.status).toBe("unknown");
+    expect(f.access(input.controllerDeviceId)).toMatchObject({
+      state: "online",
+      expiresAt: controllerExpiry,
+    });
+    // The replay lands two minutes later; the controller still counts from
+    // its first apply.
+    f.advance(120);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).authorized).toBe(1);
+    const [live] = await f.agent.listLiveGrants(f.ctx, f.outletId);
+    expect(live).toMatchObject({ id: view.id, status: "active" });
+    expect(live!.expiresAt).toBe(controllerExpiry.toISOString());
+  });
+
+  it("a grant that lands after its revoke is revoked again; the old grant keeps its pending revoke", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let started!: () => void;
+    const authorizeStarted = new Promise<void>((resolve) => (started = resolve));
+    let hold = false;
+    const forget = new Set<string>();
+    const f = await fixture({
+      providerTimeoutMs: 30_000,
+      provider: (sim) => ({
+        async authorize(context, request) {
+          if (hold) {
+            hold = false;
+            started();
+            await gate;
+          }
+          return sim.authorize(context, request);
+        },
+        async revoke(context, reference) {
+          // A controller that keeps no record of a reference it never saw.
+          if (forget.delete(reference.reference))
+            return { reference: reference.reference, authorized: false };
+          return sim.revoke(context, reference);
+        },
+      }),
+    });
+    const input = f.input();
+    const full = await f.agent.applySession(f.ctx, input);
+    f.advance(60);
+    hold = true;
+    const applying = f.agent.applySession(f.ctx, {
+      ...input,
+      remainingSeconds: 0,
+    });
+    await authorizeStarted;
+    const [, pending] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(pending!.status).toBe("pending");
+    forget.add(pending!.id);
+    // The old grant's revoke fails; the loop must still retry it.
+    f.sim.script("revoke", "transport_error");
+    await f.agent.endSession(f.ctx, {
+      outletId: f.outletId,
+      wifiSessionId: input.wifiSessionId,
+      reason: "staff_revoked",
+    });
+    release();
+    expect((await applying).status).toBe("revoked");
+    let rows = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(rows.map((r) => [r.id, r.status])).toEqual([
+      [full.id, "active"],
+      [pending!.id, "revoked"],
+    ]);
+    expect(f.access(input.controllerDeviceId).state).toBe("blocked");
+    expect(f.sim.cuts()).toEqual([]);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(1);
+    rows = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(rows.map((r) => [r.status, r.end_reason])).toEqual([
+      ["revoked", "staff_revoked"],
+      ["revoked", "staff_revoked"],
+    ]);
+  });
+
   it("an in-flight grant refuses a different request with 409", async () => {
     const f = await fixture();
     const input = f.input();
@@ -482,6 +573,37 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     // Unchanged list: no second sync.
     await f.agent.reconcile(f.ctx, f.outletId);
     expect(f.sim.calls.syncWalledGarden).toBe(1);
+  });
+
+  it("a walled-garden build failure never stops renewals: the loop uses the last good list", async () => {
+    const f = await fixture();
+    const input = f.input({ speedTier: "base", remainingSeconds: 0 });
+    const good = await f.agent.walledGarden(f.ctx);
+    await f.agent.applySession(f.ctx, input);
+    await f.agent.reconcile(f.ctx, f.outletId);
+    expect(f.sim.calls.syncWalledGarden).toBe(1);
+    // More than 100 hosts: the build now throws.
+    await owner.query(
+      `INSERT INTO tenant_domains (tenant_id, brand_id, hostname, kind, tls_status, verified_at)
+       SELECT $1, $2, 'h' || g || '-' || $3 || '.legend.test', 'custom', 'active', now()
+       FROM generate_series(1, 101) AS g`,
+      [f.tenant.tenantId, f.tenant.brandId, randomUUID().slice(0, 8)],
+    );
+    await expect(f.agent.walledGarden(f.ctx)).rejects.toMatchObject({
+      reason: "WIFI_WALLED_GARDEN_TOO_LARGE",
+    });
+    f.advance(WIFI_BASE_CHUNK_SECONDS + WIFI_FULL_GRACE_SECONDS - WIFI_RENEW_LEAD_SECONDS);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).renewed).toBe(1);
+    expect(f.sim.requests).toHaveLength(2);
+    expect(f.sim.requests[1]!.walledGarden).toEqual(good.hosts);
+    // The fallback list is never pushed to the controller.
+    expect(f.sim.calls.syncWalledGarden).toBe(1);
+    expect(f.access(input.controllerDeviceId)).toMatchObject({
+      state: "online",
+      bandwidthKbps: BASE,
+      reference: f.sim.requests[1]!.reference,
+    });
+    expect(f.sim.cuts()).toEqual([]);
   });
 
   it("TEN-01 another tenant cannot see or end this tenant's sessions", async () => {
