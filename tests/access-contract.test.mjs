@@ -149,15 +149,22 @@ describe("role templates (PRD §3.7 table)", () => {
     assert.deepEqual(template("waiter").optionalPermissions, [
       "pos.payment.accept",
     ]);
-    // Barista / Cook: KDS of the assigned station only.
+    // Barista / Cook: KDS of the assigned station only. ai.ask is the one
+    // exception: every staff role may ask the assistant (TL-10, AI-06).
     assert.deepEqual(template("barista_cook").allowedScopeTypes, ["station"]);
     assert.ok(
-      template("barista_cook").permissions.every((c) => c.startsWith("kds.")),
+      template("barista_cook").permissions.every(
+        (c) => c.startsWith("kds.") || c === "ai.ask",
+      ),
     );
     // Attendant Fasilitas: facility module only, no payment unless allowed.
+    // Plus ai.ask for all staff (TL-10, AI-06).
     assert.ok(
       template("facility_attendant").permissions.every(
-        (c) => c.startsWith("facility.") || c === "ops.checklist.complete",
+        (c) =>
+          c.startsWith("facility.") ||
+          c === "ops.checklist.complete" ||
+          c === "ai.ask",
       ),
     );
     assert.deepEqual(tagged("facility_attendant", "payment"), []);
@@ -1204,4 +1211,24 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       );
     }
   });
+});
+
+test("legend-9v9t: AI tool access does not widen report permissions beyond the PRD table", () => {
+  for (const key of ["kitchen_lead", "marketing"])
+    assert.ok(
+      !access.roleTemplate(key).permissions.includes("report.sales.view"),
+      `${key} must not hold report.sales.view`,
+    );
+  assert.ok(
+    !access
+      .roleTemplate("kitchen_lead")
+      .permissions.includes("inventory.cost.view"),
+    "kitchen_lead must not hold inventory.cost.view (MFA-sensitive)",
+  );
+  assert.ok(
+    !access
+      .roleTemplate("shareholder")
+      .permissions.includes("report.financial.view"),
+    "shareholder must not hold report.financial.view",
+  );
 });

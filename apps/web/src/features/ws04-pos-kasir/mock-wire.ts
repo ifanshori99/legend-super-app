@@ -222,6 +222,7 @@ export function receiptIssueWire(order: EngineOrder) {
       orderNumber: order.orderNo,
       documentKind: "receipt",
       status: "issued",
+      reprint: false,
       outletName: cafeLegendFixtures.outlets[0].name,
       outletAddress: "Jl. Braga No. 10, Bandung",
       issuedAt: receipt.issuedAt,
