@@ -12,6 +12,12 @@
 //   requests may all succeed; the parallel tests only pin the open-loan rule
 //   (and that the lock is per employee, not global).
 // - A refusal is HTTP 422 with error.code PAYROLL_LOAN_LIMIT_EXCEEDED.
+// - Total open cap (legend-hjaot): a pending or approved loan counts its
+//   principal, a disbursed one its unpaid outstanding; the sum of the
+//   employee's OTHER open loans plus the new principal must stay <= the cap.
+//   Pending loans count as open on approve too, so approving one of two
+//   pending loans never changes what the other sees: parallel approvals are
+//   deterministic (both pass or both fail), not "exactly one 200".
 // - On approve the loan itself is not counted as open, but any other pending,
 //   approved or disbursed loan of the employee is.
 import { randomUUID } from "node:crypto";
@@ -57,9 +63,11 @@ const key = () => `loan-caps-${randomUUID()}`;
 const label = randomUUID().slice(0, 8);
 
 let tenantB: IsolatedTenant;
+let tenantC: IsolatedTenant | undefined;
 let host: string;
 
-async function asTenantB<T>(
+async function asTenantOf<T>(
+  tenantId: string,
   run: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await owner.connect();
@@ -67,7 +75,7 @@ async function asTenantB<T>(
     await client.query("BEGIN");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenantB.tenantId],
+      [tenantId],
     );
     const result = await run(client);
     await client.query("COMMIT");
@@ -79,6 +87,9 @@ async function asTenantB<T>(
     client.release();
   }
 }
+
+const asTenantB = <T>(run: (client: PoolClient) => Promise<T>): Promise<T> =>
+  asTenantOf(tenantB.tenantId, run);
 
 async function signedInClient(name: string) {
   const client = agent(app);
@@ -176,6 +187,7 @@ type PolicyInput = {
   baseSalaryBp?: number | null;
   maxInstallments?: number;
   singleOpenLoan?: boolean;
+  maxTotalOpenIdr?: number;
 };
 
 /** Writes tenant B's policy as the owner (lenient defaults, one-off overrides). */
@@ -187,19 +199,21 @@ async function setPolicy(input: PolicyInput = {}) {
     input.maxInstallments ?? 36,
     5000,
     input.singleOpenLoan ?? false,
+    input.maxTotalOpenIdr ?? 1_000_000_000,
   ];
   await asTenantB((db) =>
     db.query(
       `INSERT INTO payroll_loan_policies
          (tenant_id, max_principal_idr, max_principal_of_base_salary_bp, max_installments,
-          max_deduction_of_net_pay_bp, single_open_loan)
-       VALUES ($1, $2, $3, $4, $5, $6)
+          max_deduction_of_net_pay_bp, single_open_loan, max_total_open_idr)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (tenant_id) DO UPDATE SET
          max_principal_idr = EXCLUDED.max_principal_idr,
          max_principal_of_base_salary_bp = EXCLUDED.max_principal_of_base_salary_bp,
          max_installments = EXCLUDED.max_installments,
          max_deduction_of_net_pay_bp = EXCLUDED.max_deduction_of_net_pay_bp,
-         single_open_loan = EXCLUDED.single_open_loan`,
+         single_open_loan = EXCLUDED.single_open_loan,
+         max_total_open_idr = EXCLUDED.max_total_open_idr`,
       values,
     ),
   );
@@ -299,6 +313,17 @@ afterAll(async () => {
       [tenantB.tenantId, createdEmployees],
     );
   });
+  if (tenantC) {
+    await asTenantOf(tenantC.tenantId, async (db) => {
+      await db.query("DELETE FROM employee_loans WHERE tenant_id = $1", [
+        tenantC!.tenantId,
+      ]);
+      await db.query("DELETE FROM employees WHERE tenant_id = $1", [
+        tenantC!.tenantId,
+      ]);
+    });
+    await dropIsolatedTenant(tenantC);
+  }
   await dropIsolatedTenant(tenantB);
   await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await appPool.end();
@@ -534,19 +559,297 @@ describe("kasbon limits: approval re-checks the policy of today", () => {
   });
 });
 
+const OPEN = "('pending','approved','disbursed')";
+
+/** Sum of outstanding_idr of the employee's open loans, read straight from SQL. */
+async function openSum(employeeId: string): Promise<number> {
+  const rows = await asTenantB((db) =>
+    db.query<{ total: string }>(
+      `SELECT COALESCE(sum(outstanding_idr), 0)::text AS total
+         FROM employee_loans WHERE employee_id = $1 AND status IN ${OPEN}`,
+      [employeeId],
+    ),
+  );
+  return Number(rows.rows[0]!.total);
+}
+
+const disburse = (id: string) =>
+  post(approver, `${HR}/${id}/disburse`, { idempotencyKey: key() });
+
+async function approved(id: string) {
+  const response = await decide(id, "approve");
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+}
+
+async function disbursed(id: string) {
+  await approved(id);
+  const response = await disburse(id);
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+}
+
+describe("kasbon limits: total open cap", () => {
+  it("[loan-total-boundary] accepts a request that fills the total exactly and refuses one rupiah more", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    await created(staff.client, 1_200_000);
+    const fits = await requestLoan(staff.client, 800_000);
+    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    expectRefused(await requestLoan(staff.client, 1));
+    expect(await openSum(staff.employeeId)).toBe(2_000_000);
+  });
+
+  it("[loan-total-first-request-over] refuses a single request above the total on its own", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    expectRefused(await requestLoan(staff.client, 2_000_001));
+    expect((await requestLoan(staff.client, 2_000_000)).status).toBe(201);
+  });
+
+  it("[loan-total-statuses-count] pending, approved and disbursed loans all count", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    const loan = await created(staff.client, 1_200_000);
+    // Room is 800,000 in every open status.
+    expectRefused(await requestLoan(staff.client, 800_001));
+    await approved(loan);
+    expectRefused(await requestLoan(staff.client, 800_001));
+    expect((await disburse(loan)).status).toBe(200);
+    expect(await statusOf(loan)).toBe("disbursed");
+    expectRefused(await requestLoan(staff.client, 800_001));
+  });
+
+  it("[loan-total-disbursed-outstanding] a disbursed loan counts its unpaid outstanding, not its principal", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    const loan = await created(staff.client, 1_200_000);
+    await disbursed(loan);
+    // Part of the loan was repaid: 300,000 is still owed of 1,200,000.
+    await asTenantB((db) =>
+      db.query(
+        "UPDATE employee_loans SET outstanding_idr = 300000 WHERE id = $1",
+        [loan],
+      ),
+    );
+    // Room = 2,000,000 - 300,000 = 1,700,000 (it would be 800,000 on principal).
+    expectRefused(await requestLoan(staff.client, 1_700_001));
+    const fits = await requestLoan(staff.client, 1_700_000);
+    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    expectRefused(await requestLoan(staff.client, 1));
+  });
+
+  it("[loan-total-closed-statuses] settled, rejected and cancelled loans do not count", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    // Each loan is 1,500,000: it could not be requested next to another open one.
+    const rejected = await created(staff.client, 1_500_000);
+    expect((await decide(rejected, "reject")).status).toBe(200);
+    const cancelled = await created(staff.client, 1_500_000);
+    expect((await decide(cancelled, "cancel")).status).toBe(200);
+    const settled = await created(staff.client, 1_500_000);
+    await disbursed(settled);
+    await asTenantB((db) =>
+      db.query(
+        "UPDATE employee_loans SET status = 'settled', settled_at = now(), outstanding_idr = 0 WHERE id = $1",
+        [settled],
+      ),
+    );
+    // None of the three counts, so the whole total is free.
+    const full = await requestLoan(staff.client, 2_000_000);
+    expect(full.status, JSON.stringify(full.body)).toBe(201);
+    expectRefused(await requestLoan(staff.client, 1));
+  });
+
+  it("[loan-total-other-employee] another employee's open loans never count", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const first = await newStaff();
+    const second = await newStaff();
+    await created(first.client, 1_900_000);
+    const mine = await requestLoan(second.client, 1_900_000);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(201);
+  });
+
+  it("[loan-total-other-tenant] another tenant's open loans never count", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    tenantC ??= await createIsolatedTenant(`lcap-${randomUUID().slice(0, 6)}`);
+    const other = tenantC;
+    const otherEmployee = randomUUID();
+    await asTenantOf(other.tenantId, async (db) => {
+      await db.query(
+        `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
+                                employment_type, join_date, status)
+         VALUES ($1, $2, $3, 'Karyawan Tenant Lain', $4, 'pkwtt', '2025-03-01', 'active')`,
+        [
+          otherEmployee,
+          other.tenantId,
+          `LC-${otherEmployee.slice(0, 8).toUpperCase()}`,
+          other.outletId,
+        ],
+      );
+      await db.query(
+        `INSERT INTO employee_loans
+           (id, tenant_id, employee_id, principal_idr, installment_idr, installment_count,
+            outstanding_idr, first_deduction_period, reason)
+         VALUES ($1, $2, $3, 1900000, 950000, 2, 1900000, '2026-02-01', 'Kasbon tenant lain')`,
+        [randomUUID(), other.tenantId, otherEmployee],
+      );
+    });
+    const staff = await newStaff();
+    const mine = await requestLoan(staff.client, 1_900_000);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(201);
+  });
+
+  it("[loan-total-approve-recheck] approval is refused once the total dropped below the open loans, and it stays pending", async () => {
+    await setPolicy({ singleOpenLoan: false });
+    const staff = await newStaff();
+    const first = await created(staff.client, 1_200_000);
+    const second = await created(staff.client, 1_200_000);
+    // The pair (2,400,000) no longer fits.
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    expectRefused(await decide(first, "approve"));
+    expect(await statusOf(first)).toBe("pending");
+    expectRefused(await decide(second, "approve"));
+    expect(await statusOf(second)).toBe("pending");
+    // Room again: both fit.
+    await setPolicy({ maxTotalOpenIdr: 2_400_000, singleOpenLoan: false });
+    await approved(first);
+    await approved(second);
+    expect(await statusOf(first)).toBe("approved");
+  });
+
+  it("[loan-total-approve-excludes-self] approving a lone loan within the total is allowed", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    const loan = await created(staff.client, 2_000_000);
+    const response = await decide(loan, "approve");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await statusOf(loan)).toBe("approved");
+  });
+
+  it("[loan-total-approve-counts-others] approval counts another open loan's outstanding, not its principal", async () => {
+    await setPolicy({ singleOpenLoan: false });
+    const staff = await newStaff();
+    const paid = await created(staff.client, 1_200_000);
+    await disbursed(paid);
+    await asTenantB((db) =>
+      db.query(
+        "UPDATE employee_loans SET outstanding_idr = 300000 WHERE id = $1",
+        [paid],
+      ),
+    );
+    const next = await created(staff.client, 1_700_000);
+    // 300,000 owed + 1,700,000 = 2,000,000.
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    expect((await decide(next, "approve")).status).toBe(200);
+    // One rupiah less room: a fresh pair must be refused.
+    const other = await newStaff();
+    const a = await created(other.client, 1_000_000);
+    await created(other.client, 1_000_000);
+    await setPolicy({ maxTotalOpenIdr: 1_999_999, singleOpenLoan: false });
+    expectRefused(await decide(a, "approve"));
+  });
+
+  it("[loan-total-parallel-requests] lets exactly two of three parallel 800,000 requests through", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const staff = await newStaff();
+    const responses = await Promise.all(
+      [1, 2, 3].map(() => requestLoan(staff.client, 800_000)),
+    );
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 201, 422]);
+    for (const refused of responses.filter((r) => r.status === 422))
+      expectRefused(refused);
+    expect(await openSum(staff.employeeId)).toBe(1_600_000);
+  });
+
+  it("[loan-total-parallel-employees] does not make different employees compete for the total", async () => {
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const [one, two] = await Promise.all([newStaff(), newStaff()]);
+    const responses = await Promise.all([
+      requestLoan(one.client, 2_000_000),
+      requestLoan(two.client, 2_000_000),
+    ]);
+    expect(responses.map((r) => r.status)).toEqual([201, 201]);
+  });
+
+  it("[loan-total-parallel-approvals] parallel approvals of two pending loans both pass or both fail", async () => {
+    // Assumption (differs from a literal reading of the brief): a pending loan
+    // already counts as open, so each approval sees the other loan whether it
+    // is pending or approved. The outcome therefore does not depend on order.
+    await setPolicy({ singleOpenLoan: false });
+    const staff = await newStaff();
+    const first = await created(staff.client, 1_200_000);
+    const second = await created(staff.client, 1_200_000);
+
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const refused = await Promise.all([
+      decide(first, "approve"),
+      decide(second, "approve"),
+    ]);
+    for (const response of refused) expectRefused(response);
+    expect(await statusOf(first)).toBe("pending");
+    expect(await statusOf(second)).toBe("pending");
+
+    await setPolicy({ maxTotalOpenIdr: 2_400_000, singleOpenLoan: false });
+    const both = await Promise.all([
+      decide(first, "approve"),
+      decide(second, "approve"),
+    ]);
+    expect(both.map((r) => r.status)).toEqual([200, 200]);
+    expect(await openSum(staff.employeeId)).toBe(2_400_000);
+  });
+
+  it("[loan-total-parallel-approve-and-request] an approval and a request racing never push the open sum over the total", async () => {
+    await setPolicy({ singleOpenLoan: false });
+    const staff = await newStaff();
+    const loan = await created(staff.client, 1_200_000);
+    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    const [approval, request] = await Promise.all([
+      decide(loan, "approve"),
+      requestLoan(staff.client, 800_001),
+    ]);
+    expect(approval.status, JSON.stringify(approval.body)).toBe(200);
+    expectRefused(request);
+    expect(await openSum(staff.employeeId)).toBe(1_200_000);
+  });
+
+  it("[loan-total-per-loan-max-wins] the per-loan maximum still refuses while the total has room", async () => {
+    await setPolicy({
+      maxPrincipalIdr: 1_000_000,
+      maxTotalOpenIdr: 5_000_000,
+      singleOpenLoan: false,
+    });
+    const staff = await newStaff();
+    expectRefused(await requestLoan(staff.client, 1_000_001));
+    expect((await requestLoan(staff.client, 1_000_000)).status).toBe(201);
+  });
+
+  it("[loan-total-salary-multiple-wins] the salary multiple still refuses while the total has room", async () => {
+    await setPolicy({
+      maxPrincipalIdr: null,
+      baseSalaryBp: 10000,
+      maxTotalOpenIdr: 5_000_000,
+      singleOpenLoan: false,
+    });
+    const staff = await newStaff();
+    await setComponent(staff.employeeId, baseSalaryComponent, 1_000_000);
+    expectRefused(await requestLoan(staff.client, 1_000_001));
+    expect((await requestLoan(staff.client, 1_000_000)).status).toBe(201);
+  });
+});
+
 describe("kasbon policy table (database)", () => {
   const insert = (values: {
     maxPrincipalIdr?: number | null;
     bp?: number | null;
     installments?: number;
     deduction?: number;
+    total?: number | null;
   }) =>
     asTenantB((db) =>
       db.query(
         `INSERT INTO payroll_loan_policies
            (tenant_id, max_principal_idr, max_principal_of_base_salary_bp, max_installments,
-            max_deduction_of_net_pay_bp)
-         VALUES ($1, $2, $3, $4, $5)`,
+            max_deduction_of_net_pay_bp, max_total_open_idr)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           tenantB.tenantId,
           values.maxPrincipalIdr === undefined
@@ -555,6 +858,7 @@ describe("kasbon policy table (database)", () => {
           values.bp ?? null,
           values.installments ?? 12,
           values.deduction ?? 5000,
+          values.total === undefined ? 1_000_000_000 : values.total,
         ],
       ),
     );
@@ -569,14 +873,20 @@ describe("kasbon policy table (database)", () => {
       { deduction: 10_001 },
       { deduction: -1 },
       { maxPrincipalIdr: 0 },
+      { total: 0 },
+      { total: -1 },
     ];
     for (const values of invalid)
       await expect(
         insert(values),
         JSON.stringify(values),
       ).rejects.toMatchObject({ code: "23514" });
+    // The total open cap is required: NULL is a not-null violation.
+    await expect(insert({ total: null })).rejects.toMatchObject({
+      code: "23502",
+    });
     // Boundaries are valid.
-    await insert({ installments: 36, deduction: 10_000 });
+    await insert({ installments: 36, deduction: 10_000, total: 1 });
     await clearPolicy();
     await insert({
       maxPrincipalIdr: null,

@@ -186,8 +186,8 @@ beforeAll(async () => {
     db.query(
       `INSERT INTO payroll_loan_policies
          (tenant_id, max_principal_idr, max_principal_of_base_salary_bp, max_installments,
-          max_deduction_of_net_pay_bp, single_open_loan)
-       VALUES ($1, 100000000, NULL, 36, 5000, false)`,
+          max_deduction_of_net_pay_bp, single_open_loan, max_total_open_idr)
+       VALUES ($1, 100000000, NULL, 36, 5000, false, 1000000000)`,
       [tenant.id],
     ),
   );

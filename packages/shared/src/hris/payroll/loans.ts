@@ -74,12 +74,43 @@ export const loanPolicySchema = z.strictObject({
   /** Ceiling as bp of the monthly base salary (10,000 = 1x); null = none. */
   maxPrincipalOfBaseSalaryBp: z.number().int().min(1).max(120_000).nullable(),
   maxInstallments: z.number().int().min(1).max(36),
+  /**
+   * Ceiling on one employee's open kasbon in total: the unpaid principal of
+   * every loan that is not settled, pending and approved ones included, plus
+   * the new request (founder decision 9 Nov).
+   */
+  maxTotalOpenIdr: positiveIdr,
   /** Max share of a period's net pay all installments may take. */
   maxDeductionOfNetPayBp: basisPointsSchema,
   /** One open loan at a time (PRD silent: safest default true). */
   singleOpenLoan: z.boolean(),
 });
 export type LoanPolicy = z.infer<typeof loanPolicySchema>;
+
+/** A stored kasbon policy: the limits plus when they last changed. */
+export const loanPolicyRecordSchema = loanPolicySchema.extend({
+  updatedAt: isoDateTimeSchema,
+});
+export type LoanPolicyRecord = z.infer<typeof loanPolicyRecordSchema>;
+
+/**
+ * Replacing the tenant's kasbon limits. Same shape as `loanPolicySchema` plus
+ * the idempotency key; at least one ceiling is required (the stored row has
+ * the same rule, so a policy without any ceiling can never exist).
+ */
+export const setLoanPolicyInputSchema = clientInputSchema({
+  ...loanPolicySchema.shape,
+  idempotencyKey: idempotencyKeySchema,
+}).refine(
+  (policy) =>
+    policy.maxPrincipalIdr !== null ||
+    policy.maxPrincipalOfBaseSalaryBp !== null,
+  {
+    path: ["maxPrincipalIdr"],
+    message: "Set at least one ceiling (rupiah or share of base salary).",
+  },
+);
+export type SetLoanPolicyInput = z.infer<typeof setLoanPolicyInputSchema>;
 
 export const employeeLoanSchema = z
   .strictObject({
@@ -185,11 +216,18 @@ export function assertLoanWithinPolicy(
     installmentCount: number;
     monthlyBaseSalaryIdr: Idr;
     openLoanCount: number;
+    /** Unpaid principal of the employee's other open loans (not settled). */
+    openOutstandingIdr: Idr;
   },
 ): void {
   if (request.installmentCount > policy.maxInstallments)
     throw new PayrollError("PAYROLL_LOAN_LIMIT_EXCEEDED");
   if (policy.singleOpenLoan && request.openLoanCount > 0)
+    throw new PayrollError("PAYROLL_LOAN_LIMIT_EXCEEDED");
+  if (
+    BigInt(request.openOutstandingIdr) + BigInt(request.principalIdr) >
+    BigInt(policy.maxTotalOpenIdr)
+  )
     throw new PayrollError("PAYROLL_LOAN_LIMIT_EXCEEDED");
   if (
     policy.maxPrincipalIdr !== null &&

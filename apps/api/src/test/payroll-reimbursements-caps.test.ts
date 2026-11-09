@@ -10,8 +10,11 @@
 //    outlet, not used by another claim; otherwise 422 VALIDATION_ERROR.
 //  - Services take an injectable HrisFileSigner (last parameter) and fill
 //    `receiptUrl`; the ref itself is never exposed.
-// Assumptions: an expense date on the 15th of the previous month is accepted;
-// a signer that throws or returns null yields receiptUrl null without failing
+// Claim window (founder decision 9 Nov): POST /me/reimbursements accepts an
+// expenseDate from today-30 to today (inclusive, business date); older or
+// future dates are 422 VALIDATION_ERROR. Checked at submission only.
+// Assumptions: a claim dated the 15th of the previous month is seeded by SQL
+// (it may fall outside the 30-day window, so it cannot be POSTed); a signer that throws or returns null yields receiptUrl null without failing
 // the call; service results may be the DTO itself or `{ data }` (handled by
 // `unwrap`).
 // Tenant A is the seeded Cafe Legend tenant; tenant B is a throwaway tenant.
@@ -60,6 +63,10 @@ const previousMonthDate = (() => {
   const previous = month === 1 ? [year - 1, 12] : [year, month - 1];
   return `${previous[0]}-${String(previous[1]).padStart(2, "0")}-15` as BusinessDate;
 })();
+const plusDays = (date: BusinessDate, days: number) =>
+  new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10) as BusinessDate;
 const key = () => `reimb-caps-${randomUUID()}`;
 const label = randomUUID().slice(0, 8);
 
@@ -248,6 +255,35 @@ async function createCategory(overrides: Record<string, unknown> = {}) {
   return response.body.data as { id: string };
 }
 
+/** Seeds a pending claim by SQL, bypassing the 30-day submission window. */
+async function seedClaim(
+  employeeId: string,
+  categoryId: string,
+  expenseDate: string,
+  amountIdr: number,
+) {
+  const id = randomUUID();
+  await asTenant(tenant.id, (db) =>
+    db.query(
+      `INSERT INTO reimbursements (id, tenant_id, employee_id, category_id, expense_date,
+                                   amount_idr, description, payout, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Klaim lama', 'cash', 'submitted')`,
+      [id, tenant.id, employeeId, categoryId, expenseDate, amountIdr],
+    ),
+  );
+  return id;
+}
+
+async function countClaims(employeeId: string, categoryId: string) {
+  return asTenant(tenant.id, async (db) => {
+    const result = await db.query(
+      "SELECT count(*)::int AS n FROM reimbursements WHERE tenant_id = $1 AND employee_id = $2 AND category_id = $3",
+      [tenant.id, employeeId, categoryId],
+    );
+    return result.rows[0].n as number;
+  });
+}
+
 const claimBody = (categoryId: string, overrides = {}) => ({
   categoryId,
   expenseDate: today,
@@ -426,11 +462,14 @@ describe("reimbursement monthly cap", () => {
     await submit(mainEmployee.client, another.id, { amountIdr: 100_000 });
     // Another employee has their own usage on the same category.
     await submit(otherEmployee.client, category.id, { amountIdr: 100_000 });
-    // A claim dated the previous month counts against that month only.
-    await submit(mainEmployee.client, category.id, {
-      amountIdr: 100_000,
-      expenseDate: previousMonthDate,
-    });
+    // A claim dated the previous month counts against that month only. It is
+    // seeded by SQL: the 15th of last month can be older than the 30-day window.
+    await seedClaim(
+      mainEmployee.employeeId,
+      category.id,
+      previousMonthDate,
+      100_000,
+    );
     // ... and this month is still full.
     expectLimitExceeded(
       await post(mainEmployee.client, category.id, { amountIdr: 1_000 }),
@@ -543,6 +582,126 @@ describe("reimbursement monthly cap", () => {
     for (const response of responses.filter((r) => r.status === 422)) {
       expectLimitExceeded(response);
     }
+  });
+});
+
+describe("reimbursement claim window", () => {
+  it("[reimb-window-boundary] accepts today-30 and today, refuses today-31 with 422 and stores nothing", async () => {
+    const category = await createCategory();
+    const edge = await post(mainEmployee.client, category.id, {
+      expenseDate: plusDays(today, -30),
+      amountIdr: 10_000,
+    });
+    expect(edge.status, JSON.stringify(edge.body)).toBe(201);
+    const now = await post(mainEmployee.client, category.id, {
+      expenseDate: today,
+      amountIdr: 10_000,
+    });
+    expect(now.status, JSON.stringify(now.body)).toBe(201);
+    expect(await countClaims(mainEmployee.employeeId, category.id)).toBe(2);
+
+    const tooOld = await post(mainEmployee.client, category.id, {
+      expenseDate: plusDays(today, -31),
+      amountIdr: 10_000,
+    });
+    expectValidationError(tooOld);
+    expect(await countClaims(mainEmployee.employeeId, category.id)).toBe(2);
+  });
+
+  it("[reimb-window-future] still refuses a future expense date with 422", async () => {
+    const category = await createCategory();
+    expectValidationError(
+      await post(mainEmployee.client, category.id, {
+        expenseDate: plusDays(today, 1),
+        amountIdr: 10_000,
+      }),
+    );
+    expect(await countClaims(mainEmployee.employeeId, category.id)).toBe(0);
+  });
+
+  it("[reimb-window-receipt] a too-old claim does not consume its receipt", async () => {
+    const category = await createCategory();
+    const ref = await storageObject(tenant.id, outletId);
+    expectValidationError(
+      await post(mainEmployee.client, category.id, {
+        expenseDate: plusDays(today, -31),
+        receiptUploadRef: ref,
+        amountIdr: 10_000,
+      }),
+    );
+    // The same receipt is still free for a claim inside the window.
+    const retry = await post(mainEmployee.client, category.id, {
+      expenseDate: today,
+      receiptUploadRef: ref,
+      amountIdr: 10_000,
+    });
+    expect(retry.status, JSON.stringify(retry.body)).toBe(201);
+  });
+
+  it("[reimb-window-old-claim] approval and cash payment of an old claim are not re-checked", async () => {
+    const category = await createCategory();
+    const id = await seedClaim(
+      mainEmployee.employeeId,
+      category.id,
+      plusDays(today, -60),
+      50_000,
+    );
+    const approved = await decide(approverClient, id);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body.data.status).toBe("approved");
+    const paid = await approverClient
+      .post(`${CLAIMS}/${id}/pay`)
+      .set(originHeader)
+      .send({ idempotencyKey: key() });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    expect(paid.body.data.status).toBe("paid");
+  });
+
+  it("[reimb-window-replay] replaying the same idempotency key returns the original claim", async () => {
+    const category = await createCategory();
+    const idempotencyKey = key();
+    const body = {
+      expenseDate: plusDays(today, -30),
+      amountIdr: 10_000,
+      idempotencyKey,
+    };
+    const first = await post(mainEmployee.client, category.id, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await post(mainEmployee.client, category.id, body);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    expect(await countClaims(mainEmployee.employeeId, category.id)).toBe(1);
+  });
+
+  it("[reimb-window-parallel] four parallel submissions, two too old: exactly two 201 and two 422", async () => {
+    const category = await createCategory();
+    const dates = [
+      plusDays(today, -31),
+      plusDays(today, -40),
+      plusDays(today, -30),
+      today,
+    ];
+    const refs = await Promise.all(
+      dates.map(() => storageObject(tenant.id, outletId)),
+    );
+    const responses = await Promise.all(
+      dates.map((expenseDate, index) =>
+        post(mainEmployee.client, category.id, {
+          expenseDate,
+          receiptUploadRef: refs[index],
+          amountIdr: 10_000,
+        }),
+      ),
+    );
+    const detail = JSON.stringify(responses.map((r) => r.body));
+    expect(
+      responses.map((r) => r.status),
+      detail,
+    ).toEqual([422, 422, 201, 201]);
+    for (const response of responses.slice(0, 2)) {
+      expectValidationError(response);
+    }
+    expect(await countClaims(mainEmployee.employeeId, category.id)).toBe(2);
   });
 });
 

@@ -55,6 +55,7 @@ import { facilityCustomerRouter } from "./facility-customer.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { payrollLoanPolicyRouter } from "./payroll-loan-policy.routes";
 import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
 import { payrollStatutoryRouter } from "./payroll-statutory.routes";
 import {
@@ -235,6 +236,7 @@ apiRouter.use("/facility", facilityRouter);
 apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
 // whose router applies its own middleware to everything under its prefix.
+apiRouter.use("/hris/payroll/loan-policy", payrollLoanPolicyRouter);
 apiRouter.use("/hris/payroll/pph21-policies", payrollPph21PolicyRouter);
 // WS-10 payroll configuration API (legend-gfcr). Before `/hris` as well.
 apiRouter.use("/hris/payroll/statutory-tables", payrollStatutoryRouter);

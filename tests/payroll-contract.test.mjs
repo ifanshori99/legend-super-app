@@ -906,6 +906,7 @@ test("kasbon limits and lifecycle fail closed", () => {
   const policy = payroll.loanPolicySchema.parse({
     maxPrincipalIdr: 5_000_000,
     maxPrincipalOfBaseSalaryBp: 10_000,
+    maxTotalOpenIdr: 5_000_000,
     maxInstallments: 6,
     maxDeductionOfNetPayBp: 5000,
     singleOpenLoan: true,
@@ -915,8 +916,25 @@ test("kasbon limits and lifecycle fail closed", () => {
     installmentCount: 3,
     monthlyBaseSalaryIdr: 4_000_000,
     openLoanCount: 0,
+    openOutstandingIdr: 0,
   };
   payroll.assertLoanWithinPolicy(policy, ok);
+  // Total open cap: unpaid principal of other open loans plus the request.
+  payroll.assertLoanWithinPolicy(
+    { ...policy, singleOpenLoan: false },
+    { ...ok, openLoanCount: 1, openOutstandingIdr: 2_000_000 },
+  );
+  throwsCode(
+    () =>
+      payroll.assertLoanWithinPolicy(
+        { ...policy, singleOpenLoan: false },
+        { ...ok, openLoanCount: 1, openOutstandingIdr: 2_000_001 },
+      ),
+    "PAYROLL_LOAN_LIMIT_EXCEEDED",
+  );
+  assert.throws(() =>
+    payroll.loanPolicySchema.parse({ ...policy, maxTotalOpenIdr: 0 }),
+  );
   for (const bad of [
     { ...ok, principalIdr: 6_000_000, monthlyBaseSalaryIdr: 9_000_000 },
     { ...ok, principalIdr: 4_500_000 },

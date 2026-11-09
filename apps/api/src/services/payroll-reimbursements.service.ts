@@ -114,6 +114,20 @@ async function lockKey(tx: Tx, key: string): Promise<void> {
   );
 }
 
+/**
+ * A claim may be dated at most this many calendar days before the day it is
+ * submitted (founder decision 9 Nov). Checked at submission only; approving
+ * later never re-checks it.
+ */
+export const REIMBURSEMENT_BACKDATE_DAYS = 30;
+
+/** `date` minus `days` calendar days (UTC arithmetic on a business date). */
+function daysBefore(date: BusinessDate, days: number): BusinessDate {
+  const moment = new Date(`${date}T00:00:00Z`);
+  moment.setUTCDate(moment.getUTCDate() - days);
+  return businessDateSchema.parse(moment.toISOString().slice(0, 10));
+}
+
 /** First day of the expense month and of the next one. */
 function monthBounds(expenseDate: BusinessDate): [BusinessDate, BusinessDate] {
   const [year, month] = expenseDate.split("-").map(Number) as [number, number];
@@ -612,8 +626,13 @@ export async function createMyReimbursement(
       { actor: self.actor, employeeId: self.employeeId, body },
       async () => {
         // The server clock decides "future", never the client.
-        if (body.expenseDate > businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK))
+        const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
+        if (body.expenseDate > today)
           throw unprocessable("Tanggal pengeluaran tidak boleh di masa depan.");
+        if (body.expenseDate < daysBefore(today, REIMBURSEMENT_BACKDATE_DAYS))
+          throw unprocessable(
+            `Klaim hanya bisa diajukan untuk pengeluaran ${REIMBURSEMENT_BACKDATE_DAYS} hari terakhir.`,
+          );
         const [category] = await tx
           .select()
           .from(reimbursementCategories)

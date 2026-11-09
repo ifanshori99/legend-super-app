@@ -835,6 +835,8 @@ export const payrollLoanPolicies = pgTable(
     maxPrincipalIdr: idrColumn("max_principal_idr"),
     /** Ceiling as basis points of the monthly base salary; null = none. */
     maxPrincipalOfBaseSalaryBp: integer("max_principal_of_base_salary_bp"),
+    /** Ceiling on one employee's total open kasbon (unpaid principal). */
+    maxTotalOpenIdr: idrColumn("max_total_open_idr").notNull(),
     maxInstallments: integer("max_installments").notNull(),
     maxDeductionOfNetPayBp: integer("max_deduction_of_net_pay_bp").notNull(),
     singleOpenLoan: boolean("single_open_loan").notNull().default(true),
@@ -853,6 +855,7 @@ export const payrollLoanPolicies = pgTable(
       "payroll_loan_policies_values_check",
       sql`(${table.maxPrincipalIdr} IS NULL OR ${table.maxPrincipalIdr} > 0)
         AND (${table.maxPrincipalOfBaseSalaryBp} IS NULL OR ${table.maxPrincipalOfBaseSalaryBp} BETWEEN 1 AND 120000)
+        AND ${table.maxTotalOpenIdr} > 0
         AND ${table.maxInstallments} BETWEEN 1 AND 36
         AND ${table.maxDeductionOfNetPayBp} BETWEEN 0 AND 10000`,
     ),

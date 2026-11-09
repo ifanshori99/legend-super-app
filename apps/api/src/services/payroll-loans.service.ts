@@ -183,12 +183,16 @@ async function assertLoanAllowed(
   const policy = loanPolicySchema.parse({
     maxPrincipalIdr: policyRow.maxPrincipalIdr,
     maxPrincipalOfBaseSalaryBp: policyRow.maxPrincipalOfBaseSalaryBp,
+    maxTotalOpenIdr: policyRow.maxTotalOpenIdr,
     maxInstallments: policyRow.maxInstallments,
     maxDeductionOfNetPayBp: policyRow.maxDeductionOfNetPayBp,
     singleOpenLoan: policyRow.singleOpenLoan,
   });
   const open = await tx
-    .select({ id: employeeLoans.id })
+    .select({
+      id: employeeLoans.id,
+      outstandingIdr: employeeLoans.outstandingIdr,
+    })
     .from(employeeLoans)
     .where(
       and(
@@ -210,6 +214,11 @@ async function assertLoanAllowed(
         ? idr(0)
         : await monthlyBaseSalaryIdr(tx, context, employeeId, today),
     openLoanCount: open.length,
+    // pending and approved loans hold their full principal as outstanding
+    // (table check), a disbursed one the unpaid rest.
+    openOutstandingIdr: idr(
+      open.reduce((sum, loan) => sum + Number(loan.outstandingIdr), 0),
+    ),
   });
 }
 

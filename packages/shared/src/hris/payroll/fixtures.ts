@@ -722,6 +722,7 @@ const thrSchedules = [
 const loanPolicy = loanPolicySchema.parse({
   maxPrincipalIdr: 5_000_000,
   maxPrincipalOfBaseSalaryBp: 10_000,
+  maxTotalOpenIdr: 5_000_000,
   maxInstallments: 6,
   maxDeductionOfNetPayBp: 5000,
   singleOpenLoan: true,

@@ -3,6 +3,7 @@ CREATE TABLE "payroll_loan_policies" (
 	"tenant_id" uuid NOT NULL,
 	"max_principal_idr" bigint,
 	"max_principal_of_base_salary_bp" integer,
+	"max_total_open_idr" bigint NOT NULL,
 	"max_installments" integer NOT NULL,
 	"max_deduction_of_net_pay_bp" integer NOT NULL,
 	"single_open_loan" boolean DEFAULT true NOT NULL,
@@ -13,6 +14,7 @@ CREATE TABLE "payroll_loan_policies" (
 	CONSTRAINT "payroll_loan_policies_ceiling_check" CHECK ("payroll_loan_policies"."max_principal_idr" IS NOT NULL OR "payroll_loan_policies"."max_principal_of_base_salary_bp" IS NOT NULL),
 	CONSTRAINT "payroll_loan_policies_values_check" CHECK (("payroll_loan_policies"."max_principal_idr" IS NULL OR "payroll_loan_policies"."max_principal_idr" > 0)
         AND ("payroll_loan_policies"."max_principal_of_base_salary_bp" IS NULL OR "payroll_loan_policies"."max_principal_of_base_salary_bp" BETWEEN 1 AND 120000)
+        AND "payroll_loan_policies"."max_total_open_idr" > 0
         AND "payroll_loan_policies"."max_installments" BETWEEN 1 AND 36
         AND "payroll_loan_policies"."max_deduction_of_net_pay_bp" BETWEEN 0 AND 10000)
 );

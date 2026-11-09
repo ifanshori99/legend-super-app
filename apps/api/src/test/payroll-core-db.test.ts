@@ -245,6 +245,7 @@ const BUILD: Record<Table, (s: Seed, id: string, v: Variant) => Cols> = {
     max_principal_idr: 5000000,
     max_installments: 12,
     max_deduction_of_net_pay_bp: 3000,
+    max_total_open_idr: 20000000,
   }),
   reimbursement_categories: (s) => ({
     tenant_id: s.tenantId,
@@ -346,6 +347,7 @@ const INSUFFICIENT_PRIVILEGE = "42501";
 const CHECK_VIOLATION = "23514";
 const FOREIGN_KEY_VIOLATION = "23503";
 const UNIQUE_VIOLATION = "23505";
+const NOT_NULL_VIOLATION = "23502";
 const EXCLUSION_VIOLATION = "23P01";
 const GUARD_FIRST: ReadonlySet<Table> = new Set([
   "payslips",
@@ -1943,5 +1945,50 @@ describe("payroll core: service charge pool guards (PAYR-04)", () => {
     expect(result.edit).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.remove).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.afterApproval).toEqual({ ok: false, code: CHECK_VIOLATION });
+  });
+});
+
+describe("payroll core: loan policy total open cap (legend-hjaot)", () => {
+  const setTotal = (client: PoolClient, value: number | null) =>
+    attempt(
+      client,
+      "UPDATE payroll_loan_policies SET max_total_open_idr = $2 WHERE id = $1",
+      [need(A, "payroll_loan_policies"), value],
+    );
+
+  it("rejects a total of zero or below, and NULL", async () => {
+    const result = await asApp({ tenant: A.tenantId }, async (client) => ({
+      zero: await setTotal(client, 0),
+      negative: await setTotal(client, -1),
+      missing: await setTotal(client, null),
+      valid: await setTotal(client, 1),
+    }));
+    expect(result.zero).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.negative).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.missing).toEqual({ ok: false, code: NOT_NULL_VIOLATION });
+    expect(result.valid).toMatchObject({ ok: true, rowCount: 1 });
+  });
+
+  it("refuses to insert a policy without a total or with a non-positive one", async () => {
+    // Constraints fire before the one-row-per-tenant unique index, so the
+    // seeded row can stay; everything is rolled back anyway.
+    const result = await asApp({ tenant: B.tenantId }, async (client) => {
+      const insertWith = (total: number | null) =>
+        attempt(
+          client,
+          `INSERT INTO payroll_loan_policies
+             (tenant_id, max_principal_idr, max_installments, max_deduction_of_net_pay_bp, max_total_open_idr)
+           VALUES ($1, 5000000, 12, 3000, $2)`,
+          [B.tenantId, total],
+        );
+      return {
+        zero: await insertWith(0),
+        negative: await insertWith(-5),
+        missing: await insertWith(null),
+      };
+    });
+    expect(result.zero).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.negative).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.missing).toEqual({ ok: false, code: NOT_NULL_VIOLATION });
   });
 });
