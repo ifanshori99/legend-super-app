@@ -46,7 +46,11 @@
 // `ws11-shared` change (new bead), not built here.
 
 import { sql } from "drizzle-orm";
-import { businessDayRange } from "@starter/shared/core";
+import {
+  businessDayRange,
+  decimal4 as toDecimal4,
+  type Decimal4,
+} from "@starter/shared/core";
 import { outletBusinessDayClock } from "../outlet-clock";
 import type {
   DailyComputeInput,
@@ -153,9 +157,11 @@ const paxReader: DailyMetricReader = {
 
 // ---- floor: turnover, dwell time, waiter calls ----------------------------
 
-/** Decimal4 string of a ratio; zero denominator gives "0.0000". */
-function decimal4(numerator: number, denominator: number): string {
-  return denominator === 0 ? "0.0000" : (numerator / denominator).toFixed(4);
+/** Decimal4 of a ratio; zero denominator gives 0. */
+function decimal4(numerator: number, denominator: number): Decimal4 {
+  return toDecimal4(
+    denominator === 0 ? "0.0000" : (numerator / denominator).toFixed(4),
+  );
 }
 
 const floorReader: DailyMetricReader = {
