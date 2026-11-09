@@ -349,3 +349,4 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - G6kfb mulai legend-em6p + fsl5 (brief 168, ws/dp-intent-lock dari m1).
 - G9syc dibuka lagi: batch9 = aj-fix142 d309b186, edc-pan-fix 36599100 (sebelum 0141 shift-close), pph21 1535d4d8. Ditahan: refund-tier (fix 0135), edge-access-apply (2 P2 Codex 160).
 - Kapasitas Codex: akun #2 limit sampai 20:37, akun #3 penuh (G08dj 130, G8ke9 156r3). Antrean: 150b, 133, 134, 138, 144, lalu brief baru 163/164, 166, 167, 168b.
+- 16:50 Keputusan founder B8: kekurangan potongan PPh21 karyawan = piutang karyawan (bukan beban perusahaan, tanpa gross-up; setoran tetap T; ditagih dari gaji berikutnya, sisa saat keluar jadi piutang terbuka). legend-kn3n P1, menunggu slot (G5qo3).
