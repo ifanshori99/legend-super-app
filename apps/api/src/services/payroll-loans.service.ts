@@ -229,16 +229,16 @@ export async function createMyLoan(
         const [row] = await tx
           .insert(employeeLoans)
           .values({
-            id: randomUUID(),
+            id: randomUUID() as LoanRow["id"],
             tenantId: context.tenant.tenantId,
             employeeId: self.employeeId,
-            principalIdr: request.principalIdr,
+            principalIdr: request.principalIdr as LoanRow["principalIdr"],
             installmentIdr: loanInstallmentFor(
               request.principalIdr as Parameters<typeof loanInstallmentFor>[0],
               request.installmentCount,
             ),
             installmentCount: request.installmentCount,
-            outstandingIdr: request.principalIdr,
+            outstandingIdr: request.principalIdr as LoanRow["outstandingIdr"],
             firstDeductionPeriod: firstDeductionPeriodAfter(today),
             reason: request.reason,
             status: "pending",
@@ -316,7 +316,7 @@ async function lockLoanForDecision(
     .where(
       and(
         eq(employeeLoans.tenantId, context.tenant.tenantId),
-        eq(employeeLoans.id, loanId),
+        eq(employeeLoans.id, loanId as LoanRow["id"]),
       ),
     )
     .for("update")

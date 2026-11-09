@@ -466,7 +466,7 @@ describe("reimbursement categories API", () => {
   });
 
   it("[TEN-02] rejects tenantId, unknown keys and bad limits with 422", async () => {
-    const post = (body: unknown) =>
+    const post = (body: object) =>
       adminClient.post(CATEGORIES).set(originHeader).send(body);
     expect(
       (await post({ ...categoryBody(), tenantId: tenant.id })).status,
@@ -614,7 +614,7 @@ describe("my reimbursements API: submit and list", () => {
   });
 
   it("[TEN-02] rejects tenantId, employeeId and bad values with 422", async () => {
-    const post = (body: unknown) =>
+    const post = (body: object) =>
       selfClient.post(ME).set(originHeader).send(body);
     const base = claimBody(defaultCategoryId);
     expect((await post({ ...base, tenantId: tenant.id })).status).toBe(422);

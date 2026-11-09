@@ -290,7 +290,10 @@ export async function updatePayrollPolicy(
           .where(
             and(
               eq(payrollPolicies.tenantId, context.tenant.tenantId),
-              eq(payrollPolicies.id, payrollPolicyId),
+              eq(
+                payrollPolicies.id,
+                payrollPolicyId as (typeof payrollPolicies.$inferSelect)["id"],
+              ),
             ),
           )
           .for("update")
@@ -412,7 +415,7 @@ export async function createThrSchedule(
           [row] = await tx
             .insert(thrSchedules)
             .values({
-              id: randomUUID(),
+              id: randomUUID() as (typeof thrSchedules.$inferSelect)["id"],
               tenantId: context.tenant.tenantId,
               legalEntityId: body.legalEntityId,
               name: body.name,

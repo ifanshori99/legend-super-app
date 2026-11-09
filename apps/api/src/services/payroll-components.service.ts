@@ -558,7 +558,7 @@ export async function setEmployeePayComponent(
             );
 
         // The id comes first: the seal binds to it.
-        const rowId = randomUUID();
+        const rowId = randomUUID() as EmployeeComponentRow["id"];
         try {
           await tx.insert(employeePayComponents).values({
             id: rowId,
@@ -616,7 +616,10 @@ export async function setEmployeePayComponent(
       .where(
         and(
           eq(employeePayComponents.tenantId, context.tenant.tenantId),
-          eq(employeePayComponents.id, created.id),
+          eq(
+            employeePayComponents.id,
+            created.id as EmployeeComponentRow["id"],
+          ),
         ),
       )
       .limit(1);

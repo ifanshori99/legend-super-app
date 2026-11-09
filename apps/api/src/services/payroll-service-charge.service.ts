@@ -29,6 +29,7 @@ import {
   serviceChargeRuleSchema,
   type ServiceChargeAllocation,
   type ServiceChargePool,
+  type ServiceChargePoolId,
 } from "@starter/shared/hris/payroll";
 import type { z } from "@starter/shared/core";
 import { db } from "../db/index.ts";
@@ -143,7 +144,7 @@ async function loadPool(
     .where(
       and(
         eq(serviceChargePools.tenantId, context.tenant.tenantId),
-        eq(serviceChargePools.id, poolId),
+        eq(serviceChargePools.id, poolId as ServiceChargePoolId),
       ),
     )
     .limit(1);
@@ -172,7 +173,7 @@ export async function listServiceChargePools(
           lt(serviceChargePools.periodStart, date),
           and(
             eq(serviceChargePools.periodStart, date),
-            lt(serviceChargePools.id, id),
+            lt(serviceChargePools.id, id as ServiceChargePoolId),
           ),
         )!,
       );
@@ -335,7 +336,7 @@ export async function listServiceChargeAllocations(
     await loadPool(tx, context, poolId);
     const filters: SQL[] = [
       eq(serviceChargeAllocations.tenantId, context.tenant.tenantId),
-      eq(serviceChargeAllocations.poolId, poolId),
+      eq(serviceChargeAllocations.poolId, poolId as ServiceChargePoolId),
     ];
     if (query.cursor) {
       const [employeeId, id] = cursorIdPair(query.cursor);

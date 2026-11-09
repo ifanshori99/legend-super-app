@@ -785,7 +785,7 @@ describe("pay components: tenant isolation", () => {
       (
         await failure(
           service.setEmployeePayComponent(theirs, otherAdmin, employeeId, {
-            componentId: component.id,
+            componentId: component.id as never,
             amountIdr: 1 as never,
             effectiveFrom: "2026-01-01" as never,
             idempotencyKey: key(),

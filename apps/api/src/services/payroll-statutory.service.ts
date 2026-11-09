@@ -19,6 +19,7 @@ import { and, desc, eq, lt, or, max, type SQL } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   businessDateOf,
+  businessDateSchema,
   createUlid,
   DEFAULT_BUSINESS_DAY_CLOCK,
   encodeCursor,
@@ -30,6 +31,7 @@ import {
   archiveStatutoryVersion,
   assertStatutoryVersionEditable,
   publishStatutoryVersion,
+  statutoryTableVersionIdSchema,
   statutoryTableVersionSchema,
   type StatutoryTableDraftInput,
   type StatutoryTableType,
@@ -181,13 +183,17 @@ export async function listStatutoryTables(
     if (query.type !== undefined)
       filters.push(eq(statutoryRates.type, query.type));
     if (query.cursor) {
-      const [date, id] = cursorPair(query.cursor);
+      const [rawDate, rawId] = cursorPair(query.cursor);
+      const date = businessDateSchema.safeParse(rawDate);
+      const id = statutoryTableVersionIdSchema.safeParse(rawId);
+      if (!date.success || !id.success)
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
       filters.push(
         or(
-          lt(statutoryRates.effectiveFrom, date),
+          lt(statutoryRates.effectiveFrom, date.data),
           and(
-            eq(statutoryRates.effectiveFrom, date),
-            lt(statutoryRates.id, id),
+            eq(statutoryRates.effectiveFrom, date.data),
+            lt(statutoryRates.id, id.data),
           ),
         )!,
       );
