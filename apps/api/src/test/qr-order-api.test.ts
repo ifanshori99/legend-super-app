@@ -247,7 +247,7 @@ async function outboxRows(name: string, field: string, value: string) {
   const { rows } = await owner.query<{ event: unknown }>(
     `SELECT event FROM domain_event_outbox
      WHERE tenant_id = $1 AND event->>'name' = $2 AND event->'payload'->>$3 = $4
-     ORDER BY created_at, id`,
+     ORDER BY sequence, created_at, id`,
     [tenant.tenantId, name, field, value],
   );
   return rows.map((row) => eventEnvelopeSchema.parse(row.event));

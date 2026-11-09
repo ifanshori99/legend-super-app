@@ -513,9 +513,22 @@ describe("TEN-01 inventory tenant isolation", () => {
   });
 
   it("TEN-01 the item routes list only the caller's tenant and refuse tenant B's item id", async () => {
-    const list = await client.get("/api/inventory/items?limit=100");
-    expect(list.status).toBe(200);
-    const ids = list.body.data.map((row: { id: string }) => row.id);
+    // Follow the cursor: the tenant fixture can hold more than one page of
+    // items (shared database), so a single page may not contain itemA.
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 50; page += 1) {
+      const list: Awaited<ReturnType<typeof client.get>> = await client.get(
+        `/api/inventory/items?limit=100${
+          cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+        }`,
+      );
+      expect(list.status).toBe(200);
+      ids.push(...list.body.data.map((row: { id: string }) => row.id));
+      cursor = list.body.meta.nextCursor;
+      if (!cursor) break;
+    }
+    expect(cursor).toBeNull();
     expect(ids).toContain(itemA);
     expect(ids).not.toContain(itemB);
 
