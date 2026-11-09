@@ -58,7 +58,7 @@ import {
 } from "../services/device-pin.service.ts";
 import { setPosReceiptPort } from "../services/pos-order-ports.ts";
 import type { PosReceiptPort } from "../services/pos-order-ports.ts";
-import { setPosReceiptGapsPort } from "../services/pos-shift-ports.ts";
+import { setPosOutletReceiptGapsPort } from "../services/pos-shift-ports.ts";
 import { closePosDay, getEndOfDayRecap } from "../services/pos-day.service.ts";
 import { recordCashMovement } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -643,7 +643,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setPosReceiptPort(null);
-  setPosReceiptGapsPort(null);
+  setPosOutletReceiptGapsPort(null);
   setDeviceOutletResolver(null);
   // Final orders and audit rows are immutable, so the isolated tenants stay in
   // the disposable database; give them a valid creator for the tenant list.
@@ -998,15 +998,15 @@ describe("POS-05 the day cannot be closed while something is unfinished (legend-
   });
 
   it("POS-06 a device with a missing receipt number blocks the close with RECEIPT_SEQUENCE_GAP", async () => {
-    setPosReceiptGapsPort(async () => [
-      { prefix: "P1", missing: [3], lost: null, writtenOff: [] },
+    setPosOutletReceiptGapsPort(async () => [
+      { prefix: "P1", deviceId: randomUUID(), missing: [3] },
     ]);
     try {
       const refused = await day().close();
       expect(refused.status, JSON.stringify(refused.body)).toBe(409);
       expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
     } finally {
-      setPosReceiptGapsPort(null);
+      setPosOutletReceiptGapsPort(null);
     }
     expect(await dailyCloseRows()).toHaveLength(0);
   });

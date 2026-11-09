@@ -406,6 +406,21 @@ describe("Tutup Hari checks every receipt run of the outlet (legend-6b0ld)", () 
     expect(await dailyCloseCount(outletId)).toBe(0);
   });
 
+  it("a device with activity that day and a hole names the missing number in the refusal (legend-sgh4l)", async () => {
+    const outletId = await freshOutlet();
+    const active = await seedDevice(outletId, [
+      { prefix: "AH", lastNumber: 4, present: [1, 2, 4], ageMinutes: 10 },
+    ]);
+
+    const refused = await closeDay(outletId, active.businessDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(errorMessage(refused.body)).toBe(
+      holeMessage(formatReceiptNumber("AH", 3)),
+    );
+    expect(await dailyCloseCount(outletId)).toBe(0);
+  });
+
   it("a device without activity that day, with a hole in its current run, blocks the close", async () => {
     const outletId = await freshOutlet();
     const active = await seedActiveDevice(outletId);
