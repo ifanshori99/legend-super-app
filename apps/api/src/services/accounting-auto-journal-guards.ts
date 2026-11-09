@@ -16,7 +16,16 @@
 // that moment are read (completed refunds, completed orders, closed
 // reservations); nothing here reads a "current" status without a time bound.
 
-import { and, eq, inArray, isNotNull, ne, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  ne,
+  notInArray,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
 import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
 import {
@@ -672,8 +681,9 @@ async function sumOf(rows: PromiseLike<{ total: string }[]>): Promise<bigint> {
  * void whose journal posted reversed the sale, crediting the intent's part
  * back to customer_deposit), less the part POS refunds by the bound
  * returned that is attributed to the intent (pos-intent-attribution.ts,
- * legend-hxpd5) + what QR pay-first sales pinned to it
- * took (total - DP) by the bound + forfeits of reservations whose DP it is
+ * legend-hxpd5) + what QR pay-first sales took of it (total - DP when it paid
+ * alone, else the part it put toward a bill split over several codes,
+ * legend-05cm9) by the bound + forfeits of reservations whose DP it is
  * closed by the bound + completed payouts of the intent by the bound that its
  * receipt backs (a fund payout with its own fund receipt is not one). Tie
  * rules are those of salesAt, forfeitsAt and refundsAt.
@@ -758,18 +768,42 @@ async function intentBackedAt(
       ).rows[0]?.amount ?? "0",
     ),
   );
-  // QR pay-first sales pin the intent that paid them (orders.payment_intent_id)
-  // and carry no tenders: the money taken is total - DP.
+  // QR pay-first sales carry no tenders: the money taken is total - DP. One
+  // code paying alone is pinned (orders.payment_intent_id) and backs all of it.
+  // legend-05cm9: a bill split over several codes of the order's payment link
+  // pins only the first payer; each code backs the part it put toward the bill
+  // (its evidence less its unallocated funds, at most total - DP), like
+  // qrSaleInUseOfIntent (payment-admin.service.ts). The pinned payer of a split
+  // bill backs its part too, not the whole bill its receipt never carried.
+  const evidenceOf = (id: SQL) => sql`(
+    SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+      WHERE e.tenant_id = ${orders.tenantId} AND e.payment_intent_id = ${id})
+    - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
+      WHERE f.tenant_id = ${orders.tenantId} AND f.payment_intent_id = ${id})`;
+  const due = sql`(${orders.totalIdr} - ${orders.depositAppliedIdr})`;
   const qrSales = await sumOf(
     tx
       .select({
-        total: sql<string>`coalesce(sum(${orders.totalIdr} - ${orders.depositAppliedIdr}), 0)::text`,
+        total: sql<string>`coalesce(sum(
+          CASE WHEN ${orders.paymentIntentId} = ${intentId}::uuid
+                AND NOT EXISTS (
+                  SELECT 1 FROM payment_intents other
+                  WHERE other.tenant_id = ${orders.tenantId}
+                    AND other.payment_link_id = ${orders.paymentLinkId}
+                    AND other.id <> ${intentId}::uuid
+                    AND other.status IN ('paid', 'partially_refunded', 'refunded')
+                    AND ${evidenceOf(sql`other.id`)} > 0)
+            THEN ${due}
+            ELSE least(${due}, greatest(${evidenceOf(sql`${intentId}::uuid`)}, 0))
+          END), 0)::text`,
       })
       .from(orders)
       .where(
         and(
           eq(orders.tenantId, tenantId),
-          eq(orders.paymentIntentId, intentId),
+          sql`(${orders.paymentIntentId} = ${intentId}::uuid
+            OR ${orders.paymentLinkId} = (SELECT pi.payment_link_id FROM payment_intents pi
+              WHERE pi.tenant_id = ${orders.tenantId} AND pi.id = ${intentId}::uuid))`,
           eq(orders.channel, "qr"),
           eq(orders.paymentMode, "pay_first"),
           sql`NOT EXISTS (SELECT 1 FROM pos_orders sp
@@ -853,8 +887,8 @@ async function assertIntentWithinReceipt(
  * - fund backing: the completed payouts of the fund up to B <= the fund receipt;
  * - intent backing: the receipt >= POS tenders of that intent captured by
  *   sales completed by B (tie: sale earlier), less what POS refunds by B
- *   returned of them (legend-hxpd5) + what QR pay-first sales pinned
- *   to it took (total - DP) by B + forfeits of reservations whose
+ *   returned of them (legend-hxpd5) + what QR pay-first sales took of it
+ *   (total - DP, or its part of a split bill, legend-05cm9) by B + forfeits of reservations whose
  *   DP it is closed by B + every completed payout of the intent up to B that
  *   its receipt backs (this one included; a fund payout with its own fund
  *   receipt is not one);
