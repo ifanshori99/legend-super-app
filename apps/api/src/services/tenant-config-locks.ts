@@ -1,0 +1,77 @@
+// Shared advisory locks for tenant configuration that provisioning seeds and the
+// owner edits (beads legend-dq0n, legend-hd1m). Provisioning reads "is this
+// still empty?" and then inserts defaults; every owner writer of the same table
+// takes the same lock first, so the backfill can never see a table as empty
+// while an owner's row is about to commit (and vice versa).
+//
+// One pattern for every lock here: transaction-scoped
+// `pg_advisory_xact_lock(hashtextextended(<key>, 0))`, taken before any read of
+// the guarded table and held until the caller's transaction ends.
+//
+// Lock order. A transaction that needs more than one of these locks takes them
+// in this order, never the reverse, so two transactions cannot deadlock:
+//   1. chart of accounts, per legal entity   (`lockChartOfAccounts`)
+//   2. stock locations, per outlet           (`lockOutletStockLocations`)
+//   3. tax rules and tax settings, per tenant (`lockTaxConfig`)
+//   4. service-charge rules, per tenant      (`lockServiceChargeConfig`)
+// Holders today: tenant creation takes 3 then 4; legal-entity creation takes 1;
+// outlet creation takes 2 then 4; each owner writer takes exactly one. The
+// backfill runs each domain in its own transaction and, within one domain,
+// takes several locks of the same kind in a fixed order (charts by legal
+// entity createdAt/id, locations by outlet), so it cannot cycle with a writer
+// that holds one.
+//
+// Keys are unchanged from the per-module locks they replace, so a running
+// process on the previous build still serialises against this one.
+
+import { sql } from "drizzle-orm";
+import type { TenantTransaction } from "./accounting-shared.ts";
+
+async function advisoryXactLock(
+  tx: TenantTransaction,
+  key: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
+}
+
+/** 1. Chart of accounts and account mappings of one legal entity. */
+export function lockChartOfAccounts(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+): Promise<void> {
+  return advisoryXactLock(tx, `chart_of_accounts:${tenantId}:${legalEntityId}`);
+}
+
+/**
+ * 2. Stock locations of one outlet. Same key as `lockOutletLocations` in
+ * inventory-setup.service.ts (the location create/rename routes).
+ */
+export function lockOutletStockLocations(
+  tx: TenantTransaction,
+  tenantId: string,
+  outletId: string,
+): Promise<void> {
+  return advisoryXactLock(
+    tx,
+    `inventory:setup:locations:${tenantId}:${outletId}`,
+  );
+}
+
+/** 3. Tax rules and tax settings of one tenant (every scope and outlet). */
+export function lockTaxConfig(
+  tx: TenantTransaction,
+  tenantId: string,
+): Promise<void> {
+  return advisoryXactLock(tx, `tax:provisioning:${tenantId}`);
+}
+
+/** 4. Service-charge rules of one tenant (every scope and outlet). */
+export function lockServiceChargeConfig(
+  tx: TenantTransaction,
+  tenantId: string,
+): Promise<void> {
+  return advisoryXactLock(tx, `tax:service-provisioning:${tenantId}`);
+}
