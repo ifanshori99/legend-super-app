@@ -3,6 +3,20 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
+
+Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih
+menjumlahkan pesanan latihan, tidak sejalan dengan kas shift (legend-0v3b3) dan
+laporan WS-11. Tingkat S.
+
+Keputusan: rekap mengecualikan pesanan latihan dari SEMUA bagiannya (himpunan
+penjualan, tender captured per metode, void, refund) lewat `reportablePosOrders()`.
+Bila hanya tender yang dikecualikan, pemeriksaan keseimbangan (tender sama
+dengan total penjualan) melempar CONFLICT, jadi keempatnya harus sama.
+Tidak diubah, dicatat sebagai temuan: pemeriksaan "masih ada pesanan belum
+selesai" di `closePosDay` tetap menghitung pesanan latihan yang menggantung,
+dan bagian shift/kas rekap tidak difilter latihan.
+
 ## 2026-11-10: Pesanan latihan: kas shift dan stok (legend-0v3b3, legend-13avp)
 
 Konteks: lanjutan legend-gkc6b. Review architect menemukan tutup shift masih

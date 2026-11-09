@@ -82,6 +82,7 @@ import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { outletTarget } from "./device-pin-support.ts";
+import { reportablePosOrders } from "./device-training.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
   loadTenantAccessInTransaction,
@@ -358,6 +359,7 @@ async function computeRecap(
         eq(orders.outletId, outletId),
         eq(orders.businessDate, businessDate),
         eq(orders.status, "completed"),
+        reportablePosOrders(),
       ),
     );
   const channels = new Map<string, { orderCount: number; totalIdr: number }>();
@@ -392,6 +394,14 @@ async function computeRecap(
         eq(orders.id, posOrderTenders.orderId),
       ),
     )
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, orders.tenantId),
+        eq(posOrders.orderId, orders.id),
+        eq(posOrders.outletId, orders.outletId),
+      ),
+    )
     .where(
       and(
         eq(posOrderTenders.tenantId, tenantId),
@@ -401,6 +411,7 @@ async function computeRecap(
         eq(orders.outletId, outletId),
         eq(orders.businessDate, businessDate),
         eq(orders.status, "completed"),
+        reportablePosOrders(),
       ),
     )
     .groupBy(posOrderTenders.method);
@@ -450,6 +461,7 @@ async function computeRecap(
         eq(posOrderVoids.outletId, outletId),
         gte(posOrderVoids.voidedAt, range.start),
         lt(posOrderVoids.voidedAt, range.end),
+        reportablePosOrders(),
       ),
     );
   if (voids.length > 0) {
@@ -527,6 +539,7 @@ async function computeRecap(
         gt(posOrderRefunds.amountIdr, idr(0)),
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
+        reportablePosOrders(),
       ),
     );
   for (const row of refunds) {
