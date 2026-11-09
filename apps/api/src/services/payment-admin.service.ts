@@ -244,7 +244,17 @@ export async function refundAudit(
       retentionClass: "audit_2y",
       createdAt: input.now.toISOString(),
     },
-    ["amountIdr", "status", "failureReason", "providerCode"],
+    [
+      "amountIdr",
+      "status",
+      "failureReason",
+      "providerCode",
+      // Quarantine ops (legend-e8z5): codes and ids, no personal data.
+      "defect",
+      "approvalChainId",
+      "approvedBy",
+      "decidedAt",
+    ],
   );
 }
 export async function authorize(
