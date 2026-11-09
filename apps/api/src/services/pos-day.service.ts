@@ -85,7 +85,11 @@ import {
   resolveAccessSnapshot,
   type Tx,
 } from "./permission-resolver.ts";
-import { posDayInventoryPort, posReceiptGapsPort } from "./pos-shift-ports.ts";
+import {
+  posDayInventoryPort,
+  posOutletReceiptGapsPort,
+  posReceiptGapsPort,
+} from "./pos-shift-ports.ts";
 
 type DayCaller = { userId: UserId };
 type CloseBusinessDayInput = z.infer<typeof closeBusinessDayInputSchema>;
@@ -762,6 +766,12 @@ export async function closePosDay(
       if (gaps.some((run) => run.missing.length > 0))
         throw new PosError("RECEIPT_SEQUENCE_GAP");
     }
+    // legend-6b0ld: POS-06 covers every run of the outlet, also devices idle
+    // today and the cloud sequence. Lost ranges are not in this result.
+    const outletGaps = await posOutletReceiptGapsPort()(tx, context, {
+      outletId,
+    });
+    if (outletGaps.length > 0) throw new PosError("RECEIPT_SEQUENCE_GAP");
 
     if (body.inventoryDeduction)
       await posDayInventoryPort()(tx, context, {

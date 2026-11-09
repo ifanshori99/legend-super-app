@@ -5,7 +5,9 @@
 // - Receipt gaps (POS-06, legend-93a). The shift report shows the device's
 //   missing receipt ordinals per run (prefix) and the day close refuses while
 //   any device has a missing ordinal (a lost range, legend-yd0h8, is shown
-//   but does not block). Default: no receipt has been issued yet, so no gap
+//   but does not block). legend-6b0ld: the day close also checks every run of
+//   the outlet (outlet port below), not only devices active that day.
+//   Default: no receipt has been issued yet, so no gap
 //   (the order service cannot complete a sale until the numbering bead
 //   installs its allocator, see pos-order-ports.ts), and the numbering bead
 //   replaces this lookup.
@@ -51,6 +53,31 @@ export function setPosReceiptGapsPort(next: PosReceiptGapsPort | null): void {
 
 export function posReceiptGapsPort(): PosReceiptGapsPort {
   return receiptGaps;
+}
+
+/**
+ * legend-6b0ld: every receipt run of the outlet (all devices incl. retired
+ * runs, plus the outlet-owned cloud sequence), not only devices with activity
+ * on the closing day. One entry per run with a missing ordinal; lost ranges
+ * are not part of the result.
+ */
+export type PosOutletReceiptGapsPort = (
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: string },
+) => Promise<{ prefix: string; deviceId: string; missing: number[] }[]>;
+
+const noOutletReceiptGaps: PosOutletReceiptGapsPort = async () => [];
+let outletReceiptGaps: PosOutletReceiptGapsPort = noOutletReceiptGaps;
+
+export function setPosOutletReceiptGapsPort(
+  next: PosOutletReceiptGapsPort | null,
+): void {
+  outletReceiptGaps = next ?? noOutletReceiptGaps;
+}
+
+export function posOutletReceiptGapsPort(): PosOutletReceiptGapsPort {
+  return outletReceiptGaps;
 }
 
 // ---- End-of-day inventory deduction (WS-06) --------------------------------
