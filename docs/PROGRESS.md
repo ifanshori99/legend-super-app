@@ -681,3 +681,4 @@ Langkah berikut CTO baru:
 - Thread baru G9vex "Payroll schema and config API" (brief 237, legend-gfcr, Opus high, akun #2, migrasi 0167 `when` 1794246000000).
 - 3b90a9bd (ghgei) lolos verifikasi CTO 19 file 396 lulus/8 skip. Antre merge train baru (basis c75b0d98, sudah di batch31; K uang).
 - 6b2fedbf (atwse) lolos verifikasi CTO 14 file 214/214. Antre merge train baru di atas 814bc779 (satu rantai).
+- Founder jawab Q46: "Kabari Owner lama". Kartu legend-fmpgz (P1, K): email + notifikasi in-app ke Owner yang diganti dan semua Owner aktif saat Super Admin menunjuk/mengganti Owner. Dikirim ke G04ur sesudah laporan 8ajy4 + fix audit middleware (satu rantai ktc4d). Catatan PRD (board B5) kini mencakup Q41, Q44, Q46.
