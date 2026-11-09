@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
+
+- Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).
+- legend-pxcs: `GET/PUT /api/accounting/finance-policy` (GET `accounting.journal.view`, PUT `accounting.reconcile`), validator strict `packages/shared/src/accounting/finance-policy.ts`, default 2/2 bila tak ada baris, per tenant (bukan per legal entity). API belum punya data/endpoint alert setoran kas: service `loadCashDepositPolicy` disiapkan untuk konsumen ACC-05; tes memakai `undepositedCashAlerts` dengan batas dari API.
+- legend-dux2: `code`, `categoryId`, `categoryName`, `originalCostIdr`, `revaluationSurplusIdr`, `revaluationLossIdr` di `fixedAssetSchema` (surplus dihitung saat baca dari `fixed_asset_revaluations`, satu query agregat); `GET/POST /api/accounting/asset-categories`; kode ganda dan nama kategori ganda 409, kategori tenant lain 404.
+- Bukti: db:generate kedua kosong; tes terarah 5 file 74/74 (finance-policy, fixed-asset-register, backfill, data-import-registry, edge-received-events-migration); `pnpm test` penuh 427/430 file: sisa gagal hanya `ai-gateway.test.ts` (kuota harian, tidak terkait, gagal juga sendirian, kemungkinan batas tanggal WIB); tsc shared+api+web exit 0 (heavy); eslint + prettier bersih.
+- Review S: satu reviewer sonnet, 1 temuan nyata (backfill di bawah FORCE RLS) dibetulkan, plus tes penuh menangkap FK scan dan registry data-import, dibetulkan.
+
 ## legend-umzos pulihkan tenant diarsip / outlet ditutup dalam 30 hari (engineer, cabang `ws/platform-restore-archived` dari integ/m1-batch31 d7a95d0c, 2026-11-09)
 
 - Keputusan founder Q40. Super Admin memulihkan tenant `archived` ke status sebelumnya (`active`/`suspended`) dan outlet `closed` ke status sebelumnya (`preopening`/`active`) dalam 30 hari sejak transisi (batas inklusif); sesudahnya 409 `RESTORE_WINDOW_EXPIRED`. Peta transisi tetap final (`archived -> []`, `closed -> []`); endpoint status umum tetap 409 `INVALID_TRANSITION`. Pulih hanya lewat aksi khusus.
