@@ -70,6 +70,7 @@ import {
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway.ts";
+import { runRefundPayout } from "../services/payment-refund.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import { FakeRefundGateway } from "./refund-fake-gateway.ts";
 import {
@@ -846,6 +847,52 @@ describe("legend-em6p U4: facts on one DP intent are stored in commit order", ()
       closedAt.getTime() + 1,
     );
   });
+
+  // Assumption: with no refund gateway installed, approving leaves the refund
+  // `approved` (payout deferred), so the completion path can then be driven
+  // through runRefundPayout with a caller-chosen `now`.
+  it.each([
+    ["one after the other", false],
+    ["at the same time", true],
+  ])(
+    "legend-41li5 two refunds on ONE intent completed with the same now get strictly increasing completed_at (%s)",
+    async (_label, concurrent) => {
+      const booked = await bookPaid(0);
+      const first = await pendingRefund(booked.intentId, 40_000);
+      const second = await pendingRefund(booked.intentId, 40_000);
+      setPaymentRefundGateway(null);
+      for (const id of [first, second]) {
+        const approved = await approveRefund(id);
+        expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+        expect(approved.body.data.status).toBe("approved");
+      }
+
+      const now = new Date(); // the very same Date for both completions
+      setPaymentRefundGateway(new FakeRefundGateway());
+      try {
+        const complete = (id: string) => runRefundPayout(scope(), id, now);
+        if (concurrent) {
+          await Promise.all([complete(first), complete(second)]);
+        } else {
+          await complete(first);
+          await complete(second);
+        }
+      } finally {
+        setPaymentRefundGateway(null);
+      }
+
+      const at = [
+        (await refundCompletedAt(first)).getTime(),
+        (await refundCompletedAt(second)).getTime(),
+      ];
+      // Every stamp is at or after the shared now, and none repeats.
+      expect(Math.min(...at)).toBeGreaterThanOrEqual(now.getTime());
+      expect(at[0]).not.toBe(at[1]);
+      // Strictly increasing in completion order (the order is arbitrary when
+      // both run at once, so only distinctness is asserted there).
+      if (!concurrent) expect(at[1]).toBeGreaterThan(at[0]!);
+    },
+  );
 });
 
 describe("legend-fsl5 U1: a forfeited DP cannot be refunded", () => {
