@@ -176,11 +176,33 @@ const cardNumberLike = /\d(?:[ \t-]*\d){11,}/g;
 const leftoverBeforeMask =
   /\d(?:[ \t-]*\d){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]/g;
 const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
-const maskCardNumbers = (text: string): string =>
-  text
+/** The old write path masked with the single-separator pattern, then cut the
+ * message to 200 UTF-16 units. A cut through a card the old pattern missed
+ * left part of it at the very end, below the thresholds above (legend-lg45).
+ * Only a message exactly 200 units long gets these end-of-text rules, the
+ * same as apps/api/scripts/edc-pan-scrub-tail.sql:
+ * - digits after a whole mask, joined by a separator the old pattern could
+ *   not cross (`… [disamarkan] - 111`);
+ * - a run of 7+ digits that holds or ends in such a separator, optionally
+ *   followed by a cut mask (`… 4111  1111  11`, `… 7777777  [disa`). A run
+ *   right after a digit and `.` or `,` (the rest of an amount) is skipped. */
+const oldWriteLimit = 200;
+const tailAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d)*[ \t-]*$/;
+const tailCardRun =
+  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[\d \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a)?)?)?)?)?)?)?)?)?)?$/;
+const maskCardNumbers = (text: string): string => {
+  const masked = text
     .replace(cardNumberLike, "[disamarkan]")
     .replace(leftoverBeforeMask, "[disamarkan]")
     .replace(leftoverAfterMask, "[disamarkan]");
+  if (text.length !== oldWriteLimit) return masked;
+  const tail = masked
+    .replace(tailAfterMask, "[disamarkan]")
+    .replace(tailCardRun, "[disamarkan]");
+  // The mask can be longer than the run it replaces; cut by code points like
+  // the SQL script's left(…, 200), so both give the same text (varchar(200)).
+  return Array.from(tail).slice(0, oldWriteLimit).join("");
+};
 const safeMessage = z
   .string()
   .transform((text) => maskCardNumbers(text).slice(0, 200));
