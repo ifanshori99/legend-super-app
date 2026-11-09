@@ -779,7 +779,10 @@ export async function resolveApprovalChainOutcome(
     .update(approvalRequests)
     .set({ status: "expired", updatedAt: input.now })
     .where(
-      and(eq(approvalRequests.id, open.id), eq(approvalRequests.status, "pending")),
+      and(
+        eq(approvalRequests.id, open.id),
+        eq(approvalRequests.status, "pending"),
+      ),
     )
     .returning();
   // The sweep won between our read and write: report what it left behind.

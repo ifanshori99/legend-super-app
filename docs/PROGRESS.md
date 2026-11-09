@@ -271,6 +271,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
 
 ## Brief 100: race expiry approval (9 Nov 2026, ws/fix-journals-expiry)
+
 - Sudah: `resolveApprovalChainOutcome` di `platform-approval.service.ts` (kunci chain head, expire bersyarat `status='pending'`, emit `approval.resolved` + audit sekali, helper bersama dengan sweep). Dipakai settle jurnal manual, jurnal berulang, POS override, dan stock count (cancel lokal dibuang; multi-level aman).
 - Bukti: test race baru 10/10 GAGAL di kode lama (13425b65), lulus di kode baru. `heavy pnpm check` hijau (1432 test). Reviewer Opus 2 putaran + architect; temuan multi-level stock count dibetulkan.
 - Bead: legend-2tcj (jalur reject stock count masih baca outcome tanpa lock, lama).

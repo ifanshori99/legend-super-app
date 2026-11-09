@@ -582,9 +582,9 @@ describe("approval expiry race: stock count", () => {
     expect(await balanceOf(prepared.locationId, prepared.itemId)).toBe(
       "6.0000",
     );
-    expect(
-      (await chainOf(approval.chain_id)).map((row) => row.status),
-    ).toEqual(["approved"]);
+    expect((await chainOf(approval.chain_id)).map((row) => row.status)).toEqual(
+      ["approved"],
+    );
   });
 
   it("past the deadline with no decision the count returns to counting, the request is closed and a late inbox decision is refused", async () => {
@@ -604,9 +604,9 @@ describe("approval expiry race: stock count", () => {
     expect(await balanceOf(prepared.locationId, prepared.itemId)).toBe(
       "10.0000",
     );
-    expect(
-      (await chainOf(approval.chain_id)).map((row) => row.status),
-    ).toEqual(["expired"]);
+    expect((await chainOf(approval.chain_id)).map((row) => row.status)).toEqual(
+      ["expired"],
+    );
     await expect(
       decideApprovalRequest(
         tenant,
