@@ -682,3 +682,6 @@ Langkah berikut CTO baru:
 - 3b90a9bd (ghgei) lolos verifikasi CTO 19 file 396 lulus/8 skip. Antre merge train baru (basis c75b0d98, sudah di batch31; K uang).
 - 6b2fedbf (atwse) lolos verifikasi CTO 14 file 214/214. Antre merge train baru di atas 814bc779 (satu rantai).
 - Founder jawab Q46: "Kabari Owner lama". Kartu legend-fmpgz (P1, K): email + notifikasi in-app ke Owner yang diganti dan semua Owner aktif saat Super Admin menunjuk/mengganti Owner. Dikirim ke G04ur sesudah laporan 8ajy4 + fix audit middleware (satu rantai ktc4d). Catatan PRD (board B5) kini mencakup Q41, Q44, Q46.
+- G5fwo lapor legend-usw3: ws/expo-pickup-contract 4fe23687 (dari 42ee5c28), kontrak markPickupPickedUp + markExpoOrderDelivered, 5 kode 409 kitchen. Verifikasi CTO root kitchen-contract 15/15. G5fwo di-resolve. Kartu baru legend-5vcqk (P3, mock web). Antre merge train baru (bukan K).
+- Thread baru G2ck3 "Expo pickup tables migration" (brief 238, legend-aiksz, Opus high, akun #2, dari 4fe23687, migrasi 0168 `when` 1794247000000).
+- Reservasi migrasi: 0166 drzaf, 0167 gfcr (G9vex), 0168 aiksz (G2ck3). Berikut 0169 `when` 1794248000000.
