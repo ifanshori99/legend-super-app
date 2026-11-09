@@ -1333,3 +1333,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## WS-03 operasi meja: pindah, gabung, pindah item (legend-685n, cabang `ws/table-move-merge`)
+- Dibangun: `POST /api/table-sessions/:id/move`, `/merge`, `/move-items` (`services/table-session-operations.service.ts`, route di `table-sessions.routes.ts`), event `table_session.moved|merged|items_moved` di katalog WS-03, audit tiap operasi. Tanpa migrasi.
+- Aturan: total tagihan tetap; pembayaran (tautan bayar, deposit, tender POS) mengunci gabung dan pindah item; sesi open bill yang lunas tidak dipindah; ulang permintaan dijawab dari event tersimpan tanpa tulis ulang.
+- Bukti: tanpa route 35 dari 38 tes gagal; dengan implementasi 84 dari 84 hijau di 5 file terkait; mutasi dua penjaga membuat 3 tes gagal. Review K (architect): 2 tinggi, 5 sedang, 3 rendah; 7 dibetulkan, sisanya dicatat sebagai risiko.
+- Keputusan: meja sumber setelah gabung jadi `dirty` (bukan `occupied`) supaya pindai ulang QR tidak membuka tagihan kedua.
