@@ -90,7 +90,7 @@ function intersectScopes(
   if (a.kind === "tenant") return b;
   if (b.kind === "tenant") return a;
   const reach = new Set<string>(b.outletIds);
-  const outletIds: string[] = a.outletIds.filter((id) => reach.has(id));
+  const outletIds = a.outletIds.filter((id) => reach.has(id));
   return outletIds.length === 0 ? null : { kind: "outlets", outletIds };
 }
 
