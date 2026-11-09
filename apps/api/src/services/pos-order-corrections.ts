@@ -69,6 +69,9 @@ import {
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
 type RefundInput = z.output<typeof refundEndpoint.body>;
 
+const rupiah = (value: number): string =>
+  `Rp${new Intl.NumberFormat("id-ID").format(value)}`;
+
 type VoidRow = typeof posOrderVoids.$inferSelect;
 type RefundRow = typeof posOrderRefunds.$inferSelect;
 
@@ -246,8 +249,27 @@ export async function voidPosOrderCorrection(
           businessDateFor(await loadOutlet(tx, context, outletId), now),
         ],
       });
+      // legend-ioyg: the void pays back only cash out of the drawer. A
+      // gateway, EDC or points tender holding money has no return path here
+      // (auto-journal parks such a void as AUTO_JOURNAL_VOID_UNSUPPORTED), so
+      // it is refused; the refund flow returns money per tender method. A
+      // closed business day is reported first. The refusal rolls back the
+      // whole transaction, so the approval stays unused and nothing is
+      // written.
+      const tenders = await tendersOf(tx, context, order.id);
+      if (
+        tenders.some(
+          (tender) =>
+            (tender.status === "captured" || tender.status === "authorized") &&
+            tender.method !== "cash",
+        )
+      )
+        throw new CoreError(
+          "CONFLICT",
+          "Transaksi ini dibayar non-tunai (QRIS, kartu, EDC, atau poin) dan tidak bisa di-void; gunakan refund.",
+        );
       // The void pays the sale's captured cash back out of this drawer.
-      const voidCashIdr = (await tendersOf(tx, context, order.id))
+      const voidCashIdr = tenders
         .filter(
           (tender) => tender.method === "cash" && tender.status === "captured",
         )
@@ -590,11 +612,19 @@ export async function refundPosOrder(
           // Rp0 return only when the guest is owed nothing; owed but no tender
           // left to pay it from stays refused below.
           goodsReturnOnly = dueBill === 0;
-          payout = Math.min(
-            input.amountIdr,
-            dueBill,
-            Math.max(0, paid - refunded),
-          );
+          // legend-a0i7 (Codex 127): the returned items are used up by this
+          // refund and a promo order cannot be refunded by amount alone, so a
+          // payout below what is due would lock the rest for good. Asking
+          // less is refused before anything is written; asking more is
+          // capped to what is due (unchanged).
+          const owedIdr = Math.min(dueBill, Math.max(0, paid - refunded));
+          if (owedIdr > 0 && input.amountIdr < owedIdr)
+            throw new HttpError(
+              422,
+              "REFUND_AMOUNT_BELOW_DUE",
+              `Refund item ini harus ${rupiah(owedIdr)}; isi jumlah tersebut agar sisa pembayaran tamu tidak tertahan.`,
+            );
+          payout = Math.min(input.amountIdr, owedIdr);
         }
         if (goodsReturnOnly) payout = 0;
         else if (payout <= 0)
