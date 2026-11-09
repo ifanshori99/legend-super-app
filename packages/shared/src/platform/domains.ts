@@ -55,7 +55,18 @@ export const domainKindSchema = z.enum(["platform_subdomain", "custom"]);
 export const tlsStatusSchema = z.enum(["pending", "active", "failed"]);
 export type TlsStatus = z.infer<typeof tlsStatusSchema>;
 
-/** `tenant_domains` (global). `hostname` is unique across the platform. */
+/** DNS TXT record a tenant publishes to prove it controls a custom domain. */
+export const domainVerificationRecordSchema = z.strictObject({
+  type: z.literal("TXT"),
+  name: z.string(),
+  value: z.string(),
+});
+export type DomainVerificationRecord = z.infer<
+  typeof domainVerificationRecordSchema
+>;
+
+/** `tenant_domains` (global). Several tenants may claim the same `hostname`
+ * while unverified; at most one tenant holds it verified (legend-t57t). */
 export const tenantDomainSchema = z.strictObject({
   id: tenantDomainIdSchema,
   tenantId: tenantIdSchema,
@@ -66,6 +77,8 @@ export const tenantDomainSchema = z.strictObject({
   /** Ownership check for custom domains (DNS record); null until verified.
    * Platform subdomains are verified when created. */
   verifiedAt: isoDateTimeSchema.nullable(),
+  /** The record to publish while unverified; null once verified. */
+  verification: domainVerificationRecordSchema.nullable(),
   createdAt: isoDateTimeSchema,
 });
 export type TenantDomain = z.infer<typeof tenantDomainSchema>;
@@ -90,6 +103,34 @@ export function platformSubdomain(
   return host;
 }
 
+/**
+ * True when `hostname` is a platform domain or lives under one. Tenants may
+ * not claim these as custom domains: the platform owns them.
+ */
+export function isReservedHostname(
+  hostname: string,
+  platformDomains: readonly string[],
+): boolean {
+  const host = normalizeHostname(hostname);
+  if (host === null) return false;
+  return platformDomains.some((entry) => {
+    const base = normalizeHostname(entry);
+    return base !== null && (host === base || host.endsWith(`.${base}`));
+  });
+}
+
+/** TXT record that proves control of `hostname` for a given token. */
+export function domainVerificationRecord(
+  hostname: string,
+  token: string,
+): DomainVerificationRecord {
+  return {
+    type: "TXT",
+    name: `_legend-verification.${hostname}`,
+    value: `legend-domain-verification=${token}`,
+  };
+}
+
 export type HostResolution =
   | { ok: true; tenantId: TenantId; brandId: BrandId; domain: TenantDomain }
   | {
@@ -101,7 +142,8 @@ export type HostResolution =
 /**
  * TEN-02 host lookup (pure; the API runs it against `tenant_domains` and
  * then mints the context with source "domain"). A domain serves only when
- * verified and its tenant is active; anything else fails closed.
+ * verified and its tenant is active; anything else fails closed. Among rows
+ * for one host a verified row is preferred.
  */
 export function resolveHost(
   host: string,
@@ -110,7 +152,10 @@ export function resolveHost(
 ): HostResolution {
   const hostname = normalizeHostname(host);
   if (hostname === null) return { ok: false, reason: "invalid_host" };
-  const domain = domains.find((row) => row.hostname === hostname);
+  // Verified claims win: unverified rows of other tenants must not shadow
+  // the real owner. Unverified rows only explain why a host does not serve.
+  const matching = domains.filter((row) => row.hostname === hostname);
+  const domain = matching.find((row) => row.verifiedAt !== null) ?? matching[0];
   if (!domain) return { ok: false, reason: "unknown_host" };
   if (domain.verifiedAt === null) return { ok: false, reason: "unverified" };
   if (tenantStatusOf(domain.tenantId) !== "active")

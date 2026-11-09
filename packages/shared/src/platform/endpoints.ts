@@ -392,6 +392,12 @@ export const orgEndpoints = {
     body: addDomainInputSchema,
     response: dataResponseSchema(tenantDomainSchema),
   }),
+  verifyDomain: defineEndpoint({
+    method: "POST",
+    path: "/api/org/domains/:domainId/verify",
+    params: z.strictObject({ domainId: tenantDomainIdSchema }),
+    response: dataResponseSchema(tenantDomainSchema),
+  }),
   removeDomain: defineEndpoint({
     method: "DELETE",
     path: "/api/org/domains/:domainId",

@@ -15,8 +15,14 @@ export const platformErrorHttpStatus = {
   SUPPORT_ACCESS_ALREADY_ACTIVE: 409,
   /** Merged Tenant Theme fails WCAG 2.2 AA in light or dark mode (TEN-10). */
   THEME_CONTRAST_FAILED: 422,
-  /** Hostname is already mapped to a tenant (tenant_domains.hostname is unique). */
+  /** Hostname is already verified by another tenant, or this tenant already added it (legend-t57t). */
   DOMAIN_TAKEN: 409,
+  /** Hostname is the platform domain or under it; those names are reserved for platform subdomains (legend-t57t). */
+  DOMAIN_RESERVED: 422,
+  /** The DNS TXT ownership record was not found or does not carry this domain's token (legend-t57t). */
+  DOMAIN_VERIFICATION_FAILED: 422,
+  /** The WhatsApp receiving number or phone number ID is already active for another tenant (legend-mbd2, AUTH-02). */
+  WHATSAPP_NUMBER_TAKEN: 409,
   /** Count quota (outlets, active employees, devices, AI requests) reached (PRD §3 F4 Kuota). */
   QUOTA_EXCEEDED: 409,
   /** Monthly WhatsApp/AI/email cost cap reached: the feature stops (PRD §2 Biaya operasional, R18). */
@@ -51,6 +57,11 @@ const defaultMessages: Record<PlatformErrorCode, string> = {
   THEME_CONTRAST_FAILED:
     "Tema belum memenuhi kontras minimum WCAG 2.2 AA sehingga tidak dapat diaktifkan.",
   DOMAIN_TAKEN: "Domain ini sudah dipakai.",
+  DOMAIN_RESERVED:
+    "Domain ini milik platform dan tidak dapat dipakai sebagai domain sendiri.",
+  DOMAIN_VERIFICATION_FAILED:
+    "Catatan DNS TXT untuk verifikasi domain belum ditemukan atau isinya tidak cocok.",
+  WHATSAPP_NUMBER_TAKEN: "Nomor WhatsApp ini sudah dipakai tenant lain.",
   QUOTA_EXCEEDED: "Kuota paket sudah tercapai.",
   COST_CAP_REACHED: "Plafon biaya bulan ini sudah tercapai.",
   MODULE_NOT_IN_PACKAGE: "Modul ini tidak termasuk dalam paket tenant.",
