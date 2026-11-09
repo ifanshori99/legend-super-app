@@ -228,6 +228,75 @@ afterAll(async () => {
   }
 });
 
+/** Tenant + entity + brand + outlet, and an edge snapshot of one cloud account `9999`. */
+async function seedEdgeWorld() {
+  const { tenantId, entityId } = await seedTenant();
+  const brandId = randomUUID();
+  const outletId = randomUUID();
+  await owner.query(
+    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'balapan', 'Brand Balapan')",
+    [brandId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet Balapan', 'Jl. Balapan', 'Asia/Jakarta', '{}', 'active')`,
+    [
+      outletId,
+      tenantId,
+      brandId,
+      entityId,
+      `PB-${randomBytes(3).toString("hex")}`.toUpperCase(),
+    ],
+  );
+  // The cloud's chart is one custom root account and no mapping. The edge
+  // copies it by id; the template must never be added next to it.
+  const now = new Date().toISOString();
+  const snapshot = {
+    version: 1,
+    issuedAt: now,
+    tenantId,
+    outletId,
+    legalEntityId: entityId,
+    uoms: [],
+    stockLocations: [],
+    chartOfAccounts: [
+      {
+        id: randomUUID(),
+        tenantId,
+        legalEntityId: entityId,
+        code: "9999",
+        name: "Akun Cloud",
+        type: "asset",
+        reportGroup: "current_asset",
+        parentId: null,
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    accountMappings: [],
+  } as unknown as EdgeMasterSnapshot;
+  const claims = {
+    tenantId,
+    outletId,
+    edgeNodeId: randomUUID(),
+    hash: "unused",
+  } as NonNullable<ReturnType<typeof parseEdgeCredential>>;
+  return { tenantId, entityId, snapshot, claims };
+}
+
+async function chartState(tenantId: string, entityId: string) {
+  const accounts = await owner.query<{ id: string; code: string }>(
+    "SELECT id, code FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY code",
+    [tenantId, entityId],
+  );
+  const mappings = await owner.query<{ role: string; account_id: string }>(
+    "SELECT role, account_id FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY role",
+    [tenantId, entityId],
+  );
+  return { accounts: accounts.rows, mappings: mappings.rows };
+}
+
 describe("provisioning vs owner writers share one lock", () => {
   it("legend-dq0n: owner tax rule and default tax backfill leave exactly one rule", async () => {
     const { tenantId } = await seedTenant();
@@ -315,58 +384,7 @@ describe("provisioning vs owner writers share one lock", () => {
   });
 
   it("legend-usa4b: edge master import and standard chart backfill never mix in one chart", async () => {
-    const { tenantId, entityId } = await seedTenant();
-    const brandId = randomUUID();
-    const outletId = randomUUID();
-    await owner.query(
-      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'balapan', 'Brand Balapan')",
-      [brandId, tenantId],
-    );
-    await owner.query(
-      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
-       VALUES ($1, $2, $3, $4, $5, 'Outlet Balapan', 'Jl. Balapan', 'Asia/Jakarta', '{}', 'active')`,
-      [
-        outletId,
-        tenantId,
-        brandId,
-        entityId,
-        `PB-${randomBytes(3).toString("hex")}`.toUpperCase(),
-      ],
-    );
-    // The cloud's chart is one custom root account and no mapping. The edge
-    // copies it by id; the template must never be added next to it.
-    const now = new Date().toISOString();
-    const snapshot = {
-      version: 1,
-      issuedAt: now,
-      tenantId,
-      outletId,
-      legalEntityId: entityId,
-      uoms: [],
-      stockLocations: [],
-      chartOfAccounts: [
-        {
-          id: randomUUID(),
-          tenantId,
-          legalEntityId: entityId,
-          code: "9999",
-          name: "Akun Cloud",
-          type: "asset",
-          reportGroup: "current_asset",
-          parentId: null,
-          isActive: true,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      accountMappings: [],
-    } as unknown as EdgeMasterSnapshot;
-    const claims = {
-      tenantId,
-      outletId,
-      edgeNodeId: randomUUID(),
-      hash: "unused",
-    } as NonNullable<ReturnType<typeof parseEdgeCredential>>;
+    const { tenantId, entityId, snapshot, claims } = await seedEdgeWorld();
 
     const outcome = await race(
       "chart_of_accounts",
@@ -393,5 +411,19 @@ describe("provisioning vs owner writers share one lock", () => {
         .toEqual(["already_present"]);
     expect.soft(outcome.parkedOn).toBe("advisory");
     expect.soft(outcome.advisoryStates).toContain(false);
+  });
+
+  it("legend-usa4b: edge import after the backfill committed the template is refused, chart and mappings untouched", async () => {
+    const { tenantId, entityId, snapshot, claims } = await seedEdgeWorld();
+    const results = await backfillTenantCharts(tenantId);
+    expect(results.map((result) => result.status)).toEqual(["provisioned"]);
+    const before = await chartState(tenantId, entityId);
+    expect(before.accounts.length).toBe(63);
+    expect(before.mappings.length).toBeGreaterThan(0);
+
+    await expect(
+      applyEdgeMasterSnapshot(claims, snapshot),
+    ).rejects.toMatchObject({ code: "LOCAL_CONFLICT" });
+    expect(await chartState(tenantId, entityId)).toEqual(before);
   });
 });
