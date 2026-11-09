@@ -165,7 +165,12 @@ async function posSaleInUseOfIntent(
  * it exists once the order fired (fired_at, the same transaction as its
  * order.paid) and takes total - DP. An unpaid or voided order never fired
  * and holds nothing, so a late payment on it is still refundable. Same
- * predicate as the payout guard (accounting-auto-journal-guards.ts qrSales).
+ * predicate as the payout guard (accounting-auto-journal-guards.ts qrSales)
+ * for the pinned intent.
+ * legend-nslvm: a bill split over several codes pins only the first payer;
+ * every other code of the order's payment link holds the part it put toward
+ * the bill (its evidence less its unallocated funds, at most the amount due).
+ * A code whose money was all booked as a double payment holds nothing.
  * Read under the intent row lock the writers hold; the QR fire path takes it
  * too (qr-order-consumers.ts, legend-9vzvs).
  */
@@ -175,9 +180,23 @@ async function qrSaleInUseOfIntent(
   intentId: string,
 ): Promise<bigint> {
   const result = await tx.execute(sql`
-    SELECT coalesce(sum(o.total_idr - o.deposit_applied_idr), 0)::text AS amount
+    SELECT coalesce(sum(
+      CASE WHEN o.payment_intent_id = ${intentId}::uuid
+        THEN o.total_idr - o.deposit_applied_idr
+        ELSE least(
+          o.total_idr - o.deposit_applied_idr,
+          greatest(
+            (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+              WHERE e.tenant_id = o.tenant_id AND e.payment_intent_id = ${intentId}::uuid)
+            - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
+                WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid),
+            0))
+      END), 0)::text AS amount
     FROM orders o
-    WHERE o.tenant_id = ${tenantId} AND o.payment_intent_id = ${intentId}::uuid
+    WHERE o.tenant_id = ${tenantId}
+      AND (o.payment_intent_id = ${intentId}::uuid
+           OR o.payment_link_id = (SELECT pi.payment_link_id FROM payment_intents pi
+                                    WHERE pi.tenant_id = o.tenant_id AND pi.id = ${intentId}::uuid))
       AND o.channel = 'qr' AND o.payment_mode = 'pay_first'
       AND o.fired_at IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM pos_orders sp

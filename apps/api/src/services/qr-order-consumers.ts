@@ -574,46 +574,64 @@ export async function handleQrOrderPaymentPaid(
       { orderId: order.id, intentId, payerIntentId },
       "QR order: fired for the code that covered the bill, not the event's double-paid code",
     );
-  // legend-9vzvs: the sale takes the payer intent's money, so the fire is
-  // decided under the same intent row lock the refund writers hold (lock
-  // order: order row -> intent, as the POS paid consumer). An approved or
-  // completed refund (`reserved - pending`) that leaves less than this
-  // order's money means firing would also pay the guest back: void the order
-  // and refund what is left (the late-payment request). A refund still
-  // `pending` does not block: the sale wins, and its approval then finds the
-  // fired sale held and fails `cap_exceeded` (qrSaleInUse).
+  // legend-9vzvs: the sale takes the money of the codes that paid the bill,
+  // so the fire is decided under the same intent row locks the refund writers
+  // hold (lock order: order row -> intents ascending, as the POS paid
+  // consumer). An approved or completed refund (`reserved - pending`) that
+  // leaves a code less than the part it put toward the bill means firing
+  // would also pay the guest back: void the order and refund what is left
+  // (the late-payment request, per code). A refund still `pending` does not
+  // block: the sale wins, and its approval then finds the fired sale held and
+  // fails `cap_exceeded` (qrSaleInUse).
+  // legend-nslvm: a bill split over several codes is checked code by code.
+  const allocated = await allocatedIdrByIntent(tx, context, paymentLinkId);
+  const contributors = [...allocated]
+    .filter(([id, amount]) => amount > 0 || id === payerIntentId)
+    .map(([id]) => id);
   const at = await lockIntentsForFact(
     tx,
     context.tenant.tenantId,
-    [payerIntentId],
+    [payerIntentId, ...contributors],
     now,
   );
-  const [payer] = await tx
-    .select()
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, context.tenant.tenantId),
-        eq(paymentIntents.id, payerIntentId),
-        eq(paymentIntents.paymentLinkId, paymentLinkId),
-      ),
-    );
-  if (!payer) return "not_settled";
-  const balance = await refundableBalance(tx, payer);
-  const committed =
-    balance.reserved -
-    (await pendingRefundIdr(tx, context.tenant.tenantId, payer.id));
-  if (
-    committed > 0n &&
-    committed + BigInt(order.totalIdr - order.depositAppliedIdr) > balance.cap
-  ) {
+  let committedRefund = false;
+  for (const id of contributors) {
+    const [code] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, id),
+          eq(paymentIntents.paymentLinkId, paymentLinkId),
+        ),
+      );
+    if (!code) return "not_settled";
+    const balance = await refundableBalance(tx, code);
+    const committed =
+      balance.reserved -
+      (await pendingRefundIdr(tx, context.tenant.tenantId, code.id));
+    // The part this code put toward the bill; one code covering it alone
+    // takes the order's amount due.
+    const part =
+      contributors.length === 1
+        ? BigInt(order.totalIdr - order.depositAppliedIdr)
+        : BigInt(allocated.get(id) ?? 0);
+    if (committed > 0n && committed + part > balance.cap)
+      committedRefund = true;
+  }
+  if (committedRefund) {
     await voidAndNotify(tx, context, order, "refund_committed", at);
-    const refundId = await requestQrLatePaymentRefund(tx, context, {
-      order,
-      paymentLinkId,
-      intentId: payer.id,
-      now: at,
-    });
+    const refundIds: (string | null)[] = [];
+    for (const id of contributors)
+      refundIds.push(
+        await requestQrLatePaymentRefund(tx, context, {
+          order,
+          paymentLinkId,
+          intentId: id,
+          now: at,
+        }),
+      );
     const doubleRefundIds = await requestQrDoublePaymentRefund(tx, context, {
       order,
       paymentLinkId,
@@ -621,7 +639,13 @@ export async function handleQrOrderPaymentPaid(
       now: at,
     });
     logger.warn(
-      { orderId: order.id, intentId, payerIntentId, refundId, doubleRefundIds },
+      {
+        orderId: order.id,
+        intentId,
+        payerIntentId,
+        refundIds,
+        doubleRefundIds,
+      },
       "QR order: a refund already took the payment's money; order voided, remainder refunded",
     );
     return "late_payment_refund_committed";
