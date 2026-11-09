@@ -887,6 +887,7 @@ describe("legend-9ppw 3 master change on the cloud", () => {
       stockLocations: STANDARD_STOCK_LOCATIONS.length + 1,
       accounts: changed.snapshot.chartOfAccounts.length,
       mappings: changed.snapshot.accountMappings.length,
+      droppedMappings: 0,
     });
     const synced = await dbView(main);
     expect(synced).toEqual(after);
@@ -967,6 +968,178 @@ describe("legend-9ppw 3 master change on the cloud", () => {
         `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
          VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
         [main.tenantId, main.entityA, mapping.role, mapping.accountId],
+      );
+    }
+    expect(await dbView(main)).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-dhbt1: a newer cloud may map a posting role this edge build does not
+// know yet. The edge drops that mapping (logged and counted) and applies the
+// rest of the snapshot; it must not refuse the whole snapshot.
+describe("legend-dhbt1 mapping role unknown to this edge build", () => {
+  const UNKNOWN_ROLE = "future_posting_role_from_newer_cloud";
+
+  /** Puts the entity's mappings back as `before` had them. */
+  async function restoreMappings(before: MasterView) {
+    await owner.query(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [main.tenantId, main.entityA],
+    );
+    for (const m of before.mappings)
+      await owner.query(
+        "INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id) VALUES ($1, $2, $3, $4)",
+        [main.tenantId, main.entityA, m.role, m.accountId],
+      );
+  }
+
+  it("drops the unknown role, logs and counts it, and still applies locations, accounts and known roles", async () => {
+    const before = await dbView(main);
+    const bBefore = await dbView(main, main.outletB, main.entityB);
+    const current = await captureMasters(main);
+    const bar = current.snapshot.stockLocations.find((l) => l.type === "bar")!;
+    const known = current.snapshot.accountMappings[0]!;
+    const otherAccount = current.snapshot.chartOfAccounts.find(
+      (a) => a.id !== known.accountId,
+    )!;
+
+    // The newer cloud renames a location, remaps a known role and adds a role
+    // this build has never heard of.
+    const newer = structuredClone(current.snapshot);
+    newer.stockLocations = newer.stockLocations.map((l) =>
+      l.id === bar.id ? { ...l, name: "Bar Toleran" } : l,
+    );
+    newer.accountMappings = [
+      ...newer.accountMappings.map((m) =>
+        m.role === known.role ? { ...m, accountId: otherAccount.id } : m,
+      ),
+      {
+        tenantId: known.tenantId,
+        legalEntityId: known.legalEntityId,
+        role: UNKNOWN_ROLE,
+        accountId: otherAccount.id,
+      },
+    ];
+
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      spyCloud({ masters: () => json(signed(newer, main)) });
+      const counts = await syncEdgeMasters(config(main));
+      expect(counts).toEqual({
+        uoms: newer.uoms.length,
+        stockLocations: newer.stockLocations.length,
+        accounts: newer.chartOfAccounts.length,
+        mappings: current.snapshot.accountMappings.length,
+        droppedMappings: 1,
+      });
+
+      const after = await dbView(main);
+      expect(after.stockLocations.find((l) => l.id === bar.id)!.name).toBe(
+        "Bar Toleran",
+      );
+      expect(after.uoms).toEqual(before.uoms);
+      expect(after.accounts).toEqual(before.accounts);
+      // Known roles: all kept, the remapped one applied; the unknown one absent.
+      expect(after.mappings.map((m) => m.role)).not.toContain(UNKNOWN_ROLE);
+      expect(after.mappings.map((m) => m.role)).toEqual(
+        before.mappings.map((m) => m.role),
+      );
+      expect(after.mappings.find((m) => m.role === known.role)!.accountId).toBe(
+        otherAccount.id,
+      );
+      expect(await dbView(main, main.outletB, main.entityB)).toEqual(bBefore);
+
+      // Logged with the role names and the count, nothing else of the payload.
+      const dropped = warn.mock.calls.filter(
+        ([fields]) =>
+          typeof fields === "object" &&
+          fields !== null &&
+          "droppedRoles" in fields,
+      );
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0]![0]).toEqual({
+        droppedMappings: 1,
+        droppedRoles: [UNKNOWN_ROLE],
+      });
+    } finally {
+      vi.restoreAllMocks();
+      // Put the shared database back for the tests that follow.
+      await owner.query("UPDATE stock_locations SET name = $2 WHERE id = $1", [
+        bar.id,
+        bar.name,
+      ]);
+      await owner.query(
+        "UPDATE account_mappings SET account_id = $4 WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+        [main.tenantId, main.entityA, known.role, known.accountId],
+      );
+      await owner.query(
+        "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+        [main.tenantId, main.entityA, UNKNOWN_ROLE],
+      );
+    }
+    expect(await dbView(main)).toEqual(before);
+  });
+
+  it("a snapshot whose only extra is an unknown role changes nothing locally", async () => {
+    const before = await dbView(main);
+    const current = await captureMasters(main);
+    const newer = structuredClone(current.snapshot);
+    const known = newer.accountMappings[0]!;
+    newer.accountMappings.push({ ...known, role: UNKNOWN_ROLE });
+    try {
+      spyCloud({ masters: () => json(signed(newer, main)) });
+      const counts = await syncEdgeMasters(config(main));
+      expect(counts.mappings).toBe(current.snapshot.accountMappings.length);
+      expect(counts.droppedMappings).toBe(1);
+      expect(await dbView(main)).toEqual(before);
+    } finally {
+      vi.restoreAllMocks();
+      await restoreMappings(before);
+    }
+    expect(await dbView(main)).toEqual(before);
+  });
+
+  it("a snapshot whose roles are all unknown keeps no local mapping: the cloud's known set is empty", async () => {
+    const before = await dbView(main);
+    expect(before.mappings.length).toBeGreaterThan(0);
+    const current = await captureMasters(main);
+    const newer = structuredClone(current.snapshot);
+    newer.accountMappings = newer.accountMappings.map((m, i) => ({
+      ...m,
+      role: `future_role_${i}`,
+    }));
+    try {
+      spyCloud({ masters: () => json(signed(newer, main)) });
+      const counts = await syncEdgeMasters(config(main));
+      expect(counts.mappings).toBe(0);
+      expect(counts.droppedMappings).toBe(newer.accountMappings.length);
+      const after = await dbView(main);
+      expect(after.mappings).toEqual([]);
+      // Only mappings go: the chart, locations and uoms stay.
+      expect({ ...after, mappings: before.mappings }).toEqual(before);
+    } finally {
+      vi.restoreAllMocks();
+      await restoreMappings(before);
+    }
+    expect(await dbView(main)).toEqual(before);
+  });
+
+  it("the wire role is a bounded string: empty, over 40 characters or a duplicate role is still BAD_SNAPSHOT", async () => {
+    const before = await dbView(main);
+    const current = await captureMasters(main);
+    const known = current.snapshot.accountMappings[0]!;
+    for (const extra of [
+      { ...known, role: "" },
+      { ...known, role: "r".repeat(41) },
+      { ...known },
+    ]) {
+      const bad = structuredClone(current.snapshot);
+      bad.accountMappings.push(extra);
+      vi.restoreAllMocks();
+      spyCloud({ masters: () => json(signed(bad, main)) });
+      expect(await failureCode(syncEdgeMasters(config(main)))).toBe(
+        "BAD_SNAPSHOT",
       );
     }
     expect(await dbView(main)).toEqual(before);

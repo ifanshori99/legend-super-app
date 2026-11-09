@@ -12,6 +12,21 @@
 // mapping set is replaced: a role missing from the snapshot is deleted on the
 // edge, as the cloud replaces the whole set per legal entity.
 //
+// Mapping `role` travels as a bounded string, not the closed posting-role enum
+// (legend-dhbt1): a newer cloud may map a role this edge build does not know
+// yet. The schema still rejects an empty, over-long (column is varchar(40)) or
+// duplicate role; `partitionEdgeMasterMappings` splits the known roles from the
+// unknown ones, and the edge drops (logs and counts) the unknown ones before it
+// applies the rest. The signature covers the snapshot as sent, unknown roles
+// included, so filtering happens only after the signature check.
+// Rollout rules while edges of different builds run:
+//   - Edges built before legend-dhbt1 still refuse a snapshot with an unknown
+//     role (BAD_SNAPSHOT). Ship this build to every edge before the cloud maps
+//     any new posting role.
+//   - Roles are additive only. A renamed or split role makes an older edge drop
+//     the new name and delete its local mapping for the old one, so its own
+//     postings to that role fail until it is upgraded.
+//
 // `signature` is HMAC-SHA256 (hex) over `canonicalJson(snapshot)`, keyed with
 // the node's credential digest, exactly like the bootstrap bundle (see
 // ./bootstrap.ts for what that does and does not prove: integrity and
@@ -30,6 +45,7 @@ import {
   accountTypeSchema,
   postingAccountRoleSchema,
   reportGroupSchema,
+  type PostingAccountRole,
 } from "../accounting/coa.ts";
 import { accountIdSchema } from "../accounting/ids.ts";
 import {
@@ -90,12 +106,18 @@ export type EdgeMasterAccount = z.infer<typeof edgeMasterAccountSchema>;
 export const edgeMasterAccountMappingSchema = z.strictObject({
   tenantId: tenantIdSchema,
   legalEntityId: legalEntityIdSchema,
-  role: postingAccountRoleSchema,
+  /** Any posting role name, known to this build or not (see the header). */
+  role: z.string().min(1).max(40),
   accountId: accountIdSchema,
 });
 export type EdgeMasterAccountMapping = z.infer<
   typeof edgeMasterAccountMappingSchema
 >;
+/** A snapshot mapping whose role this build knows. */
+export type KnownEdgeMasterAccountMapping = Omit<
+  EdgeMasterAccountMapping,
+  "role"
+> & { role: PostingAccountRole };
 
 /** Scope-consistent: one tenant, one outlet, one legal entity, ids unique. */
 export const edgeMasterSnapshotSchema = z
@@ -159,7 +181,11 @@ export const edgeMasterSnapshotSchema = z
           "Parent account is not in the snapshot",
         );
     });
+    const roles = new Set<string>();
     snapshot.accountMappings.forEach((row, index) => {
+      if (roles.has(row.role))
+        issue(["accountMappings", index, "role"], "Duplicate role");
+      roles.add(row.role);
       if (row.tenantId !== tenantId)
         wrongTenant(["accountMappings", index, "tenantId"]);
       if (row.legalEntityId !== legalEntityId)
@@ -184,3 +210,20 @@ export const edgeMasterSnapshotResponseSchema = z.strictObject({
 export type EdgeMasterSnapshotResponse = z.infer<
   typeof edgeMasterSnapshotResponseSchema
 >;
+
+/**
+ * Splits snapshot mappings into the roles this build knows (typed) and the
+ * names of the roles it does not know, in snapshot order (legend-dhbt1).
+ */
+export function partitionEdgeMasterMappings(
+  mappings: readonly EdgeMasterAccountMapping[],
+): { known: KnownEdgeMasterAccountMapping[]; unknownRoles: string[] } {
+  const known: KnownEdgeMasterAccountMapping[] = [];
+  const unknownRoles: string[] = [];
+  for (const row of mappings) {
+    const role = postingAccountRoleSchema.safeParse(row.role);
+    if (role.success) known.push({ ...row, role: role.data });
+    else unknownRoles.push(row.role);
+  }
+  return { known, unknownRoles };
+}
