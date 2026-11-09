@@ -35,13 +35,18 @@
 -- NBSP and the other \s characters, slash, underscore). So a card cut at 200 and
 -- joined by those ('...4111/1111/11', '[disamarkan]_111') is masked too, and a
 -- row of original length 200 is also picked when only such a tail matches (it
--- holds no 12-digit run). Accepted effect at exactly 200 units: a date such as
--- '2026/11/09' at the very end is masked. Rows that match neither are not touched.
+-- holds no 12-digit run). Accepted effect at exactly 200 units: a number of 7+
+-- digits at the very end that is joined by, or ends in, such a separator is
+-- masked even when it is not a card ('2026/11/09', 'INV/2026/11/0001',
+-- 'TRX_20261109_01', 'Telp 021/7654321', a thousands group joined by NBSP):
+-- it cannot be told from a cut card ('4111/1111/11'), and the old text is not
+-- kept. Rows that match neither are not touched.
 --
 -- Batches: rows are visited in id order, 1000 per round (keyset on the primary
--- key, every row read once), and only a row that matches is updated. A masked
--- row holds no digit run any more, so a second run updates nothing
--- (idempotent). The rounds share the migration transaction: batching bounds
+-- key, every row read once), and only a row that matches is updated. After the
+-- first run a row holds no wide run, and a row picked by its tail now ends in a
+-- mask (or a cut mask) that the tail rules do not match, so a second run updates
+-- nothing (idempotent). The rounds share the migration transaction: batching bounds
 -- the size of each statement, it does not shorten the lock below.
 --
 -- One statement on purpose: the NO FORCE, the loop and the FORCE run inside one

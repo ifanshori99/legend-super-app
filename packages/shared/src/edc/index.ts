@@ -185,7 +185,9 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
  * left part of it at the very end, below the thresholds above (legend-lg45).
  * Only a stored message exactly 200 units long gets these end-of-text rules,
  * on read (the current write path masks before it cuts, so it leaves no such
- * remnant), the same as migration 0143 and apps/api/scripts/edc-pan-scrub-tail.sql:
+ * remnant). Migration 0143 and apps/api/scripts/edc-pan-scrub-tail.sql hold the
+ * narrow form of these rules, migration 0170 (legend-0lrkl, legend-stetb) the
+ * wide form below:
  * - digits after a whole mask, joined by a separator the old pattern could
  *   not cross (`… [disamarkan] - 111`);
  * - a run of 7+ digits that holds or ends in such a separator, optionally
@@ -195,8 +197,11 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
  * separators, or a single one that is not a space or a dash: tab, line break,
  * NBSP and the other `\s` characters, slash, underscore (legend-stetb, same
  * class as `cardNumberLike`). Accepted effect, at exactly 200 units only: a
- * date such as `2026/11/09` at the very end is masked too (8 digits joined by
- * a wide separator). */
+ * number of 7+ digits at the very end that is joined by, or ends in, such a
+ * separator is masked even when it is not a card (`2026/11/09`,
+ * `INV/2026/11/0001`, `TRX_20261109_01`, `Telp 021/7654321`, a thousands
+ * group joined by NBSP). The rule cannot tell it from a cut card
+ * (`4111/1111/11`); card safety wins. */
 const oldWriteLimit = 200;
 const tailAfterMask =
   /\[disamarkan\](?:[\s/_-]{2,}|[^\S ]|[/_])\d(?:[\s/_-]*\d)*[\s/_-]*$/;

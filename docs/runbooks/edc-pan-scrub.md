@@ -1,10 +1,12 @@
-# EDC PAN scrub (migrations 0135 and 0143, 200-char tail rule)
+# EDC PAN scrub (migrations 0135, 0143 and 0170, 200-char tail rule)
 
 Two migrations mask card numbers (PAN) left in `edc_transactions` rows written
 before the provider response boundary filter (`packages/shared/src/edc`,
 `ecrResultDetailsSchema`). New writes never store a card number. 0143 also
 carries the tail rule (section 6) for messages cut at 200 characters. A manual
 fallback script exists only for a database that applied 0143 before legend-lg45.
+Migration 0170 (section 7) repeats the `message` scrub for the wider separators
+the write path catches since legend-deu7r.
 
 - `apps/api/drizzle/0135_edc_pan_scrub.sql` (legend-5gub) matched digits split
   by one space or dash only. It may already be applied on dev, staging and
@@ -357,3 +359,31 @@ session counts the whole table.
 
 Run the detection above again: `tail_rows` must be `0`. Then run the section 1
 detection: `any_row` must still be `0`.
+
+## 7. Wide separators and wide tails (0170, legend-0lrkl, legend-stetb)
+
+Since legend-deu7r the write path masks a run of 12+ digits split by any
+whitespace (line break, NBSP and the other `\s` characters), slash, underscore
+or dash. 0143 knew spaces, tabs and dashes only, and is already applied on some
+databases, so `apps/api/drizzle/0170_edc_pan_backfill_separators.sql` repeats
+the `message` scrub with the wide class. Do not run it by hand: the migrator
+applies it (journal idx 170, `when` 1794249000000).
+
+- Touches `edc_transactions.message` only; every other column, amount and
+  `updated_at` stays. A touched row becomes what the JS read path makes of it
+  (wide mask, the two leftover folds, and for an original length of exactly 200
+  UTF-16 units the two tail rules and the cut to 200).
+- The tail rules use the wide class too: a card cut at 200 and joined by a
+  slash, underscore, line break or NBSP (`...4111/1111/11`,
+  `[disamarkan]_111`) is masked, and a row of length 200 is also picked when
+  only such a tail matches. Accepted effect at exactly 200 units: a number of
+  7+ digits at the very end joined by such a separator is masked even if it is
+  not a card (`2026/11/09`, `INV/2026/11/0001`, `Telp 021/7654321`); the old
+  text is not kept.
+- Rows are visited in id order, 1000 per round; a second run updates no row.
+  `NO FORCE`, the loop and `FORCE ROW LEVEL SECURITY` are one `DO` block, so a
+  failure never leaves FORCE off. `ALTER TABLE` holds an ACCESS EXCLUSIVE lock
+  until the whole migrator transaction commits (`lock_timeout` 5 s): batches
+  bound statement size, not the lock.
+- Merge order: drizzle skips a migration whose `when` is not above the last
+  applied one, so 0170 must not reach a database before 0165-0169.
