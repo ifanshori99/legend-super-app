@@ -8,8 +8,10 @@
 //    is the same whichever order the events are delivered in.
 //
 // Time bounds: refund bound B = (payment_refunds.completed_at, refundId), sale
-// bound S = (pos_orders.completed_at, orderId), forfeit bound =
-// reservations.closed_at. On equal time the sale counts as earlier than a
+// bound S = (saleAt, orderId), forfeit bound = reservations.closed_at. saleAt
+// of an `orders` row: pos_orders.completed_at when a POS order exists, else
+// orders.fired_at of a QR pay-first order (U3: fired in the same transaction
+// as its order.paid), else none (not a sale, e.g. a QR open bill). On equal time the sale counts as earlier than a
 // refund or a forfeit, the forfeit as earlier than a refund. Only rows final at
 // that moment are read (completed refunds, completed orders, closed
 // reservations); nothing here reads a "current" status without a time bound.
@@ -25,7 +27,6 @@ import {
   orders,
   paymentIntents,
   paymentRefunds,
-  posOrders,
   posOrderTenders,
   reservationDepositAllocations,
   reservations,
@@ -296,9 +297,24 @@ export async function payoutBackingOf(
 // ---------------------------------------------------------------------------
 
 /**
+ * Sale time of the `orders` row under SQL alias `o` (see the header): null
+ * when the row is not a sale. Read in SQL only (see Bound on precision).
+ */
+function saleAtOf(o: string) {
+  const pos = `FROM pos_orders sp WHERE sp.tenant_id = ${o}.tenant_id AND sp.order_id = ${o}.id`;
+  return sql.raw(`(CASE WHEN EXISTS (SELECT 1 ${pos})
+    THEN (SELECT sp.completed_at ${pos})
+    WHEN ${o}.channel = 'qr' AND ${o}.payment_mode = 'pay_first' THEN ${o}.fired_at
+    END)`);
+}
+
+/** saleAt of the `orders` table of the enclosing query. */
+const saleAt = saleAtOf("orders");
+
+/**
  * The moment a fact is judged at: a payout (refund bound) or a sale. The time
  * is read in SQL from the fact's own row (payment_refunds.completed_at,
- * pos_orders.completed_at), never round-tripped through a JS Date: a Date
+ * saleAt of the order), never round-tripped through a JS Date: a Date
  * keeps milliseconds while timestamptz keeps microseconds, so a bound taken
  * from a Date could leave the fact's own row on the wrong side of it.
  */
@@ -310,9 +326,9 @@ function timeOf(bound: Bound) {
   return bound.kind === "refund"
     ? sql`(SELECT b.completed_at FROM payment_refunds b
           WHERE b.tenant_id = ${bound.tenantId}::uuid AND b.id = ${bound.refundId}::uuid)`
-    : sql`(SELECT b.completed_at FROM pos_orders b
+    : sql`(SELECT ${saleAtOf("b")} FROM orders b
           WHERE b.tenant_id = ${bound.tenantId}::uuid
-            AND b.order_id = ${ulidToUuid(bound.orderId)}::uuid)`;
+            AND b.id = ${ulidToUuid(bound.orderId)}::uuid)`;
 }
 
 /** Completed refunds that count at `bound` (refund bound: up to itself). */
@@ -337,14 +353,17 @@ function forfeitsAt(bound: Bound) {
     : and(closed, sql`${reservations.closedAt} < ${timeOf(bound)}`);
 }
 
-/** Completed sales that count at `bound` (sale earlier than a refund). */
+/**
+ * Sales (`orders` rows with a saleAt) that count at `bound`: sale earlier than
+ * a refund; between sales, tie-break on orders.id.
+ */
 function salesAt(bound: Bound) {
-  const done = isNotNull(posOrders.completedAt);
+  const done = sql`${saleAt} IS NOT NULL`;
   return bound.kind === "refund"
-    ? and(done, sql`${posOrders.completedAt} <= ${timeOf(bound)}`)
+    ? and(done, sql`${saleAt} <= ${timeOf(bound)}`)
     : and(
         done,
-        sql`(${posOrders.completedAt}, ${posOrders.orderId}) <= (${timeOf(bound)}, ${ulidToUuid(bound.orderId)}::uuid)`,
+        sql`(${saleAt}, ${orders.id}) <= (${timeOf(bound)}, ${ulidToUuid(bound.orderId)}::uuid)`,
       );
 }
 
@@ -358,7 +377,7 @@ const mismatch = (message: string) =>
 /**
  * DP of one table session as it stood at `bound`: its allocation intents, what
  * they still held and the DP its sales had applied.
- * - applied: orders completed by the bound (salesAt);
+ * - applied: sales (POS or QR pay-first) made by the bound (salesAt);
  * - held: every intent that took money (paid / partially_refunded / refunded,
  *   a status that never reverts) minus the completed non-fund refunds and the
  *   forfeits of the reservation that took it by the bound.
@@ -438,13 +457,6 @@ export async function sessionDepositAt(
       total: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
     })
     .from(orders)
-    .innerJoin(
-      posOrders,
-      and(
-        eq(posOrders.tenantId, orders.tenantId),
-        eq(posOrders.orderId, orders.id),
-      ),
-    )
     .where(
       and(
         eq(orders.tenantId, tenantId),
@@ -456,8 +468,9 @@ export async function sessionDepositAt(
 }
 
 /**
- * The sale an order.paid event journals: it must be a completed POS order with
- * a completion time (the bound S), else AutoJournalPayloadInvalid.
+ * The sale an order.paid event journals: its order must have a saleAt (a
+ * completed POS order, or a fired QR pay-first order), the bound S, else
+ * AutoJournalPayloadInvalid.
  */
 export async function saleBoundOf(
   tx: Tx,
@@ -465,12 +478,10 @@ export async function saleBoundOf(
   orderId: string,
 ): Promise<Bound> {
   const [sale] = await tx
-    .select({ completedAt: posOrders.completedAt })
-    .from(posOrders)
-    .where(
-      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, orderId)),
-    );
-  if (!sale || sale.completedAt === null)
+    .select({ isSale: sql<boolean>`${saleAt} IS NOT NULL` })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!sale || !sale.isSale)
     throw new AutoJournalPayloadInvalid("Sale order is not completed");
   return { kind: "sale", tenantId, orderId };
 }
@@ -485,11 +496,107 @@ async function sumOf(rows: PromiseLike<{ total: string }[]>): Promise<bigint> {
 }
 
 /**
+ * What an intent's receipt backs at `bound`: POS tenders of the intent
+ * captured by sales made by the bound + what QR pay-first sales pinned to it
+ * took (total - DP) by the bound + forfeits of reservations whose DP it is
+ * closed by the bound + completed payouts of the intent by the bound that its
+ * receipt backs (a fund payout with its own fund receipt is not one). Tie
+ * rules are those of salesAt, forfeitsAt and refundsAt.
+ */
+async function intentBackedAt(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  bound: Bound,
+): Promise<bigint> {
+  const tenders = await sumOf(
+    tx
+      .select({
+        total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
+      })
+      .from(posOrderTenders)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, posOrderTenders.tenantId),
+          eq(orders.id, posOrderTenders.orderId),
+        ),
+      )
+      .where(
+        and(
+          eq(posOrderTenders.tenantId, tenantId),
+          eq(posOrderTenders.paymentIntentId, intentId),
+          eq(posOrderTenders.status, "captured"),
+          salesAt(bound),
+        ),
+      ),
+  );
+  // QR pay-first sales pin the intent that paid them (orders.payment_intent_id)
+  // and carry no tenders: the money taken is total - DP.
+  const qrSales = await sumOf(
+    tx
+      .select({
+        total: sql<string>`coalesce(sum(${orders.totalIdr} - ${orders.depositAppliedIdr}), 0)::text`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.paymentIntentId, intentId),
+          eq(orders.channel, "qr"),
+          eq(orders.paymentMode, "pay_first"),
+          sql`NOT EXISTS (SELECT 1 FROM pos_orders sp
+            WHERE sp.tenant_id = ${orders.tenantId} AND sp.order_id = ${orders.id})`,
+          salesAt(bound),
+        ),
+      ),
+  );
+  const forfeits = await sumOf(
+    tx
+      .select({
+        total: sql<string>`coalesce(sum(${reservations.depositForfeitedIdr}), 0)::text`,
+      })
+      .from(reservations)
+      .where(
+        and(
+          eq(reservations.tenantId, tenantId),
+          eq(reservations.depositPaymentId, intentId),
+          forfeitsAt(bound),
+        ),
+      ),
+  );
+  const payouts = await sumOf(
+    tx
+      .select({
+        total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.paymentIntentId, intentId),
+          // A fund with its own receipt event is paid out of that receipt.
+          sql`(${paymentRefunds.unallocatedFundId} IS NULL OR NOT EXISTS (
+            SELECT 1 FROM ${domainEventOutbox}
+            WHERE ${domainEventOutbox.tenantId} = ${tenantId}
+              AND ${domainEventOutbox.destination} = ${EVENT_DESTINATION}
+              AND ${domainEventOutbox.aggregateType} = 'payment'
+              AND ${domainEventOutbox.event}->>'name' = 'payment.funds_unallocated'
+              AND ${fundPayloadId} = ${paymentRefunds.unallocatedFundId}::text))`,
+          refundsAt(bound),
+        ),
+      ),
+  );
+  return tenders + qrSales + forfeits + payouts;
+}
+
+/**
  * A completed payout may not take more out of customer_deposit than its
  * backing receipt put in, judged at its own bound B:
  * - fund backing: the completed payouts of the fund up to B <= the fund receipt;
  * - intent backing: the receipt >= POS tenders of that intent captured by
- *   sales completed by B (tie: sale earlier) + forfeits of reservations whose
+ *   sales completed by B (tie: sale earlier) + what QR pay-first sales pinned
+ *   to it took (total - DP) by B + forfeits of reservations whose
  *   DP it is closed by B + every completed payout of the intent up to B that
  *   its receipt backs (this one included; a fund payout with its own fund
  *   receipt is not one);
@@ -534,67 +641,9 @@ export async function assertPayoutWithinReceipt(
   }
   if (backing.kind !== "intent") return;
   const intentId = backing.intentId;
-  const tenders = await sumOf(
-    tx
-      .select({
-        total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
-      })
-      .from(posOrderTenders)
-      .innerJoin(
-        posOrders,
-        and(
-          eq(posOrders.tenantId, posOrderTenders.tenantId),
-          eq(posOrders.orderId, posOrderTenders.orderId),
-        ),
-      )
-      .where(
-        and(
-          eq(posOrderTenders.tenantId, tenantId),
-          eq(posOrderTenders.paymentIntentId, intentId),
-          eq(posOrderTenders.status, "captured"),
-          salesAt(bound),
-        ),
-      ),
-  );
-  const forfeits = await sumOf(
-    tx
-      .select({
-        total: sql<string>`coalesce(sum(${reservations.depositForfeitedIdr}), 0)::text`,
-      })
-      .from(reservations)
-      .where(
-        and(
-          eq(reservations.tenantId, tenantId),
-          eq(reservations.depositPaymentId, intentId),
-          forfeitsAt(bound),
-        ),
-      ),
-  );
-  const payouts = await sumOf(
-    tx
-      .select({
-        total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
-      })
-      .from(paymentRefunds)
-      .where(
-        and(
-          eq(paymentRefunds.tenantId, tenantId),
-          eq(paymentRefunds.paymentIntentId, intentId),
-          // A fund with its own receipt event is paid out of that receipt.
-          sql`(${paymentRefunds.unallocatedFundId} IS NULL OR NOT EXISTS (
-            SELECT 1 FROM ${domainEventOutbox}
-            WHERE ${domainEventOutbox.tenantId} = ${tenantId}
-              AND ${domainEventOutbox.destination} = ${EVENT_DESTINATION}
-              AND ${domainEventOutbox.aggregateType} = 'payment'
-              AND ${domainEventOutbox.event}->>'name' = 'payment.funds_unallocated'
-              AND ${fundPayloadId} = ${paymentRefunds.unallocatedFundId}::text))`,
-          refundsAt(bound),
-        ),
-      ),
-  );
-  if (tenders + forfeits + payouts > receiptCredit)
+  if ((await intentBackedAt(tx, tenantId, intentId, bound)) > receiptCredit)
     throw mismatch(
-      "Payout of an intent exceeds its receipt after POS tenders, forfeits and earlier payouts",
+      "Payout of an intent exceeds its receipt after sales, forfeits and earlier payouts",
     );
   if (refund.unallocatedFundId !== null) return;
   const sessions = await tx
@@ -618,6 +667,31 @@ export async function assertPayoutWithinReceipt(
     if (appliedIdr > heldIdr)
       throw mismatch("Refund of a DP that a completed sale already applied");
   }
+}
+
+/**
+ * A QR pay-first sale taken out of a posted intent receipt may not take more
+ * out of customer_deposit than that receipt put in, judged at its own bound S:
+ * the receipt >= what the intent backs at S (this sale included; refunds and
+ * forfeits only when strictly before S, since on a tie the sale counts as
+ * earlier). Else a refund of the intent final before the sale already took
+ * the money back.
+ */
+export async function assertSaleWithinReceipt(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  saleBound: Bound,
+): Promise<void> {
+  const receiptCredit = await postedCreditOf(
+    tx,
+    tenantId,
+    backingKeyOf({ kind: "intent", intentId }),
+  );
+  if ((await intentBackedAt(tx, tenantId, intentId, saleBound)) > receiptCredit)
+    throw mismatch(
+      "Sale of an intent exceeds its receipt after earlier sales, forfeits and payouts",
+    );
 }
 
 // ---------------------------------------------------------------------------

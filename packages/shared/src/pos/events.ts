@@ -112,7 +112,12 @@ export const orderPaidPayloadSchema = z
     /** PBJT (or the configured tax) for this sale. */
     pbjtIdr: nonnegativeIdr,
     roundingIdr: idrSchema,
-    totalIdr: positiveIdr,
+    /**
+     * legend-fbms: zero for a fully discounted sale (staff meal, comp). The
+     * event still fires so recipe deduction runs; WS-07 ignores an all-zero
+     * payload and still posts a discount/sales pair.
+     */
+    totalIdr: nonnegativeIdr,
     /** Tender buckets: exactly the amount keys of the WS-07 posting rule. */
     paidCashIdr: nonnegativeIdr,
     paidGatewayIdr: nonnegativeIdr,
@@ -124,9 +129,9 @@ export const orderPaidPayloadSchema = z
      */
     paidDepositIdr: nonnegativeIdr.default(idr(0)),
     /**
-     * Empty only when the DP covers the whole total: the sum check below
-     * (tenders = totalIdr - paidDepositIdr, totalIdr > 0) refuses any other
-     * empty list.
+     * Empty only when nothing is left to settle: the DP covers the whole
+     * total, or the total is 0 (legend-fbms). The sum check below
+     * (tenders = totalIdr - paidDepositIdr) refuses any other empty list.
      */
     tenders: z.array(tenderLineSchema),
     shiftId: posShiftIdSchema.nullable(),

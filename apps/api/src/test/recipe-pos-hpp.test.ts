@@ -1467,3 +1467,116 @@ describe("HPP reversal refused and retried at day close (i)", () => {
     });
   }, 30_000);
 });
+
+// legend-fbms / legend-9pz9: the recipe deduction rides on `order.paid`. Since
+// design A every POS completion emits it, also a fully comped one (total 0, no
+// tenders), and a QR pay-first order emits it when it fires. Assumptions: the
+// deduction key `sale:order:<orderId>` keeps each order to exactly one
+// deduction however often the event is delivered; a QR order has no pos_orders
+// row and no tender rows (the order's lines are what is deducted).
+describe("HPP of a total-0 POS order and of a QR order (legend-fbms, legend-9pz9)", () => {
+  async function seedOrderOfKind(
+    menuItemId: string,
+    businessDate: string,
+    kind: { channel: "pos" | "qr"; totalIdr: number },
+  ): Promise<{ ulid: string; uuid: string }> {
+    const ulid = createUlid();
+    const uuid = ulidToUuid(ulid);
+    await asOwnerTenant(async (client) => {
+      await client.query(
+        `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+            subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+            status, business_date, placed_at, fired_at)
+         VALUES ($1, $2, $3, $4, $7, 'takeaway', 'pay_first', $6, 0, 0, 0, 0, $6,
+                 $8, $5, now(), $9)`,
+        [
+          uuid,
+          tenantA,
+          outletA,
+          `HPP-${randomUUID().slice(0, 12)}`,
+          businessDate,
+          kind.totalIdr,
+          kind.channel,
+          kind.channel === "qr" ? "sent" : "completed",
+          kind.channel === "qr" ? new Date().toISOString() : null,
+        ],
+      );
+      await client.query(
+        `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, variant_id, name,
+            quantity, unit_price_idr, modifiers_total_idr, line_total_idr, modifiers,
+            fire_status, status, reserved_business_date)
+         VALUES ($1, $2, $3, $4, $5, NULL, 'Latte', 2, 0, 0, 0, '[]'::jsonb,
+                 'fired', 'served', $6)`,
+        [randomUUID(), tenantA, outletA, uuid, menuItemId, businessDate],
+      );
+      if (kind.channel === "pos")
+        await client.query(
+          `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel)
+           VALUES ($1, $2, $3, 'pos')`,
+          [uuid, tenantA, outletA],
+        );
+    });
+    return { ulid, uuid };
+  }
+
+  function paidEventOf(
+    orderUlid: string,
+    businessDate: string,
+    kind: "pos-comp" | "qr",
+  ) {
+    const qr = kind === "qr";
+    return envelope({
+      name: "order.paid",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      idempotencyKey: `order.paid:${orderUlid}`,
+      payload: orderPaidPayloadSchema.parse({
+        orderId: orderUlid,
+        outletId: outletA,
+        businessDate,
+        channel: qr ? "qr" : "pos",
+        serviceType: "takeaway",
+        grossSalesIdr: qr ? ORDER_TOTAL : 20_000,
+        // The comp: the whole gross is discounted, the total is 0.
+        discountIdr: qr ? 0 : 20_000,
+        serviceChargeIdr: 0,
+        pbjtIdr: 0,
+        roundingIdr: 0,
+        totalIdr: qr ? ORDER_TOTAL : 0,
+        paidCashIdr: 0,
+        paidGatewayIdr: qr ? ORDER_TOTAL : 0,
+        paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        paidDepositIdr: 0,
+        tenders: qr ? [{ method: "qris", amountIdr: ORDER_TOTAL }] : [],
+        shiftId: null,
+        cashierId: null,
+        deviceId: null,
+        paidAt: iso(),
+      }),
+    });
+  }
+
+  for (const kind of ["pos-comp", "qr"] as const)
+    it(`HPP-QR-${kind} order.paid of ${kind === "qr" ? "a QR pay-first order" : "a total-0 POS order"} delivered twice makes one deduction and one ledger set`, async () => {
+      const kit = await buildKit();
+      const businessDate = nextDate();
+      const order = await seedOrderOfKind(kit.menuItem, businessDate, {
+        channel: kind === "qr" ? "qr" : "pos",
+        totalIdr: kind === "qr" ? ORDER_TOTAL : 0,
+      });
+      const event = paidEventOf(order.ulid, businessDate, kind);
+      await deliver(event);
+      await deliver(event);
+
+      expect(
+        (await deductionsOf(order.ulid, order.uuid)).filter(
+          (row) => row.kind === "sale",
+        ),
+      ).toHaveLength(1);
+      expect(await orderLedger(order)).toHaveLength(2);
+      // 2 cups x (18 g beans, 200 ml milk)
+      expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
+      expect(await onHand(kit.location, kit.milk)).toBe("9600.0000");
+    });
+});

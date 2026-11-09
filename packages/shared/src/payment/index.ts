@@ -961,3 +961,5 @@ export const customerPaymentIntentFixtures = [
   [customerPaymentIntentSchema, failedVaIntentFixture],
 ] as const;
 export * from "./refund-events.ts";
+
+export * from "./settlement-events.ts";

@@ -460,7 +460,12 @@ export async function handleQrOrderPaymentPaid(
       ),
     );
   if (intent?.status !== "paid") return "not_settled";
-  await fireQrOrder(tx, context, order, { now, reason: "verified_payment" });
+  // Pin the intent that paid: a superseded code may have settled the bill.
+  await fireQrOrder(tx, context, order, {
+    now,
+    reason: "verified_payment",
+    paidIntentId: intentId,
+  });
   // Outbox order across intents is not relied on: when this event's intent
   // also carries `double_payment` funds (another code covered the bill
   // first), they are returned here too; a replay files nothing new.
