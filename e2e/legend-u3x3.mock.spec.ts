@@ -7,6 +7,7 @@
 // it in `LEGEND_MOCK_WEB_URL`. With no variable set every test skips, so the
 // production-build runner stays green.
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 const MOCK_URL = process.env.LEGEND_MOCK_WEB_URL;
@@ -18,14 +19,6 @@ test.skip(
 
 /** Vite's first compile of a route outlasts the 5 s assertion default. */
 const COLD_START_TIMEOUT_MS = 30_000;
-
-/** The router global appears just before React hydrates; a click in that window is lost. */
-async function waitForApp(page: import("@playwright/test").Page) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
-  await page.waitForTimeout(300);
-}
 
 /** The two onboarding fixtures: CL-1019 (manager) and CL-1020 (barista). */
 const SRI_RAHAYU = "00000000-0000-4000-8000-000000001020";
@@ -68,7 +61,7 @@ test("F24 Alur M: completing a task on the onboarding detail moves the progress"
   page,
 }) => {
   await page.goto(`/kelola/onboarding/${SRI_RAHAYU}?mock=normal`);
-  await waitForApp(page);
+  await waitForHydration(page);
 
   // The barista fixture has one done and one open task.
   await expect(page.getByRole("heading", { name: "Sri Rahayu" })).toBeVisible({
@@ -107,7 +100,7 @@ test("F24 Alur M: exit clearance locks the work certificate until every clearanc
   await page.setViewportSize({ width: 1440, height: 900 });
   await openTheme(page, "light");
   await page.goto(`/kelola/offboarding/${NADIA_SAFITRI}?mock=normal`);
-  await waitForApp(page);
+  await waitForHydration(page);
 
   await expect(
     page.getByRole("heading", { name: "Nadia Safitri" }),

@@ -36,6 +36,7 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 const expect = baseExpect.configure({ timeout: 15_000 });
@@ -60,37 +61,6 @@ const BACKSPACE = /^Hapus angka terakhir$/;
 
 const payUrl = (seed?: string, orderId = DEMO_ORDER_ID) =>
   `/pos/bayar/${orderId}${seed ? `?demo=${seed}` : ""}`;
-
-/**
- * Server HTML paints before React hydrates. The router being up is not enough
- * (legend-doykg): a screen can still be un-hydrated. A `fill()` then lands in
- * the DOM only, React state stays "", and the submit reads an empty value
- * ("Masukkan nomor kode pelanggan."). Hydration puts `__reactProps$*` on every
- * host element it adopts, so wait until each control in the main area has it.
- */
-async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
-      ),
-    undefined,
-    { timeout: 60_000 },
-  );
-  await page.waitForFunction(
-    () => {
-      const root = document.querySelector("#main-content") ?? document.body;
-      const controls = root.querySelectorAll(
-        "input, button, textarea, select, a[href]",
-      );
-      return Array.from(controls).every((el) =>
-        Object.keys(el).some((key) => key.startsWith("__reactProps$")),
-      );
-    },
-    undefined,
-    { timeout: 60_000 },
-  );
-}
 
 async function open(page: Page, url: string): Promise<void> {
   await page.goto(url);
@@ -1053,6 +1023,15 @@ async function expectBlindDrawer(page: Page): Promise<void> {
   // Variance block: explicit "not shown", never a verdict.
   await expect(area).toContainText("Selisih tidak ditampilkan");
   await expect(area).not.toContainText(/Kas sesuai|Kas kurang|Kas lebih/);
+  // One explanation, inside the variance block (visible before the dashes at 390).
+  await expect(
+    page
+      .locator('[data-variance="hidden"]')
+      .getByText(/disembunyikan untuk shift Anda sendiri/),
+  ).toBeVisible();
+  await expect(
+    area.getByText(/disembunyikan untuk shift Anda sendiri/),
+  ).toHaveCount(1);
 
   // Every withheld figure reads "—", not a number or a fake zero.
   for (const label of BLIND_DRAWER_FIGURES) {

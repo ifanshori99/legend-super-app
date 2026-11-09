@@ -3,6 +3,7 @@
 // @starter/shared/website, the SEO head, JSON-LD, sitemap/robots and the
 // reservation entry form. Acceptance IDs live in the test names.
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 declare global {
   interface Window {
@@ -10,16 +11,6 @@ declare global {
     __legendMock?: { setScenario: (scenario: string) => void };
     __TSR_ROUTER__?: { navigate: (options: { to: string }) => Promise<void> };
   }
-}
-
-/**
- * Interactions must wait for hydration, or a click becomes a full page load and
- * a client navigation during hydration leaves the previous route's DOM behind.
- * The router global appears before React finishes hydrating, hence the settle.
- */
-async function waitForHydration(page: import("@playwright/test").Page) {
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
-  await page.waitForTimeout(800);
 }
 
 /** Client-side navigation, so the mock scenario applies to the fetch. */

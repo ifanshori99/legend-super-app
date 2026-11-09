@@ -2,6 +2,7 @@
 // /member needs sign-in and robots.txt disallows it, so it is not submitted;
 // on /reservation only "Kirim lewat WhatsApp" is a filled accent.
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 declare global {
@@ -17,8 +18,7 @@ async function navigateClient(
   page: import("@playwright/test").Page,
   to: string,
 ) {
-  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
-  await page.waitForTimeout(800);
+  await waitForHydration(page);
   await page.evaluate(
     (path) => window.__TSR_ROUTER__?.navigate({ to: path }),
     to,

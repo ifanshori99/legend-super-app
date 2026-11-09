@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   createRootRouteWithContext,
@@ -53,6 +53,18 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   errorComponent: ErrorPage,
 });
 
+/**
+ * Marks the document once React has hydrated and committed (`data-hydrated` on
+ * <html>). Server HTML paints and accepts typing before handlers exist, so e2e
+ * waits for this attribute before it interacts (legend-doykg).
+ */
+function HydrationMarker() {
+  useEffect(() => {
+    document.documentElement.dataset.hydrated = "true";
+  }, []);
+  return null;
+}
+
 function RootDocument({ children }: { children: ReactNode }) {
   return (
     <html lang="id" suppressHydrationWarning>
@@ -60,6 +72,7 @@ function RootDocument({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
+        <HydrationMarker />
         <Providers>
           <a
             href="#main-content"

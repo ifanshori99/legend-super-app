@@ -5,6 +5,7 @@ import { expect, type APIRequestContext } from "@playwright/test";
 import { API_URL, WEB_URL } from "../playwright.config";
 
 export { API_URL, WEB_URL };
+export { waitForHydration } from "./hydration.ts";
 
 // Cookie-authenticated mutations must come from the web app's origin.
 export const headers = { Origin: WEB_URL };

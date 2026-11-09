@@ -5,7 +5,8 @@
 //
 // Runs against the mock-mode web server (no API, no database):
 //   LEGEND_MOCK_PORT=3247 pnpm test:e2e:mock e2e/legend-vvth.mock.spec.ts
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 const baseURL =
   process.env.LEGEND_MOCK_WEB_URL ?? process.env.E2E_MOCK_BASE_URL;
@@ -20,14 +21,6 @@ test.use({ baseURL });
 const POSTED_COUNT = "00000000-0000-4000-8000-000000007802";
 /** Posted journal fixture used by the accounting detail screen. */
 const JOURNAL = "e1000000-0000-4000-8000-000000000005";
-
-/** Waits for hydration: server-rendered links click before React attaches. */
-async function ready(page: Page) {
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
-  await page.waitForTimeout(250);
-}
 
 const AREAS = [
   { path: "/kelola/inventori", title: "Inventori" },
@@ -93,7 +86,7 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
 
     for (const entry of cases) {
       await page.goto(entry.path, { waitUntil: "networkidle" });
-      await ready(page);
+      await waitForHydration(page);
       const nav = page.getByRole("navigation", { name: entry.nav });
       await expect(nav).toBeVisible();
       const current = nav.locator('a[aria-current="page"]');
@@ -115,7 +108,7 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
     page,
   }) => {
     await page.goto("/kelola/inventori/saldo", { waitUntil: "networkidle" });
-    await ready(page);
+    await waitForHydration(page);
 
     const strip = page.getByRole("region", { name: "Ringkasan stok" });
     await expect(strip).toBeVisible();
@@ -136,7 +129,7 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
     await page.goto(`/kelola/inventori/opname/${POSTED_COUNT}`, {
       waitUntil: "networkidle",
     });
-    await ready(page);
+    await waitForHydration(page);
 
     await expect(
       page.getByRole("heading", { name: "Ringkasan selisih" }),
@@ -158,7 +151,7 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
     await page.goto("/kelola/inventori/saldo?mock=empty", {
       waitUntil: "networkidle",
     });
-    await ready(page);
+    await waitForHydration(page);
     await expect(page.getByText("Belum ada saldo stok")).toBeVisible();
   });
 });
