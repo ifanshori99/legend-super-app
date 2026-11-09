@@ -16,6 +16,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import {
   paymentIntents,
+  paymentLinks,
   paymentRefunds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
@@ -33,12 +34,66 @@ type Query = ReturnType<typeof endpoint.query.parse>;
 type Params = ReturnType<typeof resolveEndpoint.params.parse>;
 type Input = ReturnType<typeof resolveEndpoint.body.parse>;
 
-// Evidence is authoritative. The contract can represent only a single excess
-// against a bill; ambiguous evidence is refused rather than fabricating totals.
+// Evidence is authoritative. A bill (payment link) may carry several
+// unallocated funds, one per provider evidence (legend-knev). Each fund is
+// resolved for its own amount; together the bill's funds must account for
+// exactly the money that arrived but was not applied to the bill (evidence
+// received − paid_idr). That holds for overpaid, double-paid, underpaid and
+// split bills alike. Anything else is ambiguous evidence and is refused (409)
+// rather than fabricating totals.
+type BillFundsState = {
+  linkId: string;
+  excessIdr: number;
+  fundsTotalIdr: number;
+  liveRefundsIdr: number;
+};
+
+async function billFundsState(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentIntentId: string,
+): Promise<BillFundsState | null> {
+  const result = await tx.execute(sql`
+    SELECT l.id AS link_id,
+      (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+       JOIN payment_intents ei ON ei.tenant_id = e.tenant_id AND ei.id = e.payment_intent_id
+       WHERE ei.tenant_id = l.tenant_id AND ei.payment_link_id = l.id)
+        - l.paid_idr AS excess,
+      (SELECT coalesce(sum(bf.amount_idr), 0) FROM payment_unallocated_funds bf
+       JOIN payment_intents bi ON bi.tenant_id = bf.tenant_id AND bi.id = bf.payment_intent_id
+       WHERE bi.tenant_id = l.tenant_id AND bi.payment_link_id = l.id) AS funds_total,
+      (SELECT coalesce(sum(r.amount_idr), 0) FROM payment_refunds r
+       JOIN payment_unallocated_funds rf ON rf.tenant_id = r.tenant_id AND rf.id = r.unallocated_fund_id
+       JOIN payment_intents ri ON ri.tenant_id = rf.tenant_id AND ri.id = rf.payment_intent_id
+       WHERE ri.tenant_id = l.tenant_id AND ri.payment_link_id = l.id
+         AND r.status <> 'failed') AS live_refunds
+    FROM payment_intents i
+    JOIN payment_links l ON l.tenant_id = i.tenant_id AND l.id = i.payment_link_id
+    WHERE i.tenant_id = ${context.tenant.tenantId} AND i.id = ${paymentIntentId}::uuid
+  `);
+  const r = result.rows[0];
+  if (!r) return null;
+  return {
+    linkId: String(r.link_id),
+    excessIdr: Number(r.excess),
+    fundsTotalIdr: Number(r.funds_total),
+    liveRefundsIdr: Number(r.live_refunds),
+  };
+}
+
+const ambiguous = () =>
+  new HttpError(
+    409,
+    "CONFLICT",
+    "Payment evidence cannot represent this unallocated amount.",
+  );
+
 async function view(tx: Tx, context: ScopedTenantContext, id: string) {
   const result = await tx.execute(sql`
     SELECT f.*, i.method, l.reference, l.total_idr AS bill_total_idr,
       o.name AS outlet_name, u.name AS resolved_by_name,
+      (SELECT ev.amount_idr FROM payment_evidence ev
+       WHERE ev.tenant_id = f.tenant_id AND ev.id = f.evidence_id) AS evidence_amount,
       (SELECT coalesce(sum(e.amount_idr), 0)::text FROM payment_evidence e
        JOIN payment_intents ei ON ei.tenant_id = e.tenant_id AND ei.id = e.payment_intent_id
        WHERE ei.tenant_id = f.tenant_id AND ei.payment_link_id = l.id) AS paid_amount
@@ -51,6 +106,14 @@ async function view(tx: Tx, context: ScopedTenantContext, id: string) {
   `);
   const r = result.rows[0];
   if (!r) throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
+  // A fund never holds more than the provider transaction that brought it in.
+  if (
+    r.evidence_amount !== null &&
+    Number(r.amount_idr) > Number(r.evidence_amount)
+  )
+    throw ambiguous();
+  const bill = await billFundsState(tx, context, String(r.payment_intent_id));
+  if (!bill || bill.fundsTotalIdr !== bill.excessIdr) throw ambiguous();
   const parsed = unallocatedFundViewSchema.safeParse({
     id: r.id,
     tenantId: r.tenant_id,
@@ -72,12 +135,7 @@ async function view(tx: Tx, context: ScopedTenantContext, id: string) {
       : null,
     note: r.note,
   });
-  if (!parsed.success)
-    throw new HttpError(
-      409,
-      "CONFLICT",
-      "Payment evidence cannot represent this unallocated amount.",
-    );
+  if (!parsed.success) throw ambiguous();
   return parsed.data;
 }
 
@@ -156,7 +214,10 @@ export async function resolveUnallocatedFund(
   const { fundId } = resolveEndpoint.params.parse(params);
   const request = resolveEndpoint.body.parse(input);
   return withTenant(db, context, async (tx) => {
-    // Lock order: payment intent -> fund -> refund (same as lockRefundGraph).
+    // Lock order: bill -> payment intent -> fund -> refund. The bill lock is
+    // the settlement order (bill, then intent) and serializes resolves of
+    // different funds on one bill, so their combined refunds are checked
+    // against the bill's excess from committed state (legend-knev).
     const [probe] = await tx
       .select({ paymentIntentId: paymentUnallocatedFunds.paymentIntentId })
       .from(paymentUnallocatedFunds)
@@ -168,6 +229,27 @@ export async function resolveUnallocatedFund(
       );
     if (!probe)
       throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
+    const [owner] = await tx
+      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, probe.paymentIntentId),
+        ),
+      );
+    if (!owner)
+      throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
+    await tx
+      .select({ id: paymentLinks.id })
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, context.tenant.tenantId),
+          eq(paymentLinks.id, owner.paymentLinkId),
+        ),
+      )
+      .for("update");
     await tx
       .select({ id: paymentIntents.id })
       .from(paymentIntents)
@@ -231,9 +313,18 @@ export async function resolveUnallocatedFund(
             "CONFLICT",
             "A refund is already pending for these funds.",
           );
-        // The excess is capped by this fund row (locked above, at most one
-        // live refund per fund). It never consumes the bill's refundable
-        // amount: the guest paid it on top of the intent (PAY-04).
+        // Each fund is refunded for its own amount only (one live refund per
+        // fund). It never consumes the bill's refundable amount: the guest
+        // paid it on top of the intent (PAY-04). Under the bill lock, the
+        // bill's funds must still equal its excess, and every live refund on
+        // them plus this one must fit inside that excess.
+        const bill = await billFundsState(tx, context, fund.paymentIntentId);
+        if (
+          !bill ||
+          bill.fundsTotalIdr !== bill.excessIdr ||
+          bill.liveRefundsIdr + fund.amountIdr > bill.excessIdr
+        )
+          throw ambiguous();
         const now = new Date();
         const [refund] = await tx
           .insert(paymentRefunds)
