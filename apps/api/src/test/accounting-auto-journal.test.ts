@@ -612,8 +612,15 @@ function deliver(
   );
 }
 
+// Each sweep runs an hour after the previous one, past the 10-minute backoff a
+// still-parked row gets, so consecutive sweeps in one test see it as due.
+let sweepCount = 0;
 function sweep(tenant: Tenant) {
-  return retryParkedAutoJournals(contextOf(tenant), SWEEP_AT);
+  sweepCount += 1;
+  return retryParkedAutoJournals(
+    contextOf(tenant),
+    new Date(SWEEP_AT.getTime() + sweepCount * 60 * 60 * 1000),
+  );
 }
 
 /** Delivers and asserts the posting happened; returns the posted result. */

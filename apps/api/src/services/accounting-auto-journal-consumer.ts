@@ -92,7 +92,7 @@ const RETRY_BATCH = 100;
 export const AUTO_JOURNAL_RETRY_AFTER_MS = 10 * 60 * 1000;
 const LATE_AUDIT_FIELDS = [
   "journalId",
-  "eventName",
+  "trigger",
   "sourceId",
   "originalDate",
   "entryDate",
@@ -317,7 +317,7 @@ async function postAutoJournal(
           before: null,
           after: {
             journalId: journal.id,
-            eventName: stored.eventName,
+            trigger: stored.eventName,
             sourceId: fact.sourceId,
             originalDate: lateAdjustmentFrom,
             entryDate,
