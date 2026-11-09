@@ -480,3 +480,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - `createOutlet` membawa user pembuat (`routes/org.routes.ts` meneruskan `getAuth(req).user.id`): audit `tax.service_charge.provisioned` dan `publishedBy` memakai owner, bukan sistem.
 - Tidak dicek: tabrakan yang sudah ada sebelum guard ini; seed dev `seed-dev-tenant.ts` melewati guard.
 - Test: `apps/api/src/test/tax-service-overlap.test.ts` (15). Tanpa migrasi.
+
+## legend-e7zj refund DP yang sudah dipakai ditolak (engineer, cabang `ws/dp-refund-guard` dari `integ/m1-batch5`, 2026-11-09)
+
+- Sudah: 72e4f973. Refund admin (WS-05) atas DP reservasi tidak boleh melebihi DP yang belum dipakai tagihan meja (409 REFUND_DEPOSIT_IN_USE); kredit DP sesi berkurang begitu refund diajukan (pending), kembali bila refund gagal. Aturan bersama di `apps/api/src/services/reservation-deposit-credit.ts`; `refundableBalance` memakainya, jadi approval dan daftar refund ikut.
+- DP terpakai = maksimum dari DP yang diterapkan order dan tagihan yang tidak tertutup link pembayaran atau tender POS (meja open-bill ikut), sesudah DP lain di sesi, dibatasi alokasi bruto.
+- Balapan: advisory lock per intent DP (shared di pembaca kredit, exclusive di refund, semua DP sesi berurutan naik). Urutan lock legend-94qt tidak berubah.
+- Review K: Opus + architect, 3 putaran. Temuan nyata dibetulkan: approval tidak pernah menolak (in-use dihitung bersih), dua DP satu sesi tidak serial, meja open-bill tidak terhitung, tagihan POS tunai terhitung DP. Sisa (Low, diterima): order yang dibuat sesudah refund diajukan tetap dihitung, approval refund itu bisa gagal cap_exceeded, manajer mengajukan ulang lebih kecil.
+- Gate: tsc api, eslint, prettier, 34 file test API (reservation*, payment-admin*, payment-refund*, qr-order*, pos-order*, table-session*, RLS) 478 lulus 8 skip, kontrak node 39 lulus.
+- Brief Codex: `docs/briefs/157-second-opinion-dp-refund-guard.md` (main checkout, tidak di-commit).
+- Berikut: tunggu CTO. Guard sementara di consumer jurnal otomatis (legend-9pz9, 226f1155) tetap dipakai sebagai pengaman kedua.
