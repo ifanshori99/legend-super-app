@@ -896,16 +896,17 @@ export async function voidQueuedKdsLines(
       updatedAt: now,
     })
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
-  // Same order event and audit as voidPosOrder. The `order.voided` outbox
-  // event (appendPosEvent) is not emitted: its contract payload requires an
-  // approver and a void-reason enum a platform cancel does not have.
+  // Same outbox event, order event and audit as voidPosOrder, so cloud sync
+  // and reports drop the sale. A platform cancel has no approver
+  // (`approvedBy` null is the contract's system void).
+  const reasonNote = input.reason.trim().slice(0, 500);
   const payload = {
     orderId: order.id,
     outletId: order.outletId,
     businessDate: order.businessDate,
     amountIdr: order.totalIdr,
-    reason: input.reason.slice(0, 100),
-    reasonNote: input.reason.slice(0, 500),
+    reason: "customer_cancelled" as const,
+    reasonNote: reasonNote.length >= 4 ? reasonNote : "Dibatalkan platform",
     approvedBy: input.actorUserId,
     approvalRequestId: null,
     overrideId: null,
@@ -914,6 +915,12 @@ export async function voidQueuedKdsLines(
     receiptNumber: null,
     voidedAt: now.toISOString(),
   };
+  await appendPosEvent(tx, context, "order.voided", {
+    order,
+    payload,
+    caller,
+    now,
+  });
   await appendOrderEvent(tx, context, {
     order,
     type: "order.voided",

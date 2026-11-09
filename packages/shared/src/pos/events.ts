@@ -174,7 +174,12 @@ export const orderVoidedPayloadSchema = z
     amountIdr: nonnegativeIdr,
     reason: voidReasonSchema,
     reasonNote: z.string().min(4).max(500),
-    approvedBy: userIdSchema,
+    /**
+     * The supervisor who approved the void. Null only for a system void with
+     * no human approver: a delivery platform cancel (legend-5bn3), where
+     * `overrideId` and `approvalRequestId` are null too.
+     */
+    approvedBy: userIdSchema.nullable(),
     /**
      * legend-0gy1: the consumed `pos_overrides` row; the proof of approval.
      * Null only on events written before the override id was recorded.

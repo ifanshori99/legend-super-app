@@ -659,7 +659,7 @@ describe("platform cancel voids the POS order", () => {
       // Same order event and audit as a POS void, by the system.
       const events = await db.query<{
         actor_id: string | null;
-        payload: { reason: string };
+        payload: { reason: string; reasonNote: string };
       }>(
         `SELECT actor_id, payload FROM order_events
           WHERE tenant_id = $1 AND order_id = $2::uuid AND type = 'order.voided'`,
@@ -668,8 +668,21 @@ describe("platform cancel voids the POS order", () => {
       expect(events.rows).toHaveLength(1);
       expect(events.rows[0]).toMatchObject({
         actor_id: null,
-        payload: { reason: "Driver tidak ditemukan" },
+        payload: {
+          reason: "customer_cancelled",
+          reasonNote: "Driver tidak ditemukan",
+        },
       });
+      // The POS outbox carries the void too, so cloud sync and reports drop
+      // the sale; a platform cancel has no approver.
+      const outbox = await db.query<{ approved_by: string | null }>(
+        `SELECT event->'payload'->>'approvedBy' AS approved_by
+           FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->>'name' = 'order.voided'
+            AND event->'payload'->>'orderId' = $2`,
+        [a.tenant.tenantId, created.body.data.orderId],
+      );
+      expect(outbox.rows).toEqual([{ approved_by: null }]);
       const audit = await db.query<{ n: string }>(
         `SELECT count(*) AS n FROM audit_logs
           WHERE tenant_id = $1 AND event->>'action' = 'pos_order.voided'
