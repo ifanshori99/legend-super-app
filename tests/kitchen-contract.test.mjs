@@ -764,6 +764,18 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
     items: fixtures.ticketItems.filter((item) => item.ticketId === ticket.id),
   };
   respond(kitchen.listKitchenStations, fixtures.stationConfigs);
+  // legend-gt7f: the cook reads label and capacity without menu or manage rights.
+  respond(kitchen.listKitchenStationLabels, kitchen.stationLabels);
+  respond(kitchen.getStationCapacityRules, kitchen.stationCapacityRules);
+  for (const label of kitchen.stationLabels) {
+    const menuStation = menu.cafeLegendMenuFixtures.stations.find(
+      (row) => row.id === label.stationId,
+    );
+    assert.equal(menuStation?.name, label.name, "label matches a menu station");
+  }
+  for (const row of kitchen.stationCapacityRules)
+    for (const key of ["id", "tenantId", "outletId"])
+      assert.equal(key in row, false, `cook rule view has no ${key}`);
   respond(kitchen.getKitchenBoard, fixtures.stationBoards[0]);
   respond(kitchen.getKitchenStationSummary, fixtures.stationSummary);
   respond(kitchen.startKitchenTicket, detail);

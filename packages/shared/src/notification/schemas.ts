@@ -200,6 +200,15 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "AI-09",
   },
+  // legend-078b: a QR line with no kitchen station, or a kitchen void of a QR
+  // order. Not `waiter_call` (a guest request) or `order_ready` (a done order).
+  kitchen_alert: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F9 Kitchen Display System; KDS-01",
+  },
 } as const satisfies Record<string, CategoryMeta>;
 
 export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;

@@ -22,7 +22,9 @@ import {
   getKitchenStationFeed,
   getKitchenStationSummary,
   getKitchenTicket,
+  getStationCapacityRules,
   listCapacityRules,
+  listKitchenStationLabels,
   listKitchenStationTickets,
   recallKitchenTicket,
   setKitchenTicketPriority,
@@ -43,6 +45,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as capacity from "../services/kds-capacity.service.ts";
+import * as cookReads from "../services/kds-cook-reads.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -128,6 +131,40 @@ kdsRouter.get("/station-summary", processTicket, async (req, res) => {
     ),
   });
 });
+
+// Cook reads (legend-gt7f): the label and the capacity rules a station-scoped
+// cook needs, under `kds.ticket.process` only. Slim views; the capacity config
+// read (`/capacity-rules`, kds.station.manage) and PUT keep their guard.
+kdsRouter.get("/station-labels", processTicket, async (req, res) => {
+  const { outletId } = listKitchenStationLabels.params.parse(req.params);
+  res.json({
+    data: await cookReads.listStationLabels(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.get(
+  "/stations/:stationId/capacity-rules",
+  ...processStation,
+  async (req, res) => {
+    const { outletId, stationId } = getStationCapacityRules.params.parse(
+      req.params,
+    );
+    res.json({
+      data: await cookReads.listStationCapacityRules(
+        getScopedTenantContext(req),
+        actor(req),
+        outletId,
+        stationId,
+        new Date(),
+      ),
+    });
+  },
+);
 
 // ---- Tickets ---------------------------------------------------------------
 

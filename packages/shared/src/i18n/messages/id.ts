@@ -1302,6 +1302,7 @@ export const id = {
       daily_summary: "Ringkasan harian",
       operational_anomaly: "Anomali operasional",
       payment_failover: "Gateway pembayaran",
+      kitchen_alert: "Peringatan dapur",
     },
     inbox: {
       heading: "Kotak masuk",

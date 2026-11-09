@@ -73,6 +73,10 @@ import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { appendOrderEvent } from "./pos-order-support.ts";
 import {
+  notifyQrKitchenVoid,
+  notifyUnroutedQrLines,
+} from "./kds-staff-alerts.ts";
+import {
   actorSource,
   appendKitchenEvent,
   appendStationFeed,
@@ -434,6 +438,13 @@ export async function routeFiredItemsToKitchen(
       },
       now,
     );
+  // QR orders only; once per (order, line) however often routing is re-run.
+  await notifyUnroutedQrLines(tx, context, {
+    outletId,
+    orderId: input.orderId,
+    itemIds: unroutedItemIds,
+    now,
+  });
   return { ticketIds, unroutedItemIds };
 }
 
@@ -583,6 +594,16 @@ async function notifyPosOfKitchenVoid(
       userId: userIdSchema.parse(input.actor.userId),
       deviceId: input.actor.deviceId,
     },
+    now: input.now,
+  });
+  // QR orders have no cashier screen: tell the table's waiter (or KDS managers).
+  await notifyQrKitchenVoid(tx, context, {
+    order: input.order,
+    ticketId: input.ticket.id,
+    stationId: input.ticket.stationId,
+    orderItemIds: input.orderItemIds,
+    ticketCancelled: input.ticketCancelled,
+    reason: input.reason,
     now: input.now,
   });
 }

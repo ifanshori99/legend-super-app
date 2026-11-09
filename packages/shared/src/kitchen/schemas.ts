@@ -30,7 +30,7 @@ import {
   timeOfDaySchema,
 } from "../core/index.ts";
 import { PICKUP_CODE_PATTERN } from "./pickup-code.ts";
-import { channelSchema } from "../menu/schemas.ts";
+import { channelSchema, stationTypeSchema } from "../menu/schemas.ts";
 
 const scope = { tenantId: tenantIdSchema };
 const outletScope = { ...scope, outletId: outletIdSchema };
@@ -323,6 +323,18 @@ export const stationConfigSchema = z.strictObject({
   autoPrintFallback: z.boolean(),
 });
 
+/**
+ * What a station-scoped cook reads about a station (legend-gt7f): the label
+ * and the target time the KDS timer needs. Not the menu `Station` row: no
+ * printer device, no timestamps, so the read needs only `kds.ticket.process`.
+ */
+export const stationLabelSchema = z.strictObject({
+  stationId: stationIdSchema,
+  name: z.string().min(1).max(150),
+  type: stationTypeSchema,
+  targetSeconds: z.number().int().positive().nullable(),
+});
+
 /* ------------------------------------------------------- pacing / capacity */
 
 /** Load points and preparation time per menu line (F12 ordering pacing). */
@@ -357,6 +369,31 @@ export const capacityRuleSchema = z
     id: uuidSchema,
     stationId: stationIdSchema,
     /** PRD F12: capacity per station per 15 minutes. */
+    windowMinutes: z.number().int().min(5).max(60),
+    capacityPoints: z.number().int().positive().max(10_000),
+    nearCapacityBp: basisPointsSchema.refine((bp) => bp > 0, {
+      message: "The near-capacity level must be above zero",
+    }),
+    schedule: z.array(capacityScheduleSchema).min(1),
+    channelPriority: z
+      .array(channelSchema)
+      .min(1)
+      .refine((channels) => new Set(channels).size === channels.length, {
+        message: "Each channel appears once in the priority list",
+      }),
+  })
+  .refine((rule) => rule.windowMinutes % 5 === 0, {
+    path: ["windowMinutes"],
+    message: "Capacity windows are a whole number of 5-minute slices",
+  });
+
+/**
+ * A capacity rule as a cook reads it (legend-gt7f): the pacing facts of one
+ * station, without the row id, tenant, outlet or timestamps.
+ */
+export const stationCapacityRuleSchema = z
+  .strictObject({
+    stationId: stationIdSchema,
     windowMinutes: z.number().int().min(5).max(60),
     capacityPoints: z.number().int().positive().max(10_000),
     nearCapacityBp: basisPointsSchema.refine((bp) => bp > 0, {
@@ -1045,6 +1082,8 @@ export const kitchenFixtureSchema = z.strictObject({
 
 export type StationSummary = z.infer<typeof stationSummarySchema>;
 export type StationConfig = z.infer<typeof stationConfigSchema>;
+export type StationLabel = z.infer<typeof stationLabelSchema>;
+export type StationCapacityRule = z.infer<typeof stationCapacityRuleSchema>;
 export type MenuLoad = z.infer<typeof menuLoadSchema>;
 export type CapacitySchedule = z.infer<typeof capacityScheduleSchema>;
 export type CapacityRule = z.infer<typeof capacityRuleSchema>;
