@@ -25,6 +25,7 @@ import {
   toIsoDateTime,
   type OutletId,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -36,8 +37,15 @@ import type { Tx } from "./permission-resolver.ts";
 /** Platform calls made for one step (the consumer's own call is the first). */
 export const PLATFORM_SYNC_MAX_ATTEMPTS = 6;
 
-/** A claimed row is not claimable again for this long (crashed worker). */
+/**
+ * A claimed row is not claimable again for this long (crashed worker). It must
+ * outlast one sweep run: the calls of a batch run together, so a run takes
+ * about one adapter timeout (DELIVERY_ADAPTER_TIMEOUT_MS), far below the lease.
+ */
 export const PLATFORM_SYNC_LEASE_MS = 5 * 60_000;
+
+/** Rows one sweep run resends (all at once); the rest wait for the next tick. */
+export const PLATFORM_SYNC_BATCH = 10;
 
 const BACKOFF_CAP_MINUTES = 30;
 
@@ -54,7 +62,7 @@ type PlatformIntent = {
 /** The platform took the step: nothing is pending any more. */
 export async function markPlatformSynced(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   deliveryChannelOrderId: string,
 ): Promise<void> {
   await tx
@@ -82,7 +90,7 @@ export async function markPlatformSynced(
 export async function markPlatformUnsynced(
   tx: Tx,
   input: {
-    readonly tenantId: string;
+    readonly tenantId: TenantId;
     readonly deliveryChannelOrderId: string;
     readonly outcome: "refused" | "unknown";
     readonly intent: PlatformIntent;
@@ -175,6 +183,24 @@ async function claimDue(
       eq(deliveryChannelOrders.platformSyncState, "retrying"),
       lte(deliveryChannelOrders.platformSyncNextAt, now),
     );
+    // The order moved on without this worker (the platform cancelled it, a
+    // webhook advanced it): the stored step no longer applies. Resending it
+    // would only be refused and flag the order for nothing.
+    await tx
+      .update(deliveryChannelOrders)
+      .set({
+        platformSyncState: "ok",
+        platformSyncAction: null,
+        platformSyncStatus: null,
+        platformSyncAttempts: 0,
+        platformSyncNextAt: null,
+      })
+      .where(
+        and(
+          dueRetrying,
+          sql`${deliveryChannelOrders.platformSyncStatus} IS DISTINCT FROM ${deliveryChannelOrders.status}`,
+        ),
+      );
     // A worker that died on the last attempt left the row at the cap.
     const gaveUp = await tx
       .update(deliveryChannelOrders)
@@ -337,22 +363,33 @@ async function settleClaim(
 
 /**
  * Worker sweep (cloud only, run by the relay sweep in worker-main.ts): resends
- * every due `retrying` intent. Returns the number of platform calls made. One
- * row's failure never stops the others.
+ * the due `retrying` intents (at most `limit`). Returns the number of platform
+ * calls made. One row's failure never stops the others.
  */
 export async function retryDeliveryPlatformIntents(
   context: ScopedTenantContext,
   now = new Date(),
-  limit = 50,
+  limit = PLATFORM_SYNC_BATCH,
 ): Promise<number> {
+  const startedAt = Date.now();
   const claims = await claimDue(context, now, limit);
-  for (const claim of claims) {
-    const outcome = await callPlatform(context, claim);
-    try {
-      await settleClaim(context, claim, outcome, now);
-    } catch {
-      // The lease expires and the row is claimed again.
-    }
-  }
+  // Together, so a platform that is down costs one timeout, not one per row
+  // (the relay loop waits for this sweep). The backoff counts from the real
+  // end of the call, not from the start of the run.
+  await Promise.all(
+    claims.map(async (claim) => {
+      const outcome = await callPlatform(context, claim);
+      try {
+        await settleClaim(
+          context,
+          claim,
+          outcome,
+          new Date(now.getTime() + (Date.now() - startedAt)),
+        );
+      } catch {
+        // The lease expires and the row is claimed again.
+      }
+    }),
+  );
   return claims.length;
 }

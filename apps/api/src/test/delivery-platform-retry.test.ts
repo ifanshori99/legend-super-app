@@ -17,7 +17,11 @@ import { randomUUID } from "node:crypto";
 import { afterEach, afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import type { PoolClient } from "pg";
-import { createUlid, tenantIdSchema } from "@starter/shared/core";
+import {
+  createUlid,
+  outletIdSchema,
+  tenantIdSchema,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -130,7 +134,7 @@ async function setup() {
       ...eventFixture,
       id: createUlid(),
       tenantId,
-      outletId: tenant.outletId,
+      outletId: outletIdSchema.parse(tenant.outletId),
       deviceId: null,
       name: "delivery_order.status_changed",
       aggregateType: "delivery_channel_order",
@@ -154,7 +158,8 @@ async function setup() {
       deliverDeliveryChannelEvent(context, statusEvent(orderId, to), tx),
     );
 
-  const sweep = (now: Date) => retryDeliveryPlatformIntents(context, now);
+  const sweep = (now: Date, limit?: number) =>
+    retryDeliveryPlatformIntents(context, now, limit);
 
   const readSync = (orderId: string) =>
     asOwnerTenant(tenant, async (db) => {
@@ -173,6 +178,15 @@ async function setup() {
       );
       return rows[0]!;
     });
+
+  const setOrderStatus = (orderId: string, status: string) =>
+    asOwnerTenant(tenant, (db) =>
+      db.query(
+        `UPDATE delivery_channel_orders SET status = $3
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, orderId, status],
+      ),
+    );
 
   const desyncOutcomes = (orderId: string) =>
     asOwnerTenant(tenant, async (db) => {
@@ -199,6 +213,7 @@ async function setup() {
     consume,
     sweep,
     readSync,
+    setOrderStatus,
     desyncOutcomes,
     readItem,
   };
@@ -379,5 +394,48 @@ describe("legend-r7vxn delivery platform retry", () => {
     installAdapter(() => "refuse");
     await consume(refusedOrder);
     expect((await readItem(refusedOrder)).platformSync).toBe("needs_action");
+  });
+
+  it("legend-r7vxn a step the order has moved past is dropped, not resent", async () => {
+    const { seedOrder, consume, sweep, readSync, setOrderStatus } =
+      await setup();
+    const orderId = await seedOrder();
+    const { references } = installAdapter(() => "throw");
+    await consume(orderId);
+    // The customer cancels on the platform while accept_order is retrying.
+    await setOrderStatus(orderId, "cancelled");
+    expect(await sweep(new Date(Date.now() + 3 * 60_000))).toBe(0);
+    expect(references).toHaveLength(1);
+    expect(await readSync(orderId)).toMatchObject({
+      state: "ok",
+      action: null,
+      attempts: 0,
+    });
+  });
+
+  it("legend-r7vxn due rows are resent together, in batches of the sweep limit", async () => {
+    const { seedOrder, consume, sweep } = await setup();
+    const ids = [await seedOrder(), await seedOrder(), await seedOrder()];
+    let down = true;
+    let inFlight = 0;
+    let peak = 0;
+    setDeliveryChannelAdapter("gofood", {
+      execute: async (_context, input) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        inFlight--;
+        if (down) throw new Error("platform down");
+        return { reference: input.reference, accepted: true };
+      },
+    });
+    for (const id of ids) await consume(id);
+    down = false;
+    peak = 0;
+    const later = new Date(Date.now() + 3 * 60_000);
+    // Limit 2 of 3 due rows: two calls, together; the third waits for the next run.
+    expect(await sweep(later, 2)).toBe(2);
+    expect(peak).toBe(2);
+    expect(await sweep(later)).toBe(1);
   });
 });
