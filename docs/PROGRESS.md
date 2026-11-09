@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-9fhs event edge tidak lagi menghentikan sinkron ke cloud (engineer, cabang `ws/fix-9fhs`, 2026-11-09)
+
+- Akar masalah: edge mengirim semua baris outbox `cloud-sync` ke cloud; cloud tidak mengenal aggregate POS (`order`, `cashier_shift`, `day`, `table_session`, `pos_override`, ...) sehingga `applyInbound` melempar `EdgeEventUnclassifiedError`, seluruh batch rollback, kursor tidak maju, `stock.moved` ikut tertahan selamanya. Direproduksi dengan test.
+- Sudah: inbox cloud `edge_deferred_events` (migrasi `0103_edge_deferred_events`, `0104_edge_deferred_events_rls`). Aggregate WS-04 diparkir `deferred`; event edge->cloud lain yang tidak punya handler diparkir `unclassified` + log warn (fallback hanya arah edge->cloud, dipasang di cloud). Tidak ada outbox cloud, tidak ada potong stok, tidak ada jurnal. Idempoten per (tenant, event id).
+- Test: `src/test/edge-order-deferred.test.ts` (15 kasus); 103/103 di 6 file edge.
+- Lanjutan: legend-078n (applier pesanan POS isi ulang dari inbox, urut `aggregate_id, aggregate_sequence`, tanpa potong resep lagi), legend-3owf (transport edge dan event tanpa outlet), legend-niq9 (stock.* diparkir tanpa alarm).
+
 ## Sudah
 
 - Benchmark order pelanggan ESB + Richeese vs Legend: `design/benchmark/REPORT.md` (14 celah), `design/REFERENCES.md`. Cabang `ux/customer-order-benchmark`.
