@@ -13,9 +13,27 @@ Keputusan: rekap mengecualikan pesanan latihan dari SEMUA bagiannya (himpunan
 penjualan, tender captured per metode, void, refund) lewat `reportablePosOrders()`.
 Bila hanya tender yang dikecualikan, pemeriksaan keseimbangan (tender sama
 dengan total penjualan) melempar CONFLICT, jadi keempatnya harus sama.
-Tidak diubah, dicatat sebagai temuan: pemeriksaan "masih ada pesanan belum
-selesai" di `closePosDay` tetap menghitung pesanan latihan yang menggantung,
-dan bagian shift/kas rekap tidak difilter latihan.
+Lanjutan (keputusan CTO, Q63: latihan tidak boleh memengaruhi operasi nyata):
+
+1. **Pesanan latihan yang menggantung tidak menahan tutup hari.** Pemeriksaan
+   "masih ada pesanan yang belum selesai" di `closePosDay` memakai
+   `reportablePosOrders()`. Pesanan nyata yang belum selesai tetap menahan.
+2. **Bagian shift dan kas rekap tidak difilter latihan, dengan bukti.** Shift
+   khusus latihan memang bisa ada: `pos_shifts` tidak punya penanda latihan
+   (`db/schema/pos-shift.ts:49-75`), buka shift tidak memeriksa mode latihan
+   (`pos-shift.service.ts:161-249`), dan `setDeviceTrainingMode`
+   (`device.service.ts:507-556`) tidak melihat shift terbuka, jadi mode bisa
+   dialihkan di tengah shift dan satu shift berisi pesanan nyata dan latihan
+   (`pos_orders.shift_id` tidak dicek terhadap `is_training`,
+   `pos-order.service.ts:719-744`). `cash_movements` (`pos-shift.ts:341-375`)
+   tidak punya penanda latihan dan tidak punya `device_id`. Baris shift, selisih,
+   dan kas kedaluwarsa adalah keadaan laci uang sungguhan: kasir menghitung dan
+   memindahkan uang fisik. Selisih itu sudah dihitung tanpa tunai latihan
+   (legend-0v3b3) dan dijurnal saat tutup shift
+   (`cashier_shift.closed`). Menyembunyikan shift dari rekap akan membuat rekap
+   tidak sejalan dengan buku besar dan bisa menyembunyikan kas nyata pada shift
+   campuran, jadi bagian ini dibiarkan. Bila founder ingin shift latihan murni
+   disembunyikan, perlu penanda latihan pada `pos_shifts` (migrasi) lebih dulu.
 
 ## 2026-11-10: Pesanan latihan: kas shift dan stok (legend-0v3b3, legend-13avp)
 

@@ -820,6 +820,8 @@ export async function closePosDay(
           eq(orders.outletId, outletId),
           eq(orders.businessDate, body.businessDate),
           notInArray(orders.status, ["completed", "voided"]),
+          // A training order left open never holds the real day (Q63).
+          reportablePosOrders(),
         ),
       )
       .limit(1);

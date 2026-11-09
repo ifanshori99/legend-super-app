@@ -211,6 +211,60 @@ async function seedVoid(orderId: string, amountIdr: number): Promise<void> {
   );
 }
 
+/**
+ * An order that is not final yet (status draft / awaiting_payment / sent), left hanging on
+ * `date`. No tender, no completed_at; `training` stamps pos_orders.is_training.
+ */
+async function seedUnfinished(options: {
+  date: string;
+  training?: boolean;
+  status?: "draft" | "awaiting_payment" | "sent";
+}): Promise<string> {
+  const orderId = randomUUID();
+  await asOwnerTenant(async (client) => {
+    await client.query(
+      `INSERT INTO orders
+         (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+          subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+          status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', 50000, 0, 0, 5000, 0, 55000,
+               $5, $6, now())`,
+      [
+        orderId,
+        tenant.tenantId,
+        tenant.outletId,
+        `DT-U-${orderId.slice(0, 8)}`,
+        options.status ?? "draft",
+        options.date,
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_orders
+         (order_id, tenant_id, outlet_id, channel, shift_id, device_id, cashier_id,
+          submitted_at, completed_at, is_training)
+       VALUES ($1, $2, $3, 'pos', NULL, $4, $5, now(), NULL, $6)`,
+      [
+        orderId,
+        tenant.tenantId,
+        tenant.outletId,
+        deviceId,
+        manager.userId,
+        options.training ?? false,
+      ],
+    );
+  });
+  return orderId;
+}
+
+async function dailyCloseRowCount(date: string): Promise<number> {
+  const { rows } = await owner.query(
+    `SELECT 1 FROM pos_daily_closes
+     WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3`,
+    [tenant.tenantId, tenant.outletId, date],
+  );
+  return rows.length;
+}
+
 function day(date: string) {
   const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/day`;
   return {
@@ -547,5 +601,78 @@ describe("POS-05 legend-fbxzw: training orders stay out of the end-of-day recap"
     expect(rows).toHaveLength(1);
     expect(rows[0]!.order_count).toBe(0);
     expect(Number(rows[0]!.total_sales_idr)).toBe(0);
+  });
+});
+
+// ---- Round 2 (CTO decision: a hanging training order does not hold the close) ----
+
+describe("POS-05 legend-fbxzw round 2: unfinished training orders and mixed voids", () => {
+  it("R2-1: an unfinished training order does not block the day close", async () => {
+    // Assumption: "unfinished" = status draft / awaiting_payment / sent (neither completed nor voided).
+    const trainingDay = "2025-03-09";
+    await seedSale({ date: trainingDay, totalIdr: REAL_IDR });
+    await seedUnfinished({
+      date: trainingDay,
+      training: true,
+      status: "draft",
+    });
+    await seedUnfinished({
+      date: trainingDay,
+      training: true,
+      status: "sent",
+    });
+
+    const closed = await day(trainingDay).close();
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(endOfDayRecapSchema.parse(closed.body.data)).toMatchObject({
+      status: "closed",
+      totalSalesIdr: REAL_IDR,
+    });
+    expect(await dailyCloseRowCount(trainingDay)).toBe(1);
+  });
+
+  it("R2-2 (control): an unfinished real order still blocks the day close", async () => {
+    // The same hanging orders as R2-1, but real: the close must stay refused.
+    for (const [date, status] of [
+      ["2025-03-10", "draft"],
+      ["2025-03-11", "sent"],
+    ] as const) {
+      await seedSale({ date, totalIdr: REAL_IDR });
+      await seedUnfinished({ date, status });
+      const refused = await day(date).close();
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(JSON.stringify(refused.body)).toContain(
+        "Masih ada pesanan yang belum selesai.",
+      );
+      expect(await dailyCloseRowCount(date)).toBe(0);
+    }
+  });
+
+  it("R2-3: a real void and a training void on one day with the same tender method and different amounts count only the real one", async () => {
+    // Expected to pass at once: the code is already right; this test pins the
+    // per-method allocation (cash refunded = real void only) against regression.
+    const date = "2025-03-12";
+    const realVoided = await seedSale({ date, totalIdr: REAL_IDR });
+    const trainingVoided = await seedSale({
+      date,
+      totalIdr: 77_000,
+      training: true,
+    });
+    await seedVoid(realVoided, 40_000);
+    await seedVoid(trainingVoided, 70_000);
+
+    const recap = await readRecap(date);
+    expect(recap.totalVoidsIdr).toBe(40_000);
+    expect(deviceTotals(recap)).toMatchObject({
+      voidedOrderCount: 1,
+      voidedAmountIdr: 40_000,
+    });
+    expect(recap.totalSalesIdr).toBe(REAL_IDR);
+    expect(tender(recap, "cash")).toEqual({
+      method: "cash",
+      capturedIdr: REAL_IDR,
+      refundedIdr: 40_000,
+      netIdr: REAL_IDR - 40_000,
+    });
   });
 });

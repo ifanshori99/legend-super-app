@@ -12,3 +12,11 @@ File: apps/api/src/test/pos-day-training.test.ts. Kasus:
 4. Refund pesanan latihan: refundCount/refundAmountIdr tidak berubah; refund nyata tetap.
 5. Kontrol: hari tanpa pesanan latihan hasilnya identik dengan sebelum perubahan (pakai angka tes pos-day.test.ts).
 6. Hari yang hanya berisi pesanan latihan: rekap kosong (nol), tutup hari tidak melempar karena ketidakseimbangan.
+
+## Putaran 2 (keputusan CTO: pesanan latihan menggantung tidak menahan tutup hari)
+
+Tambah ke apps/api/src/test/pos-day-training.test.ts (jangan ubah src non-test):
+
+- (1) GAGAL-DULU: pesanan latihan yang belum selesai (status bukan completed/voided, mis. open/submitted) pada tanggal bisnis itu TIDAK menahan `closePosDay` (pesanan nyata semua final -> tutup berhasil). Kontrol: pesanan NYATA yang belum selesai tetap menahan dengan pesan "Masih ada pesanan yang belum selesai." Jalankan, tunjukkan gagal pada kasus pertama karena perilaku lama melempar.
+- (3) Void nyata + void latihan pada hari yang sama dengan metode tender SAMA (mis. tunai) dan nominal berbeda (mis. nyata 40.000, latihan 70.000): totalVoidsIdr, voidedOrderCount, dan alokasi refund per metode hanya mencerminkan yang nyata. Tes ini boleh langsung lulus (kode sudah benar); jelaskan.
+  Jalankan: bash -c 'cd <worktree> && pwd && LEGEND_TEST_FILES="src/test/pos-day-training.test.ts" pnpm test'.
