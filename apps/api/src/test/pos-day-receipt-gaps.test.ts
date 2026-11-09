@@ -152,7 +152,7 @@ async function seedRun(
   const deviceId = randomUUID();
   const sequenceId = randomUUID();
   const orderIds: string[] = [];
-  for (const _ordinal of input.present)
+  for (let n = 0; n < input.present.length; n += 1)
     orderIds.push(await draftOrder(outletId));
   const businessDate = await asOwnerTenant(tenant.tenantId, async (client) => {
     await client.query(

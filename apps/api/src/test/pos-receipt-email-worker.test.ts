@@ -335,5 +335,9 @@ describe("e-receipt email job wiring (legend-v3vo)", () => {
     );
     expect(source).toContain("runPosReceiptEmailJob(");
     expect(source).toContain("POS receipt email sweep failed");
+    // Cloud only: an edge-minted link would not resolve (review K).
+    expect(source).toMatch(
+      /if \(sendsReceiptEmails\) \{\s*try \{\s*await runPosReceiptEmailJob\(/,
+    );
   });
 });
