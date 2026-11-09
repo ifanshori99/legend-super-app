@@ -22,6 +22,7 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPosReceiptEmailJob } from "./worker/pos-receipt-email.job.ts";
 import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
 import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import {
@@ -92,6 +93,8 @@ const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
 // an edge node (or an unreadable edge configuration) never does.
 const edgeRuntime = parseEdgeRuntimeConfig(process.env);
 const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
+// legend-v3vo: e-receipt links resolve on the cloud only; same fail-closed rule.
+const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
@@ -366,6 +369,20 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Checklist run generation failed");
+    }
+    // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The
+    // sealed address is opened only inside the job; nothing is logged here.
+    // Cloud only: the public receipt link resolves on the cloud, and a token
+    // minted on an edge exists only in the edge database, so an edge would
+    // mail a dead link. Edge rows stay queued (follow-up bead).
+    if (sendsReceiptEmails) {
+      try {
+        await runPosReceiptEmailJob([context], {
+          email: handlers.notificationDelivery?.email ?? null,
+        });
+      } catch {
+        console.error("POS receipt email sweep failed");
+      }
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:

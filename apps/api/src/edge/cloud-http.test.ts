@@ -60,7 +60,7 @@ describe("createDeviceRecordsFetcher", () => {
       RequestInit & { cache?: string },
     ];
     expect(url).toBe(
-      "https://cloud.example.com/api/edge-sync/device-records?limit=100",
+      "https://cloud.example.com/api/edge-sync/device-records?limit=100&receiptSequences=1",
     );
     expect(init.method).toBe("GET");
     expect(init.headers).toEqual({
@@ -81,6 +81,8 @@ describe("createDeviceRecordsFetcher", () => {
     const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
     expect(url.searchParams.get("since")).toBe(since);
     expect(url.searchParams.get("limit")).toBe("25");
+    // legend-3yqy: the edge always opts in to device receipt sequences.
+    expect(url.searchParams.get("receiptSequences")).toBe("1");
     expect(url.search).toContain("since=2026-11-08T10%3A00%3A00.000Z");
     expect(url.toString()).not.toContain(CREDENTIAL);
   });

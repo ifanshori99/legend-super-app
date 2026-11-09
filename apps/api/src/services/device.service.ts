@@ -72,6 +72,10 @@ import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { findActiveDeviceForToken } from "./device-registry-check.ts";
 import type { Tx } from "./permission-resolver.ts";
+import {
+  deviceTakesReceipts,
+  provisionNextDeviceReceiptSequence,
+} from "./pos-receipt.service.ts";
 
 type DeviceRow = typeof devices.$inferSelect;
 
@@ -284,6 +288,15 @@ export async function enrollDevice(
           "Perangkat sudah terdaftar. Terbitkan token baru dari registri.",
         );
     }
+    // legend-3yqy: a device that can create a POS order gets its receipt
+    // sequence (next free `P<n>`) in this transaction, so the edge can number
+    // its sales offline. Idempotent on a replay. An edge never invents a
+    // prefix; the cloud provisions it and the device pull carries it.
+    if (deviceTakesReceipts(row.type) && !getEdgeRuntimeState().edgeMode)
+      await provisionNextDeviceReceiptSequence(tx, context, {
+        outletId,
+        deviceId: row.id,
+      });
     const token = mintForRow(
       row,
       tenantId,

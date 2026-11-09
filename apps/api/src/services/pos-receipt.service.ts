@@ -19,7 +19,7 @@
 //   matching cloud void row, and an ordinal that is already taken by another receipt.
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   CoreError,
   userIdSchema,
@@ -42,7 +42,10 @@ import {
   type PosReceipt,
   type ReceiptSequence,
 } from "@starter/shared/pos";
+import type { DeviceReceiptSequenceSync } from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { devices } from "../db/schema/device.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
 import { posOrders, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { legalEntities, outlets } from "../db/schema/platform-org.ts";
@@ -179,7 +182,7 @@ async function ensureSequence(
   const existing = await findSequenceRow(tx, tenantId, outletId, deviceId);
   if (existing) return existing;
   const cloudOwned = deviceId === outletId;
-  if (!cloudOwned && getEdgeRuntimeState().edgeMode)
+  if (!cloudOwned && isEdgeProcess())
     throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   // Another sale may have created it while this one waited for the lock.
@@ -315,6 +318,36 @@ export async function outletSnapshotFor(
 }
 
 /**
+ * Edge semantics from the first request (review K, legend-3yqy): the server
+ * answers before `startEdgeRuntime` flips `edgeMode`, so the static
+ * `EDGE_MODE` setting counts too. Otherwise an edge in its boot window would
+ * act as the cloud and refuse its own device sales (RECEIPT_DEVICE_ON_EDGE).
+ */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+/** S-K1 (legend-3yqy): the outlet has an active edge node in this database. */
+async function outletHasActiveEdge(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, tenantId),
+        eq(edgeNodes.outletId, outletId),
+        eq(edgeNodes.status, "active"),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
  * POS-06: next gapless number of the sale's device, inside the caller's order
  * transaction. An order that already has a receipt gets it back unchanged.
  */
@@ -331,11 +364,21 @@ export async function allocateReceipt(
   const existing = await findReceiptForOrder(tx, context, input.orderId);
   if (existing) return existing;
   // An edge sale without a verified device cannot take a cloud number.
-  if (input.deviceId === null && getEdgeRuntimeState().edgeMode)
+  if (input.deviceId === null && isEdgeProcess())
     throw new PosError("RECEIPT_DEVICE_REQUIRED");
   const tenantId = context.tenant.tenantId;
   const deviceKey = input.deviceId ?? input.outletId;
   const outletId = input.outletId as OutletId;
+  // S-K1 (legend-3yqy): while an edge serves the outlet, its devices number
+  // on the edge. A cloud number on the same device run would collide with
+  // the edge's (two allocators, one counter each). Sales without a device
+  // (sequence C) are the cloud's own and stay allowed.
+  if (
+    input.deviceId !== null &&
+    !isEdgeProcess() &&
+    (await outletHasActiveEdge(tx, tenantId, outletId))
+  )
+    throw new PosError("RECEIPT_DEVICE_ON_EDGE");
   const sequence = await ensureSequence(tx, tenantId, outletId, deviceKey);
   // The row lock taken here serialises every device sale on this sequence.
   const [advanced] = await tx
@@ -486,6 +529,184 @@ export async function provisionReceiptSequence(
     .returning();
   if (!row) throw new Error("Receipt sequence update returned no row");
   return toReceiptSequence(row);
+}
+
+// ---- Device sequences: cloud provisioning, edge replication (legend-3yqy) ----
+//
+// An edge never invents a prefix (ensureSequence), so the cloud provisions one
+// for every device that can create a POS order, at enroll and (for devices
+// enrolled earlier) when the edge pulls the device registry. The pull carries
+// the outlet's device sequences; the edge inserts a missing one and never
+// touches an existing one.
+
+/**
+ * Device types that can create a POS order: the PIN terminals (§3 F6,
+ * PIN_CAPABLE_DEVICE_TYPES). An order takes its receipt number from the device
+ * that created it (pos_orders.device_id), so each of these needs a sequence.
+ */
+export const RECEIPT_DEVICE_TYPES = ["pos", "kds", "waiter_phone"] as const;
+
+export function deviceTakesReceipts(type: string): boolean {
+  return (RECEIPT_DEVICE_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * Cloud: the device's sequence with the next free `P<n>` prefix of the outlet.
+ * Idempotent: an existing row is returned unchanged.
+ */
+export async function provisionNextDeviceReceiptSequence(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: string; deviceId: string },
+): Promise<ReceiptSequence> {
+  const tenantId = context.tenant.tenantId;
+  const outletId = input.outletId as OutletId;
+  // The outlet id key belongs to the cloud-owned sequence `C`.
+  if (input.deviceId === outletId)
+    throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  const existing = await findSequenceRow(
+    tx,
+    tenantId,
+    outletId,
+    input.deviceId,
+  );
+  if (existing) return toReceiptSequence(existing);
+  if (isEdgeProcess()) throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
+  await lockOutletSequences(tx, tenantId, outletId);
+  const created = await findSequenceRow(tx, tenantId, outletId, input.deviceId);
+  if (created) return toReceiptSequence(created);
+  const used = await prefixesOfOutlet(tx, tenantId, outletId);
+  return toReceiptSequence(
+    await insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId: input.deviceId,
+      prefix: nextFreePrefix(used),
+    }),
+  );
+}
+
+/**
+ * Cloud: provisions a sequence for every active order-taking device of the
+ * outlet that has none (devices enrolled before legend-3yqy). Revoked devices
+ * get none. Returns how many were created.
+ */
+export async function backfillDeviceReceiptSequences(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const missing = await tx
+    .select({ id: devices.id })
+    .from(devices)
+    .leftJoin(
+      receiptSequences,
+      and(
+        eq(receiptSequences.tenantId, devices.tenantId),
+        eq(receiptSequences.outletId, devices.outletId),
+        eq(receiptSequences.deviceId, devices.id),
+      ),
+    )
+    .where(
+      and(
+        eq(devices.tenantId, tenantId),
+        eq(devices.outletId, outletId as OutletId),
+        eq(devices.status, "active"),
+        isNull(devices.revokedAt),
+        inArray(devices.type, [...RECEIPT_DEVICE_TYPES]),
+        isNull(receiptSequences.id),
+      ),
+    )
+    .orderBy(asc(devices.createdAt), asc(devices.id));
+  for (const device of missing)
+    await provisionNextDeviceReceiptSequence(tx, context, {
+      outletId,
+      deviceId: device.id,
+    });
+  return missing.length;
+}
+
+/** Cloud: every device sequence of the outlet (not the cloud-owned `C`), for the edge pull. */
+export async function listDeviceReceiptSequences(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<DeviceReceiptSequenceSync[]> {
+  const rows = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, context.tenant.tenantId),
+        eq(receiptSequences.outletId, outletId as OutletId),
+        sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+      ),
+    )
+    .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
+  return rows.map((row) => ({
+    id: row.id,
+    outletId: row.outletId,
+    deviceId: row.deviceId,
+    prefix: row.prefix,
+    lastNumber: row.lastNumber,
+  }));
+}
+
+/**
+ * Edge: one pulled device sequence.
+ * - inserted: no row for the device and the cloud's lastNumber is 0; created
+ *   with the cloud's id and prefix at 0.
+ * - kept: a row with the same prefix exists; untouched (its counter is ahead).
+ * - refused: the device already numbers under another prefix, or the prefix or
+ *   id belongs to another device (two numbering namespaces). Nothing written.
+ * - refused (S-K1): no row here but the cloud run is already at L > 0. The
+ *   edge holds none of receipts 1..L, so the gap check would refuse Tutup Hari
+ *   forever. Fresh numbering comes from re-enrolling the terminal (new device,
+ *   new prefix).
+ */
+export async function applyCloudDeviceReceiptSequence(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sequence: DeviceReceiptSequenceSync,
+): Promise<"inserted" | "kept" | "refused"> {
+  const tenantId = context.tenant.tenantId;
+  const outletId = sequence.outletId as OutletId;
+  if (
+    sequence.deviceId === outletId ||
+    sequence.prefix === CLOUD_RECEIPT_PREFIX
+  )
+    return "refused";
+  await lockOutletSequences(tx, tenantId, outletId);
+  const existing = await findSequenceRow(
+    tx,
+    tenantId,
+    outletId,
+    sequence.deviceId,
+  );
+  if (existing) return existing.prefix === sequence.prefix ? "kept" : "refused";
+  if (sequence.lastNumber > 0) return "refused";
+  const used = await prefixesOfOutlet(tx, tenantId, outletId);
+  if (used.has(sequence.prefix)) return "refused";
+  const [sameId] = await tx
+    .select({ id: receiptSequences.id })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.id, sequence.id),
+      ),
+    );
+  if (sameId) return "refused";
+  await tx.insert(receiptSequences).values({
+    id: sequence.id,
+    tenantId,
+    outletId,
+    deviceId: sequence.deviceId,
+    prefix: sequence.prefix,
+    lastNumber: 0,
+  });
+  return "inserted";
 }
 
 /** Void columns of a merged receipt, taken from the cloud void row. */
@@ -862,4 +1083,137 @@ export function createPosReceiptPort(): PosReceiptPort {
     findForOrder: findReceiptForOrder,
     voidForOrder: voidReceiptForOrder,
   };
+}
+
+/**
+ * Same result as `receiptGapsForOutlet`, without loading every receipt the
+ * outlet ever issued (bead legend-ain0, Tutup Hari recap). One SQL count per
+ * sequence compares the receipts issued in 1..lastNumber with lastNumber;
+ * only the sequences where they differ get the full missing-number scan.
+ * Gaps are outlet-lifetime, not per business day: a hole stays reported on
+ * every later day until the missing receipt merges in.
+ */
+export async function receiptGapsForOutletFast(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<
+  {
+    sequenceId: string;
+    deviceId: string;
+    prefix: string;
+    lastNumber: number;
+    missing: number[];
+  }[]
+> {
+  const tenantId = context.tenant.tenantId;
+  const counted = await tx
+    .select({
+      sequence: receiptSequences,
+      issued:
+        sql<number>`count(${posReceipts.id}) filter (where ${posReceipts.sequenceNumber} <= ${receiptSequences.lastNumber})`.mapWith(
+          Number,
+        ),
+    })
+    .from(receiptSequences)
+    .leftJoin(
+      posReceipts,
+      and(
+        eq(posReceipts.tenantId, receiptSequences.tenantId),
+        eq(posReceipts.sequenceId, receiptSequences.id),
+      ),
+    )
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId as OutletId),
+      ),
+    )
+    .groupBy(receiptSequences.id)
+    .orderBy(asc(receiptSequences.prefix));
+  const suspect = counted.filter(
+    (row) => row.issued !== row.sequence.lastNumber,
+  );
+  if (suspect.length === 0) return [];
+  const issued = await tx
+    .select({
+      sequenceId: posReceipts.sequenceId,
+      sequenceNumber: posReceipts.sequenceNumber,
+    })
+    .from(posReceipts)
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        inArray(
+          posReceipts.sequenceId,
+          suspect.map((row) => row.sequence.id),
+        ),
+      ),
+    );
+  const bySequence = new Map<string, { sequenceNumber: number }[]>();
+  for (const row of issued) {
+    const list = bySequence.get(row.sequenceId) ?? [];
+    list.push({ sequenceNumber: row.sequenceNumber });
+    bySequence.set(row.sequenceId, list);
+  }
+  return suspect
+    .map(({ sequence }) => ({
+      sequenceId: sequence.id,
+      deviceId: sequence.deviceId,
+      prefix: sequence.prefix,
+      lastNumber: sequence.lastNumber,
+      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
+    }))
+    .filter((entry) => entry.missing.length > 0);
+}
+
+/**
+ * Missing ordinals of ONE device run (bead legend-ain0): the implementation of
+ * `posReceiptGapsPort` that app.ts installs, so Tutup Hari refuses and the
+ * shift report lists the numbers (POS-06). Fast path like
+ * `receiptGapsForOutletFast`: one SQL count first, the full scan only when the
+ * count differs from lastNumber. Outlet-lifetime, not per business day.
+ */
+export async function receiptGapsForDevice(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: string; deviceId: string },
+): Promise<number[]> {
+  const tenantId = context.tenant.tenantId;
+  const [sequence] = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, input.outletId as OutletId),
+        eq(receiptSequences.deviceId, input.deviceId),
+      ),
+    );
+  if (!sequence || sequence.lastNumber === 0) return [];
+  const [counted] = await tx
+    .select({
+      issued:
+        sql<number>`count(*) filter (where ${posReceipts.sequenceNumber} <= ${sequence.lastNumber})`.mapWith(
+          Number,
+        ),
+    })
+    .from(posReceipts)
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        eq(posReceipts.sequenceId, sequence.id),
+      ),
+    );
+  if (counted?.issued === sequence.lastNumber) return [];
+  const issued = await tx
+    .select({ sequenceNumber: posReceipts.sequenceNumber })
+    .from(posReceipts)
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        eq(posReceipts.sequenceId, sequence.id),
+      ),
+    );
+  return receiptGaps(sequence, issued);
 }

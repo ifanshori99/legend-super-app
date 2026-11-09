@@ -4,7 +4,10 @@
 //
 // deviceRecordSyncRouter (cloud only; mount at /api/edge-sync/device-records;
 // /api/edge/* is edge-only under the EDGE_MODE route guard):
-//   GET /?since=<watermark>&limit=<1..100>
+//   GET /?since=<watermark>&limit=<1..100>[&receiptSequences=1]
+//     `receiptSequences=1` (exactly; strict query schema, S-K1 legend-3yqy)
+//     adds the outlet's device receipt sequences; without it the page has no
+//     such field, so an older edge keeps parsing pages.
 //     Edge node only: `Authorization: Bearer <edge credential>`, verified by
 //     the EdgeCredentialVerifier port. No session, no cookie, read-only.
 //     Tenant and outlet come from the verified credential; a tenant resolved

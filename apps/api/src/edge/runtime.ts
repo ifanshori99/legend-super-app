@@ -661,6 +661,8 @@ export async function startEdgeRuntime(
           let first = true;
           return pullDeviceRegistry({
             context: local.context,
+            // S-K1 (legend-3yqy): a standby never applies receipt sequences.
+            role: config.role,
             since: from,
             fetchPage: async (cursor) => {
               const isFirst = first;

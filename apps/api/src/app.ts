@@ -47,7 +47,11 @@ import {
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
 import { edcTenderSettlement } from "./services/pos-edc-tender.ts";
-import { createPosReceiptPort } from "./services/pos-receipt.service.ts";
+import {
+  createPosReceiptPort,
+  receiptGapsForDevice,
+} from "./services/pos-receipt.service.ts";
+import { setPosReceiptGapsPort } from "./services/pos-shift-ports.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
@@ -65,6 +69,10 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // default (pos-order-ports.ts) until that bead lands.
 setPosOrderPromoPort(orderPromoPort);
 setPosReceiptPort(createPosReceiptPort());
+// POS-06 (legend-ain0): the real gap lookup, so Tutup Hari refuses with
+// RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before
+// this the port kept its "no gaps" default and the contract never fired.
+setPosReceiptGapsPort(receiptGapsForDevice);
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 // WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
@@ -98,10 +106,10 @@ function safeUrl(url: string) {
   const query = queryStart === -1 ? "" : target.slice(queryStart + 1);
   // A malformed percent-encoding makes the router reject the request (400);
   // the path may carry a credential in a param, so never log any of it.
-  if (rawPath && isMalformedPath(rawPath)) return "[malformed-url]";
+  if (isMalformedPath(rawPath)) return "[malformed-url]";
   // The purchase order share token is a path segment: bearer credential.
   const path = rawPath
-    ?.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
+    .replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
     .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);

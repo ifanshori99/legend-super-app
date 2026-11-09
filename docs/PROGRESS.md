@@ -387,3 +387,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Follow-up: legend-cbd0 (celah channel), legend-bk99 (panggilan platform setelah commit), legend-5d76 (selesaikan needs_review), kriteria keamanan di legend-im8n (penautan store id).
 - Parkir (keputusan owner): legend-q1e0 + 9be7 (recompute promo saat refund parsial).
 - Biaya sesi: ~21,5M token tertimbang (Opus utama 4,6M; subagent Opus 5,8M, Sonnet 11,0M, Haiku 0,2M); 54 subagent, puncak 7 bersamaan, rata-rata 1,65.
+
+## Codex 68 struk: legend-3yqy, v3vo, 9wbc, ain0 (engineer, cabang `ws/fix-receipt-codex`, 2026-11-09)
+
+- Basis `milestone/m1` dab1d592 (receipt 39296fae sudah di m1). Worktree `.worktrees/fix-receipt`. Sub-brief `docs/briefs/sub-fix-receipt-codex.md`.
+- legend-9wbc: cherry-pick fix PO absolute-form (7c98db8f, legend-qni9; konflik digabung dengan redaksi struk) + test redaksi token struk JSON/PDF absolute-form. Merge train: cabang `ws/fix-codex-procurement` membawa commit yang sama, konflik `app.ts` diselesaikan dengan versi cabang ini.
+- legend-v3vo: job email e-receipt didaftarkan di sweep tenant `worker-main.ts`, hanya di cloud (token link hanya ada di DB edge). Provider null: baris tetap queued.
+- legend-3yqy: cloud memberi urutan `P<n>` saat enroll perangkat pos/kds/waiter_phone, backfill saat pull, edge menerima lewat `?receiptSequences=1`. Edge menolak urutan yang di cloud sudah > 0 (terminal di-enroll ulang). Cloud menolak penjualan perangkat di outlet yang punya edge aktif (`RECEIPT_DEVICE_ON_EDGE`). Standby tidak menerapkan urutan.
+- legend-ain0: port celah nomor (POS-06) disambungkan di `app.ts`: Tutup Hari menolak `RECEIPT_SEQUENCE_GAP`, laporan shift menampilkan nomor hilang. Bagian edge sync merge dipisah ke legend-ol6v (terblokir legend-kai, legend-9fhs).
+- Kartu lanjutan: legend-ol6v (applier run struk), legend-zsdd (urutan terikat satu edge node, release-gate), legend-19gb (e-receipt dari edge).
+- Urutan rilis: cloud dulu, baru edge (edge baru selalu kirim `receiptSequences=1`; cloud lama menolak dengan 400 sehingga pull registri berhenti).
