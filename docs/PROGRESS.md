@@ -330,3 +330,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K reservasi: order POS `channel: reservation` dengan `serviceType` takeaway/delivery tidak ditolak dan kini kena service 5% (belum ada pemanggil di kode; jalur POS di luar scope): diperbaiki di legend-6u81: `createPosOrder` menolak `reservation` selain `dine_in` (VALIDATION_ERROR). `posPriceChannel` dan `order.paid` tidak diubah. Review K: tidak ada jalur lain yang membuat order reservation.
 - Follow-up: legend-mdh0 (publish boleh membuat tie aturan, `TAX_RULE_AMBIGUOUS` memblokir checkout; lock seed di `createServiceChargeRule`; actor `createOutlet`), legend-9flj (pertanyaan founder: channel reservation).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
+
+## legend-mdh0 publish tidak boleh membuat tabrakan aturan service (engineer, cabang `ws/service-charge-default`, 2026-11-09)
+
+- `publishServiceChargeRule` memanggil `assertNoServiceChargeOverlap` (`tax.service.ts`): versi aktif yang akan terbit dibandingkan satu per satu dengan tiap aturan service yang sedang berlaku (memakai `resolveServiceChargeRule` dan `effectiveRuleVersions` engine yang sama, engine tidak diubah), pada tanggal efektifnya dan tiap tanggal mulai aturan lain sesudahnya. Bila sama peringkat dan cakupan beririsan: `TAX_RULE_AMBIGUOUS` (409), pesan Indonesia menyebut kode aturan lawan, publish di-rollback. Pasangan satu per satu (bukan terhadap seluruh himpunan) supaya tabrakan tidak bisa bersembunyi di bawah aturan yang lebih kuat. Versi tidak aktif tidak dicek: untuk mengganti `SC-DINE-IN`, terbitkan dulu versi tidak aktifnya.
+- Kunci advisory seed dipakai juga oleh `createServiceChargeRule` dan `publishServiceChargeRule` (`lockServiceChargeConfig`, kunci pertama di publish sebelum kunci baris). Dua publish bersamaan yang bertabrakan: satu lolos, satu 409.
+- `createOutlet` membawa user pembuat (`routes/org.routes.ts` meneruskan `getAuth(req).user.id`): audit `tax.service_charge.provisioned` dan `publishedBy` memakai owner, bukan sistem.
+- Tidak dicek: tabrakan yang sudah ada sebelum guard ini; seed dev `seed-dev-tenant.ts` melewati guard.
+- Test: `apps/api/src/test/tax-service-overlap.test.ts` (15). Tanpa migrasi.

@@ -46,6 +46,7 @@ import {
   decodeCursor,
   encodeCursor,
   outletIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -440,6 +441,7 @@ function assertOutletWritable(
 export async function createOutlet(
   context: ScopedTenantContext,
   input: CreateOutletInput,
+  actorUserId: string | null = null,
 ): Promise<Outlet> {
   return withTenant(db, context, async (tx) => {
     await requireBrand(tx, input.brandId);
@@ -491,10 +493,11 @@ export async function createOutlet(
     await provisionStandardUoms(tx, context, null);
     await provisionOutletStockLocations(tx, context, inserted.id, null);
     // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
+    const actor = userIdSchema.safeParse(actorUserId);
     await provisionDefaultServiceChargeRule(
       tx,
       context,
-      null,
+      actor.success ? actor.data : null,
       outletIdSchema.parse(inserted.id),
     );
     return toOutlet(inserted);

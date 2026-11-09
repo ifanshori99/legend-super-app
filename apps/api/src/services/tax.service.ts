@@ -53,15 +53,18 @@ import {
   TaxError,
   calculateTax,
   createServiceChargeRuleInputSchema,
+  effectiveRuleVersions,
   createTaxRuleInputSchema,
   createTaxSettingsInputSchema,
   pbjtMonthlyRecapSchema,
   publishRuleVersion,
+  resolveServiceChargeRule,
   serviceChargeRuleIdSchema,
   serviceChargeRulePublished,
   serviceChargeRuleSchema,
   taxRuleIdSchema,
   taxRulePublished,
+  taxChannelSchema,
   taxRuleSchema,
   taxSettingsIdSchema,
   taxSettingsPublished,
@@ -89,6 +92,7 @@ import { outletBusinessDayClock } from "./outlet-clock";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
+import { lockServiceChargeConfig } from "./tax-provisioning.service";
 import { appendOutbox } from "./core-outbox";
 import {
   loadTenantAccessInTransaction,
@@ -777,6 +781,8 @@ export async function createServiceChargeRule(
       targetOf(input.outletId),
     );
     if (input.outletId) await requireOutlet(tx, context, input.outletId);
+    // Same lock as the default-rule seed (legend-mdh0).
+    await lockServiceChargeConfig(tx, context.tenant.tenantId);
     const [latest] = await tx
       .select({ version: serviceChargeRules.version })
       .from(serviceChargeRules)
@@ -890,6 +896,110 @@ export async function updateServiceChargeRule(
   });
 }
 
+/** Stands in for "any outlet" when the rule being published is tenant-wide. */
+const ANY_OUTLET = "00000000-0000-4000-8000-000000000000" as OutletId;
+
+/**
+ * Refuses to publish a service-charge version that would tie, in
+ * `resolveServiceChargeRule`, with another rule in force: the engine then
+ * throws TAX_RULE_AMBIGUOUS on every matching line and checkout stops
+ * (legend-mdh0). Uses the engine's own resolver, so the check cannot drift from
+ * what a bill does. Called inside the publish transaction, after the row is
+ * marked published and under the per-tenant service-charge lock.
+ *
+ * A version with `isActive` false never ties (it only turns a code off). To
+ * replace a rule, publish an inactive version of the old one first.
+ * Checked on the new version's start date and on every later date a peer
+ * rule starts, so a future-dated rule cannot hide a tie. Compared pair by pair
+ * with each rule in force, so no tie can hide under a stronger rule.
+ */
+async function assertNoServiceChargeOverlap(
+  tx: Tx,
+  tenantId: TenantId,
+  published: ServiceChargeRuleRow,
+): Promise<void> {
+  if (!published.isActive) return;
+  const rows = await tx
+    .select()
+    .from(serviceChargeRules)
+    .where(
+      and(
+        eq(serviceChargeRules.tenantId, tenantId),
+        eq(serviceChargeRules.status, "published"),
+        published.outletId === null
+          ? isNull(serviceChargeRules.outletId)
+          : or(
+              isNull(serviceChargeRules.outletId),
+              eq(serviceChargeRules.outletId, published.outletId),
+            ),
+      ),
+    )
+    .orderBy(asc(serviceChargeRules.version));
+  const rules = rows.map(toServiceChargeRule);
+  const mine = rules.find((rule) => rule.id === published.id);
+  if (!mine) return;
+  const outletId = (published.outletId ?? ANY_OUTLET) as OutletId;
+  const dates = [
+    ...new Set([
+      mine.effectiveFrom,
+      ...rules
+        .map((rule) => rule.effectiveFrom)
+        .filter((date) => date > mine.effectiveFrom),
+    ]),
+  ];
+  const zones: (string | null)[] =
+    mine.zoneId !== null
+      ? [mine.zoneId]
+      : [
+          null,
+          ...new Set(
+            rules.flatMap((rule) =>
+              rule.zoneId === null ? [] : [rule.zoneId],
+            ),
+          ),
+        ];
+  const channels =
+    mine.orderTypes.length > 0 ? mine.orderTypes : taxChannelSchema.options;
+  for (const date of dates) {
+    const inForce = effectiveRuleVersions(rules, outletId, date);
+    if (!inForce.some((rule) => rule.id === mine.id)) continue;
+    // Pairwise, not against the whole set: a stronger rule that wins in every
+    // context would hide a tie between two weaker ones, and the tie would
+    // surface at checkout the day that stronger rule is narrowed or turned off.
+    for (const peer of inForce) {
+      if (peer.id === mine.id) continue;
+      for (const zoneId of zones) {
+        for (const channel of channels) {
+          for (const itemClass of mine.itemClasses) {
+            try {
+              resolveServiceChargeRule(
+                [mine, peer],
+                {
+                  outletId,
+                  channel,
+                  zoneId: zoneId as TaxCalculationInput["zoneId"],
+                  regionCode: null,
+                },
+                itemClass,
+              );
+            } catch (error) {
+              if (
+                !(error instanceof TaxError) ||
+                error.code !== "TAX_RULE_AMBIGUOUS"
+              )
+                throw error;
+              throw new TaxError(
+                "TAX_RULE_AMBIGUOUS",
+                `Aturan service charge ${mine.code} bertabrakan dengan aturan aktif ${peer.code} untuk pesanan ${channel} (${itemClass}): keduanya berlaku sama kuat dan kasir akan gagal menghitung. Matikan aturan lama dulu (terbitkan versi tidak aktif) atau ubah cakupan aturan ini.`,
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 export async function publishServiceChargeRule(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -900,6 +1010,9 @@ export async function publishServiceChargeRule(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = serviceChargeRuleIdSchema.parse(serviceChargeRuleId);
+    // Serialises publishes (and the default-rule seed) per tenant, so the
+    // overlap check below sees every rule another publish has just committed.
+    await lockServiceChargeConfig(tx, context.tenant.tenantId);
     const row = await lockServiceChargeRule(tx, context.tenant.tenantId, id);
     await assertPermission(
       tx,
@@ -935,6 +1048,8 @@ export async function publishServiceChargeRule(
       .returning();
     if (!updated)
       throw new HttpError(404, "NOT_FOUND", "Service-charge rule not found.");
+    // Throws inside the transaction: the publish above rolls back.
+    await assertNoServiceChargeOverlap(tx, context.tenant.tenantId, updated);
     await appendTaxEvent(tx, context, serviceChargeRulePublished, {
       aggregateId: updated.id,
       outletId: updated.outletId,

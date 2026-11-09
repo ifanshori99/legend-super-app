@@ -241,6 +241,20 @@ export const DEFAULT_SERVICE_CHARGE_ORDER_TYPES: TaxChannel[] = [
 ];
 
 /**
+ * Per-tenant advisory lock for service-charge configuration. The seed, the
+ * owner's create and publish (`tax.service.ts`) all take it, so the seed's "any
+ * tenant-wide rule?" check and the publish overlap check never race a write.
+ */
+export async function lockServiceChargeConfig(
+  tx: TenantTransaction,
+  tenantId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tax:service-provisioning:${tenantId}`}, 0))`,
+  );
+}
+
+/**
  * Seeds the default 5% dine-in service charge as an owner-editable v1 row.
  * - `outletId` null (new tenant): one tenant-wide rule.
  * - `outletId` set (new outlet): one outlet-scoped rule, unless the tenant
@@ -255,9 +269,7 @@ export async function provisionDefaultServiceChargeRule(
   outletId: OutletId | null,
 ): Promise<{ rulesInserted: number }> {
   const tenantId = context.tenant.tenantId;
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tax:service-provisioning:${tenantId}`}, 0))`,
-  );
+  await lockServiceChargeConfig(tx, tenantId);
   // New tenant: skip when its own default already exists. New outlet: skip when
   // the tenant has ANY tenant-wide service rule (whatever its code or status):
   // an outlet-scoped default would outrank the owner's rule and silently
