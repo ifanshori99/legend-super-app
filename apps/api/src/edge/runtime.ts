@@ -659,6 +659,7 @@ export async function startEdgeRuntime(
   const fetchDeviceRecords = createDeviceRecordsFetcher({
     cloudUrl: config.cloudUrl,
     credential: config.credential,
+    edgeInstanceId: local.instanceId,
   });
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
@@ -669,6 +670,11 @@ export async function startEdgeRuntime(
             context: local.context,
             // S-K1 (legend-3yqy): a standby never applies receipt sequences.
             role: config.role,
+            // legend-zsdd: the sequences this database may number.
+            binding: {
+              edgeNodeId: local.scope.edgeNodeId,
+              edgeInstanceId: local.instanceId,
+            },
             since: from,
             fetchPage: async (cursor) => {
               const isFirst = first;

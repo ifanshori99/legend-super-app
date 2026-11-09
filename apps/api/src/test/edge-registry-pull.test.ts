@@ -597,7 +597,14 @@ describe("EDG-03 staleness is visible on /api/edge/status", () => {
       ).toBeGreaterThanOrEqual(1),
     );
     const status = await edgeStatus();
-    expect(status.deviceRegistry).toEqual({ lastPulledAt: null, stale: true });
+    // legend-zsdd: the status also carries the refused-sequence count (0, no
+    // successful pull yet) and the time of the last pull that refused (null).
+    expect(status.deviceRegistry).toEqual({
+      lastPulledAt: null,
+      stale: true,
+      receiptSequencesRefused: 0,
+      receiptSequencesRefusedAt: null,
+    });
   });
 
   it("EDG-03 right after a successful pull it is not stale and shows when it last pulled", async () => {

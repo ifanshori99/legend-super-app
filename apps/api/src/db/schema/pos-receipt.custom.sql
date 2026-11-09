@@ -49,6 +49,29 @@ BEGIN
     RAISE EXCEPTION 'POS-06: receipt sequence % already issued numbers under its prefix', OLD.id
       USING ERRCODE = '23514';
   END IF;
+  -- legend-zsdd: retirement is final (NULL -> value, then never changes).
+  IF OLD.retired_at IS NOT NULL AND NEW.retired_at IS DISTINCT FROM OLD.retired_at
+  THEN
+    RAISE EXCEPTION 'POS-06: receipt sequence % is retired and cannot change', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- legend-zsdd: the binding pair goes from both NULL to both set, once.
+  IF (NEW.edge_node_id IS DISTINCT FROM OLD.edge_node_id
+      OR NEW.edge_instance_id IS DISTINCT FROM OLD.edge_instance_id)
+  THEN
+    IF OLD.edge_node_id IS NOT NULL OR OLD.edge_instance_id IS NOT NULL THEN
+      RAISE EXCEPTION 'POS-06: receipt sequence % is already bound to an edge database', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF OLD.retired_at IS NOT NULL THEN
+      RAISE EXCEPTION 'POS-06: retired receipt sequence % cannot be bound', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+    IF NEW.edge_node_id IS NULL OR NEW.edge_instance_id IS NULL THEN
+      RAISE EXCEPTION 'POS-06: receipt sequence % binding needs node and instance', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 --> statement-breakpoint

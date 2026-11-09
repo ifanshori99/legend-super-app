@@ -99,13 +99,16 @@ export const deviceSyncRecordSchema = z
 export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;
 
 /**
- * A device's receipt run as the cloud hands it to the edge (legend-3yqy). The
+ * A device's receipt run as the cloud hands it to the edge (legend-3yqy,
+ * legend-zsdd). A run's counter lives in exactly one database: the row names
+ * it (`edgeNodeId` + `edgeInstanceId`, the edge database of that node). The
  * edge inserts a missing row only while the cloud's `lastNumber` is 0 (and at
- * 0), and never touches an existing row: its own counter is ahead of the
- * cloud's. A missing row with `lastNumber` > 0 is refused (S-K1): the
- * terminal is re-enrolled for a fresh prefix. A rebuilt edge not reissuing a
- * number is only safe once legend-ol6v merges edge runs into the cloud; until
- * then see the follow-up bead "sequence bound to one edge node".
+ * 0), and never touches a kept row: its own counter is ahead of the cloud's.
+ * A missing row with `lastNumber` > 0 is refused (S-K1). A rebuilt edge
+ * (fresh database, new instance id) or a standby that takes over never
+ * continues an old run: the cloud retires it and hands out a new prefix bound
+ * to the new database, so a number is never issued twice (legend-zsdd). An
+ * edge refuses a sequence whose binding is not its own.
  */
 export const deviceReceiptSequenceSyncSchema = z.strictObject({
   id: uuidSchema,
@@ -113,10 +116,19 @@ export const deviceReceiptSequenceSyncSchema = z.strictObject({
   deviceId: uuidSchema,
   prefix: receiptPrefixSchema,
   lastNumber: z.number().int().min(0).max(999_999_999),
+  /** legend-zsdd: the edge node whose database holds this run's counter. */
+  edgeNodeId: uuidSchema,
+  /** legend-zsdd: that node's database (changes when the edge is rebuilt). */
+  edgeInstanceId: uuidSchema,
 });
 export type DeviceReceiptSequenceSync = z.infer<
   typeof deviceReceiptSequenceSyncSchema
 >;
+/** legend-zsdd: which edge database (node + instance) a sequence is bound to. */
+export type DeviceReceiptSequenceBinding = {
+  edgeNodeId: string;
+  edgeInstanceId: string;
+};
 
 export const deviceSyncPageSchema = z.strictObject({
   data: z.array(deviceSyncRecordSchema),

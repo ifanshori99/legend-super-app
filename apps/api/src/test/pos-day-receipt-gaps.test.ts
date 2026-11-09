@@ -399,6 +399,7 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
       pullDeviceRegistry({
         context: edgeContext(outletId),
         role: "primary",
+        binding: EDGE_OWN,
         fetchPage: async () => ({
           data: [],
           receiptSequences: [advanced, fresh],
@@ -479,8 +480,12 @@ function pulledSequence(outletId: string, prefix: string, lastNumber: number) {
     deviceId: randomUUID(),
     prefix,
     lastNumber,
+    // legend-zsdd: pulled sequences are bound to the applying edge database.
+    ...EDGE_OWN,
   };
 }
+
+const EDGE_OWN = { edgeNodeId: randomUUID(), edgeInstanceId: randomUUID() };
 
 /** Runs `run` with edge mode on and always restores the previous state. */
 async function inEdgeMode<T>(run: () => Promise<T>): Promise<T> {

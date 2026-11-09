@@ -35,6 +35,15 @@
 //  - The cloud adds `receiptSequences` only for `?receiptSequences=1`. On the
 //    edge any sequence error is counted and logged, never stops the device
 //    records or later pages.
+//
+// legend-zsdd (a sequence lives in exactly ONE database; T2 update of this file):
+//  - A pulled sequence carries edgeNodeId + edgeInstanceId. The cloud claims
+//    and lists sequences only for an ACTIVE PRIMARY node that sent its
+//    `edgeInstance`; any other puller gets []. The tests therefore register
+//    an active primary node row (`activeEdge`) wherever the cloud lists.
+//  - The edge applies with its own binding (`own`). A pulled prefix/id change
+//    for a device with a local current run is now `replaced` (old run retired),
+//    no longer `refused`; a sequence bound to another database is `refused`.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
@@ -60,6 +69,7 @@ import {
 } from "@starter/shared/core/server";
 import {
   deviceSyncPageSchema,
+  type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
 } from "@starter/shared/edge";
@@ -250,6 +260,9 @@ type SequenceRow = {
   prefix: string;
   last_number: number;
   device_id: string;
+  edge_node_id: string | null;
+  edge_instance_id: string | null;
+  retired_at: Date | null;
 };
 
 function sequenceRows(
@@ -258,7 +271,8 @@ function sequenceRows(
 ): Promise<SequenceRow[]> {
   return asOwnerTenant(tenantId, async (client) => {
     const result = await client.query(
-      `SELECT id, prefix, last_number, device_id FROM receipt_sequences
+      `SELECT id, prefix, last_number, device_id, edge_node_id, edge_instance_id, retired_at
+       FROM receipt_sequences
        WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY prefix`,
       [tenantId, outletId],
     );
@@ -270,7 +284,10 @@ async function sequenceOf(
   outletId: string,
   deviceId: string,
 ): Promise<SequenceRow | undefined> {
-  return (await sequenceRows(outletId)).find((r) => r.device_id === deviceId);
+  // The CURRENT (not retired) run of the device (legend-zsdd).
+  return (await sequenceRows(outletId)).find(
+    (r) => r.device_id === deviceId && r.retired_at === null,
+  );
 }
 
 type DeviceType = Parameters<typeof enrollDevice>[2]["type"];
@@ -312,23 +329,36 @@ async function legacyDevice(
   return deviceId;
 }
 
-const nodeOf = (outletId: string, tenantId = tenant.tenantId) => ({
+const nodeOf = (
+  outletId: string,
+  tenantId = tenant.tenantId,
+  edgeNodeId: string = randomUUID(),
+) => ({
   tenantId: tenantId as TenantId,
   outletId: outletIdSchema.parse(outletId),
-  edgeNodeId: randomUUID(),
+  edgeNodeId,
 });
 
-/** A page as a current edge asks for it (`?receiptSequences=1`). */
+/** An edge database as the cloud sees it: node id + the instance it sends. */
+type EdgeIdentity = DeviceReceiptSequenceBinding;
+
+/**
+ * A page as a current edge asks for it (`?receiptSequences=1`). With `edge`
+ * the puller is that node and sends its instance (legend-zsdd); without it the
+ * node is unknown to the registry and the cloud lists and claims nothing.
+ */
 function cloudPage(
   outletId: string,
   tenantId = tenant.tenantId,
   receiptSequences: "1" | null = "1",
+  edge?: EdgeIdentity,
 ): Promise<DeviceSyncPage> {
   return listDeviceRecordsSince(
-    nodeOf(outletId, tenantId),
+    nodeOf(outletId, tenantId, edge?.edgeNodeId),
     deviceSyncQuerySchema.parse({
       limit: 100,
       receiptSequences: receiptSequences ?? undefined,
+      edgeInstance: edge?.edgeInstanceId,
     }),
     { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
   );
@@ -339,33 +369,57 @@ function edgePull(
   outletId: string,
   page: unknown,
   role: "primary" | "standby" = "primary",
+  binding: DeviceReceiptSequenceBinding = OWN,
 ) {
   return pullDeviceRegistry({
     context: edgeScope(outletId),
     role,
+    binding,
     fetchPage: async () => page,
   });
 }
+
+/** The edge database applying the pulls below (legend-zsdd). */
+const OWN: DeviceReceiptSequenceBinding = {
+  edgeNodeId: randomUUID(),
+  edgeInstanceId: randomUUID(),
+};
 
 /** An edge node row of the outlet in the cloud registry (owner SQL). */
 async function edgeNodeAt(
   outletId: string,
   status: "active" | "revoked" = "active",
-): Promise<void> {
-  await asOwnerTenant(tenant.tenantId, (client) =>
+  tenantId = tenant.tenantId,
+  role: "primary" | "standby" = "primary",
+): Promise<string> {
+  const id = randomUUID();
+  await asOwnerTenant(tenantId, (client) =>
     client.query(
       `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, revoked_at)
-       VALUES ($1, $2, $3, 'primary', $4, 'Server lokal', $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, 'Server lokal', $6, $7)`,
       [
-        randomUUID(),
-        tenant.tenantId,
+        id,
+        tenantId,
         outletId,
+        role,
         status,
         "a".repeat(64),
         status === "revoked" ? new Date() : null,
       ],
     ),
   );
+  return id;
+}
+
+/** The active primary node of the outlet plus a fresh database instance. */
+async function activeEdge(
+  outletId: string,
+  tenantId = tenant.tenantId,
+): Promise<EdgeIdentity> {
+  return {
+    edgeNodeId: await edgeNodeAt(outletId, "active", tenantId),
+    edgeInstanceId: randomUUID(),
+  };
 }
 
 /** A cloud revocation record of `deviceId`, with the edge row not yet revoked. */
@@ -567,7 +621,9 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
       }),
     );
     const row = await sequenceOf(outletId, device.id);
-    const page = await cloudPage(outletId);
+    const edge = await activeEdge(outletId);
+    const page = await cloudPage(outletId, tenant.tenantId, "1", edge);
+    // legend-zsdd: the listed sequence says which edge database holds it.
     expect(page.receiptSequences).toEqual([
       {
         id: row!.id,
@@ -575,6 +631,8 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
         deviceId: device.id,
         prefix: "P1",
         lastNumber: 0,
+        edgeNodeId: edge.edgeNodeId,
+        edgeInstanceId: edge.edgeInstanceId,
       },
     ]);
   });
@@ -583,15 +641,17 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
     const outletId = await freshOutlet();
     const legacy = await legacyDevice(outletId);
     expect(await sequenceOf(outletId, legacy)).toBeUndefined();
-    const first = await cloudPage(outletId);
+    const edge = await activeEdge(outletId);
+    const first = await cloudPage(outletId, tenant.tenantId, "1", edge);
     // Pull again from the watermark: the device row is not in `data`, the
     // sequence still is.
     const again = await listDeviceRecordsSince(
-      nodeOf(outletId),
+      nodeOf(outletId, tenant.tenantId, edge.edgeNodeId),
       {
         limit: 100,
         since: first.meta.watermark ?? undefined,
         receiptSequences: "1",
+        edgeInstance: edge.edgeInstanceId,
       },
       { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
     );
@@ -610,7 +670,7 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
       deviceId: live.id,
       reason: "Hilang",
     });
-    await cloudPage(outletId);
+    await cloudPage(outletId, tenant.tenantId, "1", await activeEdge(outletId));
     // Only the sequence made while `live` was active.
     expect(await sequenceRows(outletId)).toEqual([
       expect.objectContaining({ device_id: live.id, prefix: "P1" }),
@@ -621,8 +681,18 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
     const outletId = await freshOutlet();
     const device = await enroll(outletId, "pos");
     await enroll(other.outletId, "pos", other.tenantId);
-    const mine = await cloudPage(outletId);
-    const theirs = await cloudPage(other.outletId, other.tenantId);
+    const mine = await cloudPage(
+      outletId,
+      tenant.tenantId,
+      "1",
+      await activeEdge(outletId),
+    );
+    const theirs = await cloudPage(
+      other.outletId,
+      other.tenantId,
+      "1",
+      await activeEdge(other.outletId, other.tenantId),
+    );
     expect(mine.receiptSequences?.map((s) => s.deviceId)).toEqual([device.id]);
     expect(theirs.receiptSequences?.length).toBe(1);
     expect(
@@ -631,6 +701,43 @@ describe("EDG-02 POS-06 the device pull carries the outlet's receipt sequences (
       ),
     ).toBe(false);
     await expect(cloudPage(outletId, other.tenantId)).rejects.toThrow();
+  });
+
+  it("legend-zsdd a standby node, or an active primary that sends no instance, gets no sequences and claims none", async () => {
+    const outletId = await freshOutlet();
+    const device = await enroll(outletId, "pos");
+    const primary = await activeEdge(outletId);
+    const standby: EdgeIdentity = {
+      edgeNodeId: await edgeNodeAt(
+        outletId,
+        "active",
+        tenant.tenantId,
+        "standby",
+      ),
+      edgeInstanceId: randomUUID(),
+    };
+    const asStandby = await cloudPage(outletId, tenant.tenantId, "1", standby);
+    const noInstance = await cloudPage(outletId, tenant.tenantId, "1", {
+      ...primary,
+      edgeInstanceId: undefined as never,
+    });
+    expect(asStandby.receiptSequences).toEqual([]);
+    expect(noInstance.receiptSequences).toEqual([]);
+    expect(await sequenceOf(outletId, device.id)).toMatchObject({
+      prefix: "P1",
+      edge_node_id: null,
+      edge_instance_id: null,
+    });
+    // The active primary that sends its instance claims the unissued run.
+    const claimed = await cloudPage(outletId, tenant.tenantId, "1", primary);
+    expect(claimed.receiptSequences?.map((s) => s.deviceId)).toEqual([
+      device.id,
+    ]);
+    expect(await sequenceOf(outletId, device.id)).toMatchObject({
+      prefix: "P1",
+      edge_node_id: primary.edgeNodeId,
+      edge_instance_id: primary.edgeInstanceId,
+    });
   });
 });
 
@@ -649,6 +756,8 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
       deviceId: randomUUID(),
       prefix,
       lastNumber,
+      // Bound to this edge database (legend-zsdd).
+      ...OWN,
     };
   }
 
@@ -699,15 +808,20 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
     );
   });
 
-  it("POS-06 a prefix mismatch skips only that sequence, the rest of the pull applies, and the log names no device", async () => {
+  it("POS-06 a refused sequence skips only that sequence, the rest of the pull applies, and the log names no device", async () => {
     const outletId = await freshOutlet();
     const kept = unseen(outletId, "P4");
     await inEdgeMode(() => edgePull(outletId, pageWith([kept])));
     const errors = vi.spyOn(logger, "error");
+    const warns = vi.spyOn(logger, "warn");
 
-    // Same device, another prefix (two numbering namespaces), next to a new
-    // sequence and a device revocation record in the same page.
-    const clash = { ...kept, prefix: "P9" };
+    // legend-zsdd changed this case: the same device with another prefix is no
+    // longer refused, it REPLACES the local run (see the replaced test). The
+    // refusal that remains here is a sequence bound to ANOTHER edge database.
+    const clash = {
+      ...unseen(outletId, "P9"),
+      edgeInstanceId: randomUUID(),
+    };
     const fresh = unseen(outletId, "P5");
     const device = await enroll(outletId, "printer");
     const cloud = await cloudPage(outletId);
@@ -740,10 +854,48 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
     );
     expect(revoked).toMatchObject({ status: "revoked" });
 
+    expect(await sequenceOf(outletId, clash.deviceId)).toBeUndefined();
+
     expect(errors).toHaveBeenCalled();
-    const logged = JSON.stringify(errors.mock.calls);
-    for (const secret of [kept.deviceId, kept.id, "P9", tenant.tenantId])
+    const logged = JSON.stringify([...errors.mock.calls, ...warns.mock.calls]);
+    for (const secret of [
+      kept.deviceId,
+      kept.id,
+      clash.deviceId,
+      "P9",
+      tenant.tenantId,
+    ])
       expect(logged).not.toContain(secret);
+  });
+
+  it("POS-06 legend-zsdd a pulled run with a new id and prefix for the same device replaces the local run: the old one is retired and the next sale is P2-000001", async () => {
+    const outletId = await freshOutlet();
+    const old = unseen(outletId, "P1");
+    const orderId = await draftOrder(outletId);
+    await inEdgeMode(() => edgePull(outletId, pageWith([old])));
+    const warns = vi.spyOn(logger, "warn");
+    const next = { ...old, id: randomUUID(), prefix: "P2" };
+    const result = await inEdgeMode(() => edgePull(outletId, pageWith([next])));
+    expect(result).toMatchObject({
+      receiptSequencesReplaced: 1,
+      receiptSequencesRefused: 0,
+    });
+    const rows = await sequenceRows(outletId);
+    expect(rows.find((r) => r.id === old.id)?.retired_at).not.toBeNull();
+    expect(await sequenceOf(outletId, old.deviceId)).toMatchObject({
+      id: next.id,
+      prefix: "P2",
+      last_number: 0,
+      edge_node_id: OWN.edgeNodeId,
+      edge_instance_id: OWN.edgeInstanceId,
+    });
+    const logged = JSON.stringify(warns.mock.calls);
+    for (const secret of [old.deviceId, old.id, next.id, tenant.tenantId])
+      expect(logged).not.toContain(secret);
+    expect(
+      (await inEdgeMode(() => allocate(outletId, orderId, old.deviceId)))
+        .number,
+    ).toBe("P2-000001");
   });
 
   it("TEN-01 S-K1 a sequence of another outlet or tenant writes no sequence, is counted, and the page's revocation still lands", async () => {
@@ -794,6 +946,7 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
       pullDeviceRegistry({
         context: edgeScope(outletId),
         role: "primary",
+        binding: OWN,
         fetchPage: async () => pages[call++],
       }),
     );
@@ -815,6 +968,21 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
     expect(await sequenceOf(outletId, sequence.deviceId)).toBeUndefined();
     expect(await deviceStatus(device.id)).toBe("revoked");
   });
+
+  it("EDG-02 legend-zsdd a primary edge without its own binding applies the device records but never the pulled sequences", async () => {
+    const outletId = await freshOutlet();
+    const sequence = unseen(outletId, "P3");
+    const result = await inEdgeMode(() =>
+      // No `binding`: the default of edgePull would add OWN, so call directly.
+      pullDeviceRegistry({
+        context: edgeScope(outletId),
+        role: "primary",
+        fetchPage: async () => pageWith([sequence]),
+      }),
+    );
+    expect(result).toMatchObject({ receiptSequencesRefused: 0 });
+    expect(await sequenceOf(outletId, sequence.deviceId)).toBeUndefined();
+  });
 });
 
 // ---- S-K1: the flag, and cloud sales of an edge outlet -----------------------
@@ -826,7 +994,12 @@ describe("EDG-02 S-K1 the cloud sends receipt sequences only when the edge asks"
     const plain = await cloudPage(outletId, tenant.tenantId, null);
     expect("receiptSequences" in plain).toBe(false);
     expect(await sequenceOf(outletId, legacy)).toBeUndefined();
-    const asked = await cloudPage(outletId);
+    const asked = await cloudPage(
+      outletId,
+      tenant.tenantId,
+      "1",
+      await activeEdge(outletId),
+    );
     expect(asked.receiptSequences?.map((s) => s.deviceId)).toEqual([legacy]);
   });
 

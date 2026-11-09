@@ -105,6 +105,8 @@ export async function cloudGetJson(
 
 export type DeviceRecordsFetcherOptions = CloudGetOptions & {
   limit?: number;
+  /** legend-zsdd: this edge database's instance id, sent with the sequences. */
+  edgeInstanceId?: string;
 };
 
 export function createDeviceRecordsFetcher(
@@ -120,6 +122,9 @@ export function createDeviceRecordsFetcher(
     // legend-3yqy: opt in to the outlet's device receipt sequences; a cloud
     // sends them only on request so older edges keep parsing their pages.
     query.set("receiptSequences", "1");
+    // legend-zsdd: names this edge database so the cloud can bind sequences to it.
+    if (options.edgeInstanceId !== undefined)
+      query.set("edgeInstance", options.edgeInstanceId);
     return cloudGetJson({
       ...options,
       path: `${DEVICE_RECORDS_PATH}?${query.toString()}`,

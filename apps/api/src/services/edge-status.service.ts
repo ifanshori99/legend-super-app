@@ -53,6 +53,8 @@ export async function getEdgeStatus(input: {
     deviceRegistry: {
       lastPulledAt: registry?.lastSuccessAt ?? null,
       stale: registry?.stale ?? true,
+      receiptSequencesRefused: registry?.receiptSequencesRefused ?? 0,
+      receiptSequencesRefusedAt: registry?.receiptSequencesRefusedAt ?? null,
     },
     thisDevice,
   });

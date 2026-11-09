@@ -56,6 +56,10 @@ export const edgeStatusSchema = z.strictObject({
       /** Last successful pull of the device registry from the cloud. */
       lastPulledAt: isoDateTimeSchema.nullable(),
       stale: z.boolean(),
+      /** Receipt sequences the last successful pull refused (legend-zsdd). */
+      receiptSequencesRefused: z.number().int().nonnegative().optional(),
+      /** Last successful pull that refused at least one; null if never. */
+      receiptSequencesRefusedAt: isoDateTimeSchema.nullable().optional(),
     })
     // Optional: an edge image older than legend-2lp.7 does not send it; the
     // edge API always does.

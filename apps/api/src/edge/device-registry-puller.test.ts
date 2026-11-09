@@ -401,3 +401,68 @@ describe("staleness and the clock", () => {
     expect(t.puller.getState().stale).toBe(true);
   });
 });
+
+describe("refused receipt sequences (legend-zsdd)", () => {
+  it("legend-zsdd starts at 0 and null", () => {
+    const t = setup();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRefused: 0,
+      receiptSequencesRefusedAt: null,
+    });
+  });
+
+  it("legend-zsdd a pull that refuses sets the count and the time", async () => {
+    const t = setup({
+      pull: vi.fn(async () => ({
+        watermark: "w1",
+        receiptSequencesRefused: 2,
+      })),
+    });
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRefused: 2,
+      receiptSequencesRefusedAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+
+  it("legend-zsdd a later clean pull zeroes the count and keeps the time", async () => {
+    const counts = [1, 0];
+    const t = setup({
+      pull: vi.fn(async () => ({
+        watermark: "w1",
+        receiptSequencesRefused: counts.shift(),
+      })),
+    });
+    await t.puller.runOnce();
+    t.advance(INTERVAL);
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRefused: 0,
+      receiptSequencesRefusedAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+
+  it("legend-zsdd a failed pull changes neither field", async () => {
+    let fail = false;
+    const t = setup({
+      pull: vi.fn(async () => {
+        if (fail) throw new Error("down");
+        return { watermark: "w1", receiptSequencesRefused: 3 };
+      }),
+    });
+    await t.puller.runOnce();
+    fail = true;
+    t.advance(INTERVAL);
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRefused: 3,
+      receiptSequencesRefusedAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+
+  it("legend-zsdd a pull without the count (older pull) counts as 0", async () => {
+    const t = setup();
+    await t.puller.runOnce();
+    expect(t.puller.getState().receiptSequencesRefused).toBe(0);
+  });
+});
