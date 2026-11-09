@@ -1767,15 +1767,13 @@ export async function receiptGapsForDevice(
       ),
     )
     .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
-  const writeoffs = await writeoffOrdinalsBySequence(
-    tx,
-    tenantId,
-    sequences.map((sequence) => sequence.id),
-  );
   const runs: PosReceiptGapRun[] = [];
   for (const sequence of sequences) {
-    const writtenOff = writeoffs.get(sequence.id) ?? [];
-    const missing = await receiptGapsOfRun(tx, tenantId, sequence, writtenOff);
+    const { missing, writtenOff } = await receiptGapsOfRun(
+      tx,
+      tenantId,
+      sequence,
+    );
     const lost =
       sequence.retiredReason === "edge_regressed" &&
       sequence.edgeReportedNumber > sequence.lastNumber
@@ -1787,14 +1785,19 @@ export async function receiptGapsForDevice(
   return runs;
 }
 
-/** Missing ordinals of one run; fast path when the count matches lastNumber. */
+/**
+ * Missing and written-off ordinals of one run; fast path when receipts plus
+ * write-offs cover lastNumber. The write-offs are read AFTER the receipt
+ * count (as in `receiptGapsForOutletFast`): under READ COMMITTED a receipt
+ * committed in between then drops its write-off from the list (NOT EXISTS),
+ * so the sum can only fall short (a false gap, the slow path re-checks),
+ * never hide a number that has neither a receipt nor a write-off.
+ */
 async function receiptGapsOfRun(
   tx: Tx,
   tenantId: TenantId,
   sequence: SequenceRow,
-  writtenOff: number[],
-): Promise<number[]> {
-  if (sequence.lastNumber === 0) return [];
+): Promise<{ missing: number[]; writtenOff: number[] }> {
   const [counted] = await tx
     .select({
       issued:
@@ -1809,11 +1812,16 @@ async function receiptGapsOfRun(
         eq(posReceipts.sequenceId, sequence.id),
       ),
     );
+  const writtenOff =
+    (await writeoffOrdinalsBySequence(tx, tenantId, [sequence.id])).get(
+      sequence.id,
+    ) ?? [];
+  if (sequence.lastNumber === 0) return { missing: [], writtenOff };
   if (
     (counted?.issued ?? 0) + countUpTo(writtenOff, sequence.lastNumber) ===
     sequence.lastNumber
   )
-    return [];
+    return { missing: [], writtenOff };
   const issued = await tx
     .select({ sequenceNumber: posReceipts.sequenceNumber })
     .from(posReceipts)
@@ -1823,7 +1831,10 @@ async function receiptGapsOfRun(
         eq(posReceipts.sequenceId, sequence.id),
       ),
     );
-  return receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]);
+  return {
+    missing: receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]),
+    writtenOff,
+  };
 }
 
 /**
