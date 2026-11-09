@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-r7g2 parser refund DOIT (engineer, cabang `ws/doit-refund-parser`, 2026-11-09)
+
+- Akar masalah: jawaban POST refund DOIT yang menyebut payment lain diterima sebagai sukses (`parseDoitRefundAnswer`). Sekarang objek refund wajib membawa `payment_id` dan `amount` yang cocok; `idempotency_key` dan `reference`, bila ada, juga harus cocok. Selain itu `DOIT_REFUND_IDENTITY_MISMATCH` (hasil tak dikenal, bukan sukses, bukan gagal).
+- Mismatch jadi flag lengket `PAYOUT_IDENTITY_MISMATCH`: tidak dikirim ulang, tidak diganti `MANUAL_RECONCILIATION`, masuk eskalasi, audit `payment.refund_payout_identity_mismatch` + log error berisi id DOIT.
+- Webhook P2 (Codex 117 Run B): objek `refund` dengan `reference` tetap dibaca sebagai refund dan `reference`-nya dicek; jalur `payment_object` tidak menimpa `providerRef` `rf_` yang sudah ada. P2 (c) jadi legend-gqv7; temuan minor jadi legend-fpe6.
+- Bukti: test reproduksi gagal di kode lama; 20 file `*doit*`/`*refund*`/`payment-webhook*` 759 lulus, 10 skip (sandbox tanpa kunci); tsc lewat heavy, eslint, prettier, kontrak node 44/44. Review K: reviewer Opus + architect, re-review architect: tertutup.
+- Commit 36f59dc3, 3b053bb8. Brief Codex `docs/briefs/175b-second-opinion-doit-refund-parser.md` (tidak di-commit).
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.
