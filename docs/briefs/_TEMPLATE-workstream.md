@@ -12,10 +12,10 @@ Agent menerima satu workstream besar (5–15 kartu atau satu cabang besar), buka
 
 ## Pemeriksaan (satu giliran, paralel)
 - Di antara langkah: `test-runner` (haiku) per file atau kelompok test yang terdampak, tanpa `heavy`. Bukan seluruh repo tiap kali.
-- Legend: test terarah `LEGEND_TEST_FILES="src/test/x.test.ts" pnpm test` dari root worktree (ringan, tanpa `heavy`); `pnpm test` penuh dan `pnpm check` hanya gate akhir, sekali, lewat `heavy`, satu `test-runner`; jangan suite penuh paralel dari worktree yang sama.
+- Legend: test terarah `LEGEND_TEST_FILES="src/test/x.test.ts" pnpm test` dari root worktree (ringan, tanpa `heavy`); `pnpm test` penuh dan `pnpm check` hanya merge train, sekali, lewat `heavy`; jangan suite penuh paralel dari worktree yang sama.
 - `reviewer` (Opus untuk K) dan `architect` (K) bersamaan.
 - `ui-auditor` bila ada UI.
-- Gate: `heavy pnpm check` penuh hanya sekali di akhir, lewat satu `test-runner` dengan `run_in_background: true`. Typecheck, lint, suite penuh, build, dan e2e juga lewat `heavy`. Sambil menunggu, lanjutkan potongan lain. Dev server dan Playwright hanya bila agent butuh UI (maks 2 seluruh Mac).
+- Gate: thread tidak menjalankan `pnpm check` penuh. Cukup lint dan typecheck paket yang berubah lewat `heavy`, test terarah, dan `db:generate` harus kosong. Gate penuh dijalankan merge train. Dev server dan Playwright hanya bila agent butuh UI (maks 2 seluruh Mac).
 
 ## Laporan
 SHA, kartu bd yang selesai (id), jumlah subagent yang di-spawn dan maksimum yang berjalan bersamaan, hasil gate, temuan review dan fixnya, yang belum teruji.

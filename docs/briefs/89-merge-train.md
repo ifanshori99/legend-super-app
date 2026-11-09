@@ -3,7 +3,7 @@
 Peran: engineer (merge). Baca `~/.agents/team/roles/engineer.md` dan `docs/briefs/_TEMPLATE-workstream.md` dulu. Tingkat K (migrasi).
 
 ## Tujuan
-Gabungkan semua cabang yang sudah lolos review ke `milestone/m1` (worktree `.worktrees/milestone-m1`, head 8e2e7bc0) secepat mungkin tanpa merusak gate. CTO tidak lagi merge sendiri.
+Gabungkan semua cabang yang sudah lolos review ke `milestone/m1` (worktree `.worktrees/milestone-m1`, head 8e2e7bc0) secepat mungkin tanpa merusak gate. CTO tidak lagi merge sendiri. Merge train adalah pemegang satu-satunya gate penuh (`heavy pnpm check`); thread hanya lint, typecheck, dan test terarah.
 
 ## Antrean (urutan siap)
 journals (ws/journals; CTO sedang regen migration di atas 8e2e7bc0, tunggu SHA dari CTO lalu merge pertama), hris-leave, refund-approval, hris-sop, edc-framework (a6d022d3), payroll-pph21-tests, pos-shift (tunggu fix approvalRequestId dari thread pos-shift), doit-provider (8fed84ef), pos-receipt (tunggu thread struk), procurement, kds (tunggu thread masing-masing). Status tiap cabang: tabel v3.3 di `docs/PROGRESS.md`.
