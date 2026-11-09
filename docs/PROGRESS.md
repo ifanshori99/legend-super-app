@@ -366,3 +366,5 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - 16:26: Brief 172 (a0i7+ioyg) dan 173 (dq0n+hd1m) ditulis; belum dimulai karena RAM kuning (Claude 7/4). Board on-hold.
 - 16:27: Test-runner CTO ws/aj-pos-intent da059c28: 22 file, 377 lulus. Diteruskan ke G9syc (batch10, menggantikan aj-qr-sale).
 - 16:28: Test-runner CTO ws/dp-intent-lock fdf2ad21: 32 file, 586 lulus, 8 skip. Diteruskan ke G9syc setelah aj-pos-intent. RAM kembali hijau: G8qtg dimulai (brief 172, a0i7+ioyg). Brief 173 menunggu slot berikut.
+- 16:33: heavy disetel (Retro 5): slot 2-5 tutup bila >=3 tsc atau free <45% (HEAVY_TSC_MAX, HEAVY_MULTI_MIN_FREE); test-heavy.sh ulang CTO exit 0, 0 FAIL. TEAM.md item 9: jangan ulang tsc tanpa perubahan.
+- 16:33: G4ncv selesai legend-ymhh di ws/edc-pan-fix 6e31ce84 (0141 hanya bersihkan sisa 0135 yang terbukti; kode respons tetap). Bead baru legend-lg45 (P2, potong 200 karakter setelah masking). Codex 150b Run 2 masuk antrean. G4ncv di-resolve; test-runner CTO memverifikasi. G0fu7 dimulai (brief 173, dq0n+hd1m).
