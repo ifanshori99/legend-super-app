@@ -137,11 +137,24 @@ async function sendOrder(
   // commit could show a newer version (another write landed, or this is an
   // idempotent replay), and echoing that back as If-Match would skip a change
   // the client never saw. Only replays stored before legend-63l6 carry no
-  // `version`; those fall back to the current row.
-  const version =
-    versionIn(data) ??
-    (await pos.posOrderVersion(getScopedTenantContext(req), outletId, orderId));
-  res.status(status).setHeader("ETag", `"${version}"`).json({ data });
+  // `version`; for those the stored snapshot is stale and invalid against the
+  // response schema, so re-read the order and send the fresh detail with its
+  // version as the ETag. Nothing is written again (legend-3k8no).
+  let body = data;
+  let version = versionIn(data);
+  if (version === null) {
+    const fresh = await pos.getPosOrder(
+      getScopedTenantContext(req),
+      outletId,
+      orderId,
+    );
+    body =
+      typeof data === "object" && data !== null && "order" in data
+        ? { ...data, order: fresh.detail }
+        : fresh.detail;
+    version = fresh.version;
+  }
+  res.status(status).setHeader("ETag", `"${version}"`).json({ data: body });
 }
 
 // ---- Orders -------------------------------------------------------------------
