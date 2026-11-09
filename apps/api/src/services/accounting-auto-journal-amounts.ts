@@ -441,45 +441,39 @@ export async function depositReceiptOf(
  * would otherwise leave customer_deposit twice), and the allocation intents
  * must agree (depositReceiptOf).
  */
-async function orderDepositReceiptOf(
+/**
+ * DP of one table session: its allocation intents, what they still hold
+ * (same hold rule as the reservation module's loadHeldDeposit: zero unless
+ * the intent is paid / partially_refunded, else its amount minus every
+ * non-failed refund reserved against it, unallocated-fund payouts aside)
+ * and the DP its orders applied. "live" counts every non-voided order (the
+ * sale being posted included); "completed" only sales whose order.paid
+ * already debited customer_deposit or will.
+ *
+ * With `asOf` (a refund being journaled) the hold is read as it stood right
+ * after that refund: only completed refunds up to it (completedAt, then id)
+ * plus the refund itself, so a later or still pending refund never parks an
+ * earlier valid one, and an intent a later refund emptied still counts.
+ */
+async function sessionDepositOf(
   tx: Tx,
   tenantId: TenantId,
-  orderId: string,
-  paidDepositIdr: number,
-): Promise<"deposit" | "gateway"> {
-  const [order] = await tx
-    .select({
-      depositAppliedIdr: orders.depositAppliedIdr,
-      tableSessionId: orders.tableSessionId,
-    })
-    .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
-  if (!order)
-    throw new AutoJournalPayloadInvalid("Order of the event not found");
-  if (Number(order.depositAppliedIdr) !== paidDepositIdr)
-    throw new AccountingError(
-      "POSTING_AMOUNTS_MISMATCH",
-      "paidDepositIdr does not match the DP applied to the order",
-    );
-  if (order.tableSessionId === null)
-    throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
+  tableSessionId: string,
+  orderScope: "live" | "completed",
+  asOf?: { refundId: string; completedAt: Date | null },
+): Promise<{ intentIds: string[]; heldIdr: bigint; appliedIdr: bigint }> {
   const allocations = await tx
     .select({ paymentIntentId: reservationDepositAllocations.paymentIntentId })
     .from(reservationDepositAllocations)
     .where(
       and(
         eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.tableSessionId, order.tableSessionId),
+        eq(reservationDepositAllocations.tableSessionId, tableSessionId),
       ),
     );
-  if (allocations.length === 0)
-    throw new AutoJournalPayloadInvalid(
-      "Order with a DP has no reservation deposit on its session",
-    );
   const intentIds = [...new Set(allocations.map((row) => row.paymentIntentId))];
-  // Same hold rule as the reservation module (loadHeldDeposit): zero unless
-  // the intent is paid / partially_refunded, else its amount minus every
-  // non-failed refund reserved against it (unallocated-fund payouts aside).
+  if (intentIds.length === 0)
+    return { intentIds, heldIdr: 0n, appliedIdr: 0n };
   const intents = await tx
     .select({
       id: paymentIntents.id,
@@ -503,8 +497,16 @@ async function orderDepositReceiptOf(
       and(
         eq(paymentRefunds.tenantId, tenantId),
         inArray(paymentRefunds.paymentIntentId, intentIds),
-        sql`${paymentRefunds.status} <> 'failed'`,
         isNull(paymentRefunds.unallocatedFundId),
+        asOf === undefined
+          ? sql`${paymentRefunds.status} <> 'failed'`
+          : asOf.completedAt === null
+            ? eq(paymentRefunds.id, asOf.refundId)
+            : sql`(${paymentRefunds.id} = ${asOf.refundId} OR (
+                ${paymentRefunds.status} = 'completed'
+                AND ${paymentRefunds.completedAt} IS NOT NULL
+                AND (${paymentRefunds.completedAt}, ${paymentRefunds.id})
+                    < (${asOf.completedAt.toISOString()}::timestamptz, ${asOf.refundId}::uuid)))`,
       ),
     )
     .groupBy(paymentRefunds.paymentIntentId);
@@ -513,7 +515,11 @@ async function orderDepositReceiptOf(
   );
   let heldIdr = 0n;
   for (const intent of intents) {
-    if (!depositHoldsFunds(intent.status)) continue;
+    // A later refund may since have moved the intent to "refunded".
+    const holds =
+      depositHoldsFunds(intent.status) ||
+      (asOf !== undefined && intent.status === "refunded");
+    if (!holds) continue;
     const held = BigInt(intent.amountIdr) - (refundedBy.get(intent.id) ?? 0n);
     if (held > 0n) heldIdr += held;
   }
@@ -525,11 +531,86 @@ async function orderDepositReceiptOf(
     .where(
       and(
         eq(orders.tenantId, tenantId),
-        eq(orders.tableSessionId, order.tableSessionId),
-        ne(orders.status, "voided"),
+        eq(orders.tableSessionId, tableSessionId),
+        orderScope === "live"
+          ? ne(orders.status, "voided")
+          : eq(orders.status, "completed"),
       ),
     );
-  if (BigInt(applied?.total ?? "0") > heldIdr)
+  return { intentIds, heldIdr, appliedIdr: BigInt(applied?.total ?? "0") };
+}
+
+/**
+ * legend-e7zj interim guard: a refund of a DP intent whose DP a completed
+ * sale already took from customer_deposit would debit it twice. Fail closed
+ * until the refund module refuses such a refund.
+ */
+async function assertRefundLeavesAppliedDeposit(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  refund: { refundId: string; completedAt: Date | null },
+): Promise<void> {
+  const sessions = await tx
+    .selectDistinct({
+      tableSessionId: reservationDepositAllocations.tableSessionId,
+    })
+    .from(reservationDepositAllocations)
+    .where(
+      and(
+        eq(reservationDepositAllocations.tenantId, tenantId),
+        eq(reservationDepositAllocations.paymentIntentId, intentId),
+      ),
+    );
+  for (const { tableSessionId } of sessions) {
+    const { heldIdr, appliedIdr } = await sessionDepositOf(
+      tx,
+      tenantId,
+      tableSessionId,
+      "completed",
+      refund,
+    );
+    if (appliedIdr > heldIdr)
+      throw new AccountingError(
+        "POSTING_AMOUNTS_MISMATCH",
+        "Refund of a DP that a completed sale already applied",
+      );
+  }
+}
+
+async function orderDepositReceiptOf(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  paidDepositIdr: number,
+): Promise<"deposit" | "gateway"> {
+  const [order] = await tx
+    .select({
+      depositAppliedIdr: orders.depositAppliedIdr,
+      tableSessionId: orders.tableSessionId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!order)
+    throw new AutoJournalPayloadInvalid("Order of the event not found");
+  if (Number(order.depositAppliedIdr) !== paidDepositIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "paidDepositIdr does not match the DP applied to the order",
+    );
+  if (order.tableSessionId === null)
+    throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
+  const { intentIds, heldIdr, appliedIdr } = await sessionDepositOf(
+    tx,
+    tenantId,
+    order.tableSessionId,
+    "live",
+  );
+  if (intentIds.length === 0)
+    throw new AutoJournalPayloadInvalid(
+      "Order with a DP has no reservation deposit on its session",
+    );
+  if (appliedIdr > heldIdr)
     throw new AccountingError(
       "POSTING_AMOUNTS_MISMATCH",
       "DP applied by the session exceeds what its DP intents still hold",
@@ -735,6 +816,7 @@ export async function autoJournalFactOf(
         .select({
           outletId: paymentRefunds.outletId,
           completedAt: paymentRefunds.completedAt,
+          unallocatedFundId: paymentRefunds.unallocatedFundId,
         })
         .from(paymentRefunds)
         .where(
@@ -747,6 +829,13 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "Payment refund of the event not found",
         );
+      // A payout of an unallocated fund (duplicate or extra payment) never
+      // takes DP.
+      if (refund.unallocatedFundId === null)
+        await assertRefundLeavesAppliedDeposit(tx, tenantId, p.paymentIntentId, {
+          refundId: p.refundId,
+          completedAt: refund.completedAt,
+        });
       return {
         ruleEvent: "payment.refunded",
         amounts: { amountIdr: p.amountIdr },

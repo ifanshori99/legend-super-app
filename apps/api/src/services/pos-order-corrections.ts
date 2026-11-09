@@ -205,12 +205,13 @@ export async function voidPosOrderCorrection(
           "Tidak ada nilai transaksi untuk di-void.",
         );
       // legend-9pz9: the void pays back only captured cash and books the
-      // full total, so a DP applied to the sale would vanish; DP goes back
-      // through the refund flow.
+      // full total, so a DP applied to the sale would vanish. The refund
+      // flow returns captured tenders only, so a DP sale is corrected by
+      // an admin.
       if (order.depositAppliedIdr > 0)
         throw new CoreError(
           "CONFLICT",
-          "Transaksi ini dibayar dengan DP reservasi; lanjutkan dengan refund.",
+          "Transaksi ini dibayar dengan DP reservasi dan tidak bisa di-void; hubungi admin untuk koreksi.",
         );
       const override = await consumeApproval(tx, context, {
         action: "void",

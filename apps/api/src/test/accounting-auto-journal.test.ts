@@ -2335,6 +2335,76 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
       { retryable: false, event_name: "order.paid" },
     ]);
   });
+
+  it("AJ-DPA-08 a DP refunded after a completed sale applied it parks the refund non-retryable POSTING_AMOUNTS_MISMATCH; a refund of the unapplied rest still posts", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 160_000);
+    await post(world, paymentPaid(world, intentId, 160_000));
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    expect(await balanceOf(world, "customer_deposit")).toBe(-50_000);
+
+    // The unapplied 50_000 may go back to the guest. A later refund still
+    // pending when the first one is journaled does not count against it.
+    const restId = await seedRefund(world, intentId, 50_000);
+    const overId = await seedRefund(world, intentId, 110_000);
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'pending', completed_at = NULL WHERE id = $1`,
+      [overId],
+    );
+    await post(world, paymentRefunded(world, restId, intentId, 50_000));
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    // Any more would take back DP the sale already used.
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'completed', completed_at = $2 WHERE id = $1`,
+      [overId, "2026-10-16T06:00:00.000Z"],
+    );
+    const over = paymentRefunded(world, overId, intentId, 110_000);
+    expect(await deliver(world.tenant, over)).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    await owner.query(
+      `UPDATE payment_intents SET status = 'refunded' WHERE id = $1`,
+      [intentId],
+    );
+
+    // Replaying the first refund after the second completed and emptied the
+    // intent is still judged as it stood then.
+    expect(
+      await deliver(world.tenant, paymentRefunded(world, restId, intentId, 50_000)),
+    ).toMatchObject({ status: "already_posted" });
+  });
+
+  it("AJ-DPA-09 a payout of an unallocated fund on an over-applied DP intent still posts (it never takes DP)", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    // A bad DP refund leaves the session over-applied.
+    const badId = await seedRefund(world, intentId, 110_000);
+    expect(
+      await deliver(world.tenant, paymentRefunded(world, badId, intentId, 110_000)),
+    ).toMatchObject({ status: "parked", code: "POSTING_AMOUNTS_MISMATCH" });
+
+    const fundId = await seedFund(world, intentId, 25_000);
+    await post(world, fundsUnallocated(world, fundId, intentId, 25_000));
+    const payoutId = await seedRefund(world, intentId, 25_000, fundId);
+    const payout = await post(
+      world,
+      paymentRefunded(world, payoutId, intentId, 25_000, fundId),
+    );
+    expect(payout.journalEntryId).toBeTruthy();
+  });
 });
 
 describe("F19 slice 2 a forfeited DP moves to deposit_forfeit_income", () => {

@@ -766,7 +766,7 @@ describe("POS sale settled by the session deposit (legend-9pz9)", () => {
     });
   });
 
-  it("legend-9pz9 a completed sale paid with the DP is refused a linked void (refund instead)", async () => {
+  it("legend-9pz9 a completed sale paid with the DP is refused a linked void (admin corrects it)", async () => {
     const session = await openSession(a);
     setCredit(a, session, 100_000);
     const order = await createDineIn(a, session);
@@ -782,7 +782,7 @@ describe("POS sale settled by the session deposit (legend-9pz9)", () => {
     });
     expect(voided.status, JSON.stringify(voided.body)).toBe(409);
     expect(voided.body.error?.code ?? voided.body.code).toBe("CONFLICT");
-    expect(JSON.stringify(voided.body)).toMatch(/refund/);
+    expect(JSON.stringify(voided.body)).toMatch(/hubungi admin/);
     const { rows } = await owner.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM pos_order_voids
        WHERE tenant_id = $1 AND order_id = $2`,
