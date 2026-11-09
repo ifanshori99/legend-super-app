@@ -295,12 +295,14 @@ type OpenBody = {
   differenceIdr?: number;
   ownerId: string;
   refs: { type: string; id: string }[];
+  idempotencyKey?: string;
 };
 const openCase = (user: User, body: OpenBody) =>
   post(user, BASE, {
     outletId: null,
     type: "bank_statement",
     differenceIdr: 10_000,
+    idempotencyKey: `open-${randomUUID()}`,
     ...body,
   });
 const act = (user: User, caseId: string, body: unknown) =>
@@ -579,6 +581,56 @@ describe("legend-fnxl.6 reconciliation cases (ACC-04)", () => {
     });
     expect(again.status).toBe(409);
     expect(again.body.error.code).toBe("STATEMENT_LINE_ALREADY_MATCHED");
+  });
+
+  it("refuses a journal that is already matched to a statement line", async () => {
+    const entity = await seedEntity();
+    const journalId = await seedJournal(entity, 10_000);
+    const matchedLine = await seedLine(entity, "auto_matched");
+    await owner.query(
+      `INSERT INTO bank_statement_line_matches
+         (tenant_id, bank_account_id, line_id, ref_type, ref_id, amount_idr, source, matched_by)
+       VALUES ($1, $2, $3, 'journal_entry', $4, 10000, 'auto', 'seed')`,
+      [tenantId, entity.bankAccountId, matchedLine, journalId],
+    );
+    const response = await openCase(finance, {
+      legalEntityId: entity.id,
+      ownerId: finance2.userId,
+      refs: [{ type: "journal_entry", id: journalId }],
+    });
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("STATEMENT_LINE_ALREADY_MATCHED");
+    const { rowCount } = await owner.query(
+      "SELECT 1 FROM bank_reconciliation_cases WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantId, entity.id],
+    );
+    expect(rowCount).toBe(0);
+  });
+
+  it("opening is idempotent: same key + body replays one case, same key + other body is refused", async () => {
+    const entity = await seedEntity();
+    const lineId = await seedLine(entity);
+    const key = `open-${randomUUID()}`;
+    const body = {
+      legalEntityId: entity.id,
+      ownerId: finance2.userId,
+      refs: [{ type: "bank_statement_line", id: lineId }],
+      idempotencyKey: key,
+    };
+    const first = await openCase(finance, body);
+    expect(first.status).toBe(201);
+    const replay = await openCase(finance, body);
+    expect(replay.status).toBe(201);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const { rows } = await owner.query<{ idempotency_key: string | null }>(
+      "SELECT idempotency_key FROM bank_reconciliation_cases WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantId, entity.id],
+    );
+    expect(rows).toEqual([{ idempotency_key: key }]);
+
+    const other = await openCase(finance, { ...body, differenceIdr: 20_000 });
+    expect(other.status).toBe(409);
+    expect(other.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 
   it("every action writes exactly one event row with actor, from/to status and owner; reassign logs both owners", async () => {

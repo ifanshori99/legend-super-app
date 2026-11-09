@@ -312,6 +312,7 @@ describe("ACC-04: matching target and suggestions", () => {
       differenceIdr: -23_500,
       ownerId: fixtures.users.finance,
       refs: [ref("bank_statement_line", lineId)],
+      idempotencyKey: "open-case-test-0001",
     });
     assert.equal(created.data.status, "open");
     assert.equal(created.data.ownerId, fixtures.users.finance);
@@ -364,6 +365,7 @@ describe("ACC-04: matching target and suggestions", () => {
         differenceIdr: matchedLine.amountIdr,
         ownerId: fixtures.users.finance,
         refs: [ref("bank_statement_line", matchedLine.id)],
+        idempotencyKey: "open-case-test-0002",
       }),
     );
     assert.equal(refused.status, 409);

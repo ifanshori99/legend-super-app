@@ -70,6 +70,7 @@ import {
   assertOutletReach,
   assertTenantScope,
   auditApFa,
+  idempotentCommand,
   outletVisible,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
@@ -224,6 +225,30 @@ async function assertJournalsOfEntity(
   for (const id of ids) if (!found.has(id)) throw notFound("Jurnal");
 }
 
+/** A document already matched to a statement line cannot open a case. */
+async function assertNotMatched(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const [taken] = await tx
+    .select({ id: bankStatementLineMatches.id })
+    .from(bankStatementLineMatches)
+    .where(
+      and(
+        eq(bankStatementLineMatches.tenantId, tenantId),
+        inArray(bankStatementLineMatches.refType, [
+          "journal_entry",
+          "cash_deposit",
+        ]),
+        inArray(bankStatementLineMatches.refId, ids),
+      ),
+    )
+    .limit(1);
+  if (taken) throw new AccountingError("STATEMENT_LINE_ALREADY_MATCHED");
+}
+
 export async function openReconciliationCase(
   context: ScopedTenantContext,
   rawInput: unknown,
@@ -246,130 +271,155 @@ export async function openReconciliationCase(
   // Statement lines belong to the entity, not to an outlet.
   if (lineIds.length > 0) assertTenantScope(context);
 
-  return withTenant(db, context, async (tx) => {
-    const tenantId = context.tenant.tenantId;
-    const now = new Date();
-    await requireLegalEntity(tx, tenantId, input.legalEntityId);
-    if (input.outletId !== null) {
-      const [outlet] = await tx
-        .select({ id: outlets.id })
-        .from(outlets)
-        .where(
-          and(
-            eq(outlets.tenantId, tenantId),
-            eq(outlets.id, input.outletId),
-            eq(outlets.legalEntityId, input.legalEntityId),
-          ),
-        )
-        .limit(1);
-      if (!outlet)
-        throw new HttpError(
-          422,
-          "VALIDATION_ERROR",
-          "Outlet bukan milik badan usaha ini.",
+  return withTenant(db, context, async (tx) =>
+    idempotentCommand(
+      tx,
+      context,
+      {
+        key: input.idempotencyKey,
+        operation: "reconciliation_case.open",
+        request: {
+          legalEntityId: input.legalEntityId,
+          outletId: input.outletId,
+          type: input.type,
+          differenceIdr: input.differenceIdr,
+          ownerId: input.ownerId,
+          refs: input.refs,
+        },
+      },
+      async () => {
+        const tenantId = context.tenant.tenantId;
+        const now = new Date();
+        await requireLegalEntity(tx, tenantId, input.legalEntityId);
+        if (input.outletId !== null) {
+          const [outlet] = await tx
+            .select({ id: outlets.id })
+            .from(outlets)
+            .where(
+              and(
+                eq(outlets.tenantId, tenantId),
+                eq(outlets.id, input.outletId),
+                eq(outlets.legalEntityId, input.legalEntityId),
+              ),
+            )
+            .limit(1);
+          if (!outlet)
+            throw new HttpError(
+              422,
+              "VALIDATION_ERROR",
+              "Outlet bukan milik badan usaha ini.",
+            );
+        }
+        await assertActiveOwner(tx, tenantId, input.ownerId, now);
+
+        await advisoryLock(tx, entityLockName(tenantId, input.legalEntityId));
+        await lockStatementLines(tx, tenantId, input.legalEntityId, lineIds);
+        await lockCashDeposits(tx, context, input.legalEntityId, depositIds);
+        await assertJournalsOfEntity(
+          tx,
+          tenantId,
+          input.legalEntityId,
+          journalIds,
         );
-    }
-    await assertActiveOwner(tx, tenantId, input.ownerId, now);
+        await assertNotMatched(tx, tenantId, [...journalIds, ...depositIds]);
 
-    await advisoryLock(tx, entityLockName(tenantId, input.legalEntityId));
-    await lockStatementLines(tx, tenantId, input.legalEntityId, lineIds);
-    await lockCashDeposits(tx, context, input.legalEntityId, depositIds);
-    await assertJournalsOfEntity(tx, tenantId, input.legalEntityId, journalIds);
+        const [row] = await tx
+          .insert(bankReconciliationCases)
+          .values({
+            tenantId,
+            legalEntityId: input.legalEntityId,
+            outletId: input.outletId,
+            type: input.type,
+            differenceIdr: input.differenceIdr,
+            ownerId: input.ownerId,
+            status: "open",
+            dueAt: new Date(
+              now.getTime() + RECONCILIATION_POLICY.caseDueDays * DAY_MS,
+            ),
+            refs: input.refs,
+            idempotencyKey: input.idempotencyKey,
+            openedBy: actorId,
+            openedAt: now,
+          })
+          .returning();
+        if (!row) throw new Error("Reconciliation case insert returned no row");
 
-    const [row] = await tx
-      .insert(bankReconciliationCases)
-      .values({
-        tenantId,
-        legalEntityId: input.legalEntityId,
-        outletId: input.outletId,
-        type: input.type,
-        differenceIdr: input.differenceIdr,
-        ownerId: input.ownerId,
-        status: "open",
-        dueAt: new Date(
-          now.getTime() + RECONCILIATION_POLICY.caseDueDays * DAY_MS,
-        ),
-        refs: input.refs,
-        openedBy: actorId,
-        openedAt: now,
-      })
-      .returning();
-    if (!row) throw new Error("Reconciliation case insert returned no row");
-
-    if (lineIds.length > 0) {
-      await tx
-        .update(bankStatementLines)
-        .set({
-          matchStatus: "in_case",
-          reconciliationCaseId: row.id,
-          statusChangedBy: actorId,
-          statusChangedAt: now,
-          version: sql`${bankStatementLines.version} + 1`,
-        })
-        .where(
-          and(
-            eq(bankStatementLines.tenantId, tenantId),
-            inArray(bankStatementLines.id, lineIds),
-          ),
-        );
-      for (const id of lineIds)
+        if (lineIds.length > 0) {
+          await tx
+            .update(bankStatementLines)
+            .set({
+              matchStatus: "in_case",
+              reconciliationCaseId: row.id,
+              statusChangedBy: actorId,
+              statusChangedAt: now,
+              version: sql`${bankStatementLines.version} + 1`,
+            })
+            .where(
+              and(
+                eq(bankStatementLines.tenantId, tenantId),
+                inArray(bankStatementLines.id, lineIds),
+              ),
+            );
+          for (const id of lineIds)
+            await auditApFa(tx, context, {
+              actorId,
+              action: "accounting.bank_statement_line.in_case",
+              objectType: "bank_statement_line",
+              objectId: id,
+              before: { status: "unmatched" },
+              after: { status: "in_case" },
+            });
+        }
+        if (depositIds.length > 0) {
+          await tx
+            .update(cashDeposits)
+            .set({
+              status: "discrepancy",
+              reconciliationCaseId: row.id,
+              version: sql`${cashDeposits.version} + 1`,
+            })
+            .where(
+              and(
+                eq(cashDeposits.tenantId, tenantId),
+                inArray(cashDeposits.id, depositIds),
+              ),
+            );
+          for (const id of depositIds)
+            await auditApFa(tx, context, {
+              actorId,
+              action: "accounting.cash_deposit.discrepancy",
+              objectType: "cash_deposit",
+              objectId: id,
+              before: { status: "recorded" },
+              after: { status: "discrepancy" },
+            });
+        }
+        await tx.insert(bankReconciliationCaseEvents).values({
+          tenantId,
+          caseId: row.id,
+          seq: 1,
+          action: "open",
+          actorId,
+          fromStatus: null,
+          toStatus: "open",
+          fromOwnerId: null,
+          toOwnerId: input.ownerId,
+          note: null,
+          at: now,
+        });
         await auditApFa(tx, context, {
           actorId,
-          action: "accounting.bank_statement_line.in_case",
-          objectType: "bank_statement_line",
-          objectId: id,
-          before: { status: "unmatched" },
-          after: { status: "in_case" },
+          action: "accounting.reconciliation_case.opened",
+          objectType: "reconciliation_case",
+          objectId: row.id,
+          outletId: input.outletId,
+          before: null,
+          after: { status: "open", count: input.refs.length },
         });
-    }
-    if (depositIds.length > 0) {
-      await tx
-        .update(cashDeposits)
-        .set({
-          status: "discrepancy",
-          reconciliationCaseId: row.id,
-          version: sql`${cashDeposits.version} + 1`,
-        })
-        .where(
-          and(
-            eq(cashDeposits.tenantId, tenantId),
-            inArray(cashDeposits.id, depositIds),
-          ),
-        );
-      for (const id of depositIds)
-        await auditApFa(tx, context, {
-          actorId,
-          action: "accounting.cash_deposit.discrepancy",
-          objectType: "cash_deposit",
-          objectId: id,
-          before: { status: "recorded" },
-          after: { status: "discrepancy" },
-        });
-    }
-    await tx.insert(bankReconciliationCaseEvents).values({
-      tenantId,
-      caseId: row.id,
-      seq: 1,
-      action: "open",
-      actorId,
-      fromStatus: null,
-      toStatus: "open",
-      fromOwnerId: null,
-      toOwnerId: input.ownerId,
-      note: null,
-      at: now,
-    });
-    await auditApFa(tx, context, {
-      actorId,
-      action: "accounting.reconciliation_case.opened",
-      objectType: "reconciliation_case",
-      objectId: row.id,
-      outletId: input.outletId,
-      before: null,
-      after: { status: "open", count: input.refs.length },
-    });
-    return reconciliationCaseDto(row);
-  });
+        return reconciliationCaseDto(row);
+      },
+    ),
+  );
 }
 
 export type ReconciliationCaseListQuery = {

@@ -235,7 +235,7 @@ export async function openReconciliationCase(
   body: Omit<Body<typeof openReconciliationCaseEndpoint>, "idempotencyKey">,
 ) {
   const response = await callEndpoint(openReconciliationCaseEndpoint, {
-    body,
+    body: { ...body, idempotencyKey: createUlid() },
   });
   return response.data;
 }
