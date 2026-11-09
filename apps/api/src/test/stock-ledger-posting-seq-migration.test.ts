@@ -472,14 +472,19 @@ describe("legend-bsw9 migration metadata", () => {
     });
   });
 
-  it("snapshot 0186 chains from snapshot 0170", () => {
+  it("snapshot 0186 chains from the previous snapshot", () => {
     const read = (name: string) =>
       JSON.parse(readFileSync(join(drizzleDir, "meta", name), "utf8")) as {
         id: string;
         prevId: string;
       };
-    expect(read("0186_snapshot.json").prevId).toBe(
-      read("0170_snapshot.json").id,
-    );
+    // Lower idx numbers may be added or skipped by other branches, so look up
+    // the snapshot that comes right before 0186 instead of assuming 0170.
+    const previous = readdirSync(join(drizzleDir, "meta"))
+      .filter((n) => /^\d{4}_snapshot\.json$/.test(n) && n < "0186_snapshot.json")
+      .sort()
+      .at(-1);
+    expect(previous).toBeDefined();
+    expect(read("0186_snapshot.json").prevId).toBe(read(previous!).id);
   });
 });
