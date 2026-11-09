@@ -459,10 +459,10 @@ async function receiptStatesOf(
 export const DEAD_LETTERED_RECEIPT_BOUND_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
- * Throws AutoJournalReceiptDeadLettered when a pending intent's receipt is
- * pending only because every undelivered payment.paid of it is dead-lettered
- * past the bound. A live (ready/queued) row, a young dead letter, or a receipt
- * parked retryable (no outbox row) keeps the plain pending wait.
+ * Throws AutoJournalReceiptDeadLettered when a pending intent's payment.paid
+ * is held back by a dead letter older than the bound (the head of the intent's
+ * undelivered events, see below). A live (ready/queued) head, a young dead
+ * letter, or a receipt parked retryable (no outbox row) keeps the plain wait.
  */
 async function assertNotDeadLettered(
   tx: Tx,
@@ -472,6 +472,8 @@ async function assertNotDeadLettered(
   const rows = await tx
     .select({
       intentId: domainEventOutbox.aggregateId,
+      sequence: domainEventOutbox.sequence,
+      name: sql<string>`${domainEventOutbox.event}->>'name'`,
       dispatchState: domainEventOutbox.dispatchState,
       deadLetteredAt: domainEventOutbox.deadLetteredAt,
     })
@@ -483,20 +485,23 @@ async function assertNotDeadLettered(
         ne(domainEventOutbox.status, "delivered"),
         eq(domainEventOutbox.aggregateType, "payment"),
         inArray(domainEventOutbox.aggregateId, [...intentIds]),
-        sql`${domainEventOutbox.event}->>'name' = 'payment.paid'`,
       ),
     );
   const cutoff = Date.now() - DEAD_LETTERED_RECEIPT_BOUND_MS;
   for (const intentId of intentIds) {
-    const own = rows.filter((row) => row.intentId === intentId);
+    const own = rows
+      .filter((row) => row.intentId === intentId)
+      .sort((a, b) => a.sequence - b.sequence);
+    // The relay delivers an aggregate in sequence order: the first undelivered
+    // event (payment.paid or an earlier one such as payment.expired) gates
+    // payment.paid, so a dead head holds the receipt back for good.
+    const head = own[0];
     if (
-      own.length > 0 &&
-      own.every(
-        (row) =>
-          row.dispatchState === "dead" &&
-          row.deadLetteredAt !== null &&
-          row.deadLetteredAt.getTime() <= cutoff,
-      )
+      head !== undefined &&
+      own.some((row) => row.name === "payment.paid") &&
+      head.dispatchState === "dead" &&
+      head.deadLetteredAt !== null &&
+      head.deadLetteredAt.getTime() <= cutoff
     )
       throw new AutoJournalReceiptDeadLettered(
         "Gateway receipt is dead-lettered; replay it or book the sale by hand",

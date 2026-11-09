@@ -29,7 +29,7 @@
 // closed one, with `late_adjustment_from` = the natural date, a description
 // suffix and an `accounting.journal.late_adjusted` audit row.
 
-import { and, asc, eq, inArray, lte, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, max, or, sql } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import {
   AccountingError,
@@ -110,6 +110,7 @@ const RETRYABLE_CODES = [
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
+const DEAD_LETTERED_CODE = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
 
 /** The outlet has no legal entity yet: parked until finance assigns one. */
 class OutletLegalEntityMissing extends Error {
@@ -119,6 +120,8 @@ class OutletLegalEntityMissing extends Error {
 const RETRY_BATCH = 100;
 /** Backoff between retries of one parked event (matches inventory GL). */
 export const AUTO_JOURNAL_RETRY_AFTER_MS = 10 * 60 * 1000;
+/** legend-3r6r: recheck pace of a row parked RECEIPT_DEAD_LETTERED. */
+export const AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS = 24 * 60 * 60 * 1000;
 const LATE_AUDIT_FIELDS = [
   "journalId",
   "trigger",
@@ -229,13 +232,30 @@ async function park(
     return { status: "parked", code, retryable: false };
   }
   // legend-3r6r: the sale stopped retrying; make the stuck row loud.
-  if (code === "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED")
-    console.error(
-      `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: replay the dead-lettered payment.paid`,
-    );
+  if (code === DEAD_LETTERED_CODE) {
+    const [already] = await tx
+      .select({ code: autoJournalParked.errorCode })
+      .from(autoJournalParked)
+      .where(
+        and(
+          eq(autoJournalParked.tenantId, tenantId),
+          eq(autoJournalParked.idempotencyKey, row.key),
+        ),
+      )
+      .limit(1);
+    if (already?.code !== DEAD_LETTERED_CODE)
+      console.error(
+        `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: replay the dead-lettered payment.paid`,
+      );
+  }
+  // A dead-lettered row is not retried at the 10 minute pace, but a daily
+  // safety net re-checks it (a release can be missed, or the replayed receipt
+  // may never post and the sale must then book the plain way).
   const nextRetryAt = retryable
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
-    : null;
+    : code === DEAD_LETTERED_CODE
+      ? new Date(now.getTime() + AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS)
+      : null;
   await tx
     .insert(autoJournalParked)
     .values({
@@ -351,7 +371,7 @@ async function settleAutoJournal(
   } catch (error) {
     const code = parkCodeOf(error);
     if (!code) throw error;
-    return park(
+    const parked = await park(
       tx,
       context,
       {
@@ -364,6 +384,10 @@ async function settleAutoJournal(
       },
       now,
     );
+    // A replayed payment.paid that parks (it may never post) also wakes the
+    // sales waiting on its dead letter: they decide again on the new state.
+    await requeueReceiptDependents(tx, tenantId, stored, now);
+    return parked;
   }
   // Posted, or nothing to book any more: either way no longer parked.
   await clearParked(tx, tenantId, key);
@@ -426,7 +450,7 @@ async function requeueReceiptDependents(
       and(
         eq(autoJournalParked.tenantId, tenantId),
         eq(autoJournalParked.outletId, stored.outletId),
-        eq(autoJournalParked.errorCode, "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED"),
+        eq(autoJournalParked.errorCode, DEAD_LETTERED_CODE),
         eq(autoJournalParked.retryable, false),
       ),
     );
@@ -616,7 +640,10 @@ export async function retryParkedAutoJournals(
       .where(
         and(
           eq(autoJournalParked.tenantId, tenantId),
-          eq(autoJournalParked.retryable, true),
+          or(
+            eq(autoJournalParked.retryable, true),
+            eq(autoJournalParked.errorCode, DEAD_LETTERED_CODE),
+          ),
           lte(autoJournalParked.nextRetryAt, now),
         ),
       )
