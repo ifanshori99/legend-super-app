@@ -269,3 +269,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+
+## legend-yw90 + legend-lrsx sapu container test PG bocor (engineer, cabang `ws/testdb-cleanup`, 2026-11-09)
+
+- Sudah: label `legend.test.owner=<pid>.<start>.<namespace>` di container dan jaringan test PG (`compose.test.yaml`); `scripts/test.mjs` menyapu proyek `starter-pg-test-*` yang pemiliknya mati di awal run (`scripts/test-sweep.mjs`), menangani SIGHUP, dan menghapus paksa per proyek bila `compose down` gagal. Manual: `node scripts/test-sweep.mjs [--dry-run] [--legacy-older-than-min=N, N >= 1]`.
+- Keputusan: pemilik dianggap mati hanya bila PID tidak ada atau waktu start beda (Linux `/proc/<pid>/stat`; lainnya `ps lstart`, toleransi 5 dtk); label dari namespace lain atau format lama tidak pernah disapu; sumber daya tanpa label (skrip lama) tidak disapu otomatis.
+- Diperiksa: `tests/test-sweep.test.mjs` 15/15; eslint + prettier bersih; simulasi `kill -9` lalu run ulang menyapu sisa tanpa menyentuh run lain.
+- Belum diuji: `mem_limit` 512m (`STARTER_TEST_PG_MEM` mengganti) hanya dicoba dengan satu file DB, belum suite penuh. Naikkan default ke 768m bila gate merge train kena `connection terminated`.
