@@ -217,3 +217,4 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Brief 98 WS-01 menunggu slot.
 - m1 `71751c8f` fix-sharp (legend-vj37, prioritas: build produksi crash). Gate prep b2eef70a API 2177 / root 1427 + build API tsup sukses; format:check bersih; vj37 ditutup.
 - m1 `30a31a3c` pos-shift (0088-0090; fix ULID legend-xvyr + nama migration pos-day; 6c0 xvyr ditutup).
+- Keputusan founder (9 Nov pagi): rilis TANPA kartu online. Online: QRIS + VA (DOIT). Kasir: tunai, EDC (debit/kredit), QRIS. Kartu online menyusul via Duitku pascarilis. PRD dirapikan (subagent doc-writer).
