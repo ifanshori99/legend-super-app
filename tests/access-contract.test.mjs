@@ -1160,6 +1160,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: true,
       mfaVerified: false,
       stations: [],
+      supportSession: null,
     });
     assert.deepEqual(view.permissions, [
       "org.structure.manage",
@@ -1172,6 +1173,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: false,
       mfaVerified: true,
       stations: [station("bar_kopi")],
+      supportSession: null,
     });
     assert.deepEqual(withStation.stations, [station("bar_kopi")]);
     // Platform codes are never part of a tenant view.
@@ -1181,6 +1183,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         mfaRequired: true,
         mfaVerified: true,
         stations: [],
+        supportSession: null,
       }).success,
       false,
     );
@@ -1189,6 +1192,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         permissions: [],
         mfaRequired: false,
         stations: [],
+        supportSession: null,
       }).success,
       false,
     );
