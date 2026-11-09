@@ -39,9 +39,15 @@ CREATE TABLE "wifi_device_grants" (
 	CONSTRAINT "wifi_device_grants_superseded_check" CHECK (("wifi_device_grants"."superseded_by" IS NOT NULL) = ("wifi_device_grants"."status" = 'superseded') AND "wifi_device_grants"."superseded_by" IS DISTINCT FROM "wifi_device_grants"."id")
 );
 --> statement-breakpoint
+-- legend-b9i: the migrator may be a plain table owner (no BYPASSRLS). FORCE ROW
+-- LEVEL SECURITY would apply the tenant policies to it while the outlet foreign
+-- keys are validated. Lift FORCE on outlets for that step and restore it below
+-- (pending migrations apply in one transaction, so no session sees the lift).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_superseded_by_fk" FOREIGN KEY ("tenant_id","outlet_id","superseded_by") REFERENCES "public"."wifi_device_grants"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "wifi_device_grants_one_active" ON "wifi_device_grants" USING btree ("tenant_id","outlet_id","device_hash") WHERE "wifi_device_grants"."status" = 'active';--> statement-breakpoint
 CREATE UNIQUE INDEX "wifi_device_grants_one_inflight" ON "wifi_device_grants" USING btree ("tenant_id","outlet_id","device_hash") WHERE "wifi_device_grants"."status" IN ('pending','unknown');--> statement-breakpoint
