@@ -18,6 +18,10 @@ export default defineConfig({
   target: "node22",
   outDir: "dist",
   clean: true,
+  // apps/api/assets/ is copied into dist/ (dist/fonts/ holds the Noto Sans
+  // subsets the PO PDF renderer reads at runtime), so the image still ships
+  // only dist/ and drizzle/.
+  publicDir: "assets",
   sourcemap: true,
   splitting: true,
   // noExternal wins over external, so the native packages are excluded here.

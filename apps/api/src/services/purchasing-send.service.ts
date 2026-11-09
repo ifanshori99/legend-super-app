@@ -841,7 +841,7 @@ export async function getPublicPurchaseOrderPdf(
         itemName,
         uomCode,
       }));
-    const pdf = renderPurchaseOrderPdf({
+    const pdf = await renderPurchaseOrderPdf({
       tenantName: tenant.name,
       outletName: outlet.name,
       supplier,
