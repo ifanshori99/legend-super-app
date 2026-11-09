@@ -396,6 +396,7 @@ const accessBaseMessages = {
       price_correction: { approve: "Setujui koreksi harga" },
       edc_standalone: { approve: "Setujui pembayaran EDC standalone" },
       day: { close: "Tutup hari usaha" },
+      receipt: { writeoff: "Hapus buku nomor struk yang hilang" },
     },
     shift: {
       cash: {
