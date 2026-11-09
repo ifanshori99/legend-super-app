@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/migrate.ts",
     "db:studio": "drizzle-kit studio",
+    "db:backfill-defaults": "tsx src/db/backfill-tenant-defaults.ts",
     "role:set": "tsx src/set-role.ts",
     "worker": "node --enable-source-maps dist/worker.js"
   },

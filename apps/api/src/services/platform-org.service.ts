@@ -30,6 +30,7 @@ import {
   createUlid,
   decodeCursor,
   encodeCursor,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -44,6 +45,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
 
 type TenantRow = typeof tenants.$inferSelect;
@@ -217,6 +219,9 @@ export async function createTenant(
         "That tenant slug is already taken.",
       );
     await seedTenantRoleTemplates(tx, row.id);
+    // Standard UOM catalog, same transaction (PRD v1.7 §3.19, legend-4ryw).
+    const actor = userIdSchema.safeParse(actorUserId);
+    await provisionStandardUoms(tx, context, actor.success ? actor.data : null);
     const admin = await provisionFirstTenantAdmin(
       tx,
       context,

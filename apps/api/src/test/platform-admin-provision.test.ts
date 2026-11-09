@@ -210,7 +210,9 @@ describe("First tenant admin (flow R steps 2-3)", () => {
     });
     const tenant = await createTenant(input, actorUserId);
     const events = await auditActions(tenant.id);
+    // legend-4ryw: a new tenant also gets the standard UOM catalog, audited.
     expect(events.map((event) => event.action).sort()).toEqual([
+      "inventory.uoms.provisioned",
       "role_assignment.granted",
       "tenant.created",
     ]);

@@ -191,7 +191,9 @@ describe("Panel Platform API", () => {
       "SELECT event->>'action' AS action FROM audit_logs WHERE tenant_id = $1",
       [created.body.data.id],
     );
+    // legend-4ryw: a new tenant also gets the standard UOM catalog, audited.
     expect(audited.rows.map((row) => row.action).sort()).toEqual([
+      "inventory.uoms.provisioned",
       "role_assignment.granted",
       "tenant.created",
     ]);

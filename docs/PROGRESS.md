@@ -311,3 +311,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keputusan: pemilik dianggap mati hanya bila PID tidak ada atau waktu start beda (Linux `/proc/<pid>/stat`; lainnya `ps lstart`, toleransi 5 dtk); label dari namespace lain atau format lama tidak pernah disapu; sumber daya tanpa label (skrip lama) tidak disapu otomatis.
 - Diperiksa: `tests/test-sweep.test.mjs` 15/15; eslint + prettier bersih; simulasi `kill -9` lalu run ulang menyapu sisa tanpa menyentuh run lain.
 - Belum diuji: `mem_limit` 512m (`STARTER_TEST_PG_MEM` mengganti) hanya dicoba dengan satu file DB, belum suite penuh. Naikkan default ke 768m bila gate merge train kena `connection terminated`.
+
+## legend-a7x7 + legend-4ryw provisioning default (engineer, cabang `ws/provisioning-default`, 2026-11-09)
+
+- Entitas legal baru (`createLegalEntity`) langsung mendapat bagan akun standar F&B (58 akun) + 39 mapping default dalam transaksi yang sama, satu audit `accounting.chart.provisioned`. Entitas yang sudah punya akun tidak disentuh (`already_present`); jumlah role tanpa mapping dilaporkan sebagai `missingRoles`.
+- Outlet baru (`createOutlet`) mendapat enam lokasi stok (Gudang Utama, Chiller, Freezer, Bar, Dapur, Pastry) + katalog UOM standar tenant (12 satuan, `STANDARD_UOM_CATALOG` di `@starter/shared/inventory`). Tenant baru (`createTenant`) mendapat katalog UOM. Semua idempoten, tidak mengubah baris lama; lokasi yang namanya bentrok dilewati. Kunci per outlet sama dengan route lokasi.
+- Backfill: `pnpm db:backfill-defaults [--tenant <uuid>]` (`apps/api/src/db/backfill-tenant-defaults.ts`). Jalankan di luar jam operasional, satu tenant sekali jalan: backfill bersamaan dengan admin membuat akun pertama di entitas kosong bisa mencampur template dan akun custom (catatan reviewer, diterima brief).
+- Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/provisioning-defaults.test.ts`.
+- Follow-up: legend-9ppw (lokasi, UOM, CoA belum ikut ke edge node; celah sudah ada sebelumnya).
+- Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
