@@ -1,6 +1,5 @@
 // Worker job: sends queued e-receipt emails (bead legend-93a; PRD v1.7 §3 F11).
-// Not registered here: the lead wires `runPosReceiptEmailJob` into the worker
-// runtime (e.g. a pg-boss schedule every 30 s).
+// Registered in worker-main.ts' per-tenant sweep (legend-v3vo).
 //
 // Per tenant, up to 50 times, one `withTenant` transaction (outlet `*`) per
 // delivery: claim one queued email `FOR UPDATE SKIP LOCKED` so two workers
@@ -28,7 +27,8 @@ export const POS_RECEIPT_EMAIL_BATCH = 50;
 export const POS_RECEIPT_EMAIL_MAX_ATTEMPTS = 5;
 export const POS_RECEIPT_EMAIL_BACKOFF_SECONDS = 120;
 
-export type PosReceiptEmailDeps = { email: EmailProvider };
+/** `email: null` means the adapter is not configured: rows stay queued (legend-v3vo). */
+export type PosReceiptEmailDeps = { email: EmailProvider | null };
 
 /** Safe, short reason for the row: never the address or a provider payload. */
 function reasonOf(error: unknown): string {
@@ -46,7 +46,7 @@ type Outcome = "sent" | "retried" | "failed";
  */
 async function sendOne(
   context: ScopedTenantContext,
-  deps: PosReceiptEmailDeps,
+  email: EmailProvider,
   now: Date,
   skip: readonly string[],
 ): Promise<{ id: string; outcome: Outcome } | null> {
@@ -101,7 +101,7 @@ async function sendOne(
           now,
         );
         const { subject, body } = renderReceiptEmail(document, link.url);
-        const result = await deps.email.send(context, {
+        const result = await email.send(context, {
           tenantId,
           outletId: row.outletId,
           // The delivery id is the provider's idempotency key.
@@ -154,7 +154,7 @@ async function sendOne(
 
 async function sendBatch(
   context: ScopedTenantContext,
-  deps: PosReceiptEmailDeps,
+  email: EmailProvider,
   now: Date,
 ): Promise<{ sent: number; retried: number; failed: number }> {
   const total = { sent: 0, retried: 0, failed: 0 };
@@ -162,7 +162,7 @@ async function sendBatch(
   // One transaction per row: a send that already left for the provider is
   // committed with its mark, never rolled back by a later row's failure.
   for (let n = 0; n < POS_RECEIPT_EMAIL_BATCH; n += 1) {
-    const done = await sendOne(context, deps, now, tried);
+    const done = await sendOne(context, email, now, tried);
     if (!done) break;
     tried.push(done.id);
     total[done.outcome] += 1;
@@ -177,10 +177,14 @@ export async function runPosReceiptEmailJob(
   now = new Date(),
 ): Promise<{ sent: number; retried: number; failed: number }> {
   const total = { sent: 0, retried: 0, failed: 0 };
+  // No provider: leave every row queued (fail closed, nothing counted), as the
+  // PO email job does (legend-v3vo).
+  const email = deps.email;
+  if (email === null) return total;
   for (const context of contexts) {
     // One tenant's failure (DB error, bad context) must not stop the others.
     try {
-      const result = await sendBatch(context, deps, now);
+      const result = await sendBatch(context, email, now);
       total.sent += result.sent;
       total.retried += result.retried;
       total.failed += result.failed;

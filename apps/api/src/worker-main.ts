@@ -22,6 +22,7 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPosReceiptEmailJob } from "./worker/pos-receipt-email.job.ts";
 import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
 import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
@@ -297,6 +298,15 @@ const relay = createRelayRuntime({
       });
     } catch {
       console.error("Purchasing PO email sweep failed");
+    }
+    // PRD §3 F11 e-receipt (legend-v3vo): send queued receipt emails. The
+    // sealed address is opened only inside the job; nothing is logged here.
+    try {
+      await runPosReceiptEmailJob([context], {
+        email: handlers.notificationDelivery?.email ?? null,
+      });
+    } catch {
+      console.error("POS receipt email sweep failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:
