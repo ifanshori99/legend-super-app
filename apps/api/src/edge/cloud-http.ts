@@ -266,17 +266,40 @@ export function createStaffPinRecordsFetcher(
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
 
-  return (since, signal) => {
+  const pathFor = (since: string | null, withRevision: boolean) => {
+    const query = new URLSearchParams({ limit: String(limit) });
     // legend-r11j7: `revision=1` opts in to the cloud attempt revision per
     // record (an older edge's strict parse would refuse it, so the cloud only
-    // sends it on request). This edge needs a cloud that knows the flag: the
-    // cloud is released first (docs/deployment.md).
-    const query = new URLSearchParams({ limit: String(limit), revision: "1" });
+    // sends it on request).
+    if (withRevision) query.set("revision", "1");
     if (since !== null) query.set("since", since);
-    return cloudGetJson({
-      ...options,
-      path: `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`,
-      signal,
-    });
+    return `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`;
+  };
+
+  return async (since, signal) => {
+    try {
+      return await cloudGetJson({
+        ...options,
+        path: pathFor(since, true),
+        signal,
+      });
+    } catch (error) {
+      // legend-n758r: an older cloud's strict query refuses `revision` with
+      // 400, so the cloud no longer has to be released first. Retry the same
+      // page once without it: the records then carry no attemptRevision and
+      // the edge compares the counter by value. A second failure is thrown as
+      // is, so the pull's HTTP_400 cursor recovery still sees it. Any other
+      // error is not retried.
+      if (!(error instanceof EdgeCloudHttpError) || error.code !== "HTTP_400")
+        throw error;
+      logger.warn(
+        "cloud refused the attempt revision query; retrying the page without it",
+      );
+      return cloudGetJson({
+        ...options,
+        path: pathFor(since, false),
+        signal,
+      });
+    }
   };
 }

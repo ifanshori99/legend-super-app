@@ -393,6 +393,98 @@ describe("legend-yvhw8 the edge pulls staff pins from the cloud", () => {
     expect(new URL(urls[1]!).searchParams.get("since")).toBe("cursor-1");
   });
 
+  describe("legend-n758r a cloud that refuses revision=1 (an older cloud)", () => {
+    /** Fetcher over a stub cloud: records each request URL, answers by `reply`. */
+    function stubFetcher(reply: (url: URL) => Response | Promise<Response>) {
+      const urls: URL[] = [];
+      const fetchPage = createStaffPinRecordsFetcher({
+        cloudUrl: "wss://cloud.example.test/edge",
+        credential: "edge-credential",
+        fetchImpl: (async (input: string | URL | Request) => {
+          const url = new URL(String(input));
+          urls.push(url);
+          return reply(url);
+        }) as typeof fetch,
+      });
+      return { fetchPage, urls };
+    }
+    const signal = new AbortController().signal;
+
+    it("retries the page once without revision=1 and the edge applies it by value", async () => {
+      const userId = await newStaff();
+      await setCloudPin(userId, PIN_A);
+      // Captured without `revision`: the records lack attemptRevision, as an
+      // old cloud sends them.
+      const exported = await awaitExport(userId);
+      const record = exported.records.find((row) => row.userId === userId)!;
+      expect(record.attemptRevision).toBeUndefined();
+      await deletePin(userId);
+
+      const served = serve(exported);
+      const { fetchPage, urls } = stubFetcher(async (url) => {
+        // The old cloud's strict query refuses the unknown `revision` key.
+        if (url.searchParams.has("revision"))
+          return new Response("{}", { status: 400 });
+        return Response.json(
+          await served.fetchPage(url.searchParams.get("since")),
+        );
+      });
+      const result = await runPull(fetchPage);
+
+      expect(urls).toHaveLength(2);
+      expect(urls[0]!.searchParams.get("revision")).toBe("1");
+      expect(urls[1]!.searchParams.has("revision")).toBe(false);
+      expect(urls[1]!.searchParams.get("limit")).toBe(
+        urls[0]!.searchParams.get("limit"),
+      );
+      expect(urls[1]!.searchParams.get("since")).toBe(
+        urls[0]!.searchParams.get("since"),
+      );
+      expect(result.watermark).toBe(exported.watermark);
+      expect(await pinHashOf(userId)).toBe(record.pinHash);
+      const { rows } = await owner.query<{ cloud_attempt_revision: unknown }>(
+        "SELECT cloud_attempt_revision FROM staff_pins WHERE tenant_id = $1 AND outlet_id = $2 AND user_id = $3",
+        [tenantId, outletId, userId],
+      );
+      expect(rows[0]!.cloud_attempt_revision).toBeNull();
+    });
+
+    it("a cloud that refuses both requests still surfaces HTTP_400 after exactly 2 requests", async () => {
+      const { fetchPage, urls } = stubFetcher(
+        () => new Response("{}", { status: 400 }),
+      );
+      const error = await fetchPage("cursor-1", signal).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(EdgeCloudHttpError);
+      expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
+      expect(urls).toHaveLength(2);
+      expect(urls[0]!.searchParams.get("revision")).toBe("1");
+      expect(urls[1]!.searchParams.has("revision")).toBe(false);
+    });
+
+    it("a non-400 error is thrown after 1 request, with no retry", async () => {
+      const { fetchPage, urls } = stubFetcher(
+        () => new Response("{}", { status: 500 }),
+      );
+      const error = await fetchPage(null, signal).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(EdgeCloudHttpError);
+      expect((error as EdgeCloudHttpError).code).not.toBe("HTTP_400");
+      expect(urls).toHaveLength(1);
+    });
+
+    it("a cloud that knows revision=1 is asked once", async () => {
+      const { fetchPage, urls } = stubFetcher(
+        () => new Response("{}", { status: 200 }),
+      );
+      await fetchPage(null, signal);
+      expect(urls).toHaveLength(1);
+      expect(urls[0]!.searchParams.get("revision")).toBe("1");
+    });
+  });
+
   it("an unreadable page fails without quoting its content", async () => {
     const secret = "S3CRET-HASH-MATERIAL";
     const error = await pullStaffPins({
