@@ -29,7 +29,14 @@
 -- points. The read path applies those only to a stored message of exactly 200
 -- units, and the wide mask always shortens a row (a run is 13+ characters), so
 -- without them here a row would leave the 200 case and a cut card number at its
--- end would show on read. Rows that hold no wide run are not touched.
+-- end would show on read. The two tail rules use the same wide class (legend-stetb):
+-- a separator the old single-separator pattern could not cross is a run of two or
+-- more separators, or one that is not a plain space or dash (tab, line break,
+-- NBSP and the other \s characters, slash, underscore). So a card cut at 200 and
+-- joined by those ('...4111/1111/11', '[disamarkan]_111') is masked too, and a
+-- row of original length 200 is also picked when only such a tail matches (it
+-- holds no 12-digit run). Accepted effect at exactly 200 units: a date such as
+-- '2026/11/09' at the very end is masked. Rows that match neither are not touched.
 --
 -- Batches: rows are visited in id order, 1000 per round (keyset on the primary
 -- key, every row read once), and only a row that matches is updated. A masked
@@ -79,8 +86,8 @@ BEGIN
                     regexp_replace("message", '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}', '[disamarkan]', 'g'),
                     '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]', '[disamarkan]', 'g'),
                   '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}', '[disamarkan]', 'g'),
-                '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9])*[ \t-]*$', '[disamarkan]'),
-              '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$', '[disamarkan]'),
+                '\[disamarkan\](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]{2,}|[\t\n\u000b\u000c\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_])[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9])*[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*$', '[disamarkan]'),
+              '(?<![0-9]|[0-9][.,])[0-9](?=(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){6})(?=[0-9\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*?(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]{2,}|[\t\n\u000b\u000c\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_]))(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9])*[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$', '[disamarkan]'),
             200)
         ELSE regexp_replace(
           regexp_replace(
@@ -90,7 +97,11 @@ BEGIN
       END
     WHERE (last_id IS NULL OR "id" > last_id)
       AND "id" <= batch_last
-      AND "message" ~ '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}';
+      AND ("message" ~ '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}'
+        OR (length("message")
+              + length(regexp_replace("message", '[\u0001-\uffff]', '', 'g')) = 200
+            AND ("message" ~ '\[disamarkan\](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]{2,}|[\t\n\u000b\u000c\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_])[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9])*[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*$'
+              OR "message" ~ '(?<![0-9]|[0-9][.,])[0-9](?=(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){6})(?=[0-9\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*?(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]{2,}|[\t\n\u000b\u000c\r\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_]))(?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9])*[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$')));
 
     last_id := batch_last;
   END LOOP;

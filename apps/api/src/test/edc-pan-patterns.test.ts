@@ -328,6 +328,59 @@ describe("200-char tail left by the old write path (legend-lg45)", () => {
       tail: " Rp 50.000  4111  111",
       expectedTail: " Rp 50.000  [disamark",
     },
+    // legend-stetb: the old single-separator pattern could not cross a slash,
+    // an underscore, a line break or an NBSP either, so a card cut at 200 and
+    // joined by one of them left a remnant the tail rule must catch too.
+    {
+      name: "card cut at the end, joined by slashes",
+      tail: " 4111/1111/11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by underscores",
+      tail: " 4111_1111_11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by line breaks",
+      tail: " 4111\r\n1111\r\n11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by NBSP",
+      tail: " 4111\u00a01111\u00a011",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits, a slash, then a cut mask prefix",
+      tail: " 7777777/[disa",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits, an underscore, then a cut mask missing its bracket",
+      tail: " 7777777_[disamarkan",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by a slash",
+      tail: " [disamarkan]/111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by an underscore",
+      tail: " [disamarkan]_111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by a line break",
+      tail: " [disamarkan]\n111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "a date with slashes at the very end (accepted effect: 8 digits, wide separator)",
+      tail: " 2026/11/09",
+      expectedTail: " [disamarkan]",
+    },
   ];
 
   // Tails that must stay exactly as they are at 200.
@@ -353,6 +406,21 @@ describe("200-char tail left by the old write path (legend-lg45)", () => {
     {
       name: "amount then only 6 digits",
       tail: " Rp 50.000  4111  11",
+      expectedTail: "",
+    },
+    {
+      name: "only 6 digits joined by a slash",
+      tail: " 12345/1",
+      expectedTail: "",
+    },
+    {
+      name: "date and time with slashes",
+      tail: " 2026/11/09 10:00",
+      expectedTail: "",
+    },
+    {
+      name: "short code after a mask with a colon",
+      tail: " [disamarkan]:51",
       expectedTail: "",
     },
   ];

@@ -108,6 +108,32 @@ const probes: Probe[] = [
       200,
     ),
   },
+  // legend-stetb: a card cut at 200 and joined by a slash, underscore, line
+  // break or NBSP is a remnant the tail rules catch; the row holds no 12-digit
+  // run, so 0170 must also pick it by its tail. Stored value = read path.
+  ...[
+    ["slash-cut-card", " 4111/1111/11"],
+    ["underscore-cut-card", " 4111_1111_11"],
+    ["crlf-cut-card", " 4111\r\n1111\r\n11"],
+    ["nbsp-cut-card", " 4111\u00a01111\u00a011"],
+    ["slash-digits-then-cut-mask", " 7777777/[disa"],
+    ["underscore-digits-then-cut-mask", " 7777777_[disamarkan"],
+    ["digits-after-mask-slash", " [disamarkan]/111"],
+    ["digits-after-mask-underscore", " [disamarkan]_111"],
+    ["digits-after-mask-newline", " [disamarkan]\n111"],
+    ["date-with-slashes-at-end", " 2026/11/09"],
+    // stays: 6 digits, a date with time, a colon before the code
+    ["keep-six-digits-slash", " 12345/1"],
+    ["keep-date-time-slash", " 2026/11/09 10:00"],
+    ["keep-colon-code", " [disamarkan]:51"],
+  ].map(([name, tail]) => ({
+    name: `len200-tail-${name}`,
+    message: padded("REF ", tail!, 200),
+  })),
+  {
+    name: "len199-same-tail-stays",
+    message: padded("REF ", " 4111/1111/11", 199),
+  },
   {
     name: "len199-wide-run-and-card-tail-stays",
     message: padded("REF 5500/0000/0000/0004 ", "4111  1111  11", 199),
@@ -388,6 +414,48 @@ describe("0170 DB pattern equals the write-path cardNumberLike", () => {
     );
     expect(after.get(ids.get("keep-eleven")!)?.message).toBe(
       "ref 4111/1111/111 ok",
+    );
+  });
+});
+
+describe("0170 persists the tail masks for slash, underscore, line break and NBSP (legend-stetb)", () => {
+  const rewritten = [
+    ["slash-cut-card", " 4111/1111/11"],
+    ["underscore-cut-card", " 4111_1111_11"],
+    ["crlf-cut-card", " 4111\r\n1111\r\n11"],
+    ["nbsp-cut-card", " 4111\u00a01111\u00a011"],
+    ["slash-digits-then-cut-mask", " 7777777/[disa"],
+    ["underscore-digits-then-cut-mask", " 7777777_[disamarkan"],
+    ["digits-after-mask-slash", " [disamarkan]/111"],
+    ["digits-after-mask-underscore", " [disamarkan]_111"],
+    ["digits-after-mask-newline", " [disamarkan]\n111"],
+    ["date-with-slashes-at-end", " 2026/11/09"],
+  ] as const;
+  for (const [name, tail] of rewritten)
+    it(`${name}: the tail becomes a mask in the stored row`, () => {
+      const original = padded("REF ", tail, 200);
+      // The mask can be longer than the tail it replaces: cut to 200 code
+      // points like the read path (a date tail of 11 units becomes 13).
+      const expected = `${original.slice(0, original.length - tail.length)} ${MASK}`;
+      expect(after.get(ids.get(`len200-tail-${name}`)!)?.message).toBe(
+        Array.from(expected).slice(0, 200).join(""),
+      );
+    });
+
+  for (const name of [
+    "keep-six-digits-slash",
+    "keep-date-time-slash",
+    "keep-colon-code",
+  ])
+    it(`${name}: stays as it was`, () => {
+      expect(after.get(ids.get(`len200-tail-${name}`)!)?.message).toBe(
+        before.get(ids.get(`len200-tail-${name}`)!)?.message,
+      );
+    });
+
+  it("the same tail at 199 units stays (the tail rules need exactly 200)", () => {
+    expect(after.get(ids.get("len199-same-tail-stays")!)?.message).toBe(
+      before.get(ids.get("len199-same-tail-stays")!)?.message,
     );
   });
 });

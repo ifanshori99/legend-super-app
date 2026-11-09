@@ -190,11 +190,18 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
  *   not cross (`… [disamarkan] - 111`);
  * - a run of 7+ digits that holds or ends in such a separator, optionally
  *   followed by a cut mask (`… 4111  1111  11`, `… 7777777  [disa`). A run
- *   right after a digit and `.` or `,` (the rest of an amount) is skipped. */
+ *   right after a digit and `.` or `,` (the rest of an amount) is skipped.
+ * A separator the old pattern could not cross is a run of two or more
+ * separators, or a single one that is not a space or a dash: tab, line break,
+ * NBSP and the other `\s` characters, slash, underscore (legend-stetb, same
+ * class as `cardNumberLike`). Accepted effect, at exactly 200 units only: a
+ * date such as `2026/11/09` at the very end is masked too (8 digits joined by
+ * a wide separator). */
 const oldWriteLimit = 200;
-const tailAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d)*[ \t-]*$/;
+const tailAfterMask =
+  /\[disamarkan\](?:[\s/_-]{2,}|[^\S ]|[/_])\d(?:[\s/_-]*\d)*[\s/_-]*$/;
 const tailCardRun =
-  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[\d \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
+  /(?<!\d|\d[.,])\d(?=(?:[\s/_-]*\d){6})(?=[\d\s/_-]*?(?:[\s/_-]{2,}|[^\S ]|[/_]))(?:[\s/_-]*\d)*[\s/_-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
 const maskCardNumbers = (text: string): string =>
   text
     .replace(cardNumberLike, "[disamarkan]")
