@@ -77,6 +77,7 @@ import {
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
 import { createStaffPinPull } from "./staff-pin-pull.ts";
+import { startEdgeMasterSyncLoop } from "./master-sync.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -132,6 +133,8 @@ function isRejectedCursor(error: unknown): boolean {
 
 /** Longest wait between device-registry pulls while the cloud is failing. */
 const MIN_MAX_PULL_BACKOFF_MS = 300_000;
+// legend-6xcy: how often the edge re-pulls the cloud masters.
+const EDGE_MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
 
 export class EdgeBootError extends Error {
   constructor(message: string) {
@@ -789,6 +792,16 @@ export async function startEdgeRuntime(
       logger.warn(safeError(error), "Edge staff pin pull failed"),
   });
   pinPuller.start();
+  // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
+  // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
+  // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
+  // its schedule.
+  const masterSync = startEdgeMasterSyncLoop({
+    config,
+    intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge master sync failed"),
+  });
   // legend-zclb: one-shot, not awaited. A failure is logged by class only
   // (the error can quote hash material) and never stops the runtime.
   resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)
@@ -821,6 +834,7 @@ export async function startEdgeRuntime(
       await Promise.all([
         puller.stop(),
         pinPuller.stop(),
+        masterSync.stop(),
         stopWakeups(),
         client.stop(),
       ]);

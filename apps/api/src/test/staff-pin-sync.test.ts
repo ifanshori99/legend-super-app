@@ -31,11 +31,17 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import {
-  applyStaffPinRecords,
+  applyStaffPinRecords as applyStaffPinRecordsRaw,
   listStaffPinRecordsSince,
   setEdgeCredentialVerifier,
   type VerifiedEdgeNode,
 } from "../services/staff-pin-sync.ts";
+import { withEdgeModeEnv } from "./edge-mode-env.ts";
+
+// legend-oark: the edge applier refuses to run outside EDGE_MODE.
+const applyStaffPinRecords = (
+  ...args: Parameters<typeof applyStaffPinRecordsRaw>
+) => withEdgeModeEnv(() => applyStaffPinRecordsRaw(...args));
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const bandung = cafeLegendAccessFixtures.outletIds.bandung;
@@ -418,6 +424,22 @@ describe("legend-obh5 GET /api/edge-sync/staff-pin-records", () => {
 // ------------------------------------------------------------------- apply
 
 describe("legend-obh5 staff pin edge apply (cloud wins, ordered by the generation key)", () => {
+  it("legend-oark applyStaffPinRecords refuses to run outside EDGE_MODE and writes nothing", async () => {
+    const user = await staffWithPin(ago(120_000));
+    const record = await recordOf(user);
+    await deletePin(user);
+    const previous = process.env.EDGE_MODE;
+    delete process.env.EDGE_MODE;
+    try {
+      await expect(
+        applyStaffPinRecordsRaw(edgeContext, [record]),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    } finally {
+      if (previous !== undefined) process.env.EDGE_MODE = previous;
+    }
+    expect(await pinRow(user)).toBeUndefined();
+  });
+
   it("legend-obh5 EDG-02 an unknown record is inserted under the cloud id, a replay is a no-op, and the pin verifies on the edge", async () => {
     const user = await staffWithPin(ago(120_000));
     const record = await recordOf(user);

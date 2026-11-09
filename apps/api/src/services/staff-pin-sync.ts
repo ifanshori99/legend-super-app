@@ -130,6 +130,7 @@ import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { outletContext } from "./device-pin-support.ts";
 
 // ------------------------------------------------------- edge credential port
@@ -457,6 +458,14 @@ export async function applyStaffPinRecords(
   context: ScopedTenantContext,
   records: readonly unknown[],
 ): Promise<StaffPinApplyResult> {
+  // legend-oark: the cloud is the source of these records and never ingests
+  // them. Same rule as pos-receipt.service.ts: the runtime flag, or the static
+  // EDGE_MODE setting during the boot window.
+  if (!getEdgeRuntimeState().edgeMode && process.env.EDGE_MODE !== "true")
+    throw new CoreError(
+      "FORBIDDEN",
+      "Staff pin records are applied on an edge node only.",
+    );
   const tenantId = context.tenant.tenantId.toLowerCase();
   const parsed: StaffPinEdgeRecord[] = records.map((raw) => {
     const result = staffPinEdgeRecordSchema.safeParse(raw);
