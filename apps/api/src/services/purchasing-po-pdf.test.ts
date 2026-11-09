@@ -12,6 +12,7 @@ import {
   renderPurchaseOrderPdf,
   textWidth,
 } from "./purchasing-po-pdf";
+import { allText, drawnText } from "../test/pdf-text.ts";
 
 const order = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -69,20 +70,21 @@ function input(
 }
 
 describe("renderPurchaseOrderPdf", () => {
-  it("[9yz-PDF-1] starts with %PDF-1.4 and carries number and total", () => {
-    const text = renderPurchaseOrderPdf(input()).toString("latin1");
-    expect(text.startsWith("%PDF-1.4")).toBe(true);
+  it("[9yz-PDF-1] starts with %PDF- and carries number and total", async () => {
+    const pdf = await renderPurchaseOrderPdf(input());
+    const text = allText(pdf);
+    expect(pdf.toString("latin1").startsWith("%PDF-")).toBe(true);
     expect(text).toContain("PO/202611/0001");
     expect(text).toContain("Rp 1.234.567");
     expect(text).toContain("Beras Premium");
-    expect(text.trimEnd().endsWith("%%EOF")).toBe(true);
+    expect(pdf.toString("latin1").trimEnd().endsWith("%%EOF")).toBe(true);
   });
 
-  it("[9yz-PDF-2] xref offsets point at each object", () => {
+  it("[9yz-PDF-2] xref offsets point at each object", async () => {
     const many = Array.from({ length: 80 }, (_, index) =>
       line(index, `Barang ${index}`),
     );
-    const pdf = renderPurchaseOrderPdf(input({ lines: many }));
+    const pdf = await renderPurchaseOrderPdf(input({ lines: many }));
     const text = pdf.toString("latin1");
     const start = Number(/startxref\n(\d+)\n%%EOF/.exec(text)?.[1]);
     expect(text.slice(start, start + 4)).toBe("xref");
@@ -99,21 +101,61 @@ describe("renderPurchaseOrderPdf", () => {
     }
   });
 
-  it("[9yz-PDF-3] escapes parentheses and backslashes", () => {
-    const text = renderPurchaseOrderPdf(
-      input({
-        supplier: { name: "Toko (A) \\ B", address: null, phone: null },
-      }),
-    ).toString("latin1");
-    expect(text).toContain("(Toko \\(A\\) \\\\ B)");
+  it("[9yz-PDF-3] keeps parentheses and backslashes", async () => {
+    const text = allText(
+      await renderPurchaseOrderPdf(
+        input({
+          supplier: { name: "Toko (A) \\ B", address: null, phone: null },
+        }),
+      ),
+    );
+    expect(text).toContain("Toko (A) \\ B");
   });
 
-  it("[9yz-PDF-4] replaces non-Latin1 characters with ?", () => {
-    const text = renderPurchaseOrderPdf(
-      input({ lines: [line(1, "Teh 茶 \u{1F375}")] }),
-    ).toString("latin1");
-    expect(text).toContain("Teh ? ?");
-    expect([...text].every((ch) => ch.charCodeAt(0) <= 0xff)).toBe(true);
+  it("[uokb-PDF-1] prints Latin Extended, Greek and Cyrillic, no ?", async () => {
+    const name = "Kopi Ñ é Ελληνικά Кириллица";
+    const text = allText(
+      await renderPurchaseOrderPdf(
+        input({
+          supplier: { name: "Café Ünïcode Łódź", address: null, phone: null },
+          lines: [line(1, name)],
+        }),
+      ),
+    );
+    expect(text).toContain(name);
+    expect(text).toContain("Café Ünïcode Łódź");
+    expect(text).not.toContain("?");
+    expect(text).not.toContain("\uFFFD");
+  });
+
+  it("[uokb-PDF-2] a glyph outside the subset does not break the file", async () => {
+    const pdf = await renderPurchaseOrderPdf(
+      input({ lines: [line(1, "Teh 茶 \u{1F375} hijau")] }),
+    );
+    const text = allText(pdf);
+    expect(text).toContain("Teh");
+    expect(text).toContain("hijau");
+    expect(text).not.toContain("?");
+  });
+
+  it("[uokb-PDF-3] a re-send renders the same bytes", async () => {
+    const first = await renderPurchaseOrderPdf(input());
+    const second = await renderPurchaseOrderPdf(input());
+    expect(second.equals(first)).toBe(true);
+  });
+
+  it("[uokb-PDF-4] long Greek and Cyrillic names wrap inside the item column", async () => {
+    const long = Array.from({ length: 12 }, () => "Ελληνικά Кириллица").join(
+      " ",
+    );
+    const drawn = drawnText(
+      await renderPurchaseOrderPdf(input({ lines: [line(1, long)] })),
+    ).filter((entry) => entry.x === 40 + COLUMNS.item.x);
+    expect(drawn.length).toBeGreaterThan(2);
+    for (const entry of drawn)
+      expect(textWidth(entry.text, entry.size)).toBeLessThanOrEqual(
+        COLUMNS.item.width + 0.01,
+      );
   });
 
   it("[9yz-PDF-5] formats rupiah with dot grouping", () => {
@@ -121,34 +163,35 @@ describe("renderPurchaseOrderPdf", () => {
     expect(formatRupiah(0)).toBe("Rp 0");
   });
 
-  it("[9yz-PDF-6] 10-digit amounts stay inside their column", () => {
+  it("[9yz-PDF-6] 10-digit amounts stay inside their column", async () => {
     const big = {
       ...line(1, "Daging Wagyu"),
       quantity: "9999999999.9999",
       unitPriceIdr: "9999999999.9999",
       lineTotalIdr: 9999999999,
     } as unknown as PurchaseOrderPdfInput["lines"][number];
-    const text = renderPurchaseOrderPdf(
-      input({
-        lines: [big],
-        order: {
-          ...order,
-          subtotalIdr: 9999999999,
-          totalIdr: 9999999999,
-        } as unknown as PurchaseOrder,
-      }),
-    ).toString("latin1");
-    expect(text).toContain("Rp 9.999.999.999");
+    const drawn = drawnText(
+      await renderPurchaseOrderPdf(
+        input({
+          lines: [big],
+          order: {
+            ...order,
+            subtotalIdr: 9999999999,
+            totalIdr: 9999999999,
+          } as unknown as PurchaseOrder,
+        }),
+      ),
+    );
+    expect(drawn.map((entry) => entry.text)).toContain("Rp 9.999.999.999");
 
     const margin = 40;
     const cell = (value: string) => {
-      const match = new RegExp(
-        `BT /F1 ([\\d.]+) Tf ([\\d.]+) [\\d.]+ Td \\(${value.replace(/[.,]/g, "\\$&")}\\) Tj ET`,
-      ).exec(text);
-      if (!match) throw new Error(`cell not found: ${value}`);
-      const size = Number(match[1]);
-      const left = Number(match[2]);
-      return { left, right: left + textWidth(value, size) };
+      const found = drawn.find((entry) => entry.text === value);
+      if (!found) throw new Error(`cell not found: ${value}`);
+      return {
+        left: found.x,
+        right: found.x + textWidth(value, found.size),
+      };
     };
     const within = (
       drawn: { left: number; right: number },

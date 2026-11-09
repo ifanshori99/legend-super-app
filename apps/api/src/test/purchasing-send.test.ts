@@ -42,6 +42,7 @@ import {
 import { revokePurchaseOrderShareLinks } from "../services/purchasing-send.service.ts";
 import { runPurchasingPoEmailJob } from "../worker/purchasing-po-email.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { allText } from "./pdf-text.ts";
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -397,9 +398,10 @@ describe("9yz-SEND-1 share link", () => {
     expect(pdf.headers["content-type"]).toContain("application/pdf");
     expect(pdf.headers["cache-control"]).toContain("no-store");
     const text = (pdf.body as Buffer).toString("latin1");
-    expect(text.startsWith("%PDF-1.4")).toBe(true);
-    expect(text).toContain(order.number);
-    expect(text).toContain("Rp 37.000");
+    expect(text.startsWith("%PDF-")).toBe(true);
+    const drawn = allText(pdf.body as Buffer);
+    expect(drawn).toContain(order.number);
+    expect(drawn).toContain("Rp 37.000");
   });
 
   it("[9yz-SEND-1] replays the same key to the same link and issues a new one per key", async () => {
@@ -588,7 +590,7 @@ describe("9yz-SEND-3 email", () => {
     // The link in the email serves the PDF.
     const pdf = await publicGet(pathOf(link));
     expect(pdf.status).toBe(200);
-    expect((pdf.body as Buffer).toString("latin1")).toContain(order.number);
+    expect(allText(pdf.body as Buffer)).toContain(order.number);
 
     expect(logLines.join("")).not.toContain(address);
     expect(consoleOutput).not.toContain(address);
@@ -811,7 +813,8 @@ describe("9yz-ISO-3 isolation", () => {
     });
     expect(rows).toHaveLength(0);
     const pdf = await publicGet(path);
-    const text = (pdf.body as Buffer).toString("latin1");
+    const text = allText(pdf.body as Buffer);
+    expect(text).toContain("PO/");
     expect(text).not.toContain(`Tenant ${tenantB.hostname}`);
   });
 });
