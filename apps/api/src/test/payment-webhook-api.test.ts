@@ -719,14 +719,14 @@ describe("PAY-02 a verified webhook settles the intent", () => {
     expect((await eventRows(tenantA, body.id))[0]?.status).toBe("processed");
   });
 
-  it("PAY-02 event types other than payment.paid and payment.expired are stored ignored and change nothing", async () => {
+  it("PAY-02 event types other than payment and refund events are stored ignored and change nothing", async () => {
     const bill = await openIntent();
+    // refund.succeeded / refund.failed go to the refund port (legend-0ogy);
+    // see the next test and payment-doit-refund-webhook.test.ts.
     for (const [type, status] of [
       ["webhook.test", "pending"],
       ["invoice.created", "pending"],
       ["payment.proof_uploaded", "pending"],
-      ["refund.succeeded", "refunded"],
-      ["refund.failed", "paid"],
       // Not in the docs: never moves an intent either.
       ["payment.failed", "failed"],
     ] as const) {
@@ -742,6 +742,28 @@ describe("PAY-02 a verified webhook settles the intent", () => {
       });
       // The same event again is a duplicate.
       expect((await deliver(body)).body.status).toBe("duplicate");
+    }
+    await expectUntouched(bill);
+    expect(await unallocatedCount(bill.intentId)).toBe(0);
+  });
+
+  it("legend-0ogy refund events with no matching refund never move the intent", async () => {
+    const bill = await openIntent();
+    for (const [type, status] of [
+      ["refund.succeeded", "refunded"],
+      ["refund.failed", "paid"],
+    ] as const) {
+      const body = doit.otherEvent(bill.providerRef, type, status);
+      // No refund to settle yet: DOIT is asked to retry (500) within the
+      // unknown-reference window, and the row waits as failed.
+      const response = await deliver(body);
+      expect(response.status).toBe(500);
+      const [row, ...rest] = await eventRows(tenantA, body.id);
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({
+        status: "failed",
+        last_error_code: "REFUND_UNMATCHED",
+      });
     }
     await expectUntouched(bill);
     expect(await unallocatedCount(bill.intentId)).toBe(0);

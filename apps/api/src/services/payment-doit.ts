@@ -9,25 +9,35 @@
 // `health()` is `down` and create/getStatus answer 503. Credentials come from
 // the sealed integration store per call and are never logged, thrown or
 // echoed; a provider response body never reaches an error or a log line.
+//
+// The gateway also implements `PaymentRefundPort` (POST /v1/payments/{id}/refunds).
+// DOIT has no refund lookup and does not document how long it keeps an
+// idempotency key, so `getRefundStatus` never answers `not_found` and `refund`
+// only ever runs on the first attempt.
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isPublicHttpsUrl } from "@starter/shared/adapters";
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
 import type { PaymentChannel } from "@starter/shared/payment";
-import type { z } from "zod";
+import { z } from "zod";
 import { env } from "../config/env";
 import { logger } from "../lib/logger";
 import {
   DOIT_BASE_URL,
   DOIT_CREATABLE_METHODS,
+  DOIT_ERROR_BODY_MAX_BYTES,
   type DoitCreatableMethod,
+  DoitRefundUnknownError,
   doitPaymentMethodsSchema,
   doitPaymentSchema,
   doitPaymentToGatewayStatus,
   doitPaymentToInstructions,
+  doitRefundDeclineCode,
   malformedProviderAnswer,
   mapDoitMethods,
+  parseDoitErrorCode,
+  parseDoitRefundAnswer,
   verifyDoitSignature,
 } from "./payment-doit-wire";
 import type {
@@ -40,6 +50,12 @@ import type {
   OnlinePaymentMethod,
   PaymentGatewayPort,
 } from "./payment-gateway";
+import type {
+  GatewayRefundLookup,
+  GatewayRefundRequest,
+  GatewayRefundResult,
+  PaymentRefundPort,
+} from "./payment-refund-gateway";
 import {
   loadActiveIntegrationCredentials,
   loadIntegrationCredentialsById,
@@ -47,6 +63,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const METHODS_CACHE_MS = 60_000;
+const REFUND_REASON_MAX = 255;
 
 export type DoitCredentialLoader = (
   context: ScopedTenantContext,
@@ -82,16 +99,17 @@ export type DoitGatewayOptions = {
   now?: () => Date;
 };
 
-export type DoitGateway = PaymentGatewayPort & {
-  /** True when `header` is a fresh DOIT signature over `rawBody` made with
-   * one of `secrets`. */
-  verifyWebhook(input: {
-    rawBody: Buffer;
-    header: string | undefined;
-    secrets: readonly string[];
-    now?: Date;
-  }): boolean;
-};
+export type DoitGateway = PaymentGatewayPort &
+  PaymentRefundPort & {
+    /** True when `header` is a fresh DOIT signature over `rawBody` made with
+     * one of `secrets`. */
+    verifyWebhook(input: {
+      rawBody: Buffer;
+      header: string | undefined;
+      secrets: readonly string[];
+      now?: Date;
+    }): boolean;
+  };
 
 type Resolved = {
   integrationId: string;
@@ -107,6 +125,42 @@ const defaultByIdLoader: DoitCredentialByIdLoader = (context, integrationId) =>
 
 function unavailable(message: string): CoreError {
   return new CoreError("SERVICE_UNAVAILABLE", message);
+}
+
+/** A DOIT error status the caller asked to see (`captureErrorStatuses`). Holds
+ * only the HTTP status and a validated DOIT error code, never body text. */
+class DoitErrorStatus extends CoreError {
+  constructor(
+    readonly httpStatus: number,
+    readonly doitCode: string | null,
+  ) {
+    super(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran sedang bermasalah. Bayar di kasir.",
+    );
+  }
+}
+
+/** The DOIT error code in an error body of at most 4 KB, else null. */
+async function readDoitErrorCode(response: Response): Promise<string | null> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  try {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= DOIT_ERROR_BODY_MAX_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value));
+      total += value.byteLength;
+    }
+    if (total > DOIT_ERROR_BODY_MAX_BYTES) return null;
+    return parseDoitErrorCode(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return null;
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
 }
 
 /** The one outlet an outlet-scoped context is limited to, else null (tenant
@@ -288,6 +342,11 @@ export function createDoitGateway(
       path: string;
       body?: unknown;
       idempotencyKey?: string;
+      /** Aborts the call together with the internal timeout. */
+      signal?: AbortSignal;
+      /** Error statuses to throw as `DoitErrorStatus` (status + DOIT code)
+       * instead of the generic mapping. */
+      captureErrorStatuses?: readonly number[];
     },
     schema: z.ZodType<T>,
   ): Promise<T> {
@@ -330,7 +389,12 @@ export function createDoitGateway(
         body:
           request.body === undefined ? undefined : JSON.stringify(request.body),
         redirect: "error",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: request.signal
+          ? AbortSignal.any([
+              AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+              request.signal,
+            ])
+          : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (error) {
       logger.warn(
@@ -346,10 +410,17 @@ export function createDoitGateway(
     }
 
     if (!response.ok) {
+      const captured = request.captureErrorStatuses?.includes(response.status);
+      const doitCode = captured ? await readDoitErrorCode(response) : null;
       logger.warn(
-        { integrationId: resolved.integrationId, status: response.status },
+        {
+          integrationId: resolved.integrationId,
+          status: response.status,
+          ...(doitCode ? { doitCode } : {}),
+        },
         "DOIT answered with an error status",
       );
+      if (captured) throw new DoitErrorStatus(response.status, doitCode);
       // Drop the body without reading it into memory or an error.
       void response.body?.cancel().catch(() => {});
       if (response.status === 400 || response.status === 422)
@@ -523,6 +594,93 @@ export function createDoitGateway(
       if (input.intentId !== undefined && payment.reference !== input.intentId)
         throw malformedProviderAnswer();
       return doitPaymentToGatewayStatus(payment);
+    },
+
+    async refund(input: GatewayRefundRequest): Promise<GatewayRefundResult> {
+      // Nothing to refund against (a manual intent has no DOIT payment): the
+      // request never leaves, but that is not a provider decline, so the
+      // outcome stays unknown and the refund waits for a person.
+      if (input.paymentProviderRef === null)
+        throw new DoitRefundUnknownError("DOIT_PAYMENT_REF_MISSING");
+      const resolved = await requireCredentials(
+        input.context,
+        input.outletId,
+        input.integrationId,
+      );
+      let answer: unknown;
+      try {
+        answer = await call(
+          resolved,
+          {
+            method: "POST",
+            path: `/v1/payments/${encodeURIComponent(input.paymentProviderRef)}/refunds`,
+            idempotencyKey: input.idempotencyKey,
+            body: {
+              amount: input.amountIdr,
+              reason: input.reason.slice(0, REFUND_REASON_MAX),
+            },
+            signal: input.signal,
+            captureErrorStatuses: [400, 409, 502],
+          },
+          z.unknown(),
+        );
+      } catch (error) {
+        if (error instanceof DoitErrorStatus) {
+          // Only a definitive decline of this first send is a failure; every
+          // other status or code leaves the outcome unknown.
+          const code = doitRefundDeclineCode(error.httpStatus, error.doitCode);
+          if (code !== null)
+            return { status: "failed", providerRef: null, code };
+          // Not a decline: unknown outcome, with the HTTP status as the code.
+          throw new DoitRefundUnknownError(`DOIT_HTTP_${error.httpStatus}`);
+        }
+        throw error;
+      }
+      return parseDoitRefundAnswer(answer, {
+        paymentProviderRef: input.paymentProviderRef,
+        paymentIntentId: input.paymentIntentId,
+        amountIdr: input.amountIdr,
+      });
+    },
+
+    async getRefundStatus(input): Promise<GatewayRefundLookup> {
+      // DOIT has no GET refund: the payment is the only thing to read. This
+      // never answers `not_found` (see the file header).
+      if (input.paymentProviderRef === null)
+        throw new DoitRefundUnknownError("DOIT_REFUND_STATUS_UNKNOWN");
+      const resolved = await requireCredentials(
+        input.context,
+        input.outletId,
+        input.integrationId,
+      );
+      const payment = await call(
+        resolved,
+        {
+          method: "GET",
+          path: `/v1/payments/${encodeURIComponent(input.paymentProviderRef)}`,
+          signal: input.signal,
+        },
+        doitPaymentSchema,
+      );
+      if (
+        payment.id !== input.paymentProviderRef ||
+        payment.reference !== input.paymentIntentId
+      )
+        throw new DoitRefundUnknownError("DOIT_REFUND_STATUS_UNKNOWN");
+      // A refund we already hold a ref for, on a payment DOIT still shows as
+      // paid: the refund has not landed yet.
+      if (
+        payment.status === "paid" &&
+        input.providerRef !== null &&
+        input.providerRef !== payment.id
+      )
+        return { status: "pending", providerRef: input.providerRef };
+      if (payment.status !== "refunded" || payment.amount !== input.amountIdr)
+        throw new DoitRefundUnknownError("DOIT_REFUND_STATUS_UNKNOWN");
+      return {
+        status: "succeeded",
+        providerRef: input.providerRef ?? payment.id,
+      };
     },
 
     verifyWebhook(input) {

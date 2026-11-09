@@ -159,6 +159,13 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Kill switch for DOIT refund payouts (legend-0ogy). Off by default: the
+    // refund port stays fail-closed, so approved refunds wait instead of
+    // moving money. Turn on only once the DOIT refund flow is verified live.
+    DOIT_REFUNDS_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Keyed-digest secret for contact values (WhatsApp numbers, emails) that
     // must link across modules — identity rows, reservations, CRM (AUTH-01/07).
     // Optional so existing deployments start; it falls back to

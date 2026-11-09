@@ -418,3 +418,12 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Keputusan: semua bahan diambil dari `sale_location_id` outlet; konfigurasi kurang (tanpa resep, tanpa lokasi, resep nonaktif) dicatat `skipped`, tidak melempar error (supaya outbox tidak macet). Comp = barang gratis yang tidak ada di baris tertagih.
 - Bead lanjutan: `legend-p4z1` (KDS emit order_issue.recorded), `legend-fbms` (order total 0 tidak emit order.paid), `legend-q55i` (repost skipped), `legend-3kdd` (FK menu → recipes), `legend-89zm` (rute lokasi per item).
 - Berikut: review CTO, merge ke `main` (rapikan nomor migration).
+## legend-0ogy refund DOIT lewat PaymentRefundPort (engineer, cabang `ws/doit-refund`, 2026-11-09)
+
+- Dasar: `ws/fix-refund-quarantine-ops` (84a89e35) + merge `milestone/m1` (dab1d592, provider DOIT). Merge bersih, journal migrasi tanpa duplikat, tanpa migrasi baru.
+- Kontrak DOIT (docs resmi): hanya `POST /v1/payments/{id}/refunds` + Idempotency-Key. Bentuk respons refund, GET refund, dan isi webhook `refund.*` tidak didokumentasikan. Desain fail-safe: `getRefundStatus` tidak pernah `not_found` (refund hanya dikirim sekali), bentuk tak dikenal = hasil tak diketahui, `failed` hanya untuk penolakan definitif kiriman pertama (409 `payment_not_refundable`, 400 `invalid_refund_amount`, 502 `provider_refund_failed`).
+- Adapter: `createDoitGateway` juga `PaymentRefundPort` (kredensial integrasi pencetak intent). Webhook `refund.succeeded/failed` ke `applyRefundProviderUpdate` lewat idempotency key, refund id, atau objek payment (hanya refund penuh, tepat satu kandidat, bukan refund dana). Integrasi penanda tangan wajib sama dengan pencetak intent (menutup legend-dnkm). Poll: sweep `sweepApprovedRefundPayouts` yang sudah ada.
+- Kill switch `DOIT_REFUNDS_ENABLED` (default off). Saat off, sweep dan payout tidak meng-claim (tidak menaikkan `payoutAttempts`).
+- Review K: reviewer Opus (3 bug refund dana tak teralokasi + intent manual + kebocoran kill switch) dan architect (kill switch, `pending` saat payment masih `paid`, cek reference) dibetulkan semua.
+- Sebelum switch dinyalakan: verifikasi sandbox DOIT (bentuk respons, payload webhook, masa simpan kunci) dan putuskan reset satu kali `payout_attempts` refund lama yang sempat di-claim gateway kosong.
+- Gate penuh: oleh merge train. Second opinion Codex: antre.

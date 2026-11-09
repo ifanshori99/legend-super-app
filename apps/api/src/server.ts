@@ -7,6 +7,7 @@ import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { setPaymentGateway } from "./services/payment-gateway.ts";
+import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import {
@@ -37,8 +38,12 @@ import {
 
 const app = createApp();
 // WS-05 payment gateway (legend-b9i): DOIT, fails closed without credentials.
-// Installed here, not in createApp, so tests keep their fake gateways.
-setPaymentGateway(createDoitGateway());
+// Installed here, not in createApp, so tests keep their fake gateways. The
+// same adapter pays approved refunds (PaymentRefundPort, legend-0ogy) only
+// while DOIT_REFUNDS_ENABLED is on; otherwise the refund port stays fail-closed.
+const doitGateway = createDoitGateway();
+setPaymentGateway(doitGateway);
+if (env.DOIT_REFUNDS_ENABLED) setPaymentRefundGateway(doitGateway);
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
 setReservationDepositPort(createPaymentReservationDepositPort());
 // Staff device PIN (legend-obh5): a device names an outlet only through the

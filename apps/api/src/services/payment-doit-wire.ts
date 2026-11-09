@@ -28,6 +28,7 @@ import type {
   GatewayPaymentMethod,
   GatewayPaymentStatus,
 } from "./payment-gateway";
+import type { GatewayRefundResult } from "./payment-refund-gateway";
 
 /** The one DOIT host, sandbox and live (the key prefix picks the
  * environment). */
@@ -328,6 +329,112 @@ export function malformedProviderAnswer(): CoreError {
     "SERVICE_UNAVAILABLE",
     "Gateway pembayaran memberi jawaban yang tidak dikenali. Bayar di kasir.",
   );
+}
+
+// -- Refund -----------------------------------------------------------------
+//
+// The docs (https://doit.id/docs/en/#refund) give the request and the error
+// codes but not the refund object, a GET refund endpoint or the refund webhook
+// data. So every shape that is not recognised is an UNKNOWN outcome (a throw),
+// never a success or a failure.
+
+/** Unknown refund outcome. Carries our own code (read by the refund service
+ * as the payout error), never provider text; stays a 503 `CoreError`. */
+export class DoitRefundUnknownError extends CoreError {
+  constructor(refundCode: string) {
+    super(
+      "SERVICE_UNAVAILABLE",
+      "Gateway pembayaran memberi jawaban refund yang tidak dikenali.",
+    );
+    (this as { code: string }).code = refundCode;
+  }
+}
+
+/** Largest error body read to find the DOIT error code. */
+export const DOIT_ERROR_BODY_MAX_BYTES = 4096;
+
+const doitErrorBodySchema = z.object({
+  error: z.object({
+    code: z
+      .string()
+      .max(64)
+      .regex(/^[a-z_]+$/),
+  }),
+});
+
+/** `{ error: { code } }` -> the code; anything else (bad JSON, bad code) null. */
+export function parseDoitErrorCode(text: string): string | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = doitErrorBodySchema.safeParse(value);
+  return parsed.success ? parsed.data.error.code : null;
+}
+
+/** Definitive refund declines: HTTP status -> DOIT error code. */
+const DOIT_REFUND_DECLINES: Readonly<Record<number, string>> = {
+  409: "payment_not_refundable",
+  400: "invalid_refund_amount",
+  502: "provider_refund_failed",
+};
+
+/** Our decline code for a first-send answer that DOIT definitively refused,
+ * else null (unknown outcome). */
+export function doitRefundDeclineCode(
+  status: number,
+  doitCode: string | null,
+): string | null {
+  if (doitCode === null || DOIT_REFUND_DECLINES[status] !== doitCode)
+    return null;
+  return `DOIT_${doitCode.toUpperCase()}`;
+}
+
+const REFUND_SUCCEEDED_STATUSES = [
+  "succeeded",
+  "success",
+  "completed",
+  "refunded",
+];
+const REFUND_PENDING_STATUSES = ["pending", "processing", "requested"];
+
+/** Loose reading of the 2xx answer of `POST …/refunds`. */
+export function parseDoitRefundAnswer(
+  payload: unknown,
+  expected: {
+    paymentProviderRef: string;
+    paymentIntentId: string;
+    amountIdr: number;
+  },
+): GatewayRefundResult {
+  const unrecognized = () =>
+    new DoitRefundUnknownError("DOIT_REFUND_UNRECOGNIZED");
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+    throw unrecognized();
+  const body = payload as Record<string, unknown>;
+  const { id, status, amount, reference } = body;
+  if (typeof id !== "string" || id === "" || id.length > 100)
+    throw unrecognized();
+  if (amount !== undefined && amount !== expected.amountIdr)
+    throw unrecognized();
+  // The payment object (the refund moved it to `refunded`).
+  if (id === expected.paymentProviderRef) {
+    if (reference !== expected.paymentIntentId) throw unrecognized();
+    if (status === "refunded" && amount === expected.amountIdr)
+      return { status: "succeeded", providerRef: id };
+    throw unrecognized();
+  }
+  // A refund object.
+  if (typeof status !== "string") throw unrecognized();
+  if (REFUND_SUCCEEDED_STATUSES.includes(status))
+    return { status: "succeeded", providerRef: id };
+  if (REFUND_PENDING_STATUSES.includes(status))
+    return { status: "pending", providerRef: id };
+  if (status === "failed")
+    return { status: "failed", providerRef: id, code: "DOIT_REFUND_FAILED" };
+  throw unrecognized();
 }
 
 // -- Webhook signature ------------------------------------------------------
