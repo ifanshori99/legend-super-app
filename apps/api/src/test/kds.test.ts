@@ -1849,7 +1849,7 @@ describe("KDS illegal transitions change nothing", () => {
     expect((await ticketDetail(ticketId)).status).toBe("done");
   });
 
-  it("KDS-04 a user without station permission gets 403 at once, even while another transaction holds the order and ticket locks", async () => {
+  it("KDS-04 a user without station permission gets 404 (as for an unknown ticket) at once, even while another transaction holds the order and ticket locks", async () => {
     const placed = await placeOrder([{ menuItemId: ids.nasi }]);
     const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
     const [line] = (await ticketDetail(ticketId)).items;
@@ -1887,7 +1887,7 @@ describe("KDS illegal transitions change nothing", () => {
           setTimeout(resolve, 5000, "timeout"),
         ),
       ]);
-      expect(settled).toEqual([403, 403, 403, 403]);
+      expect(settled).toEqual([404, 404, 404, 404]);
     } finally {
       await holder.query("ROLLBACK");
       holder.release();
@@ -2127,11 +2127,13 @@ describe("KDS isolation and authorization", () => {
     // The kitchen station of the same outlet is out of reach, read or write.
     expect((await asBarista.snapshot(ids.kitchenA)).status).toBe(403);
     expect((await asBarista.feed(ids.kitchenA, 0)).status).toBe(403);
-    expect((await asBarista.ticket(target.ticketId)).status).toBe(403);
-    expect((await asBarista.start(target.ticketId)).status).toBe(403);
+    // Another station's ticket answers like an unknown ticket (404), so the
+    // status cannot be used to probe which ticket ids exist.
+    expect((await asBarista.ticket(target.ticketId)).status).toBe(404);
+    expect((await asBarista.start(target.ticketId)).status).toBe(404);
     expect(
       (await asBarista.voidTicket(target.ticketId, { reason: "Uji" })).status,
-    ).toBe(403);
+    ).toBe(404);
     expect((await ticketDetail(target.ticketId)).status).toBe("new");
     // A void on their own station works for a station-only cook too (it
     // locks the order to tell the POS).
@@ -2140,6 +2142,52 @@ describe("KDS isolation and authorization", () => {
     expect(
       (await changesOf(target.ticketId)).map((row) => row.to_status),
     ).toEqual(["new"]);
+  });
+
+  it("legend-qqvf a foreign-station ticket answers exactly like an unknown ticket (detail and action)", async () => {
+    const asBarista = kds(barista);
+    // Positive control: the cook's own station ticket works.
+    const barOrder = await placeOrder([{ menuItemId: ids.kopi }]);
+    const barTicket = await ticketOn(barOrder.orderId, ids.barA);
+    expect((await asBarista.ticket(barTicket)).status).toBe(200);
+    expect((await asBarista.start(barTicket)).status).toBe(200);
+
+    const strip = (body: { requestId?: unknown; error?: unknown }) => {
+      const rest: Record<string, unknown> = { ...body };
+      delete rest.requestId;
+      const error = { ...((rest.error as Record<string, unknown>) ?? {}) };
+      delete error.requestId;
+      return { ...rest, error };
+    };
+    const unknownId = uuidToUlid(randomUUID());
+    const before = await ticketDetail(target.ticketId);
+
+    const unknownDetail = await asBarista.ticket(unknownId);
+    const foreignDetail = await asBarista.ticket(target.ticketId);
+    expect(unknownDetail.status).toBe(404);
+    expect(foreignDetail.status).toBe(unknownDetail.status);
+    expect(strip(foreignDetail.body)).toEqual(strip(unknownDetail.body));
+
+    const unknownStart = await asBarista.start(unknownId);
+    const foreignStart = await asBarista.start(target.ticketId);
+    expect(unknownStart.status).toBe(404);
+    expect(foreignStart.status).toBe(unknownStart.status);
+    expect(strip(foreignStart.body)).toEqual(strip(unknownStart.body));
+
+    const unknownBump = await asBarista.bump(unknownId);
+    const foreignBump = await asBarista.bump(target.ticketId);
+    expect(foreignBump.status).toBe(unknownBump.status);
+    expect(strip(foreignBump.body)).toEqual(strip(unknownBump.body));
+
+    // A line of another station answers like an unknown line.
+    const [foreignLine] = (await ticketDetail(target.ticketId)).items;
+    const unknownItem = await asBarista.item(uuidToUlid(randomUUID()), "start");
+    const foreignItem = await asBarista.item(foreignLine!.id, "start");
+    expect(unknownItem.status).toBe(404);
+    expect(foreignItem.status).toBe(unknownItem.status);
+    expect(strip(foreignItem.body)).toEqual(strip(unknownItem.body));
+
+    expect(await ticketDetail(target.ticketId)).toEqual(before);
   });
 
   it("legend-cot3 a station-scoped cook changes priority and item status on their own station only", async () => {
@@ -2175,15 +2223,13 @@ describe("KDS isolation and authorization", () => {
       await asBarista.item(kitchenLine!.id, "serve"),
       await asBarista.item(kitchenLine!.id, "void"),
       // Permission runs before the state machine, so bump and recall of a
-      // ticket that is not started/done still answer 403, not 409.
+      // ticket that is not started/done still answer 404, not 409.
       await asBarista.bump(kitchenTicket),
       await asBarista.recall(kitchenTicket, { reason: "Uji" }),
     ];
     for (const response of denied) {
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
-      expect(response.body.error?.code ?? response.body.code).toBe(
-        "PERMISSION_DENIED",
-      );
+      expect(response.status, JSON.stringify(response.body)).toBe(404);
+      expect(response.body.error?.code ?? response.body.code).toBe("NOT_FOUND");
     }
     const after = await ticketDetail(kitchenTicket);
     expect(after).toEqual(before);

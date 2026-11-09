@@ -36,6 +36,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
   CoreError,
@@ -178,6 +179,35 @@ async function readTicket(
   const [ticket] = lock ? await query.for("update") : await query;
   if (!ticket) throw ticketNotFound();
   return ticket;
+}
+
+/**
+ * By-id paths: a ticket (or line) of a station outside the caller's reach
+ * answers exactly like an unknown id, so the status code cannot be used to
+ * probe which ids exist. Runs before any lock is taken.
+ */
+async function assertTicketStationPermission(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  stationId: string,
+  now: Date,
+  notFound: () => CoreError,
+): Promise<void> {
+  try {
+    await assertStationPermission(
+      tx,
+      context,
+      actorUserId,
+      PROCESS,
+      stationId,
+      now,
+    );
+  } catch (error) {
+    if (error instanceof AccessError && error.code === "PERMISSION_DENIED")
+      throw notFound();
+    throw error;
+  }
 }
 
 /** Station must be an active station of this outlet (after the permission check). */
@@ -748,13 +778,13 @@ export async function applyKitchenTicketAction(
     // Permission first, on an unlocked read: a denied user must never queue
     // behind (or hold) the order and ticket locks of a busy kitchen.
     const unlocked = await readTicket(tx, context, outletId, ticketId, false);
-    await assertStationPermission(
+    await assertTicketStationPermission(
       tx,
       context,
       actor.userId,
-      PROCESS,
       unlocked.stationId,
       now,
+      ticketNotFound,
     );
     const order =
       action === "void"
@@ -972,13 +1002,13 @@ export async function setKitchenTicketPriority(
     // Permission on an unlocked read first: a caller without access never
     // takes or waits on the ticket row lock.
     const unlocked = await readTicket(tx, context, outletId, ticketId, false);
-    await assertStationPermission(
+    await assertTicketStationPermission(
       tx,
       context,
       actor.userId,
-      PROCESS,
       unlocked.stationId,
       now,
+      ticketNotFound,
     );
     const ticket = await readTicket(tx, context, outletId, ticketId, true);
     if (ticket.stationId !== unlocked.stationId) throw ticketMoved();
@@ -1050,13 +1080,13 @@ export async function applyKitchenItemAction(
       found.ticketId,
       false,
     );
-    await assertStationPermission(
+    await assertTicketStationPermission(
       tx,
       context,
       actor.userId,
-      PROCESS,
       unlocked.stationId,
       now,
+      itemNotFound,
     );
     // Then order row (void only), ticket row, and the line: the ticket-action order.
     const order =
@@ -1244,13 +1274,13 @@ export async function getKitchenTicketDetail(
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
     const ticket = await readTicket(tx, context, outletId, ticketId, false);
-    await assertStationPermission(
+    await assertTicketStationPermission(
       tx,
       context,
       actor.userId,
-      PROCESS,
       ticket.stationId,
       now,
+      ticketNotFound,
     );
     const [detail] = await ticketDetails(tx, context, [ticket]);
     if (!detail) throw ticketNotFound();
