@@ -19,6 +19,8 @@ export const posErrorHttpStatus = {
   DISCOUNT_EXCEEDS_SUBTOTAL: 422,
   /** POS-02: a refund always carries a verified approval. */
   REFUND_APPROVAL_REQUIRED: 403,
+  /** EDC-04: a standalone EDC payment always carries a verified approval. */
+  EDC_STANDALONE_APPROVAL_REQUIRED: 403,
   /** A refund may not exceed what is still refundable on the order. */
   REFUND_EXCEEDS_PAID: 422,
   /** POS-04: corrections (void/refund records) only target final orders. */
@@ -79,6 +81,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
   DISCOUNT_APPROVAL_REQUIRED: "Diskon di atas ambang memerlukan persetujuan.",
   DISCOUNT_EXCEEDS_SUBTOTAL: "Diskon melebihi nilai pesanan.",
   REFUND_APPROVAL_REQUIRED: "Refund memerlukan persetujuan supervisor.",
+  EDC_STANDALONE_APPROVAL_REQUIRED:
+    "Pembayaran EDC standalone memerlukan persetujuan supervisor.",
   REFUND_EXCEEDS_PAID: "Refund melebihi nominal yang masih dapat direfund.",
   CORRECTION_TARGET_NOT_FINAL: "Koreksi hanya untuk transaksi final.",
   TENDER_TOTAL_MISMATCH: "Pembayaran belum menutup seluruh tagihan.",

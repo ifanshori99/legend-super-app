@@ -294,6 +294,7 @@ export class EcrSimulator implements EdcProvider {
     if (!record || !known || record.batchNo !== this.#batchNo(terminalRowId))
       return ecrInquiryResultSchema.parse({
         outcome: "not_found",
+        trace: request.trace,
         batchNo: this.#batchNo(terminalRowId),
       });
     if (record.state === "in_progress")

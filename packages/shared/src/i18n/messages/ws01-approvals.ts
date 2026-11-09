@@ -31,6 +31,7 @@ export const approvalsMessages = {
     cash_drawer_open: "Buka laci kas",
     price_correction: "Koreksi harga",
     cash_shift_close: "Tutup shift kasir",
+    edc_standalone: "Pembayaran EDC standalone",
     apology_voucher: "Voucher permintaan maaf",
     unallocated_funds: "Dana belum teralokasi",
     purchase_request: "Permintaan pembelian",

@@ -60,6 +60,7 @@ export const APPROVAL_ACTIONS = {
   price_correction: "§3.6 Override Supervisor (koreksi harga)",
   // Other PRD clauses that route through the matrix / approval inbox
   cash_shift_close: "§3.10 Shift Kasir (approval supervisor)",
+  edc_standalone: "§3.13 EDC mode standalone; EDC-04 (PIN supervisor)",
   apology_voucher: "§3.9 Voucher Permintaan Maaf (batas nilai sesuai matriks)",
   unallocated_funds: "PAY-04",
   purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
@@ -281,6 +282,8 @@ export const POS_OVERRIDE_ACTIONS = [
   "price_correction",
   // §4 E step 5 / POS-03: the supervisor approves the blind-count close.
   "cash_shift_close",
+  // EDC-04: a standalone EDC payment (agent down) needs a supervisor PIN.
+  "edc_standalone",
 ] as const satisfies readonly ApprovalActionType[];
 export type PosOverrideAction = (typeof POS_OVERRIDE_ACTIONS)[number];
 

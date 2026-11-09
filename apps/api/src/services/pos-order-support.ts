@@ -636,12 +636,18 @@ export async function auditPos(
 // ---- Approvals (POS-02, AUTH-06) ------------------------------------------------
 
 export type ApprovalPurpose =
-  "order_void" | "item_void" | "discount" | "correction_void" | "refund";
+  | "order_void"
+  | "item_void"
+  | "discount"
+  | "correction_void"
+  | "refund"
+  | "edc_standalone";
 
 const APPROVAL_ERROR = {
   void: "VOID_APPROVAL_REQUIRED",
   discount: "DISCOUNT_APPROVAL_REQUIRED",
   refund: "REFUND_APPROVAL_REQUIRED",
+  edc_standalone: "EDC_STANDALONE_APPROVAL_REQUIRED",
 } as const;
 
 /**
@@ -661,11 +667,11 @@ export async function consumeApproval(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
-    action: "void" | "discount" | "refund";
+    action: "void" | "discount" | "refund" | "edc_standalone";
     purpose: ApprovalPurpose;
     outletId: OutletId;
     orderId: string;
-    objectType: "order" | "order_item";
+    objectType: "order" | "order_item" | "pos_order";
     objectId: string;
     requesterId: string;
     approvedBy: string;

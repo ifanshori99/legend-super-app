@@ -100,6 +100,7 @@ const entries = [
   ["pos.refund.approve", ["approve", "payment"]],
   ["pos.cash_drawer.approve", ["approve"]],
   ["pos.price_correction.approve", ["approve", "sell_price"]],
+  ["pos.edc_standalone.approve", ["approve", "payment"]],
   ["shift.cash.operate", ["payment"]],
   ["shift.cash.approve_close", ["approve", "payment"]],
   ["shift.cash.view_all", ["payment"]],

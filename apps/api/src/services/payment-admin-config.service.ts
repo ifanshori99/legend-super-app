@@ -6,6 +6,7 @@ import {
   encodeCursor,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { EdcError } from "@starter/shared/edc";
 import {
   getPaymentRouting as routingContract,
   listEdcTerminals as terminalsContract,
@@ -18,7 +19,7 @@ import {
   type UpdateEdcTerminalInput,
   type UpdateEdcCashierDefaultInput,
 } from "@starter/shared/payment/admin";
-import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   outlets,
@@ -30,6 +31,7 @@ import {
   paymentEdcTerminals,
   paymentCashierDefaults,
 } from "../db/schema/payment-admin.ts";
+import { edcTransactions } from "../db/schema/edc.ts";
 import { withTenant } from "../db/tenant";
 import { recordAudit } from "./core-audit";
 import { paymentGateway } from "./payment-gateway";
@@ -447,6 +449,34 @@ export async function updateEdcTerminal(
       "terminal.update",
       { params, body },
       async () => {
+        // An inquiry asks whatever device the row describes now. With an
+        // unfinished sale on this terminal the identity must not move, or the
+        // new device's `not_found` could free a second charge (EDC-03). The
+        // row is locked above and a new sale's insert needs a key-share lock
+        // on it, so no sale can slip in between this check and the write.
+        const identityChanged =
+          (body.bankCode !== undefined && body.bankCode !== old.bankCode) ||
+          (body.terminalId !== undefined &&
+            body.terminalId !== old.terminalId) ||
+          (body.merchantId !== undefined &&
+            body.merchantId !== old.merchantId) ||
+          (body.connection !== undefined &&
+            body.connection !== old.connection) ||
+          (body.ipAddress !== undefined && body.ipAddress !== old.ipAddress);
+        if (identityChanged) {
+          const [open] = await tx
+            .select({ id: edcTransactions.id })
+            .from(edcTransactions)
+            .where(
+              and(
+                eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+                eq(edcTransactions.terminalId, old.id),
+                inArray(edcTransactions.status, ["pending", "unknown"]),
+              ),
+            )
+            .limit(1);
+          if (open) throw new EdcError("EDC_TERMINAL_BUSY");
+        }
         const [row] = await tx
           .update(paymentEdcTerminals)
           .set({ ...body, updatedAt: new Date() })

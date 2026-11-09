@@ -278,3 +278,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect; temuan (null integrasi fail-open, UPDATE MALFORMED tanpa guard, celah test) dibetulkan.
 - Beads: legend-srf6 (kunci dedupe tanpa integrasi, risiko diterima), legend-dnkm (callback refund tanpa ikatan integrasi), legend-f03o (secret dipakai bersama antar integrasi).
 - Gate penuh: oleh merge train. Second opinion Codex: antre.
+
+## Brief 102 temuan Codex EDC + tender port + override edc_standalone (engineer, cabang `ws/fix-edc-codex`, 2026-11-09)
+
+- Temuan 1 (`agent.ts` not_found): trace dicek sebelum outcome diterapkan; not_found tanpa trace jadi unknown. Simulator mengembalikan trace.
+- Temuan 2 (ownership/stop): ownership dicek sebelum tiap panggilan terminal (sale, inquiry, guardRetry, cancel); tiap panggilan dilacak per outlet; `stop()`/`releaseOutlet` menunggu semuanya. `writeAhead` membaca ulang terminal `FOR KEY SHARE`.
+- Temuan 3 (config terminal berubah): ubah bank/TID/MID/koneksi/IP ditolak `EDC_TERMINAL_BUSY` selama ada row pending/unknown. Tanpa migration.
+- Temuan 4 (PAN): cardType allowlist; rrn/invoiceNo/batchNo/approvalCode dengan deret 13-19 digit jadi null saat tulis dan baca. `bankRef` standalone dan reference tender juga disaring.
+- legend-dahk: `setPosEdcTenderPort(edcTenderSettlement)` di `app.ts`; reference EDC = nomor order.
+- legend-m4fv: action override `edc_standalone`, permission `pos.edc_standalone.approve`, PIN supervisor + nomor referensi bank; row `edc_transactions` mode standalone, `needs_reconciliation=true`; override sekali pakai; nominal = sisa tagihan.
+- Migration `0103_pos_override_edc_standalone`, `0104_edc_standalone_permission` (sebelumnya 0099/0100, direnomor di prep m1 726515a4). `db:generate` kosong.
+- Test terarah: 19 file (edc-_, pos-edc-_, pos-order*, device-pin-service, payment-admin-api, staff-override*) 227/227 lulus. Typecheck shared/api/web lulus; eslint + prettier berkas berubah bersih.
+- Review: reviewer Opus 3 putaran + architect; semua temuan High/Medium dibetulkan. Sisa Low: `stop()` tanpa batas waktu (bead baru).
+- Tidak diubah: skip e2e EDC-01/02/04 di `prep/e2e-az` (merge train). Data PAN lama: legend-5gub. Gate penuh: merge train. Second opinion Codex: antre.

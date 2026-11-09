@@ -84,12 +84,17 @@ import { emitEdcTransactionEvent } from "./events.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
+type Ownership =
+  { client: PoolClient; lockName: string; lost: () => void } | undefined;
 type Hold = <R>(
   call: () => Promise<R>,
   signal: AbortSignal,
   /** Row whose exchange this is: `holding` has it until the call settles. */
   rowId?: string,
 ) => Promise<R>;
+/** Who may use the terminal: the outlet and the ownership token taken when
+ * the operation began. An operation without a live token never sends. */
+type Gate = { readonly key: string; readonly ownership: Ownership };
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type EdcRow = typeof edcTransactions.$inferSelect;
 type TerminalRow = typeof paymentEdcTerminals.$inferSelect;
@@ -174,6 +179,14 @@ function defaultTrace(): string {
   for (let i = 0; i < 12; i += 1)
     trace += TRACE_ALPHABET[randomInt(TRACE_ALPHABET.length)];
   return trace;
+}
+
+/** The owner check refused a call right before the terminal: nothing was
+ * sent. Distinct from an adapter failure, which may have reached the wire. */
+class NotSentError extends EdcError {
+  constructor() {
+    super("EDC_AGENT_NOT_READY");
+  }
 }
 
 function notFound(): CoreError {
@@ -316,6 +329,33 @@ function patchFromAnswer(
   answerCtx: AnswerContext,
 ): Patch {
   if (result.outcome === "in_progress") return {};
+  // The echo is checked before any outcome, `not_found` included: an answer
+  // that names another transaction's trace, or none, says nothing about this
+  // one (it must never turn this row `failed`, which frees a second charge).
+  const traceOk =
+    result.trace === row.trace ||
+    (result.trace === null &&
+      !answerCtx.strictTrace &&
+      answerCtx.capabilities.inquiry !== "last_only");
+  if (!traceOk) {
+    logger.warn(
+      { edcTransactionId: row.id, trace: row.trace },
+      "EDC terminal answer does not echo the request trace",
+    );
+    // An inquiry answers by asking: a wrong or missing echo means another
+    // transaction's answer, so nothing of it is recorded on this row. A sale
+    // or cancel reply may really be the charge: keep it as evidence and flag
+    // the row for a human.
+    if (answerCtx.strictTrace)
+      return {
+        status: "unknown",
+        details: { message: MESSAGE_TRACE_MISMATCH },
+      };
+    return {
+      ...unknownEvidencePatch(result, MESSAGE_TRACE_MISMATCH),
+      needsReconciliation: true,
+    };
+  }
   if (result.outcome === "not_found") {
     const dispatchedAt = row.dispatchedAt;
     const ageMs =
@@ -350,30 +390,6 @@ function patchFromAnswer(
           status: "unknown",
           details: { message: MESSAGE_NOT_FOUND_UNCONFIRMED },
         };
-  }
-  const traceOk =
-    result.trace === row.trace ||
-    (result.trace === null &&
-      !answerCtx.strictTrace &&
-      answerCtx.capabilities.inquiry !== "last_only");
-  if (!traceOk) {
-    logger.warn(
-      { edcTransactionId: row.id, trace: row.trace },
-      "EDC terminal answer does not echo the request trace",
-    );
-    // An inquiry answers by asking: a wrong or missing echo means another
-    // transaction's answer, so nothing of it is recorded on this row. A sale
-    // or cancel reply may really be the charge: keep it as evidence and flag
-    // the row for a human.
-    if (answerCtx.strictTrace)
-      return {
-        status: "unknown",
-        details: { message: MESSAGE_TRACE_MISMATCH },
-      };
-    return {
-      ...unknownEvidencePatch(result, MESSAGE_TRACE_MISMATCH),
-      needsReconciliation: true,
-    };
   }
   switch (result.outcome) {
     case "approved":
@@ -511,6 +527,36 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     string,
     { client: PoolClient; lockName: string; lost: () => void }
   >();
+  /** Sales (queued or on the wire) per owned outlet. `stop` waits for them
+   * before it frees the outlet lock, so a replacement agent never sends next
+   * to an operation of this one. */
+  const sales = new Map<string, Set<Promise<unknown>>>();
+  /** Every adapter call on the wire per owned outlet (sale, inquiry, cancel,
+   * bypass cancel), until it settles, whatever the agent waited for. `stop`
+   * waits for them too: a call that outlived its timeout is still the
+   * terminal's business. */
+  const wires = new Map<string, Set<Promise<unknown>>>();
+
+  function trackWire(key: string, call: Promise<unknown>): void {
+    const set = wires.get(key) ?? new Set<Promise<unknown>>();
+    wires.set(key, set);
+    const settled = call.then(
+      () => undefined,
+      () => undefined,
+    );
+    set.add(settled);
+    void settled.then(() => {
+      set.delete(settled);
+      if (set.size === 0 && wires.get(key) === set) wires.delete(key);
+    });
+  }
+
+  /** Same tick as the wire: refuses unless the instance that began the
+   * operation still holds the outlet. */
+  function assertOwnedFor(gate: Gate): void {
+    if (gate.ownership === undefined || owned.get(gate.key) !== gate.ownership)
+      throw new NotSentError();
+  }
 
   function ownedKey(tenantId: string, outletId: string): string {
     return `${tenantId.toLowerCase()}:${outletId.toLowerCase()}`;
@@ -535,7 +581,18 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   async function releaseOutlet(key: string): Promise<void> {
     const entry = owned.get(key);
     if (!entry) return;
+    // Out of `owned` first: a sale still queued sees the lost ownership and
+    // does not go out. The ones already on the wire are awaited, then the
+    // lock is freed.
     owned.delete(key);
+    // Sales first, then every call still on the wire (a timed-out call or a
+    // bypass cancel is not a sale). Nothing new starts: each call re-checks
+    // ownership in the tick it goes out.
+    for (;;) {
+      const pending = [...(sales.get(key) ?? []), ...(wires.get(key) ?? [])];
+      if (pending.length === 0) break;
+      await Promise.allSettled(pending);
+    }
     let broken: Error | undefined;
     try {
       await entry.client.query(
@@ -603,6 +660,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
    * outlives its abort marks the terminal `stuck` until it settles. */
   async function withTerminalLock<T>(
     terminalRowId: string,
+    gate: Gate,
     run: (hold: Hold) => Promise<T>,
   ): Promise<T> {
     const previous = tails.get(terminalRowId) ?? Promise.resolve();
@@ -626,11 +684,15 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       signal: AbortSignal,
       rowId?: string,
     ): Promise<R> {
+      // The last check before the terminal, in the tick of the call: ownership
+      // may have gone while this exchange queued or while the claim awaited.
+      assertOwnedFor(gate);
       held = true;
       if (rowId) holding.add(rowId);
       const work = new Promise<R>((resolve) => {
         resolve(call());
       });
+      trackWire(gate.key, work);
       let settled = false;
       const onSettle = () => {
         settled = true;
@@ -768,7 +830,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     ctx: ScopedTenantContext,
     row: EdcRow,
     patch: Patch,
-    options: { inquiry?: boolean; undispatchedOnly?: boolean } = {},
+    options: {
+      inquiry?: boolean;
+      undispatchedOnly?: boolean;
+      /** The sale was claimed at this instant but never sent: clear the claim
+       * with the status change. */
+      revokeDispatch?: Date | null;
+    } = {},
   ): Promise<EdcRow> {
     const at = now();
     const status = patch.status;
@@ -782,6 +850,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         : {}),
       ...(patch.details ?? {}),
       ...(patch.needsReconciliation ? { needsReconciliation: true } : {}),
+      ...(options.revokeDispatch
+        ? { dispatchedAt: null, dispatchBatchNo: null }
+        : {}),
       ...(options.inquiry
         ? {
             inquiryCount: sql`${edcTransactions.inquiryCount} + 1`,
@@ -817,6 +888,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               inArray(edcTransactions.status, [...OPEN_STATUSES]),
               options.undispatchedOnly
                 ? isNull(edcTransactions.dispatchedAt)
+                : undefined,
+              options.revokeDispatch
+                ? eq(edcTransactions.dispatchedAt, options.revokeDispatch)
                 : undefined,
             ),
           )
@@ -937,6 +1011,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   async function inquireRow(
     ctx: ScopedTenantContext,
     row: EdcRow,
+    ownership: Ownership,
   ): Promise<EdcRow> {
     if (isFinal(row.status)) return row;
     if (inFlight.has(row.id)) return (await reload(ctx, row.id)) ?? row;
@@ -965,7 +1040,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       );
       return (await reload(ctx, row.id)) ?? row;
     }
-    return withTerminalLock(terminal.id, async (hold) => {
+    const gate: Gate = { key: ownedKey(row.tenantId, row.outletId), ownership };
+    return withTerminalLock(terminal.id, gate, async (hold) => {
       // The sale or another inquiry may have resolved the row while queued.
       const current = await reload(ctx, row.id);
       if (!current) throw notFound();
@@ -990,6 +1066,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           answerContext(provider, { strictTrace: true }),
         );
       } catch (error) {
+        // Refused before the wire: nothing was asked, the row stays as it is.
+        if (error instanceof NotSentError) throw error;
         logger.warn(
           {
             edcTransactionId: current.id,
@@ -1011,8 +1089,17 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     row: EdcRow,
     provider: EdcProvider,
     terminal: EcrTerminal,
+    ownership: Ownership,
   ): Promise<EdcRow> {
-    return withTerminalLock(terminal.id, async (hold) => {
+    const key = ownedKey(row.tenantId, row.outletId);
+    /** The outlet is still held by the instance that accepted the request. */
+    const stillOwned = () =>
+      ownership !== undefined && owned.get(key) === ownership;
+    return withTerminalLock(terminal.id, { key, ownership }, async (hold) => {
+      // Ownership may have gone while this sale queued (stop, lost
+      // connection): another agent may now drive the terminal. Nothing is
+      // claimed or sent; the owner's recovery settles the pending row.
+      if (!stillOwned()) throw new EdcError("EDC_AGENT_NOT_READY");
       // Dispatch claim: only a row still `pending` and never sent goes out. A
       // cancel that won the race while this sale was queued means no sale.
       // The row joins `holding` only when `hold` invokes the sale call, never
@@ -1057,21 +1144,36 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         const signal = AbortSignal.timeout(saleTimeoutMs);
         const answer = ecrResultSchema.parse(
           await hold(
-            () =>
-              provider.sale({
+            () => {
+              // `hold` re-checked ownership in this tick: the claim above
+              // awaited the database.
+              return provider.sale({
                 terminal,
                 trace: claimed.trace,
                 amountIdr: claimed.amountIdr,
                 method: claimed.method as EdcPaymentRequest["method"],
                 reference: claimed.reference,
                 signal,
-              }),
+              });
+            },
             signal,
             claimed.id,
           ),
         );
         patch = patchFromAnswer(claimed, answer, answerContext(provider));
       } catch (error) {
+        if (error instanceof NotSentError) {
+          // The owner check refused the sale after the dispatch claim: the
+          // terminal never saw it. Say so (failed, not dispatched) instead of
+          // leaving an `unknown` row for a human to reconcile.
+          await applyPatch(
+            ctx,
+            claimed,
+            { status: "failed", details: { message: MESSAGE_NEVER_SENT } },
+            { revokeDispatch: claimed.dispatchedAt },
+          );
+          throw error;
+        }
         logger.warn(
           {
             edcTransactionId: claimed.id,
@@ -1092,6 +1194,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     ctx: ScopedTenantContext,
     row: EdcRow,
     fingerprint: string,
+    ownership: Ownership,
   ): Promise<EdcTransaction> {
     if (row.requestFingerprint !== fingerprint)
       throw new CoreError(
@@ -1099,7 +1202,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         "Idempotency key sudah dipakai untuk permintaan EDC yang berbeda.",
       );
     try {
-      return toDto(await inquireRow(ctx, row));
+      return toDto(await inquireRow(ctx, row, ownership));
     } catch (error) {
       if (error instanceof EdcError) return toDto(row);
       throw error;
@@ -1110,6 +1213,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   async function guardRetry(
     ctx: ScopedTenantContext,
     earlier: readonly EdcRow[],
+    ownership: Ownership,
   ): Promise<void> {
     if (earlier.some((row) => row.status === "approved"))
       throw new EdcError("EDC_ALREADY_APPROVED");
@@ -1128,7 +1232,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       (r) => r.status === "unknown" || r.status === "pending",
     )) {
       try {
-        const resolved = await inquireRow(ctx, row);
+        const resolved = await inquireRow(ctx, row, ownership);
         if (resolved.status === "approved") approved = true;
         else if (!isFinal(resolved.status)) unresolved = true;
       } catch (error) {
@@ -1141,14 +1245,20 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   }
 
   type WriteAhead =
-    | { kind: "created"; row: EdcRow }
+    | {
+        kind: "created";
+        row: EdcRow;
+        /** The terminal as read inside the write-ahead transaction. */
+        terminal: TerminalRow;
+        provider: EdcProvider;
+      }
     | { kind: "existing"; row: EdcRow }
     | { kind: "retry" };
 
   async function writeAhead(
     ctx: ScopedTenantContext,
     input: EdcPaymentRequest,
-    values: { id: string; bank: EdcBank; trace: string; fingerprint: string },
+    values: { id: string; trace: string; fingerprint: string },
   ): Promise<WriteAhead> {
     try {
       return await withTenant(db, ctx, async (tx): Promise<WriteAhead> => {
@@ -1177,6 +1287,29 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           )
           .limit(1);
         if (blocking.length > 0) return { kind: "retry" };
+        // The terminal is read again here, locked against a concurrent edit
+        // (`FOR KEY SHARE` conflicts with the admin's `FOR UPDATE`): the sale
+        // goes out to the identity this row was written for, and the admin's
+        // busy check sees this row once it commits.
+        const [terminal] = await tx
+          .select()
+          .from(paymentEdcTerminals)
+          .where(
+            and(
+              eq(paymentEdcTerminals.tenantId, ctx.tenant.tenantId),
+              eq(paymentEdcTerminals.outletId, input.outletId),
+              eq(paymentEdcTerminals.id, input.terminalId),
+            ),
+          )
+          .for("key share")
+          .limit(1);
+        if (
+          !terminal ||
+          terminal.status !== "active" ||
+          !terminal.supportedMethods.includes(input.method)
+        )
+          throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
+        const provider = registry.get(terminal.bankCode);
         const at = now();
         const [row] = await tx
           .insert(edcTransactions)
@@ -1185,7 +1318,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             tenantId: ctx.tenant.tenantId,
             outletId: input.outletId,
             terminalId: input.terminalId,
-            bank: values.bank,
+            bank: provider.bank,
             reference: input.reference,
             idempotencyKey: input.idempotencyKey,
             requestFingerprint: values.fingerprint,
@@ -1203,7 +1336,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           row,
           now: at,
         });
-        return { kind: "created", row };
+        return { kind: "created", row, terminal, provider };
       });
     } catch (error) {
       if (!uniqueViolation(error)) throw error;
@@ -1282,6 +1415,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       const input = edcPaymentRequestSchema.parse(rawInput);
       assertScope(ctx, input.tenantId, input.outletId);
       assertReady(ctx.tenant.tenantId, input.outletId);
+      const salesKey = ownedKey(ctx.tenant.tenantId, input.outletId);
+      const ownership = owned.get(salesKey);
       const fingerprint = fingerprintOf(input);
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
@@ -1315,9 +1450,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           return { kind: "fresh", earlier, terminal } as const;
         });
         if (pre.kind === "existing")
-          return replay(ctx, pre.existing, fingerprint);
+          return replay(ctx, pre.existing, fingerprint, ownership);
 
-        await guardRetry(ctx, pre.earlier);
+        await guardRetry(ctx, pre.earlier, ownership);
 
         const { terminal } = pre;
         if (
@@ -1336,33 +1471,41 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
         }
         // Unknown bank fails here, before any row exists.
-        const provider = registry.get(terminal.bankCode);
-        const ecrTerminal = toEcrTerminal(terminal, provider.bank);
+        registry.get(terminal.bankCode);
 
         const id = randomUUID();
         inFlight.add(id);
         try {
           const created = await writeAhead(ctx, input, {
             id,
-            bank: provider.bank,
             trace: newTrace(),
             fingerprint,
           });
           if (created.kind === "existing") {
             inFlight.delete(id);
-            return replay(ctx, created.row, fingerprint);
+            return replay(ctx, created.row, fingerprint, ownership);
           }
           if (created.kind === "retry") {
             inFlight.delete(id);
             continue;
           }
-          const finished = await performSale(
+          const selling = performSale(
             ctx,
             created.row,
-            provider,
-            ecrTerminal,
+            created.provider,
+            toEcrTerminal(created.terminal, created.provider.bank),
+            ownership,
           );
-          return toDto(finished);
+          const tracked = sales.get(salesKey) ?? new Set<Promise<unknown>>();
+          sales.set(salesKey, tracked);
+          tracked.add(selling);
+          const untrack = () => {
+            tracked.delete(selling);
+            if (tracked.size === 0 && sales.get(salesKey) === tracked)
+              sales.delete(salesKey);
+          };
+          selling.then(untrack, untrack);
+          return toDto(await selling);
         } finally {
           inFlight.delete(id);
         }
@@ -1372,7 +1515,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
 
     async inquire(ctx, actorUserId, ref) {
       const row = await loadOwned(ctx, actorUserId, ref);
-      return toDto(await inquireRow(ctx, row));
+      const ownership = owned.get(ownedKey(row.tenantId, row.outletId));
+      return toDto(await inquireRow(ctx, row, ownership));
     },
 
     async cancel(ctx, actorUserId, ref) {
@@ -1416,6 +1560,10 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         if (isFinal(row.status)) throw new EdcError("EDC_NOT_CANCELLABLE");
       }
 
+      const cancelGate: Gate = {
+        key: ownedKey(row.tenantId, row.outletId),
+        ownership: owned.get(ownedKey(row.tenantId, row.outletId)),
+      };
       const terminal = await withTenant(db, ctx, (tx) =>
         selectTerminal(tx, ctx, row.outletId, row.terminalId),
       );
@@ -1448,6 +1596,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           if (hold) {
             answer = ecrResultSchema.parse(await hold(call, signal));
           } else {
+            // Same tick as the frame: refused if the outlet is no longer ours.
+            assertOwnedFor(cancelGate);
             const wire = new Promise<EcrResult>((resolve) => {
               resolve(call());
             });
@@ -1463,6 +1613,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               ? Promise.all([earlier, settled]).then(() => undefined)
               : settled;
             bypassWire.set(current.id, done);
+            trackWire(cancelGate.key, done);
             void done.then(() => {
               if (bypassWire.get(current.id) === done)
                 bypassWire.delete(current.id);
@@ -1470,6 +1621,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             answer = ecrResultSchema.parse(await raceAbort(wire, signal));
           }
         } catch (error) {
+          // Refused before the wire: nothing was sent, nothing to record.
+          if (error instanceof NotSentError) throw error;
           logger.warn(
             {
               edcTransactionId: current.id,
@@ -1511,7 +1664,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         cancelling.set(row.id, run);
         return run;
       }
-      return withTerminalLock(terminal.id, async (hold) => {
+      return withTerminalLock(terminal.id, cancelGate, async (hold) => {
         const current = await reload(ctx, row.id);
         if (!current) throw notFound();
         if (current.status === "cancelled") return toDto(current);
