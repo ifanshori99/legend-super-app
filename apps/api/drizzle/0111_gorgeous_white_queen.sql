@@ -1,0 +1,2 @@
+ALTER TABLE "wifi_device_grants" ADD COLUMN "revoke_retry_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "wifi_device_grants" ADD CONSTRAINT "wifi_device_grants_revoke_retry_check" CHECK ("wifi_device_grants"."revoke_retry_at" IS NULL OR "wifi_device_grants"."status" IN ('superseded','revoked','failed'));

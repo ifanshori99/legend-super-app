@@ -25,6 +25,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import {
+  isStaleStampStatus,
+  shouldRefillAfterConflict,
+} from "../admin-conflict.ts";
 import { useUpdateFacility } from "../hooks.ts";
 import {
   clockMinutes,
@@ -122,7 +126,7 @@ export function GeneralTab({
   // its stamp, or every retry would send the old stamp and fail again. Plain
   // refetches never get here, so unsaved edits survive them. Set during render
   // (React's "adjust state when a prop changes" pattern), not in an effect.
-  if (conflictPending && facility.updatedAt !== stamp) {
+  if (shouldRefillAfterConflict(conflictPending, facility.updatedAt, stamp)) {
     setConflictPending(false);
     setValues(initialValues(facility));
     setStamp(facility.updatedAt);
@@ -344,7 +348,7 @@ export function GeneralTab({
         onError: (error) => {
           // Only a stale stamp (412) means another admin saved first. A 409
           // is a refused change, so the typed values stay for a retry.
-          if (error instanceof ApiError && error.status === 412)
+          if (error instanceof ApiError && isStaleStampStatus(error.status))
             setConflictPending(true);
           setFormError(
             error instanceof ApiError

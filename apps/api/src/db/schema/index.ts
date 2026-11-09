@@ -88,3 +88,5 @@ export * from "./inventory-count";
 export * from "./device";
 // WS-06 inventory -> GL bridge tracking (legend-w1vo).
 export * from "./inventory-gl";
+// WS-09 edge Wi-Fi agent grant ledger (legend-hsk).
+export * from "./edge-wifi";

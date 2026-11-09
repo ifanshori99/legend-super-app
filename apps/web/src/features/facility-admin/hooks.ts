@@ -32,6 +32,7 @@ import type {
 } from "@starter/shared/facility";
 import { ApiError } from "@/lib/api/errors.ts";
 import * as api from "./api.ts";
+import { mergeFacilityRow } from "./admin-conflict.ts";
 import {
   facilityAdminKeys,
   facilityConfigQuery,
@@ -72,15 +73,7 @@ function patchConfig(
 function patchFacilityRow(queryClient: QueryClient, facility: Facility) {
   queryClient.setQueriesData<CursorPage<FacilityListItem>>(
     { queryKey: facilityAdminKeys.lists() },
-    (page) =>
-      page
-        ? {
-            ...page,
-            data: page.data.map((row) =>
-              row.id === facility.id ? { ...row, ...facility } : row,
-            ),
-          }
-        : page,
+    (page) => mergeFacilityRow(page, facility),
   );
 }
 

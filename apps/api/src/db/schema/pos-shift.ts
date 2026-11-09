@@ -324,10 +324,54 @@ export const cashMovements = pgTable(
       sql`${table.type} IN ('cash_in', 'cash_out', 'drop')`,
     ),
     check("cash_movements_amount_check", sql`${table.amountIdr} > 0`),
+    // The service trims the note first; btrim keeps spaces, tabs and newlines
+    // alone out even for a writer that skips it (legend-vor4). char_length
+    // counts code points, as the service does. Migration 0099 adds it NOT
+    // VALID so rows written before it are not re-checked.
     check(
       "cash_movements_reason_check",
-      sql`char_length(${table.reasonNote}) >= 4`,
+      sql`char_length(btrim(${table.reasonNote}, E' \\t\\r\\n')) >= 4`,
     ),
+  ],
+);
+
+/**
+ * `cash_movement_refusals` (T, E): the idempotency record of a refused cash
+ * out (legend-uw47). A retry with the same key and fingerprint gets the same
+ * refusal without a new audit row, so retries do not use up the shift's
+ * refusal allowance; one row per unique refused attempt.
+ */
+export const cashMovementRefusals = pgTable(
+  "cash_movement_refusals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    shiftId: uuid("shift_id").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
+    requestFingerprint: varchar("request_fingerprint", {
+      length: 64,
+    }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("cash_movement_refusals_idempotency_key").on(
+      table.tenantId,
+      table.shiftId,
+      table.idempotencyKey,
+    ),
+    foreignKey({
+      name: "cash_movement_refusals_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
+    foreignKey({
+      name: "cash_movement_refusals_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
   ],
 );
 

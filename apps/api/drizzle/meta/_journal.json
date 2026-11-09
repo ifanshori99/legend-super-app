@@ -736,6 +736,62 @@
       "when": 1794194057119,
       "tag": "0104_edc_standalone_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1794196986300,
+      "tag": "0105_many_goblin_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794197135871,
+      "tag": "0106_noisy_silver_centurion",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1794197152606,
+      "tag": "0107_pos_shift_refusals_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1794197468206,
+      "tag": "0108_aromatic_virginia_dare",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1794197540289,
+      "tag": "0109_clammy_the_fallen",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1794197549251,
+      "tag": "0110_ws09_wifi_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1794197671039,
+      "tag": "0111_gorgeous_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1794197676507,
+      "tag": "0112_ws09_wifi_hardening_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -162,7 +162,7 @@ describe("portal derivations (UI text and links)", () => {
     const policy = fixtures.wifiPolicies[0];
     assert.equal(
       portal.formatPeakWindows(policy.peakSchedule, t),
-      "Sen–Jum 11.30–14.00, 18.00–21.00 · Min, Sab 00.00–23.59",
+      "Sen–Jum 11.30–14.00, 18.00–21.00 · Min, Sab 00.00–24.00",
     );
   });
 

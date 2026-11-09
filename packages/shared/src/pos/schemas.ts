@@ -1082,7 +1082,15 @@ export type PosShiftReport = z.infer<typeof posShiftReportSchema>;
 export const recordCashMovementInputSchema = clientInputSchema({
   type: cashMovementTypeSchema,
   amountIdr: positiveIdr,
-  reasonNote: z.string().min(4).max(500),
+  // Code points, as the database check counts them ("😀😀" is 2, not 4).
+  reasonNote: z
+    .string()
+    .trim()
+    .min(4)
+    .max(500)
+    .refine((value) => Array.from(value).length >= 4, {
+      message: "Reason needs at least 4 characters",
+    }),
   idempotencyKey: idempotencyKeySchema,
 });
 

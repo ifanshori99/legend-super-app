@@ -990,7 +990,7 @@ export const cafeLegendWifiPolicies = [
     peakSchedule: [
       { daysOfWeek: [1, 2, 3, 4, 5], startsAt: "11:30", endsAt: "14:00" },
       { daysOfWeek: [1, 2, 3, 4, 5], startsAt: "18:00", endsAt: "21:00" },
-      { daysOfWeek: [0, 6], startsAt: "00:00", endsAt: "23:59" },
+      { daysOfWeek: [0, 6], startsAt: "00:00", endsAt: "24:00" },
     ],
     baseSpeedKbps: 5_000,
     fullSpeedKbps: 20_000,

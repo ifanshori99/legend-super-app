@@ -262,6 +262,21 @@ export interface EdcProvider {
     input: ScopedReference,
   ): Promise<EdcResult>;
 }
+/** Venue Wi-Fi controller boundary (edge Wi-Fi agent, bead legend-hsk).
+ * - `reference` is one grant. The same reference with the same request replays;
+ *   a different request fails `IDEMPOTENCY_KEY_REUSED`; a revoked reference
+ *   never authorizes again (`authorized: false`).
+ * - A new `authorize` for a `deviceId` that already holds a grant replaces that
+ *   device's rate and duration without a gap (RADIUS CoA or a controller API
+ *   update). The adapter must guarantee this: a speed change never cuts the
+ *   device.
+ * - `revoke` of a reference that was superseded on its device is a no-op for
+ *   the device.
+ * - `durationSeconds` lapsing at the controller is a cut. Callers renew before
+ *   it lapses.
+ * - `walledGarden` is the pre-auth allowlist (hosts). Adapters that can set it
+ *   at the controller also implement the optional `WifiWalledGardenSync`
+ *   capability (`@starter/shared/edge`). */
 export interface WifiProvider {
   authorize(
     context: ScopedTenantContext,

@@ -59,13 +59,13 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   // authenticated staff configuration and must never share the guests'
   // per-IP budget at a venue NAT (Opus review legend-wd4b).
   "/api/payments/links",
+  // Supplier PO PDF share links (legend-9yz): token in the path, no session.
+  "/api/public/purchase-orders",
   // Guest facility price board and QR entry lookup, no login (FAC-11, legend-zjfi).
   "/api/facility/catalog",
   "/api/facility/entry",
   // Active subscription plans for the Wi-Fi portal, no login (legend-1cj0).
   "/api/facility/subscription-plans",
-  // Supplier PO PDF share links (legend-9yz): token in the path, no session.
-  "/api/public/purchase-orders",
 ];
 
 /**

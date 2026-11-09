@@ -261,20 +261,27 @@ class Grants {
 
 export class FakeWifiProvider implements WifiProvider {
   private grants = new Grants();
+  /** References revoked before they were ever authorized (legend-nffy). */
+  private revokedUnseen = new Set<string>();
   async authorize(c: ScopedTenantContext, input: WifiRequest) {
     const v = accept(c, wifiRequestSchema, input);
+    const key = refKey(v);
     return wifiResultSchema.parse({
       reference: v.reference,
-      authorized: this.grants.grant(refKey(v), v),
+      authorized: this.revokedUnseen.has(key)
+        ? false
+        : this.grants.grant(key, v),
     });
   }
-  /** Revoking an unknown voucher is a no-op: it is not authorized either way. */
+  /** Revoking an unknown voucher records it: a revoked reference never
+   * authorizes later, even when its authorize arrives after the revoke. */
   async revoke(
     c: ScopedTenantContext,
     input: ScopedReference,
   ): Promise<WifiResult> {
     const v = accept(c, scopedReferenceSchema, input);
-    this.grants.revoke(refKey(v));
+    const key = refKey(v);
+    if (!this.grants.revoke(key)) this.revokedUnseen.add(key);
     return wifiResultSchema.parse({
       reference: v.reference,
       authorized: false,

@@ -65,6 +65,7 @@ import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
+  cashMovementRefusals,
   cashMovements,
   posDailyCloses,
   posShiftCounts,
@@ -122,6 +123,7 @@ const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
 const MAX_CASHIER_COUNTS = 3;
 /** Over-drawer cash-out refusals a shift gets before every cash-out is refused. */
 const MAX_CASH_OUT_REFUSALS = 2;
+const MIN_REASON_LENGTH = 4;
 
 const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
@@ -472,7 +474,17 @@ export async function recordCashMovement(
   shiftId: string,
   input: RecordCashMovementInput,
 ): Promise<PosCashMovement> {
-  const { idempotencyKey, ...request } = input;
+  const { idempotencyKey, ...rest } = input;
+  // Spaces alone are not a reason: trim before the length check (the contract
+  // schema trims too; this keeps direct callers honest). Length is in code
+  // points, as the database check counts them ("😀😀" is 2, not 4).
+  const reasonNote = input.reasonNote.trim();
+  if (Array.from(reasonNote).length < MIN_REASON_LENGTH)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Alasan kas minimal 4 karakter (tanpa spasi di awal dan akhir).",
+    );
+  const request = { ...rest, reasonNote };
   const id = parseShiftId(shiftId);
   const fingerprint = shiftFingerprint({
     op: "cash_movement.record",
@@ -516,7 +528,44 @@ export async function recordCashMovement(
         );
       return movementDto(replay);
     }
+    // A refused cash out is remembered by key (legend-uw47) so a retry does
+    // not use up the shift's refusal allowance. It is not frozen: the checks
+    // below run again (the cashier may have added cash since), and a refusal
+    // that repeats writes no new audit row and no new refusal row, since the
+    // attempt is already counted. Another body under the key is a conflict.
+    const [refusedBefore] = await tx
+      .select()
+      .from(cashMovementRefusals)
+      .where(
+        and(
+          eq(cashMovementRefusals.tenantId, tenantId),
+          eq(cashMovementRefusals.shiftId, shift.id),
+          eq(cashMovementRefusals.idempotencyKey, idempotencyKey),
+        ),
+      );
+    if (refusedBefore && refusedBefore.requestFingerprint !== fingerprint)
+      throw new CoreError(
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+      );
     assertCashMovementAllowed(shift);
+    // legend-1hza: a cash in must keep every drawer figure a safe integer
+    // (count and close sum opening + sales + cash in with sumIdr, which
+    // throws past the bound). Checked in bigint before the insert. This bounds
+    // cash in only: cash tenders (pos-order-payment.ts) are not bounded here.
+    if (input.type === "cash_in") {
+      const live = await computeShiftAggregates(tx, shift);
+      const inflow =
+        BigInt(shift.openingFloatIdr) +
+        BigInt(live.cashSalesIdr) +
+        BigInt(live.cashInIdr) +
+        BigInt(input.amountIdr);
+      if (inflow > BigInt(Number.MAX_SAFE_INTEGER))
+        throw new CoreError(
+          "VALIDATION_ERROR",
+          "Jumlah kas masuk terlalu besar untuk shift ini.",
+        );
+    }
     // Cash out and drops come out of the drawer: never more than the drawer
     // should hold, or the shift could never close (contract expectedIdr ≥ 0,
     // movements are insert-only so there is no correction path). The shift
@@ -549,6 +598,7 @@ export async function recordCashMovement(
         (refusals?.n ?? 0) >= MAX_CASH_OUT_REFUSALS ||
         input.amountIdr > expected
       ) {
+        if (refusedBefore) return { refused: true as const };
         await auditShift(
           tx,
           context,
@@ -564,10 +614,17 @@ export async function recordCashMovement(
               type: input.type,
               amountIdr: input.amountIdr,
             },
-            reason: input.reasonNote,
+            reason: reasonNote,
           },
           now,
         );
+        await tx.insert(cashMovementRefusals).values({
+          tenantId,
+          outletId,
+          shiftId: shift.id,
+          idempotencyKey,
+          requestFingerprint: fingerprint,
+        });
         return { refused: true as const };
       }
     }
@@ -579,7 +636,7 @@ export async function recordCashMovement(
         shiftId: shift.id,
         type: input.type,
         amountIdr: input.amountIdr,
-        reasonNote: input.reasonNote,
+        reasonNote,
         recordedBy: caller.userId,
         recordedAt: now,
         approvedBy: null,
