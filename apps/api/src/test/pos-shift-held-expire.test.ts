@@ -726,7 +726,8 @@ describe("POS-03 legend-y9bf booking at close: a held cash out is not part of th
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(closed.body.data).toMatchObject({
       status: "closed",
-      expectedIdr: FLOAT_IDR,
+      // Blind close (legend-4wrfd): the cashier's answer carries no expected.
+      expectedIdr: null,
       countedIdr: FLOAT_IDR,
     });
 
@@ -1306,10 +1307,7 @@ describe("POS-03 legend-y9bf the cashier's responses do not reveal a held or exp
     );
   });
 
-  // Skipped: the cashier close response shows the shift drawer figures,
-  // which leave a held refund out; that predates legend-y9bf (present at
-  // 1c051167) and needs its own decision: legend-4wrfd.
-  it.skip("legend-y9bf: count and close answers are identical for a held and a normal cash refund (legend-4wrfd)", async () => {
+  it("legend-y9bf: count and close answers are identical for a held and a normal cash refund (legend-4wrfd)", async () => {
     const runs = [];
     for (const needsApproval of [true, false]) {
       const cashier = await newCashier();

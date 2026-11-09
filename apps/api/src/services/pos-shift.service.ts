@@ -54,6 +54,7 @@ import {
   storedApprovalIdSchema,
   type PosCashMovement,
   type PosShift,
+  type PosShiftWithFigures,
   type PosShiftCount,
   type PosShiftCountReceipt,
   type PosShiftReport,
@@ -94,7 +95,9 @@ import {
   movementsOf,
   parseShiftId,
   shiftAuditView,
+  blindShiftDto,
   shiftDto,
+  shiftFiguresDto,
   shiftFingerprint,
   permissionDenied,
   SHIFT_COUNT_OBJECT_TYPE,
@@ -205,8 +208,8 @@ export async function openPosShift(
           "IDEMPOTENCY_KEY_REUSED",
           "Kunci idempotensi sudah dipakai untuk permintaan lain.",
         );
-      // POS-03 blind count: the cashier never sees the live drawer figures.
-      return shiftDto(replay);
+      // POS-03 blind count: the cashier never sees the drawer figures.
+      return shiftDto(replay, undefined, { blind: true });
     }
     const businessDate = businessDateFor(outlet, now);
     const [closedDay] = await tx
@@ -293,7 +296,7 @@ export async function openPosShift(
       },
       now,
     );
-    return shiftDto(row);
+    return shiftDto(row, undefined, { blind: true });
   });
 }
 
@@ -351,7 +354,9 @@ export async function getPosShiftReport(
       deviceId: row.deviceId,
     });
     return posShiftReportSchema.parse({
-      shift: shiftDto(row, live),
+      // legend-4wrfd: blind (no breakdown, expected or variance), open or
+      // closed, for a caller who may not see the variance.
+      shift: shiftDto(row, live, { blind: !seesLiveFigures }),
       movements: movements.map((movement) =>
         movementDto(movement, { withApproval: seesLiveFigures }),
       ),
@@ -396,18 +401,20 @@ export async function listPosShifts(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const data: PosShift[] = [];
-    for (const row of page)
+    for (const row of page) {
+      // POS-03 blind count (legend-4wrfd): never the caller's own shift,
+      // open or closed, nor any shift for a caller without view_all.
+      const seesFigures = seesAll && !sameUser(row.cashierId, caller.userId);
       data.push(
         shiftDto(
           row,
-          // POS-03 blind count: never the caller's own open shift.
-          row.status === "open" &&
-            seesAll &&
-            !sameUser(row.cashierId, caller.userId)
+          row.status === "open" && seesFigures
             ? await computeShiftAggregates(tx, row)
             : undefined,
+          { blind: !seesFigures },
         ),
       );
+    }
     const last = page.at(-1);
     return {
       data,
@@ -696,7 +703,7 @@ export async function recordCashMovement(
 /** Expected drawer cash of `shift` with `aggregates`; RangeError -> 409. */
 function expectedCashOf(shift: ShiftRow, aggregates: ShiftAggregates): number {
   try {
-    return Number(shiftExpectedCashIdr(shiftDto(shift, aggregates)));
+    return Number(shiftExpectedCashIdr(shiftFiguresDto(shift, aggregates)));
   } catch (error) {
     if (error instanceof RangeError)
       throw new CoreError("CONFLICT", error.message);
@@ -1224,7 +1231,8 @@ export async function closePosShift(
           "IDEMPOTENCY_KEY_REUSED",
           "Kunci idempotensi sudah dipakai untuk permintaan lain.",
         );
-      return shiftDto(shift);
+      // The closer is the shift's cashier: blind replay (legend-4wrfd).
+      return shiftDto(shift, undefined, { blind: true });
     }
     const [count] = await tx
       .select()
@@ -1287,9 +1295,9 @@ export async function closePosShift(
       (await heldCorrectionCashIdrOf(tx, shift)) !== heldCorrectionIdr
     )
       throw new PosError("SHIFT_COUNT_STALE");
-    let closed: PosShift;
+    let closed: PosShiftWithFigures;
     try {
-      closed = closeShift(shiftDto(shift, aggregates), {
+      closed = closeShift(shiftFiguresDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
         heldCashOutIdr: heldCorrectionIdr,
@@ -1321,19 +1329,22 @@ export async function closePosShift(
       approvalRequestId: input.approvalRequestId,
       now,
     });
-    return writeClose(tx, context, caller, {
-      outletId,
-      shift,
-      aggregates,
-      count,
-      closed,
-      heldCorrectionIdr,
-      override,
-      idempotencyKey,
-      fingerprint,
-      now,
-      auditAction: "pos_shift.closed",
-    });
+    // The closer is the shift's cashier: blind response (legend-4wrfd).
+    return blindShiftDto(
+      await writeClose(tx, context, caller, {
+        outletId,
+        shift,
+        aggregates,
+        count,
+        closed,
+        heldCorrectionIdr,
+        override,
+        idempotencyKey,
+        fingerprint,
+        now,
+        auditAction: "pos_shift.closed",
+      }),
+    );
   });
 }
 
@@ -1352,7 +1363,7 @@ async function writeClose(
     shift: ShiftRow;
     aggregates: ShiftAggregates;
     count: ShiftCountRow;
-    closed: PosShift;
+    closed: PosShiftWithFigures;
     /** Held refund and void cash of the shift (heldCorrectionCashIdrOf). */
     heldCorrectionIdr: number;
     override: OverrideRow;
@@ -1429,7 +1440,7 @@ async function writeClose(
     throw error;
   }
   if (!row) throw new CoreError("CONFLICT", "Shift sudah tidak terbuka.");
-  const dto = shiftDto(row);
+  const dto = shiftFiguresDto(row);
   await appendShiftEvent(tx, context, "cashier_shift.closed", {
     aggregateId: row.id,
     outletId,
@@ -1597,9 +1608,9 @@ export async function forceClosePosShift(
       (await heldCorrectionCashIdrOf(tx, shift)) !== heldCorrectionIdr
     )
       throw new PosError("SHIFT_COUNT_STALE");
-    let closed: PosShift;
+    let closed: PosShiftWithFigures;
     try {
-      closed = closeShift(shiftDto(shift, aggregates), {
+      closed = closeShift(shiftFiguresDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
         heldCashOutIdr: heldCorrectionIdr,

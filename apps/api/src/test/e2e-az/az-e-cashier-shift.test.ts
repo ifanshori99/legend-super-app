@@ -886,11 +886,12 @@ describe("Alur E buka dan tutup shift kasir", () => {
       approvalRequestId: approval.overrideId,
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    // legend-4wrfd: the cashier's close answer is blind; the supervisor reads the figures.
     expect(closed.body.data).toMatchObject({
       status: "closed",
-      expectedIdr: 150_000,
+      expectedIdr: null,
       countedIdr: 145_000,
-      varianceIdr: -5_000,
+      varianceIdr: null,
       approvedBy: supervisor.userId,
     });
 
@@ -909,6 +910,8 @@ describe("Alur E buka dan tutup shift kasir", () => {
     const report = await get(supervisor, `/shifts/${shiftId}`);
     expect(report.body.data.shift).toMatchObject({
       status: "closed",
+      expectedIdr: 150_000,
+      countedIdr: 145_000,
       varianceIdr: -5_000,
     });
     expect(report.body.data.movements).toHaveLength(1);
@@ -939,7 +942,13 @@ describe("Alur E buka dan tutup shift kasir", () => {
       approvalRequestId: approval.overrideId,
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data.varianceIdr).toBe(0);
+    expect(closed.body.data.varianceIdr).toBeNull();
+    const report = await get(supervisor, `/shifts/${shiftId}`);
+    expect(report.body.data.shift).toMatchObject({
+      status: "closed",
+      expectedIdr: FLOAT_IDR,
+      varianceIdr: 0,
+    });
   });
 
   it("POS-03 kasir tanpa izin shift ditolak membuka shift", async () => {

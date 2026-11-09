@@ -595,6 +595,36 @@ afterAll(async () => {
 
 // ---- F1 ----------------------------------------------------------------------------
 
+/**
+ * legend-4wrfd: the cashier's own shift is blind (no drawer breakdown,
+ * expected or variance). Checks that, then adds the stored figures so the
+ * assertions on the close maths keep working.
+ */
+async function withStoredFigures<T extends { id: string }>(dto: T): Promise<T> {
+  for (const key of [
+    "cashSalesIdr",
+    "cashRefundsIdr",
+    "cashInIdr",
+    "cashOutIdr",
+    "cashDropIdr",
+    "expectedIdr",
+    "varianceIdr",
+  ])
+    expect((dto as Record<string, unknown>)[key], key).toBeNull();
+  const { rows } = await owner.query<Record<string, number | null>>(
+    `SELECT cash_sales_idr::float8 AS "cashSalesIdr",
+            cash_refunds_idr::float8 AS "cashRefundsIdr",
+            cash_in_idr::float8 AS "cashInIdr",
+            cash_out_idr::float8 AS "cashOutIdr",
+            cash_drop_idr::float8 AS "cashDropIdr",
+            expected_idr::float8 AS "expectedIdr",
+            variance_idr::float8 AS "varianceIdr"
+       FROM pos_shifts WHERE id = $1`,
+    [dto.id],
+  );
+  return { ...dto, ...rows[0] };
+}
+
 describe("POS-03 legend-q7jj F1: a stale count is no balance oracle", () => {
   it("after a count, cash out X then cash in X answers the same SHIFT_COUNT_STALE whether the cash out was normal or held, with or without a valid approval", async () => {
     // Normal: Rp10.000 fits the drawer. Held: Rp150.000 is over the drawer.
@@ -925,7 +955,7 @@ describe("POS-03 legend-q7jj F2 (decided, legend-y9bf): a held cash out that was
     expect(held.status, JSON.stringify(held.body)).toBe(201);
     const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data).toMatchObject({
+    expect(await withStoredFigures(closed.body.data)).toMatchObject({
       status: "closed",
       expectedIdr: FLOAT_IDR,
       countedIdr: FLOAT_IDR,

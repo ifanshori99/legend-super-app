@@ -84,6 +84,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: test reproduksi gagal di kode lama; 20 file `*doit*`/`*refund*`/`payment-webhook*` 759 lulus, 10 skip (sandbox tanpa kunci); tsc lewat heavy, eslint, prettier, kontrak node 44/44. Review K: reviewer Opus + architect, re-review architect: tertutup.
 - Commit 36f59dc3, 3b053bb8. Brief Codex `docs/briefs/175b-second-opinion-doit-refund-parser.md` (tidak di-commit).
 
+## legend-4wrfd tutup buta untuk kasir (engineer, cabang `ws/shift-blind-close` dari `6b3c6840`, 2026-11-09)
+
+- Keputusan CTO: DTO shift dan respons tutup ke peran tanpa izin lihat selisih membawa `expectedIdr`, `varianceIdr` dan rincian laci (`cashSalesIdr`, `cashRefundsIdr`, `cashInIdr`, `cashOutIdr`, `cashDropIdr`) null. Supervisor ke atas melihat lengkap untuk shift kasir lain; shift sendiri tetap buta (POS-03). Cash out held tidak diberitahukan ke kasir.
+- Sudah: skema shared nullable semua-atau-tidak, `shiftDto(..., { blind })`, `shiftFiguresDto` untuk event, audit, ledger. Open, close, replay buta; report dan list buta kecuali supervisor membaca shift orang lain; force close lengkap.
+- Test: `pos-shift-blind-close.test.ts` (9), test oracle held refund di `pos-shift-held-expire.test.ts` aktif. Repro gagal di basis bersih `6b3c6840` (10 gagal).
+- Review K: reviewer Opus dan architect, tidak ada cacat di diff. Tindak lanjut: legend-awg5p (laporan harian menampilkan selisih shift sendiri ke supervisor, perlu keputusan CTO), legend-ekaca (tipe web POS kasir belum menerima null).
+- Brief second opinion: `docs/briefs/176c-second-opinion-blind-close.md` (tidak di-commit). legend-3l4q ditunda.
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.

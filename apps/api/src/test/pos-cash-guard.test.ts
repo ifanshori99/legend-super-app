@@ -651,6 +651,36 @@ afterAll(async () => {
 
 // ---- Finding 1: a closed day takes no more order writes -------------------------
 
+/**
+ * legend-4wrfd: the cashier's own shift is blind (no drawer breakdown,
+ * expected or variance). Checks that, then adds the stored figures so the
+ * assertions on the close maths keep working.
+ */
+async function withStoredFigures<T extends { id: string }>(dto: T): Promise<T> {
+  for (const key of [
+    "cashSalesIdr",
+    "cashRefundsIdr",
+    "cashInIdr",
+    "cashOutIdr",
+    "cashDropIdr",
+    "expectedIdr",
+    "varianceIdr",
+  ])
+    expect((dto as Record<string, unknown>)[key], key).toBeNull();
+  const { rows } = await owner.query<Record<string, number | null>>(
+    `SELECT cash_sales_idr::float8 AS "cashSalesIdr",
+            cash_refunds_idr::float8 AS "cashRefundsIdr",
+            cash_in_idr::float8 AS "cashInIdr",
+            cash_out_idr::float8 AS "cashOutIdr",
+            cash_drop_idr::float8 AS "cashDropIdr",
+            expected_idr::float8 AS "expectedIdr",
+            variance_idr::float8 AS "varianceIdr"
+       FROM pos_shifts WHERE id = $1`,
+    [dto.id],
+  );
+  return { ...dto, ...rows[0] };
+}
+
 describe("POS-05 a closed business day refuses order writes (legend-6c0 finding 1)", () => {
   it("create, submit, tender and complete on a closed day are refused with 409 BUSINESS_DAY_ALREADY_CLOSED", async () => {
     const outlet = await addOutlet();
@@ -1729,7 +1759,9 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
       await expect(closeWith(drawer, recount.id)).rejects.toMatchObject({
         code: "SHIFT_VARIANCE_NOTE_REQUIRED",
       });
-      const closed = await closeWith(drawer, recount.id, NOTE);
+      const closed = await withStoredFigures(
+        await closeWith(drawer, recount.id, NOTE),
+      );
       expect(closed.status).toBe("closed");
       expect(Number(closed.expectedIdr)).toBe(LEFT_IDR);
       expect(Number(closed.varianceIdr)).toBe(0);
@@ -1878,7 +1910,9 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
       expect(receipt.noteRequired).toBe(false);
 
       // The supervisor approval carries the stored variance magnitude (= held).
-      const closed = await closeWith(drawer, receipt.id, undefined, held);
+      const closed = await withStoredFigures(
+        await closeWith(drawer, receipt.id, undefined, held),
+      );
       expect(closed.status).toBe("closed");
       expect(Number(closed.expectedIdr)).toBe(LEFT_IDR + held);
       expect(Number(closed.varianceIdr)).toBe(-held);

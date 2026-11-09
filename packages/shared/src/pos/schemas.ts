@@ -885,12 +885,16 @@ export const posShiftShape = {
   status: posShiftStatusSchema,
   openedAt: isoDateTimeSchema,
   openingFloatIdr: nonnegativeIdr,
-  /** Server aggregates over the shift's captured/refunded cash tenders. */
-  cashSalesIdr: nonnegativeIdr,
-  cashRefundsIdr: nonnegativeIdr,
-  cashInIdr: nonnegativeIdr,
-  cashOutIdr: nonnegativeIdr,
-  cashDropIdr: nonnegativeIdr,
+  /**
+   * Server aggregates over the shift's captured/refunded cash tenders. Null
+   * together with expectedIdr and varianceIdr in the blind view a caller
+   * without the variance permission gets, open or closed (legend-4wrfd).
+   */
+  cashSalesIdr: nonnegativeIdr.nullable(),
+  cashRefundsIdr: nonnegativeIdr.nullable(),
+  cashInIdr: nonnegativeIdr.nullable(),
+  cashOutIdr: nonnegativeIdr.nullable(),
+  cashDropIdr: nonnegativeIdr.nullable(),
   expectedIdr: nonnegativeIdr.nullable(),
   countedIdr: nonnegativeIdr.nullable(),
   /** counted − expected: negative is short, positive is over. */
@@ -904,9 +908,38 @@ export const posShiftShape = {
   countId: posShiftCountIdSchema.nullable(),
 };
 
+/** The drawer figures the blind view hides (legend-4wrfd). */
+export const POS_SHIFT_BLIND_FIELDS = [
+  "cashSalesIdr",
+  "cashRefundsIdr",
+  "cashInIdr",
+  "cashOutIdr",
+  "cashDropIdr",
+  "expectedIdr",
+  "varianceIdr",
+] as const;
+
 export const posShiftSchema = z
   .strictObject(posShiftShape)
   .superRefine((shift, ctx) => {
+    // Blind view: the drawer breakdown, expected and variance are null
+    // together; a partly hidden shift would leak the rest by subtraction.
+    const blind = shift.cashSalesIdr === null;
+    for (const key of POS_SHIFT_BLIND_FIELDS)
+      if (
+        (blind && shift[key] !== null) ||
+        (!blind &&
+          key !== "expectedIdr" &&
+          key !== "varianceIdr" &&
+          shift[key] === null)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "The blind view hides all drawer figures together",
+        });
+        return;
+      }
     if (shift.status === "open") {
       for (const key of [
         "countedIdr",
@@ -929,8 +962,7 @@ export const posShiftSchema = z
     if (
       shift.closedAt === null ||
       shift.countedIdr === null ||
-      shift.expectedIdr === null ||
-      shift.varianceIdr === null ||
+      (!blind && (shift.expectedIdr === null || shift.varianceIdr === null)) ||
       shift.approvedBy === null ||
       shift.approvalRequestId === null ||
       shift.approvedAt === null ||
@@ -942,8 +974,23 @@ export const posShiftSchema = z
         message:
           "A closed shift records count, expectation, variance and supervisor approval (POS-03)",
       });
-    else {
-      const expected = shiftExpectedCashIdr(shift);
+    else if (
+      shift.cashSalesIdr !== null &&
+      shift.cashRefundsIdr !== null &&
+      shift.cashInIdr !== null &&
+      shift.cashOutIdr !== null &&
+      shift.cashDropIdr !== null &&
+      shift.expectedIdr !== null &&
+      shift.varianceIdr !== null
+    ) {
+      const expected = shiftExpectedCashIdr({
+        ...shift,
+        cashSalesIdr: shift.cashSalesIdr,
+        cashRefundsIdr: shift.cashRefundsIdr,
+        cashInIdr: shift.cashInIdr,
+        cashOutIdr: shift.cashOutIdr,
+        cashDropIdr: shift.cashDropIdr,
+      });
       if (Number(shift.expectedIdr) !== Number(expected))
         ctx.addIssue({
           code: "custom",
@@ -968,6 +1015,15 @@ export const posShiftSchema = z
     }
   });
 export type PosShift = z.infer<typeof posShiftSchema>;
+/** Full (supervisor and internal) shift: the drawer breakdown is present. */
+export type PosShiftWithFigures = PosShift & {
+  [
+    K in Exclude<
+      (typeof POS_SHIFT_BLIND_FIELDS)[number],
+      "expectedIdr" | "varianceIdr"
+    >
+  ]: NonNullable<PosShift[K]>;
+};
 
 /**
  * Rupiah notes and coins in circulation (Bank Indonesia); the blind count is

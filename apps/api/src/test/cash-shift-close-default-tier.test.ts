@@ -406,7 +406,13 @@ describe("legend-ccpn the default matrix keeps who could approve a shift close",
     const manager = await userWithRole(tenant, "outlet_manager");
     const closed = await closeWithPin(tenant, shift, manager);
     expect(closed.status).toBe("closed");
-    expect(closed.varianceIdr).toBe(-30_000);
+    // legend-4wrfd: the cashier's close answer is blind; the row holds the variance.
+    expect(closed.varianceIdr).toBeNull();
+    const { rows } = await owner.query<{ variance: number }>(
+      "SELECT variance_idr::int AS variance FROM pos_shifts WHERE id = $1",
+      [shift.shiftId],
+    );
+    expect(rows[0]?.variance).toBe(-30_000);
   });
 
   it("legend-ccpn a supervisor and a general_manager PIN approve a close under the default matrix", async () => {
