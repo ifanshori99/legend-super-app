@@ -222,3 +222,4 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `b8fed67b` fix-auth06 (AUTH-06 redirect ke appHomePath; tanpa migration; gate prep 6c213190 API 2301 / root 1427; e2e auth/roles hijau di cabang menurut CTO, tidak diulang di m1).
 - m1 `9f446f9b` procurement (0092/0093; NO FORCE outlets/inventory_items/uoms; gate prep a94ea4f3 API 2379 / root 1432; 25a7 9yz ditutup; brief 61 rentang b8fed67b..9f446f9b).
 - m1 `5c04f1b2` kds (0094-0096; gate prep 07130a4e API 2447 / root 1432; s2dh 4d5 ditutup; brief 63 rentang 9f446f9b..5c04f1b2).
+- m1 `13425b65` doit-provider (96df32a8 + fix Codex brief 95; 0097/0098; gate prep 1836c2f4 API 2777 / root 1432; b9i ditutup; brief 62 rentang 5c04f1b2..13425b65).

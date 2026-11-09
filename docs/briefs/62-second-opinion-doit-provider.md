@@ -34,3 +34,5 @@ Satu baris per temuan: `path:baris`, tingkat, masalah, skenario gagal, saran per
 
 ## Larangan
 Jangan edit atau commit. Jangan baca `.env*` atau `~/.ssh`.
+
+Digabung ke `milestone/m1` sebagai merge `13425b65` lewat `prep2/doit-provider` 1836c2f4 (ws 96df32a8 termasuk fix Codex brief 95; migration diregen 0097/0098). Rentang diff isi cabang di atas m1: `git diff 5c04f1b2 13425b65` (abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`.
