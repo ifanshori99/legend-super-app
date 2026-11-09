@@ -51,9 +51,17 @@ Kemungkinan penolakan:
 
 ### Outlet dengan edge
 
-Write-off tidak disinkronkan ke edge node. Jika Tutup Hari berjalan di edge, outlet tetap ditolak setelah write-off dibuat di cloud. Sampai ada kartu tindak lanjut, tutup hari lewat cloud.
+Write-off tetap dibuat di cloud. Edge node menyalinnya saat sinkronisasi registri perangkat berikutnya (legend-jcby0), lalu Tutup Hari di edge menghitung nomor itu sebagai ada, sama seperti di cloud. Setelah tersalin, Tutup Hari di edge tetap berjalan walau edge sedang offline.
 
-> Keputusan pending untuk CTO: perilaku Tutup Hari di edge setelah write-off, dan kapan kartu tindak lanjut dikerjakan.
+1. Buat write-off di cloud seperti di atas.
+2. Tunggu sinkronisasi edge berikutnya (edge harus online sebentar). Write-off yang dibuat saat edge offline baru sampai setelah edge tersambung lagi.
+3. Jalankan Tutup Hari di edge.
+
+Jika Tutup Hari di edge masih ditolak:
+
+- Edge belum sinkron sejak write-off dibuat. Cek status sinkronisasi edge, lalu ulangi.
+- Edge masih versi lama (sebelum legend-jcby0) dan tidak meminta write-off. Tutup hari lewat cloud, atau perbarui edge.
+- Run di edge berbeda dengan run di cloud (misalnya database edge dipulihkan dari cadangan). Edge sengaja tidak memakai write-off untuk run yang tidak cocok. Hubungi tim teknis.
 
 ## Jika struk datang terlambat
 
@@ -75,6 +83,8 @@ Di laporan shift, nomor tersebut tampil sebagai "di-write-off", bukan sebagai ce
 ## Untuk tim teknis: rilis dan rollback
 
 **Urutan rilis.** Migrasi 0155 (payroll) harus ikut atau dirilis sebelum 0156. Migrator melewati `when` yang lebih lama jika sudah ada `when` yang lebih baru yang diterapkan.
+
+**Sinkron ke edge (legend-jcby0).** Tanpa migrasi baru: edge memakai tabel `receipt_number_writeoffs` dari 0156. Rilis cloud dulu, lalu build edge. Edge baru ke cloud lama: cloud menolak parameter `receiptWriteoffs` (400), edge mengulang halaman tanpa parameter itu, dan Tutup Hari di edge tetap butuh jalan lewat cloud sampai cloud diperbarui.
 
 **Rollback.** Utamakan perbaikan maju (fix forward). Rollback membuat Tutup Hari kembali diblokir.
 

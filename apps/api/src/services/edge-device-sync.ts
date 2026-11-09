@@ -37,16 +37,23 @@
 //   receiving revocations). The edge parses the sequences apart from the
 //   page: a sequence error is counted and logged, never stops the device
 //   records or later pages. A standby edge never applies them.
+// - Receipt number write-offs (legend-jcby0): created only on the cloud, copied
+//   to the edge so its gap check (Tutup Hari) counts them; see
+//   `applyDeviceReceiptWriteoffs`. Only when the edge asks
+//   (`?receiptWriteoffs=1`), parsed apart from the page like the sequences.
 import {
   deviceReceiptSequenceSyncSchema,
+  deviceReceiptWriteoffSyncSchema,
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
   decodeReceiptRunReport,
   decodeReceiptRunRefusals,
+  RECEIPT_WRITEOFF_SYNC_MAX,
   receiptRunReportQuerySchema,
   receiptRunRefusalQuerySchema,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
+  type DeviceReceiptWriteoffSync,
   type DeviceSyncPage,
   type DeviceSyncRecord,
   type ReceiptRunRefusalReason,
@@ -63,12 +70,14 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
 import { stations } from "../db/schema/menu.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
+import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -124,6 +133,11 @@ export const deviceSyncQuerySchema = z.strictObject({
    * `receiptSequences=1`; absent = an old edge (no self-heal).
    */
   receiptRefused: receiptRunRefusalQuerySchema.optional(),
+  /**
+   * legend-jcby0: `1` adds the outlet's receipt number write-offs (to a
+   * primary edge with a binding, like the sequences). Absent = an old edge.
+   */
+  receiptWriteoffs: z.literal("1").optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -205,6 +219,7 @@ export async function listDeviceRecordsSince(
     edgeInstance,
     receiptRuns,
     receiptRefused,
+    receiptWriteoffs: withWriteoffs,
   } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
@@ -371,9 +386,67 @@ export async function listDeviceRecordsSince(
               verified.outletId,
               binding,
             );
-    return { found, sequences, alert };
+    // legend-jcby0: the outlet's write-offs, in the same transaction as the
+    // sequences. Outlet data, not bound to an edge database: sent on request;
+    // the edge applies them only as a primary with a binding. Read in a
+    // savepoint: a failed read leaves the field out of the page (the edge then
+    // applies nothing: fail closed) and never costs the device records or the
+    // sequences of the page.
+    let writeoffs: DeviceReceiptWriteoffSync[] | undefined;
+    if (withWriteoffs === "1") {
+      try {
+        // Newest first so that past the cap the newest still arrive (older rows
+        // are already on the edge and never removed).
+        const listed = await tx.transaction(async (savepoint) =>
+          savepoint
+            .select()
+            .from(receiptNumberWriteoffs)
+            .where(
+              and(
+                eq(receiptNumberWriteoffs.tenantId, verified.tenantId),
+                eq(receiptNumberWriteoffs.outletId, verified.outletId),
+              ),
+            )
+            .orderBy(
+              desc(receiptNumberWriteoffs.createdAt),
+              desc(receiptNumberWriteoffs.id),
+            )
+            .limit(RECEIPT_WRITEOFF_SYNC_MAX + 1),
+        );
+        // Counts only, never the reason text.
+        if (listed.length > RECEIPT_WRITEOFF_SYNC_MAX)
+          logger.warn(
+            {
+              edgeNodeId: verified.edgeNodeId,
+              max: RECEIPT_WRITEOFF_SYNC_MAX,
+            },
+            "receipt write-offs past the sync limit: the newest are sent, the oldest are left to the edge's copy (legend-jcby0)",
+          );
+        // Back to oldest first (`created_at, id`) for the page.
+        writeoffs = listed
+          .slice(0, RECEIPT_WRITEOFF_SYNC_MAX)
+          .reverse()
+          .map((row) => ({
+            id: row.id,
+            outletId: row.outletId,
+            sequenceId: row.sequenceId,
+            prefix: row.prefix,
+            sequenceNumber: row.sequenceNumber,
+            reason: row.reason,
+            writtenOffBy: row.writtenOffBy,
+            createdAt: row.createdAt.toISOString(),
+          })) as DeviceReceiptWriteoffSync[];
+      } catch {
+        // Counts only: no error text, no row data.
+        logger.error(
+          { edgeNodeId: verified.edgeNodeId },
+          "receipt write-offs not read for an edge pull: left out of the page (legend-jcby0)",
+        );
+      }
+    }
+    return { found, sequences, alert, writeoffs };
   });
-  const { found: rows, sequences, alert } = result;
+  const { found: rows, sequences, alert, writeoffs } = result;
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
@@ -389,6 +462,7 @@ export async function listDeviceRecordsSince(
       }),
     ),
     ...(sequences === undefined ? {} : { receiptSequences: sequences }),
+    ...(writeoffs === undefined ? {} : { receiptWriteoffs: writeoffs }),
     // legend-yd0h8: only to an edge that sent `receiptRuns` (old edges parse
     // pages strictly).
     ...(receiptRuns !== undefined && alert ? { receiptRunAlert: true } : {}),
@@ -695,6 +769,194 @@ export async function applyDeviceReceiptSequences(
   return result;
 }
 
+// ------------------------------------------------ receipt write-offs apply
+
+export type ReceiptWriteoffApplyResult = {
+  /** Rows copied into the edge's `receipt_number_writeoffs`. */
+  readonly inserted: number;
+  /**
+   * Not copied, the row stays out on purpose: the run is not held here (or
+   * not as named), the number is above the local counter, a local receipt
+   * carries the number, the trigger refused it, or it is already present.
+   */
+  readonly skipped: number;
+  /** The whole list refused (another outlet, bad shape or a failed apply). */
+  readonly refused: number;
+};
+
+/** True when a PostgreSQL error (or its drizzle cause chain) has `code`. */
+function hasPgCode(error: unknown, code: string, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return candidate.code === code || hasPgCode(candidate.cause, code, depth + 1);
+}
+
+/**
+ * Edge side (legend-jcby0): copies the cloud's receipt number write-offs of
+ * the outlet into the local `receipt_number_writeoffs`, so the edge's own gap
+ * check counts them (write-offs are created only on the cloud). One
+ * transaction; the context must be exactly one outlet and a row of another
+ * outlet refuses the whole list. A row is copied (cloud id, idempotent) only
+ * when this database holds the named run (same tenant, outlet and prefix) with
+ * `last_number >= sequenceNumber` and no local receipt carries the number (a
+ * late receipt cancels the write-off); else it is skipped (fail closed). Rows
+ * already present, for a run this database does not hold, or for a late receipt
+ * are skipped without noise; a held run with another prefix or a lower counter,
+ * or a trigger refusal (23514), is skipped and logged as missed. Any other
+ * error refuses the whole list. Throws only for a bad context, shape or foreign outlet; apply failures
+ * are counted in `refused`. Logged with counts only (never the reason text).
+ */
+export async function applyDeviceReceiptWriteoffs(
+  context: ScopedTenantContext,
+  writeoffs: readonly unknown[],
+): Promise<ReceiptWriteoffApplyResult> {
+  if (
+    context.outletScope.kind !== "outlets" ||
+    context.outletScope.outletIds.length !== 1
+  )
+    refuse("Device sync needs a context of exactly one outlet.");
+  const ownOutletId = context.outletScope.outletIds[0]!;
+  const outletId = ownOutletId.toLowerCase();
+  const parsed: DeviceReceiptWriteoffSync[] = writeoffs.map((raw) => {
+    const result = deviceReceiptWriteoffSyncSchema.safeParse(raw);
+    if (!result.success) refuse("Receipt write-off has an unknown shape.");
+    return result.data;
+  });
+  for (const writeoff of parsed)
+    if (writeoff.outletId.toLowerCase() !== outletId)
+      refuse("Receipt write-off belongs to another outlet.");
+  if (parsed.length === 0) return { inserted: 0, skipped: 0, refused: 0 };
+  const tenantId = context.tenant.tenantId;
+  let result: { inserted: number; skipped: number; missed: number };
+  try {
+    result = await withTenant(db, context, async (tx) => {
+      // One query first: write-offs this outlet already holds are skipped
+      // silently (repeat pulls), with no further queries for them.
+      const present = new Set(
+        (
+          await tx
+            .select({ id: receiptNumberWriteoffs.id })
+            .from(receiptNumberWriteoffs)
+            .where(
+              and(
+                eq(receiptNumberWriteoffs.tenantId, tenantId),
+                eq(receiptNumberWriteoffs.outletId, ownOutletId),
+                inArray(
+                  receiptNumberWriteoffs.id,
+                  parsed.map((writeoff) => writeoff.id),
+                ),
+              ),
+            )
+        ).map((row) => row.id),
+      );
+      const runs = await tx
+        .select({
+          id: receiptSequences.id,
+          prefix: receiptSequences.prefix,
+          lastNumber: receiptSequences.lastNumber,
+        })
+        .from(receiptSequences)
+        .where(
+          and(
+            eq(receiptSequences.tenantId, tenantId),
+            eq(receiptSequences.outletId, ownOutletId),
+          ),
+        );
+      const runById = new Map(runs.map((run) => [run.id, run]));
+      let inserted = 0;
+      let skipped = 0;
+      // Worth a warn: a run held but not matching, or a trigger refusal. Not
+      // counted: already present, run not held here, late receipt.
+      let missed = 0;
+      for (const writeoff of parsed) {
+        if (present.has(writeoff.id)) {
+          skipped += 1;
+          continue;
+        }
+        const run = runById.get(writeoff.sequenceId);
+        if (!run) {
+          // This database does not hold the run (not its own, not yet).
+          skipped += 1;
+          continue;
+        }
+        if (
+          run.prefix !== writeoff.prefix ||
+          run.lastNumber < writeoff.sequenceNumber
+        ) {
+          skipped += 1;
+          missed += 1;
+          continue;
+        }
+        const [receipt] = await tx
+          .select({ id: posReceipts.id })
+          .from(posReceipts)
+          .where(
+            and(
+              eq(posReceipts.tenantId, tenantId),
+              eq(posReceipts.sequenceId, writeoff.sequenceId),
+              eq(posReceipts.sequenceNumber, writeoff.sequenceNumber),
+            ),
+          )
+          .limit(1);
+        if (receipt) {
+          // A late receipt holds the number: the gap check counts the receipt.
+          skipped += 1;
+          continue;
+        }
+        try {
+          const rows = await tx.transaction(async (savepoint) =>
+            savepoint
+              .insert(receiptNumberWriteoffs)
+              .values({
+                id: writeoff.id,
+                tenantId,
+                outletId: ownOutletId,
+                sequenceId: writeoff.sequenceId,
+                prefix: writeoff.prefix,
+                sequenceNumber: writeoff.sequenceNumber,
+                reason: writeoff.reason,
+                writtenOffBy: writeoff.writtenOffBy,
+                createdAt: new Date(writeoff.createdAt),
+              })
+              .onConflictDoNothing()
+              .returning({ id: receiptNumberWriteoffs.id }),
+          );
+          if (rows.length > 0) inserted += 1;
+          else skipped += 1;
+        } catch (error) {
+          // The 0156 trigger refused this one row (backstop of the checks
+          // above); anything else fails the whole list.
+          if (!hasPgCode(error, "23514")) throw error;
+          skipped += 1;
+          missed += 1;
+        }
+      }
+      return { inserted, skipped, missed };
+    });
+  } catch {
+    logger.error(
+      { refused: parsed.length },
+      "Edge receipt write-offs refused (legend-jcby0)",
+    );
+    return { inserted: 0, skipped: 0, refused: parsed.length };
+  }
+  if (result.inserted > 0)
+    logger.info(
+      { inserted: result.inserted, skipped: result.skipped },
+      "Edge receipt write-offs copied from the cloud (legend-jcby0)",
+    );
+  if (result.missed > 0)
+    logger.warn(
+      { missed: result.missed },
+      "Edge receipt write-offs not copied: run mismatch or trigger refusal (legend-jcby0)",
+    );
+  return {
+    inserted: result.inserted,
+    skipped: result.skipped,
+    refused: 0,
+  };
+}
+
 // --------------------------------------------------------------------- pull
 
 export type PullDeviceRegistryOptions = {
@@ -743,6 +1005,12 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
   readonly receiptSequencesReplaced: number;
   /** legend-sduiq: local runs retired because the cloud no longer lists them. */
   readonly receiptSequencesRetired: number;
+  /** legend-jcby0: write-offs copied into the edge's own table. */
+  readonly receiptWriteoffsInserted: number;
+  /** legend-jcby0: write-offs left out (see `ReceiptWriteoffApplyResult`). */
+  readonly receiptWriteoffsSkipped: number;
+  /** legend-jcby0: write-offs of a refused list (whole list counted). */
+  readonly receiptWriteoffsRefused: number;
   /**
    * legend-yd0h8: the cloud flagged a restored or cloned edge database (some
    * page carried `receiptRunAlert: true`).
@@ -796,20 +1064,52 @@ async function applyPageReceiptSequences(
   }
 }
 
+/**
+ * legend-jcby0: the page's `receiptWriteoffs` applied apart from its device
+ * records. A list that is not an array, or any apply error, is caught and
+ * counted as refused (never throws out of the pull).
+ */
+async function applyPageReceiptWriteoffs(
+  context: ScopedTenantContext,
+  raw: unknown,
+): Promise<ReceiptWriteoffApplyResult> {
+  const count = Array.isArray(raw) ? raw.length : 1;
+  try {
+    if (!Array.isArray(raw)) refuse("Receipt write-offs are not a list.");
+    return await applyDeviceReceiptWriteoffs(context, raw);
+  } catch {
+    logger.error(
+      { refused: count },
+      "Edge receipt write-offs of a device page refused (legend-jcby0)",
+    );
+    return { inserted: 0, skipped: 0, refused: count };
+  }
+}
+
 /** Splits `receiptSequences` off a raw page (parsed apart, see above). */
 function splitPage(raw: unknown): {
   page: unknown;
   sequences: unknown;
+  writeoffs: unknown;
   alert: unknown;
 } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return { page: raw, sequences: undefined, alert: undefined };
+    return {
+      page: raw,
+      sequences: undefined,
+      writeoffs: undefined,
+      alert: undefined,
+    };
   // legend-yd0h8: `receiptRunAlert` is split off too, never refusing the page.
-  const { receiptSequences, receiptRunAlert, ...page } = raw as Record<
-    string,
-    unknown
-  >;
-  return { page, sequences: receiptSequences, alert: receiptRunAlert };
+  // legend-jcby0: so is `receiptWriteoffs`.
+  const { receiptSequences, receiptWriteoffs, receiptRunAlert, ...page } =
+    raw as Record<string, unknown>;
+  return {
+    page,
+    sequences: receiptSequences,
+    writeoffs: receiptWriteoffs,
+    alert: receiptRunAlert,
+  };
 }
 
 /**
@@ -850,7 +1150,12 @@ export async function pullDeviceRegistry(
   let receiptSequencesRefused = 0;
   let receiptSequencesReplaced = 0;
   let receiptSequencesRetired = 0;
+  let receiptWriteoffsInserted = 0;
+  let receiptWriteoffsSkipped = 0;
+  let receiptWriteoffsRefused = 0;
   let receiptRunAlert = false;
+  // legend-jcby0: the list is the same on every page; applied once per pull.
+  let writeoffsApplied = false;
   // legend-hfq3z: clash refusals to report with the next request: the previous
   // pull's first, then those of the page just applied.
   let pending: ReceiptRunRefusalReport = options.refusals ?? new Map();
@@ -906,6 +1211,23 @@ export async function pullDeviceRegistry(
       // A cloud that sends no sequences cannot use the report.
       pending = new Map();
     }
+    // legend-jcby0: after the page's sequences (a new run is there first);
+    // primary with a binding only, never throws out of the pull.
+    if (
+      !writeoffsApplied &&
+      raw.writeoffs !== undefined &&
+      options.role === "primary" &&
+      options.binding !== undefined
+    ) {
+      writeoffsApplied = true;
+      const counts = await applyPageReceiptWriteoffs(
+        options.context,
+        raw.writeoffs,
+      );
+      receiptWriteoffsInserted += counts.inserted;
+      receiptWriteoffsSkipped += counts.skipped;
+      receiptWriteoffsRefused += counts.refused;
+    }
     // An empty page echoes the rewound cursor: keep the stored one instead.
     if (page.data.length > 0) watermark = page.meta.watermark ?? watermark;
     if (page.meta.nextCursor === null) break;
@@ -924,6 +1246,9 @@ export async function pullDeviceRegistry(
     receiptSequencesRefused,
     receiptSequencesReplaced,
     receiptSequencesRetired,
+    receiptWriteoffsInserted,
+    receiptWriteoffsSkipped,
+    receiptWriteoffsRefused,
     receiptRunAlert,
     receiptRunRefusals: pending,
   };

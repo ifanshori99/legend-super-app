@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-jcby0 write-off nomor struk ikut tersinkron ke edge (engineer, cabang `ws/receipt-writeoff-edge-sync` dari integ/m1-batch27 f448cf94 + merge hfq3z 996cc889, 2026-11-09)
+
+- Sudah: edge meminta `receiptWriteoffs=1` di pull registri perangkat; cloud mengirim daftar write-off outlet itu (maks 1000 terbaru, diurut lama ke baru, dibaca dalam savepoint: gagal baca = field tidak dikirim). Edge (primary dengan binding) menyalin baris ke `receipt_number_writeoffs` lokalnya dengan id cloud, sekali per pull, idempoten. Baris hanya disalin bila edge memegang run yang sama (id, outlet, prefix) dengan `last_number >= nomor` dan belum ada struk lokal untuk nomor itu; selain itu dilewati (fail closed). Cek celah edge sudah memakai port yang sama dengan cloud, jadi Tutup Hari edge lulus sesudah pull, juga saat offline; struk terlambat membatalkan write-off seperti di cloud. Tanpa migrasi (0161 tidak dipakai).
+- Kompat: edge lama tidak meminta, halaman tetap tanpa field baru. Edge baru ke cloud lama: 400, ulang tanpa `receiptWriteoffs`, lalu rantai mundur lama. Rilis: cloud dulu, lalu build edge. Runbook `docs/runbooks/receipt-number-writeoff.md` diperbarui (aturan sementara "tutup hari lewat cloud" hanya untuk edge lama).
+- Bukti dan review: lihat komentar kartu legend-jcby0. Brief: `docs/briefs/sub-receipt-writeoff-edge-sync.md`, `-fix1.md`.
+- Tindak lanjut: legend-mqh2m (status puller menampilkan hitungan write-off).
+
 ## legend-npkpz sesi impersonate dipotong saat grant berakhir (engineer, cabang `ws/impersonate-expiry-cap` dari integ/m1-batch24 94d769c6, 2026-11-09)
 
 - Sudah: `expiresAt` sesi impersonated = min(expiry Better Auth, sekarang + 60 menit, akhir grant terakhir yang cocok) di `session.create.before` (`impersonationSessionEnd`). Grant dicabut atau kedaluwarsa kemudian tetap ditolak guard per request.

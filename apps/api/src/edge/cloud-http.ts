@@ -135,6 +135,7 @@ export function createDeviceRecordsFetcher(
     withSequences: boolean,
     receiptRuns?: ReceiptRunReport,
     refusals?: ReceiptRunRefusalReport,
+    withWriteoffs = false,
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
@@ -153,6 +154,11 @@ export function createDeviceRecordsFetcher(
       // rotate a refused run. Only sent when there is something to report.
       if (refusals !== undefined && refusals.size > 0)
         query.set("receiptRefused", encodeReceiptRunRefusals(refusals));
+      // legend-jcby0: opt in to the outlet's receipt number write-offs. The
+      // first attempt of each page carries it, only with an edge instance id
+      // (only a bound primary applies them); every retry stage drops it.
+      if (withWriteoffs && options.edgeInstanceId !== undefined)
+        query.set("receiptWriteoffs", "1");
     }
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };
@@ -161,7 +167,7 @@ export function createDeviceRecordsFetcher(
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns, refusals),
+        path: pathFor(since, true, receiptRuns, refusals, true),
         signal,
       });
     } catch (error) {
@@ -179,6 +185,25 @@ export function createDeviceRecordsFetcher(
         error.code !== "HTTP_400"
       )
         throw error;
+      // legend-jcby0: the first request also carried `receiptWriteoffs`. Retry
+      // the same page with everything except it (an older cloud); only a
+      // second 400 continues into the staged chain below, which never sends it.
+      logger.warn(
+        "cloud refused the receipt write-off query; retrying the page without it",
+      );
+      try {
+        return await cloudGetJson({
+          ...options,
+          path: pathFor(since, true, receiptRuns, refusals),
+          signal,
+        });
+      } catch (second) {
+        if (
+          !(second instanceof EdgeCloudHttpError) ||
+          second.code !== "HTTP_400"
+        )
+          throw second;
+      }
       // legend-hfq3z: a request that carried `receiptRefused` first retries
       // without it but keeps `receiptRuns` (a yd0h8 cloud); only a second 400
       // continues into the staged chain below.
