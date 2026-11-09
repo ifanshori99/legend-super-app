@@ -1161,6 +1161,8 @@ const slip = (employeeNo, base, paymentMethod = "bank_transfer") => {
       pph21RefundIdr: 0,
       pph21EmployerRefundIdr: 0,
       noTaxIdSurchargeApplied: false,
+      grossSchemeBaseIdr: gross,
+      employerSchemeBaseIdr: 0,
     },
     paymentMethod,
   };
