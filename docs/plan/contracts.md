@@ -66,6 +66,19 @@ Each outlet sets `businessDayCutoff` (`outlets.business_day_cutoff`, `HH:mm`, `0
 - **Stays wall-clock** (`localDateOf(instant, timeZone)`, plain local calendar date): opening hours, menu availability schedules, promo time windows (`outletLocalClock`), notification quiet hours, reservation day, HRIS shift roster/attendance day, facility slot day. Promo/voucher validity (`startsAt`/`endsAt`, `validFrom`/`validUntil`) are instants, not dates. Payment settlement periods are bank-supplied dates.
 - Tests: `tests/core-contract.test.mjs` "Q39 …" (23:59 / 00:30 / 03:59 / 04:00 × WIB/WITA/WIT, ranges, DST, bounds); API tests named `Q39` in `platform-org-api`, `inventory`, `crm-promo-engine`.
 
+## Migrations: foreign keys into FORCE RLS tables (bead `legend-m007`)
+
+Tenant tables (`employees`, `positions`, `stations`, `outlets`, `chart_of_accounts`, …) use `FORCE ROW LEVEL SECURITY`, so the tenant policy also applies to their owner. The migrator is allowed to be a plain table owner (no SUPERUSER, no BYPASSRLS). Production uses a dedicated migrator login with BYPASSRLS (`legend-jtnd`), and migrations 0000-0064 still need BYPASSRLS on a fresh database; migrations 0065 and later must not depend on it. `ALTER TABLE child ADD CONSTRAINT … FOREIGN KEY … REFERENCES forced_parent` validates under the parent's policy; with no `app.tenant_id` it raises `tenant context is required` and aborts the migration transaction. Even an empty new child table fails.
+
+A new migration that references a FORCE RLS table must use one of these, in this order of preference:
+
+1. **Foreign key inside `CREATE TABLE`** of the new (empty) table: no validation scan runs. When drizzle generates a separate `ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY`, move the clause into the `CREATE TABLE` by hand before committing the SQL (keep the constraint name so the drizzle snapshot still matches).
+2. **Lift FORCE for the transaction** around the foreign keys: `ALTER TABLE public.<parent> NO FORCE ROW LEVEL SECURITY;` at the top, `ALTER TABLE public.<parent> FORCE ROW LEVEL SECURITY;` after the last statement that needs it, before the file ends (drizzle runs all pending migrations in one transaction, so no other session sees the lifted state). Required whenever the child already holds rows, or the migration also reads the parent. Examples: `0065_edge_received_events.sql`, `0068_closed_tiger_shark.sql`. Restore FORCE on every table you lifted.
+
+Do not use `NOT VALID` (the constraint stays unvalidated forever, and a later `VALIDATE CONSTRAINT` hits the same error) and do not rely on BYPASSRLS for migrations 0065 and later.
+
+Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") applies the real folder from 0065 as a plain owner, so a new migration that breaks the rule fails there; `migrator-role.test.ts` is the contrast case (a plain owner is expected to fail on 0000-0064). Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
+
 ## Naming
 
 - DB: English `snake_case` tables, columns and status values (PRD §6). Wire/TypeScript: `camelCase` keys, same English words (`total_idr` → `totalIdr`, `tenant_id` → `tenantId`). Status values stay `snake_case` strings on the wire (`awaiting_payment`).
