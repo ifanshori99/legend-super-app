@@ -273,6 +273,9 @@ const manageStations = requireOutletPermission("kds.station.manage", (req) =>
   String(req.params.outletId),
 );
 
+// legend-44jm: GET answers `listCapacityRules` (contract rows), ordered by
+// station, then window_minutes, then id, so two reads of an unchanged config
+// are identical. Only this tenant's and this path outlet's stations appear.
 kdsRouter.get("/capacity-rules", manageStations, async (req, res) => {
   const { outletId } = listCapacityRules.params.parse(req.params);
   res.json({

@@ -149,6 +149,16 @@ function api(who: Member | null, forHeaders = headers, outletId?: string) {
   };
 }
 
+/** Rule rows of one outlet, as the owner connection sees them. */
+async function storedCount(outletId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM kitchen_capacity_rules
+     WHERE tenant_id = $1 AND outlet_id = $2`,
+    [tenant.tenantId, outletId],
+  );
+  return Number(rows[0]!.n);
+}
+
 /** Rows of one station, as the owner connection sees them. */
 async function storedWindows(
   stationId: string,
@@ -482,7 +492,7 @@ describe("GET capacity-rules", () => {
     const res = await api(manager).list();
     expect(res.status).toBe(200);
     const rules = listCapacityRules.response.parse(res.body).data;
-    expect(rules).toHaveLength(5);
+    expect(rules).toHaveLength(await storedCount(tenant.outletId));
     expect(new Set(rules.map((r) => r.stationId))).toEqual(
       new Set([ids.barA, ids.kitchenA]),
     );
@@ -513,6 +523,44 @@ describe("GET capacity-rules", () => {
         first.filter((r) => r.stationId === id).map(() => id),
       ),
     );
+  });
+
+  it("returns exactly the rows a PUT answered, with the same ids", async () => {
+    const put = await api(manager).replace(ids.kitchenA, {
+      rules: [
+        rule({ windowMinutes: 20, capacityPoints: 30 }),
+        rule({ windowMinutes: 10, capacityPoints: 15 }),
+      ],
+    });
+    const listed = (await api(manager).list()).body.data as {
+      stationId: string;
+    }[];
+    expect(listed.filter((r) => r.stationId === ids.kitchenA)).toEqual(
+      put.body.data,
+    );
+  });
+
+  it("breaks a tie on the same window by row id, the same on every call", async () => {
+    await api(manager).replace(ids.kitchenA, {
+      rules: [
+        rule({ windowMinutes: 15, capacityPoints: 11 }),
+        rule({ windowMinutes: 15, capacityPoints: 12 }),
+        rule({ windowMinutes: 15, capacityPoints: 13 }),
+      ],
+    });
+    const read = async () =>
+      (
+        (await api(manager).list()).body.data as {
+          id: string;
+          stationId: string;
+        }[]
+      )
+        .filter((r) => r.stationId === ids.kitchenA)
+        .map((r) => r.id);
+    const first = await read();
+    expect(first).toHaveLength(3);
+    expect(first).toEqual([...first].sort());
+    expect(await read()).toEqual(first);
   });
 
   it("never shows a station of another outlet or tenant", async () => {
@@ -565,7 +613,7 @@ describe("GET capacity-rules", () => {
   it("serves an outlet-scoped manager their own outlet", async () => {
     const res = await api(outletAManager).list();
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(5);
+    expect(res.body.data).toHaveLength(await storedCount(tenant.outletId));
   });
 
   it("answers 403 or 404 for another tenant's outlet", async () => {
@@ -641,8 +689,9 @@ describe("database guards", () => {
     await asOwnerTenant(tenant.tenantId, (client) =>
       insertRaw(client, { outletId: ids.outletB, stationId: ids.barB }),
     );
-    expect(await countFor(tenant.tenantId, "*")).toBe(6);
-    expect(await countFor(tenant.tenantId, tenant.outletId)).toBe(5);
+    const inA = await storedCount(tenant.outletId);
+    expect(await countFor(tenant.tenantId, "*")).toBe(inA + 1);
+    expect(await countFor(tenant.tenantId, tenant.outletId)).toBe(inA);
     expect(await countFor(tenant.tenantId, ids.outletB)).toBe(1);
     expect(await countFor(tenant.tenantId, randomUUID())).toBe(0);
     // Tenant B sees only its own row.
