@@ -74,7 +74,11 @@ test("AUTH-06 · switch user: pick a name, type the PIN with the keyboard", asyn
   await page.keyboard.press("Backspace");
   await typePin(page, "246810");
   await expect(page.getByTestId("active-staff")).toContainText("Nina Marlina");
-  await expect(page.getByText("Berpindah ke Nina Marlina")).toBeVisible();
+  // exact: the toast's polite live region repeats the title as "Notifikasi
+  // Berpindah ke ..." for about a second, which a substring match also hits.
+  await expect(
+    page.getByText("Berpindah ke Nina Marlina", { exact: true }),
+  ).toBeVisible();
 });
 
 test("AUTH-06 · touch pad: tapping the digit keys verifies the PIN", async ({
@@ -201,10 +205,19 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
     .getByRole("combobox", { name: "Supervisor yang memasukkan PIN" })
     .click();
   await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
+  // Radix Select hands focus back to its trigger a moment after it closes.
+  // Wait for that before blurring, or the first key reaches the pad and the
+  // rest land on the combobox, which owns them (a PIN of 1 + the clicks below).
+  await expect(
+    modal.getByRole("combobox", { name: "Supervisor yang memasukkan PIN" }),
+  ).toBeFocused();
 
   await typePinOutsideFields(page, "246810");
+  // The alert, not the static hint paragraph, which carries the same sentence.
   await expect(
-    modal.getByText("Penyetuju tidak boleh sama dengan peminta"),
+    modal
+      .getByRole("alert")
+      .filter({ hasText: "Penyetuju tidak boleh sama dengan peminta" }),
   ).toBeVisible();
 
   await expect(modal.getByRole("button", { name: "Angka 1" })).toBeEnabled();
