@@ -44,8 +44,16 @@
 //   priorWithheld > 0 and E > 0 that omits `taxAllowanceIdr`, including
 //   employerSchemeBaseIdr as the only scheme field.
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PPH21_POLICY } from "@starter/shared/hris/payroll";
-import type { Pph21PolicyParameters } from "@starter/shared/hris/payroll";
+import {
+  DEFAULT_PPH21_POLICY,
+  buildPph21Prior,
+  computePayslipTax,
+} from "@starter/shared/hris/payroll";
+import type {
+  Pph21PolicyParameters,
+  PayslipTaxEarning,
+  PayslipTaxInput,
+} from "@starter/shared/hris/payroll";
 import { computePph21Period } from "@starter/shared/hris/payroll";
 import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
 
@@ -513,5 +521,358 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
         }),
       ).not.toThrow();
     });
+  });
+});
+
+// legend-m9gx: a month without taxable pay lines but with employer BPJS
+// (employerBenefitIdr > 0) follows the tax scheme of the employment agreement
+// (`contractTaxScheme`). Brief section "legend-m9gx". All figures below are
+// hand computed (python3 big integers), never read from the engine.
+//
+// Assumptions (the brief is silent):
+// - M1: the TER month figures use TER A (TK/0) with one half_up rounding; the
+//   3_000_000 benefit falls in row 1 (0%), so every tax amount of that case is
+//   0 and the case pins X and the stored scheme bases. An 8_000_000 benefit
+//   (row 7, 1,5%) is added so that withheld / allowance / borne are non-zero.
+// - M2: `contractTaxScheme` missing with benefit > 0 and no taxable line is a
+//   RangeError in both a TER month and the last tax period. A zero benefit
+//   with no lines needs no scheme.
+// - M3: in the last period, with a gross_up line the employer's part of the
+//   tax is an allowance inside withheld (as in H7), so the employee's own part
+//   is pph21WithheldIdr - taxAllowanceIdr; with no line at all (rule D) it is
+//   booked as borne tax (assumption A1 above).
+describe("legend-m9gx benefit-only month follows the contract tax scheme", () => {
+  const payslip = (over: Partial<PayslipTaxInput>) =>
+    computePayslipTax({
+      tables: REFERENCE_TABLES,
+      policy: DEFAULT_PPH21_POLICY,
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: false,
+      monthsWorked: 1,
+      earnings: [],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 0,
+      prior: prior(0, 0),
+      ...over,
+    });
+
+  // Benefit 3_000_000 (X <= 5_400_000, TER A row 1, 0%): T = 0 under every
+  // scheme, X = 3_000_000 (no tax to add). Stored bases follow G*:
+  // gross => G* = 3_000_000, employer base 0; gross_up / net => G* = 0,
+  // employer base X - 0 = 3_000_000.
+  // Benefit 8_000_000 (row 7, 1,5%):
+  //   gross:    X = 8_000_000, T = 8_000_000 x 150 / 10000 = 120_000, all
+  //             withheld by the employee (G* = benefit); bases 8_000_000 / 0.
+  //   gross_up: G* = 0, S = round_half_up(1,5% x (8_000_000 + S)) = 121_827
+  //             (8_121_827 x 150 / 10000 = 121_827,405, stable), X = 8_121_827,
+  //             T = 121_827 = allowance, withheld = allowance (the company's
+  //             money inside the withheld tax), borne 0; bases 0 / 8_121_827.
+  //   net:      G* = 0, same S, X = 8_121_827, T = 121_827 = borne,
+  //             withheld 0, allowance 0; bases 0 / 8_121_827.
+  const termCases = [
+    {
+      benefit: 3_000_000,
+      scheme: "gross" as const,
+      rateBp: 0,
+      x: 3_000_000,
+      t: 0,
+      withheld: 0,
+      allowance: 0,
+      borne: 0,
+      gBase: 3_000_000,
+      eBase: 0,
+    },
+    {
+      benefit: 3_000_000,
+      scheme: "gross_up" as const,
+      rateBp: 0,
+      x: 3_000_000,
+      t: 0,
+      withheld: 0,
+      allowance: 0,
+      borne: 0,
+      gBase: 0,
+      eBase: 3_000_000,
+    },
+    {
+      benefit: 3_000_000,
+      scheme: "net" as const,
+      rateBp: 0,
+      x: 3_000_000,
+      t: 0,
+      withheld: 0,
+      allowance: 0,
+      borne: 0,
+      gBase: 0,
+      eBase: 3_000_000,
+    },
+    {
+      benefit: 8_000_000,
+      scheme: "gross" as const,
+      rateBp: 150,
+      x: 8_000_000,
+      t: 120_000,
+      withheld: 120_000,
+      allowance: 0,
+      borne: 0,
+      gBase: 8_000_000,
+      eBase: 0,
+    },
+    {
+      benefit: 8_000_000,
+      scheme: "gross_up" as const,
+      rateBp: 150,
+      x: 8_121_827,
+      t: 121_827,
+      withheld: 121_827,
+      allowance: 121_827,
+      borne: 0,
+      gBase: 0,
+      eBase: 8_121_827,
+    },
+    {
+      benefit: 8_000_000,
+      scheme: "net" as const,
+      rateBp: 150,
+      x: 8_121_827,
+      t: 121_827,
+      withheld: 0,
+      allowance: 0,
+      borne: 121_827,
+      gBase: 0,
+      eBase: 8_121_827,
+    },
+  ];
+
+  for (const c of termCases) {
+    it(`M1 TER month, no lines, benefit ${c.benefit}, contract ${c.scheme}: X ${c.x}, tax ${c.t}, withheld ${c.withheld}, allowance ${c.allowance}, borne ${c.borne}, bases ${c.gBase}/${c.eBase}`, () => {
+      const { tax } = payslip({
+        employerBenefitIdr: c.benefit,
+        contractTaxScheme: c.scheme,
+      });
+      expect(tax.method).toBe("ter");
+      expect(tax.terRateBp).toBe(c.rateBp);
+      expect(tax.taxableGrossIdr).toBe(c.x);
+      expect(tax.pph21Idr).toBe(c.t);
+      expect(tax.pph21WithheldIdr).toBe(c.withheld);
+      expect(tax.taxAllowanceIdr).toBe(c.allowance);
+      expect(tax.pph21EmployerBorneIdr).toBe(c.borne);
+      expect(tax.pph21RefundIdr).toBe(0);
+      expect(tax.pph21EmployerRefundIdr).toBe(0);
+      expect(tax.grossSchemeBaseIdr).toBe(c.gBase);
+      expect(tax.employerSchemeBaseIdr).toBe(c.eBase);
+      // Invariant: A + B + W = T and the bases add up to X.
+      expect(tax.pph21WithheldIdr + tax.pph21EmployerBorneIdr).toBe(
+        tax.pph21Idr,
+      );
+      expect(tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr).toBe(
+        tax.taxableGrossIdr,
+      );
+    });
+  }
+
+  it("M2 without contractTaxScheme a benefit-only month is refused (RangeError), in a TER month and in the last tax period", () => {
+    expect(() => payslip({ employerBenefitIdr: 3_000_000 })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      payslip({
+        employerBenefitIdr: 3_000_000,
+        lastTaxPeriod: true,
+        monthsWorked: 12,
+      }),
+    ).toThrow(RangeError);
+    // The same inputs with a scheme are accepted.
+    expect(() =>
+      payslip({ employerBenefitIdr: 3_000_000, contractTaxScheme: "gross" }),
+    ).not.toThrow();
+    // No benefit and no lines: nothing to attribute, no scheme needed.
+    expect(() => payslip({})).not.toThrow();
+  });
+
+  it("M2 with taxable lines contractTaxScheme is ignored: same result with every scheme and without it", () => {
+    // Gross line 10_000_000 + benefit 3_000_000, all gross scheme: X =
+    // 13_000_000 (TER A row 15, 5%, bound 13_750_000), T = 650_000, all
+    // withheld by the employee, bases 13_000_000 / 0.
+    const earnings: PayslipTaxEarning[] = [
+      { amountIdr: 10_000_000, taxable: true, taxScheme: "gross" },
+    ];
+    const without = payslip({ earnings, employerBenefitIdr: 3_000_000 });
+    expect(without.tax.taxableGrossIdr).toBe(13_000_000);
+    expect(without.tax.pph21Idr).toBe(650_000);
+    expect(without.tax.pph21WithheldIdr).toBe(650_000);
+    expect(without.tax.taxAllowanceIdr).toBe(0);
+    expect(without.tax.pph21EmployerBorneIdr).toBe(0);
+    expect(without.tax.grossSchemeBaseIdr).toBe(13_000_000);
+    expect(without.tax.employerSchemeBaseIdr).toBe(0);
+    for (const scheme of ["gross", "gross_up", "net"] as const) {
+      const withScheme = payslip({
+        earnings,
+        employerBenefitIdr: 3_000_000,
+        contractTaxScheme: scheme,
+      });
+      expect(withScheme.tax).toEqual(without.tax);
+      expect(withScheme.result).toEqual(without.result);
+    }
+  });
+
+  describe("reviewer repro: no NPWP, annual_only surcharge, Jan benefit only (contract gross_up), Feb-Nov gross_up 20_000_000, December gross_up 20_000_000", () => {
+    // Feb-Nov: S = round_half_up(9% x (20_000_000 + S)) = 1_978_022
+    //   (21_978_022 x 900 / 10000 = 1_978_021,98), X = 21_978_022, TER A row 19.
+    //   Each month tax = withheld = allowance = 1_978_022, borne 0, bases 0 / X.
+    //   No NPWP surcharge in TER months (annual_only).
+    // Jan: X = 3_000_000, 0% => tax 0, bases 0 / 3_000_000 (contract gross_up).
+    // Prior (11 payslips): X = 3_000_000 + 10 x 21_978_022 = 222_780_220;
+    //   withheld = allowance = 10 x 1_978_022 = 19_780_220; borne 0;
+    //   gross base 0, employer base 222_780_220 (pure gross-up history).
+    // H (with the 20% no-NPWP surcharge, Pasal 21(5a) UU PPh): annual(prior) =
+    //   cost 6_000_000 (cap), net 216_780_220, PKP 162_780_000, tax 3_000_000 +
+    //   102_780_000 x 15% = 18_417_000, x 120% = 22_100_400; H = 22_100_400 -
+    //   19_780_220 = 2_320_180 > 0, all the employer's (E = mix).
+    // Employee part: G* = 0 and employeeHistory = 0 under both policies
+    //   (proportional: employerHistory = clamp(floor((H + priorTax) x E / mix)
+    //   - pET, 0, H) = H; gross_first: annual(Gs = 0) = 0), so W = 0.
+    //
+    // December paid (gross_up 20_000_000, S = employer part = T since W = 0):
+    //   S0=0       T 5_920_180
+    //   S1=5_920_180 T 6_985_780
+    //   S2=6_985_780 T 7_177_660
+    //   S3=7_177_660 T 7_212_040
+    //   S4=7_212_040 T 7_218_340
+    //   S5=7_218_340 T 7_219_420
+    //   S6=7_219_420 T 7_219_600
+    //   S7=7_219_600 T 7_219_600 stop.
+    //   X = 27_219_600; gross 249_999_820; cost 6_000_000; net 243_999_820; PKP
+    //   189_999_000; tax 3_000_000 + 129_999_000 x 15% = 22_499_850; x 120% =
+    //   26_999_820; T = 26_999_820 - 19_780_220 = 7_219_600 = allowance =
+    //   withheld; employee's own part 0 (the old rule: T 7_154_260, W 297_609).
+    //
+    // December with no pay at all (rule D, W = min(employeeHistory 0, T) = 0):
+    //   S0=0 T 2_320_180; S1 2_737_780; S2 2_813_020; S3 2_826_520;
+    //   S4 2_828_860; S5 2_829_400; S6=2_829_400 T 2_829_400 stop.
+    //   X = 2_829_400 (gross 225_609_620, PKP 165_609_000, tax 18_841_350, x 120%
+    //   22_609_620); T = 22_609_620 - 19_780_220 = 2_829_400, booked as borne
+    //   (A1), withheld 0, allowance 0.
+    const policyOf = (
+      mixedSchemeAllocation: Pph21PolicyParameters["mixedSchemeAllocation"],
+    ): Pph21PolicyParameters => ({
+      ...DEFAULT_PPH21_POLICY,
+      noTaxIdSurcharge: "annual_only",
+      mixedSchemeAllocation,
+    });
+
+    const history = (
+      mixedSchemeAllocation: Pph21PolicyParameters["mixedSchemeAllocation"],
+    ) => {
+      const policy = policyOf(mixedSchemeAllocation);
+      const jan = payslip({
+        policy,
+        hasTaxId: false,
+        employerBenefitIdr: 3_000_000,
+        contractTaxScheme: "gross_up",
+      });
+      const feb = payslip({
+        policy,
+        hasTaxId: false,
+        earnings: [
+          { amountIdr: 20_000_000, taxable: true, taxScheme: "gross_up" },
+        ],
+      });
+      return { jan, feb, policy };
+    };
+
+    for (const allocation of ALLOCATIONS) {
+      it(`${allocation}: the stored Jan and Feb payslips and the summed prior`, () => {
+        const { jan, feb } = history(allocation);
+        expect(jan.tax.taxableGrossIdr).toBe(3_000_000);
+        expect(jan.tax.pph21Idr).toBe(0);
+        expect(jan.tax.noTaxIdSurchargeApplied).toBe(false);
+        expect(jan.tax.grossSchemeBaseIdr).toBe(0);
+        expect(jan.tax.employerSchemeBaseIdr).toBe(3_000_000);
+        expect(feb.tax.taxableGrossIdr).toBe(21_978_022);
+        expect(feb.tax.pph21Idr).toBe(1_978_022);
+        expect(feb.tax.pph21WithheldIdr).toBe(1_978_022);
+        expect(feb.tax.taxAllowanceIdr).toBe(1_978_022);
+        expect(feb.tax.pph21EmployerBorneIdr).toBe(0);
+        expect(feb.tax.noTaxIdSurchargeApplied).toBe(false);
+        expect(feb.tax.grossSchemeBaseIdr).toBe(0);
+        expect(feb.tax.employerSchemeBaseIdr).toBe(21_978_022);
+
+        const prior = buildPph21Prior([
+          { tax: jan.tax, employeeDeductibleIdr: 0 },
+          ...Array.from({ length: 10 }, () => ({
+            tax: feb.tax,
+            employeeDeductibleIdr: 0,
+          })),
+        ]);
+        expect(prior.taxableGrossIdr).toBe(222_780_220);
+        expect(prior.pph21WithheldIdr).toBe(19_780_220);
+        expect(prior.taxAllowanceIdr).toBe(19_780_220);
+        expect(prior.pph21EmployerBorneIdr).toBe(0);
+        expect(prior.grossSchemeBaseIdr).toBe(0);
+        expect(prior.employerSchemeBaseIdr).toBe(222_780_220);
+      });
+
+      const priorFor = () => {
+        const { jan, feb } = history(allocation);
+        return buildPph21Prior([
+          { tax: jan.tax, employeeDeductibleIdr: 0 },
+          ...Array.from({ length: 10 }, () => ({
+            tax: feb.tax,
+            employeeDeductibleIdr: 0,
+          })),
+        ]);
+      };
+
+      it(`${allocation}: December gross_up 20_000_000, the employee bears none of the tax (T 7_219_600 is all the company's allowance)`, () => {
+        const r = payslip({
+          policy: policyOf(allocation),
+          hasTaxId: false,
+          lastTaxPeriod: true,
+          monthsWorked: 12,
+          earnings: [
+            { amountIdr: 20_000_000, taxable: true, taxScheme: "gross_up" },
+          ],
+          prior: priorFor(),
+        });
+        expect(r.tax.method).toBe("annual_recalculation");
+        expect(r.tax.noTaxIdSurchargeApplied).toBe(true);
+        expect(r.tax.taxableGrossIdr).toBe(27_219_600);
+        expect(r.tax.pph21Idr).toBe(7_219_600);
+        expect(r.tax.taxAllowanceIdr).toBe(7_219_600);
+        expect(r.tax.pph21WithheldIdr).toBe(7_219_600);
+        expect(r.tax.pph21EmployerBorneIdr).toBe(0);
+        expect(r.tax.pph21RefundIdr).toBe(0);
+        expect(r.tax.pph21EmployerRefundIdr).toBe(0);
+        expect(r.tax.grossSchemeBaseIdr).toBe(0);
+        expect(r.tax.employerSchemeBaseIdr).toBe(27_219_600);
+        // W: the employee's own part of the withheld tax is 0 (old: 297_609).
+        expect(r.tax.pph21WithheldIdr - r.tax.taxAllowanceIdr).toBe(0);
+      });
+
+      it(`${allocation}: December with no pay (rule D) after the same history, W = 0, the whole tax is borne by the company`, () => {
+        const r = payslip({
+          policy: policyOf(allocation),
+          hasTaxId: false,
+          lastTaxPeriod: true,
+          monthsWorked: 12,
+          earnings: [],
+          employerBenefitIdr: 0,
+          prior: priorFor(),
+        });
+        expect(r.tax.method).toBe("annual_recalculation");
+        expect(r.tax.noTaxIdSurchargeApplied).toBe(true);
+        expect(r.tax.taxableGrossIdr).toBe(2_829_400);
+        expect(r.tax.pph21Idr).toBe(2_829_400);
+        expect(r.tax.pph21WithheldIdr).toBe(0);
+        expect(r.tax.taxAllowanceIdr).toBe(0);
+        expect(r.tax.pph21EmployerBorneIdr).toBe(2_829_400);
+        expect(r.tax.pph21RefundIdr).toBe(0);
+        expect(r.tax.pph21EmployerRefundIdr).toBe(0);
+        expect(r.tax.grossSchemeBaseIdr).toBe(0);
+        expect(r.tax.employerSchemeBaseIdr).toBe(2_829_400);
+      });
+    }
   });
 });

@@ -45,3 +45,15 @@ B. Pembagi H (H > 0), bagian perusahaan employerHistory:
 ## Test terarah
 
 `LEGEND_TEST_FILES="src/test/payroll-pph21-history-split.test.ts src/test/payroll-pph21-history-split-reference.test.ts src/test/payroll-pph21-annual.test.ts src/test/payroll-pph21-ter.test.ts src/test/payroll-pph21-prior.test.ts src/test/payroll-pph21-prior-reference.test.ts src/test/payroll-run-pph21-db.test.ts src/test/payroll-pph21-guards.test.ts" pnpm test`
+
+## legend-m9gx (keputusan CTO 2026-11-09)
+
+Bulan tanpa baris gaji kena pajak tetapi ada BPJS perusahaan (`employerBenefitIdr` > 0) mengikuti skema perjanjian kerja yang berlaku di bulan itu (skema pajak = atribut perjanjian kerja).
+
+- Input baru `contractTaxScheme` di `Pph21PeriodInput` dan `PayslipTaxInput`. Wajib (RangeError) bila benefit > 0 dan jumlah baris kena pajak 0 (tidak ada baris, atau semua bernilai 0); diabaikan bila ada baris bernilai.
+- `gross`: seperti sebelumnya. G* = benefit, karyawan menanggung pajaknya.
+- `gross_up`: G* = 0, pajak perusahaan menjadi tunjangan (allowance).
+- `net`: G* = 0, pajak perusahaan menjadi borne.
+- Basis tersimpan mengikuti G*: `grossSchemeBaseIdr` = G*, `employerSchemeBaseIdr` = X − G*.
+- Repro reviewer: TK/0 tanpa NPWP, `noTaxIdSurcharge: "annual_only"`, proportional. Jan tanpa baris, benefit 3.000.000 (kontrak gross_up). Feb–Nov gross_up 20.000.000. Des gross_up 20.000.000, alur `computePayslipTax` → `buildPph21Prior`. Sebelum: T 7.154.260, W 297.609. Sesudah: W 0 (bagian karyawan atas H = 0).
+- Belum ada kolom skema pajak di `employment_contracts`. Sumber data untuk run service (legend-07eg) dilaporkan ke CTO.

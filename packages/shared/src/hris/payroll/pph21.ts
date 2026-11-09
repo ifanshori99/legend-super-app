@@ -85,6 +85,14 @@ export type Pph21PeriodInput = {
   taxableLines: readonly Pph21Line[];
   /** Employer JKK + JKM + BPJS Kesehatan shares (taxable benefit). */
   employerBenefitIdr: Idr | number;
+  /**
+   * Tax scheme of the employment agreement in force this period (bead
+   * legend-m9gx). Required when the period has an employer benefit but its
+   * taxable lines add up to 0 (none, or only zero amounts; e.g. unpaid leave
+   * with BPJS still paid): the benefit then follows the agreement's scheme.
+   * Ignored when a taxable line has an amount.
+   */
+  contractTaxScheme?: TaxScheme;
   /** Employee JHT + JP of the period (deductible in the annual computation). */
   employeeDeductibleIdr: Idr | number;
   /** Earlier periods of the tax year at this employer (last period only). */
@@ -219,11 +227,15 @@ type SchemeSplit = {
   n: bigint;
   /** Part of G + U + N on the employee's (gross) scheme. */
   employeeG: bigint;
+  /** Weights splitting the employer-covered tax into allowance (gross-up) and borne (net). */
+  coverU: bigint;
+  coverN: bigint;
 };
 
 function schemeSplit(
   taxableLines: readonly Pph21Line[],
   employerBenefitIdr: Idr | number,
+  contractTaxScheme: TaxScheme | undefined,
 ): SchemeSplit {
   const benefit = nonNegativeInt(employerBenefitIdr, "employerBenefitIdr");
   let grossLines = 0n;
@@ -242,11 +254,35 @@ function schemeSplit(
   // is the company's (it joins the employer-covered tax: allowance or borne,
   // never take-home). Gross-only pay (no net / gross-up line) keeps all of it.
   const lineBase = grossLines + u + n;
+  // No line but a benefit (unpaid leave, BPJS still paid): the benefit follows
+  // the employment agreement's scheme (bead legend-m9gx), so a gross-up or
+  // net employee keeps no part of its tax and the company's cover is an
+  // allowance (gross-up) or borne (net).
+  if (lineBase === 0n && benefit > 0n) {
+    if (contractTaxScheme === undefined)
+      throw new RangeError(
+        "contractTaxScheme is required for a period with only an employer benefit",
+      );
+    if (
+      contractTaxScheme !== "gross" &&
+      contractTaxScheme !== "gross_up" &&
+      contractTaxScheme !== "net"
+    )
+      throw new RangeError("Unknown contractTaxScheme");
+    return {
+      benefit,
+      g,
+      grossLines,
+      u,
+      n,
+      employeeG: contractTaxScheme === "gross" ? g : 0n,
+      coverU: contractTaxScheme === "gross_up" ? benefit : 0n,
+      coverN: contractTaxScheme === "net" ? benefit : 0n,
+    };
+  }
   const employeeG =
-    u + n === 0n || lineBase === 0n
-      ? g
-      : grossLines + (benefit * grossLines) / lineBase;
-  return { benefit, g, grossLines, u, n, employeeG };
+    u + n === 0n ? g : grossLines + (benefit * grossLines) / lineBase;
+  return { benefit, g, grossLines, u, n, employeeG, coverU: u, coverN: n };
 }
 
 /**
@@ -259,8 +295,11 @@ function schemeSplit(
 export function pph21GrossSchemeBase(
   taxableLines: readonly Pph21Line[],
   employerBenefitIdr: Idr | number,
+  contractTaxScheme?: TaxScheme,
 ): Idr {
-  return toIdr(schemeSplit(taxableLines, employerBenefitIdr).employeeG);
+  return toIdr(
+    schemeSplit(taxableLines, employerBenefitIdr, contractTaxScheme).employeeG,
+  );
 }
 
 type PeriodTax = {
@@ -284,9 +323,10 @@ export function computePph21Period(
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
 
-  const { g, u, n, employeeG } = schemeSplit(
+  const { g, u, n, employeeG, coverU, coverN } = schemeSplit(
     input.taxableLines,
     input.employerBenefitIdr,
+    input.contractTaxScheme,
   );
   const deductible = nonNegativeInt(
     input.employeeDeductibleIdr,
@@ -511,7 +551,8 @@ export function computePph21Period(
   if (tax >= 0n) {
     const w = employeeShare(tax, x);
     const employerPart = tax - w;
-    allowance = u + n > 0n ? (covered * u) / (u + n) : 0n;
+    allowance =
+      coverU + coverN > 0n ? (covered * coverU) / (coverU + coverN) : 0n;
     if (allowance > employerPart) allowance = employerPart;
     borne = employerPart - allowance;
     withheld = w + allowance;
