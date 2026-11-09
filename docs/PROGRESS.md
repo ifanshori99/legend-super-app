@@ -492,3 +492,8 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - Cron sesi: retro tiap 2 jam menit :13; one-shot 20:47 antrean Codex (G4xjf carry on, lalu run berikut).
 - Slot Claude 8/8 penuh (termasuk sesi CTO lama G16xk dan "Perawatan SSD mingguan" G0lpx di project lain). Brief siap mulai saat slot lowong: 189 (legend-9z1vm), 190 (legend-awg5p, tunggu batch16 di m1), 191 (legend-lg45). Board B1-B3.
 - Kuota: Claude #3 5h 86% (reset 20:49), #1 5h 10% (pakai #1 untuk thread baru). Codex #2 dan #3 habis sampai 20:37/20:44.
+- 18:58 G781b (brief 185) selesai: ws/refund-followups-2 25cbe987 (x1i1h, j0ag5, leqj6), tanpa migrasi, review K selesai; task 4 (45bs9, 8v2yl) tanpa commit, patch WIP digabung ke brief 189. Verifikasi test-runner berjalan; masuk antrean merge train sesudah pos-refund-promo.
+- 18:58 G0kln (brief 187) selesai: ws/receipt-seq-edge 6acb238b. Migrasi bentrok dengan batch16 (keduanya 0151): diminta rebase ke cc188ee0 dan dinomori 0152 when 1794231000000. ws/edge-pin-pull (G4oo4) nanti 0153 ke atas.
+- Keputusan CTO: zsdd rilis bersama 3yqy (satu paket m1), tanpa migrasi pengaman untuk run pra-rilis.
+- Catatan rilis tambahan: zsdd dan 3yqy wajib satu rilis; deploy cloud dulu lalu edge; lingkungan non-produksi yang menjalankan edge m1 reset receipt_sequences; restore/clone DB edge: set edge_nodes.instance_id ke uuid baru sebelum API edge jalan (deteksi otomatis legend-yd0h8, P1 release-gate); runbook auto-journal-sale-missing: antre ulang void QRIS dan payout POSTING_AMOUNTS_MISMATCH per tenant.
+- Antrean Codex tambahan sudah tercatat: 185b (git diff d2f8c072 25cbe987), 187b (SHA baru setelah rebase), 188b.
