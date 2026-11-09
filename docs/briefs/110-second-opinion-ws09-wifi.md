@@ -26,3 +26,8 @@ Baca `~/.agents/team/roles/second-opinion.md` dan `~/.agents/team/TEAM.md`.
 
 ## Laporan
 Temuan diurutkan dari yang paling berat. Tiap temuan: file:baris, masalah, skenario gagal konkret, fix. Tulis "Tidak ada blocker" bila memang tidak ada.
+
+## Run tambahan: hardening Wi-Fi (tingkat K: migrasi, hapus data, data pribadi)
+Cabang `ws/ws09-wifi-hardening` d2710c47, basis `ws/ws09-wifi` b9d7e40b. Diff: `git diff b9d7e40b d2710c47`.
+Cek: trigger pembekuan baris final (0101), CHECK `revoke_retry_at` (0102), purge 30 hari (RLS, FK `superseded_by`), retry revoke dan race authorize-setelah-revoke.
+Tulis ke `docs/reviews/codex-ws09-wifi-hardening.md`.
