@@ -867,7 +867,7 @@ describe("PAY-04 a tenant that configured its own refund matrix keeps it", () =>
   ];
 
   /**
-   * Run the 0134 migration body on a dedicated connection inside a transaction
+   * Run the refund_approval_policies_data migration body on a dedicated connection inside a transaction
    * that is always rolled back. The migration locks roles and approval_policies,
    * so every read inside goes through this same connection: a read on another
    * connection would wait for the lock and never return.
@@ -876,8 +876,11 @@ describe("PAY-04 a tenant that configured its own refund matrix keeps it", () =>
     inspect: (client: PoolClient) => Promise<T>,
   ): Promise<T> {
     const dir = fileURLToPath(new URL("../../drizzle/", import.meta.url));
-    const file = readdirSync(dir).find((name) => /^0134_.*\.sql$/.test(name));
-    if (!file) throw new Error("Migration 0134 is missing");
+    const file = readdirSync(dir).find((name) =>
+      /^\d{4}_refund_approval_policies_data\.sql$/.test(name),
+    );
+    if (!file)
+      throw new Error("Migration refund_approval_policies_data is missing");
     const statements = readFileSync(`${dir}${file}`, "utf8")
       .split("--> statement-breakpoint")
       .map((statement) => statement.trim())
