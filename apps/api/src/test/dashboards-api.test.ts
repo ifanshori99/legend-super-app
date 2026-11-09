@@ -44,6 +44,7 @@ import {
   reportByCode,
   reportResultSchema,
 } from "@starter/shared/dashboard";
+import { METRIC_UNAVAILABLE_MESSAGES } from "@starter/shared/metrics";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
@@ -871,11 +872,108 @@ describe("queue rows and facility scope", () => {
     expect(
       (await get(a.nobody, "/api/dashboards/queues/kitchen_queue/rows")).status,
     ).toBe(403);
+    // The reviews queue answers an explicit "not built" instead of an empty
+    // list that would read as "no reviews" (F11 availability per queue).
     const reviews = await get(a.full, "/api/dashboards/queues/reviews/rows");
-    expect(reviews.status).toBe(501);
-    expect(reviews.body.error.code).toBe("DASHBOARD_QUEUE_UNAVAILABLE");
+    expect(reviews.status).toBe(200);
+    const parsed = dashboardQueueRowsSchema.parse(reviews.body.data);
+    expect(parsed.queue).toBe("reviews");
+    expect(parsed.rows).toEqual([]);
+    expect(parsed.availability).toEqual({
+      status: "unavailable",
+      reason: "source_not_built",
+      message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+    });
     expect(
       (await get(a.full, "/api/dashboards/queues/approvals/rows")).status,
     ).toBe(422);
+  });
+
+  it("marks a served queue available", async () => {
+    const response = await get(
+      a.full,
+      "/api/dashboards/queues/kitchen_queue/rows",
+    );
+    expect(
+      dashboardQueueRowsSchema.parse(response.body.data).availability,
+    ).toEqual({ status: "available" });
+  });
+});
+
+// ---- F11 additions (managerRole, availability, single outletIds) -----------
+
+describe("management managerRole query", () => {
+  it("narrows the management layout to the role's tiles plus shared ones", async () => {
+    const response = await get(
+      a.full,
+      "/api/dashboards/management?managerRole=gm",
+    );
+    expect(response.status).toBe(200);
+    const keys = dashboardLayoutSchema
+      .parse(response.body.data)
+      .tiles.map((tile) => tile.key);
+    expect(keys).toContain("management.gm_kpi");
+    expect(keys).toContain("management.reports");
+    expect(keys).not.toContain("management.hr_kpi");
+    expect(keys).not.toContain("management.kitchen_kpi");
+  });
+
+  it("narrows the values the same way", async () => {
+    const result = await values(a.full, `${JUNE}&managerRole=gm`, "management");
+    const keys = result.tiles.map((tile) => tile.tileKey);
+    expect(keys).toContain("management.gm_kpi");
+    expect(keys).not.toContain("management.hr_kpi");
+  });
+
+  // The API answers every zod failure 422 (error-handler.ts), not 400.
+  it("rejects an unknown role", async () => {
+    for (const path of [
+      "/api/dashboards/management?managerRole=ceo",
+      "/api/dashboards/management/values?managerRole=ceo",
+    ])
+      expect((await get(a.full, path)).status, path).toBe(422);
+  });
+});
+
+describe("tile availability", () => {
+  it("marks a built tile available and an unbuilt one unavailable with the Indonesian message", async () => {
+    const result = await values(
+      a.full,
+      `${JUNE}&managerRole=purchasing`,
+      "management",
+    );
+    const built = await values(a.full, JUNE);
+    expect(
+      built.tiles.find((tile) => tile.tileKey === "owner.today_sales")
+        ?.availability,
+    ).toEqual({ status: "available" });
+    const unbuilt = result.tiles.find(
+      (tile) => tile.tileKey === "management.purchasing_kpi",
+    );
+    expect(unbuilt?.availability).toEqual({
+      status: "unavailable",
+      reason: "source_not_built",
+      message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+    });
+  });
+});
+
+describe("a single outletIds on GET", () => {
+  it("is read as a one-element array on layout, values and queue rows", async () => {
+    const layout = await get(
+      a.full,
+      `/api/dashboards/owner?outletIds=${a.outlet1}`,
+    );
+    expect(layout.status).toBe(200);
+    expect(
+      dashboardLayoutSchema.parse(layout.body.data).availableOutlets,
+    ).toEqual([a.outlet1]);
+    const result = await values(a.full, `${JUNE}&outletIds=${a.outlet1}`);
+    expect(result.outlets).toEqual({ kind: "outlets", outletIds: [a.outlet1] });
+    const rows = await get(
+      a.full,
+      `/api/dashboards/queues/kitchen_queue/rows?outletIds=${a.outlet1}`,
+    );
+    expect(rows.status).toBe(200);
   });
 });

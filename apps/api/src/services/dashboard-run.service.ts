@@ -41,10 +41,12 @@ import {
   dashboardValuesSchema,
   DASHBOARD_CATALOG,
   DASHBOARD_TITLES,
+  dashboardTilesFor,
   reportAcceptsAggregateView,
   reportByCode,
   reportMetricByCode,
   reportPermittedFor,
+  type DashboardAvailability,
   type DashboardFacilityScope,
   type DashboardKind,
   type DashboardLayout,
@@ -53,14 +55,16 @@ import {
   type DashboardTile,
   type DashboardValues,
   type DashboardValuesQuery,
+  type ManagementRole,
   type MetricDashboardTile,
   type ReportDefinition,
   type ReportPeriodPreset,
 } from "@starter/shared/dashboard";
-import type {
-  MetricFinality,
-  MetricPeriod,
-  MetricValue,
+import {
+  METRIC_UNAVAILABLE_MESSAGES,
+  type MetricFinality,
+  type MetricPeriod,
+  type MetricValue,
 } from "@starter/shared/metrics";
 import { db } from "../db";
 import {
@@ -119,13 +123,25 @@ export function tileAdmitted(
   );
 }
 
-/** Tiles of one dashboard the held permissions open, in catalog order. */
+/**
+ * Tiles of one dashboard the held permissions open, in catalog order. A
+ * `managerRole` narrows the management home to that role's tiles plus the
+ * shared ones (`dashboardTilesFor`); without it every management tile stays.
+ */
 export function admittedTiles(
   dashboard: DashboardKind,
   permissions: readonly string[],
+  managerRole?: ManagementRole,
 ): DashboardTile[] {
+  const forRole =
+    dashboard === "management" && managerRole !== undefined
+      ? new Set(dashboardTilesFor(dashboard, managerRole))
+      : undefined;
   return DASHBOARD_CATALOG.filter(
-    (tile) => tile.dashboard === dashboard && tileAdmitted(tile, permissions),
+    (tile) =>
+      tile.dashboard === dashboard &&
+      (forRole === undefined || forRole.has(tile)) &&
+      tileAdmitted(tile, permissions),
   );
 }
 
@@ -476,10 +492,31 @@ export async function getDashboardValues(
     const valueOf = (code: string): MetricValue | null =>
       unavailable.has(code) ? null : (pointOf(evaluated, code)?.value ?? null);
 
+    const reasonOf = new Map(
+      evaluated.availability.flatMap((entry) =>
+        entry.status === "unavailable"
+          ? [[entry.metricCode, entry.reason]]
+          : [],
+      ),
+    );
+
     for (const tile of groupTiles) {
+      // A tile is unavailable only when none of its metrics has a source.
+      const reasons = tile.metricCodes.map((code) => reasonOf.get(code));
+      const firstReason = reasons[0];
+      const availability: DashboardAvailability =
+        firstReason !== undefined &&
+        reasons.every((reason) => reason !== undefined)
+          ? {
+              status: "unavailable",
+              reason: firstReason,
+              message: METRIC_UNAVAILABLE_MESSAGES[firstReason],
+            }
+          : { status: "available" };
       tiles.push({
         tileKey: tile.key,
         period,
+        availability,
         values: tile.metricCodes.map((code) => {
           const point = pointOf(evaluated, code);
           const value = valueOf(code);
@@ -740,12 +777,19 @@ export async function getDashboardQueueRows(
   }
 
   // `reviews`: no review table exists yet, so there is nothing true to show.
-  // Answering an empty list would read as "no reviews", so the tile is told.
-  throw new HttpError(
-    501,
-    "DASHBOARD_QUEUE_UNAVAILABLE",
-    "Data ulasan belum tersedia.",
-  );
+  // An empty list alone would read as "no reviews", so the payload says the
+  // source is not built (availability) instead of failing the tile.
+  return dashboardQueueRowsSchema.parse({
+    queue: "reviews",
+    rows: [],
+    hasMore: false,
+    generatedAt,
+    availability: {
+      status: "unavailable",
+      reason: "source_not_built",
+      message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+    },
+  });
 }
 
 /** Facility ids per outlet in the caller's scope. */

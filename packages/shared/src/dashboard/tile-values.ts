@@ -26,6 +26,7 @@ import {
   metricCodeSchema,
   metricComparisonSchema,
   metricFinalitySchema,
+  metricUnavailableReasonSchema,
   metricOutletFilterSchema,
   metricPeriodSchema,
   metricValueSchema,
@@ -50,7 +51,28 @@ import {
   openDayPeriod,
 } from "../metrics/fixtures.ts";
 import { reportPeriodPresetSchema } from "./reports.ts";
-import { dashboardKindSchema, tileKeySchema } from "./dashboards.ts";
+import {
+  dashboardKindSchema,
+  managementRoleSchema,
+  tileKeySchema,
+} from "./dashboards.ts";
+
+// ---- Availability (F11) -----------------------------------------------------
+
+/**
+ * Whether a tile or queue has a source behind it. An unavailable one carries
+ * the reason and the Indonesian sentence (`METRIC_UNAVAILABLE_MESSAGES`), so a
+ * blank reads as "not built yet", never as "no data" or zero.
+ */
+export const dashboardAvailabilitySchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("available") }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    reason: metricUnavailableReasonSchema,
+    message: z.string().min(1).max(200),
+  }),
+]);
+export type DashboardAvailability = z.infer<typeof dashboardAvailabilitySchema>;
 
 // ---- Metric tile values (legend-v3pt) ---------------------------------------
 
@@ -62,6 +84,8 @@ export const dashboardValuesQuerySchema = clientInputSchema({
   endDate: businessDateSchema.optional(),
   /** Intersected with the caller's outlet scope server-side (TEN-03). */
   outletIds: z.array(outletIdSchema).min(1).max(50).optional(),
+  /** Management only: the role whose tiles to answer (same as the layout). */
+  managerRole: managementRoleSchema.optional(),
 }).superRefine((query, ctx) => {
   const hasDates = query.startDate !== undefined || query.endDate !== undefined;
   if (query.period === "custom") {
@@ -137,6 +161,8 @@ export const dashboardTileValuesSchema = z
     /** The period this tile resolved to (preset default or query override). */
     period: metricPeriodSchema,
     values: z.array(dashboardTileMetricValueSchema).min(1).max(6),
+    /** Unavailable when every cited metric's source is not built (F11). */
+    availability: dashboardAvailabilitySchema.default({ status: "available" }),
   })
   .superRefine((tile, ctx) => {
     const codes = tile.values.map((entry) => entry.metricCode);
@@ -285,6 +311,8 @@ const queueRowsPayload = <
     /** Rows beyond the page cap exist; the tile links to its full screen. */
     hasMore: z.boolean(),
     generatedAt: isoDateTimeSchema,
+    /** Unavailable (empty rows) when the queue's source is not built (F11). */
+    availability: dashboardAvailabilitySchema.default({ status: "available" }),
   });
 
 /** GET /api/dashboards/queues/:queue/rows payload, keyed by queue. */

@@ -22,6 +22,7 @@ import {
   getDashboardValuesEndpoint,
   type DashboardKind,
   type DashboardTile,
+  type ManagementRole,
 } from "@starter/shared/dashboard";
 import { requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
@@ -83,11 +84,12 @@ export function createDashboardsRouter() {
   async function admit(
     req: Parameters<typeof resolveViewer>[0],
     dashboard: DashboardKind,
+    managerRole?: ManagementRole,
   ) {
     const { permissions } = await loadRequestAccess(req);
     if (!permissions.includes(`dashboard.${dashboard}.view` as PermissionCode))
       throw reportHttpError("REPORT_NOT_PERMITTED");
-    return admittedTiles(dashboard, permissions);
+    return admittedTiles(dashboard, permissions, managerRole);
   }
 
   // Fixed paths first so "/:dashboard" never shadows them.
@@ -122,7 +124,7 @@ export function createDashboardsRouter() {
       req.params,
     );
     const query = getDashboardValuesEndpoint.query.parse(queryOf(req.query));
-    const tiles = await admit(req, dashboardCode);
+    const tiles = await admit(req, dashboardCode, query.managerRole);
     const { context, viewer } = await resolveTiles(req, dashboardCode, tiles);
     res.json({
       data: await getDashboardValues(context, {
@@ -137,7 +139,7 @@ export function createDashboardsRouter() {
   router.get(route(getDashboardEndpoint.path), async (req, res) => {
     const { dashboard } = getDashboardEndpoint.params.parse(req.params);
     const query = getDashboardEndpoint.query.parse(queryOf(req.query));
-    const tiles = await admit(req, dashboard);
+    const tiles = await admit(req, dashboard, query.managerRole);
     const { context } = await resolveTiles(req, dashboard, tiles);
     res.json({
       data: await getDashboardLayout(context, {
