@@ -12,6 +12,7 @@
 // transaction (TEN-03).
 import { Router } from "express";
 import {
+  completeMaintenanceSchedule as completeMaintenanceScheduleEndpoint,
   createEquipment as createEquipmentEndpoint,
   createMaintenanceSchedule as createMaintenanceScheduleEndpoint,
   createMaintenanceTicket as createMaintenanceTicketEndpoint,
@@ -177,6 +178,28 @@ operationsEquipmentRouter.post(
       .status(201)
       .location(`/api/operations/maintenance-schedules/${created.id}`)
       .json({ data: created });
+  },
+);
+
+// WS-14: a finished service advances next_due_at by the interval.
+operationsEquipmentRouter.post(
+  "/maintenance-schedules/:scheduleId/complete",
+  ...common,
+  maintain,
+  jsonBody,
+  async (req, res) => {
+    const { scheduleId } = completeMaintenanceScheduleEndpoint.params.parse(
+      req.params,
+    );
+    const input = completeMaintenanceScheduleEndpoint.body.parse(req.body);
+    res.json({
+      data: await service.completeMaintenanceSchedule(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        scheduleId,
+        input,
+      ),
+    });
   },
 );
 

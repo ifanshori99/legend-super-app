@@ -553,6 +553,10 @@ export const maintenanceSchedules = pgTable(
     nextDueAt: timestamp("next_due_at", { withTimezone: true }).notNull(),
     /** Service vendor; a purchasing supplier (legend-uy1e). */
     vendorId: uuid("vendor_id"),
+    /** The `next_due_at` the last service reminder was queued for. The sweep
+     * reminds once per due date: completing a service moves `next_due_at`,
+     * which re-arms the reminder (OPS-04). */
+    remindedForDueAt: timestamp("reminded_for_due_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },
