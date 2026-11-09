@@ -303,3 +303,12 @@ Langkah berikut:
 Catatan rilis: deploy cloud sebelum edge; API dan web bersamaan (DTO auto-journal); reset d21p sebelum DOIT_REFUNDS_ENABLED; backfill dan scrub PAN EDC di luar jam operasional (`docs/runbooks/edc-pan-scrub.md`); approval tutup shift lewat HP yang dibuka sebelum deploy ditolak, kasir minta ulang; batas approval refund 7 hari; tiap tutup shift butuh PIN supervisor.
 
 Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Opus 1046k, Haiku 971k, Sonnet 533k), 58 subagent, compact 3.
+
+### Tambahan serah terima 15:05
+- ws/edge-event-class 2216e2b7 (eadm, niq9) diverifikasi CTO 348/348, diteruskan ke G9syc (menyentuh edge/runtime.ts blok registrasi). G54my sekarang mengerjakan legend-kyie (P1 K, cloud menerapkan event PIN/override edge) di ws/edge-access-apply dari 2216e2b7; brief Codex 160 ditulis thread.
+- pph21: 6e20273a (mmgd) test 283/283 + kontrak 24/24, Codex 156 run 1+2 tanpa temuan, tetapi architect CTO menemukan regresi legend-4ndx (P1 K): proportional dengan T<0 bisa memotong karyawan melebihi gaji Desember (fuzz 394/12000). Keputusan CTO: potongan karyawan dibatasi gaji tersedia, kelebihan ditanggung perusahaan, setoran tetap T. Dikirim ke G5qo3 (Run 3 brief 156). Merge train tetap baf5ca9e.
+- Codex 154 refund-tier: run 1 tanpa temuan; run 2 (2dnh, sampai ceaab8fe) 4 temuan P2 (0135 email sistem bentrok signup, UUID sistem bisa diberi peran, refund gagal permanen memonopoli batch, lock intent menahan sweep) dikirim ke G5xnj. Codex 157 dp-refund-guard: tanpa temuan.
+- legend-npwl dipegang thread baru G3qi9 (brief 161, ws/unallocated-fund-contract dari m1 9126f624).
+- Codex jalan: G8ffh brief 142 (akun 2), G7mxn brief 150 (akun 2), G1634 brief 146 (akun 3). Antrean sisa: 152, 158, 159, 160 (setelah ditulis), lalu 117, 119, 121, 122, 124, 126, 127, 130, 133, 134, 138, 144.
+- 15:20 akun Claude #1 reset: kirim G2wg9 "Limit akun sudah reset: lanjutkan. Tugas berikut slice 4 (settlement + MDR); slice 3 juga bisa karena batch 3/4 sudah di m1 9126f624."
+- Jadwalkan ulang: retro berkala tiap 2 jam (`~/.agents/team/retro-brief.md`).
