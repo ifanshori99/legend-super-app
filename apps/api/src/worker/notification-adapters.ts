@@ -26,7 +26,6 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
-  idr,
   toIsoDateTime,
   z,
   type TenantId,
@@ -44,6 +43,7 @@ import {
   approvalResolvedEvent,
 } from "@starter/shared/identity";
 import {
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   type NotificationCategory,
@@ -52,6 +52,7 @@ import {
   type Reachability,
 } from "@starter/shared/notification";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
+import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
 import {
   paymentRefundEscalatedPayloadSchema,
@@ -122,32 +123,17 @@ async function loadPolicy(
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, tenantId));
-  return notificationPolicySchema.parse(
-    row
-      ? {
-          tenantId,
-          webPushEnabled: row.webPushEnabled,
-          emailEnabled: row.emailEnabled,
-          whatsapp: row.whatsapp,
-          maxAttempts: row.maxAttempts,
-          retryBackoffSeconds: row.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(row.updatedAt),
-        }
-      : {
-          tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  return row
+    ? notificationPolicySchema.parse({
+        tenantId,
+        webPushEnabled: row.webPushEnabled,
+        emailEnabled: row.emailEnabled,
+        whatsapp: row.whatsapp,
+        maxAttempts: row.maxAttempts,
+        retryBackoffSeconds: row.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(row.updatedAt),
+      })
+    : defaultNotificationPolicy(tenantId, now);
 }
 
 async function loadRecipientState(
@@ -732,6 +718,106 @@ async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+const OWNER_CHANGE_TIME = new Intl.DateTimeFormat("id-ID", {
+  timeZone: "Asia/Jakarta",
+  dateStyle: "long",
+  timeStyle: "short",
+});
+
+const OWNER_CHANGE_REASON_MAX = 300;
+const NOTIFICATION_BODY_MAX = 1000;
+
+/** Name first; the email only when it is a real one (WhatsApp invites get a
+ * `@wa.invalid` placeholder). */
+function accountLabel(account: { name: string; email: string }): string {
+  const name = account.name.trim();
+  if (account.email.endsWith("@wa.invalid")) return name || "akun baru";
+  return name ? `${name} (${account.email})` : account.email;
+}
+
+/** legend-fmpgz (Q46): a platform Super Admin appointed or replaced an Owner.
+ * Recipients come from database rows only: every active tenant Owner plus the
+ * replaced Owner (read from the replaced assignment row; it has ended by now).
+ * Owners that ended earlier are not told. */
+async function tenantOwnerChangedRule(input: RuleInput): Promise<Rule> {
+  const payload = PLATFORM_EVENT_PAYLOADS["tenant_owner.changed"].parse(
+    input.event.payload,
+  );
+  const wanted: string[] = [payload.newAssignmentId];
+  if (payload.replacedAssignmentId !== null)
+    wanted.push(payload.replacedAssignmentId);
+  const rows = await input.tx
+    .select({
+      id: roleAssignments.id,
+      userId: roleAssignments.userId,
+      name: user.name,
+      email: user.email,
+    })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .innerJoin(user, eq(user.id, roleAssignments.userId))
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        inArray(roleAssignments.id, wanted),
+        eq(roles.templateKey, "owner"),
+        eq(roleAssignments.scopeType, "tenant"),
+      ),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const created = byId.get(payload.newAssignmentId);
+  if (!created) throw new Error("Owner assignment not found for notification");
+  const replaced =
+    payload.replacedAssignmentId === null
+      ? null
+      : (byId.get(payload.replacedAssignmentId) ?? null);
+  if (payload.replacedAssignmentId !== null && !replaced)
+    throw new Error("Replaced Owner assignment not found for notification");
+  const [actor] = await input.tx
+    .select({ name: user.name })
+    .from(user)
+    .where(eq(user.id, payload.actorUserId));
+  // Staff identity stays a name only, like the support access notices.
+  const actorLabel = actor?.name.trim() ? actor.name.trim() : "tim platform";
+  const when = `${OWNER_CHANGE_TIME.format(new Date(payload.changedAt))} WIB`;
+  const what = replaced
+    ? `mengganti Owner ${accountLabel(replaced)} dengan ${accountLabel(created)}`
+    : `menunjuk ${accountLabel(created)} sebagai Owner`;
+  // Owners appointed after this change (or before a replay) are not told.
+  const owners = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    required(
+      and(
+        eq(roles.templateKey, "owner"),
+        lte(roleAssignments.validFrom, new Date(payload.changedAt)),
+      ),
+    ),
+    { kind: "tenant" },
+  );
+  const body = `Super Admin platform ${actorLabel} ${what} pada ${when}. Alasan: ${payload.reason.slice(0, OWNER_CHANGE_REASON_MAX)}`;
+  return {
+    userIds: replaced ? [...owners, replaced.userId] : owners,
+    content: {
+      category: "security",
+      title: replaced
+        ? "Owner diganti oleh platform"
+        : "Owner baru ditunjuk oleh platform",
+      body:
+        body.length > NOTIFICATION_BODY_MAX
+          ? `${body.slice(0, NOTIFICATION_BODY_MAX - 1)}…`
+          : body,
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -755,6 +841,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return aiDailySummaryRule(input);
     case "payment.refund_escalated":
       return refundEscalatedRule(input);
+    case "tenant_owner.changed":
+      return tenantOwnerChangedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

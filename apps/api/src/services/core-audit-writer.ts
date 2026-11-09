@@ -95,6 +95,7 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "account",
   ],
   "tenant_owner.denied": ["cause", "impersonatedBy"],
+  "tenant_owner.notify_failed": ["assignmentId", "kind", "error"],
   "platform.access.denied": [
     "cause",
     "code",

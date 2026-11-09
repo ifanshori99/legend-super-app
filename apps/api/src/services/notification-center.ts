@@ -14,6 +14,7 @@ import {
   listNotifications,
   markNotificationRead,
   notificationSchema,
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   notificationTemplateSchema,
@@ -159,32 +160,20 @@ export function createNotificationService(
             );
             const row = result.rows[0];
             return {
-              data: notificationPolicySchema.parse(
-                row
-                  ? {
-                      tenantId: row.tenant_id,
-                      webPushEnabled: row.web_push_enabled,
-                      emailEnabled: row.email_enabled,
-                      whatsapp: row.whatsapp,
-                      maxAttempts: row.max_attempts,
-                      retryBackoffSeconds: row.retry_backoff_seconds,
-                      updatedAt: isoTimestamp(row.updated_at),
-                    }
-                  : {
-                      tenantId: context.tenant.tenantId,
-                      webPushEnabled: true,
-                      emailEnabled: true,
-                      whatsapp: {
-                        enabled: false,
-                        allowedCategories: [],
-                        monthlyCap: 0,
-                        costPerMessageIdr: 0,
-                      },
-                      maxAttempts: 5,
-                      retryBackoffSeconds: [30, 120, 600, 3600],
-                      updatedAt: new Date().toISOString(),
-                    },
-              ),
+              data: row
+                ? notificationPolicySchema.parse({
+                    tenantId: row.tenant_id,
+                    webPushEnabled: row.web_push_enabled,
+                    emailEnabled: row.email_enabled,
+                    whatsapp: row.whatsapp,
+                    maxAttempts: row.max_attempts,
+                    retryBackoffSeconds: row.retry_backoff_seconds,
+                    updatedAt: isoTimestamp(row.updated_at),
+                  })
+                : defaultNotificationPolicy(
+                    context.tenant.tenantId,
+                    new Date(),
+                  ),
             };
           }
           case "updatePolicy": {

@@ -20,11 +20,12 @@ import {
   roleAssignmentEndedEvent,
   roleAssignmentGrantedEvent,
 } from "@starter/shared/access";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
 import {
   tenantOwnerAssignmentSchema,
   type AssignTenantOwnerInput,
   type ReplaceTenantOwnerInput,
+  platformEvents,
   type TenantOwnerAssignment,
 } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
@@ -33,6 +34,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { SYSTEM_ACCOUNT_ID } from "../lib/system-account.ts";
 import { appendAccessEvent } from "./access.service.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { resolveAdminAccount } from "./platform-admin-provision.service.ts";
 import {
@@ -49,6 +51,7 @@ type DeniedCause = "impersonated_session" | "mfa_not_verified";
 
 const OWNER_TEMPLATE = "owner";
 const OBJECT_TYPE = "role_assignment";
+const NOTIFICATION_DESTINATION = "notification";
 
 type OwnerRequest = {
   tenantId: string;
@@ -412,6 +415,91 @@ async function endOwner(
   );
 }
 
+/**
+ * legend-fmpgz (Q46): tells the replaced Owner and every active Owner that a
+ * platform Super Admin changed the Owner. The event joins the transactional
+ * outbox; the worker's notification consumer sends the in-app notification and
+ * the email, so a delivery failure never touches this transaction (it lands in
+ * delivery_attempts / the dead letter). Appending runs in a savepoint: if even
+ * that fails, the appointment stays and a `tenant_owner.notify_failed` audit
+ * row records it.
+ */
+async function notifyOwnerChange(
+  tx: Tx,
+  context: ScopedTenantContext,
+  args: {
+    kind: "assigned" | "replaced";
+    actorUserId: string;
+    reason: string;
+    newAssignmentId: string;
+    replacedAssignmentId: string | null;
+    now: Date;
+  },
+): Promise<void> {
+  const { tenantId } = context.tenant;
+  try {
+    await tx.transaction(async (savepoint) => {
+      const definition = platformEvents["tenant_owner.changed"];
+      const aggregateId = createUlid(args.now.getTime());
+      const event = definition.envelopeSchema.parse({
+        id: createUlid(args.now.getTime()),
+        tenantId,
+        outletId: null,
+        name: definition.name,
+        version: definition.version,
+        aggregateType: definition.entry.aggregateType,
+        aggregateId,
+        sequence: 1,
+        occurredAt: args.now.toISOString(),
+        actor: { type: "user", id: args.actorUserId },
+        deviceId: null,
+        idempotencyKey: `${definition.name}:${aggregateId}`,
+        payloadSchemaRef: definition.payloadSchemaRef,
+        payload: {
+          kind: args.kind,
+          actorUserId: args.actorUserId,
+          reason: args.reason,
+          changedAt: args.now.toISOString(),
+          newAssignmentId: args.newAssignmentId,
+          replacedAssignmentId: args.replacedAssignmentId,
+        },
+      });
+      await appendOutbox(savepoint, context, {
+        id: createUlid(args.now.getTime()),
+        event,
+        destination: NOTIFICATION_DESTINATION,
+        direction: null,
+        peerId: null,
+      });
+    });
+  } catch (error) {
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: args.actorUserId,
+        deviceId: null,
+        action: "tenant_owner.notify_failed",
+        objectType: OBJECT_TYPE,
+        objectId: args.newAssignmentId,
+        reason: args.reason,
+        before: null,
+        after: {
+          assignmentId: args.newAssignmentId,
+          kind: args.kind,
+          error: (error instanceof Error ? error.message : String(error)).slice(
+            0,
+            200,
+          ),
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+  }
+}
+
 async function changeOwner(
   request: OwnerRequest & {
     input: AssignTenantOwnerInput;
@@ -546,6 +634,14 @@ async function changeOwner(
       },
       { tx, context },
     );
+    await notifyOwnerChange(tx, context, {
+      kind: replaced ? "replaced" : "assigned",
+      actorUserId,
+      reason: input.reason,
+      newAssignmentId: assignment.id,
+      replacedAssignmentId: result.replacedAssignmentId,
+      now,
+    });
     return tenantOwnerAssignmentSchema.parse(result);
   });
 }

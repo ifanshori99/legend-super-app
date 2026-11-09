@@ -49,7 +49,10 @@ async function whatsappOutlet() {
   seededOutlet ??= (await seedTenantOutlets(tenant))[0];
   return seededOutlet;
 }
-async function makeAttempt(channel: "email" | "web_push" | "whatsapp") {
+async function makeAttempt(
+  channel: "email" | "web_push" | "whatsapp",
+  category = "order_ready",
+) {
   const outletId = channel === "whatsapp" ? await whatsappOutlet() : null;
   const notificationId = createUlid();
   const attemptId = createUlid();
@@ -59,7 +62,7 @@ async function makeAttempt(channel: "email" | "web_push" | "whatsapp") {
       id: ulidToUuid(notificationId),
       outletId,
       userId: randomUUID(),
-      category: "order_ready",
+      category: category as "order_ready",
       title: "Ready",
       body: "Order ready",
       link: null,
@@ -421,4 +424,82 @@ it("AUTH-03 releases the monthly WhatsApp slot when the provider declines for go
       when,
     ),
   ).toBe("sent");
+});
+
+// legend-307w3: security email ignores the tenant switch and the user's email
+// opt-out; any other category keeps both. Every other input is held equal.
+const emailOff = (
+  category: string,
+  over: { tenantOff: boolean; userOptOut: boolean },
+) =>
+  async function resolveEmailOff(
+    ctx: unknown,
+    notification: { userId: string },
+  ) {
+    const base = await resolve(ctx, notification);
+    return {
+      ...base,
+      policy: notificationPolicySchema.parse({
+        ...base.policy,
+        emailEnabled: !over.tenantOff,
+      }),
+      preference: notificationPreferenceSchema.parse({
+        ...base.preference,
+        categories: {
+          [category]: {
+            web_push: false,
+            email: !over.userOptOut,
+            whatsapp: false,
+          },
+        },
+      }),
+    };
+  };
+async function emailAttemptState(attemptId: string) {
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select()
+      .from(schema.deliveryAttempts)
+      .where(eq(schema.deliveryAttempts.id, ulidToUuid(attemptId))),
+  );
+  return rows[0];
+}
+it("legend-307w3 sends a security email even when the tenant disabled email and the user opted out", async () => {
+  const provider = new FakeEmailProvider();
+  const attemptId = await makeAttempt("email", "security");
+  expect(
+    await deliverNotificationAttempt(db, context, attemptId, {
+      resolve: emailOff("security", { tenantOff: true, userOptOut: true }),
+      push,
+      email: provider,
+    }),
+  ).toBe("sent");
+  expect(provider.sent).toHaveLength(1);
+  const row = await emailAttemptState(attemptId);
+  expect(row.status).toBe("sent");
+  expect(row.skipReason).toBeNull();
+});
+it("legend-307w3 still skips a non-security email when the tenant disabled email or the user opted out", async () => {
+  const provider = new FakeEmailProvider();
+  const tenantOff = await makeAttempt("email", "order_ready");
+  expect(
+    await deliverNotificationAttempt(db, context, tenantOff, {
+      resolve: emailOff("order_ready", { tenantOff: true, userOptOut: true }),
+      push,
+      email: provider,
+    }),
+  ).toBe("skipped");
+  expect((await emailAttemptState(tenantOff)).skipReason).toBe(
+    "policy_disabled",
+  );
+  const userOff = await makeAttempt("email", "order_ready");
+  expect(
+    await deliverNotificationAttempt(db, context, userOff, {
+      resolve: emailOff("order_ready", { tenantOff: false, userOptOut: true }),
+      push,
+      email: provider,
+    }),
+  ).toBe("skipped");
+  expect((await emailAttemptState(userOff)).skipReason).toBe("opted_out");
+  expect(provider.sent).toHaveLength(0);
 });

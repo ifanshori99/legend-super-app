@@ -24,7 +24,6 @@ import {
   createUlid,
   decodeCursor,
   encodeCursor,
-  idr,
   idempotencyKeySchema,
   toIsoDateTime,
   z,
@@ -38,6 +37,7 @@ import {
   type EventEnvelope,
 } from "@starter/shared/events";
 import {
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
 } from "@starter/shared/notification";
@@ -191,32 +191,17 @@ export async function buildRecipients(
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, tenantId));
-  const policy = notificationPolicySchema.parse(
-    policyRow
-      ? {
-          tenantId,
-          webPushEnabled: policyRow.webPushEnabled,
-          emailEnabled: policyRow.emailEnabled,
-          whatsapp: policyRow.whatsapp,
-          maxAttempts: policyRow.maxAttempts,
-          retryBackoffSeconds: policyRow.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(policyRow.updatedAt),
-        }
-      : {
-          tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  const policy = policyRow
+    ? notificationPolicySchema.parse({
+        tenantId,
+        webPushEnabled: policyRow.webPushEnabled,
+        emailEnabled: policyRow.emailEnabled,
+        whatsapp: policyRow.whatsapp,
+        maxAttempts: policyRow.maxAttempts,
+        retryBackoffSeconds: policyRow.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(policyRow.updatedAt),
+      })
+    : defaultNotificationPolicy(tenantId, now);
   const subscribed = new Set(
     (
       await tx
