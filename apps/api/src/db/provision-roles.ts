@@ -1,12 +1,15 @@
 // Restricted database login provisioning (legend-zoqc, PRD §3 F3, TEN-02).
 //
 // Runs with the migration/owner connection from a trusted operator job, never
-// inside the API or worker. It creates (or re-keys) two LOGIN roles:
+// inside the API or worker. It creates (or re-keys) up to three LOGIN roles:
 //   - the application login, a member of the NOLOGIN `legend_app` group that
-//     migrations grant DML on tenant tables (RLS-forced), and
+//     migrations grant DML on tenant tables (RLS-forced),
 //   - the queue login, which owns only the pg-boss schema and can read the
-//     filtered app.active_tenant_registry view.
-// Neither may be a superuser, bypass RLS, own domain tables, or create objects
+//     filtered app.active_tenant_registry view, and
+//   - the optional maintenance login (legend-usyi), a member of the NOLOGIN
+//     `legend_maintenance` group only: no table rights, it may run just the two
+//     audit retention functions (SECURITY DEFINER, owned by the table owner).
+// None may be a superuser, bypass RLS, own domain tables, or create objects
 // outside its own schema. Every run re-verifies that, so the job is safe to
 // repeat and doubles as an audit.
 //
@@ -22,8 +25,15 @@ import { Client, type ClientBase } from "pg";
 
 export const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
 export const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
+export const MAINT_LOGIN = /^legend_maint_[a-f0-9]{16}$/;
 export const PASSWORD = /^[a-f0-9]{48}$/;
 const APP_GROUP = "legend_app";
+const MAINT_GROUP = "legend_maintenance";
+// The only routines the maintenance group may run (migration 0187).
+const MAINT_FUNCTIONS = [
+  "app.audit_retention_due_tenants()",
+  "app.purge_audit_retention_batch(uuid, integer)",
+];
 const QUEUE_SCHEMA = "pgboss";
 // Serialises concurrent runs against one database (hashtext is stable).
 const LOCK_KEY = "legend.provision-roles";
@@ -814,14 +824,14 @@ async function verifyIdentity(login: Login, label: string, database: string) {
   }
 }
 
-async function assertGroup(client: ClientBase) {
+async function assertGroup(client: ClientBase, name = APP_GROUP) {
   const group = await client.query(
     "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
-    [APP_GROUP],
+    [name],
   );
   if (!group.rows.length)
     throw new ProvisionError(
-      `Run the migrations first: the ${APP_GROUP} group role does not exist.`,
+      `Run the migrations first: the ${name} group role does not exist.`,
     );
   const g = group.rows[0];
   if (
@@ -833,20 +843,17 @@ async function assertGroup(client: ClientBase) {
     g.rolcanlogin
   )
     throw new ProvisionError(
-      `The ${APP_GROUP} group role must be NOLOGIN without elevated attributes.`,
+      `The ${name} group role must be NOLOGIN without elevated attributes.`,
     );
 }
 
-async function provisionApp(client: ClientBase, login: Login) {
-  await assertGroup(client);
-  // Before PostgreSQL 15 every role could create in `public`. Revoking is a
-  // no-op on newer servers and is verified below either way.
-  await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
-  const outcome = await upsertLogin(client, login, "application");
-  // Normalise existing memberships: drop any grant without INHERIT or with
-  // ADMIN OPTION, then grant cleanly. PostgreSQL keeps one row per grantor; a
-  // superuser can revoke each by name, anyone can revoke their own. Rows it
-  // cannot revoke stay and make assertRestricted refuse with the grantor named.
+/**
+ * Normalise existing memberships of `group`: drop any grant without INHERIT or
+ * with ADMIN OPTION, then grant cleanly. PostgreSQL keeps one row per grantor; a
+ * superuser can revoke each by name, anyone can revoke their own. Rows it
+ * cannot revoke stay and make assertRestricted refuse with the grantor named.
+ */
+async function grantGroup(client: ClientBase, group: string, user: string) {
   const admin = await client.query(
     "SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user",
   );
@@ -856,7 +863,7 @@ async function provisionApp(client: ClientBase, login: Login) {
      FROM pg_auth_members m
      WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
        AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)`,
-    [APP_GROUP, login.user],
+    [group, user],
   );
   for (const row of rows.rows as {
     grantor: string;
@@ -865,13 +872,22 @@ async function provisionApp(client: ClientBase, login: Login) {
   }[]) {
     if (!row.admin_option && row.inherit) continue;
     if (row.grantor === admin.rows[0].name)
-      await client.query(`REVOKE ${APP_GROUP} FROM "${login.user}"`);
+      await client.query(`REVOKE ${group} FROM "${user}"`);
     else if (admin.rows[0].rolsuper && !row.grantor.includes('"'))
       await client.query(
-        `REVOKE ${APP_GROUP} FROM "${login.user}" GRANTED BY "${row.grantor}"`,
+        `REVOKE ${group} FROM "${user}" GRANTED BY "${row.grantor}"`,
       );
   }
-  await client.query(`GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`);
+  await client.query(`GRANT ${group} TO "${user}" WITH INHERIT TRUE`);
+}
+
+async function provisionApp(client: ClientBase, login: Login) {
+  await assertGroup(client);
+  // Before PostgreSQL 15 every role could create in `public`. Revoking is a
+  // no-op on newer servers and is verified below either way.
+  await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
+  const outcome = await upsertLogin(client, login, "application");
+  await grantGroup(client, APP_GROUP, login.user);
   await auditApp(client, login.user);
   return outcome;
 }
@@ -910,6 +926,122 @@ async function auditWorker(client: ClientBase, user: string) {
   await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], [], []);
   await assertNoSensitive(client, user, "queue");
   await assertNoParameterGrants(client, user, "queue");
+}
+
+/**
+ * The maintenance group runs the two audit retention functions and nothing
+ * else (migration 0187): both are SECURITY DEFINER with a pinned search_path,
+ * owned by the owner of audit_logs (so RLS applies to the owner, not to the
+ * login), executable by the group but never by PUBLIC or legend_app.
+ */
+async function assertMaintenanceFunctions(client: ClientBase, user: string) {
+  const functions = await client.query(
+    `SELECT f.signature, p.oid IS NOT NULL AS found,
+            COALESCE(p.prosecdef, false) AS secdef,
+            COALESCE(p.proconfig::text[] @> ARRAY['search_path=pg_catalog, pg_temp'], false) AS pinned,
+            COALESCE(p.proowner = t.relowner, false) AS owned_by_table_owner,
+            COALESCE(has_function_privilege($1, p.oid, 'EXECUTE'), false) AS login_can,
+            COALESCE(has_function_privilege('public', p.oid, 'EXECUTE'), false) AS public_can,
+            COALESCE(has_function_privilege($3, p.oid, 'EXECUTE'), false) AS app_can
+     FROM unnest($2::text[]) AS f(signature)
+     LEFT JOIN pg_proc p ON p.oid = to_regprocedure(f.signature)
+     CROSS JOIN (SELECT relowner FROM pg_class WHERE oid = 'public.audit_logs'::regclass) t
+     ORDER BY 1`,
+    [user, MAINT_FUNCTIONS, APP_GROUP],
+  );
+  type Row = {
+    signature: string;
+    found: boolean;
+    secdef: boolean;
+    pinned: boolean;
+    owned_by_table_owner: boolean;
+    login_can: boolean;
+    public_can: boolean;
+    app_can: boolean;
+  };
+  const problems = (functions.rows as Row[]).flatMap((row) => {
+    if (!row.found) return [`${row.signature} does not exist`];
+    return [
+      ...(row.secdef ? [] : ["is not SECURITY DEFINER"]),
+      ...(row.pinned ? [] : ["has no pinned search_path"]),
+      ...(row.owned_by_table_owner
+        ? []
+        : ["is not owned by the owner of audit_logs"]),
+      ...(row.login_can ? [] : ["cannot be run by the login"]),
+      ...(row.public_can || row.app_can
+        ? ["can be run by PUBLIC or legend_app"]
+        : []),
+    ].map((problem) => `${row.signature} ${problem}`);
+  });
+  if (problems.length)
+    throw new ProvisionError(
+      `The maintenance functions are not as the migrations define them: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? "; ..." : ""}. Run the migrations, then re-run.`,
+    );
+  // Nothing else in the app schema may be reachable beyond PUBLIC's rights.
+  const extra = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'app'
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, MAINT_FUNCTIONS],
+  );
+  if (extra.rows[0].names.length)
+    throw new ProvisionError(
+      `The maintenance role may run functions beyond its two: ${extra.rows[0].names.slice(0, 5).join(", ")}${extra.rows[0].names.length > 5 ? ", ..." : ""}.`,
+    );
+  // The check above skips PUBLIC's rights, but a SECURITY DEFINER function
+  // runs as its owner: one that kept PUBLIC's default EXECUTE (or got a direct
+  // grant) lets the login act beyond its two functions. Any schema the login
+  // can reach counts, not only app: PUBLIC keeps USAGE on schema public.
+  const secdef = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND has_schema_privilege($1, n.oid, 'USAGE')
+         AND p.prosecdef
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, MAINT_FUNCTIONS],
+  );
+  if (secdef.rows[0].names.length)
+    throw new ProvisionError(
+      `The maintenance role may run SECURITY DEFINER functions beyond its two: ${secdef.rows[0].names.slice(0, 5).join(", ")}${secdef.rows[0].names.length > 5 ? ", ..." : ""}. Revoke EXECUTE from PUBLIC and the role, then re-run.`,
+    );
+  const schema = await client.query(
+    "SELECT has_schema_privilege($1, 'app', 'USAGE') AS usage",
+    [user],
+  );
+  if (!schema.rows[0].usage)
+    throw new ProvisionError(
+      `The maintenance role has no USAGE on schema app; run the migrations, then re-run.`,
+    );
+}
+
+async function auditMaintenance(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "maintenance", [MAINT_GROUP], []);
+  // No table or sequence right at all: the functions do the work as the owner.
+  await assertTableRights(client, user, "maintenance", [], {});
+  await assertSequenceRights(client, user, "maintenance", [], []);
+  await assertDefaultPrivileges(client, user, "maintenance", [], [], []);
+  await assertNoSensitive(client, user, "maintenance");
+  await assertNoParameterGrants(client, user, "maintenance");
+  await assertMaintenanceFunctions(client, user);
+}
+
+async function provisionMaintenance(client: ClientBase, login: Login) {
+  await assertGroup(client, MAINT_GROUP);
+  const outcome = await upsertLogin(client, login, "maintenance");
+  await grantGroup(client, MAINT_GROUP, login.user);
+  await auditMaintenance(client, login.user);
+  return outcome;
 }
 
 async function assertRegistry(client: ClientBase) {
@@ -967,6 +1099,7 @@ async function queueSchemaOwner(
 export type ProvisionResult = {
   app: { user: string; outcome: "created" | "updated" };
   worker?: { user: string; outcome: "created" | "updated" };
+  maintenance?: { user: string; outcome: "created" | "updated" };
 };
 
 /**
@@ -979,6 +1112,7 @@ export async function provisionRoles(options: {
   adminUrl: string;
   appUrl: string;
   workerUrl?: string;
+  maintenanceUrl?: string;
 }): Promise<ProvisionResult> {
   const app = parseLogin(
     options.adminUrl,
@@ -988,6 +1122,14 @@ export async function provisionRoles(options: {
   );
   const worker = options.workerUrl
     ? parseLogin(options.adminUrl, options.workerUrl, WORKER_LOGIN, "queue")
+    : undefined;
+  const maintenance = options.maintenanceUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.maintenanceUrl,
+        MAINT_LOGIN,
+        "maintenance",
+      )
     : undefined;
   const { result, database } = await withAdmin(
     options.adminUrl,
@@ -1000,11 +1142,17 @@ export async function provisionRoles(options: {
           user: worker.user,
           outcome: await provisionWorker(client, worker),
         };
+      if (maintenance)
+        result.maintenance = {
+          user: maintenance.user,
+          outcome: await provisionMaintenance(client, maintenance),
+        };
       return { result, database: await currentDatabase(client) };
     },
   );
   await verifyIdentity(app, "application", database);
   if (worker) await verifyIdentity(worker, "queue", database);
+  if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
   return result;
 }
 
@@ -1035,6 +1183,7 @@ export async function auditRoles(options: {
   adminUrl: string;
   appUrl: string;
   workerUrl: string;
+  maintenanceUrl?: string;
 }) {
   const app = parseLogin(
     options.adminUrl,
@@ -1048,6 +1197,14 @@ export async function auditRoles(options: {
     WORKER_LOGIN,
     "queue",
   );
+  const maintenance = options.maintenanceUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.maintenanceUrl,
+        MAINT_LOGIN,
+        "maintenance",
+      )
+    : undefined;
   const database = await withAdmin(
     options.adminUrl,
     async (client) => {
@@ -1077,13 +1234,31 @@ export async function auditRoles(options: {
           `The queue login ${worker.user} cannot read app.active_tenant_registry; re-run provision-roles.sh.`,
         );
       await auditWorker(client, worker.user);
+      if (maintenance) {
+        await assertGroup(client, MAINT_GROUP);
+        await assertLogin(client, maintenance.user, "maintenance");
+        const member = await client.query(
+          "SELECT pg_has_role($1, $2, 'USAGE') AS member",
+          [maintenance.user, MAINT_GROUP],
+        );
+        if (!member.rows[0].member)
+          throw new ProvisionError(
+            `The maintenance login ${maintenance.user} does not inherit ${MAINT_GROUP}; re-run provision-roles.sh.`,
+          );
+        await auditMaintenance(client, maintenance.user);
+      }
       return currentDatabase(client);
     },
     false,
   );
   await verifyIdentity(app, "application", database);
   await verifyIdentity(worker, "queue", database);
-  return { app: app.user, worker: worker.user };
+  if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
+  return {
+    app: app.user,
+    worker: worker.user,
+    ...(maintenance ? { maintenance: maintenance.user } : {}),
+  };
 }
 
 /** Local development and test harness entry point (scripts/*.mjs). */
@@ -1092,6 +1267,7 @@ export async function provisionAppRole(adminUrl: string, appUrl: string) {
     adminUrl,
     appUrl,
     workerUrl: process.env.WORKER_DATABASE_URL || undefined,
+    maintenanceUrl: process.env.MAINTENANCE_DATABASE_URL || undefined,
   });
 }
 

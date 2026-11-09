@@ -25,6 +25,8 @@ type Boss = {
       retryDelay?: number;
       retryBackoff?: boolean;
       retryDelayMax?: number;
+      policy?: string;
+      expireInSeconds?: number;
     },
   ): Promise<void>;
   work(
@@ -117,7 +119,14 @@ export function createWorkerRuntime<Context>(options: {
 }
 
 /** Adapt the actual pg-boss instance without exposing its queue API to consumers. */
-export function createPgBoss(connectionString: string): Boss {
+export function createPgBoss(connectionString: string): Boss & {
+  schedule(
+    name: string,
+    cron: string,
+    data?: object | null,
+    options?: { tz?: string },
+  ): Promise<void>;
+} {
   const boss = new PgBoss(queueBossOptions(connectionString));
   // pg-boss emits background errors; an explicit listener avoids EventEmitter's
   // unhandled-error crash while keeping credentials out of logs.
@@ -126,6 +135,8 @@ export function createPgBoss(connectionString: string): Boss {
     start: () => boss.start(),
     stop: () => boss.stop(),
     createQueue: (name, options) => boss.createQueue(name, options),
+    schedule: (name, cron, data, options) =>
+      boss.schedule(name, cron, data, options),
     work: (name, handler) => boss.work(name, handler),
     send: (name, data, options) => boss.send(name, data, options),
   };

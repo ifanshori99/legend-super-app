@@ -1268,6 +1268,13 @@
       "when": 1794265000000,
       "tag": "0186_stock_ledger_posting_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1794266000000,
+      "tag": "0187_audit_retention_maintenance",
+      "breakpoints": true
     }
   ]
 }

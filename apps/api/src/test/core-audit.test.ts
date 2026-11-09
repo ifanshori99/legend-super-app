@@ -142,7 +142,9 @@ describe("audit log", () => {
   it("PRD §3 retention hook denies application callers and keeps recent rows", async () => {
     await expect(
       withTenant(db, context(tenantA), (tx) =>
-        tx.execute(sql`SELECT app.purge_expired_audit_logs(${tenantA}::uuid)`),
+        tx.execute(
+          sql`SELECT app.purge_audit_retention_batch(${tenantA}::uuid, 1000)`,
+        ),
       ),
     ).rejects.toThrow();
     const owner = new Pool({
@@ -150,7 +152,7 @@ describe("audit log", () => {
     });
     try {
       const result = await owner.query(
-        "SELECT app.purge_expired_audit_logs($1::uuid) AS count",
+        "SELECT app.purge_audit_retention_batch($1::uuid, 1000) AS count",
         [tenantA],
       );
       expect(Number(result.rows[0].count)).toBe(0);

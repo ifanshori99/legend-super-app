@@ -484,10 +484,11 @@ They log in with two restricted roles that a one-shot job creates after the
 migrations (PRD §3 F3, TEN-02). The migration login is the `legend_migrator_<16 hex>`
 login created in the previous section, not the bootstrap superuser.
 
-| Login                     | Env key (file)                                                 | What it can do                                                                                                                                             |
-| ------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects. |
-| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                    |
+| Login                     | Env key (file)                                                 | What it can do                                                                                                                                                                                |
+| ------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
+| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
+| `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
 
 1. Generate each login name and password on the VM, and write them into the
    private env files; never commit or paste them anywhere else:
@@ -495,13 +496,22 @@ login created in the previous section, not the bootstrap superuser.
    ```sh
    echo "legend_runtime_$(openssl rand -hex 8)"   # application login name
    echo "legend_worker_$(openssl rand -hex 8)"    # queue login name
+   echo "legend_maint_$(openssl rand -hex 8)"     # audit retention login name
    openssl rand -hex 24                            # a password (one per login)
    ```
 
    `api.env`: `APP_DATABASE_URL` and `DATABASE_URL` set to
    `postgresql://<app login>:<app password>@postgres:5432/legend`.
    `worker.env`: the same two lines plus `WORKER_DATABASE_URL` with the queue
-   login. `migrator.env` alone holds `MIGRATION_DATABASE_URL`.
+   login, and `MAINTENANCE_DATABASE_URL` with the audit retention login (same
+   host and database; never in `api.env` or `web.env`). The cloud worker refuses
+   to start in production without it; the edge worker skips it (follow-up:
+   edge audit retention is not scheduled yet). The job provisions it only when
+   set, and `--audit` then also verifies that it has no table rights, is not a
+   `legend_app` member, and that both retention functions are `SECURITY DEFINER`
+   with a pinned `search_path`, owned by the owner of `audit_logs`, and
+   executable by neither PUBLIC nor `legend_app`. `migrator.env` alone holds
+   `MIGRATION_DATABASE_URL`.
 
 2. Run the job from the private network, on the VM:
 
@@ -535,8 +545,9 @@ login created in the previous section, not the bootstrap superuser.
    `deploy/single-vm/check-compose-env.mjs`, run with `node` from the
    migrator image in a container with no network and no env file. It refuses
    unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
-   (or `_FILE`), `web` receives no database URL, and the URLs `api` and
-   `worker` receive equal the ones just validated. Its messages name only
+   (or `_FILE`), `web` receives no database URL, no service except `worker` receives
+   `MAINTENANCE_DATABASE_URL`, and the URLs `api` and `worker` receive equal the
+   ones just validated. Its messages name only
    services and keys, never values. Compose fills `${VAR}` in env files from
    the shell and `compose.env`, so the configuration is read with the
    environment `deploy.sh` uses to start the services (which never exports
@@ -667,7 +678,8 @@ hand it the `pgboss` schema.
 Outside Compose (another host on the private network, with the API bundle or
 the repository), run `node dist/provision-roles.js` or
 `pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
-`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set. Each
+`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set (and
+`MAINTENANCE_DATABASE_URL` for the audit retention login). Each
 may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
 job does not read `.env` files. Local development keeps using
 `pnpm dev:prepare`, which provisions its own random login through the same code.
