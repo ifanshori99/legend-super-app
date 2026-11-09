@@ -2,7 +2,7 @@
 // Latihan; acceptance EDG-03 UI): summary strip, filters, dense table on
 // desktop, cards on phones, detail drawer, revoke dialog.
 import * as React from "react";
-import { ChevronRight, MonitorSmartphone, WifiOff } from "lucide-react";
+import { ChevronRight, MonitorSmartphone, Plus, WifiOff } from "lucide-react";
 import type { Device } from "@starter/shared/edge";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,9 @@ import {
   type RegistryFilters,
 } from "../logic.ts";
 import { DeviceDrawer } from "./device-drawer.tsx";
+import { DeviceTokenDialog, type IssuedToken } from "./device-token-dialog.tsx";
+import { EnrollDialog } from "./enroll-dialog.tsx";
+import { ReissueTokenDialog } from "./reissue-token-dialog.tsx";
 import { HeartbeatCell } from "./heartbeat-status.tsx";
 import { RevokeDialog } from "./revoke-dialog.tsx";
 import { TrainingSwitch } from "./training-control.tsx";
@@ -65,6 +68,10 @@ export function DeviceRegistryPage({
   const [filters, setFilters] = React.useState<RegistryFilters>(EMPTY_FILTERS);
   const [openId, setOpenId] = React.useState<string | null>(null);
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
+  const [enrollOpen, setEnrollOpen] = React.useState(false);
+  const [reissueId, setReissueId] = React.useState<string | null>(null);
+  // The one-time device token lives only here, until the dialog is closed.
+  const [issued, setIssued] = React.useState<IssuedToken | null>(null);
 
   const devices = React.useMemo(
     () => mergeRevocations(query.data?.data ?? [], revoked),
@@ -97,6 +104,7 @@ export function DeviceRegistryPage({
   const counts = nowMs === null ? null : deviceCounts(devices, nowMs);
   const opened = devices.find((d) => d.id === openId) ?? null;
   const revokeTarget = devices.find((d) => d.id === revokeId) ?? null;
+  const reissueTarget = devices.find((d) => d.id === reissueId) ?? null;
 
   const state: DataState = query.isPending
     ? "loading"
@@ -185,6 +193,12 @@ export function DeviceRegistryPage({
         </p>
         {API_MOCK && (
           <Badge tone="info">{t("deviceRegistry.sampleData")}</Badge>
+        )}
+        {canManage && (
+          <Button disabled={!online} onClick={() => setEnrollOpen(true)}>
+            <Plus aria-hidden="true" />
+            {t("deviceRegistry.enroll.action")}
+          </Button>
         )}
       </div>
 
@@ -366,7 +380,25 @@ export function DeviceRegistryPage({
           if (!open) setOpenId(null);
         }}
         onRevoke={(d) => setRevokeId(d.id)}
+        onReissue={(d) => setReissueId(d.id)}
       />
+      <EnrollDialog
+        open={enrollOpen}
+        outlets={outlets.data?.data ?? []}
+        defaultOutletId={
+          filters.outletId === ALL ? undefined : filters.outletId
+        }
+        onOpenChange={setEnrollOpen}
+        onEnrolled={setIssued}
+      />
+      <ReissueTokenDialog
+        device={reissueTarget}
+        onOpenChange={(open) => {
+          if (!open) setReissueId(null);
+        }}
+        onIssued={setIssued}
+      />
+      <DeviceTokenDialog issued={issued} onClose={() => setIssued(null)} />
       <RevokeDialog
         device={revokeTarget}
         open={revokeTarget !== null}
