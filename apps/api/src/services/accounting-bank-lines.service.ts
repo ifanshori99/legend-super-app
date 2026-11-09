@@ -85,7 +85,7 @@ export type ReconciliationSummary = {
 
 async function lineDto(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   row: BankStatementLineRow,
 ): Promise<BankStatementLine> {
   const matches = await loadMatchesByLine(tx, tenantId, [row.id]);

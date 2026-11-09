@@ -19,6 +19,11 @@ import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
+import { createAccountingBankAccountsRouter } from "./accounting-bank-accounts.routes";
+import { createAccountingBankStatementsRouter } from "./accounting-bank-statements.routes";
+import { createAccountingBankLinesRouter } from "./accounting-bank-lines.routes";
+import { createAccountingCashDepositsRouter } from "./accounting-cash-deposits.routes";
+import { createAccountingBankReconCasesRouter } from "./accounting-bank-recon-cases.routes";
 import { createAccountingLegalEntitiesRouter } from "./accounting-legal-entities.routes";
 import { meRouter } from "./me.routes";
 import { orgRouter } from "./org.routes";
@@ -236,6 +241,12 @@ apiRouter.use("/accounting", accountingJournalRouter);
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // Per-tenant finance policy: bank matching tolerance, ACC-05 day limit (legend-pxcs).
 apiRouter.use("/accounting", createAccountingFinancePolicyRouter());
+// WS-07 cash & bank (legend-fnxl).
+apiRouter.use("/accounting", createAccountingBankAccountsRouter());
+apiRouter.use("/accounting", createAccountingBankStatementsRouter());
+apiRouter.use("/accounting", createAccountingBankLinesRouter());
+apiRouter.use("/accounting", createAccountingCashDepositsRouter());
+apiRouter.use("/accounting", createAccountingBankReconCasesRouter());
 // Legal-entity picker for finance screens, accounting.journal.view (legend-bddb).
 apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).

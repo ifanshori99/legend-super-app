@@ -28,6 +28,7 @@ import {
   type BankStatementLineRow,
   type CashDepositRow,
 } from "../db/schema/accounting-cash-bank.ts";
+import type { TenantId } from "@starter/shared/core";
 import { HttpError } from "../lib/http-error.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 
@@ -116,7 +117,7 @@ export function reconciliationCaseDto(
 /** The bank account, or NOT_FOUND (also for another tenant's id). */
 export async function loadBankAccount(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   bankAccountId: string,
   options: { forUpdate?: boolean } = {},
 ): Promise<BankAccountRow> {
@@ -138,7 +139,7 @@ export async function loadBankAccount(
 /** Match rows of several lines, grouped by line id (stable order). */
 export async function loadMatchesByLine(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   lineIds: readonly string[],
 ): Promise<Map<string, BankStatementLineMatchRow[]>> {
   const byLine = new Map<string, BankStatementLineMatchRow[]>();
