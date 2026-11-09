@@ -6,6 +6,7 @@ Peran: engineer. Baca `~/.agents/team/roles/engineer.md` dan `docs/briefs/_TEMPL
 Semua kartu berlabel `fix-codex`: `bd list --label fix-codex --status open`.
 - Procurement: legend-qni9, legend-8a9w, legend-uokb.
 - Pos-shift: legend-1hza, legend-uw47, legend-vor4.
+- KDS: dua kartu berlabel `kds` (P2 lineMoves, P3 readyAt); cabang `ws/fix-codex-kds`.
 
 Rincian file dan arah fix ada di deskripsi tiap kartu.
 
