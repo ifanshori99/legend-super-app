@@ -11,6 +11,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/migrate.ts",
+    "db:reset-preswitch-refunds": "tsx src/db/reset-preswitch-refund-payouts.ts",
     "db:studio": "drizzle-kit studio",
     "role:set": "tsx src/set-role.ts",
     "worker": "node --enable-source-maps dist/worker.js"

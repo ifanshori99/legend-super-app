@@ -1,0 +1,4 @@
+# Raw sandbox captures may hold keys or signatures. Commit only redacted files named *.redacted.*
+*
+!.gitignore
+!*.redacted.*

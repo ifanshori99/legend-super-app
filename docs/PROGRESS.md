@@ -288,3 +288,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus (3 bug refund dana tak teralokasi + intent manual + kebocoran kill switch) dan architect (kill switch, `pending` saat payment masih `paid`, cek reference) dibetulkan semua.
 - Sebelum switch dinyalakan: verifikasi sandbox DOIT (bentuk respons, payload webhook, masa simpan kunci) dan putuskan reset satu kali `payout_attempts` refund lama yang sempat di-claim gateway kosong.
 - Gate penuh: oleh merge train. Second opinion Codex: antre.
+
+## Brief 129 reset refund lama + persiapan sandbox DOIT (engineer, cabang `ws/doit-sandbox`, 2026-11-09)
+
+- Sudah: legend-d21p `pnpm db:reset-preswitch-refunds` (`apps/api/src/db/reset-preswitch-refund-payouts.ts`). Default dry-run; `--apply` wajib `--touched-before <waktu deploy 5316426a>` dan `--ids <file yang ditinjau finance>`. Reset `payout_attempts=0`, `last_payout_error` NULL kecuali `PAYOUT_QUARANTINED`, satu audit `payment.refund_payout_preswitch_reset` per baris dalam transaksi yang sama. Guard: flag di env script, jejak kiriman DOIT (provider_ref, polls, `DOIT_%`, provider_declined). Test 11/11.
+- Keputusan: baris quarantined ikut di-reset tapi tetap `PAYOUT_QUARANTINED` (bisa di-release/re-open ops). Cutoff `updated_at` menutup jalur bayar ganda dari timeout DOIT nyata (temuan reviewer Opus + architect).
+- Sudah: legend-0yd1 harness `docs/qa/doit-sandbox-refund.md`; bukti mentah di `docs/qa/evidence/doit-sandbox/` (gitignore lokal, hanya `*.redacted.*`).
+- Berikut: CTO minta rahasia sandbox (apiKey, webhookSecret); legend-8cf3 runner production; legend-xd2q refund yang dikecualikan finance.
