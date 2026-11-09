@@ -71,10 +71,7 @@ describe("Access log redaction of public PO share tokens", () => {
   it.each([
     ["relative path", `/api/public/purchase-orders/${TOKEN}`],
     ["relative path with query", `/api/public/purchase-orders/${TOKEN}?x=1`],
-    [
-      "absolute URL",
-      `http://example.test/api/public/purchase-orders/${TOKEN}`,
-    ],
+    ["absolute URL", `http://example.test/api/public/purchase-orders/${TOKEN}`],
     [
       "absolute URL with query",
       `http://example.test:8080/api/public/purchase-orders/${TOKEN}?x=1`,
@@ -113,10 +110,7 @@ describe("Access log redaction of public PO share tokens", () => {
       "absolute-form pdf with query",
       `http://example.test/api/public/receipts/${TOKEN}/pdf?x=1`,
     ],
-    [
-      "uppercase scheme",
-      `HTTP://example.test/api/public/receipts/${TOKEN}`,
-    ],
+    ["uppercase scheme", `HTTP://example.test/api/public/receipts/${TOKEN}`],
     [
       "uppercase scheme pdf with query",
       `HTTP://example.test/api/public/receipts/${TOKEN}/pdf?x=1`,

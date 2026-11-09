@@ -39,7 +39,15 @@
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   outletIdSchema,
   tenantIdSchema,
@@ -215,7 +223,12 @@ function allocate(
   deviceId: string,
 ): Promise<PosReceipt> {
   return inTx((tx, context) =>
-    allocateReceipt(tx, context, { orderId, outletId, deviceId, at: new Date() }),
+    allocateReceipt(tx, context, {
+      orderId,
+      outletId,
+      deviceId,
+      at: new Date(),
+    }),
   );
 }
 
@@ -373,9 +386,11 @@ async function revocationOf(outletId: string, deviceId: string) {
 }
 
 async function deviceStatus(deviceId: string): Promise<string | undefined> {
-  const [row] = await asOwnerTenant(tenant.tenantId, async (c) =>
-    (await c.query("SELECT status FROM devices WHERE id = $1", [deviceId]))
-      .rows,
+  const [row] = await asOwnerTenant(
+    tenant.tenantId,
+    async (c) =>
+      (await c.query("SELECT status FROM devices WHERE id = $1", [deviceId]))
+        .rows,
   );
   return (row as { status?: string } | undefined)?.status;
 }
@@ -679,7 +694,9 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
     await inEdgeMode(() => allocate(outletId, a, sequence.deviceId));
     await inEdgeMode(() => allocate(outletId, b, sequence.deviceId));
     await inEdgeMode(() => edgePull(outletId, pageWith([sequence])));
-    expect((await sequenceOf(outletId, sequence.deviceId))?.last_number).toBe(2);
+    expect((await sequenceOf(outletId, sequence.deviceId))?.last_number).toBe(
+      2,
+    );
   });
 
   it("POS-06 a prefix mismatch skips only that sequence, the rest of the pull applies, and the log names no device", async () => {
@@ -715,9 +732,11 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
       prefix: "P4",
     });
     expect((await sequenceOf(outletId, fresh.deviceId))?.prefix).toBe("P5");
-    const [revoked] = await asOwnerTenant(tenant.tenantId, async (c) =>
-      (await c.query("SELECT status FROM devices WHERE id = $1", [device.id]))
-        .rows,
+    const [revoked] = await asOwnerTenant(
+      tenant.tenantId,
+      async (c) =>
+        (await c.query("SELECT status FROM devices WHERE id = $1", [device.id]))
+          .rows,
     );
     expect(revoked).toMatchObject({ status: "revoked" });
 
@@ -849,6 +868,24 @@ describe("POS-06 S-K1 cloud refuses a device sale of an outlet served by an edge
       }),
     );
     expect(receipt.number).toBe("C-000001");
+  });
+
+  it("POS-06 an edge in its boot window (EDGE_MODE set, runtime not started) sells on its own sequence, not RECEIPT_DEVICE_ON_EDGE", async () => {
+    const outletId = await freshOutlet();
+    const device = await enroll(outletId, "pos");
+    // The edge database holds its own active edge_nodes row.
+    await edgeNodeAt(outletId);
+    const orderId = await draftOrder(outletId);
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      expect((await allocate(outletId, orderId, device.id)).number).toBe(
+        "P1-000001",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
   });
 
   it("POS-06 a revoked edge node does not block the cloud device sale", async () => {

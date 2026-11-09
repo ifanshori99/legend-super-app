@@ -182,7 +182,7 @@ async function ensureSequence(
   const existing = await findSequenceRow(tx, tenantId, outletId, deviceId);
   if (existing) return existing;
   const cloudOwned = deviceId === outletId;
-  if (!cloudOwned && getEdgeRuntimeState().edgeMode)
+  if (!cloudOwned && isEdgeProcess())
     throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   // Another sale may have created it while this one waited for the lock.
@@ -317,6 +317,16 @@ export async function outletSnapshotFor(
   };
 }
 
+/**
+ * Edge semantics from the first request (review K, legend-3yqy): the server
+ * answers before `startEdgeRuntime` flips `edgeMode`, so the static
+ * `EDGE_MODE` setting counts too. Otherwise an edge in its boot window would
+ * act as the cloud and refuse its own device sales (RECEIPT_DEVICE_ON_EDGE).
+ */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
 /** S-K1 (legend-3yqy): the outlet has an active edge node in this database. */
 async function outletHasActiveEdge(
   tx: Tx,
@@ -354,7 +364,7 @@ export async function allocateReceipt(
   const existing = await findReceiptForOrder(tx, context, input.orderId);
   if (existing) return existing;
   // An edge sale without a verified device cannot take a cloud number.
-  if (input.deviceId === null && getEdgeRuntimeState().edgeMode)
+  if (input.deviceId === null && isEdgeProcess())
     throw new PosError("RECEIPT_DEVICE_REQUIRED");
   const tenantId = context.tenant.tenantId;
   const deviceKey = input.deviceId ?? input.outletId;
@@ -365,7 +375,7 @@ export async function allocateReceipt(
   // (sequence C) are the cloud's own and stay allowed.
   if (
     input.deviceId !== null &&
-    !getEdgeRuntimeState().edgeMode &&
+    !isEdgeProcess() &&
     (await outletHasActiveEdge(tx, tenantId, outletId))
   )
     throw new PosError("RECEIPT_DEVICE_ON_EDGE");
@@ -561,8 +571,7 @@ export async function provisionNextDeviceReceiptSequence(
     input.deviceId,
   );
   if (existing) return toReceiptSequence(existing);
-  if (getEdgeRuntimeState().edgeMode)
-    throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
+  if (isEdgeProcess()) throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   const created = await findSequenceRow(tx, tenantId, outletId, input.deviceId);
   if (created) return toReceiptSequence(created);
