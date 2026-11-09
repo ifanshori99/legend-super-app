@@ -85,6 +85,228 @@ append-only; only the owner may delete, and only rows 2 years or older
    retention class is `audit_2y`; a class-to-days map is not introduced because
    the CHECK constraint allows one class.
 
+## 2026-11-10: WS-12 provider AI per tenant (legend-dwrr)
+
+Konteks: provider AI saat ini satu untuk seluruh platform (`AI_PROVIDER`,
+`AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL` di `config/env.ts`, dibangun sekali
+oleh `lib/ai/provider-factory.ts`). Semua panggilan model lewat `aiComplete`
+(`services/ai-gateway.service.ts`) dengan `AccessSnapshot` yang membawa
+tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
+(rahasia, akses): review architect, second-opinion Codex sebelum rilis.
+
+1. **Tabel baru `ai_provider_configs`** di file baru
+   `apps/api/src/db/schema/ai-provider.ts` (bukan di `ai.ts`, supaya tidak
+   bertabrakan dengan cabang WS-12 lain). Satu baris per tenant:
+   - `id` uuid PK `defaultRandom()`;
+   - `tenant_id` `tenantIdColumn(() => tenants.id).notNull()`, `uniqueIndex`
+     `ai_provider_configs_tenant_key` (satu config per tenant);
+   - `connection_type` varchar(20) `$type<AiConnectionType>()` NOT NULL
+     default `'api_key'`, CHECK `IN ('api_key','chatgpt_oauth')`.
+     `chatgpt_oauth` hanya dicadangkan: service menolaknya, OAuth tidak dibangun;
+   - `base_url` varchar(500) NOT NULL (sudah dinormalisasi, tanpa `/` akhir);
+   - `default_model` varchar(200) NOT NULL;
+   - `api_key_encrypted` text NULL (amplop `sealSecret`, base64);
+   - `api_key_key_version` smallint NULL (byte versi amplop, untuk rotasi);
+   - `api_key_last4` varchar(4) NULL;
+   - `api_key_set_at` timestamptz NULL, `api_key_set_by` text NULL (user id);
+   - `last_test_status` varchar(10) NULL, CHECK `IN ('ok','failed')`;
+   - `last_tested_at` timestamptz NULL;
+   - `last_test_error_code` varchar(40) NULL: **kode** dari katalog tetap
+     (butir 9), bukan teks galat provider. Pesan untuk UI diambil dari katalog;
+   - `created_at`, `updated_at` (`$onUpdate`).
+   CHECK `ai_provider_configs_key_check`: `connection_type <> 'api_key' OR
+   (api_key_encrypted IS NOT NULL AND api_key_key_version IS NOT NULL AND
+   api_key_last4 IS NOT NULL)`. CHECK `ai_provider_configs_test_check`:
+   `last_test_status IS NULL OR last_tested_at IS NOT NULL`.
+2. **RLS** di `apps/api/src/db/schema/ai-provider.custom.sql`:
+   `SELECT app.enforce_tenant_rls('public.ai_provider_configs'::regclass);`.
+   Baris tingkat tenant, tanpa `outlet_id`, jadi tanpa outlet RLS. Tanpa
+   SECURITY DEFINER: semua pembaca punya tenant dari `withTenant`.
+3. **Migrasi** `apps/api/drizzle/0188_ai_provider_configs.sql`, satu migrasi:
+   DDL hasil drizzle lalu isi `.custom.sql` di bawahnya (pola 0184). Journal
+   `idx` 188, `when` 1794267000000, plus `meta/0188_snapshot.json`.
+4. **Enkripsi: pakai `lib/secrets.ts`**, tanpa helper baru. AES-256-GCM dengan
+   `DATA_ENCRYPTION_KEY` (wajib di production). AAD
+   `ai_provider_config:<tenantId>:<rowId>`, jadi blob yang disalin ke baris
+   atau tenant lain gagal dibuka. Id baris dibuat di service (`randomUUID()`)
+   sebelum seal, untuk insert pertama. Versi: tambahkan ke `lib/secrets.ts`
+   ekspor `sealedVersion(sealed)` dan `currentSealVersion()` (logika yang sama
+   dengan `platform-integration.service.ts`; file itu tidak disentuh di cabang
+   ini). Rotasi: `rotateAiProviderKeys()` di service membuka lalu menyegel ulang
+   setiap baris yang `api_key_key_version` berbeda dari versi sekarang, pola
+   `rotateIntegrationCredentials`. Dipasang di tempat yang sama dengan
+   pemanggil `rotateIntegrationCredentials`.
+   `api_key_last4` = 4 karakter terakhir kunci yang sudah di-trim. Kunci minimal
+   16 karakter, jadi 4 karakter tidak membuka bagian berarti.
+5. **Izin: pakai `ai.governance.manage`**, tanpa kode baru (kode baru =
+   perubahan kontrak WS-00). Kode ini dipegang `tenant_admin` dan owner, bertag
+   `access_admin`. Tidak ada rute Panel Platform di cabang ini (lihat
+   pertanyaan founder).
+6. **Kontrak** di file baru `packages/shared/src/ai/provider.ts`, diekspor dari
+   `packages/shared/src/ai/index.ts`:
+   - `AI_CONNECTION_TYPES = ["api_key","chatgpt_oauth"]`,
+     `aiConnectionTypeSchema`, `AiConnectionType`;
+   - `AI_PROVIDER_TEST_ERROR_CODES = ["URL_BLOCKED","REDIRECT_REFUSED",
+     "TIMEOUT","AUTH_FAILED","NOT_FOUND","REQUEST_REJECTED","RATE_LIMITED",
+     "PROVIDER_ERROR","NETWORK_ERROR","BAD_RESPONSE","KEY_UNREADABLE"]`,
+     `aiProviderTestErrorCodeSchema`, plus `aiProviderTestErrorMessages`
+     (teks Indonesia tetap, aman ditampilkan);
+   - `aiProviderConfigSchema` (strict): `connectionType`, `baseUrl`,
+     `defaultModel`, `hasKey: boolean`, `keyLast4: string(4) | null`,
+     `keySetAt: isoDateTime | null`, `lastTest: { status: "ok"|"failed",
+     testedAt, errorCode: code | null } | null`, `updatedAt`. **Tidak ada
+     field kunci** di skema baca mana pun;
+   - `aiProviderViewSchema` = `{ config: aiProviderConfigSchema | null,
+     fallbackAvailable: boolean }` (`fallbackAvailable` = provider env ada);
+   - `upsertAiProviderConfigInputSchema` (strict): `connectionType`,
+     `baseUrl` (trim, 1..500), `defaultModel` (trim, 1..200,
+     `/^[\w.:/@+-]+$/`), `apiKey?` (trim, 16..500, `/^\S+$/`). Tanpa
+     `tenantId` (TEN-02);
+   - `aiProviderTestResultSchema` = `{ status, testedAt, errorCode | null }`;
+   - endpoint `getAiProviderConfig` GET `/api/ai/provider`,
+     `upsertAiProviderConfig` PUT `/api/ai/provider`, `deleteAiProviderConfig`
+     DELETE `/api/ai/provider`, `testAiProviderConfig` POST
+     `/api/ai/provider/test` (body `z.strictObject({})`). Semua respons
+     `dataResponseSchema(...)`; DELETE mengembalikan `{ data: view }` dengan
+     `config: null`. Nama sengaja tidak `getAiProvider` (bentrok dengan
+     factory). Fixture mock ditambahkan bila tes cakupan kontrak memintanya.
+   Kode galat baru di `packages/shared/src/ai/errors.ts` (status + pesan
+   default): `AI_PROVIDER_URL_BLOCKED` 422, `AI_PROVIDER_KEY_REQUIRED` 422,
+   `AI_PROVIDER_CONNECTION_UNSUPPORTED` 422, `AI_PROVIDER_NOT_CONFIGURED` 404,
+   `AI_PROVIDER_TEST_TOO_SOON` 429.
+7. **Rute** di file baru `apps/api/src/routes/ai-provider.routes.ts`, dipasang
+   di `routes/index.ts` dengan `apiRouter.use("/ai", aiProviderRouter)` di
+   sebelah `aiGovernanceRouter`. Gate per rute (bukan `router.use`), urutan:
+   `requireAuth, requireTrustedOrigin, requireTenantContext,
+   requireBackOfficeSurface(), requireTenantPermission("ai.governance.manage")`,
+   lalu `jsonBody` untuk PUT dan POST. `requireBackOfficeSurface` memaksa MFA
+   untuk peran `mfaRequired`. `requireTenantPermission` sudah memasang
+   `Cache-Control: private, no-store`. Service dipanggil dengan
+   `getScopedTenantContext(req)` dan `getAuth(req).user.id`.
+8. **Aturan simpan (PUT)** di `apps/api/src/services/ai-provider-config.service.ts`:
+   - `chatgpt_oauth` ditolak `AI_PROVIDER_CONNECTION_UNSUPPORTED`;
+   - `baseUrl` dinormalisasi (buang `/` akhir), lalu `checkAiUrl(url, true,
+     resolve)`. **URL milik tenant selalu strict, juga di dev dan test**:
+     tenant tidak pernah dipercaya menunjuk jaringan internal. Model lokal
+     (Ollama) di dev tetap lewat env. Alasan ditolak dikirim sebagai pesan
+     `AI_PROVIDER_URL_BLOCKED` (teks url-guard, tanpa kunci);
+   - config baru tanpa `apiKey`, atau `baseUrl` berubah tanpa `apiKey` baru:
+     `AI_PROVIDER_KEY_REQUIRED`. Jadi admin tidak bisa memindahkan kunci lama ke
+     host lain untuk mencurinya;
+   - `apiKey` absen dan `baseUrl` sama: kunci lama dipertahankan;
+   - setiap perubahan `baseUrl`, `defaultModel` atau kunci mengosongkan
+     `last_test_*`;
+   - `recordAudit` untuk simpan dan hapus. Snapshot hanya `connectionType`,
+     `baseUrl`, `defaultModel`, `hasKey`, `keyLast4`;
+   - DELETE menghapus baris (hard delete, tanpa riwayat), 404
+     `AI_PROVIDER_NOT_CONFIGURED` bila tidak ada.
+9. **Uji koneksi (POST /test)** menguji config **tersimpan**. Body kosong, jadi
+   kunci tidak lewat jalur ini lagi. File baru `apps/api/src/lib/ai/provider-probe.ts`,
+   `probeOpenAiCompatible({ baseUrl, apiKey, model, timeoutMs, fetch?,
+   resolve? })`, mengembalikan `{ status, errorCode }`, tidak pernah throw:
+   - `checkAiUrl(url, true, resolve)` dulu; ditolak = `URL_BLOCKED`, tanpa fetch;
+   - satu `POST <baseUrl>/chat/completions` berisi `{ model, messages: [{ role:
+     "user", content: "Reply with OK." }], stream: false }` tanpa parameter
+     token (cocok untuk semua server, tanpa adaptasi), `redirect: "manual"`,
+     `AbortSignal.timeout(min(env.AI_TIMEOUT_MS, 15000))`, `maxAttempts` 1;
+   - klasifikasi: 2xx dengan `choices` = ok; 2xx lain atau JSON rusak =
+     `BAD_RESPONSE`; 3xx = `REDIRECT_REFUSED` (tidak diikuti); 401/403 =
+     `AUTH_FAILED`; 404 = `NOT_FOUND`; 400/422 = `REQUEST_REJECTED`; 429 =
+     `RATE_LIMITED`; 5xx dan lainnya = `PROVIDER_ERROR`; `TimeoutError` atau
+     `AbortError` = `TIMEOUT`; throw lain = `NETWORK_ERROR`. Badan respons galat
+     **tidak dibaca** (`body.cancel()`), tidak dicatat, tidak dikembalikan;
+   - blob tidak bisa dibuka = `KEY_UNREADABLE`, tanpa fetch;
+   - hasil ditulis ke `last_test_*`. Uji kurang dari 10 detik setelah uji
+     sebelumnya ditolak `AI_PROVIDER_TEST_TOO_SOON`;
+   - uji tidak lewat `aiComplete`, tidak dihitung anggaran (beberapa token, di
+     kunci tenant sendiri).
+   DNS rebinding: `checkAiUrl` me-resolve lalu fetch me-resolve ulang. Bila
+   `undici` sudah ada di dependensi `apps/api`, probe dan provider tenant
+   memakai `dispatcher: new Agent({ connect: { lookup } })` dengan lookup yang
+   menolak alamat `isBlockedIp`. Bila belum ada, celah ini tetap tercatat
+   (sama dengan `AI_BASE_URL` env) dan masuk daftar second-opinion.
+10. **Resolusi provider.** `provider-factory.ts` mendapat:
+    - `buildTenantAiProvider({ baseUrl, apiKey, model })` →
+      `createOpenAiCompatibleProvider` dengan `timeoutMs: env.AI_TIMEOUT_MS`
+      dan `checkUrl: (url) => checkAiUrl(url, true)`. Redirect sudah ditolak
+      di provider (`redirect: "error"`);
+    - `isAiProviderOverridden(): boolean` untuk `setAiProviderForTests`.
+    Service mengekspor `resolveTenantAiProvider(context): Promise<{ provider,
+    model, source: "tenant" | "platform" } | null>`, urutannya:
+    1) override test aktif → `getAiProvider()`;
+    2) ada baris tenant → `connection_type` `api_key` dan blob terbuka →
+       provider tenant; `chatgpt_oauth` atau blob gagal dibuka → `null`
+       (`AI_PROVIDER_UNAVAILABLE`). **Tidak jatuh ke kunci platform** bila
+       tenant punya baris: salah konfigurasi tidak tersembunyi, dan platform
+       tidak diam-diam membayar;
+    3) tanpa baris → `getAiProvider()` (env, cadangan) dengan `env.AI_MODEL`.
+    Status uji terakhir tidak memblokir pemakaian. Tanpa cache: satu query
+    berindeks plus satu dekripsi per panggilan, kecil dibanding panggilan
+    model, dan DELETE langsung berlaku di semua proses.
+    `aiComplete` memanggil `resolveTenantAiProvider(gatewayContext(access))`
+    sebagai ganti `getAiProvider()`. `recordUsage` menerima nama provider dan
+    model hasil resolusi (bukan `getAiProvider()?.name` dan `env.AI_MODEL`).
+    `ai-governance.service.ts` `providerAvailable` memakai resolusi yang sama.
+    `settingsVersionOf` digabung dengan `updated_at` config provider, supaya
+    cache jawaban lama gugur saat provider diganti.
+11. **Anggaran tidak berubah.** `aiPreflight` tetap berjalan sebelum resolusi
+    provider. `monthlyBudgetIdr` default `idr(0)` tetap memblokir
+    (`AI_BUDGET_EXCEEDED`), apa pun sumber providernya. Pemakaian dengan kunci
+    tenant tetap dicatat di `ai_usage_*` dan dihitung ke anggaran tenant
+    dengan `priceFor(model)`. Model tak dikenal dihargai Opus (tidak pernah
+    kurang hitung). Lihat pertanyaan founder 1.
+12. **Kunci tidak bocor.** Kunci hanya ada di memori: saat seal di PUT dan
+    saat membangun provider atau probe. Tidak ada di respons, audit, log,
+    pesan galat, `ai_usage_events`, atau objek `AiError`. Galat Zod dari PUT
+    tidak boleh menggemakan nilai `apiKey`: handler galat sudah membuang
+    `input`; test membuktikannya.
+13. **Test wajib, gagal dulu,** di file baru
+    `apps/api/src/test/ai-provider-config.test.ts` (fetch dan resolver
+    disuntik, tanpa jaringan):
+    - kunci tidak muncul di body respons GET, PUT, POST test, galat 422, baris
+      audit, maupun log (spy logger, `JSON.stringify` semuanya);
+    - isolasi: config tenant A tidak terlihat dan tidak dipakai tenant B; blob A
+      yang disalin ke baris B gagal dibuka (AAD);
+    - pengguna tanpa `ai.governance.manage` (hanya `ai.ask`) mendapat 403 di
+      keempat rute;
+    - PUT dan test menolak `https://127.0.0.1`, `https://10.0.0.5`,
+      `https://169.254.169.254`, `http://` publik, `https://localhost`, dan nama
+      yang di-resolve ke IP privat; respons 302 dari probe = `REDIRECT_REFUSED`
+      dan URL tujuan tidak pernah di-fetch;
+    - timeout probe = `TIMEOUT`;
+    - `baseUrl` berubah tanpa `apiKey` = `AI_PROVIDER_KEY_REQUIRED`;
+    - anggaran 0 memblokir walau tenant punya config;
+    - tenant tanpa config memakai provider cadangan dan `env.AI_MODEL`; tenant
+      dengan config memanggil `baseUrl` dan `defaultModel` miliknya;
+    - `chatgpt_oauth` ditolak `AI_PROVIDER_CONNECTION_UNSUPPORTED`;
+    - rotasi menyegel ulang baris versi lama.
+14. **Daftar file.** Buat: `apps/api/src/db/schema/ai-provider.ts`,
+    `apps/api/src/db/schema/ai-provider.custom.sql`,
+    `apps/api/drizzle/0188_ai_provider_configs.sql`,
+    `apps/api/drizzle/meta/0188_snapshot.json`,
+    `packages/shared/src/ai/provider.ts`,
+    `apps/api/src/lib/ai/provider-probe.ts`,
+    `apps/api/src/services/ai-provider-config.service.ts`,
+    `apps/api/src/routes/ai-provider.routes.ts`,
+    `apps/api/src/test/ai-provider-config.test.ts`. Ubah:
+    `apps/api/drizzle/meta/_journal.json`, `apps/api/src/db/schema/index.ts`,
+    `packages/shared/src/ai/index.ts`, `packages/shared/src/ai/errors.ts`,
+    `packages/shared/src/ai/fixtures.ts` (bila tes cakupan meminta),
+    `apps/api/src/lib/secrets.ts`, `apps/api/src/lib/ai/provider-factory.ts`,
+    `apps/api/src/services/ai-gateway.service.ts`,
+    `apps/api/src/services/ai-governance.service.ts`,
+    `apps/api/src/routes/index.ts`. UI Kelola menyusul di slice terpisah
+    mengikuti `ui-standard.md`.
+15. **Pertanyaan founder** (default dipakai sampai dijawab):
+    1) Pemakaian dengan kunci AI milik tenant tetap dihitung ke anggaran AI
+       bulanan tenant (dengan harga platform)? Default: ya, supaya anggaran 0
+       tetap menghentikan semua AI.
+    2) Super Admin di Panel Platform boleh melihat atau mengatur provider AI
+       tenant? Default: tidak; hanya admin tenant dan owner.
+
+Celah yang diketahui: DNS rebinding (butir 9) bila `undici` tidak tersedia;
+model tenant di luar daftar harga dihitung dengan harga Opus.
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope

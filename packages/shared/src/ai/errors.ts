@@ -35,6 +35,16 @@ export const aiErrorHttpStatus = {
   MCP_RATE_LIMITED: 429,
   /** The conversation does not exist, is deleted, or belongs to another user. */
   AI_CONVERSATION_NOT_FOUND: 404,
+  /** WS-12 provider: the tenant URL is not allowed (internal or unsafe host). */
+  AI_PROVIDER_URL_BLOCKED: 422,
+  /** WS-12 provider: a key is needed (new config, or the base URL changed). */
+  AI_PROVIDER_KEY_REQUIRED: 422,
+  /** WS-12 provider: the connection type is reserved and not supported yet. */
+  AI_PROVIDER_CONNECTION_UNSUPPORTED: 422,
+  /** WS-12 provider: the tenant has no provider config. */
+  AI_PROVIDER_NOT_CONFIGURED: 404,
+  /** WS-12 provider: connection test asked again too soon. */
+  AI_PROVIDER_TEST_TOO_SOON: 429,
 } as const satisfies Record<string, number>;
 
 export type AiErrorCode = keyof typeof aiErrorHttpStatus;
@@ -64,6 +74,14 @@ const defaultMessages: Record<AiErrorCode, string> = {
   MCP_SCOPE_INSUFFICIENT: "Akses MCP ini tidak mencakup alat tersebut.",
   MCP_RATE_LIMITED: "Terlalu banyak permintaan MCP. Coba lagi sebentar lagi.",
   AI_CONVERSATION_NOT_FOUND: "Percakapan AI tidak ditemukan.",
+  AI_PROVIDER_URL_BLOCKED: "Alamat provider AI tidak diizinkan.",
+  AI_PROVIDER_KEY_REQUIRED:
+    "Kunci API wajib diisi untuk pengaturan provider ini.",
+  AI_PROVIDER_CONNECTION_UNSUPPORTED:
+    "Jenis koneksi ini belum didukung. Pakai kunci API.",
+  AI_PROVIDER_NOT_CONFIGURED: "Provider AI belum diatur untuk tenant ini.",
+  AI_PROVIDER_TEST_TOO_SOON:
+    "Uji koneksi terlalu sering. Coba lagi sebentar lagi.",
 };
 
 export class AiError extends Error {

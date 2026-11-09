@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
+
+- Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).
+- Rute `GET/PUT/DELETE /api/ai/provider`, `POST /api/ai/provider/test`, izin `ai.governance.manage` + back office (MFA). Kontrak `packages/shared/src/ai/provider.ts`. Keputusan: `docs/DECISIONS.md` "WS-12 provider AI per tenant".
+- URL tenant selalu strict, https port 443, redirect ditolak, fetch berjaga (`lib/ai/guarded-fetch.ts`) memblok IP privat saat connect (tutup DNS rebinding). Ganti base URL wajib kirim ulang kunci. Tenant punya baris tidak pernah jatuh ke kunci platform; tanpa baris pakai provider env + `AI_MODEL`. Anggaran 0 tetap memblokir.
+- Review architect (K): 1 tinggi (status di luar 200-599 mematikan proses API) dan 4 rendah, semua dibetulkan. Bukti gagal-dulu: 8 mutasi (izin, kunci di respons, URL longgar, fallback platform, anggaran, filter tenant, ganti host tanpa kunci), semua tertangkap test.
+- Bukti (setelah perubahan terakhir 4b47b040): 6 file api 115/115 (ai-provider-config, ai-provider-probe, ai-provider, migration-force-rls-guard, migration-fk-force-rls, db/rls); root `tests/ai-contract.test.mjs` 72/72 (node --test, tanpa DB); db:generate kosong; tsc shared + api exit 0 (heavy); eslint + prettier bersih.
+- Berikut: second-opinion Codex `docs/briefs/281b-second-opinion-ai-provider.md` (xhigh, belum dijalankan); UI Kelola legend-nnufz (butuh mockup, gerbang founder); merge train: gabung 0187 (`ws/audit-retention-purge`) dulu lalu rechain prevId 0188.
+- Subagent: 15 (Explore 3, architect 2, implementer 8, test-writer 1, test-runner 1), puncak bersamaan 4.
+
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
 - Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).

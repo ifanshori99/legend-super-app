@@ -8,4 +8,5 @@ export * from "./events.ts";
 export * from "./errors.ts";
 export * from "./endpoints.ts";
 export * from "./insights.ts";
+export * from "./provider.ts";
 export * from "./fixtures.ts";

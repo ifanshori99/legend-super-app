@@ -1275,6 +1275,13 @@
       "when": 1794266000000,
       "tag": "0187_audit_retention_maintenance",
       "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1794267000000,
+      "tag": "0188_ai_provider_configs",
+      "breakpoints": true
     }
   ]
 }
