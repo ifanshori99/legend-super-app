@@ -47,7 +47,8 @@
     "./hris/payroll/server": "./src/hris/payroll/server.ts",
     "./platform": "./src/platform/index.ts",
     "./dashboard": "./src/dashboard/index.ts",
-    "./operations": "./src/operations/index.ts"
+    "./operations": "./src/operations/index.ts",
+    "./ai": "./src/ai/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
