@@ -340,6 +340,9 @@ const accessBaseMessages = {
       theme: { manage: "Ubah tema & tampilan" },
       config: { export: "Ekspor konfigurasi tenant" },
       tax_config: { manage: "Kelola konfigurasi pajak" },
+      notification_policy: {
+        manage: "Kelola kebijakan & template notifikasi",
+      },
     },
     device: {
       registry: {
