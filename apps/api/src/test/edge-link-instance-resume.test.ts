@@ -427,11 +427,17 @@ const helloSendersSince = (from: number) =>
 const protocolClosesSince = (from: number) =>
   closesSince(from).filter((c) => c.code === LINK_PROTOCOL_CLOSE);
 
-function startEdge(fx: Fx, store: EdgeStore, instanceId?: string) {
+function startEdge(
+  fx: Fx,
+  store: EdgeStore,
+  instanceId?: string,
+  onClose?: (code: number, reason: string) => void,
+) {
   const client = createEdgeLinkClient({
     url,
     credential: fx.credential,
     instanceId,
+    onClose,
     scope: fx.node.scope,
     store,
     version: "edge",
@@ -1238,5 +1244,134 @@ describe("legend-nd3cu sync_cursors trigger guards the peer instance and offset"
       peer_instance_id: I2,
       peer_seq_offset: 4,
     });
+  });
+});
+
+describe("legend-a9iby the cloud refuses an edge database that went back in time", () => {
+  /**
+   * The restored database's own events after the backup: new event ids under
+   * link numbers the cloud already received from the old state.
+   */
+  function afterRestore(staff: Awaited<ReturnType<typeof phaseOne>>) {
+    return [
+      relabel(staff.s2, staff.s2, {
+        sequence: 2,
+        setAtMs: staff.now - 4 * MINUTE,
+      }),
+      relabel(staff.s3, staff.s3, {
+        sequence: 3,
+        setAtMs: staff.now - 3 * MINUTE,
+      }),
+      relabel(staff.s1, staff.s1, {
+        sequence: 4,
+        setAtMs: staff.now - 2 * MINUTE,
+      }),
+    ];
+  }
+
+  async function expectRefusedUnchanged(
+    fx: Fx,
+    restored: EdgeStore,
+    instanceId: string,
+    created: readonly EventEnvelope[],
+  ) {
+    const cursorsBefore = await allCursorColumns(fx);
+    const ackedBefore = restored.acked;
+    const seenByEdge: { code: number; reason: string }[] = [];
+    const from = mark();
+    const client = startEdge(fx, restored, instanceId, (code, reason) =>
+      seenByEdge.push({ code, reason }),
+    );
+    await eventually(
+      () => seenByEdge.length > 0,
+      "the edge sees the 1008 refusal",
+      4000,
+    );
+    await stopEdge(fx, client);
+    expect(
+      protocolClosesSince(from).some((c) =>
+        /older than the cloud's link cursor/i.test(c.reason),
+      ),
+    ).toBe(true);
+    // The edge client hands the reason to the runtime, which logs it.
+    expect(seenByEdge[0]).toEqual({
+      code: LINK_PROTOCOL_CLOSE,
+      reason:
+        "Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume",
+    });
+    // Nothing written on the cloud, nothing acked on the edge: the events the
+    // restored database created stay queued there for a manual reconcile.
+    expect(await allCursorColumns(fx)).toEqual(cursorsBefore);
+    expect(restored.acked).toBe(ackedBefore);
+    expect(restored.deliveries).toEqual([]);
+    for (const event of created)
+      expect(await inboundReceipts(fx, event)).toEqual([]);
+  }
+
+  it("J a restore of the same instance (behind the cloud's cloud_to_edge ack) with new events is refused with 1008: nothing acked as sent, cursors unchanged", async () => {
+    const fx = await seedTenant("Restored same instance J");
+    // Bound to I1: cloud received_in_seq 3 (edge_to_cloud), acked 2
+    // (cloud_to_edge), a third cloud event pending.
+    const staff = await phaseOne(fx, I1);
+    // The backup was taken after s1 was acked and the first cloud event
+    // applied. The restored database then creates three events: link 2..4.
+    const created = afterRestore(staff);
+    const restored = new EdgeStore([staff.s1, ...created]);
+    restored.acked = 1;
+    restored.received = 1;
+    await expectRefusedUnchanged(fx, restored, I1, created);
+    expect((await cursorRows(fx)).c2e).toMatchObject({
+      peer_instance_id: I1,
+      peer_seq_offset: 0,
+      acked_out_seq: 2,
+    });
+  });
+
+  it("J the refusal counts the rebase offset: a restore of the rebased instance I2 behind its numbering is refused, its live database still resumes", async () => {
+    const fx = await seedTenant("Restored rebased J");
+    const staff = await phaseOne(fx, I1);
+    // I2 numbering on cloud_to_edge: acked 3 - offset 2 = 1 (the pending event).
+    const { edge2 } = await rebaseToI2(fx, staff);
+    expect((await cursorRows(fx)).c2e).toMatchObject({
+      peer_instance_id: I2,
+      peer_seq_offset: 2,
+      acked_out_seq: 3,
+    });
+    const created = [
+      relabel(staff.s3, staff.s3, {
+        sequence: 2,
+        setAtMs: staff.now - 2 * MINUTE,
+      }),
+    ];
+    const restored = new EdgeStore([...edge2.queue.map((q) => q.event)]);
+    restored.push(created[0]!);
+    restored.acked = 1;
+    restored.received = 0;
+    await expectRefusedUnchanged(fx, restored, I2, created);
+
+    // The live I2 database (received 1 = acked 3 - offset 2) is not refused.
+    const second = mark();
+    const client = startEdge(fx, edge2, I2);
+    await eventually(
+      () => linkServer.isConnected(fx.node.scope.edgeNodeId),
+      "the live instance connects",
+    );
+    await sleep(300);
+    expect(protocolClosesSince(second)).toEqual([]);
+    await stopEdge(fx, client);
+  });
+
+  it("J unbound rows: an instance-bearing edge whose cloud_to_edge cursor is behind the cloud's ack is refused and the rows stay unbound", async () => {
+    const fx = await seedTenant("Restored unbound J");
+    // An old edge (no header) leaves both rows unbound with acked 2.
+    const staff = await phaseOne(fx, undefined);
+    const created = afterRestore(staff);
+    const restored = new EdgeStore([staff.s1, ...created]);
+    restored.acked = 1;
+    restored.received = 1;
+    await expectRefusedUnchanged(fx, restored, I1, created);
+    const rows = await cursorRows(fx);
+    for (const row of [rows.e2c, rows.c2e])
+      expect(row).toMatchObject({ peer_instance_id: null, peer_seq_offset: 0 });
   });
 });

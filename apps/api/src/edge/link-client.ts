@@ -58,6 +58,12 @@ export type EdgeLinkClientOptions = {
   version: string;
   onState?: (state: EdgeLinkClientState) => void;
   onError?: (error: unknown) => void;
+  /**
+   * The link closed with this code and reason (legend-a9iby): the reason of a
+   * 1008 refusal is the only place an operator learns why the cloud refuses
+   * this database, so the runtime logs it.
+   */
+  onClose?: (code: number, reason: string) => void;
   /** Test seams. */
   random?: () => number;
   ackTimeoutMs?: number;
@@ -168,7 +174,8 @@ export function createEdgeLinkClient(
     ws.on("error", (error) => {
       options.onError?.(new Error(`Edge link socket error: ${error.message}`));
     });
-    ws.on("close", (code) => {
+    ws.on("close", (code, reason) => {
+      options.onClose?.(code, reason.toString("utf8"));
       linkPeer.stop();
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;

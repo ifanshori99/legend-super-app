@@ -200,6 +200,10 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
    * this link, from the peer's hello cursor (link-peer `onPeerHello`).
    * - Same instance: nothing. No instance stored yet (fresh node, or an edge
    *   upgraded in place): adopt it, numbering unchanged.
+   * - Same instance or none stored, but a hello cursor below our acknowledged
+   *   cloud_to_edge cursor: the database went back in time (restore or
+   *   clone, legend-a9iby). Refuse, change nothing. Only seen when the peer
+   *   had acknowledged events newer than its backup (docs/deployment.md).
    * - Another instance and cursor 0: a rebuilt database that received nothing
    *   yet. Rebase both directions so its numbering starts at what the cloud
    *   holds: inbound at the received cursor (our hello acknowledges nothing
@@ -218,10 +222,26 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
       for (const direction of directions) {
         const cursor = await lockSyncCursor(tx, node, direction);
         const result = await tx.execute(
-          sql`SELECT peer_instance_id FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+          sql`SELECT peer_instance_id, peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
         );
         const stored =
           (result.rows[0]?.peer_instance_id as string | null) ?? null;
+        // legend-a9iby: the peer acknowledges only what it applied durably,
+        // so its hello cursor never falls below our acknowledged cursor (in
+        // its numbering) unless its database went back in time. A restore or
+        // clone keeps the instance id, so without this check it would resume,
+        // and once its own queue passes our inbound cursor it would take that
+        // cursor as an ack for events it created after the restore and never
+        // sent. Refuse before anything is written.
+        if (
+          direction === outbound &&
+          (stored === instance || stored === null) &&
+          peerCursor <
+            cursor.acked_out_seq - Number(result.rows[0]?.peer_seq_offset ?? 0)
+        )
+          throw new LinkProtocolError(
+            "Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume",
+          );
         if (stored === instance) continue;
         if (stored !== null && peerCursor !== 0)
           throw new LinkProtocolError(
