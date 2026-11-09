@@ -335,3 +335,4 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - G4ncv mulai legend-tjwb (brief 165, ws/edc-pan-fix dari m1 a8c90378).
 - Catatan rilis tambahan: kontrak tiket KDS station lain 403 -> 404; ORD-03 inklusif diterima (kontrak ws03-pay).
 - 15:45 CTO verifikasi ws/aj-fix142 d309b186: test-runner 19/19 file, 284 lulus 1 skip; reviewer Opus tanpa bug nyata. Siap batch9. Pelajaran: prompt test-runner harus menulis `bash -c '...'` eksplisit; di zsh `shopt` gagal dan daftar kosong menjalankan suite penuh.
+- 15:40 Codex 152 (station/ai scope): tanpa bypass; P2 gabung reach outlet+station -> legend-cy2e; invariant per-outlet holdsToolAccess diterima CTO. Codex jalan: G6kgt 117, G8wel 142b, G9bku 119.
