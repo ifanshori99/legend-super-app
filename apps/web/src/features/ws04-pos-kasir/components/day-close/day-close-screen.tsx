@@ -106,7 +106,8 @@ function AmountRow({
   small,
 }: {
   label: string;
-  amountIdr: number;
+  /** null: the figure is hidden from the caller, shown as a dash. */
+  amountIdr: number | null;
   strong?: boolean;
   small?: boolean;
 }) {
@@ -120,7 +121,11 @@ function AmountRow({
     >
       <dt className={cn(!strong && "text-foreground")}>{label}</dt>
       <dd className="text-right font-semibold">
-        <Money amount={amountIdr} size={small ? "sm" : "md"} />
+        {amountIdr === null ? (
+          <span aria-label={label}>—</span>
+        ) : (
+          <Money amount={amountIdr} size={small ? "sm" : "md"} />
+        )}
       </dd>
     </div>
   );
@@ -246,13 +251,15 @@ function ChannelPanel({ recap }: { recap: DayCloseRecap }) {
                 terminals: recap.shifts.terminals,
               })}
             </p>
-            <p className="tabular">
-              {variance === 0
-                ? t("posKasirDayclose.channels.noVariance")
-                : t("posKasirDayclose.channels.variance", {
-                    amount: formatRupiah(variance),
-                  })}
-            </p>
+            {variance !== null && (
+              <p className="tabular">
+                {variance === 0
+                  ? t("posKasirDayclose.channels.noVariance")
+                  : t("posKasirDayclose.channels.variance", {
+                      amount: formatRupiah(variance),
+                    })}
+              </p>
+            )}
           </SuccessBlock>
         ) : (
           <Notice
@@ -300,6 +307,11 @@ function NetPaymentPanel({ recap }: { recap: DayCloseRecap }) {
         <p className="text-base text-muted-foreground">
           {t("posKasirDayclose.net.separate")}
         </p>
+        {recap.drawerFiguresHidden && (
+          <p className="text-base text-muted-foreground">
+            {t("posKasirDayclose.channels.blindNote")}
+          </p>
+        )}
       </div>
     </PosPanel>
   );
@@ -482,17 +494,27 @@ function ClosedDay({
     <div className="mx-auto grid w-full max-w-5xl gap-4">
       <SuccessBlock title={t("posKasirDayclose.closed.successTitle")}>
         <p className="tabular">
-          {variance === 0
-            ? t("posKasirDayclose.closed.successNoVariance", {
+          {variance === null
+            ? t("posKasirDayclose.closed.successBlind", {
                 terminals: recap.shifts.terminals,
                 shifts: recap.shifts.total,
               })
-            : t("posKasirDayclose.closed.success", {
-                terminals: recap.shifts.terminals,
-                shifts: recap.shifts.total,
-                amount: formatRupiah(variance),
-              })}
+            : variance === 0
+              ? t("posKasirDayclose.closed.successNoVariance", {
+                  terminals: recap.shifts.terminals,
+                  shifts: recap.shifts.total,
+                })
+              : t("posKasirDayclose.closed.success", {
+                  terminals: recap.shifts.terminals,
+                  shifts: recap.shifts.total,
+                  amount: formatRupiah(variance),
+                })}
         </p>
+        {recap.drawerFiguresHidden && (
+          <p className="text-muted-foreground">
+            {t("posKasirDayclose.channels.blindNote")}
+          </p>
+        )}
         <p className="tabular text-muted-foreground">
           {t("posKasirDayclose.closed.closedBy", {
             name: result.closedByName,

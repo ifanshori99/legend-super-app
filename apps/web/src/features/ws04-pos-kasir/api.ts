@@ -17,7 +17,7 @@ import {
   listPosShifts,
   openPosShift,
   recordPosCashMovement,
-  type EndOfDayRecap,
+  type EndOfDayRecapView,
   type PosOrderDetail,
   type PosShift,
 } from "@starter/shared/pos";
@@ -226,7 +226,10 @@ function activeShiftFrom(shift: PosShift): ActiveShift {
   };
 }
 
-function dayRecapFrom(recap: EndOfDayRecap, cutoff: string): DayCloseRecap {
+function dayRecapFrom(recap: EndOfDayRecapView, cutoff: string): DayCloseRecap {
+  // The blind view (legend-awg5p) blanks the drawer figures with null; keep
+  // them null so the screen shows a dash, never a made-up 0.
+  const hidden = "drawerFiguresHidden" in recap;
   const closedDevices = recap.devices.filter((d) => d.closed);
   return {
     businessDate: recap.businessDate,
@@ -244,17 +247,20 @@ function dayRecapFrom(recap: EndOfDayRecap, cutoff: string): DayCloseRecap {
       total: recap.devices.reduce((sum, d) => sum + d.shiftCount, 0),
       closed: closedDevices.reduce((sum, d) => sum + d.shiftCount, 0),
       terminals: recap.devices.length,
-      cashVarianceIdr: Number(recap.totalVarianceIdr),
+      cashVarianceIdr:
+        recap.totalVarianceIdr === null ? null : Number(recap.totalVarianceIdr),
     },
     netPayments: recap.tenders.map((row) => ({
       code: row.method,
       label: METHOD_LABELS[row.method] ?? row.method,
-      netIdr: Number(row.netIdr),
+      netIdr: row.netIdr === null ? null : Number(row.netIdr),
     })),
-    totalNetIdr: recap.tenders.reduce(
-      (sum, row) => sum + Number(row.netIdr),
+    totalNetIdr: recap.tenders.reduce<number | null>(
+      (sum, row) =>
+        sum === null || row.netIdr === null ? null : sum + Number(row.netIdr),
       0,
     ),
+    ...(hidden ? { drawerFiguresHidden: true } : {}),
     // Settlement per bank and unmatched standalone are not in the contract yet.
     settlement: null,
     standaloneUnmatched: null,

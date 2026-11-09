@@ -1387,6 +1387,133 @@ export const endOfDayRecapSchema = z
   });
 export type EndOfDayRecap = z.infer<typeof endOfDayRecapSchema>;
 
+/**
+ * GET recap read by a caller below the outlet manager (no `pos.day.close`)
+ * who holds a shift on that business day (legend-awg5p, POS-03 blind rule).
+ * The drawer figures of their own shift are blank, before and after the
+ * close: the cash variance and expired cash outs of every device they ran a
+ * shift on, the outlet totals that sum them, and the captured / refunded / net
+ * per method (on a one-device outlet those are their own cash sales and cash
+ * paid back). A device row is blank whole: both fields null together.
+ */
+export const endOfDayBlindDeviceRecapSchema = endOfDayDeviceRecapSchema.extend({
+  cashVarianceIdr: idrSchema.nullable(),
+  expiredCashOutIdr: nonnegativeIdr.nullable(),
+});
+export type EndOfDayBlindDeviceRecap = z.infer<
+  typeof endOfDayBlindDeviceRecapSchema
+>;
+
+export const endOfDayBlindTenderRowSchema = z.strictObject({
+  method: posTenderMethodSchema,
+  capturedIdr: z.null(),
+  refundedIdr: z.null(),
+  netIdr: z.null(),
+});
+export type EndOfDayBlindTenderRow = z.infer<
+  typeof endOfDayBlindTenderRowSchema
+>;
+
+export const endOfDayBlindRecapSchema = z
+  .strictObject({
+    id: dailyCloseIdSchema,
+    ...scope,
+    businessDate: businessDateSchema,
+    status: z.enum(["open", "closed"]),
+    generatedAt: isoDateTimeSchema,
+    closedAt: isoDateTimeSchema.nullable(),
+    closedBy: userIdSchema.nullable(),
+    devices: z.array(endOfDayBlindDeviceRecapSchema).min(1),
+    tenders: z.array(endOfDayBlindTenderRowSchema).min(1),
+    channels: z.array(endOfDayChannelRowSchema).min(1),
+    totalSalesIdr: nonnegativeIdr,
+    totalRefundsIdr: nonnegativeIdr,
+    totalVoidsIdr: nonnegativeIdr,
+    totalVarianceIdr: z.null(),
+    totalExpiredCashOutIdr: z.null(),
+    inventoryDeductionApplied: z.boolean(),
+    accountingSync: z.strictObject({
+      status: z.enum(["pending", "posted"]),
+      journalCount: z.number().int().nonnegative(),
+      postedAt: isoDateTimeSchema.nullable(),
+    }),
+    /** Marks the blind view; a full recap has no such field. */
+    drawerFiguresHidden: z.literal(true),
+  })
+  .superRefine((recap, ctx) => {
+    // Every method exactly once: the set of methods used would leak the
+    // cash net on a one-device, cash-only day.
+    const methods = recap.tenders.map((row) => row.method);
+    if (
+      methods.length !== POS_TENDER_METHODS.length ||
+      POS_TENDER_METHODS.some((method) => !methods.includes(method))
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "A blind recap lists every tender method once",
+      });
+    let blankDevices = 0;
+    for (const device of recap.devices) {
+      if (
+        (device.cashVarianceIdr === null) !==
+        (device.expiredCashOutIdr === null)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["devices"],
+          message: "A blind device row hides its drawer figures together",
+        });
+      if (device.cashVarianceIdr === null) blankDevices += 1;
+    }
+    if (blankDevices === 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["devices"],
+        message: "A blind recap blanks the caller's own device",
+      });
+    const total = (pick: (d: EndOfDayBlindDeviceRecap) => unknown) =>
+      recap.devices.reduce((sum, device) => sum + Number(pick(device)), 0);
+    if (Number(recap.totalSalesIdr) !== total((d) => d.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalSalesIdr"],
+        message: "totalSalesIdr must equal the device totals",
+      });
+    if (Number(recap.totalRefundsIdr) !== total((d) => d.refundAmountIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalRefundsIdr"],
+        message: "totalRefundsIdr must equal the device refunds",
+      });
+    if (Number(recap.totalVoidsIdr) !== total((d) => d.voidedAmountIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalVoidsIdr"],
+        message: "totalVoidsIdr must equal the device voided sales",
+      });
+    if ((recap.status === "closed") !== (recap.closedAt !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedAt"],
+        message: "closedAt is set exactly when the business day is closed",
+      });
+    if ((recap.closedAt === null) !== (recap.closedBy === null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedBy"],
+        message: "closedAt and closedBy are set together",
+      });
+  });
+export type EndOfDayBlindRecap = z.infer<typeof endOfDayBlindRecapSchema>;
+
+/** GET /pos/day response: the full recap, or the blind one (legend-awg5p). */
+export const endOfDayRecapViewSchema = z.union([
+  endOfDayRecapSchema,
+  endOfDayBlindRecapSchema,
+]);
+export type EndOfDayRecapView = z.infer<typeof endOfDayRecapViewSchema>;
+
 export const closeBusinessDayInputSchema = clientInputSchema({
   businessDate: businessDateSchema,
   inventoryDeduction: z.boolean(),

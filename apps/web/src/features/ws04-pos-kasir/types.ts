@@ -313,10 +313,13 @@ export type DayCloseRecap = {
     total: number;
     closed: number;
     terminals: number;
-    cashVarianceIdr: number;
+    /** null when the drawer figures are hidden from the caller. */
+    cashVarianceIdr: number | null;
   };
-  netPayments: { code: string; label: string; netIdr: number }[];
-  totalNetIdr: number;
+  netPayments: { code: string; label: string; netIdr: number | null }[];
+  totalNetIdr: number | null;
+  /** Blind view: the caller ran a shift today, so drawer figures are null. */
+  drawerFiguresHidden?: boolean;
   /** DEMO-CONTRACT: EDC settlement per bank; null when the server has none. */
   settlement: { bank: string; amountIdr: number }[] | null;
   /** Standalone EDC transactions that still need reconciliation. */
