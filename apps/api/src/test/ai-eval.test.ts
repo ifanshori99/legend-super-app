@@ -33,6 +33,7 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createFakeProvider, type FakeAiResponder } from "../lib/ai/fake.ts";
 import { setAiProviderForTests } from "../lib/ai/provider-factory.ts";
 import type { AiCompletionRequest, AiContentBlock } from "../lib/ai/types.ts";
+import type { OutletId } from "@starter/shared/core";
 import {
   defaultDeps,
   askAi,
@@ -700,7 +701,7 @@ describe.each(GROUPS)("AI evaluation: %s", (group) => {
       {
         feature: "AI-01",
         question: "Ringkas penjualan.",
-        outletId: otherTenantOutlet,
+        outletId: otherTenantOutlet as OutletId,
       },
       deps,
     ).catch((error: unknown) => error);
@@ -710,7 +711,11 @@ describe.each(GROUPS)("AI evaluation: %s", (group) => {
       const sibling = await askAi(
         access,
         contextOf(access),
-        { feature: "AI-01", question: "Ringkas penjualan.", outletId: outletB },
+        {
+          feature: "AI-01",
+          question: "Ringkas penjualan.",
+          outletId: outletB as OutletId,
+        },
         deps,
       ).catch((error: unknown) => error);
       expect(sibling).toBeInstanceOf(AiError);
