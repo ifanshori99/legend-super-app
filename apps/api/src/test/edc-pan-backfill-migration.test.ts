@@ -63,6 +63,12 @@ const WIDE_SEPARATORS = [
 ];
 // A colon, comma, dot or letter ends the run, like in the JS pattern.
 const NON_SEPARATORS = [":", ",", ".", "x", "|", ";"];
+/** prefix + filler + tail, exactly `length` UTF-16 units (like JS `.length`). */
+function padded(prefix: string, tail: string, length: number): string {
+  const message = `${prefix}${"x".repeat(length - prefix.length - tail.length)}${tail}`;
+  if (message.length !== length) throw new Error("bad probe length");
+  return message;
+}
 const pan = (sep: string) => `4111${sep}1111${sep}1111${sep}1111`;
 const MASK = "[disamarkan]";
 
@@ -84,9 +90,31 @@ const probes: Probe[] = [
   { name: "keep-rupiah", message: "total Rp 1.250.000.000.000 ok" },
   { name: "keep-masked", message: `sudah ${MASK} ok` },
   { name: "keep-null-ish", message: "" },
+  // 200 UTF-16 units: the read path also runs the tail rules, so a row 0170
+  // shortens must still end up as maskStoredMessage(original) (review K).
+  {
+    name: "len200-wide-run-and-cut-card-tail",
+    message: padded("REF 5500/0000/0000/0004 ", "4111  1111  11", 200),
+  },
+  {
+    name: "len200-wide-run-and-mask-with-short-code",
+    message: padded("REF 5500\n0000\n0000\n0004 ", "[disamarkan] - 51", 200),
+  },
+  {
+    name: "len200-astral-chars-count-twice",
+    message: padded(
+      "\u{1F600}\u{1F600} 5500_0000_0000_0004 ",
+      "4111  1111  11",
+      200,
+    ),
+  },
+  {
+    name: "len199-wide-run-and-card-tail-stays",
+    message: padded("REF 5500/0000/0000/0004 ", "4111  1111  11", 199),
+  },
 ];
 
-/** What the JS read path says a stored message becomes (no 200-char rows here). */
+/** What the JS read path says a stored message becomes. */
 const expectedMessage = (message: string) =>
   edcTransactionSchema.shape.message.parse(message);
 
@@ -423,6 +451,11 @@ describe("0170 batches, is idempotent and keeps FORCE RLS", () => {
        WHERE oid = 'public.edc_transactions'::regclass`,
     );
     expect(result.rows[0]?.forced).toBe(true);
+  });
+
+  it("is plain ASCII: separators are written as \\uXXXX escapes, none is a raw invisible character", () => {
+    expect([...sql0170].some((ch) => ch.charCodeAt(0) > 0x7f)).toBe(false);
+    expect(sql0170).toContain("\\u00a0");
   });
 
   it("is one statement: NO FORCE, the loop and FORCE commit or fail together", () => {

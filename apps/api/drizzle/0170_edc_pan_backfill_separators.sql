@@ -13,19 +13,29 @@
 -- letter ends a run, so '2026/11/09 12:30:45' (10 digits) and 'Rp 1.250.000'
 -- stay. Same 12-digit threshold as the write path. Each run becomes
 -- '[disamarkan]', which is never longer than the run (12+ characters), so the
--- varchar limit holds.
+-- varchar limit holds. Everything is written as \uXXXX escapes: no invisible
+-- character sits in this file.
 --
--- Scope: edc_transactions.message ONLY. card_type, rrn, invoice_no, batch_no,
--- dispatch_batch_no, masked_pan, amounts, status and updated_at are not
--- touched. The 200-character tail rules and the leftover folds of 0143 are
--- not repeated: they only repair what the old single-separator write path left
--- behind, and the JS read path (maskStoredMessage) still applies them on read.
+-- Scope: edc_transactions.message ONLY, and only rows that hold such a run.
+-- card_type, rrn, invoice_no, batch_no, dispatch_batch_no, masked_pan, amounts,
+-- status and updated_at are not touched.
 --
--- Batches: rows are updated 1000 at a time (a statement per batch) until none
--- matches. A masked row holds no digit run any more, so the loop ends and a
--- second run updates nothing (idempotent). The batches share the migration
--- transaction, so this bounds statement size, not the lock; the lock is
--- short-lived like 0143's (lock_timeout 5s, fail fast and roll back).
+-- What a touched row becomes is what the JS read path (maskStoredMessage)
+-- makes of it, so the stored value and the read value agree: the wide mask,
+-- then the two leftover folds of 0141/0143 (digits left next to a mask by the
+-- old single-separator scrub). A row whose ORIGINAL length is exactly 200
+-- UTF-16 units (astral characters count twice, like JS `.length`) also gets
+-- the two end-of-text rules of 0143 (legend-lg45) and is cut to 200 code
+-- points. The read path applies those only to a stored message of exactly 200
+-- units, and the wide mask always shortens a row (a run is 13+ characters), so
+-- without them here a row would leave the 200 case and a cut card number at its
+-- end would show on read. Rows that hold no wide run are not touched.
+--
+-- Batches: rows are visited in id order, 1000 per round (keyset on the primary
+-- key, every row read once), and only a row that matches is updated. A masked
+-- row holds no digit run any more, so a second run updates nothing
+-- (idempotent). The rounds share the migration transaction: batching bounds
+-- the size of each statement, it does not shorten the lock below.
 --
 -- One statement on purpose: the NO FORCE, the loop and the FORCE run inside one
 -- DO block, so they commit or fail together even when the file is run
@@ -35,29 +45,54 @@
 -- RLS: edc_transactions is FORCE RLS and the migration role is a non-super
 -- table owner without tenant context, so FORCE is lifted for the UPDATE and
 -- restored right after (precedent: 0096, 0135, 0143). Policies are not touched.
--- Runbook: docs/runbooks/edc-pan-scrub.md.
+-- ALTER TABLE takes an ACCESS EXCLUSIVE lock held until the transaction (the
+-- whole migrator batch) commits; lock_timeout 5s makes it fail fast and roll
+-- back instead of queueing POS/EDC traffic, the same as 0143. Runbook:
+-- docs/runbooks/edc-pan-scrub.md.
 DO $backfill$
 DECLARE
   prior_lock_timeout text := current_setting('lock_timeout');
-  batch_rows integer;
+  last_id uuid := NULL;
+  batch_last uuid;
 BEGIN
   PERFORM set_config('lock_timeout', '5s', true);
 
   ALTER TABLE "edc_transactions" NO FORCE ROW LEVEL SECURITY;
 
   LOOP
-    UPDATE "edc_transactions" SET
-      "message" = regexp_replace(
-        "message",
-        '[0-9](?:[\t\n\u000b\u000c\r    -     　﻿/_-]*[0-9]){11,}',
-        '[disamarkan]',
-        'g')
-    WHERE "id" IN (
+    SELECT b."id" INTO batch_last FROM (
       SELECT "id" FROM "edc_transactions"
-      WHERE "message" ~ '[0-9](?:[\t\n\u000b\u000c\r    -     　﻿/_-]*[0-9]){11,}'
-      LIMIT 1000);
-    GET DIAGNOSTICS batch_rows = ROW_COUNT;
-    EXIT WHEN batch_rows = 0;
+      WHERE last_id IS NULL OR "id" > last_id
+      ORDER BY "id" LIMIT 1000) b
+    ORDER BY b."id" DESC LIMIT 1;
+    EXIT WHEN batch_last IS NULL;
+
+    UPDATE "edc_transactions" SET
+      "message" = CASE
+        WHEN length("message")
+            + length(regexp_replace("message", '[\u0001-\uffff]', '', 'g')) = 200
+          THEN left(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    regexp_replace("message", '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}', '[disamarkan]', 'g'),
+                    '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]', '[disamarkan]', 'g'),
+                  '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}', '[disamarkan]', 'g'),
+                '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9])*[ \t-]*$', '[disamarkan]'),
+              '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$', '[disamarkan]'),
+            200)
+        ELSE regexp_replace(
+          regexp_replace(
+            regexp_replace("message", '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}', '[disamarkan]', 'g'),
+            '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]', '[disamarkan]', 'g'),
+          '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}', '[disamarkan]', 'g')
+      END
+    WHERE (last_id IS NULL OR "id" > last_id)
+      AND "id" <= batch_last
+      AND "message" ~ '[0-9](?:[\t\n\u000b\u000c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff/_-]*[0-9]){11,}';
+
+    last_id := batch_last;
   END LOOP;
 
   ALTER TABLE "edc_transactions" FORCE ROW LEVEL SECURITY;
