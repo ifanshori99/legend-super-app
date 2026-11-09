@@ -3,6 +3,29 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Pesanan latihan: kas shift dan stok (legend-0v3b3, legend-13avp)
+
+Konteks: lanjutan legend-gkc6b. Review architect menemukan tutup shift masih
+menghitung tender tunai pesanan latihan ke kas yang diharapkan, dan founder
+(Q63) memutuskan pesanan latihan tidak memotong stok. Tingkat K (uang).
+
+1. **Kas shift (legend-0v3b3).** `computeShiftAggregates` mengecualikan tender
+   tunai, refund tunai, dan void tunai milik pesanan latihan lewat `LEFT JOIN
+   pos_orders` dan `is_training = false`. Baris tanpa pasangan `pos_orders`
+   (QR bayar-dulu) tetap dihitung. Alasan: uang latihan tidak pernah masuk laci,
+   jadi shift campuran tidak boleh mencatat selisih palsu. Satu fungsi ini juga
+   dipakai hitung buta, penjaga kas, dan tutup paksa, jadi semuanya ikut benar.
+   Laporan harian (`pos-day.service.ts`) hanya tampilan dan tidak diubah.
+2. **Stok (legend-13avp).** Konsumen `recipe-deduction` melewati pesanan
+   latihan: `order.paid` dan `order_issue.recorded` (remake, comp) tidak
+   membuat baris `recipe_deductions`, `stock_ledger`, maupun `stock.moved`;
+   `order.voided` pesanan latihan tanpa deduksi tidak meninggalkan tombstone.
+   Pemeriksaan di konsumen (bukan penerbit) dengan alasan yang sama seperti
+   legend-gkc6b.
+3. **Data lama.** Void pesanan latihan yang sudah punya deduksi tetap
+   membalik. Deduksi `pending` milik pesanan latihan dilewati saat `day.closed`
+   dan tetap `pending`. Deduksi latihan yang sudah `posted` tidak dikoreksi.
+
 ## 2026-11-10: Pesanan latihan tidak boleh menjurnal (legend-gkc6b)
 
 Konteks: `accounting-auto-journal` dan jembatan stok ke buku besar
