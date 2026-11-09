@@ -33,6 +33,14 @@ import {
   legalEntityIdSchema,
 } from "./ids.ts";
 import { journalSourceIdSchema, journalSourceTypeSchema } from "./journal.ts";
+import {
+  refineStatementBasis,
+  statementBasisFields,
+  statementBasisShape,
+} from "./statement-basis.ts";
+
+/** Fiscal-period rows a builder reads the basis from; none = nothing closed = live. */
+type PeriodRows = readonly { period: string; status: string }[];
 
 /** A posted line as statements need it (the entry date and line outlet). */
 export type LedgerLine = {
@@ -95,11 +103,13 @@ export const trialBalanceSchema = z
   .strictObject({
     legalEntityId: legalEntityIdSchema,
     asOf: businessDateSchema,
+    ...statementBasisShape,
     rows: z.array(trialBalanceRowSchema),
     totalDebitIdr: idrSchema,
     totalCreditIdr: idrSchema,
   })
   .superRefine((tb, ctx) => {
+    refineStatementBasis(tb, { from: tb.asOf, to: tb.asOf }, ctx);
     if (tb.totalDebitIdr !== tb.totalCreditIdr)
       ctx.addIssue({ code: "custom", message: "Trial balance must balance" });
     if (toIdr(sumBig(tb.rows.map((row) => row.debitIdr))) !== tb.totalDebitIdr)
@@ -117,6 +127,7 @@ export function buildTrialBalance(
   lines: readonly LedgerLine[],
   legalEntityId: string,
   asOf: string,
+  periods: PeriodRows = [],
 ): TrialBalance {
   const totals = totalsByAccount(lines, { to: asOf });
   const rows = accounts
@@ -140,6 +151,11 @@ export function buildTrialBalance(
   return trialBalanceSchema.parse({
     legalEntityId,
     asOf,
+    ...statementBasisFields(periods, {
+      from: asOf,
+      to: asOf,
+      cumulative: true,
+    }),
     rows,
     totalDebitIdr: toIdr(sumBig(rows.map((row) => row.debitIdr))),
     totalCreditIdr: toIdr(sumBig(rows.map((row) => row.creditIdr))),
@@ -229,12 +245,14 @@ export const profitAndLossSchema = z
     outletId: outletIdSchema.nullable(),
     from: businessDateSchema,
     to: businessDateSchema,
+    ...statementBasisShape,
     sections: z.array(statementSectionSchema),
     grossProfitIdr: idrSchema,
     operatingProfitIdr: idrSchema,
     netProfitIdr: idrSchema,
   })
   .superRefine((pl, ctx) => {
+    refineStatementBasis(pl, pl, ctx);
     const total = (group: ReportGroup) => sectionTotal(pl.sections, group);
     const gross = total("revenue") - total("cogs");
     const operating = gross - total("operating_expense");
@@ -266,6 +284,7 @@ export function buildProfitAndLoss(
     from: string;
     to: string;
     outletId?: OutletId | null;
+    periods?: PeriodRows;
   },
 ): ProfitAndLoss {
   const scoped = accounts.filter(
@@ -285,6 +304,7 @@ export function buildProfitAndLoss(
     outletId: input.outletId ?? null,
     from: input.from,
     to: input.to,
+    ...statementBasisFields(input.periods ?? [], input),
     sections,
     grossProfitIdr: gross,
     operatingProfitIdr: operating,
@@ -307,6 +327,7 @@ export const balanceSheetSchema = z
   .strictObject({
     legalEntityId: legalEntityIdSchema,
     asOf: businessDateSchema,
+    ...statementBasisShape,
     sections: z.array(statementSectionSchema),
     /** Revenue − expenses not yet closed to retained earnings, shown under equity. */
     currentEarningsIdr: idrSchema,
@@ -315,6 +336,7 @@ export const balanceSheetSchema = z
     totalEquityIdr: idrSchema,
   })
   .superRefine((bs, ctx) => {
+    refineStatementBasis(bs, { from: bs.asOf, to: bs.asOf }, ctx);
     const total = (group: ReportGroup) => sectionTotal(bs.sections, group);
     const assets =
       total("cash_and_equivalents") +
@@ -344,7 +366,7 @@ export type BalanceSheet = z.infer<typeof balanceSheetSchema>;
 export function buildBalanceSheet(
   accounts: readonly Account[],
   lines: readonly LedgerLine[],
-  input: { legalEntityId: string; asOf: string },
+  input: { legalEntityId: string; asOf: string; periods?: PeriodRows },
 ): BalanceSheet {
   const scoped = accounts.filter(
     (account) => account.legalEntityId === input.legalEntityId,
@@ -363,6 +385,11 @@ export function buildBalanceSheet(
   return balanceSheetSchema.parse({
     legalEntityId: input.legalEntityId,
     asOf: input.asOf,
+    ...statementBasisFields(input.periods ?? [], {
+      from: input.asOf,
+      to: input.asOf,
+      cumulative: true,
+    }),
     sections,
     currentEarningsIdr: currentEarnings,
     totalAssetsIdr:
@@ -389,6 +416,7 @@ export const cashFlowStatementSchema = z
     from: businessDateSchema,
     to: businessDateSchema,
     method: z.literal("direct"),
+    ...statementBasisShape,
     sections: z.array(
       z.strictObject({
         activity: cashFlowActivitySchema,
@@ -406,6 +434,7 @@ export const cashFlowStatementSchema = z
     closingCashIdr: idrSchema,
   })
   .superRefine((cf, ctx) => {
+    refineStatementBasis(cf, cf, ctx);
     for (const section of cf.sections)
       if (
         toIdr(sumBig(section.rows.map((row) => row.amountIdr))) !==
@@ -430,6 +459,7 @@ export const equityChangesSchema = z
     legalEntityId: legalEntityIdSchema,
     from: businessDateSchema,
     to: businessDateSchema,
+    ...statementBasisShape,
     rows: z.array(
       z.strictObject({
         accountId: accountIdSchema.nullable(),
@@ -444,6 +474,7 @@ export const equityChangesSchema = z
     ),
   })
   .superRefine((eq, ctx) => {
+    refineStatementBasis(eq, eq, ctx);
     for (const row of eq.rows)
       if (
         row.openingIdr +
@@ -464,10 +495,28 @@ export const multiEntityProfitAndLossSchema = z
   .strictObject({
     from: businessDateSchema,
     to: businessDateSchema,
+    /** closed_snapshot only when every entity's figures are. */
+    basis: statementBasisShape.basis,
+    periodKeys: statementBasisShape.periodKeys,
     entities: z.array(profitAndLossSchema).min(1),
     combinedNetProfitIdr: idrSchema,
   })
   .superRefine((report, ctx) => {
+    const allClosed = report.entities.every(
+      (entity) => entity.basis === "closed_snapshot",
+    );
+    if (allClosed !== (report.basis === "closed_snapshot"))
+      ctx.addIssue({
+        code: "custom",
+        path: ["basis"],
+        message: "Combined basis is closed_snapshot only if every entity is",
+      });
+    // Only the months are checked here; the closed subset lives per entity.
+    refineStatementBasis(
+      { basis: "live", periodKeys: report.periodKeys, closedPeriodKeys: [] },
+      report,
+      ctx,
+    );
     if (
       toIdr(sumBig(report.entities.map((pl) => pl.netProfitIdr))) !==
       report.combinedNetProfitIdr

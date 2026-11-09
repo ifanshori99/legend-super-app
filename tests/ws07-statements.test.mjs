@@ -467,6 +467,8 @@ describe("statement rows", () => {
     const report = accounting.multiEntityProfitAndLossSchema.parse({
       from: pl.from,
       to: pl.to,
+      basis: pl.basis,
+      periodKeys: pl.periodKeys,
       entities: [pl, second],
       combinedNetProfitIdr: pl.netProfitIdr + second.netProfitIdr,
     });

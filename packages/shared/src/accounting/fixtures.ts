@@ -74,6 +74,7 @@ import type {
   DistributionRun,
 } from "./profit-share.ts";
 import {
+import { statementBasisFields } from "./statement-basis.ts";
   buildBalanceSheet,
   buildProfitAndLoss,
   buildTrialBalance,
@@ -978,27 +979,36 @@ const profitAndLossNovember = buildProfitAndLoss(accounts, ledgerLines, {
 });
 const profitAndLossBandungNovember = buildProfitAndLoss(accounts, ledgerLines, {
   legalEntityId,
+  fiscalPeriods,
   from: "2026-11-01",
   to: "2026-11-30",
   outletId: bandung,
 });
 const balanceSheet = buildBalanceSheet(accounts, ledgerLines, {
+  periods: fiscalPeriods,
   legalEntityId,
   asOf: "2026-11-30",
 });
 
 const cashFlowNovember = cashFlowStatementSchema.parse({
   legalEntityId,
+  periods: fiscalPeriods,
   from: "2026-11-01",
   to: "2026-11-30",
   method: "direct",
   sections: [
+  periods: fiscalPeriods,
     {
       activity: "operating",
       rows: [
         {
           label: "Penerimaan penjualan tunai dan settlement",
           amountIdr: 410_575,
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-11-01",
+    to: "2026-11-30",
+    cumulative: true,
+  }),
         },
         { label: "Pembayaran beban operasional", amountIdr: -1_520_000 },
       ],
@@ -1023,6 +1033,11 @@ const equityChangesOctober = equityChangesSchema.parse({
       profitIdr: 0,
       distributionsIdr: 0,
       otherMovementsIdr: 0,
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-10-01",
+    to: "2026-10-31",
+    cumulative: true,
+  }),
       closingIdr: 366_000_000,
     },
     {
