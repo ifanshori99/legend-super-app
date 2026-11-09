@@ -349,6 +349,12 @@ export const stockLedger = pgTable(
       table.occurredAt,
       table.id,
     ),
+    // The GL bridge reads every ledger row of one source document.
+    index("stock_ledger_tenant_source_idx").on(
+      table.tenantId,
+      table.sourceType,
+      table.sourceId,
+    ),
     index("stock_ledger_tenant_outlet_occurred_idx").on(
       table.tenantId,
       table.outletId,

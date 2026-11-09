@@ -20,9 +20,9 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import { Client, type ClientBase } from "pg";
 
-const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
-const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
-const PASSWORD = /^[a-f0-9]{48}$/;
+export const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
+export const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
+export const PASSWORD = /^[a-f0-9]{48}$/;
 const APP_GROUP = "legend_app";
 const QUEUE_SCHEMA = "pgboss";
 // Serialises concurrent runs against one database (hashtext is stable).
@@ -118,7 +118,7 @@ export class ProvisionError extends Error {
 
 type Login = { user: string; password: string; url: string };
 
-function parseUrl(raw: string, label: string): URL {
+export function parseUrl(raw: string, label: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -141,7 +141,7 @@ function parseUrl(raw: string, label: string): URL {
   return url;
 }
 
-function parseLogin(
+export function parseLogin(
   adminUrl: string,
   loginUrl: string,
   pattern: RegExp,
@@ -182,7 +182,7 @@ export function scramSha256Verifier(password: string, iterations = 4096) {
 
 // Identifiers are validated against APP_LOGIN/WORKER_LOGIN before use, and the
 // verifier alphabet is base64 plus `$:-`, so neither can break out of quotes.
-function quoteVerifier(verifier: string) {
+export function quoteVerifier(verifier: string) {
   if (
     !/^SCRAM-SHA-256\$\d+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/.test(
       verifier,
@@ -200,7 +200,7 @@ async function serverVersion(client: ClientBase): Promise<number> {
   ).rows[0].version;
 }
 
-async function currentDatabase(client: ClientBase) {
+export async function currentDatabase(client: ClientBase) {
   const name: string = (await client.query("SELECT current_database() AS name"))
     .rows[0].name;
   // Quoted as an identifier below; refuse anything that could break out.
@@ -739,7 +739,7 @@ async function assertDefaultPrivileges(
  * an advisory lock, so concurrent runs serialise. `commit: false` always
  * rolls back (audit mode).
  */
-async function withAdmin<T>(
+export async function withAdmin<T>(
   adminUrl: string,
   work: (client: ClientBase) => Promise<T>,
   commit = true,
