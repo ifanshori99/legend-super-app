@@ -4,14 +4,16 @@
 // `metrics_daily` through `recomputeMetricsDaily`, and every figure is read
 // back through the engine (`evaluateMetrics`) like a report run does.
 //
-// Test day 2025-06-10 (Asia/Jakarta, UTC+7), shower room "S" with units A1 and
-// A2 and coworking "W" with unit W1, every facility open 08:00-20:00:
+// Test day 2025-06-10 (Asia/Jakarta, UTC+7), shower room "S" with units A1,
+// A2 and A3 and coworking "W" with unit W1, every facility open 08:00-20:00:
 //   A1 completed 09:00-10:00 used until 10:20 (20 min over), completed
 //      11:00-12:00 used until 11:50; a cancelled and an issued ticket count nowhere
 //   A2 completed 13:00-14:00 on time
-//   W1 completed 09:00-11:00 used until 11:30 (30 min over)
+//   A3 created at 14:00 on the test day, never used
+//   W1 completed 09:00-11:00 used until 11:30 (30 min over), in use
+//      19:30-20:30 (30 min inside opening hours)
 //   incidents: S/A1 answered after 300 s, S (no unit) after 600 s, W open.
-// Open minutes are 720 per unit.
+// Open minutes are 720 per unit (A3: 360). Used minutes: A1 130, A2 60, W1 180.
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -146,8 +148,9 @@ async function seedFacility(
       const unitId = randomUUID();
       units[code] = unitId;
       await client.query(
-        `INSERT INTO facility_units (id, tenant_id, outlet_id, facility_id, area_id, code, status, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6, 'available', $7)`,
+        `INSERT INTO facility_units (id, tenant_id, outlet_id, facility_id, area_id, code, status, sort_order,
+                                     created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'available', $7, '2025-01-01T00:00:00Z')`,
         [unitId, tenantId, outletId, id, areaId, code, index],
       );
     }
@@ -243,7 +246,7 @@ async function makeWorld(label: string): Promise<World> {
   const shower = await seedFacility(tenant.tenantId, tenant.outletId, {
     name: "Shower",
     type: "shower",
-    units: ["A1", "A2"],
+    units: ["A1", "A2", "A3"],
   });
   const wfc = await seedFacility(tenant.tenantId, tenant.outletId, {
     name: "WFC",
@@ -378,6 +381,19 @@ beforeAll(async () => {
     endedAt: "11:30",
     status: "completed",
   });
+  await ticket(world, world.outlet1, wfc, {
+    unit: "W1",
+    from: "19:30",
+    to: "20:30",
+    status: "in_use",
+  });
+  // A3 exists only from 14:00: no open minute before its creation counts.
+  await asOwner(world.tenantId, (client) =>
+    client.query("UPDATE facility_units SET created_at = $2 WHERE id = $1", [
+      shower.units.A3,
+      at(DAY, "14:00"),
+    ]),
+  );
   await incident(world, world.outlet1, shower, {
     unit: "A1",
     at: "10:00",
@@ -500,6 +516,104 @@ describe("facility.incidents", () => {
   });
 });
 
+describe("used and available minutes, derived ratios", () => {
+  const hourDim = (hh: string): Dim => ({ key: "hour", value: hh });
+
+  it("sums used and open minutes inside opening hours and unit lifetime", async () => {
+    const value = async (code: string, dim: Dim | null) =>
+      (await figure(world, code, dim)).value;
+    expect(await value("shower_used_minutes", null)).toBe(190);
+    expect(await value("shower_available_minutes", null)).toBe(1800);
+    expect(
+      await value("shower_available_minutes", unitDim(world.shower.units.A3!)),
+    ).toBe(360);
+    expect(
+      await value("shower_used_minutes", unitDim(world.shower.units.A1!)),
+    ).toBe(130);
+    // W1 is coworking: not a shower minute, but a unit minute.
+    expect(await value("unit_used_minutes", null)).toBe(370);
+    expect(await value("unit_available_minutes", null)).toBe(2520);
+    expect(await value("unit_used_minutes", unitDim(world.wfc.units.W1!))).toBe(
+      180,
+    );
+    expect(await value("unit_used_minutes", hourDim("09"))).toBe(120);
+    expect(await value("unit_available_minutes", hourDim("09"))).toBe(180);
+    expect(await value("unit_available_minutes", hourDim("15"))).toBe(240);
+    expect(await value("unit_used_minutes", hourDim("19"))).toBe(30);
+  });
+
+  it("recomputes the percents from the sums, per split", async () => {
+    const value = async (code: string, dim: Dim | null) =>
+      (await figure(world, code, dim)).value;
+    expect(await value("shower_occupancy_pct", null)).toBe(10.5556);
+    expect(
+      await value("shower_occupancy_pct", unitDim(world.shower.units.A1!)),
+    ).toBe(18.0556);
+    expect(await value("unit_utilization_pct", null)).toBe(14.6825);
+    expect(await value("unit_utilization_pct", hourDim("09"))).toBe(66.6667);
+    expect(await value("unit_utilization_pct", hourDim("15"))).toBe(0);
+  });
+
+  it("averages response seconds over answered incidents only", async () => {
+    const value = async (code: string, dim: Dim | null) =>
+      (await figure(world, code, dim)).value;
+    expect(await value("facility_incident_response_total_seconds", null)).toBe(
+      900,
+    );
+    expect(await value("facility_incident_answered_count", null)).toBe(2);
+    expect(await value("facility_incident_response_seconds", null)).toBe(450);
+    expect(
+      await value(
+        "facility_incident_response_seconds",
+        unitDim(world.shower.units.A1!),
+      ),
+    ).toBe(300);
+    // W's only incident is still open: no answered incident, no average.
+    expect(
+      await value(
+        "facility_incident_response_seconds",
+        facilityDim(world.wfc.id),
+      ),
+    ).toBeNull();
+  });
+
+  it("registers the three ratios as derived, never stored", async () => {
+    expect(metricSourceOf("shower_occupancy_pct")).toEqual({
+      kind: "derived",
+      code: "shower_occupancy_pct",
+      numerator: "shower_used_minutes",
+      denominator: "shower_available_minutes",
+      scale: 100,
+    });
+    expect(metricSourceOf("unit_utilization_pct")).toEqual({
+      kind: "derived",
+      code: "unit_utilization_pct",
+      numerator: "unit_used_minutes",
+      denominator: "unit_available_minutes",
+      scale: 100,
+    });
+    expect(metricSourceOf("facility_incident_response_seconds")).toEqual({
+      kind: "derived",
+      code: "facility_incident_response_seconds",
+      numerator: "facility_incident_response_total_seconds",
+      denominator: "facility_incident_answered_count",
+      scale: 1,
+    });
+    const { rows } = await owner.query(
+      `SELECT 1 FROM metrics_daily WHERE tenant_id = $1 AND metric_code = ANY($2)`,
+      [
+        world.tenantId,
+        [
+          "shower_occupancy_pct",
+          "unit_utilization_pct",
+          "facility_incident_response_seconds",
+        ],
+      ],
+    );
+    expect(rows).toEqual([]);
+  });
+});
+
 const FACILITY_REPORTS = [
   "facility.revenue",
   "facility.revpash",
@@ -516,9 +630,6 @@ const FACILITY_REPORTS = [
 
 describe("unavailable facility metrics", () => {
   const UNAVAILABLE = [
-    "shower_occupancy_pct",
-    "unit_utilization_pct",
-    "facility_incident_response_seconds",
     "shower_revenue",
     "facility_product_revenue",
     "facility_product_sales",
@@ -548,7 +659,7 @@ describe("unavailable facility metrics", () => {
       for (const point of series.points) expect(point.value).toBeNull();
   });
 
-  it("stores no row for them: the daily readers write only the four sums", async () => {
+  it("stores no row for them", async () => {
     const { rows } = await owner.query<{ metric_code: string }>(
       `SELECT DISTINCT metric_code FROM metrics_daily
         WHERE tenant_id = $1 AND metric_code = ANY($2)`,
@@ -573,7 +684,7 @@ describe("unavailable facility metrics", () => {
     );
     expect(codes.size).toBe(19);
     for (const code of codes)
-      expect(["daily", "unavailable"], code).toContain(
+      expect(["daily", "derived", "unavailable"], code).toContain(
         metricSourceOf(code).kind,
       );
   });
