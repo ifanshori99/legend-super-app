@@ -1323,3 +1323,140 @@ test("MCP-05 consent preview: strict query, labelled scopes, every scope has an 
     scopes: [{ scope: "mcp:evil:read", label: "x" }],
   });
 });
+
+// ---- Per-tenant AI provider (legend-dwrr) ----------------------------------
+
+test("legend-dwrr provider read schema has no key field and stays strict", () => {
+  const config = {
+    connectionType: "api_key",
+    baseUrl: "https://api.example.com/v1",
+    defaultModel: "gpt-4o-mini",
+    hasKey: true,
+    keyLast4: "abcd",
+    keySetAt: "2026-11-10T01:00:00.000Z",
+    lastTest: {
+      status: "failed",
+      testedAt: "2026-11-10T01:05:00.000Z",
+      errorCode: "AUTH_FAILED",
+    },
+    updatedAt: "2026-11-10T01:05:00.000Z",
+  };
+  accepts(ai.aiProviderConfigSchema, config);
+  accepts(ai.aiProviderViewSchema, { config, fallbackAvailable: false });
+  accepts(ai.aiProviderViewSchema, { config: null, fallbackAvailable: true });
+  for (const extra of ["apiKey", "api_key", "key", "apiKeyEncrypted"]) {
+    rejects(ai.aiProviderConfigSchema, { ...config, [extra]: "sk-secret" });
+  }
+  rejects(ai.aiProviderConfigSchema, { ...config, keyLast4: "abcde" });
+  rejects(ai.aiProviderConfigSchema, {
+    ...config,
+    lastTest: { ...config.lastTest, errorCode: "boom" },
+  });
+  assert.deepEqual(
+    Object.keys(ai.aiProviderConfigSchema.shape).sort(),
+    [
+      "baseUrl",
+      "connectionType",
+      "defaultModel",
+      "hasKey",
+      "keyLast4",
+      "keySetAt",
+      "lastTest",
+      "updatedAt",
+    ],
+  );
+});
+
+test("legend-dwrr provider upsert input validation", () => {
+  const input = {
+    connectionType: "api_key",
+    baseUrl: "https://api.example.com/v1",
+    defaultModel: "gpt-4o-mini",
+    apiKey: "sk-0123456789abcdef",
+  };
+  accepts(ai.upsertAiProviderConfigInputSchema, input);
+  const { apiKey: _omit, ...withoutKey } = input;
+  accepts(ai.upsertAiProviderConfigInputSchema, withoutKey);
+  accepts(ai.upsertAiProviderConfigInputSchema, {
+    ...input,
+    connectionType: "chatgpt_oauth",
+  });
+  rejects(ai.upsertAiProviderConfigInputSchema, {
+    ...input,
+    tenantId: "00000000-0000-4000-8000-000000000001",
+  });
+  rejects(ai.upsertAiProviderConfigInputSchema, { ...input, apiKey: "short" });
+  rejects(ai.upsertAiProviderConfigInputSchema, {
+    ...input,
+    apiKey: "sk-0123456789 abcdef",
+  });
+  rejects(ai.upsertAiProviderConfigInputSchema, {
+    ...input,
+    defaultModel: "bad model!",
+  });
+  rejects(ai.upsertAiProviderConfigInputSchema, { ...input, baseUrl: "  " });
+  rejects(ai.upsertAiProviderConfigInputSchema, {
+    ...input,
+    connectionType: "oauth",
+  });
+  assert.equal(
+    ai.upsertAiProviderConfigInputSchema.parse({
+      ...input,
+      baseUrl: "  https://api.example.com/v1  ",
+    }).baseUrl,
+    "https://api.example.com/v1",
+  );
+});
+
+test("legend-dwrr provider test result, error codes and messages", () => {
+  accepts(ai.aiProviderTestResultSchema, {
+    status: "ok",
+    testedAt: "2026-11-10T01:05:00.000Z",
+    errorCode: null,
+  });
+  rejects(ai.aiProviderTestResultSchema, {
+    status: "failed",
+    testedAt: "2026-11-10T01:05:00.000Z",
+    errorCode: "Bearer sk-secret",
+  });
+  assert.equal(ai.AI_PROVIDER_TEST_ERROR_CODES.length, 11);
+  assert.deepEqual(
+    Object.keys(ai.aiProviderTestErrorMessages).sort(),
+    [...ai.AI_PROVIDER_TEST_ERROR_CODES].sort(),
+  );
+  for (const code of ai.AI_PROVIDER_TEST_ERROR_CODES) {
+    assert.ok(ai.aiProviderTestErrorMessages[code].length > 0);
+  }
+});
+
+test("legend-dwrr provider endpoints and error codes", () => {
+  assert.deepEqual(
+    [
+      ai.getAiProviderConfig,
+      ai.upsertAiProviderConfig,
+      ai.deleteAiProviderConfig,
+      ai.testAiProviderConfig,
+    ].map((e) => `${e.method} ${e.path}`),
+    [
+      "GET /api/ai/provider",
+      "PUT /api/ai/provider",
+      "DELETE /api/ai/provider",
+      "POST /api/ai/provider/test",
+    ],
+  );
+  accepts(ai.testAiProviderConfig.body, {});
+  rejects(ai.testAiProviderConfig.body, { apiKey: "x" });
+  const expected = {
+    AI_PROVIDER_URL_BLOCKED: 422,
+    AI_PROVIDER_KEY_REQUIRED: 422,
+    AI_PROVIDER_CONNECTION_UNSUPPORTED: 422,
+    AI_PROVIDER_NOT_CONFIGURED: 404,
+    AI_PROVIDER_TEST_TOO_SOON: 429,
+  };
+  for (const [code, status] of Object.entries(expected)) {
+    assert.equal(ai.aiErrorHttpStatus[code], status);
+    const err = new ai.AiError(code);
+    assert.equal(err.status, status);
+    assert.ok(err.message.length > 0);
+  }
+});

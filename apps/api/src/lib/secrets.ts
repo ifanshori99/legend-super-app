@@ -96,3 +96,17 @@ export function blindIndex(value: string, purpose: string): string {
 export function newSecretRef(): string {
   return `sec_${randomBytes(24).toString("base64url")}`;
 }
+
+/** Leading version byte of a sealed envelope (for key rotation). */
+export function sealedVersion(sealed: string): number {
+  const version = Buffer.from(sealed, "base64")[0];
+  if (version === undefined) throw new Error("Sealed value is empty");
+  return version;
+}
+
+let currentVersion: number | undefined;
+/** The envelope/key version sealSecret writes today, read from a probe seal. */
+export function currentSealVersion(): number {
+  currentVersion ??= sealedVersion(sealSecret("probe", "seal-version-probe"));
+  return currentVersion;
+}

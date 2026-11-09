@@ -32,8 +32,8 @@ import { db } from "../db/index.ts";
 import { aiSettings, aiToolCalls, aiUsageEvents } from "../db/schema/ai.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { getAiProvider } from "../lib/ai/provider-factory.ts";
 import { recordAudit } from "./core-audit.ts";
+import { resolveTenantAiProvider } from "./ai-provider-config.service.ts";
 import {
   dailyLimitFor,
   defaultAiSettings,
@@ -230,6 +230,10 @@ export async function getUsageSummary(
   const canSeeBudget = access.allows("ai.governance.manage", {
     type: "tenant",
   });
+  const providerAvailable =
+    (await resolveTenantAiProvider(gatewayContext(access)).catch(
+      () => null,
+    )) !== null;
   return withTenant(db, gatewayContext(access), async (tx) => {
     const row = await getAiSettingsRow(tx, access);
     const settings = row ? settingsRowToView(row) : defaultAiSettings(access);
@@ -239,7 +243,7 @@ export async function getUsageSummary(
       : 0;
     return {
       aiEnabled: settings.aiEnabled,
-      providerAvailable: getAiProvider() !== null,
+      providerAvailable,
       month,
       features: AI_FEATURE_CODES.map((feature) => ({
         feature,

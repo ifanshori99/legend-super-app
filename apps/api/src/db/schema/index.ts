@@ -118,3 +118,5 @@ export * from "./inventory-receiving";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// WS-12 per-tenant AI provider config (legend-dwrr).
+export * from "./ai-provider";
