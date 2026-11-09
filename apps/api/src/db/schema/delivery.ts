@@ -37,6 +37,7 @@ import type {
   DeliveryOrderSource,
   DeliveryOrderStatus,
   DeliveryPlatform,
+  DeliveryPlatformSync,
   DeliverySettlementStatus,
   DeliverySyncStatus,
 } from "@starter/shared/delivery";
@@ -175,6 +176,33 @@ export const deliveryChannelOrders = pgTable(
     closeReason: varchar("close_reason", { length: 300 }),
     settledAt: timestamp("settled_at", { withTimezone: true }),
     settledNetIdr: idrColumn("settled_net_idr"),
+    /**
+     * Platform sync of the latest staff step (legend-r7vxn): `ok` (nothing
+     * pending), `retrying` (the platform call had an unknown outcome; the
+     * worker sweep resends the stored intent with backoff) or `needs_action`
+     * (refused, or retries exhausted: staff must act). Written by the delivery
+     * consumer and sweep only; it does not bump `version` (not an order edit).
+     */
+    platformSyncState: varchar("platform_sync_state", { length: 12 })
+      .$type<DeliveryPlatformSync>()
+      .notNull()
+      .default("ok"),
+    /** Stored adapter action of the unsynced step; null when none pending. */
+    platformSyncAction: varchar("platform_sync_action", {
+      length: 16,
+    }).$type<"accept_order" | "update_order" | "cancel_order">(),
+    /** Target status of the unsynced step (the adapter reference is `<id>:<status>`). */
+    platformSyncStatus: varchar("platform_sync_status", {
+      length: 12,
+    }).$type<DeliveryOrderStatus>(),
+    /** Platform calls made for the stored intent (the consumer's own is the first). */
+    platformSyncAttempts: integer("platform_sync_attempts")
+      .notNull()
+      .default(0),
+    /** Next resend instant while `retrying` (also the claim lease); else null. */
+    platformSyncNextAt: timestamp("platform_sync_next_at", {
+      withTimezone: true,
+    }),
     /** Optimistic concurrency: bumped by every write. */
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -242,6 +270,16 @@ export const deliveryChannelOrders = pgTable(
       sql`(${table.settledAt} IS NULL) = (${table.settledNetIdr} IS NULL)`,
     ),
     check("delivery_channel_orders_version_check", sql`${table.version} >= 1`),
+    check(
+      "delivery_channel_orders_platform_sync_check",
+      sql`${table.platformSyncState} IN ('ok', 'retrying', 'needs_action')
+        AND ${table.platformSyncAttempts} >= 0
+        AND (${table.platformSyncAction} IS NULL OR ${table.platformSyncAction} IN ('accept_order', 'update_order', 'cancel_order'))
+        AND (${table.platformSyncState} <> 'retrying' OR (${table.platformSyncAction} IS NOT NULL AND ${table.platformSyncStatus} IS NOT NULL AND ${table.platformSyncNextAt} IS NOT NULL))`,
+    ),
+    index("delivery_channel_orders_platform_retry_idx")
+      .on(table.tenantId, table.platformSyncNextAt)
+      .where(sql`${table.platformSyncState} = 'retrying'`),
   ],
 );
 

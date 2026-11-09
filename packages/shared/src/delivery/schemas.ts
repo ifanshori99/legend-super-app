@@ -74,6 +74,18 @@ export type DeliveryOrderStatus = z.infer<typeof deliveryOrderStatusSchema>;
 
 /** `platform`: the adapter received it. `manual_pos`: cashier recorded it (D12). */
 export const deliveryOrderSourceSchema = z.enum(["platform", "manual_pos"]);
+
+/**
+ * Platform sync of an order's latest staff step (legend-r7vxn): `ok` nothing
+ * pending, `retrying` the system resends it, `needs_action` the platform
+ * refused it or retries ran out, so staff must act (staff screens flag it).
+ */
+export const deliveryPlatformSyncSchema = z.enum([
+  "ok",
+  "retrying",
+  "needs_action",
+]);
+export type DeliveryPlatformSync = z.infer<typeof deliveryPlatformSyncSchema>;
 export type DeliveryOrderSource = z.infer<typeof deliveryOrderSourceSchema>;
 
 export const DELIVERY_MAPPING_STATUSES = [
@@ -182,6 +194,8 @@ export const deliveryChannelOrderSchema = z
     /** Commission settlement: when the platform statement matched this order. */
     settledAt: isoDateTimeSchema.nullable(),
     settledNetIdr: nonnegativeIdr.nullable(),
+    /** Platform sync of the latest status step; manual orders stay `ok`. */
+    platformSync: deliveryPlatformSyncSchema.default("ok"),
   })
   .superRefine((order, ctx) => {
     if (

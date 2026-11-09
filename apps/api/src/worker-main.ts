@@ -51,6 +51,7 @@ import {
 import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
+import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -340,6 +341,12 @@ const relay = createRelayRuntime({
         await syncStaleDeliveryChannels(context, new Date());
       } catch {
         console.error("Delivery channel sync sweep failed");
+      }
+      // legend-r7vxn: resend platform status steps whose outcome was unknown.
+      try {
+        await retryDeliveryPlatformIntents(context, new Date());
+      } catch {
+        console.error("Delivery platform retry sweep failed");
       }
     }
     // §3.19 (legend-9pz9), cloud only: retry parked auto-journals (mapping

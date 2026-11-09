@@ -73,6 +73,7 @@ export function toDeliveryChannelOrder(
     closeReason: row.closeReason,
     settledAt: isoOrNull(row.settledAt),
     settledNetIdr: row.settledNetIdr,
+    platformSync: row.platformSyncState,
   });
 }
 
