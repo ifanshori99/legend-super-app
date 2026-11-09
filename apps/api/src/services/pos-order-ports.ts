@@ -4,6 +4,8 @@
 //
 // - Promo (order-promo-port.ts; legend-souz `orderPromoPort`). Default: no
 //   promotion applies and an explicit code is refused.
+// - Promo partial refund (legend-q1e0). Default: the real order-promo port, so
+//   a refund of a promo order is always re-priced; a test injects a failing one.
 // - Receipt numbering (POS-06, legend-93a). Default: fail closed. A sale is
 //   only `completed` with a receipt number (contract posOrderDetailSchema), so
 //   completion is refused until the gapless numbering bead installs its
@@ -23,6 +25,8 @@ import {
 } from "@starter/shared/core";
 import type { PosReceipt, PosTenderMethod } from "@starter/shared/pos";
 import type { OrderPromoPort } from "./order-promo-port.ts";
+import type { PromoPartialRefundPort } from "./crm-promo-refund.ts";
+import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
 import type { Tx } from "./permission-resolver.ts";
 import { noPromotionsPort } from "./qr-order-ports.ts";
 
@@ -36,6 +40,20 @@ export function setPosOrderPromoPort(next: OrderPromoPort | null): void {
 
 export function posOrderPromoPort(): OrderPromoPort {
   return promoPort;
+}
+
+// ---- Promo partial refund -----------------------------------------------------
+
+let promoRefundPort: PromoPartialRefundPort = orderPromoPartialRefundPort;
+
+export function setPosPromoRefundPort(
+  next: PromoPartialRefundPort | null,
+): void {
+  promoRefundPort = next ?? orderPromoPartialRefundPort;
+}
+
+export function posPromoRefundPort(): PromoPartialRefundPort {
+  return promoRefundPort;
 }
 
 // ---- Receipt numbering (POS-06) --------------------------------------------

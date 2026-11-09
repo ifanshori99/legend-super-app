@@ -29,6 +29,7 @@ import {
   and,
   asc,
   eq,
+  gt,
   gte,
   inArray,
   lt,
@@ -45,6 +46,7 @@ import {
   businessDayRange,
   CoreError,
   createUlid,
+  idr,
   toIsoDateTime,
   type OutletId,
   type ScopedTenantContext,
@@ -445,6 +447,8 @@ async function computeRecap(
       and(
         eq(posOrderRefunds.tenantId, tenantId),
         eq(posOrderRefunds.outletId, outletId),
+        // A Rp0 goods return (legend-wkl3) moved no money: not a refund here.
+        gt(posOrderRefunds.amountIdr, idr(0)),
         gte(posOrderRefunds.refundedAt, range.start),
         lt(posOrderRefunds.refundedAt, range.end),
       ),

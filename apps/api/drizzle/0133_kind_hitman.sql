@@ -1,0 +1,5 @@
+ALTER TABLE "pos_order_refunds" DROP CONSTRAINT "pos_order_refunds_amount_check";--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" DROP CONSTRAINT "pos_order_refunds_lines_check";--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD COLUMN "items" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_amount_check" CHECK ("pos_order_refunds"."amount_idr" > 0 OR ("pos_order_refunds"."amount_idr" = 0 AND jsonb_array_length("pos_order_refunds"."items") > 0));--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_lines_check" CHECK (jsonb_typeof("pos_order_refunds"."lines") = 'array' AND (jsonb_array_length("pos_order_refunds"."lines") > 0) = ("pos_order_refunds"."amount_idr" > 0));

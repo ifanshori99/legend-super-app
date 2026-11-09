@@ -40,18 +40,22 @@ import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
+import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import {
   assertBusinessDayOpen,
   lockCashierShiftForCash,
 } from "./pos-cash-guard.ts";
-import { posReceiptPort } from "./pos-order-ports.ts";
+import { posPromoRefundPort, posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
   appendPosEvent,
   auditPos,
   businessDateFor,
   consumeApproval,
+  itemsOf,
+  liveDiscountsOf,
   loadOutlet,
   lockPosOrder,
   posIdempotent,
@@ -95,6 +99,7 @@ function refundDto(row: RefundRow): PosRefund {
     reason: row.reason,
     reasonNote: row.reasonNote,
     lines: row.lines,
+    items: row.items,
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
     approvalRequestId: row.approvalRequestId,
@@ -432,7 +437,140 @@ export async function refundPosOrder(
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
-      assertRefundWithinPaid(idr(paid), idr(refunded), idr(input.amountIdr));
+
+      // Items: quantities already refunded by earlier rows, then this request.
+      const requested = (input.items ?? []).map(({ itemId, quantity }) => ({
+        itemId,
+        quantity,
+      }));
+      const liveItems = (await itemsOf(tx, context, order.id))
+        .map(({ item }) => item)
+        .filter((item) => item.status !== "voided");
+      const refundedBefore = new Map<string, number>();
+      for (const row of refunds)
+        for (const entry of row.items)
+          refundedBefore.set(
+            entry.itemId,
+            (refundedBefore.get(entry.itemId) ?? 0) + entry.quantity,
+          );
+      const refundedNow = new Map<string, number>();
+      for (const entry of requested) {
+        const item = liveItems.find(
+          (candidate) => candidate.id === entry.itemId,
+        );
+        if (!item || refundedNow.has(entry.itemId))
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Item refund tidak valid untuk pesanan ini.",
+          );
+        if (entry.quantity > item.quantity - (refundedBefore.get(item.id) ?? 0))
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Jumlah refund melebihi sisa item yang belum direfund.",
+          );
+        refundedNow.set(entry.itemId, entry.quantity);
+      }
+
+      // A promo order is re-priced (founder rules, legend-q1e0): the payout is
+      // what the guest paid minus what the kept items still cost. A failing
+      // port aborts the refund.
+      let payout = input.amountIdr;
+      // legend-wkl3 (CTO): nothing due (e.g. a returned free item, founder Q19)
+      // still records the return as a Rp0 row: items, reason and audit, no
+      // payment line, no event, no gateway, no stock reversal.
+      let goodsReturnOnly = false;
+      const promoApplication = await livePromoApplicationOf(
+        tx,
+        context,
+        order.id,
+      );
+      if (promoApplication) {
+        if (requested.length === 0)
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Pesanan berpromo: pilih item yang direfund.",
+          );
+        const keptLines = liveItems.flatMap((item) => {
+          const keptQty =
+            item.quantity -
+            (refundedBefore.get(item.id) ?? 0) -
+            (refundedNow.get(item.id) ?? 0);
+          if (keptQty <= 0) return [];
+          const unitPriceIdr = item.unitPriceIdr + item.modifiersTotalIdr;
+          return [
+            {
+              menuItemId: item.menuItemId,
+              quantity: keptQty,
+              unitPriceIdr: idr(unitPriceIdr),
+              lineTotalIdr: idr(unitPriceIdr * keptQty),
+            },
+          ];
+        });
+        const recomputed =
+          await posPromoRefundPort().recomputeAfterPartialRefund(tx, context, {
+            orderId: order.id,
+            keptLines,
+            reason: input.reasonNote,
+            actorUserId: caller.userId,
+            at: now,
+            deferPayout: true,
+          });
+        if (recomputed.adjusted) {
+          // Kept goods after the promo (application) and after their pro-rata
+          // (by price) share of any manual discount stacked on the sale.
+          const keptSubtotal = keptLines.reduce(
+            (sum, line) => sum + Number(line.lineTotalIdr),
+            0,
+          );
+          const manualDiscount = (await liveDiscountsOf(tx, context, order.id))
+            .filter((row) => row.source === "manual")
+            .reduce((sum, row) => sum + Number(row.amountIdr), 0);
+          const keptManualShare =
+            order.subtotalIdr > 0
+              ? Number(
+                  (BigInt(manualDiscount) * BigInt(keptSubtotal)) /
+                    BigInt(order.subtotalIdr),
+                )
+              : 0;
+          const keptGoods = Math.max(
+            0,
+            Number(recomputed.keptPayableIdr) - keptManualShare,
+          );
+          // Bill level: service charge, tax and rounding follow the goods pro
+          // rata (total / net of the sale). What the guest paid in counts the
+          // deposit applied to the bill; the payout itself is capped at what
+          // the tenders still hold (a deposit is not paid back here).
+          const net = order.subtotalIdr - order.discountIdr;
+          const keptPayableBill =
+            net > 0
+              ? Number(
+                  (BigInt(order.totalIdr) * BigInt(keptGoods)) / BigInt(net),
+                )
+              : 0;
+          const paidIn = paid + Number(order.depositAppliedIdr);
+          const dueBill = Math.max(0, paidIn - refunded - keptPayableBill);
+          // Rp0 return only when the guest is owed nothing; owed but no tender
+          // left to pay it from stays refused below.
+          goodsReturnOnly = dueBill === 0;
+          payout = Math.min(
+            input.amountIdr,
+            dueBill,
+            Math.max(0, paid - refunded),
+          );
+        }
+        if (goodsReturnOnly) payout = 0;
+        else if (payout <= 0)
+          throw new HttpError(
+            422,
+            "REFUND_NOTHING_DUE",
+            "Tidak ada dana yang perlu dikembalikan.",
+          );
+      }
+      if (!goodsReturnOnly)
+        assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
       const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
@@ -443,13 +581,15 @@ export async function refundPosOrder(
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
-        minValueIdr: input.amountIdr,
+        minValueIdr: payout,
         now,
       });
-      const allocation = refundAllocation(
-        stillRefundableByMethod(tenders, refunds),
-        idr(input.amountIdr),
-      );
+      const allocation = goodsReturnOnly
+        ? []
+        : refundAllocation(
+            stillRefundableByMethod(tenders, refunds),
+            idr(payout),
+          );
       const lines = allocation.map((line) => ({
         method: line.method,
         amountIdr: Number(line.amountIdr),
@@ -481,10 +621,11 @@ export async function refundPosOrder(
           tenantId: context.tenant.tenantId,
           outletId: order.outletId,
           orderId: order.id,
-          amountIdr: idr(input.amountIdr),
+          amountIdr: idr(payout),
           reason: input.reason,
           reasonNote: input.reasonNote,
           lines,
+          items: requested,
           requestedBy: caller.userId,
           approvedBy: input.approvedBy,
           approvalRequestId: override.approvalRequestId,
@@ -494,6 +635,14 @@ export async function refundPosOrder(
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");
+      const split = refundSplit(order, payout);
+      // Goods part of the payout goes onto the promo application's ledger.
+      if (promoApplication && !goodsReturnOnly)
+        await posPromoRefundPort().recordPartialRefundPayout(tx, context, {
+          orderId: order.id,
+          payoutIdr: split.grossSalesIdr - split.discountIdr,
+          at: now,
+        });
       const bucket = (name: string) =>
         lines
           .filter((line) => tenderBucket(line.method as never) === name)
@@ -503,13 +652,13 @@ export async function refundPosOrder(
         outletId,
         businessDate: order.businessDate,
         refundId: row.id,
-        amountIdr: input.amountIdr,
+        amountIdr: payout,
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
         approvalRequestId: override.approvalRequestId,
         overrideId: override.id,
-        ...refundSplit(order, input.amountIdr),
+        ...split,
         refundCashIdr: bucket("cash"),
         refundGatewayIdr: bucket("gateway"),
         refundEdcIdr: bucket("edc"),
@@ -520,19 +669,23 @@ export async function refundPosOrder(
         })),
         refundedAt: now.toISOString(),
       };
-      await appendPosEvent(tx, context, "order.refunded", {
-        order,
-        payload,
-        caller,
-        now,
-      });
-      await appendOrderEvent(tx, context, {
-        order,
-        type: "order.refunded",
-        payload,
-        caller,
-        now,
-      });
+      // No money moved on a Rp0 return: order.refunded (journals, loyalty,
+      // revenue) is not emitted; the row and its audit are the record.
+      if (!goodsReturnOnly) {
+        await appendPosEvent(tx, context, "order.refunded", {
+          order,
+          payload,
+          caller,
+          now,
+        });
+        await appendOrderEvent(tx, context, {
+          order,
+          type: "order.refunded",
+          payload,
+          caller,
+          now,
+        });
+      }
       await auditPos(
         tx,
         context,
@@ -546,6 +699,15 @@ export async function refundPosOrder(
           after: {
             id: row.id,
             amountIdr: row.amountIdr,
+            requestedAmountIdr: input.amountIdr,
+            items: requested,
+            ...(goodsReturnOnly
+              ? {
+                  goodsReturnOnly: true,
+                  goodsReturnNote:
+                    "Retur barang tanpa dana: tidak ada yang perlu dikembalikan (item gratis atau tetap tercakup promo).",
+                }
+              : {}),
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
