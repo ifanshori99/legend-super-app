@@ -24,39 +24,51 @@
 // reservation.no_show book the forfeited DP the same way; cashier_shift.closed
 // books the signed drawer difference checked against the shift row.
 //
+// legend-9pz9 (design section 10): a payout, a forfeit and a sale are judged
+// at their own moment (accounting-auto-journal-guards.ts), never against
+// current state, so the verdict does not depend on event delivery order.
+// order.voided is only stored and keyed here; the consumer rebuilds its fact
+// in accounting-auto-journal-void.ts.
+//
 // A payload, row or method that can never post as sent throws
 // AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
 // non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
-import { depositHoldsFunds } from "@starter/shared/reservation";
 import {
-  autoJournalParked,
-  domainEventOutbox,
-  journalEntries,
+  orders,
   paymentIntents,
   paymentRefunds,
-  orders,
   paymentUnallocatedFunds,
   posOrderTenders,
   posShifts,
-  reservationDepositAllocations,
   reservations,
 } from "../db/schema/index.ts";
+import {
+  assertForfeitWithinIntent,
+  assertPayoutWithinReceipt,
+  backingKeyOf,
+  backingStateOf,
+  backingStatesOf,
+  DP_INTENT_STATUSES,
+  payoutBackingOf,
+  saleBoundOf,
+  sessionDepositAt,
+} from "./accounting-auto-journal-guards.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
-import { EVENT_DESTINATION } from "./payment-support.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
 export const AUTO_JOURNAL_EVENTS = [
   "order.paid",
   "order.refunded",
+  "order.voided",
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
@@ -81,6 +93,15 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * payment.refunded paid out of a receipt that will never post (payment.paid
+ * consumed before the consumer went live, never emitted, or parked non-
+ * retryable): parked, never retried.
+ */
+export class AutoJournalReceiptMissing extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_MISSING";
 }
 
 /**
@@ -130,6 +151,19 @@ const orderRefundedSchema = z.object({
   refundEdcIdr: idr,
   refundPointsIdr: idr,
   refundedAt: time,
+});
+
+/**
+ * order.voided as the consumer stores it. Only a void of a completed sale
+ * (voidedFinalOrder) is journaled; an open-order void books nothing.
+ */
+export const orderVoidedStoredSchema = z.object({
+  orderId: id,
+  outletId: z.string().uuid(),
+  voidId: id.nullable(),
+  amountIdr: idr,
+  voidedFinalOrder: z.boolean(),
+  voidedAt: time,
 });
 
 const paymentPaidSchema = z.object({
@@ -212,6 +246,10 @@ export function storedEventOf(event: {
       const payload = orderRefundedSchema.parse(event.payload);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
+    case "order.voided": {
+      const payload = orderVoidedStoredSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
     case "payment.paid":
     case "payment.funds_unallocated":
     case "payment.refunded": {
@@ -240,7 +278,7 @@ export function storedEventOf(event: {
 
 const IDEMPOTENCY_KEY_MAX = 100;
 
-function boundedKey(key: string): string {
+export function boundedKey(key: string): string {
   if (key.length <= IDEMPOTENCY_KEY_MAX) return key;
   return `aj:${createHash("sha256").update(key).digest("hex")}`;
 }
@@ -266,6 +304,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:sale:${String(p.orderId)}`);
     case "order.refunded":
       return boundedKey(`aj:order-refund:${String(p.refundId)}`);
+    case "order.voided":
+      return boundedKey(`aj:sale-void:${String(p.orderId)}`);
     case "payment.paid":
       return receiptKeyOf(String(p.intentId));
     case "payment.funds_unallocated":
@@ -292,12 +332,7 @@ type ReceiptState = "posted" | "pending" | "none";
  *   before the consumer went live or with accounting off, never emitted, or
  *   parked non-retryable), so the tender books the money once, the
  *   pre-deposit way, Dr gateway_clearing.
- * Read order outbox, parked, journals: each later source is written by the
- * same transaction that clears the earlier one (consumption marks the outbox
- * row delivered with the receipt journal or its parked row; the sweep inserts
- * the journal and deletes the parked row), so under read committed a receipt
- * that commits between two reads is seen as pending or posted, never as none.
- * Fails closed on an unknown or EDC-linked intent (EDC money is not gateway
+ * Read order and ordering note: backingStatesOf. Fails closed on an unknown or EDC-linked intent (EDC money is not gateway
  * money).
  */
 async function receiptStatesOf(
@@ -330,64 +365,18 @@ async function receiptStatesOf(
     throw new AutoJournalPayloadInvalid(
       "Gateway tender is linked to an EDC transaction",
     );
-  // 1. Outbox first (see the ordering note above).
-  const undelivered = await tx
-    .select({ intentId: domainEventOutbox.aggregateId })
-    .from(domainEventOutbox)
-    .where(
-      and(
-        eq(domainEventOutbox.tenantId, tenantId),
-        eq(domainEventOutbox.destination, EVENT_DESTINATION),
-        eq(domainEventOutbox.aggregateType, "payment"),
-        inArray(domainEventOutbox.aggregateId, ids),
-        sql`${domainEventOutbox.event}->>'name' = 'payment.paid'`,
-        ne(domainEventOutbox.status, "delivered"),
-      ),
-    );
-  for (const row of undelivered) states.set(row.intentId, "pending");
-  const intentByKey = new Map(
-    ids.map((intentId) => [receiptKeyOf(intentId), intentId]),
+  const backingStates = await backingStatesOf(
+    tx,
+    tenantId,
+    ids.map((intentId) => ({ kind: "intent", intentId })),
   );
-  const keys = [...intentByKey.keys()];
-  // 2. Then the parked receipts: only a retryable one can still post.
-  const parked = await tx
-    .select({
-      key: autoJournalParked.idempotencyKey,
-      retryable: autoJournalParked.retryable,
-    })
-    .from(autoJournalParked)
-    .where(
-      and(
-        eq(autoJournalParked.tenantId, tenantId),
-        inArray(autoJournalParked.idempotencyKey, keys),
-      ),
+  for (const intentId of ids)
+    states.set(
+      intentId,
+      backingStates.get(backingKeyOf({ kind: "intent", intentId })) ?? "none",
     );
-  for (const row of parked) {
-    const intentId = intentByKey.get(row.key);
-    if (intentId !== undefined && row.retryable)
-      states.set(intentId, "pending");
-  }
-  // 3. Last the receipt journals (they win over pending).
-  const posted = await tx
-    .select({ key: journalEntries.idempotencyKey })
-    .from(journalEntries)
-    .where(
-      and(
-        eq(journalEntries.tenantId, tenantId),
-        inArray(journalEntries.idempotencyKey, keys),
-      ),
-    );
-  const postedIds = new Set<string>();
-  for (const row of posted) {
-    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
-    if (intentId !== undefined) postedIds.add(intentId);
-  }
-  for (const intentId of postedIds) states.set(intentId, "posted");
   return states;
 }
-
-/** DP intents that took money: their receipts decide where the DP sits. */
-const DP_INTENT_STATUSES = ["paid", "partially_refunded", "refunded"] as const;
 
 /**
  * Where a DP is booked (the cutover guard of receiptStatesOf, applied to the
@@ -436,148 +425,12 @@ export async function depositReceiptOf(
 
 /**
  * Where the DP applied to an order is booked: the order row must carry exactly
- * the DP the event reports, the session's live orders together may not apply
- * more DP than the allocation intents still hold (a DP refunded after seating
- * would otherwise leave customer_deposit twice), and the allocation intents
- * must agree (depositReceiptOf).
+ * the DP the event reports, the session's sales completed by this sale
+ * (bound S, this one included) together may not apply more DP than the
+ * allocation intents still held right before it (a DP refunded or forfeited
+ * before the sale would otherwise leave customer_deposit twice), and the
+ * allocation intents must agree (depositReceiptOf). Facts after S never count.
  */
-/**
- * DP of one table session: its allocation intents, what they still hold
- * (same hold rule as the reservation module's loadHeldDeposit: zero unless
- * the intent is paid / partially_refunded, else its amount minus every
- * non-failed refund reserved against it, unallocated-fund payouts aside)
- * and the DP its orders applied. "live" counts every non-voided order (the
- * sale being posted included); "completed" only sales whose order.paid
- * already debited customer_deposit or will.
- *
- * With `asOf` (a refund being journaled) the hold is read as it stood right
- * after that refund: only completed refunds up to it (completedAt, then id)
- * plus the refund itself, so a later or still pending refund never parks an
- * earlier valid one, and an intent a later refund emptied still counts.
- */
-async function sessionDepositOf(
-  tx: Tx,
-  tenantId: TenantId,
-  tableSessionId: string,
-  orderScope: "live" | "completed",
-  asOf?: { refundId: string; completedAt: Date | null },
-): Promise<{ intentIds: string[]; heldIdr: bigint; appliedIdr: bigint }> {
-  const allocations = await tx
-    .select({ paymentIntentId: reservationDepositAllocations.paymentIntentId })
-    .from(reservationDepositAllocations)
-    .where(
-      and(
-        eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.tableSessionId, tableSessionId),
-      ),
-    );
-  const intentIds = [...new Set(allocations.map((row) => row.paymentIntentId))];
-  if (intentIds.length === 0)
-    return { intentIds, heldIdr: 0n, appliedIdr: 0n };
-  const intents = await tx
-    .select({
-      id: paymentIntents.id,
-      status: paymentIntents.status,
-      amountIdr: paymentIntents.amountIdr,
-    })
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, tenantId),
-        inArray(paymentIntents.id, intentIds),
-      ),
-    );
-  const refunds = await tx
-    .select({
-      intentId: paymentRefunds.paymentIntentId,
-      total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
-    })
-    .from(paymentRefunds)
-    .where(
-      and(
-        eq(paymentRefunds.tenantId, tenantId),
-        inArray(paymentRefunds.paymentIntentId, intentIds),
-        isNull(paymentRefunds.unallocatedFundId),
-        asOf === undefined
-          ? sql`${paymentRefunds.status} <> 'failed'`
-          : asOf.completedAt === null
-            ? eq(paymentRefunds.id, asOf.refundId)
-            : sql`(${paymentRefunds.id} = ${asOf.refundId} OR (
-                ${paymentRefunds.status} = 'completed'
-                AND ${paymentRefunds.completedAt} IS NOT NULL
-                AND (${paymentRefunds.completedAt}, ${paymentRefunds.id})
-                    < (${asOf.completedAt.toISOString()}::timestamptz, ${asOf.refundId}::uuid)))`,
-      ),
-    )
-    .groupBy(paymentRefunds.paymentIntentId);
-  const refundedBy = new Map(
-    refunds.map((row) => [row.intentId, BigInt(row.total)]),
-  );
-  let heldIdr = 0n;
-  for (const intent of intents) {
-    // A later refund may since have moved the intent to "refunded".
-    const holds =
-      depositHoldsFunds(intent.status) ||
-      (asOf !== undefined && intent.status === "refunded");
-    if (!holds) continue;
-    const held = BigInt(intent.amountIdr) - (refundedBy.get(intent.id) ?? 0n);
-    if (held > 0n) heldIdr += held;
-  }
-  const [applied] = await tx
-    .select({
-      total: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
-    })
-    .from(orders)
-    .where(
-      and(
-        eq(orders.tenantId, tenantId),
-        eq(orders.tableSessionId, tableSessionId),
-        orderScope === "live"
-          ? ne(orders.status, "voided")
-          : eq(orders.status, "completed"),
-      ),
-    );
-  return { intentIds, heldIdr, appliedIdr: BigInt(applied?.total ?? "0") };
-}
-
-/**
- * legend-e7zj interim guard: a refund of a DP intent whose DP a completed
- * sale already took from customer_deposit would debit it twice. Fail closed
- * until the refund module refuses such a refund.
- */
-async function assertRefundLeavesAppliedDeposit(
-  tx: Tx,
-  tenantId: TenantId,
-  intentId: string,
-  refund: { refundId: string; completedAt: Date | null },
-): Promise<void> {
-  const sessions = await tx
-    .selectDistinct({
-      tableSessionId: reservationDepositAllocations.tableSessionId,
-    })
-    .from(reservationDepositAllocations)
-    .where(
-      and(
-        eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.paymentIntentId, intentId),
-      ),
-    );
-  for (const { tableSessionId } of sessions) {
-    const { heldIdr, appliedIdr } = await sessionDepositOf(
-      tx,
-      tenantId,
-      tableSessionId,
-      "completed",
-      refund,
-    );
-    if (appliedIdr > heldIdr)
-      throw new AccountingError(
-        "POSTING_AMOUNTS_MISMATCH",
-        "Refund of a DP that a completed sale already applied",
-      );
-  }
-}
-
 async function orderDepositReceiptOf(
   tx: Tx,
   tenantId: TenantId,
@@ -600,11 +453,12 @@ async function orderDepositReceiptOf(
     );
   if (order.tableSessionId === null)
     throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
-  const { intentIds, heldIdr, appliedIdr } = await sessionDepositOf(
+  const sale = await saleBoundOf(tx, tenantId, orderId);
+  const { intentIds, heldIdr, appliedIdr } = await sessionDepositAt(
     tx,
     tenantId,
     order.tableSessionId,
-    "live",
+    sale,
   );
   if (intentIds.length === 0)
     throw new AutoJournalPayloadInvalid(
@@ -758,6 +612,8 @@ export async function autoJournalFactOf(
         moneyTime: new Date(p.refundedAt),
       };
     }
+    case "order.voided":
+      throw new Error("order.voided is handled by voidFactOf");
     case "payment.paid": {
       const p = paymentPaidSchema.parse(stored.payload);
       if (p.receivedIdr <= 0) return null;
@@ -815,7 +671,10 @@ export async function autoJournalFactOf(
       const [refund] = await tx
         .select({
           outletId: paymentRefunds.outletId,
+          status: paymentRefunds.status,
           completedAt: paymentRefunds.completedAt,
+          amountIdr: paymentRefunds.amountIdr,
+          paymentIntentId: paymentRefunds.paymentIntentId,
           unallocatedFundId: paymentRefunds.unallocatedFundId,
         })
         .from(paymentRefunds)
@@ -829,19 +688,45 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "Payment refund of the event not found",
         );
-      // A payout of an unallocated fund (duplicate or extra payment) never
-      // takes DP.
-      if (refund.unallocatedFundId === null)
-        await assertRefundLeavesAppliedDeposit(tx, tenantId, p.paymentIntentId, {
-          refundId: p.refundId,
-          completedAt: refund.completedAt,
-        });
+      // The refund is judged at its own completion: it must be final and be
+      // the one the event reports.
+      if (
+        refund.status !== "completed" ||
+        refund.completedAt === null ||
+        Number(refund.amountIdr) !== p.amountIdr ||
+        refund.paymentIntentId !== p.paymentIntentId
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Payment refund is not completed or differs from the event",
+        );
+      // The payout leaves the receipt that holds its money: the fund's own
+      // receipt, else the intent's (an intent refund, or a fund the intent's
+      // payment.paid already counts).
+      const backing = await payoutBackingOf(tx, tenantId, {
+        intentId: p.paymentIntentId,
+        unallocatedFundId: refund.unallocatedFundId,
+      });
+      const backingState = await backingStateOf(tx, tenantId, backing);
+      if (backingState === "pending")
+        throw new AutoJournalReceiptPending(
+          "Receipt behind a payout is not booked yet",
+        );
+      if (backingState === "none")
+        throw new AutoJournalReceiptMissing(
+          "Receipt behind a payout will never be booked",
+        );
+      await assertPayoutWithinReceipt(tx, tenantId, backing, {
+        refundId: p.refundId,
+        completedAt: refund.completedAt,
+        intentId: p.paymentIntentId,
+        unallocatedFundId: refund.unallocatedFundId,
+      });
       return {
         ruleEvent: "payment.refunded",
         amounts: { amountIdr: p.amountIdr },
         sourceId: p.refundId,
         outletId: refund.outletId,
-        moneyTime: refund.completedAt ?? new Date(stored.occurredAt),
+        moneyTime: refund.completedAt,
       };
     }
     case "reservation.cancelled":
@@ -854,6 +739,7 @@ export async function autoJournalFactOf(
           status: reservations.status,
           depositForfeitedIdr: reservations.depositForfeitedIdr,
           depositPaymentId: reservations.depositPaymentId,
+          closedAt: reservations.closedAt,
         })
         .from(reservations)
         .where(
@@ -887,6 +773,19 @@ export async function autoJournalFactOf(
       const source = await depositReceiptOf(tx, tenantId, [
         reservation.depositPaymentId,
       ]);
+      // The forfeit and the refunds that were final before it may not take
+      // more than the DP intent took (a later refund parks itself instead).
+      if (reservation.closedAt === null)
+        throw new AutoJournalPayloadInvalid(
+          "Closed reservation has no close time",
+        );
+      await assertForfeitWithinIntent(
+        tx,
+        tenantId,
+        reservation.depositPaymentId,
+        p.depositForfeitedIdr,
+        p.reservationId,
+      );
       return {
         ruleEvent: stored.eventName,
         amounts: {

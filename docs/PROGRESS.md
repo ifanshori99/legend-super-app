@@ -333,3 +333,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bead slice 2: legend-z13t (tampilan finance RECEIPT_PENDING >1 hari), legend-3r6r (batas parkir saat payment.paid dead letter), legend-p7lx (sisa bayar POS web belum kurangi DP), legend-e7zj (P1, blocker gerbang rilis: modul refund harus menolak refund DP yang sudah dipakai).
 - Berikut: tunggu CTO. Slice 3 setelah batch 3/4 (QR kej3, total 0 fbms), slice 4 settlement + MDR, slice 5 setoran kas.
 - Biaya sesi ee66d9 (05:55-06:42 UTC): total biaya* 9262k (utama Opus 3374k, subagent Opus 3582k, Sonnet 2187k, Haiku 119k), 28 subagent, maks 4 paralel, rata 1.34 berjalan.
+
+### Langkah 0: perbaikan temuan Codex 142 (cabang `ws/aj-fix142` dari `ws/dp-late-journal` b714f7b6, 2026-11-09)
+
+- Desain bersama subagent architect: `docs/design/auto-journals.md` §10.
+- F1 payout tanpa penerimaan: payout dicari penopangnya (receipt intent, atau receipt dana tak teralokasi bila dana itu punya event sendiri). Pending parkir `AUTO_JOURNAL_RECEIPT_PENDING` (diulang), tidak ada parkir `AUTO_JOURNAL_RECEIPT_MISSING` (tidak diulang). Receipt yang dibalik finance tidak menopang apa pun.
+- F2 void penjualan selesai: event `order.voided` (voidedFinalOrder) membalik jurnal `aj:sale:<orderId>` lewat ACC-01 (`reverseJournalInTransaction`, kunci `aj:sale-void:<orderId>`). Hanya penjualan tunai murni; ada tender gateway/EDC/poin parkir `AUTO_JOURNAL_VOID_UNSUPPORTED` (void hanya mengembalikan tunai). Jurnal penjualan belum ada: `AUTO_JOURNAL_SALE_PENDING` / `AUTO_JOURNAL_SALE_MISSING`.
+- F3 DP hangus: cek payout menghitung forfeit; cek forfeit menghitung refund sebelumnya.
+- F4 urutan event: semua cek dibatasi waktu dari baris faktanya sendiri (dibaca di SQL, bukan JS Date: presisi mikrodetik). Seri: penjualan lebih dulu dari refund/forfeit, forfeit lebih dulu dari refund.
+- File: `accounting-auto-journal-{amounts,consumer,guards (baru),void (baru)}.ts`, `accounting-journal.service.ts` (ekstrak `reverseJournalInTransaction`), test, desain.
+- Sisa (usulan ke CTO, berkas terlarang/di luar scope): U1 `refundableBalance` kurangi DP hangus; U2 void harus menolak atau mengembalikan tender gateway/EDC/poin; U3 order QR butuh waktu selesai sebelum slice 3; U4 race urutan commit vs cap waktu (penulis refund, penjualan, forfeit perlu kunci baris payment_intents sebelum ambil waktu).

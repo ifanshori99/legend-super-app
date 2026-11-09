@@ -1,9 +1,11 @@
 // Auto-journal consumer (F19, legend-9pz9; design docs/design/auto-journals.md).
 // Cloud only, wired in worker-main.ts next to the inventory GL bridge: every
 // automatic money journal (sale, sale refund, gateway receipt, gateway payout,
-// forfeited reservation DP, cashier shift over/short)
-// posts through `postJournalFromRuleInTransaction` inside the outbox
-// consumption transaction. Tenants without the accounting module: `ignored`.
+// forfeited reservation DP, cashier shift over/short) posts through
+// `postJournalFromRuleInTransaction` inside the outbox consumption
+// transaction; a completed-sale void reverses the sale journal instead
+// (`reverseJournalInTransaction`, accounting-auto-journal-void.ts). Tenants
+// without the accounting module: `ignored`.
 //
 // Copies the inventory-gl-consumer pattern:
 // - a business-fact idempotency key (`aj:...`) is looked up first, so a replay
@@ -56,6 +58,7 @@ import { withTenant } from "../db/tenant.ts";
 import {
   AutoJournalDepositCutoverMixed,
   AutoJournalPayloadInvalid,
+  AutoJournalReceiptMissing,
   AutoJournalReceiptPending,
   autoJournalFactOf,
   autoJournalKeyOf,
@@ -65,7 +68,16 @@ import {
   type AutoJournalEventName,
   type StoredAutoJournalEvent,
 } from "./accounting-auto-journal-amounts.ts";
-import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import {
+  AutoJournalSaleMissing,
+  AutoJournalSalePending,
+  AutoJournalVoidUnsupported,
+  voidFactOf,
+} from "./accounting-auto-journal-void.ts";
+import {
+  postJournalFromRuleInTransaction,
+  reverseJournalInTransaction,
+} from "./accounting-journal.service.ts";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
@@ -93,6 +105,7 @@ const RETRYABLE_CODES = [
   "OUTLET_LEGAL_ENTITY_MISSING",
   "PERIOD_CLOSED",
   "AUTO_JOURNAL_RECEIPT_PENDING",
+  "AUTO_JOURNAL_SALE_PENDING",
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
@@ -120,6 +133,10 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AccountingError) return error.code;
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
+  if (error instanceof AutoJournalReceiptMissing) return error.code;
+  if (error instanceof AutoJournalSalePending) return error.code;
+  if (error instanceof AutoJournalSaleMissing) return error.code;
+  if (error instanceof AutoJournalVoidUnsupported) return error.code;
   if (error instanceof AutoJournalDepositCutoverMixed) return error.code;
   if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
@@ -386,8 +403,12 @@ async function postAutoJournal(
   now: Date,
 ): Promise<AutoJournalResult> {
   const tenantId = context.tenant.tenantId;
-  const fact = await autoJournalFactOf(tx, tenantId, stored);
-  if (!fact) return { status: "ignored" };
+  // order.voided reverses the sale journal; every other event posts a rule.
+  const isVoid = stored.eventName === "order.voided";
+  const voidFact = isVoid ? await voidFactOf(tx, tenantId, stored) : null;
+  const fact = isVoid ? null : await autoJournalFactOf(tx, tenantId, stored);
+  const target = voidFact ?? fact;
+  if (!target) return { status: "ignored" };
   const [outlet] = await tx
     .select({
       legalEntityId: outlets.legalEntityId,
@@ -395,7 +416,9 @@ async function postAutoJournal(
       businessDayCutoff: outlets.businessDayCutoff,
     })
     .from(outlets)
-    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, fact.outletId)));
+    .where(
+      and(eq(outlets.tenantId, tenantId), eq(outlets.id, target.outletId)),
+    );
   if (!outlet)
     throw new AutoJournalPayloadInvalid(
       "Outlet of the auto-journal event not found",
@@ -404,7 +427,7 @@ async function postAutoJournal(
   const legalEntityId = outlet.legalEntityId;
 
   const naturalDate = businessDateOf(
-    fact.moneyTime,
+    target.moneyTime,
     outletBusinessDayClock(outlet),
   );
   // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
@@ -418,29 +441,47 @@ async function postAutoJournal(
     naturalDate,
     blocked ? await latestClosedPeriod(tx, tenantId, legalEntityId) : null,
   );
-  const rule = resolvePostingRule(defaultPostingRules, {
-    eventName: fact.ruleEvent,
-  });
-  const journal = await postJournalFromRuleInTransaction(
-    tx,
-    context,
-    {
+  const lateSuffix =
+    lateAdjustmentFrom === null
+      ? ""
+      : ` (penyesuaian terlambat dari ${lateAdjustmentFrom})`;
+  let journal: { id: string };
+  if (voidFact) {
+    journal = await reverseJournalInTransaction(
+      tx,
+      context,
+      voidFact.saleEntryId,
+      {
+        entryDate: entryDate as typeof naturalDate,
+        reason: `Void penjualan ${voidFact.sourceId}${lateSuffix}`,
+        idempotencyKey: key,
+        lateAdjustmentFrom,
+        postedBy: null,
+      },
+      now,
+    );
+  } else if (fact) {
+    const rule = resolvePostingRule(defaultPostingRules, {
       eventName: fact.ruleEvent,
-      amounts: fact.amounts,
-      legalEntityId,
-      outletId: fact.outletId,
-      entryDate: entryDate as typeof naturalDate,
-      sourceId: fact.sourceId,
-      description:
-        lateAdjustmentFrom === null
-          ? rule.description
-          : `${rule.description} (penyesuaian terlambat dari ${lateAdjustmentFrom})`,
-      postedBy: null,
-      idempotencyKey: key,
-      lateAdjustmentFrom,
-    },
-    now,
-  );
+    });
+    journal = await postJournalFromRuleInTransaction(
+      tx,
+      context,
+      {
+        eventName: fact.ruleEvent,
+        amounts: fact.amounts,
+        legalEntityId,
+        outletId: fact.outletId,
+        entryDate: entryDate as typeof naturalDate,
+        sourceId: fact.sourceId,
+        description: `${rule.description}${lateSuffix}`,
+        postedBy: null,
+        idempotencyKey: key,
+        lateAdjustmentFrom,
+      },
+      now,
+    );
+  } else return { status: "ignored" };
   if (lateAdjustmentFrom !== null)
     await recordAudit(
       tx,
@@ -448,7 +489,7 @@ async function postAutoJournal(
       {
         id: createUlid(now.getTime()),
         tenantId,
-        outletId: fact.outletId,
+        outletId: target.outletId,
         actorType: "system",
         actorId: null,
         deviceId: null,
@@ -461,7 +502,7 @@ async function postAutoJournal(
           after: {
             journalId: journal.id,
             trigger: stored.eventName,
-            sourceId: fact.sourceId,
+            sourceId: target.sourceId,
             originalDate: lateAdjustmentFrom,
             entryDate,
           },
