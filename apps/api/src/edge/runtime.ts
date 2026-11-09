@@ -84,6 +84,7 @@ import {
   type EdgeLinkClientState,
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
+import { LINK_CLOSE } from "./protocol.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
 import { createDefaultWifiProvider } from "./wifi/registry.ts";
@@ -653,6 +654,16 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    // A protocol refusal (1008) carries a fixed reason from the link code, no
+    // payload; it tells the operator why the link keeps dropping (legend-a9iby:
+    // a restored or cloned database). See docs/deployment.md, item 5.
+    onClose: (code, reason) => {
+      if (code === LINK_CLOSE.protocol)
+        logger.warn(
+          { code, reason: reason.slice(0, 123) },
+          "Edge link refused by protocol",
+        );
+    },
   });
   const stopWakeups = await listenEdgeLinkWakeups(pool, (signal) => {
     if (signal.edgeNodeId === local.scope.edgeNodeId) client.notify();
