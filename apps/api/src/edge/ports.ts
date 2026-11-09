@@ -45,9 +45,14 @@ export type EdgeEventApplier<Tx = unknown> = {
   ): Promise<number | null>;
 };
 
-/** Returns null for an aggregate the receiver does not know (fail closed). */
+/**
+ * Returns null for an aggregate the receiver does not know (fail closed).
+ * `direction` is the direction the event arrives on; omitted by callers that
+ * have none (then no per-direction default applies).
+ */
 export type EdgeEventClassifier = (
   event: EventEnvelope,
+  direction?: SyncDirection,
 ) => EdgeEventKind | null;
 
 export class EdgeEventUnclassifiedError extends Error {
@@ -94,8 +99,11 @@ export function setEdgeEventClassifier(next: EdgeEventClassifier | null): void {
   classifier = next ?? (() => null);
 }
 
-export function classifyEdgeEvent(event: EventEnvelope): EdgeEventKind {
-  const kind = classifier(event);
+export function classifyEdgeEvent(
+  event: EventEnvelope,
+  direction?: SyncDirection,
+): EdgeEventKind {
+  const kind = classifier(event, direction);
   if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
   return kind;
 }
