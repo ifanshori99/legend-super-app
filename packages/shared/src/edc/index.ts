@@ -164,9 +164,13 @@ function referenceField(max: number) {
     .transform(dropPanLike);
 }
 
-/** A run of 12+ digits (split by spaces, tabs or dashes, repeated or mixed) looks
- * like a card number: the terminal's free text is masked before it is stored. */
-const cardNumberLike = /\d(?:[ \t-]*\d){11,}/g;
+/** A run of 12+ digits (split by whitespace of any kind, dashes, slashes or
+ * underscores, repeated or mixed) looks like a card number: the terminal's free
+ * text is masked before it is stored. `\s` covers newline, CRLF and NBSP
+ * (legend-deu7r). Only this free-text rule widened: the migration scrubs
+ * (0135/0141/0143) and the leftover rules below keep the narrow class.
+ * A date such as `2026/11/09 12:30:45` stays (colon ends the run, 10 digits). */
+const cardNumberLike = /\d(?:[\s/_-]*\d){11,}/g;
 /** Card digits the old single-separator scrub (0135, the write path before
  * legend-tjwb) left next to a mask: joined by a separator run it could not
  * cross (anything but exactly one space or dash), and more than the receipt
@@ -181,16 +185,28 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
  * left part of it at the very end, below the thresholds above (legend-lg45).
  * Only a stored message exactly 200 units long gets these end-of-text rules,
  * on read (the current write path masks before it cuts, so it leaves no such
- * remnant), the same as migration 0143 and apps/api/scripts/edc-pan-scrub-tail.sql:
+ * remnant). Migration 0143 and apps/api/scripts/edc-pan-scrub-tail.sql hold the
+ * narrow form of these rules, migration 0170 (legend-0lrkl, legend-stetb) the
+ * wide form below:
  * - digits after a whole mask, joined by a separator the old pattern could
  *   not cross (`… [disamarkan] - 111`);
  * - a run of 7+ digits that holds or ends in such a separator, optionally
  *   followed by a cut mask (`… 4111  1111  11`, `… 7777777  [disa`). A run
- *   right after a digit and `.` or `,` (the rest of an amount) is skipped. */
+ *   right after a digit and `.` or `,` (the rest of an amount) is skipped.
+ * A separator the old pattern could not cross is a run of two or more
+ * separators, or a single one that is not a space or a dash: tab, line break,
+ * NBSP and the other `\s` characters, slash, underscore (legend-stetb, same
+ * class as `cardNumberLike`). Accepted effect, at exactly 200 units only: a
+ * number of 7+ digits at the very end that is joined by, or ends in, such a
+ * separator is masked even when it is not a card (`2026/11/09`,
+ * `INV/2026/11/0001`, `TRX_20261109_01`, `Telp 021/7654321`, a thousands
+ * group joined by NBSP). The rule cannot tell it from a cut card
+ * (`4111/1111/11`); card safety wins. */
 const oldWriteLimit = 200;
-const tailAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d)*[ \t-]*$/;
+const tailAfterMask =
+  /\[disamarkan\](?:[\s/_-]{2,}|[^\S ]|[/_])\d(?:[\s/_-]*\d)*[\s/_-]*$/;
 const tailCardRun =
-  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[\d \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
+  /(?<!\d|\d[.,])\d(?=(?:[\s/_-]*\d){6})(?=[\d\s/_-]*?(?:[\s/_-]{2,}|[^\S ]|[/_]))(?:[\s/_-]*\d)*[\s/_-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
 const maskCardNumbers = (text: string): string =>
   text
     .replace(cardNumberLike, "[disamarkan]")

@@ -406,10 +406,19 @@ export async function voidPosOrderCorrection(
  * Splits a refund over the sale's revenue lines for the WS-07 refund rule
  * (gross − discount + service + tax = amount, exactly): service charge and
  * tax pro rata to the bill, discount pro rata to the net, gross the rest.
+ *
+ * A promo refund that was re-priced (legend-aef1) passes `refundedSubtotalIdr`,
+ * the bill value the refunded items carried before the promo. The gross is then
+ * that value and the discount is what the guest no longer gets of it (gross −
+ * the goods part of the payout): the order's overall discount ratio is wrong
+ * when the promo is withdrawn on the kept items (payout 30k of a 100k bill with
+ * 20k off, item 50k: gross 50k / discount 20k, not 37.5k / 7.5k). The sum rule
+ * above still holds because the goods part is the same as before.
  */
-function refundSplit(
+export function refundSplit(
   order: Locked["order"],
   amountIdr: number,
+  refundedSubtotalIdr: number | null = null,
 ): {
   grossSalesIdr: number;
   discountIdr: number;
@@ -424,6 +433,28 @@ function refundSplit(
     order.serviceChargeIdr,
     order.taxIdr,
   ]).map(Number);
+  if (refundedSubtotalIdr !== null) {
+    // An inclusive order's item prices already contain service and tax, but
+    // its sale books gross without them (order-revenue.ts): bring the refunded
+    // value to the same basis, pro rata. Exclusive orders scale by 1.
+    const refundedGross =
+      order.subtotalIdr > 0
+        ? Number(
+            (BigInt(refundedSubtotalIdr) *
+              BigInt(Math.max(0, orderNetSubtotalIdr(order)))) /
+              BigInt(order.subtotalIdr),
+          )
+        : refundedSubtotalIdr;
+    // The goods part never exceeds what the refunded items carried: a bigger
+    // value would mean a negative discount, which has no place in a refund.
+    const grossPart = Math.max(refundedGross, netPart);
+    return {
+      grossSalesIdr: grossPart,
+      discountIdr: grossPart - netPart,
+      serviceChargeIdr: servicePart,
+      pbjtIdr: taxPart,
+    };
+  }
   const discountPart =
     net > 0
       ? Math.min(
@@ -625,6 +656,9 @@ export async function refundPosOrder(
       // deposit side still owes the guest (not paid back here).
       let depositGoodsReturn = false;
       let depositOwedIdr = 0;
+      // legend-aef1: bill value (before promo) of the items this refund returns,
+      // set once the promo is re-priced; the revenue split builds on it.
+      let promoRefundedSubtotalIdr: number | null = null;
       const promoApplication = await livePromoApplicationOf(
         tx,
         context,
@@ -687,6 +721,7 @@ export async function refundPosOrder(
             "Promo pesanan ini tidak lagi memenuhi syarat untuk item yang tersisa; pelunasan sisa refund perlu koreksi admin.",
           );
         if (recomputed.adjusted) {
+          promoRefundedSubtotalIdr = Number(recomputed.refundedSubtotalIdr);
           // Kept goods after the promo (application) and after their pro-rata
           // (by price) share of any manual discount stacked on the sale.
           const keptSubtotal = keptLines.reduce(
@@ -837,7 +872,7 @@ export async function refundPosOrder(
           lines,
           now,
         });
-      const split = refundSplit(order, payout);
+      const split = refundSplit(order, payout, promoRefundedSubtotialIdr);
       // Goods part of the payout goes onto the promo application's ledger.
       if (promoApplication && !goodsReturnOnly)
         await posPromoRefundPort().recordPartialRefundPayout(tx, context, {

@@ -1019,6 +1019,30 @@ describe("late payment and refresh", () => {
     expect(view.body.data.paidAfterExpiry).toBe(true);
   });
 
+  it("legend-jf4i the worker sweep leaves a lapsed gateway code to the poller", async () => {
+    gateway.expiresInMs = 40;
+    const { token } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "worker-sweep-key",
+      });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const now = new Date(Date.now() + 60_000);
+    // The poller owns a gateway-backed code until its 24 h reconciliation
+    // window closes: expiring it here would end the polling (money may land late).
+    const swept = await expireDueIntents(contextFor(), now, 200, {
+      leaveGatewayReconciling: true,
+    });
+    expect(swept.expired).toBe(0);
+    // Still pending: the plain sweep (no option) finds and expires it.
+    const plain = await expireDueIntents(contextFor(), now);
+    expect(plain.expired).toBeGreaterThanOrEqual(1);
+    expect(created.body.data.id).toBeTruthy();
+  });
+
   it("PAY-01 refresh mints a new code with the outstanding server amount", async () => {
     gateway.expiresInMs = 40;
     const { token } = await openBill();

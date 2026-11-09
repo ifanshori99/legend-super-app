@@ -637,6 +637,10 @@ describe("legend-q1e0 partial refund of a promo order (founder examples)", () =>
       status: expect.not.stringMatching(/released/),
     });
     expect(await spentOf(sale.promotionId)).toBe(10_000);
+    // Split: the refunded item (Rp50.000) is gross, Rp10.000 of its discount goes.
+    expect(await refundedSplits(sale.orderId)).toMatchObject([
+      { amountIdr: 40_000, grossSalesIdr: 50_000, discountIdr: 10_000 },
+    ]);
     expect(await refundRows(sale.orderId)).toEqual([
       { amount: 40_000, items: [{ itemId: sale.itemA, quantity: 1 }] },
     ]);
@@ -666,6 +670,11 @@ describe("legend-q1e0 partial refund of a promo order (founder examples)", () =>
     });
     // The whole promotion is given back to the budget.
     expect(await spentOf(sale.promotionId)).toBe(0);
+    // legend-aef1: the refunded item is Rp50.000 gross and the whole Rp20.000
+    // discount is reversed (not the order's 25% ratio: 37.5k / 7.5k).
+    expect(await refundedSplits(sale.orderId)).toMatchObject([
+      { amountIdr: 30_000, grossSalesIdr: 50_000, discountIdr: 20_000 },
+    ]);
     expect(await refundRows(sale.orderId)).toHaveLength(1);
     expect(await dailyStock()).toEqual(stockBefore);
   });
@@ -1129,6 +1138,29 @@ async function orderEventTypes(orderId: string) {
     [tenant.tenantId, ulidToUuid(orderId as never)],
   );
   return rows.map((row) => row.type);
+}
+
+/** The revenue split of each order.refunded event of an order (legend-aef1). */
+async function refundedSplits(orderId: string) {
+  const { rows } = await owner.query<{
+    amountIdr: number;
+    grossSalesIdr: number;
+    discountIdr: number;
+    serviceChargeIdr: number;
+    pbjtIdr: number;
+  }>(
+    `SELECT (event->'payload'->>'amountIdr')::int AS "amountIdr",
+            (event->'payload'->>'grossSalesIdr')::int AS "grossSalesIdr",
+            (event->'payload'->>'discountIdr')::int AS "discountIdr",
+            (event->'payload'->>'serviceChargeIdr')::int AS "serviceChargeIdr",
+            (event->'payload'->>'pbjtIdr')::int AS "pbjtIdr"
+       FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = 'order.refunded'
+        AND event->'payload'->>'orderId' = $2
+      ORDER BY id`,
+    [tenant.tenantId, orderId],
+  );
+  return rows;
 }
 
 async function outboxEventNames(orderId: string) {

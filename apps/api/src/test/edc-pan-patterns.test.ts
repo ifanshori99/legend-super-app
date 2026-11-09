@@ -39,6 +39,17 @@ const row = {
   completedAt: null,
 };
 
+// Separators beyond space, tab and dash (legend-deu7r): line breaks, NBSP
+// (U+00A0), slash and underscore also split a card number in free text.
+const oddSeparatorPans = [
+  "4111\n1111\n1111\n1111",
+  "4111\r\n1111\r\n1111\r\n1111",
+  "4111 1111 1111 1111",
+  "4111/1111/1111/1111",
+  "4111_1111_1111_1111",
+  "4111 \n 1111/1111_1111",
+];
+
 const spacedPans = [
   "4111 1111 1111 1111",
   "4111  1111  1111  1111",
@@ -73,6 +84,19 @@ describe("free-text message (write path)", () => {
     );
   });
 
+  it("masks a card number split by newline, CRLF, NBSP, slash or underscore", () => {
+    for (const pan of oddSeparatorPans) {
+      expect(write(`kartu ${pan} ditolak`)).toBe("kartu [disamarkan] ditolak");
+    }
+  });
+
+  it("keeps a date and a time written with slash or colon", () => {
+    expect(write("tgl 2026/11/09 12:30:45 ok")).toBe(
+      "tgl 2026/11/09 12:30:45 ok",
+    );
+    expect(write("ref 12345_67890 ok")).toBe("ref 12345_67890 ok");
+  });
+
   it("masks a tab-separated card number", () => {
     expect(write("kartu 4111\t1111\t1111\t1111 ditolak")).toBe(
       "kartu [disamarkan] ditolak",
@@ -105,6 +129,18 @@ describe("free-text message (read path)", () => {
     );
     expect(read("kartu 4111 1111 1111 ditolak")).toBe(
       "kartu [disamarkan] ditolak",
+    );
+  });
+
+  it("masks a card number split by newline, CRLF, NBSP, slash or underscore", () => {
+    for (const pan of oddSeparatorPans) {
+      expect(read(`kartu ${pan} ditolak`)).toBe("kartu [disamarkan] ditolak");
+    }
+  });
+
+  it("keeps a date and a time written with slash or colon", () => {
+    expect(read("tgl 2026/11/09 12:30:45 ok")).toBe(
+      "tgl 2026/11/09 12:30:45 ok",
     );
   });
 
@@ -292,6 +328,59 @@ describe("200-char tail left by the old write path (legend-lg45)", () => {
       tail: " Rp 50.000  4111  111",
       expectedTail: " Rp 50.000  [disamark",
     },
+    // legend-stetb: the old single-separator pattern could not cross a slash,
+    // an underscore, a line break or an NBSP either, so a card cut at 200 and
+    // joined by one of them left a remnant the tail rule must catch too.
+    {
+      name: "card cut at the end, joined by slashes",
+      tail: " 4111/1111/11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by underscores",
+      tail: " 4111_1111_11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by line breaks",
+      tail: " 4111\r\n1111\r\n11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "card cut at the end, joined by NBSP",
+      tail: " 4111\u00a01111\u00a011",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits, a slash, then a cut mask prefix",
+      tail: " 7777777/[disa",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits, an underscore, then a cut mask missing its bracket",
+      tail: " 7777777_[disamarkan",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by a slash",
+      tail: " [disamarkan]/111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by an underscore",
+      tail: " [disamarkan]_111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits left after a whole mask, joined by a line break",
+      tail: " [disamarkan]\n111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "a date with slashes at the very end (accepted effect: 8 digits, wide separator)",
+      tail: " 2026/11/09",
+      expectedTail: " [disamarkan]",
+    },
   ];
 
   // Tails that must stay exactly as they are at 200.
@@ -317,6 +406,21 @@ describe("200-char tail left by the old write path (legend-lg45)", () => {
     {
       name: "amount then only 6 digits",
       tail: " Rp 50.000  4111  11",
+      expectedTail: "",
+    },
+    {
+      name: "only 6 digits joined by a slash",
+      tail: " 12345/1",
+      expectedTail: "",
+    },
+    {
+      name: "date and time with slashes",
+      tail: " 2026/11/09 10:00",
+      expectedTail: "",
+    },
+    {
+      name: "short code after a mask with a colon",
+      tail: " [disamarkan]:51",
       expectedTail: "",
     },
   ];
