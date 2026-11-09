@@ -21,6 +21,11 @@
 //   in the event payload is the per-tenant payout_stalled_hours (same meaning as
 //   for the other reasons), and `waitingSince` is the stall stamp. Stall tests
 //   call escalateStaleRefunds directly so the payout sweep cannot move a row.
+// - Evidence mapping (legend-ix8i): the brief calls it `mapRefundEvidence`; the
+//   user-facing action is the ops retry that maps a fund to its source evidence
+//   (retryRefundPayout with sourceEvidenceId). The retry also runs one payout
+//   attempt, so the gateway is scripted to time out and the refund stays
+//   approved; the next stall is then simulated by setting MANUAL_RECONCILIATION.
 // - Recipient rule: users with `outlet_manager` (outlet scope) and `finance`
 //   (tenant scope) both receive the alert; a cashier does not.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -50,6 +55,7 @@ import { listRefunds } from "../services/payment-admin.service";
 import {
   escalateStaleRefunds,
   reopenQuarantinedRefund,
+  retryRefundPayout,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
 import { createNotificationRecipientResolver } from "../worker/notification-adapters.ts";
@@ -85,6 +91,7 @@ type Seeded = { tenantId: string; outletId: string; intentId: string };
 const refundIds: string[] = [];
 const intents: string[] = [];
 const links: string[] = [];
+const fundIds: string[] = [];
 let other: IsolatedTenant;
 let otherSeed: Seeded;
 let fake: FakeRefundGateway | null = null;
@@ -261,6 +268,22 @@ async function outboxRows(refundId: string, forTenant: string = tenantId) {
 
 const sweep = () => sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
 
+async function evidenceMappedAudits(refundId: string) {
+  const { rows } = await owner.query<{
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+  }>(
+    `SELECT event->'maskedChanges'->'before' AS before,
+            event->'maskedChanges'->'after' AS after
+     FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2
+       AND event->>'action' = 'payment.refund_fund_evidence_mapped'
+     ORDER BY created_at`,
+    [tenantId, refundId],
+  );
+  return rows;
+}
+
 async function purgeAudits(ids: string[]) {
   if (ids.length === 0) return;
   const client = await owner.connect();
@@ -293,6 +316,10 @@ async function cleanRows() {
   await owner.query("DELETE FROM payment_refunds WHERE id = ANY($1::uuid[])", [
     refundIds,
   ]);
+  await owner.query(
+    "DELETE FROM payment_unallocated_funds WHERE id = ANY($1::uuid[])",
+    [fundIds],
+  );
   await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
     [intents],
@@ -1046,6 +1073,126 @@ describe.each(gatewayModes)("legend-n9kn refund escalation (%s)", (_label, makeG
     expect(row.escalated_at).toBeNull();
     expect(row.escalation_reason).toBeNull();
   });
+
+  /** An approved, never-polled fund refund whose payout waits for evidence mapping, approved by an ops user with supervisor authority. decided_at is now(): an older decision made the payout re-validation quarantine it (supervisor_required). */
+  async function seedFundRefund(): Promise<{ id: string; evidenceId: string }> {
+    const seed = await seedPaid();
+    const evidence = await owner.query<{ id: string }>(
+      "SELECT id FROM payment_evidence WHERE payment_intent_id = $1",
+      [seed.intentId],
+    );
+    const fundId = randomUUID();
+    fundIds.push(fundId);
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, evidence_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, NULL, 20000, 'overpayment')`,
+      [fundId, tenantId, outletA, seed.intentId],
+    );
+    const id = randomUUID();
+    refundIds.push(id);
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by,
+          approved_by, decided_at, payout_attempts, last_payout_error, updated_at, unallocated_fund_id)
+       VALUES ($1, $2, $3, $4, 20000, 'Kembalikan kelebihan bayar', 'approved', $5,
+          $6, now(), 0, 'EVIDENCE_MAPPING_REQUIRED', now() - interval '2 hours', $7)`,
+      [id, tenantId, outletA, seed.intentId, REQUESTER, opsUser, fundId],
+    );
+    return { id, evidenceId: evidence.rows[0]!.id };
+  }
+
+  const mapEvidence = (id: string, evidenceId: string) => {
+    // The retry runs one payout attempt; a timeout leaves the refund approved.
+    fake!.enqueue("throw");
+    const retryKey = `esc-map-${randomUUID()}`;
+    return retryRefundPayout(
+      tenantWide,
+      opsUser,
+      { refundId: id, sourceEvidenceId: evidenceId },
+      retryKey,
+    );
+  };
+
+  it.skipIf(!installed)(
+    "legend-ix8i mapping a stalled refund's evidence clears the payout_stalled flag; when it stalls again it escalates anew (2 audits, 2 notifications in total)",
+    async () => {
+      const { id, evidenceId } = await seedFundRefund();
+      expect(await escalate()).toBe(0);
+      await backdateStall(id, 25);
+      expect(await escalate()).toBe(1);
+      expect((await refundRow(id)).escalation_reason).toBe("payout_stalled");
+      expect(await audits(id)).toHaveLength(1);
+      expect(await outboxRows(id)).toHaveLength(1);
+
+      await mapEvidence(id, evidenceId);
+      const mapped = await refundRow(id);
+      expect(mapped.status).toBe("approved");
+      expect(mapped.escalated_at).toBeNull();
+      expect(mapped.escalation_reason).toBeNull();
+      expect(mapped.payout_stall_detected_at).toBeNull();
+      const mappedAudits = await evidenceMappedAudits(id);
+      expect(mappedAudits).toHaveLength(1);
+      expect(mappedAudits[0]!.before?.escalationReason).toBe("payout_stalled");
+      expect(mappedAudits[0]!.after?.escalationReason).toBeNull();
+
+      // Nothing is stalled right after mapping, so the sweep escalates nothing.
+      expect(await escalate()).toBe(0);
+      expect((await refundRow(id)).escalated_at).toBeNull();
+      expect(await audits(id)).toHaveLength(1);
+
+      // The payout stalls again: new stamp, then a second escalation after 25 h.
+      await owner.query(
+        "UPDATE payment_refunds SET last_payout_error = 'MANUAL_RECONCILIATION' WHERE id = $1",
+        [id],
+      );
+      expect(await escalate()).toBe(0);
+      expect((await refundRow(id)).payout_stall_detected_at).not.toBeNull();
+      expect((await refundRow(id)).escalated_at).toBeNull();
+      await backdateStall(id, 25);
+      expect(await escalate()).toBe(1);
+      const again = await refundRow(id);
+      expect(again.escalation_reason).toBe("payout_stalled");
+      expect(again.escalated_at).not.toBeNull();
+      expect(await audits(id)).toHaveLength(2);
+      expect(await outboxRows(id)).toHaveLength(2);
+
+      expect(await escalate()).toBe(0);
+      expect(await audits(id)).toHaveLength(2);
+      expect(await outboxRows(id)).toHaveLength(2);
+    },
+  );
+
+  it.skipIf(!installed)(
+    "legend-ix8i mapping a refund's evidence keeps an escalation of another reason (pending_unapproved) and only resets its stall clock",
+    async () => {
+      const { id, evidenceId } = await seedFundRefund();
+      expect(await escalate()).toBe(0);
+      expect((await refundRow(id)).payout_stall_detected_at).not.toBeNull();
+      await owner.query(
+        `UPDATE payment_refunds
+            SET escalated_at = now() - interval '5 hours', escalation_reason = 'pending_unapproved'
+          WHERE id = $1`,
+        [id],
+      );
+      const escalatedAt = (await refundRow(id)).escalated_at;
+
+      await mapEvidence(id, evidenceId);
+
+      const row = await refundRow(id);
+      expect(row.escalation_reason).toBe("pending_unapproved");
+      expect(row.escalated_at).toEqual(escalatedAt);
+      expect(row.payout_stall_detected_at).toBeNull();
+      expect(row.status).toBe("approved");
+      const mappedAudits = await evidenceMappedAudits(id);
+      expect(mappedAudits).toHaveLength(1);
+      expect(mappedAudits[0]!.before?.escalationReason).toBe(
+        "pending_unapproved",
+      );
+      expect(mappedAudits[0]!.after?.escalationReason).toBe(
+        "pending_unapproved",
+      );
+    },
+  );
 });
 
 describe("legend-n9kn notification recipients for payment.refund_escalated", () => {

@@ -2180,9 +2180,29 @@ async function mapFundEvidence(
       throw conflict("Evidence is already mapped to another fund.");
     throw error;
   }
+  // Lock the refund (after intent and fund, the lockRefundGraph order) so the
+  // audit's escalation `before` is the row this update really changes.
+  const [current] = await tx
+    .select({ escalationReason: paymentRefunds.escalationReason })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.id, refund.id),
+      ),
+    )
+    .for("update");
   const [cleared] = await tx
     .update(paymentRefunds)
-    .set({ lastPayoutError: null, updatedAt: now })
+    .set({
+      lastPayoutError: null,
+      // Ops resolved the stall: a later stall is a new wait and alerts again,
+      // like a quarantine reopen (legend-ix8i). Other reasons stay.
+      payoutStallDetectedAt: null,
+      escalatedAt: sql`CASE WHEN ${paymentRefunds.escalationReason} = 'payout_stalled' THEN NULL ELSE ${paymentRefunds.escalatedAt} END`,
+      escalationReason: sql`CASE WHEN ${paymentRefunds.escalationReason} = 'payout_stalled' THEN NULL ELSE ${paymentRefunds.escalationReason} END`,
+      updatedAt: now,
+    })
     .where(
       and(
         eq(paymentRefunds.tenantId, tenantId),
@@ -2196,8 +2216,16 @@ async function mapFundEvidence(
     row: cleared ?? refund,
     action: "payment.refund_fund_evidence_mapped",
     now,
-    before: { evidenceId: null },
-    after: { evidenceId },
+    before: {
+      evidenceId: null,
+      escalationReason: current?.escalationReason ?? refund.escalationReason,
+    },
+    after: {
+      evidenceId,
+      escalationReason: cleared
+        ? cleared.escalationReason
+        : (current?.escalationReason ?? refund.escalationReason),
+    },
   });
 }
 
