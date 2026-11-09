@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-npkpz sesi impersonate dipotong saat grant berakhir (engineer, cabang `ws/impersonate-expiry-cap` dari integ/m1-batch24 94d769c6, 2026-11-09)
+
+- Sudah: `expiresAt` sesi impersonated = min(expiry Better Auth, sekarang + 60 menit, akhir grant terakhir yang cocok) di `session.create.before` (`impersonationSessionEnd`). Grant dicabut atau kedaluwarsa kemudian tetap ditolak guard per request.
+- Scan grant lintas tenant: dalam satu request `POST /api/auth/admin/impersonate-user` scan penuh pertama yang berhasil mengingat tenant yang cocok (memo `WeakMap` di store AsyncLocalStorage request); dua cek berikutnya scan ulang segar (grant + peran) hanya di tenant itu, jadi grant yang diakhiri di tengah request tetap ditolak (temuan Low reviewer Opus, dibetulkan). Test: 31 transaksi jadi < 2 × jumlah tenant. Tanpa request (server-side `auth.api`) tetap scan penuh tiap cek.
+- Batas (jujur): grant ada di bawah RLS tenant yang di-force, jadi tanpa migrasi scan tetap mengunjungi tiap tenant sekali per request mulai, dan sekali saat selesai. Penyempitan sungguhan butuh fungsi SECURITY DEFINER (migrasi), di luar scope.
+- Label audit: `support_access.*` (granted, denied, ended, expired, impersonation_started, impersonation_ended) dan object type `support_access_grant`.
+- Audit mulai: `impersonationEndsAt` per tenant = min(akhir sesi, akhir grant tenant itu).
+- Review K: reviewer Opus (1 Low: memo memakai baris grant lama, grant diakhiri di tengah request tetap dipercaya; dibetulkan, memo kini hanya tenant id) + architect (setuju; Low test dua tenant, Info akhir per tenant, Nit tipe: semua dibetulkan). Follow-up: legend-edjgj (fungsi SECURITY DEFINER, migrasi).
+- Berikut: second-opinion Codex (brief `docs/briefs/206b-second-opinion-impersonate-expiry-cap.md` di folder utama), merge train.
+
 ## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
 
 - Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.

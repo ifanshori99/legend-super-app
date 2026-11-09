@@ -54,6 +54,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { getRequestContext } from "../lib/request-context.ts";
 import {
   recordAudit,
   type AuditEntry,
@@ -745,10 +746,12 @@ export async function findImpersonationGrants(input: {
   targetUserId: string;
   now: Date;
   at?: Date;
+  /** Only these tenants (default: every tenant). */
+  tenantIds?: readonly string[];
 }): Promise<ImpersonationMatch[]> {
   const at = input.at ?? input.now;
   const matches: ImpersonationMatch[] = [];
-  for (const tenantId of await allTenantIds()) {
+  for (const tenantId of input.tenantIds ?? (await allTenantIds())) {
     const match = await withTenant(
       db,
       platformTenantContext(tenantId),
@@ -794,6 +797,63 @@ export async function findImpersonationGrants(input: {
   return matches;
 }
 
+/*
+ * One POST /api/auth/admin/impersonate-user checks the same impersonation
+ * three times (hooks.before, session.create.before, session.create.after;
+ * legend-npkpz). Grants are tenant-owned under forced RLS, so only a scan of
+ * every tenant (one tenant transaction each) can find them. The first
+ * successful scan of a request remembers which tenants matched; the later
+ * checks of that request scan again, fresh, but only those tenants. A grant
+ * or role assignment that ends in between is therefore still seen, and a
+ * tenant outside the first match could only add a match, never remove one.
+ * The memo is keyed on the request's AsyncLocalStorage store, which dies with
+ * the request. Outside an HTTP request (server-side auth.api.impersonateUser)
+ * there is no store and every check scans every tenant.
+ */
+const requestScans = new WeakMap<object, Map<string, string[]>>();
+
+async function scanImpersonationGrants(input: {
+  adminUserId: string;
+  targetUserId: string;
+  now: Date;
+}): Promise<ImpersonationMatch[]> {
+  const store = getRequestContext();
+  const key = `${input.adminUserId}\u0000${input.targetUserId}`;
+  const tenantIds = store ? requestScans.get(store)?.get(key) : undefined;
+  const matches = await findImpersonationGrants({ ...input, tenantIds });
+  if (store && !tenantIds && matches.length > 0) {
+    let scans = requestScans.get(store);
+    if (!scans) requestScans.set(store, (scans = new Map()));
+    scans.set(
+      key,
+      matches.map((match) => match.tenantId),
+    );
+  }
+  return matches;
+}
+
+/**
+ * When an impersonated session must end: the Better Auth expiry, but never
+ * after IMPERSONATION_SESSION_MAX_SECONDS from `now`, nor after the last
+ * matched grant ends (legend-npkpz). The support-session guard still refuses
+ * each request once the grant of that request's tenant has ended.
+ */
+export function impersonationSessionEnd(input: {
+  requested: Date;
+  matches: ImpersonationMatch[];
+  now: Date;
+}): Date {
+  const ends = [
+    input.requested.getTime(),
+    input.now.getTime() + IMPERSONATION_SESSION_MAX_SECONDS * 1000,
+  ];
+  if (input.matches.length > 0)
+    ends.push(
+      Math.max(...input.matches.map(({ grant }) => grant.expiresAt.getTime())),
+    );
+  return new Date(Math.min(...ends));
+}
+
 /** Throws ImpersonationRefused unless the impersonation is covered by a grant. */
 export async function assertImpersonationAllowed(input: {
   adminUserId: string;
@@ -813,7 +873,7 @@ export async function assertImpersonationAllowed(input: {
       "IMPERSONATION_NOT_ALLOWED",
       "This user cannot be impersonated.",
     );
-  const matches = await findImpersonationGrants(input);
+  const matches = await scanImpersonationGrants(input);
   if (matches.length === 0)
     throw new ImpersonationRefused(
       "SUPPORT_ACCESS_REQUIRED",
@@ -865,7 +925,11 @@ export async function recordImpersonationStarted(input: {
         // Pairs start and end rows. Not named *session*: masking redacts it.
         impersonationId: input.sessionId,
         accessMode: grant.accessMode,
-        impersonationEndsAt: input.sessionExpiresAt.toISOString(),
+        // This tenant's access ends with its own grant, even when another
+        // tenant's later grant keeps the session alive (legend-npkpz).
+        impersonationEndsAt: new Date(
+          Math.min(input.sessionExpiresAt.getTime(), grant.expiresAt.getTime()),
+        ).toISOString(),
         grantExpiresAt: grant.expiresAt.toISOString(),
       },
     }),
