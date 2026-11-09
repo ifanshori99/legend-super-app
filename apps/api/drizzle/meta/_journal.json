@@ -722,6 +722,20 @@
       "when": 1794186357711,
       "tag": "0102_pos_receipts_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1794198094000,
+      "tag": "0103_edge_deferred_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1794198095746,
+      "tag": "0104_edge_deferred_events_rls",
+      "breakpoints": true
     }
   ]
 }
