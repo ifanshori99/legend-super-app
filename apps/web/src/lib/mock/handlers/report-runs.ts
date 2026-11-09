@@ -16,10 +16,11 @@ import { ApiError } from "../../api/errors.ts";
 import { registerMock } from "../registry.ts";
 
 /**
- * One run answers one question: report, split, period and outlet scope. Two
- * screens may run the same report with a different split (the owner's
- * per-channel table, the GM's unsplit total), and two outlets are two
- * questions, so the key carries all four; the same question registered twice
+ * One run answers one question: report, split, period, bucket and outlet
+ * scope. Two screens may run the same report with a different split (the
+ * owner's per-channel table, the GM's unsplit total), a total and a per-day
+ * run of one period have different rows, and two outlets are two questions,
+ * so the key carries all five; the same question registered twice
  * with different numbers would break DASH-02 (a tile and its drill-down must
  * agree), so it fails loudly instead of last-write-wins.
  *
@@ -54,8 +55,9 @@ function questionKey(
   reportCode: string,
   groupBy: readonly string[],
   period: Period,
+  bucket: string,
 ): string {
-  return `${reportCode}|${groupBy.join(",")}|${period.startDate}|${period.endDate}`;
+  return `${reportCode}|${groupBy.join(",")}|${period.startDate}|${period.endDate}|${bucket}`;
 }
 
 function runKey(question: string, scope: string): string {
@@ -101,15 +103,16 @@ function figuresOf(result: ReportResult): string {
  * Whether a run for this exact question is already registered. A screen that
  * would otherwise serve different numbers for the same key yields to the
  * first owner (registration order is the feature folder order of the glob).
- * Without `outletIds` any outlet's run counts.
+ * Without `outletIds` any outlet's run counts. `bucket` defaults to `total`.
  */
 export function hasMockReportRun(
   reportCode: string,
   groupBy: readonly string[],
   period: Period,
   outletIds?: readonly string[],
+  bucket = "total",
 ): boolean {
-  const question = questionKey(reportCode, groupBy, period);
+  const question = questionKey(reportCode, groupBy, period, bucket);
   return outletIds === undefined
     ? scopesByQuestion.has(question)
     : runs.has(runKey(question, scopeOf(outletIds)));
@@ -126,6 +129,7 @@ export function registerMockReportRuns(
       result.reportCode,
       result.groupBy,
       result.period,
+      result.bucket,
     );
     const scope = scopeOfResult(result);
     const key = runKey(question, scope);
@@ -154,7 +158,7 @@ registerMock(runReportEndpoint, ({ body, scenario }) => {
       "Laporan tidak ditemukan di katalog.",
     );
   const run = findRun(
-    questionKey(body.reportCode, body.groupBy, body.period),
+    questionKey(body.reportCode, body.groupBy, body.period, body.bucket),
     body.outletIds,
   );
   // A split or period the fixture was not built for is contract drift, not a demo.

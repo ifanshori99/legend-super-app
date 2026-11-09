@@ -189,12 +189,20 @@ describe("builder mock · DASH-02", () => {
     );
     assert.ok(data.rows.length > 0);
     assert.equal(data.rows[0].dimensions[0].key, "hour");
-    // Sorted by net_sales desc as asked.
-    const sales = data.rows.map((row) => row.values[0].value.valueIdr);
-    assert.deepEqual(
-      sales,
-      [...sales].sort((a, b) => b - a),
-    );
+    // Day buckets run in date order; net_sales sorts desc inside each bucket.
+    assert.equal(data.bucket, "day");
+    const starts = data.rows.map((row) => row.bucketStart);
+    assert.deepEqual(starts, [...starts].sort());
+    for (const row of data.rows) assert.equal(row.bucketStart, row.bucketEnd);
+    for (const start of new Set(starts)) {
+      const sales = data.rows
+        .filter((row) => row.bucketStart === start)
+        .map((row) => row.values[0].value.valueIdr);
+      assert.deepEqual(
+        sales,
+        [...sales].sort((x, y) => y - x),
+      );
+    }
     // The same query always shows the same table.
     const again = await post("/api/reports/builder/preview", query);
     assert.deepEqual(again.data.rows, data.rows);

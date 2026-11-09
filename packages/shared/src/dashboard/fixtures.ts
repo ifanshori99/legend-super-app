@@ -160,6 +160,7 @@ function kpiRun(
       status: "open",
       accountingPeriodClosed: false,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: cells.map((cell) => metricRef(cell.metricCode)),
     availability: cells.map((cell) => ({
@@ -169,6 +170,8 @@ function kpiRun(
     groupBy: [],
     rows: [
       {
+        bucketStart: period.startDate,
+        bucketEnd: period.endDate,
         dimensions: [],
         values: cells.map((cell) => ({
           metricCode: cell.metricCode,
@@ -180,6 +183,7 @@ function kpiRun(
     ],
     generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 
@@ -305,6 +309,7 @@ export const reportRunResultFixture = reportResultSchema.parse({
     status: "closed",
     accountingPeriodClosed: true,
   }),
+  bucket: "total",
   outletFilter: { kind: "outlets", outletIds: [outlet.id] },
   definitions: [metricRef("net_sales"), metricRef("transaction_count")],
   availability: [
@@ -314,6 +319,8 @@ export const reportRunResultFixture = reportResultSchema.parse({
   groupBy: ["channel"],
   rows: [
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "qr" }],
       values: [
         {
@@ -329,6 +336,8 @@ export const reportRunResultFixture = reportResultSchema.parse({
       ],
     },
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "pos" }],
       values: [
         {
@@ -344,6 +353,8 @@ export const reportRunResultFixture = reportResultSchema.parse({
       ],
     },
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "gofood" }],
       values: [
         {
@@ -359,6 +370,8 @@ export const reportRunResultFixture = reportResultSchema.parse({
       ],
     },
     {
+      bucketStart: "2026-10-01",
+      bucketEnd: "2026-10-31",
       dimensions: [{ key: "channel", value: "grabfood" }],
       values: [
         {
@@ -376,6 +389,7 @@ export const reportRunResultFixture = reportResultSchema.parse({
   ],
   generatedAt: "2026-11-01T22:46:00.000Z",
   rowLimit: 100,
+  truncated: false,
 });
 
 export const reportBuilderQueryFixture = reportBuilderQuerySchema.parse({
@@ -607,6 +621,7 @@ function ownerBoardRun(
   return reportResultSchema.parse({
     reportCode: code,
     period: ownerBoardPeriod,
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: report.metrics.map(ownerBoardMetricRef),
     availability: report.metrics.map((metricCode) => ({
@@ -615,6 +630,8 @@ function ownerBoardRun(
     })),
     groupBy,
     rows: rows.map((row) => ({
+      bucketStart: ownerBoardPeriod.startDate,
+      bucketEnd: ownerBoardPeriod.endDate,
       dimensions: (row.dims ?? []).map(([key, value]) => ({ key, value })),
       values: report.metrics.map((metricCode) => ({
         metricCode,
@@ -624,6 +641,7 @@ function ownerBoardRun(
     })),
     generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
+    truncated: false,
   });
 }
 

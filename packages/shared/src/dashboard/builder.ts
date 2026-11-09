@@ -13,6 +13,7 @@
 
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  businessDateSchema,
   clientInputSchema,
   cursorPageQuerySchema,
   cursorPageSchema,
@@ -50,6 +51,15 @@ export const REPORT_BUILDER_MAX_DIMENSIONS = 3;
 export const REPORT_BUILDER_MAX_FILTERS = 10;
 export const REPORT_BUILDER_MAX_ROWS = 1000;
 export const REPORT_BUILDER_DEFAULT_ROWS = 100;
+
+/**
+ * Split dimensions a report run answers besides `outlet` (legend-hdfd2).
+ * `metrics_daily` stores one dimension per row, so a second split (channel and
+ * hour together, say) cannot be read back; going deeper needs a schema change.
+ * The schema does not refuse a longer `groupBy`: the run answers 200 with
+ * `unavailable` / `dimension_not_supported`, as it does for any unreadable split.
+ */
+export const REPORT_RUN_MAX_SPLIT_DIMENSIONS = 1;
 
 export const REPORT_SORT_DIRECTIONS = ["asc", "desc"] as const;
 export const reportSortDirectionSchema = z.enum(REPORT_SORT_DIRECTIONS);
@@ -237,9 +247,14 @@ export const reportRunInputSchema = clientInputSchema({
 });
 export type ReportRunInput = z.infer<typeof reportRunInputSchema>;
 
-/** One row: the dimension values in `groupBy` order, then one value per metric. */
+/**
+ * One row: the bucket it belongs to, the dimension values in `groupBy` order,
+ * then one value per metric. For bucket `total` the bucket is the whole period.
+ */
 export const reportResultRowSchema = z
   .strictObject({
+    bucketStart: businessDateSchema,
+    bucketEnd: businessDateSchema,
     dimensions: z
       .array(metricDimensionValueSchema)
       .max(REPORT_BUILDER_MAX_DIMENSIONS),
@@ -256,6 +271,12 @@ export const reportResultRowSchema = z
       .max(REPORT_BUILDER_MAX_METRICS),
   })
   .superRefine((row, ctx) => {
+    if (row.bucketStart > row.bucketEnd)
+      ctx.addIssue({
+        code: "custom",
+        message: "bucketStart must not be after bucketEnd",
+        path: ["bucketEnd"],
+      });
     const codes = row.values.map((value) => value.metricCode);
     if (new Set(codes).size !== codes.length)
       ctx.addIssue({
@@ -274,7 +295,9 @@ export const reportResultRowSchema = z
 export type ReportResultRow = z.infer<typeof reportResultRowSchema>;
 
 /**
- * Table result of one run. `groupBy` and every row's dimensions share one
+ * Table result of one run. `bucket` is the period's bucket: one block of rows
+ * per bucket, in bucket order, then dimension order; `limit` counts all rows.
+ * `groupBy` and every row's dimensions share one
  * order; every row carries exactly the requested definitions in order, so a
  * cell always resolves to a registry row (DASH-01). `finality` is per value:
  * an open period is an estimate, a closed one final (SH-02).
@@ -284,6 +307,7 @@ export const reportResultSchema = z
     /** Null for an ad hoc builder preview; set for a catalog report. */
     reportCode: reportCodeSchema.nullable(),
     period: metricPeriodSchema,
+    bucket: metricBucketSchema,
     outletFilter: metricOutletFilterSchema,
     definitions: z
       .array(metricDefinitionRefSchema)
@@ -300,6 +324,8 @@ export const reportResultSchema = z
     rows: z.array(reportResultRowSchema).max(REPORT_BUILDER_MAX_ROWS),
     generatedAt: isoDateTimeSchema,
     rowLimit: z.number().int().min(1).max(REPORT_BUILDER_MAX_ROWS),
+    /** True when `rowLimit` cut rows off; false when every row is here. */
+    truncated: z.boolean(),
   })
   .superRefine((result, ctx) => {
     const report =
@@ -309,6 +335,24 @@ export const reportResultSchema = z
         code: "custom",
         message: "reportCode is not in the catalog",
         path: ["reportCode"],
+      });
+    if (result.bucket !== result.period.bucket)
+      ctx.addIssue({
+        code: "custom",
+        message: "bucket must match the period bucket",
+        path: ["bucket"],
+      });
+    if (result.rows.length > result.rowLimit)
+      ctx.addIssue({
+        code: "custom",
+        message: "rows must not exceed rowLimit",
+        path: ["rows"],
+      });
+    if (result.truncated && result.rows.length !== result.rowLimit)
+      ctx.addIssue({
+        code: "custom",
+        message: "A truncated result fills rowLimit",
+        path: ["truncated"],
       });
     const codes = result.definitions.map((definition) => definition.code);
     if (new Set(codes).size !== codes.length)
@@ -336,7 +380,49 @@ export const reportResultSchema = z
     const byCode = new Map(
       result.definitions.map((definition) => [definition.code, definition]),
     );
+    let previousBucketStart: string | null = null;
+    const endOfBucket = new Map<string, string>();
     for (const [index, row] of result.rows.entries()) {
+      if (result.bucket === "day" && row.bucketStart !== row.bucketEnd)
+        ctx.addIssue({
+          code: "custom",
+          message: "A day row starts and ends on the same date",
+          path: ["rows", index, "bucketEnd"],
+        });
+      const knownEnd = endOfBucket.get(row.bucketStart);
+      if (knownEnd !== undefined && knownEnd !== row.bucketEnd)
+        ctx.addIssue({
+          code: "custom",
+          message: "Rows of one bucket share its end date",
+          path: ["rows", index, "bucketEnd"],
+        });
+      endOfBucket.set(row.bucketStart, row.bucketEnd);
+      if (
+        row.bucketStart < result.period.startDate ||
+        row.bucketEnd > result.period.endDate
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Row bucket must lie inside the period",
+          path: ["rows", index, "bucketStart"],
+        });
+      if (
+        result.bucket === "total" &&
+        (row.bucketStart !== result.period.startDate ||
+          row.bucketEnd !== result.period.endDate)
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "A total row covers the whole period",
+          path: ["rows", index, "bucketStart"],
+        });
+      if (previousBucketStart !== null && row.bucketStart < previousBucketStart)
+        ctx.addIssue({
+          code: "custom",
+          message: "Rows must be ordered by bucket",
+          path: ["rows", index, "bucketStart"],
+        });
+      previousBucketStart = row.bucketStart;
       const columnKeys = row.dimensions.map((dimension) => dimension.key);
       if (
         columnKeys.length !== result.groupBy.length ||
@@ -381,21 +467,30 @@ export const reportResultSchema = z
             message: `Cell value unit must be ${definition.unit}`,
             path: ["rows", index, "values", position, "value", "unit"],
           });
-        // SH-02: a figure is final only when its period is closed and, for
-        // closed-period-only metrics or reports, the books are closed too.
-        if (
-          cell.finality === "final" &&
-          (result.period.status === "open" ||
-            (!result.period.accountingPeriodClosed &&
-              (definition.officiality === "closed_period_only" ||
-                report?.closedPeriodOnly === true)))
-        )
-          ctx.addIssue({
-            code: "custom",
-            message:
-              "An open or not-yet-closed period can only report estimates (SH-02)",
-            path: ["rows", index, "values", position, "finality"],
-          });
+        // SH-02: a figure is final only when its bucket is closed and, for
+        // closed-period-only metrics or reports, its books are closed too.
+        // A total bucket is the whole period, so the period decides. A split
+        // bucket is ruled by the engine per bucket (a closed month can sit in
+        // a longer period); the schema only knows the last bucket of an open
+        // period is still running.
+        if (cell.finality === "final") {
+          const wholePeriod = result.bucket === "total";
+          const running =
+            result.period.status === "open" &&
+            (wholePeriod || row.bucketEnd >= result.period.endDate);
+          const booksOpen =
+            wholePeriod &&
+            !result.period.accountingPeriodClosed &&
+            (definition.officiality === "closed_period_only" ||
+              report?.closedPeriodOnly === true);
+          if (running || booksOpen)
+            ctx.addIssue({
+              code: "custom",
+              message:
+                "An open or not-yet-closed bucket can only report estimates (SH-02)",
+              path: ["rows", index, "values", position, "finality"],
+            });
+        }
       }
     }
   });

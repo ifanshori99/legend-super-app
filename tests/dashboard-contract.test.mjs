@@ -196,6 +196,220 @@ test("DASH-02: report run rows keep groupBy order and one typed value per defini
     );
 });
 
+test("DASH-02: report result rows carry their bucket inside the period (legend-ymtsg)", () => {
+  const result = fixtures.runResult;
+  const [row] = result.rows;
+  assert.equal(result.bucket, "total");
+  assert.equal(row.bucketStart, result.period.startDate);
+  assert.equal(row.bucketEnd, result.period.endDate);
+  const withoutBucket = { ...result, bucket: undefined };
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(withoutBucket).success,
+    false,
+    "result bucket is required",
+  );
+  for (const key of ["bucketStart", "bucketEnd"])
+    assert.equal(
+      dashboard.reportResultSchema.safeParse({
+        ...result,
+        rows: [{ ...row, [key]: undefined }, ...result.rows.slice(1)],
+      }).success,
+      false,
+      `row ${key} is required`,
+    );
+  const withRow = (patch) => ({
+    ...result,
+    rows: [{ ...row, ...patch }, ...result.rows.slice(1)],
+  });
+  for (const patch of [
+    { bucketStart: "2026-10-31", bucketEnd: "2026-10-01" },
+    { bucketStart: "2026-09-30" },
+    { bucketEnd: "2026-11-01" },
+    { bucketEnd: "2026-10-30" },
+  ])
+    assert.equal(
+      dashboard.reportResultSchema.safeParse(withRow(patch)).success,
+      false,
+      `total rows cover the period: ${JSON.stringify(patch)}`,
+    );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({ ...result, bucket: "day" })
+      .success,
+    false,
+    "result bucket follows the period bucket",
+  );
+});
+
+test("DASH-02: a day-bucket result lists rows by bucket, each inside the period (legend-ymtsg)", () => {
+  const result = fixtures.runResult;
+  const [row] = result.rows;
+  const day = (date, extra = {}) => ({
+    ...row,
+    dimensions: [],
+    bucketStart: date,
+    bucketEnd: date,
+    ...extra,
+  });
+  const perDay = {
+    ...result,
+    groupBy: [],
+    bucket: "day",
+    period: { ...result.period, bucket: "day" },
+    rows: [day("2026-10-01"), day("2026-10-02"), day("2026-10-03")],
+  };
+  assert.ok(dashboard.reportResultSchema.parse(perDay));
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...perDay,
+      rows: [...perDay.rows].reverse(),
+    }).success,
+    false,
+    "rows are ordered by bucket",
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...perDay,
+      rows: [day("2026-10-01"), day("2026-11-02")],
+    }).success,
+    false,
+    "a bucket outside the period is rejected",
+  );
+});
+
+test("DASH-02: a day bucket starts and ends on one date, rows of one bucket share its end (review R2)", () => {
+  const result = fixtures.runResult;
+  const [row] = result.rows;
+  const day = (date, extra = {}) => ({
+    ...row,
+    dimensions: [],
+    bucketStart: date,
+    bucketEnd: date,
+    ...extra,
+  });
+  const perDay = (rows) => ({
+    ...result,
+    groupBy: [],
+    bucket: "day",
+    period: { ...result.period, bucket: "day" },
+    rows,
+  });
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(
+      perDay([day("2026-10-01", { bucketEnd: "2026-10-02" })]),
+    ).success,
+    false,
+    "a day row spanning two dates is rejected",
+  );
+  const perWeek = (rows) => ({
+    ...result,
+    groupBy: [],
+    bucket: "week",
+    period: { ...result.period, bucket: "week" },
+    rows,
+  });
+  const week = (extra) =>
+    day("2026-10-01", { bucketEnd: "2026-10-04", ...extra });
+  assert.ok(dashboard.reportResultSchema.parse(perWeek([week({})])));
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(
+      perWeek([week({}), week({ bucketEnd: "2026-10-05" })]),
+    ).success,
+    false,
+    "rows with one bucketStart must share bucketEnd",
+  );
+});
+
+test("DASH-02: truncated is required and true only when the limit filled (review R2)", () => {
+  const result = fixtures.runResult;
+  assert.equal(result.truncated, false);
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({ ...result, truncated: undefined })
+      .success,
+    false,
+    "truncated is required",
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({ ...result, truncated: true })
+      .success,
+    false,
+    "a result below its limit cannot be truncated",
+  );
+  assert.ok(
+    dashboard.reportResultSchema.parse({
+      ...result,
+      rowLimit: result.rows.length,
+      truncated: true,
+    }),
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...result,
+      rowLimit: result.rows.length - 1 || 1,
+    }).success,
+    result.rows.length === 1,
+    "rows never exceed rowLimit",
+  );
+});
+
+test("SH-02: finality is ruled per bucket, the running bucket never final (review R2)", () => {
+  const result = fixtures.runResult;
+  const [row] = result.rows;
+  const open = {
+    ...result,
+    groupBy: [],
+    bucket: "day",
+    period: {
+      ...result.period,
+      bucket: "day",
+      status: "open",
+      accountingPeriodClosed: false,
+    },
+  };
+  const day = (date, finality) => ({
+    ...row,
+    dimensions: [],
+    bucketStart: date,
+    bucketEnd: date,
+    values: row.values.map((cell) => ({ ...cell, finality })),
+  });
+  const first = result.period.startDate;
+  const last = result.period.endDate;
+  assert.ok(
+    dashboard.reportResultSchema.parse({
+      ...open,
+      rows: [day(first, "final"), day(last, "estimate")],
+    }),
+    "a past day of an open period may be final",
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...open,
+      rows: [day(first, "estimate"), day(last, "final")],
+    }).success,
+    false,
+    "the last bucket of an open period is still running",
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...open,
+      bucket: "total",
+      period: { ...open.period, bucket: "total" },
+      rows: [{ ...day(first, "final"), bucketEnd: last }],
+    }).success,
+    false,
+    "a total bucket of an open period is never final",
+  );
+});
+
+test("legend-hdfd2: a run splits by at most one dimension besides outlet, and the schema leaves the answer to the run", () => {
+  assert.equal(dashboard.REPORT_RUN_MAX_SPLIT_DIMENSIONS, 1);
+  assert.ok(
+    dashboard.REPORT_BUILDER_MAX_DIMENSIONS >
+      dashboard.REPORT_RUN_MAX_SPLIT_DIMENSIONS + 1,
+    "the schema still accepts a deeper groupBy",
+  );
+});
+
 test("report results require availability and null cells for unavailable metrics", () => {
   const result = fixtures.runResult;
   const withoutAvailability = { ...result, availability: undefined };

@@ -45,6 +45,7 @@ import {
   businessDateSchema,
   idr,
   tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -55,6 +56,7 @@ import { reportResultSchema, reportCatalog } from "@starter/shared/dashboard";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
+import { closeFiscalPeriod } from "../services/accounting-period-close.service";
 import {
   agent,
   originHeader,
@@ -102,6 +104,7 @@ const EMPTY = { startDate: "2024-01-01", endDate: "2024-01-31" };
 let app: Express;
 let a: World;
 let b: World;
+let c: World; // books of June 2025 are closed
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -431,6 +434,17 @@ beforeAll(async () => {
   app = createApp();
   a = await makeWorld("a", 0);
   b = await makeWorld("b", 9_000_000);
+  c = await makeWorld("c", 0);
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM fiscal_periods WHERE tenant_id = $1 AND period = '2025-06'`,
+    [c.tenantId],
+  );
+  await closeFiscalPeriod(
+    context(c),
+    rows[0]!.id,
+    { expectedVersion: 1, idempotencyKey: `close-${randomUUID()}` },
+    userIdSchema.parse(randomUUID()),
+  );
 });
 
 afterAll(async () => {
@@ -566,6 +580,173 @@ describe("POST /api/reports/run: ledger report", () => {
       400_000, 950_000,
     ]);
     expect(sum(idrCells(result, "net_sales"))).toBe(1_350_000);
+  });
+
+  it("runs bucket day as one row per day with its bucket dates and per-day ledger figures", async () => {
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: JUNE,
+        bucket: "day",
+      }),
+    );
+    expect(result.bucket).toBe("day");
+    expect(result.period.bucket).toBe("day");
+    expect(result.rows).toHaveLength(30);
+    result.rows.forEach((row, index) => {
+      const date = `2025-06-${String(index + 1).padStart(2, "0")}`;
+      expect(row.bucketStart).toBe(date);
+      expect(row.bucketEnd).toBe(date);
+    });
+    const netSales = idrCells(result, "net_sales");
+    // Ledger by day: 10th 1,000k, 11th 400k, 20th -50k (discount); no data
+    // elsewhere is null or 0 but never a number from another day.
+    expect(netSales[9]).toBe(1_000_000);
+    expect(netSales[10]).toBe(400_000);
+    expect(netSales[19]).toBe(-50_000);
+    expect(netSales[0] ?? 0).toBe(0);
+    expect(sum(netSales)).toBe(1_350_000);
+    expect(sum(idrCells(result, "cogs"))).toBe(420_000);
+    expect(idrCells(result, "cogs")[9]).toBe(300_000);
+  });
+
+  it("runs bucket total as one bucket covering the whole period", async () => {
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: JUNE,
+        bucket: "total",
+      }),
+    );
+    expect(result.bucket).toBe("total");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      bucketStart: JUNE.startDate,
+      bucketEnd: JUNE.endDate,
+    });
+  });
+
+  it("orders rows by bucket, then dimension, and counts the limit over all rows", async () => {
+    const period = { startDate: "2025-06-10", endDate: "2025-06-12" };
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period,
+        bucket: "day",
+        groupBy: ["outlet"],
+        sort: { column: "net_sales", direction: "desc" },
+      }),
+    );
+    const starts = result.rows.map((row) => row.bucketStart);
+    expect(starts).toEqual([...starts].sort());
+    const tenth = result.rows.filter((row) => row.bucketStart === "2025-06-10");
+    const tenthSales = idrCells({ ...result, rows: tenth }, "net_sales");
+    expect(tenthSales[0]).toBe(1_000_000);
+    const limited = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period,
+        bucket: "day",
+        groupBy: ["outlet"],
+        limit: 2,
+      }),
+    );
+    expect(limited.rows).toHaveLength(2);
+    expect(limited.rowLimit).toBe(2);
+  });
+
+  it("flags truncated only when the limit cuts rows", async () => {
+    const body = {
+      reportCode: INCOME_STATEMENT,
+      period: JUNE,
+      bucket: "day",
+      groupBy: ["outlet"],
+    };
+    // 30 days x 2 outlets with ledger data = 60 rows.
+    const all = resultOf(await run(a.full, { ...body, limit: 500 }));
+    expect(all.rows.length).toBeGreaterThan(30);
+    expect(all.truncated).toBe(false);
+    const exact = resultOf(
+      await run(a.full, { ...body, limit: all.rows.length }),
+    );
+    expect(exact.truncated).toBe(false);
+    const cut = resultOf(
+      await run(a.full, { ...body, limit: all.rows.length - 1 }),
+    );
+    expect(cut.truncated).toBe(true);
+    expect(cut.rows).toHaveLength(all.rows.length - 1);
+  });
+
+  it("runs bucket week with the first and last week cut to the period", async () => {
+    // Wed 4 June to Wed 25 June 2025: weeks start on Monday.
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: { startDate: "2025-06-04", endDate: "2025-06-25" },
+        bucket: "week",
+      }),
+    );
+    expect(result.rows.map((row) => [row.bucketStart, row.bucketEnd])).toEqual([
+      ["2025-06-04", "2025-06-08"],
+      ["2025-06-09", "2025-06-15"],
+      ["2025-06-16", "2025-06-22"],
+      ["2025-06-23", "2025-06-25"],
+    ]);
+    // 10th and 11th fall in week two, the 20th discount in week three.
+    expect(idrCells(result, "net_sales")).toEqual([
+      null,
+      1_400_000,
+      -50_000,
+      null,
+    ]);
+  });
+
+  it("runs bucket month with the first and last month cut to the period", async () => {
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: { startDate: "2025-05-15", endDate: "2025-07-10" },
+        bucket: "month",
+      }),
+    );
+    expect(result.rows.map((row) => [row.bucketStart, row.bucketEnd])).toEqual([
+      ["2025-05-15", "2025-05-31"],
+      ["2025-06-01", "2025-06-30"],
+      ["2025-07-01", "2025-07-10"],
+    ]);
+    expect(idrCells(result, "net_sales")).toEqual([null, 1_350_000, null]);
+  });
+
+  it("rules finality per bucket: a closed month stays final inside a longer period", async () => {
+    const soon = new Date(Date.now() + 2 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const result = resultOf(
+      await run(c.full, {
+        reportCode: INCOME_STATEMENT,
+        period: { startDate: "2025-06-10", endDate: soon },
+        bucket: "month",
+      }),
+    );
+    // The period reaches today, so it is open and its books are not all closed.
+    expect(result.period.status).toBe("open");
+    expect(result.period.accountingPeriodClosed).toBe(false);
+    // 10-30 June 2025: books closed, so the figures are final.
+    const june = result.rows[0]!;
+    expect([june.bucketStart, june.bucketEnd]).toEqual([
+      "2025-06-10",
+      "2025-06-30",
+    ]);
+    const netSales = june.values.find(
+      (cell) => cell.metricCode === "net_sales",
+    );
+    expect(netSales).toMatchObject({
+      value: { valueIdr: 1_350_000 },
+      finality: "final",
+    });
+    // July 2025 is past but its books are open; the running month is open.
+    for (const row of result.rows.slice(1))
+      for (const cell of row.values) expect(cell.finality).toBe("estimate");
   });
 
   it("keeps tenants apart: tenant B never sees tenant A figures", async () => {
