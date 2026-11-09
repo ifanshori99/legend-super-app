@@ -18,12 +18,12 @@
 //   (webhook or `getRefundStatus` poll).
 // - Every call carries an `AbortSignal` (30 s deadline); the adapter must honour
 //   it. A timeout is an unknown outcome like a throw.
-// - Before re-sending after an earlier attempt the service asks
-//   `getRefundStatus`; only `not_found` allows a new `refund()` with the same key.
-//   An adapter whose provider cannot prove a key was never seen (DOIT has no
-//   refund lookup and does not document how long it keeps a key) MUST NOT answer
-//   `not_found`: `refund()` then runs on the first attempt only, and an unknown
-//   outcome ends in manual reconciliation instead of a second payout.
+// - `refund()` runs on the first attempt only (legend-xd2q tripwire). After an
+//   earlier attempt the service only asks `getRefundStatus`; a `not_found`
+//   answer never re-sends: the refund is flagged PAYOUT_NOT_FOUND_MAYBE_SENT
+//   for ops. An unknown outcome ends in manual reconciliation, never a second
+//   payout. A refund finance paid by hand is closed with settle-manually
+//   (SETTLED_OUTSIDE_PROVIDER); a later provider success on it is a conflict.
 // - `failed` is only for a definitive decline of the first send (or a request
 //   that never left, e.g. no payment ref). Any unrecognised answer throws.
 

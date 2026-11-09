@@ -261,6 +261,14 @@ export async function refundAudit(
       "escalationReason",
       "escalatedAt",
       "thresholdHours",
+      // Manual settlement evidence and payout flags (legend-xd2q): a date, a
+      // channel enum, a transfer/receipt reference (never an account number,
+      // see manualRefundSettlementInputSchema), a defect code and flag codes.
+      "paidAt",
+      "channel",
+      "externalReference",
+      "approvalDefect",
+      "lastPayoutError",
     ],
   );
 }

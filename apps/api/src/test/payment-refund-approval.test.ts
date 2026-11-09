@@ -561,7 +561,7 @@ describe("PAY-04 refund rejection", () => {
 });
 
 describe("PAY-04 provider failures", () => {
-  it("PAY-04 a provider timeout keeps the refund approved; retry completes it with one execution", async () => {
+  it("PAY-04 a provider timeout keeps the refund approved; retry only looks it up and never sends it again", async () => {
     const intent = await seedPaid(100_000);
     const refundId = await requestRefund(intent.intentId, 30_000);
     fake.enqueue("throw");
@@ -585,24 +585,23 @@ describe("PAY-04 provider failures", () => {
       refundableAmountIdr: 70_000,
     });
 
+    // legend-xd2q: the retry only looks the refund up; the provider does not
+    // know it, so it is flagged for ops and never sent a second time.
     const second = await retry(financeB, refundId);
-    expect(second.status).toBe(200);
-    expect(second.body.data).toMatchObject({
-      status: "completed",
-      payoutAttempts: 2,
+    expect([200, 409]).toContain(second.status);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.executionCount).toBe(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 2,
+      last_payout_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
     });
-    expect(second.body.data.providerRef).toEqual(expect.any(String));
-    expect(fake.calls).toHaveLength(2);
-    expect(new Set(fake.calls.map((c) => c.idempotencyKey))).toEqual(
-      new Set([`refund:${refundId}`]),
-    );
-    expect(fake.executionCount).toBe(1);
-    expect(fake.executionsFor(`refund:${refundId}`)).toBe(1);
-    expect(await intentStatus(intent.intentId)).toBe("partially_refunded");
-
-    // Nothing left to retry.
-    expect((await retry(financeB, refundId)).status).toBe(409);
-    expect(fake.calls).toHaveLength(2);
+    expect(await intentStatus(intent.intentId)).toBe("paid");
+    // Still reserved until ops settle it.
+    expect(await refundable(intent.intentId)).toMatchObject({
+      refundedAmountIdr: 30_000,
+      refundableAmountIdr: 70_000,
+    });
   });
 
   it("PAY-04 retrying a refund that was never approved is refused", async () => {
@@ -1392,12 +1391,13 @@ const decide = (
   );
 
 describe("PAY-04 payout lease: a stale caller cannot clear a newer lease", () => {
-  it("PAY-04 a caller whose lease was replaced leaves the newer lease intact", async () => {
+  // legend-xd2q: caller 2 (retry) only looks the refund up, it never sends, so it
+  // holds no provider call; the stale caller 1 must still not undo its outcome.
+  it("PAY-04 a caller whose lease was replaced leaves the newer outcome intact", async () => {
     const gateway = install();
     const intent = await seedPaid(100_000);
     const refundId = await requestRefund(intent.intentId, 30_000);
     const releaseOld = gateway.hold();
-    const releaseNew = gateway.hold();
 
     // Caller 1 claims the payout and hangs inside the provider call.
     const oldCaller = approve(financeA, refundId).then((response) => response);
@@ -1410,47 +1410,34 @@ describe("PAY-04 payout lease: a stale caller cannot clear a newer lease", () =>
     });
     expect(first.token).not.toBeNull();
 
-    // Its lease runs out; caller 2 takes over with a new claim.
+    // Its lease runs out; caller 2 takes over, asks the provider, finds nothing
+    // and flags the refund instead of sending.
     await expireLease(refundId);
-    const newCaller = retry(financeB, refundId).then((response) => response);
-    await expect.poll(() => gateway.started, { timeout: 15_000 }).toBe(2);
-    const second = await leaseRow(refundId);
-    expect(second).toMatchObject({
+    const second = await retry(financeB, refundId);
+    expect([200, 409]).toContain(second.status);
+    expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
+    expect(gateway.started).toBe(1);
+    const flagged = await leaseRow(refundId);
+    expect(flagged).toMatchObject({
       status: "approved",
       attempts: 2,
-      live: true,
+      live: false,
+      last_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
     });
-    expect(second.token).not.toBeNull();
-    expect(second.token).not.toBe(first.token);
-    // Retrying an unknown outcome asks the provider before re-sending.
-    expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
 
-    // Caller 1 now times out. It must not clear or replace caller 2's lease.
+    // Caller 1 now times out. It must not clear the flag or take a lease back.
     releaseOld("throw");
     const oldDone = await oldCaller;
     expect(oldDone.status).toBe(200);
     const afterStale = await leaseRow(refundId);
-    expect(afterStale).toMatchObject({ status: "approved", live: true });
-    expect(afterStale.token).toBe(second.token);
-    expect(afterStale.claimed_until?.getTime()).toBe(
-      second.claimed_until?.getTime(),
-    );
-
-    // While caller 2 holds the lease, a third caller does not reach the provider.
-    const third = await retry(financeA, refundId);
-    expect([200, 409]).toContain(third.status);
-    expect(gateway.started).toBe(2);
-
-    // Caller 2 finishes normally and completes the refund once.
-    releaseNew("succeeded");
-    const newDone = await newCaller;
-    expect(newDone.status).toBe(200);
-    expect(newDone.body.data.status).toBe("completed");
-    const done = await leaseRow(refundId);
-    expect(done).toMatchObject({ status: "completed", live: false });
-    expect(done.claimed_until).toBeNull();
-    expect(gateway.executionCount).toBe(1);
-    expect(await intentStatus(intent.intentId)).toBe("partially_refunded");
+    expect(afterStale).toMatchObject({
+      status: "approved",
+      live: false,
+      last_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
+    });
+    expect(gateway.started).toBe(1);
+    expect(gateway.executionCount).toBe(0);
+    expect(await intentStatus(intent.intentId)).toBe("paid");
   });
 
   it("PAY-04 a stale timeout never downgrades a refund another caller completed", async () => {
@@ -1463,7 +1450,12 @@ describe("PAY-04 payout lease: a stale caller cannot clear a newer lease", () =>
     await expect.poll(() => gateway.started, { timeout: 15_000 }).toBe(1);
     await expireLease(refundId);
 
-    // Caller 2 is not held: it completes the refund while caller 1 hangs.
+    // Caller 2 asks the provider, which paid (legend-xd2q: a retry never
+    // sends), and completes the refund while caller 1 hangs.
+    gateway.setStatus(`refund:${refundId}`, {
+      status: "succeeded",
+      providerRef: "PR-LOOKUP-DONE",
+    });
     const newDone = await retry(financeB, refundId);
     expect(newDone.status).toBe(200);
     expect(newDone.body.data.status).toBe("completed");
@@ -1501,7 +1493,11 @@ describe("PAY-04 retry after an unknown outcome asks the provider first", () => 
     expect(gateway.statusCalls).toHaveLength(0);
   });
 
-  it("PAY-04 not_found means the provider never saw it, so the refund is sent again", async () => {
+  // legend-xd2q: a refund that may have been sent is never POSTed again. A
+  // `not_found` answer is not proof the provider never saw it (the provider may
+  // not have indexed it yet), so the refund stays approved and is flagged for
+  // ops, who close it with a manual settlement once it is paid.
+  it("PAY-04 not_found on a maybe-sent refund is never sent again: it stays approved, flagged PAYOUT_NOT_FOUND_MAYBE_SENT", async () => {
     const gateway = install();
     const intent = await seedPaid();
     const refundId = await requestRefund(intent.intentId, 30_000);
@@ -1510,18 +1506,22 @@ describe("PAY-04 retry after an unknown outcome asks the provider first", () => 
       "approved",
     );
 
+    // The retry answers the current view (200) or a refusal (409); only the
+    // stored state and the provider calls are asserted.
     const response = await retry(financeB, refundId);
-    expect(response.status).toBe(200);
-    expect(response.body.data).toMatchObject({
-      status: "completed",
-      payoutAttempts: 2,
-    });
+    expect([200, 409]).toContain(response.status);
     expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
     expect(gateway.statusCalls[0]).toMatchObject({
       idempotencyKey: `refund:${refundId}`,
     });
-    expect(gateway.callsFor(refundId)).toHaveLength(2);
-    expect(gateway.executionCount).toBe(1);
+    expect(gateway.callsFor(refundId)).toHaveLength(1); // only the first, timed-out call
+    expect(gateway.executionCount).toBe(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 2,
+      last_payout_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
+    });
+    expect(await intentStatus(intent.intentId)).toBe("paid");
   });
 
   it("PAY-04 a lookup that finds the refund succeeded completes it without sending again", async () => {
@@ -1596,7 +1596,7 @@ describe("PAY-04 retry after an unknown outcome asks the provider first", () => 
     });
   });
 
-  it("PAY-04 when the lookup itself fails the refund is not sent again", async () => {
+  it("PAY-04 when the lookup itself fails the refund is not sent again, and a later not_found does not send it either", async () => {
     const gateway = install();
     const intent = await seedPaid();
     const refundId = await requestRefund(intent.intentId, 30_000);
@@ -1611,17 +1611,25 @@ describe("PAY-04 retry after an unknown outcome asks the provider first", () => 
     expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
     expect((await refundRow(refundId)).payout_attempts).toBe(2);
 
-    // The provider recovers: the lookup says not_found and the refund is sent.
+    // The provider recovers: the lookup says not_found. The refund may still
+    // have been sent, so it is not sent again; it is flagged for ops instead.
     gateway.lookupFails = false;
     const done = await retry(financeB, refundId);
-    expect(done.body.data.status).toBe("completed");
-    expect(gateway.callsFor(refundId)).toHaveLength(2);
-    expect(gateway.executionCount).toBe(1);
+    expect([200, 409]).toContain(done.status);
+    expect(gateway.callsFor(refundId)).toHaveLength(1);
+    expect(gateway.statusCallsFor(refundId)).toHaveLength(2);
+    expect(gateway.executionCount).toBe(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
+    });
   });
 });
 
 describe("PAY-04 the payout sweeper finishes approved refunds", () => {
-  it("PAY-04 an approved refund left by a provider timeout is completed by the sweeper once its backoff has passed", async () => {
+  // legend-xd2q: the sweeper asks the provider after an unknown outcome but never
+  // sends again; a not_found answer flags the refund for ops (manual settlement).
+  it("PAY-04 an approved refund left by a provider timeout is looked up by the sweeper once its backoff has passed, never sent again, and flagged when the provider does not know it", async () => {
     const gateway = install();
     const intent = await seedPaid(100_000);
     const refundId = await requestRefund(intent.intentId, 30_000);
@@ -1638,22 +1646,25 @@ describe("PAY-04 the payout sweeper finishes approved refunds", () => {
       payout_attempts: 1,
     });
 
-    // Backoff elapsed: it asks the provider, finds nothing, sends, completes.
+    // Backoff elapsed: it asks the provider, finds nothing, and does NOT send.
     await ageRefund(refundId);
     await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
     expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
-    expect(gateway.callsFor(refundId)).toHaveLength(2);
-    expect(gateway.executionCount).toBe(1);
+    expect(gateway.callsFor(refundId)).toHaveLength(1);
+    expect(gateway.executionCount).toBe(0);
     const row = await refundRow(refundId);
-    expect(row).toMatchObject({ status: "completed", payout_attempts: 2 });
-    expect(row.provider_ref).toEqual(expect.any(String));
-    expect(row.completed_at).not.toBeNull();
-    expect(await intentStatus(intent.intentId)).toBe("partially_refunded");
+    expect(row).toMatchObject({
+      status: "approved",
+      payout_attempts: 2,
+      last_payout_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
+    });
+    expect(row.completed_at).toBeNull();
+    expect(await intentStatus(intent.intentId)).toBe("paid");
 
-    // Nothing left: a further sweep changes nothing.
+    // Still no send on a further sweep.
+    await ageRefund(refundId);
     await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
-    expect(gateway.callsFor(refundId)).toHaveLength(2);
-    expect((await refundRow(refundId)).payout_attempts).toBe(2);
+    expect(gateway.callsFor(refundId)).toHaveLength(1);
   });
 
   it("PAY-04 a never-attempted approved refund is sent by the sweeper without a status lookup", async () => {
@@ -1687,11 +1698,17 @@ describe("PAY-04 the payout sweeper finishes approved refunds", () => {
       payout_attempts: 1,
     });
 
-    // Once the lease has run out the refund is picked up.
+    // Once the lease has run out the refund is picked up: it was attempted
+    // before, so it is only looked up (never sent); an unknown refund is
+    // flagged for ops (legend-xd2q).
     await expireLease(refundId);
     await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
-    expect(gateway.callsFor(refundId)).toHaveLength(1);
-    expect((await refundRow(refundId)).status).toBe("completed");
+    expect(gateway.statusCallsFor(refundId)).toHaveLength(1);
+    expect(gateway.callsFor(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: "PAYOUT_NOT_FOUND_MAYBE_SENT",
+    });
   });
 
   it("PAY-04 the sweeper stops after 8 attempts and flags the refund for manual reconciliation", async () => {
