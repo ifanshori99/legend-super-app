@@ -48,6 +48,60 @@ PRD §6 says money is BIGINT rupiah, but `stock_ledger.unit_cost_idr` and `recip
 
 Envelope: `{ "error": { "code", "message", "details"?: [{ field, message }], "requestId"? } }`, the starter's shape. `code` is stable `UPPER_SNAKE_CASE`; the UI maps it to catalog text. `message` is a safe Indonesian fallback. Core codes and their HTTP status live in `coreErrorHttpStatus` (starter codes plus `TENANT_CONTEXT_REQUIRED`, `OUTLET_OUT_OF_SCOPE`, `FEATURE_DISABLED`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `PRECONDITION_FAILED`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`). Domain contracts declare their own codes next to their schemas (for example `PERIOD_CLOSED` in WS-07).
 
+#### Inventory and purchasing error statuses (bead `legend-ul4s`)
+
+`InventoryError` and `PurchasingError` codes have one HTTP mapping each, declared next to the codes: `inventoryErrorHttpStatus` and `purchasingErrorHttpStatus` (`Record` over the code union, so a new code without a status fails the typecheck) in `@starter/shared/inventory`. The API answers `{ error: { code, message } }` through the single translator `translateDomainError` (`apps/api/src/services/domain-error-http.shared.ts`); the old `translateInventoryError`, `translateCountError` and `translatePurchasingError` delegate to it. `message` is the fixed Indonesian text from `inventoryErrorMessages` / `purchasingErrorMessages`, never the thrown message (it carries ids and amounts). Exception: stock-count services raise `countError(code, message)` with a message they build themselves (status and code still come from the table); those messages hold the document status only, never ids or amounts. Observable changes made with this table: `PURCHASE_ORDER_LINE_MISMATCH` and `THREE_WAY_MATCH_INVALID_INPUT` 409 to 422 (no API path throws them yet); `INSUFFICIENT_STOCK` through the generic translator 422 to 409 (the `insufficientStock` helper already answered 409). Errors that are not an `InventoryError` or `PurchasingError` pass through unchanged. Rule of thumb: not found 404; state, transition, version, duplicate, limit or stock conflict 409; permission-like (self approval, blind detail) 403; invalid or missing input data 422. Purchasing self-approval stays 409 (shipped, asserted by `purchasing-flow.test.ts`); stock-count self-approval stays 403.
+
+| Inventory code                     | HTTP |
+| ---------------------------------- | ---- |
+| `RECIPE_CYCLE`                     | 422  |
+| `RECIPE_NOT_FOUND`                 | 404  |
+| `RECIPE_OUTPUT_MISSING`            | 422  |
+| `RECIPE_COMPONENT_MISSING`         | 422  |
+| `UNIT_COST_MISSING`                | 422  |
+| `UOM_CONVERSION_MISSING`           | 422  |
+| `STOCK_COUNT_INVALID_TRANSITION`   | 409  |
+| `STOCK_COUNT_NOT_PENDING_APPROVAL` | 409  |
+| `STOCK_COUNT_SELF_APPROVAL`        | 403  |
+| `STOCK_COUNT_BLIND_HIDDEN`         | 403  |
+| `STOCK_COUNT_BLIND_USE_SHEET`      | 409  |
+| `STOCK_COUNT_LOCATION_BUSY`        | 409  |
+| `STOCK_COUNT_LINES_INCOMPLETE`     | 422  |
+| `STOCK_COUNT_APPROVAL_UNROUTED`    | 409  |
+| `STOCK_COUNT_VERSION_MISMATCH`     | 409  |
+| `STOCK_COUNT_NOT_EDITABLE`         | 409  |
+| `STOCK_COUNT_COST_MISSING`         | 422  |
+| `STOCK_COUNT_DECIDER_CANNOT_COUNT` | 403  |
+| `STOCK_COUNT_VIEWER_CANNOT_COUNT`  | 403  |
+| `STOCK_COUNT_APPROVAL_EXPIRED`     | 409  |
+| `PRODUCTION_INVALID_TRANSITION`    | 409  |
+| `INSUFFICIENT_STOCK`               | 409  |
+| `PRODUCTION_LOCATION_UNRESOLVED`   | 422  |
+
+| Purchasing code                         | HTTP |
+| --------------------------------------- | ---- |
+| `PURCHASE_REQUEST_INVALID_TRANSITION`   | 409  |
+| `PURCHASE_REQUEST_NOT_PENDING_APPROVAL` | 409  |
+| `PURCHASE_REQUEST_SELF_APPROVAL`        | 409  |
+| `PURCHASE_ORDER_INVALID_TRANSITION`     | 409  |
+| `PURCHASE_ORDER_NOT_PENDING_APPROVAL`   | 409  |
+| `PURCHASE_ORDER_SELF_APPROVAL`          | 409  |
+| `PURCHASE_ORDER_LINE_MISMATCH`          | 422  |
+| `PURCHASE_ORDER_OVER_RECEIPT`           | 409  |
+| `SUPPLIER_INVOICE_NOT_MATCHED`          | 409  |
+| `SUPPLIER_INVOICE_NOT_PAYABLE`          | 409  |
+| `SUPPLIER_INVOICE_OVERPAYMENT`          | 409  |
+| `SUPPLIER_PAYMENT_INVALID_TRANSITION`   | 409  |
+| `SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL` | 409  |
+| `SUPPLIER_PAYMENT_SELF_APPROVAL`        | 409  |
+| `PURCHASE_RETURN_EXCEEDS_RECEIPT`       | 409  |
+| `PETTY_PURCHASE_LIMIT_EXCEEDED`         | 409  |
+| `THREE_WAY_MATCH_INVALID_INPUT`         | 422  |
+| `SUPPLIER_INACTIVE`                     | 409  |
+| `SUPPLIER_NAME_TAKEN`                   | 409  |
+| `PURCHASE_ORDER_NOT_SENDABLE`           | 409  |
+| `PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE` | 409  |
+
 ### D-CORE-5 Pagination
 
 New list endpoints use cursor (keyset) pagination: query `cursorPageQuerySchema` (`cursor?`, `limit` 1–100, default 25), response `{ data, meta: { limit, nextCursor } }` (`nextCursor: null` on the last page). The cursor is `encodeCursor([sortKey…, id])`, opaque base64url; a tampered cursor decodes to `RangeError` → `VALIDATION_ERROR`. One limit, `CURSOR_MAX_LENGTH` = 1024 characters, applies to both sides: `encodeCursor` throws instead of emitting a longer cursor, and the query schema rejects one. Sort only on bounded columns (timestamps, ids, names up to 150 characters), never free text. Offset paging stays only on the starter Notes example.

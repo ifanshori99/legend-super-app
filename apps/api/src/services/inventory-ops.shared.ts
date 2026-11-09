@@ -38,7 +38,7 @@ import {
 import {
   convertQuantity,
   grossRecipeQuantity,
-  InventoryError,
+  inventoryErrorHttpStatus,
   type RecipeComponentType,
   type UomConversion,
 } from "@starter/shared/inventory";
@@ -47,6 +47,7 @@ import { inventoryItems, uomConversions } from "../db/schema/inventory.ts";
 import { inventoryOpsIdempotency } from "../db/schema/inventory-ops.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { translateDomainError } from "./domain-error-http.shared.ts";
 import { recordAudit } from "./core-audit.ts";
 import { inventoryLocationLockKey } from "./inventory.service.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
@@ -324,27 +325,17 @@ export async function lockLocations(
 
 /** No negative-stock bypass for explicit movements (waste/transfer/production). */
 export function insufficientStock(itemId: string): HttpError {
+  // The item id is the caller's own tenant data, so it stays in the message.
   return new HttpError(
-    409,
+    inventoryErrorHttpStatus.INSUFFICIENT_STOCK,
     "INSUFFICIENT_STOCK",
     `The location does not hold enough stock of item ${itemId}.`,
   );
 }
 
-/**
- * Inventory contract errors have no HTTP mapping (docs/backend.md): translate
- * the ones this bead can raise to documented statuses.
- */
+/** Contract status and safe message per code (see domain-error-http.shared.ts). */
 export function translateInventoryError(error: unknown): unknown {
-  if (!(error instanceof InventoryError)) return error;
-  switch (error.code) {
-    case "PRODUCTION_INVALID_TRANSITION":
-      return new HttpError(409, error.code, error.message);
-    case "RECIPE_NOT_FOUND":
-      return new HttpError(404, error.code, error.message);
-    default:
-      return new HttpError(422, error.code, error.message);
-  }
+  return translateDomainError(error);
 }
 
 // ------------------------------------------------------------------- audit
