@@ -368,13 +368,14 @@ type FullRow = SequenceRow & {
   edge_node_id: string | null;
   edge_instance_id: string | null;
   retired_at: Date | null;
+  retired_reason: string | null;
 };
 
 /** Every row of the outlet (retired included) with the binding columns. */
 function fullRows(outletId: string): Promise<FullRow[]> {
   return asOwnerTenant(tenant.tenantId, async (client) => {
     const result = await client.query(
-      `SELECT id, prefix, last_number, device_id, edge_node_id, edge_instance_id, retired_at
+      `SELECT id, prefix, last_number, device_id, edge_node_id, edge_instance_id, retired_at, retired_reason
        FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY prefix`,
       [tenant.tenantId, outletId],
     );
@@ -1012,7 +1013,7 @@ describe("zsdd-R1 the edge allocation honours the binding (review of 2283ae9c)",
     });
   });
 
-  it("EDG-02 a replacement the cloud already advanced (lastNumber > 0) is refused and the local current row stays", async () => {
+  it("EDG-02 POS-06 a replacement the cloud already advanced (lastNumber > 0) is refused; the local run the cloud no longer lists is retired and stops numbering (legend-sduiq)", async () => {
     const edgeOutlet = await freshOutlet();
     const own: Binding = {
       edgeNodeId: randomUUID(),
@@ -1024,6 +1025,7 @@ describe("zsdd-R1 the edge allocation honours the binding (review of 2283ae9c)",
       pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
       own,
     );
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
 
     const result = await edgeApply(
       edgeOutlet,
@@ -1032,11 +1034,280 @@ describe("zsdd-R1 the edge allocation honours the binding (review of 2283ae9c)",
     );
     expect(result.receiptSequencesRefused).toBe(1);
     expect(result.receiptSequencesReplaced).toBe(0);
+    expect(result.receiptSequencesRetired).toBe(1);
 
     const rows = await fullRows(edgeOutlet);
     expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
-    expect(rowOf(rows, "P1").retired_at).toBeNull();
-    // The old run keeps numbering: nothing was handed over or skipped.
+    expect(rowOf(rows, "P1")).toMatchObject({
+      last_number: 1,
+      retired_reason: "edge_replaced",
+    });
+    expect(rowOf(rows, "P1").retired_at).not.toBeNull();
+    // The cloud retired P1: no number of it is issued again here.
+    const orderId = await draftOrder(edgeOutlet);
+    await expect(
+      inEdgeMode(() => allocate(edgeOutlet, orderId, deviceId)),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_NOT_PROVISIONED" });
+  });
+});
+
+describe("sduiq the edge retires a local run the cloud no longer lists (legend-sduiq)", () => {
+  const ownBinding = (): Binding => ({
+    edgeNodeId: randomUUID(),
+    edgeInstanceId: randomUUID(),
+  });
+
+  it("POS-06 EDG-02 the pulled replacement clashes with a local prefix: it is refused, the device's old run is retired, the other device keeps numbering", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const [deviceA, deviceB] = [randomUUID(), randomUUID()];
+    const b2 = seq(edgeOutlet, deviceB, "P2", own);
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceA, "P1", own), b2]),
+      own,
+    );
+    expect(await edgeSell(edgeOutlet, deviceA)).toBe("P1-000001");
+
+    // The cloud rotated A's P1 to a prefix this database already holds.
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceA, "P2", own), b2]),
+      own,
+    );
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 1,
+      receiptSequencesReplaced: 0,
+      receiptSequencesRetired: 1,
+    });
+    const rows = await fullRows(edgeOutlet);
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_reason: "edge_replaced",
+      last_number: 1,
+    });
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+    const orderId = await draftOrder(edgeOutlet);
+    await expect(
+      inEdgeMode(() => allocate(edgeOutlet, orderId, deviceA)),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_NOT_PROVISIONED" });
+    expect(await edgeSell(edgeOutlet, deviceB)).toBe("P2-000001");
+  });
+
+  it("POS-06 a device missing from a non-empty list loses its local run; listed runs are kept and keep counting", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const [deviceA, deviceB] = [randomUUID(), randomUUID()];
+    const b2 = seq(edgeOutlet, deviceB, "P2", own);
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceA, "P1", own), b2]),
+      own,
+    );
+    expect(await edgeSell(edgeOutlet, deviceB)).toBe("P2-000001");
+
+    const result = await edgeApply(edgeOutlet, pageOf([b2]), own);
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 0,
+      receiptSequencesRetired: 1,
+    });
+    const rows = await fullRows(edgeOutlet);
+    expect(rowOf(rows, "P1").retired_reason).toBe("edge_replaced");
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+    expect(await edgeSell(edgeOutlet, deviceB)).toBe("P2-000002");
+  });
+
+  it("POS-06 EDG-02 the same full list again retires nothing (normal pulls are untouched)", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    const page = pageOf([seq(edgeOutlet, deviceId, "P1", own)]);
+    await edgeApply(edgeOutlet, page, own);
     expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+    const again = await edgeApply(edgeOutlet, page, own);
+    expect(again).toMatchObject({
+      receiptSequencesRefused: 0,
+      receiptSequencesReplaced: 0,
+      receiptSequencesRetired: 0,
+    });
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000002");
+  });
+
+  it("EDG-02 an empty list retires nothing (the cloud may not have recognised this database as the primary)", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+    const result = await edgeApply(edgeOutlet, pageOf([]), own);
+    expect(result.receiptSequencesRetired).toBe(0);
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+  });
+
+  it("EDG-02 a refused list (sequence of another outlet) retires nothing", async () => {
+    const edgeOutlet = await freshOutlet();
+    const otherOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(otherOutlet, randomUUID(), "P2", own)]),
+      own,
+    );
+    expect(result.receiptSequencesRefused).toBe(1);
+    expect(result.receiptSequencesRetired).toBe(0);
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+  });
+
+  it("EDG-02 a standby applies nothing and retires nothing", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+    const result = await inEdgeMode(() =>
+      pullDeviceRegistry({
+        context: edgeScope(edgeOutlet),
+        role: "standby",
+        binding: own,
+        fetchPage: async () =>
+          pageOf([seq(edgeOutlet, randomUUID(), "P2", own)]),
+      }),
+    );
+    expect(result.receiptSequencesRetired).toBe(0);
+    expect(rowOf(await fullRows(edgeOutlet), "P1").retired_at).toBeNull();
+  });
+
+  it("POS-06 a local run bound to an old instance (restore procedure) is left as it is; it already cannot number", async () => {
+    const edgeOutlet = await freshOutlet();
+    const nodeId = randomUUID();
+    const oldOwn: Binding = {
+      edgeNodeId: nodeId,
+      edgeInstanceId: randomUUID(),
+    };
+    const newOwn: Binding = {
+      edgeNodeId: nodeId,
+      edgeInstanceId: randomUUID(),
+    };
+    const [deviceA, deviceB] = [randomUUID(), randomUUID()];
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceA, "P1", oldOwn)]),
+      oldOwn,
+    );
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceB, "P2", newOwn)]),
+      newOwn,
+    );
+    expect(result.receiptSequencesRetired).toBe(0);
+    expect(rowOf(await fullRows(edgeOutlet), "P1")).toMatchObject({
+      retired_at: null,
+      edge_instance_id: oldOwn.edgeInstanceId,
+    });
+  });
+
+  it("EDG-02 a non-empty list with no entry bound to this database retires nothing (node id mismatch)", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, randomUUID(), "P2", ownBinding())]),
+      own,
+    );
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 1,
+      receiptSequencesRetired: 0,
+    });
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+  });
+
+  it("EDG-02 the cloud sends the FULL bound list on every page of a multi-page pull (the edge's retire relies on it)", async () => {
+    const outletId = await freshOutlet();
+    await enroll(outletId, "pos");
+    await enroll(outletId, "pos");
+    await enroll(outletId, "pos");
+    const nodeId = await insertNode(outletId);
+    const instanceId = randomUUID();
+    const node = {
+      tenantId: tenant.tenantId as TenantId,
+      outletId: outletIdSchema.parse(outletId),
+      edgeNodeId: nodeId,
+    };
+    const pages: DeviceSyncPage[] = [];
+    let since: string | undefined;
+    for (;;) {
+      const page = await listDeviceRecordsSince(
+        node,
+        deviceSyncQuerySchema.parse({
+          limit: 1,
+          receiptSequences: "1",
+          edgeInstance: instanceId,
+          ...(since === undefined ? {} : { since }),
+        }),
+        { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
+      );
+      pages.push(page);
+      if (page.meta.nextCursor === null) break;
+      since = page.meta.nextCursor;
+    }
+    expect(pages.length).toBeGreaterThanOrEqual(3);
+    const bound = (await fullRows(outletId))
+      .filter(
+        (r) =>
+          r.retired_at === null &&
+          r.edge_node_id === nodeId &&
+          r.edge_instance_id === instanceId,
+      )
+      .map((r) => r.id)
+      .sort();
+    expect(bound).toHaveLength(3);
+    for (const page of pages)
+      expect((page.receiptSequences ?? []).map((s) => s.id).sort()).toEqual(
+        bound,
+      );
+  });
+
+  it("POS-06 an unbound local run (3yqy era) missing from the list is retired too", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const [deviceA, deviceB] = [randomUUID(), randomUUID()];
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO receipt_sequences (id, tenant_id, outlet_id, device_id, prefix, last_number)
+         VALUES ($1, $2, $3, $4, 'P1', 4)`,
+        [randomUUID(), tenant.tenantId, edgeOutlet, deviceA],
+      ),
+    );
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceB, "P2", own)]),
+      own,
+    );
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 0,
+      receiptSequencesRetired: 1,
+    });
+    expect(rowOf(await fullRows(edgeOutlet), "P1")).toMatchObject({
+      retired_reason: "edge_replaced",
+      edge_node_id: null,
+      last_number: 4,
+    });
   });
 });

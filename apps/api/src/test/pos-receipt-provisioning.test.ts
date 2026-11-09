@@ -866,10 +866,15 @@ describe("EDG-02 POS-06 the edge applies pulled receipt sequences (legend-3yqy)"
       c.query("DELETE FROM devices WHERE id = $1", [device.id]),
     );
 
+    // legend-sduiq: the cloud sends the full list, so `kept` is in it too (a
+    // local run missing from the list would be retired).
     const result = await inEdgeMode(() =>
-      edgePull(outletId, pageWith([clash, fresh], [revocation])),
+      edgePull(outletId, pageWith([kept, clash, fresh], [revocation])),
     );
-    expect(result).toMatchObject({ receiptSequencesRefused: 1 });
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 1,
+      receiptSequencesRetired: 0,
+    });
     expect(await sequenceOf(outletId, kept.deviceId)).toMatchObject({
       id: kept.id,
       prefix: "P4",

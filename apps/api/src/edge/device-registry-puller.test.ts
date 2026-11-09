@@ -522,3 +522,30 @@ describe("receipt run alert (legend-yd0h8)", () => {
     });
   });
 });
+
+describe("receipt sequences retired (legend-sduiq)", () => {
+  it("legend-sduiq starts 0 and null; a pull that retired sets the count and the time; a later pull resets the count and keeps the time", async () => {
+    const retired = [2, undefined];
+    const t = setup({
+      pull: vi.fn(async () => ({
+        watermark: "w1",
+        receiptSequencesRetired: retired.shift(),
+      })),
+    });
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRetired: 0,
+      receiptSequencesRetiredAt: null,
+    });
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRetired: 2,
+      receiptSequencesRetiredAt: "2026-11-08T10:00:00.000Z",
+    });
+    t.advance(INTERVAL);
+    await t.puller.runOnce();
+    expect(t.puller.getState()).toMatchObject({
+      receiptSequencesRetired: 0,
+      receiptSequencesRetiredAt: "2026-11-08T10:00:00.000Z",
+    });
+  });
+});
