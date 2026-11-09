@@ -470,6 +470,7 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
         status: "open",
         accountingPeriodClosed: false,
       },
+      bucket: "total",
       outletFilter: { kind: "outlets", outletIds: [outletId] },
       definitions: [dashboard.reportMetricByCode.get("net_sales")].map(
         (definition) =>
@@ -492,6 +493,8 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
       groupBy: [],
       rows: [
         {
+          bucketStart: day.startDate,
+          bucketEnd: day.endDate,
           dimensions: [],
           values: [
             {
@@ -580,19 +583,20 @@ describe("ws11 mock reports · review findings (legend-3nuv)", () => {
 
   test("2: an all-outlet run answers only a request naming every outlet of the tenant", async () => {
     const day = { startDate: "2031-04-07", endDate: "2031-04-07" };
+    const served = await post({
+      reportCode: "sales.target",
+      period: {
+        startDate: dayModel.BUSINESS_DATE,
+        endDate: dayModel.BUSINESS_DATE,
+      },
+      outletIds: [outletA],
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
     const allRun = dashboard.reportResultSchema.parse({
-      ...(await post({
-        reportCode: "sales.target",
-        period: {
-          startDate: dayModel.BUSINESS_DATE,
-          endDate: dayModel.BUSINESS_DATE,
-        },
-        outletIds: [outletA],
-        groupBy: [],
-        filters: [],
-        bucket: "total",
-        limit: 100,
-      })),
+      ...served,
       period: {
         ...day,
         bucket: "total",
@@ -600,6 +604,11 @@ describe("ws11 mock reports · review findings (legend-3nuv)", () => {
         accountingPeriodClosed: false,
       },
       outletFilter: { kind: "all" },
+      rows: served.rows.map((row) => ({
+        ...row,
+        bucketStart: day.startDate,
+        bucketEnd: day.endDate,
+      })),
     });
     registerMockReportRuns({ all: allRun });
     const request = (outletIds) => ({

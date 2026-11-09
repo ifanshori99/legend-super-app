@@ -568,6 +568,79 @@ describe("POST /api/reports/run: ledger report", () => {
     expect(sum(idrCells(result, "net_sales"))).toBe(1_350_000);
   });
 
+  it("runs bucket day as one row per day with its bucket dates and per-day ledger figures", async () => {
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: JUNE,
+        bucket: "day",
+      }),
+    );
+    expect(result.bucket).toBe("day");
+    expect(result.period.bucket).toBe("day");
+    expect(result.rows).toHaveLength(30);
+    result.rows.forEach((row, index) => {
+      const date = `2025-06-${String(index + 1).padStart(2, "0")}`;
+      expect(row.bucketStart).toBe(date);
+      expect(row.bucketEnd).toBe(date);
+    });
+    const netSales = idrCells(result, "net_sales");
+    // Ledger by day: 10th 1,000k, 11th 400k, 20th -50k (discount); no data
+    // elsewhere is null or 0 but never a number from another day.
+    expect(netSales[9]).toBe(1_000_000);
+    expect(netSales[10]).toBe(400_000);
+    expect(netSales[19]).toBe(-50_000);
+    expect(netSales[0] ?? 0).toBe(0);
+    expect(sum(netSales)).toBe(1_350_000);
+    expect(sum(idrCells(result, "cogs"))).toBe(420_000);
+    expect(idrCells(result, "cogs")[9]).toBe(300_000);
+  });
+
+  it("runs bucket total as one bucket covering the whole period", async () => {
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period: JUNE,
+        bucket: "total",
+      }),
+    );
+    expect(result.bucket).toBe("total");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      bucketStart: JUNE.startDate,
+      bucketEnd: JUNE.endDate,
+    });
+  });
+
+  it("orders rows by bucket, then dimension, and counts the limit over all rows", async () => {
+    const period = { startDate: "2025-06-10", endDate: "2025-06-12" };
+    const result = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period,
+        bucket: "day",
+        groupBy: ["outlet"],
+        sort: { column: "net_sales", direction: "desc" },
+      }),
+    );
+    const starts = result.rows.map((row) => row.bucketStart);
+    expect(starts).toEqual([...starts].sort());
+    const tenth = result.rows.filter((row) => row.bucketStart === "2025-06-10");
+    const tenthSales = idrCells({ ...result, rows: tenth }, "net_sales");
+    expect(tenthSales[0]).toBe(1_000_000);
+    const limited = resultOf(
+      await run(a.full, {
+        reportCode: INCOME_STATEMENT,
+        period,
+        bucket: "day",
+        groupBy: ["outlet"],
+        limit: 2,
+      }),
+    );
+    expect(limited.rows).toHaveLength(2);
+    expect(limited.rowLimit).toBe(2);
+  });
+
   it("keeps tenants apart: tenant B never sees tenant A figures", async () => {
     const forB = resultOf(
       await run(b.full, { reportCode: INCOME_STATEMENT, period: JUNE }),

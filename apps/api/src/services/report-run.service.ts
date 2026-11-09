@@ -10,12 +10,11 @@
 //   mirrors routes/metrics.routes); the request never carries a tenant (TEN-02)
 //   and the requested outlets are intersected with the scope (TEN-03).
 // - Row dimensions come from `EvaluatedSeries.dimensions` (outlet first, then
-//   the one other key). A bucket other than `total` has no row shape: it
-//   answers 200 with no rows and every metric unavailable.
+//   the one other key). Every row carries its bucket (`bucketStart`/`bucketEnd`,
+//   the whole period for `total`); rows run in bucket order, then `sort` or
+//   dimension order within a bucket, and `limit` counts all rows.
 
 import {
-  businessDateOf,
-  DEFAULT_BUSINESS_DAY_CLOCK,
   decodeCursor,
   encodeCursor,
   outletIdsForQuery,
@@ -41,10 +40,7 @@ import {
   type ReportRunInput,
 } from "@starter/shared/dashboard";
 import {
-  METRIC_UNAVAILABLE_MESSAGES,
-  metricDefinitionRefSchema,
-  type MetricDefinition,
-  type MetricDefinitionRef,
+  type MetricBucket,
   type MetricDimensionValue,
   type MetricFinality,
   type MetricValue,
@@ -136,23 +132,6 @@ export function getReportDefinition(
 
 // ---- Run and preview --------------------------------------------------------
 
-function definitionRef(definition: MetricDefinition): MetricDefinitionRef {
-  return metricDefinitionRefSchema.parse({
-    id: definition.id,
-    code: definition.code,
-    version: definition.version,
-    name: definition.name,
-    ownerModule: definition.ownerModule,
-    formula: definition.formula,
-    unit: definition.unit,
-    aggregation: definition.aggregation,
-    dimensions: definition.dimensions,
-    grain: definition.grain,
-    officiality: definition.officiality,
-    sourceReport: definition.sourceReport,
-  });
-}
-
 /** Sortable number of a cell value (idr, count, seconds, percent, decimal). */
 function numericOf(value: MetricValue | null): number | null {
   if (value === null) return null;
@@ -168,18 +147,28 @@ function dimensionValueOf(
   return row.dimensions.find((dimension) => dimension.key === key)?.value;
 }
 
+/** Bucket order first (rows of one bucket stay together), then `sort` or dimensions. */
 function sortRows(
   rows: ReportResultRow[],
   sort: { column: string; direction: "asc" | "desc" } | undefined,
 ): ReportResultRow[] {
+  const byBucket = (a: ReportResultRow, b: ReportResultRow) =>
+    a.bucketStart.localeCompare(b.bucketStart);
+  const inBucket = sortWithinBucket(sort);
+  return rows.sort((a, b) => byBucket(a, b) || inBucket(a, b));
+}
+
+function sortWithinBucket(
+  sort: { column: string; direction: "asc" | "desc" } | undefined,
+): (a: ReportResultRow, b: ReportResultRow) => number {
   const byDimensions = (a: ReportResultRow, b: ReportResultRow) =>
     a.dimensions
       .map((d) => d.value)
       .join("\u0000")
       .localeCompare(b.dimensions.map((d) => d.value).join("\u0000"));
-  if (sort === undefined) return rows.sort(byDimensions);
+  if (sort === undefined) return byDimensions;
   const sign = sort.direction === "asc" ? 1 : -1;
-  return rows.sort((a, b) => {
+  return (a, b) => {
     const cellA = a.values.find((cell) => cell.metricCode === sort.column);
     const cellB = b.values.find((cell) => cell.metricCode === sort.column);
     if (cellA !== undefined || cellB !== undefined) {
@@ -194,7 +183,7 @@ function sortRows(
     const x = dimensionValueOf(a, sort.column) ?? "";
     const y = dimensionValueOf(b, sort.column) ?? "";
     return x === y ? byDimensions(a, b) : x.localeCompare(y) * sign;
-  });
+  };
 }
 
 type Selection = {
@@ -203,7 +192,7 @@ type Selection = {
   outletIds?: readonly string[] | undefined;
   groupBy: readonly string[];
   filters: ReportBuilderQuery["filters"];
-  bucket: string;
+  bucket: MetricBucket;
   sort?: { column: string; direction: "asc" | "desc" } | undefined;
   limit: number;
 };
@@ -234,35 +223,6 @@ async function buildResult(
     end: selection.period.endDate as BusinessDate,
   };
 
-  const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
-
-  // Rows have no bucket column: a result is one table over the whole period,
-  // so another bucket answers 200 with no rows and every metric unavailable.
-  if (selection.bucket !== "total") {
-    return reportResultSchema.parse({
-      reportCode: report?.code ?? null,
-      period: {
-        startDate: range.start,
-        endDate: range.end,
-        bucket: selection.bucket,
-        status: range.end < today ? "closed" : "open",
-        accountingPeriodClosed: false,
-      },
-      outletFilter,
-      definitions: definitions.map(definitionRef),
-      availability: definitions.map((definition) => ({
-        metricCode: definition.code,
-        status: "unavailable",
-        reason: "dimension_not_supported",
-        message: METRIC_UNAVAILABLE_MESSAGES.dimension_not_supported,
-      })),
-      groupBy: selection.groupBy,
-      rows: [],
-      generatedAt: now.toISOString(),
-      rowLimit: selection.limit,
-    });
-  }
-
   const evaluated = await withTenantSnapshot(context, (tx) =>
     evaluateMetrics(
       tx,
@@ -270,7 +230,7 @@ async function buildResult(
       {
         metricCodes: selection.metricCodes,
         period: range,
-        bucket: "total",
+        bucket: selection.bucket,
         outletFilter,
         groupBy: selection.groupBy,
         filters: selection.filters,
@@ -284,10 +244,19 @@ async function buildResult(
   const periodClosed = evaluated.period.status === "closed";
   const accountingPeriodClosed = evaluated.period.accountingPeriodClosed;
 
-  // Pivot: one row per dimension value, one cell per requested metric.
+  // Pivot: one row per (bucket, dimension values), one cell per requested metric.
   const rowsByKey = new Map<
     string,
-    { dimensions: MetricDimensionValue[]; cells: Map<string, Cell> }
+    {
+      bucketStart: BusinessDate;
+      bucketEnd: BusinessDate;
+      dimensions: MetricDimensionValue[];
+      cells: Map<string, Cell>;
+    }
+  >();
+  const buckets = new Map<
+    string,
+    { bucketStart: BusinessDate; bucketEnd: BusinessDate }
   >();
   const addSeries = (series: EvaluatedSeries) => {
     // The engine puts outlet first; a row follows the requested groupBy order.
@@ -295,19 +264,39 @@ async function buildResult(
       series.dimensions.filter((dimension) => dimension.key === key),
     );
     if (dimensions.length !== selection.groupBy.length) return;
-    const key = dimensions.map((d) => `${d.key}=${d.value}`).join("|");
-    const row = rowsByKey.get(key) ?? { dimensions, cells: new Map() };
-    rowsByKey.set(key, row);
-    const point = series.points[0];
-    row.cells.set(series.metricCode, {
-      value: point?.value ?? null,
-      finality: point?.finality ?? "estimate",
-    });
+    const dimensionKey = dimensions.map((d) => `${d.key}=${d.value}`).join("|");
+    for (const point of series.points) {
+      buckets.set(point.bucketStart, point);
+      const key = `${point.bucketStart}|${dimensionKey}`;
+      const row = rowsByKey.get(key) ?? {
+        bucketStart: point.bucketStart,
+        bucketEnd: point.bucketEnd,
+        dimensions,
+        cells: new Map(),
+      };
+      rowsByKey.set(key, row);
+      row.cells.set(series.metricCode, {
+        value: point.value,
+        finality: point.finality,
+      });
+    }
   };
   for (const series of evaluated.series) addSeries(series);
-  // A table without a split always shows its one row, even with no data.
-  if (selection.groupBy.length === 0 && rowsByKey.size === 0)
-    rowsByKey.set("", { dimensions: [], cells: new Map() });
+  // A table without a split always shows one row per bucket, even with no data.
+  if (selection.groupBy.length === 0) {
+    if (buckets.size === 0)
+      buckets.set(range.start, {
+        bucketStart: range.start,
+        bucketEnd: range.end,
+      });
+    for (const bucket of buckets.values())
+      if (!rowsByKey.has(`${bucket.bucketStart}|`))
+        rowsByKey.set(`${bucket.bucketStart}|`, {
+          ...bucket,
+          dimensions: [],
+          cells: new Map(),
+        });
+  }
 
   const unavailable = new Set(
     evaluated.availability
@@ -315,6 +304,8 @@ async function buildResult(
       .map((entry) => entry.metricCode),
   );
   const rows: ReportResultRow[] = [...rowsByKey.values()].map((row) => ({
+    bucketStart: row.bucketStart,
+    bucketEnd: row.bucketEnd,
     dimensions: row.dimensions,
     values: definitions.map((definition) => {
       const cell = row.cells.get(definition.code);
@@ -339,6 +330,7 @@ async function buildResult(
   return reportResultSchema.parse({
     reportCode: report?.code ?? null,
     period: evaluated.period,
+    bucket: evaluated.period.bucket,
     outletFilter: evaluated.outletFilter,
     definitions: evaluated.definitions,
     availability: evaluated.availability,

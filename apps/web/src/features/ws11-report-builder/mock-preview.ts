@@ -194,6 +194,66 @@ function aggregate(
   return [...rows.values()];
 }
 
+const DAY_MS = 86_400_000;
+const isoDay = (time: number) => new Date(time).toISOString().slice(0, 10);
+
+/** Start of the bucket holding `date` (weeks start on Monday, like the API). */
+function bucketStartOf(date: string, bucket: ReportBuilderQuery["bucket"]) {
+  const time = Date.parse(`${date}T00:00:00Z`);
+  const at = new Date(time);
+  switch (bucket) {
+    case "week":
+      return isoDay(time - ((at.getUTCDay() + 6) % 7) * DAY_MS);
+    case "month":
+      return `${date.slice(0, 7)}-01`;
+    case "quarter":
+      return `${date.slice(0, 5)}${String(Math.floor(at.getUTCMonth() / 3) * 3 + 1).padStart(2, "0")}-01`;
+    case "year":
+      return `${date.slice(0, 4)}-01-01`;
+    default:
+      return date;
+  }
+}
+
+/** Bucket ranges clipped to the period; `total` is the whole period. */
+function bucketRanges(
+  range: DateRange,
+  bucket: ReportBuilderQuery["bucket"],
+): DateRange[] {
+  if (bucket === "total") return [range];
+  const ranges: DateRange[] = [];
+  let startDate = range.startDate;
+  while (startDate <= range.endDate) {
+    const next = (() => {
+      const from = bucketStartOf(startDate, bucket);
+      const time = Date.parse(`${from}T00:00:00Z`);
+      switch (bucket) {
+        case "day":
+          return isoDay(time + DAY_MS);
+        case "week":
+          return isoDay(time + 7 * DAY_MS);
+        case "month":
+          return isoDay(
+            Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)), 1),
+          );
+        case "quarter":
+          return isoDay(
+            Date.UTC(Number(from.slice(0, 4)), Number(from.slice(5, 7)) + 2, 1),
+          );
+        default:
+          return `${Number(from.slice(0, 4)) + 1}-01-01`;
+      }
+    })();
+    const endDate = isoDay(Date.parse(`${next}T00:00:00Z`) - DAY_MS);
+    ranges.push({
+      startDate,
+      endDate: endDate > range.endDate ? range.endDate : endDate,
+    });
+    startDate = next;
+  }
+  return ranges;
+}
+
 function cellNumber(cell: Cell): number | null {
   if (cell === null) return null;
   return cell.valueIdr ?? Number(cell.value);
@@ -234,7 +294,12 @@ export function buildPreviewResult(
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
 
-  const rows = (options.empty ? [] : aggregate(query, range)).map((row) => ({
+  const toRow = (
+    bucketRange: DateRange,
+    row: ReturnType<typeof aggregate>[number],
+  ) => ({
+    bucketStart: bucketRange.startDate,
+    bucketEnd: bucketRange.endDate,
     dimensions: query.groupBy.map((key, position) => ({
       key,
       value: row.dims[position] as string,
@@ -248,14 +313,15 @@ export function buildPreviewResult(
           ? ("final" as const)
           : ("estimate" as const),
     })),
-  }));
+  });
 
-  if (query.sort !== undefined) {
+  const sortRows = (rows: ReturnType<typeof toRow>[]) => {
+    if (query.sort === undefined) return rows;
     const { column, direction } = query.sort;
     const factor = direction === "asc" ? 1 : -1;
     const metricIndex = query.metricCodes.indexOf(column);
     const keyIndex = query.groupBy.indexOf(column);
-    rows.sort((a, b) => {
+    return rows.sort((a, b) => {
       if (metricIndex >= 0) {
         const left = cellNumber(a.values[metricIndex]?.value ?? null);
         const right = cellNumber(b.values[metricIndex]?.value ?? null);
@@ -273,7 +339,16 @@ export function buildPreviewResult(
         )
       );
     });
-  }
+  };
+
+  // Bucket order first, then the sort within each bucket, like the service.
+  const rows = options.empty
+    ? []
+    : bucketRanges(range, query.bucket).flatMap((bucketRange) =>
+        sortRows(
+          aggregate(query, bucketRange).map((row) => toRow(bucketRange, row)),
+        ),
+      );
 
   return reportResultSchema.parse({
     reportCode: null,
@@ -284,6 +359,7 @@ export function buildPreviewResult(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: query.bucket,
     outletFilter:
       query.outletIds === undefined
         ? { kind: "all" }

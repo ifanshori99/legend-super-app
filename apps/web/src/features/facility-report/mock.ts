@@ -739,6 +739,8 @@ function metricRef(code: string) {
 }
 
 type LooseRow = {
+  bucketStart: string;
+  bucketEnd: string;
   dimensions: { key: string; value: string }[];
   values: { metricCode: string; value: Cell; finality: "final" | "estimate" }[];
 };
@@ -754,6 +756,8 @@ function buildRun(
   const accountingClosed = closed && range.endDate < MONTH_START;
   const refs = report.metrics.map(metricRef);
   const rows: LooseRow[] = seeds.map((seed) => ({
+    bucketStart: range.startDate,
+    bucketEnd: range.endDate,
     dimensions: seed.dims.map(([key, value]) => ({ key, value })),
     values: refs.map((ref) => {
       // SH-02: final only for a closed period, and for closed-period-only
@@ -779,6 +783,7 @@ function buildRun(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
     availability: report.metrics.map((metricCode) => ({

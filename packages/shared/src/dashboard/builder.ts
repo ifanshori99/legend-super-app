@@ -13,6 +13,7 @@
 
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  businessDateSchema,
   clientInputSchema,
   cursorPageQuerySchema,
   cursorPageSchema,
@@ -237,9 +238,14 @@ export const reportRunInputSchema = clientInputSchema({
 });
 export type ReportRunInput = z.infer<typeof reportRunInputSchema>;
 
-/** One row: the dimension values in `groupBy` order, then one value per metric. */
+/**
+ * One row: the bucket it belongs to, the dimension values in `groupBy` order,
+ * then one value per metric. For bucket `total` the bucket is the whole period.
+ */
 export const reportResultRowSchema = z
   .strictObject({
+    bucketStart: businessDateSchema,
+    bucketEnd: businessDateSchema,
     dimensions: z
       .array(metricDimensionValueSchema)
       .max(REPORT_BUILDER_MAX_DIMENSIONS),
@@ -256,6 +262,12 @@ export const reportResultRowSchema = z
       .max(REPORT_BUILDER_MAX_METRICS),
   })
   .superRefine((row, ctx) => {
+    if (row.bucketStart > row.bucketEnd)
+      ctx.addIssue({
+        code: "custom",
+        message: "bucketStart must not be after bucketEnd",
+        path: ["bucketEnd"],
+      });
     const codes = row.values.map((value) => value.metricCode);
     if (new Set(codes).size !== codes.length)
       ctx.addIssue({
@@ -274,7 +286,9 @@ export const reportResultRowSchema = z
 export type ReportResultRow = z.infer<typeof reportResultRowSchema>;
 
 /**
- * Table result of one run. `groupBy` and every row's dimensions share one
+ * Table result of one run. `bucket` is the period's bucket: one block of rows
+ * per bucket, in bucket order, then dimension order; `limit` counts all rows.
+ * `groupBy` and every row's dimensions share one
  * order; every row carries exactly the requested definitions in order, so a
  * cell always resolves to a registry row (DASH-01). `finality` is per value:
  * an open period is an estimate, a closed one final (SH-02).
@@ -284,6 +298,7 @@ export const reportResultSchema = z
     /** Null for an ad hoc builder preview; set for a catalog report. */
     reportCode: reportCodeSchema.nullable(),
     period: metricPeriodSchema,
+    bucket: metricBucketSchema,
     outletFilter: metricOutletFilterSchema,
     definitions: z
       .array(metricDefinitionRefSchema)
@@ -309,6 +324,12 @@ export const reportResultSchema = z
         code: "custom",
         message: "reportCode is not in the catalog",
         path: ["reportCode"],
+      });
+    if (result.bucket !== result.period.bucket)
+      ctx.addIssue({
+        code: "custom",
+        message: "bucket must match the period bucket",
+        path: ["bucket"],
       });
     const codes = result.definitions.map((definition) => definition.code);
     if (new Set(codes).size !== codes.length)
@@ -336,7 +357,34 @@ export const reportResultSchema = z
     const byCode = new Map(
       result.definitions.map((definition) => [definition.code, definition]),
     );
+    let previousBucketStart: string | null = null;
     for (const [index, row] of result.rows.entries()) {
+      if (
+        row.bucketStart < result.period.startDate ||
+        row.bucketEnd > result.period.endDate
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Row bucket must lie inside the period",
+          path: ["rows", index, "bucketStart"],
+        });
+      if (
+        result.bucket === "total" &&
+        (row.bucketStart !== result.period.startDate ||
+          row.bucketEnd !== result.period.endDate)
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "A total row covers the whole period",
+          path: ["rows", index, "bucketStart"],
+        });
+      if (previousBucketStart !== null && row.bucketStart < previousBucketStart)
+        ctx.addIssue({
+          code: "custom",
+          message: "Rows must be ordered by bucket",
+          path: ["rows", index, "bucketStart"],
+        });
+      previousBucketStart = row.bucketStart;
       const columnKeys = row.dimensions.map((dimension) => dimension.key);
       if (
         columnKeys.length !== result.groupBy.length ||

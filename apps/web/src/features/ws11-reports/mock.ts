@@ -312,6 +312,8 @@ function metricRef(code: string) {
 }
 
 type LooseRow = {
+  bucketStart: string;
+  bucketEnd: string;
   dimensions: { key: string; value: string }[];
   values: { metricCode: string; value: Cell; finality: "final" | "estimate" }[];
 };
@@ -331,6 +333,8 @@ function buildRun(
     atoms: Figures,
   ): LooseRow {
     return {
+      bucketStart: range.startDate,
+      bucketEnd: range.endDate,
       dimensions: dims.map(([key, value]) => ({ key, value })),
       values: refs.map((ref) => {
         const value = cellFor(ref.code, atoms, totals);
@@ -380,6 +384,7 @@ function buildRun(
       status: closed ? "closed" : "open",
       accountingPeriodClosed: accountingClosed,
     },
+    bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
     availability: report.metrics.map((metricCode) => ({
