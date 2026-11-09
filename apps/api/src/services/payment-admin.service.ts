@@ -22,7 +22,10 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
-import { approveRefund as approveRefundWithPayout } from "./payment-refund.service.ts";
+import {
+  approveRefund as approveRefundWithPayout,
+  openRefundChainAtRequest,
+} from "./payment-refund.service.ts";
 import {
   appendPaymentEvent,
   assertPaymentPermission,
@@ -331,7 +334,7 @@ export async function createRefund(
         if (reserved + BigInt(body.amountIdr) > cap)
           throw conflict("Refund exceeds available paid amount.");
         const now = new Date();
-        const [row] = await tx
+        const [inserted] = await tx
           .insert(paymentRefunds)
           .values({
             tenantId: intent.tenantId,
@@ -343,7 +346,8 @@ export async function createRefund(
             requestedBy: actor,
           })
           .returning();
-        if (!row) throw new Error("Refund insert returned no row");
+        if (!inserted) throw new Error("Refund insert returned no row");
+        const row = await openRefundChainAtRequest(tx, context, inserted, now);
         await refundAudit(tx, context, {
           actorId: actor,
           row,
