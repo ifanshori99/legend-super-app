@@ -9,6 +9,13 @@
 // delete-guard test deletes as legend_app); trigger errors are asserted by
 // SQLSTATE 23514 only, since the trigger message text is not part of the
 // contract.
+// Round 2: the BEFORE INSERT order/outlet trigger (errcode 23503) fires before
+// the RLS WITH CHECK and before the composite order FK. Cases with the trigger
+// on therefore assert exactly 23503. Round 3: the FK and the RLS WITH CHECK are
+// proven separately, inside an owner transaction that is ROLLED BACK, with the
+// trigger disabled (ALTER TABLE ... DISABLE TRIGGER is transactional). Guard-
+// trigger update cases keep every other CHECK satisfied so only the guard can
+// refuse.
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -52,6 +59,43 @@ let order1: string;
 let order2: string;
 let order3OutletA2: string;
 let orderB: string;
+
+/**
+ * Rolled-back owner transaction with the table's BEFORE INSERT order/outlet
+ * trigger disabled, so only the composite FK and RLS can refuse an insert.
+ * `asRole: "owner"` keeps the owner (tenant GUCs set, FORCE RLS applies);
+ * `asRole: "app"` switches to legend_app so the RLS WITH CHECK is exercised.
+ */
+async function withOrderTriggerDisabled<T>(
+  table: string,
+  session: {
+    tenantId: string;
+    outletIds?: "*" | string[];
+    asRole: "owner" | "app";
+  },
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `ALTER TABLE ${table} DISABLE TRIGGER ${table}_order_outlet_trg`,
+    );
+    // Report an FK violation at the INSERT, not at COMMIT.
+    await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+    if (session.asRole === "app")
+      await client.query("SET LOCAL ROLE legend_app");
+    const outletIds = session.outletIds ?? "*";
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', $2, true)",
+      [session.tenantId, outletIds === "*" ? "*" : JSON.stringify(outletIds)],
+    );
+    return await run(client);
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
 
 /** Owner transaction with tenant settings (orders/pickup tables are FORCE RLS). */
 async function asOwnerOf<T>(
@@ -273,15 +317,44 @@ describe.each([
     ).rejects.toThrow(/tenant context is required/);
   });
 
-  it("inserting a row for another tenant is refused", async () => {
+  it("inserting a row for another tenant is refused by the order/outlet trigger (23503)", async () => {
+    // Trigger on: tenant B's session cannot see tenant A's order, so the
+    // BEFORE INSERT trigger refuses first.
     await expect(
       asTenant(appPool, tenantB.tenantId, (c) =>
         insertForeign(c, tenantAId, outletA1),
       ),
-    ).rejects.toThrow(/row-level security/);
+    ).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("a session limited to another outlet cannot see the row or insert into this outlet", async () => {
+  it("RLS WITH CHECK refuses inserting a row for another tenant (trigger disabled)", async () => {
+    await expect(
+      withOrderTriggerDisabled(
+        table,
+        { tenantId: tenantB.tenantId, asRole: "app" },
+        (c) => insertForeign(c, tenantAId, outletA1),
+      ),
+    ).rejects.toMatchObject({
+      code: "42501",
+      message: expect.stringMatching(/row-level security/),
+    });
+  });
+
+  it("RLS WITH CHECK refuses inserting into an outlet outside app.outlet_ids (trigger disabled)", async () => {
+    // order1 belongs to outlet A1, so the order/outlet match would hold.
+    await expect(
+      withOrderTriggerDisabled(
+        table,
+        { tenantId: tenantAId, outletIds: [outletA2], asRole: "app" },
+        (c) => insertForeign(c, tenantAId, outletA1),
+      ),
+    ).rejects.toMatchObject({
+      code: "42501",
+      message: expect.stringMatching(/row-level security/),
+    });
+  });
+
+  it("a session limited to another outlet cannot see the row", async () => {
     const hidden = await asTenant(
       appPool,
       tenantAId,
@@ -296,14 +369,6 @@ describe.each([
       [outletA1],
     );
     expect(visible.rows).toEqual([{ id: rowA() }]);
-    await expect(
-      asTenant(
-        appPool,
-        tenantAId,
-        (c) => insertForeign(c, tenantAId, outletA1),
-        [outletA2],
-      ),
-    ).rejects.toThrow(/row-level security/);
   });
 
   it("a row cannot point at another tenant's order", async () => {
@@ -325,6 +390,97 @@ describe.each([
             }),
       ),
     ).rejects.toMatchObject({ code: "23503" });
+  });
+});
+
+describe.each([
+  {
+    table: "pickup_calls",
+    insertRow: (c: PoolClient, outletId: string, orderId: string) =>
+      insertPickup(c, { outletId, orderId, number: 7 }),
+  },
+  {
+    table: "expo_assignments",
+    insertRow: (c: PoolClient, outletId: string, orderId: string) =>
+      insertExpo(c, { outletId, orderId }),
+  },
+])("$table order/outlet match trigger", ({ table, insertRow }) => {
+  it("accepts a row whose outlet equals its order's outlet", async () => {
+    await asTenant(appPool, tenantAId, async (c) => {
+      await insertRow(c, outletA1, order1);
+    });
+    await asTenant(appPool, tenantAId, async (c) => {
+      await insertRow(c, outletA2, order3OutletA2);
+    });
+  });
+
+  it("refuses an outlet A2 row pointing at an outlet A1 order", async () => {
+    await expect(
+      asTenant(appPool, tenantAId, (c) => insertRow(c, outletA2, order1)),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("refuses an outlet A1 row pointing at an outlet A2 order", async () => {
+    await expect(
+      asTenant(appPool, tenantAId, (c) =>
+        insertRow(c, outletA1, order3OutletA2),
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("refuses a row pointing at an order that does not exist", async () => {
+    await expect(
+      asTenant(appPool, tenantAId, (c) => insertRow(c, outletA1, randomUUID())),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  // Tenant B's row pointing at tenant A's order is covered above
+  // ("a row cannot point at another tenant's order", 23503).
+  it("refuses an order the session cannot see (limited to another outlet)", async () => {
+    // Session sees only outlet A2; order1 belongs to outlet A1 and is hidden.
+    await expect(
+      asTenant(appPool, tenantAId, (c) => insertRow(c, outletA2, order1), [
+        outletA2,
+      ]),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("refuses an outlet A1 row with an outlet A1 order when the session sees only outlet A2", async () => {
+    await expect(
+      asTenant(appPool, tenantAId, (c) => insertRow(c, outletA1, order1), [
+        outletA2,
+      ]),
+    ).rejects.toMatchObject({
+      code: "23503",
+      message: expect.stringMatching(/must belong to the outlet of its order/),
+    });
+  });
+
+  it("composite order FK refuses another tenant's order (trigger disabled)", async () => {
+    // Tenant A row, tenant B's order: (tenant_id, order_id) matches no order.
+    await expect(
+      withOrderTriggerDisabled(
+        table,
+        { tenantId: tenantAId, asRole: "owner" },
+        (c) => insertRow(c, outletA1, orderB),
+      ),
+    ).rejects.toMatchObject({
+      code: "23503",
+      constraint: `${table}_order_fk`,
+    });
+  });
+
+  it("composite order FK refuses an order id that does not exist (trigger disabled)", async () => {
+    await expect(
+      withOrderTriggerDisabled(
+        table,
+        { tenantId: tenantAId, asRole: "owner" },
+        (c) => insertRow(c, outletA1, randomUUID()),
+      ),
+    ).rejects.toMatchObject({
+      code: "23503",
+      constraint: `${table}_order_fk`,
+    });
   });
 });
 
@@ -581,6 +737,40 @@ describe("pickup_calls guard trigger", () => {
     ).rejects.toMatchObject({ code: "23514" });
   });
 
+  it.each([
+    ["order_id", "order_id = $2", () => order2],
+    ["outlet_id", "outlet_id = $2", () => outletA2],
+    ["number", "number = $2", () => 8],
+    ["business_date", "business_date = $2", () => OTHER_DAY],
+    ["channel", "channel = $2", () => "gofood"],
+  ])("refuses changing %s", async (_column, set, value) => {
+    await expect(
+      asTenant(appPool, tenantAId, async (c) => {
+        await insertPickup(c, { id, orderId: order1, number: 7 });
+        await c.query(`UPDATE pickup_calls SET ${set} WHERE id = $1`, [
+          id,
+          value(),
+        ]);
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("refuses skipping a step: assigned -> picked_up in one UPDATE", async () => {
+    await expect(
+      asTenant(appPool, tenantAId, async (c) => {
+        await insertPickup(c, { id, orderId: order1, number: 7 });
+        // called_at and picked_up_at are both valid for the CHECKs, so only
+        // the one-step rule can refuse.
+        await c.query(
+          `UPDATE pickup_calls
+              SET status = 'picked_up', called_at = $2, picked_up_at = $3
+            WHERE id = $1`,
+          [id, T_CALLED, T_LATER],
+        );
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
   it("allows an UPDATE that keeps the same values", async () => {
     await asTenant(appPool, tenantAId, async (c) => {
       await insertPickup(c, {
@@ -760,6 +950,50 @@ describe("expo_assignments guard trigger", () => {
         );
       }),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it.each([
+    ["order_id", "order_id = $2", () => order2],
+    ["outlet_id", "outlet_id = $2", () => outletA2],
+  ])("refuses changing %s before delivery", async (_column, set, value) => {
+    await expect(
+      asTenant(appPool, tenantAId, async (c) => {
+        await insertExpo(c, { id, orderId: order1 });
+        await c.query(`UPDATE expo_assignments SET ${set} WHERE id = $1`, [
+          id,
+          value(),
+        ]);
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it.each([
+    ["order_id", "order_id = $2", () => order2],
+    ["outlet_id", "outlet_id = $2", () => outletA2],
+    ["runner_assigned_at", "runner_assigned_at = $2", () => T_CALLED],
+    ["assigned_by", "assigned_by = $2", () => randomUUID()],
+  ])("refuses changing %s after delivery", async (_column, set, value) => {
+    await expect(
+      asTenant(appPool, tenantAId, async (c) => {
+        await delivered(c);
+        // T_CALLED is still <= delivered_at, so the CHECKs pass.
+        await c.query(`UPDATE expo_assignments SET ${set} WHERE id = $1`, [
+          id,
+          value(),
+        ]);
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("allows changing assigned_by before delivery", async () => {
+    await asTenant(appPool, tenantAId, async (c) => {
+      await insertExpo(c, { id, orderId: order1 });
+      const result = await c.query(
+        "UPDATE expo_assignments SET assigned_by = $2 WHERE id = $1",
+        [id, randomUUID()],
+      );
+      expect(result.rowCount).toBe(1);
+    });
   });
 
   it("refuses deleting a delivered assignment", async () => {
