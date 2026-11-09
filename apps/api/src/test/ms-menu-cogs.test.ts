@@ -552,7 +552,7 @@ describe("menu_popularity_pct: share of the period total", () => {
   const D20 = "2025-06-20";
   const D21 = "2025-06-21";
   const popularity = async (
-    request: Parameters<typeof evaluate>[1],
+    request: Omit<Parameters<typeof evaluate>[1], "metricCodes">,
   ): Promise<Map<string, number | null>> =>
     splitOf(
       await evaluate(world, {
