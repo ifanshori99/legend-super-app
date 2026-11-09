@@ -287,7 +287,8 @@ export const approvalPolicyWire = {
 
 // ---- Shift -----------------------------------------------------------------
 
-export function shiftWire(shift: EngineShift) {
+/** `blind`: the caller lacks the variance permission, so the drawer figures go out as null. */
+export function shiftWire(shift: EngineShift, blind = false) {
   const closed = shift.status === "closed" && shift.closed && shift.count;
   return {
     id: shift.id,
@@ -298,16 +299,17 @@ export function shiftWire(shift: EngineShift) {
     status: closed ? "closed" : "open",
     openedAt: shift.openedAt,
     openingFloatIdr: shift.openingFloatIdr,
-    cashSalesIdr: shift.cashSalesIdr,
-    cashRefundsIdr: shift.cashRefundsIdr,
-    cashInIdr: shift.cashInIdr,
-    cashOutIdr: shift.cashOutIdr,
-    cashDropIdr: shift.cashDropIdr,
-    expectedIdr: closed ? shift.closed!.expectedIdr : null,
+    cashSalesIdr: blind ? null : shift.cashSalesIdr,
+    cashRefundsIdr: blind ? null : shift.cashRefundsIdr,
+    cashInIdr: blind ? null : shift.cashInIdr,
+    cashOutIdr: blind ? null : shift.cashOutIdr,
+    cashDropIdr: blind ? null : shift.cashDropIdr,
+    expectedIdr: closed && !blind ? shift.closed!.expectedIdr : null,
     countedIdr: closed ? shift.count!.countedIdr : null,
-    varianceIdr: closed ? shift.closed!.varianceIdr : null,
+    varianceIdr: closed && !blind ? shift.closed!.varianceIdr : null,
     varianceNote:
-      closed && shift.closed!.varianceIdr !== 0
+      // Whether a note exists would reveal a non-zero variance to a blind caller.
+      closed && !blind && shift.closed!.varianceIdr !== 0
         ? shift.closed!.varianceNote
         : null,
     approvedBy: closed ? MOCK_SUPERVISOR_ID : null,
