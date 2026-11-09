@@ -15,7 +15,9 @@
 // Seeded and checked for leaks: TL-01 sales, TL-02 menu performance, TL-03
 // stock, TL-04 food cost, TL-11 anomalies. Not seeded (denial or "no outlet B
 // id/name in the reply" only): TL-05 labor, TL-08 shifts, TL-20 facility. TL-05,
-// TL-06, TL-08, TL-09 and TL-12 are also behind the MFA gate for MCP callers.
+// TL-06, TL-08, TL-09 and TL-12 are also behind the MFA gate for MCP callers,
+// so their refusals here come from that gate, not from outlet scope. TL-10 SOP
+// search is seeded with a tenant-wide SOP and an outlet-B station SOP.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -56,6 +58,11 @@ const MENU_A = "Menu Marker Alfa";
 const MENU_B = "Menu Marker Bravo";
 const STOCK_A = "Stok Marker Alfa";
 const STOCK_B = "Stok Marker Bravo";
+/** SOP titles; TL-10 searches "prosedur". */
+const SOP_GLOBAL = "Prosedur Marker Global";
+const SOP_B = "Prosedur Marker Bravo";
+/** Self-only tools: they read the caller's own rows, never an outlet's. */
+const SELF_TOOL_CODES = new Set(["TL-09", "TL-12"]);
 
 const READ_TOOLS = AI_TOOL_CATALOG.filter((tool) => tool.kind === "read");
 /** Tools that read operational rows of one or more outlets (they take `outletIds`). */
@@ -80,6 +87,7 @@ let stationElevatedUser: Actor;
 let outletBName = "";
 let stationId = "";
 const stationIds: string[] = [];
+const sopIds: string[] = [];
 
 // ---- Protocol helpers (same wire format as ai-mcp-acceptance.test.ts) --------
 
@@ -370,17 +378,37 @@ async function seedData(): Promise<void> {
   });
 }
 
-async function createStation(): Promise<string> {
+async function createStation(outlet = outletA): Promise<string> {
   const id = randomUUID();
   await asTenant((db) =>
     db.query(
       `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
        VALUES ($1, $2, $3, $4, 'coffee_bar')`,
-      [id, tenantId, outletA, `Stasiun scope ${id.slice(0, 6)}`],
+      [id, tenantId, outlet, `Stasiun scope ${id.slice(0, 6)}`],
     ),
   );
   stationIds.push(id);
   return id;
+}
+
+/** One live SOP per row: tenant-wide (no station) and one at an outlet-B station. */
+async function seedSops(): Promise<void> {
+  const stationB = await createStation(outletB);
+  for (const [title, station] of [
+    [SOP_GLOBAL, null],
+    [SOP_B, stationB],
+  ] as const) {
+    const id = randomUUID();
+    await asTenant((db) =>
+      db.query(
+        `INSERT INTO sop_documents (id, tenant_id, lineage_id, version, station_id,
+           title, body, requires_acknowledgement, effective_from, published_by)
+         VALUES ($1, $2, $1, 1, $3, $4, $5, false, '2026-01-01', $6)`,
+        [id, tenantId, station, title, `${title} langkah kerja`, admin.userId],
+      ),
+    );
+    sopIds.push(id);
+  }
 }
 
 /** Assigns a seeded role template at STATION scope (direct insert, as the role editor would not). */
@@ -451,6 +479,7 @@ function bMarkers(): string[] {
     String(NET_B),
     MENU_B.toLowerCase(),
     STOCK_B.toLowerCase(),
+    SOP_B.toLowerCase(),
   ];
 }
 
@@ -519,6 +548,7 @@ beforeAll(async () => {
   );
   outletBName = name.rows[0]!.name;
   await seedData();
+  await seedSops();
 
   // Tenant-wide control: owner + purchasing + marketing at tenant scope.
   wide = await signedIn("Pengguna lebar scope");
@@ -568,6 +598,12 @@ afterAll(async () => {
     if (user) await removeAssignments(user.userId).catch(() => undefined);
   await cleanupAcceptance().catch(() => undefined);
   await asTenant((db) =>
+    db.query(
+      "DELETE FROM sop_documents WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenantId, sopIds],
+    ),
+  ).catch(() => undefined);
+  await asTenant((db) =>
     db.query("DELETE FROM stations WHERE tenant_id = $1 AND id = ANY($2)", [
       tenantId,
       stationIds,
@@ -600,6 +636,12 @@ describe("legend-cot3 ai mcp scope: positive control (tenant-wide principal)", (
     // No filter: both outlets.
     const all = find("TL-01", "no outlet filter");
     expect(hasAny(all.reply, [String(NET_B), String(NET_A)])).toHaveLength(2);
+    // SOP search: the tenant-wide SOP and the outlet-B station SOP.
+    const sop = find("TL-10", "no outlet input");
+    expect(denied(sop.reply), describeReply(sop)).toBe(false);
+    expect(
+      hasAny(sop.reply, [SOP_GLOBAL.toLowerCase(), SOP_B.toLowerCase()]),
+    ).toHaveLength(2);
   });
 });
 
@@ -635,7 +677,9 @@ describe("legend-cot3 ai mcp scope: outlet-A principal", () => {
     const seen = await sweep(tokens.outlet);
     expect(invalidInputs(seen)).toEqual([]);
     expect(leaksOf(seen)).toEqual([]);
-    // Naming outlet B explicitly is refused, not silently narrowed.
+    // Naming outlet B explicitly is refused, not silently narrowed. TL-05 and
+    // TL-08 are refused earlier by the MCP MFA gate, so for them this checks the
+    // gate only (see the file header).
     const asked = seen.filter(
       (o) => OUTLET_TOOL_CODES.has(o.tool) && o.variant !== "no outlet filter",
     );
@@ -684,11 +728,16 @@ describe("legend-cot3 ai mcp scope: station-only principal holding outlet templa
     const seen = await sweep(tokens.elevated);
     expect(invalidInputs(seen)).toEqual([]);
     expect(leaksOf(seen)).toEqual([]);
+    // Every tool except the self-only ones is refused: outlet tools and
+    // tenant-level tools (finance, customers, SOP search) alike.
     const answered = seen
-      .filter((o) => OUTLET_TOOL_CODES.has(o.tool) && !denied(o.reply))
+      .filter((o) => !SELF_TOOL_CODES.has(o.tool) && !denied(o.reply))
       .map(describeReply);
-    expect(answered, "outlet-reading tools answered at station scope").toEqual(
-      [],
+    expect(answered, "non-self tools answered at station scope").toEqual([]);
+    const tenantSop = seen.filter(
+      (o) =>
+        !denied(o.reply) && hasAny(o.reply, [SOP_GLOBAL.toLowerCase()]).length,
     );
+    expect(tenantSop.map(describeReply)).toEqual([]);
   });
 });
