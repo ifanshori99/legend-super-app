@@ -29,6 +29,7 @@ import {
   CoreError,
   encodeCursor,
   idr,
+  outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -57,6 +58,7 @@ import {
   comboComponents,
   combos,
   coreStorageObjects,
+  devices,
   itemAvailability,
   itemVariants,
   menuCategories,
@@ -560,6 +562,38 @@ export async function listStations(
   });
 }
 
+/**
+ * legend-e087: a station's printer must be an active printer device of the
+ * station's own outlet and tenant. Unknown, other-outlet, other-tenant,
+ * non-printer and revoked all give the same error (no existence oracle).
+ */
+async function assertStationPrinter(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  printerDeviceId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.tenantId, context.tenant.tenantId),
+        eq(devices.outletId, outletIdSchema.parse(outletId)),
+        eq(devices.id, printerDeviceId),
+        eq(devices.type, "printer"),
+        eq(devices.status, "active"),
+        isNull(devices.revokedAt),
+      ),
+    );
+  if (!row)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Printer tidak valid untuk outlet ini.",
+    );
+}
+
 export async function createStation(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -582,6 +616,8 @@ export async function createStation(
       outletId,
       now,
     );
+    if (input.printerDeviceId)
+      await assertStationPrinter(tx, context, outletId, input.printerDeviceId);
     const [row] = await tx
       .insert(stations)
       .values({
@@ -667,6 +703,19 @@ export async function updateStation(
         MENU_ITEM_PERMISSION,
         existing.outletId,
         now,
+      );
+    // legend-e087: only a changed, non-null printer is validated; an echo of
+    // the stored value (e.g. revoked since) must not block saving target time.
+    if (
+      input.printerDeviceId &&
+      input.printerDeviceId.toLowerCase() !==
+        existing.printerDeviceId?.toLowerCase()
+    )
+      await assertStationPrinter(
+        tx,
+        context,
+        existing.outletId,
+        input.printerDeviceId,
       );
     const [row] = await tx
       .update(stations)
