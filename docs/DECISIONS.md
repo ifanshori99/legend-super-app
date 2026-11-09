@@ -3,6 +3,61 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Laporan harian tanpa pesanan latihan (legend-fbxzw)
+
+Konteks: rekap akhir hari (`computeRecap`, `pos-day.service.ts`) masih
+menjumlahkan pesanan latihan, tidak sejalan dengan kas shift (legend-0v3b3) dan
+laporan WS-11. Tingkat S.
+
+Keputusan: rekap mengecualikan pesanan latihan dari SEMUA bagiannya (himpunan
+penjualan, tender captured per metode, void, refund) lewat `reportablePosOrders()`.
+Bila hanya tender yang dikecualikan, pemeriksaan keseimbangan (tender sama
+dengan total penjualan) melempar CONFLICT, jadi keempatnya harus sama.
+Lanjutan (keputusan CTO, Q63: latihan tidak boleh memengaruhi operasi nyata):
+
+1. **Pesanan latihan yang menggantung tidak menahan tutup hari.** Pemeriksaan
+   "masih ada pesanan yang belum selesai" di `closePosDay` memakai
+   `reportablePosOrders()`. Pesanan nyata yang belum selesai tetap menahan.
+2. **Bagian shift dan kas rekap tidak difilter latihan, dengan bukti.** Shift
+   khusus latihan memang bisa ada: `pos_shifts` tidak punya penanda latihan
+   (`db/schema/pos-shift.ts:49-75`), buka shift tidak memeriksa mode latihan
+   (`pos-shift.service.ts:161-249`), dan `setDeviceTrainingMode`
+   (`device.service.ts:507-556`) tidak melihat shift terbuka, jadi mode bisa
+   dialihkan di tengah shift dan satu shift berisi pesanan nyata dan latihan
+   (`pos_orders.shift_id` tidak dicek terhadap `is_training`,
+   `pos-order.service.ts:719-744`). `cash_movements` (`pos-shift.ts:341-375`)
+   tidak punya penanda latihan dan tidak punya `device_id`. Baris shift, selisih,
+   dan kas kedaluwarsa adalah keadaan laci uang sungguhan: kasir menghitung dan
+   memindahkan uang fisik. Selisih itu sudah dihitung tanpa tunai latihan
+   (legend-0v3b3) dan dijurnal saat tutup shift
+   (`cashier_shift.closed`). Menyembunyikan shift dari rekap akan membuat rekap
+   tidak sejalan dengan buku besar dan bisa menyembunyikan kas nyata pada shift
+   campuran, jadi bagian ini dibiarkan. Bila founder ingin shift latihan murni
+   disembunyikan, perlu penanda latihan pada `pos_shifts` (migrasi) lebih dulu.
+
+## 2026-11-10: Pesanan latihan: kas shift dan stok (legend-0v3b3, legend-13avp)
+
+Konteks: lanjutan legend-gkc6b. Review architect menemukan tutup shift masih
+menghitung tender tunai pesanan latihan ke kas yang diharapkan, dan founder
+(Q63) memutuskan pesanan latihan tidak memotong stok. Tingkat K (uang).
+
+1. **Kas shift (legend-0v3b3).** `computeShiftAggregates` mengecualikan tender
+   tunai, refund tunai, dan void tunai milik pesanan latihan lewat `LEFT JOIN
+   pos_orders` dan `is_training = false`. Baris tanpa pasangan `pos_orders`
+   (QR bayar-dulu) tetap dihitung. Alasan: uang latihan tidak pernah masuk laci,
+   jadi shift campuran tidak boleh mencatat selisih palsu. Satu fungsi ini juga
+   dipakai hitung buta, penjaga kas, dan tutup paksa, jadi semuanya ikut benar.
+   Laporan harian (`pos-day.service.ts`) hanya tampilan dan tidak diubah.
+2. **Stok (legend-13avp).** Konsumen `recipe-deduction` melewati pesanan
+   latihan: `order.paid` dan `order_issue.recorded` (remake, comp) tidak
+   membuat baris `recipe_deductions`, `stock_ledger`, maupun `stock.moved`;
+   `order.voided` pesanan latihan tanpa deduksi tidak meninggalkan tombstone.
+   Pemeriksaan di konsumen (bukan penerbit) dengan alasan yang sama seperti
+   legend-gkc6b.
+3. **Data lama.** Void pesanan latihan yang sudah punya deduksi tetap
+   membalik. Deduksi `pending` milik pesanan latihan dilewati saat `day.closed`
+   dan tetap `pending`. Deduksi latihan yang sudah `posted` tidak dikoreksi.
+
 ## 2026-11-10: Pesanan latihan tidak boleh menjurnal (legend-gkc6b)
 
 Konteks: `accounting-auto-journal` dan jembatan stok ke buku besar
