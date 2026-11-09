@@ -6,6 +6,7 @@ Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 ## Repo
 Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/prep-pos-receipt`, cabang `prep2/pos-receipt` HEAD `39296fae`, berisi `ws/pos-receipt` (1657797e) plus fix shift (`bd5885b6`: cash sale mengikuti aturan pos-shift). Cabang ini BELUM digabung ke `milestone/m1`.
 Rentang diff isi receipt saja: `git diff 2d0f7f4a 39296fae` (29 file; abaikan drizzle `meta/*.json`). `2d0f7f4a` adalah parent kedua `39296fae` (chain head `prep4/fix-whitelabel`). Jangan pakai `git diff milestone/m1...`: merge-base `1e2ab930` menyeret isi ws02-edge dan whitelabel yang belum merge.
+Sudah digabung ke `milestone/m1` sebagai merge `726515a4` (09-11); rentang di m1: `git diff cc3e778c 726515a4` (isi sama dengan rentang di atas).
 Migration pada rantai ini: 0101/0102 (diregen di atas chain ws02-edge).
 
 ## Berkas berisiko
