@@ -348,16 +348,28 @@ export async function applyStaffPinSet(
 /**
  * legend-o839h: the event comes from the edge database that gave the current
  * generation, so its aggregate sequence is comparable with the stored one.
- * Same node id and same instance id; a null instance on both sides (an old
- * edge that never reports one) keeps the node-only rule of legend-rucdm. A
- * rebuilt edge database keeps the node id but has a new instance id and
- * restarts its sequences, so its sets compare by key only. A restored or
- * cloned database keeps its instance id and still orders by sequence
- * (legend-yd0h8 covers that case for receipts).
+ *
+ * - The event names its instance (`meta.edgeInstanceId`, the link's
+ *   `x-edge-instance` header): same node id and same stored instance. A
+ *   rebuilt edge database keeps the node id but has a new instance id and
+ *   restarts its sequences, so its sets compare by key only. A row adopted
+ *   before instances were reported (null) also compares by key, so a rebuild
+ *   from such a row needs no runbook either. A restored or cloned database
+ *   keeps its instance id and still orders by sequence (legend-yd0h8 covers
+ *   that case for receipts).
+ * - The instance is unknown (an old edge without the header, a parked event
+ *   drained later, a conflict replayed by a supervisor): the node-only rule of
+ *   legend-rucdm, exactly as before instances existed. Those paths never
+ *   recorded the instance, so treating them as another database would let an
+ *   older set of the node win by key (review K #2, #3).
+ *
+ * Never NULL (a cloud row has no node): it is negated in the key branch.
  */
 function sameGenerationOrigin(meta: EdgeApplyMeta) {
-  // Never NULL (a cloud row has no node): it is negated in the key branch.
-  return sql`(${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeInstanceId} IS NOT DISTINCT FROM ${meta.edgeInstanceId ?? null}::uuid)`;
+  const sameNode = sql`${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid`;
+  const instanceId = meta.edgeInstanceId ?? null;
+  if (instanceId === null) return sql`(${sameNode})`;
+  return sql`(${sameNode} AND ${staffPins.generationEdgeInstanceId} IS NOT DISTINCT FROM ${instanceId}::uuid)`;
 }
 
 /**
@@ -573,8 +585,14 @@ export async function drainParkedAccessEvents(
         .limit(limit)
         .for("update", { skipLocked: true });
       for (const row of rows) {
-        // The parked row's own node (primary or standby of this outlet).
-        const rowMeta: EdgeApplyMeta = { ...meta, edgeNodeId: row.edgeNodeId };
+        // The parked row's own node (primary or standby of this outlet). Its
+        // edge database instance was never recorded: never borrow the live
+        // link's (review K #2), so the node-only rule applies (legend-o839h).
+        const rowMeta: EdgeApplyMeta = {
+          ...meta,
+          edgeNodeId: row.edgeNodeId,
+          edgeInstanceId: null,
+        };
         let outcome: EdgeDeferredApplyOutcome;
         try {
           outcome = await drain.transaction((savepoint) =>

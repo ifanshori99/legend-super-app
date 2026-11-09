@@ -28,7 +28,10 @@ import {
   type QueuedEdgeEvent,
 } from "../edge/link-peer.ts";
 import { createEdgeLinkClient, reconnectDelayMs } from "../edge/link-client.ts";
-import { createEdgeLinkServer } from "../edge/link-server.ts";
+import {
+  createEdgeLinkServer,
+  type EdgeLinkIdentity,
+} from "../edge/link-server.ts";
 import { classifyApiPath, edgeRouteGuard } from "../edge/mode.ts";
 import { decodeFrame, oppositeDirection } from "../edge/protocol.ts";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
@@ -727,7 +730,7 @@ describe("EDG-01 WebSocket link (real ws, in-memory stores)", () => {
     const { token } = mintEdgeCredential(scope);
     const seen: (string | null | undefined)[] = [];
     server = createServer();
-    const linkServer = createEdgeLinkServer(server, {
+    const linkServer = createEdgeLinkServer<EdgeLinkIdentity>(server, {
       version: "cloud",
       authenticate: async (presented) =>
         presented === token ? { scope } : null,

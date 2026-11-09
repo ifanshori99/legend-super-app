@@ -22,6 +22,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
   outletIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -36,6 +37,7 @@ import { withTenant } from "../db/tenant.ts";
 import {
   applyStaffPinLocked,
   applyStaffPinSet,
+  drainParkedAccessEvents,
 } from "../edge/access-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -296,7 +298,10 @@ function lockedEvent(
  * `instanceId` undefined: the meta of an old edge (the field is absent).
  * null: the field present but unknown.
  */
-function metaOf(node: AuthenticatedEdgeNode, instanceId: string | null | undefined) {
+function metaOf(
+  node: AuthenticatedEdgeNode,
+  instanceId: string | null | undefined,
+) {
   return {
     edgeNodeId: node.scope.edgeNodeId,
     ...(instanceId === undefined ? {} : { edgeInstanceId: instanceId }),
@@ -597,6 +602,48 @@ describe("legend-o839h the edge database instance joins the node in the pin orde
     expect(locked.pin_hash).toBe(adopted.pin_hash);
   });
 
+  it("6 unknown instance (parked drain, conflict replay) against a row holding an instance: the node-only rule, as before instances existed", async () => {
+    const { userId, now, s1, s2, s3 } = await staffWithSets(t1);
+    const node = t1.node;
+    // Adopted by sequence with a stepped-back key: the cloud key is ahead of
+    // the node's clock.
+    expect(
+      await applySet(
+        node,
+        I1,
+        relabel(s1, s1, { sequence: 10, setAtMs: now - 10 * MINUTE }),
+      ),
+    ).toBe("applied");
+    expect(
+      await applySet(
+        node,
+        I1,
+        relabel(s2, s2, { sequence: 11, setAtMs: now - 120 * MINUTE }),
+      ),
+    ).toBe("applied");
+    const adopted = await pinRow(t1, userId);
+    expect(adopted.generation_edge_instance_id).toBe(I1);
+
+    // An older set of the node (lower sequence, newer key) replayed without
+    // its instance is refused (R2), as before.
+    const older = relabel(s3, s3, { sequence: 9, setAtMs: now - 1 * MINUTE });
+    expect(await applySet(node, undefined, older)).toBe("not_applicable");
+    expect(await applySet(node, null, older)).toBe("not_applicable");
+    expect((await pinRow(t1, userId)).pin_hash).toBe(adopted.pin_hash);
+
+    // The node's later lock replayed without its instance is applied (F1),
+    // although its time is older than the cloud key.
+    const lock = lockedEvent(s2, {
+      sequence: 12,
+      occurredAtMs: now - 60 * MINUTE,
+      lockedUntilMs: now + 5 * MINUTE,
+    });
+    expect(await applyLock(node, undefined, lock)).toBe("applied");
+    const locked = await pinRow(t1, userId);
+    expect(locked.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
+    expect(locked.pin_hash).toBe(adopted.pin_hash);
+  });
+
   it("5 cross tenant: another tenant's node with the same instance id never changes this tenant's row", async () => {
     const one = await staffWithSets(t1);
     const nodeOne = t1.node;
@@ -651,5 +698,67 @@ describe("legend-o839h the edge database instance joins the node in the pin orde
     const rowTwoAfter = await pinRow(t2, two.userId);
     expect(rowTwoAfter.pin_hash).toBe(rowTwo.pin_hash);
     expect(rowTwoAfter.generation_edge_sequence).toBe("50");
+  });
+
+  it("7 parked drain never borrows the live link's instance: a standby's parked set is adopted with its node and a null instance", async () => {
+    const { userId, now, s1 } = await staffWithSets(t1);
+
+    // A standby node of the same outlet, besides the primary (the live link).
+    const registered = await registerEdgeNode(t1.scope, actor, {
+      outletId: t1.outletId,
+      role: "standby",
+      label: "Instance standby",
+    });
+    const standby = await authenticateEdgeCredential(registered.credential);
+    if (!standby) throw new Error("Standby node did not authenticate");
+    const standbyId = standby.scope.edgeNodeId;
+    expect(standbyId).not.toBe(t1.node.scope.edgeNodeId);
+
+    // A `staff_pin.set` with material parked by the standby (owner INSERT, as
+    // seedParked in edge-access-applier.test.ts).
+    const parked = relabel(s1, s1, {
+      sequence: 20,
+      setAtMs: now - 10 * MINUTE,
+    });
+    await owner.query(
+      `INSERT INTO edge_deferred_events (tenant_id, outlet_id, edge_node_id, event_id, aggregate_type, aggregate_id,
+          aggregate_sequence, event_name, envelope, parked_reason)
+       VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9::jsonb, 'deferred')`,
+      [
+        t1.tenantId,
+        t1.outletId,
+        standbyId,
+        ulidToUuid(parked.id),
+        parked.aggregateType,
+        parked.aggregateId,
+        parked.sequence,
+        parked.name,
+        JSON.stringify(parked),
+      ],
+    );
+
+    // The drain runs on the primary's live link, which carries instance I1.
+    const drained = await withTenant(db, t1.node.context, (tx) =>
+      drainParkedAccessEvents(
+        tx,
+        metaOf(t1.node, I1),
+        outletIdSchema.parse(t1.outletId),
+      ),
+    );
+    expect(drained).toBe(1);
+
+    const marked = await owner.query<{ applied_at: Date | null }>(
+      "SELECT applied_at FROM edge_deferred_events WHERE tenant_id = $1 AND event_id = $2::uuid",
+      [t1.tenantId, ulidToUuid(parked.id)],
+    );
+    expect(marked.rows[0]?.applied_at).not.toBeNull();
+
+    // Adopted under the standby's node; the live link's instance (I1) is never
+    // borrowed, because the parked row's own instance was never recorded.
+    const row = await pinRow(t1, userId);
+    expect(row.pin_hash).toBe(materialOf(parked).pinHash);
+    expect(row.generation_edge_node_id).toBe(standbyId);
+    expect(row.generation_edge_instance_id).toBeNull();
+    expect(row.generation_edge_sequence).toBe("20");
   });
 });
