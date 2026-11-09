@@ -641,3 +641,6 @@ Langkah berikut CTO baru:
 - Thread baru G19c4 "Platform restore archived tenant" (legend-umzos, brief 230, Opus high, basis integ/m1-batch31 d7a95d0c, migrasi 0165). Slot Claude penuh 8/8.
 - Review ganda Claude (Q43): 5 architect kena batas 30 langkah lagi, dilanjutkan lewat SendMessage. Hasil sudah ada: R2 lengkap (172b/175b/181b/185b/186b x2), 193b x2, 176c+190b (architect2). Sisa: 214b, 184b, 191b, 190c, 210b, 215b.
 - Menunggu: G3pm5 kartu izin founder (0135), laporan G3lqr/G2uif/G8422/G04ur, gate batch29 di G9syc.
+- 22:10 G3lqr lapor legend-n758r: ws/edge-pin-pull-retry faa696e2 (PIN pull ulang tanpa revision=1 saat cloud lama jawab 400). Verifikasi CTO 4 file 38/38. Antre G9syc sesudah aa489d1b. G3lqr di-resolve. Catatan rilis: urutan cloud sebelum edge tidak lagi wajib untuk PIN pull.
+- 22:10 G04ur lapor legend-ktc4d: ws/platform-assign-owner 9b9d719e (Super Admin tunjuk/ganti Owner, MFA, alasan wajib, audit). Verifikasi CTO 8 file 80/80. Antre G9syc sesudah e2d5df50. Kartu baru legend-be0lx (UI, butuh mockup), legend-qr1uv (P1 K, race endRoleAssignment) dikirim ke G04ur sebagai lanjutan (cabang ws/end-role-assignment-lock). Codex 224b antre (tingkat K).
+- 22:12 Thread baru G3zeq "Triage old WS backend cards" (brief 231, Sonnet, baca saja): vm6+usw3+5rzy, 316, j2l2, 5f7, m0k.
