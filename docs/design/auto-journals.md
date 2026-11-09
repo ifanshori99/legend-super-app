@@ -208,6 +208,15 @@ No historical journal backfill: auto-journals start at deploy. Opening balances 
 Slices 1 and 3 must both land before the release gate: until 3, QR receipts sit in
 `customer_deposit` with no sale.
 
+Slice 2 deploys API and web together: `posOrderBaseSchema` is strict and the web client
+validates every response against it (`apps/web/src/lib/api/endpoint-core.ts:121`), so an
+old web build answers a new API's POS order with `RESPONSE_SHAPE_INVALID` (and the reverse).
+Slice 2 also decides the DP source on the exact intents only (the session's
+`reservation_deposit_allocations.payment_intent_id` for a sale, `reservations.deposit_payment_id`
+for a forfeit), parks a sale whose session applies more DP than those intents still hold
+(`POSTING_AMOUNTS_MISMATCH`, not retryable), and refuses a linked void of a sale paid with DP
+(409 CONFLICT, refund instead).
+
 ### Slice 1 files (no forbidden file; about 740 non-test lines)
 
 | File | Change | Est. lines |

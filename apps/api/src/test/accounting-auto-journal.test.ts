@@ -298,7 +298,7 @@ type IntentOptions = {
   reservationId?: string;
   edcTransactionId?: string;
   /** Default "paid". An "expired" intent has no paid_at (money may still arrive). */
-  status?: "paid" | "expired";
+  status?: "paid" | "expired" | "refunded";
 };
 
 /** A paid gateway (QRIS) intent with its payment link. */
@@ -765,19 +765,21 @@ async function seedReservation(
 }
 
 /**
- * A seated reservation whose paid DP is credited to a fresh table session
- * (RSV-02 allocation). Extra DP intents of the same reservation are optional.
+ * A seated reservation whose paid DP is credited to a table session (RSV-02
+ * allocation): a fresh one, or `sharedSessionId` for a second reservation on
+ * the same bill. Extra DP intents of the same reservation are optional.
  */
 async function seedSeatedDeposit(
   world: World,
   depositIdr: number,
+  sharedSessionId?: string,
 ): Promise<{ reservationId: string; sessionId: string; intentId: string }> {
   const reservationId = randomUUID();
   const intentId = await seedIntent(world, {
     amountIdr: depositIdr,
     reservationId,
   });
-  const sessionId = await seedSession(world);
+  const sessionId = sharedSessionId ?? (await seedSession(world));
   await seedReservation(world, {
     id: reservationId,
     status: "seated",
@@ -2257,15 +2259,13 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     ]);
   });
 
-  it("AJ-DPA-05 a DP with one booked and one pre-cutover receipt parks non-retryable AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED", async () => {
+  it("AJ-DPA-05 a session with one booked and one pre-cutover DP allocation parks non-retryable AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED", async () => {
     const world = await makeWorld();
-    const { reservationId, sessionId, intentId } = await seedSeatedDeposit(
-      world,
-      110_000,
-    );
-    await post(world, paymentPaid(world, intentId, 110_000));
-    // A second DP intent of the reservation, paid before the cutover.
-    await seedIntent(world, { amountIdr: 50_000, reservationId });
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 60_000);
+    await post(world, paymentPaid(world, intentId, 60_000));
+    // A second reservation seated on the same bill, its DP paid before the
+    // cutover.
+    await seedSeatedDeposit(world, 50_000, sessionId);
     const orderUlid = createUlid();
     const sale = dpSale(sessionId);
     await seedPosOrder(world, orderUlid, sale);
@@ -2280,6 +2280,59 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     expect(await journalCount(world)).toBe(1);
     expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toMatchObject([
       { retryable: false },
+    ]);
+  });
+
+  it("AJ-DPA-06 only the allocated DP intent decides: a duplicate pre-cutover intent of the reservation (refunded or paid) does not hold the sale", async () => {
+    const world = await makeWorld();
+    const { reservationId, sessionId, intentId } = await seedSeatedDeposit(
+      world,
+      110_000,
+    );
+    await post(world, paymentPaid(world, intentId, 110_000));
+    // Duplicate intents of the same reservation without a receipt (the other
+    // cutover side), one refunded and one still paid: neither is allocated.
+    await seedIntent(world, {
+      amountIdr: 110_000,
+      reservationId,
+      status: "refunded",
+    });
+    await seedIntent(world, { amountIdr: 50_000, reservationId });
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-DPA-07 a DP refunded after seating and then applied to the sale parks non-retryable POSTING_AMOUNTS_MISMATCH (customer_deposit is never debited twice)", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    const refundId = await seedRefund(world, intentId, 110_000);
+    await post(world, paymentRefunded(world, refundId, intentId, 110_000));
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    const orderUlid = createUlid();
+    const sale = dpSale(sessionId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    expect(
+      await deliver(world.tenant, orderPaid(world, orderUlid, sale)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toMatchObject([
+      { retryable: false, event_name: "order.paid" },
     ]);
   });
 });
@@ -2385,7 +2438,7 @@ describe("F19 slice 2 a forfeited DP moves to deposit_forfeit_income", () => {
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
-  it("AJ-FORFEIT-05 mixed cutover (one DP intent booked, one not) parks non-retryable AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED", async () => {
+  it("AJ-FORFEIT-05 only deposit_payment_id decides: a second, pre-cutover DP intent of the reservation does not mix the cutover; the forfeit posts via customer_deposit", async () => {
     const world = await makeWorld();
     const deposit = { paidIdr: 200_000, forfeitedIdr: 200_000 };
     const { reservationId, intentId } = await seedClosedReservation(world, {
@@ -2395,20 +2448,18 @@ describe("F19 slice 2 a forfeited DP moves to deposit_forfeit_income", () => {
     await post(world, paymentPaid(world, intentId, 200_000));
     await seedIntent(world, { amountIdr: 50_000, reservationId });
 
-    expect(
-      await deliver(
-        world.tenant,
-        reservationClosed(world, reservationId, "no_show", deposit),
-      ),
-    ).toEqual({
-      status: "parked",
-      code: "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED",
-      retryable: false,
-    });
+    const result = await post(
+      world,
+      reservationClosed(world, reservationId, "no_show", deposit),
+    );
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 200_000, credit: 0 },
+      { role: "deposit_forfeit_income", debit: 0, credit: 200_000 },
+    ]);
     expect(
       await parkedOf(world.tenant, `aj:dp-forfeit:${reservationId}`),
-    ).toMatchObject([{ retryable: false, event_name: "reservation.no_show" }]);
-    expect(await journalCount(world)).toBe(1);
+    ).toHaveLength(0);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 
   it("AJ-FORFEIT-06 a forfeit different from the stored reservation split parks non-retryable POSTING_AMOUNTS_MISMATCH", async () => {

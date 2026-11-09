@@ -30,11 +30,12 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
+import { depositHoldsFunds } from "@starter/shared/reservation";
 import {
   autoJournalParked,
   domainEventOutbox,
@@ -389,43 +390,41 @@ async function receiptStatesOf(
 const DP_INTENT_STATUSES = ["paid", "partially_refunded", "refunded"] as const;
 
 /**
- * Where a reservation's DP is booked (the cutover guard of receiptStatesOf,
- * applied to every DP intent of the reservation):
+ * Where a DP is booked (the cutover guard of receiptStatesOf, applied to the
+ * exact DP intents behind the money: the session's allocation intents for a
+ * DP applied, reservations.deposit_payment_id for a forfeit; a second or
+ * duplicate intent of the reservation never counts):
  * - "deposit": every receipt posted, the DP sits in customer_deposit;
  * - "gateway": no receipt will ever post (DP paid before the cutover), the DP
  *   was never booked and still sits in gateway_clearing only;
  * - any receipt pending: AutoJournalReceiptPending (retryable);
  * - posted and none mixed: AutoJournalDepositCutoverMixed (not retryable);
- * - no DP intent that took money: AutoJournalPayloadInvalid.
+ * - an intent missing or that never took money: AutoJournalPayloadInvalid;
+ * - an EDC-linked intent fails closed (receiptStatesOf).
  */
 export async function depositReceiptOf(
   tx: Tx,
   tenantId: TenantId,
-  reservationId: string,
+  intentIds: readonly string[],
 ): Promise<"deposit" | "gateway"> {
+  const ids = [...new Set(intentIds)];
+  if (ids.length === 0)
+    throw new AutoJournalPayloadInvalid("DP has no payment intent");
   const intents = await tx
     .select({ id: paymentIntents.id })
     .from(paymentIntents)
     .where(
       and(
         eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.reservationId, reservationId),
+        inArray(paymentIntents.id, ids),
         inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
       ),
     );
-  if (intents.length === 0)
+  if (intents.length !== ids.length)
     throw new AutoJournalPayloadInvalid(
-      "Reservation has no paid DP payment intent",
+      "DP payment intent not found or never paid",
     );
-  const states = [
-    ...(
-      await receiptStatesOf(
-        tx,
-        tenantId,
-        intents.map((intent) => intent.id),
-      )
-    ).values(),
-  ];
+  const states = [...(await receiptStatesOf(tx, tenantId, ids)).values()];
   if (states.includes("pending"))
     throw new AutoJournalReceiptPending("DP receipt is not booked yet");
   if (states.every((state) => state === "posted")) return "deposit";
@@ -437,8 +436,10 @@ export async function depositReceiptOf(
 
 /**
  * Where the DP applied to an order is booked: the order row must carry exactly
- * the DP the event reports, and every reservation credited to its table
- * session must agree (depositReceiptOf).
+ * the DP the event reports, the session's live orders together may not apply
+ * more DP than the allocation intents still hold (a DP refunded after seating
+ * would otherwise leave customer_deposit twice), and the allocation intents
+ * must agree (depositReceiptOf).
  */
 async function orderDepositReceiptOf(
   tx: Tx,
@@ -463,7 +464,7 @@ async function orderDepositReceiptOf(
   if (order.tableSessionId === null)
     throw new AutoJournalPayloadInvalid("Order with a DP has no table session");
   const allocations = await tx
-    .select({ reservationId: reservationDepositAllocations.reservationId })
+    .select({ paymentIntentId: reservationDepositAllocations.paymentIntentId })
     .from(reservationDepositAllocations)
     .where(
       and(
@@ -475,16 +476,65 @@ async function orderDepositReceiptOf(
     throw new AutoJournalPayloadInvalid(
       "Order with a DP has no reservation deposit on its session",
     );
-  const sources = new Set<"deposit" | "gateway">();
-  for (const reservationId of new Set(
-    allocations.map((row) => row.reservationId),
-  ))
-    sources.add(await depositReceiptOf(tx, tenantId, reservationId));
-  if (sources.size > 1)
-    throw new AutoJournalDepositCutoverMixed(
-      "DP receipts of the session are partly booked and partly before the cutover",
+  const intentIds = [...new Set(allocations.map((row) => row.paymentIntentId))];
+  // Same hold rule as the reservation module (loadHeldDeposit): zero unless
+  // the intent is paid / partially_refunded, else its amount minus every
+  // non-failed refund reserved against it (unallocated-fund payouts aside).
+  const intents = await tx
+    .select({
+      id: paymentIntents.id,
+      status: paymentIntents.status,
+      amountIdr: paymentIntents.amountIdr,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.id, intentIds),
+      ),
     );
-  return [...sources][0]!;
+  const refunds = await tx
+    .select({
+      intentId: paymentRefunds.paymentIntentId,
+      total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+    })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        inArray(paymentRefunds.paymentIntentId, intentIds),
+        sql`${paymentRefunds.status} <> 'failed'`,
+        isNull(paymentRefunds.unallocatedFundId),
+      ),
+    )
+    .groupBy(paymentRefunds.paymentIntentId);
+  const refundedBy = new Map(
+    refunds.map((row) => [row.intentId, BigInt(row.total)]),
+  );
+  let heldIdr = 0n;
+  for (const intent of intents) {
+    if (!depositHoldsFunds(intent.status)) continue;
+    const held = BigInt(intent.amountIdr) - (refundedBy.get(intent.id) ?? 0n);
+    if (held > 0n) heldIdr += held;
+  }
+  const [applied] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, order.tableSessionId),
+        ne(orders.status, "voided"),
+      ),
+    );
+  if (BigInt(applied?.total ?? "0") > heldIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "DP applied by the session exceeds what its DP intents still hold",
+    );
+  return depositReceiptOf(tx, tenantId, intentIds);
 }
 
 /** EDC-linked intents post through edc_clearing, never as gateway receipts. */
@@ -714,6 +764,7 @@ export async function autoJournalFactOf(
           outletId: reservations.outletId,
           status: reservations.status,
           depositForfeitedIdr: reservations.depositForfeitedIdr,
+          depositPaymentId: reservations.depositPaymentId,
         })
         .from(reservations)
         .where(
@@ -739,7 +790,14 @@ export async function autoJournalFactOf(
           "POSTING_AMOUNTS_MISMATCH",
           "depositForfeitedIdr does not match the reservation",
         );
-      const source = await depositReceiptOf(tx, tenantId, p.reservationId);
+      // Only the DP intent the close split (deposit_payment_id) decides.
+      if (reservation.depositPaymentId === null)
+        throw new AutoJournalPayloadInvalid(
+          "Reservation with a forfeit has no DP payment intent",
+        );
+      const source = await depositReceiptOf(tx, tenantId, [
+        reservation.depositPaymentId,
+      ]);
       return {
         ruleEvent: stored.eventName,
         amounts: {

@@ -425,6 +425,8 @@ function posRoutes(fx: Fixture, who: Member = fx.cashier) {
       send(`/${orderId}/submit`, { expectedStatus }),
     complete: (orderId: string, expectedStatus: string) =>
       send(`/${orderId}/complete`, { expectedStatus }),
+    correctionVoid: (orderId: string, body: Record<string, unknown>) =>
+      send(`/${orderId}/corrections/void`, body),
   };
 }
 
@@ -762,6 +764,31 @@ describe("POS sale settled by the session deposit (legend-9pz9)", () => {
       paidPointsIdr: 0,
       tenders: [],
     });
+  });
+
+  it("legend-9pz9 a completed sale paid with the DP is refused a linked void (refund instead)", async () => {
+    const session = await openSession(a);
+    setCredit(a, session, 100_000);
+    const order = await createDineIn(a, session);
+    const status = await sent(a, order);
+    const completed = await posRoutes(a).complete(order.id, status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    // The void pays back only captured cash and books the full total, so the
+    // DP would vanish: refused before any approval is consumed.
+    const voided = await posRoutes(a).correctionVoid(order.id, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan salah pesan",
+      ...(await voidApproval(a, order.id, ORDER_TOTAL_IDR)),
+    });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+    expect(voided.body.error?.code ?? voided.body.code).toBe("CONFLICT");
+    expect(JSON.stringify(voided.body)).toMatch(/refund/);
+    const { rows } = await owner.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pos_order_voids
+       WHERE tenant_id = $1 AND order_id = $2`,
+      [a.tenant.tenantId, ulidToUuid(order.id)],
+    );
+    expect(rows[0]?.count).toBe("0");
   });
 
   it("legend-9pz9 a sale part-covered by the DP still needs tenders for the rest", async () => {
