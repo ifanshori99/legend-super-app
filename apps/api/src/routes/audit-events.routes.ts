@@ -8,7 +8,7 @@
 
 import { Router } from "express";
 import { listAuditEventsEndpoint } from "@starter/shared/audit";
-import { requireAuth } from "../middleware/auth";
+import { getAuth, requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -33,6 +33,12 @@ auditEventsRouter.get(
   requireTenantPermission("audit.log.view"),
   async (req, res) => {
     const query = listAuditEventsEndpoint.query.parse(req.query);
-    res.json(await listAuditEvents(getScopedTenantContext(req), query));
+    res.json(
+      await listAuditEvents(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        query,
+      ),
+    );
   },
 );

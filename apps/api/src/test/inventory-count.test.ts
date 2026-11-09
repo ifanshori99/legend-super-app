@@ -1177,7 +1177,7 @@ describe("F1 blind count variance in the audit log is not readable by the counte
       "audit.log.view",
     );
 
-    // …and no audit read endpoint is mounted, so nothing reaches the counter.
+    // …so the audit viewer answers the counter 403 and nothing reaches them.
     for (const path of [
       "/api/audit/events",
       `/api/audit/events?objectType=stock_count&objectId=${prepared.countId}`,
@@ -1188,21 +1188,63 @@ describe("F1 blind count variance in the audit log is not readable by the counte
     }
   });
 
-  it("tripwire: the audit viewer is not mounted yet (it must redact blind-count variance before it ships)", async () => {
-    // A tenant admin holds `audit.log.view`. When the F36 audit viewer
-    // (`GET /api/audit/events`) is built this test fails on purpose: the viewer
-    // must then hide totalVarianceIdr/grossVarianceIdr of blind stock counts
-    // from readers who counted them or lack `inventory.adjustment.approve`
-    // (legend-j5x), and this test must be replaced by that redaction test.
+  it("the audit viewer hides blind-count variance from a counter or a reader without approve", async () => {
+    const assignTenantRole = async (userId: string, templateKey: string) =>
+      owner.query(
+        `INSERT INTO role_assignments
+           (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+        [tenantA, userId, await roleIdOf(templateKey)],
+      );
+    // The counter holds every tenant permission (audit viewer and approve too).
+    const countingOwner = await makeActor("Opname Audit Counter", []);
+    await assignTenantRole(countingOwner.userId, "owner");
+    // Audit viewer without `inventory.adjustment.approve`.
     const admin = await makeActor("Opname Audit Admin", []);
-    await owner.query(
-      `INSERT INTO role_assignments
-         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
-      [tenantA, admin.userId, await roleIdOf("tenant_admin")],
-    );
-    const response = await admin.client.get("/api/audit/events");
-    expect(response.status).toBe(404);
+    await assignTenantRole(admin.userId, "tenant_admin");
+    // Audit viewer with approve who never counted.
+    const reviewer = await makeActor("Opname Audit Reviewer", []);
+    await assignTenantRole(reviewer.userId, "owner");
+
+    // 10 on hand at 1.500 counted as 3 -> variance Rp10.500.
+    const blind = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      blind: true,
+      creator: countingOwner,
+    });
+    const open = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      creator: countingOwner,
+    });
+
+    const varianceOf = async (reader: Actor, countId: string) => {
+      const response = await ok(
+        await reader.client.get(
+          `/api/audit/events?objectType=stock_count&actorType=user&actorId=${countingOwner.userId}&limit=100`,
+        ),
+      );
+      const rows = (
+        response.body.data as Array<{
+          event: {
+            objectId: string;
+            maskedChanges: { after: Record<string, unknown> | null };
+          };
+        }>
+      ).filter((row) => row.event.objectId === countId);
+      expect(rows.length).toBeGreaterThan(0);
+      return rows
+        .map((row) => row.event.maskedChanges.after?.grossVarianceIdr)
+        .filter((value) => value !== null && value !== undefined);
+    };
+
+    // Blind: the counter and the reader without approve see the marker only.
+    for (const reader of [countingOwner, admin]) {
+      const values = await varianceOf(reader, blind.countId);
+      expect(values.length).toBeGreaterThan(0);
+      expect(values.every((value) => value === "[REDACTED]")).toBe(true);
+    }
+    // Blind: an approver who never counted reads the variance.
+    expect(await varianceOf(reviewer, blind.countId)).toContain(10500);
+    // Non-blind counts are not redacted for anyone.
+    expect(await varianceOf(admin, open.countId)).toContain(10500);
   });
 });
 
