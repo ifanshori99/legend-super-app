@@ -490,6 +490,60 @@ describe("POS order service (legend-kk7)", () => {
     expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
   });
 
+  // legend-6u81: a reservation order is only for dining in.
+  const RESERVATION_ONLY_DINE_IN =
+    "Pesanan reservasi hanya untuk makan di tempat.";
+  const orderCount = async (): Promise<string | undefined> =>
+    (
+      await owner.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM orders WHERE tenant_id = $1",
+        [tenant.tenantId],
+      )
+    ).rows[0]?.count;
+
+  it.each(["takeaway", "delivery"])(
+    "POS-01 a reservation order for %s is refused with a validation error and nothing is stored (legend-6u81)",
+    async (serviceType) => {
+      const before = await orderCount();
+      const refused = await pos().create({
+        channel: "reservation",
+        serviceType,
+      });
+      expect(
+        refused.status,
+        JSON.stringify(refused.body),
+      ).toBeGreaterThanOrEqual(400);
+      expect(refused.status).toBeLessThan(500);
+      expect(refused.body.error?.code ?? refused.body.code).toBe(
+        "VALIDATION_ERROR",
+      );
+      expect(JSON.stringify(refused.body)).toContain(RESERVATION_ONLY_DINE_IN);
+      expect(refused.body.data?.id).toBeUndefined();
+      expect(await orderCount()).toBe(before);
+    },
+  );
+
+  it("POS-01 a reservation order for dine in is not refused by the reservation guard (legend-6u81)", async () => {
+    const created = await pos().create({
+      channel: "reservation",
+      serviceType: "dine_in",
+    });
+    // Assumption: dine_in may need a table session or price list this fixture
+    // lacks, so only assert the reservation guard is not what refuses it.
+    expect(JSON.stringify(created.body)).not.toContain(
+      RESERVATION_ONLY_DINE_IN,
+    );
+  });
+
+  it("POS-01 a pos takeaway sale is still accepted (legend-6u81)", async () => {
+    const created = await pos().create({
+      channel: "pos",
+      serviceType: "takeaway",
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.channel).toBe("pos");
+  });
+
   it("POS-04 a completed sale cannot be edited or deleted, even by the database owner", async () => {
     const { orderId } = await completedSale();
     const uuid = ulidToUuid(orderId);

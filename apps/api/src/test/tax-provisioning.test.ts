@@ -402,7 +402,7 @@ describe("legend-9obf default tax config for a tenant created in the Platform pa
     expect(await auditCount(tenantId, SETTINGS_ACTION)).toBe(1);
   });
 
-  it("makes /api/tax/preview work: Rp 100.000 F&B line gives tax Rp 10.000 exclusive", async () => {
+  it("makes /api/tax/preview work: Rp 100.000 F&B dine-in line gives service Rp 5.000 and tax Rp 10.500 exclusive", async () => {
     const tenantId = await createTenantViaPanel();
     const preview = await previewHundredThousand(
       tenantId,
@@ -410,13 +410,16 @@ describe("legend-9obf default tax config for a tenant created in the Platform pa
     );
     expect(preview.body?.error?.code).not.toBe("TAX_SETTINGS_NOT_FOUND");
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
-    expect(preview.body.data.taxIdr).toBe(10_000);
-    // Exclusive: tax is added on top of the Rp 100.000 base.
+    // legend-2qz7: dine-in also gets the default 5% service charge, and the
+    // PBJT rule takes service into its base: 10% of Rp 105.000.
+    expect(preview.body.data.serviceChargeIdr).toBe(5_000);
+    expect(preview.body.data.taxIdr).toBe(10_500);
+    // Exclusive: service and tax are added on top of the Rp 100.000 base.
     expect(preview.body.data.baseIdr).toBe(100_000);
-    expect(preview.body.data.totalIdr).toBe(110_000);
+    expect(preview.body.data.totalIdr).toBe(115_500);
   });
 
-  it("covers dates back to 2024-01-01: rows start 2024-01-01 and a 2025-06-01 preview gives 10%", async () => {
+  it("covers dates back to 2024-01-01: rows start 2024-01-01 and a 2025-06-01 preview gives 10% tax and 5% service", async () => {
     const tenantId = await createTenantViaPanel();
 
     const { rows: rules } = await owner.query<{ d: string }>(
@@ -432,8 +435,9 @@ describe("legend-9obf default tax config for a tenant created in the Platform pa
 
     const preview = await previewHundredThousand(tenantId, "2025-06-01");
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
-    expect(preview.body.data.taxIdr).toBe(10_000);
-    expect(preview.body.data.totalIdr).toBe(110_000);
+    expect(preview.body.data.serviceChargeIdr).toBe(5_000);
+    expect(preview.body.data.taxIdr).toBe(10_500);
+    expect(preview.body.data.totalIdr).toBe(115_500);
   });
 });
 

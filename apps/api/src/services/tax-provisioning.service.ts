@@ -4,8 +4,12 @@
 //
 // Values come from `cafeLegendTaxFixtures` so the dev seed and production
 // defaults cannot drift: PBJT-FNB 10% tenant-wide, prices exclusive, half_up
-// rounding, fixed_bp package allocation. No service-charge rule is seeded: the
-// fixture's only one is outlet-scoped (Private Room) and the owner decides.
+// rounding, fixed_bp package allocation. The service-charge default is separate
+// (`provisionDefaultServiceChargeRule`, bead legend-2qz7, founder decision Q25
+// 9 Nov 2026): 5% on dine-in (QR dine-in and reservation included), food and beverage lines, for
+// NEW tenants and NEW outlets only. Takeaway and delivery carry no service.
+// Existing tenants and outlets are never backfilled: a running bill must not
+// change silently, so `backfillTenantTaxDefaults` does not seed it.
 //
 // Rules that live here:
 // - Runs inside the caller's tenant transaction, so rows commit or roll back
@@ -29,6 +33,7 @@ import {
   createUlid,
   idr,
   type BusinessDate,
+  type OutletId,
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
@@ -36,9 +41,13 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { cafeLegendTaxFixtures } from "@starter/shared/tax";
+import { cafeLegendTaxFixtures, type TaxChannel } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { taxRules, taxSettings } from "../db/schema/index.ts";
+import {
+  serviceChargeRules,
+  taxRules,
+  taxSettings,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -61,6 +70,9 @@ const AUDIT_SAFE_FIELDS = [
   "packageAllocation",
   "effectiveFrom",
   "version",
+  "orderTypes",
+  "itemClasses",
+  "scope",
 ] as const;
 
 /** First business date the default configuration covers. */
@@ -92,6 +104,7 @@ async function auditProvisioning(
     action: string;
     objectType: string;
     after: Record<string, unknown>;
+    outletId?: OutletId | null;
   },
 ): Promise<void> {
   await recordAudit(
@@ -100,13 +113,13 @@ async function auditProvisioning(
     {
       id: createUlid(),
       tenantId: context.tenant.tenantId,
-      outletId: null,
+      outletId: input.outletId ?? null,
       actorType: actorId === null ? "system" : "user",
       actorId,
       deviceId: null,
       action: input.action,
       objectType: input.objectType,
-      objectId: context.tenant.tenantId,
+      objectId: input.outletId ?? context.tenant.tenantId,
       reason: null,
       maskedChanges: { before: null, after: input.after },
       ipHash: null,
@@ -216,6 +229,87 @@ export async function provisionDefaultTaxConfig(
     });
   }
   return { rulesInserted, settingsInserted };
+}
+
+/** Founder decision Q25: 5% service charge, on-site orders only. */
+export const DEFAULT_SERVICE_CHARGE_CODE = "SC-DINE-IN";
+export const DEFAULT_SERVICE_CHARGE_RATE_BP = 500;
+/** Dine-in and dine-in reservations (guests eat on site; CTO decision legend-9flj). */
+export const DEFAULT_SERVICE_CHARGE_ORDER_TYPES: TaxChannel[] = [
+  "dine_in",
+  "reservation",
+];
+
+/**
+ * Seeds the default 5% dine-in service charge as an owner-editable v1 row.
+ * - `outletId` null (new tenant): one tenant-wide rule.
+ * - `outletId` set (new outlet): one outlet-scoped rule, unless the tenant
+ *   already has the tenant-wide default (it already covers the outlet).
+ * Idempotent per scope and code (any version, any status, so a rule the owner
+ * disabled or replaced is never re-created). Never updates an existing row.
+ */
+export async function provisionDefaultServiceChargeRule(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  actorId: UserId | null,
+  outletId: OutletId | null,
+): Promise<{ rulesInserted: number }> {
+  const tenantId = context.tenant.tenantId;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tax:service-provisioning:${tenantId}`}, 0))`,
+  );
+  // New tenant: skip when its own default already exists. New outlet: skip when
+  // the tenant has ANY tenant-wide service rule (whatever its code or status):
+  // an outlet-scoped default would outrank the owner's rule and silently
+  // change the bill at this outlet.
+  const [existing] = await tx
+    .select({ id: serviceChargeRules.id })
+    .from(serviceChargeRules)
+    .where(
+      and(
+        eq(serviceChargeRules.tenantId, tenantId),
+        outletId === null
+          ? and(
+              eq(serviceChargeRules.code, DEFAULT_SERVICE_CHARGE_CODE),
+              sql`${serviceChargeRules.outletId} IS NULL`,
+            )
+          : sql`(${serviceChargeRules.outletId} IS NULL OR (${serviceChargeRules.outletId} = ${outletId} AND ${serviceChargeRules.code} = ${DEFAULT_SERVICE_CHARGE_CODE}))`,
+      ),
+    )
+    .limit(1);
+  if (existing) return { rulesInserted: 0 };
+
+  await tx.insert(serviceChargeRules).values({
+    tenantId,
+    outletId,
+    code: DEFAULT_SERVICE_CHARGE_CODE,
+    name: "Service charge dine-in",
+    rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
+    zoneId: null,
+    orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
+    itemClasses: ["food_beverage"],
+    isActive: true,
+    version: 1,
+    effectiveFrom: DEFAULT_EFFECTIVE_FROM,
+    status: "published",
+    publishedAt: new Date(),
+    publishedBy: actorId ?? TAX_PROVISIONING_SYSTEM_USER,
+  });
+  await auditProvisioning(tx, context, actorId, {
+    action: "tax.service_charge.provisioned",
+    objectType: "service_charge_rule_defaults",
+    outletId,
+    after: {
+      ruleCodes: [DEFAULT_SERVICE_CHARGE_CODE],
+      rateBp: DEFAULT_SERVICE_CHARGE_RATE_BP,
+      orderTypes: DEFAULT_SERVICE_CHARGE_ORDER_TYPES,
+      itemClasses: ["food_beverage"],
+      scope: outletId === null ? "tenant" : "outlet",
+      effectiveFrom: DEFAULT_EFFECTIVE_FROM,
+      version: 1,
+    },
+  });
+  return { rulesInserted: 1 };
 }
 
 /** Tenant-wide context for a backfill; the id comes from the operator script. */

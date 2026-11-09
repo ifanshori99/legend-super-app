@@ -449,3 +449,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 
 - Sudah: `legend-2tcj` reject stock count kini mengunci kepala chain (`resolveApprovalChainOutcome`) sebelum membaca hasil approval; test balapan di `approval-expiry-race-modules.test.ts` (pg_locks, merah tanpa fix). `legend-t8xt` urutan outbox di `pos-shift.test.ts` kini `ORDER BY created_at, sequence, id` (sequence per agregat bisa sama); 3 run 62/62.
 - Ditahan: `legend-fbms` (order.paid total 0) butuh ubah skema `packages/shared` dan keputusan desain (A: order.paid total 0 tanpa tender, atau B: event baru `order.settled` plus konsumen recipe-deduction yang hanya ada di `integ/m1-batch3`). Menunggu CTO.
+
+## legend-2qz7 service charge default 5% (engineer, cabang `ws/service-charge-default`, 2026-11-09)
+
+- Keputusan founder Q25: tenant baru (panel Platform) mendapat aturan `SC-DINE-IN` tenant-wide, 5%, `dine_in` dan `reservation` (QR dine-in ikut; keputusan CTO legend-9flj), kelas F&B, v1 published, berlaku sejak 2024-01-01, dalam transaksi `createTenant`. Outlet baru (`createOutlet`) mendapat aturan outlet-scoped yang sama, KECUALI tenant sudah punya aturan service tenant-wide apa pun (kode apa pun): aturan outlet akan mengalahkan aturan owner dan mengubah tagihan diam-diam. Seed: `provisionDefaultServiceChargeRule` di `tax-provisioning.service.ts`. Idempoten, kunci advisory per tenant, audit `tax.service_charge.provisioned` (outlet id tercatat untuk aturan outlet).
+- Tenant dan outlet lama TIDAK di-backfill; `backfillTenantTaxDefaults` tidak menyentuh service. Mesin hitung tidak diubah. Takeaway dan delivery tanpa service.
+- Dampak: preview dine-in tenant baru Rp 100.000 menjadi service 5.000, pajak 10.500 (PBJT menghitung service dalam dasar), total 115.500. Test lama di `tax-provisioning`, `platform-org-api`, `platform-admin-provision` diperbarui.
+- Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/tax-service-default.test.ts` (14).
+- Review K reservasi: order POS `channel: reservation` dengan `serviceType` takeaway/delivery tidak ditolak dan kini kena service 5% (belum ada pemanggil di kode; jalur POS di luar scope): diperbaiki di legend-6u81: `createPosOrder` menolak `reservation` selain `dine_in` (VALIDATION_ERROR). `posPriceChannel` dan `order.paid` tidak diubah. Review K: tidak ada jalur lain yang membuat order reservation.
+- Follow-up: legend-mdh0 (publish boleh membuat tie aturan, `TAX_RULE_AMBIGUOUS` memblokir checkout; lock seed di `createServiceChargeRule`; actor `createOutlet`), legend-9flj (pertanyaan founder: channel reservation).
+- Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.

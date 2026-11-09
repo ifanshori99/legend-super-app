@@ -55,6 +55,7 @@ import {
   createUlid,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -74,6 +75,7 @@ import {
   provisionOutletStockLocations,
   provisionStandardUoms,
 } from "./inventory-provisioning.service";
+import { provisionDefaultServiceChargeRule } from "./tax-provisioning.service";
 import { HttpError } from "../lib/http-error";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
@@ -530,6 +532,13 @@ export async function createOutlet(
     // tenants without UOMs get them here too; both calls are idempotent.
     await provisionStandardUoms(tx, context, null);
     await provisionOutletStockLocations(tx, context, inserted.id, null);
+    // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
+    await provisionDefaultServiceChargeRule(
+      tx,
+      context,
+      null,
+      outletIdSchema.parse(inserted.id),
+    );
     return toOutlet(inserted);
   });
 }

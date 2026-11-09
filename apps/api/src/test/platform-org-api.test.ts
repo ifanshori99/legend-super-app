@@ -193,10 +193,12 @@ describe("Panel Platform API", () => {
     );
     // legend-4ryw: a new tenant also gets the standard UOM catalog, audited.
     // legend-9obf: and the default PBJT rule and tax settings.
+    // legend-2qz7: and the default 5% dine-in service charge.
     expect(audited.rows.map((row) => row.action).sort()).toEqual([
       "inventory.uoms.provisioned",
       "role_assignment.granted",
       "tax.rules.provisioned",
+      "tax.service_charge.provisioned",
       "tax.settings.provisioned",
       "tenant.created",
     ]);
