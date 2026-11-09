@@ -38,6 +38,13 @@ const ids = {
 
 const HOURS = { opens: "08:00", closes: "22:00" };
 
+// Other files in the shared-DB run (platform-org-api creates one through the
+// API, outlet cleanup elsewhere is best effort) leave outlets behind in this
+// fixture tenant, so the plan's maxOutlets can already be reached. createOutlet
+// is the subject here, not the quota (covered in platform-org-api), so the cap
+// is lifted for this file and restored afterwards.
+let originalMaxOutlets: string | null = null;
+
 async function asOwnerTenant<T>(
   run: (query: Pool["query"]) => Promise<T>,
 ): Promise<T> {
@@ -63,6 +70,16 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   await asOwnerTenant(async (query) => {
+    const limits = await query(
+      "SELECT limits->>'maxOutlets' AS max FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    originalMaxOutlets = limits.rows[0].max as string;
+    await query(
+      `UPDATE tenants SET limits = jsonb_set(limits, '{maxOutlets}', '1000'::jsonb)
+        WHERE id = $1`,
+      [tenantId],
+    );
     await query(
       `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
        VALUES ($1, $2, $3, 'Sapuan Uji', 0)`,
@@ -100,6 +117,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (originalMaxOutlets !== null) {
+    await asOwnerTenant(async (query) => {
+      await query(
+        `UPDATE tenants SET limits = jsonb_set(limits, '{maxOutlets}', to_jsonb($2::int))
+          WHERE id = $1`,
+        [tenantId, originalMaxOutlets],
+      );
+    });
+  }
   await ownerPool.end();
 });
 
