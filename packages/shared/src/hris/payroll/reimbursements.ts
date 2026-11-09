@@ -32,6 +32,14 @@ import {
 const positiveIdr = idrSchema.refine((v) => v > 0, "Must be positive");
 
 /** Limit of one category for one position ("batas per jabatan"). */
+/**
+ * A claim may be dated at most this many calendar days before the day it is
+ * submitted (founder decision 9 Nov). Checked at submission only; approving
+ * later never re-checks it. The API enforces it; forms use it as the `min`
+ * of the date input.
+ */
+export const REIMBURSEMENT_BACKDATE_DAYS = 30;
+
 export const reimbursementLimitSchema = z.strictObject({
   /** null = default for positions without their own row. */
   positionId: positionIdSchema.nullable(),

@@ -15,6 +15,7 @@
 //   runs: reversal decision                          payroll.cancel.approve (≠ requester)
 //   service-charge pools                             payroll.run / payroll.approve
 //   kasbon decide/disburse                           hr.loan.approve
+//   kasbon limits (loan-policy)                      payroll.view (read) / payroll.run (write)
 //   reimbursement decide/pay                         hr.reimbursement.approve
 //   /me/payslips                                     self.payslip.view + payslip PIN
 //   /me/reimbursements                               self.reimbursement.request
@@ -55,6 +56,8 @@ import {
   createEmployeeLoanInputSchema,
   employeeLoanSchema,
   employeeLoanStatusSchema,
+  loanPolicyRecordSchema,
+  setLoanPolicyInputSchema,
 } from "./loans.ts";
 import {
   bankTransferFileSchema,
@@ -464,6 +467,21 @@ export const listServiceChargeAllocations = defineEndpoint({
 
 // ---- Kasbon & reimbursement (HR side) ---------------------------------
 
+/** The tenant's kasbon limits; `data` is null until a policy is set (kasbon is off). */
+export const getLoanPolicy = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/loan-policy`,
+  response: dataResponseSchema(loanPolicyRecordSchema.nullable()),
+});
+
+/** Replace the tenant's kasbon limits (one policy per tenant). */
+export const setLoanPolicy = defineEndpoint({
+  method: "PUT",
+  path: `${BASE}/loan-policy`,
+  body: setLoanPolicyInputSchema,
+  response: dataResponseSchema(loanPolicyRecordSchema),
+});
+
 export const listEmployeeLoans = defineEndpoint({
   method: "GET",
   path: `${BASE}/loans`,
@@ -624,6 +642,8 @@ export const payrollEndpoints = [
   calculateServiceChargePool,
   approveServiceChargePool,
   listServiceChargeAllocations,
+  getLoanPolicy,
+  setLoanPolicy,
   listEmployeeLoans,
   decideEmployeeLoan,
   disburseEmployeeLoan,

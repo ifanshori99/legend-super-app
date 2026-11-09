@@ -1,6 +1,6 @@
 // Payroll core tables against PostgreSQL with the restricted app role (bead
 // legend-gfcr; PRD v1.7 §3 D.30-31, §6 H, R20, PAYR-02, PAYR-04, HR-03,
-// TEN-01/02/03): every one of the 14 payroll tables has forced, restrictive
+// TEN-01/02/03): every one of the 15 payroll tables has forced, restrictive
 // tenant RLS; the app role cannot delete payroll history; sealed pay amounts
 // and published statutory versions and locked runs cannot be rewritten; and a
 // composite foreign key can never point into another tenant.
@@ -43,10 +43,16 @@ const TABLES = [
   "service_charge_pools",
   "service_charge_allocations",
   "employee_loans",
+  "payroll_loan_policies",
   "reimbursement_categories",
   "reimbursements",
 ] as const;
 type Table = (typeof TABLES)[number];
+
+/** Tables with a unique key on tenant_id alone (a second row clashes). */
+const ONE_ROW_PER_TENANT: ReadonlySet<Table> = new Set([
+  "payroll_loan_policies",
+]);
 
 /** The app role keeps DELETE only on allocations (recalculation before approval). */
 const DELETABLE: ReadonlySet<Table> = new Set(["service_charge_allocations"]);
@@ -234,6 +240,13 @@ const BUILD: Record<Table, (s: Seed, id: string, v: Variant) => Cols> = {
     first_deduction_period: "2026-02-01",
     reason: "Kasbon DB",
   }),
+  payroll_loan_policies: (s) => ({
+    tenant_id: s.tenantId,
+    max_principal_idr: 5000000,
+    max_installments: 12,
+    max_deduction_of_net_pay_bp: 3000,
+    max_total_open_idr: 20000000,
+  }),
   reimbursement_categories: (s) => ({
     tenant_id: s.tenantId,
     name: `Kategori ${seq()}`,
@@ -334,6 +347,7 @@ const INSUFFICIENT_PRIVILEGE = "42501";
 const CHECK_VIOLATION = "23514";
 const FOREIGN_KEY_VIOLATION = "23503";
 const UNIQUE_VIOLATION = "23505";
+const NOT_NULL_VIOLATION = "23502";
 const EXCLUSION_VIOLATION = "23P01";
 const GUARD_FIRST: ReadonlySet<Table> = new Set([
   "payslips",
@@ -483,7 +497,7 @@ describe("payroll core: coverage", () => {
       .filter((name): name is string => name !== null)
       .sort();
     expect(exported).toEqual([...TABLES].sort());
-    expect(TABLES).toHaveLength(14);
+    expect(TABLES).toHaveLength(15);
   });
 });
 
@@ -551,7 +565,13 @@ describe.each(TABLES)("payroll core: %s tenant isolation", (table) => {
       const theirs = await attempt(client, foreign.text, foreign.values);
       return { mine, theirs };
     });
-    expect(result.mine).toMatchObject({ ok: true, rowCount: 1 });
+    // A one-row-per-tenant table already holds the seeded row of tenant B: the
+    // control insert is refused by the unique key (23505), not by RLS.
+    expect(result.mine).toMatchObject(
+      ONE_ROW_PER_TENANT.has(table)
+        ? { ok: false, code: "23505" }
+        : { ok: true, rowCount: 1 },
+    );
     // RLS WITH CHECK refuses before any foreign key is looked at. Payslips,
     // bank files and allocations also have a BEFORE INSERT guard that reads
     // the parent under the caller's RLS, so for them it may refuse first
@@ -1925,5 +1945,53 @@ describe("payroll core: service charge pool guards (PAYR-04)", () => {
     expect(result.edit).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.remove).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.afterApproval).toEqual({ ok: false, code: CHECK_VIOLATION });
+  });
+});
+
+describe("payroll core: loan policy total open cap (legend-hjaot)", () => {
+  const setTotal = (client: PoolClient, value: number | null) =>
+    attempt(
+      client,
+      "UPDATE payroll_loan_policies SET max_total_open_idr = $2 WHERE id = $1",
+      [need(A, "payroll_loan_policies"), value],
+    );
+
+  it("rejects a total of zero or below, and NULL", async () => {
+    const result = await asApp({ tenant: A.tenantId }, async (client) => ({
+      zero: await setTotal(client, 0),
+      negative: await setTotal(client, -1),
+      missing: await setTotal(client, null),
+      // Seeded per-loan ceiling is 5,000,000: the total may not be below it.
+      belowCeiling: await setTotal(client, 4_999_999),
+      valid: await setTotal(client, 5_000_000),
+    }));
+    expect(result.zero).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.negative).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.missing).toEqual({ ok: false, code: NOT_NULL_VIOLATION });
+    expect(result.belowCeiling).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.valid).toMatchObject({ ok: true, rowCount: 1 });
+  });
+
+  it("refuses to insert a policy without a total or with a non-positive one", async () => {
+    // Constraints fire before the one-row-per-tenant unique index, so the
+    // seeded row can stay; everything is rolled back anyway.
+    const result = await asApp({ tenant: B.tenantId }, async (client) => {
+      const insertWith = (total: number | null) =>
+        attempt(
+          client,
+          `INSERT INTO payroll_loan_policies
+             (tenant_id, max_principal_idr, max_installments, max_deduction_of_net_pay_bp, max_total_open_idr)
+           VALUES ($1, 5000000, 12, 3000, $2)`,
+          [B.tenantId, total],
+        );
+      return {
+        zero: await insertWith(0),
+        negative: await insertWith(-5),
+        missing: await insertWith(null),
+      };
+    });
+    expect(result.zero).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.negative).toEqual({ ok: false, code: CHECK_VIOLATION });
+    expect(result.missing).toEqual({ ok: false, code: NOT_NULL_VIOLATION });
   });
 });

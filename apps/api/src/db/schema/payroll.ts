@@ -822,6 +822,47 @@ export const employeeLoans = pgTable(
   ],
 );
 
+/**
+ * Kasbon limits, one row per tenant (contract `loanPolicySchema`; bead
+ * legend-fij0l). No row = no kasbon: the service fails closed.
+ */
+export const payrollLoanPolicies = pgTable(
+  "payroll_loan_policies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    /** Absolute ceiling per loan; null = only the salary multiple applies. */
+    maxPrincipalIdr: idrColumn("max_principal_idr"),
+    /** Ceiling as basis points of the monthly base salary; null = none. */
+    maxPrincipalOfBaseSalaryBp: integer("max_principal_of_base_salary_bp"),
+    /** Ceiling on one employee's total open kasbon (unpaid principal). */
+    maxTotalOpenIdr: idrColumn("max_total_open_idr").notNull(),
+    maxInstallments: integer("max_installments").notNull(),
+    maxDeductionOfNetPayBp: integer("max_deduction_of_net_pay_bp").notNull(),
+    singleOpenLoan: boolean("single_open_loan").notNull().default(true),
+    updatedBy: actor("updated_by"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    // One policy per tenant.
+    unique("payroll_loan_policies_tenant_key").on(table.tenantId),
+    check(
+      "payroll_loan_policies_ceiling_check",
+      sql`${table.maxPrincipalIdr} IS NOT NULL OR ${table.maxPrincipalOfBaseSalaryBp} IS NOT NULL`,
+    ),
+    check(
+      "payroll_loan_policies_values_check",
+      sql`(${table.maxPrincipalIdr} IS NULL OR ${table.maxPrincipalIdr} > 0)
+        AND (${table.maxPrincipalOfBaseSalaryBp} IS NULL OR ${table.maxPrincipalOfBaseSalaryBp} BETWEEN 1 AND 120000)
+        AND ${table.maxTotalOpenIdr} > 0
+        AND (${table.maxPrincipalIdr} IS NULL OR ${table.maxTotalOpenIdr} >= ${table.maxPrincipalIdr})
+        AND ${table.maxInstallments} BETWEEN 1 AND 36
+        AND ${table.maxDeductionOfNetPayBp} BETWEEN 0 AND 10000`,
+    ),
+  ],
+);
+
 // ---- Reimbursement (PRD §3 D.31) ------------------------------------------
 
 export const reimbursementCategories = pgTable(
@@ -886,6 +927,11 @@ export const reimbursements = pgTable(
       table.employeeId,
     ),
     index("reimbursements_tenant_status_idx").on(table.tenantId, table.status),
+    // A receipt upload backs one claim only (legend-8399r; the service also
+    // locks per ref, this is the backstop). Case-insensitive like the service.
+    uniqueIndex("reimbursements_receipt_upload_ref_key")
+      .on(table.tenantId, sql`lower(${table.receiptUploadRef})`)
+      .where(sql`${table.receiptUploadRef} IS NOT NULL`),
     foreignKey({
       name: "reimbursements_employee_fk",
       columns: [table.tenantId, table.employeeId],

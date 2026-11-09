@@ -45,6 +45,10 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import {
+  noHrisFileSigner,
+  type HrisFileSigner,
+} from "../services/hris-contract.service";
 import * as service from "../services/payroll-reimbursements.service";
 import { loadTenantAccess } from "../services/permission-resolver";
 
@@ -116,126 +120,160 @@ const requireSelfReimbursement: RequestHandler = async (req, res, next) => {
 
 const actor = (req: Request) => getAuth(req).user.id;
 
-// ---- Categories -----------------------------------------------------------
+export type PayrollReimbursementRouterDeps = {
+  /** Private-bucket URL signer (core-storage); default mints no URL. */
+  readonly fileSigner?: HrisFileSigner;
+};
 
-export const payrollReimbursementCategoriesRouter = Router();
-payrollReimbursementCategoriesRouter.use(...gate);
+export function createPayrollReimbursementRouters(
+  deps: PayrollReimbursementRouterDeps = {},
+) {
+  const signer = deps.fileSigner ?? noHrisFileSigner;
+  // ---- Categories -----------------------------------------------------------
 
-payrollReimbursementCategoriesRouter.get(
-  "/",
-  requireViewOrApprove,
-  async (req, res) => {
-    const query = listReimbursementCategories.query.parse(req.query);
-    res.json(
-      await service.listReimbursementCategories(
-        getScopedTenantContext(req),
-        actor(req),
-        query,
-      ),
-    );
-  },
-);
+  const payrollReimbursementCategoriesRouter = Router();
+  payrollReimbursementCategoriesRouter.use(...gate);
 
-payrollReimbursementCategoriesRouter.post(
-  "/",
-  requireTenantPermission("payroll.run"),
-  jsonBody,
-  async (req, res) => {
-    const body = createReimbursementCategory.body.parse(req.body);
-    res.status(201).json({
-      data: await service.createReimbursementCategory(
-        getScopedTenantContext(req),
-        actor(req),
-        body,
-      ),
-    });
-  },
-);
+  payrollReimbursementCategoriesRouter.get(
+    "/",
+    requireViewOrApprove,
+    async (req, res) => {
+      const query = listReimbursementCategories.query.parse(req.query);
+      res.json(
+        await service.listReimbursementCategories(
+          getScopedTenantContext(req),
+          actor(req),
+          query,
+        ),
+      );
+    },
+  );
 
-// ---- Claims (HR side) -----------------------------------------------------
+  payrollReimbursementCategoriesRouter.post(
+    "/",
+    requireTenantPermission("payroll.run"),
+    jsonBody,
+    async (req, res) => {
+      const body = createReimbursementCategory.body.parse(req.body);
+      res.status(201).json({
+        data: await service.createReimbursementCategory(
+          getScopedTenantContext(req),
+          actor(req),
+          body,
+        ),
+      });
+    },
+  );
 
-export const payrollReimbursementsRouter = Router();
-payrollReimbursementsRouter.use(...gate);
+  // ---- Claims (HR side) -----------------------------------------------------
 
-payrollReimbursementsRouter.get(
-  "/",
-  requireTenantPermission("hr.reimbursement.approve"),
-  async (req, res) => {
-    const query = listReimbursements.query.parse(req.query);
-    res.json(
-      await service.listReimbursements(
-        getScopedTenantContext(req),
-        actor(req),
-        query,
-      ),
-    );
-  },
-);
+  const payrollReimbursementsRouter = Router();
+  payrollReimbursementsRouter.use(...gate);
 
-payrollReimbursementsRouter.post(
-  "/:reimbursementId/decision",
-  requireTenantPermission("hr.reimbursement.approve"),
-  jsonBody,
-  async (req, res) => {
-    const { reimbursementId } = decideReimbursement.params.parse(req.params);
-    const body = decideReimbursement.body.parse(req.body);
-    res.json({
-      data: await service.decideReimbursement(
-        getScopedTenantContext(req),
-        actor(req),
-        reimbursementId,
-        body,
-      ),
-    });
-  },
-);
+  payrollReimbursementsRouter.get(
+    "/",
+    requireTenantPermission("hr.reimbursement.approve"),
+    async (req, res) => {
+      const query = listReimbursements.query.parse(req.query);
+      res.json(
+        await service.listReimbursements(
+          getScopedTenantContext(req),
+          actor(req),
+          query,
+          signer,
+        ),
+      );
+    },
+  );
 
-payrollReimbursementsRouter.post(
-  "/:reimbursementId/pay",
-  requireTenantPermission("hr.reimbursement.approve"),
-  jsonBody,
-  async (req, res) => {
-    const { reimbursementId } = payReimbursementCash.params.parse(req.params);
-    const { idempotencyKey } = payReimbursementCash.body.parse(req.body);
-    res.json({
-      data: await service.payReimbursementCash(
-        getScopedTenantContext(req),
-        actor(req),
-        reimbursementId,
-        idempotencyKey,
-      ),
-    });
-  },
-);
+  payrollReimbursementsRouter.post(
+    "/:reimbursementId/decision",
+    requireTenantPermission("hr.reimbursement.approve"),
+    jsonBody,
+    async (req, res) => {
+      const { reimbursementId } = decideReimbursement.params.parse(req.params);
+      const body = decideReimbursement.body.parse(req.body);
+      res.json({
+        data: await service.decideReimbursement(
+          getScopedTenantContext(req),
+          actor(req),
+          reimbursementId,
+          body,
+          new Date(),
+          signer,
+        ),
+      });
+    },
+  );
 
-// ---- Employee self-service ------------------------------------------------
+  payrollReimbursementsRouter.post(
+    "/:reimbursementId/pay",
+    requireTenantPermission("hr.reimbursement.approve"),
+    jsonBody,
+    async (req, res) => {
+      const { reimbursementId } = payReimbursementCash.params.parse(req.params);
+      const { idempotencyKey } = payReimbursementCash.body.parse(req.body);
+      res.json({
+        data: await service.payReimbursementCash(
+          getScopedTenantContext(req),
+          actor(req),
+          reimbursementId,
+          idempotencyKey,
+          new Date(),
+          signer,
+        ),
+      });
+    },
+  );
 
-export const payrollMyReimbursementsRouter = Router();
-payrollMyReimbursementsRouter.use(...gate);
+  // ---- Employee self-service ------------------------------------------------
 
-payrollMyReimbursementsRouter.get(
-  "/",
-  requireSelfReimbursement,
-  async (req, res) => {
-    const query = listMyReimbursements.query.parse(req.query);
-    res.json(
-      await service.listMyReimbursements(selfContext(req), actor(req), query),
-    );
-  },
-);
+  const payrollMyReimbursementsRouter = Router();
+  payrollMyReimbursementsRouter.use(...gate);
 
-payrollMyReimbursementsRouter.post(
-  "/",
-  requireSelfReimbursement,
-  jsonBody,
-  async (req, res) => {
-    const body = createMyReimbursement.body.parse(req.body);
-    res.status(201).json({
-      data: await service.createMyReimbursement(
-        selfContext(req),
-        actor(req),
-        body,
-      ),
-    });
-  },
-);
+  payrollMyReimbursementsRouter.get(
+    "/",
+    requireSelfReimbursement,
+    async (req, res) => {
+      const query = listMyReimbursements.query.parse(req.query);
+      res.json(
+        await service.listMyReimbursements(
+          selfContext(req),
+          actor(req),
+          query,
+          signer,
+        ),
+      );
+    },
+  );
+
+  payrollMyReimbursementsRouter.post(
+    "/",
+    requireSelfReimbursement,
+    jsonBody,
+    async (req, res) => {
+      const body = createMyReimbursement.body.parse(req.body);
+      res.status(201).json({
+        data: await service.createMyReimbursement(
+          selfContext(req),
+          actor(req),
+          body,
+          new Date(),
+          signer,
+        ),
+      });
+    },
+  );
+
+  return {
+    payrollReimbursementCategoriesRouter,
+    payrollReimbursementsRouter,
+    payrollMyReimbursementsRouter,
+  };
+}
+
+export const {
+  payrollReimbursementCategoriesRouter,
+  payrollReimbursementsRouter,
+  payrollMyReimbursementsRouter,
+} = createPayrollReimbursementRouters();

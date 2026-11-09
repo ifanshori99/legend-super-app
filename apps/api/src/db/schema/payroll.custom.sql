@@ -334,3 +334,11 @@ END $$;
 CREATE TRIGGER "service_charge_allocations_guard_trg"
   BEFORE INSERT OR UPDATE OR DELETE ON "service_charge_allocations"
   FOR EACH ROW EXECUTE FUNCTION app.service_charge_allocations_guard();
+
+-- ---------------------------------------------------------------------------
+-- Appended to migration 0169_payroll_loan_policy (bead legend-fij0l and the
+-- receipt unique index of legend-8399r): payroll_loan_policies, one row per
+-- tenant. Constraints and the index live in schema/payroll.ts.
+SELECT app.enforce_tenant_rls('public.payroll_loan_policies'::regclass);
+--> statement-breakpoint
+REVOKE DELETE, TRUNCATE ON TABLE public.payroll_loan_policies FROM legend_app;

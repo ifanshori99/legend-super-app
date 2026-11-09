@@ -290,15 +290,20 @@ registerMock(createMyLoan, ({ body }) => {
     return { data: replay.value };
   }
 
-  const openLoanCount = myLoans().filter((loan) =>
+  const openLoans = myLoans().filter((loan) =>
     OPEN_LOAN_STATUSES.includes(loan.status),
-  ).length;
+  );
+  const openLoanCount = openLoans.length;
+  const openOutstandingIdr = idr(
+    openLoans.reduce((sum, loan) => sum + loan.outstandingIdr, 0),
+  );
   try {
     assertLoanWithinPolicy(fixtures.loanPolicy, {
       principalIdr: body.principalIdr,
       installmentCount: body.installmentCount,
       monthlyBaseSalaryIdr: monthlyBaseSalaryIdr(),
       openLoanCount,
+      openOutstandingIdr,
     });
   } catch (error) {
     if (error instanceof PayrollError) throw payrollApiError(error.code);
