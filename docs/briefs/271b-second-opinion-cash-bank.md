@@ -12,7 +12,7 @@ Keputusan desain: `docs/DECISIONS.md` "2026-11-10: WS-07 cash & bank reconciliat
 
 ## Berkas berisiko
 
-- `apps/api/drizzle/0191_cash_bank_recon.sql`, `apps/api/src/db/schema/accounting-cash-bank.ts` (+ `.custom.sql`): 7 tabel, FK inline, RLS tenant, RLS outlet pada `cash_deposits`, REVOKE pada log kasus.
+- `apps/api/drizzle/0191_cash_bank_recon.sql`, `apps/api/src/db/schema/accounting-cash-bank.ts` (+ `.custom.sql`): 8 tabel (termasuk `bank_statement_match_rejections`), FK inline, RLS tenant, RLS outlet pada `cash_deposits`, REVOKE pada log kasus.
 - `apps/api/src/services/accounting-bank-matching.ts`: kandidat (jurnal + setoran kas), auto-match unik dua arah, `applyMatch`, kunci entitas.
 - `apps/api/src/services/accounting-bank-csv.ts`: parser CSV ketat, dedupe per kemunculan.
 - `apps/api/src/services/accounting-bank-statements.service.ts`: impor idempoten, ON CONFLICT, auto-match sesudah impor.
@@ -36,7 +36,8 @@ Keputusan desain: `docs/DECISIONS.md` "2026-11-10: WS-07 cash & bank reconciliat
 3. Auto-match: ada kasus yang mencocokkan padahal ambigu (dua kandidat, dua mutasi berebut satu dokumen, jurnal yang dibalik, jurnal di balik setoran)?
 4. Unmatch: keadaan baris, match, dan setoran benar-benar kembali seperti sebelum match?
 5. Migrasi: aman di DB yang sudah migrasi sampai 0186 (FK ke tabel FORCE RLS, urutan `when`), RLS outlet `cash_deposits`, REVOKE log kasus.
-6. Formula koleksi kas ACC-05 dari `pos_shifts` (drop, cash in, refund, shift belum ditutup).
+6. Formula koleksi kas ACC-05 dari `pos_shifts` (drop, cash in, refund, selisih kas `variance_idr`, shift belum ditutup).
+7. Perbaikan review architect (DECISIONS #12-15): pasangan yang di-unmatch tidak dicocokkan otomatis lagi, keunikan per akun GL, dokumen di kasus terbuka bukan kandidat, buka kasus idempoten.
 
 ## Effort
 

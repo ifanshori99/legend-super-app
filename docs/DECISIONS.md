@@ -51,8 +51,11 @@ subagent before the schema landed.
    GL account, so a per-account lock would let them race for one journal.
 8. **Cash collections are not stored.** ACC-05 collections are derived from
    closed `pos_shifts` per (outlet, business date):
-   `cash_sales − cash_refunds − cash_out`, floored at 0. Cash drops stay in the outlet (not banked) and
-   cash in is float, so neither counts. Deposits in every status cover cash
+   `cash_sales − cash_refunds − cash_out + variance`, floored at 0. The
+   variance (counted minus expected) is in, so a short shift does not show
+   cash that never existed as undeposited, and extra cash does show. Cash
+   drops stay in the outlet (not banked) and cash in is float, so neither
+   counts. Deposits in every status cover cash
    FIFO (shared `undepositedCashAlerts`); alerts are computed on read with
    `loadCashDepositPolicy`, no alert table.
 9. **Cases** live in `bank_reconciliation_cases` (the gateway-specific
@@ -70,6 +73,22 @@ subagent before the schema landed.
     `in_case` lines, and deposits in a case stay `discrepancy`. Refs of type
     `gateway_settlement`, `edc_settlement` and `supplier_payment` are stored
     on a case as given until legend-cs7 can validate them; nothing acts on them.
+12. **An unmatched pair is never auto-matched again.** Unmatch writes the
+    (line, document) pair to `bank_statement_match_rejections`; automatic
+    matching skips it. A person can still match that pair by hand, which
+    clears the row (review finding, 2026-11-10).
+13. **Uniqueness is counted per GL account, not per bank account.** Two bank
+    accounts of one entity may share a GL account, so the "only one line
+    wants this document" test counts candidate lines of every bank account on
+    that GL account. A document named in a case that is still open is no
+    candidate, cannot be matched by hand, and a case cannot name a document
+    that is already matched (one document, one place).
+14. **Opening a case is idempotent** (`idempotencyKey` added to the
+    open-case body, stored in `bank_reconciliation_cases.idempotency_key`),
+    like every other cash-bank command.
+15. **The dedupe key keeps its readable format** (the web preview compares
+    keys); a row whose normalized key exceeds 400 characters is refused with
+    STATEMENT_VALUE_INVALID instead of failing the insert.
 
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
