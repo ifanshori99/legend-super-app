@@ -111,3 +111,105 @@ it("TEN-02 rejects storage metadata pointing at another tenant's outlet", async 
     ),
   ).rejects.toThrow();
 });
+
+const insertRaw = (
+  tenant: { tenantId: string; outletId: string },
+  columns: {
+    ownerUserId?: string | null;
+    sourceKind?: string | null;
+    sourceId?: string | null;
+  },
+) => {
+  const id = randomUUID();
+  return owner.query(
+    `INSERT INTO core_storage_objects
+       (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id, source_kind, source_id)
+     VALUES ($1, $2, $3, 'receipt', $4, 'image/webp', 1, $5, $6, $7)`,
+    [
+      tenant.tenantId,
+      tenant.outletId,
+      id,
+      `${id}/original.webp`,
+      columns.ownerUserId ?? null,
+      columns.sourceKind ?? null,
+      columns.sourceId ?? null,
+    ],
+  );
+};
+
+it("legend-pszrm storage objects carry nullable owner, source kind and source id columns", async () => {
+  const { rows } = await owner.query(
+    `SELECT column_name, data_type, character_maximum_length, is_nullable
+     FROM information_schema.columns
+     WHERE table_name = 'core_storage_objects'
+       AND column_name IN ('owner_user_id', 'source_kind', 'source_id')`,
+  );
+  const byName = Object.fromEntries(
+    rows.map((r: { column_name: string }) => [r.column_name, r]),
+  );
+  expect(Object.keys(byName).sort()).toEqual([
+    "owner_user_id",
+    "source_id",
+    "source_kind",
+  ]);
+  expect(byName.owner_user_id).toMatchObject({
+    data_type: "text",
+    is_nullable: "YES",
+  });
+  expect(byName.source_kind).toMatchObject({
+    data_type: "character varying",
+    character_maximum_length: 32,
+    is_nullable: "YES",
+  });
+  expect(byName.source_id).toMatchObject({
+    data_type: "uuid",
+    is_nullable: "YES",
+  });
+});
+
+it("legend-pszrm storage objects round-trip owner and source through the tenant client", async () => {
+  const id = randomUUID();
+  const sourceId = randomUUID();
+  await withTenant(db, context(a.tenantId), (tx) =>
+    tx.insert(schema.coreStorageObjects).values({
+      ...row(a.tenantId, a.outletId, id),
+      purpose: "receipt",
+      ownerUserId: "user-schema",
+      sourceKind: "reimbursement",
+      sourceId,
+    }),
+  );
+  const [stored] = await withTenant(db, context(a.tenantId), (tx) =>
+    tx
+      .select()
+      .from(schema.coreStorageObjects)
+      .where(eq(schema.coreStorageObjects.id, id)),
+  );
+  expect(stored).toMatchObject({
+    ownerUserId: "user-schema",
+    sourceKind: "reimbursement",
+    sourceId,
+  });
+});
+
+it("legend-pszrm storage objects accept legacy rows and a kind without a source id", async () => {
+  // Legacy upload: all three columns null.
+  await insertRaw(a, {});
+  // Kind chosen at upload, document not created yet.
+  await insertRaw(a, { ownerUserId: "user-schema", sourceKind: "expense" });
+  // Linked.
+  await insertRaw(a, {
+    ownerUserId: "user-schema",
+    sourceKind: "expense",
+    sourceId: randomUUID(),
+  });
+});
+
+it("legend-pszrm storage objects refuse a source id without a source kind", async () => {
+  await expect(insertRaw(a, { sourceId: randomUUID() })).rejects.toThrow(
+    /check constraint/i,
+  );
+  await expect(
+    insertRaw(a, { ownerUserId: "user-schema", sourceId: randomUUID() }),
+  ).rejects.toThrow(/check constraint/i);
+});

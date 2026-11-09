@@ -1223,3 +1223,31 @@ describe("legend-c9kbk TEN-04 re-review fixes", () => {
     expect(response.status).toBe(422);
   });
 });
+
+// legend-w1due (architect review): an Owner assignment made by a support
+// request that passed the guard just before the grant ended commits a moment
+// after the end. Such an assignment must not count as independent.
+describe("legend-w1due TEN-04 independence keeps a grace margin after a grant ends", () => {
+  it("legend-w1due TEN-04 an owner assigned seconds after the admin's grant ended cannot approve", async () => {
+    const admin = await newSuperAdmin();
+    const grant = await openReadOnlyGrant(
+      tenantId,
+      admin.userId,
+      new Date(Date.now() - 30 * MINUTE_MS),
+    );
+    const endedAt = new Date(Date.now() - 10 * MINUTE_MS);
+    await db.query(
+      "UPDATE support_access_grants SET ended_at = $3, ended_by = $2 WHERE id = $1",
+      [grant.id, admin.userId, endedAt.toISOString()],
+    );
+    const insider = await newOwner();
+    await restampOwnerAssignment(
+      insider,
+      insider.userId,
+      new Date(endedAt.getTime() + 1000),
+    );
+    const request = await requestWrite(tenantId, admin.userId);
+    grantCountBefore.set(request.id, await grantCount(admin.userId));
+    await expectNotIndependent(insider, request.id, admin.userId);
+  });
+});

@@ -113,8 +113,10 @@ async function tenantOwnerOf(tenantId: string): Promise<string> {
   );
   await owner.query(
     `INSERT INTO role_assignments
-       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by, assigned_at)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 day', $2, now() - interval '1 day')`,
+    // The tenant's Owner predates every support window of the test (c9kbk
+    // independence, with the legend-w1due grace margin after a window ends).
     [tenantId, userId, roleId],
   );
   tenantOwners.set(tenantId, userId);

@@ -261,12 +261,13 @@ async function storageObject(
   outletId: string,
   purpose: "document" | "selfie" | "menu_photo" | "receipt" = "document",
   ageHours = 0,
+  ownerUserId: string | null = null,
 ): Promise<string> {
   const id = randomUUID();
   createdStorage.push(id);
   await sql(
-    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at)
-     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int))`,
+    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at, owner_user_id)
+     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int), $7)`,
     [
       tenantId,
       outletId,
@@ -274,6 +275,7 @@ async function storageObject(
       purpose,
       `private/${tenantId}/${id}.pdf`,
       ageHours,
+      ownerUserId,
     ],
   );
   return id;
@@ -418,7 +420,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     const staff = await makeStaff();
     const other = await makeStaff();
-    const objectId = await storageObject(outletA);
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
     const body = requestBody(type.id, objectId);
 
     const created = await createLeaveRequest(
@@ -520,7 +522,7 @@ describe("legend-arj.4 leave attachment", () => {
   it("the default signer mints no URL and writes no URL audit (fail closed)", async () => {
     const type = await makeType({ tracksBalance: false });
     const staff = await makeStaff();
-    const objectId = await storageObject(outletA);
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
     const created = await createLeaveRequest(
       outletScope(outletA),
       staff.userId,
@@ -554,11 +556,16 @@ describe("legend-arj.4 leave attachment", () => {
     const refs: Record<string, string> = {
       unknown: randomUUID(),
       malformed: "not-a-uuid",
-      public: await storageObject(outletA, "menu_photo"),
-      otherOutlet: await storageObject(outletB),
-      otherPrivatePurpose: await storageObject(outletA, "selfie"),
-      receiptPurpose: await storageObject(outletA, "receipt"),
-      stale: await storageObject(outletA, "document", 25),
+      public: await storageObject(outletA, "menu_photo", 0, staff.userId),
+      otherOutlet: await storageObject(outletB, "document", 0, staff.userId),
+      otherPrivatePurpose: await storageObject(
+        outletA,
+        "selfie",
+        0,
+        staff.userId,
+      ),
+      receiptPurpose: await storageObject(outletA, "receipt", 0, staff.userId),
+      stale: await storageObject(outletA, "document", 25, staff.userId),
     };
     for (const [name, ref] of Object.entries(refs)) {
       const result = await failure(
@@ -582,7 +589,7 @@ describe("legend-arj.4 leave attachment", () => {
   it("refuses an upload already attached to an employee document", async () => {
     const type = await makeType({ tracksBalance: false });
     const staff = await makeStaff();
-    const objectId = await storageObject(outletA);
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
     await sql(
       `INSERT INTO employee_documents (tenant_id, employee_id, type, storage_object_id)
        VALUES ($1, $2, 'ktp', $3)`,
@@ -612,7 +619,7 @@ describe("legend-arj.4 leave attachment", () => {
     const type = await makeType({ tracksBalance: false });
     const staff = await makeStaff();
     const other = await makeStaff();
-    const objectId = await storageObject(outletA);
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
     await createLeaveRequest(
       outletScope(outletA),
       staff.userId,
@@ -636,7 +643,7 @@ describe("legend-arj.4 leave attachment", () => {
   it("the unique index also rejects a duplicate attachment_key at the database", async () => {
     const type = await makeType({ tracksBalance: false });
     const staff = await makeStaff();
-    const objectId = await storageObject(outletA);
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
     await createLeaveRequest(
       outletScope(outletA),
       staff.userId,
@@ -653,6 +660,140 @@ describe("legend-arj.4 leave attachment", () => {
       ),
     ).rejects.toMatchObject({
       constraint: "leave_requests_tenant_attachment_key",
+    });
+  });
+
+  it("[storage-object-owner] refuses an upload owned by another user (422, nothing created, ownership untouched)", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const other = await makeStaff();
+    // Fresh, private, same outlet, unreferenced: only the owner differs.
+    const objectId = await storageObject(outletA, "document", 0, other.userId);
+    const result = await failure(
+      createLeaveRequest(
+        outletScope(outletA),
+        staff.userId,
+        requestBody(type.id, objectId),
+        new Date(),
+        stubSigner,
+      ),
+    );
+    expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+    expect(await requestCount(staff.employee.id)).toBe(0);
+    const rows = await sql<Record<string, string | null>>(
+      "SELECT owner_user_id, source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenantId, objectId],
+    );
+    expect(rows[0]).toEqual({
+      owner_user_id: other.userId,
+      source_kind: null,
+      source_id: null,
+    });
+  });
+
+  it("[storage-object-owner] refuses the requester's own upload stored at another outlet than their home outlet (422, nothing linked)", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    // Owner matches and the file is fresh: only the outlet differs from the home outlet A.
+    const objectId = await storageObject(outletB, "document", 0, staff.userId);
+    const result = await failure(
+      createLeaveRequest(
+        outletScope(outletA),
+        staff.userId,
+        requestBody(type.id, objectId),
+        new Date(),
+        stubSigner,
+      ),
+    );
+    expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+    expect(await requestCount(staff.employee.id)).toBe(0);
+    const rows = await sql<Record<string, string | null>>(
+      "SELECT source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenantId, objectId],
+    );
+    expect(rows[0]).toEqual({ source_kind: null, source_id: null });
+  });
+
+  it("[storage-object-owner] accepts the requester's own upload and links it: source leave_request, source id = the request, owner = requester", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
+    const created = await createLeaveRequest(
+      outletScope(outletA),
+      staff.userId,
+      requestBody(type.id, objectId),
+      new Date(),
+      stubSigner,
+    );
+    const rows = await sql<Record<string, string | null>>(
+      "SELECT owner_user_id, source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenantId, objectId],
+    );
+    expect(rows[0]).toEqual({
+      owner_user_id: staff.userId,
+      source_kind: "leave_request",
+      source_id: created.id,
+    });
+  });
+
+  it("[storage-object-owner] a fresh upload with no owner at the home outlet is refused (422, nothing created, nothing linked)", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    // Only the missing owner differs: private document, fresh, home outlet.
+    const objectId = await storageObject(outletA);
+    const result = await failure(
+      createLeaveRequest(
+        outletScope(outletA),
+        staff.userId,
+        requestBody(type.id, objectId),
+        new Date(),
+        stubSigner,
+      ),
+    );
+    expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+    expect(await requestCount(staff.employee.id)).toBe(0);
+    const rows = await sql<Record<string, string | null>>(
+      "SELECT owner_user_id, source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenantId, objectId],
+    );
+    expect(rows[0]).toEqual({
+      owner_user_id: null,
+      source_kind: null,
+      source_id: null,
+    });
+  });
+
+  it("[storage-object-owner] an unowned document object (like a printed-menu render) cannot be claimed as a leave attachment by anyone", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const other = await makeStaff();
+    // Assumption: a menu-print render is a private `document` object stored
+    // at the outlet with no owner (uploaded with actorUserId null).
+    const objectId = await storageObject(outletA);
+    for (const [who, day] of [
+      [staff, "03"],
+      [other, "04"],
+    ] as const) {
+      const result = await failure(
+        createLeaveRequest(
+          outletScope(outletA),
+          who.userId,
+          requestBody(type.id, objectId, day),
+          new Date(),
+          stubSigner,
+        ),
+      );
+      expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+      expect(await requestCount(who.employee.id)).toBe(0);
+    }
+    const rows = await sql<Record<string, string | null>>(
+      "SELECT owner_user_id, source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenantId, objectId],
+    );
+    expect(rows[0]).toEqual({
+      owner_user_id: null,
+      source_kind: null,
+      source_id: null,
     });
   });
 });

@@ -318,10 +318,12 @@ describe("legend-ktc4d platform.access.denied", () => {
     const impersonator = await newTenantOwner();
     await markImpersonated(admin.userId, impersonator.userId);
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const response = await admin.client.get(usagePath);
-      expect(response.status).toBe(403);
-    }
+    // legend-w1due: the first refusal (no live grant covers the session)
+    // also deletes the session, so the repeats are 401 and add no row.
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1)
+      statuses.push((await admin.client.get(usagePath)).status);
+    expect(statuses).toEqual([403, 401, 401]);
     expect(
       await auditRows(tenantId, "platform.access.denied", impersonator.userId),
     ).toHaveLength(1);

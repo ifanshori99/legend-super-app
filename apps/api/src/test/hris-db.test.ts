@@ -176,17 +176,19 @@ async function failure(promise: Promise<unknown>) {
   throw new Error("Expected the call to fail");
 }
 
+/** `ownerUserId` is the uploader; HR links of an unowned object are refused. */
 async function storageObject(
   tenant: string,
   outletId: string,
+  ownerUserId: string | null = null,
 ): Promise<string> {
   const id = randomUUID();
   createdStorage.push({ tenant, id });
   await asOwner(tenant, (client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'application/pdf', 1024)`,
-      [tenant, outletId, id, `private/${tenant}/${id}.pdf`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id)
+       VALUES ($1, $2, $3, 'document', $4, 'application/pdf', 1024, $5)`,
+      [tenant, outletId, id, `private/${tenant}/${id}.pdf`, ownerUserId],
     ),
   );
   return id;
@@ -877,7 +879,7 @@ describe("HR-01 an employee sees only their own data", () => {
   });
 
   it("[HR-01] documents: owner and HR list them (signed URL audited); others get 404/403", async () => {
-    const objectId = await storageObject(tenantId, outletA);
+    const objectId = await storageObject(tenantId, outletA, hr);
     const document = await createEmployeeDocument(tenantScope(), hr, {
       employeeId: e1.id,
       type: "ktp",
@@ -933,6 +935,264 @@ describe("HR-01 an employee sees only their own data", () => {
         )
       ).status,
     ).toBe(403);
+  });
+});
+
+// ------------------------------------------- storage object source + owner
+
+describe("storage-object-owner HR files record their source and the employee as owner", () => {
+  const storageRow = async (objectId: string) =>
+    (
+      await asOwner(tenantId, (client) =>
+        client.query<{
+          source_kind: string | null;
+          source_id: string | null;
+          owner_user_id: string | null;
+        }>(
+          "SELECT source_kind, source_id, owner_user_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+          [tenantId, objectId],
+        ),
+      )
+    ).rows[0];
+
+  const contractInput = (fileObjectId: string) => ({
+    employeeId: e1.id,
+    type: "pkwt" as const,
+    taxScheme: "gross" as const,
+    startDate: "2026-02-01",
+    endDate: "2026-12-31",
+    renewedFromId: null,
+    salarySnapshotIdr: null,
+    fileObjectId,
+    reminderDaysBefore: 30,
+  });
+
+  it("[storage-object-owner] an employee document links its file: source employee_document, owner = the employee's user (not the HR actor)", async () => {
+    const objectId = await storageObject(tenantId, outletA, hr);
+    expect(await storageRow(objectId)).toMatchObject({
+      source_kind: null,
+      source_id: null,
+      owner_user_id: hr,
+    });
+    const document = await createEmployeeDocument(tenantScope(), hr, {
+      employeeId: e1.id,
+      type: "ktp",
+      storageObjectId: objectId,
+      expiresOn: null,
+    });
+    expect(await storageRow(objectId)).toEqual({
+      source_kind: "employee_document",
+      source_id: document.id,
+      owner_user_id: staff1,
+    });
+  });
+
+  it("[storage-object-owner] an employment contract file links the same way: source employment_contract, owner = the employee's user", async () => {
+    const objectId = await storageObject(tenantId, outletA, hr);
+    const contract = await createEmploymentContract(
+      tenantScope(),
+      hr,
+      contractInput(objectId),
+    );
+    expect(await storageRow(objectId)).toEqual({
+      source_kind: "employment_contract",
+      source_id: contract.id,
+      owner_user_id: staff1,
+    });
+  });
+
+  it("[storage-object-owner] HR cannot link a file uploaded (owned) by another user; HR's own upload links and passes to the employee", async () => {
+    const owned = async (objectId: string, userId: string) =>
+      asOwner(tenantId, (client) =>
+        client.query(
+          "UPDATE core_storage_objects SET owner_user_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [tenantId, objectId, userId],
+        ),
+      );
+    const input = (storageObjectId: string) => ({
+      employeeId: e1.id,
+      type: "ktp" as const,
+      storageObjectId,
+      expiresOn: null,
+    });
+    const countDocs = async (objectId: string) =>
+      Number(
+        (
+          await asOwner(tenantId, (client) =>
+            client.query<{ n: string }>(
+              "SELECT count(*) AS n FROM employee_documents WHERE tenant_id = $1 AND storage_object_id = $2",
+              [tenantId, objectId],
+            ),
+          )
+        ).rows[0]!.n,
+      );
+
+    // Uploaded by someone else (staff2 is neither HR nor the employee).
+    const foreign = await storageObject(tenantId, outletA);
+    await owned(foreign, staff2);
+    const refused = await failure(
+      createEmployeeDocument(tenantScope(), hr, input(foreign)),
+    );
+    expect(refused.code).toBe("VALIDATION_ERROR");
+    expect(await countDocs(foreign)).toBe(0);
+    expect(await storageRow(foreign)).toEqual({
+      source_kind: null,
+      source_id: null,
+      owner_user_id: staff2,
+    });
+    // Same for a contract file.
+    expect(
+      (
+        await failure(
+          createEmploymentContract(tenantScope(), hr, contractInput(foreign)),
+        )
+      ).code,
+    ).toBe("VALIDATION_ERROR");
+    expect(await storageRow(foreign)).toMatchObject({
+      source_kind: null,
+      owner_user_id: staff2,
+    });
+
+    // Positive control: HR uploaded it, so HR may link it; owner moves to the employee.
+    const mine = await storageObject(tenantId, outletA);
+    await owned(mine, hr);
+    const document = await createEmployeeDocument(
+      tenantScope(),
+      hr,
+      input(mine),
+    );
+    expect(await storageRow(mine)).toEqual({
+      source_kind: "employee_document",
+      source_id: document.id,
+      owner_user_id: staff1,
+    });
+  });
+
+  it("[storage-object-owner] HR cannot link an unowned (legacy, null-owner) file; the same file owned by HR links", async () => {
+    const input = (storageObjectId: string) => ({
+      employeeId: e1.id,
+      type: "ktp" as const,
+      storageObjectId,
+      expiresOn: null,
+    });
+    const unowned = await storageObject(tenantId, outletA);
+    expect(
+      (await failure(createEmployeeDocument(tenantScope(), hr, input(unowned))))
+        .code,
+    ).toBe("VALIDATION_ERROR");
+    expect(
+      (
+        await failure(
+          createEmploymentContract(tenantScope(), hr, contractInput(unowned)),
+        )
+      ).code,
+    ).toBe("VALIDATION_ERROR");
+    expect(await storageRow(unowned)).toEqual({
+      source_kind: null,
+      source_id: null,
+      owner_user_id: null,
+    });
+    // Positive control: the same shape of file, uploaded by HR, links.
+    const owned = await storageObject(tenantId, outletA, hr);
+    const document = await createEmployeeDocument(
+      tenantScope(),
+      hr,
+      input(owned),
+    );
+    expect((await storageRow(owned)).source_id).toBe(document.id);
+  });
+
+  it("[storage-object-owner] a file stored at another outlet than the employee's home outlet is refused", async () => {
+    // e1's home outlet is A; the file sits at outlet B.
+    const elsewhere = await storageObject(tenantId, outletB, hr);
+    expect(
+      (
+        await failure(
+          createEmployeeDocument(tenantScope(), hr, {
+            employeeId: e1.id,
+            type: "ktp",
+            storageObjectId: elsewhere,
+            expiresOn: null,
+          }),
+        )
+      ).code,
+    ).toBe("VALIDATION_ERROR");
+    expect(
+      (
+        await failure(
+          createEmploymentContract(tenantScope(), hr, contractInput(elsewhere)),
+        )
+      ).code,
+    ).toBe("VALIDATION_ERROR");
+    expect(await storageRow(elsewhere)).toEqual({
+      source_kind: null,
+      source_id: null,
+      owner_user_id: hr,
+    });
+    // Positive control: employee e3 is homed at outlet B, so the same file links for them.
+    const document = await createEmployeeDocument(tenantScope(), hr, {
+      employeeId: e3.id,
+      type: "ktp",
+      storageObjectId: elsewhere,
+      expiresOn: null,
+    });
+    expect((await storageRow(elsewhere)).source_id).toBe(document.id);
+  });
+
+  it("[storage-object-owner] a file already linked cannot be linked a second time: nothing new is created and the first link stays", async () => {
+    const objectId = await storageObject(tenantId, outletA, hr);
+    const first = await createEmployeeDocument(tenantScope(), hr, {
+      employeeId: e1.id,
+      type: "ktp",
+      storageObjectId: objectId,
+      expiresOn: null,
+    });
+    const count = async (table: string) =>
+      Number(
+        (
+          await asOwner(tenantId, (client) =>
+            client.query<{ n: string }>(
+              `SELECT count(*) AS n FROM ${table} WHERE tenant_id = $1 AND ${
+                table === "employee_documents"
+                  ? "storage_object_id"
+                  : "file_object_id"
+              } = $2`,
+              [tenantId, objectId],
+            ),
+          )
+        ).rows[0]!.n,
+      );
+
+    // Same object as a second document, for the same and for another employee.
+    for (const employeeId of [e1.id, e2.id])
+      expect(
+        (
+          await failure(
+            createEmployeeDocument(tenantScope(), hr, {
+              employeeId,
+              type: "npwp",
+              storageObjectId: objectId,
+              expiresOn: null,
+            }),
+          )
+        ).code,
+      ).toBe("VALIDATION_ERROR");
+    // Same object as a contract file.
+    expect(
+      (
+        await failure(
+          createEmploymentContract(tenantScope(), hr, contractInput(objectId)),
+        )
+      ).code,
+    ).toBe("VALIDATION_ERROR");
+
+    expect(await count("employee_documents")).toBe(1);
+    expect(await count("employment_contracts")).toBe(0);
+    expect(await storageRow(objectId)).toEqual({
+      source_kind: "employee_document",
+      source_id: first.id,
+      owner_user_id: staff1,
+    });
   });
 });
 

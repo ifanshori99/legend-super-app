@@ -465,10 +465,9 @@ describe("legend-cg071 TEN-04 support session read-only", () => {
       grantId: grant.id,
       actorUserId: admin.userId,
     });
-    expectCode(
-      await support.get("/api/org/domains"),
-      "SUPPORT_ACCESS_REQUIRED",
-    );
+    // legend-w1due: ending the grant also deletes the support session, so the
+    // next request is not even authenticated.
+    expect((await support.get("/api/org/domains")).status).toBe(401);
   });
 
   it("TEN-04 an expired grant no longer opens the tenant", async () => {

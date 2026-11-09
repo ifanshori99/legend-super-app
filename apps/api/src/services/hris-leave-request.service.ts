@@ -68,6 +68,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
@@ -453,14 +454,16 @@ const ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The upload must be a fresh `document` object at the requester's home outlet
- * that nothing else references. `core_storage_objects` records no uploader, so
- * freshness plus single use is what stops attaching someone else's private
- * file (an HR employee document, another request's proof) to read it back.
+ * that nothing else references, uploaded by the requester (`owner_user_id`).
+ * Ownership stops attaching someone else's private file (an HR employee
+ * document, another request's proof) or an unowned system file (the printed
+ * menu PDF); freshness plus single use still bound reuse.
  */
 async function assertAttachmentUsable(
   tx: Tx,
   tenantId: TenantId,
   homeOutletId: string,
+  actorUserId: string,
   uploadRef: string,
   now: Date,
 ) {
@@ -470,6 +473,7 @@ async function assertAttachmentUsable(
           outletId: coreStorageObjects.outletId,
           purpose: coreStorageObjects.purpose,
           createdAt: coreStorageObjects.createdAt,
+          ownerUserId: coreStorageObjects.ownerUserId,
         })
         .from(coreStorageObjects)
         .where(
@@ -496,6 +500,7 @@ async function assertAttachmentUsable(
     object.purpose !== "document" ||
     policy?.visibility !== "private" ||
     lower(object.outletId) !== lower(homeOutletId) ||
+    object.ownerUserId !== actorUserId ||
     object.createdAt.getTime() < now.getTime() - ATTACHMENT_MAX_AGE_MS
   )
     throw invalid();
@@ -724,6 +729,7 @@ export async function createLeaveRequest(
         tx,
         tenantId,
         own.homeOutletId,
+        access.actorUserId,
         input.attachmentUploadRef,
         now,
       );
@@ -865,6 +871,16 @@ export async function createLeaveRequest(
         throw error;
       });
     if (!inserted) throw new Error("Leave request insert returned no row");
+    if (input.attachmentUploadRef !== null)
+      await linkStorageObjectSource(tx, {
+        tenantId,
+        objectId: input.attachmentUploadRef,
+        sourceKind: "leave_request",
+        sourceId: inserted.id,
+        actorUserId: access.actorUserId,
+        ownerUserId: access.actorUserId,
+        outletId: own.homeOutletId,
+      });
 
     const opened = await openApprovalRequest(tx, scoped, {
       sourceModule: HRIS_LEAVE_SOURCE_MODULE,
