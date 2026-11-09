@@ -679,3 +679,4 @@ Langkah berikut CTO baru:
 - G6q9e lapor legend-atwse: ws/admin-notes-guard 6b2fedbf (dari 814bc779): /api/admin wajib requirePlatformAdmin + requireSessionMfa. Verifikasi CTO 14 file berjalan. Lanjutan ke G6q9e: legend-gn17x hapus Notes demo + update AGENTS.md/docs/backend.md. Codex 232b mencakup d7a95d0c..6b2fedbf.
 - Akun Claude: #3 7d 93% (reset 10 Nov 05:00), #1 97%, #2 59%. Thread baru pakai `--account 2`.
 - Thread baru G9vex "Payroll schema and config API" (brief 237, legend-gfcr, Opus high, akun #2, migrasi 0167 `when` 1794246000000).
+- 3b90a9bd (ghgei) lolos verifikasi CTO 19 file 396 lulus/8 skip. Antre merge train baru (basis c75b0d98, sudah di batch31; K uang).
