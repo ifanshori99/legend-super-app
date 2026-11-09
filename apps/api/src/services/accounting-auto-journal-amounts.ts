@@ -78,6 +78,10 @@ import {
   saleBoundOf,
   sessionDepositAt,
 } from "./accounting-auto-journal-guards.ts";
+import {
+  AutoJournalSaleMissing,
+  AutoJournalSalePending,
+} from "./accounting-auto-journal-void.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 
@@ -815,6 +819,17 @@ export async function autoJournalFactOf(
     }
     case "order.refunded": {
       const p = orderRefundedSchema.parse(stored.payload);
+      // legend-ni6o: the refund mirrors the sale journal, so it waits for it
+      // like the void does. A parked or missing sale would leave the refund
+      // reversing revenue never booked (its gateway part as customer_deposit).
+      const saleState = await backingStateOf(tx, tenantId, {
+        kind: "sale",
+        orderId: p.orderId,
+      });
+      if (saleState === "pending")
+        throw new AutoJournalSalePending("Sale journal is not posted yet");
+      if (saleState === "none")
+        throw new AutoJournalSaleMissing("Sale journal will never post");
       return {
         ruleEvent: "order.refunded",
         amounts: {

@@ -768,3 +768,21 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: test gagal dulu (migrasi 2/14, pola 1/20), lalu 3 file `edc-pan*` 44/44; 14 file EDC/POS EDC 189/189; `edc-contract` 6/6; tsc api dan shared lewat heavy, eslint, prettier lulus.
 - Bead baru: `legend-lg45` (P2, sisa PAN di pesan yang terpotong 200 karakter oleh jalur tulis lama; celah lama, bukan dari diff ini).
 - Berikut: second opinion Codex run 2 (brief 150b, bagian Run 2), urutan merge 0141 vs `ws/shift-close-fix`.
+
+## legend-riqu + legend-ni6o: refund intent tidak memakai uang tender POS, refund jurnal menunggu penjualan (engineer, cabang `ws/refund-intent-guard` dari `milestone/m1` fee69d45, 2026-11-09)
+
+- Sudah: ni6o (71ddaf57) `order.refunded` parkir `AUTO_JOURNAL_SALE_PENDING` (retryable, sweep) sampai `aj:sale:<orderId>` posted; `SALE_MISSING` non-retryable seperti void. riqu (e8f1faa4) `refundableBalance` mengurangi `posSaleInUse` (tender POS yang masih memakai intent, dikurangi retur gateway refund POS per metode); permintaan dan approval menjawab 409 `REFUND_INTENT_IN_POS_SALE`; approval di bawah kunci `lockIntentsForFact`, waktu fakta dari kunci.
+- Perbaikan review K (e23edfa5 + commit berikut): pesanan ber-void tidak menahan intent; retur penuh satu metode membebaskan semua intent metode itu; tender `authorized` pada pesanan terbuka ikut menahan (webhook paid menangkapnya tanpa kunci intent).
+- Bukti: test repro gagal di kode lama (ni6o :1651/:1726; riqu :331/:341/:367/:389/:428/:444; R6/R7 :466/:485 di e8f1faa4; R8 :511 di e23edfa5). 20 file test refund/jurnal: 611 lulus, 8 skip. Root contract node: 92 lulus.
+- Bead sisa: legend-r5brx (capture tender kunci intent), legend-hxpd5 (guard GL payout tanpa retur POS, P1), legend-3bsyh (parkir SALE_MISSING tidak diulang), legend-8v2yl (baris refund POS per tender).
+- Berikut: second opinion Codex `docs/briefs/179b-second-opinion-refund-intent-guard.md` (folder utama), gerbang merge CTO.
+
+## legend-hxpd5 + legend-060xt + legend-r5brx + legend-3bsyh: sisa refund intent (engineer, cabang `ws/refund-payout-followups` dari `ws/refund-intent-guard` 27ba1fb9, 2026-11-09)
+
+- Sudah: hxpd5 (d19e323e, 060e3d66, a2f7727b) `intentBackedAt` mengurangi bagian gateway yang diretur refund POS lewat modul atribusi bersama `pos-intent-attribution.ts` (dipakai juga `posSaleInUseOfIntent`); hanya refund POS yang jurnalnya posted dikurangi, yang masih bisa posting (termasuk parkir `SALE_MISSING`) membuat payout parkir retryable `AUTO_JOURNAL_RECEIPT_PENDING`. 060xt (d19e323e) tender `authorized` dicocokkan lewat `payment_link_id` intent (refresh QR). r5brx (df7a3fb6, 9341c5e2) capture QRIS: kunci link FOR UPDATE lalu semua intent paid link dalam satu `lockIntentsForFact`, pilih intent yang uangnya dihitung link (bukan double payment), tolak capture (void + refund late payment) bila refund approved/completed > cap; refund pending tidak memblok (approval-nya gagal cap). 3bsyh (771c9fc5) saat `aj:sale:X` posted, baris parkir `SALE_MISSING` void/refund X jadi retryable `nextRetryAt = now`; runbook `docs/runbooks/auto-journal-sale-missing.md`.
+- Urutan kunci capture: orders → pos_orders → tender → payment_links → payment_intents (ORDER BY id) → day lock. Refund: payment_intents → fund → payment_refunds. Tidak ada migrasi.
+- Bukti: repro gagal di kode lama (AJ-HXPD5-01 :5411, -03 :5475, -04 :5494, -06 :5596; PAY-04 R9 201≠409; race C1 :509, C2a :559, C2b :601 dengan `pg_locks`, C5 :652; AJ-3BSYH-01/02). 24 file test terarah 629/629 lulus; setelah perbaikan terakhir 3 file 185/185. tsc api lewat heavy, eslint, prettier lulus.
+- Review K: reviewer Opus + architect paralel tiap putaran, temuan nyata dibetulkan, perbaikan terakhir dibaca reviewer segar.
+- Bead baru: legend-x1i1h (void QRIS tidak kredit balik customer_deposit, P2), legend-45bs9 (dua intent QRIS + refund POS sebagian, P3), legend-leqj6 (late refund memotong refund pending, P3).
+- Biaya sesi: 6.241k (biaya*), 14 subagent, rata 0,97 berjalan, puncak 3.
+- Berikut: second opinion Codex `docs/briefs/181b-second-opinion-refund-payout-followups.md` (folder utama), gerbang merge CTO setelah `ws/refund-intent-guard`.

@@ -26,6 +26,7 @@ import {
   approveRefund as approveRefundWithPayout,
   openRefundChainAtRequest,
 } from "./payment-refund.service.ts";
+import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
 import { depositInUseOfIntent } from "./reservation-deposit-credit.ts";
 import {
   appendPaymentEvent,
@@ -37,6 +38,13 @@ export const missing = () =>
   new HttpError(404, "NOT_FOUND", "Payment or refund not found.");
 export const conflict = (message: string) =>
   new HttpError(409, "CONFLICT", message);
+/** legend-riqu: the intent's money is still held by a captured POS tender. */
+export const posSaleInUseRefused = (refundableIdr: bigint) =>
+  new HttpError(
+    409,
+    "REFUND_INTENT_IN_POS_SALE",
+    `Payment still pays a POS sale; refund that sale at the POS first. At most ${refundableIdr} IDR can be refunded now.`,
+  );
 
 export type Intent = typeof paymentIntents.$inferSelect;
 export type Refund = typeof paymentRefunds.$inferSelect;
@@ -90,9 +98,48 @@ export async function refundableBalance(
     { lock: lockDeposit },
   );
   const forfeited = BigInt(String(row.forfeited));
-  const held = depositInUse + forfeited;
+  const posSaleInUse = await posSaleInUseOfIntent(
+    tx,
+    intent.tenantId,
+    intent.id,
+  );
+  const held = depositInUse + forfeited + posSaleInUse;
   const cap = paid > held ? paid - held : 0n;
-  return { cap, reserved, paid, depositInUse, forfeited };
+  return { cap, reserved, paid, depositInUse, forfeited, posSaleInUse };
+}
+
+/**
+ * legend-riqu: money of the intent a captured POS tender still holds. Per
+ * order and tender method: the captured tenders paid by the intent, less what
+ * POS refunds of that order already gave back for that method (owed to the
+ * guest, paid out by an intent refund). A POS refund line names a method, not
+ * a tender, so it counts for the intent only when every captured tender of
+ * that method on the order is paid by this intent; otherwise the intent keeps
+ * the whole amount held (fail closed: no refund of money a sale may still
+ * hold), unless the POS refunds returned the whole method (nothing left to
+ * attribute). A voided sale (`pos_order_voids`) holds nothing: the void keeps
+ * the tenders captured and the QRIS part goes back through an intent refund.
+ * An `authorized` tender of an open order counts as captured: the paid
+ * webhook captures it later without taking the intent lock, so a refund
+ * approved in between would pay the guest for a sale that then completes. An
+ * authorized tender of a completed or voided order is never captured (its
+ * money goes back as a late payment refund) and holds nothing.
+ * legend-060xt: an authorized tender holds every intent of its payment link
+ * (a QR refresh opens a new intent on the link; the tender names the first).
+ * legend-hxpd5: the SQL is shared with the payout check
+ * (pos-intent-attribution.ts).
+ * Read under the intent row lock the writers hold.
+ */
+async function posSaleInUseOfIntent(
+  tx: Tx,
+  tenantId: Intent["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(
+    netPosTendersOfIntentSql(tenantId, intentId, { kind: "held" }),
+  );
+  const held = BigInt(String(result.rows[0]?.amount ?? "0"));
+  return held > 0n ? held : 0n;
 }
 
 async function paymentInfo(tx: Tx, intent: Intent) {
@@ -353,9 +400,15 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const { cap, reserved, paid, depositInUse, forfeited } =
+        const { cap, reserved, paid, depositInUse, forfeited, posSaleInUse } =
           await refundableBalance(tx, intent);
         if (reserved + BigInt(body.amountIdr) > cap) {
+          // legend-riqu: a captured POS tender still holds this money.
+          if (
+            posSaleInUse > 0n &&
+            reserved + BigInt(body.amountIdr) <= cap + posSaleInUse
+          )
+            throw posSaleInUseRefused(cap > reserved ? cap - reserved : 0n);
           // legend-fsl5: the reservation DP was forfeited to the outlet.
           if (
             forfeited > 0n &&

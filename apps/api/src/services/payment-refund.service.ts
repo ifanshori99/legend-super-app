@@ -58,6 +58,7 @@ import {
   conflict,
   hasSourceDocument,
   missing,
+  posSaleInUseRefused,
   refundableBalance,
   refundAudit,
   refundView,
@@ -339,23 +340,33 @@ async function applyApproval(
       note: null,
       now,
     });
-  // This refund is itself reserved (pending), so reserved must still fit the cap.
+  // legend-riqu: decide under the intent row lock (lockRefundGraph holds it;
+  // the sale side takes the same lock) at the fact time it gives, never the
+  // app clock read before commit.
+  const at = await lockIntentsForFact(tx, refund.tenantId, [intent.id], now);
+  // This refund is itself reserved (pending), so reserved must still fit the
+  // cap; the cap excludes money a captured POS tender still holds.
+  let posSaleInUse = 0n;
   const fits = fund
     ? !fund.resolution
-    : await refundableBalance(tx, intent).then(
-        ({ cap, reserved }) => reserved <= cap,
-      );
+    : await refundableBalance(tx, intent).then((balance) => {
+        posSaleInUse = balance.posSaleInUse;
+        return balance.reserved <= balance.cap;
+      });
   if (!fits)
     return failRefund(tx, context, refund, {
       reason: "cap_exceeded",
       action: "payment.refund_failed",
       actorId: approvedBy,
       note: null,
-      now,
+      ...(posSaleInUse > 0n
+        ? { detail: { posSaleInUseIdr: Number(posSaleInUse) } }
+        : {}),
+      now: at,
     });
   const [updated] = await tx
     .update(paymentRefunds)
-    .set({ status: "approved", approvedBy, decidedAt: now, updatedAt: now })
+    .set({ status: "approved", approvedBy, decidedAt: at, updatedAt: at })
     .where(
       and(
         eq(paymentRefunds.tenantId, refund.tenantId),
@@ -369,7 +380,7 @@ async function applyApproval(
     actorId: approvedBy,
     row: updated,
     action: "payment.refund_approved",
-    now,
+    now: at,
     before: { status: "pending" },
   });
   return updated;
@@ -933,6 +944,50 @@ const sourceDocumentRefused = () =>
     "REFUND_SOURCE_DOCUMENT",
     "Payment belongs to a sales document; refund it from the owning module.",
   );
+/**
+ * The 409 for a refund that failed `cap_exceeded` (already committed): the
+ * POS-sale code when a captured POS tender's hold is what blocked it
+ * (legend-riqu). Read after the decision, for the error only.
+ */
+async function capRefusal(
+  context: ScopedTenantContext,
+  refundId: string,
+  fallback = "Refund exceeds available paid amount.",
+): Promise<HttpError> {
+  const refusal = await withTenant(db, context, async (tx) => {
+    const [refund] = await tx
+      .select()
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, context.tenant.tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    if (!refund || refund.unallocatedFundId !== null) return null;
+    const [intent] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, refund.paymentIntentId),
+        ),
+      );
+    if (!intent) return null;
+    const { cap, reserved, posSaleInUse } = await refundableBalance(
+      tx,
+      intent,
+      { lockDeposit: false },
+    );
+    const wanted = reserved + BigInt(refund.amountIdr);
+    return posSaleInUse > 0n && wanted > cap && wanted <= cap + posSaleInUse
+      ? posSaleInUseRefused(cap > reserved ? cap - reserved : 0n)
+      : null;
+  });
+  return refusal ?? conflict(fallback);
+}
+
 type FirstStep =
   | { readonly kind: "done" }
   | { readonly kind: "capped"; readonly reason?: string | null }
@@ -1114,7 +1169,7 @@ async function decideRefund(
   }
   if (first.kind === "capped") {
     if (first.reason === "source_document") throw sourceDocumentRefused();
-    throw conflict("Refund exceeds available paid amount.");
+    throw await capRefusal(context, refundId);
   }
   if (first.kind === "decide") {
     const settled = await settleRefundFromChain(context, refundId);
@@ -1126,6 +1181,12 @@ async function decideRefund(
     if (decision === "approved" && settled.status === "failed") {
       if (settled.failureReason === "source_document")
         throw sourceDocumentRefused();
+      if (settled.failureReason === "cap_exceeded")
+        throw await capRefusal(
+          context,
+          refundId,
+          "Refund could not be approved.",
+        );
       throw conflict("Refund could not be approved.");
     }
     // Our decision did not land (another approver took this level): the state
