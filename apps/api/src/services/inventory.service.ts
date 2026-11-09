@@ -195,6 +195,26 @@ async function assertCatalogRead(
   throw new AccessError("PERMISSION_DENIED");
 }
 
+/**
+ * Item master write: tenant-wide `inventory.item.manage`, or (transitional,
+ * until existing tenants are backfilled with the new code) the
+ * `inventory.stock.receive` code that gated it before (legend-1ozj).
+ */
+async function assertItemWrite(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+): Promise<void> {
+  const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+  const tenant: AccessTarget = { type: "tenant" };
+  if (
+    snapshot.allows("inventory.item.manage", tenant) ||
+    snapshot.allows("inventory.stock.receive", tenant)
+  )
+    return;
+  throw new AccessError("PERMISSION_DENIED");
+}
+
 function outletTarget(outletId: string): AccessTarget {
   return { type: "outlet", id: outletId };
 }
@@ -482,16 +502,14 @@ export async function getInventoryItem(
   });
 }
 
-/** Item master write: needs the tenant-wide `inventory.item.manage` code. */
+/** Item master write; see assertItemWrite for the gate. */
 export async function createInventoryItem(
   context: ScopedTenantContext,
   actorUserId: string,
   input: CreateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
-      type: "tenant",
-    });
+    await assertItemWrite(tx, context, actorUserId);
     const [uom] = await tx
       .select()
       .from(uoms)
@@ -565,9 +583,7 @@ export async function updateInventoryItem(
   input: UpdateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
-      type: "tenant",
-    });
+    await assertItemWrite(tx, context, actorUserId);
     const [existing] = await tx
       .select()
       .from(inventoryItems)
