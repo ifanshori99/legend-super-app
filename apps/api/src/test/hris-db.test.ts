@@ -673,6 +673,7 @@ describe("HR-03 encrypted PII at rest, masked reads, role-gated decrypt", () => 
     const contract = await createEmploymentContract(tenantScope(), hr, {
       employeeId: e1.id,
       type: "pkwt",
+      taxScheme: "gross",
       startDate: "2026-01-05",
       endDate: "2026-12-31",
       renewedFromId: null,
@@ -701,6 +702,122 @@ describe("HR-03 encrypted PII at rest, masked reads, role-gated decrypt", () => 
     });
     expect(asSelf.data.map((row) => row.id)).toEqual([contract.id]);
     expect(asSelf.data[0]?.salarySnapshot).toBeNull();
+  });
+});
+
+// ------------------------------------------------------- legend-rhq5
+
+describe("legend-rhq5 the PPh 21 tax scheme is an attribute of the employment contract", () => {
+  const schemes = ["gross", "gross_up", "net"] as const;
+
+  const contractInput = (taxScheme: (typeof schemes)[number]) => ({
+    employeeId: e1.id,
+    type: "pkwt" as const,
+    taxScheme,
+    startDate: "2026-02-01",
+    endDate: "2026-12-31",
+    renewedFromId: null,
+    salarySnapshotIdr: null,
+    fileObjectId: null,
+    reminderDaysBefore: 30,
+  });
+
+  const contractsOfE1 = async (viewer: string) =>
+    (
+      await listEmploymentContracts(tenantScope(), viewer, {
+        limit: 100,
+        employeeId: e1.id,
+      })
+    ).data;
+
+  // Raw insert as the table owner (tenant context set by asOwner), so only the
+  // database constraints decide. `undefined` leaves the column out entirely.
+  const rawInsert = (taxScheme: string | undefined) =>
+    asOwner(tenantId, (client) =>
+      client.query(
+        `INSERT INTO employment_contracts
+           (id, tenant_id, employee_id, type, ${taxScheme === undefined ? "" : "tax_scheme,"}
+            start_date, end_date, reminder_days_before, status)
+         VALUES ($1, $2, $3, 'pkwt', ${taxScheme === undefined ? "" : "$4,"}
+                 '2026-02-01', '2026-12-31', 30, 'draft')`,
+        taxScheme === undefined
+          ? [randomUUID(), tenantId, e1.id]
+          : [randomUUID(), tenantId, e1.id, taxScheme],
+      ),
+    );
+
+  for (const scheme of schemes)
+    it(`[legend-rhq5] creating a ${scheme} contract keeps taxScheme when it is read back`, async () => {
+      const created = await createEmploymentContract(
+        tenantScope(),
+        hr,
+        contractInput(scheme),
+      );
+      expect(created.taxScheme).toBe(scheme);
+
+      const listed = await contractsOfE1(hr);
+      expect(listed.find((row) => row.id === created.id)?.taxScheme).toBe(
+        scheme,
+      );
+
+      const { rows } = await asOwner(tenantId, (client) =>
+        client.query(
+          "SELECT tax_scheme FROM employment_contracts WHERE id = $1",
+          [created.id],
+        ),
+      );
+      expect(rows[0].tax_scheme).toBe(scheme);
+    });
+
+  it("[legend-rhq5] a payroll viewer reads the scheme too", async () => {
+    const created = await createEmploymentContract(
+      tenantScope(),
+      hr,
+      contractInput("gross_up"),
+    );
+    const asPayroll = await contractsOfE1(payroll);
+    expect(asPayroll.find((row) => row.id === created.id)?.taxScheme).toBe(
+      "gross_up",
+    );
+  });
+
+  it("[legend-rhq5] the database rejects a raw insert without tax_scheme (no silent default)", async () => {
+    const rejected = await failure(rawInsert(undefined));
+    expect(rejected.code).toBe("23502"); // not_null_violation
+  });
+
+  it("[legend-rhq5] the database rejects an invalid tax_scheme value", async () => {
+    for (const bad of ["", "GROSS", "grossup", "net_up", "none"]) {
+      const rejected = await failure(rawInsert(bad));
+      expect(rejected.code, bad).toBe("23514"); // check_violation
+    }
+    // Control: a valid value goes through the very same statement.
+    await expect(rawInsert("net")).resolves.toBeDefined();
+  });
+
+  it("[legend-rhq5] the service refuses an unknown tax scheme and writes nothing", async () => {
+    const before = (await contractsOfE1(hr)).length;
+    await expect(
+      createEmploymentContract(tenantScope(), hr, {
+        ...contractInput("gross"),
+        taxScheme: "bogus" as never,
+      }),
+    ).rejects.toBeDefined();
+    expect((await contractsOfE1(hr)).length).toBe(before);
+  });
+
+  it("[legend-rhq5] the creation audit entry carries taxScheme", async () => {
+    const created = await createEmploymentContract(
+      tenantScope(),
+      hr,
+      contractInput("net"),
+    );
+    const entries = (await auditRows(created.id)).filter(
+      (row) => row.event.action === "hris.employment_contract.created",
+    );
+    expect(entries).toHaveLength(1);
+    // The scheme is not sensitive, so it is stored readable, not redacted.
+    expect(JSON.stringify(entries[0].event)).toContain('"taxScheme":"net"');
   });
 });
 

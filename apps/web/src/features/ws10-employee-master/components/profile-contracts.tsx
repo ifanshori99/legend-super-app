@@ -26,6 +26,7 @@ import {
   contractReminderDue,
   formatBusinessDate,
 } from "../lib";
+import { TAX_SCHEME_KEYS } from "@/features/ws10-payroll-config/labels";
 import { ContractStatusPill, EmploymentTypeBadge } from "./employee-status";
 
 export function EmployeeContracts({
@@ -83,6 +84,13 @@ export function EmployeeContracts({
               <ReminderBadge contract={contract} today={today} />
               <span className="text-sm text-muted-foreground">
                 <span className="sr-only">
+                  {t("employeeMaster.profile.contracts.columns.taxScheme")}
+                  :{" "}
+                </span>
+                {t(TAX_SCHEME_KEYS[contract.taxScheme])}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                <span className="sr-only">
                   {t("employeeMaster.profile.contracts.columns.salary")}:{" "}
                 </span>
                 {contract.salarySnapshot?.masked ?? (
@@ -114,6 +122,9 @@ export function EmployeeContracts({
                 {t("employeeMaster.profile.contracts.columns.reminder")}
               </TableHead>
               <TableHead>
+                {t("employeeMaster.profile.contracts.columns.taxScheme")}
+              </TableHead>
+              <TableHead>
                 {t("employeeMaster.profile.contracts.columns.salary")}
               </TableHead>
               <TableHead>
@@ -137,6 +148,9 @@ export function EmployeeContracts({
                 </TableCell>
                 <TableCell>
                   <ReminderBadge contract={contract} today={today} />
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {t(TAX_SCHEME_KEYS[contract.taxScheme])}
                 </TableCell>
                 <TableCell className="whitespace-nowrap tabular">
                   {contract.salarySnapshot?.masked ?? (

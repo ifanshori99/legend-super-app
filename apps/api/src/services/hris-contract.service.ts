@@ -42,6 +42,7 @@ import {
   type HrisViewer,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
+import type { TaxScheme } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import {
   employeeDocuments,
@@ -174,6 +175,7 @@ async function toContract(
     tenantId: row.tenantId,
     employeeId: row.employeeId,
     type: row.type,
+    taxScheme: row.taxScheme,
     startDate: row.startDate,
     endDate: row.endDate,
     renewedFromId: row.renewedFromId,
@@ -465,6 +467,8 @@ async function managedEmployee(
 export type CreateEmploymentContractInput = {
   readonly employeeId: string;
   readonly type: EmploymentType;
+  /** PPh 21 scheme of the agreement; required, never defaulted (legend-rhq5). */
+  readonly taxScheme: TaxScheme;
   readonly startDate: string;
   readonly endDate: string | null;
   readonly renewedFromId: string | null;
@@ -489,6 +493,7 @@ export async function createEmploymentContract(
     tenantId: context.tenant.tenantId,
     employeeId: input.employeeId,
     type: input.type,
+    taxScheme: input.taxScheme,
     startDate: input.startDate,
     endDate: input.endDate,
     renewedFromId: input.renewedFromId,
@@ -516,6 +521,7 @@ export async function createEmploymentContract(
         tenantId: context.tenant.tenantId,
         employeeId: employee.id,
         type: input.type,
+        taxScheme: input.taxScheme,
         startDate: input.startDate,
         endDate: input.endDate,
         renewedFromId: input.renewedFromId,
@@ -547,6 +553,7 @@ export async function createEmploymentContract(
         objectId: row.id,
         after: {
           type: row.type,
+          taxScheme: row.taxScheme,
           status: row.status,
           changedFields: salary === null ? [] : ["salarySnapshot"],
         },

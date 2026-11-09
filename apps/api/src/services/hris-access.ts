@@ -239,6 +239,7 @@ export const HRIS_AUDIT_SAFE_FIELDS = [
   "employeeNo",
   "employmentType",
   "type",
+  "taxScheme",
   "viewerKind",
 ] as const;
 
