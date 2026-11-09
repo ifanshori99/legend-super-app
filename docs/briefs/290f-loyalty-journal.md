@@ -2,7 +2,7 @@
 
 Level: K (akuntansi, uang). Model: Opus 5.5 (desain uang). Effort: high.
 Kartu bd: kartu baru, CTO membuat id. Sampai id ada, pakai nama kerja `loyalty-journal`.
-Sumber kebenaran: `docs/design/ws08-member-loyalty.md` §5 (Accounting), §9 (kartu 290f), §6 risiko 2.
+Sumber kebenaran: `docs/design/ws08-member-loyalty.md` §5 (Accounting), §9 (kartu 290f), §6 risiko 2. Sumber aturan bersama: `docs/briefs/290-aturan-bersama.md` (B1, B11). Desain menang; aturan bersama merinci. Bila beda, tulis TBD-verify di laporan.
 Kontrak: `packages/shared/src/crm/events.ts` (payload `points.*`).
 
 ## Peran
@@ -20,8 +20,8 @@ Desain §5: "Needs the accounting second opinion and the founder's accountant (Q
 - Commit lokal saja. Jangan push, jangan merge.
 
 ## Bergantung pada
-- 290a (legend-111j): event `points.earned`, `points.reversed`, `points.redeemed`, `points.expired` dan `liability_idr` di `point_ledger`.
-- 290c (legend-m4p5) untuk jurnal penukaran (`points.redeemed`) dan restore pembatalan. Tanpa 290c, kerjakan hanya earn, reverse, expire, dan tandai redeem sebagai menunggu.
+- 290a (legend-111j): event `points.earned`, `points.reversed`, `points.redeemed`, `points.expired`, `liability_idr` di `point_ledger`, dan source reverse `void` (B1: `order.voided` membalik poin dengan `source_type='void'`).
+- 290c (legend-m4p5): event `points.adjusted` (aditif, B11) dengan `kind: 'restore'` dan `reversesEntryId`, untuk jurnal penukaran dan restore pembatalan. Tanpa 290c, kerjakan hanya earn, reverse, expire, dan tandai redeem sebagai menunggu.
 - 290e (legend-3zd1) untuk `points.expired` dengan grant nyata. Jika belum merge, pakai fixture.
 
 ## Paralel dengan
@@ -31,10 +31,11 @@ Desain §5: "Needs the accounting second opinion and the founder's accountant (Q
 1. Konsumer `loyalty-journal` pada event poin, source type `'loyalty'` (CHECK sudah mengizinkan, belum ditulis siapa pun). Pola: `accounting-auto-journal-consumer.ts`. Berjalan dalam transaksi konsumsi, savepoint per event, gagal diparkir.
 2. Entri jurnal (§5):
    - `points.earned` / bonus: Dr `loyalty_points_deferral` (role baru, kontra-pendapatan di bawah 4100), Cr `loyalty_liability`, jumlah `liabilityIdr`.
-   - `points.reversed`: cermin entri earn.
+   - `points.reversed`: cermin entri earn. Berlaku juga untuk reverse `source_type='void'` (B1), tanpa aturan khusus.
    - `points.redeemed`: Dr `loyalty_liability`, Cr `sales_discount`. Diskon muncul di pesanan tempat hadiah dipakai, jadi keduanya saling menutup.
    - `points.expired`: Dr `loyalty_liability`, Cr `loyalty_breakage_revenue`.
-   - Restore penukaran yang dibatalkan: cermin entri redeem.
+   - `points.adjusted` `kind: 'restore'`: cermin entri redeem, yaitu Dr `sales_discount`, Cr `loyalty_liability`, jumlah sesuai `reversesEntryId`.
+   - `points.adjusted` manual: mengikuti tanda. Poin naik = seperti earn, poin turun = seperti reverse.
 3. Role akun `loyalty_points_deferral` baru: role disimpan `varchar` tanpa CHECK (`apps/api/src/db/schema/accounting.ts:140`), daftar role di `packages/shared/src/accounting/coa.ts:190-204`. Tambah role = edit `coa.ts` + akun seed + backfill `account_mappings` lewat `apps/api/src/db/backfill-tenant-defaults.ts`. Tanpa migrasi skema.
 4. Idempoten: replay event tidak membuat jurnal kedua (kunci dari event id dan source id).
 5. Saldo jurnal seimbang per entri (Dr = Cr).
@@ -44,21 +45,22 @@ Desain §5: "Needs the accounting second opinion and the founder's accountant (Q
 - `pnpm db:generate` harus kosong.
 
 ## Potongan untuk subagent
-Berkas diduga. Cek dengan Explore dulu.
-1. `apps/api/src/services/loyalty-journal.service.ts` dan `apps/api/src/services/loyalty-journal-consumer.ts` (pola `accounting-auto-journal-*`).
-2. `apps/api/src/services/accounting-auto-journal-amounts.ts` hanya bila payload `points.*` perlu parser baru. Jangan ubah konsumer lain.
-3. CoA: `packages/shared/src/accounting/coa.ts` (role dan akun seed) dan `apps/api/src/db/backfill-tenant-defaults.ts` (backfill `account_mappings`).
-4. test-writer: `apps/api/src/test/loyalty-journal.test.ts`.
+Nama berkas dari tabel D. Cek dengan Explore hanya bila payload `points.*` butuh parser baru, dan lapor ke CTO sebelum menulisnya.
+1. `apps/api/src/services/loyalty-journal-consumer.ts` (pola `accounting-auto-journal-*`). Implementer sonnet.
+2. `packages/shared/src/accounting/coa.ts` (role dan akun seed). Implementer sonnet. Berkas ini dipegang satu subagent saja.
+3. Berkas registri (A.2): `apps/api/src/db/backfill-tenant-defaults.ts` (backfill `account_mappings`). Dipegang SATU subagent, hanya tambah blok dengan komentar `legend-<id kartu>`. Tidak boleh bersamaan dengan `coa.ts` bila ada ketergantungan urutan.
+4. test-writer sonnet: `apps/api/src/test/loyalty-journal.test.ts`.
 
-Subagent: implementer sonnet untuk 1-3, test-writer sonnet. Potongan yang sama tidak boleh mengedit berkas yang sama.
+Subagent: implementer sonnet untuk 1-3, test-writer sonnet. Potongan yang sama tidak boleh mengedit berkas yang sama. Jangan ubah konsumer lain.
 
 ## Tes gagal-dulu
 - Earn 1 000 poin, liability setara dengan `liabilityIdr`. Jurnal seimbang.
 - Reverse sebagian: cermin persis sejumlah reversal, bukan lebih.
+- Reverse `source_type='void'` (order lunas dibatalkan): cermin earn, seimbang.
 - Replay `points.earned` yang sama: satu jurnal.
 - Redeem: Dr `loyalty_liability` = Cr `sales_discount`, saldo nol untuk pasangan itu.
 - Expire: Dr `loyalty_liability` = Cr `loyalty_breakage_revenue`.
-- Restore penukaran batal: cermin redeem.
+- Restore penukaran batal (`points.adjusted`, `kind: 'restore'`): cermin redeem.
 - Source type `'loyalty'` ditulis; entri lain tidak tersentuh.
 - Isolasi tenant: jurnal tenant A tidak terbaca tenant B.
 
@@ -67,7 +69,7 @@ Perintah: `LEGEND_TEST_FILES="src/test/loyalty-journal.test.ts" pnpm test` dari 
 ## Kontrak
 - Kode error sudah ada di `packages/shared/src/crm/errors.ts`. Jangan ganti nama.
 - Tidak ada endpoint baru diduga. Jika laporan jurnal butuh endpoint, lapor dulu. Itu kartu WS-11.
-- `events.ts`: tidak ada perubahan payload.
+- `events.ts`: tidak ada perubahan payload di kartu ini. `points.adjusted` dan source `void` ditambah oleh 290c dan 290a.
 
 ## Gate cabang
 - `heavy pnpm --filter @starter/api typecheck`, `heavy pnpm --filter @starter/shared typecheck` (bila shared berubah), `pnpm exec eslint <berkas berubah>`.

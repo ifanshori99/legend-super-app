@@ -112,12 +112,15 @@ Full design: `docs/design/ws08-member-loyalty.md`. Decisions:
   person. A person is a member of a tenant when `customer_profiles` has a row
   for `(tenant_id, user_id)`, and staff when an active role assignment exists.
   Member sign-in methods (WhatsApp reverse OTP, email magic link, Google) mint
-  `session.kind = 'customer'` sessions and refuse staff accounts.
+  `session.kind = 'customer'` sessions. Each session stores `auth_method`; only
+  `password` upgrades to `management` (identity gate), so staff who sign in by
+  a member method get customer-only access (403 on staff routes).
 - **Identity graph.** `user_identities` holds one row per verified method
   (`whatsapp`, `email`, `google`), at most one WhatsApp per person. Proving a
   WhatsApp number that a WhatsApp-only account already holds merges that
   account into the signed-in one (`identity_merges`); anything else goes to
-  support.
+  support. A magic link verified in another browser (`auth_cross_device`)
+  cannot link WhatsApp or merge (403 `IDENTITY_LINK_REAUTH_REQUIRED`).
 - **Member routes.** `/api/member/*` = `tenantContext` from the PWA host,
   `requireAuth`, `requireTrustedOrigin` on mutations, then `requireMember`,
   which resolves the caller's own profile into a `MemberScope`. Member services
@@ -130,15 +133,19 @@ Full design: `docs/design/ws08-member-loyalty.md`. Decisions:
   the ledger sum, and `CHECK (points_balance >= 0)` stops overdraws. Writers
   hold the profile row lock. A unique key per `(tenant, type, source_type,
   source_id)` makes paid, refund, redemption and expiry postings idempotent.
-  Each row carries `liability_idr = points x point_value_idr`; the point value
-  locks after the first posting.
+  A trigger copies `point_value_idr` onto each row and computes
+  `liability_idr = points x point_value_idr`; the value locks after the first
+  posting.
 - **Earn and reverse.** Outbox consumer `loyalty-earn` reads `order.paid` and
   `order.refunded`. The member on an order comes from the order row
   (`customer_profile_id`, attached by member QR, cashier lookup or the member's
   own QR-order session). Earn base = gross sales minus discount minus points
   tender, before service and PBJT; daily cap and the staff self-serve ban are
   checked under the profile lock. Partial refunds reverse points
-  proportionally and cumulatively, clamped at the balance.
+  proportionally and cumulatively, clamped at the balance. A void of a paid
+  POS sale (`order.voided` with `voidedFinalOrder`) reverses all remaining
+  points. Restoring a cancelled or expired redemption is a positive `adjust`
+  row that keeps the original expiry.
 - **Consent.** `consents` stays the record; members write with source
   `member_pwa` against the active `consent_policy_versions` row of the
   purpose. The loyalty consent plus a verified WhatsApp activate membership.

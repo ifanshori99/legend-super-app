@@ -17,19 +17,26 @@ authorization. Full design and card plan: `docs/design/ws08-member-loyalty.md`.
    self-serve ban needs. Every member table keys on `customer_profile_id`, so
    the cookie can still move to its own instance later.
 2. **Member sign-in = WhatsApp, email magic link, Google.** All mint customer
-   sessions and refuse staff accounts in m1, so an inbox can never replace a
-   staff password plus MFA. Email and Google stay off until their keys exist.
-   Points need a verified WhatsApp (AUTH-07).
+   sessions. The email magic link runs on the existing `login_challenges` flow
+   (AUTH-01: 15 minutes, single use, keyed digest), not the Better Auth
+   `magicLink` plugin. Each session records `auth_method`; only a `password`
+   session upgrades to management, so an inbox or a WhatsApp code can never
+   replace a staff password plus MFA. Staff may sign in with a member method
+   and get customer-only access (403 on staff routes). The self-serve ban still
+   stops them earning on their own sales. Email and Google stay off until their
+   keys exist. Points need a verified WhatsApp (AUTH-07).
 3. **Merge only WhatsApp-only accounts.** Proving a number held by an account
    with no other identity, no role and no platform access merges it into the
    signed-in account; everything else is refused with
-   `IDENTITY_MERGE_NEEDS_SUPPORT`. Profiles move, the ledger does not.
+   `IDENTITY_MERGE_NEEDS_SUPPORT`. Profiles move, the ledger does not. A magic
+   link verified in another browser (`auth_cross_device`) cannot link WhatsApp
+   or merge: 403 `IDENTITY_LINK_REAUTH_REQUIRED`.
 4. **The database keeps the money rules.** `point_ledger` is append-only, the
    balance column is maintained only by an insert trigger and cannot go below
    zero, writers lock the profile row, and the unique source key makes every
-   paid, refund, redemption and expiry posting happen once. The point value is
-   copied onto every row and locks at the first posting, so the liability sum
-   always matches outstanding points.
+   paid, refund, redemption and expiry posting happen once. A trigger copies the
+   point value onto every row and locks it at the first posting, so the
+   liability sum always matches outstanding points.
 5. **Member isolation in two layers.** `requireMember` turns the session into
    a `MemberScope` that services take as their only identity input, and a
    RESTRICTIVE `member_self` policy keyed on `app.customer_profile_id` hides
@@ -38,13 +45,17 @@ authorization. Full design and card plan: `docs/design/ws08-member-loyalty.md`.
    `order.refunded` drive a `loyalty-earn` consumer; the member comes from the
    order row. Base = gross sales minus discount minus points tender, before
    service and PBJT. Partial refunds reverse cumulatively, rounded against the
-   member, clamped at the balance with an anomaly row.
+   member, clamped at the balance with an anomaly row. A void of a paid POS
+   sale (`order.voided` with `voidedFinalOrder`) reverses all remaining points.
 7. **Consent from the member app** is written with source `member_pwa` against
    a versioned `consent_policy_versions` row; an outdated version is refused.
 8. **Defaults until the founder decides (A15, 30 Nov):** program inactive,
    Rp10.000 = 1 point, point value Rp100, 12-month expiry and tier window,
-   daily cap 500, self-serve ban on, referral off, points tender off. All are
+   daily cap 1.000 (contract default), self-serve ban on, referral off, points tender off. All are
    settings, not code.
+9. **Restore keeps the original expiry.** A cancelled or expired redemption
+   puts its points back as a positive `adjust` row that points at the redeem
+   row, so the restored points keep the expiry of their grant.
 
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
