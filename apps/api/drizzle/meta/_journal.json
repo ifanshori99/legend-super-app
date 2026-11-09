@@ -1037,6 +1037,13 @@
       "when": 1794220000000,
       "tag": "0147_accounting_coa_backfill_1204",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1794222890808,
+      "tag": "0148_station_printer_binding_cleanup",
+      "breakpoints": true
     }
   ]
 }

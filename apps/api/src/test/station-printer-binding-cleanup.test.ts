@@ -1,4 +1,4 @@
-// legend-4xai (Codex 159): migration 0147_station_printer_binding_cleanup.sql
+// legend-4xai (Codex 159): migration 0148_station_printer_binding_cleanup.sql
 // clears every station printer binding that is not an active printer of the
 // same tenant and outlet. The test seeds good and bad bindings as the owner,
 // runs the migration statements in one transaction (as drizzle does), and
@@ -29,7 +29,7 @@ const owner = new Pool({
 
 const readMigration = (file: string) =>
   readFileSync(new URL(`../../drizzle/${file}`, import.meta.url), "utf8");
-const statements = readMigration("0147_station_printer_binding_cleanup.sql")
+const statements = readMigration("0148_station_printer_binding_cleanup.sql")
   .split("--> statement-breakpoint")
   .map((s) => s.trim())
   .filter(Boolean);
