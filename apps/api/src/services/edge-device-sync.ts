@@ -30,9 +30,13 @@
 //   station must not stop a revocation from landing).
 // - Idempotent: replaying a page produces the same rows. No audit or outbox
 //   from apply: it mirrors cloud state and an event would echo back.
+// - Receipt sequences (legend-3yqy): each page also carries the outlet's
+//   device receipt sequences in full; see `applyDeviceReceiptSequences`.
 import {
+  deviceReceiptSequenceSyncSchema,
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
+  type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
   type DeviceSyncRecord,
 } from "@starter/shared/edge";
@@ -54,7 +58,13 @@ import { stations } from "../db/schema/menu.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { logger } from "../lib/logger.ts";
 import { toDevice } from "./device.service.ts";
+import {
+  applyCloudDeviceReceiptSequence,
+  backfillDeviceReceiptSequences,
+  listDeviceReceiptSequences,
+} from "./pos-receipt.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 
@@ -169,7 +179,7 @@ export async function listDeviceRecordsSince(
   });
   const context = outletContext(tenant, verified.outletId);
 
-  const rows = await withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -195,7 +205,13 @@ export async function listDeviceRecordsSince(
         "FORBIDDEN",
         "Edge node tidak dapat menyinkronkan outlet ini.",
       );
-    return tx
+    // legend-3yqy: a read path that writes. Order-taking devices enrolled
+    // before sequences were provisioned at enroll get theirs here, so the edge
+    // can number their sales offline. Safe on a read: provisioning is
+    // idempotent (an existing row is returned unchanged), outlet-locked, and
+    // runs in this same tenant/outlet-scoped transaction.
+    await backfillDeviceReceiptSequences(tx, context, verified.outletId);
+    const found = await tx
       .select({ row: devices, version: versionOf })
       .from(devices)
       .where(
@@ -210,7 +226,15 @@ export async function listDeviceRecordsSince(
       )
       .orderBy(asc(devices.updatedAt), asc(devices.id))
       .limit(limit + 1);
+    // The full list on every page (a handful per outlet): no cursor to keep.
+    const sequences = await listDeviceReceiptSequences(
+      tx,
+      context,
+      verified.outletId,
+    );
+    return { found, sequences };
   });
+  const { found: rows, sequences } = result;
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
@@ -225,6 +249,7 @@ export async function listDeviceRecordsSince(
         updatedAt: row.updatedAt.toISOString(),
       }),
     ),
+    receiptSequences: sequences,
     meta: {
       limit,
       nextCursor: rows.length > limit ? lastMark : null,
@@ -387,6 +412,68 @@ export async function applyDeviceRecords(
   });
 }
 
+// ------------------------------------------------- receipt sequences apply
+
+export type ReceiptSequenceApplyResult = {
+  readonly inserted: number;
+  readonly kept: number;
+  /** Skipped: prefix mismatch with the edge's own row (see below). */
+  readonly refused: number;
+};
+
+/**
+ * Edge side (legend-3yqy): the outlet's device receipt sequences from a pull
+ * page. A sequence of another tenant or outlet refuses the whole list (a
+ * poisoned page changes nothing). Each one is inserted when absent (cloud id,
+ * prefix and lastNumber) and never touched when present. A prefix mismatch
+ * (two numbering namespaces) skips only that sequence and is logged without
+ * device data: failing the pull would also stop revocations from landing.
+ */
+export async function applyDeviceReceiptSequences(
+  context: ScopedTenantContext,
+  sequences: readonly unknown[],
+): Promise<ReceiptSequenceApplyResult> {
+  // The tenant comes from `context` only (records carry none; RLS scopes the
+  // writes to it).
+  if (
+    context.outletScope.kind !== "outlets" ||
+    context.outletScope.outletIds.length !== 1
+  )
+    refuse("Device sync needs a context of exactly one outlet.");
+  const outletId = context.outletScope.outletIds[0]!.toLowerCase();
+  const parsed: DeviceReceiptSequenceSync[] = sequences.map((raw) => {
+    const result = deviceReceiptSequenceSyncSchema.safeParse(raw);
+    if (!result.success) refuse("Receipt sequence has an unknown shape.");
+    return result.data;
+  });
+  for (const sequence of parsed)
+    if (sequence.outletId.toLowerCase() !== outletId)
+      refuse("Receipt sequence belongs to another outlet.");
+  if (parsed.length === 0) return { inserted: 0, kept: 0, refused: 0 };
+  const result = await withTenant(db, context, async (tx) => {
+    let inserted = 0;
+    let kept = 0;
+    let refused = 0;
+    for (const sequence of parsed) {
+      const outcome = await applyCloudDeviceReceiptSequence(
+        tx,
+        context,
+        sequence,
+      );
+      if (outcome === "inserted") inserted += 1;
+      else if (outcome === "kept") kept += 1;
+      else refused += 1;
+    }
+    return { inserted, kept, refused };
+  });
+  if (result.refused > 0)
+    logger.error(
+      { refused: result.refused },
+      "Edge receipt sequence prefix mismatch: sequence skipped",
+    );
+  return result;
+}
+
 // --------------------------------------------------------------------- pull
 
 export type PullDeviceRegistryOptions = {
@@ -405,6 +492,8 @@ export type PullDeviceRegistryOptions = {
 
 export type PullDeviceRegistryResult = DeviceApplyResult & {
   readonly pages: number;
+  /** legend-3yqy: pulled receipt sequences skipped for a prefix mismatch. */
+  readonly receiptSequencesRefused: number;
   /** Store only after this function returned: every page was applied. */
   readonly watermark: string | null;
 };
@@ -426,6 +515,7 @@ export async function pullDeviceRegistry(
   let applied = 0;
   let skipped = 0;
   let pages = 0;
+  let receiptSequencesRefused = 0;
   for (;;) {
     if (pages >= maxPages)
       throw new CoreError(
@@ -437,6 +527,15 @@ export async function pullDeviceRegistry(
     const result = await applyDeviceRecords(options.context, page.data);
     applied += result.applied;
     skipped += result.skipped;
+    // legend-3yqy: after the device records, so a revocation on the same page
+    // has landed whatever happens to the sequences.
+    if (page.receiptSequences !== undefined)
+      receiptSequencesRefused += (
+        await applyDeviceReceiptSequences(
+          options.context,
+          page.receiptSequences,
+        )
+      ).refused;
     // An empty page echoes the rewound cursor: keep the stored one instead.
     if (page.data.length > 0) watermark = page.meta.watermark ?? watermark;
     if (page.meta.nextCursor === null) break;
@@ -447,5 +546,5 @@ export async function pullDeviceRegistry(
       );
     since = page.meta.nextCursor;
   }
-  return { applied, skipped, pages, watermark };
+  return { applied, skipped, pages, watermark, receiptSequencesRefused };
 }

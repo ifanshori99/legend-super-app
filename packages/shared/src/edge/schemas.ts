@@ -15,6 +15,7 @@ import {
   syncCheckpointSchema,
   eventCatalogEntrySchema,
 } from "../events/index.ts";
+import { receiptPrefixSchema } from "../pos/receipts.ts";
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 const text = z.string().min(1).max(255);
@@ -97,8 +98,30 @@ export const deviceSyncRecordSchema = z
   .refine(revocationAgrees, revocationAgreesIssue);
 export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;
 
+/**
+ * A device's receipt run as the cloud hands it to the edge (legend-3yqy). The
+ * edge inserts a missing row starting at `lastNumber` (so a rebuilt edge never
+ * reissues a number) and never touches an existing row: its own counter is
+ * ahead of the cloud's.
+ */
+export const deviceReceiptSequenceSyncSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  deviceId: uuidSchema,
+  prefix: receiptPrefixSchema,
+  lastNumber: z.number().int().min(0).max(999_999_999),
+});
+export type DeviceReceiptSequenceSync = z.infer<
+  typeof deviceReceiptSequenceSyncSchema
+>;
+
 export const deviceSyncPageSchema = z.strictObject({
   data: z.array(deviceSyncRecordSchema),
+  /**
+   * legend-3yqy: every device receipt sequence of the outlet, sent in full on
+   * each page (a handful per outlet; no cursor). Optional: older clouds omit it.
+   */
+  receiptSequences: z.array(deviceReceiptSequenceSyncSchema).optional(),
   meta: z.strictObject({
     limit: z.number().int().min(1).max(PAGE_LIMIT_MAX),
     /** Non-null while more rows follow: request again with `since` = this. */
