@@ -48,7 +48,7 @@ Kemungkinan penolakan:
 
 - `403` `MFA_REQUIRED`, sesi belum pernah diverifikasi 2FA. Verifikasi 2FA, lalu ulangi.
 - `401` `REAUTH_REQUIRED`, verifikasi 2FA sudah lebih dari 5 menit lalu, atau sesi sudah dicabut atau kedaluwarsa. Verifikasi 2FA lagi (atau masuk lagi), lalu ulangi.
-- `409`, nomor di luar rentang yang sudah terbit (lebih besar dari nomor terakhir).
+- `409`, nomor di luar rentang yang sudah terbit (lebih besar dari nomor terakhir). Untuk run milik edge, batasnya nomor tertinggi yang sudah dilaporkan edge ke cloud (lihat "Outlet dengan edge").
 - `409`, nomor ini sudah punya struk.
 - `409`, nomor ini sudah di-write-off sebelumnya.
 - `404`, prefix tidak dikenal.
@@ -59,6 +59,10 @@ Kemungkinan penolakan:
 
 `GET` dan `POST` ke edge node ditolak dengan `409`: riwayat write-off hanya dikelola di cloud. Write-off tetap dibuat di cloud. Edge node menyalinnya saat sinkronisasi registri perangkat berikutnya (legend-jcby0), lalu Tutup Hari di edge menghitung nomor itu sebagai ada, sama seperti di cloud. Setelah tersalin, Tutup Hari di edge tetap berjalan walau edge sedang offline.
 
+Untuk run yang dimiliki edge, cloud tidak menomori struk (edge yang menomori), jadi batas nomor write-off adalah nomor tertinggi yang sudah dilaporkan edge ke cloud saat sinkronisasi (legend-drzaf). Edge harus sudah sinkron (pull) setelah nomor itu terbit. Jika belum, write-off ditolak `409` "Nomor struk di luar rentang yang sudah terbit.": tunggu edge sinkron, lalu ulangi.
+
+Struk run edge belum dikirim ke cloud (legend-ol6v belum ada), jadi cloud tidak bisa memeriksa apakah nomor itu sudah punya struk di edge. Write-off hanya nomor yang disebut hilang oleh penolakan Tutup Hari di edge. Write-off untuk nomor yang ternyata punya struk di edge tidak disalin ke edge, tetapi tetap tercatat di riwayat cloud dan tidak bisa dihapus.
+
 1. Buat write-off di cloud seperti di atas.
 2. Tunggu sinkronisasi edge berikutnya (edge harus online sebentar). Write-off yang dibuat saat edge offline baru sampai setelah edge tersambung lagi.
 3. Jalankan Tutup Hari di edge.
@@ -67,6 +71,7 @@ Jika Tutup Hari di edge masih ditolak:
 
 - Edge belum sinkron sejak write-off dibuat. Cek status sinkronisasi edge, lalu ulangi.
 - Edge masih versi lama (sebelum legend-jcby0) dan tidak meminta write-off. Tutup hari lewat cloud, atau perbarui edge.
+- Cloud belum membawa legend-drzaf (migrasi 0166), atau edge masih versi sebelum legend-jcby0, sehingga write-off nomor run edge ditolak atau tidak tersalin. Jalan sementara: tutup hari lewat cloud. Gap cloud untuk run edge dihitung dari `last_number` cloud yang 0, jadi cloud tidak menahan Tutup Hari.
 - Run di edge berbeda dengan run di cloud (misalnya database edge dipulihkan dari cadangan). Edge sengaja tidak memakai write-off untuk run yang tidak cocok. Hubungi tim teknis.
 
 ## Jika struk datang terlambat
@@ -120,6 +125,8 @@ ORDER BY tenant_id;
 Tenant dari query 1 tidak bisa write-off. Laporkan daftarnya ke CTO sebelum rilis; cara perbaikannya (misalnya seed ulang template) perlu keputusan dan diuji terpisah, jangan menambah baris template dengan tangan. Role custom dari query 2 harus dicabut kodenya (lihat rollback (a)) atau dicatat sebagai keputusan.
 
 **Sinkron ke edge (legend-jcby0).** Tanpa migrasi baru: edge memakai tabel `receipt_number_writeoffs` dari 0156. Rilis cloud dulu, lalu build edge. Edge baru ke cloud lama: cloud menolak parameter `receiptWriteoffs` (400), edge mengulang halaman tanpa parameter itu, dan Tutup Hari di edge tetap butuh jalan lewat cloud sampai cloud diperbarui.
+
+**Write-off untuk run edge (legend-drzaf).** Migrasi 0166 hanya mengganti fungsi trigger `app.receipt_number_writeoffs_check_insert()` (batas jadi `GREATEST(last_number, edge_reported_number)`), tanpa mengubah tabel. Rilis cloud dulu (migrasi + API), lalu edge. Sebelum cloud ini terpasang, write-off nomor run edge ditolak; pakai jalan sementara di "Outlet dengan edge". Trigger di DB edge tetap ketat (`last_number` lokal).
 
 **Rollback (a): cabut izin dari semua role.** Lakukan sebelum API lama dinyalakan. Kode ini harus dicabut dari template owner dan dari role custom, karena API lama menolak role yang memegang kode yang tidak dikenalnya. UPDATE ini tidak menulis audit atau access event, jadi catat audit manual: siapa, kapan, jumlah role per tenant (simpan hasil query preflight 2). Jangan memutar ulang access event yang memuat kode baru ke API lama; parsingnya juga ketat.
 

@@ -24,17 +24,21 @@ CREATE TRIGGER "receipt_number_writeoffs_append_only_trg"
 
 -- 3. Backstop: only a number the run already issued and that has no receipt
 --    can be written off, under the run's own prefix and outlet.
+--    legend-drzaf (0166): "issued" is GREATEST(last_number,
+--    edge_reported_number); an edge-bound run's cloud last_number stays 0 and
+--    its high-water is the counter its edge reported. 0 on unbound runs and on
+--    every row of an edge database.
 CREATE OR REPLACE FUNCTION app.receipt_number_writeoffs_check_insert() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE seq record;
 BEGIN
-  SELECT s.outlet_id, s.prefix, s.last_number INTO seq
+  SELECT s.outlet_id, s.prefix, s.last_number, s.edge_reported_number INTO seq
   FROM public.receipt_sequences s
   WHERE s.tenant_id = NEW.tenant_id AND s.id = NEW.sequence_id;
   IF NOT FOUND
     OR seq.outlet_id <> NEW.outlet_id
     OR seq.prefix <> NEW.prefix
-    OR NEW.sequence_number > seq.last_number
+    OR NEW.sequence_number > GREATEST(seq.last_number, seq.edge_reported_number)
   THEN
     RAISE EXCEPTION 'POS-06: write-off of % does not match its device sequence',
       NEW.sequence_number
