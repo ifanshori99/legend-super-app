@@ -448,8 +448,12 @@ export const posOrderItemShape = {
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
   voidOverrideId: overrideIdSchema.nullable(),
-  /** §6 `order_items.cost_snapshot_idr`: HPP at sale time, server-computed. */
-  costSnapshotIdr: nonnegativeIdr,
+  /**
+   * §6 `order_items.cost_snapshot_idr`: line HPP at sale time, server-computed.
+   * Finance data (`inventory.cost.view`): the POS order DTO always sends
+   * `null` (unknown / not exposed); never read it as 0. Cost readers use SQL.
+   */
+  costSnapshotIdr: nonnegativeIdr.nullable(),
   createdAt: isoDateTimeSchema,
 };
 
