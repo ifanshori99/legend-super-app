@@ -34,9 +34,9 @@
 //    that need it fail on that missing API. Cases 1 and 2 only use the edge
 //    pull, so they fail on the receipt NUMBER assertion.
 //  - Round 2/3 (R1 stale token, R2 retire needs a reason, A3 early clone alert,
-//    Q1..Q3): the token of a report is the CLOUD time the request reached
-//    `listDeviceRecordsSince` (its `now` option), never an edge clock; there is
-//    no `receiptRunsAt` and no clamp. A row whose `edge_reported_at` is >= the
+//    Q1..Q3): the token of a report is the CLOUD arrival time of the request
+//    (the route stamps it before the credential check and passes it as
+//    `listDeviceRecordsSince`'s `now` option), never an edge clock. A row whose `edge_reported_at` is >= the
 //    token is skipped as stale (equal token = stale). The claim is driven
 //    directly (explicit `reportedAt` = arrival time) for the `stale` count, and
 //    through `listDeviceRecordsSince(..., { now })` for page-level facts. The
