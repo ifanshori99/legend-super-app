@@ -10,10 +10,17 @@
 //   on the same path answers 200 { data: [...] } newest first. The DTO fields
 //   are id, outletId, prefix, sequenceNumber, number, reason, writtenOffBy,
 //   createdAt.
-// - "Owner" is a tenant member holding pos.receipt.writeoff. An isolated tenant
-//   has no role templates, so the owner is a custom role (mfa_required false,
-//   like the other POS tests here) holding exactly that permission; the manager
-//   role holds only pos.day.close and must be refused (403).
+// - "Owner" is a tenant member holding the OWNER ROLE TEMPLATE (legend-l56xd:
+//   only the owner template may use pos.receipt.writeoff; a custom role that
+//   holds the code is refused 403 PERMISSION_DENIED even for a tenant admin
+//   path). An isolated tenant has no templates, so the test inserts one owner
+//   template row per tenant (mfa_required false, like the other POS tests),
+//   holding exactly that permission; the manager role holds only pos.day.close
+//   and must be refused (403).
+// - POST needs a second factor verified in the last 5 minutes: a session with
+//   mfa_verified_at older than that answers 401 REAUTH_REQUIRED, one without any
+//   verification 403 MFA_REQUIRED. GET needs neither, but is owner only and,
+//   like POST, refused on the edge (409).
 // - A body that fails validation (reason shorter than 10 characters) answers
 //   422 VALIDATION_ERROR; an outlet of another tenant answers 403 or 404 (either hides it).
 // - The audit row is read from audit_logs: event.action, actorId, reason and
@@ -43,6 +50,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
@@ -65,6 +73,7 @@ import {
 } from "../services/pos-shift-ports.ts";
 import {
   receiptGapsForDevice,
+  receiptGapsForOutlet,
   receiptGapsForOutletFast,
 } from "../services/pos-receipt.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
@@ -89,7 +98,7 @@ const ids = {
   cashierRole: randomUUID(),
   managerRole: randomUUID(),
   ownerRole: randomUUID(),
-  outletOwnerRole: randomUUID(),
+  customWriteoffRole: randomUUID(),
   otherOwnerRole: randomUUID(),
 };
 
@@ -247,32 +256,59 @@ beforeAll(async () => {
   otherTenant = await createIsolatedTenant(`wob-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
   otherHeaders = { Host: otherTenant.hostname };
-  const roles: [string, string, string, string[]][] = [
+  // [id, tenant, name, permissions, owner template?]
+  const roles: [string, string, string, string[], boolean][] = [
     [
       ids.cashierRole,
       tenant.tenantId,
       "Kasir Write-off",
       ["order.view", "pos.sale.create", "shift.cash.operate"],
+      false,
     ],
-    [ids.managerRole, tenant.tenantId, "Manajer Write-off", ["pos.day.close"]],
+    [
+      ids.managerRole,
+      tenant.tenantId,
+      "Manajer Write-off",
+      ["pos.day.close"],
+      false,
+    ],
+    // The owner TEMPLATE (unique per tenant). It also allows outlet scope, for
+    // the outlet-scoped assignment test below.
     [
       ids.ownerRole,
       tenant.tenantId,
       "Pemilik Write-off",
       ["pos.receipt.writeoff"],
+      true,
     ],
     [
       ids.otherOwnerRole,
       otherTenant.tenantId,
       "Pemilik Tenant Lain",
       ["pos.receipt.writeoff"],
+      true,
+    ],
+    // A custom role that holds the code (what a tenant admin can create).
+    [
+      ids.customWriteoffRole,
+      tenant.tenantId,
+      "Kustom Pegang Write-off",
+      ["pos.receipt.writeoff"],
+      false,
     ],
   ];
-  for (const [id, tenantId, name, permissions] of roles)
+  for (const [id, tenantId, name, permissions, isOwnerTemplate] of roles)
     await owner.query(
       `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-       VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant"]')`,
-      [id, tenantId, name, JSON.stringify(permissions)],
+       VALUES ($1, $2, $3, $4, $5, $6, false, '["tenant","outlet"]')`,
+      [
+        id,
+        tenantId,
+        name,
+        isOwnerTemplate,
+        isOwnerTemplate ? "owner" : null,
+        JSON.stringify(permissions),
+      ],
     );
   cashier = await member(ids.cashierRole, "Kasir Writeoff");
   manager = await member(ids.managerRole, "Manajer Writeoff");
@@ -608,6 +644,89 @@ async function insertLateReceipt(
       ],
     );
   });
+}
+
+function tenantScopeContext() {
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+}
+
+const pgDialect = new PgDialect();
+const touchesReceipts = (text: string) => /\bpos_receipts\b/.test(text);
+
+/**
+ * Wraps a transaction so that `onRead` runs once, right after the first
+ * statement touching pos_receipts has resolved (before its rows go back to the
+ * caller). Covers query builders (`select`, `selectDistinct`, any chain, also
+ * set operators) and raw `execute(sql...)`.
+ */
+function afterFirstReceiptRead(tx: object, onRead: () => Promise<void>) {
+  let fired = false;
+  const fire = async () => {
+    if (fired) return;
+    fired = true;
+    await onRead();
+  };
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const watch = (builder: any): any => {
+    const proxy: any = new Proxy(builder, {
+      get(target, prop) {
+        if (prop === "then")
+          return (onFulfilled: any, onRejected: any) =>
+            Promise.resolve(
+              target.then(async (rows: unknown) => {
+                let text = "";
+                try {
+                  text = target.toSQL().sql;
+                } catch {
+                  // not a builder with SQL: nothing to inspect
+                }
+                if (touchesReceipts(text)) await fire();
+                return rows;
+              }),
+            ).then(onFulfilled, onRejected);
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const result = value.apply(target, args);
+          if (result === target) return proxy;
+          if (result && typeof result === "object" && "toSQL" in result)
+            return watch(result);
+          return result;
+        };
+      },
+    });
+    return proxy;
+  };
+  const target = tx as any;
+  return new Proxy(target, {
+    get(_, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      if (prop === "select" || prop === "selectDistinct")
+        return (...args: unknown[]) => watch(value.apply(target, args));
+      if (prop === "execute")
+        return async (query: any, ...rest: unknown[]) => {
+          const result = await value.call(target, query, ...rest);
+          let text = "";
+          try {
+            text = pgDialect.sqlToQuery(query).sql;
+          } catch {
+            // not a drizzle sql object
+          }
+          if (touchesReceipts(text)) await fire();
+          return result;
+        };
+      return value.bind(target);
+    },
+  });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 }
 
 /** Runs `run` with edge mode on and always restores the previous state. */
@@ -998,19 +1117,10 @@ describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
   });
 
   it("a user holding the permission only through an outlet-scoped assignment on outlet X is refused on outlet Y (403/404)", async () => {
-    await owner.query(
-      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-       VALUES ($1, $2, 'Pemilik Satu Outlet', false, NULL, $3, false, '["tenant","outlet"]')`,
-      [
-        ids.outletOwnerRole,
-        tenant.tenantId,
-        JSON.stringify(["pos.receipt.writeoff"]),
-      ],
-    );
     const outletX = await outletWithHole("WP1");
     const outletY = await outletWithHole("WQ1");
     const scoped = await member(
-      ids.outletOwnerRole,
+      ids.ownerRole,
       "Pemilik Outlet X",
       tenant.tenantId,
       { mfa: true, outletId: outletX.outletId },
@@ -1046,5 +1156,128 @@ describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
     // The state is restored: the same request now succeeds.
     const created = await writeOff(ownerA, outletId, body);
     expect(created.status, JSON.stringify(created.body)).toBe(201);
+  });
+
+  // ---- legend-l56xd: owner template only, recent re-auth -----------------------
+
+  it("repro l56xd: a custom role that holds pos.receipt.writeoff is refused on POST and GET (403) and nothing is written; the owner still works", async () => {
+    const { outletId } = await outletWithHole("WS1");
+    // The session is MFA-verified just now, so only the role can be the reason.
+    const delegate = await member(
+      ids.customWriteoffRole,
+      "Pemilik Kustom",
+      tenant.tenantId,
+      { mfa: true },
+    );
+    const body = { prefix: "WS1", sequenceNumber: 2, reason: REASON };
+
+    const refused = await writeOff(delegate, outletId, body);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(errorCode(refused.body)).toBe("PERMISSION_DENIED");
+    expect(await writeoffRows(outletId)).toEqual([]);
+
+    const listing = await listWriteOffs(delegate, outletId);
+    expect(listing.status, JSON.stringify(listing.body)).toBe(403);
+
+    const created = await writeOff(ownerA, outletId, body);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(await writeoffRows(outletId)).toHaveLength(1);
+  });
+
+  it("a stale second factor (verified 10 minutes ago) is refused on POST (401 REAUTH_REQUIRED) and writes nothing; GET still works; verifying again unlocks POST", async () => {
+    const { outletId } = await outletWithHole("WS2");
+    const stale = await member(ids.ownerRole, "Pemilik Basi", tenant.tenantId, {
+      mfa: true,
+    });
+    await owner.query(
+      `UPDATE "session" SET mfa_verified_at = $2
+        WHERE revoked_at IS NULL AND user_id = $1`,
+      [stale.userId, new Date(Date.now() - 10 * 60_000)],
+    );
+    const body = { prefix: "WS2", sequenceNumber: 2, reason: REASON };
+
+    const refused = await writeOff(stale, outletId, body);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(401);
+    expect(errorCode(refused.body)).toBe("REAUTH_REQUIRED");
+    expect(await writeoffRows(outletId)).toEqual([]);
+
+    const listed = await listWriteOffs(stale, outletId);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.data).toEqual([]);
+
+    // Verifying the second factor again (stamp now) lets the same call through.
+    await owner.query(
+      `UPDATE "session" SET mfa_verified_at = $2
+        WHERE revoked_at IS NULL AND user_id = $1`,
+      [stale.userId, new Date()],
+    );
+    const created = await writeOff(stale, outletId, body);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(await writeoffRows(outletId)).toHaveLength(1);
+  });
+
+  // ---- legend-xlvvl ---------------------------------------------------------------
+
+  it("repro xlvvl b: with the edge state on, listing the write-offs is refused (409); in the cloud it works", async () => {
+    const outletId = await freshOutlet();
+    const refused = await inEdgeMode(() => listWriteOffs(ownerA, outletId));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+
+    const listed = await listWriteOffs(ownerA, outletId);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.data).toEqual([]);
+  });
+
+  it("repro xlvvl c: a receipt that commits between the slow helper's reads does not make a false gap", async () => {
+    // Run lastNumber 3, receipts 1 and 3, number 2 written off. Receipt 2 then
+    // arrives late and commits right after the helper read the receipts. The
+    // helper must still report no gap: with two statements it saw receipts
+    // {1,3} and then a write-off list that already dropped 2 (it has a
+    // receipt now), so it invented a gap at 2; one statement is one snapshot.
+    const outletId = await freshOutlet();
+    await seedDevice(
+      outletId,
+      [
+        {
+          prefix: "WS3",
+          lastNumber: 3,
+          present: [1, 3],
+          ageMinutes: 60,
+          retired: { reason: "claim_rotated", edgeReportedNumber: 0 },
+        },
+      ],
+      { daysBefore: 1 },
+    );
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WS3",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    // Assumption: the interleave is made deterministic by wrapping the
+    // transaction handed to the helper. The first statement that touches
+    // pos_receipts (a select builder or a raw execute) resolves, then the late
+    // receipt is committed on a separate owner connection, then the helper goes
+    // on. This holds for the one-statement fix too (the late receipt then
+    // commits after the only read).
+    let lateCommitted = false;
+    const context = tenantScopeContext();
+    const gaps = await withTenant(db, context, (tx) =>
+      receiptGapsForOutlet(
+        afterFirstReceiptRead(tx, async () => {
+          await insertLateReceipt(outletId, "WS3", 2);
+          lateCommitted = true;
+        }) as never,
+        context,
+        outletId,
+      ),
+    );
+    expect(lateCommitted, "the late receipt was committed mid-helper").toBe(
+      true,
+    );
+    expect(gaps).toEqual([]);
+    // After everything committed there is still no gap.
+    expect(await outletGaps(outletId)).toEqual([]);
   });
 });
