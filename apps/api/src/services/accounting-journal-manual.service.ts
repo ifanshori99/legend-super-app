@@ -61,8 +61,8 @@ import {
 } from "./accounting-shared";
 import {
   cancelApprovalRequest,
-  getApprovalChainOutcome,
   openApprovalRequest,
+  resolveApprovalChainOutcome,
 } from "./platform-approval.service";
 
 type Row = typeof manualJournals.$inferSelect;
@@ -695,14 +695,16 @@ async function settleRow(
   if (row.status !== "pending_approval" || row.approvalChainId === null)
     return row;
   const chainId = row.approvalChainId;
-  let outcome = await getApprovalChainOutcome(tx, {
+  // Locks the chain head and applies the deadline atomically, so an inbox
+  // decision in flight commits first; read the last level only afterwards.
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
     chainId,
     sourceModule: JOURNAL_APPROVAL_SOURCE_MODULE,
+    now,
   });
   const [last] = await tx
     .select({
       decidedBy: approvalRequests.decidedBy,
-      deadlineAt: approvalRequests.deadlineAt,
     })
     .from(approvalRequests)
     .where(
@@ -714,9 +716,6 @@ async function settleRow(
     .orderBy(desc(approvalRequests.level))
     .limit(1);
   if (!last) throw notFound();
-  // Past the deadline the request stays blocked even before the sweep runs.
-  if (outcome === "pending" && last.deadlineAt.getTime() <= now.getTime())
-    outcome = "expired";
   if (outcome === "pending") return row;
   if (outcome === "approved") {
     const decider = last.decidedBy;
