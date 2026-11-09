@@ -193,35 +193,46 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     });
   }
 
-  it("H3 (6q7o c) net TER-0% months followed by taxed gross months: the net months' scheme share still counts, so the employer bears the shortfall", () => {
+  it("H3 (6q7o c, legend-mmgd) net TER-0% months followed by taxed gross months: each payer settles its own balance, the employee's over-payment is not used to cover the company's shortfall", () => {
+    // Updated for bead legend-mmgd (brief sub-pph21-unclamped): the signed
+    // balances bE + bR = H are no longer clamped to [0, H].
     // Jan-Jun net 5_400_000 (TER A row 1, 0%): no tax, X = 5_400_000 each, all
     //   employer scheme. Jul-Nov gross 10_000_000 (TER A row 9, 2%): withheld
     //   200_000 each. Prior gross = 6 x 5_400_000 + 5 x 10_000_000 = 82_400_000;
     //   withheld 1_000_000, borne 0, allowance 0; E = 32_400_000, Gs = 50_000_000.
     // H = annual(82_400_000) - 1_000_000: cost 4_120_000, net 78_280_000,
     //   PKP 24_280_000, tax 1_214_000 -> H = 214_000.
-    // pET = 0. Rule B, proportional: floor(1_214_000 x 32_400_000 / 82_400_000) - 0
-    //   = 477_364, clamped to H => employerHistory 214_000, employeeHistory 0.
-    //   Rule B, gross_first: annual(Gs = 50_000_000) = 0 (PKP 0), pEeT = 1_000_000
-    //   => employeeHistory = clamp(0 - 1_000_000, 0, H) = 0, same split.
-    //   (The old rule used pET / priorTax = 0, i.e. charged the employee all of H.)
-    // December gross 10_000_000, G* = X0 = 10_000_000; the employer's H is borne.
-    // gross_first: W = annual(92_400_000) - annual(82_400_000) + 0
-    //   = 1_689_000 - 1_214_000 = 475_000.
-    //   S0=0       T 689_000 W 475_000 next 214_000
-    //   S1=214_000 T 699_150 W 475_000 next 224_150
-    //   S2=224_150 T 699_600 W 475_000 next 224_600
-    //   S3=224_600 T 699_650 W 475_000 next 224_650
-    //   S4=224_650 gross 92_624_650 PKP 33_993_000 annual 1_699_650 T 699_650 next 224_650 stop.
-    //   X = 10_224_650; T = 1_699_650 - 1_000_000 = 699_650; withheld 475_000, borne 224_650.
-    // proportional: W = 0 + floor((T - 214_000) x 10_000_000 / X):
-    //   S0=0       T 689_000 W 475_000 next 214_000
-    //   S1=214_000 T 699_150 W 474_985 next 224_165
-    //   S2=224_165 T 699_600 W 474_953 next 224_647
-    //   S3=224_647 T 699_650 W 474_979 next 224_671
-    //   S4=224_671 T 699_650 W 474_978 next 224_672
-    //   S5=224_672 gross 92_624_672 annual 1_699_650 T 699_650 W 474_978 next 224_672 stop.
-    //   X = 10_224_672; withheld 474_978, borne 224_672.
+    // pET = 0, pEeT = 1_000_000.
+    //   proportional: bR = floor(1_214_000 x 32_400_000 / 82_400_000) - 0 =
+    //     floor(477_349,51) = 477_349 (an earlier draft said 477_364); bE =
+    //     214_000 - 477_349 = -263_349.
+    //   gross_first: annual(Gs = 50_000_000) = 0 (PKP 0) => bE = 0 - 1_000_000
+    //     = -1_000_000, bR = 214_000 + 1_000_000 = 1_214_000.
+    //   The employee over-paid; the old clamp to [0, H] hid this and charged
+    //   him as if his balance were 0 (old W 475_000 / 474_978).
+    // December gross 10_000_000, G* = X0 = 10_000_000. annual(92_400_000): cost
+    //   4_620_000, net 87_780_000, PKP 33_780_000 -> 1_689_000, so the gross_first
+    //   De cap = 1_689_000 - 1_214_000 = 475_000. D = annual(prior + X) - 1_214_000,
+    //   covered_{k+1} = max(0, Dr + bR), Dr = D - De:
+    // gross_first (De = 475_000 every step):
+    //   S0=0         X 10_000_000 annual 1_689_000 T 689_000 D 475_000 Dr 0 next 1_214_000
+    //   S1=1_214_000 X 11_214_000 annual 1_746_650 T 746_650 D 532_650 Dr 57_650 next 1_271_650
+    //   S2=1_271_650 X 11_271_650 annual 1_749_400 T 749_400 D 535_400 Dr 60_400 next 1_274_400
+    //   S3=1_274_400 X 11_274_400 annual 1_749_500 T 749_500 D 535_500 Dr 60_500 next 1_274_500
+    //   S4=1_274_500 X 11_274_500 annual 1_749_500 T 749_500 D 535_500 Dr 60_500 next 1_274_500 stop.
+    //   X = 11_274_500, T = 1_749_500 - 1_000_000 = 749_500. Employee: e =
+    //   475_000 - 1_000_000 < 0 => W = 0, refund 525_000. Company: r = 60_500 +
+    //   1_214_000 = 1_274_500 = borne. Check: 0 + 1_274_500 - 525_000 = 749_500.
+    // proportional (De = floor(D x 10_000_000 / X)):
+    //   S0=0       X 10_000_000 annual 1_689_000 T 689_000 D 475_000 De 475_000 Dr 0 next 477_349
+    //   S1=477_349 X 10_477_349 annual 1_711_650 T 711_650 D 497_650 De 474_977 Dr 22_673 next 500_022
+    //   S2=500_022 X 10_500_022 annual 1_712_750 T 712_750 D 498_750 De 474_999 Dr 23_751 next 501_100
+    //   S3=501_100 X 10_501_100 annual 1_712_800 T 712_800 D 498_800 De 474_997 Dr 23_803 next 501_152
+    //   S4=501_152 X 10_501_152 annual 1_712_800 T 712_800 D 498_800 De 474_995 Dr 23_805 next 501_154
+    //   S5=501_154 X 10_501_154 annual 1_712_800 T 712_800 D 498_800 De 474_995 Dr 23_805 next 501_154 stop.
+    //   X = 10_501_154, T = 712_800. Employee: e = 474_995 - 263_349 = 211_646 =
+    //   W. Company: r = 23_805 + 477_349 = 501_154 = borne.
+    //   Check: 211_646 + 501_154 = 712_800.
     const prior3 = {
       ...prior(82_400_000, 1_000_000, 0),
       taxAllowanceIdr: 0,
@@ -235,31 +246,40 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
 
     const grossFirst = run(input, { mixedSchemeAllocation: "gross_first" });
     expect(grossFirst.method).toBe("annual_recalculation");
-    expect(grossFirst.taxableGrossIdr).toBe(10_224_650);
-    expect(grossFirst.pph21Idr).toBe(699_650);
-    expect(grossFirst.pph21WithheldIdr).toBe(475_000);
-    expect(grossFirst.pph21EmployerBorneIdr).toBe(224_650);
+    expect(grossFirst.taxableGrossIdr).toBe(11_274_500);
+    expect(grossFirst.pph21Idr).toBe(749_500);
+    expect(grossFirst.pph21WithheldIdr).toBe(0);
+    expect(grossFirst.pph21EmployerBorneIdr).toBe(1_274_500);
     expect(grossFirst.taxAllowanceIdr).toBe(0);
-    expect(grossFirst.pph21RefundIdr).toBe(0);
-    expect(grossFirst.annual?.annualTaxIdr).toBe(1_699_650);
+    expect(grossFirst.pph21RefundIdr).toBe(525_000);
+    expect(grossFirst.pph21EmployerRefundIdr).toBe(0);
+    expect(grossFirst.annual?.annualTaxIdr).toBe(1_749_500);
     expect(grossFirst.annual?.priorPph21Idr).toBe(1_000_000);
 
     const proportional = run(input, { mixedSchemeAllocation: "proportional" });
     expect(proportional.method).toBe("annual_recalculation");
-    expect(proportional.taxableGrossIdr).toBe(10_224_672);
-    expect(proportional.pph21Idr).toBe(699_650);
-    expect(proportional.pph21WithheldIdr).toBe(474_978);
-    expect(proportional.pph21EmployerBorneIdr).toBe(224_672);
+    expect(proportional.taxableGrossIdr).toBe(10_501_154);
+    expect(proportional.pph21Idr).toBe(712_800);
+    expect(proportional.pph21WithheldIdr).toBe(211_646);
+    expect(proportional.pph21EmployerBorneIdr).toBe(501_154);
     expect(proportional.taxAllowanceIdr).toBe(0);
     expect(proportional.pph21RefundIdr).toBe(0);
-    expect(proportional.annual?.annualTaxIdr).toBe(1_699_650);
+    expect(proportional.pph21EmployerRefundIdr).toBe(0);
+    expect(proportional.annual?.annualTaxIdr).toBe(1_712_800);
 
     for (const r of [grossFirst, proportional]) {
-      expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
     }
   });
 
-  it("H4 mixed payer history (net Jan-Jun, gross Jul-Nov): `proportional` splits H by scheme mix minus what the employer already paid; `gross_first` charges the employee only what his own gross base owes", () => {
+  it("H4 (legend-mmgd) mixed payer history (net Jan-Jun, gross Jul-Nov): `proportional` splits H by scheme mix minus what the employer already paid; `gross_first` refunds the employee what he over-paid beyond his own gross base", () => {
+    // Updated for bead legend-mmgd (brief sub-pph21-unclamped): balances are
+    // signed, no clamp to [0, H].
     // Jan-Jun net 10_000_000: S = 230_179, X = 10_230_179 (see R28), borne
     //   230_179 each. Jul-Nov gross 10_000_000: withheld 200_000 each.
     // Prior gross = 6 x 10_230_179 + 5 x 10_000_000 = 111_381_074; withheld
@@ -268,33 +288,33 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     // H = annual(111_381_074) - 2_381_074: cost 5_569_053, net 105_812_021,
     //   PKP 51_812_000, tax 2_590_600 -> H = 209_526.
     // pET = 1_381_074 + 0; pEeT = priorTax - pET = 1_000_000.
-    // Rule B, proportional: floor(2_590_600 x 61_381_074 / 111_381_074)
-    //   = 1_427_655; minus pET = 46_581 => employerHistory 46_581,
-    //   employeeHistory 162_945.
-    // Rule B, gross_first: annual(Gs = 50_000_000): cost 2_500_000, net
-    //   47_500_000, PKP 0 => 0. employeeHistory = clamp(0 - 1_000_000, 0, H) = 0,
-    //   employerHistory = H = 209_526: the gross-scheme half of the year owes no
-    //   tax on its own and the employee's 1_000_000 withheld already exceeds it.
-    // December gross 10_000_000 (G* = X0):
-    // gross_first: W = annual(121_381_074) - annual(111_381_074) + 0
-    //   = 3_207_150 - 2_590_600 = 616_550.
-    //   S0=0       T 826_076 W 616_550 next 209_526
-    //   S1=209_526 T 857_426 next 240_876
-    //   S2=240_876 T 862_076 next 245_526
-    //   S3=245_526 T 862_826 next 246_276
-    //   S4=246_276 T 862_976 next 246_426
-    //   S5=246_426 gross 121_627_500 annual 3_244_050 T 862_976 next 246_426 stop.
-    //   X = 10_246_426, T = 3_244_050 - 2_381_074 = 862_976; withheld 616_550, borne 246_426.
-    //   (The old base-ratio rule gave the employee 162_945 of H: X 10_054_681,
-    //   withheld 779_495, borne 54_681.)
-    // proportional: W = 162_945 + floor((T - 209_526) x 10_000_000 / X):
-    //   S0=0       T 826_076 W 779_495 next 46_581
-    //   S1=46_581  T 832_976 W 783_504 next 49_472
-    //   S2=49_472  T 833_426 W 783_773 next 49_653
-    //   S3=49_653  T 833_426 W 783_762 next 49_664
-    //   S4=49_664  T 833_426 W 783_761 next 49_665
-    //   S5=49_665  gross 121_430_739 annual 3_214_500 T 833_426 W 783_761 next 49_665 stop.
-    //   X = 10_049_665; withheld 783_761, borne 49_665.
+    //   proportional: bR = floor(2_590_600 x 61_381_074 / 111_381_074) - pET =
+    //     1_427_655 - 1_381_074 = 46_581; bE = 209_526 - 46_581 = 162_945
+    //     (same signs as the old clamp: unchanged).
+    //   gross_first: annual(Gs = 50_000_000) = 0 => bE = 0 - 1_000_000 =
+    //     -1_000_000 (the employee over-paid), bR = 209_526 + 1_000_000 =
+    //     1_209_526. (Old clamp: bE 0, bR 209_526.)
+    // December gross 10_000_000 (G* = X0). annual(121_381_074) = 3_207_150;
+    //   gross_first De cap = 3_207_150 - 2_590_600 = 616_550.
+    // gross_first (De = 616_550 every step):
+    //   S0=0         X 10_000_000 annual 3_207_150 T 826_076 D 616_550 Dr 0 next 1_209_526
+    //   S1=1_209_526 X 11_209_526 annual 3_388_500 T 1_007_426 D 797_900 Dr 181_350 next 1_390_876
+    //   S2=1_390_876 X 11_390_876 annual 3_415_650 T 1_034_576 D 825_050 Dr 208_500 next 1_418_026
+    //   S3=1_418_026 X 11_418_026 annual 3_419_850 T 1_038_776 D 829_250 Dr 212_700 next 1_422_226
+    //   S4=1_422_226 X 11_422_226 annual 3_420_450 T 1_039_376 D 829_850 Dr 213_300 next 1_422_826
+    //   S5=1_422_826 X 11_422_826 annual 3_420_450 T 1_039_376 D 829_850 Dr 213_300 next 1_422_826 stop.
+    //   X = 11_422_826, T = 3_420_450 - 2_381_074 = 1_039_376. Employee: e =
+    //   616_550 - 1_000_000 < 0 => W = 0, refund 383_450. Company: r = 213_300 +
+    //   1_209_526 = 1_422_826 = borne. Check: 1_422_826 - 383_450 = 1_039_376.
+    // proportional (bE = 162_945, bR = 46_581, De = floor(D x 10_000_000 / X)):
+    //   S0=0      X 10_000_000 annual 3_207_150 T 826_076 D 616_550 De 616_550 Dr 0 next 46_581
+    //   S1=46_581 X 10_046_581 annual 3_214_050 T 832_976 D 623_450 De 620_559 Dr 2_891 next 49_472
+    //   S2=49_472 X 10_049_472 annual 3_214_500 T 833_426 D 623_900 De 620_828 Dr 3_072 next 49_653
+    //   S3=49_653 X 10_049_653 annual 3_214_500 T 833_426 D 623_900 De 620_817 Dr 3_083 next 49_664
+    //   S4=49_664 X 10_049_664 annual 3_214_500 T 833_426 D 623_900 De 620_816 Dr 3_084 next 49_665
+    //   S5=49_665 X 10_049_665 annual 3_214_500 T 833_426 D 623_900 De 620_816 Dr 3_084 next 49_665 stop.
+    //   X = 10_049_665, T = 833_426. W = 620_816 + 162_945 = 783_761; borne =
+    //   3_084 + 46_581 = 49_665. Check: 783_761 + 49_665 = 833_426.
     const prior4 = {
       ...prior(111_381_074, 1_000_000, 1_381_074),
       taxAllowanceIdr: 0,
@@ -307,11 +327,12 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     };
 
     const grossFirst = run(input, { mixedSchemeAllocation: "gross_first" });
-    expect(grossFirst.taxableGrossIdr).toBe(10_246_426);
-    expect(grossFirst.pph21Idr).toBe(862_976);
-    expect(grossFirst.pph21WithheldIdr).toBe(616_550);
-    expect(grossFirst.pph21EmployerBorneIdr).toBe(246_426);
-    expect(grossFirst.annual?.annualTaxIdr).toBe(3_244_050);
+    expect(grossFirst.taxableGrossIdr).toBe(11_422_826);
+    expect(grossFirst.pph21Idr).toBe(1_039_376);
+    expect(grossFirst.pph21WithheldIdr).toBe(0);
+    expect(grossFirst.pph21EmployerBorneIdr).toBe(1_422_826);
+    expect(grossFirst.pph21RefundIdr).toBe(383_450);
+    expect(grossFirst.annual?.annualTaxIdr).toBe(3_420_450);
     expect(grossFirst.annual?.priorPph21Idr).toBe(2_381_074);
 
     const proportional = run(input, { mixedSchemeAllocation: "proportional" });
@@ -319,12 +340,18 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     expect(proportional.pph21Idr).toBe(833_426);
     expect(proportional.pph21WithheldIdr).toBe(783_761);
     expect(proportional.pph21EmployerBorneIdr).toBe(49_665);
+    expect(proportional.pph21RefundIdr).toBe(0);
     expect(proportional.annual?.annualTaxIdr).toBe(3_214_500);
 
     for (const r of [grossFirst, proportional]) {
-      expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
       expect(r.taxAllowanceIdr).toBe(0);
-      expect(r.pph21RefundIdr).toBe(0);
+      expect(r.pph21EmployerRefundIdr).toBe(0);
     }
   });
 
@@ -362,7 +389,9 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     });
   }
 
-  it("H7 (architect) gross 5 jt + gross-up 5 jt every month, gross_first: the employee pays tax only on his own 5 jt, not a share of the company-funded Jan-Nov shortfall", () => {
+  it("H7 (architect, legend-mmgd) gross 5 jt + gross-up 5 jt every month, gross_first: the employee owes tax only on his own 5 jt and is refunded the rest of his over-payment; the company's shortfall is its allowance", () => {
+    // Updated for bead legend-mmgd (brief sub-pph21-unclamped): signed
+    // balances, no clamp to [0, H].
     // Each Jan-Nov month: gross 5_000_000 + gross_up 5_000_000, TER A. X = 10_000_000 + A,
     //   A = employer allowance = round_half_up(2,25% x (5_000_000 + A)) (the gross-up
     //   part is grossed up, the 5_000_000 gross part is taxed as is):
@@ -374,23 +403,26 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
     //   1_265_990 (11 x 115_090), borne 0; Gs = 55_000_000, E = 56_265_990.
     // H = annual(111_265_990) - 2_503_490: cost 5_563_299, net 105_702_691, PKP 51_702_000,
     //   tax 2_585_100 -> H = 81_610. pET = 0 + 1_265_990, pEeT = 2_503_490 - 1_265_990
-    //   = 1_237_500. Rule B, gross_first: annual(55_000_000) = 0 (PKP 0) =>
-    //   employeeHistory = clamp(0 - 1_237_500, 0, 81_610) = 0. (The old base-ratio
-    //   rule charged the employee a share of H: W 350_781.)
-    // December the same lines: G* = 5_000_000, X0 = 10_000_000, S = employer part.
-    //   W = annual(116_265_990) - annual(111_265_990) + 0: cost 5_813_299, net 110_452_691,
-    //   PKP 56_452_000, tax 2_822_600 - 2_585_100 = 237_500 (5% x 4_750_000).
-    //   S0=0       T 686_260 W 237_500 next 448_760
-    //   S1=448_760 T 753_610 next 516_110
-    //   S2=516_110 T 763_810 next 526_310
-    //   S3=526_310 T 765_310 next 527_810
-    //   S4=527_810 T 765_460 next 527_960
-    //   S5=527_960 gross 121_793_950 annual 3_268_950 T 765_460 next 527_960 stop.
-    //   X = 10_527_960, T = 3_268_950 - 2_503_490 = 765_460. Assumption: because
-    //   December has a gross_up line, the employer's part S is a tax allowance
-    //   (as in R72): allowance 527_960, withheld = T = 765_460 (employee's part
-    //   237_500 + allowance 527_960), borne 0. Take-home = 10_000_000 + allowance - withheld
-    //   = 10_000_000 - 237_500.
+    //   = 1_237_500. gross_first: annual(55_000_000) = 0 (PKP 0) =>
+    //   bE = 0 - 1_237_500 = -1_237_500 (the employee over-paid), bR = 81_610 +
+    //   1_237_500 = 1_319_110. (The old clamp to [0, H] gave bE 0, bR 81_610.)
+    // December the same lines: G* = 5_000_000, X0 = 10_000_000, U = 5_000_000,
+    //   N = 0. De cap = annual(116_265_990) - 2_585_100: cost 5_813_299, net
+    //   110_452_691, PKP 56_452_000, tax 2_822_600 -> 237_500 (5% x 4_750_000).
+    //   covered_{k+1} = max(0, Dr + bR), Dr = D - 237_500:
+    //   S0=0         X 10_000_000 annual 3_189_750 T 686_260 D 604_650 Dr 367_150 next 1_686_260
+    //   S1=1_686_260 X 11_686_260 annual 3_442_800 T 939_310 D 857_700 Dr 620_200 next 1_939_310
+    //   S2=1_939_310 X 11_939_310 annual 3_480_750 T 977_260 D 895_650 Dr 658_150 next 1_977_260
+    //   S3=1_977_260 X 11_977_260 annual 3_486_450 T 982_960 D 901_350 Dr 663_850 next 1_982_960
+    //   S4=1_982_960 X 11_982_960 annual 3_487_200 T 983_710 D 902_100 Dr 664_600 next 1_983_710
+    //   S5=1_983_710 X 11_983_710 annual 3_487_350 T 983_860 D 902_250 Dr 664_750 next 1_983_860
+    //   S6=1_983_860 X 11_983_860 annual 3_487_350 T 983_860 D 902_250 Dr 664_750 next 1_983_860 stop.
+    //   X = 11_983_860, T = 3_487_350 - 2_503_490 = 983_860. Employee: e =
+    //   237_500 - 1_237_500 = -1_000_000 => W = 0, refund 1_000_000. Company:
+    //   r = 664_750 + 1_319_110 = 1_983_860; December has a gross_up line and
+    //   no net line, so A = min(covered x U/(U+N), r) = 1_983_860 allowance,
+    //   borne 0 (as in R72). withheld = 0 + 1_983_860.
+    //   Check: 1_983_860 - 1_000_000 = 983_860 = T.
     const december = [
       { amountIdr: 5_000_000, taxScheme: "gross" as const },
       { amountIdr: 5_000_000, taxScheme: "gross_up" as const },
@@ -408,16 +440,24 @@ describe("PPh 21 history split between employee and employer (legend-6q7o, legen
       { mixedSchemeAllocation: "gross_first" },
     );
     expect(r.method).toBe("annual_recalculation");
-    expect(r.taxableGrossIdr).toBe(10_527_960);
-    expect(r.pph21Idr).toBe(765_460);
-    expect(r.taxAllowanceIdr).toBe(527_960);
-    expect(r.pph21WithheldIdr).toBe(765_460);
+    expect(r.taxableGrossIdr).toBe(11_983_860);
+    expect(r.pph21Idr).toBe(983_860);
+    expect(r.taxAllowanceIdr).toBe(1_983_860);
+    expect(r.pph21WithheldIdr).toBe(1_983_860);
     expect(r.pph21EmployerBorneIdr).toBe(0);
-    expect(r.pph21RefundIdr).toBe(0);
-    expect(r.annual?.annualTaxIdr).toBe(3_268_950);
+    expect(r.pph21RefundIdr).toBe(1_000_000);
+    expect(r.pph21EmployerRefundIdr).toBe(0);
+    expect(r.annual?.annualTaxIdr).toBe(3_487_350);
     expect(r.annual?.priorPph21Idr).toBe(2_503_490);
-    // The employee's own share W = withheld - allowance = 237_500.
-    expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBe(237_500);
+    // The employee's own tax W = withheld - allowance = 0; he is refunded
+    // 1_000_000 of his over-payment. withheld + borne - refund = T.
+    expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBe(0);
+    expect(
+      r.pph21WithheldIdr +
+        r.pph21EmployerBorneIdr -
+        r.pph21RefundIdr -
+        r.pph21EmployerRefundIdr,
+    ).toBe(r.pph21Idr);
   });
 
   for (const allocation of ALLOCATIONS) {

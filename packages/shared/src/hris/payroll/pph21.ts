@@ -32,23 +32,25 @@
 // - net: the employer bears the tax; the borne tax is itself a taxable benefit
 //   (FAQ DJP PMK-66/2023 no. 40), so it enters the bruto like the allowance.
 // Let G = gross lines + employer BPJS benefit, U = gross_up lines, N = net
-// lines, S = employer-covered tax (allowance A + borne B), X = G+U+N+S. The
-// employee's share W of the tax follows the policy (`proportional`: T x G / X;
-// `gross_first`: the tax G would carry alone, capped at T). In the last
-// period the Jan-Nov shortfall H inside T is split first, by the earlier
-// scheme mix (else the payer history), under both policies; only T - H
-// follows this month's mix. S is the least
-// fixed point of S = T(X(S)) - W(X(S)), iterated from 0 (monotone, so it rises
-// to the least solution). A = S x U / (U + N), B = T - W - A. Withheld = W + A,
-// so the employee's take-home is exactly G + U + N - W: the allowance cancels
-// out to the rupiah.
-// Jan-Nov lebih potong (H < 0, bead legend-u1xq): T = D - C, D the tax this
-// month adds (>= 0), C = -H. D follows this month's mix as above; C goes back
-// to whoever overpaid it (by the earlier scheme mix, else the payer history).
-// Each payer nets its own two parts, so the company's credit never lowers the
-// employee's tax: withheld may exceed T, with an employer refund beside it,
-// and a refund may stand beside a borne or withheld amount. Always
-// withheld + borne - employee refund - employer refund = T.
+// lines, S = employer-covered tax (allowance A + borne B), X = G+U+N+S.
+// In the last period H = annual tax on the prior income alone - tax already
+// paid (0 in a TER month) and T = H + D, D >= 0 the tax this month adds.
+// - D follows this month's mix per policy (`proportional`: D x G* / X, G* the
+//   gross-scheme part; `gross_first`: the tax G* would add alone, capped at D);
+//   the employer part is Dr.
+// - H is split into each payer's own balance of the prior year (by the
+//   earlier scheme mix, else the payer history), unclamped: one payer's
+//   overpayment never covers the other's shortfall (bead legend-mmgd).
+// - Each payer nets its part of D with its balance: positive is charged
+//   (withheld W from the employee; A or B for the company), negative refunded
+//   to that payer. So withheld may exceed T beside an employer refund, and a
+//   borne amount may stand beside an employee refund (beads legend-u1xq,
+//   legend-mmgd). Always withheld + borne - employee refund - employer
+//   refund = T, the deposit.
+// S is the least fixed point of S = max(0, Dr(X(S)) + employer balance),
+// iterated from 0 (monotone, so it rises to the least solution). A = S x U /
+// (U + N), B = the rest. Withheld = W + A, so the employee's take-home is
+// exactly G + U + N - W + employee refund: the allowance cancels out.
 
 import { divideRounded, idr } from "../../core/index.ts";
 import type { Idr, RoundingMode } from "../../core/index.ts";
@@ -458,180 +460,91 @@ export function computePph21Period(
     };
   };
 
-  // Last period only: the history shortfall H = annual tax on the prior
-  // income alone minus what was already paid (0 in a TER month). Its employee
-  // part follows the year's payer history, like a refund: the share the
-  // employer bore before stays with the employer.
+  // Last period only: the history balance H = annual tax on the prior income
+  // alone minus what was already paid (0 in a TER month): > 0 a shortfall
+  // (kurang bayar), < 0 a credit (lebih potong Jan-Nov).
   const history = input.lastTaxPeriod ? taxOf(0n).tax : 0n;
-  // Split of H (bead legend-6q7o). With the earlier scheme mix known, the
-  // annual tax on the prior income (H + priorTax) is shared by scheme base
-  // and each payer owes its share minus what it already paid, clamped to
-  // [0, H]: pay that was on the employer's scheme stays the employer's even
-  // when the employee paid tax in other months (TER 0% net months, then taxed
-  // gross months). Without the mix, H follows the payer history, else (nothing
+  // Each payer's own balance of the prior year, unclamped (beads legend-6q7o,
+  // legend-u1xq, legend-mmgd): employee + employer = H, each > 0 when that
+  // payer underpaid its share and < 0 when it overpaid. With the earlier
+  // scheme mix known, the annual tax on the prior income aP = priorTax + H is
+  // shared by scheme base (`proportional`), or the employee's share is the tax
+  // their gross-scheme pay carries alone (`gross_first`), and each payer's
+  // balance is its share minus what it already paid. The two may differ in
+  // sign: one payer's overpayment never covers the other's shortfall. Without
+  // the mix, H follows the payer history (same sign for both), else (nothing
   // paid yet) this month's mix.
-  // gross_first with the mix known: the employee's part of the prior year's
-  // tax is the annual tax on their gross-scheme pay alone (the company covers
-  // everything on top), minus what they already paid, clamped to [0, H].
-  const historyBase0 = g + u + n;
-  let employerHistory = 0n;
-  const clampH = (v: bigint) => (v < 0n ? 0n : v > history ? history : v);
-  if (
-    history > 0n &&
-    priorMix > 0n &&
-    policy.mixedSchemeAllocation === "gross_first"
-  )
-    employerHistory =
-      history - clampH(annualOf(priorGrossScheme).annualTax - priorEmployeeTax);
-  else if (history > 0n && priorMix > 0n)
-    employerHistory = clampH(
-      ((history + priorTax) * priorEmployerScheme) / priorMix -
-        priorEmployerTax,
-    );
-  else if (history > 0n && priorTax > 0n)
-    employerHistory = (history * priorEmployerTax) / priorTax;
-  else if (history > 0n && historyBase0 > 0n)
-    employerHistory = (history * (historyBase0 - employeeG)) / historyBase0;
-  const employeeHistory = history - employerHistory;
-  // gross_first: the employee bears the tax their gross components add on top
-  // of the prior income, plus their part of H; the employer covers the rest.
-  const grossFirstShare =
-    policy.mixedSchemeAllocation === "gross_first"
-      ? taxOf(employeeG).tax - history + employeeHistory
-      : 0n;
+  const lineBase = g + u + n;
+  let employerBalance = 0n;
+  if (input.lastTaxPeriod && priorMix > 0n) {
+    if (policy.mixedSchemeAllocation === "gross_first")
+      employerBalance =
+        history - (annualOf(priorGrossScheme).annualTax - priorEmployeeTax);
+    else
+      employerBalance =
+        ((priorTax + history) * priorEmployerScheme) / priorMix -
+        priorEmployerTax;
+  } else if (history !== 0n && priorTax > 0n)
+    // BigInt division truncates toward 0: the employee keeps the rupiah.
+    employerBalance = (history * priorEmployerTax) / priorTax;
+  else if (history > 0n && lineBase > 0n)
+    employerBalance = (history * (lineBase - employeeG)) / lineBase;
+  const employeeBalance = history - employerBalance;
 
-  // Employee gross share of the period tax T at base x.
-  const employeeShare = (tax: bigint, x: bigint): bigint => {
-    if (tax <= 0n) return 0n;
-    // Nothing paid this period (last period only can owe tax at X = 0): the
-    // employee owes their part of H; the employer bears its part, which then
-    // becomes taxable borne pay (X > 0) in the fixed point below.
-    if (x === 0n) {
-      const part = history > 0n ? employeeHistory : tax;
-      return part < tax ? part : tax;
-    }
-    if (policy.mixedSchemeAllocation === "gross_first") {
-      const alone = grossFirstShare > 0n ? grossFirstShare : 0n;
-      return alone < tax ? alone : tax;
-    }
-    // proportional: the employee's part of H follows the payer history (as
-    // under gross_first); the tax this month adds on top, T - H, follows this
-    // month's gross share per scheme (employeeG: gross lines plus their share
-    // of the employer benefit), so the net / gross-up part is the company's and
-    // a net-only employee is never charged for it. T >= H (the annual tax
-    // rises with the base). With no shortfall the whole T follows the mix.
-    if (history > 0n) {
-      const share = employeeHistory + ((tax - history) * employeeG) / x;
-      return share < tax ? share : tax;
-    }
-    return (tax * employeeG) / x;
+  // The tax this period adds, D = T - H >= 0 (T = D in a TER month), split by
+  // this month's scheme mix: `proportional` by the employee's gross share
+  // employeeG / X (gross lines plus their share of the employer benefit), so
+  // the net / gross-up part is the company's and a net-only employee is never
+  // charged for it; `gross_first` the tax the employee's gross components add
+  // alone, capped at D. Nothing paid this period (X = 0): D = 0.
+  const employeeAloneAdded = taxOf(employeeG).tax - history;
+  const addedSplit = (at: bigint) => {
+    const added = taxOf(at).tax - history;
+    let employeePart: bigint;
+    if (policy.mixedSchemeAllocation === "gross_first")
+      employeePart = employeeAloneAdded < added ? employeeAloneAdded : added;
+    else employeePart = at === 0n ? 0n : (added * employeeG) / at;
+    return { employeePart, employerPart: added - employeePart };
   };
 
-  let x: bigint;
-  let tax: bigint;
-  let period: PeriodTax;
-  let withheld = 0n;
+  // Employer-covered tax S = max(0, Dr(X(S)) + employer balance): least fixed
+  // point from 0. Dr rises with X, so the map is monotone. With the pro rata
+  // floor it can dip by a rupiah; stop on the first non-increase and let the
+  // borne amount absorb the residual (take-home stays exact). Runs for
+  // gross-only pay too: the employer's part of a shortfall is borne, hence
+  // taxable as well.
+  let covered = 0n;
+  for (let i = 0; ; i++) {
+    if (i >= MAX_ITERATIONS)
+      throw new RangeError("Employer-covered tax did not converge");
+    const { employerPart } = addedSplit(lineBase + covered);
+    const next = employerPart + employerBalance;
+    if (next <= covered) break;
+    covered = next;
+  }
+  const x = lineBase + covered;
+  const period = taxOf(x);
+  const tax = period.tax;
+  // Each payer nets its part of D with its own balance: a positive result is
+  // charged (withheld from the employee; allowance or borne for the company),
+  // a negative one refunded to that payer. withheld + borne - both refunds =
+  // T, so the deposit is exactly T, and withheld may exceed T beside an
+  // employer refund (or borne stand beside an employee refund).
+  const { employeePart, employerPart } = addedSplit(x);
+  const employeeNet = employeePart + employeeBalance;
+  const employerNet = employerPart + employerBalance;
+  const w = employeeNet > 0n ? employeeNet : 0n;
+  const employeeRefund = employeeNet < 0n ? -employeeNet : 0n;
   let allowance = 0n;
   let borne = 0n;
-  let employeeRefund = 0n;
   let employerRefund = 0n;
-  const allowanceOf = (covered: bigint, employerPart: bigint) => {
-    const a =
+  if (employerNet >= 0n) {
+    allowance =
       coverU + coverN > 0n ? (covered * coverU) / (coverU + coverN) : 0n;
-    return a > employerPart ? employerPart : a;
-  };
-
-  if (history < 0n) {
-    // Lebih potong Jan-Nov (bead legend-u1xq). T = D - C: D = annual(prior +
-    // X) - annual(prior) >= 0 is the tax this month adds, C = -H the credit for
-    // tax already overpaid. Each payer settles its own balance: D is split by
-    // this month's scheme mix (De employee, Dr employer), C by who overpaid
-    // (Ce, Cr), and each side nets its two parts. The company's credit never
-    // lowers the employee's tax: W = De - Ce may exceed T, with the company's
-    // credit going back as an employer refund. withheld + borne - refunds = T,
-    // so the deposit is still exactly T.
-    const credit = -history;
-    const clampC = (v: bigint) => (v < 0n ? 0n : v > credit ? credit : v);
-    // priorTax > 0 here: H < 0 means more was paid than the prior income owes.
-    const priorAnnual = priorTax + history;
-    let employeeCredit: bigint;
-    if (priorMix > 0n && policy.mixedSchemeAllocation === "gross_first")
-      // Their overpayment over the tax their gross-scheme pay carries alone.
-      employeeCredit = clampC(
-        priorEmployeeTax - annualOf(priorGrossScheme).annualTax,
-      );
-    else if (priorMix > 0n)
-      // The company's overpayment over its scheme-base share of the prior tax.
-      employeeCredit =
-        credit -
-        clampC(
-          priorEmployerTax - (priorAnnual * priorEmployerScheme) / priorMix,
-        );
-    // No scheme mix: by payer history.
-    else employeeCredit = credit - (credit * priorEmployerTax) / priorTax;
-    const employerCredit = credit - employeeCredit;
-    const employeeAloneAdded = taxOf(employeeG).tax - history;
-    const addedSplit = (at: bigint) => {
-      const added = taxOf(at).tax - history;
-      let employeePart: bigint;
-      if (policy.mixedSchemeAllocation === "gross_first")
-        employeePart = employeeAloneAdded < added ? employeeAloneAdded : added;
-      else employeePart = at === 0n ? 0n : (added * employeeG) / at;
-      return { employeePart, employerPart: added - employeePart };
-    };
-    // Covered tax S = max(0, Dr(X(S)) - Cr): least fixed point from 0, same
-    // stop rule as below. Dr rises with X, so the map is monotone.
-    let covered = 0n;
-    for (let i = 0; ; i++) {
-      if (i >= MAX_ITERATIONS)
-        throw new RangeError("Employer-covered tax did not converge");
-      const { employerPart } = addedSplit(g + u + n + covered);
-      const next =
-        employerPart > employerCredit ? employerPart - employerCredit : 0n;
-      if (next <= covered) break;
-      covered = next;
-    }
-    x = g + u + n + covered;
-    period = taxOf(x);
-    tax = period.tax;
-    const { employeePart, employerPart } = addedSplit(x);
-    const employeeNet = employeePart - employeeCredit;
-    const employerNet = employerPart - employerCredit;
-    const w = employeeNet > 0n ? employeeNet : 0n;
-    employeeRefund = employeeNet < 0n ? -employeeNet : 0n;
-    if (employerNet >= 0n) {
-      allowance = allowanceOf(covered, employerNet);
-      borne = employerNet - allowance;
-    } else employerRefund = -employerNet;
-    withheld = w + allowance;
-  } else {
-    // Employer-covered tax S: least fixed point from 0. With the pro rata
-    // floor the map can dip by a rupiah; stop on the first non-increase and
-    // let the borne amount absorb the residual (take-home stays exact).
-    // Runs for gross-only pay too: under gross_first the employer's part of
-    // the history shortfall is borne, hence taxable as well. Otherwise the
-    // first step returns 0 and the loop stops at once.
-    let covered = 0n;
-    for (let i = 0; ; i++) {
-      if (i >= MAX_ITERATIONS)
-        throw new RangeError("Employer-covered tax did not converge");
-      const at = g + u + n + covered;
-      const { tax: atTax } = taxOf(at);
-      const next = atTax > 0n ? atTax - employeeShare(atTax, at) : 0n;
-      if (next <= covered) break;
-      covered = next;
-    }
-    x = g + u + n + covered;
-    period = taxOf(x);
-    tax = period.tax;
-    // H >= 0: T >= H >= 0 (the annual tax rises with the base; TER >= 0).
-    if (tax < 0n) throw new RangeError("Negative tax without a lebih potong");
-    const w = employeeShare(tax, x);
-    const employerPart = tax - w;
-    allowance = allowanceOf(covered, employerPart);
-    borne = employerPart - allowance;
-    withheld = w + allowance;
-  }
+    if (allowance > employerNet) allowance = employerNet;
+    borne = employerNet - allowance;
+  } else employerRefund = -employerNet;
+  const withheld = w + allowance;
 
   return {
     method: input.lastTaxPeriod ? "annual_recalculation" : "ter",
