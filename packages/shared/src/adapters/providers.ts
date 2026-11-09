@@ -41,8 +41,16 @@ export const storageLookupSchema = z.strictObject({
   key: storageKeySchema,
   visibility: z.enum(["public", "private"]).optional(),
 });
+/** Header-safe download name: no quotes, separators, whitespace, CR/LF or non-ASCII. */
+export const storageDownloadFileNameSchema = z
+  .string()
+  .min(1)
+  .max(150)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Unsafe download file name");
 export const storageSignedLookupSchema = storageLookupSchema.extend({
   expiresInSeconds: z.number().int().min(1).max(3600),
+  /** When set, the signed response carries `Content-Disposition: attachment`. */
+  downloadFileName: storageDownloadFileNameSchema.optional(),
 });
 
 /** PRD §5 payment cycle: pending -> paid | expired | failed -> refunded;
