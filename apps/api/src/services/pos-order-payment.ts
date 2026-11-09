@@ -54,7 +54,10 @@ import {
   isBusinessDayClosed,
   lockCashierShiftForCash,
 } from "./pos-cash-guard.ts";
-import { requestPosLatePaymentRefund } from "./pos-order-late-payment.ts";
+import {
+  pendingRefundIdr,
+  requestPosLatePaymentRefund,
+} from "./pos-order-late-payment.ts";
 import { settlePosEdcStandalone } from "./pos-edc-standalone.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
@@ -573,28 +576,6 @@ async function voidTendersAndRefundPaidQris(
     intentId: input.intentId,
     now,
   });
-}
-
-/**
- * legend-r5brx: refunds of the intent still `pending`, with the filter of
- * `refundableBalance().reserved` (no unallocated fund). Read under the intent
- * row lock, so `reserved - pending` is what approved and completed refunds
- * already committed.
- */
-async function pendingRefundIdr(
-  tx: Tx,
-  tenantId: ScopedTenantContext["tenant"]["tenantId"],
-  intentId: string,
-): Promise<bigint> {
-  const result = await tx.execute(sql`
-    SELECT coalesce(sum(amount_idr), 0)::text AS pending
-      FROM payment_refunds
-     WHERE tenant_id = ${tenantId}
-       AND payment_intent_id = ${intentId}::uuid
-       AND status = 'pending'
-       AND unallocated_fund_id IS NULL
-  `);
-  return BigInt(String(result.rows[0]?.pending ?? "0"));
 }
 
 /**

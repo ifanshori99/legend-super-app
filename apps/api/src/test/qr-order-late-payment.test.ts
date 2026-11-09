@@ -542,3 +542,94 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
     expect(again.rowCount).toBe(1);
   });
 });
+
+describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", () => {
+  /** A voided QR order whose intent the guest then paid late; the paid event. */
+  async function lateSettledOrder() {
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const intentId = await openPayment(guest, orderId);
+    const failedAt = new Date();
+    gateway.status = "failed";
+    try {
+      await getGuestPayment(
+        contextOf(tenant.tenantId),
+        guest.token,
+        guest.sessionId,
+        intentId,
+        failedAt,
+      );
+    } finally {
+      gateway.status = "pending";
+    }
+    const failed = await onlyEvent("payment.failed", intentId);
+    const { payment_link_id: linkId } = await orderRow(orderId);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        "UPDATE payment_links SET expires_at = now() - interval '1 minute' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, linkId],
+      ),
+    );
+    const { expires_at: codeEnd } = await intentRow(intentId);
+    const afterGrace = new Date(
+      codeEnd.getTime() + LATE_PAYMENT_GRACE_MS + MINUTE,
+    );
+    expect(await deliver(failed, afterGrace)).toEqual({
+      route: "qr",
+      outcome: "voided",
+    });
+    await settle(
+      intentId,
+      totalIdr,
+      `WEBHOOK-${randomBytes(6).toString("hex")}`,
+    );
+    return {
+      intentId,
+      totalIdr,
+      paid: await onlyEvent("payment.paid", intentId),
+    };
+  }
+
+  async function filedRefund(
+    intentId: string,
+    amountIdr: number,
+    status: "pending" | "approved",
+  ) {
+    await owner.query(
+      `INSERT INTO payment_refunds (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+       SELECT tenant_id, outlet_id, id, $3, 'Refund uji leqj6', $4, 'leqj6-test'
+       FROM payment_intents WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, intentId, amountIdr, status],
+    );
+  }
+
+  it("a pending 1000 refund is not subtracted: the late refund returns the whole amount", async () => {
+    const { intentId, totalIdr, paid } = await lateSettledOrder();
+    await filedRefund(intentId, 1000, "pending");
+
+    expect(await deliver(paid)).toEqual({
+      route: "qr",
+      outcome: "late_payment_on_voided_order",
+    });
+    const late = (await refundsOfIntent(intentId)).filter(
+      (row) => row.requested_by === "system:qr",
+    );
+    expect(late).toHaveLength(1);
+    expect(late[0]).toMatchObject({
+      amount_idr: String(totalIdr),
+      status: "pending",
+    });
+  });
+
+  it("regression: an approved 1000 refund is still subtracted", async () => {
+    const { intentId, totalIdr, paid } = await lateSettledOrder();
+    await filedRefund(intentId, 1000, "approved");
+
+    await deliver(paid);
+    const late = (await refundsOfIntent(intentId)).filter(
+      (row) => row.requested_by === "system:qr",
+    );
+    expect(late).toHaveLength(1);
+    expect(late[0]).toMatchObject({ amount_idr: String(totalIdr - 1000) });
+  });
+});
