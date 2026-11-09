@@ -71,7 +71,6 @@ let savedPolicies: Record<string, unknown>[] = [];
 const intentIds: string[] = [];
 const linkIds: string[] = [];
 const orderIds: string[] = [];
-let holdKey = 7_181_000;
 
 const key = (prefix = "race") => `${prefix}-${randomUUID()}`;
 
@@ -257,18 +256,6 @@ async function tenderOf(tenderId: string) {
   }>(
     "SELECT status, payment_intent_id FROM pos_order_tenders WHERE tenant_id = $1 AND id = $2",
     [seededTenantId, tenderId],
-  );
-  return rows[0];
-}
-
-async function orderState(orderId: string) {
-  const { rows } = await owner.query<{ status: string; captured: string }>(
-    `SELECT o.status,
-            (SELECT count(*) FROM pos_order_tenders t
-              WHERE t.tenant_id = o.tenant_id AND t.order_id = o.id
-                AND t.status = 'captured')::text AS captured
-       FROM orders o WHERE o.tenant_id = $1 AND o.id = $2`,
-    [seededTenantId, orderId],
   );
   return rows[0];
 }
