@@ -399,14 +399,12 @@ describe("delivery orders: platform orders push the adapter action after the com
     ]);
   });
 
-  it("commits the step when the platform is down and retries the same reference", async () => {
-    let down = true;
+  it("commits the step when the platform is down and records an unknown desync without stalling the order's outbox", async () => {
     const references: string[] = [];
     setDeliveryChannelAdapter("gofood", {
       execute: async (_context, input) => {
         references.push(input.reference);
-        if (down) throw new Error("platform down");
-        return { reference: input.reference, accepted: true };
+        throw new Error("platform down");
       },
     });
     const id = await seedInjectedPlatformOrder();
@@ -414,13 +412,13 @@ describe("delivery orders: platform orders push the adapter action after the com
       status: "accepted",
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    // The consumption fails, so the outbox retries it.
-    await expect(consumeStatusEvents(id)).rejects.toThrow();
+    // A throwing adapter must not fail the consumption (dead-letter would
+    // park every later event of this order): audited as unknown instead.
+    await expect(consumeStatusEvents(id)).resolves.toBeUndefined();
     const read = await get(`/delivery-orders/${id}`);
     expect(read.body.data.status).toBe("accepted");
-    down = false;
-    await consumeStatusEvents(id);
-    expect(references).toEqual([`${id}:accepted`, `${id}:accepted`]);
+    expect(references).toEqual([`${id}:accepted`]);
+    expect(await desyncOutcomes(id)).toEqual(["unknown"]);
   });
 
   it("records a refused push as a desync and settles the event", async () => {

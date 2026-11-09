@@ -291,24 +291,32 @@ async function deliverOrderStatusIntent(
       ),
     )
     .limit(1);
-  // A thrown call may still have reached the platform: the consumption fails
-  // and the outbox retries it under the same reference.
-  const result = await deliveryChannelAdapterFor(payload.platform).execute(
-    context,
-    {
-      tenantId,
-      outletId: event.outletId,
-      reference: `${payload.deliveryChannelOrderId}:${payload.to}`,
-      channel: payload.platform,
-      action: payload.action,
-      payload: {
-        externalOrderId: payload.externalOrderId,
-        status: payload.to,
-        reason: order?.closeReason ?? null,
+  // A thrown call may still have reached the platform, and failing the
+  // consumption would retry it and then dead-letter it, holding every later
+  // event of the order (the relay claims last_sequence + 1). It settles as an
+  // unknown outcome instead (legend-bk99).
+  let outcome: "refused" | "unknown";
+  try {
+    const result = await deliveryChannelAdapterFor(payload.platform).execute(
+      context,
+      {
+        tenantId,
+        outletId: event.outletId,
+        reference: `${payload.deliveryChannelOrderId}:${payload.to}`,
+        channel: payload.platform,
+        action: payload.action,
+        payload: {
+          externalOrderId: payload.externalOrderId,
+          status: payload.to,
+          reason: order?.closeReason ?? null,
+        },
       },
-    },
-  );
-  if (result.accepted) return;
+    );
+    if (result.accepted) return;
+    outcome = "refused";
+  } catch {
+    outcome = "unknown";
+  }
   await recordAudit(
     tx,
     context,
@@ -322,13 +330,16 @@ async function deliverOrderStatusIntent(
       action: "delivery_order.platform_desync",
       objectType: "delivery_channel_order",
       objectId: payload.deliveryChannelOrderId,
-      reason: `Platform menolak ${payload.action}; status lokal sudah tersimpan.`,
+      reason:
+        outcome === "refused"
+          ? `Platform menolak ${payload.action}; status lokal sudah tersimpan.`
+          : `Hasil ${payload.action} ke platform tidak diketahui; status lokal sudah tersimpan.`,
       maskedChanges: {
         before: { platform: payload.platform, status: payload.from },
         after: {
           platform: payload.platform,
           status: payload.to,
-          outcome: "refused",
+          outcome,
         },
       },
       ipHash: null,

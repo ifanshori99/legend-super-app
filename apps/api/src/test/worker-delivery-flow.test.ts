@@ -4,12 +4,16 @@
 // consumption run the real outbox functions.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
-import { createUlid, tenantIdSchema } from "@starter/shared/core";
-import { eventFixture } from "@starter/shared/events";
+import {
+  createUlid,
+  outletIdSchema,
+  tenantIdSchema,
+} from "@starter/shared/core";
+import { eventFixture, type EventEnvelope } from "@starter/shared/events";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -18,7 +22,12 @@ import {
   relayOutbox,
 } from "../services/core-outbox.ts";
 import { resolveFilledOutboxGaps } from "../services/core-outbox-gaps.ts";
-import { syncStaleDeliveryChannels } from "../services/delivery-sync-consumer.ts";
+import { setDeliveryChannelAdapter } from "../services/delivery-ports.ts";
+import {
+  deliverDeliveryChannelEvent,
+  syncStaleDeliveryChannels,
+} from "../services/delivery-sync-consumer.ts";
+import { createIsolatedTenant } from "./floor-test-helpers.ts";
 import { loadWorkerConfig } from "../worker/production-config.ts";
 
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
@@ -185,6 +194,84 @@ describe("legend-18qw production worker delivery", () => {
     expect(
       await count(
         sql`SELECT count(*) AS total FROM domain_event_gap_requests WHERE resolved_at IS NOT NULL`,
+      ),
+    ).toBe(1);
+  });
+});
+
+describe("legend-bk99 delivery order status intent consumption", () => {
+  afterEach(() => setDeliveryChannelAdapter("gofood", null));
+
+  it("legend-bk99 a throwing adapter settles as an unknown desync and does not hold the next event", async () => {
+    // A real tenant and outlet: the desync audit row references the outlet.
+    const { handlers } = await setup();
+    const isolated = await createIsolatedTenant(
+      `bk99-${randomUUID().slice(0, 6)}`,
+    );
+    const tenantId = tenantIdSchema.parse(isolated.tenantId);
+    const outletId = outletIdSchema.parse(isolated.outletId);
+    const context = await handlers.resolveContext(tenantId);
+    const aggregateId = createUlid();
+    const count = (query: ReturnType<typeof sql>) =>
+      withTenant(database, context, async (tx) =>
+        Number((await tx.execute(query)).rows[0]?.total ?? 0),
+      );
+    const orderId = randomUUID();
+    const statusEvent = (sequence: number, to: "accepted" | "preparing") =>
+      ({
+        ...eventFixture,
+        id: createUlid(),
+        tenantId,
+        outletId,
+        deviceId: null,
+        name: "delivery_order.status_changed",
+        aggregateType: "delivery_channel_order",
+        aggregateId,
+        sequence,
+        idempotencyKey: `legend-bk99:${aggregateId}:${sequence}`,
+        payloadSchemaRef: "delivery_order.status_changed.v1",
+        payload: {
+          deliveryChannelOrderId: orderId,
+          platform: "gofood",
+          externalOrderId: "GF-1",
+          orderId: null,
+          from: to === "accepted" ? "received" : "accepted",
+          to,
+          action: to === "accepted" ? "accept_order" : "update_order",
+        },
+      }) as EventEnvelope;
+    const references: string[] = [];
+    let down = true;
+    setDeliveryChannelAdapter("gofood", {
+      execute: async (_context, input) => {
+        references.push(input.reference);
+        if (down) throw new Error("platform down");
+        return { reference: input.reference, accepted: true };
+      },
+    });
+    const consume = (event: EventEnvelope) =>
+      withTenant(database, context, (tx) =>
+        deliverDeliveryChannelEvent(context, event, tx),
+      );
+    // The consumption settles instead of throwing (no pg-boss retry loop).
+    await expect(consume(statusEvent(1, "accepted"))).resolves.toBeUndefined();
+    expect(
+      await count(
+        sql`SELECT count(*) AS total FROM audit_logs
+          WHERE event->>'objectId' = ${orderId}
+            AND event->>'action' = 'delivery_order.platform_desync'
+            AND event->'maskedChanges'->'after'->>'outcome' = 'unknown'`,
+      ),
+    ).toBe(1);
+    // The next status event of the same order is consumed normally.
+    down = false;
+    await expect(consume(statusEvent(2, "preparing"))).resolves.toBeUndefined();
+    expect(references).toEqual([`${orderId}:accepted`, `${orderId}:preparing`]);
+    expect(
+      await count(
+        sql`SELECT count(*) AS total FROM audit_logs
+          WHERE event->>'objectId' = ${orderId}
+            AND event->>'action' = 'delivery_order.platform_desync'`,
       ),
     ).toBe(1);
   });
