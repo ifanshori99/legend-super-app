@@ -89,6 +89,47 @@ describe("Access log redaction of public PO share tokens", () => {
     expect(output).not.toContain(TOKEN);
   });
 
+  // legend-9wbc: the e-receipt token (legend-93a) is a bearer credential on
+  // /api/public/receipts/<token> and /<token>/pdf, in origin-form and
+  // absolute-form request targets alike. The pre-fix safeUrl split on "?" and
+  // anchored the path regexes at "^/api/...", so any absolute-form target
+  // ("http://host/api/public/receipts/<token>") never matched and the token
+  // reached the log; that breaks the not.toContain(TOKEN) assertion below.
+  it.each([
+    ["origin-form", `/api/public/receipts/${TOKEN}`],
+    ["origin-form pdf", `/api/public/receipts/${TOKEN}/pdf`],
+    ["origin-form with query", `/api/public/receipts/${TOKEN}?x=1`],
+    ["origin-form pdf with query", `/api/public/receipts/${TOKEN}/pdf?x=1`],
+    ["absolute-form", `http://example.test/api/public/receipts/${TOKEN}`],
+    [
+      "absolute-form pdf",
+      `http://example.test/api/public/receipts/${TOKEN}/pdf`,
+    ],
+    [
+      "absolute-form with port and query",
+      `http://example.test:8080/api/public/receipts/${TOKEN}?x=1`,
+    ],
+    [
+      "absolute-form pdf with query",
+      `http://example.test/api/public/receipts/${TOKEN}/pdf?x=1`,
+    ],
+    [
+      "uppercase scheme",
+      `HTTP://example.test/api/public/receipts/${TOKEN}`,
+    ],
+    [
+      "uppercase scheme pdf with query",
+      `HTTP://example.test/api/public/receipts/${TOKEN}/pdf?x=1`,
+    ],
+  ])(
+    "keeps the receipt token out of the log for an %s URL",
+    async (_name, target) => {
+      const output = await logOutputFor(target);
+      expect(output).toContain("/api/public/receipts/[redacted]");
+      expect(output).not.toContain(TOKEN);
+    },
+  );
+
   it("still blanks credential-like query values on an absolute URL", async () => {
     const output = await logOutputFor(
       "http://example.test/api/health?token=QUERYSECRET&page=2",
