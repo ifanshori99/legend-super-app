@@ -16,6 +16,7 @@ import {
   listPosShifts,
   openPosShift,
   recordPosCashMovement,
+  submitPosShiftCount,
 } from "@starter/shared/pos";
 import {
   createPosOverride,
@@ -131,11 +132,45 @@ registerMock(getPosShift, ({ params }) => {
   });
 });
 
+/**
+ * The contract stores a blind count first (`POST .../counts`) and the close
+ * names it by `countId`. The engine still closes from the counts, so the mock
+ * keeps each submitted count by id until the close reads it back.
+ */
+const submittedCounts = new Map<
+  string,
+  { shiftId: string; counts: { denominationIdr: number; quantity: number }[] }
+>();
+
+registerMock(submitPosShiftCount, ({ params, body }) => {
+  const sequence =
+    [...submittedCounts.values()].filter((c) => c.shiftId === params.shiftId)
+      .length + 1;
+  const id = crypto.randomUUID();
+  submittedCounts.set(id, { shiftId: params.shiftId, counts: body.counts });
+  return wire({
+    data: {
+      id,
+      shiftId: params.shiftId,
+      sequence,
+      countedIdr: body.counts.reduce(
+        (sum, line) => sum + line.denominationIdr * line.quantity,
+        0,
+      ),
+      noteRequired: false,
+      submittedAt: new Date().toISOString(),
+    },
+  });
+});
+
 registerMock(closePosShift, ({ params, body }) => {
+  const count = submittedCounts.get(body.countId);
+  if (!count || count.shiftId !== params.shiftId)
+    throw new ApiError(404, "NOT_FOUND", "Hitungan kas tidak ditemukan.");
   const shift = callPosKasirEngine((engine) => {
     engine.closeShiftWithApprover({
       shiftId: params.shiftId,
-      counts: body.counts,
+      counts: count.counts,
       varianceNote: body.varianceNote,
       approvedBy: body.approvedBy,
     });

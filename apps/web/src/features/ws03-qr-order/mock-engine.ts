@@ -643,6 +643,8 @@ export function createEngine(
         ? []
         : floor.ordersOf(sessionId).map((order) => simulatedOrder(order)),
       openServiceRequests: empty ? [] : visibleRequests(sessionId),
+      // WS-02: the demo outlet has no edge node, or its link is down.
+      orderingAvailable: scenario !== "edge-down",
     } as unknown as TableSessionView;
   }
 

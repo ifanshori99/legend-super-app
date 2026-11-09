@@ -40,12 +40,18 @@ import { db } from "../db/index.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
+import {
+  assertBusinessDayOpen,
+  lockCashierShiftForCash,
+} from "./pos-cash-guard.ts";
 import { posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
   appendPosEvent,
   auditPos,
+  businessDateFor,
   consumeApproval,
+  loadOutlet,
   lockPosOrder,
   posIdempotent,
   tenderDto,
@@ -218,6 +224,29 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Struk transaksi ini tidak ditemukan; void tertaut memerlukan nomor struk.",
         );
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      // The void pays the sale's captured cash back out of this drawer.
+      const voidCashIdr = (await tendersOf(tx, context, order.id))
+        .filter(
+          (tender) => tender.method === "cash" && tender.status === "captured",
+        )
+        .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
+      const shift =
+        voidCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: voidCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -233,6 +262,7 @@ export async function voidPosOrderCorrection(
           approvalRequestId: override.approvalRequestId,
           overrideId: override.id,
           voidedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
@@ -422,6 +452,26 @@ export async function refundPosOrder(
         amountIdr: Number(line.amountIdr),
         reference: null,
       }));
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      const refundCashIdr = lines
+        .filter((line) => tenderBucket(line.method as never) === "cash")
+        .reduce((sum, line) => sum + line.amountIdr, 0);
+      const shift =
+        refundCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: refundCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderRefunds)
         .values({
@@ -437,6 +487,7 @@ export async function refundPosOrder(
           approvalRequestId: override.approvalRequestId,
           overrideId: override.id,
           refundedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");

@@ -101,9 +101,9 @@ export async function createIsolatedTenant(
       `Tenant ${slugSuffix}`,
       JSON.stringify({ modules: ["qr_order"], integrationProviders: [] }),
       JSON.stringify(limits),
-      // A user id, never a free string: leftover tenants (append-only audit
-      // rows block cleanup) must still parse in the platform tenant list.
-      fixtures.tenant.createdBy,
+      // A user-id-shaped creator: the platform tenant list parses every row
+      // (tenantSchema.createdBy is a UUID), so 'test' broke /api/platform/tenants.
+      randomUUID(),
     ],
   );
   await owner.query(

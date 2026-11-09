@@ -101,7 +101,14 @@ async function roleIdOf(templateKey: string): Promise<string> {
   return rows[0].id;
 }
 
-async function signedIn(templateKey: "owner" | "finance", label: string) {
+// Supervisor authority (`pos.refund.approve`, PRD D14) is required to decide a
+// refund; Finance alone no longer pays out. The Finance approvers below
+// therefore also hold the supervisor template scoped to the refund outlet.
+async function signedIn(
+  templateKey: "owner" | "finance",
+  label: string,
+  alsoSupervisor = false,
+) {
   const client = agent(app);
   const email = await signUp(client, label);
   const session = await client.get("/api/auth/get-session");
@@ -113,6 +120,12 @@ async function signedIn(templateKey: "owner" | "finance", label: string) {
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
     [tenantId, userId, await roleIdOf(templateKey)],
   );
+  if (alsoSupervisor)
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [tenantId, userId, await roleIdOf("supervisor"), outletA],
+    );
   return { client, userId };
 }
 
@@ -274,10 +287,12 @@ beforeAll(async () => {
   ({ client: financeA, userId: financeAId } = await signedIn(
     "finance",
     "Refund finance A",
+    true,
   ));
   ({ client: financeB, userId: financeBId } = await signedIn(
     "finance",
     "Refund finance B",
+    true,
   ));
   ({ client: ownerB, userId: ownerBId } = await signedIn(
     "owner",

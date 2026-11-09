@@ -169,6 +169,7 @@ type Resolved = {
     rowNumber: number;
     existingItemId: string | null;
     stationId: string;
+    stationType: string;
   }[];
 };
 
@@ -231,7 +232,7 @@ async function resolveImport(
     );
   const categoryByName = new Map(categories.map((c) => [norm(c.name), c.id]));
   const stationRows = await tx
-    .select({ id: stations.id, name: stations.name })
+    .select({ id: stations.id, name: stations.name, type: stations.type })
     .from(stations)
     .where(
       and(
@@ -240,7 +241,9 @@ async function resolveImport(
         isNull(stations.deletedAt),
       ),
     );
-  const stationByName = new Map(stationRows.map((s) => [norm(s.name), s.id]));
+  const stationByName = new Map(
+    stationRows.map((s) => [norm(s.name), { id: s.id, type: s.type }]),
+  );
   const existing = await tx
     .select({
       id: menuItems.id,
@@ -273,7 +276,8 @@ async function resolveImport(
     const row = parsedRow.data;
     let action: ImportRowReport["action"] = "error";
     if (row && errors.length === 0) {
-      const stationId = stationByName.get(norm(row.station));
+      const station = stationByName.get(norm(row.station));
+      const stationId = station?.id;
       const existingId =
         itemByKey.get(importKey(row.category, row.name)) ?? null;
       if (!stationId)
@@ -288,7 +292,7 @@ async function resolveImport(
           code: "DUPLICATE_EXISTING",
           message: "Item dengan kategori dan nama yang sama sudah ada.",
         });
-      if (errors.length === 0 && stationId) {
+      if (errors.length === 0 && station) {
         action = existingId ? "update" : "create";
         if (existingId) toUpdate += 1;
         else toCreate += 1;
@@ -298,7 +302,8 @@ async function resolveImport(
           row,
           rowNumber: parsedRow.rowNumber,
           existingItemId: existingId,
-          stationId,
+          stationId: station.id,
+          stationType: station.type,
         });
       }
     }
@@ -540,6 +545,7 @@ export async function commitMenuImport(
           .set({
             description: row.description,
             stationId: entry.stationId,
+            stationType: entry.stationType,
             course: row.course === "" ? null : row.course,
             labels: row.labels,
             allergens: row.allergens,
@@ -577,6 +583,7 @@ export async function commitMenuImport(
             description: row.description,
             type: row.type,
             stationId: entry.stationId,
+            stationType: entry.stationType,
             course: row.course === "" ? null : row.course,
             labels: row.labels,
             allergens: row.allergens,

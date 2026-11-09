@@ -1699,6 +1699,12 @@ export const tableSessionViewSchema = z
     quote: orderQuoteSchema.nullable(),
     orders: z.array(qrOrderSchema),
     openServiceRequests: z.array(serviceRequestSchema),
+    /**
+     * False while the outlet has an edge node whose cloud link is down: the
+     * guest page shows the waiter notice and disables ordering (WS-02,
+     * PRD "Pesanan Pelanggan dari Cloud"). Defaults to true (no edge).
+     */
+    orderingAvailable: z.boolean().default(true),
   })
   .superRefine((view, ctx) => {
     const add = (

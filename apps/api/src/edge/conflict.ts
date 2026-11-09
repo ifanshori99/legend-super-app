@@ -28,7 +28,11 @@ import type {
 } from "../db/schema/edge-node.ts";
 
 export type EdgeConflictReason =
-  "edge_master_data" | "sequence_collision" | "sequence_gap";
+  | "edge_master_data"
+  | "sequence_collision"
+  | "sequence_gap"
+  /** The domain applier refused the event (CoreError / 4xx), legend-wqc6. */
+  | "applier_refused";
 
 export type InboundDecision =
   | { action: "apply" }

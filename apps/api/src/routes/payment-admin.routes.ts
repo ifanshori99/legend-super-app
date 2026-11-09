@@ -256,7 +256,10 @@ paymentAdminRouter.post(
       data: await refunds.retryRefundPayout(
         scope(req),
         actor(req),
-        contract.retryRefundPayout.params.parse(req.params),
+        {
+          ...contract.retryRefundPayout.params.parse(req.params),
+          sourceEvidenceId: input.sourceEvidenceId,
+        },
         input.idempotencyKey,
       ),
     });

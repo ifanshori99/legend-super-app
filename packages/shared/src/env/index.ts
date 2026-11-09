@@ -110,3 +110,65 @@ export function assertDataImportAllowed(
   if (dataType === "real" && settings.DEPLOYMENT_MODE !== "production")
     throw new Error("Real data imports are only permitted in production.");
 }
+
+// Edge link hardening (bead legend-x3lv). Read by the API from its process
+// environment; every key has a safe default, so none is required.
+//   EDGE_CREDENTIAL_ROTATION_GRACE_HOURS   previous credential accepted after a
+//                                          rotation (0..720, default 24)
+//   EDGE_LINK_AUTH_FAILURE_LIMIT           failed link authentications per
+//                                          address / node per window (default 10)
+//   EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS  that window (default 300)
+//   EDGE_QUEUE_ACKED_RETENTION_DAYS        acked queue rows kept (default 7)
+export const edgeHardeningEnvShape = {
+  EDGE_CREDENTIAL_ROTATION_GRACE_HOURS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(720)
+    .default(24),
+  EDGE_LINK_AUTH_FAILURE_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(10_000)
+    .default(10),
+  EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(86_400)
+    .default(300),
+  EDGE_QUEUE_ACKED_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3_650)
+    .default(7),
+};
+
+export const edgeHardeningEnvSchema = z.object(edgeHardeningEnvShape);
+export type EdgeHardeningSettings = z.infer<typeof edgeHardeningEnvSchema>;
+
+// Throws one Error naming each invalid key (never its value).
+export function parseEdgeHardeningEnv(
+  source: Record<string, string | undefined>,
+): EdgeHardeningSettings {
+  const parsed = edgeHardeningEnvSchema.safeParse({
+    EDGE_CREDENTIAL_ROTATION_GRACE_HOURS:
+      source.EDGE_CREDENTIAL_ROTATION_GRACE_HOURS || undefined,
+    EDGE_LINK_AUTH_FAILURE_LIMIT:
+      source.EDGE_LINK_AUTH_FAILURE_LIMIT || undefined,
+    EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS:
+      source.EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS || undefined,
+    EDGE_QUEUE_ACKED_RETENTION_DAYS:
+      source.EDGE_QUEUE_ACKED_RETENTION_DAYS || undefined,
+  });
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `Invalid edge settings:\n${formatDeploymentEnvProblems(
+      parsed.error.issues.map(
+        (issue) => `${issue.path.map(String).join(".")}: ${issue.message}`,
+      ),
+    )}`,
+  );
+}

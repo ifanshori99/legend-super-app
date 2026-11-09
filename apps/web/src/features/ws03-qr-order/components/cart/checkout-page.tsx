@@ -17,6 +17,7 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { WaiterOrderNotice } from "@/features/ws02-edge/components/waiter-order-notice";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
 import {
@@ -392,7 +393,13 @@ export function CheckoutPage() {
   const payable = plainQuote?.totalIdr ?? null;
   const shortfall = quote.minimumSpend.shortfallIdr;
   const busy = place.isPending || start.isPending;
+  // WS-02: the outlet's edge link is down (the view says so, or the order was
+  // just refused with EDGE_LINK_DOWN): the guest asks a waiter instead.
+  const orderingAvailable =
+    view.orderingAvailable !== false &&
+    !(place.error instanceof ApiError && place.error.code === "EDGE_LINK_DOWN");
   const blocked =
+    !orderingAvailable ||
     shortfall > 0 ||
     quote.lines.length === 0 ||
     awaitingConfirmation ||
@@ -462,7 +469,8 @@ export function CheckoutPage() {
         : null;
   const action = (
     <div className="grid gap-3">
-      {place.isError && (
+      {!orderingAvailable && <WaiterOrderNotice />}
+      {place.isError && orderingAvailable && (
         <Notice tone="danger" title={errorText(t, place.error)} />
       )}
       {payFailure}

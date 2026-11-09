@@ -37,12 +37,15 @@ export function depositReference(reservationId: string): string {
  * booking must never hold a table it cannot collect the DP for. A health
  * check that throws counts as down.
  */
-async function assertGatewayReady(context: ScopedTenantContext): Promise<void> {
+async function assertGatewayReady(
+  context: ScopedTenantContext,
+  outletId?: string,
+): Promise<void> {
   const gateway = paymentGateway();
   if (gateway.provider === "unconfigured") throw depositUnavailable();
   let status: string;
   try {
-    status = (await gateway.health(context)).status;
+    status = (await gateway.health(context, outletId)).status;
   } catch {
     throw depositUnavailable();
   }
@@ -53,7 +56,7 @@ export function createPaymentReservationDepositPort(): ReservationDepositPort {
   return {
     assertReady: assertGatewayReady,
     async openDeposit(input) {
-      await assertGatewayReady(input.context);
+      await assertGatewayReady(input.context, input.outletId);
       const amount = idr(input.amountIdr);
       const opened = await createPaymentLink(
         input.context,

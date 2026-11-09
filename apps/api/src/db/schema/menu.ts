@@ -160,6 +160,11 @@ export const menuItems = pgTable(
     type: varchar("type", { length: 20 }).notNull().default("single"),
     /** Default station routing (PRD §6 C #7 "Stasiun produksi"). */
     stationId: uuid("station_id"),
+    /**
+     * Station TYPE this item is made at (brand-level); KDS routing resolves it
+     * to a station per outlet. `stationId` stays as a per-outlet override.
+     */
+    stationType: varchar("station_type", { length: 20 }),
     course: varchar("course", { length: 20 }),
     /** WS-06 recipes (HPP and stock deduction); table not on main yet. */
     recipeId: uuid("recipe_id"),
@@ -217,6 +222,10 @@ export const menuItems = pgTable(
       table.id,
     ),
     check("menu_items_type_check", sql`${table.type} IN ('single', 'combo')`),
+    check(
+      "menu_items_station_type_check",
+      sql`${table.stationType} IS NULL OR ${table.stationType} IN ('coffee_bar', 'beverage_bar', 'hot_kitchen', 'cold_kitchen', 'pastry')`,
+    ),
     check("menu_items_sort_order_check", sql`${table.sortOrder} >= 0`),
   ],
 );

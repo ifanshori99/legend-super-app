@@ -30,6 +30,13 @@ export const stationSchema = z.strictObject({
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().positive().nullable(),
 });
+export const stationTypeSchema = z.enum([
+  "coffee_bar",
+  "beverage_bar",
+  "hot_kitchen",
+  "cold_kitchen",
+  "pastry",
+]);
 export const menuItemSchema = z.strictObject({
   ...scope,
   brandId: brandIdSchema,
@@ -38,6 +45,13 @@ export const menuItemSchema = z.strictObject({
   description: z.string(),
   type: z.enum(["single", "combo"]),
   stationId: uuidSchema.nullable(),
+  /**
+   * Brand-level station TYPE; each outlet resolves it to its own station of
+   * that type, and `stationId` is only an override inside its outlet
+   * (legend-s2dh). Optional in the DTO so older payloads and mocks still
+   * parse; the API always sends it.
+   */
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable(),
   recipeId: uuidSchema.nullable(),
   taxRuleId: uuidSchema.nullable(),

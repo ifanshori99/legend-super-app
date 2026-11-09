@@ -35,6 +35,12 @@ export const posErrorHttpStatus = {
   SHIFT_VARIANCE_LOCKED: 409,
   /** U9: a cash difference is explained before the shift closes. */
   SHIFT_VARIANCE_NOTE_REQUIRED: 422,
+  /** The drawer changed after the count: the cashier counts again. */
+  SHIFT_COUNT_STALE: 409,
+  /** A newer count of the same shift replaced this one. */
+  SHIFT_COUNT_SUPERSEDED: 409,
+  /** The cashier used all recounts of the shift: a supervisor force closes it. */
+  SHIFT_COUNT_LIMIT: 409,
   /** A device holds one open shift at a time. */
   SHIFT_ALREADY_OPEN: 409,
   /** An order can only be billed to an open shift of its own terminal. */
@@ -45,6 +51,12 @@ export const posErrorHttpStatus = {
   RECEIPT_SEQUENCE_REGRESSION: 409,
   /** The receipt number does not belong to this device's prefix/ordinal. */
   RECEIPT_PREFIX_MISMATCH: 422,
+  /** An edge sale needs a verified device to take a receipt number. */
+  RECEIPT_DEVICE_REQUIRED: 422,
+  /** The edge has no cloud-provisioned receipt sequence for this device. */
+  RECEIPT_SEQUENCE_NOT_PROVISIONED: 409,
+  /** A merged receipt says voided but the cloud holds no matching void. */
+  RECEIPT_VOID_UNMATCHED: 409,
   /** A receipt is voided once; its number stays on record. */
   RECEIPT_ALREADY_VOIDED: 409,
   /** The business day was already closed for this outlet. */
@@ -71,17 +83,28 @@ const defaultMessages: Record<PosErrorCode, string> = {
   CORRECTION_TARGET_NOT_FINAL: "Koreksi hanya untuk transaksi final.",
   TENDER_TOTAL_MISMATCH: "Pembayaran belum menutup seluruh tagihan.",
   CASH_TENDER_MISMATCH: "Hanya pembayaran tunai yang mencatat uang diterima.",
-  SHIFT_NOT_OPEN: "Shift kasir sudah ditutup.",
+  SHIFT_NOT_OPEN: "Tidak ada shift kasir yang terbuka. Buka shift dulu.",
   SHIFT_ALREADY_CLOSED: "Shift ini sudah ditutup.",
   SHIFT_VARIANCE_LOCKED:
     "Selisih kas yang sudah disetujui tidak dapat diubah lagi.",
   SHIFT_VARIANCE_NOTE_REQUIRED: "Selisih kas wajib diberi penjelasan.",
+  SHIFT_COUNT_STALE: "Kas laci berubah setelah dihitung. Hitung ulang.",
+  SHIFT_COUNT_SUPERSEDED:
+    "Hitungan ini sudah diganti hitungan yang lebih baru.",
+  SHIFT_COUNT_LIMIT:
+    "Batas hitung ulang tercapai. Minta supervisor menutup shift.",
   SHIFT_ALREADY_OPEN: "Perangkat ini masih memiliki shift yang terbuka.",
   SHIFT_ORDER_MISMATCH: "Pesanan ini bukan milik shift perangkat tersebut.",
   RECEIPT_SEQUENCE_GAP: "Ada nomor struk yang hilang pada perangkat ini.",
   RECEIPT_SEQUENCE_REGRESSION:
     "Nomor struk tidak boleh mundur atau dipakai ulang.",
   RECEIPT_PREFIX_MISMATCH: "Nomor struk tidak cocok dengan prefiks perangkat.",
+  RECEIPT_DEVICE_REQUIRED:
+    "Penjualan di edge memerlukan perangkat terverifikasi.",
+  RECEIPT_SEQUENCE_NOT_PROVISIONED:
+    "Perangkat ini belum menerima urutan nomor struk dari cloud.",
+  RECEIPT_VOID_UNMATCHED:
+    "Struk ditandai void tetapi cloud tidak punya void yang cocok.",
   RECEIPT_ALREADY_VOIDED: "Struk ini sudah di-void.",
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
 };

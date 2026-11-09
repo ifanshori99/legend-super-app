@@ -61,7 +61,7 @@ import {
 } from "@starter/shared/pos";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { tableSessions } from "../db/schema/index.ts";
+import { devices, tableSessions } from "../db/schema/index.ts";
 import {
   orderEvents,
   posApprovalPolicies,
@@ -71,6 +71,11 @@ import {
 } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
+import {
+  cancelKitchenItemsForVoidedLines,
+  routeFiredItemsToKitchen,
+} from "./kds.service.ts";
 import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
@@ -118,6 +123,7 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
+import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
@@ -173,6 +179,10 @@ export async function mutatePosOrder<T>(
           input.outletId,
           input.orderId,
         );
+        await assertBusinessDayOpen(tx, context, {
+          outletId: input.outletId,
+          businessDates: [locked.order.businessDate],
+        });
         assertExpectedVersion(locked.pos, caller.expectedVersion);
         return run(tx, locked);
       },
@@ -595,6 +605,10 @@ export async function createPosOrder(
         }
 
         const businessDate = businessDateFor(outlet, now);
+        await assertBusinessDayOpen(tx, context, {
+          outletId,
+          businessDates: [businessDate],
+        });
         const channel = posPriceChannel(input.channel, input.serviceType);
         const catalogue = await loadPosCatalogue(tx, context, {
           brandId: outlet.brandId,
@@ -702,6 +716,22 @@ export async function createPosOrder(
           })
           .returning();
         if (!order) throw new Error("Order insert returned no row");
+        // Training stamp: the device's mode at creation, fixed for the order's life.
+        let isTraining = false;
+        if (caller.deviceId) {
+          const [device] = await tx
+            .select({ trainingMode: devices.trainingMode })
+            .from(devices)
+            .where(
+              and(
+                eq(devices.tenantId, tenantId),
+                eq(devices.outletId, outlet.id as OutletId),
+                eq(devices.id, caller.deviceId),
+              ),
+            )
+            .limit(1);
+          isTraining = device?.trainingMode ?? false;
+        }
         await tx.insert(posOrders).values({
           orderId,
           tenantId,
@@ -711,6 +741,7 @@ export async function createPosOrder(
           deviceId: caller.deviceId,
           cashierId: caller.userId,
           holdItems: input.holdItems ?? false,
+          isTraining,
           createdAt: now,
           updatedAt: now,
         });
@@ -849,6 +880,26 @@ async function fireLines(
         eq(posOrderItems.tenantId, tenantId),
         inArray(posOrderItems.itemId, ids),
       ),
+    );
+  // A sale must never fail because the outlet has no KDS station for an
+  // item's type: such lines are fired without a kitchen ticket and audited
+  // (`kitchen_ticket.unrouted`), the other lines still get theirs.
+  const routed = await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: ids,
+    actor: { userId: caller.userId, deviceId: caller.deviceId ?? null },
+    now,
+    onUnresolved: "skip",
+  });
+  if (routed.unroutedItemIds.length > 0)
+    logger.warn(
+      {
+        orderId: order.id,
+        outletId: order.outletId,
+        unroutedCount: routed.unroutedItemIds.length,
+      },
+      "POS fire: items have no KDS station and were fired without a ticket",
     );
   let current = order;
   if (order.status === "awaiting_payment") {
@@ -1276,6 +1327,15 @@ async function voidLines(
           ),
         ),
       );
+  if (voided.length > 0)
+    await cancelKitchenItemsForVoidedLines(tx, context, {
+      outletId: order.outletId,
+      orderId: order.id,
+      itemIds: voided.map((item) => item.id),
+      reason: input.reason,
+      actor: { userId: input.voidedBy, deviceId: null },
+      now: input.now,
+    });
   return voided.length;
 }
 
