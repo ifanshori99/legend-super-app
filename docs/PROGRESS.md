@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-gauz3 + legend-r11j7 + legend-lhffb race PIN edge (engineer, cabang `ws/edge-pin-race-fixes` dari m1 94d769c6, 2026-11-09)
+
+- Sudah (gauz3, P1): job resend material PIN mengunci baris PIN (`FOR UPDATE`) sebelum membaca material dan event set terakhir, satu baris per transaksi (review K: mengunci semua baris sekaligus bisa deadlock dengan penarik PIN yang mengunci urut id cloud). Reset yang bersamaan tidak lagi membuat PIN lama aktif lagi.
+- Sudah (lhffb, P2): lock dari node asal generasi dengan sequence ≤ sequence set generasi ditolak sebelum perbandingan timestamp, sama seperti guard set.
+- Sudah (r11j7, P2): migrasi `0163_staff_pin_attempt_revision` (`when` 1794242000000): kolom `attempt_revision` yang dinaikkan trigger setiap counter, lock, atau material berubah, dan baseline edge `cloud_attempt_revision`. Edge menilai "counter bergerak" dari revisi bila keduanya punya; tanpa revisi, perbandingan nilai seperti sebelumnya. Ekspor membawa `attemptRevision` hanya bila edge meminta `revision=1` (edge lama memakai schema strict).
+- Rilis: cloud dahulu (sudah urutan di `docs/deployment.md`); edge baru butuh cloud yang mengenal `revision=1`.
+- Batas: restore cloud yang memundurkan revisi tepat ke baseline edge bisa memunculkan lagi kasus ABA (jarang, arah aman). Saat merge dengan cabang generation instance (0157), klausa baru guard lock harus ikut memakai pemeriksaan asal yang sadar instance.
+- Second opinion Codex: `docs/briefs/221b-second-opinion-edge-pin-race-fixes.md` (folder utama, tidak di-commit).
+
 ## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
 
 - Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.

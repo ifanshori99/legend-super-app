@@ -452,7 +452,7 @@ describe("legend-r11j7 counter ABA between two pulls", () => {
     expect(row.cloud_attempt_revision).toBeNull();
   });
 
-  it("the trigger bumps attempt_revision on a counter, lock or hash change only, and a writer cannot set it", async () => {
+  it("the trigger bumps attempt_revision on a counter or hash change only (not a lock-only change), and a writer cannot set it", async () => {
     const userId = await newStaff();
     await setStaffPin(
       tenant,
@@ -470,22 +470,23 @@ describe("legend-r11j7 counter ABA between two pulls", () => {
 
     await update("failed_attempts = 2");
     expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 1);
+    // A lock-only change is merged by value on the edge: no bump (review K).
     await update("locked_until = now() + interval '5 minutes'");
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 2);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 1);
     await update("pin_salt = 'AAAAAAAAAAAAAAAAAAAAAA=='");
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 3);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 2);
     await update(`pin_hash = repeat('a', 64)`);
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 3);
 
     // updated_at only, or a write of the same values: no bump.
     await update("updated_at = now()");
     await update("failed_attempts = 2");
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 3);
 
     // A writer cannot set it, alone or together with a counter change.
     await update("attempt_revision = 999");
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 3);
     await update("attempt_revision = 999, failed_attempts = 1");
-    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 5);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
   });
 });

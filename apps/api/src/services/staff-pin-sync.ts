@@ -607,7 +607,7 @@ export async function applyStaffPinRecords(
       // The value alone cannot see a cloud counter that went 3 -> 0 -> 3
       // between two pulls (legend-r11j7): the record equals the baseline and
       // was dropped as a replay. The cloud `attempt_revision` moves on every
-      // counter, lock or hash change, so when both sides carry one, the
+      // counter or hash change (not a lock-only one), so when both sides carry one, the
       // revision decides whether the counter moved; a replay (cloud restart
       // resync) keeps the same revision and still changes nothing. Without a
       // revision on either side (older cloud export, or the first pull after

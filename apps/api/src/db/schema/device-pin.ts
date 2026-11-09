@@ -119,8 +119,8 @@ export const staffPins = pgTable(
     cloudLockedUntil: timestamp("cloud_locked_until", { withTimezone: true }),
     /**
      * Counter revision (legend-r11j7): bumped by the `staff_pins_attempt_revision`
-     * trigger on every change of `failed_attempts`, `locked_until`, `pin_hash`
-     * or `pin_salt` (no application code sets it). The cloud exports it, so
+     * trigger on every change of `failed_attempts`, `pin_hash` or `pin_salt`,
+     * not on a lock-only change (no application code sets it). The cloud exports it, so
      * the edge sees a counter that went 3 -> 0 -> 3 between two pulls as moved
      * although the value is the same.
      */

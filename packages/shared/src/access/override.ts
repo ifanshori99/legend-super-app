@@ -128,10 +128,11 @@ export const staffPinEdgeRecordSchema = z.strictObject({
   pinGenerationAt: isoDateTimeSchema,
   /**
    * Counter revision (`staff_pins.attempt_revision`, legend-r11j7): bumped on
-   * every change of the counter, the lock or the hash material, so the edge
-   * sees a counter that went 3 -> 0 -> 3 between two pulls as moved. Optional:
-   * an edge on this version accepts the export of an older cloud and then
-   * compares the counter by value.
+   * every change of the counter or the hash material, so the edge sees a
+   * counter that went 3 -> 0 -> 3 between two pulls as moved. Optional: the
+   * cloud sends it only to an edge that asks (`revision=1`), since an older
+   * edge parses this record strictly; without it the edge compares the
+   * counter by value.
    */
   attemptRevision: z.number().int().nonnegative().optional(),
 });
