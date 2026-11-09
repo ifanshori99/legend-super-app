@@ -63,6 +63,12 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Konflik hanya di `docs/DECISIONS.md` dan `docs/PROGRESS.md` (keep-both). Rantai migrasi tetap 0186 terakhir.
 - ws/audit-retention-purge (0187) menyusul sesudah tes migrasi pemilik non-superuser.
 
+## Tambahan batch42
+
+- ws/training-orders-no-journal (1a21d857, legend-gkc6b, tanpa migrasi): pesanan latihan tidak pernah memposting jurnal penjualan atau HPP (consumer jurnal otomatis dan consumer GL stok melewati pesanan latihan).
+- Tanpa konflik. Rantai migrasi tetap berujung di 0186.
+- ws/audit-retention-purge (0187) masuk batch43 sesudah tes migrasi 0187.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
