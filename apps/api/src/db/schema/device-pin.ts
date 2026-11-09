@@ -128,6 +128,15 @@ export const staffPins = pgTable(
     generationEdgeSequence: bigint("generation_edge_sequence", {
       mode: "number",
     }),
+    /**
+     * Cloud only (legend-o839h): the edge database (`edge_nodes.instance_id`
+     * of the sending edge) that gave the current generation. A rebuilt edge
+     * database keeps its node id but restarts its sequences, so a set from
+     * another instance of the same node compares by key, not by sequence.
+     * Null when the edge did not report an instance (old edge), after a cloud
+     * set, and on the edge.
+     */
+    generationEdgeInstanceId: uuid("generation_edge_instance_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

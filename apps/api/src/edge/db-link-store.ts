@@ -60,6 +60,8 @@ export type DbLinkStoreOptions = {
   context: ScopedTenantContext;
   node: { tenantId: string; outletId: string; edgeNodeId: string };
   outboundDirection: SyncDirection;
+  /** Sending edge database's instance id (cloud side); null = unknown. */
+  edgeInstanceId?: string | null;
   /** Test seams; production uses the installed ports. */
   applier?: EdgeEventApplier<EdgeTx>;
   /** Must return a kind; null/throw refuses the batch (ports.ts, fail closed). */
@@ -290,6 +292,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
           const kind = classify(event);
           const meta: EdgeApplyMeta = {
             edgeNodeId: nodeId,
+            edgeInstanceId: options.edgeInstanceId ?? null,
             direction: inbound,
             kind,
             context,

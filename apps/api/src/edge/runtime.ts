@@ -632,6 +632,7 @@ export async function startEdgeRuntime(
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
+    instanceId: local.instanceId,
     scope: local.scope,
     version: config.version,
     store: createDbLinkStore({
@@ -847,6 +848,7 @@ export async function registerEdgeLink(
         database: db,
         context: identity.context,
         node: identity.scope,
+        edgeInstanceId: identity.edgeInstanceId,
         outboundDirection: "cloud_to_edge",
       }),
     onHeartbeat: (identity, frame) =>

@@ -188,6 +188,11 @@ async function assertTenantUser(
  * adopted key is GREATEST(setAt, current + 1 ms) so the cloud key never moves
  * back, and the node id and sequence are stored for the next set.
  *
+ * legend-o839h: "the node" is the node id and the edge database instance id
+ * it reported (`meta.edgeInstanceId`, stored as `generation_edge_instance_id`).
+ * A rebuilt edge database of the same node restarts its sequences; its sets
+ * compare by key, so they are adopted without registering a new node.
+ *
  * legend-kgbw: a refused set with other material (an older or tied key)
  * touches the cloud row, so the export sends the cloud pin again and the edge
  * replaces the pin the cloud refused. No event, no audit.
@@ -223,7 +228,9 @@ export async function applyStaffPinSet(
   const provenance = {
     generationEdgeNodeId: meta.edgeNodeId,
     generationEdgeSequence: event.sequence,
+    generationEdgeInstanceId: meta.edgeInstanceId ?? null,
   };
+  const ownOrigin = sameGenerationOrigin(meta);
   const values = {
     pinHash: material.pinHash,
     pinSalt: material.salt,
@@ -265,7 +272,8 @@ export async function applyStaffPinSet(
     // equal sequence) never wins through the key branch (review K R2): its
     // later set may already hold a lower key after the clock stepped back. A
     // null generation_edge_node_id (cloud set, older rows) still compares by
-    // key only.
+    // key only, and so does another edge database of the same node
+    // (legend-o839h, `sameGenerationOrigin`).
     const written = await tx
       .update(staffPins)
       .set({
@@ -278,7 +286,7 @@ export async function applyStaffPinSet(
         and(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.id, id),
-          sql`((${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}) OR (${staffPins.pinGenerationAt} < ${pinGenerationAt} AND NOT (${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} >= ${event.sequence})))`,
+          sql`((${ownOrigin} AND ${staffPins.generationEdgeSequence} < ${event.sequence}) OR (${staffPins.pinGenerationAt} < ${pinGenerationAt} AND NOT (${ownOrigin} AND ${staffPins.generationEdgeSequence} >= ${event.sequence})))`,
           otherMaterial,
         ),
       )
@@ -338,6 +346,21 @@ export async function applyStaffPinSet(
 }
 
 /**
+ * legend-o839h: the event comes from the edge database that gave the current
+ * generation, so its aggregate sequence is comparable with the stored one.
+ * Same node id and same instance id; a null instance on both sides (an old
+ * edge that never reports one) keeps the node-only rule of legend-rucdm. A
+ * rebuilt edge database keeps the node id but has a new instance id and
+ * restarts its sequences, so its sets compare by key only. A restored or
+ * cloned database keeps its instance id and still orders by sequence
+ * (legend-yd0h8 covers that case for receipts).
+ */
+function sameGenerationOrigin(meta: EdgeApplyMeta) {
+  // Never NULL (a cloud row has no node): it is negated in the key branch.
+  return sql`(${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeInstanceId} IS NOT DISTINCT FROM ${meta.edgeInstanceId ?? null}::uuid)`;
+}
+
+/**
  * Runs a staff_pins write. A database error can quote the row (hash, salt)
  * in its message or parameters, so anything but a domain refusal is
  * rethrown as a generic error (review K F4). Domain refusals pass unchanged.
@@ -361,7 +384,8 @@ async function guardPinWrite<T>(work: () => Promise<T>): Promise<T> {
  * Review K F1: after an adoption by sequence (legend-rucdm) the cloud key is
  * ahead of that node's clock, so its later locks would all look older than
  * the generation. A lock of the node that gave the generation with a higher
- * aggregate sequence is therefore also newer. Set and lock events of one
+ * aggregate sequence is therefore also newer (same node and same edge
+ * database instance, legend-o839h). Set and lock events of one
  * staff pin share one aggregate stream on the edge (`appendDevicePinEvent`,
  * aggregate = the staff pin row), so the sequences are comparable.
  */
@@ -392,7 +416,7 @@ export async function applyStaffPinLocked(
           eq(staffPins.userId, payload.userId),
           // Same clock as an edge set's order key (both edge time), or a
           // later event of the node that gave the generation (F1).
-          sql`(${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz OR (${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
+          sql`(${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz OR (${sameGenerationOrigin(meta)} AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
           // An edge clock far ahead (round 3 R1).
           sql`${event.occurredAt}::timestamptz <= ${edgeClockLimit}`,
           sql`${payload.lockedUntil}::timestamptz > now()`,

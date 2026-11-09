@@ -25,6 +25,11 @@ import type { EdgeEventKind } from "../db/schema/edge-node.ts";
 
 export type EdgeApplyMeta = {
   readonly edgeNodeId: string;
+  /**
+   * The sending edge database's `edge_nodes.instance_id` (legend-o839h);
+   * null/absent = unknown (an old edge that does not send it).
+   */
+  readonly edgeInstanceId?: string | null;
   readonly direction: SyncDirection;
   readonly kind: EdgeEventKind;
   readonly context: ScopedTenantContext;

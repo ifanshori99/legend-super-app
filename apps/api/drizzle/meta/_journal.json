@@ -1086,6 +1086,13 @@
       "when": 1794233000000,
       "tag": "0154_receipt_sequence_restore_detect",
       "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1794236000000,
+      "tag": "0157_staff_pin_generation_instance",
+      "breakpoints": true
     }
   ]
 }

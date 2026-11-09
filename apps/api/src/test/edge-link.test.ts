@@ -723,6 +723,48 @@ describe("EDG-01 WebSocket link (real ws, in-memory stores)", () => {
     await linkServer.close();
   });
 
+  it("legend-o839h sends the instance id header and the cloud carries it on the identity; missing or invalid means null", async () => {
+    const { token } = mintEdgeCredential(scope);
+    const seen: (string | null | undefined)[] = [];
+    server = createServer();
+    const linkServer = createEdgeLinkServer(server, {
+      version: "cloud",
+      authenticate: async (presented) =>
+        presented === token ? { scope } : null,
+      isActive: async () => true,
+      storeFor: (identity) => {
+        seen.push(identity.edgeInstanceId);
+        return new MemoryStore("cloud_to_edge");
+      },
+    });
+    await new Promise<void>((resolve) =>
+      server!.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as AddressInfo).port;
+    const url = `ws://127.0.0.1:${port}/api/edge-link`;
+    const connect = async (instanceId?: string | null) => {
+      const client = createEdgeLinkClient({
+        url,
+        credential: token,
+        instanceId,
+        scope,
+        store: new MemoryStore("edge_to_cloud"),
+        version: "edge",
+      });
+      await settle(() => client.state().cloudLink === "connected");
+      expect(client.state().refused).toBe(false);
+      await client.stop();
+      await settle(() => !linkServer.isConnected(scope.edgeNodeId));
+    };
+
+    const instance = randomUUID();
+    await connect(instance);
+    await connect(); // old edge: no header
+    await connect("not-a-uuid"); // malformed: connection still accepted
+    expect(seen).toEqual([instance, null, null]);
+    await linkServer.close();
+  });
+
   it("EDG-01 a cloud-side failure while authenticating is retried, not treated as a refusal", async () => {
     const { token } = mintEdgeCredential(scope);
     let failures = 2;
