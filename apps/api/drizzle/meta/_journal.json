@@ -1282,6 +1282,13 @@
       "when": 1794267000000,
       "tag": "0188_ai_provider_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1794269000000,
+      "tag": "0190_poll_lease",
+      "breakpoints": true
     }
   ]
 }

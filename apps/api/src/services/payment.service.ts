@@ -48,6 +48,7 @@ import {
   eq,
   gt,
   gte,
+  inArray,
   isNotNull,
   isNull,
   lt,
@@ -1908,6 +1909,11 @@ export const GATEWAY_POLL_MAX_BACKOFF_MS = 60 * 60_000;
 export const GATEWAY_POLL_BUDGET_MS = 20_000;
 export const GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS = 3;
 
+/** How long a worker holds the intents it claimed for a polling run. It is
+ * released when the run ends; this only matters when a worker dies mid-run, so
+ * it must outlast the run budget with room to spare. */
+export const GATEWAY_POLL_LEASE_MS = 2 * 60_000;
+
 /**
  * Applies a verified provider "expired"/"failed" outcome. It acts only while
  * the intent is still `pending`: the conditional UPDATE re-checks the status
@@ -2055,6 +2061,34 @@ async function markGatewayReconciled(
   );
 }
 
+/** Frees the polling lease of `ids`, but only where it is still the one this
+ * run took: a run that outlived its lease must not free a newer worker's.
+ * Best effort: a failure only means the lease lapses on its own after
+ * `GATEWAY_POLL_LEASE_MS`. */
+async function releasePollLease(
+  context: ScopedTenantContext,
+  ids: readonly string[],
+  leaseUntil: Date,
+): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await withTenant(db, context, async (tx) =>
+      tx
+        .update(paymentIntents)
+        .set({ gatewayPollLeaseUntil: null })
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            inArray(paymentIntents.id, [...ids]),
+            eq(paymentIntents.gatewayPollLeaseUntil, leaseUntil),
+          ),
+        ),
+    );
+  } catch (error) {
+    logger.warn({ err: error }, "Payment: releasing the poll lease failed");
+  }
+}
+
 /**
  * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
  * pending intents that have a provider reference and are older than the grace
@@ -2083,13 +2117,23 @@ export async function pollPendingGatewayIntents(
     gt(paymentIntents.expiresAt, now),
     sql`${paymentIntents.gatewayPolledAt} <= ${nowAt} - least((${nowAt} - ${paymentIntents.expiresAt}) / 2, ${`${GATEWAY_POLL_MAX_BACKOFF_MS} milliseconds`}::interval)`,
   );
-  const pending = await withTenant(db, context, async (tx) =>
-    tx
-      .select()
+  // The lease runs on the wall clock, not on the caller's `now` (which the
+  // worker took before slower steps and tests move around).
+  const leaseNow = new Date();
+  const leaseUntil = new Date(leaseNow.getTime() + GATEWAY_POLL_LEASE_MS);
+  // Claim atomically: rows another worker holds (a live lease, or a row lock
+  // mid-claim) are skipped, so two workers never poll the same intent.
+  const pending = await withTenant(db, context, async (tx) => {
+    const candidates = await tx
+      .select({ id: paymentIntents.id })
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
+          or(
+            isNull(paymentIntents.gatewayPollLeaseUntil),
+            lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+          ),
           or(
             eq(paymentIntents.status, "pending"),
             and(
@@ -2113,51 +2157,79 @@ export async function pollPendingGatewayIntents(
         sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
         asc(paymentIntents.createdAt),
       )
-      .limit(limit),
-  );
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    if (candidates.length === 0) return [];
+    const claimed = await tx
+      .update(paymentIntents)
+      .set({ gatewayPollLeaseUntil: leaseUntil })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          inArray(
+            paymentIntents.id,
+            candidates.map((row) => row.id),
+          ),
+        ),
+      )
+      .returning();
+    const byId = new Map(claimed.map((row) => [row.id, row]));
+    // `returning` has no order: keep the least-recently-polled-first order.
+    return candidates.flatMap((row) => byId.get(row.id) ?? []);
+  });
   let checked = 0;
   let settled = 0;
   let consecutiveErrors = 0;
   const startedAt = Date.now();
-  for (const row of pending) {
-    if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
-    if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
-    checked += 1;
-    try {
-      // Stamp the attempt first so an erroring intent rotates to the back.
-      await withTenant(db, context, async (tx) =>
-        tx
-          .update(paymentIntents)
-          .set({ gatewayPolledAt: now })
-          .where(
-            and(
-              eq(paymentIntents.tenantId, context.tenant.tenantId),
-              eq(paymentIntents.id, row.id),
+  try {
+    for (const row of pending) {
+      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+      if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
+      checked += 1;
+      try {
+        // Stamp the attempt first so an erroring intent rotates to the back.
+        await withTenant(db, context, async (tx) =>
+          tx
+            .update(paymentIntents)
+            .set({ gatewayPolledAt: now })
+            .where(
+              and(
+                eq(paymentIntents.tenantId, context.tenant.tenantId),
+                eq(paymentIntents.id, row.id),
+              ),
             ),
-          ),
-      );
-      // Narrow to the intent's outlet so the gateway reads that outlet's own
-      // DOIT credentials when it has them (outlet row wins over tenant row).
-      const outletContext =
-        context.outletScope.kind === "tenant"
-          ? establishScopedTenantContext(context.tenant, {
-              kind: "outlets",
-              outletIds: [row.outletId],
-            })
-          : context;
-      const result =
-        row.status === "expired"
-          ? await syncExpiredIntentPayment(outletContext, row, now)
-          : await syncPendingIntentDetailed(outletContext, row, now);
-      consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
-      if (
-        row.status !== result.intent.status &&
-        (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
-      )
-        settled += 1;
-    } catch {
-      // One intent's failure never blocks the others; the next run retries.
+        );
+        // Narrow to the intent's outlet so the gateway reads that outlet's own
+        // DOIT credentials when it has them (outlet row wins over tenant row).
+        const outletContext =
+          context.outletScope.kind === "tenant"
+            ? establishScopedTenantContext(context.tenant, {
+                kind: "outlets",
+                outletIds: [row.outletId],
+              })
+            : context;
+        const result =
+          row.status === "expired"
+            ? await syncExpiredIntentPayment(outletContext, row, now)
+            : await syncPendingIntentDetailed(outletContext, row, now);
+        consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
+        if (
+          row.status !== result.intent.status &&
+          (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+        )
+          settled += 1;
+      } catch {
+        // One intent's failure never blocks the others; the next run retries.
+      }
     }
+  } finally {
+    // Release the claim (also the rows a break left unprocessed) so the next
+    // run, or another worker, can take them straight away.
+    await releasePollLease(
+      context,
+      pending.map((row) => row.id),
+      leaseUntil,
+    );
   }
   return { checked, settled };
 }
