@@ -6,15 +6,25 @@
 -- 1. RLS for auto_journal_parked: tenant-owned AND outlet-owned (outlet_id NOT
 --    NULL), so the RESTRICTIVE tenant policy and, right after it, the outlet
 --    policy (TEN-03, guard test src/db/outlet-rls.test.ts), as in 0087.
--- 2. Per-legal-entity backfill of the two new posting roles. No FORCE lift:
---    the migration owner has BYPASSRLS (deploy/single-vm/provision-roles.sh;
---    tests/db-role-provisioning.test.mjs "migrations run under forced RLS, so
---    the owner needs BYPASSRLS"), and BYPASSRLS skips forced policies on the
---    inserts and on the foreign key checks alike, so FORCE ROW LEVEL SECURITY
---    on legal_entities, chart_of_accounts and account_mappings stays untouched.
+-- 2. Per-legal-entity backfill of the two new posting roles. The migrator may
+--    be a plain table owner (no SUPERUSER, no BYPASSRLS; legend-wg5t, see 0070
+--    and src/test/edge-received-events-migration.test.ts): FORCE ROW LEVEL
+--    SECURITY would apply the tenant policies to it and, with no app.tenant_id
+--    set, raise 42501 on the inserts and on the foreign key checks. Lift FORCE
+--    on legal_entities, chart_of_accounts and account_mappings for this
+--    transaction only and restore it at the end (drizzle applies pending
+--    migrations in one transaction, so no other session ever sees the lifted
+--    state). Without FORCE the owner skips RLS, so the backfill still spans
+--    every tenant.
 SELECT app.enforce_tenant_rls('public.auto_journal_parked'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.auto_journal_parked'::regclass);
+--> statement-breakpoint
+ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 -- 2107 Uang Muka Pelanggan under the entity's own header 2100. Only when 2100
 -- is a liability header that already has at least one child account (so it is
@@ -75,3 +85,9 @@ SELECT a.tenant_id, a.legal_entity_id, 'deposit_forfeit_income', a.id
   WHERE a.code = '7103' AND a.name = 'Pendapatan Uang Muka Hangus'
     AND a.type = 'revenue' AND a.is_active
 ON CONFLICT (tenant_id, legal_entity_id, role) DO NOTHING;
+--> statement-breakpoint
+ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;
