@@ -40,6 +40,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -890,7 +891,7 @@ describe("POS-03 cash in, cash out and drops", () => {
         shift.id,
         {
           type: "cash_in",
-          amountIdr: 1_000,
+          amountIdr: idr(1_000),
           reasonNote: "😀😀",
           idempotencyKey: randomUUID(),
         },
