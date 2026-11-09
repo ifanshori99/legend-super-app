@@ -438,7 +438,7 @@ describe("13.1 the API key never leaves the server", () => {
   it("13.1 key is absent from GET, PUT, test, 422, Zod errors, audit, logs, usage and DB plaintext", async () => {
     const lines = captureOutput();
     const bodies: string[] = [];
-    const keep = (res: { text: string }) => {
+    const keep = <T extends { text: string }>(res: T): T => {
       bodies.push(res.text);
       return res;
     };
@@ -836,6 +836,30 @@ describe("13.5 connection test", () => {
     expect(again.status).toBe(429);
     expect(codeOf(again)).toBe("AI_PROVIDER_TEST_TOO_SOON");
     expect(calls).toHaveLength(sent);
+  });
+
+  it("13.5 two concurrent tests: only one reaches the provider, the other is 429", async () => {
+    await putCfg(adminA, configA);
+    await backdateTest(tenantA);
+    const sent = calls.length;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    responder = async () => {
+      await gate;
+      return chatOk();
+    };
+    const first = testCfg(adminA).then((res) => res);
+    const second = testCfg(adminA).then((res) => res);
+    // The loser answers at once; the winner waits on the gate.
+    const loser = await Promise.race([first, second]);
+    expect(loser.status).toBe(429);
+    expect(codeOf(loser)).toBe("AI_PROVIDER_TEST_TOO_SOON");
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect([a.status, b.status].sort()).toEqual([200, 429]);
+    expect(calls.length - sent).toBe(1);
   });
 });
 

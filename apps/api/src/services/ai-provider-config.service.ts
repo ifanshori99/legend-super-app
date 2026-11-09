@@ -48,6 +48,15 @@ type ConfigRow = typeof aiProviderConfigs.$inferSelect;
 
 /** Minimum gap between two connection tests of one tenant. */
 const TEST_INTERVAL_MS = 10_000;
+/** Hard cap of one probe (DECISIONS butir 9), whatever AI_TIMEOUT_MS says. */
+const PROBE_MAX_TIMEOUT_MS = 15_000;
+
+/**
+ * Tenants with a connection test in flight (tenantId -> attempt time). The DB
+ * check on last_tested_at only sees finished tests; this slot, claimed before
+ * the probe, stops two concurrent tests of one tenant from both passing it.
+ */
+const testsInFlight = new Map<string, number>();
 
 const aadOf = (tenantId: string, id: string) =>
   `ai_provider_config:${tenantId}:${id}`;
@@ -296,51 +305,59 @@ export async function testAiProviderConnection(
     Date.now() - row.lastTestedAt.getTime() < TEST_INTERVAL_MS
   )
     throw new AiError("AI_PROVIDER_TEST_TOO_SOON");
+  // No await between this check and the claim: the claim is atomic per process.
+  if (testsInFlight.has(tenantId))
+    throw new AiError("AI_PROVIDER_TEST_TOO_SOON");
+  testsInFlight.set(tenantId, Date.now());
 
-  let outcome: {
-    status: "ok" | "failed";
-    errorCode: AiProviderTestErrorCode | null;
-  };
-  const apiKey = openKey(row);
-  if (apiKey === null) {
-    outcome = { status: "failed", errorCode: "KEY_UNREADABLE" };
-  } else {
-    outcome = await probeOpenAiCompatible({
-      baseUrl: row.baseUrl,
-      apiKey,
-      model: row.defaultModel,
-      timeoutMs: env.AI_TIMEOUT_MS,
+  try {
+    let outcome: {
+      status: "ok" | "failed";
+      errorCode: AiProviderTestErrorCode | null;
+    };
+    const apiKey = openKey(row);
+    if (apiKey === null) {
+      outcome = { status: "failed", errorCode: "KEY_UNREADABLE" };
+    } else {
+      outcome = await probeOpenAiCompatible({
+        baseUrl: row.baseUrl,
+        apiKey,
+        model: row.defaultModel,
+        timeoutMs: Math.min(env.AI_TIMEOUT_MS, PROBE_MAX_TIMEOUT_MS),
+      });
+    }
+
+    const testedAt = new Date();
+    await withTenant(db, context, async (tx) => {
+      await tx
+        .update(aiProviderConfigs)
+        .set({
+          lastTestStatus: outcome.status,
+          lastTestedAt: testedAt,
+          lastTestErrorCode: outcome.errorCode,
+          // A test is not a config change: keep updated_at (it versions caches).
+          updatedAt: sql`${aiProviderConfigs.updatedAt}`,
+        })
+        .where(
+          and(
+            eq(aiProviderConfigs.tenantId, tenantId),
+            eq(aiProviderConfigs.id, row.id),
+            eq(aiProviderConfigs.baseUrl, row.baseUrl),
+            eq(aiProviderConfigs.defaultModel, row.defaultModel),
+            row.apiKeyEncrypted === null
+              ? isNull(aiProviderConfigs.apiKeyEncrypted)
+              : eq(aiProviderConfigs.apiKeyEncrypted, row.apiKeyEncrypted),
+          ),
+        );
     });
+    return {
+      status: outcome.status,
+      testedAt: testedAt.toISOString(),
+      errorCode: outcome.errorCode,
+    };
+  } finally {
+    testsInFlight.delete(tenantId);
   }
-
-  const testedAt = new Date();
-  await withTenant(db, context, async (tx) => {
-    await tx
-      .update(aiProviderConfigs)
-      .set({
-        lastTestStatus: outcome.status,
-        lastTestedAt: testedAt,
-        lastTestErrorCode: outcome.errorCode,
-        // A test is not a config change: keep updated_at (it versions caches).
-        updatedAt: sql`${aiProviderConfigs.updatedAt}`,
-      })
-      .where(
-        and(
-          eq(aiProviderConfigs.tenantId, tenantId),
-          eq(aiProviderConfigs.id, row.id),
-          eq(aiProviderConfigs.baseUrl, row.baseUrl),
-          eq(aiProviderConfigs.defaultModel, row.defaultModel),
-          row.apiKeyEncrypted === null
-            ? isNull(aiProviderConfigs.apiKeyEncrypted)
-            : eq(aiProviderConfigs.apiKeyEncrypted, row.apiKeyEncrypted),
-        ),
-      );
-  });
-  return {
-    status: outcome.status,
-    testedAt: testedAt.toISOString(),
-    errorCode: outcome.errorCode,
-  };
 }
 
 /** The key of a row, or null when it cannot be opened (never throws). */
