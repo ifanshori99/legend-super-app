@@ -338,15 +338,45 @@ export function malformedProviderAnswer(): CoreError {
 // data. So every shape that is not recognised is an UNKNOWN outcome (a throw),
 // never a success or a failure.
 
+export type DoitRefundEvidence = {
+  id?: string;
+  paymentId?: string;
+  amountIdr?: number;
+  status?: string;
+};
+
+const EVIDENCE_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
+const EVIDENCE_STATUS = /^[a-z_]{1,32}$/;
+
+/** Bounded ids out of a refund answer: what ops need to find it at DOIT. */
+export function doitRefundEvidence(
+  body: Record<string, unknown>,
+): DoitRefundEvidence {
+  const evidence: DoitRefundEvidence = {};
+  if (typeof body.id === "string" && EVIDENCE_ID.test(body.id))
+    evidence.id = body.id;
+  if (typeof body.payment_id === "string" && EVIDENCE_ID.test(body.payment_id))
+    evidence.paymentId = body.payment_id;
+  const amount =
+    body.amount === undefined ? undefined : refundAmount(body.amount);
+  if (amount !== undefined) evidence.amountIdr = amount;
+  if (typeof body.status === "string" && EVIDENCE_STATUS.test(body.status))
+    evidence.status = body.status;
+  return evidence;
+}
+
 /** Unknown refund outcome. Carries our own code (read by the refund service
  * as the payout error), never provider text; stays a 503 `CoreError`. */
 export class DoitRefundUnknownError extends CoreError {
-  constructor(refundCode: string) {
+  /** Ids-only facts of the provider answer (legend-r7g2), for the audit. */
+  readonly providerEvidence?: DoitRefundEvidence;
+  constructor(refundCode: string, providerEvidence?: DoitRefundEvidence) {
     super(
       "SERVICE_UNAVAILABLE",
       "Gateway pembayaran memberi jawaban refund yang tidak dikenali.",
     );
     (this as { code: string }).code = refundCode;
+    if (providerEvidence) this.providerEvidence = providerEvidence;
   }
 }
 
@@ -441,8 +471,12 @@ export function parseDoitRefundAnswer(
 ): GatewayRefundResult {
   const unrecognized = () =>
     new DoitRefundUnknownError("DOIT_REFUND_UNRECOGNIZED");
+  // Ids only from the foreign answer, for the ops audit (never provider text).
   const mismatch = () =>
-    new DoitRefundUnknownError("DOIT_REFUND_IDENTITY_MISMATCH");
+    new DoitRefundUnknownError(
+      "DOIT_REFUND_IDENTITY_MISMATCH",
+      doitRefundEvidence(body),
+    );
   if (typeof payload !== "object" || payload === null || Array.isArray(payload))
     throw unrecognized();
   const body = payload as Record<string, unknown>;

@@ -132,6 +132,9 @@ type RecordedCall = {
 class FakeDoit {
   readonly payments = new Map<string, FakePayment>();
   readonly calls: RecordedCall[] = [];
+  /** When set, POST refund answers this body (200) instead of a matching refund: a foreign answer. */
+  refundAnswer:
+    ((paymentId: string, input: { amount: number }) => unknown) | null = null;
   private readonly refundsByKey = new Map<string, unknown>();
   private server: Server | null = null;
   baseUrl = "";
@@ -195,6 +198,14 @@ class FakeDoit {
     const refundPath = /^\/v1\/payments\/([^/]+)\/refunds$/.exec(url.pathname);
     if (req.method === "POST" && refundPath) {
       const key = String(req.headers["idempotency-key"] ?? "");
+      if (this.refundAnswer)
+        return send(
+          200,
+          this.refundAnswer(
+            decodeURIComponent(refundPath[1]!),
+            JSON.parse(raw) as { amount: number },
+          ),
+        );
       const known = this.refundsByKey.get(key);
       if (known) return send(200, known);
       const input = JSON.parse(raw) as { amount: number };
@@ -345,6 +356,7 @@ beforeEach(() => {
   clearDoitWebhookSecretCache();
   doit.calls.length = 0;
   doit.payments.clear();
+  doit.refundAnswer = null;
 });
 afterEach(async () => {
   await cleanupRows();
@@ -1389,5 +1401,171 @@ describe("PAY-04 a refund of an unallocated fund is bound to the fund's evidence
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("processed");
     expect((await refundRow(refundId)).status).toBe("completed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3 (docs/briefs/sub-175-doit-refund-parser.md): an identity mismatch stays
+// visible. DOIT's 2xx answer to POST refund names another payment, or another
+// amount: the refund is never completed, never re-sent, and carries the sticky
+// flag DOIT_REFUND_IDENTITY_MISMATCH that later unknown lookups and the attempt
+// limit do not overwrite.
+// Assumptions: the audit row is found by `event->>'action'`, `objectId` = the
+// refund id and `event->>'reason'` = the code (same shape as the quarantine
+// audit); the `providerEvidence` ids are asserted by their presence anywhere in
+// the audit event, not by their exact JSON path. The attempt limit is 8 unknown
+// outcomes, reached here by setting payout_attempts to 7 (the brief names
+// PAYOUT_MAX_ATTEMPTS without a value).
+// ---------------------------------------------------------------------------
+
+const IDENTITY_MISMATCH = "DOIT_REFUND_IDENTITY_MISMATCH";
+const MISMATCH_ACTION = "payment.refund_payout_identity_mismatch";
+
+async function mismatchAudits(refundId: string) {
+  const { rows } = await owner.query<{
+    reason: string | null;
+    event: unknown;
+  }>(
+    `SELECT event->>'reason' AS reason, event FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2 AND event->>'action' = $3`,
+    [tenantId, refundId, MISMATCH_ACTION],
+  );
+  return rows;
+}
+
+const ageRefund = (refundId: string, attempts?: number) =>
+  owner.query(
+    `UPDATE payment_refunds
+        SET updated_at = now() - interval '2 hours',
+            payout_attempts = COALESCE($2::int, payout_attempts)
+      WHERE tenant_id = $1 AND id = $3::uuid`,
+    [tenantId, attempts ?? null, refundId],
+  );
+
+async function payoutAttempts(refundId: string): Promise<number> {
+  const { rows } = await owner.query<{ payout_attempts: number }>(
+    "SELECT payout_attempts FROM payment_refunds WHERE tenant_id = $1 AND id = $2",
+    [tenantId, refundId],
+  );
+  return rows[0]!.payout_attempts;
+}
+
+type ForeignAnswer = (paymentId: string, input: { amount: number }) => unknown;
+
+describe("PAY-04 a DOIT refund answer for another payment or amount stays visible (legend-r7g2 T3)", () => {
+  const foreignPayment: ForeignAnswer = (_paymentId, input) => ({
+    id: "rf_foreign",
+    payment_id: `dp_other_${hex(6)}`,
+    status: "succeeded",
+    amount: input.amount,
+  });
+  const foreignAmount: ForeignAnswer = (paymentId, input) => ({
+    id: "rf_foreign",
+    payment_id: paymentId,
+    status: "succeeded",
+    amount: input.amount + 1_000,
+  });
+
+  it.each([
+    ["names another payment_id", foreignPayment],
+    ["carries another amount", foreignAmount],
+  ] as Array<[string, ForeignAnswer]>)(
+    "PAY-04 the answer %s: refund stays approved, flagged, sent once, audited once",
+    async (_label, answer) => {
+      const intent = await seedPaidIntent();
+      const refundId = await seedRefund(intent, { attempts: 0 });
+      doit.refundAnswer = answer;
+
+      await sweep();
+
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "approved",
+        completed_at: null,
+        last_payout_error: IDENTITY_MISMATCH,
+      });
+      expect(await intentStatus(intent.intentId)).toBe("paid");
+      expect(doit.refundPostsFor(intent.paymentId)).toHaveLength(1);
+
+      const audits = await mismatchAudits(refundId);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.reason).toBe(IDENTITY_MISMATCH);
+      // Ids are masked in the audit row ("[REDACTED]"); the amount and status are not.
+      const after = (
+        audits[0]!.event as {
+          maskedChanges: {
+            after: { providerEvidence: Record<string, unknown> };
+          };
+        }
+      ).maskedChanges.after;
+      expect(Object.keys(after.providerEvidence).sort()).toEqual([
+        "amountIdr",
+        "id",
+        "paymentId",
+        "status",
+      ]);
+      expect(after.providerEvidence).toMatchObject({
+        status: "succeeded",
+        amountIdr: expect.any(Number),
+      });
+      expect(JSON.stringify(audits[0]!.event)).not.toContain(apiKeyA);
+    },
+  );
+
+  it("PAY-04 a later sweep whose lookup is unknown (404) keeps the flag, adds no audit and sends nothing again", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, { attempts: 0 });
+    doit.refundAnswer = foreignPayment;
+    await sweep();
+    expect(await refundRow(refundId)).toMatchObject({
+      last_payout_error: IDENTITY_MISMATCH,
+    });
+
+    // From here the fake knows no payment: GET answers 404 (unknown outcome).
+    for (let round = 0; round < 2; round += 1) {
+      await ageRefund(refundId);
+      await sweep();
+      expect(await refundRow(refundId)).toMatchObject({
+        status: "approved",
+        completed_at: null,
+        last_payout_error: IDENTITY_MISMATCH,
+      });
+    }
+
+    expect(
+      doit.calls.some(
+        (call) =>
+          call.method === "GET" &&
+          call.path === `/v1/payments/${intent.paymentId}`,
+      ),
+    ).toBe(true);
+    expect(doit.refundPostsFor(intent.paymentId)).toHaveLength(1);
+    expect(await mismatchAudits(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 after the attempt limit the flag stays; it is not replaced by MANUAL_RECONCILIATION", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, { attempts: 0 });
+    doit.refundAnswer = foreignPayment;
+    await sweep();
+    expect((await refundRow(refundId)).last_payout_error).toBe(
+      IDENTITY_MISMATCH,
+    );
+
+    // One unknown lookup short of the limit, then past it.
+    await ageRefund(refundId, 7);
+    await sweep();
+    await ageRefund(refundId);
+    await sweep();
+    await ageRefund(refundId);
+    await sweep();
+
+    expect(await payoutAttempts(refundId)).toBeGreaterThanOrEqual(8);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      completed_at: null,
+      last_payout_error: IDENTITY_MISMATCH,
+    });
+    expect(doit.refundPostsFor(intent.paymentId)).toHaveLength(1);
+    expect(await mismatchAudits(refundId)).toHaveLength(1);
   });
 });

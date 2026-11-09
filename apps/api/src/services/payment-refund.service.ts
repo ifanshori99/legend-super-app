@@ -128,6 +128,14 @@ export const SETTLED_OUTSIDE_PROVIDER = "SETTLED_OUTSIDE_PROVIDER";
  * answer clears the flag, and ops close it with settle-manually once paid.
  */
 export const PAYOUT_NOT_FOUND_MAYBE_SENT = "PAYOUT_NOT_FOUND_MAYBE_SENT";
+/**
+ * The provider answered the refund POST, but for another payment, amount or
+ * idempotency key (legend-r7g2). Money may have moved: never re-sent, never
+ * replaced by MANUAL_RECONCILIATION, escalated; ops check the provider
+ * dashboard before any settle-manually (the provider ids are in the error log;
+ * the audit masks them and keeps status and amount).
+ */
+export const PAYOUT_IDENTITY_MISMATCH = "DOIT_REFUND_IDENTITY_MISMATCH";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
@@ -1238,10 +1246,24 @@ const keepQuarantine = (next: string | null) =>
 
 /**
  * An unknown outcome never erases a sticky flag already on the row: the
- * quarantine, or a maybe-sent payout the provider did not find.
+ * quarantine, a maybe-sent payout the provider did not find, or a provider
+ * answer for another payment (legend-r7g2).
  */
 const keepSticky = (next: string) =>
-  sql`CASE WHEN ${paymentRefunds.lastPayoutError} IN (${PAYOUT_QUARANTINED}, ${PAYOUT_NOT_FOUND_MAYBE_SENT}) THEN ${paymentRefunds.lastPayoutError} ELSE ${next}::text END`;
+  sql`CASE WHEN ${paymentRefunds.lastPayoutError} IN (${PAYOUT_QUARANTINED}, ${PAYOUT_NOT_FOUND_MAYBE_SENT}, ${PAYOUT_IDENTITY_MISMATCH}) THEN ${paymentRefunds.lastPayoutError} ELSE ${next}::text END`;
+
+/** Ids-only provider facts an unknown-outcome error may carry (legend-r7g2). */
+function providerEvidenceOf(error: unknown): Record<string, unknown> | null {
+  const evidence =
+    typeof error === "object" && error !== null
+      ? (error as { providerEvidence?: unknown }).providerEvidence
+      : undefined;
+  return typeof evidence === "object" &&
+    evidence !== null &&
+    !Array.isArray(evidence)
+    ? (evidence as Record<string, unknown>)
+    : null;
+}
 
 /**
  * Fencing check right before a send (legend-xd2q): the claim is still ours, the
@@ -1549,6 +1571,7 @@ export async function runRefundPayout(
   const port = paymentRefundGateway();
   let result = null as GatewayRefundLookup | null;
   let unknownCode: string | null = null;
+  let unknownEvidence: Record<string, unknown> | null = null;
   try {
     if (claim.lookupFirst) {
       const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
@@ -1595,6 +1618,7 @@ export async function runRefundPayout(
   } catch (error) {
     result = null;
     unknownCode = errorCodeOf(error);
+    unknownEvidence = providerEvidenceOf(error);
   }
 
   const recordedAt = new Date();
@@ -1625,7 +1649,16 @@ export async function runRefundPayout(
     const keepLease = locked.refund.payoutClaimToken !== claim.token;
     if (outcome === null) {
       // Unknown outcome: record its code, but keep a sticky flag.
-      if (keepLease) return locked.refund;
+      if (keepLease) {
+        // A stale worker leaves the row alone, but a foreign answer is never
+        // lost silently (legend-r7g2).
+        if (unknownCode === PAYOUT_IDENTITY_MISMATCH)
+          logger.error(
+            { refundId: refund.id, providerEvidence: unknownEvidence },
+            "Refund payout answer names another payment, amount or key (stale worker; lease taken over). Check the provider dashboard",
+          );
+        return locked.refund;
+      }
       const [updated] = await tx
         .update(paymentRefunds)
         .set({
@@ -1641,7 +1674,31 @@ export async function runRefundPayout(
           ),
         )
         .returning();
-      return updated ?? locked.refund;
+      if (!updated) return locked.refund;
+      if (
+        updated.lastPayoutError === PAYOUT_IDENTITY_MISMATCH &&
+        locked.refund.lastPayoutError !== PAYOUT_IDENTITY_MISMATCH
+      ) {
+        await refundAudit(tx, context, {
+          actorId: null,
+          row: updated,
+          action: "payment.refund_payout_identity_mismatch",
+          now: recordedAt,
+          reason: PAYOUT_IDENTITY_MISMATCH,
+          before: { lastPayoutError: locked.refund.lastPayoutError },
+          after: {
+            amountIdr: updated.amountIdr,
+            status: updated.status,
+            lastPayoutError: updated.lastPayoutError,
+            providerEvidence: unknownEvidence,
+          },
+        });
+        logger.error(
+          { refundId: updated.id, providerEvidence: unknownEvidence },
+          "Refund payout answer names another payment, amount or key; it is never re-sent. Check the provider dashboard before any settle-manually",
+        );
+      }
+      return updated;
     }
     if (outcome.status === "not_found") {
       // The provider has no record of a refund that may have been sent: never
@@ -1749,7 +1806,8 @@ const ESCALATION_PAYOUT_STALLED_HOURS = 24;
  * provider still answering `pending`, aged from `decided_at` (default 72 h).
  * Case `payout_stalled`: `approved` with no provider polls whose payout is
  * stuck (with a gateway: `last_payout_error` is `MANUAL_RECONCILIATION`,
- * `PAYOUT_QUARANTINED` or `EVIDENCE_MAPPING_REQUIRED`; without a gateway: any
+ * `PAYOUT_QUARANTINED`, `EVIDENCE_MAPPING_REQUIRED` or
+ * `DOIT_REFUND_IDENTITY_MISMATCH`; without a gateway: any
  * such refund, since nothing will pay it), aged from `payout_stall_detected_at`
  * (default 24 h). That stall clock is owned here: it is stamped when a stall is
  * first seen and cleared when the refund is no longer stalled. Polls never
@@ -1781,6 +1839,7 @@ export async function escalateStaleRefunds(
               MANUAL_RECONCILIATION,
               PAYOUT_QUARANTINED,
               EVIDENCE_MAPPING_REQUIRED,
+              PAYOUT_IDENTITY_MISMATCH,
             ].map((value) => sql`${value}`),
             sql`, `,
           )})`
@@ -2002,6 +2061,7 @@ export async function sweepApprovedRefundPayouts(
           // specific) flag.
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_QUARANTINED}`,
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_NOT_FOUND_MAYBE_SENT}`,
+          sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_IDENTITY_MISMATCH}`,
         ),
       )
       .returning({ id: paymentRefunds.id });

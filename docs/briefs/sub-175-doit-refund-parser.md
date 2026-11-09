@@ -24,3 +24,10 @@ Worktree `.worktrees/doit-refund-parser`, cabang `ws/doit-refund-parser` dari m1
 T1 (parser, `apps/api/src/test/payment-doit-refund.test.ts` dekat test parser :237/:264): (1) contoh Codex di atas → unknown `DOIT_REFUND_IDENTITY_MISMATCH`; (2) objek refund tanpa `payment_id` → unknown; (3) objek refund tanpa `amount` → unknown; (4) `idempotency_key` beda → unknown; (5) `reference` intent lain → unknown; (6) `object:"payment"` dengan id lain → unknown; (7) bentuk 201 dan 200 sandbox tetap succeeded/pending; jalur end-to-end bila ada (refund berstatus tetap `approved` dengan `lastPayoutError` kode di atas, bukan `completed`). Fixture lama `refundObject` (tanpa `payment_id`) diperbarui mengikuti bentuk sandbox.
 T2 (webhook, `apps/api/src/test/payment-doit-refund-webhook.test.ts`): skenario (a) dan (b).
 Semua test baru harus GAGAL di kode lama; laporkan baris kegagalannya.
+
+## T3: mismatch tetap terlihat (P1 architect, ditulis setelah 36f59dc3)
+Perilaku baru di `payment-refund.service.ts` (engineer yang mengedit):
+- Konstanta `PAYOUT_IDENTITY_MISMATCH = "DOIT_REFUND_IDENTITY_MISMATCH"` (export) menjadi flag lengket seperti `PAYOUT_NOT_FOUND_MAYBE_SENT`: lookup berikut yang unknown tidak menimpanya; batas percobaan (`PAYOUT_MAX_ATTEMPTS`) tidak menggantinya dengan `MANUAL_RECONCILIATION`.
+- Saat pertama tercatat: audit `payment.refund_payout_identity_mismatch` (reason = kode, `after` memuat `providerEvidence` ids saja: `id`, `paymentId`, `amountIdr`, `status` dari jawaban DOIT) dan `logger.error`.
+- Refund dengan flag ini ikut himpunan "stalled" eskalasi (sama seperti `MANUAL_RECONCILIATION`).
+Test (DB, pakai fake DOIT + sweep di `apps/api/src/test/payment-doit-refund-webhook.test.ts`): fake POST refund menjawab `payment_id` payment lain (atau nominal lain) → setelah sweep refund `approved`, `last_payout_error = DOIT_REFUND_IDENTITY_MISMATCH`, satu POST saja; sweep berikut (lookup unknown/404) flag tetap; setelah batas percobaan flag tetap (bukan `MANUAL_RECONCILIATION`); satu baris audit aksi di atas; tidak ada POST kedua. Test harus GAGAL di 36f59dc3.
