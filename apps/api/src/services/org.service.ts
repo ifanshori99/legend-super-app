@@ -10,7 +10,17 @@
 // panel/tenant-admin API writes rows, no deploy.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
 import {
@@ -50,7 +60,9 @@ import {
 import { db } from "../db";
 import {
   brands,
+  itemAvailability,
   legalEntities,
+  menuItems,
   outlets,
   tenantDomains,
   tenants,
@@ -466,6 +478,36 @@ export async function createOutlet(
           openingHours: input.openingHours,
         })
         .returning();
+      // legend-2nb9: a new outlet starts with an availability row for every
+      // existing item of its brand, so its 86 screen lists them on day one
+      // (the item-create path seeds only the outlets that exist then).
+      const items = await tx
+        .select({ id: menuItems.id })
+        .from(menuItems)
+        .where(
+          and(
+            eq(menuItems.tenantId, context.tenant.tenantId),
+            eq(menuItems.brandId, input.brandId),
+            isNull(menuItems.deletedAt),
+          ),
+        );
+      if (items.length > 0) {
+        const now = new Date();
+        await tx
+          .insert(itemAvailability)
+          .values(
+            items.map((item) => ({
+              tenantId: context.tenant.tenantId,
+              outletId: row.id,
+              menuItemId: item.id,
+              schedule: [],
+              status: "available" as const,
+              createdAt: now,
+              updatedAt: now,
+            })),
+          )
+          .onConflictDoNothing();
+      }
       return toOutlet(row);
     } catch (error) {
       if (uniqueViolation(error))

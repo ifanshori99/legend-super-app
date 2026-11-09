@@ -10,8 +10,6 @@
 // no `@/` alias) so the Node contract test can load it directly.
 import { createUlid, idr } from "@starter/shared/core";
 import {
-  cafeLegendQrOrderFixtures,
-  cafeLegendTaxRules,
   canApplyTableStatusAction,
   canCloseTableSession,
   computeQuote,
@@ -20,8 +18,6 @@ import {
   floorBoardSchema,
   floorZoneSchema,
   qrOrderSchema,
-  qrTokenTableCodes,
-  quoteConfigForZone,
   saveFloorLayoutInputSchema,
   sessionBillSchema,
   tableLiveStatusSchema,
@@ -43,6 +39,12 @@ import {
   type TableSession,
   type TableStatusAction,
 } from "@starter/shared/qr-order";
+import {
+  cafeLegendQrOrderFixtures,
+  cafeLegendTaxRules,
+  qrTokenTableCodes,
+  quoteConfigForZone,
+} from "@starter/shared/qr-order/sample";
 import type { z } from "zod";
 import { ApiError } from "../../api/errors.ts";
 import { newIdempotencyKey } from "../../idempotency.ts";
@@ -141,12 +143,39 @@ function seedState(clock: () => number): FloorState {
     const template = fixtures.orders[0];
     if (template) {
       const orderId = createUlid() as QrOrder["id"];
+      // W02 runs inclusive prices (harga nett, legend-zmc2) so the guest bill
+      // and receipt show service and tax as "termasuk" in mock mode.
+      const inclusiveQuote = computeQuote({
+        sessionId: extra.id,
+        cartVersion: 1,
+        lines: template.items.map((item) => ({
+          cartLineId: crypto.randomUUID(),
+          menuItemId: item.menuItemId,
+          name: item.name,
+          quantity: item.quantity,
+          unitPriceIdr: item.unitPriceIdr,
+          modifiersTotalIdr: item.modifiersTotalIdr,
+          taxRuleId: cafeLegendTaxRules[0].id,
+        })),
+        config: {
+          ...quoteConfigForZone(zones[0]),
+          pricesIncludeTaxAndService: true,
+        },
+        computedAt: new Date(nowMs).toISOString(),
+      });
       orders[extra.id] = [
         qrOrderSchema.parse({
           ...structuredClone(template),
           id: orderId,
           number: "QR-20261101-0043",
           tableSessionId: extra.id,
+          subtotalIdr: inclusiveQuote.subtotalIdr,
+          discountIdr: inclusiveQuote.discountIdr,
+          serviceChargeIdr: inclusiveQuote.serviceCharge.amountIdr,
+          taxIdr: inclusiveQuote.taxIdr,
+          roundingIdr: inclusiveQuote.rounding.adjustmentIdr,
+          totalIdr: inclusiveQuote.totalIdr,
+          pricesIncludeTaxAndService: true,
           items: template.items.map((item) => ({
             ...structuredClone(item),
             id: createUlid() as QrOrderItem["id"],
@@ -291,8 +320,8 @@ export function createWs03Engine(clock: () => number = Date.now) {
     const quote = computeQuote({
       sessionId: order.tableSessionId,
       cartVersion: 1,
-      lines: items.map((item, index) => ({
-        cartLineId: `move-${item.id}-${index}`,
+      lines: items.map((item) => ({
+        cartLineId: crypto.randomUUID(),
         menuItemId: item.menuItemId,
         name: item.name,
         quantity: item.quantity,
@@ -300,7 +329,10 @@ export function createWs03Engine(clock: () => number = Date.now) {
         modifiersTotalIdr: item.modifiersTotalIdr,
         taxRuleId: cafeLegendTaxRules[0].id,
       })),
-      config: quoteConfigForZone(zoneOf(table)),
+      config: {
+        ...quoteConfigForZone(zoneOf(table)),
+        pricesIncludeTaxAndService: order.pricesIncludeTaxAndService,
+      },
       computedAt: nowIso(),
     });
     return qrOrderSchema.parse({
@@ -735,6 +767,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
         taxIdr: idr(0),
         roundingIdr: idr(0),
         totalIdr: idr(0),
+        pricesIncludeTaxAndService: false,
         status: "sent",
         items: [],
         createdAt: now,

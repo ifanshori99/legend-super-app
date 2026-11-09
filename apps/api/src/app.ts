@@ -12,6 +12,7 @@ import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
 import {
   PUBLIC_RATE_LIMIT_PATHS,
+  guestSessionRateLimit,
   publicRateLimit,
   type PublicRateLimitOptions,
 } from "./middleware/public-rate-limit";
@@ -320,6 +321,10 @@ export function createApp({
   // prefixes: health, Better Auth, provider webhooks and the TLS ask keep their
   // own budgets, and a limiter window can never fail a probe (legend-wd4b).
   app.use(PUBLIC_RATE_LIMIT_PATHS, publicRateLimit(publicRateLimitOptions));
+  // Guest table-session routes (cart, quote, bill, payments, polls): the same
+  // per-IP/tenant limiter, sized for a venue NAT plus a per-session bucket.
+  // The staff confirm/close routes on this prefix are skipped inside.
+  app.use("/api/table-sessions", guestSessionRateLimit(publicRateLimitOptions));
   app.use("/api", apiRouter);
 
   app.use(notFound);

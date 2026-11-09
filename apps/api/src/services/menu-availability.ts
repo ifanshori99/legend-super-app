@@ -504,7 +504,8 @@ export async function restoreExpiredSoldOut(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
-    actorUserId: string;
+    /** `null` when the worker sweeps with no signed-in user (system actor). */
+    actorUserId: string | null;
     now: Date;
     outletIds?: readonly string[];
   },

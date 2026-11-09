@@ -41,6 +41,7 @@ import { useAddToCart } from "../hooks";
 import {
   MAX_NOTE_LENGTH,
   emptySelection,
+  formatAvailableFrom,
   groupRule,
   previewLineTotal,
   selectedInGroup,
@@ -158,7 +159,17 @@ function SheetBody({
   const companion = useCompanion(item.id);
   const add = useAddToCart(sessionId ?? "none");
 
-  const soldOut = item.status === "sold_out";
+  const soldOut = item.status !== "available";
+  const availableTime =
+    item.status === "unavailable_until" && item.availableFrom
+      ? formatAvailableFrom(
+          item.availableFrom,
+          menu?.outlet.timeZone ?? "Asia/Jakarta",
+        )
+      : null;
+  const availableLabel = availableTime
+    ? t("qrGlass.menu.card.availableFrom", { time: availableTime })
+    : null;
   const orderingOpen = menu?.orderingOpen ?? true;
   const issues = useMemo(
     () => validateSelection(item, selection),
@@ -251,7 +262,7 @@ function SheetBody({
     guest && sessionId && !view && !viewError && !ended,
   );
   const ctaDisabledReason = soldOut
-    ? t("qrMenu.sheet.soldOutAction")
+    ? (availableLabel ?? t("qrMenu.sheet.soldOutAction"))
     : !orderingOpen
       ? t("qrMenu.sheet.orderingClosed")
       : null;
@@ -334,10 +345,12 @@ function SheetBody({
           {soldOut && (
             <Notice
               tone="warning"
-              title={t("qrGlass.item.soldOut.title")}
+              title={availableLabel ?? t("qrGlass.item.soldOut.title")}
               className="mt-4"
             >
-              {t("qrGlass.item.soldOut.hint")}
+              {availableLabel
+                ? t("qrGlass.item.soldOut.hintUntil")
+                : t("qrGlass.item.soldOut.hint")}
             </Notice>
           )}
 

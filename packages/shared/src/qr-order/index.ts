@@ -11,3 +11,6 @@ export * from "./table-operations.ts";
 export * from "./guest.ts";
 export * from "./edge-forwarding.ts";
 export * from "./fixtures.ts";
+export * from "./zone-waiters.ts";
+export * from "./realtime.ts";
+export * from "./open-bill.ts";

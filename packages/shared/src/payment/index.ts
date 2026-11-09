@@ -650,6 +650,9 @@ export const createPaymentIntentInputSchema = z
     /** Bank/channel code for `va` and `bank_transfer`; null for QRIS. */
     channelCode: z.string().min(1).max(40).nullable(),
     idempotencyKey: idempotencyKeySchema,
+    /** Optional earlier expiry (e.g. the QR guest session ends sooner); the
+     * server caps it at the method's default lifetime. */
+    expiresAt: isoDateTimeSchema.optional(),
   })
   .superRefine((input, ctx) => {
     const needsChannel = input.method !== "qris";

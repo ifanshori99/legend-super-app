@@ -1,7 +1,7 @@
 // "Keranjang & bayar": the shared cart and checkout on one page (legend-2re1,
 // mockup final-a-checkout-mobile; PRD §3 F10 "Mode Bayar", "Estimasi Waktu
-// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS or
-// e-wallet, or hold it for the cashier (founder Q3); the kitchen sees it only
+// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS
+// or hold it for the cashier (founder Q3); the kitchen sees it only
 // after payment is confirmed (ORD-02). Open bill: the order goes straight to
 // the kitchen and is paid at the end. Menu prices exclude tax and service
 // charge, so the breakdown shows both (owner rule, ORD-03).
@@ -29,6 +29,7 @@ import {
   useStartPayment,
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
+import { formatAvailableFrom } from "../../lib/item-options.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import {
   QrFooter,
@@ -221,17 +222,16 @@ export function CheckoutPage() {
       search: { item: itemId },
     });
 
-  // Pay an order that is already placed: gateway for QRIS / e-wallet, the
-  // cashier code screen for "Bayar di kasir", the demo VA / card screen
-  // (mock mode only: the picker disables them with the real API, and that
-  // screen itself shows "not available" there, so neither ever reaches
-  // useStartPayment, whose contract takes only QRIS / e-wallet).
+  // Pay an order that is already placed: gateway for QRIS, the
+  // cashier code screen for "Bayar di kasir", the VA screen for Virtual
+  // Account (it lists the provider's banks and opens the VA itself, since
+  // the VA needs a bank before useStartPayment can run).
   const payOrder = (orderId: OrderId, fresh = false) => {
-    if (method === "va" || method === "card") {
+    if (method === "va") {
       void navigate({
         to: "/t/$token/bayar/$orderId",
         params: { token: qrToken, orderId },
-        search: { metode: method === "va" ? "va" : "kartu" },
+        search: { metode: "va" },
       });
       return;
     }
@@ -407,8 +407,19 @@ export function CheckoutPage() {
     (payFirst && payable === null);
   const names = quote.removedLines.map((line) => line.name).join(", ");
   const soldOutIds = new Set(
-    menu.items.filter((item) => item.status === "sold_out").map((i) => i.id),
+    menu.items.filter((item) => item.status !== "available").map((i) => i.id),
   );
+  const availableLabelFor = (menuItemId: string): string | null => {
+    const item = menu.items.find((entry) => entry.id === menuItemId);
+    const time =
+      item?.status === "unavailable_until" && item.availableFrom
+        ? formatAvailableFrom(
+            item.availableFrom,
+            menu.outlet.timeZone ?? "Asia/Jakarta",
+          )
+        : null;
+    return time ? t("qrGlass.menu.card.availableFrom", { time }) : null;
+  };
   const lineBusy = change.isPending || remove.isPending;
   const lineFailure = change.error ?? remove.error;
   const onLineError = (error: unknown) =>
@@ -562,6 +573,7 @@ export function CheckoutPage() {
                     ?.photoUrl ?? null
                 }
                 soldOut={soldOutIds.has(line.menuItemId)}
+                availableLabel={availableLabelFor(line.menuItemId)}
                 mine={
                   line.addedByParticipantId === null || participantId === null
                     ? null

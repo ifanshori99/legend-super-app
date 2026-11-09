@@ -13,7 +13,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import {
   CoreError,
@@ -40,6 +40,7 @@ import {
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
 import { confirmPayment } from "../services/payment.service.ts";
+import * as guestSessionScope from "../services/guest-session-scope.ts";
 import { deliverQrOrderPaymentEvent } from "../services/qr-order-payment.ts";
 import {
   setQrOrderDepositCreditLookup,
@@ -391,6 +392,49 @@ afterAll(async () => {
 });
 
 describe("QR order cart, quote and checkout (legend-e2x)", () => {
+  it("legend-7csf cart, quote and checkout run for real inside the outlet-scoped guest context", async () => {
+    // No service is mocked: the spy only records the context the routes mint
+    // (outlet taken from the verified session row) and lets it through.
+    const minted: ScopedTenantContext[] = [];
+    const original = guestSessionScope.guestSessionContext;
+    const spy = vi
+      .spyOn(guestSessionScope, "guestSessionContext")
+      .mockImplementation(async (...args) => {
+        const context = await original(...args);
+        minted.push(context);
+        return context;
+      });
+    try {
+      const { qrToken } = await newTable();
+      const guest = await seat(qrToken);
+      const added = await as(guest).add({
+        menuItemId: ids.kopi,
+        quantity: 2,
+        expectedCartVersion: 0,
+      });
+      expect(added.status).toBe(201);
+      const quote = await as(guest).quote();
+      expect(quote.status).toBe(200);
+      expect(quote.body.data.subtotalIdr).toBe(PRICES.kopi * 2);
+      const placed = await as(guest).checkout({
+        expectedCartVersion: added.body.data.cart.version,
+        idempotencyKey: randomUUID(),
+      });
+      expect(placed.status).toBe(201);
+      expect(placed.body.data.order.items).toHaveLength(1);
+      expect(minted).toHaveLength(3);
+      for (const context of minted) {
+        expect(context.tenant.tenantId).toBe(tenant.tenantId);
+        expect(context.outletScope).toMatchObject({
+          kind: "outlets",
+          outletIds: [tenant.outletId],
+        });
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("ORD-01 a guest without login shares one cart with every device of the session", async () => {
     const { qrToken } = await newTable();
     const first = await seat(qrToken);
@@ -640,11 +684,12 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
     }
   });
 
-  it("ORD-03 a price-inclusive tax rule is refused with a catalogued error (legend-49pw)", async () => {
+  it("ORD-03 a price-inclusive tax rule quotes inclusive and places an inclusive order (legend-49pw, legend-zmc2)", async () => {
     const guest = await seat((await newTable()).qrToken);
     const version = await fillStandardCart(guest);
     // A published version of the same rule that marks menu prices inclusive:
-    // the QR quote adds service and tax on top, so it must fail closed.
+    // the quote backs service and tax out of the menu price instead of adding
+    // them; the order stores the same gross subtotal and backed-out parts.
     const publishRuleVersion = (ruleVersion: number, inclusive: boolean) =>
       asOwnerTenant(tenant.tenantId, (client) =>
         client.query(
@@ -661,26 +706,163 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
     await publishRuleVersion(2, true);
     try {
       const quote = await as(guest).quote();
-      expect(quote.status).toBe(422);
-      expect(quote.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
-      expect(quote.body.error.message).toMatch(/termasuk pajak/i);
+      expect(quote.status).toBe(200);
+      const data = quote.body.data;
+      expect(data.pricesIncludeTaxAndService).toBe(true);
+      // Nothing is added on top: the total is the discounted menu price.
+      expect(data.totalIdr).toBe(
+        data.subtotalIdr - data.discountIdr + data.rounding.adjustmentIdr,
+      );
+      expect(data.serviceCharge.amountIdr + data.taxIdr).toBeGreaterThan(0);
 
       const placed = await as(guest).checkout({
         expectedCartVersion: version,
         idempotencyKey: randomUUID(),
       });
-      expect(placed.status).toBe(422);
-      expect(placed.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
-
-      // The cart still loads and is not silently re-priced: quote stays null.
-      const view = await as(guest).view();
-      expect(view.status).toBe(200);
-      expect(view.body.data.cart.lines).toHaveLength(2);
-      expect(view.body.data.quote).toBeNull();
+      expect(placed.status).toBe(201);
+      const order = placed.body.data.order;
+      expect(order.pricesIncludeTaxAndService).toBe(true);
+      expect(order.subtotalIdr).toBe(data.subtotalIdr);
+      expect(order.serviceChargeIdr).toBe(data.serviceCharge.amountIdr);
+      expect(order.taxIdr).toBe(data.taxIdr);
+      expect(order.totalIdr).toBe(data.totalIdr);
+      const stored = await owner.query<{ prices_include_tax: boolean }>(
+        "SELECT prices_include_tax FROM orders WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, ulidToUuid(order.id)],
+      );
+      expect(stored.rows[0]?.prices_include_tax).toBe(true);
     } finally {
       // Publish an exclusive version so the rest of the file prices normally.
       await publishRuleVersion(3, false);
     }
+  });
+
+  it("ORD-03 a cart mixing an inclusive and an exclusive rule is refused (legend-49pw)", async () => {
+    const guest = await seat((await newTable()).qrToken);
+    await fillStandardCart(guest);
+    // An item-specific inclusive rule beats the exclusive class rule for the
+    // roti only, so the cart has no single total formula.
+    const ruleId = randomUUID();
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+            price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, NULL, 'PBJT-ROTI', 'PBJT Roti', 'pbjt', 1000, NULL, '[]', $3,
+                 true, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+        [
+          ruleId,
+          tenant.tenantId,
+          JSON.stringify({
+            itemClasses: [],
+            categoryIds: [],
+            itemIds: [ids.roti],
+          }),
+          staff.userId,
+        ],
+      ),
+    );
+    try {
+      const quote = await as(guest).quote();
+      expect(quote.status).toBe(422);
+      expect(quote.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
+    } finally {
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query("DELETE FROM tax_rules WHERE tenant_id = $1 AND id = $2", [
+          tenant.tenantId,
+          ruleId,
+        ]),
+      );
+    }
+  });
+
+  it("ORD-05 a mixed inclusive/exclusive refusal at checkout writes no order and releases the daily stock (legend-49pw)", async () => {
+    const guest = await seat((await newTable()).qrToken);
+    const added = await as(guest).add({
+      menuItemId: ids.terbatas,
+      quantity: 1,
+      expectedCartVersion: 0,
+    });
+    expect(added.status).toBe(201);
+    // A second line whose item-specific inclusive rule beats the exclusive
+    // class rule: the cart mixes both, so checkout is refused (legend-zmc2).
+    const withRoti = await as(guest).add({
+      menuItemId: ids.roti,
+      quantity: 1,
+      expectedCartVersion: added.body.data.cart.version as number,
+    });
+    expect(withRoti.status).toBe(201);
+    const version = withRoti.body.data.cart.version as number;
+    const usageBefore = await usageOf(ids.terbatas);
+    const orderCount = async () =>
+      Number(
+        (
+          await owner.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM orders WHERE tenant_id = $1",
+            [tenant.tenantId],
+          )
+        ).rows[0]?.count,
+      );
+    const ordersBefore = await orderCount();
+    const ruleId = randomUUID();
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+            price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, NULL, 'PBJT-ROTI2', 'PBJT Roti', 'pbjt', 1000, NULL, '[]', $3,
+                 true, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+        [
+          ruleId,
+          tenant.tenantId,
+          JSON.stringify({
+            itemClasses: [],
+            categoryIds: [],
+            itemIds: [ids.roti],
+          }),
+          staff.userId,
+        ],
+      ),
+    );
+    try {
+      const refused = await as(guest).checkout({
+        expectedCartVersion: version,
+        idempotencyKey: randomUUID(),
+      });
+      expect(refused.status).toBe(422);
+      expect(refused.body.error.code).toBe(
+        "QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED",
+      );
+      // The refusal rolled the whole checkout back: no order, no held stock.
+      expect(await orderCount()).toBe(ordersBefore);
+      expect(await usageOf(ids.terbatas)).toBe(usageBefore);
+    } finally {
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query("DELETE FROM tax_rules WHERE tenant_id = $1 AND id = $2", [
+          tenant.tenantId,
+          ruleId,
+        ]),
+      );
+    }
+    // The single unit of the day is free again: the same cart checks out.
+    const placed = await as(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
+    });
+    expect(placed.status).toBe(201);
+    expect(await usageOf(ids.terbatas)).toBe(usageBefore + 1);
+    // Free the unit again for the daily-limit test below.
+    await voidUnpaidQrOrder(
+      contextOf(tenant.tenantId),
+      placed.body.data.order.id,
+      {
+        reason: "payment expired",
+        actorUserId: null,
+      },
+    );
+    expect(await usageOf(ids.terbatas)).toBe(usageBefore);
   });
 
   it("ORD-05 a sold-out item cannot be added", async () => {

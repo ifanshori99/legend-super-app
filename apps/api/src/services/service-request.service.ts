@@ -37,28 +37,37 @@ import {
   payloadSchemaRefOf,
   type EventEnvelope,
 } from "@starter/shared/events";
-import { notificationPolicySchema } from "@starter/shared/notification";
 import {
+  notificationPolicySchema,
+  notificationPreferenceSchema,
+} from "@starter/shared/notification";
+import {
+  assignZoneWaiterInputSchema,
   createServiceRequestInputSchema,
   resolveServiceRequestInputSchema,
   serviceRequestListQuerySchema,
   qrOrderEvents,
   serviceRequestSchema,
   transitionServiceRequest,
+  zoneWaiterAssignmentSchema,
   type ServiceRequest,
   type ServiceRequestAction,
+  type ZoneWaiterAssignment,
 } from "@starter/shared/qr-order";
 import { db } from "../db";
-import { tableSessions } from "../db/schema/floor";
+import { floorZones, tableSessions } from "../db/schema/floor";
 import {
   notificationPolicies,
+  notificationPreferences,
   pushSubscriptions,
 } from "../db/schema/notification";
+import { user } from "../db/schema/user";
 import {
   serviceRequests,
   zoneWaiterAssignments,
 } from "../db/schema/service-request";
 import { withTenant } from "../db/tenant";
+import { accessSnapshotInTransaction } from "./permission-resolver";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import { createNotificationConsumer } from "./notification-consumer";
@@ -70,6 +79,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Row = typeof serviceRequests.$inferSelect;
 type CreateInput = z.infer<typeof createServiceRequestInputSchema>;
 type ResolveInput = z.infer<typeof resolveServiceRequestInputSchema>;
+type AssignInput = z.infer<typeof assignZoneWaiterInputSchema>;
 type ListQuery = z.infer<typeof serviceRequestListQuerySchema>;
 
 /**
@@ -92,6 +102,13 @@ const AUDIT_SAFE_FIELDS = [
   "assignedTo",
 ] as const;
 
+const ZONE_WAITER_AUDIT_FIELDS = [
+  "id",
+  "outletId",
+  "zoneId",
+  "userId",
+] as const;
+
 const iso = (value: Date | null): string | null =>
   value ? toIsoDateTime(value) : null;
 
@@ -111,6 +128,7 @@ function toRequest(row: Row): ServiceRequest {
     createdAt: toIsoDateTime(row.createdAt),
     acknowledgedAt: iso(row.acknowledgedAt),
     resolvedAt: iso(row.resolvedAt),
+    resolvedBy: row.resolvedBy,
   });
 }
 
@@ -159,7 +177,7 @@ async function zoneWaiterIds(
   return [...new Set(rows.map((row) => row.userId))];
 }
 
-async function buildRecipients(
+export async function buildRecipients(
   tx: Tx,
   tenantId: string,
   userIds: string[],
@@ -210,6 +228,37 @@ async function buildRecipients(
         )
     ).map((row) => row.userId),
   );
+  // The user's own channel / quiet-hours choice (notification_preferences);
+  // a user without a row falls back to the catalog defaults.
+  // A malformed row must never block the guest's call: skip it (defaults).
+  const preferences = new Map<
+    string,
+    z.infer<typeof notificationPreferenceSchema>
+  >();
+  const preferenceRows = await tx
+    .select()
+    .from(notificationPreferences)
+    .where(
+      and(
+        eq(notificationPreferences.tenantId, tenantId),
+        inArray(notificationPreferences.userId, userIds),
+      ),
+    );
+  for (const row of preferenceRows) {
+    const parsed = notificationPreferenceSchema.safeParse({
+      tenantId: row.tenantId,
+      userId: row.userId,
+      categories: row.categories,
+      quietHours: row.quietHours,
+      timeZone: row.timeZone,
+      updatedAt: toIsoDateTime(row.updatedAt),
+    });
+    if (parsed.success) preferences.set(row.userId, parsed.data);
+    else
+      console.warn(
+        `Notification preference ignored (invalid row) for user ${row.userId}`,
+      );
+  }
   return userIds.map((userId) => ({
     userId,
     category: "waiter_call" as const,
@@ -217,7 +266,7 @@ async function buildRecipients(
     body: content.body,
     link: null,
     policy,
-    preference: null,
+    preference: preferences.get(userId) ?? null,
     reachability: {
       hasPushSubscription: subscribed.has(userId),
       hasVerifiedEmail: false,
@@ -521,9 +570,13 @@ async function transition(
     assertOutletInScope(context.outletScope, row.outletId);
 
     const target = action === "acknowledge" ? "acknowledged" : "resolved";
-    // A retry by the same staff member after success is a no-op, not an error.
-    if (row.status === target && row.assignedTo === actorUserId)
-      return toRequest(row);
+    // A retry after success is a no-op, not an error. Resolve is idempotent
+    // for any staff member: a second resolver gets the original outcome
+    // (resolvedBy keeps the first resolver), never a 409.
+    if (row.status === target) {
+      if (action === "resolve" || row.assignedTo === actorUserId)
+        return toRequest(row);
+    }
     let next;
     try {
       next = transitionServiceRequest(row.status, action);
@@ -543,6 +596,7 @@ async function transition(
         assignedTo: row.assignedTo ?? actorUserId,
         acknowledgedAt: row.acknowledgedAt ?? now,
         resolvedAt: action === "resolve" ? now : null,
+        resolvedBy: action === "resolve" ? actorUserId : null,
         resolutionNote: action === "resolve" ? note : row.resolutionNote,
         updatedAt: now,
       })
@@ -710,5 +764,209 @@ export async function sweepOverdueServiceRequests(
       escalated.push(row.id);
     }
     return escalated;
+  });
+}
+
+// ---- Zone waiter management (ORD-07, bead legend-xlzl) --------------------
+
+type AssignmentRow = typeof zoneWaiterAssignments.$inferSelect;
+
+function toAssignment(row: AssignmentRow): ZoneWaiterAssignment {
+  return zoneWaiterAssignmentSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    zoneId: row.zoneId,
+    userId: row.userId,
+    note: row.note,
+    createdAt: toIsoDateTime(row.createdAt),
+  });
+}
+
+/** Zone waiter assignments of one outlet, optionally one zone. */
+export async function listZoneWaiterAssignments(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  zoneId?: string,
+): Promise<ZoneWaiterAssignment[]> {
+  assertOutletInScope(context.outletScope, outletId);
+  return withTenant(db, context, async (tx) => {
+    const rows = await tx
+      .select()
+      .from(zoneWaiterAssignments)
+      .where(
+        and(
+          eq(zoneWaiterAssignments.tenantId, context.tenant.tenantId),
+          eq(zoneWaiterAssignments.outletId, outletId),
+          zoneId ? eq(zoneWaiterAssignments.zoneId, zoneId) : undefined,
+        ),
+      )
+      .orderBy(zoneWaiterAssignments.createdAt, zoneWaiterAssignments.id);
+    return rows.map(toAssignment);
+  });
+}
+
+/**
+ * Audit row for a zone waiter change, written in the caller's transaction.
+ * `actorUserId` is the staff member; without one the row is a system action.
+ */
+async function auditZoneWaiter(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string | null,
+  action:
+    "service_request.zone_waiter.assign" | "service_request.zone_waiter.remove",
+  row: AssignmentRow,
+  now: Date,
+): Promise<void> {
+  const snapshot = maskAuditChanges(
+    {
+      id: row.id,
+      outletId: row.outletId,
+      zoneId: row.zoneId,
+      userId: row.userId,
+    },
+    ZONE_WAITER_AUDIT_FIELDS,
+  );
+  const assigned = action === "service_request.zone_waiter.assign";
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: row.outletId,
+      actorType: actorUserId ? "user" : "system",
+      actorId: actorUserId,
+      deviceId: null,
+      action,
+      objectType: "zone_waiter_assignment",
+      objectId: row.id,
+      reason: null,
+      maskedChanges: assigned
+        ? { before: null, after: snapshot }
+        : { before: snapshot, after: null },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    ZONE_WAITER_AUDIT_FIELDS,
+  );
+}
+
+/**
+ * Assigns a waiter to a zone. The user must be an active (not banned) member
+ * of this tenant who can operate this outlet's floor, i.e. could acknowledge
+ * the calls routed to them; anyone else is refused. Assigning a user who is
+ * already on the zone returns the existing row (`created: false`).
+ */
+export async function assignZoneWaiter(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  zoneId: string,
+  input: AssignInput,
+  actorUserId: string | null = null,
+  now = new Date(),
+): Promise<{ assignment: ZoneWaiterAssignment; created: boolean }> {
+  assertOutletInScope(context.outletScope, outletId);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [zone] = await tx
+      .select({ id: floorZones.id })
+      .from(floorZones)
+      .where(
+        and(
+          eq(floorZones.tenantId, tenantId),
+          eq(floorZones.outletId, outletId),
+          eq(floorZones.id, zoneId),
+        ),
+      );
+    if (!zone) throw new CoreError("NOT_FOUND", "Zona tidak ditemukan.");
+
+    const [account] = await tx
+      .select({ banned: user.banned })
+      .from(user)
+      .where(eq(user.id, input.userId));
+    const snapshot = account
+      ? await accessSnapshotInTransaction(tx, context, input.userId, now)
+      : null;
+    if (
+      !account ||
+      account.banned ||
+      !snapshot?.allows("floor.table.operate", { type: "outlet", id: outletId })
+    )
+      throw new CoreError(
+        "VALIDATION_ERROR",
+        "Pengguna bukan anggota aktif dengan akses ke outlet ini.",
+      );
+
+    const [inserted] = await tx
+      .insert(zoneWaiterAssignments)
+      .values({
+        tenantId,
+        outletId,
+        zoneId,
+        userId: input.userId,
+        note: input.note || null,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      await auditZoneWaiter(
+        tx,
+        context,
+        actorUserId,
+        "service_request.zone_waiter.assign",
+        inserted,
+        now,
+      );
+      return { assignment: toAssignment(inserted), created: true };
+    }
+    const [existing] = await tx
+      .select()
+      .from(zoneWaiterAssignments)
+      .where(
+        and(
+          eq(zoneWaiterAssignments.tenantId, tenantId),
+          eq(zoneWaiterAssignments.zoneId, zoneId),
+          eq(zoneWaiterAssignments.userId, input.userId),
+        ),
+      );
+    if (!existing) throw new CoreError("CONFLICT", "Penugasan gagal disimpan.");
+    return { assignment: toAssignment(existing), created: false };
+  });
+}
+
+/** Removes one assignment; the zone's open requests keep their assignee. */
+export async function removeZoneWaiterAssignment(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  assignmentId: string,
+  actorUserId: string | null = null,
+  now = new Date(),
+): Promise<void> {
+  assertOutletInScope(context.outletScope, outletId);
+  await withTenant(db, context, async (tx) => {
+    const removed = await tx
+      .delete(zoneWaiterAssignments)
+      .where(
+        and(
+          eq(zoneWaiterAssignments.tenantId, context.tenant.tenantId),
+          eq(zoneWaiterAssignments.outletId, outletId),
+          eq(zoneWaiterAssignments.id, assignmentId),
+        ),
+      )
+      .returning();
+    if (removed.length === 0)
+      throw new CoreError("NOT_FOUND", "Penugasan waiter tidak ditemukan.");
+    await auditZoneWaiter(
+      tx,
+      context,
+      actorUserId,
+      "service_request.zone_waiter.remove",
+      removed[0],
+      now,
+    );
   });
 }

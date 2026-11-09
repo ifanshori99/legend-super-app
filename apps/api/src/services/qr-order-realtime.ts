@@ -25,7 +25,6 @@ import WebSocket, { WebSocketServer } from "ws";
 import {
   assertTrustedScopedContext,
   uuidSchema,
-  z,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -36,10 +35,12 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resolveHostname } from "./org-resolve.service.ts";
 import {
-  QR_CART_WAKE_CHANNEL,
+  qrRealtimeMessageSchema,
   qrRealtimeSignalSchema,
+  type QrRealtimeMessage,
   type QrRealtimeSignal,
-} from "./qr-order-realtime-signal.ts";
+} from "@starter/shared/qr-order";
+import { QR_CART_WAKE_CHANNEL } from "./qr-order-realtime-signal.ts";
 import { lockGuestSessionForPayment } from "./qr-order.service.ts";
 
 export const QR_REALTIME_PROTOCOL = "legend-qr.v1";
@@ -49,25 +50,6 @@ const CREDENTIAL = /^[A-Za-z0-9_-]{20,256}$/;
 /** A table seats at most 30 (contract pax); one socket per phone. */
 export const MAX_SOCKETS_PER_SESSION = 30;
 const RECHECK_INTERVAL_MS = 60_000;
-
-/**
- * Message pushed to guests. Lead: move into @starter/shared/qr-order so the
- * web client parses the same schema.
- */
-export const qrRealtimeMessageSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    type: z.literal("cart.updated"),
-    sessionId: uuidSchema,
-    version: z.number().int().nonnegative(),
-  }),
-  z.strictObject({
-    type: z.literal("order.updated"),
-    sessionId: uuidSchema,
-    orderId: z.string(),
-    status: z.enum(["sent", "voided"]),
-  }),
-]);
-export type QrRealtimeMessage = z.infer<typeof qrRealtimeMessageSchema>;
 
 type Options = {
   /** Tenant of the request host (TEN-02). Default: deny every connection. */

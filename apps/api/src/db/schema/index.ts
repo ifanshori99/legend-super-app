@@ -94,3 +94,5 @@ export * from "./ai-insights";
 export * from "./inventory-gl";
 // WS-09 edge Wi-Fi agent grant ledger (legend-hsk).
 export * from "./edge-wifi";
+// WS-03 open-bill controls per outlet (legend-cqrw).
+export * from "./open-bill";

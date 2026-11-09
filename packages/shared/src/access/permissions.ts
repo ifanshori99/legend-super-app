@@ -84,6 +84,8 @@ const entries = [
   // "dikonfirmasi waiter atau kasir", ORD-10): confirm/close a session, move,
   // merge, move items, table status. Layout editing stays floor.table.manage.
   ["floor.table.operate", []],
+  // Who receives a zone's waiter calls: assign and remove zone waiters (ORD-07).
+  ["service_request.zone.manage", []],
   ["order.view", []],
   ["order.create", []],
   ["order.recovery.handle", []],

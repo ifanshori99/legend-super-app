@@ -48,6 +48,7 @@ import {
   modifierGroups,
   modifiers,
   stations,
+  serviceChargeRules,
   taxRules,
   taxSettings,
   type floorZones,
@@ -421,6 +422,9 @@ export function resolveLine(
 export type QrTaxConfig = {
   taxRules: TaxRule[];
   settings: TaxSettings[];
+  /** Published outlet/tenant service charge rules: the fallback when the zone
+   * itself carries no charge (see `selectServiceChargeRules`). */
+  serviceChargeRules: ServiceChargeRule[];
   ruleNames: Map<string, string>;
 };
 
@@ -436,7 +440,7 @@ export async function loadTaxConfig(
 ): Promise<QrTaxConfig> {
   const tenantId = context.tenant.tenantId;
   const outletId = outletIdSchema.parse(outletIdInput);
-  const [ruleRows, settingsRows] = await Promise.all([
+  const [ruleRows, settingsRows, serviceRows] = await Promise.all([
     tx
       .select()
       .from(taxRules)
@@ -455,6 +459,19 @@ export async function loadTaxConfig(
           eq(taxSettings.tenantId, tenantId),
           eq(taxSettings.status, "published"),
           or(isNull(taxSettings.outletId), eq(taxSettings.outletId, outletId)),
+        ),
+      ),
+    tx
+      .select()
+      .from(serviceChargeRules)
+      .where(
+        and(
+          eq(serviceChargeRules.tenantId, tenantId),
+          eq(serviceChargeRules.status, "published"),
+          or(
+            isNull(serviceChargeRules.outletId),
+            eq(serviceChargeRules.outletId, outletId),
+          ),
         ),
       ),
   ]);
@@ -503,21 +520,49 @@ export async function loadTaxConfig(
         createdAt: row.createdAt.toISOString(),
       }) as TaxSettings,
   );
+  const serviceRules = serviceRows.map(
+    (row) =>
+      ({
+        id: row.id,
+        tenantId: row.tenantId,
+        outletId: row.outletId,
+        code: row.code,
+        name: row.name,
+        rateBp: row.rateBp,
+        zoneId: row.zoneId,
+        orderTypes: row.orderTypes,
+        itemClasses: row.itemClasses,
+        isActive: row.isActive,
+        version: row.version,
+        effectiveFrom: row.effectiveFrom,
+        status: row.status,
+        publishedAt: row.publishedAt?.toISOString() ?? null,
+        publishedBy: row.publishedBy,
+        createdAt: row.createdAt.toISOString(),
+      }) as unknown as ServiceChargeRule,
+  );
   return {
     taxRules: rules,
     settings,
+    serviceChargeRules: serviceRules,
     ruleNames: new Map<string, string>(
       ruleRows.map((row) => [row.id, row.name]),
     ),
   };
 }
 
-/** The zone's service charge as one engine rule (see the header). */
-function zoneServiceChargeRules(
-  zone: ZoneRow,
+/**
+ * The service charge rules the engine sees for one order, shared by QR and POS
+ * so both price a zone the same way: a zone with a charge is one engine rule
+ * (see the header); a zone with none (or no zone) falls back to the outlet's
+ * published service charge rules, as the POS always did.
+ */
+export function selectServiceChargeRules(
+  zone: ZoneRow | null,
   context: ScopedTenantContext,
+  configured: readonly ServiceChargeRule[],
 ): ServiceChargeRule[] {
-  if (zone.serviceChargeBp <= 0) return [];
+  if (zone === null || zone.serviceChargeBp <= 0) return [...configured];
   return [
     {
       id: zone.id,
@@ -579,8 +624,8 @@ function lineSubtotal(line: PricedQuoteLine): number {
 /**
  * Builds the contract quote from server-priced lines. The tax engine runs
  * discount -> service -> tax and fails closed (TaxError) on a configuration
- * gap; a tax-inclusive rule is refused because QR prices exclude tax (owner
- * decision) and the quote's total formula assumes exclusive prices.
+ * gap. A tax-inclusive rule yields an inclusive quote (`pricesIncludeTaxAndService`);
+ * a cart mixing inclusive and exclusive rules is refused.
  */
 export function buildQuote(input: {
   context: ScopedTenantContext;
@@ -649,6 +694,11 @@ export function buildQuote(input: {
     input.outletId,
     input.businessDate,
   );
+  const engineServiceRules = selectServiceChargeRules(
+    input.zone,
+    input.context,
+    input.taxConfig.serviceChargeRules,
+  );
   const tax = calculateTax(
     {
       outletId: input.outletId,
@@ -670,18 +720,30 @@ export function buildQuote(input: {
     } as TaxCalculationInput,
     {
       taxRules: input.taxConfig.taxRules,
-      serviceChargeRules: zoneServiceChargeRules(input.zone, input.context),
+      serviceChargeRules: engineServiceRules,
       settings: input.taxConfig.settings,
     },
   );
-  if (tax.taxes.some((summary) => summary.priceIncludesTax))
-    // Fail closed and explicit (legend-49pw): QR prices exclude service and
-    // tax, so an inclusive rule would make this quote's total double-charge.
+  // Inclusive prices (legend-49pw): decided by the resolved rules, as in
+  // `calculateTax`. A cart that mixes inclusive and exclusive rules has no single
+  // total formula, so it fails closed.
+  const inclusiveRules = tax.taxes.filter(
+    (summary) => summary.priceIncludesTax,
+  );
+  if (inclusiveRules.length > 0 && inclusiveRules.length < tax.taxes.length)
     throw new HttpError(
       qrOrderErrorHttpStatus.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
       QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
       qrOrderErrorMessages.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
     );
+  const inclusive = inclusiveRules.length > 0;
+  // The rate the engine charged: the zone's, or the outlet rule it fell back to.
+  const serviceRateBp =
+    input.zone.serviceChargeBp > 0
+      ? input.zone.serviceChargeBp
+      : (engineServiceRules.find(
+          (rule) => rule.id === tax.lines[0]?.serviceChargeRuleId,
+        )?.rateBp ?? 0);
   const byLine = new Map(tax.lines.map((line) => [line.lineId, line]));
   const net = subtotal - tax.discountIdr;
   const discountLines =
@@ -720,9 +782,11 @@ export function buildQuote(input: {
     subtotalIdr: subtotal,
     discountLines,
     discountIdr: tax.discountIdr,
+    pricesIncludeTaxAndService: inclusive,
     serviceCharge: {
-      rateBp: input.zone.serviceChargeBp,
-      baseIdr: net,
+      rateBp: serviceRateBp,
+      // Inclusive: the base the service charge was backed out of.
+      baseIdr: inclusive ? tax.baseIdr : net,
       amountIdr: tax.serviceChargeIdr,
     },
     taxLines: tax.taxes.map((summary) => ({

@@ -35,6 +35,8 @@ import {
 } from "./services/inventory-gl-consumer.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
+import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -379,6 +381,26 @@ const relay = createRelayRuntime({
       await sweepOverdueServiceRequests(new Date(), context);
     } catch {
       console.error("Service request overdue sweep failed");
+    }
+    // legend-cqrw (PRD §3 F43): alert the zone waiters of open-bill sessions
+    // idle past the outlet's limit, once per idle spell. Same fail-closed rule.
+    try {
+      await sweepInactiveOpenBillSessions(new Date(), context);
+    } catch {
+      console.error("Open bill inactivity sweep failed");
+    }
+    // legend-1am2 (PRD §8 Ketersediaan): lift every 86 whose soldOutUntil
+    // passed and broadcast item.restored (system actor) even with no staff
+    // board open. Idempotent; same fail-closed rule as the sweeps above.
+    try {
+      await withTenant(db, context, (tx) =>
+        restoreExpiredSoldOut(tx, context, {
+          actorUserId: null,
+          now: new Date(),
+        }),
+      );
+    } catch {
+      console.error("Item 86 deadline sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are required at startup (legend-18qw); a

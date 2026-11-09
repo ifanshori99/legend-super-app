@@ -8,3 +8,4 @@ export * from "./calculate.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";
+export * from "./net-subtotal.ts";

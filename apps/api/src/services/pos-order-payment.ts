@@ -35,6 +35,7 @@ import {
   PosError,
   type PosTenderResult,
 } from "@starter/shared/pos";
+import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
@@ -333,7 +334,8 @@ export async function addPosTender(
               reference: order.number,
               tableLabel: null,
               pax: null,
-              subtotalIdr: order.subtotalIdr,
+              // legend-zmc2: the link adds service and tax to the subtotal.
+              subtotalIdr: orderNetSubtotalIdr(order),
               discountIdr: idr(order.discountIdr + covered),
               serviceChargeIdr: order.serviceChargeIdr,
               taxIdr: order.taxIdr,

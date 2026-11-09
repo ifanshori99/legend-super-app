@@ -66,6 +66,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
 import { recordAudit } from "./core-audit";
 import {
   decidePaymentConfirmation,
@@ -74,6 +75,7 @@ import {
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
   paymentGateway,
+  type GatewayCancelRequest,
   type GatewayIntent,
   type OnlinePaymentMethod,
 } from "./payment-gateway";
@@ -537,12 +539,14 @@ async function readIntentPlan(
   });
 }
 
+/** Supersedes the bill's pending codes; returns the ones a provider holds. */
 async function supersedePending(
   tx: Tx,
   context: ScopedTenantContext,
   link: PaymentLinkRow,
   now: Date,
-): Promise<void> {
+): Promise<GatewayCancelRequest[]> {
+  const superseded: GatewayCancelRequest[] = [];
   // A gateway code already past its expiry is not live for the guest; it stays
   // `pending` so reconciliation keeps asking the gateway until it answers
   // definitively (see `syncPendingIntentDetailed`).
@@ -581,6 +585,38 @@ async function supersedePending(
       payload: { intentId: row.id, reason: "superseded" },
       now,
     });
+    if (row.providerRef !== null)
+      superseded.push({
+        intentId: row.id,
+        providerRef: row.providerRef,
+        outletId: row.outletId,
+      });
+  }
+  return superseded;
+}
+
+/**
+ * After the supersede committed: asks the provider to close the old codes so
+ * a guest cannot still pay a VA they switched away from. Best effort; a
+ * failure is logged and the old code, if paid anyway, is settled and refunded
+ * through the normal verified path.
+ */
+async function cancelSupersededAtGateway(
+  context: ScopedTenantContext,
+  superseded: readonly GatewayCancelRequest[],
+): Promise<void> {
+  const gateway = paymentGateway();
+  if (!gateway.cancel) return;
+  for (const intent of superseded) {
+    try {
+      await gateway.cancel(context, intent);
+    } catch (error) {
+      // Identifiers only.
+      logger.warn(
+        { intentId: intent.intentId, err: error },
+        "Payment: gateway cancel of a superseded code failed",
+      );
+    }
   }
 }
 
@@ -611,9 +647,21 @@ export async function createIntent(
       "The payment gateway is unavailable; pay at the cashier.",
     );
 
-  const requestedExpiry = new Date(
-    now.getTime() + INTENT_LIFETIME_MINUTES[parsed.method] * 60_000,
-  );
+  // The caller may shorten the lifetime (a QR guest's session ends sooner);
+  // never lengthen it past the method default.
+  const methodExpiry =
+    now.getTime() + INTENT_LIFETIME_MINUTES[parsed.method] * 60_000;
+  const callerExpiry =
+    parsed.expiresAt === undefined
+      ? methodExpiry
+      : Date.parse(parsed.expiresAt);
+  if (callerExpiry <= now.getTime())
+    throw new HttpError(
+      400,
+      "VALIDATION_ERROR",
+      "The payment expiry must be in the future.",
+    );
+  const requestedExpiry = new Date(Math.min(methodExpiry, callerExpiry));
   // Same key, same id, same DOIT request: see intentIdFor.
   const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
   const created: GatewayIntent = await gateway.createIntent({
@@ -632,8 +680,9 @@ export async function createIntent(
   );
   const instructions: PaymentInstructions = created.instructions;
 
+  let superseded: GatewayCancelRequest[] = [];
   try {
-    return await withTenant(db, context, async (tx) => {
+    const stored = await withTenant(db, context, async (tx) => {
       // Re-check inside the transaction: a concurrent retry may have won.
       const [existing] = await tx
         .select()
@@ -689,7 +738,7 @@ export async function createIntent(
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
-      await supersedePending(tx, context, plan.link, now);
+      superseded = await supersedePending(tx, context, plan.link, now);
       const [row] = await tx
         .insert(paymentIntents)
         .values({
@@ -728,6 +777,8 @@ export async function createIntent(
       });
       return toCustomerIntent(row);
     });
+    await cancelSupersededAtGateway(context, superseded);
+    return stored;
   } catch (error) {
     if (!uniqueViolation(error)) throw error;
     // The unique (tenant, idempotency_key) key decided the race.

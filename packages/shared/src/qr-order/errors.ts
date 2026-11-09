@@ -22,9 +22,18 @@ export const QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED =
  */
 export const EDGE_LINK_DOWN = "EDGE_LINK_DOWN" as const;
 
+/**
+ * legend-zmc2: one table session, one pricing mode. An order whose prices
+ * include tax cannot join a session that already holds an exclusive order (or
+ * the reverse): the session bill has no single total formula.
+ */
+export const QR_ORDER_PRICING_MODE_MIXED =
+  "QR_ORDER_PRICING_MODE_MIXED" as const;
+
 export const qrOrderErrorHttpStatus = {
   [QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED]: 422,
   [EDGE_LINK_DOWN]: 503,
+  [QR_ORDER_PRICING_MODE_MIXED]: 409,
 } as const satisfies Record<string, number>;
 
 export type QrOrderErrorCode = keyof typeof qrOrderErrorHttpStatus;
@@ -41,4 +50,6 @@ export const qrOrderErrorMessages: Record<QrOrderErrorCode, string> = {
   QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED:
     "Pajak harga-termasuk-pajak belum didukung untuk QR order; harga menu QR tidak termasuk pajak dan service charge.",
   EDGE_LINK_DOWN: "Silakan pesan melalui waiter.",
+  QR_ORDER_PRICING_MODE_MIXED:
+    "Pesanan ini memakai mode harga (termasuk atau belum termasuk pajak) yang berbeda dari pesanan lain di meja ini. Minta bantuan kasir.",
 };

@@ -87,9 +87,18 @@ export type GatewayPaymentStatus = {
   readonly paidAt?: string | null;
 };
 
+/** A code that was replaced by another one on the same bill. */
+export type GatewayCancelRequest = {
+  readonly intentId: string;
+  readonly providerRef: string;
+  readonly outletId: string;
+};
+
 export interface PaymentGatewayPort {
   /** Provider code of the configured gateway (PRD default: DOIT). */
   readonly provider: string;
+  /** `outletId`: outlet of the bill, so a per-outlet adapter (m1 DOIT) picks
+   * that outlet's credentials; an adapter without outlets ignores it. */
   health(
     context: ScopedTenantContext,
     outletId?: string,
@@ -121,6 +130,15 @@ export interface PaymentGatewayPort {
     context: ScopedTenantContext,
     outletId?: string,
   ): Promise<readonly GatewayMethodAvailability[]>;
+  /**
+   * Best effort: closes a superseded code at the provider so it stops taking
+   * money (a VA lives 3 hours). Optional; a code paid anyway is still settled
+   * by its verified webhook and its money returned (qr-order-consumers.ts).
+   */
+  cancel?(
+    context: ScopedTenantContext,
+    intent: GatewayCancelRequest,
+  ): Promise<void>;
 }
 
 /**

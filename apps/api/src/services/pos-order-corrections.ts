@@ -36,6 +36,7 @@ import {
   type PosTender,
   type PosVoid,
 } from "@starter/shared/pos";
+import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -343,7 +344,9 @@ function refundSplit(
   serviceChargeIdr: number;
   pbjtIdr: number;
 } {
-  const net = Math.max(0, order.subtotalIdr - order.discountIdr);
+  // legend-zmc2: an inclusive order's subtotal already contains service and
+  // tax; the net line excludes them so the split still adds up to the amount.
+  const net = Math.max(0, orderNetSubtotalIdr(order) - order.discountIdr);
   const [netPart, servicePart, taxPart] = allocateIdr(idr(amountIdr), [
     net,
     order.serviceChargeIdr,

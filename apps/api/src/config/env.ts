@@ -120,6 +120,16 @@ const schema = z
       .min(1)
       .max(10_000_000)
       .default(6000),
+    // Guest table-session routes (cart, quote, bill, payments, polls) count
+    // against their own tenant bucket, so a polling dining room cannot spend
+    // the budget of the public reads (or the reverse). It is per tenant, so it
+    // covers every outlet: size it for all venues polling at once.
+    PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000_000)
+      .default(60_000),
     // The web server's address(es) as the API sees them (comma-separated). Its
     // SSR calls carry no visitor IP, so they skip the per-IP public bucket and
     // only count against the tenant bucket. Loopback by default (web and API

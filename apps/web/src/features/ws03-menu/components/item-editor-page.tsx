@@ -263,6 +263,7 @@ function ItemEditor({
     mediaId: values.image?.mediaId ?? null,
   });
   const patch = item ? itemPatch(values, item) : null;
+  const unchanged = patch !== null && Object.keys(patch).length === 0;
   /**
    * Q23: mirror of the API refusal — only a write that publishes (activation,
    * or clearing the photo of an active item) is blocked. A legacy active item
@@ -327,6 +328,9 @@ function ItemEditor({
       });
       return;
     }
+    // Nothing changed: skip the request instead of sending an empty PATCH
+    // (the save button is disabled in this state; this guards Enter-submit).
+    if (unchanged) return;
     updateItem.mutate(
       { itemId, body: patch ?? body },
       {
@@ -660,6 +664,7 @@ function ItemEditor({
               <Button
                 type="submit"
                 loading={createItem.isPending || updateItem.isPending}
+                disabled={unchanged}
               >
                 {t("menu.editor.save")}
               </Button>

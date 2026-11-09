@@ -58,6 +58,9 @@ import {
   placeOrderInputSchema,
   placeOrderResultSchema,
   planQrOrderPlacement,
+  QR_ORDER_PRICING_MODE_MIXED,
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
   qrOrderEvents,
   qrOrderSchema,
   quoteInputSchema,
@@ -69,8 +72,6 @@ import {
   transitionTableSession,
   updateCartLineInputSchema,
   EDGE_LINK_DOWN,
-  qrOrderErrorHttpStatus,
-  qrOrderErrorMessages,
   type Cart,
   type CartLine,
   type CartMutationResult,
@@ -108,6 +109,11 @@ import {
   getOutletEdgeLinkState,
 } from "../edge/qr-order-forwarding.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  assertOpenBillWithinLimit,
+  OpenBillLimitExceeded,
+  refuseOpenBillBreach,
+} from "./open-bill-control.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
@@ -739,6 +745,7 @@ export function orderDto(
     taxIdr: row.taxIdr,
     roundingIdr: row.roundingIdr,
     totalIdr: row.totalIdr,
+    pricesIncludeTaxAndService: row.pricesIncludeTax,
     status: row.status,
     items: items.map((item) => ({
       id: item.id,
@@ -1515,7 +1522,13 @@ export async function placeQrOrder(
         throw error;
       }
     },
-  );
+  ).catch(async (error: unknown) => {
+    // The checkout transaction rolled back (stock released); the breach is
+    // recorded in a fresh one, then answered 409 (ORD-10 / F43).
+    if (error instanceof OpenBillLimitExceeded)
+      return refuseOpenBillBreach(context, error);
+    throw error;
+  });
   if (outcome.kind === "all_sold_out")
     throw new CoreError(
       "CONFLICT",
@@ -1640,6 +1653,38 @@ async function checkout(
   });
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
+  // legend-zmc2: one session, one pricing mode. The quote already refuses a
+  // cart mixing inclusive and exclusive rules; an order may not mix with the
+  // session's earlier non-voided orders either (the bill has one formula).
+  const [otherMode] = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, session.id),
+        ne(orders.status, "voided"),
+        ne(orders.pricesIncludeTax, quote.pricesIncludeTaxAndService),
+      ),
+    )
+    .limit(1);
+  if (otherMode)
+    throw new HttpError(
+      qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
+      QR_ORDER_PRICING_MODE_MIXED,
+      qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
+    );
+  // ORD-10 / F43: an open-bill order may not push the session over its limit.
+  await assertOpenBillWithinLimit(tx, context, {
+    sessionId: session.id,
+    outletId: session.outletId,
+    tableId: session.tableId,
+    zoneId: zone.id,
+    paymentMode: session.paymentMode,
+    cartVersion: cart.version,
+    orderTotalIdr: quote.totalIdr,
+    now,
+  });
 
   const orderId = createUlid(now.getTime());
   const payFirst = plan.kitchenFire === "held_for_payment";
@@ -1667,6 +1712,9 @@ async function checkout(
       taxIdr: quote.taxIdr,
       roundingIdr: quote.rounding.adjustmentIdr,
       totalIdr: quote.totalIdr,
+      // legend-zmc2: subtotal stays the gross line sum; service and tax are
+      // the parts backed out of it (orders_total_check branches on this).
+      pricesIncludeTax: quote.pricesIncludeTaxAndService,
       depositAppliedIdr: idr(0),
       status: payFirst ? "awaiting_payment" : "sent",
       businessDate,

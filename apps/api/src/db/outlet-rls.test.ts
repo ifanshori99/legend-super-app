@@ -158,6 +158,7 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
          AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR NOT EXISTS (
            SELECT 1 FROM pg_policy p
            WHERE p.polrelid = c.oid AND p.polname = 'outlet_isolation' AND NOT p.polpermissive
+             AND p.polqual IS NOT NULL AND p.polwithcheck IS NOT NULL
          ))
        ORDER BY 1`,
     );

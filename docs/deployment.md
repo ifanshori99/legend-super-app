@@ -196,11 +196,12 @@ The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the b
 
 Two fixed one-minute windows are charged on every public read: one per client IP and one per resolved tenant. A request over either limit answers `429` with `{"error":{"code":"RATE_LIMITED"}}`, a `Retry-After` header holding the whole seconds left in the window, and `Cache-Control: no-store`. Health, Better Auth (`/api/auth/*`), provider webhooks and the TLS ask are not mounted on the limiter.
 
-| Variable                              | Default  | Meaning                                                              |
-| ------------------------------------- | -------- | -------------------------------------------------------------------- |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`    | Requests per client IP per minute                                    |
-| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`   | Requests per resolved tenant per minute                              |
-| `PUBLIC_RATE_LIMIT_INTERNAL_IPS`      | loopback | Web server address(es) that skip the per-IP bucket (comma-separated) |
+| Variable                                    | Default  | Meaning                                                                                                                                                    |
+| ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE`              | `600`    | Requests per client IP per minute                                                                                                                          |
+| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE`       | `6000`   | Requests per resolved tenant per minute                                                                                                                    |
+| `PUBLIC_RATE_LIMIT_INTERNAL_IPS`            | loopback | Web server address(es) that skip the per-IP bucket (comma-separated)                                                                                       |
+| `PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE` | `60000`  | QR guest table-session requests per tenant per minute (own bucket; guests also get 10x the per-IP budget for a venue NAT and 600/min per table credential) |
 
 Sizing the defaults — they must not break legitimate traffic:
 

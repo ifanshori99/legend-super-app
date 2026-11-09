@@ -14,12 +14,14 @@
 // public read.
 //
 // Prices are the outlet's dine-in price list (latest version effective today)
-// and, per the owner decision of 1 Nov 2026, exclude tax and service charge.
-// Tax lines are the published rules for the outlet that cover F&B on the
-// dine-in channel; the tax engine (WS-05) still owns the real calculation — the
-// menu only prints the note, so no rounding happens here.
+// and, per the owner decision of 1 Nov 2026, exclude tax and service charge
+// unless the outlet's F&B tax rule is price-inclusive (legend-49pw).
+// The tax note is the rule the WS-05 resolver (`resolveTaxRule`) picks for a
+// representative F&B dine-in line of the outlet, so the note can never list a
+// rule the engine would override; the tax engine still owns the real
+// calculation — the menu only prints the note, so no rounding happens here.
 
-import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   businessDateOf,
   CoreError,
@@ -32,7 +34,10 @@ import {
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
-import { menuItemVisibleToGuests } from "@starter/shared/menu";
+import {
+  menuItemVisibleToGuests,
+  type MenuSchedule,
+} from "@starter/shared/menu";
 import {
   assertQrTokenMatchesTable,
   qrMenuSchema,
@@ -43,6 +48,13 @@ import {
   type ZoneHours,
 } from "@starter/shared/qr-order";
 import {
+  effectiveRuleVersions,
+  resolveServiceChargeRule,
+  resolveTaxRule,
+  TaxError,
+  type TaxRule,
+} from "@starter/shared/tax";
+import {
   publicMenuPageSchema,
   type PublicMenuPage,
 } from "@starter/shared/website";
@@ -50,6 +62,7 @@ import { db } from "../db";
 import {
   brands,
   floorZones,
+  itemAvailability,
   itemVariants,
   menuCategories,
   menuItemModifierGroups,
@@ -58,7 +71,6 @@ import {
   modifiers,
   outlets,
   tables,
-  taxRules,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import {
@@ -68,9 +80,15 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
-import { readAvailabilityDecisions, withinWindows } from "./menu-availability";
+import {
+  minutesOfDay,
+  readAvailabilityDecisions,
+  wallClockAt,
+  withinWindows,
+} from "./menu-availability";
 import { outletBusinessDayClock } from "./outlet-clock";
 import { readChannelPriceGrid } from "./menu-pricing.service";
+import { loadTaxConfig, selectServiceChargeRules } from "./qr-order-pricing";
 import { verifyTableQrToken } from "./qr-token";
 
 /** The contract caps a guest item's lists; the database does not. */
@@ -106,6 +124,29 @@ export function zoneOrderingOpen(
   timeZone: string,
 ): boolean {
   return withinWindows(hours, at, timeZone, "closed");
+}
+
+/**
+ * Start of the next sales window later the same local day, or null when none
+ * opens before midnight (legend-nx3f: "Tersedia mulai HH:mm" only promises a
+ * window today; a window on another day stays `sold_out`). A window with
+ * `start === end` is a full day, so it is never "later".
+ */
+export function nextWindowStartToday(
+  windows: readonly MenuSchedule[],
+  at: Date,
+  timeZone: string,
+): Date | null {
+  const clock = wallClockAt(at, timeZone);
+  if (!clock) return null;
+  const starts = windows
+    .filter((window) => window.daysOfWeek.includes(clock.weekday))
+    .filter((window) => minutesOfDay(window.start) !== minutesOfDay(window.end))
+    .map((window) => minutesOfDay(window.start))
+    .filter((start) => start > clock.minutes);
+  if (starts.length === 0) return null;
+  const minuteStart = Math.floor(at.getTime() / 60_000) * 60_000;
+  return new Date(minuteStart + (Math.min(...starts) - clock.minutes) * 60_000);
 }
 
 // ---- Catalogue -------------------------------------------------------------
@@ -338,6 +379,39 @@ async function readGuestCatalogue(
       .filter(([, decision]) => !decision.sellable)
       .map(([itemId]) => itemId),
   );
+  const outsideSchedule = [...availability.entries()]
+    .filter(
+      ([, decision]) =>
+        decision.reason === "outside_schedule" &&
+        // A later window does not help while today's daily stock is spent.
+        (decision.remaining === null || decision.remaining > 0),
+    )
+    .map(([itemId]) => itemId);
+  const availableFrom = new Map<string, Date>();
+  if (outsideSchedule.length > 0) {
+    const scheduleRows = await tx
+      .select({
+        menuItemId: itemAvailability.menuItemId,
+        schedule: itemAvailability.schedule,
+      })
+      .from(itemAvailability)
+      .where(
+        and(
+          eq(itemAvailability.tenantId, tenantId),
+          eq(itemAvailability.outletId, input.outletId),
+          inArray(itemAvailability.menuItemId, outsideSchedule),
+          isNull(itemAvailability.deletedAt),
+        ),
+      );
+    for (const row of scheduleRows) {
+      const next = nextWindowStartToday(
+        row.schedule,
+        input.now,
+        input.timeZone,
+      );
+      if (next) availableFrom.set(row.menuItemId, next);
+    }
+  }
 
   const mediaUrls = await loadMediaUrls(
     tx,
@@ -370,6 +444,7 @@ async function readGuestCatalogue(
     // guest menu item at all.
     if (base === undefined || base <= 0) continue;
     const priceIdr = base;
+    const later = availableFrom.get(row.id);
     items.push({
       id: row.id,
       categoryId: row.categoryId,
@@ -385,7 +460,12 @@ async function readGuestCatalogue(
         priceIdr: idr(variant.priceIdr),
       })),
       modifierGroups: groupsByItem.get(row.id) ?? [],
-      status: soldOut.has(row.id) ? "sold_out" : "available",
+      ...(later
+        ? {
+            status: "unavailable_until" as const,
+            availableFrom: toIsoDateTime(later),
+          }
+        : { status: soldOut.has(row.id) ? "sold_out" : "available" }),
       sortOrder: row.sortOrder,
     });
   }
@@ -413,42 +493,116 @@ async function readGuestCatalogue(
   };
 }
 
-/** Published tax rules of the outlet that print in the menu price note. */
-async function readGuestTaxes(
+type GuestTaxNote = {
+  taxes: { name: string; rateBp: number }[];
+  /** True only when EVERY picked rule is price-inclusive. */
+  pricesIncludeTaxAndService: boolean;
+  taxPriceMode: "inclusive" | "exclusive" | "mixed";
+  /** The rate the engine would charge in this zone (zone rule, else outlet rule). */
+  serviceChargeBp: number;
+};
+
+/** Nil UUID: the representative line is not a real menu item. */
+const NOTE_ITEM_ID = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * The tax note of the menu (legend-lf8g): the rules the WS-05 resolver picks
+ * for the guest items (food_beverage, dine-in) of the outlet, resolved per item
+ * so category- and item-specific rules count, and listed once each. Follows the
+ * same item/category/outlet/channel/region specificity as the real calculation.
+ * An item whose rule is missing or ambiguous (the engine fails closed on both)
+ * adds nothing; no items at all falls back to one representative line. Nothing
+ * is computed from it.
+ *
+ * `taxPriceMode` follows the picked rules' `priceIncludesTax`, the flag
+ * `calculateTax` (POS, QR order) honours: all inclusive, all exclusive, or
+ * mixed (the guest sees a neutral note; checkout refuses a mixed cart). The
+ * `tax_settings` value is only the default for rules created later.
+ *
+ * The service charge rate uses the same selection as the quote
+ * (`selectServiceChargeRules`): a zone with no charge falls back to the
+ * outlet's published service charge rule.
+ */
+async function readGuestTaxNote(
   tx: Tx,
-  tenantId: TenantId,
-  outletId: OutletId,
-  today: string,
-): Promise<{ name: string; rateBp: number }[]> {
-  const rows = await tx
-    .select()
-    .from(taxRules)
-    .where(
-      and(
-        eq(taxRules.tenantId, tenantId),
-        or(eq(taxRules.outletId, outletId), isNull(taxRules.outletId)),
-        eq(taxRules.status, "published"),
-        eq(taxRules.isActive, true),
-        lte(taxRules.effectiveFrom, today),
-      ),
-    )
-    .orderBy(desc(taxRules.effectiveFrom), desc(taxRules.version));
-  const tenantWide = new Map<string, { name: string; rateBp: number }>();
-  const outletRules = new Map<string, { name: string; rateBp: number }>();
-  for (const row of rows) {
-    // Empty `channels` means every channel (tax contract).
-    if (row.channels.length > 0 && !row.channels.includes(GUEST_CHANNEL))
-      continue;
-    if (
-      row.appliesTo.itemClasses.length > 0 &&
-      !row.appliesTo.itemClasses.includes("food_beverage")
-    )
-      continue;
-    const target = row.outletId === null ? tenantWide : outletRules;
-    if (!target.has(row.code))
-      target.set(row.code, { name: row.name, rateBp: row.rateBp });
+  context: ScopedTenantContext,
+  input: {
+    outletId: OutletId;
+    zone: typeof floorZones.$inferSelect;
+    today: string;
+    items: readonly { id: string; categoryId: string }[];
+  },
+): Promise<GuestTaxNote> {
+  const config = await loadTaxConfig(tx, context, input.outletId);
+  const rules = effectiveRuleVersions(
+    config.taxRules,
+    input.outletId,
+    input.today,
+  );
+  const taxContext = {
+    outletId: input.outletId,
+    channel: GUEST_CHANNEL,
+    zoneId: input.zone.id,
+    // Outlets carry no PBJT region code yet; region-bound rules do not match.
+    regionCode: null,
+  };
+  const lines =
+    input.items.length > 0
+      ? input.items.map((item) => ({
+          itemId: item.id,
+          categoryId: item.categoryId,
+        }))
+      : [{ itemId: NOTE_ITEM_ID, categoryId: null }];
+  const picked = new Map<string, TaxRule>();
+  for (const line of lines)
+    try {
+      const rule = resolveTaxRule(rules, taxContext, {
+        ...line,
+        itemClass: "food_beverage",
+      });
+      picked.set(rule.id, rule);
+    } catch (error) {
+      if (!(error instanceof TaxError)) throw error;
+    }
+  const inclusive = [...picked.values()].filter(
+    (rule) => rule.priceIncludesTax,
+  ).length;
+  const taxPriceMode =
+    inclusive === 0
+      ? "exclusive"
+      : inclusive === picked.size
+        ? "inclusive"
+        : "mixed";
+
+  let serviceChargeBp = 0;
+  try {
+    serviceChargeBp =
+      resolveServiceChargeRule(
+        effectiveRuleVersions(
+          selectServiceChargeRules(
+            input.zone,
+            context,
+            config.serviceChargeRules,
+          ),
+          input.outletId,
+          input.today,
+        ),
+        taxContext,
+        "food_beverage",
+      )?.rateBp ?? 0;
+  } catch (error) {
+    // Ambiguous service rules: the engine fails closed, the note shows none.
+    if (!(error instanceof TaxError)) throw error;
   }
-  return [...new Map([...tenantWide, ...outletRules]).values()];
+  return {
+    taxes: [...picked.values()].map((rule) => ({
+      name: rule.name,
+      rateBp: rule.rateBp,
+    })),
+    pricesIncludeTaxAndService: taxPriceMode === "inclusive",
+    taxPriceMode,
+    serviceChargeBp,
+  };
 }
 
 // ---- QR menu ---------------------------------------------------------------
@@ -469,6 +623,37 @@ async function brandAndOutletRefs(
     .where(and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)));
   if (!brand) throw new CoreError("NOT_FOUND", "Brand tidak ditemukan.");
   return { outlet, brand };
+}
+
+/**
+ * Guest items that can be ordered right now at one outlet (read-only wrapper
+ * of the private catalogue read, same Q23 / price / 86 rules): status
+ * `available`, in the menu's own order. Used by the guest suggestions read
+ * model, which must never offer an item the guest cannot order.
+ */
+export async function listOrderableGuestItems(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; now: Date },
+): Promise<QrMenuItem[]> {
+  const { outlet } = await brandAndOutletRefs(
+    tx,
+    context.tenant.tenantId,
+    input.outletId,
+  );
+  const catalogue = await readGuestCatalogue(
+    tx,
+    context,
+    {
+      brandId: brandIdSchema.parse(outlet.brandId),
+      outletId: input.outletId,
+      now: input.now,
+      timeZone: outlet.timezone,
+      businessDayCutoff: outlet.businessDayCutoff,
+    },
+    noMediaUrls,
+  );
+  return catalogue.items.filter((item) => item.status === "available");
 }
 
 /**
@@ -536,12 +721,12 @@ export async function getQrMenu(
       },
       resolveMediaUrls,
     );
-    const taxes = await readGuestTaxes(
-      tx,
-      context.tenant.tenantId,
-      outletIdSchema.parse(outlet.id),
-      businessDateOf(now, outletBusinessDayClock(outlet)),
-    );
+    const taxNote = await readGuestTaxNote(tx, context, {
+      outletId: outletIdSchema.parse(outlet.id),
+      zone,
+      today: businessDateOf(now, outletBusinessDayClock(outlet)),
+      items: catalogue.items,
+    });
 
     return qrMenuSchema.parse({
       brand: {
@@ -569,14 +754,15 @@ export async function getQrMenu(
         id: zone.id,
         name: zone.name,
         paymentMode: zone.paymentMode,
-        serviceChargeBp: zone.serviceChargeBp,
+        serviceChargeBp: taxNote.serviceChargeBp,
         minimumSpendIdr: zone.minimumSpendIdr,
       },
       orderingOpen: zoneOrderingOpen(zone.hours, now, outlet.timezone),
       pricing: {
-        pricesIncludeTaxAndService: false,
-        serviceChargeBp: zone.serviceChargeBp,
-        taxes,
+        pricesIncludeTaxAndService: taxNote.pricesIncludeTaxAndService,
+        taxPriceMode: taxNote.taxPriceMode,
+        serviceChargeBp: taxNote.serviceChargeBp,
+        taxes: taxNote.taxes,
       },
       categories: catalogue.categories,
       items: catalogue.items,

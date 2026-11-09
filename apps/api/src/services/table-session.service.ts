@@ -69,6 +69,7 @@ import {
   sessionParticipants,
   outlets,
   domainEventOutbox,
+  serviceRequests,
 } from "../db/schema";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
@@ -332,6 +333,68 @@ async function activeSessionForTable(
   return row;
 }
 
+/**
+ * A guest scanning a SECONDARY table of a multi-table party: the session is
+ * bound to the primary table only, so the scanned table has no session of its
+ * own. The link is the party's live `reservation_tables` hold plus the
+ * session's `reservation_id` (see `openStaffSeatedSession`).
+ */
+async function partySessionForSecondaryTable(
+  tx: Tx,
+  tenantId: TenantId,
+  table: { id: string; outletId: OutletId; status: string },
+): Promise<SessionRow | undefined> {
+  // Seating marks every table of the party occupied and closing frees them, so
+  // a table that is not occupied cannot be part of a live party: a stale hold
+  // must never pull a later guest into (or block a status change on) it.
+  if (table.status !== "occupied") return undefined;
+  const [row] = await tx
+    .select({ session: tableSessions })
+    .from(reservationTables)
+    .innerJoin(
+      tableSessions,
+      and(
+        eq(tableSessions.tenantId, reservationTables.tenantId),
+        eq(tableSessions.reservationId, reservationTables.reservationId),
+        eq(tableSessions.outletId, table.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(reservationTables.tenantId, tenantId),
+        eq(reservationTables.tableId, table.id),
+        isNull(reservationTables.releasedAt),
+        inArray(tableSessions.status, ACTIVE_STATUSES),
+      ),
+    )
+    .orderBy(desc(tableSessions.openedAt))
+    .limit(1);
+  return row?.session;
+}
+
+/**
+ * The guest left: a request still open when its session closes (or is voided
+ * or expires) must not absorb the next session's call at the same table (the
+ * open-dedupe key is per table and type). Same transaction as the close.
+ */
+async function cancelOpenServiceRequests(
+  tx: Tx,
+  tenantId: TenantId,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  await tx
+    .update(serviceRequests)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(
+      and(
+        eq(serviceRequests.tenantId, tenantId),
+        eq(serviceRequests.tableSessionId, sessionId),
+        inArray(serviceRequests.status, ["pending", "acknowledged"]),
+      ),
+    );
+}
+
 async function nextSequence(
   tx: Tx,
   tenantId: string,
@@ -572,6 +635,7 @@ async function expireSession(
         eq(tableSessions.id, row.id),
       ),
     );
+  await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
   await appendSessionEvent(tx, context, "table_session.closed", {
     sessionId: row.id,
     outletId: row.outletId,
@@ -651,17 +715,73 @@ export async function openOrJoinTableSession(
       throw new CoreError("CONFLICT", "Meja sedang dibersihkan.");
 
     const refs = await outletRefs(tx, context.tenant.tenantId, table.outletId);
-    const active = await activeSessionForTable(
+    // The scanned table may be a secondary table of a multi-table party; its
+    // session sits on the primary table, so join that one (legend-rml8).
+    let active = await activeSessionForTable(
       tx,
       context.tenant.tenantId,
       table.id,
     );
+    if (!active) {
+      const party = await partySessionForSecondaryTable(
+        tx,
+        context.tenant.tenantId,
+        table,
+      );
+      if (party) {
+        // Re-read under a row lock: the party may have closed since the lookup.
+        const fresh = await loadSession(tx, context.tenant.tenantId, party.id, {
+          forUpdate: true,
+        });
+        if (ACTIVE_STATUSES.includes(fresh.status)) {
+          // A secondary scan never expires the party's session: the primary
+          // table owns it, and expiry settles the whole party's bill.
+          if (tokenExpired(fresh, now))
+            throw new CoreError(
+              "CONFLICT",
+              "Sesi meja sudah berakhir; pindai QR meja utama atau minta bantuan staf.",
+            );
+          active = fresh;
+        }
+      }
+    }
     if (active && !tokenExpired(active, now)) {
+      // The session is bound to its own table, so the scan result reports
+      // that table (the scan contract requires `session.tableId === table.id`).
+      // For a secondary-table scan that is the party's primary table.
+      let sessionTable = table;
+      let sessionZone = zone;
+      if (active.tableId !== table.id) {
+        const [primary] = await tx
+          .select()
+          .from(tables)
+          .where(
+            and(
+              eq(tables.tenantId, context.tenant.tenantId),
+              eq(tables.id, active.tableId),
+            ),
+          );
+        const [primaryZone] = primary
+          ? await tx
+              .select()
+              .from(floorZones)
+              .where(
+                and(
+                  eq(floorZones.tenantId, context.tenant.tenantId),
+                  eq(floorZones.id, primary.zoneId),
+                ),
+              )
+          : [];
+        if (!primary || !primaryZone)
+          throw new CoreError("NOT_FOUND", "QR meja tidak dikenali");
+        sessionTable = primary;
+        sessionZone = primaryZone;
+      }
       const [participant] = await tx
         .insert(sessionParticipants)
         .values({
           tenantId: context.tenant.tenantId,
-          outletId: table.outletId,
+          outletId: sessionTable.outletId,
           tableSessionId: active.id,
           deviceHash: input.deviceHash,
           joinedAt: now,
@@ -681,11 +801,11 @@ export async function openOrJoinTableSession(
       if (participant) {
         await appendSessionEvent(tx, context, "table_session.joined", {
           sessionId: active.id,
-          outletId: table.outletId,
+          outletId: sessionTable.outletId,
           payload: {
             sessionId: active.id,
-            tableId: table.id,
-            zoneId: zone.id,
+            tableId: sessionTable.id,
+            zoneId: sessionZone.id,
             participantId: participant.id,
           },
           actor: { type: "system" },
@@ -695,8 +815,8 @@ export async function openOrJoinTableSession(
       const refreshed = { ...active, lastActivityAt: now };
       return scanResult({
         outcome: "joined",
-        table,
-        zone,
+        table: sessionTable,
+        zone: sessionZone,
         session: await sessionDto(tx, refreshed),
         token: openSessionToken(active),
         refs,
@@ -1188,6 +1308,7 @@ export async function closeTableSession(
       )
       .returning();
     if (!updated) throw new Error("Session close returned no row");
+    await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
     await tx
       .update(tables)
       .set({
@@ -1277,11 +1398,11 @@ export async function updateTableStatus(
       );
     if (!row) throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
     assertOutletInScope(context.outletScope, row.outletId);
-    const session = await activeSessionForTable(
-      tx,
-      context.tenant.tenantId,
-      row.id,
-    );
+    // A secondary table of a seated party has no session of its own; it is
+    // still in use while the party's session is live (no mark_available).
+    const session =
+      (await activeSessionForTable(tx, context.tenant.tenantId, row.id)) ??
+      (await partySessionForSecondaryTable(tx, context.tenant.tenantId, row));
     assertCanApplyTableStatusAction({
       action: input.action,
       tableStatus: row.status,

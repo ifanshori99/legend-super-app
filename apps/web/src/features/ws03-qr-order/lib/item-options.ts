@@ -34,13 +34,37 @@ export function selectedInGroup(
   return selection.modifierIds.filter((id) => ids.has(id));
 }
 
+/** `HH:mm` of the next sales window in the outlet's time zone (nx3f).
+ * Returns null when `iso` / `timeZone` cannot be formatted: callers then fall
+ * back to the plain sold-out label. Never throws. */
+export function formatAvailableFrom(
+  iso: string,
+  timeZone: string,
+): string | null {
+  try {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat("id-ID", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+    const hour = parts.find((part) => part.type === "hour")?.value;
+    const minute = parts.find((part) => part.type === "minute")?.value;
+    return hour && minute ? `${hour}:${minute}` : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Empty list means the selection can be added to the cart. */
 export function validateSelection(
   item: QrMenuItem,
   selection: Selection,
 ): SelectionIssue[] {
   const issues: SelectionIssue[] = [];
-  if (item.status === "sold_out") issues.push({ code: "item_sold_out" });
+  if (item.status !== "available") issues.push({ code: "item_sold_out" });
   if (
     item.variants.length > 0 &&
     !item.variants.some((variant) => variant.id === selection.variantId)
