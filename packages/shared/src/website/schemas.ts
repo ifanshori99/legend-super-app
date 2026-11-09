@@ -206,6 +206,54 @@ export const publicSiteSchema = z.strictObject({
 });
 export type PublicSite = z.infer<typeof publicSiteSchema>;
 
+// ---- Staff-edited site content ---------------------------------------------
+
+/**
+ * What staff write for a brand's public site (`brand_websites.content`): the
+ * parts of `publicSiteSchema` that no other table holds. The brand name and
+ * slug, the outlet code, name and hours, the featured menu, the promotions and
+ * the reservation switch are read from their own tables at request time.
+ */
+export const brandWebsiteContentSchema = z.strictObject({
+  tagline: publicBrandSchema.shape.tagline,
+  description: publicBrandSchema.shape.description,
+  heroImages: z.array(publicImageSchema).min(1).max(10),
+  gallery: z.array(publicImageSchema).max(30),
+  highlights: z.array(publicHighlightSchema).max(8),
+  address: publicAddressSchema,
+  /** Null until staff pick the pin; the site cannot publish without it. */
+  geo: publicGeoSchema.nullable(),
+  contact: publicContactSchema,
+  seo: seoMetaSchema,
+  /** Maps link the guest opens; null falls back to a pin on `geo`. */
+  googleBusinessUrl: httpsUrlSchema.nullable(),
+});
+export type BrandWebsiteContent = z.infer<typeof brandWebsiteContentSchema>;
+
+export const brandWebsiteParamsSchema = z.strictObject({
+  brandId: brandIdSchema,
+});
+
+/** `GET /api/website/brands/:brandId/content` answer. */
+export const brandWebsiteSchema = z.strictObject({
+  brandId: brandIdSchema,
+  outletId: outletIdSchema,
+  content: brandWebsiteContentSchema,
+  publishedAt: isoDateTimeSchema.nullable(),
+  updatedAt: isoDateTimeSchema,
+});
+export type BrandWebsite = z.infer<typeof brandWebsiteSchema>;
+
+/** `PUT /api/website/brands/:brandId/content` body. */
+export const saveBrandWebsiteInputSchema = z.strictObject({
+  /** Featured outlet; omitted keeps the current one (first outlet on create). */
+  outletId: outletIdSchema.optional(),
+  content: brandWebsiteContentSchema,
+  /** true publishes (or keeps published); false unpublishes the site. */
+  publish: z.boolean(),
+});
+export type SaveBrandWebsiteInput = z.infer<typeof saveBrandWebsiteInputSchema>;
+
 /** The website's own routes, used for navigation and the sitemap. */
 export const publicSiteRoutesSchema = z.strictObject({
   home: z.literal("/"),

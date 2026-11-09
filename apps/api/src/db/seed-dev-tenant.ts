@@ -10,6 +10,10 @@ import { Pool } from "pg";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendTaxFixtures } from "@starter/shared/tax";
+import {
+  brandWebsiteContentSchema,
+  cafeLegendWebsiteFixtures,
+} from "@starter/shared/website";
 import { databaseUrl } from "./connection";
 
 if (
@@ -338,6 +342,38 @@ try {
       ],
     );
   }
+
+  // Published public website content (WS-08, legend-qgr6): the Cafe Legend
+  // site fixture, so GET /api/public/site answers in development and tests.
+  const site = cafeLegendWebsiteFixtures.site;
+  const websiteContent = brandWebsiteContentSchema.parse({
+    tagline: site.brand.tagline,
+    description: site.brand.description,
+    heroImages: site.heroImages,
+    gallery: site.gallery,
+    highlights: site.highlights,
+    address: site.outlet.address,
+    geo: site.outlet.geo,
+    contact: site.contact,
+    seo: site.seo,
+    googleBusinessUrl: site.outlet.mapUrl,
+  });
+  await client.query(
+    `INSERT INTO brand_websites (tenant_id, brand_id, outlet_id, content, published_at, updated_by)
+     VALUES ($1, $2, $3, $4, now(), $5)
+     ON CONFLICT (tenant_id, brand_id) DO UPDATE SET
+       outlet_id = EXCLUDED.outlet_id,
+       content = EXCLUDED.content,
+       published_at = COALESCE(brand_websites.published_at, EXCLUDED.published_at),
+       updated_at = now()`,
+    [
+      tenant.id,
+      brand.id,
+      fixtures.outlets[0].id,
+      JSON.stringify(websiteContent),
+      tenant.createdBy,
+    ],
+  );
 
   await client.query("COMMIT");
 } catch (error) {

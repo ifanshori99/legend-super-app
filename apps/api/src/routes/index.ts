@@ -31,6 +31,7 @@ import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
+import { websiteAdminRouter } from "./website-admin.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -136,6 +137,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);
+// Staff editor of the brand website content (WS-08, legend-qgr6).
+apiRouter.use("/website", websiteAdminRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
 // Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.

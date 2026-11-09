@@ -13,10 +13,30 @@ import { Router } from "express";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { getPublicMenuPage as readPublicMenuPage } from "../services/guest-menu.service";
+import { getPublicSite as readPublicSite } from "../services/public-site.service";
 
 export const publicSiteRouter = Router();
 
 publicSiteRouter.use(requireTenantContext);
+
+// Contract `getPublicSite` (`GET /api/public/site`). 404
+// `PUBLIC_SITE_NOT_PUBLISHED` until staff publish; only a published answer is
+// cacheable (the app-wide `no-store` default stays on every other answer).
+publicSiteRouter.get("/", async (req, res) => {
+  const context = establishScopedTenantContext(getTenantContext(req), {
+    kind: "tenant",
+  });
+  // Only a host that resolved to a registered tenant domain names the member
+  // link and may be cached; any other source keeps the no-store default.
+  const domain =
+    context.tenant.source === "domain" ? req.hostname.toLowerCase() : null;
+  const data = await readPublicSite(
+    context,
+    domain ? `https://${domain}` : null,
+  );
+  if (domain) res.setHeader("Cache-Control", "public, max-age=60");
+  res.json({ data });
+});
 
 // Contract `getPublicMenuPage` (`GET /api/public/site/menu`).
 publicSiteRouter.get("/menu", async (req, res) => {
