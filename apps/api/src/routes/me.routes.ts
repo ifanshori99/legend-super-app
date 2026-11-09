@@ -12,6 +12,7 @@ import { myAccessViewSchema } from "@starter/shared/access";
 import { requireAuth } from "../middleware/auth";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { loadRequestAccess } from "../middleware/permissions";
+import { supportSessionOf } from "../middleware/support-session";
 import { requireTenantContext } from "../middleware/tenant";
 
 export const meRouter = Router();
@@ -32,12 +33,19 @@ meRouter.get("/access", async (req, res) => {
       ),
     ),
   ].sort();
+  // Support session (TEN-04): an impersonated session shows its grant's mode
+  // and expiry (cached from the requireAuth guard). A normal session costs no
+  // extra query.
+  const support = await supportSessionOf(req);
   res.json({
     data: myAccessViewSchema.parse({
       permissions: snapshot.permissions,
       mfaRequired: snapshot.mfaRequired,
       mfaVerified: snapshot.mfaVerified,
       stations,
+      supportSession: support
+        ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
+        : null,
     }),
   });
 });

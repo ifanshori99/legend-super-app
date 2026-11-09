@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "cn";
 import { LoaderCircle } from "lucide-react";
 import { Slot } from "radix-ui";
+import { useSupportReadOnly } from "@/features/ws01-support-access/read-only";
 
 // v3 (Metoric): primary = solid accent with a tinted hairline shadow;
 // outline = card fill, soft border, hairline shadow (the label identifies
@@ -42,6 +43,10 @@ type ButtonProps = React.ComponentProps<"button"> &
     asChild?: boolean;
     /** Shows a spinner, keeps the label, and blocks repeat presses. */
     loading?: boolean;
+    /** Keeps a submit button enabled in a read-only support session. For
+     * read-only forms (search/filter) only; pair with
+     * `<form data-support-readonly-allow>`. */
+    allowInReadOnly?: boolean;
   };
 
 function Button({
@@ -50,17 +55,22 @@ function Button({
   size,
   asChild = false,
   loading = false,
+  allowInReadOnly = false,
   disabled,
   children,
   ...props
 }: ButtonProps) {
   const Comp = asChild ? Slot.Root : "button";
+  // A read-only support session cannot save: submit buttons render disabled
+  // (the API refuses the write anyway). Outside the provider this is false.
+  const supportReadOnly =
+    useSupportReadOnly() && props.type === "submit" && !allowInReadOnly;
   return (
     <Comp
       data-slot="button"
       data-variant={variant ?? "default"}
       className={cn(buttonVariants({ variant, size, className }))}
-      disabled={asChild ? undefined : disabled || loading}
+      disabled={asChild ? undefined : disabled || loading || supportReadOnly}
       aria-busy={loading || undefined}
       {...props}
     >

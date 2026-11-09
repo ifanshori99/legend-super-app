@@ -32,6 +32,8 @@ import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-fr
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
 import { SupportSessionBanner } from "@/features/ws01-support-access/components/session-banner";
+import { SupportReadOnlyNotice } from "@/features/ws01-support-access/components/read-only-notice";
+import { SupportReadOnlyProvider } from "@/features/ws01-support-access/read-only";
 import { holdsAny } from "@/lib/areas/guard";
 
 type SessionLike = { user: { name: string } } | null;
@@ -118,11 +120,17 @@ function AreaFrameBody({
   if (gate.status === "forbidden" || gate.status === "mfa_required")
     return <AreaGateScreen area={area} gate={gate} />;
 
+  // TEN-04: an impersonated session under a read_only grant sees a notice
+  // and cannot submit forms (the API refuses the writes anyway). Platform
+  // screens are the Super Admin's own and never read-only.
+  const supportReadOnly =
+    area !== "platform" && access.supportSession?.accessMode === "read_only";
   const body = (
-    <>
+    <SupportReadOnlyProvider value={supportReadOnly}>
+      {supportReadOnly ? <SupportReadOnlyNotice className="mb-4" /> : null}
       <OfflineBannerSlot />
       {children}
-    </>
+    </SupportReadOnlyProvider>
   );
   const signOut = session ? <SignOutButton /> : null;
 

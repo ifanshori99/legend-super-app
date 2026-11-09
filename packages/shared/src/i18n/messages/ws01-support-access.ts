@@ -128,4 +128,13 @@ export const supportAccessMessages = {
     reason: "Alasan: {reason}",
     expiringSoon: "Sesi segera berakhir",
   },
+
+  // Read-only support session notice for the impersonator (TEN-04).
+  readOnlyMode: {
+    label: "Sesi dukungan · Hanya baca. Perubahan dinonaktifkan.",
+    end: "Akhiri sesi",
+    ending: "Mengakhiri…",
+    endFailed: "Sesi dukungan gagal diakhiri. Coba lagi.",
+    submitBlocked: "Sesi dukungan hanya baca: perubahan tidak disimpan.",
+  },
 } as const;

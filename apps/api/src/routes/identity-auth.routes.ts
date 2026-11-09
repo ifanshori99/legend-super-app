@@ -15,6 +15,7 @@
 import { Router } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.ts";
+import { PlatformError } from "@starter/shared/platform";
 import {
   createWhatsAppLoginChallengeSchema,
   LOGIN_CODE_TTL_MINUTES,
@@ -63,6 +64,10 @@ loginChallengeRouter.post(
       headers: fromNodeHeaders(req.headers),
       query: { disableCookieCache: true },
     });
+    // Belt and braces behind guardImpersonatedAuthRoutes: a support session
+    // must never link a WhatsApp number to the user it impersonates.
+    if (signedIn?.session.impersonatedBy)
+      throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     const nonce = ensureBindingNonce(req);
     const issued = await issueWhatsAppChallenge(getTenantContext(req), {
       bindingNonce: nonce,
