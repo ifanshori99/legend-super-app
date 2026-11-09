@@ -77,6 +77,8 @@ export * from "./purchasing";
 export * from "./pos-shift";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
 export * from "./payroll-pph21-policy";
+// WS-10 payroll core tables (legend-gfcr).
+export * from "./payroll";
 // EDC agent framework (legend-apt).
 export * from "./edc";
 // HRIS SOP library, training and announcements (legend-7df1).
