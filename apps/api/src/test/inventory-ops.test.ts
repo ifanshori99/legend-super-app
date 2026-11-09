@@ -847,7 +847,25 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
     );
     await receive(kitchen, coffee, "5000.0000", "2.0000");
     await receive(kitchen, sugar, "1000.0000", "5.0000");
-    const recipeId = randomUUID();
+    // production_orders.recipe_id has a real FK (legend-tk7i): the recipe row
+    // must exist; the in-memory source still supplies its lines.
+    const { rows: brandRows } = await owner.query<{ id: string }>(
+      "SELECT id FROM brands WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+      [tenantA],
+    );
+    const { rows: recipeRows } = await owner.query<{ id: string }>(
+      `INSERT INTO recipes (tenant_id, brand_id, name, output_item_id, yield_quantity, yield_uom_id, is_active, updated_by)
+       VALUES ($1, $2, $3, $4, '1000.0000', $5, true, $6) RETURNING id`,
+      [
+        tenantA,
+        brandRows[0]!.id,
+        `Cold Brew ${randomUUID().slice(0, 8)}`,
+        coldBrew,
+        gramId,
+        ownerUserId,
+      ],
+    );
+    const recipeId = recipeRows[0]!.id;
     recipes.set(recipeId, {
       recipeId,
       isActive: true,
