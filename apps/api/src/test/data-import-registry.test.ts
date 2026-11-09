@@ -126,6 +126,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
+  // legend-k2l
+  "0204_k2l_member_signin_identity.sql":
+    "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -250,6 +250,20 @@ const schema = z
       .min(1000)
       .max(300_000)
       .default(30_000),
+    // Google sign-in for customers (legend-k2l, AUTH-05). Both or neither: with
+    // neither set Google sign-in is OFF (no provider is registered in
+    // lib/auth.ts); one without the other refuses to boot (below).
+    GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    // Email channel (legend-k2l, member email magic link; the worker reads the
+    // same names, worker/notification-adapters.ts). "disabled" keeps the email
+    // sign-in answering EMAIL_NOT_CONFIGURED in production.
+    NOTIFICATION_EMAIL_PROVIDER: z
+      .enum(["disabled", "brevo"])
+      .default("disabled"),
+    BREVO_API_KEY: z.string().min(1).optional(),
+    NOTIFICATION_EMAIL_FROM: z.email().optional(),
+    NOTIFICATION_EMAIL_FROM_NAME: z.string().min(1).max(200).optional(),
     // Lifetime of an MCP access token (seconds).
     MCP_TOKEN_TTL_SECONDS: z.coerce
       .number()
@@ -277,6 +291,34 @@ const schema = z
         path: ["AI_PROVIDER"],
         message: "The fake AI provider is not allowed in production.",
       });
+  })
+  // legend-k2l: Google needs both halves; Brevo needs its key and sender.
+  .superRefine((values, ctx) => {
+    const hasId = values.GOOGLE_CLIENT_ID !== undefined;
+    const hasSecret = values.GOOGLE_CLIENT_SECRET !== undefined;
+    if (hasId !== hasSecret)
+      ctx.addIssue({
+        code: "custom",
+        path: [hasId ? "GOOGLE_CLIENT_SECRET" : "GOOGLE_CLIENT_ID"],
+        message:
+          "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET together, or neither.",
+      });
+    if (values.NOTIFICATION_EMAIL_PROVIDER === "brevo") {
+      if (values.BREVO_API_KEY === undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["BREVO_API_KEY"],
+          message:
+            "BREVO_API_KEY is required when the email provider is brevo.",
+        });
+      if (values.NOTIFICATION_EMAIL_FROM === undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["NOTIFICATION_EMAIL_FROM"],
+          message:
+            "NOTIFICATION_EMAIL_FROM is required when the email provider is brevo.",
+        });
+    }
   })
   .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed
@@ -351,6 +393,11 @@ export const env = {
   PORT: values.PORT ?? (Number(new URL(values.BETTER_AUTH_URL).port) || 4000),
   isProduction: values.NODE_ENV === "production",
   isTest: values.NODE_ENV === "test",
+  // legend-k2l: Google sign-in is on only with both credentials (the schema
+  // refuses one without the other).
+  googleEnabled:
+    values.GOOGLE_CLIENT_ID !== undefined &&
+    values.GOOGLE_CLIENT_SECRET !== undefined,
   // Hostnames tenants may not claim as custom domains: the platform domain and
   // the cookie parent domain (without its leading dot), whichever are set.
   reservedDomains: [

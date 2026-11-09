@@ -17,10 +17,14 @@ import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.ts";
 import { PlatformError } from "@starter/shared/platform";
 import {
+  createMagicLinkChallengeSchema,
   createWhatsAppLoginChallengeSchema,
   LOGIN_CODE_TTL_MINUTES,
   loginChallengeParamsSchema,
+  magicLinkVerifyBodySchema,
+  MAGIC_LINK_TTL_MINUTES,
 } from "@starter/shared/identity";
+import { env } from "../config/env";
 import { jsonBody } from "../middleware/body";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -31,6 +35,10 @@ import {
   readBindingNonce,
   setBindingCookie,
 } from "../lib/login-binding";
+import {
+  requestEmailMagicLink,
+  verifyEmailMagicLink,
+} from "../services/identity-email-login.service";
 import {
   cancelWhatsAppChallenge,
   issueWhatsAppChallenge,
@@ -46,6 +54,20 @@ loginChallengeRouter.use(noStore, requireTrustedOrigin);
 // The binding cookie outlives the code by a minute so a slow round trip still
 // collects its session; the challenge itself still expires after five.
 const BINDING_COOKIE_SECONDS = (LOGIN_CODE_TTL_MINUTES + 1) * 60;
+// legend-k2l: the email link lives longer than a WhatsApp code, and the cookie
+// must still be there when the same browser clicks it (same-device detection).
+const EMAIL_BINDING_COOKIE_SECONDS = (MAGIC_LINK_TTL_MINUTES + 1) * 60;
+
+/**
+ * legend-k2l: where the emailed link points. The requesting page's own origin
+ * when it is a trusted one (a tenant on its own domain gets its own page),
+ * otherwise WEB_URL. The Origin header is only ever used as a pick from
+ * `env.trustedOrigins`, never echoed as-is.
+ */
+function emailLinkOrigin(origin: string | undefined): string {
+  if (origin && env.trustedOrigins.includes(origin)) return origin;
+  return new URL(env.WEB_URL).origin;
+}
 
 /**
  * Mobile deep link / desktop QR: issues the code and binds it to this browser.
@@ -111,3 +133,49 @@ loginChallengeRouter.post("/:challengeId/cancel", async (req, res) => {
   await cancelWhatsAppChallenge(challengeId, readBindingNonce(req));
   res.status(204).end();
 });
+
+/**
+ * legend-k2l: asks for a sign-in link by email. The answer is the same for a
+ * known and an unknown address. `returnTo` stays in the browser (the link page
+ * restores it), like the WhatsApp route.
+ */
+loginChallengeRouter.post(
+  "/email",
+  requireTenantContext,
+  jsonBody,
+  async (req, res) => {
+    const body = createMagicLinkChallengeSchema.parse(req.body);
+    const nonce = ensureBindingNonce(req);
+    const requested = await requestEmailMagicLink(getTenantContext(req), {
+      email: body.email,
+      bindingNonce: nonce,
+      linkOrigin: emailLinkOrigin(req.get("origin")),
+      ip: req.ip ?? null,
+      userAgent: req.get("user-agent") ?? null,
+    });
+    setBindingCookie(res, nonce, EMAIL_BINDING_COOKIE_SECONDS);
+    res.status(201).json({ data: requested });
+  },
+);
+
+/**
+ * legend-k2l: the link page posts the token from its URL fragment. The session
+ * cookie is set in the browser that opened the link, which need not be the
+ * one that asked (`crossDevice` says so).
+ */
+loginChallengeRouter.post(
+  "/email/verify",
+  requireTenantContext,
+  jsonBody,
+  async (req, res) => {
+    const { token } = magicLinkVerifyBodySchema.parse(req.body);
+    const verified = await verifyEmailMagicLink(getTenantContext(req), {
+      token,
+      bindingNonce: readBindingNonce(req),
+      ip: req.ip ?? null,
+      userAgent: req.get("user-agent") ?? null,
+    });
+    setCustomerSessionCookie(res, verified.session);
+    res.status(200).json({ data: verified.view });
+  },
+);

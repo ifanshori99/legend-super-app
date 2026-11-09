@@ -32,6 +32,11 @@ export type IssuedSession = {
  * Creates the server-side session §3 F6 asks for ("Sesi disimpan di server dan
  * dapat dicabut per perangkat"): a customer session lasts 90 days.
  *
+ * `authMethod` and `crossDevice` (legend-k2l, design ws08 M2 "Sign-in method
+ * gate") are stored on the row so the staff gate can refuse a session that
+ * never used a password, and the link flow can ask for a fresh WhatsApp proof
+ * after a cross-device sign-in.
+ *
  * `overrideAll` is true so the contract's TTL wins over Better Auth's default
  * session lifetime; nothing else is overridden.
  */
@@ -40,6 +45,10 @@ export async function createCustomerSession(input: {
   ipAddress: string | null;
   userAgent: string | null;
   now?: Date;
+  /** How the browser proved who it is; a gate input (design M2), never from the client. */
+  authMethod: "whatsapp" | "email_magic_link";
+  /** True when the browser that finished the sign-in is not the one that asked for it. */
+  crossDevice?: boolean;
 }): Promise<IssuedSession> {
   const context = await auth.$context;
   const expiresAt = new Date(
@@ -52,6 +61,10 @@ export async function createCustomerSession(input: {
       expiresAt,
       ipAddress: input.ipAddress ?? "",
       userAgent: input.userAgent ?? "",
+      // legend-k2l: written in the INSERT; the auth.ts session hook keeps them
+      // when there is no Better Auth request path (this internal call).
+      authMethod: input.authMethod,
+      authCrossDevice: input.crossDevice ?? false,
     },
     true,
   );

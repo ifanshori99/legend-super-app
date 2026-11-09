@@ -118,3 +118,5 @@ export * from "./inventory-receiving";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// legend-k2l
+export * from "./identity-merge";

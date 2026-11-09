@@ -3,7 +3,10 @@ import { fromNodeHeaders } from "better-auth/node";
 import type { Permissions } from "@starter/shared/permissions";
 import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
-import { setRequestUser } from "../lib/request-context";
+import {
+  setRequestAuthMethod,
+  setRequestUser,
+} from "../lib/request-context";
 import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
@@ -17,6 +20,9 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
     throw new HttpError(401, "UNAUTHORIZED", "Sign in to continue.");
   req.auth = session;
   setRequestUser(session.user.id);
+  // legend-k2l: only a password session may use staff role assignments
+  // (services/permission-resolver.ts reads it through requestMayUseStaffRoles).
+  setRequestAuthMethod(session.session.authMethod ?? "legacy");
   // A support (impersonated) session is checked against its support access
   // grant here, the one chokepoint of every cookie router. See
   // middleware/support-session.ts.
@@ -29,6 +35,14 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
 // requireAuth. Hiding UI in the web app is never the access check.
 export function requirePermission(permissions: Permissions): RequestHandler {
   return async (req, _res, next) => {
+    // legend-k2l (design ws08 M2): a member sign-in method never stands in
+    // for the staff password, also for user.role checks.
+    if ((getAuth(req).session.authMethod ?? "legacy") !== "password")
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Your account cannot perform this action.",
+      );
     const { success } = await auth.api.userHasPermission({
       body: { userId: getAuth(req).user.id, permissions },
     });
