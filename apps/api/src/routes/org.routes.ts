@@ -101,7 +101,11 @@ orgRouter.get("/outlets", manage, async (req, res) => {
 
 orgRouter.post("/outlets", manage, jsonBody, async (req, res) => {
   const input = createOutletInputSchema.parse(req.body);
-  const outlet = await createOutlet(getScopedTenantContext(req), input);
+  const outlet = await createOutlet(
+    getScopedTenantContext(req),
+    input,
+    getAuth(req).user.id,
+  );
   res.status(201).location(`/api/org/outlets/${outlet.id}`).json({
     data: outlet,
   });
