@@ -10,6 +10,11 @@
 // contract:
 // - Each bank payout has exactly one emitter and one event. EDC payouts are
 //   emitted only as `edc_transaction.settled`, never as `settlement.reconciled`.
+// - `settlement.reconciled.provider` is an allow-list of gateway providers
+//   (`GATEWAY_SETTLEMENT_PROVIDERS`: the gateway providers of
+//   `packages/shared/src/payment/admin.ts`, today `doit` and `duitku`). A new gateway provider
+//   means adding it to that list (a schema change). EDC bank codes and
+//   `edc_<bank>` are rejected.
 // - One event per outlet. `settlementId` / `settlementBatchId` are unique per
 //   tenant: the emitter dedupes by provider + bank statement line or provider
 //   reference, so a re-imported bank file never makes a new id.
@@ -30,6 +35,14 @@ import {
   z,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
+
+/**
+ * Gateway providers whose settlements may emit `settlement.reconciled`. A
+ * new gateway provider is added here (a schema change). EDC bank codes
+ * (bca, mandiri, bni, bjb) and `edc_<bank>` are never valid: EDC payouts use
+ * `edc_transaction.settled`.
+ */
+export const GATEWAY_SETTLEMENT_PROVIDERS = ["doit", "duitku"] as const;
 
 const grossIdr = idrSchema.refine((n) => n > 0, "grossIdr must be above 0");
 const feeIdr = idrSchema.refine((n) => n >= 0, "feeIdr must not be negative");
@@ -53,15 +66,11 @@ const GROSS_MESSAGE = {
 export const settlementReconciledPayloadSchema = z
   .strictObject({
     settlementId: uuidSchema,
-    /** Gateway provider key (for example `doit`). */
-    provider: z
-      .string()
-      .min(1)
-      .max(64)
-      .refine(
-        (value) => !value.startsWith("edc_"),
-        "EDC payouts use edc_transaction.settled",
-      ),
+    /** Gateway provider key from the allow-list (EDC banks are rejected). */
+    provider: z.enum(GATEWAY_SETTLEMENT_PROVIDERS, {
+      error:
+        "provider must be a gateway settlement provider; EDC payouts use edc_transaction.settled",
+    }),
     outletId: outletIdSchema,
     settledOn: businessDateSchema,
     grossIdr,

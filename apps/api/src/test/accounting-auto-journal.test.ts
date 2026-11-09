@@ -3616,7 +3616,7 @@ describe("F19 slice 4 settlement", () => {
       occurredAt: options.occurredAt ?? "2026-10-17T05:00:00.000Z",
       payload: {
         settlementId,
-        provider: options.provider ?? "doku",
+        provider: options.provider ?? "doit",
         outletId: options.outletId ?? world.outletId,
         settledOn: options.settledOn ?? "2026-10-15",
         ...amountsOf(options),
@@ -4002,7 +4002,7 @@ describe("F19 slice 4 settlement", () => {
   describe("shared payload schemas", () => {
     const base = {
       settlementId: randomUUID(),
-      provider: "doku",
+      provider: "doit",
       outletId: randomUUID(),
       settledOn: "2026-10-15",
       grossIdr: 100_000,
@@ -4118,12 +4118,25 @@ describe("F19 slice 4 settlement", () => {
           result.error.issues.map((issue) => issue.message).join(" "),
         ).toContain("EDC payouts use edc_transaction.settled");
       }
-      // Gateway providers, and a name that merely contains edc, stay valid.
-      for (const provider of ["doku", "xendit", "medc_x"])
+      // legend-x9w2: provider is an allow-list; only listed gateway
+      // providers are valid, so EDC bank codes and unknown names fail too.
+      for (const provider of ["doit", "duitku"])
         expect(
           settlementReconciledPayloadSchema.safeParse({ ...base, provider })
             .success,
         ).toBe(true);
+      for (const provider of [
+        "bca",
+        "mandiri",
+        "bni",
+        "bjb",
+        "xendit",
+        "medc_x",
+      ])
+        expect(
+          settlementReconciledPayloadSchema.safeParse({ ...base, provider })
+            .success,
+        ).toBe(false);
     });
   });
 });
@@ -4961,5 +4974,209 @@ describe("F19 slice 3 QR sale and total-0 order.paid", () => {
       retryable: false,
     });
     expect(await journalCount(world)).toBe(0);
+  });
+});
+
+describe("legend-6bq2 POS intent sale check", () => {
+  const T_EARLY = "2026-10-15T05:00:00.000Z"; // before REFUND_DAY
+  const T_LATE = "2026-10-17T05:00:00.000Z"; // after REFUND_DAY
+  const AMOUNTS_MISMATCH = {
+    status: "parked",
+    code: "POSTING_AMOUNTS_MISMATCH",
+    retryable: false,
+  } as const;
+
+  type DeliveryOrder = "sale-first" | "refund-first";
+  const ORDERS = ["sale-first", "refund-first"] as const;
+
+  // A POS sale of `amountIdr` (no tax) paid by one gateway tender on `intentId`.
+  const posSale = (
+    intentId: string,
+    amountIdr: number,
+    completedAt: string,
+  ): SaleAmounts => ({
+    grossSalesIdr: amountIdr,
+    completedAt,
+    tenders: [{ method: "qris", amountIdr, intentId }],
+  });
+
+  /** A paid intent whose receipt is booked (posted). */
+  async function bookedIntent(world: World, amountIdr: number) {
+    const intentId = await seedIntent(world, { amountIdr });
+    await post(world, paymentPaid(world, intentId, amountIdr));
+    return intentId;
+  }
+
+  /**
+   * A 100k intent with a posted receipt, one POS sale of `saleIdr` completed at
+   * `completedAt`, and a completed refund of `refundIdr` at REFUND_DAY.
+   */
+  async function deliverSaleAndRefund(
+    order: DeliveryOrder,
+    completedAt: string,
+    saleIdr: number,
+    refundIdr: number,
+  ) {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 100_000);
+    const sale = posSale(intentId, saleIdr, completedAt);
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, sale);
+    const refundId = await seedRefund(world, intentId, refundIdr);
+    const saleEvent = orderPaid(world, orderUlid, sale);
+    const refundEvent = paymentRefunded(world, refundId, intentId, refundIdr);
+    let saleResult: AutoJournalResult;
+    let refundResult: AutoJournalResult;
+    if (order === "sale-first") {
+      saleResult = await deliver(world.tenant, saleEvent);
+      refundResult = await deliver(world.tenant, refundEvent);
+    } else {
+      refundResult = await deliver(world.tenant, refundEvent);
+      saleResult = await deliver(world.tenant, saleEvent);
+    }
+    return { world, orderUlid, sale: saleResult, refund: refundResult };
+  }
+
+  for (const order of ORDERS) {
+    const label = order === "sale-first" ? "sale first" : "refund first";
+
+    it(`AJ-POSI-01 (${label}) a POS sale completed after the full refund of its intent parks POSTING_AMOUNTS_MISMATCH and is not retried; the refund posts; customer_deposit never goes below 0`, async () => {
+      const { world, orderUlid, sale, refund } = await deliverSaleAndRefund(
+        order,
+        T_LATE,
+        100_000,
+        100_000,
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toEqual(AMOUNTS_MISMATCH);
+      expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toEqual([
+        expect.objectContaining({
+          error_code: "POSTING_AMOUNTS_MISMATCH",
+          retryable: false,
+        }),
+      ]);
+      // receipt + refund only
+      expect(await journalCount(world)).toBe(2);
+      // customer_deposit is a liability: a positive debit-credit balance
+      // would mean the deposit was spent twice.
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    // Assumption: a sale completed at the same instant as the refund counts as
+    // earlier (same rule as QR AJ-QR-18 / AJ-QR-22).
+    it(`AJ-POSI-02 (${label}) a POS sale completed at the same instant as the full refund counts as earlier: the sale posts, the refund parks`, async () => {
+      const { world, sale, refund } = await deliverSaleAndRefund(
+        order,
+        REFUND_DAY,
+        100_000,
+        100_000,
+      );
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(refund).toEqual(AMOUNTS_MISMATCH);
+      // receipt + sale only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-POSI-03 (${label}) after a 40k partial refund of a 100k intent, a 100k POS sale tender parks POSTING_AMOUNTS_MISMATCH`, async () => {
+      const { world, sale, refund } = await deliverSaleAndRefund(
+        order,
+        T_LATE,
+        100_000,
+        40_000,
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toEqual(AMOUNTS_MISMATCH);
+      // receipt + refund only: 60k of the deposit is left, none was spent
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(-60_000);
+    });
+
+    it(`AJ-POSI-03 (${label}) after a 40k partial refund of a 100k intent, a 60k POS sale tender posts and the deposit nets to 0`, async () => {
+      const { world, sale, refund } = await deliverSaleAndRefund(
+        order,
+        T_LATE,
+        60_000,
+        40_000,
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(await journalCount(world)).toBe(3);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    // Two 60k sales on one 100k intent: only 100k exists, so the sale with the
+    // later completed_at parks whatever the delivery order.
+    it(`AJ-POSI-04 (${order === "sale-first" ? "earlier sale first" : "later sale first"}) two 60k POS sales on one 100k intent: the later one by completed_at parks, the earlier posts`, async () => {
+      const world = await makeWorld();
+      const intentId = await bookedIntent(world, 100_000);
+      const earlyUlid = createUlid();
+      const lateUlid = createUlid();
+      const early = posSale(intentId, 60_000, T_EARLY);
+      const late = posSale(intentId, 60_000, T_LATE);
+      await seedPosOrder(world, earlyUlid, early);
+      await seedPosOrder(world, lateUlid, late);
+      const earlyEvent = orderPaid(world, earlyUlid, early);
+      const lateEvent = orderPaid(world, lateUlid, late);
+      let earlyResult: AutoJournalResult;
+      let lateResult: AutoJournalResult;
+      if (order === "sale-first") {
+        earlyResult = await deliver(world.tenant, earlyEvent);
+        lateResult = await deliver(world.tenant, lateEvent);
+      } else {
+        lateResult = await deliver(world.tenant, lateEvent);
+        earlyResult = await deliver(world.tenant, earlyEvent);
+      }
+      expect(earlyResult).toMatchObject({ status: "posted" });
+      expect(lateResult).toEqual(AMOUNTS_MISMATCH);
+      expect(await parkedOf(world.tenant, `aj:sale:${lateUlid}`)).toEqual([
+        expect.objectContaining({
+          error_code: "POSTING_AMOUNTS_MISMATCH",
+          retryable: false,
+        }),
+      ]);
+      // receipt + the earlier sale only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+    });
+  }
+
+  it("AJ-POSI-05 a POS sale with an intent tender and no refund still posts through customer_deposit", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 100_000);
+    const orderUlid = createUlid();
+    const sale = posSale(intentId, 100_000, T_LATE);
+    await seedPosOrder(world, orderUlid, sale);
+
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 100_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-POSI-05 a POS sale whose receipt is not consumed yet still parks AUTO_JOURNAL_RECEIPT_PENDING (retryable)", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    const sale = posSale(intentId, 100_000, T_LATE);
+    await seedPosOrder(world, orderUlid, sale);
+    await seedUndeliveredReceipt(world, intentId, 100_000);
+
+    expect(
+      await deliver(world.tenant, orderPaid(world, orderUlid, sale)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toEqual([
+      expect.objectContaining({
+        error_code: "AUTO_JOURNAL_RECEIPT_PENDING",
+        retryable: true,
+      }),
+    ]);
   });
 });

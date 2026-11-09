@@ -1421,10 +1421,13 @@ export async function fireQrOrder(
       and(
         eq(orders.tenantId, context.tenant.tenantId),
         eq(orders.id, order.id),
+        eq(orders.status, "awaiting_payment"),
       ),
     )
     .returning();
-  if (!fired) throw new Error("Order fire returned no row");
+  if (!fired) {
+    throw new Error("Order is not awaiting payment; not fired again");
+  }
   const items = await tx
     .update(orderItems)
     .set({ fireStatus: "fired", updatedAt: input.now })

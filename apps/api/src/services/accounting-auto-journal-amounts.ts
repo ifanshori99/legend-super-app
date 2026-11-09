@@ -763,6 +763,22 @@ export async function autoJournalFactOf(
           );
         if (state === "posted") withReceipt += tender.amountIdr;
       }
+      // legend-6bq2: like a QR sale, a POS sale may not use more of an
+      // intent than its posted receipt still holds at the sale's bound
+      // (earlier sales, forfeits and payouts of that intent counted), so a
+      // refund completed before the sale cannot leave customer_deposit twice.
+      const postedIntents = [
+        ...new Set(
+          intentTenders
+            .filter((tender) => states.get(tender.intentId) === "posted")
+            .map((tender) => tender.intentId),
+        ),
+      ];
+      if (postedIntents.length > 0) {
+        const saleBound = await saleBoundOf(tx, tenantId, p.orderId);
+        for (const intentId of postedIntents)
+          await assertSaleWithinReceipt(tx, tenantId, intentId, saleBound);
+      }
       // DP applied: out of customer_deposit when its receipt is booked, else
       // (paid before the cutover) gateway money like a tender without receipt.
       let paidDepositIdr = 0;
