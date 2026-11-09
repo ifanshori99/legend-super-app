@@ -68,14 +68,14 @@ Puller (`apps/api/src/edge/device-registry-puller.ts`): `pull` may return `recei
 
 Status: `packages/shared/src/edge/endpoints.ts` `edgeStatusSchema.deviceRegistry` gains `receiptRunAlert: z.boolean().optional()` and `receiptRunAlertAt: isoDateTimeSchema.nullable().optional()`; `apps/api/src/services/edge-status.service.ts` fills them.
 
-Migration: `apps/api/drizzle/0153_receipt_sequence_restore_detect.sql`, journal `when` = 1794232000000 (above 1794231000000). CTO may renumber at merge.
+Migration: `apps/api/drizzle/0154_receipt_sequence_restore_detect.sql`, journal idx 154, `when` = 1794233000000 (0153 belongs to ws/edge-pin-pull). CTO may renumber at merge.
 
 ## S1: schema + migration (implementer)
 
 Files: `apps/api/src/db/schema/pos-receipt.ts`, `apps/api/src/db/schema/pos-receipt.custom.sql`, new migration + `apps/api/drizzle/meta/*`.
 
 - Columns, checks, type per Contract. Trigger: read the whole function; add the rules; update custom.sql AND append the same `CREATE OR REPLACE FUNCTION` to the migration.
-- `cd apps/api && pnpm db:generate` (no DB needed), rename generated file/tag to `0153_receipt_sequence_restore_detect`, journal `when` 1794232000000, append trigger SQL with `--> statement-breakpoint`. Run `pnpm db:generate` again: must produce nothing. Report the generated SQL.
+- `cd apps/api && pnpm db:generate` (no DB needed), rename generated file/tag to `0154_receipt_sequence_restore_detect`, journal `when` 1794233000000, append trigger SQL with `--> statement-breakpoint`. Run `pnpm db:generate` again: must produce nothing. Report the generated SQL.
 
 ## S2: service (implementer)
 
