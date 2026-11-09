@@ -472,6 +472,7 @@ async function computeRecap(
       deviceId: posShifts.deviceId,
       status: posShifts.status,
       varianceIdr: posShifts.varianceIdr,
+      heldCashOutIdr: posShifts.heldCashOutIdr,
     })
     .from(posShifts)
     .where(
@@ -484,8 +485,13 @@ async function computeRecap(
   for (const row of shifts) {
     const acc = deviceOf(row.deviceId);
     acc.shiftCount += 1;
+    // Book variance, as the shift close booked it (cashier_shift.closed
+    // differenceIdr, legend-ifnb): counted − (expected − held). Held cash
+    // refunds already sit in refundedIdr, so counted − expected would count
+    // them twice.
     if (row.status === "closed")
-      acc.cashVarianceIdr += Number(row.varianceIdr ?? 0);
+      acc.cashVarianceIdr +=
+        Number(row.varianceIdr ?? 0) + Number(row.heldCashOutIdr);
     else acc.closed = false;
   }
 

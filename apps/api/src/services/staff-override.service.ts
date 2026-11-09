@@ -367,8 +367,10 @@ export async function createPosOverride(
     );
   // legend-6c0 round 2: a shift-close approval is worth the server's variance
   // of the blind count it names. The cashier counts blind and cannot know
-  // it, so the submitted value is ignored for this action and the matrix tier
-  // (phone) and the close (pos-shift.service.ts) both see the real value.
+  // it, so the submitted value is ignored for this action and the close
+  // (pos-shift.service.ts) checks the approval against the real value. The
+  // phone chain does not route by it (see amountIdr below): the value stays in
+  // the payload for approvers only.
   const valueIdr =
     input.action === "cash_shift_close"
       ? await shiftCloseApprovalValue(
@@ -435,7 +437,10 @@ export async function createPosOverride(
         actionType: input.action,
         objectType: APPROVAL_OBJECT_TYPE,
         objectId: id,
-        amountIdr: valueIdr,
+        // A shift close routes without an amount (every tier applies, so the
+        // top tier decides). The route and the answer to the cashier must not
+        // depend on the variance, or repeated counts would reveal it.
+        amountIdr: input.action === "cash_shift_close" ? null : valueIdr,
         outletId,
         requestedBy,
         source: "user",
@@ -450,8 +455,9 @@ export async function createPosOverride(
         now,
       });
       // An override always needs an approver (AUTH-06). If the matrix asks
-      // for none at this value there is nobody to route it to: refuse rather
-      // than record an override without an approver.
+      // for none there is nobody to route it to: refuse rather than record an
+      // override without an approver. A shift close has no amount, so this
+      // never depends on its variance; it only fires without a matching policy.
       if (!opened.required)
         throw new CoreError(
           "PRECONDITION_FAILED",

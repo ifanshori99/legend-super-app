@@ -24,6 +24,10 @@
 //    go through the real staff-override service (ULID id, PIN fallback).
 //  - The approval matrix (§3.7) is exercised with `approval_policies` rows for
 //    `cash_shift_close` inserted as the owner and removed in the same test.
+//  - legend-nib1: closing a shift is judged against the TOP tier of that matrix
+//    whatever the variance, and a phone request is routed without an amount
+//    (the variance only rides in the approval payload, for approvers), so the
+//    cashier's answers never depend on the variance.
 //  - Idempotent replays answer 200 or 201 with the stored result.
 //  - A refused request answers with `{ error: { code } }` and the HTTP status
 //    of the contract error table (packages/shared/src/pos/errors.ts).
@@ -1802,40 +1806,88 @@ async function withShiftClosePolicies(
 }
 
 /**
- * An approved phone decision: a one-level `pos_override` approval chain for
- * `chainAmountIdr` and the approved `supervisor_phone` override that points at
- * it, worth |variance| of the count. Written as the owner (deciding a chain
- * through the inbox needs a second session; the rows are what it stores).
+ * An approved `supervisor_phone` decision, written as the owner (deciding a
+ * chain through the inbox needs a second session; the rows are what it
+ * stores): a `pos_override` approval chain and the approved override that
+ * points at it.
+ * legend-nib1: a shift-close chain is opened WITHOUT an amount (the route must
+ * not depend on the variance); the variance only rides in `payload.valueIdr`,
+ * for approvers. By default the chain is one level (the supervisor role),
+ * fully approved, with the variance of the count in its payload. Options build
+ * the bad chains the close must refuse:
+ *  - `chainAmountIdr`: an old-style chain that was opened for an amount;
+ *  - `payloadValueIdr`: a payload that names another variance, a string or
+ *    null one, or (set to `undefined`) none at all;
+ *  - `steps` / `approvedLevels`: the levels the chain has and how many of them
+ *    are approved (the others stay pending).
+ * The returned `approvedBy` is the decider of the last approved level.
  */
 async function phoneApprovalFor(
   cashier: Member,
   countId: string,
-  chainAmountIdr: number,
+  options: {
+    chainAmountIdr?: number | null;
+    // Any JSON value; `undefined` leaves `valueIdr` out of the payload.
+    payloadValueIdr?: unknown;
+    steps?: { level: number; approverRoleIds: string[]; decidedBy: string }[];
+    approvedLevels?: number;
+  } = {},
 ): Promise<{ approvedBy: string; approvalRequestId: string }> {
   const chainId = randomUUID();
   const overrideId = randomUUID();
   const valueIdr = Math.abs((await countRow(countId))?.variance ?? 0);
+  const steps = options.steps ?? [
+    {
+      level: 1,
+      approverRoleIds: [roleIds.supervisor],
+      decidedBy: supervisor.userId,
+    },
+  ];
+  const approvedLevels = options.approvedLevels ?? steps.length;
+  const snapshot = steps.map(({ level, approverRoleIds }) => ({
+    level,
+    approverRoleIds,
+  }));
+  const lastApproved = steps
+    .filter((step) => step.level <= approvedLevels)
+    .at(-1);
+  const approvedBy = lastApproved?.decidedBy ?? supervisor.userId;
   await asOwnerTenant(tenant.tenantId, async (client) => {
-    await client.query(
-      `INSERT INTO approval_requests
-         (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
-          requested_by, source, level, required_levels, required_steps, amount_idr, status,
-          decided_by, decided_at, reason, request_reason, deadline_at, created_at)
-       VALUES ($1, $2, $3, $1, 'pos_override', 'cash_shift_close', 'pos_override', $4,
-               $5, 'user', 1, 1, $6::jsonb, $7, 'approved',
-               $8, now() - interval '4 seconds', 'Disetujui lewat ponsel', 'Hitung kas akhir shift',
-               now() + interval '1 hour', now() - interval '6 seconds')`,
-      [
-        chainId,
-        tenant.tenantId,
-        tenant.outletId,
-        overrideId,
-        cashier.userId,
-        JSON.stringify([{ level: 1, approverRoleIds: [roleIds.supervisor] }]),
-        chainAmountIdr,
-        supervisor.userId,
-      ],
-    );
+    for (const step of steps) {
+      const decided = step.level <= approvedLevels;
+      await client.query(
+        `INSERT INTO approval_requests
+           (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+            payload, requested_by, source, level, required_levels, required_steps, amount_idr, status,
+            decided_by, decided_at, reason, request_reason, deadline_at, created_at)
+         VALUES ($1, $2, $3, $4, 'pos_override', 'cash_shift_close', 'pos_override', $5,
+                 $6::jsonb, $7, 'user', $8, $9, $10::jsonb, $11, $12,
+                 $13, $14, $15, 'Hitung kas akhir shift',
+                 now() + interval '1 hour', now() - interval '6 seconds')`,
+        [
+          step.level === 1 ? chainId : randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          chainId,
+          overrideId,
+          JSON.stringify({
+            action: "cash_shift_close",
+            objectId: countId,
+            valueIdr:
+              "payloadValueIdr" in options ? options.payloadValueIdr : valueIdr,
+          }),
+          cashier.userId,
+          step.level,
+          steps.length,
+          JSON.stringify(snapshot),
+          options.chainAmountIdr ?? null,
+          decided ? "approved" : "pending",
+          decided ? step.decidedBy : null,
+          decided ? new Date(Date.now() - 4_000) : null,
+          decided ? "Disetujui lewat ponsel" : null,
+        ],
+      );
+    }
     await client.query(
       `INSERT INTO pos_overrides
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
@@ -1849,7 +1901,7 @@ async function phoneApprovalFor(
         tenant.tenantId,
         tenant.outletId,
         cashier.userId,
-        supervisor.userId,
+        approvedBy,
         valueIdr,
         countId,
         chainId,
@@ -1857,7 +1909,77 @@ async function phoneApprovalFor(
       ],
     );
   });
-  return { approvedBy: supervisor.userId, approvalRequestId: chainId };
+  return { approvedBy, approvalRequestId: chainId };
+}
+
+/** The phone approval message the cashier gets for a close that needs several levels. */
+const PHONE_ONLY_MESSAGE =
+  "Penutupan shift ini perlu persetujuan supervisor lewat ponsel.";
+
+/** A role that holds the approve permission, plus one member with it (a "senior"). */
+async function seniorSupervisor(label = "Supervisor Senior") {
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, $3, false, NULL, $4, false, '["tenant"]')`,
+    [
+      roleId,
+      tenant.tenantId,
+      `${label} Uji ${roleId.slice(0, 6)}`,
+      JSON.stringify(["shift.cash.approve_close"]),
+    ],
+  );
+  return { roleId, member: await member(tenant, roleId, label) };
+}
+
+/** A fresh cashier with a shift whose latest blind count is `FLOAT_IDR + varianceIdr`. */
+async function countedShift(varianceIdr: number, label = "Kasir Selisih") {
+  const cashier = await newCashier(label);
+  const shift = await openShift(cashier);
+  const count = await countDrawer(cashier, shift.id, FLOAT_IDR + varianceIdr);
+  return { cashier, shift, count };
+}
+
+/** The variance note a close needs unless the count is exact. */
+const noteFor = (varianceIdr: number) =>
+  varianceIdr === 0 ? {} : { varianceNote: "Selisih dicek supervisor" };
+
+/** POST /api/pos-overrides for a shift-close count (the device sends Rp0: blind). */
+function postShiftCloseOverride(
+  cashier: Member,
+  countId: string,
+  approval: Record<string, unknown>,
+  key = randomUUID(),
+) {
+  return cashier.client
+    .post("/api/pos-overrides")
+    .set(headers)
+    .set(originHeader)
+    .set("Idempotency-Key", key)
+    .send({
+      outletId: tenant.outletId,
+      action: "cash_shift_close",
+      valueIdr: 0,
+      reason: "Hitung kas akhir shift",
+      objectType: "pos_shift_count",
+      objectId: countId,
+      approval,
+    });
+}
+
+/** What a requester reads, minus ids, timestamps and who/which-object fields. */
+function withoutIdentity(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutIdentity);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(
+          ([key]) =>
+            !/^(id|.*Id|.*Ids|.*At|requestedBy|requester.*|number)$/.test(key),
+        )
+        .map(([key, entry]) => [key, withoutIdentity(entry)]),
+    );
+  return value;
 }
 
 describe("POS-03 round 2: a close approval is bound to one count and its variance (legend-6c0 findings 3 and 4)", () => {
@@ -2101,100 +2223,395 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
     });
   });
 
-  it("the approval matrix tier is checked when the approval is used: a two-level tier refuses a PIN; a one-level tier needs its role", async () => {
-    const seniorRole = randomUUID();
-    await owner.query(
-      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-       VALUES ($1, $2, 'Supervisor Senior Uji', false, NULL, $3, false, '["tenant"]')`,
-      [
-        seniorRole,
-        tenant.tenantId,
-        JSON.stringify(["shift.cash.approve_close"]),
-      ],
-    );
-    const senior = await member(tenant, seniorRole, "Supervisor Senior");
-    const note = { varianceNote: "Selisih besar, dicek ulang" };
+  // legend-nib1: shift-close authority does not depend on the variance. The
+  // cashier can count again and again; if the tier, the refusal or the request
+  // followed the variance, the answers would reveal the expected cash. So every
+  // close is judged against the TOP tier of the tenant's matrix, whatever the
+  // variance (assumption: "top tier" = the tier with the highest threshold).
+  const VARIANCES = [0, 60_000, 600_000];
 
+  it("two-level top tier: a PIN close is refused with the same 403 message at variance 0, 60.000 and 600.000, whoever approves", async () => {
+    const senior = await seniorSupervisor();
     await withShiftClosePolicies(
       [
         // Rp50.000 and up: one level, the senior role.
-        { thresholdIdr: 50_000, roleId: seniorRole, level: 1 },
-        // Rp500.000 and up: two levels.
+        { thresholdIdr: 50_000, roleId: senior.roleId, level: 1 },
+        // Rp500.000 and up: two levels (the top tier).
         { thresholdIdr: 500_000, roleId: roleIds.supervisor, level: 1 },
-        { thresholdIdr: 500_000, roleId: seniorRole, level: 2 },
+        { thresholdIdr: 500_000, roleId: senior.roleId, level: 2 },
       ],
       async () => {
-        // Two-level tier: no single PIN closes it, whoever approves.
-        const a = await newCashier("Kasir Matriks A");
-        const bigShift = await openShift(a);
-        const big = await countDrawer(a, bigShift.id, FLOAT_IDR + 600_000);
-        for (const approver of [supervisor.userId, senior.userId]) {
-          const refused = await close(a, bigShift.id, {
-            countId: big.id,
-            ...(await approvalFor(a, big.id, { approver })),
-            ...note,
-          });
-          expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        const messages = new Set<string>();
+        for (const variance of VARIANCES) {
+          const { cashier, shift, count } = await countedShift(variance);
+          for (const approver of [supervisor.userId, senior.member.userId]) {
+            const refused = await close(cashier, shift.id, {
+              countId: count.id,
+              ...(await approvalFor(cashier, count.id, { approver })),
+              ...noteFor(variance),
+            });
+            expect(
+              refused.status,
+              `variance ${variance}: ${JSON.stringify(refused.body)}`,
+            ).toBe(403);
+            messages.add(refused.body.error.message as string);
+          }
+          expect((await shiftRow(shift.id))?.status).toBe("open");
         }
-        expect((await shiftRow(bigShift.id))?.status).toBe("open");
-
-        // One-level tier with the senior role: the plain supervisor is refused,
-        // the senior closes.
-        const b = await newCashier("Kasir Matriks B");
-        const midShift = await openShift(b);
-        const mid = await countDrawer(b, midShift.id, FLOAT_IDR + 60_000);
-        const wrongRole = await close(b, midShift.id, {
-          countId: mid.id,
-          ...(await approvalFor(b, mid.id)),
-          ...note,
-        });
-        expect(wrongRole.status, JSON.stringify(wrongRole.body)).toBe(403);
-        expect((await shiftRow(midShift.id))?.status).toBe("open");
-        const rightRole = await close(b, midShift.id, {
-          countId: mid.id,
-          ...(await approvalFor(b, mid.id, { approver: senior.userId })),
-          ...note,
-        });
-        expect(rightRole.status, JSON.stringify(rightRole.body)).toBe(200);
-        expect(rightRole.body.data).toMatchObject({
-          varianceIdr: 60_000,
-          approvedBy: senior.userId,
-        });
-
-        // Below every threshold: the approve permission alone is enough.
-        const c = await newCashier("Kasir Matriks C");
-        const smallShift = await openShift(c);
-        const small = await closeShift(c, smallShift.id, FLOAT_IDR);
-        expect(small.status, JSON.stringify(small.body)).toBe(200);
+        // One message for every variance and approver; it never names the amount.
+        expect([...messages]).toEqual([PHONE_ONLY_MESSAGE]);
       },
     );
   });
 
-  it("a phone approval is refused when its chain was opened for another amount than the variance", async () => {
+  it("one-level top tier: a PIN from a lower tier's role is refused the same way at every variance; a PIN from the top tier's role closes at every variance", async () => {
+    const senior = await seniorSupervisor();
+    await withShiftClosePolicies(
+      [
+        // Lower tier: the plain supervisor role.
+        { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 },
+        // Top tier: one level, the senior role.
+        { thresholdIdr: 500_000, roleId: senior.roleId, level: 1 },
+      ],
+      async () => {
+        const refusals = new Set<string>();
+        for (const variance of VARIANCES) {
+          const { cashier, shift, count } = await countedShift(variance);
+          const wrongRole = await close(cashier, shift.id, {
+            countId: count.id,
+            ...(await approvalFor(cashier, count.id)),
+            ...noteFor(variance),
+          });
+          expect(
+            wrongRole.status,
+            `variance ${variance}: ${JSON.stringify(wrongRole.body)}`,
+          ).toBe(403);
+          refusals.add(
+            `${wrongRole.body.error.code} ${wrongRole.body.error.message}`,
+          );
+          expect((await shiftRow(shift.id))?.status).toBe("open");
+
+          const rightRole = await close(cashier, shift.id, {
+            countId: count.id,
+            ...(await approvalFor(cashier, count.id, {
+              approver: senior.member.userId,
+            })),
+            ...noteFor(variance),
+          });
+          expect(
+            rightRole.status,
+            `variance ${variance}: ${JSON.stringify(rightRole.body)}`,
+          ).toBe(200);
+          expect(rightRole.body.data).toMatchObject({
+            status: "closed",
+            varianceIdr: variance,
+            approvedBy: senior.member.userId,
+          });
+        }
+        expect(refusals.size).toBe(1);
+      },
+    );
+  });
+
+  it("a phone close needs every level of the top tier approved, an amount-free chain and a payload that names this variance", async () => {
+    const senior = await seniorSupervisor();
+    const topSteps = [
+      {
+        level: 1,
+        approverRoleIds: [roleIds.supervisor],
+        decidedBy: supervisor.userId,
+      },
+      {
+        level: 2,
+        approverRoleIds: [senior.roleId],
+        decidedBy: senior.member.userId,
+      },
+    ];
+    await withShiftClosePolicies(
+      [
+        { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 },
+        { thresholdIdr: 500_000, roleId: roleIds.supervisor, level: 1 },
+        { thresholdIdr: 500_000, roleId: senior.roleId, level: 2 },
+      ],
+      async () => {
+        // A small variance, far below the top tier's threshold.
+        const variance = 1_000;
+        const { cashier, shift, count } = await countedShift(variance);
+        const note = noteFor(variance);
+        const refusedWith = async (
+          label: string,
+          approval: { approvedBy: string; approvalRequestId: string },
+        ) => {
+          const refused = await close(cashier, shift.id, {
+            countId: count.id,
+            ...approval,
+            ...note,
+          });
+          expect(
+            refused.status,
+            `${label}: ${JSON.stringify(refused.body)}`,
+          ).toBe(403);
+          expect((await shiftRow(shift.id))?.status).toBe("open");
+        };
+
+        // Only the lower tier's one level is approved.
+        await refusedWith(
+          "one of two levels approved",
+          await phoneApprovalFor(cashier, count.id, {
+            steps: topSteps,
+            approvedLevels: 1,
+          }),
+        );
+        await refusedWith(
+          "a one-level chain",
+          await phoneApprovalFor(cashier, count.id),
+        );
+        // An old chain that was opened for an amount.
+        await refusedWith(
+          "old chain with an amount",
+          await phoneApprovalFor(cashier, count.id, {
+            steps: topSteps,
+            chainAmountIdr: variance,
+          }),
+        );
+        // A payload that names another variance.
+        await refusedWith(
+          "payload for another variance",
+          await phoneApprovalFor(cashier, count.id, {
+            steps: topSteps,
+            payloadValueIdr: variance + 1_000,
+          }),
+        );
+
+        // Control: every level of the top tier approved, no amount, same value.
+        const closed = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(cashier, count.id, { steps: topSteps })),
+          ...note,
+        });
+        expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+        expect(closed.body.data).toMatchObject({
+          status: "closed",
+          varianceIdr: variance,
+        });
+      },
+    );
+  });
+
+  it("a one-level top tier closes by phone at a small variance with a one-level amount-free chain", async () => {
     await withShiftClosePolicies(
       [{ thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 }],
       async () => {
-        const cashier = await newCashier("Kasir Ponsel");
-        const shift = await openShift(cashier);
-        const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 60_000);
-        const note = { varianceNote: "Selisih dicek supervisor lewat ponsel" };
-        const cheap = await close(cashier, shift.id, {
+        const variance = 1_000;
+        const { cashier, shift, count } = await countedShift(variance);
+        const closed = await close(cashier, shift.id, {
           countId: count.id,
-          ...(await phoneApprovalFor(cashier, count.id, 1_000)),
-          ...note,
+          ...(await phoneApprovalFor(cashier, count.id)),
+          ...noteFor(variance),
         });
-        expect(cheap.status, JSON.stringify(cheap.body)).toBe(403);
-        expect((await shiftRow(shift.id))?.status).toBe("open");
-        // Control: the same chain for the real amount closes.
-        const exact = await close(cashier, shift.id, {
-          countId: count.id,
-          ...(await phoneApprovalFor(cashier, count.id, 60_000)),
-          ...note,
-        });
-        expect(exact.status, JSON.stringify(exact.body)).toBe(200);
-        expect(exact.body.data.varianceIdr).toBe(60_000);
+        expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+        expect(closed.body.data.varianceIdr).toBe(variance);
       },
     );
+  });
+
+  it("a phone chain whose payload has no numeric valueIdr (missing, string, null) is refused at variance 0", async () => {
+    await withShiftClosePolicies(
+      [{ thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 }],
+      async () => {
+        const { cashier, shift, count } = await countedShift(0);
+        const cases: [string, unknown][] = [
+          ["no valueIdr", undefined],
+          ["string valueIdr", "0"],
+          ["null valueIdr", null],
+        ];
+        for (const [label, payloadValueIdr] of cases) {
+          const refused = await close(cashier, shift.id, {
+            countId: count.id,
+            ...(await phoneApprovalFor(cashier, count.id, {
+              payloadValueIdr,
+            })),
+          });
+          expect(
+            refused.status,
+            `${label}: ${JSON.stringify(refused.body)}`,
+          ).toBe(403);
+          expect((await shiftRow(shift.id))?.status).toBe("open");
+        }
+        // Control: a numeric 0 closes.
+        const closed = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(cashier, count.id)),
+        });
+        expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+      },
+    );
+  });
+
+  it("an approved pre-deploy chain (with an amount) is refused; a new phone request for the same count, approved, closes the shift", async () => {
+    await withShiftClosePolicies(
+      [{ thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 }],
+      async () => {
+        const variance = 1_000;
+        const { cashier, shift, count } = await countedShift(variance);
+        const note = noteFor(variance);
+
+        const old = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(cashier, count.id, {
+            chainAmountIdr: variance,
+          })),
+          ...note,
+        });
+        expect(old.status, JSON.stringify(old.body)).toBe(403);
+        expect((await shiftRow(shift.id))?.status).toBe("open");
+
+        // The cashier asks again for the same count, through the API.
+        const created = await postShiftCloseOverride(cashier, count.id, {
+          method: "supervisor_phone",
+        });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        expect(created.body.data.status).toBe("pending");
+        const chainId = created.body.data.approvalRequestId as string;
+
+        // The supervisor approves it (the rows a decision in the inbox writes).
+        await asOwnerTenant(tenant.tenantId, async (client) => {
+          await client.query(
+            `UPDATE approval_requests
+                SET status = 'approved', decided_by = $3, decided_at = now(),
+                    reason = 'Disetujui lewat ponsel'
+              WHERE tenant_id = $1 AND chain_id = $2`,
+            [tenant.tenantId, chainId, supervisor.userId],
+          );
+          await client.query(
+            `UPDATE pos_overrides
+                SET status = 'approved', approved_by = $3, resolved_at = now()
+              WHERE tenant_id = $1 AND approval_request_id = $2`,
+            [tenant.tenantId, chainId, supervisor.userId],
+          );
+        });
+
+        const closed = await close(cashier, shift.id, {
+          countId: count.id,
+          approvedBy: supervisor.userId,
+          approvalRequestId: chainId,
+          ...note,
+        });
+        expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+        expect(closed.body.data).toMatchObject({
+          status: "closed",
+          varianceIdr: variance,
+        });
+      },
+    );
+  });
+
+  it("a phone request below every threshold is pending (never refused for its value); the cashier reads the same override and approval request at variance 0 and 600.000, and the stored chain has no amount", async () => {
+    const inboxRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Penyetuju Ponsel Rata', false, NULL, $3, false, '["tenant"]')`,
+      [
+        inboxRole,
+        tenant.tenantId,
+        JSON.stringify(["shift.cash.approve_close", "approval.inbox.view"]),
+      ],
+    );
+    await withShiftClosePolicies(
+      // Variance 0 is below the only threshold; Rp600.000 is above it.
+      [{ thresholdIdr: 500_000, roleId: inboxRole, level: 1 }],
+      async () => {
+        const views: unknown[] = [];
+        for (const variance of [0, 600_000]) {
+          // Same label: the views may carry the requester's name.
+          const { cashier, count } = await countedShift(variance, "Kasir Sama");
+          const created = await postShiftCloseOverride(cashier, count.id, {
+            method: "supervisor_phone",
+          });
+          expect(
+            created.status,
+            `variance ${variance}: ${JSON.stringify(created.body)}`,
+          ).toBe(201);
+          expect(created.body.data).toMatchObject({
+            status: "pending",
+            valueIdr: null,
+          });
+          const overrideId = created.body.data.id as string;
+          const polled = await cashier.client
+            .get(`/api/pos-overrides/${overrideId}`)
+            .set(headers)
+            .set(originHeader);
+          expect(polled.status, JSON.stringify(polled.body)).toBe(200);
+          const own = await cashier.client
+            .get("/api/approvals")
+            .set(headers)
+            .set(originHeader);
+          expect(own.status, JSON.stringify(own.body)).toBe(200);
+          const mine = (
+            own.body.data as { id: string; objectId: string }[]
+          ).find((row) => row.objectId === overrideId);
+          expect(
+            mine,
+            "the approval request is in the cashier's list",
+          ).toBeDefined();
+          const detail = await cashier.client
+            .get(`/api/approvals/${mine!.id}`)
+            .set(headers)
+            .set(originHeader);
+          expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+          if (variance > 0)
+            for (const body of [
+              created.body,
+              polled.body,
+              own.body,
+              detail.body,
+            ])
+              expect(JSON.stringify(body)).not.toContain(String(variance));
+
+          // Stored: no amount on the chain; the variance only in the payload.
+          const { rows } = await owner.query<{
+            amount: string | null;
+            value: number;
+          }>(
+            `SELECT amount_idr AS amount, (payload->>'valueIdr')::int AS value
+               FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2`,
+            [tenant.tenantId, created.body.data.approvalRequestId],
+          );
+          expect(rows.length).toBeGreaterThan(0);
+          for (const row of rows) {
+            expect(row.amount).toBeNull();
+            expect(row.value).toBe(variance);
+          }
+          views.push(
+            withoutIdentity({
+              created: created.body.data,
+              polled: polled.body.data,
+              request: mine,
+              detail: detail.body.data,
+            }),
+          );
+        }
+        // Identical except ids, timestamps and the requester.
+        expect(views[0]).toEqual(views[1]);
+      },
+    );
+  });
+
+  it("a tenant without a shift-close rule gets APPROVAL_POLICY_MISSING for a phone request at every variance", async () => {
+    // No `withShiftClosePolicies`: this file's tenant has no rule.
+    const outcomes = new Set<string>();
+    for (const variance of [0, 60_000, 600_000]) {
+      const { cashier, count } = await countedShift(variance);
+      const refused = await postShiftCloseOverride(cashier, count.id, {
+        method: "supervisor_phone",
+      });
+      expect(refused.status).toBeGreaterThanOrEqual(400);
+      expect(refused.body.error.code).toBe("APPROVAL_POLICY_MISSING");
+      outcomes.add(
+        `${refused.status} ${refused.body.error.code} ${refused.body.error.message}`,
+      );
+    }
+    expect(outcomes.size).toBe(1);
   });
 
   it("blind count: the cashier never reads the variance from the override or the approval request; the approver and an inbox viewer do, and the close still works", async () => {
@@ -2286,10 +2703,12 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
           objectId: count.id,
         });
 
-        // The inbox viewer (the approver role) still sees the amount.
+        // The inbox viewer (the approver role) still sees the variance, in the
+        // payload: legend-nib1 the chain itself has no amount (it routes to
+        // the top tier whatever the variance).
         const inbox = await getApproval(inboxViewer, mine!.id);
         expect(inbox.status, JSON.stringify(inbox.body)).toBe(200);
-        expect(inbox.body.data.amountIdr).toBe(60_000);
+        expect(inbox.body.data.amountIdr).toBeNull();
         expect(inbox.body.data.payload.valueIdr).toBe(60_000);
         const inboxList = await inboxViewer.client
           .get("/api/approvals")
@@ -2298,8 +2717,12 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
         expect(inboxList.status, JSON.stringify(inboxList.body)).toBe(200);
         expect(
           (
-            inboxList.body.data as { id: string; amountIdr: number | null }[]
-          ).find((row) => row.id === mine!.id)?.amountIdr,
+            inboxList.body.data as {
+              id: string;
+              amountIdr: number | null;
+              payload: Record<string, unknown>;
+            }[]
+          ).find((row) => row.id === mine!.id)?.payload.valueIdr,
         ).toBe(60_000);
       },
     );
@@ -2420,27 +2843,31 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
     expect(recorded[0]?.n).toBe(2);
   });
 
-  it("a tier that needs several levels says only that the shift needs a supervisor over the phone, whatever the variance", async () => {
+  it("a tier that needs several levels says only that the shift needs a supervisor over the phone, whatever the variance (0, 60.000, 600.000)", async () => {
     await withShiftClosePolicies(
       [
         { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 },
         { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 2 },
       ],
       async () => {
-        const cashier = await newCashier();
-        const shift = await openShift(cashier);
-        const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 60_000);
-        const refused = await close(cashier, shift.id, {
-          countId: count.id,
-          ...(await approvalFor(cashier, count.id)),
-          varianceNote: "Selisih dicek supervisor",
-        });
-        expect(refused.status, JSON.stringify(refused.body)).toBe(403);
-        expect(refused.body.error.message).toBe(
-          "Penutupan shift ini perlu persetujuan supervisor lewat ponsel.",
-        );
-        expect(refused.body.error.message).not.toMatch(/selisih|berjenjang/i);
-        expect((await shiftRow(shift.id))?.status).toBe("open");
+        const messages = new Set<string>();
+        // legend-nib1: variance 0 is below the threshold but gets the same answer.
+        for (const variance of [0, 60_000, 600_000]) {
+          const { cashier, shift, count } = await countedShift(variance);
+          const refused = await close(cashier, shift.id, {
+            countId: count.id,
+            ...(await approvalFor(cashier, count.id)),
+            ...noteFor(variance),
+          });
+          expect(
+            refused.status,
+            `variance ${variance}: ${JSON.stringify(refused.body)}`,
+          ).toBe(403);
+          expect(refused.body.error.message).not.toMatch(/selisih|berjenjang/i);
+          messages.add(refused.body.error.message as string);
+          expect((await shiftRow(shift.id))?.status).toBe("open");
+        }
+        expect([...messages]).toEqual([PHONE_ONLY_MESSAGE]);
       },
     );
   });

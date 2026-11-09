@@ -1059,13 +1059,18 @@ async function verifyCloseApproval(
 
 /**
  * §3.7 approval matrix, checked when the approval is used (not only when it
- * was asked for): the tier for the variance value as the tenant's matrix
- * stands now. A tenant without a `cash_shift_close` rule relies on the
- * approve permission alone (checked by the caller).
- * - Phone approval: the chain was opened for exactly this value and approved
- *   at least at as many levels as the tier asks for.
- * - PIN approval: one person decides at the device, so the tier must have one
- *   level and the approver must hold one of its roles on this outlet.
+ * was asked for). Shift-close authority does not depend on the variance: the
+ * cashier counts blind, and a tier that followed the variance would let
+ * repeated counts reveal it. So the check uses no amount, which applies every
+ * tier and lands on the top tier as the tenant's matrix stands now. A tenant
+ * without a `cash_shift_close` rule relies on the approve permission alone
+ * (checked by the caller).
+ * - Phone approval: the chain was opened without an amount (a chain with an
+ *   amount is an old one and is refused), its payload names exactly this
+ *   variance, and it is approved at least at as many levels as the top tier
+ *   asks for.
+ * - PIN approval: one person decides at the device, so the top tier must have
+ *   one level and the approver must hold one of its roles on this outlet.
  */
 async function assertApprovalTier(
   tx: Tx,
@@ -1104,7 +1109,7 @@ async function assertApprovalTier(
   const requirement = approvalRequirementFor(
     policies,
     "cash_shift_close",
-    input.valueIdr,
+    null,
   );
   if (!requirement.required) return;
   const { override } = input;
@@ -1117,6 +1122,7 @@ async function assertApprovalTier(
         amountIdr: approvalRequests.amountIdr,
         sourceModule: approvalRequests.sourceModule,
         actionType: approvalRequests.actionType,
+        payload: approvalRequests.payload,
       })
       .from(approvalRequests)
       .where(
@@ -1133,8 +1139,9 @@ async function assertApprovalTier(
       !first ||
       first.sourceModule !== POS_OVERRIDE_SOURCE_MODULE ||
       first.actionType !== "cash_shift_close" ||
-      first.amountIdr === null ||
-      Number(first.amountIdr) !== input.valueIdr ||
+      first.amountIdr !== null ||
+      typeof first.payload.valueIdr !== "number" ||
+      first.payload.valueIdr !== input.valueIdr ||
       chain.some((row) => row.status !== "approved") ||
       approvedLevels < requirement.steps.length
     )

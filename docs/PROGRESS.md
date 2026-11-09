@@ -342,3 +342,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - `pos_shifts.held_cash_out_idr` diisi saat tutup dari hitungan yang dipakai (trigger `app.pos_shifts_guard` memastikan sama). Refine catatan U9 dihapus dari `posShiftSchema` (DTO kasir tidak membawa held).
 - Migrasi: `0114_brave_golden_guardian.sql`, `0115_daily_stone_men.sql` (bentrok nomor dengan cabang integ; regen di merge train).
 - Lanjutan: `legend-nib1` (P1, approval tutup shift via HP membocorkan selisih lewat ambang matriks), `legend-ifnb` (P1, rekap tutup hari menghitung kas ditahan dua kali dan selisihnya tidak cocok dengan jurnal), `legend-89pn` (tidak ada aturan posting `cash_movement.recorded`), `legend-pspy` (UI).
+
+## legend-ifnb dan legend-nib1: rekap tutup hari dan approval tutup shift lewat HP (engineer, cabang `ws/pos-drawer-guess`, 2026-11-09)
+
+- legend-ifnb: rekap tutup hari menjumlahkan selisih buku per shift (`variance_idr + held_cash_out_idr`, sama dengan `differenceIdr` event `cashier_shift.closed`). Kas refund yang ditahan tidak lagi dihitung dua kali, dan `totalVarianceIdr` cocok dengan jurnal.
+- legend-nib1: permintaan approval tutup shift lewat HP dibuka tanpa nominal (`amountIdr` null), jadi routing selalu tier tertinggi matriks. Penutupan dicek terhadap tier tertinggi dan `payload.valueIdr` (angka, sama dengan selisih). Chain lama yang punya nominal ditolak; kasir minta ulang. Respons ke kasir (pending, requiredLevels, 403 PIN) tidak lagi bergantung pada selisih.
+- Keputusan bisnis terbuka (untuk founder lewat CTO): setiap tutup shift, termasuk selisih 0, sekarang butuh penyetuju tier tertinggi `cash_shift_close`. Bila tier tertinggi 2 level, PIN tidak pernah cukup dan semua tutup shift lewat HP.
+- Lanjutan: `legend-6om3` (UI inbox membaca `payload.valueIdr`), `legend-o0w6` (event `pos_override.recorded` membawa selisih ke cloud-sync).
