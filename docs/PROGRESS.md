@@ -559,3 +559,12 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - kasir-e2e-hydrate terverifikasi (15 spec mock, 142 lulus lewat heavy), masuk batch27 (77c6b24c). G6o4c resolved. Merge train diminta menjalankan ulang 15 spec mock sesudah paket kontrak masuk (paket itu mengubah data mock kasir).
 - Batch27 tertahan: 0156 write-off gagal "applies the full migration folder as the non-superuser owner" (FK ke tabel FORCE RLS, 42501). Dikirim ke G6yu3 sebagai prioritas sebelum brief 214. Pelajaran CTO: verifikasi cabang bermigrasi wajib menyertakan `edge-received-events-migration.test.ts` dan `migration-fk-force-rls.test.ts`. 0157 dan 0159 dicek ulang: 18/18 lulus masing-masing. G93mi dan G878y sudah diingatkan.
 - Gate batch26 dijalankan ulang (run pertama kena SIGTERM dari luar).
+
+### 21:20 (CTO G8flk)
+- Keputusan founder Q42: Codex second opinion hanya untuk uang, pajak, login/akses, dan migrasi database, digabung per area; antrean lain diperiksa architect Claude dengan konteks segar. Klasifikasi antrean sedang dibuat subagent.
+- Codex 169b bersih: `legend-6bq2`, `legend-x9w2` ditutup. U4 (`legend-em6p`) diberi catatan: perbaikan harus mencakup penyelesaian POS.
+- `legend-xx22n` ditutup bukan bug (test regresi ec34c69b masuk batch27). Kartu produk `legend-etmr2` (zona 0 tidak menghapus service).
+- 0156 diperbaiki (13ce6220, 42 test lulus) dan ditukar di batch27. Gate dijalankan langsung di batch27 f448cf94 (mencakup batch26).
+- hfq3z self-heal terverifikasi (12 file, 264 lulus, tanpa migrasi; 0158 kosong), antre batch28 bersama paket kontrak 0159 dan 15 spec mock kasir.
+- G878y lanjut `legend-jcby0` (brief 210, basis f448cf94 + 996cc889). G5gti lanjut `legend-nd3cu` (desain kolom peer_instance_id/peer_seq_offset di sync_cursors disetujui, migrasi 0162 when 1794241000000). G3chm: tiga temuan DOIT diperbaiki (3eeb3fa0, 7b2cdfae), scope diperluas ke celah adapter (sendBy) dan webhook tanpa fakta sah.
+- Pesanan migrasi: 0160 c9kbk, 0161 jcby0, 0162 nd3cu. Merge train boleh menomori ulang idx sesuai urutan masuk, `when` harus naik.
