@@ -910,7 +910,6 @@ describe("pickup call transitions", () => {
 describe("pickup display feed", () => {
   it("lists only called numbers of the outlet's current business date, newest call first", async () => {
     const outlet = await createOutlet(tenantA);
-    const today = nowDate();
     await seedCall(tenantA, outlet, {
       number: 1,
       status: "called",
@@ -923,11 +922,6 @@ describe("pickup display feed", () => {
     });
     await seedCall(tenantA, outlet, { number: 3, status: "assigned" });
     await seedCall(tenantA, outlet, { number: 4, status: "picked_up" });
-    await seedCall(tenantA, outlet, {
-      number: 5,
-      status: "called",
-      businessDate: dayBefore(today),
-    });
     const voided = await seedCall(tenantA, outlet, {
       number: 6,
       status: "called",
@@ -939,7 +933,6 @@ describe("pickup display feed", () => {
     expect(feed.tenantId).toBe(tenantA.tenantId);
     expect(feed.outletId).toBe(outlet);
     expect(feed.calls.every((c) => c.status === "called")).toBe(true);
-    expect(feed.calls.every((c) => c.businessDate === today)).toBe(true);
     expect(feed.calls.map((c) => c.number)).toEqual([2, 1]);
     // Each feed row carries its display code next to the number.
     expect(feed.calls.map((c) => c.code)).toEqual(["A-002", "A-001"]);
@@ -963,6 +956,130 @@ describe("pickup display feed", () => {
       [1000, "B-001"],
       [999, "A-999"],
     ]);
+  });
+
+  it("an unfinished call stays on the feed after the day cutoff; picked up and assigned ones do not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "picked_up",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 3,
+      status: "assigned",
+      businessDate: yesterday,
+    });
+    const voided = await seedCall(tenantA, outlet, {
+      number: 4,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await voidOrder(tenantA, voided.orderId);
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => c.number)).toEqual([1]);
+    expect(feed.calls[0]?.businessDate).toBe(yesterday);
+  });
+
+  it("hides yesterday's called number when today has the same number (called or assigned), so the wall never shows two #N", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    // #1: today's twin is called. #2: today's twin is only assigned.
+    // #3: yesterday only, so it still shows.
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 3,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: today,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "assigned",
+      businessDate: today,
+    });
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    const byNumber = (n: number) => feed.calls.filter((c) => c.number === n);
+    expect(byNumber(1).map((c) => c.businessDate)).toEqual([today]);
+    expect(byNumber(2)).toEqual([]);
+    expect(byNumber(3).map((c) => c.businessDate)).toEqual([yesterday]);
+  });
+
+  it("shows yesterday's number again when today's same number is absent or deleted", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: today,
+    });
+    // Today's #2 is deleted: yesterday's #2 comes back. #1 never had a twin.
+    await asOwnerTenant(tenantA.tenantId, (client) =>
+      client.query(
+        `DELETE FROM pickup_calls
+         WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3 AND number = 2`,
+        [tenantA.tenantId, outlet, today],
+      ),
+    );
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => [c.number, c.businessDate]).sort()).toEqual([
+      [1, yesterday],
+      [2, yesterday],
+    ]);
+  });
+
+  it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const twoAgo = dayBefore(dayBefore(nowDate()));
+    const threeAgo = dayBefore(twoAgo);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: twoAgo,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: threeAgo,
+    });
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => c.number)).toEqual([1]);
   });
 
   it("a number moves onto the feed when called and off it when picked up", async () => {

@@ -6,14 +6,16 @@
 // - Every query runs on a `withTenant` transaction (tenant + outlet RLS); the
 //   path outlet is asserted against the caller's scope as well.
 // - One expo ticket = one order of the outlet with at least one non-cancelled
-//   kitchen ticket. Order voided = not on the board. `isComplete` = every
+//   kitchen ticket. Order voided = not on the board. An order of an earlier
+//   business day stays while undelivered (expo-pickup-window.ts). `isComplete` = every
 //   non-cancelled ticket is `done` (a `recalled` ticket reopens it); `readyAt`
 //   = the latest `done_at`.
 // - Assign and deliver of one order serialise on a transaction advisory lock,
 //   so parallel calls end in one `expo_assignments` row and one `delivered_at`.
-// - Runner roster (legend-aiksz: `runner_id` has no FK): a user with a live
-//   (not expired) role assignment on the tenant or on this outlet, not banned.
-//   Brand- and station-scoped assignments are not counted (no org index here).
+// - Runner roster (legend-aiksz: `runner_id` has no FK; legend-f1qr7): a user
+//   with a live (not expired) role assignment that reaches this outlet, not
+//   banned: tenant scope, the outlet's brand, the outlet itself, or one of the
+//   outlet's stations (a station-scoped waiter or cook can still carry plates).
 // - Channel on the ticket: delivery platforms and `reservation` pass through;
 //   anything else follows `service_type` (`delivery` without a platform is
 //   shown as `takeaway`: the contract has no plain delivery channel).
@@ -23,8 +25,10 @@ import {
   asc,
   eq,
   gt,
+  gte,
   inArray,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -54,6 +58,7 @@ import {
   expoAssignments,
   kitchenTickets,
   orders,
+  outlets,
   pickupCalls,
   roleAssignments,
   stations,
@@ -63,6 +68,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { expoPickupFloorDate } from "./expo-pickup-window.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { KdsActor } from "./kds-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -312,7 +318,17 @@ export async function readExpoBoard(
       tx,
       context,
       outlet,
-      eq(orders.businessDate, today),
+      // Today's orders, delivered or not; an earlier day only while undelivered.
+      or(
+        eq(orders.businessDate, today),
+        and(
+          lt(orders.businessDate, today),
+          gte(orders.businessDate, expoPickupFloorDate(today)),
+          isNull(expoAssignments.deliveredAt),
+          // A picked-up pickup number is finished even if nobody tapped Diantar.
+          or(isNull(pickupCalls.status), ne(pickupCalls.status, "picked_up")),
+        ),
+      ),
     );
     return expoBoardSchema.parse({
       tenantId: context.tenant.tenantId,
@@ -338,8 +354,16 @@ function liveStaffOfOutlet(
     or(
       eq(roleAssignments.scopeType, "tenant"),
       and(
+        eq(roleAssignments.scopeType, "brand"),
+        sql`${roleAssignments.scopeId} IN (SELECT ${outlets.brandId} FROM ${outlets} WHERE ${outlets.tenantId} = ${context.tenant.tenantId} AND ${outlets.id} = ${outletId})`,
+      ),
+      and(
         eq(roleAssignments.scopeType, "outlet"),
         eq(roleAssignments.scopeId, outletId),
+      ),
+      and(
+        eq(roleAssignments.scopeType, "station"),
+        sql`${roleAssignments.scopeId} IN (SELECT ${stations.id} FROM ${stations} WHERE ${stations.tenantId} = ${context.tenant.tenantId} AND ${stations.outletId} = ${outletId})`,
       ),
     ),
     or(isNull(user.banned), eq(user.banned, false)),

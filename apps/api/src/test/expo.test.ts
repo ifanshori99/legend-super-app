@@ -168,6 +168,42 @@ async function seedStation(
   return id;
 }
 
+/** A second brand of the tenant. */
+async function createBrand(forTenant: IsolatedTenant): Promise<string> {
+  const id = randomUUID();
+  const slug = `br-${randomUUID().slice(0, 8)}`;
+  await asOwnerTenant(forTenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, $4)`,
+      [id, forTenant.tenantId, slug, `Brand ${slug}`],
+    ),
+  );
+  return id;
+}
+
+/** A new outlet of the tenant under the given brand. */
+async function createOutletOfBrand(
+  forTenant: IsolatedTenant,
+  brandId: string,
+): Promise<string> {
+  const id = randomUUID();
+  await asOwnerTenant(forTenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, $5, legal_entity_id, $2, 'Outlet Merek Lain', 'Jl. Uji 4', timezone, opening_hours, 'active'
+       FROM outlets WHERE tenant_id = $3 AND id = $4`,
+      [
+        id,
+        `EX-${randomUUID().slice(0, 8)}`.toUpperCase(),
+        forTenant.tenantId,
+        forTenant.outletId,
+        brandId,
+      ],
+    ),
+  );
+  return id;
+}
+
 /** A table with an open session; returns the session id (uuid). */
 async function seedTableSession(
   forTenant: IsolatedTenant,
@@ -318,18 +354,27 @@ async function seedPickupCall(
   outletId: string,
   orderUlid: string,
   number: number,
+  input: {
+    status?: "assigned" | "called" | "picked_up";
+    businessDate?: string;
+  } = {},
 ) {
+  const status = input.status ?? "assigned";
   await asOwnerTenant(forTenant.tenantId, (client) =>
     client.query(
-      `INSERT INTO pickup_calls (id, tenant_id, outlet_id, order_id, channel, number, business_date, status)
-       VALUES ($1, $2, $3, $4, 'takeaway', $5, $6, 'assigned')`,
+      `INSERT INTO pickup_calls (id, tenant_id, outlet_id, order_id, channel, number, business_date,
+         status, called_at, picked_up_at)
+       VALUES ($1, $2, $3, $4, 'takeaway', $5, $6, $7, $8, $9)`,
       [
         randomUUID(),
         forTenant.tenantId,
         outletId,
         ulidToUuid(orderUlid),
         number,
-        nowDate(),
+        input.businessDate ?? nowDate(),
+        status,
+        status === "assigned" ? null : "2031-03-15T10:00:00.000Z",
+        status === "picked_up" ? "2031-03-15T10:05:00.000Z" : null,
       ],
     ),
   );
@@ -419,7 +464,7 @@ async function grant(
   forTenant: IsolatedTenant,
   userId: string,
   roleId: string,
-  scope: { type: "tenant" | "outlet"; id: string | null },
+  scope: { type: "tenant" | "brand" | "outlet" | "station"; id: string | null },
   window: { from?: Date; until?: Date | null } = {},
 ) {
   await owner.query(
@@ -687,7 +732,7 @@ describe("expo board", () => {
     expect(ticket.readyAt).toBe(iso(doneAt));
   });
 
-  it("omits orders without an active ticket, voided orders, other days and other outlets", async () => {
+  it("omits orders without an active ticket, voided orders and other outlets", async () => {
     const outlet = await createOutlet(tenantA);
     const otherOutlet = await createOutlet(tenantA);
     const station = await seedStation(tenantA, outlet, "Dapur Utama");
@@ -704,10 +749,6 @@ describe("expo board", () => {
     });
     const voided = await seedOrder(tenantA, outlet, { status: "voided" });
     await seedTicket(tenantA, outlet, voided, { stationId: station });
-    const yesterday = await seedOrder(tenantA, outlet, {
-      businessDate: dayBefore(nowDate()),
-    });
-    await seedTicket(tenantA, outlet, yesterday, { stationId: station });
     const elsewhere = await seedOrder(tenantA, otherOutlet);
     await seedTicket(tenantA, otherOutlet, elsewhere, {
       stationId: otherStation,
@@ -715,13 +756,7 @@ describe("expo board", () => {
 
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     expect(board.tickets.map((t) => t.orderId)).toEqual([shown]);
-    for (const absent of [
-      noTickets,
-      cancelledOnly,
-      voided,
-      yesterday,
-      elsewhere,
-    ])
+    for (const absent of [noTickets, cancelledOnly, voided, elsewhere])
       expect(board.tickets.map((t) => t.orderId)).not.toContain(absent);
   });
 
@@ -861,6 +896,126 @@ describe("expo board", () => {
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     expect(board.tickets.map((t) => t.orderId)).toEqual([oldest, mid, newest]);
   });
+
+  it("keeps an undelivered order of an earlier business day on the board, cooking or complete", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const yesterday = dayBefore(nowDate());
+
+    const cooking = await seedOrder(tenantA, outlet, {
+      businessDate: yesterday,
+    });
+    await seedTicket(tenantA, outlet, cooking, {
+      stationId: station,
+      status: "in_progress",
+    });
+    const complete = await seedOrder(tenantA, outlet, {
+      businessDate: yesterday,
+    });
+    await seedTicket(tenantA, outlet, complete, { stationId: station });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(ticketOf(board, cooking).isComplete).toBe(false);
+    expect(ticketOf(board, complete).isComplete).toBe(true);
+  });
+
+  it("drops an order delivered on an earlier business day, but keeps one delivered today", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const assignedAt = new Date(Date.now() - 6 * MINUTE);
+    const deliveredAt = new Date(Date.now() - 3 * MINUTE);
+
+    const oldDelivered = await seedOrder(tenantA, outlet, {
+      businessDate: dayBefore(nowDate()),
+    });
+    await seedTicket(tenantA, outlet, oldDelivered, { stationId: station });
+    await seedAssignment(tenantA, outlet, oldDelivered, {
+      runnerId: runner1.userId,
+      assignedAt,
+      deliveredAt,
+    });
+    const todayDelivered = await seedOrder(tenantA, outlet);
+    await seedTicket(tenantA, outlet, todayDelivered, { stationId: station });
+    await seedAssignment(tenantA, outlet, todayDelivered, {
+      runnerId: runner1.userId,
+      assignedAt,
+      deliveredAt,
+    });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([todayDelivered]);
+  });
+
+  it("drops an earlier-day order whose pickup call is picked_up, but keeps one whose call is called, assigned or absent", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const yesterday = dayBefore(nowDate());
+    const seedOld = async () => {
+      const orderId = await seedOrder(tenantA, outlet, {
+        businessDate: yesterday,
+      });
+      await seedTicket(tenantA, outlet, orderId, { stationId: station });
+      return orderId;
+    };
+
+    const pickedUp = await seedOld();
+    await seedPickupCall(tenantA, outlet, pickedUp, 1, {
+      status: "picked_up",
+      businessDate: yesterday,
+    });
+    const called = await seedOld();
+    await seedPickupCall(tenantA, outlet, called, 2, {
+      status: "called",
+      businessDate: yesterday,
+    });
+    const assigned = await seedOld();
+    await seedPickupCall(tenantA, outlet, assigned, 3, {
+      status: "assigned",
+      businessDate: yesterday,
+    });
+    const noCall = await seedOld();
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId).sort()).toEqual(
+      [called, assigned, noCall].sort(),
+    );
+  });
+
+  it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const twoAgo = dayBefore(dayBefore(nowDate()));
+    const threeAgo = dayBefore(twoAgo);
+
+    const shown = await seedOrder(tenantA, outlet, { businessDate: twoAgo });
+    await seedTicket(tenantA, outlet, shown, { stationId: station });
+    const tooOld = await seedOrder(tenantA, outlet, { businessDate: threeAgo });
+    await seedTicket(tenantA, outlet, tooOld, { stationId: station });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([shown]);
+  });
+
+  it("puts an older business day before today", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+
+    const today = await seedOrder(tenantA, outlet);
+    await seedTicket(tenantA, outlet, today, {
+      stationId: station,
+      firedAt: new Date(Date.now() - 5 * MINUTE),
+    });
+    const older = await seedOrder(tenantA, outlet, {
+      businessDate: dayBefore(nowDate()),
+    });
+    await seedTicket(tenantA, outlet, older, {
+      stationId: station,
+      firedAt: new Date(Date.now() - 20 * 60 * MINUTE),
+    });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([older, today]);
+  });
 });
 
 // ---- Runners -----------------------------------------------------------------
@@ -933,6 +1088,141 @@ describe("expo runners", () => {
     expect(other.map((r) => r.userId).sort()).toEqual(
       [budi.userId, elsewhere.userId, zed.userId].sort(),
     );
+  });
+
+  it("lists a brand-scoped runner of the outlet's brand and a station-scoped runner of this outlet's station", async () => {
+    const tenantR = await createIsolatedTenant(
+      `exr-${randomUUID().slice(0, 6)}`,
+    );
+    const outlet = tenantR.outletId;
+    const role = randomUUID();
+    await insertRole(tenantR.tenantId, role, "Runner Uji", ["order.view"]);
+    const station = await seedStation(tenantR, outlet, "Pass Runner");
+
+    const brandRunner = await createUser("Brand Runner");
+    await grant(tenantR, brandRunner.userId, role, {
+      type: "brand",
+      id: tenantR.brandId,
+    });
+    const stationRunner = await createUser("Station Runner");
+    await grant(tenantR, stationRunner.userId, role, {
+      type: "station",
+      id: station,
+    });
+
+    const list = await listExpoRunners(
+      contextOf(tenantR.tenantId),
+      outlet,
+      new Date(),
+    );
+    expect(list.map((r) => r.userId).sort()).toEqual(
+      [brandRunner.userId, stationRunner.userId].sort(),
+    );
+  });
+
+  it("leaves out a runner scoped to another brand, or to a station of another outlet", async () => {
+    const tenantR = await createIsolatedTenant(
+      `exr-${randomUUID().slice(0, 6)}`,
+    );
+    const outlet = tenantR.outletId;
+    const role = randomUUID();
+    await insertRole(tenantR.tenantId, role, "Runner Uji", ["order.view"]);
+    const otherBrand = await createBrand(tenantR);
+    const otherOutlet = await createOutletOfBrand(tenantR, otherBrand);
+    const otherStation = await seedStation(tenantR, otherOutlet, "Pass Lain");
+
+    const otherBrandRunner = await createUser("Brand Lain");
+    await grant(tenantR, otherBrandRunner.userId, role, {
+      type: "brand",
+      id: otherBrand,
+    });
+    const otherStationRunner = await createUser("Station Lain");
+    await grant(tenantR, otherStationRunner.userId, role, {
+      type: "station",
+      id: otherStation,
+    });
+
+    expect(
+      await listExpoRunners(contextOf(tenantR.tenantId), outlet, new Date()),
+    ).toEqual([]);
+    // They do belong to the other outlet.
+    const other = await listExpoRunners(
+      contextOf(tenantR.tenantId),
+      otherOutlet,
+      new Date(),
+    );
+    expect(other.map((r) => r.userId).sort()).toEqual(
+      [otherBrandRunner.userId, otherStationRunner.userId].sort(),
+    );
+  });
+
+  it("leaves out an expired or not-yet-valid brand or station assignment", async () => {
+    const tenantR = await createIsolatedTenant(
+      `exr-${randomUUID().slice(0, 6)}`,
+    );
+    const outlet = tenantR.outletId;
+    const role = randomUUID();
+    await insertRole(tenantR.tenantId, role, "Runner Uji", ["order.view"]);
+    const station = await seedStation(tenantR, outlet, "Pass Kedaluwarsa");
+    const past = {
+      from: new Date(Date.now() - 2 * 60 * MINUTE),
+      until: new Date(Date.now() - 60 * MINUTE),
+    };
+
+    const expiredBrand = await createUser("Brand Kedaluwarsa");
+    await grant(
+      tenantR,
+      expiredBrand.userId,
+      role,
+      { type: "brand", id: tenantR.brandId },
+      past,
+    );
+    const expiredStation = await createUser("Station Kedaluwarsa");
+    await grant(
+      tenantR,
+      expiredStation.userId,
+      role,
+      { type: "station", id: station },
+      past,
+    );
+    const futureBrand = await createUser("Brand Belum Aktif");
+    await grant(
+      tenantR,
+      futureBrand.userId,
+      role,
+      { type: "brand", id: tenantR.brandId },
+      { from: new Date(Date.now() + 60 * MINUTE) },
+    );
+
+    expect(
+      await listExpoRunners(contextOf(tenantR.tenantId), outlet, new Date()),
+    ).toEqual([]);
+  });
+
+  it("lists a user with two matching assignments once", async () => {
+    const tenantR = await createIsolatedTenant(
+      `exr-${randomUUID().slice(0, 6)}`,
+    );
+    const outlet = tenantR.outletId;
+    const role = randomUUID();
+    await insertRole(tenantR.tenantId, role, "Runner Uji", ["order.view"]);
+    const station = await seedStation(tenantR, outlet, "Pass Ganda");
+
+    const twice = await createUser("Ganda Runner");
+    await grant(tenantR, twice.userId, role, { type: "tenant", id: null });
+    await grant(tenantR, twice.userId, role, {
+      type: "brand",
+      id: tenantR.brandId,
+    });
+    await grant(tenantR, twice.userId, role, { type: "outlet", id: outlet });
+    await grant(tenantR, twice.userId, role, { type: "station", id: station });
+
+    const list = await listExpoRunners(
+      contextOf(tenantR.tenantId),
+      outlet,
+      new Date(),
+    );
+    expect(list.map((r) => r.userId)).toEqual([twice.userId]);
   });
 
   it("gives a tenant only its own staff: tenant B cannot list tenant A's runners", async () => {
@@ -1062,6 +1352,92 @@ describe("assign a runner", () => {
       stranger.userId,
       operatorB.userId, // another tenant's user
       randomUUID(), // no such user
+    ])
+      await expect(
+        assignExpoRunner(
+          ctxA(),
+          actorOf(operator),
+          outlet,
+          orderId,
+          candidate,
+          new Date(),
+        ),
+      ).rejects.toMatchObject({ status: 422, code: "EXPO_RUNNER_INVALID" });
+    expect(await assignmentRows(tenantA, orderId)).toEqual([]);
+  });
+
+  it("assigns a brand-scoped runner of the outlet's brand and a station-scoped runner of the outlet's station", async () => {
+    const outlet = await createOutlet(tenantA);
+    const orderId = await seedCookingOrder(tenantA, outlet);
+    const station = await seedStation(tenantA, outlet, "Pass Assign");
+    const brandRunner = await createUser("Brand Assign");
+    await grant(tenantA, brandRunner.userId, ROLE_STAFF, {
+      type: "brand",
+      id: tenantA.brandId,
+    });
+    const stationRunner = await createUser("Station Assign");
+    await grant(tenantA, stationRunner.userId, ROLE_STAFF, {
+      type: "station",
+      id: station,
+    });
+
+    for (const candidate of [brandRunner, stationRunner]) {
+      const ticket = await assignExpoRunner(
+        ctxA(),
+        actorOf(operator),
+        outlet,
+        orderId,
+        candidate.userId,
+        new Date(),
+      );
+      expect(ticket.runnerId).toBe(candidate.userId);
+    }
+  });
+
+  it("422 EXPO_RUNNER_INVALID for a runner scoped to another brand, a station of another outlet, or an expired brand or station", async () => {
+    const outlet = await createOutlet(tenantA);
+    const orderId = await seedCookingOrder(tenantA, outlet);
+    const station = await seedStation(tenantA, outlet, "Pass Kedaluwarsa");
+    const otherBrand = await createBrand(tenantA);
+    const otherOutlet = await createOutletOfBrand(tenantA, otherBrand);
+    const otherStation = await seedStation(tenantA, otherOutlet, "Pass Lain");
+    const past = {
+      from: new Date(Date.now() - 2 * 60 * MINUTE),
+      until: new Date(Date.now() - 60 * MINUTE),
+    };
+
+    const otherBrandRunner = await createUser("Brand Lain");
+    await grant(tenantA, otherBrandRunner.userId, ROLE_STAFF, {
+      type: "brand",
+      id: otherBrand,
+    });
+    const otherStationRunner = await createUser("Station Lain");
+    await grant(tenantA, otherStationRunner.userId, ROLE_STAFF, {
+      type: "station",
+      id: otherStation,
+    });
+    const expiredBrand = await createUser("Brand Kedaluwarsa");
+    await grant(
+      tenantA,
+      expiredBrand.userId,
+      ROLE_STAFF,
+      { type: "brand", id: tenantA.brandId },
+      past,
+    );
+    const expiredStation = await createUser("Station Kedaluwarsa");
+    await grant(
+      tenantA,
+      expiredStation.userId,
+      ROLE_STAFF,
+      { type: "station", id: station },
+      past,
+    );
+
+    for (const candidate of [
+      otherBrandRunner.userId,
+      otherStationRunner.userId,
+      expiredBrand.userId,
+      expiredStation.userId,
     ])
       await expect(
         assignExpoRunner(

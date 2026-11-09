@@ -21,13 +21,26 @@
 //       afterwards leaves the feed and cannot be called or picked up. The row
 //       stays (pickup_calls has no void status; numbers are not recycled).
 // - The feed shows called numbers only: an `assigned` number is not yet for the
-//   customer's eyes, and a `picked_up` one is done. The business date is the
-//   outlet's current business date (day cutoff), not the server calendar date.
+//   customer's eyes, and a `picked_up` one is done. A called number stays past
+//   the business-day cutoff until it is picked up (look-back capped, see
+//   expo-pickup-window.ts); the day is the outlet's, not the server's.
 // - Promotions on the feed are display-safe (title, body, validUntil): active,
 //   inside their window, running at this outlet, and not code-gated. A
 //   promotion with a code or voucher requirement is never put on a wall.
 
-import { and, asc, desc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   assertOutletInScope,
   outletIdSchema,
@@ -51,6 +64,7 @@ import { withTenant } from "../db/tenant.ts";
 import { db } from "../db/index.ts";
 import { orders, pickupCalls, promotions } from "../db/schema/index.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { expoPickupFloorDate } from "./expo-pickup-window.ts";
 import { promotionEnabledAtOutlet } from "./crm-promo-outlets.ts";
 import { businessDateFor, loadOutlet } from "./pos-order-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -208,7 +222,15 @@ export async function readPickupDisplay(
         and(
           eq(pickupCalls.tenantId, tenantId),
           eq(pickupCalls.outletId, outlet),
-          eq(pickupCalls.businessDate, today),
+          // Past the cutoff a called number stays until it is picked up.
+          lte(pickupCalls.businessDate, today),
+          gte(pickupCalls.businessDate, expoPickupFloorDate(today)),
+          // Numbers restart each day: an earlier day's number is hidden once
+          // today reuses it, so the wall never shows two of the same number.
+          or(
+            eq(pickupCalls.businessDate, today),
+            sql`NOT EXISTS (SELECT 1 FROM pickup_calls AS today_calls WHERE today_calls.tenant_id = ${pickupCalls.tenantId} AND today_calls.outlet_id = ${pickupCalls.outletId} AND today_calls.business_date = ${today} AND today_calls.number = ${pickupCalls.number})`,
+          ),
           eq(pickupCalls.status, "called"),
           sql`${orders.status} <> 'voided'`,
         ),

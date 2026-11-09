@@ -72,10 +72,17 @@ export const EDGE_API_PREFIXES = [
   "/api/pos-overrides",
   // Floor and table sessions for captain order (§4 Alur F step 3).
   "/api/floor",
-  // Only the operational outlet routers: POS orders and the floor plan
-  // (legend-zinn). Add KDS/expo/pickup subpaths here when their routers land.
+  // Only the operational outlet routers: POS orders, the floor plan
+  // (legend-zinn), and the kitchen trio (legend-64i1): KDS (tickets, feeds
+  // and its realtime WebSocket under /kitchen), expo, and the pickup display
+  // with its call/picked-up actions. There is no order-issues router yet; add
+  // its subpath here when it lands.
   "/api/outlets/:outletId/pos",
   "/api/outlets/:outletId/floor",
+  "/api/outlets/:outletId/kitchen",
+  "/api/outlets/:outletId/expo",
+  "/api/outlets/:outletId/pickup-display",
+  "/api/outlets/:outletId/pickup-calls",
   "/api/tables",
   "/api/table-sessions",
   // Facility boards and access (FAC, offline smart lock via the edge).

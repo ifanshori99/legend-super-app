@@ -125,12 +125,25 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       expect(classifyApiPath(path), path).toBe("cloud_only");
   });
 
-  it("serves only the POS and floor routers of an outlet on the edge", () => {
+  it("serves only the POS, floor, kitchen, expo and pickup routers of an outlet on the edge", () => {
     for (const path of [
       `/api/outlets/${OUTLET}/pos`,
       `/api/outlets/${OUTLET}/pos/orders`,
       `/api/outlets/${OUTLET}/pos/orders/abc/fire`,
       `/api/outlets/${OUTLET}/floor`,
+      // KDS, including its realtime WebSocket path (legend-64i1).
+      `/api/outlets/${OUTLET}/kitchen`,
+      `/api/outlets/${OUTLET}/kitchen/stations/abc/tickets`,
+      `/api/outlets/${OUTLET}/kitchen/stations/abc/feed`,
+      `/api/outlets/${OUTLET}/kitchen/stations/abc/realtime`,
+      `/api/outlets/${OUTLET}/kitchen/tickets/abc/start`,
+      `/api/outlets/${OUTLET}/expo`,
+      `/api/outlets/${OUTLET}/expo/runners`,
+      `/api/outlets/${OUTLET}/expo/abc/runner`,
+      `/api/outlets/${OUTLET}/expo/abc/delivered`,
+      `/api/outlets/${OUTLET}/pickup-display`,
+      `/api/outlets/${OUTLET}/pickup-calls/abc/call`,
+      `/api/outlets/${OUTLET}/pickup-calls/abc/picked-up`,
     ])
       expect(classifyApiPath(path), path).toBe("edge_and_cloud");
     for (const path of [
@@ -140,6 +153,13 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
       `/api/outlets/${OUTLET}/service-requests`,
       `/api/outlets/${OUTLET}/delivery-zones`,
       `/api/outlets/${OUTLET}/posx`,
+      `/api/outlets/${OUTLET}/kitchenx`,
+      `/api/outlets/${OUTLET}/expox`,
+      `/api/outlets/${OUTLET}/pickup-displayx`,
+      `/api/outlets/${OUTLET}/pickup-callsx`,
+      `/api/outlets/${OUTLET}/pickup`,
+      "/api/outlets/kitchen",
+      "/api/outlets/expo",
       "/api/outlets/pos",
       "/api/outlets//pos",
     ])
