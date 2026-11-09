@@ -53,6 +53,28 @@ export type PayslipTaxResult = {
   result: Pph21PeriodResult;
 };
 
+/**
+ * The pay left for the employee's PPh 21 (`employeeWithholdingCapIdr`, bead
+ * legend-xzid): cash earnings without the tax allowance and the PPh 21 refund
+ * line, minus every employee BPJS share (JHT, JP, health) and the pre-net
+ * deductions that are not loans (e.g. LATE). Loans and the employee
+ * receivable are collected after PPh 21 from what is left.
+ */
+export function payslipWithholdingCap(input: {
+  cashEarningsIdr: Idr | number;
+  bpjsEmployeeIdr: Idr | number;
+  preNetDeductionsIdr: Idr | number;
+}): Idr {
+  const cash = wholeRupiah(Number(input.cashEarningsIdr), "cashEarningsIdr");
+  const bpjs = wholeRupiah(Number(input.bpjsEmployeeIdr), "bpjsEmployeeIdr");
+  const preNet = wholeRupiah(
+    Number(input.preNetDeductionsIdr),
+    "preNetDeductionsIdr",
+  );
+  const left = cash - bpjs - preNet;
+  return idr(Number(left > 0n ? left : 0n));
+}
+
 export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
   const taxableLines = input.earnings
     .filter((earning) => earning.taxable)
@@ -96,7 +118,7 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
       pph21EmployerBorneIdr: result.pph21EmployerBorneIdr,
       pph21RefundIdr: result.pph21RefundIdr,
       pph21EmployerRefundIdr: result.pph21EmployerRefundIdr,
-      pph21CapExcessIdr: result.pph21CapExcessIdr,
+      pph21ReceivableIdr: result.pph21ReceivableIdr,
       noTaxIdSurchargeApplied: result.noTaxIdSurchargeApplied,
       grossSchemeBaseIdr,
       employerSchemeBaseIdr: idr(result.taxableGrossIdr - grossSchemeBaseIdr),
@@ -141,7 +163,7 @@ export function buildPph21Prior(
   let withheld = 0n;
   let borne = 0n;
   let allowance = 0n;
-  let capExcess = 0n;
+  let receivable = 0n;
   let grossScheme = 0n;
   let employerScheme = 0n;
   periods.forEach((period, index) => {
@@ -168,14 +190,10 @@ export function buildPph21Prior(
       tax.pph21EmployerBorneIdr,
       `${at} pph21EmployerBorneIdr`,
     );
-    const periodCapExcess = wholeRupiah(
-      tax.pph21CapExcessIdr ?? 0,
-      `${at} pph21CapExcessIdr`,
+    const periodReceivable = wholeRupiah(
+      tax.pph21ReceivableIdr ?? 0,
+      `${at} pph21ReceivableIdr`,
     );
-    if (periodCapExcess > periodBorne)
-      throw new RangeError(
-        `${at} pph21CapExcessIdr exceeds pph21EmployerBorneIdr`,
-      );
     const periodGrossScheme = wholeRupiah(
       tax.grossSchemeBaseIdr,
       `${at} grossSchemeBaseIdr`,
@@ -188,10 +206,10 @@ export function buildPph21Prior(
       throw new RangeError(`${at} taxAllowanceIdr exceeds pph21WithheldIdr`);
     if (
       wholeRupiah(tax.pph21Idr, `${at} pph21Idr`) !==
-      periodWithheld + periodBorne
+      periodWithheld + periodBorne + periodReceivable
     )
       throw new RangeError(
-        `${at} pph21Idr is not pph21WithheldIdr + pph21EmployerBorneIdr`,
+        `${at} pph21Idr is not pph21WithheldIdr + pph21EmployerBorneIdr + pph21ReceivableIdr`,
       );
     if (periodGrossScheme + periodEmployerScheme !== x)
       throw new RangeError(`${at} scheme bases do not sum to taxableGrossIdr`);
@@ -208,7 +226,7 @@ export function buildPph21Prior(
     withheld += periodWithheld;
     borne += periodBorne;
     allowance += periodAllowance;
-    capExcess += periodCapExcess;
+    receivable += periodReceivable;
     grossScheme += periodGrossScheme;
     employerScheme += periodEmployerScheme;
   });
@@ -223,7 +241,7 @@ export function buildPph21Prior(
     pph21WithheldIdr: out(withheld, "pph21WithheldIdr"),
     pph21EmployerBorneIdr: out(borne, "pph21EmployerBorneIdr"),
     taxAllowanceIdr: out(allowance, "taxAllowanceIdr"),
-    pph21CapExcessIdr: out(capExcess, "pph21CapExcessIdr"),
+    pph21ReceivableIdr: out(receivable, "pph21ReceivableIdr"),
     grossSchemeBaseIdr: out(grossScheme, "grossSchemeBaseIdr"),
     employerSchemeBaseIdr: out(employerScheme, "employerSchemeBaseIdr"),
   };

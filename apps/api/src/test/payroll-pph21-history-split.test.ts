@@ -174,7 +174,9 @@ describe("history split invariants over random years", () => {
   // Bead legend-u1xq: with a Jan-Nov lebih potong each payer nets its own
   // part, so withheld may exceed T beside an employer refund. The split always
   // adds up to T (the DJP deposit), and a pure history stays on its payer.
-  it("keeps withheld + borne - refunds = T, allowance <= withheld, and pure histories on their payer", () => {
+  // Founder decision B8: the identity includes the employee receivable, and
+  // `replay` accumulates it into prior.pph21ReceivableIdr (buildPph21Prior).
+  it("keeps withheld + borne + receivable - refunds = T, allowance <= withheld, and pure histories on their payer", () => {
     for (let i = 0; i < 300; i++) {
       const allocation = ALLOCATIONS[rand(2)] ?? "proportional";
       const policy = policyOf(allocation);
@@ -194,7 +196,8 @@ describe("history split invariants over random years", () => {
       const { result: r } = replay(months, last, policy);
       expect(
         r.pph21WithheldIdr +
-          r.pph21EmployerBorneIdr -
+          r.pph21EmployerBorneIdr +
+          r.pph21ReceivableIdr -
           r.pph21RefundIdr -
           r.pph21EmployerRefundIdr,
       ).toBe(r.pph21Idr);
@@ -211,12 +214,14 @@ describe("history split invariants over random years", () => {
       if (pure === 1) {
         expect(w).toBe(0);
         expect(r.pph21RefundIdr).toBe(0);
+        expect(r.pph21ReceivableIdr).toBe(0);
       }
       if (pure === 2) {
         expect(r.taxAllowanceIdr).toBe(0);
         expect(r.pph21EmployerBorneIdr).toBe(0);
         expect(r.pph21EmployerRefundIdr).toBe(0);
       }
+      // The prior the builder hands over carries the receivable of the history.
     }
   });
 });

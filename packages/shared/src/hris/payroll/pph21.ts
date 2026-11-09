@@ -45,25 +45,19 @@
 //   (withheld W from the employee; A or B for the company), negative refunded
 //   to that payer. So withheld may exceed T beside an employer refund, and a
 //   borne amount may stand beside an employee refund (beads legend-u1xq,
-//   legend-mmgd). Always withheld + borne - employee refund - employer
-//   refund = T, the deposit.
+//   legend-mmgd).
 // - W never exceeds the pay left: cap = gross lines + U + N - employee JHT/JP
-//   (lowered by `employeeWithholdingCapIdr` when given). The employee charge
-//   above the cap (excess) moves to the employer, applied in every period
-//   (TER months too). Where the employer's net stays >= excess it is borne
-//   (enters X) and reported as `pph21CapExcessIdr`; a later annual
-//   recalculation uses it to settle the employee's own charge of that period
-//   (history balance plus their part of the month's tax), so it is never
-//   charged back, and never pays it out as an employee refund (what is left
-//   stays the employer's credit). Otherwise the excess first cancels the employer's
-//   credit (lower employer refund) (bead legend-4ndx). Excess 0: the result
-//   is unchanged.
-// S is the least fixed point of S = max(0, Dr(X(S)) + employer balance +
-// settled + excess(X(S))), iterated from 0 (monotone, so it rises to the least
-// solution). A = (S - settled - excess) x U / (U + N), capped at the employer's own
-// net, B = the rest: the excess never becomes a tax allowance. Withheld = W + A, so the employee's
-// take-home is exactly G + U + N - W + employee refund: the allowance
-// cancels out.
+//   (lowered by `employeeWithholdingCapIdr` when given), in every period (TER
+//   months too, bead legend-4ndx). The employee's charge above the cap is an
+//   employee receivable (`pph21ReceivableIdr`): the employer deposits it and
+//   collects it from later pay (founder decision B8, bead legend-kn3n). It is
+//   not a benefit, so it never enters X (no gross-up), and a later annual
+//   recalculation counts it as tax the employee paid. Always withheld + borne
+//   + receivable - employee refund - employer refund = T, the deposit.
+// S is the least fixed point of S = max(0, Dr(X(S)) + employer balance),
+// iterated from 0 (monotone, so it rises to the least solution). A = S x U /
+// (U + N), B = the rest. Withheld = W + A, so the employee's take-home is
+// exactly G + U + N - W + employee refund: the allowance cancels out.
 
 import { divideRounded, idr } from "../../core/index.ts";
 import type { Idr, RoundingMode } from "../../core/index.ts";
@@ -118,7 +112,8 @@ export type Pph21PeriodInput = {
    * Optional cap on the employee's PPh 21 (W): cash pay without the tax
    * allowance, minus every employee BPJS share (JHT, JP, health). It can only
    * lower the engine's own cap (gross lines + U + N - employeeDeductibleIdr);
-   * the excess is borne by the employer (bead legend-4ndx).
+   * the employee's tax above it is `pph21ReceivableIdr` (beads legend-4ndx,
+   * legend-kn3n). Fill it with `payslipWithholdingCap` (payslip-tax.ts).
    */
   employeeWithholdingCapIdr?: Idr | number;
   /** Earlier periods of the tax year at this employer (last period only). */
@@ -145,13 +140,11 @@ export type Pph21PeriodInput = {
      */
     taxAllowanceIdr?: Idr | number;
     /**
-     * Part of `pph21EmployerBorneIdr` that was the employee's own tax taken
-     * over by the employer because the pay left was too small (results'
-     * `pph21CapExcessIdr`, default 0). The annual recalculation uses it to
-     * settle the employee's own shortfall, so it is never charged back to the
-     * employee, and never refunds it to the employee (bead legend-4ndx).
+     * Employee receivable of earlier periods (results' `pph21ReceivableIdr`,
+     * default 0): employee tax above the cap that the employer deposited.
+     * Counts as tax paid by the employee, whether collected yet or not.
      */
-    pph21CapExcessIdr?: Idr | number;
+    pph21ReceivableIdr?: Idr | number;
   };
 };
 
@@ -191,11 +184,11 @@ export type Pph21PeriodResult = {
   /** Lebih potong that returns to the employer (tax it bore). */
   pph21EmployerRefundIdr: Idr;
   /**
-   * Part of `pph21EmployerBorneIdr` that is the employee's own tax above the
-   * withholding cap, taken over by the employer (bead legend-4ndx). Pass the
-   * sum of earlier periods as `prior.pph21CapExcessIdr`.
+   * The employee's tax above the withholding cap: deposited by the employer,
+   * owed back by the employee (employee receivable, founder decision B8).
+   * Not in X. Pass the sum of earlier periods as `prior.pph21ReceivableIdr`.
    */
-  pph21CapExcessIdr: Idr;
+  pph21ReceivableIdr: Idr;
   /**
    * The no-tax-id rule applies in this period (no tax id, the table has a
    * surcharge and the policy surcharges this method), even when the base tax
@@ -388,7 +381,13 @@ export function computePph21Period(
     input.prior.pph21EmployerBorneIdr,
     "prior.pph21EmployerBorneIdr",
   );
-  const priorTax = priorWithheld + priorBorne;
+  // Employee tax above the cap in earlier periods, deposited by the employer
+  // and owed back by the employee (employee receivable, founder B8).
+  const priorReceivable = nonNegativeInt(
+    input.prior.pph21ReceivableIdr ?? 0,
+    "prior.pph21ReceivableIdr",
+  );
+  const priorTax = priorWithheld + priorBorne + priorReceivable;
   const priorGrossScheme = nonNegativeInt(
     input.prior.grossSchemeBaseIdr ?? 0,
     "prior.grossSchemeBaseIdr",
@@ -420,16 +419,6 @@ export function computePph21Period(
   if (priorAllowance === null && priorWithheld > 0n && priorEmployerScheme > 0n)
     throw new RangeError(
       "prior.taxAllowanceIdr is required for a history with employer-scheme pay",
-    );
-  // Borne tax that was the employee's own above the cap (bead legend-4ndx);
-  // see the payer balances below.
-  const priorCapExcess = nonNegativeInt(
-    input.prior.pph21CapExcessIdr ?? 0,
-    "prior.pph21CapExcessIdr",
-  );
-  if (priorCapExcess > priorBorne)
-    throw new RangeError(
-      "prior.pph21CapExcessIdr exceeds prior.pph21EmployerBorneIdr",
     );
   const priorEmployerTax = priorBorne + (priorAllowance ?? 0n);
   const priorEmployeeTax = priorTax - priorEmployerTax;
@@ -562,70 +551,40 @@ export function computePph21Period(
     );
     if (callerCap < cap) cap = callerCap;
   }
-  const netsAt = (at: bigint) => {
-    const { employeePart, employerPart } = addedSplit(at);
-    const charge = employeePart + employeeBalance;
-    // Tax the employer took over above the cap in earlier periods settles the
-    // employee's charge of the last period (history balance plus their part
-    // of this month's tax), so it is never charged back; it never becomes an
-    // employee refund: what it does not settle stays the employer's credit.
-    const settled =
-      input.lastTaxPeriod && charge > 0n
-        ? priorCapExcess < charge
-          ? priorCapExcess
-          : charge
-        : 0n;
-    const own = charge - settled;
-    const excess = own > cap ? own - cap : 0n;
-    return {
-      employeeNet: own - excess,
-      employerNet: employerPart + employerBalance + settled + excess,
-      excess,
-      // The employee's tax the employer takes over (never an allowance).
-      takenOver: settled + excess,
-    };
-  };
-  // W is capped at the pay left (bead legend-4ndx); the excess over the cap
-  // is the employer's. Employer-covered tax S = max(0, Dr(X(S)) + employer
-  // balance + settled + excess(X(S))): least fixed point from 0. Dr, the
-  // employee part and the settled prior excess all rise with X, so the map is monotone (slope < 1). With the pro rata
+  // Employer-covered tax S = max(0, Dr(X(S)) + employer balance): least fixed
+  // point from 0. Dr rises with X, so the map is monotone. With the pro rata
   // floor it can dip by a rupiah; stop on the first non-increase and let the
-  // borne amount absorb the residual (take-home stays exact). Runs for
-  // gross-only pay too: the employer's part of a shortfall is borne, hence
-  // taxable as well.
+  // borne amount absorb the residual (take-home stays exact).
   let covered = 0n;
   for (let i = 0; ; i++) {
     if (i >= MAX_ITERATIONS)
       throw new RangeError("Employer-covered tax did not converge");
-    const next = netsAt(lineBase + covered).employerNet;
+    const { employerPart } = addedSplit(lineBase + covered);
+    const next = employerPart + employerBalance;
     if (next <= covered) break;
     covered = next;
   }
   const x = lineBase + covered;
   const period = taxOf(x);
   const tax = period.tax;
-  // Each payer nets its part of D with its own balance: a positive result is
-  // charged (withheld from the employee; allowance or borne for the company),
-  // a negative one refunded to that payer. withheld + borne - both refunds =
-  // T, so the deposit is exactly T, and withheld may exceed T beside an
-  // employer refund (or borne stand beside an employee refund).
-  const { employeeNet, employerNet, excess, takenOver } = netsAt(x);
-  const w = employeeNet > 0n ? employeeNet : 0n;
-  const employeeRefund = employeeNet < 0n ? -employeeNet : 0n;
+  const { employeePart, employerPart } = addedSplit(x);
+  // Each payer nets its part of D with its own balance: positive is charged,
+  // negative refunded to that payer. The employee's charge above the cap is
+  // the employee receivable, never moved to the employer (founder B8).
+  const charge = employeePart + employeeBalance;
+  const w = charge <= 0n ? 0n : charge < cap ? charge : cap;
+  const receivable = charge > cap ? charge - cap : 0n;
+  const employeeRefund = charge < 0n ? -charge : 0n;
+  const employerNet = employerPart + employerBalance;
   let allowance = 0n;
   let borne = 0n;
   let employerRefund = 0n;
   if (employerNet >= 0n) {
-    const ownNet = employerNet - takenOver;
-    const ownCovered = covered > takenOver ? covered - takenOver : 0n;
     allowance =
-      coverU + coverN > 0n ? (ownCovered * coverU) / (coverU + coverN) : 0n;
-    if (allowance > ownNet) allowance = ownNet > 0n ? ownNet : 0n;
+      coverU + coverN > 0n ? (covered * coverU) / (coverU + coverN) : 0n;
+    if (allowance > employerNet) allowance = employerNet;
     borne = employerNet - allowance;
   } else employerRefund = -employerNet;
-  // The borne part that is the employee's tax above the cap; the rest of the
-  // excess (0 <= employer net < excess) only cancelled an employer credit.
-  const capExcess = employerNet >= 0n ? (excess < borne ? excess : borne) : 0n;
   const withheld = w + allowance;
 
   return {
@@ -640,7 +599,7 @@ export function computePph21Period(
     pph21EmployerBorneIdr: toIdr(borne),
     pph21RefundIdr: toIdr(employeeRefund),
     pph21EmployerRefundIdr: toIdr(employerRefund),
-    pph21CapExcessIdr: toIdr(capExcess),
+    pph21ReceivableIdr: toIdr(receivable),
     noTaxIdSurchargeApplied: surchargeApplies,
     annual: period.annual,
   };

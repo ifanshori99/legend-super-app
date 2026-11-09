@@ -604,11 +604,11 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
   // Benefit 8_000_000 (row 7, 1,5%):
   //   gross:    G* = benefit, but the benefit is not cash: the available pay
   //             is 0 (no lines, bead legend-4ndx), so the employee cannot be
-  //             charged. The whole tax is the company's, borne and taxable:
-  //             S = round_half_up(1,5% x (8_000_000 + S)) = 121_827 (as
-  //             gross_up), X = 8_121_827, T = 121_827 = borne, withheld 0,
-  //             allowance 0; bases follow G*: 8_000_000 / X - 8_000_000 =
-  //             121_827. (Before the cap: X 8_000_000, T = W = 120_000.)
+  //             charged. Founder decision B8 (bead legend-kn3n): the tax is
+  //             the employee's receivable, not the company's cost, and there
+  //             is no gross-up: X = 8_000_000, T = 1,5% x 8_000_000 = 120_000
+  //             = receivable, withheld 0, allowance 0, borne 0; bases follow
+  //             G*: 8_000_000 / 0. (Before B8: X 8_121_827, borne 121_827.)
   //   gross_up: G* = 0, S = round_half_up(1,5% x (8_000_000 + S)) = 121_827
   //             (8_121_827 x 150 / 10000 = 121_827,405, stable), X = 8_121_827,
   //             T = 121_827 = allowance, withheld = allowance (the company's
@@ -625,6 +625,7 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       withheld: 0,
       allowance: 0,
       borne: 0,
+      receivable: 0,
       gBase: 3_000_000,
       eBase: 0,
     },
@@ -637,6 +638,7 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       withheld: 0,
       allowance: 0,
       borne: 0,
+      receivable: 0,
       gBase: 0,
       eBase: 3_000_000,
     },
@@ -649,6 +651,7 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       withheld: 0,
       allowance: 0,
       borne: 0,
+      receivable: 0,
       gBase: 0,
       eBase: 3_000_000,
     },
@@ -656,13 +659,14 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       benefit: 8_000_000,
       scheme: "gross" as const,
       rateBp: 150,
-      x: 8_121_827,
-      t: 121_827,
+      x: 8_000_000,
+      t: 120_000,
       withheld: 0,
       allowance: 0,
-      borne: 121_827,
+      borne: 0,
+      receivable: 120_000,
       gBase: 8_000_000,
-      eBase: 121_827,
+      eBase: 0,
     },
     {
       benefit: 8_000_000,
@@ -673,6 +677,7 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       withheld: 121_827,
       allowance: 121_827,
       borne: 0,
+      receivable: 0,
       gBase: 0,
       eBase: 8_121_827,
     },
@@ -685,13 +690,14 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       withheld: 0,
       allowance: 0,
       borne: 121_827,
+      receivable: 0,
       gBase: 0,
       eBase: 8_121_827,
     },
   ];
 
   for (const c of termCases) {
-    it(`M1 TER month, no lines, benefit ${c.benefit}, contract ${c.scheme}: X ${c.x}, tax ${c.t}, withheld ${c.withheld}, allowance ${c.allowance}, borne ${c.borne}, bases ${c.gBase}/${c.eBase}`, () => {
+    it(`M1 TER month, no lines, benefit ${c.benefit}, contract ${c.scheme}: X ${c.x}, tax ${c.t}, withheld ${c.withheld}, allowance ${c.allowance}, borne ${c.borne}, receivable ${c.receivable}, bases ${c.gBase}/${c.eBase}`, () => {
       const { tax } = payslip({
         employerBenefitIdr: c.benefit,
         contractTaxScheme: c.scheme,
@@ -703,14 +709,17 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       expect(tax.pph21WithheldIdr).toBe(c.withheld);
       expect(tax.taxAllowanceIdr).toBe(c.allowance);
       expect(tax.pph21EmployerBorneIdr).toBe(c.borne);
+      expect(tax.pph21ReceivableIdr).toBe(c.receivable);
       expect(tax.pph21RefundIdr).toBe(0);
       expect(tax.pph21EmployerRefundIdr).toBe(0);
       expect(tax.grossSchemeBaseIdr).toBe(c.gBase);
       expect(tax.employerSchemeBaseIdr).toBe(c.eBase);
-      // Invariant: A + B + W = T and the bases add up to X.
-      expect(tax.pph21WithheldIdr + tax.pph21EmployerBorneIdr).toBe(
-        tax.pph21Idr,
-      );
+      // Invariant: W + B + receivable = T and the bases add up to X.
+      expect(
+        tax.pph21WithheldIdr +
+          tax.pph21EmployerBorneIdr +
+          (tax.pph21ReceivableIdr ?? 0),
+      ).toBe(tax.pph21Idr);
       expect(tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr).toBe(
         tax.taxableGrossIdr,
       );
