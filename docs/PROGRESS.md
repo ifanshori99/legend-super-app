@@ -562,3 +562,38 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bead baru: `legend-z76q` (P2, dispatcher print cek ulang printer saat cetak), `legend-4qon` (P3, oracle 404 vs 422 station brand lain di `menu.service`).
 - Biaya sesi 8d51c681 (06:43-07:53 UTC, termasuk akhir dak5): total biaya* 9922k (utama Opus 4869k, subagent Opus 2089k, Sonnet 2865k, Haiku 99k), 37 subagent sesi, task ini 6 subagent, maks 2 paralel.
 - Berikut: verifikasi CTO, second opinion Codex rentang 6f3063c7..5864a36c sebelum gerbang rilis, merge train.
+
+### Serah terima slice 4 dan 3 (sesi ee66d9 compact 3x, 2026-11-09 15:08 WIB)
+
+- legend-e7zj selesai: cabang `ws/dp-refund-guard` 72e4f973 (kode + test) + 41524fcb (progress); brief Codex 157 sudah dijalankan, tanpa temuan; masuk merge train.
+- Slice 4 (settlement + MDR): cabang `ws/aj-settlement` dari b714f7b6, worktree `.worktrees/aj-settlement` (worktree:setup sudah). Belum ada kode.
+  - Fakta (Explore): rule `gateway_settlement` dan `edc_settlement` sudah ada di `packages/shared/src/accounting/posting-rules.ts:232-253` (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing / edc_clearing gross). Nama event di catalog (`catalog.ts:46`, `:68`). Belum ada payload schema, emitter, maupun tabel settlement; `payment-admin-reconciliation.service.ts:144` melempar 503. Tidak ada poster settlement lain (tidak dobel). `bank` = akun 1103 tunggal. Consumer melewati intent EDC (`accounting-auto-journal-amounts.ts:329`, `:621`); edc_clearing di-debit lewat paidEdcIdr pada order.paid.
+  - Yang dikerjakan: schema v1 `settlement.reconciled` {settlementId, provider, outletId, settledOn, grossIdr, feeIdr, netSettledIdr; refine gross = net + fee} dan `edc_transaction.settled` {settlementBatchId, terminalId, outletId, settledOn, grossIdr, feeIdr, netSettledIdr}; kunci `aj:settlement:<id>` dan `aj:edc-settlement:<batchId>`; waktu uang = settledOn (periode tutup: hari buka pertama, audit); handler di amounts.ts + consumer; test event sintetis; update `docs/design/auto-journals.md` §8.
+  - Emitter menunggu bead yang sudah ada: legend-3a5m (ledger impor + emit settlement.reconciled), legend-jlqi, legend-cs7. Tidak perlu bead baru.
+- Slice 3 (kej3 + fbms): cabang baru dari milestone/m1 terbaru (9126f624 atau lebih baru), gabung slice 1/2/4, nomor ulang migrasi 0113/0114 di atas m1. Isi: emit order.paid dari jalur QR (`qr-order-consumers.ts` ~:341, tender intent gateway, paidAt = intent.paidAt, paidDepositIdr = depositApplied), `orderRevenueSplit()` bersama di `order-revenue.ts` (eksklusif/inklusif, selain itu fail closed), fbms desain A (schema total nonnegatif, buang `if (order.totalIdr > 0)`, consumer lewati jumlah nol semua).
+- Gate tiap slice: semua `src/test/accounting*.test.ts`, RLS, payment-support, pos-order*, qr-order*, reservation*, pos-shift* (`LEGEND_TEST_FILES` dari root worktree, daftar dibuat dengan bash nullglob), tsc api/shared/web lewat `heavy`, eslint, kontrak node (`^ℹ pass`). Review K: reviewer Opus + architect paralel. Brief Codex per slice (tidak di-commit, maks 800 baris non-test, tanpa temuan Claude). Jangan sentuh app.ts, routes/index.ts, worker-main.ts, edge/runtime.ts, adapter/webhook DOIT, modul refund, crm-promo-refund.ts, approval policies.
+- SSD: cleanup-ssd --apply mengembalikan 0.07 GB (32.58 ke 32.65 GB kosong); tidak ada worktree yang aman dihapus.
+- Biaya sesi ee66d9 total (05:55-08:07 UTC): biaya* 18606k (utama Opus 7871k, subagent Opus 7398k, Sonnet 3134k, Haiku 203k), 45 subagent, maks 4 paralel, rata 0.85 berjalan. Gelombang e7zj (07:24-08:07 UTC): sekitar 4153k.
+
+### Langkah 0: perbaikan temuan Codex 142 (cabang `ws/aj-fix142` dari `ws/dp-late-journal` b714f7b6, 2026-11-09)
+
+- Desain bersama subagent architect: `docs/design/auto-journals.md` §10.
+- F1 payout tanpa penerimaan: payout dicari penopangnya (receipt intent, atau receipt dana tak teralokasi bila dana itu punya event sendiri). Pending parkir `AUTO_JOURNAL_RECEIPT_PENDING` (diulang), tidak ada parkir `AUTO_JOURNAL_RECEIPT_MISSING` (tidak diulang). Receipt yang dibalik finance tidak menopang apa pun.
+- F2 void penjualan selesai: event `order.voided` (voidedFinalOrder) membalik jurnal `aj:sale:<orderId>` lewat ACC-01 (`reverseJournalInTransaction`, kunci `aj:sale-void:<orderId>`). Hanya penjualan tunai murni; ada tender gateway/EDC/poin parkir `AUTO_JOURNAL_VOID_UNSUPPORTED` (void hanya mengembalikan tunai). Jurnal penjualan belum ada: `AUTO_JOURNAL_SALE_PENDING` / `AUTO_JOURNAL_SALE_MISSING`.
+- F3 DP hangus: cek payout menghitung forfeit; cek forfeit menghitung refund sebelumnya.
+- F4 urutan event: semua cek dibatasi waktu dari baris faktanya sendiri (dibaca di SQL, bukan JS Date: presisi mikrodetik). Seri: penjualan lebih dulu dari refund/forfeit, forfeit lebih dulu dari refund.
+- File: `accounting-auto-journal-{amounts,consumer,guards (baru),void (baru)}.ts`, `accounting-journal.service.ts` (ekstrak `reverseJournalInTransaction`), test, desain.
+- Sisa (usulan ke CTO, berkas terlarang/di luar scope): U1 `refundableBalance` kurangi DP hangus; U2 void harus menolak atau mengembalikan tender gateway/EDC/poin; U3 order QR butuh waktu selesai sebelum slice 3; U4 race urutan commit vs cap waktu (penulis refund, penjualan, forfeit perlu kunci baris payment_intents sebelum ambil waktu).
+- Bukti: gate 37 file test API 569 lulus 1 skip; ulang 5 file accounting setelah perubahan terakhir 169 lulus 1 skip (auto-journal 86/86); kontrak node 131 lulus; tsc api/shared/web, eslint, prettier bersih. Commit 84218ab4. Brief Codex `docs/briefs/142b-second-opinion-fix142.md` (main checkout, tidak di-commit, 3 run).
+- Biaya sesi 9d8aab (08:10-08:31 UTC): total biaya* 5316k (utama Opus 2324k, subagent Opus 1133k, Sonnet 1689k, Haiku 170k), 15 subagent.
+- Berikut: tunggu CTO, lalu gabung `ws/aj-fix142` ke `ws/aj-settlement` dan mulai slice 4.
+
+### Slice 4: settlement gateway dan EDC + MDR (cabang `ws/aj-settlement`, 2026-11-09)
+
+- Gabung `ws/aj-fix142` ke `ws/aj-settlement` (ab1c5aab).
+- Schema shared v1 `settlement.reconciled` dan `edc_transaction.settled` (`packages/shared/src/payment/settlement-events.ts`): strict, gross = net + fee, fee dan net >= 0, provider `edc_*` ditolak di event gateway. Header berisi kontrak emitter (satu emitter per payout, satu event per outlet, id unik per tenant, emit sekali saat final, koreksi lewat jurnal manual, net >= 0, `bankAccountId` v2).
+- Consumer: kunci `aj:settlement:<id>` dan `aj:edc-settlement:<batchId>`; tanggal jurnal = `settledOn` persis (`AutoJournalFact.entryDate`, tidak lewat jam dan cutoff outlet); periode tutup ke hari buka pertama dengan audit; outlet envelope harus sama dengan payload; tanpa guard penopang (kelebihan settlement = kasus rekonsiliasi).
+- Review K (reviewer Opus + architect): tanpa cacat kode. Dibetulkan: test AJ-SET-04 kini cutoff 08:00 (uji mutasi: tanpa `entryDate` test gagal), AJ-SET-07 pakai outlet nyata entitas lain, provider `edc_` ditolak (AJ-SET-17), kontrak emitter ditulis di header dan desain §4/§8.
+- Cek CTO 84218ab4: (1) aggregateType `order.paid` = `order` (catalog `name.split(".")[0]`, `appendPosEvent` pakai `entry.aggregateType`), cocok dengan guard sale; (2) `auditAccountingChange` menerima `actorId: null` (actorType system).
+- Bukti: gate 33 file 489 lulus 1 skip (sebelum perbaikan review); ulang 10 file accounting setelah perbaikan 217 lulus 1 skip (auto-journal 104/104); kontrak node 137 lulus; tsc shared/api/web, eslint, prettier bersih.
+- Emitter tetap milik legend-3a5m, legend-jlqi, legend-cs7.
