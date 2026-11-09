@@ -47,7 +47,10 @@ import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
-import { provisionDefaultTaxConfig } from "./tax-provisioning.service.ts";
+import {
+  provisionDefaultServiceChargeRule,
+  provisionDefaultTaxConfig,
+} from "./tax-provisioning.service.ts";
 
 type TenantRow = typeof tenants.$inferSelect;
 type PackageRow = typeof platformPackages.$inferSelect;
@@ -229,6 +232,13 @@ export async function createTenant(
       tx,
       context,
       actor.success ? actor.data : null,
+    );
+    // Default 5% dine-in service charge, same transaction (legend-2qz7, Q25).
+    await provisionDefaultServiceChargeRule(
+      tx,
+      context,
+      actor.success ? actor.data : null,
+      null,
     );
     const admin = await provisionFirstTenantAdmin(
       tx,

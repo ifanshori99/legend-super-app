@@ -320,3 +320,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/provisioning-defaults.test.ts`.
 - Follow-up: legend-9ppw (lokasi, UOM, CoA belum ikut ke edge node; celah sudah ada sebelumnya).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
+
+## legend-2qz7 service charge default 5% (engineer, cabang `ws/service-charge-default`, 2026-11-09)
+
+- Keputusan founder Q25: tenant baru (panel Platform) mendapat aturan `SC-DINE-IN` tenant-wide, 5%, hanya `dine_in` (QR dine-in ikut), kelas F&B, v1 published, berlaku sejak 2024-01-01, dalam transaksi `createTenant`. Outlet baru (`createOutlet`) mendapat aturan outlet-scoped yang sama, KECUALI tenant sudah punya aturan service tenant-wide apa pun (kode apa pun): aturan outlet akan mengalahkan aturan owner dan mengubah tagihan diam-diam. Seed: `provisionDefaultServiceChargeRule` di `tax-provisioning.service.ts`. Idempoten, kunci advisory per tenant, audit `tax.service_charge.provisioned` (outlet id tercatat untuk aturan outlet).
+- Tenant dan outlet lama TIDAK di-backfill; `backfillTenantTaxDefaults` tidak menyentuh service. Mesin hitung tidak diubah. Takeaway dan delivery tanpa service.
+- Dampak: preview dine-in tenant baru Rp 100.000 menjadi service 5.000, pajak 10.500 (PBJT menghitung service dalam dasar), total 115.500. Test lama di `tax-provisioning`, `platform-org-api`, `platform-admin-provision` diperbarui.
+- Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/tax-service-default.test.ts` (14).
+- Follow-up: legend-mdh0 (publish boleh membuat tie aturan, `TAX_RULE_AMBIGUOUS` memblokir checkout; lock seed di `createServiceChargeRule`; actor `createOutlet`), legend-9flj (pertanyaan founder: channel reservation).
+- Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
