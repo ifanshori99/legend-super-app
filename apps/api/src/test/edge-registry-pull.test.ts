@@ -614,6 +614,8 @@ describe("EDG-03 staleness is visible on /api/edge/status", () => {
       receiptSequencesRefusedAt: null,
       receiptRunAlert: false,
       receiptRunAlertAt: null,
+      receiptSequencesRetired: 0,
+      receiptSequencesRetiredAt: null,
     });
   });
 

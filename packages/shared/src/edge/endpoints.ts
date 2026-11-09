@@ -64,6 +64,10 @@ export const edgeStatusSchema = z.strictObject({
       receiptRunAlert: z.boolean().optional(),
       /** Last successful pull with the alert; null if never. */
       receiptRunAlertAt: isoDateTimeSchema.nullable().optional(),
+      /** legend-sduiq: local runs the last pull retired (cloud no longer lists them). */
+      receiptSequencesRetired: z.number().int().nonnegative().optional(),
+      /** Last successful pull that retired at least one; null if never. */
+      receiptSequencesRetiredAt: isoDateTimeSchema.nullable().optional(),
     })
     // Optional: an edge image older than legend-2lp.7 does not send it; the
     // edge API always does.

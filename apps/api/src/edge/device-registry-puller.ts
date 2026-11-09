@@ -25,6 +25,13 @@ export type DeviceRegistrySyncState = {
   readonly receiptRunAlert: boolean;
   /** Time of the last successful pull with the alert, else null. */
   readonly receiptRunAlertAt: string | null;
+  /**
+   * legend-sduiq: local receipt runs the last successful pull retired because
+   * the cloud no longer lists them (that device stops numbering).
+   */
+  readonly receiptSequencesRetired: number;
+  /** Time of the last successful pull that retired at least one, else null. */
+  readonly receiptSequencesRetiredAt: string | null;
 };
 
 export type DeviceRegistryPuller = {
@@ -46,6 +53,8 @@ export type DeviceRegistryPullerDeps = {
     receiptSequencesRefused?: number;
     /** legend-yd0h8 */
     receiptRunAlert?: boolean;
+    /** legend-sduiq */
+    receiptSequencesRetired?: number;
   }>;
   /** Called once, lazily, before the first pull (retried next run if it throws). */
   load(): Promise<{ watermark: string | null; lastSuccessAt: Date | null }>;
@@ -100,6 +109,8 @@ export function createDeviceRegistryPuller(
   let receiptSequencesRefusedAt: Date | null = null;
   let receiptRunAlert = false;
   let receiptRunAlertAt: Date | null = null;
+  let receiptSequencesRetired = 0;
+  let receiptSequencesRetiredAt: Date | null = null;
 
   let started = false;
   let stopped = false;
@@ -169,6 +180,9 @@ export function createDeviceRegistryPuller(
       // legend-yd0h8: same pattern as the refused count above.
       receiptRunAlert = result.receiptRunAlert === true;
       if (receiptRunAlert) receiptRunAlertAt = succeededAt;
+      // legend-sduiq: same pattern; the time stays after the count drops to 0.
+      receiptSequencesRetired = result.receiptSequencesRetired ?? 0;
+      if (receiptSequencesRetired > 0) receiptSequencesRetiredAt = succeededAt;
       lastError = null;
       consecutiveFailures = 0;
       ok = true;
@@ -232,6 +246,10 @@ export function createDeviceRegistryPuller(
         receiptRunAlert,
         receiptRunAlertAt: receiptRunAlertAt
           ? receiptRunAlertAt.toISOString()
+          : null,
+        receiptSequencesRetired,
+        receiptSequencesRetiredAt: receiptSequencesRetiredAt
+          ? receiptSequencesRetiredAt.toISOString()
           : null,
       };
     },

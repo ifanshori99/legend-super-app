@@ -554,6 +554,14 @@ export async function applyDeviceReceiptSequences(
   context: ScopedTenantContext,
   sequences: readonly unknown[],
   own: DeviceReceiptSequenceBinding,
+  options: {
+    /**
+     * legend-sduiq: `sequences` is the cloud's FULL list for `own` (a pull
+     * page). Only then are local runs missing from it retired; any other
+     * caller (a partial list) must leave this off.
+     */
+    readonly complete?: boolean;
+  } = {},
 ): Promise<ReceiptSequenceApplyResult> {
   // The tenant comes from `context` only (records carry none; RLS scopes the
   // writes to it).
@@ -590,13 +598,26 @@ export async function applyDeviceReceiptSequences(
       else if (outcome === "replaced") replaced += 1;
       else refused += 1;
     }
-    const retired = await retireUnlistedDeviceReceiptSequences(
-      tx,
-      context,
-      outletId,
-      parsed.map((sequence) => sequence.id),
-      own,
-    );
+    // legend-sduiq: only entries bound to `own` say what this database may
+    // number; a list with none of them (e.g. a node id mismatch) retires
+    // nothing, like an empty list.
+    const listedIds = parsed
+      .filter(
+        (sequence) =>
+          sequence.edgeNodeId === own.edgeNodeId &&
+          sequence.edgeInstanceId === own.edgeInstanceId,
+      )
+      .map((sequence) => sequence.id);
+    const retired =
+      options.complete === true
+        ? await retireUnlistedDeviceReceiptSequences(
+            tx,
+            context,
+            outletId,
+            listedIds,
+            own,
+          )
+        : 0;
     return { inserted, kept, replaced, refused, retired };
   });
   if (result.refused > 0)
@@ -681,7 +702,10 @@ async function applyPageReceiptSequences(
   const count = Array.isArray(raw) ? raw.length : 1;
   try {
     if (!Array.isArray(raw)) refuse("Receipt sequences are not a list.");
-    const result = await applyDeviceReceiptSequences(context, raw, own);
+    // A pull page carries the cloud's full list (legend-sduiq).
+    const result = await applyDeviceReceiptSequences(context, raw, own, {
+      complete: true,
+    });
     return {
       refused: result.refused,
       replaced: result.replaced,

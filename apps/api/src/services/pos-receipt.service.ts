@@ -1191,11 +1191,17 @@ export async function applyCloudDeviceReceiptSequence(
  * it was retired by the cloud, typically rotated by legend-yd0h8 while the
  * replacement was refused here (prefix or id clash, run already advanced);
  * without this the device would keep numbering a run the cloud retired. The
- * device then numbers nothing until a later pull delivers a run it accepts
- * (RECEIPT_SEQUENCE_NOT_PROVISIONED). Callers pass the ids of a list that
- * passed its page checks (a refused list never gets here); an empty list is ambiguous (the cloud did not recognise this
- * database as the primary) and never retires anything. Rows bound to another
- * binding already cannot number here and are left alone. Returns the count.
+ * device then numbers nothing (RECEIPT_SEQUENCE_NOT_PROVISIONED; fail closed)
+ * until a pull delivers a run it accepts. For an advanced replacement
+ * (L > 0) the next claim rotates it (absent from the report = 0 < high-water).
+ * For a prefix or id clash it does NOT recover by itself: the replacement
+ * stays at 0 and is refused on every pull (edge status
+ * `receiptSequencesRefused` > 0); the manual zsdd procedure is needed.
+ * Callers pass the ids of the page's entries bound to `own`, from a list that
+ * passed its page checks (a refused list never gets here); no such id (empty
+ * list, or a node id mismatch) is ambiguous and never retires anything. Rows
+ * bound to another binding already cannot number here and are left alone.
+ * Returns the count.
  */
 export async function retireUnlistedDeviceReceiptSequences(
   tx: Tx,

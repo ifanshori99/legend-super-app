@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
+
+- Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.
+- Pengaman: daftar kosong, daftar yang ditolak, daftar tanpa entri untuk binding sendiri, standby, dan baris yang terikat ke instance lain tidak pernah dipensiunkan. Status edge mendapat `deviceRegistry.receiptSequencesRetired` dan `receiptSequencesRetiredAt`.
+- Batas (jujur): bila pengganti ditolak karena prefix atau id bentrok, perangkat itu tetap tidak bisa menjual (fail closed) sampai prosedur manual zsdd dijalankan. Tandanya `receiptSequencesRefused > 0` yang menetap. Kasus pengganti yang sudah maju (L > 0) pulih sendiri lewat rotasi berikutnya; ini hanya dianalisis dan belum diuji.
+- Rilis: hanya edge, tanpa urutan khusus terhadap cloud.
+
 ## legend-yd0h8 deteksi database edge hasil restore/clone (engineer, cabang `ws/edge-restore-detect` dari `ws/receipt-seq-edge` 64638306, 2026-11-09)
 
 - Sudah: tiap pull primary edge melaporkan counter lokal per run (`receiptRuns=P1:150,...`). Cloud menyimpan high-water per run (`receipt_sequences.edge_reported_number`, `edge_reported_at`, tidak pernah turun). Laporan lebih rendah (atau run terikat yang tidak lagi dipegang edge) = restore/clone: run dipensiunkan (`retired_reason = edge_regressed`) dan perangkat lanjut di prefix baru. Laporan lama yang diproses terlambat (waktu tiba di cloud tidak lebih baru dari yang tersimpan) diabaikan; token memakai jam cloud, bukan jam edge, jadi jam edge yang salah tidak mematikan deteksi. Rate limit: maks 2 rotasi regresi per perangkat per node per 24 jam, sesudahnya run dipertahankan dan halaman membawa `receiptRunAlert`; laporan run pensiun di atas high-water bekunya = database kedua hidup, alert langsung. Alert tampil di `GET /api/edge/status` (`deviceRegistry.receiptRunAlert`, `receiptRunAlertAt`). Semua jalur pensiun menyimpan alasan; trigger mewajibkannya. Edge lama tanpa `receiptRuns` tidak dicek dan tidak menerima field baru; fetcher mundur bertahap pada 400.

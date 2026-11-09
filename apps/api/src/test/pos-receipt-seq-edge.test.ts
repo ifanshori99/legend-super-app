@@ -1217,6 +1217,73 @@ describe("sduiq the edge retires a local run the cloud no longer lists (legend-s
     });
   });
 
+  it("EDG-02 a non-empty list with no entry bound to this database retires nothing (node id mismatch)", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own = ownBinding();
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, randomUUID(), "P2", ownBinding())]),
+      own,
+    );
+    expect(result).toMatchObject({
+      receiptSequencesRefused: 1,
+      receiptSequencesRetired: 0,
+    });
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+  });
+
+  it("EDG-02 the cloud sends the FULL bound list on every page of a multi-page pull (the edge's retire relies on it)", async () => {
+    const outletId = await freshOutlet();
+    await enroll(outletId, "pos");
+    await enroll(outletId, "pos");
+    await enroll(outletId, "pos");
+    const nodeId = await insertNode(outletId);
+    const instanceId = randomUUID();
+    const node = {
+      tenantId: tenant.tenantId as TenantId,
+      outletId: outletIdSchema.parse(outletId),
+      edgeNodeId: nodeId,
+    };
+    const pages: DeviceSyncPage[] = [];
+    let since: string | undefined;
+    for (;;) {
+      const page = await listDeviceRecordsSince(
+        node,
+        deviceSyncQuerySchema.parse({
+          limit: 1,
+          receiptSequences: "1",
+          edgeInstance: instanceId,
+          ...(since === undefined ? {} : { since }),
+        }),
+        { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
+      );
+      pages.push(page);
+      if (page.meta.nextCursor === null) break;
+      since = page.meta.nextCursor;
+    }
+    expect(pages.length).toBeGreaterThanOrEqual(3);
+    const bound = (await fullRows(outletId))
+      .filter(
+        (r) =>
+          r.retired_at === null &&
+          r.edge_node_id === nodeId &&
+          r.edge_instance_id === instanceId,
+      )
+      .map((r) => r.id)
+      .sort();
+    expect(bound).toHaveLength(3);
+    for (const page of pages)
+      expect((page.receiptSequences ?? []).map((s) => s.id).sort()).toEqual(
+        bound,
+      );
+  });
+
   it("POS-06 an unbound local run (3yqy era) missing from the list is retired too", async () => {
     const edgeOutlet = await freshOutlet();
     const own = ownBinding();

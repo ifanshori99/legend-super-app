@@ -36,3 +36,20 @@ The cloud rotates a device run (legend-yd0h8 `edge_regressed`, or any rotation) 
 - `apps/api/src/test/pos-receipt-seq-edge.test.ts`:
   - The zsdd-R1 "advanced replacement" test now expects the old run to be retired. This is the repro, and it failed before the fix.
   - New `sduiq` describe block.
+
+## Review K (reviewer Opus + architect), fixed
+
+- A1 (medium): the "full list on every page" property is now tested. In the cloud test, 3 devices are pulled with `limit: 1` and every page carries the same full bound list.
+- A2: `applyDeviceReceiptSequences` retires only with `{ complete: true }`. Only `applyPageReceiptSequences`, which handles a pull page, passes it.
+- A3: `listedIds` holds only entries bound to `own`. A non-empty list with none of them (node id mismatch) retires nothing, like an empty list.
+- A4: the edge status `deviceRegistry` gains `receiptSequencesRetired` and `receiptSequencesRetiredAt`, on the same pattern as `receiptSequencesRefused`.
+- R1 (low, documented, not changed): a replacement refused for a prefix or id **clash** stays at 0. It never shows up in the edge's report, so the cloud never rotates it again, and the device stays blocked (fail closed). The signal is `deviceRegistry.receiptSequencesRefused > 0` that persists, together with `receiptSequencesRetiredAt`. The **advanced** (L > 0) case recovers by itself, because the next claim sees "absent = 0 < high-water" and rotates.
+
+## Runbook line
+
+A device whose sales fail with `RECEIPT_SEQUENCE_NOT_PROVISIONED`, while edge status shows `receiptSequencesRefused > 0` that persists, needs the manual zsdd procedure:
+
+1. Reset `edge_nodes.instance_id` on the edge database.
+2. Let the next pull rotate every run to a new prefix.
+
+A clash usually means the local prefixes are not a subset of the cloud's, for example after a cloud restore or a manual change.
