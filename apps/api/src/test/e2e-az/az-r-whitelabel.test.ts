@@ -335,154 +335,146 @@ describe("Alur R: Super Admin menambah tenant baru, pelanggan hanya melihat bran
 
 // ---- Not yet in m1 ---------------------------------------------------------
 
-describeUntilMerged(
-  "ws/pos-receipt",
-  "Alur R struk dan PDF tenant B (TEN-08, POS-07)",
-  () => {
-    itUntilMerged(
-      "ws/pos-receipt",
-      "TEN-08 POS-07: struk, e-receipt publik, dan PDF memuat brand/outlet tenant, bukan nama platform",
-      async () => {
-        // Dynamic imports: these modules only exist on ws/pos-receipt.
-        const { createIsolatedTenant } = await import("../floor-test-helpers");
-        // Variable specifier keeps the m1 typecheck from resolving the module.
-        const receiptModule = "../../services/pos-receipt.service.ts";
-        const { createPosReceiptPort } = await import(
-          /* @vite-ignore */ receiptModule
-        );
-        const { setPosReceiptPort } =
-          await import("../../services/pos-order-ports");
-        setPosReceiptPort(createPosReceiptPort());
-        try {
-          const t = await createIsolatedTenant(`wl-${suffix}`);
-          await owner.query(
-            "UPDATE tenants SET created_by = $2 WHERE id = $1",
-            [t.tenantId, randomUUID()],
-          );
-          await owner.query("UPDATE brands SET name = $2 WHERE id = $1", [
-            t.brandId,
-            BRAND_B,
-          ]);
-          await owner.query(
-            "UPDATE outlets SET name = 'Kopi Senja Dago', address = 'Jl. Dago 9, Bandung' WHERE id = $1",
-            [t.outletId],
-          );
-          // Cashier role with POS rights; the same setup as pos-receipt.test.ts:
-          // menu item with photo, price list, published PBJT 10% rule.
-          const roleId = randomUUID();
-          await owner.query(
-            `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-             VALUES ($1, $2, 'Kasir WL', false, NULL, $3, false, '["tenant","outlet"]')`,
-            [
-              roleId,
-              t.tenantId,
-              JSON.stringify([
-                "order.view",
-                "pos.sale.create",
-                "pos.payment.accept",
-              ]),
-            ],
-          );
-          const cashier = agent(app);
-          await signUp(cashier, "Kasir Senja");
-          const userId = (await cashier.get("/api/auth/get-session")).body.user
-            .id as string;
-          await owner.query(
-            `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-             VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
-            [t.tenantId, userId, roleId],
-          );
-          const item = randomUUID();
-          const priceList = randomUUID();
-          await asTenant(t.tenantId, async (client) => {
-            const category = randomUUID();
-            await client.query(
-              "INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order) VALUES ($1,$2,$3,'Kopi',0)",
-              [category, t.tenantId, t.brandId],
-            );
-            await client.query(
-              "INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id) VALUES ($1,$2,$3,$4,'Kopi Susu',true,$5)",
-              [item, t.tenantId, t.brandId, category, randomUUID()],
-            );
-            await client.query(
-              "INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from) VALUES ($1,$2,$3,'takeaway','2026-01-01')",
-              [priceList, t.tenantId, t.outletId],
-            );
-            await client.query(
-              "INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr) VALUES ($1,$2,$3,$4,25000)",
-              [randomUUID(), t.tenantId, priceList, item],
-            );
-          });
-          const base = `/api/outlets/${t.outletId}/pos`;
-          const post = (path: string, body: Record<string, unknown>) =>
-            cashier
-              .post(`${base}${path}`)
-              .set("Host", t.hostname)
-              .set(originHeader)
-              .send({ idempotencyKey: randomUUID(), ...body });
-          const order = await post("/orders", {
-            channel: "pos",
-            serviceType: "takeaway",
-            items: [{ menuItemId: item, quantity: 1, modifierIds: [] }],
-          });
-          expect(order.status, JSON.stringify(order.body)).toBe(201);
-          const orderId = order.body.data.id as string;
-          let status = order.body.data.status as string;
-          if (status === "draft") {
-            const submitted = await post(`/orders/${orderId}/submit`, {
-              expectedStatus: status,
-            });
-            status = submitted.body.data.status as string;
-          }
-          const paid = await post(`/orders/${orderId}/tenders`, {
-            method: "cash",
-            receivedIdr: order.body.data.totalIdr + 5000,
-            expectedStatus: status,
-          });
-          expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-          const done = await post(`/orders/${orderId}/complete`, {
-            expectedStatus: paid.body.data.order.status,
-          });
-          expect(done.status).toBe(200);
-          const issued = await post(`/orders/${orderId}/receipts`, {
-            deliveries: ["print", "link"],
-          });
-          expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
-
-          // Staff document and the customer's e-receipt carry the brand's outlet.
-          expect(issued.body.data.receipt.outletName).toBe("Kopi Senja Dago");
-          expect(platformLeaks(issued.body)).toEqual([]);
-          const token = String(issued.body.data.link.url).split("/r/")[1];
-          const publicDoc = await request(app)
-            .get(`/api/public/receipts/${token}`)
-            .set("Host", t.hostname);
-          expect(publicDoc.status).toBe(200);
-          expect(platformLeaks(publicDoc.body)).toEqual([]);
-
-          // PDFs (receipt and kuitansi) hold no platform name either.
-          for (const kind of ["receipt", "kuitansi"]) {
-            const pdf = await request(app)
-              .get(`/api/public/receipts/${token}/pdf?kind=${kind}`)
-              .set("Host", t.hostname)
-              .buffer(true)
-              .parse((res, done) => {
-                const chunks: Buffer[] = [];
-                res.on("data", (chunk: Buffer) => chunks.push(chunk));
-                res.on("end", () => done(null, Buffer.concat(chunks)));
-              });
-            expect(pdf.status).toBe(200);
-            const text = (pdf.body as Buffer).toString("latin1");
-            expect(text.startsWith("%PDF-")).toBe(true);
-            expect(text).toContain("Kopi Senja Dago");
-            expect(platformLeaks(text)).toEqual([]);
-          }
-        } finally {
-          setPosReceiptPort(null);
-        }
-      },
+describe("Alur R struk dan PDF tenant B (TEN-08, POS-07)", () => {
+  it("TEN-08 POS-07: struk, e-receipt publik, dan PDF memuat brand/outlet tenant, bukan nama platform", async () => {
+    // Dynamic imports: these modules only exist on ws/pos-receipt.
+    const { createIsolatedTenant } = await import("../floor-test-helpers");
+    // Variable specifier keeps the m1 typecheck from resolving the module.
+    const receiptModule = "../../services/pos-receipt.service.ts";
+    const { createPosReceiptPort } = await import(
+      /* @vite-ignore */ receiptModule
     );
-  },
-);
+    const { setPosReceiptPort } =
+      await import("../../services/pos-order-ports");
+    setPosReceiptPort(createPosReceiptPort());
+    try {
+      const t = await createIsolatedTenant(`wl-${suffix}`);
+      await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
+        t.tenantId,
+        randomUUID(),
+      ]);
+      await owner.query("UPDATE brands SET name = $2 WHERE id = $1", [
+        t.brandId,
+        BRAND_B,
+      ]);
+      await owner.query(
+        "UPDATE outlets SET name = 'Kopi Senja Dago', address = 'Jl. Dago 9, Bandung' WHERE id = $1",
+        [t.outletId],
+      );
+      // Cashier role with POS rights; the same setup as pos-receipt.test.ts:
+      // menu item with photo, price list, published PBJT 10% rule.
+      const roleId = randomUUID();
+      await owner.query(
+        `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+             VALUES ($1, $2, 'Kasir WL', false, NULL, $3, false, '["tenant","outlet"]')`,
+        [
+          roleId,
+          t.tenantId,
+          JSON.stringify([
+            "order.view",
+            "pos.sale.create",
+            "pos.payment.accept",
+          ]),
+        ],
+      );
+      const cashier = agent(app);
+      await signUp(cashier, "Kasir Senja");
+      const userId = (await cashier.get("/api/auth/get-session")).body.user
+        .id as string;
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+             VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+        [t.tenantId, userId, roleId],
+      );
+      const item = randomUUID();
+      const priceList = randomUUID();
+      await asTenant(t.tenantId, async (client) => {
+        const category = randomUUID();
+        await client.query(
+          "INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order) VALUES ($1,$2,$3,'Kopi',0)",
+          [category, t.tenantId, t.brandId],
+        );
+        await client.query(
+          "INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id) VALUES ($1,$2,$3,$4,'Kopi Susu',true,$5)",
+          [item, t.tenantId, t.brandId, category, randomUUID()],
+        );
+        await client.query(
+          "INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from) VALUES ($1,$2,$3,'takeaway','2026-01-01')",
+          [priceList, t.tenantId, t.outletId],
+        );
+        await client.query(
+          "INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr) VALUES ($1,$2,$3,$4,25000)",
+          [randomUUID(), t.tenantId, priceList, item],
+        );
+      });
+      const base = `/api/outlets/${t.outletId}/pos`;
+      const post = (path: string, body: Record<string, unknown>) =>
+        cashier
+          .post(`${base}${path}`)
+          .set("Host", t.hostname)
+          .set(originHeader)
+          .send({ idempotencyKey: randomUUID(), ...body });
+      const order = await post("/orders", {
+        channel: "pos",
+        serviceType: "takeaway",
+        items: [{ menuItemId: item, quantity: 1, modifierIds: [] }],
+      });
+      expect(order.status, JSON.stringify(order.body)).toBe(201);
+      const orderId = order.body.data.id as string;
+      let status = order.body.data.status as string;
+      if (status === "draft") {
+        const submitted = await post(`/orders/${orderId}/submit`, {
+          expectedStatus: status,
+        });
+        status = submitted.body.data.status as string;
+      }
+      const paid = await post(`/orders/${orderId}/tenders`, {
+        method: "cash",
+        receivedIdr: order.body.data.totalIdr + 5000,
+        expectedStatus: status,
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const done = await post(`/orders/${orderId}/complete`, {
+        expectedStatus: paid.body.data.order.status,
+      });
+      expect(done.status).toBe(200);
+      const issued = await post(`/orders/${orderId}/receipts`, {
+        deliveries: ["print", "link"],
+      });
+      expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
+
+      // Staff document and the customer's e-receipt carry the brand's outlet.
+      expect(issued.body.data.receipt.outletName).toBe("Kopi Senja Dago");
+      expect(platformLeaks(issued.body)).toEqual([]);
+      const token = String(issued.body.data.link.url).split("/r/")[1];
+      const publicDoc = await request(app)
+        .get(`/api/public/receipts/${token}`)
+        .set("Host", t.hostname);
+      expect(publicDoc.status).toBe(200);
+      expect(platformLeaks(publicDoc.body)).toEqual([]);
+
+      // PDFs (receipt and kuitansi) hold no platform name either.
+      for (const kind of ["receipt", "kuitansi"]) {
+        const pdf = await request(app)
+          .get(`/api/public/receipts/${token}/pdf?kind=${kind}`)
+          .set("Host", t.hostname)
+          .buffer(true)
+          .parse((res, done) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (chunk: Buffer) => chunks.push(chunk));
+            res.on("end", () => done(null, Buffer.concat(chunks)));
+          });
+        expect(pdf.status).toBe(200);
+        const text = (pdf.body as Buffer).toString("latin1");
+        expect(text.startsWith("%PDF-")).toBe(true);
+        expect(text).toContain("Kopi Senja Dago");
+        expect(platformLeaks(text)).toEqual([]);
+      }
+    } finally {
+      setPosReceiptPort(null);
+    }
+  });
+});
 
 describeUntilMerged(
   "ws/tenant-config-export",

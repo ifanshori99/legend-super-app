@@ -40,6 +40,7 @@ import {
   setStaffPin,
 } from "../../services/device-pin.service.ts";
 import { setPosReceiptPort } from "../../services/pos-order-ports.ts";
+import { createPosReceiptPort } from "../../services/pos-receipt.service.ts";
 import { createPosOverride } from "../../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "../helpers.ts";
 import {
@@ -47,7 +48,7 @@ import {
   owner,
   type IsolatedTenant,
 } from "../floor-test-helpers.ts";
-import { describeUntilMerged, itUntilBuilt } from "./pending-branch.ts";
+import { itUntilBuilt } from "./pending-branch.ts";
 
 const PIN = "582914";
 const CASHIER_PIN = "719364";
@@ -1315,9 +1316,9 @@ describe("Alur E refund pembayaran gateway butuh orang kedua", () => {
 
 // ---- Receipt (ws/pos-receipt) ----------------------------------------------------------------
 
-describeUntilMerged("ws/pos-receipt", "Alur E struk setelah penjualan", () => {
+describe("Alur E struk setelah penjualan", () => {
   it("POS-06 POS-07 nomor struk berurutan tanpa celah, struk void tetap bernomor, struk memuat outlet, item, pajak, metode bayar", async () => {
-    setPosReceiptPort(null); // real numbering from ws/pos-receipt
+    setPosReceiptPort(createPosReceiptPort()); // real numbering from ws/pos-receipt
     const first = await cashSale();
     const second = await cashSale();
     const issue = (orderId: string) =>
