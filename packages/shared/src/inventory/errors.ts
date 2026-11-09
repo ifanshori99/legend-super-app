@@ -67,3 +67,80 @@ export class InventoryError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * HTTP status per inventory code (docs/plan/contracts.md, "Inventory and
+ * purchasing error statuses"). A `Record` over the code union: a new code
+ * without a status fails the typecheck.
+ */
+export const inventoryErrorHttpStatus = {
+  RECIPE_CYCLE: 422,
+  RECIPE_NOT_FOUND: 404,
+  RECIPE_OUTPUT_MISSING: 422,
+  RECIPE_COMPONENT_MISSING: 422,
+  UNIT_COST_MISSING: 422,
+  UOM_CONVERSION_MISSING: 422,
+  STOCK_COUNT_INVALID_TRANSITION: 409,
+  STOCK_COUNT_NOT_PENDING_APPROVAL: 409,
+  STOCK_COUNT_SELF_APPROVAL: 403,
+  STOCK_COUNT_BLIND_HIDDEN: 403,
+  STOCK_COUNT_BLIND_USE_SHEET: 409,
+  STOCK_COUNT_LOCATION_BUSY: 409,
+  STOCK_COUNT_LINES_INCOMPLETE: 422,
+  STOCK_COUNT_APPROVAL_UNROUTED: 409,
+  STOCK_COUNT_VERSION_MISMATCH: 409,
+  STOCK_COUNT_NOT_EDITABLE: 409,
+  STOCK_COUNT_COST_MISSING: 422,
+  STOCK_COUNT_DECIDER_CANNOT_COUNT: 403,
+  STOCK_COUNT_VIEWER_CANNOT_COUNT: 403,
+  STOCK_COUNT_APPROVAL_EXPIRED: 409,
+  PRODUCTION_INVALID_TRANSITION: 409,
+  INSUFFICIENT_STOCK: 409,
+  PRODUCTION_LOCATION_UNRESOLVED: 422,
+} as const satisfies Record<InventoryErrorCode, number>;
+
+/**
+ * Safe Indonesian fallback message per code. Fixed text: the thrown
+ * `InventoryError.message` carries ids and quantities and never reaches a client.
+ */
+export const inventoryErrorMessages: Record<InventoryErrorCode, string> = {
+  RECIPE_CYCLE: "Resep saling mengacu sehingga tidak dapat dihitung.",
+  RECIPE_NOT_FOUND: "Resep tidak ditemukan.",
+  RECIPE_OUTPUT_MISSING: "Resep turunan belum memiliki item hasil.",
+  RECIPE_COMPONENT_MISSING: "Resep memuat komponen yang tidak ditemukan.",
+  UNIT_COST_MISSING: "Item belum memiliki harga pokok rata-rata.",
+  UOM_CONVERSION_MISSING:
+    "Satuan tidak dapat dikonversi dengan faktor yang ada.",
+  STOCK_COUNT_INVALID_TRANSITION:
+    "Aksi ini tidak dapat dilakukan pada status stok opname saat ini.",
+  STOCK_COUNT_NOT_PENDING_APPROVAL:
+    "Stok opname belum diajukan untuk persetujuan.",
+  STOCK_COUNT_SELF_APPROVAL:
+    "Penghitung tidak dapat menyetujui stok opname miliknya sendiri.",
+  STOCK_COUNT_BLIND_HIDDEN: "Detail stok opname buta disembunyikan dari Anda.",
+  STOCK_COUNT_BLIND_USE_SHEET:
+    "Baris stok opname buta harus diubah lewat lembar hitung.",
+  STOCK_COUNT_LOCATION_BUSY:
+    "Lokasi ini masih memiliki stok opname yang belum selesai.",
+  STOCK_COUNT_LINES_INCOMPLETE:
+    "Semua baris harus dihitung sebelum stok opname diajukan.",
+  STOCK_COUNT_APPROVAL_UNROUTED:
+    "Tidak ada kebijakan persetujuan untuk stok opname ini.",
+  STOCK_COUNT_VERSION_MISMATCH:
+    "Baris stok opname berubah setelah permintaan persetujuan dibuka.",
+  STOCK_COUNT_NOT_EDITABLE:
+    "Baris stok opname hanya dapat diubah saat status penghitungan.",
+  STOCK_COUNT_COST_MISSING:
+    "Selisih lebih tidak dapat dinilai karena harga pokok belum ada.",
+  STOCK_COUNT_DECIDER_CANNOT_COUNT:
+    "Pihak yang memutuskan persetujuan tidak dapat menghitung stok opname ini.",
+  STOCK_COUNT_VIEWER_CANNOT_COUNT:
+    "Pihak yang telah melihat jumlah sistem tidak dapat menghitung stok opname ini.",
+  STOCK_COUNT_APPROVAL_EXPIRED:
+    "Batas waktu persetujuan stok opname sudah lewat.",
+  PRODUCTION_INVALID_TRANSITION:
+    "Aksi ini tidak dapat dilakukan pada status produksi saat ini.",
+  INSUFFICIENT_STOCK: "Stok di lokasi ini tidak mencukupi.",
+  PRODUCTION_LOCATION_UNRESOLVED:
+    "Lokasi dapur untuk produksi di outlet ini tidak dapat ditentukan.",
+};

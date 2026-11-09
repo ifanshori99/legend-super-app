@@ -549,9 +549,7 @@ export async function sendPurchaseOrder(
         try {
           next = transitionPurchaseOrder(row.status, "send");
         } catch (error) {
-          if (error instanceof PurchasingError)
-            throw new HttpError(409, error.code, error.message);
-          throw error;
+          throw translatePurchasingError(error);
         }
         const [updated] = await tx
           .update(purchaseOrders)
