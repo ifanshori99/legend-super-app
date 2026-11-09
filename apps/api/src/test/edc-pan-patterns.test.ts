@@ -228,3 +228,216 @@ describe("hasPanLengthDigits", () => {
     expect(hasPanLengthDigits("123456789012")).toBe(false);
   });
 });
+
+describe("200-char tail left by the old write path (legend-lg45)", () => {
+  // The old write path masked with a single-separator pattern and THEN cut the
+  // message to 200 UTF-16 units, so a message exactly 200 long can end in a
+  // card-number remnant. The tail rule applies ONLY to messages whose UTF-16
+  // length is exactly 200; shorter or longer messages keep the old behaviour.
+  // The tail rule runs on the READ path only (stored rows). The WRITE path
+  // (provider answer) keeps the pre-change behaviour: chain, then
+  // `.slice(0, 200)`. For these examples the chain leaves the tail alone, so a
+  // 200-long input comes back unchanged on write.
+  // Assumption: the output is cut to 200 code points (replacement can be longer
+  // than the run), so expectations are built with the same cut.
+  const write = (message: string) =>
+    ecrResultDetailsSchema.parse({ message }).message;
+  const read = (message: string) =>
+    edcTransactionSchema.parse({ ...row, message }).message;
+
+  // Pads the tail with "x" so the whole message is `len` UTF-16 units.
+  const padded = (tail: string, len: number, lead = "") =>
+    lead + "x".repeat(len - lead.length - tail.length) + tail;
+  const cut200 = (s: string) => Array.from(s).slice(0, 200).join("");
+
+  const emoji = "\u{1F600}"; // 2 UTF-16 units, 1 code point
+
+  type Case = { name: string; tail: string; expectedTail: string };
+
+  // Tails that must be rewritten when the message is exactly 200 long.
+  const rewritten: Case[] = [
+    {
+      name: "multi-separator card cut at the end (10 digits)",
+      tail: " 4111  1111  11",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits then a cut mask prefix",
+      tail: " 7777777  [disa",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits then a cut mask missing only its closing bracket",
+      tail: " 7777777  [disamarkan",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "7+ digits, a tab, then a cut mask missing its closing bracket",
+      tail: " 7777777\t[disamarkan",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "digits, wide separator, then a bare opening bracket",
+      tail: " 7777777  [",
+      // replacement " [disamarkan]" no longer fits, so it is cut to 200
+      expectedTail: " [disamarka",
+    },
+    {
+      name: "digits left after a whole mask",
+      tail: " [disamarkan] - 111",
+      expectedTail: " [disamarkan]",
+    },
+    {
+      name: "amount before a card tail of 7 digits",
+      tail: " Rp 50.000  4111  111",
+      expectedTail: " Rp 50.000  [disamark",
+    },
+  ];
+
+  // Tails that must stay exactly as they are at 200.
+  const untouched: Case[] = [
+    {
+      name: "only 4 digits before a cut mask",
+      tail: " 4111  [disa",
+      expectedTail: "",
+    },
+    { name: "rupiah amount", tail: " Rp 1.500.000", expectedTail: "" },
+    { name: "transaction code", tail: " TRX 12345678", expectedTail: "" },
+    {
+      name: "order id with a dash",
+      tail: " ID P261109-1234",
+      expectedTail: "",
+    },
+    { name: "date and time", tail: " 2026-11-09 10:00", expectedTail: "" },
+    {
+      name: "single-separator short number",
+      tail: " 4111 1111",
+      expectedTail: "",
+    },
+    {
+      name: "amount then only 6 digits",
+      tail: " Rp 50.000  4111  11",
+      expectedTail: "",
+    },
+  ];
+
+  describe("write path (tail rule is NOT applied)", () => {
+    const everyTail = [...rewritten, ...untouched];
+
+    for (const c of everyTail) {
+      it(`keeps a 200-long input as the pre-change result: ${c.name}`, () => {
+        const input = padded(c.tail, 200);
+        expect(input).toHaveLength(200);
+        expect(write(input)).toBe(input);
+      });
+    }
+
+    it("keeps a short code after a mask at exactly 200", () => {
+      const input = padded(" [disamarkan] - 51", 200);
+      expect(input).toHaveLength(200);
+      expect(write(input)).toBe(input);
+    });
+
+    it("keeps the emoji-first 200-unit input as is", () => {
+      const input = padded(" 4111\t111", 200, emoji);
+      expect(input).toHaveLength(200);
+      expect(write(input)).toBe(input);
+    });
+
+    it("still caps what it stores at 200 UTF-16 units", () => {
+      const long = "x".repeat(250);
+      expect(write(long)).toHaveLength(200);
+    });
+
+    it("still masks a plain single-separator card number in a 200-long input", () => {
+      const input = padded(" 4111 1111 1111 1111", 200);
+      const out = write(input);
+      expect(out).toContain("[disamarkan]");
+      expect(out).not.toMatch(/4111 1111/);
+    });
+
+    it("is idempotent", () => {
+      for (const c of everyTail) {
+        const once = write(padded(c.tail, 200));
+        expect(write(once!)).toBe(once);
+      }
+    });
+
+    it("differs from the read path on the rewritten tails", () => {
+      for (const c of rewritten) {
+        const input = padded(c.tail, 200);
+        expect(read(input)).not.toBe(write(input));
+      }
+    });
+  });
+
+  describe("read path (tail rule applied)", () => {
+    const reader = { parse: read };
+    for (const c of rewritten) {
+      it(`rewrites at exactly 200: ${c.name}`, () => {
+        const input = padded(c.tail, 200);
+        expect(input).toHaveLength(200);
+        const expected = cut200(
+          input.slice(0, input.length - c.tail.length) + c.expectedTail,
+        );
+        const out = reader.parse(input);
+        expect(out).toBe(expected);
+        expect(out!.length).toBeLessThanOrEqual(200);
+        expect(out).not.toMatch(/\d{4}\s+\d/);
+      });
+    }
+
+    for (const c of untouched) {
+      it(`keeps at exactly 200: ${c.name}`, () => {
+        const input = padded(c.tail, 200);
+        expect(input).toHaveLength(200);
+        expect(reader.parse(input)).toBe(input);
+      });
+    }
+
+    it("leaves the same multi-separator tail alone at 199", () => {
+      const input = padded(" 4111  1111  11", 199);
+      expect(input).toHaveLength(199);
+      expect(reader.parse(input)).toBe(input);
+    });
+
+    it("leaves a short code after a mask alone at 199", () => {
+      const input = padded(" [disamarkan] - 51", 199);
+      expect(input).toHaveLength(199);
+      expect(reader.parse(input)).toBe(input);
+    });
+
+    it("removes a short code after a mask at exactly 200 (accepted effect)", () => {
+      const input = padded(" [disamarkan] - 51", 200);
+      expect(input).toHaveLength(200);
+      const expected =
+        input.slice(0, input.length - " [disamarkan] - 51".length) +
+        " [disamarkan]";
+      expect(reader.parse(input)).toBe(expected);
+    });
+
+    it("counts UTF-16 units: emoji first, 200 units but 199 code points", () => {
+      const tail = " 4111\t111";
+      const input = padded(tail, 200, emoji);
+      expect(input).toHaveLength(200);
+      expect(Array.from(input)).toHaveLength(199);
+      const out = reader.parse(input);
+      const masked = cut200(
+        input.slice(0, input.length - tail.length) + " [disamarkan]",
+      );
+      // The read path and the SQL migration cut by code points (varchar).
+      expect(out).toBe(masked);
+      expect(out!.endsWith(" [disamark")).toBe(true);
+      expect(Array.from(out!)).toHaveLength(200);
+    });
+
+    it("is idempotent: a second pass changes nothing", () => {
+      for (const c of [...rewritten, ...untouched]) {
+        const once = reader.parse(padded(c.tail, 200));
+        expect(reader.parse(once!)).toBe(once);
+      }
+      const emojiOnce = reader.parse(padded(" 4111\t111", 200, emoji));
+      expect(reader.parse(emojiOnce!)).toBe(emojiOnce);
+    });
+  });
+});

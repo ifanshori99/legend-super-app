@@ -33,6 +33,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - 8v2yl: baris `pos_order_refunds.lines` mencatat `tenderId` dan `paymentIntentId` (FIFO per tender; total per metode tetap); event `order.refunded` tidak berubah. Tanpa migrasi (jsonb).
 - Lanjutan: legend-9z1vm (atribusi intent membaca id baris, setelah ws/refund-payout-followups masuk m1), legend-pk38k (alur pengembalian DP dan pendapatan untuk retur Rp0 DP).
 
+## legend-lg45 sisa PAN di ujung pesan EDC 200 karakter (engineer, cabang `ws/edc-pan-tail` dari f5438770, 2026-11-09)
+
+- Sudah: aturan ujung pesan (hanya pesan asli tepat 200 unit UTF-16): `[disamarkan]` + pemisah lebar + digit di ujung, dan run 7+ digit yang memuat/diakhiri pemisah lebar (opsional potongan `[disamarkan`), diganti `[disamarkan]`, lalu dipotong 200 code point. Ada di `0143_edc_pan_scrub_separators.sql` (diubah di tempat; syarat 200 dicek pada pesan asli sebelum rantai 0143), jalur baca JS `maskStoredMessage`, dan skrip cadangan `apps/api/scripts/edc-pan-scrub-tail.sql` (hanya untuk DB yang sudah menjalankan 0143 lama). Jalur tulis tidak berubah. Runbook bagian 6.
+- Bukti: test 13 file EDC 229/229, tsc shared+api (heavy), eslint, prettier, `db:generate` kosong. Review K: reviewer Opus 0 bug (fuzz 230k baris), architect 0 blokir (fuzz 40k baris 0135→0143 = JS).
+- Keputusan: hash 0143 berubah (lama `67c6b05a…`); DB yang sudah menjalankan 0143 lama tidak menjalankan ulang, pakai skrip cadangan. Kartu baru `legend-deu7r` (pemisah newline/NBSP/`/`/`_`, sudah ada sebelumnya).
+- Berikut: second opinion Codex `docs/briefs/191b-second-opinion-edc-pan-tail.md` (folder utama), keputusan CTO soal sisa potongan sebelum pemisah lebar pertama, merge train.
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.

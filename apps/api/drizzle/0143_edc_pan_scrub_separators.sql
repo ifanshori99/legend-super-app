@@ -37,10 +37,41 @@
 -- '[disamarkan] - 123456' (approval code), is removed for good, since it
 -- cannot be told apart from the end of a 17-19 digit card.
 --
--- Only rows that hold a card-number-like run are updated; every other column
--- (amount, status, completed_at, updated_at, ...) stays as it is. Replacements
--- hold no matching run and are never longer than the value they replace, so a
--- second run updates no row and varchar limits hold.
+-- 200-char tail (legend-lg45): the write path before legend-tjwb masked
+-- message with the single-separator pattern and THEN cut it to 200 UTF-16
+-- units, so a message that was exactly 200 long can end in a cut card number
+-- no pattern above sees: '...4111  1111  11' (10 digits), '...7777777  [disa' or
+-- '...7777777  [disamarkan' (cut mask), '...[disamarkan] - 111' (3 digits).
+-- For a message whose ORIGINAL length is exactly 200 UTF-16 units (astral
+-- characters count twice, like JS `.length`) two more rules run after the
+-- chain above, each once and anchored at the end of the message:
+--   tail after a mask   '[disamarkan]' + a separator run the old pattern could
+--                       not cross + digits (any count) up to the end
+--   tail card run       7+ digits at the end (separators between them, not
+--                       right after `digit.` or `digit,`, so a dotted amount
+--                       stays) that contain such a wide separator, inside or
+--                       trailing, optionally followed by a cut prefix of
+--                       '[disamarkan]'
+-- Both become '[disamarkan]', then the result is cut to 200 code points (the
+-- replacement can be longer than the run it replaces). The length is checked
+-- on the original message, before the chain: the chain can shorten a 200-char
+-- row (an earlier '4111  1111  1111  1111' becomes '[disamarkan]'), which
+-- would hide the signal. The old write path masked with 0135's exact pattern
+-- before cutting, so 0135 never shortens such a row. Rows of any other length
+-- are not touched by the tail rules: a 199-char row ending in '4111  1111  11'
+-- is a real, uncut value. Accepted effect: a legitimate short code at the very
+-- end of a 200-char message after a mask ('... [disamarkan] - 51') is
+-- removed. Residual (cannot be told from a normal number): a cut before the
+-- first wide separator ('...4111 1111', '...41111111'). The JS read path
+-- (packages/shared/src/edc, maskStoredMessage) applies the same rule.
+-- apps/api/scripts/edc-pan-scrub-tail.sql is only a fallback for a database
+-- that applied this migration before the tail rule existed.
+--
+-- Only rows that hold a card-number-like run (or a 200-char tail) are
+-- updated; every other column (amount, status, completed_at, updated_at, ...)
+-- stays as it is. Replacements hold no matching run; outside the tail rule
+-- they are never longer than the value they replace, and the tail rule cuts to
+-- 200, so varchar limits hold and a second run updates no row.
 --
 -- One statement on purpose: the NO FORCE, the UPDATE and the FORCE run inside
 -- one DO block, so they commit or fail together even when the file is run
@@ -80,6 +111,24 @@ BEGIN
       WHEN "dispatch_batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}' THEN NULL
       ELSE "dispatch_batch_no" END,
     "message" = CASE
+      WHEN length("message")
+          + length(regexp_replace("message", '[\u0001-\uffff]', '', 'g')) = 200
+        AND ("message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
+          OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
+          OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
+          OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9])*[ \t-]*$'
+          OR "message" ~ '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$')
+        THEN left(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace("message", '[0-9](?:[ \t-]*[0-9]){11,}', '[disamarkan]', 'g'),
+                  '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]', '[disamarkan]', 'g'),
+                '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}', '[disamarkan]', 'g'),
+              '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9])*[ \t-]*$', '[disamarkan]'),
+            '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$', '[disamarkan]'),
+          200)
       WHEN "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
         OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
         OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
@@ -104,6 +153,10 @@ BEGIN
      OR "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
      OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
      OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
+     OR (length("message")
+          + length(regexp_replace("message", '[\u0001-\uffff]', '', 'g')) = 200
+         AND ("message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9])*[ \t-]*$'
+              OR "message" ~ '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$'))
      OR "masked_pan" ~ '[0-9](?:[ \t-]*[0-9]){11,}';
 
   ALTER TABLE "edc_transactions" FORCE ROW LEVEL SECURITY;
