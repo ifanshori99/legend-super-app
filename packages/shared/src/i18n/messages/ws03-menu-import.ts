@@ -5,28 +5,30 @@
 export const menuImportMessages = {
   title: "Impor & cetak menu",
   subtitle:
-    "Impor massal CSV dengan pratinjau validasi per baris, dan menu cetak siap PDF.",
+    "Impor massal CSV atau XLSX dengan pratinjau validasi per baris, dan menu cetak siap PDF.",
   import: {
     title: "Impor massal menu",
     description:
-      "Unggah berkas CSV berisi kolom kategori, nama, deskripsi, tipe, harga, stasiun, course, label, dan alergen. Pratinjau memeriksa setiap baris sebelum ada data yang ditulis.",
+      "Unggah berkas CSV atau XLSX berisi kolom kategori, nama, deskripsi, tipe, harga, stasiun, course, label, dan alergen. Pratinjau memeriksa setiap baris sebelum ada data yang ditulis.",
     photoNote:
       "Baris yang valid disimpan sebagai draf. Template tidak memuat foto, sedangkan item wajib punya foto sebelum bisa diaktifkan (Q23), jadi item hasil impor tidak langsung tampil di menu tamu.",
     downloadTemplate: "Unduh template CSV",
     templateHint:
       "Template berisi satu baris contoh. Kolom label dan alergen dipisahkan titik koma (;).",
     uploadLabel: "Berkas impor menu",
-    upload: "Pilih file CSV",
+    upload: "Pilih file CSV atau XLSX",
     changeFile: "Ganti file",
     acceptHint:
-      "Format yang diterima: CSV. Impor XLSX langsung belum tersedia; simpan file Excel sebagai CSV lebih dulu.",
+      "Format yang diterima: CSV atau XLSX (Excel), maksimal 1 MB. Berkas XLSX dibaca di server.",
     selectedFile: "File terpilih: {name}",
     reading: "Membaca berkas…",
     fileErrorTitle: "Berkas belum bisa diproses",
-    xlsxUnsupported:
-      "File XLSX belum bisa dibaca langsung. Buka di Excel atau Google Sheets, pilih Simpan sebagai / Unduh sebagai CSV, lalu unggah file CSV tersebut.",
     unsupportedType:
-      "Format berkas tidak dikenal. Pilih berkas .csv, atau simpan .xlsx sebagai CSV lebih dulu.",
+      "Format berkas tidak dikenal. Pilih berkas .csv atau .xlsx.",
+    serverFailed:
+      "Berkas XLSX tidak bisa diproses di server. Periksa koneksi atau hak akses Anda, lalu coba lagi.",
+    tooLarge:
+      "Berkas terlalu besar: maksimal 1 MB. Kurangi jumlah baris atau pecah menjadi beberapa berkas.",
     unreadable:
       "Berkas tidak bisa dibaca sebagai teks CSV. Simpan ulang sebagai CSV UTF-8 lalu coba lagi.",
     offline:
@@ -141,6 +143,7 @@ export const menuImportMessages = {
       "Kolom muncul lebih dari sekali: {columns}. Sisakan satu kolom untuk setiap nama.",
     emptyFile:
       "Berkas tidak berisi baris data. Tambahkan minimal satu baris di bawah header.",
+    serverRow: "{message}",
     unterminatedQuote:
       "Ada tanda kutip yang tidak ditutup. Periksa kembali sel yang memakai tanda kutip.",
   },
