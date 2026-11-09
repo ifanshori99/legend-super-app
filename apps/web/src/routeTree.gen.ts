@@ -212,6 +212,10 @@ import { Route as KelolaReportsCrmPromoCostRouteImport } from './routes/_kelola/
 import { Route as KelolaReportsCrmRepeatVisitRouteImport } from './routes/_kelola/reports.crm.repeat-visit'
 import { Route as KelolaReportsCrmReviewsRouteImport } from './routes/_kelola/reports.crm.reviews'
 import { Route as KelolaReportsCrmSegmentsRouteImport } from './routes/_kelola/reports.crm.segments'
+import { Route as KelolaReportsDeliveryByMenuRouteImport } from './routes/_kelola/reports.delivery.by-menu'
+import { Route as KelolaReportsDeliveryChannelSalesRouteImport } from './routes/_kelola/reports.delivery.channel-sales'
+import { Route as KelolaReportsDeliveryOrdersRouteImport } from './routes/_kelola/reports.delivery.orders'
+import { Route as KelolaReportsDeliverySettlementRouteImport } from './routes/_kelola/reports.delivery.settlement'
 import { Route as KelolaReportsFacilityCleaningTimeRouteImport } from './routes/_kelola/reports.facility.cleaning-time'
 import { Route as KelolaReportsFacilityFnbConversionRouteImport } from './routes/_kelola/reports.facility.fnb-conversion'
 import { Route as KelolaReportsFacilityIncidentsRouteImport } from './routes/_kelola/reports.facility.incidents'
@@ -1445,6 +1449,30 @@ const KelolaReportsCrmSegmentsRoute =
     path: '/reports/crm/segments',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsDeliveryByMenuRoute =
+  KelolaReportsDeliveryByMenuRouteImport.update({
+    id: '/reports/delivery/by-menu',
+    path: '/reports/delivery/by-menu',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliveryChannelSalesRoute =
+  KelolaReportsDeliveryChannelSalesRouteImport.update({
+    id: '/reports/delivery/channel-sales',
+    path: '/reports/delivery/channel-sales',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliveryOrdersRoute =
+  KelolaReportsDeliveryOrdersRouteImport.update({
+    id: '/reports/delivery/orders',
+    path: '/reports/delivery/orders',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsDeliverySettlementRoute =
+  KelolaReportsDeliverySettlementRouteImport.update({
+    id: '/reports/delivery/settlement',
+    path: '/reports/delivery/settlement',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaReportsFacilityCleaningTimeRoute =
   KelolaReportsFacilityCleaningTimeRouteImport.update({
     id: '/reports/facility/cleaning-time',
@@ -2396,6 +2424,10 @@ export interface FileRoutesByFullPath {
   '/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
   '/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
   '/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
   '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
   '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
@@ -2720,6 +2752,10 @@ export interface FileRoutesByTo {
   '/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
   '/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
   '/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
   '/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
   '/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
@@ -3058,6 +3094,10 @@ export interface FileRoutesById {
   '/_kelola/reports/crm/repeat-visit': typeof KelolaReportsCrmRepeatVisitRoute
   '/_kelola/reports/crm/reviews': typeof KelolaReportsCrmReviewsRoute
   '/_kelola/reports/crm/segments': typeof KelolaReportsCrmSegmentsRoute
+  '/_kelola/reports/delivery/by-menu': typeof KelolaReportsDeliveryByMenuRoute
+  '/_kelola/reports/delivery/channel-sales': typeof KelolaReportsDeliveryChannelSalesRoute
+  '/_kelola/reports/delivery/orders': typeof KelolaReportsDeliveryOrdersRoute
+  '/_kelola/reports/delivery/settlement': typeof KelolaReportsDeliverySettlementRoute
   '/_kelola/reports/facility/cleaning-time': typeof KelolaReportsFacilityCleaningTimeRoute
   '/_kelola/reports/facility/fnb-conversion': typeof KelolaReportsFacilityFnbConversionRoute
   '/_kelola/reports/facility/incidents': typeof KelolaReportsFacilityIncidentsRoute
@@ -3387,6 +3427,10 @@ export interface FileRouteTypes {
     | '/reports/crm/repeat-visit'
     | '/reports/crm/reviews'
     | '/reports/crm/segments'
+    | '/reports/delivery/by-menu'
+    | '/reports/delivery/channel-sales'
+    | '/reports/delivery/orders'
+    | '/reports/delivery/settlement'
     | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
     | '/reports/facility/incidents'
@@ -3711,6 +3755,10 @@ export interface FileRouteTypes {
     | '/reports/crm/repeat-visit'
     | '/reports/crm/reviews'
     | '/reports/crm/segments'
+    | '/reports/delivery/by-menu'
+    | '/reports/delivery/channel-sales'
+    | '/reports/delivery/orders'
+    | '/reports/delivery/settlement'
     | '/reports/facility/cleaning-time'
     | '/reports/facility/fnb-conversion'
     | '/reports/facility/incidents'
@@ -4048,6 +4096,10 @@ export interface FileRouteTypes {
     | '/_kelola/reports/crm/repeat-visit'
     | '/_kelola/reports/crm/reviews'
     | '/_kelola/reports/crm/segments'
+    | '/_kelola/reports/delivery/by-menu'
+    | '/_kelola/reports/delivery/channel-sales'
+    | '/_kelola/reports/delivery/orders'
+    | '/_kelola/reports/delivery/settlement'
     | '/_kelola/reports/facility/cleaning-time'
     | '/_kelola/reports/facility/fnb-conversion'
     | '/_kelola/reports/facility/incidents'
@@ -5648,6 +5700,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsCrmSegmentsRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/delivery/by-menu': {
+      id: '/_kelola/reports/delivery/by-menu'
+      path: '/reports/delivery/by-menu'
+      fullPath: '/reports/delivery/by-menu'
+      preLoaderRoute: typeof KelolaReportsDeliveryByMenuRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/channel-sales': {
+      id: '/_kelola/reports/delivery/channel-sales'
+      path: '/reports/delivery/channel-sales'
+      fullPath: '/reports/delivery/channel-sales'
+      preLoaderRoute: typeof KelolaReportsDeliveryChannelSalesRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/orders': {
+      id: '/_kelola/reports/delivery/orders'
+      path: '/reports/delivery/orders'
+      fullPath: '/reports/delivery/orders'
+      preLoaderRoute: typeof KelolaReportsDeliveryOrdersRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/delivery/settlement': {
+      id: '/_kelola/reports/delivery/settlement'
+      path: '/reports/delivery/settlement'
+      fullPath: '/reports/delivery/settlement'
+      preLoaderRoute: typeof KelolaReportsDeliverySettlementRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/facility/cleaning-time': {
       id: '/_kelola/reports/facility/cleaning-time'
       path: '/reports/facility/cleaning-time'
@@ -6811,6 +6891,10 @@ interface KelolaRouteChildren {
   KelolaReportsCrmRepeatVisitRoute: typeof KelolaReportsCrmRepeatVisitRoute
   KelolaReportsCrmReviewsRoute: typeof KelolaReportsCrmReviewsRoute
   KelolaReportsCrmSegmentsRoute: typeof KelolaReportsCrmSegmentsRoute
+  KelolaReportsDeliveryByMenuRoute: typeof KelolaReportsDeliveryByMenuRoute
+  KelolaReportsDeliveryChannelSalesRoute: typeof KelolaReportsDeliveryChannelSalesRoute
+  KelolaReportsDeliveryOrdersRoute: typeof KelolaReportsDeliveryOrdersRoute
+  KelolaReportsDeliverySettlementRoute: typeof KelolaReportsDeliverySettlementRoute
   KelolaReportsFacilityCleaningTimeRoute: typeof KelolaReportsFacilityCleaningTimeRoute
   KelolaReportsFacilityFnbConversionRoute: typeof KelolaReportsFacilityFnbConversionRoute
   KelolaReportsFacilityIncidentsRoute: typeof KelolaReportsFacilityIncidentsRoute
@@ -7054,6 +7138,11 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaReportsCrmRepeatVisitRoute: KelolaReportsCrmRepeatVisitRoute,
   KelolaReportsCrmReviewsRoute: KelolaReportsCrmReviewsRoute,
   KelolaReportsCrmSegmentsRoute: KelolaReportsCrmSegmentsRoute,
+  KelolaReportsDeliveryByMenuRoute: KelolaReportsDeliveryByMenuRoute,
+  KelolaReportsDeliveryChannelSalesRoute:
+    KelolaReportsDeliveryChannelSalesRoute,
+  KelolaReportsDeliveryOrdersRoute: KelolaReportsDeliveryOrdersRoute,
+  KelolaReportsDeliverySettlementRoute: KelolaReportsDeliverySettlementRoute,
   KelolaReportsFacilityCleaningTimeRoute:
     KelolaReportsFacilityCleaningTimeRoute,
   KelolaReportsFacilityFnbConversionRoute:
