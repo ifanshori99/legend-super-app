@@ -286,8 +286,7 @@ export async function voidPosOrderCorrection(
             })
           : null;
       // legend-q7jj F3: every outflow of the drawer stays a safe integer.
-      if (shift !== null)
-        await assertShiftOutflowBound(tx, shift, voidCashIdr);
+      if (shift !== null) await assertShiftOutflowBound(tx, shift, voidCashIdr);
       // Held, not refused: a refusal would let the cashier probe the expected
       // drawer cash (legend-utqr). Nothing the cashier reads shows the flag.
       const needsApproval =

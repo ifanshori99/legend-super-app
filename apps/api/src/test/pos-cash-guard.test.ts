@@ -1934,7 +1934,9 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
     async (_label, over) => {
       const drawer = await cashDrawer({ over });
       expect((await cashRefund(drawer)).status).toBe(201);
-      const refund = (await correctionRows("refund", drawer.sales[0]!.orderId))[0]!;
+      const refund = (
+        await correctionRows("refund", drawer.sales[0]!.orderId)
+      )[0]!;
       expect(refund.needs_approval).toBe(over);
 
       const { rows } = await owner.query<{ own: string }>(
@@ -1942,7 +1944,8 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
           WHERE tenant_id = $1 AND shift_id = $2 AND type IN ('cash_out', 'drop')`,
         [tenant.tenantId, drawer.shiftId],
       );
-      const room = Number.MAX_SAFE_INTEGER - Number(rows[0]!.own) - refund.amount;
+      const room =
+        Number.MAX_SAFE_INTEGER - Number(rows[0]!.own) - refund.amount;
       const cashOut = (amountIdr: number) =>
         recordCashMovement(
           scopedContext(),
@@ -2004,7 +2007,8 @@ describe("legend-utqr cash refund and void do not reveal the drawer balance", ()
       // The cash the correction pays out: the refund's KOPI_IDR, the void's sale total.
       const probe = await cashDrawer({ over: false });
       expect((await correct(kind, probe)).status).toBe(201);
-      const cash = (await correctionRows(kind, probe.sales[0]!.orderId))[0]!.amount;
+      const cash = (await correctionRows(kind, probe.sales[0]!.orderId))[0]!
+        .amount;
 
       const refusedDrawer = await cashDrawer({ over: false });
       await cashOut(refusedDrawer, Number.MAX_SAFE_INTEGER - cash + 1);

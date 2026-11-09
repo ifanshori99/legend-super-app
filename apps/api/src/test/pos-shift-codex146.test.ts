@@ -50,7 +50,10 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
-import { posShiftCountReceiptSchema, posShiftCountSchema } from "@starter/shared/pos";
+import {
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
+} from "@starter/shared/pos";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
@@ -151,9 +154,12 @@ function deviceHeader(deviceId: string): string {
   });
 }
 
-const SHIFTS = () => `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/shifts`;
+const SHIFTS = () =>
+  `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/shifts`;
 
-async function openShift(cashier: Cashier): Promise<{ id: string; businessDate: string }> {
+async function openShift(
+  cashier: Cashier,
+): Promise<{ id: string; businessDate: string }> {
   const response = await cashier.client
     .post(SHIFTS())
     .set(headers)
@@ -186,7 +192,11 @@ function close(who: Member, shiftId: string, body: Record<string, unknown>) {
     .send({ idempotencyKey: randomUUID(), ...body });
 }
 
-function forceClose(who: Member, shiftId: string, body: Record<string, unknown>) {
+function forceClose(
+  who: Member,
+  shiftId: string,
+  body: Record<string, unknown>,
+) {
   return who.client
     .post(`${SHIFTS()}/${shiftId}/force-close`)
     .set(headers)
@@ -194,7 +204,11 @@ function forceClose(who: Member, shiftId: string, body: Record<string, unknown>)
     .send({ idempotencyKey: randomUUID(), ...body });
 }
 
-function submitCount(who: Member, shiftId: string, body: Record<string, unknown>) {
+function submitCount(
+  who: Member,
+  shiftId: string,
+  body: Record<string, unknown>,
+) {
   return who.client
     .post(`${SHIFTS()}/${shiftId}/counts`)
     .set(headers)
@@ -203,15 +217,22 @@ function submitCount(who: Member, shiftId: string, body: Record<string, unknown>
 }
 
 function listCounts(who: Member, shiftId: string) {
-  return who.client.get(`${SHIFTS()}/${shiftId}/counts`).set(headers).set(originHeader);
+  return who.client
+    .get(`${SHIFTS()}/${shiftId}/counts`)
+    .set(headers)
+    .set(originHeader);
 }
 
 type CountReceipt = { id: string; sequence: number; countedIdr: number };
 
-function countsFor(totalIdr: number): { denominationIdr: number; quantity: number }[] {
+function countsFor(
+  totalIdr: number,
+): { denominationIdr: number; quantity: number }[] {
   let rest = totalIdr;
   const lines: { denominationIdr: number; quantity: number }[] = [];
-  for (const denominationIdr of [100_000, 50_000, 20_000, 10_000, 5_000, 1_000]) {
+  for (const denominationIdr of [
+    100_000, 50_000, 20_000, 10_000, 5_000, 1_000,
+  ]) {
     const quantity = Math.floor(rest / denominationIdr);
     if (quantity > 0) lines.push({ denominationIdr, quantity });
     rest -= quantity * denominationIdr;
@@ -221,8 +242,14 @@ function countsFor(totalIdr: number): { denominationIdr: number; quantity: numbe
   return lines;
 }
 
-async function countDrawer(who: Member, shiftId: string, countedIdr: number): Promise<CountReceipt> {
-  const response = await submitCount(who, shiftId, { counts: countsFor(countedIdr) });
+async function countDrawer(
+  who: Member,
+  shiftId: string,
+  countedIdr: number,
+): Promise<CountReceipt> {
+  const response = await submitCount(who, shiftId, {
+    counts: countsFor(countedIdr),
+  });
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return posShiftCountReceiptSchema.parse(response.body.data) as CountReceipt;
 }
@@ -318,7 +345,14 @@ async function seedSale(
       `INSERT INTO pos_orders
          (order_id, tenant_id, outlet_id, channel, shift_id, device_id, cashier_id, submitted_at, completed_at)
        VALUES ($1, $2, $3, 'pos', $4, $5, $6, now(), now())`,
-      [orderId, tenant.tenantId, tenant.outletId, shift.id, cashier.deviceId, cashier.userId],
+      [
+        orderId,
+        tenant.tenantId,
+        tenant.outletId,
+        shift.id,
+        cashier.deviceId,
+        cashier.userId,
+      ],
     );
     await client.query(
       `INSERT INTO pos_order_tenders
@@ -488,7 +522,8 @@ async function phoneApprovalFor(
         JSON.stringify({
           action: "cash_shift_close",
           objectId: countId,
-          valueIdr: "payloadValueIdr" in options ? options.payloadValueIdr : valueIdr,
+          valueIdr:
+            "payloadValueIdr" in options ? options.payloadValueIdr : valueIdr,
         }),
         cashier.userId,
         JSON.stringify(snapshot),
@@ -526,7 +561,8 @@ beforeAll(async () => {
   tenant = await createIsolatedTenant(`codex146-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
   setDeviceOutletResolver(
-    async ({ tenantId, deviceId }) => registeredDevices.get(`${tenantId}:${deviceId}`) ?? null,
+    async ({ tenantId, deviceId }) =>
+      registeredDevices.get(`${tenantId}:${deviceId}`) ?? null,
   );
   const roles: [string, string, string[]][] = [
     [roleIds.cashier, "Kasir Codex 146", ["shift.cash.operate"]],
@@ -577,7 +613,10 @@ describe("POS-03 legend-q7jj F1: a stale count is no balance oracle", () => {
         reasonNote: "Beli gas elpiji",
       });
       expect(out.status, JSON.stringify(out.body)).toBe(201);
-      const back = await move(cashier, shift.id, { type: "cash_in", amountIdr });
+      const back = await move(cashier, shift.id, {
+        type: "cash_in",
+        amountIdr,
+      });
       expect(back.status, JSON.stringify(back.body)).toBe(201);
 
       // No valid approval: the approval id was never issued.
@@ -611,7 +650,9 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
       const cashier = await newCashier();
       const caller = await member(roleIds.supervisor, "Supervisor Paksa");
       const shift = await openShift(cashier);
-      const forced = await submitCount(caller, shift.id, { counts: countsFor(FLOAT_IDR) });
+      const forced = await submitCount(caller, shift.id, {
+        counts: countsFor(FLOAT_IDR),
+      });
       expect(forced.status, JSON.stringify(forced.body)).toBe(201);
       const forcedCount = posShiftCountReceiptSchema.parse(forced.body.data);
       const out = await move(cashier, shift.id, {
@@ -620,7 +661,10 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
         reasonNote: "Beli gas elpiji",
       });
       expect(out.status, JSON.stringify(out.body)).toBe(201);
-      const back = await move(cashier, shift.id, { type: "cash_in", amountIdr });
+      const back = await move(cashier, shift.id, {
+        type: "cash_in",
+        amountIdr,
+      });
       expect(back.status, JSON.stringify(back.body)).toBe(201);
 
       // No valid witness approval: the stale answer comes first either way.
@@ -630,7 +674,10 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
         approvedBy: supervisor.userId,
         approvalRequestId: randomUUID(),
       });
-      answers.push({ status: refused.status, code: refused.body?.error?.code as string });
+      answers.push({
+        status: refused.status,
+        code: refused.body?.error?.code as string,
+      });
       expect((await shiftRow(shift.id))?.status).toBe("open");
     }
     expect(answers[1], JSON.stringify(answers)).toEqual(answers[0]);
@@ -645,7 +692,11 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
    * are append-only (a trigger refuses updates), so the legacy row is inserted
    * with a NULL watermark, nothing else different from a real count.
    */
-  async function legacyCount(shiftId: string, submittedBy: string, forced: boolean): Promise<string> {
+  async function legacyCount(
+    shiftId: string,
+    submittedBy: string,
+    forced: boolean,
+  ): Promise<string> {
     const id = randomUUID();
     await asOwnerTenant(tenant.tenantId, (client) =>
       client.query(
@@ -709,25 +760,55 @@ describe("POS-03 legend-q7jj F1: force close and legacy counts", () => {
 
 const ACCOUNTING_CHART: [string, string, string, string, string][] = [
   ["cash_on_hand", "1101", "Kas", "asset", "current_asset"],
-  ["gateway_clearing", "1201", "Kliring Payment Gateway", "asset", "current_asset"],
+  [
+    "gateway_clearing",
+    "1201",
+    "Kliring Payment Gateway",
+    "asset",
+    "current_asset",
+  ],
   ["edc_clearing", "1202", "Kliring EDC", "asset", "current_asset"],
-  ["loyalty_liability", "2105", "Liabilitas Poin", "liability", "current_liability"],
+  [
+    "loyalty_liability",
+    "2105",
+    "Liabilitas Poin",
+    "liability",
+    "current_liability",
+  ],
   ["tax_payable_pbjt", "2104", "Utang PBJT", "liability", "current_liability"],
-  ["customer_deposit", "2107", "Uang Muka Pelanggan", "liability", "current_liability"],
+  [
+    "customer_deposit",
+    "2107",
+    "Uang Muka Pelanggan",
+    "liability",
+    "current_liability",
+  ],
   ["sales_revenue", "4101", "Penjualan", "revenue", "revenue"],
   ["sales_discount", "4102", "Diskon Penjualan", "revenue", "revenue"],
   ["service_charge", "4103", "Service Charge", "revenue", "revenue"],
   ["rounding", "4104", "Pembulatan", "revenue", "revenue"],
-  ["deposit_forfeit_income", "4201", "Pendapatan DP Hangus", "revenue", "other_income"],
+  [
+    "deposit_forfeit_income",
+    "4201",
+    "Pendapatan DP Hangus",
+    "revenue",
+    "other_income",
+  ],
   ["cash_over_short", "6108", "Selisih Kas", "expense", "operating_expense"],
 ];
 
 /** Accounting module on, a mapped chart of accounts and open periods for the test tenant. */
 async function enableAccounting(businessDate: string): Promise<void> {
-  await owner.query("UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1", [
-    tenant.tenantId,
-    JSON.stringify({ modules: ["qr_order", "accounting"], integrationProviders: [] }),
-  ]);
+  await owner.query(
+    "UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1",
+    [
+      tenant.tenantId,
+      JSON.stringify({
+        modules: ["qr_order", "accounting"],
+        integrationProviders: [],
+      }),
+    ],
+  );
   const { rows: have } = await owner.query(
     "SELECT 1 FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
     [tenant.tenantId, tenant.legalEntityId],
@@ -776,7 +857,12 @@ async function deliverClosedEvent(shiftId: string) {
     { kind: "tenant" },
   );
   return withTenant(db, context, (tx) =>
-    deliverAutoJournalEvent(context, event, tx, new Date(Date.now() + 60 * 60 * 1000)),
+    deliverAutoJournalEvent(
+      context,
+      event,
+      tx,
+      new Date(Date.now() + 60 * 60 * 1000),
+    ),
   );
 }
 
@@ -866,10 +952,14 @@ describe("POS-03 legend-q7jj F3: the outflow cap counts refunds and voids too", 
     const trail = await listCounts(supervisor, shift.id);
     expect(trail.status, JSON.stringify(trail.body)).toBe(200);
     expect(
-      (trail.body.data as unknown[]).map((row) => posShiftCountSchema.parse(row).heldCashOutIdr),
+      (trail.body.data as unknown[]).map(
+        (row) => posShiftCountSchema.parse(row).heldCashOutIdr,
+      ),
     ).toEqual([1_000]);
 
-    const forced = await submitCount(caller, shift.id, { counts: countsFor(drawerIdr) });
+    const forced = await submitCount(caller, shift.id, {
+      counts: countsFor(drawerIdr),
+    });
     expect(forced.status, JSON.stringify(forced.body)).toBe(201);
     const forcedCount = posShiftCountReceiptSchema.parse(forced.body.data);
     await pinOverride(caller, forcedCount.id);
@@ -914,7 +1004,10 @@ describe("POS-03 legend-q7jj F3: the outflow cap counts refunds and voids too", 
     expect(over.body.error.code).toBe("VALIDATION_ERROR");
     expect(await storedCashMovements(shift.id)).toBe(1);
     // Cash in is no outflow: it is still accepted at the cap.
-    const cashIn = await move(cashier, shift.id, { type: "cash_in", amountIdr: 1_000 });
+    const cashIn = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: 1_000,
+    });
     expect(cashIn.status, JSON.stringify(cashIn.body)).toBe(201);
   });
 
@@ -940,7 +1033,9 @@ describe("POS-03 legend-q7jj F3: the outflow cap counts refunds and voids too", 
     });
     expect(atCap.status, JSON.stringify(atCap.body)).toBe(201);
     // Held total = exactly MAX_SAFE_INTEGER: the count still answers (no 500).
-    const counted = await submitCount(cashier, shift.id, { counts: countsFor(FLOAT_IDR) });
+    const counted = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+    });
     expect(counted.status, JSON.stringify(counted.body)).toBe(201);
   });
 });
@@ -971,7 +1066,9 @@ describe("POS-03 legend-q7jj F4: an old approval chain is refused when the matri
         ...(await phoneApprovalFor(cashier, count.id, options)),
         ...note,
       });
-      expect(refused.status, `${label}: ${JSON.stringify(refused.body)}`).toBe(403);
+      expect(refused.status, `${label}: ${JSON.stringify(refused.body)}`).toBe(
+        403,
+      );
       expect((await shiftRow(shift.id))?.status, label).toBe("open");
     }
   });
@@ -980,32 +1077,48 @@ describe("POS-03 legend-q7jj F4: an old approval chain is refused when the matri
   // 0, level 1, supervisor role. The shape checks added for F4 must not break
   // the two honest paths: PIN at the cashier, and a phone chain with no amount
   // whose payload valueIdr is the variance. Same with an empty matrix.
-  const matrices: [string, { thresholdIdr: number | null; roleId: string; level: number }[]][] = [
+  const matrices: [
+    string,
+    { thresholdIdr: number | null; roleId: string; level: number }[],
+  ][] = [
     ["an empty matrix", []],
-    ["the default matrix (threshold 0, level 1, supervisor)", [
-      { thresholdIdr: 0, roleId: roleIds.supervisor, level: 1 },
-    ]],
+    [
+      "the default matrix (threshold 0, level 1, supervisor)",
+      [{ thresholdIdr: 0, roleId: roleIds.supervisor, level: 1 }],
+    ],
   ];
-  it.each(matrices)("the PIN path and a valid amountless phone chain close with %s", async (_label, rows) => {
-    await withShiftClosePolicies(rows, async () => {
-      const note = { varianceNote: "Selisih dicek supervisor" };
+  it.each(matrices)(
+    "the PIN path and a valid amountless phone chain close with %s",
+    async (_label, rows) => {
+      await withShiftClosePolicies(rows, async () => {
+        const note = { varianceNote: "Selisih dicek supervisor" };
 
-      const pinCashier = await newCashier();
-      const pinShift = await openShift(pinCashier);
-      const pinClosed = await closeShift(pinCashier, pinShift.id, FLOAT_IDR + 1_000, note);
-      expect(pinClosed.status, JSON.stringify(pinClosed.body)).toBe(200);
-      expect((await shiftRow(pinShift.id))?.status).toBe("closed");
+        const pinCashier = await newCashier();
+        const pinShift = await openShift(pinCashier);
+        const pinClosed = await closeShift(
+          pinCashier,
+          pinShift.id,
+          FLOAT_IDR + 1_000,
+          note,
+        );
+        expect(pinClosed.status, JSON.stringify(pinClosed.body)).toBe(200);
+        expect((await shiftRow(pinShift.id))?.status).toBe("closed");
 
-      const phoneCashier = await newCashier();
-      const phoneShift = await openShift(phoneCashier);
-      const count = await countDrawer(phoneCashier, phoneShift.id, FLOAT_IDR + 1_000);
-      const phoneClosed = await close(phoneCashier, phoneShift.id, {
-        countId: count.id,
-        ...(await phoneApprovalFor(phoneCashier, count.id)),
-        ...note,
+        const phoneCashier = await newCashier();
+        const phoneShift = await openShift(phoneCashier);
+        const count = await countDrawer(
+          phoneCashier,
+          phoneShift.id,
+          FLOAT_IDR + 1_000,
+        );
+        const phoneClosed = await close(phoneCashier, phoneShift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(phoneCashier, count.id)),
+          ...note,
+        });
+        expect(phoneClosed.status, JSON.stringify(phoneClosed.body)).toBe(200);
+        expect((await shiftRow(phoneShift.id))?.status).toBe("closed");
       });
-      expect(phoneClosed.status, JSON.stringify(phoneClosed.body)).toBe(200);
-      expect((await shiftRow(phoneShift.id))?.status).toBe("closed");
-    });
-  });
+    },
+  );
 });
