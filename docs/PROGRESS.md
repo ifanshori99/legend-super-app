@@ -303,3 +303,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: test race baru 10/10 GAGAL di kode lama (13425b65), lulus di kode baru. `heavy pnpm check` hijau (1432 test). Reviewer Opus 2 putaran + architect; temuan multi-level stock count dibetulkan.
 - Bead: legend-2tcj (jalur reject stock count masih baca outcome tanpa lock, lama).
 - Keputusan: expiry lewat deadline kini tercatat `expired` di layanan approval (bukan override lokal); stock count yang lewat deadline tercatat `expired`, bukan `cancelled`.
+
+## legend-yw90 + legend-lrsx sapu container test PG bocor (engineer, cabang `ws/testdb-cleanup`, 2026-11-09)
+
+- Sudah: label `legend.test.owner=<pid>.<start>.<namespace>` di container dan jaringan test PG (`compose.test.yaml`); `scripts/test.mjs` menyapu proyek `starter-pg-test-*` yang pemiliknya mati di awal run (`scripts/test-sweep.mjs`), menangani SIGHUP, dan menghapus paksa per proyek bila `compose down` gagal. Manual: `node scripts/test-sweep.mjs [--dry-run] [--legacy-older-than-min=N, N >= 1]`.
+- Keputusan: pemilik dianggap mati hanya bila PID tidak ada atau waktu start beda (Linux `/proc/<pid>/stat`; lainnya `ps lstart`, toleransi 5 dtk); label dari namespace lain atau format lama tidak pernah disapu; sumber daya tanpa label (skrip lama) tidak disapu otomatis.
+- Diperiksa: `tests/test-sweep.test.mjs` 15/15; eslint + prettier bersih; simulasi `kill -9` lalu run ulang menyapu sisa tanpa menyentuh run lain.
+- Belum diuji: `mem_limit` 512m (`STARTER_TEST_PG_MEM` mengganti) hanya dicoba dengan satu file DB, belum suite penuh. Naikkan default ke 768m bila gate merge train kena `connection terminated`.
