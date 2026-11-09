@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-de3b cek tumpang-tindih aturan pajak (engineer, cabang `ws/tax-rule-overlap` dari `ws/provisioning-race`, 2026-11-09)
+
+- Akar masalah: `publishTaxRule` tidak memeriksa tabrakan. Owner bisa menerbitkan aturan tenant-wide F&B kedua di samping `PBJT-FNB`, lalu semua order gagal `TAX_RULE_AMBIGUOUS` (409).
+- Sudah: `packages/shared/src/tax/overlap.ts` (`taxRuleTie`, `findTaxRuleTies`, memakai `resolveTaxRule` asli, berpasangan, per tanggal berlaku). `publishTaxRule` menolak aturan aktif yang seri dengan 409 yang menyebut kode, versi, dan tanggal aturan lawan, di bawah `lockTaxConfig`. Pesan 409 service charge kini memakai label Indonesia. Owner mengganti aturan dengan menerbitkan versi tidak aktif dulu (pola legend-mdh0). Data lama yang ganda: `GET /api/tax/rules/conflicts`, plus banner di halaman aturan pajak dengan tombol "Buat versi nonaktif". Dialog versi baru kini mempertahankan outlet aturan (dulu jadi tenant-wide).
+- Test: `src/test/tax-rule-overlap.test.ts` (10 kasus; 4 gagal di kode lama), `tests/tax-rule-overlap.test.mjs` (21 unit). Test terarah 16 file, 186 test lulus; node 80/80; tsc shared/api/web lulus.
+- Review K: reviewer Opus 2 putaran dan architect (setuju); ui-auditor (8 cacat, sudah dibetulkan).
+- Batas yang diketahui: cek berpasangan bisa menolak konfigurasi yang aman karena ada aturan ketiga yang lebih spesifik (sama dengan pola service charge). Banner menampilkan "item tertentu" atau "kategori tertentu" tanpa nama.
+
 ## legend-dq0n + legend-hd1m race backfill provisioning (engineer, cabang `ws/provisioning-race`, 2026-11-09)
 
 - Akar masalah: backfill pajak dan CoA mengunci, tetapi penulis owner tidak, jadi backfill bisa melihat tabel kosong lalu menyisipkan default di samping aturan atau akun owner. Tipe lokasi standar dilewati permanen bila namanya sudah dipakai.

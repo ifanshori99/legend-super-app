@@ -11,6 +11,13 @@ type Translate = (
 
 export function taxMutationError(error: unknown, t: Translate): string {
   if (error instanceof ApiError) {
+    // The server message for an overlap names the other rule; keep it only
+    // when the response carried one (not the client's English fallback).
+    if (
+      error.code === "TAX_RULE_AMBIGUOUS" &&
+      error.message !== `Request failed with status ${error.status}.`
+    )
+      return error.message;
     const key = taxErrorMessageKey(error.code);
     if (key) return t(key);
     const detail = error.details?.[0]?.message;

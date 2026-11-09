@@ -25,7 +25,12 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { taxMutationError } from "../errors";
-import { usePublishTaxRule, useTaxRules } from "../hooks";
+import {
+  usePublishTaxRule,
+  useTaxOutlets,
+  useTaxRuleConflicts,
+  useTaxRules,
+} from "../hooks";
 import { TAX_TYPE_KEYS } from "../labels";
 import {
   businessDateToday,
@@ -35,6 +40,7 @@ import {
   sortRuleVersions,
 } from "../lib";
 import { PublishDialog } from "./publish-dialog";
+import { RuleConflictsBanner } from "./rule-conflicts-banner";
 import { AppliesToSummary, ChannelsSummary } from "./summaries";
 import { TaxRuleDialog } from "./tax-rule-dialog";
 import { EffectiveBadge, VersionStatusBadge } from "./version-badges";
@@ -45,7 +51,12 @@ type StatusFilter = RuleVersionStatus | "all";
 type Editor =
   | { mode: "create" }
   | { mode: "edit"; rule: TaxRule }
-  | { mode: "new-version"; rule: TaxRule };
+  | {
+      mode: "new-version";
+      rule: TaxRule;
+      /** Set when opened from the overlap banner. */
+      inactive?: { otherCode: string; effectiveDate: string };
+    };
 
 function RuleActions({
   rule,
@@ -136,6 +147,8 @@ export function TaxRulesPage() {
   const t = useT();
   const toast = useToast();
   const rulesQuery = useTaxRules();
+  const conflictsQuery = useTaxRuleConflicts();
+  const outletsQuery = useTaxOutlets();
   const publishRule = usePublishTaxRule();
 
   const [search, setSearch] = React.useState("");
@@ -150,6 +163,37 @@ export function TaxRulesPage() {
     [rulesQuery.data],
   );
   const rows = filterRuleVersions(all, { search, status });
+  const outletNames = React.useMemo(
+    () =>
+      new Map(
+        (outletsQuery.data?.data ?? []).map((outlet) => [
+          outlet.id,
+          outlet.name,
+        ]),
+      ),
+    [outletsQuery.data],
+  );
+
+  function deactivateFromConflict(
+    ruleId: string,
+    code: string,
+    other: { code: string; effectiveDate: string },
+  ) {
+    const rule = all.find((row) => row.id === ruleId);
+    if (rule?.status !== "published") {
+      // Not in the loaded page: say so instead of doing nothing.
+      toast({
+        title: t("tax.conflicts.notLoaded", { code }),
+        tone: "danger",
+      });
+      return;
+    }
+    setEditor({
+      mode: "new-version",
+      rule,
+      inactive: { otherCode: other.code, effectiveDate: other.effectiveDate },
+    });
+  }
 
   function confirmPublish() {
     if (!publishing) return;
@@ -236,6 +280,13 @@ export function TaxRulesPage() {
         noResults={all.length > 0 && rows.length === 0}
         rowCount={rows.length}
       >
+        <RuleConflictsBanner
+          conflicts={conflictsQuery.data?.conflicts ?? []}
+          outletNames={outletNames}
+          today={today}
+          disabled={rulesQuery.isPending}
+          onDeactivate={deactivateFromConflict}
+        />
         <div className="hidden md:block">
           <Table>
             <TableHeader>
@@ -365,6 +416,16 @@ export function TaxRulesPage() {
           rule={editor.mode === "create" ? undefined : editor.rule}
           versions={all}
           today={today}
+          presetInactive={
+            editor.mode === "new-version" ? editor.inactive : undefined
+          }
+          onSaved={(saved) => {
+            // From the overlap banner: go straight to publishing the draft.
+            if (editor.mode === "new-version" && editor.inactive) {
+              setPublishError(undefined);
+              setPublishing(saved);
+            }
+          }}
           onClose={() => setEditor(null)}
         />
       )}
