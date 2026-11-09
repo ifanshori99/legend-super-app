@@ -304,10 +304,14 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Reservation deposit hold sweep failed");
     }
-    try {
-      await retryPendingRefunds(context, new Date());
-    } catch {
-      console.error("Reservation refund retry sweep failed");
+    // legend-jm5c: cloud only; on an edge it would write payment_refunds rows
+    // that nothing there ever pays out.
+    if (sweepsRefunds) {
+      try {
+        await retryPendingRefunds(context, new Date());
+      } catch {
+        console.error("Reservation refund retry sweep failed");
+      }
     }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per
     // legal entity (idempotent per entity+period and asset+period). Fail closed.

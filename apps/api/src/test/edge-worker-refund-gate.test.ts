@@ -19,6 +19,9 @@ describe("legend-jm5c the refund sweep is cloud only", () => {
     expect(source).toMatch(
       /if \(sweepsRefunds\) \{\s*scheduleRefundPayoutRound\(\);\s*\}/,
     );
+    expect(source).toMatch(
+      /if \(sweepsRefunds\) \{\s*try \{\s*await retryPendingRefunds\(/,
+    );
     // Definition plus the one gated start call: no other start site.
     expect(source.match(/scheduleRefundPayoutRound\(\)/g)).toHaveLength(2);
   });

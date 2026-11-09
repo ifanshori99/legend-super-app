@@ -793,8 +793,9 @@ export async function startEdgeRuntime(
   });
   pinPuller.start();
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
-  // accounts. Bootstrap already synced once, so the first tick is one interval
-  // away; a failure is logged by class only and the loop keeps its schedule.
+  // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
+  // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
+  // its schedule.
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
