@@ -1595,7 +1595,7 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
     );
   });
 
-  it("AJ-PARK-04 an unparkable event (no tenant outlet) throws instead of vanishing", async () => {
+  it("AJ-PARK-04 an unparkable event (no tenant outlet) never throws: the delivery commits and a tenant-wide unparkable audit row records the lost fact", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
     const bad: EventEnvelope = {
@@ -1605,14 +1605,33 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
       outletId: randomUUID() as EventEnvelope["outletId"],
     };
 
-    // Nothing owns a parked row: the outbox must retry or dead-letter it.
-    await expect(deliver(tenant, bad)).rejects.toThrow(
-      /has no outlet to park under \(AUTO_JOURNAL_PAYLOAD_INVALID\)/,
-    );
+    // Throwing would roll back the whole cloud-sync delivery on every retry.
+    const outcome = await deliver(tenant, bad);
+    expect(outcome).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
     expect(await journalCount(world)).toBe(0);
     expect(
       await parkedByCode(tenant, "AUTO_JOURNAL_PAYLOAD_INVALID"),
     ).toHaveLength(0);
+    const { rows } = await owner.query<{
+      outlet_id: string | null;
+      after: Record<string, unknown>;
+    }>(
+      `SELECT outlet_id, event->'maskedChanges'->'after' AS after FROM audit_logs
+        WHERE tenant_id = $1
+          AND event->>'action' = 'accounting.auto_journal.unparkable'`,
+      [tenant.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.outlet_id).toBeNull();
+    expect(rows[0]!.after).toMatchObject({
+      eventId: bad.id,
+      trigger: "payment.paid",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+    });
   });
 
   it("AJ-PARK-03 a late fact that is also unmappable keeps its natural date: after mapping, the sweep posts it rolled forward and flagged", async () => {

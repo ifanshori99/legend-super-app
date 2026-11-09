@@ -16,7 +16,8 @@
 // - a deterministic non-accounting failure (unreadable payload, missing row,
 //   unknown tender method, EDC-linked gateway tender) parks as non-retryable
 //   AUTO_JOURNAL_PAYLOAD_INVALID: it never throws, because the consumer runs
-//   inside the POS capture transaction. Any other error (database, transient)
+//   inside the cloud-sync delivery transaction (with no outlet to park under:
+//   an `accounting.auto_journal.unparkable` audit row). Any other error (database, transient)
 //   propagates (outbox retry, dead letter, replayOutbox).
 //
 // Late adjustment (CTO decision 1): a money fact whose outlet business date
@@ -109,6 +110,8 @@ const LATE_AUDIT_FIELDS = [
   "entryDate",
 ] as const;
 
+const UNPARKABLE_AUDIT_FIELDS = ["eventId", "trigger", "code", "key"] as const;
+
 function parkCodeOf(error: unknown): string | null {
   if (error instanceof OutletLegalEntityMissing) return error.code;
   if (error instanceof AccountingError) return error.code;
@@ -141,12 +144,16 @@ async function parkOutletOf(
 /**
  * Parks (or re-parks) one event under its key. The outlet is checked first:
  * a malformed envelope must not turn into a foreign-key error that rolls back
- * the caller. With no outlet to own the row it throws, so the outbox retries
- * or dead-letters the event instead of committing a lost money fact.
+ * the caller. With no outlet to own the row (malformed envelope, outlet of
+ * another tenant) it still never throws: a throw would roll back the whole
+ * cloud-sync delivery (QR order, POS settlement, reservation) on every retry
+ * and dead-letter its aggregate. It writes a tenant-wide
+ * `accounting.auto_journal.unparkable` audit row instead, so finance sees the
+ * lost fact, and lets the delivery commit.
  */
 async function park(
   tx: Tx,
-  tenantId: TenantId,
+  context: ScopedTenantContext,
   row: {
     key: string;
     outletCandidates: readonly unknown[];
@@ -157,13 +164,47 @@ async function park(
   },
   now: Date,
 ): Promise<AutoJournalResult> {
+  const tenantId = context.tenant.tenantId;
   const { code } = row;
   const retryable = (RETRYABLE_CODES as readonly string[]).includes(code);
   const outletId = await parkOutletOf(tx, tenantId, row.outletCandidates);
-  if (outletId === null)
-    throw new Error(
-      `Auto-journal ${row.eventName} ${row.eventId} has no outlet to park under (${code})`,
+  if (outletId === null) {
+    console.error(
+      `Auto-journal ${row.eventName} ${row.eventId} not parked (${code}): no outlet`,
     );
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "accounting.auto_journal.unparkable",
+        objectType: "domain_event",
+        objectId: null,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            eventId: row.eventId,
+            trigger: row.eventName,
+            code,
+            key: row.key,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      UNPARKABLE_AUDIT_FIELDS,
+    );
+    // No row written, so nothing for the sweep to retry.
+    return { status: "parked", code, retryable: false };
+  }
   const nextRetryAt = retryable
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
     : null;
@@ -232,7 +273,7 @@ export async function deliverAutoJournalEvent(
     const raw = event.payload as { outletId?: unknown } | null;
     return park(
       tx,
-      context.tenant.tenantId,
+      context,
       {
         key: invalidEventKeyOf(event.id),
         outletCandidates: [event.outletId, raw?.outletId],
@@ -282,7 +323,7 @@ async function settleAutoJournal(
     if (!code) throw error;
     return park(
       tx,
-      tenantId,
+      context,
       {
         key,
         outletCandidates: [stored.outletId],

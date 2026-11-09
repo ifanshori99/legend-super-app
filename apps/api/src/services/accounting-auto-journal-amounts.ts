@@ -237,9 +237,11 @@ type ReceiptState = "posted" | "pending" | "none";
  *   before the consumer went live or with accounting off, never emitted, or
  *   parked non-retryable), so the tender books the money once, the
  *   pre-deposit way, Dr gateway_clearing.
- * The outbox is read first: the receipt journal and the outbox row's
- * `delivered` status commit in one transaction, so under read committed a
- * receipt that commits between the reads is seen as pending, never as none.
+ * Read order outbox, parked, journals: each later source is written by the
+ * same transaction that clears the earlier one (consumption marks the outbox
+ * row delivered with the receipt journal or its parked row; the sweep inserts
+ * the journal and deletes the parked row), so under read committed a receipt
+ * that commits between two reads is seen as pending or posted, never as none.
  * Fails closed on an unknown or EDC-linked intent (EDC money is not gateway
  * money).
  */
@@ -292,22 +294,7 @@ async function receiptStatesOf(
     ids.map((intentId) => [receiptKeyOf(intentId), intentId]),
   );
   const keys = [...intentByKey.keys()];
-  // 2. Then the receipt journals.
-  const posted = await tx
-    .select({ key: journalEntries.idempotencyKey })
-    .from(journalEntries)
-    .where(
-      and(
-        eq(journalEntries.tenantId, tenantId),
-        inArray(journalEntries.idempotencyKey, keys),
-      ),
-    );
-  const postedIds = new Set<string>();
-  for (const row of posted) {
-    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
-    if (intentId !== undefined) postedIds.add(intentId);
-  }
-  // 3. Then the parked receipts: only a retryable one can still post.
+  // 2. Then the parked receipts: only a retryable one can still post.
   const parked = await tx
     .select({
       key: autoJournalParked.idempotencyKey,
@@ -324,6 +311,21 @@ async function receiptStatesOf(
     const intentId = intentByKey.get(row.key);
     if (intentId !== undefined && row.retryable)
       states.set(intentId, "pending");
+  }
+  // 3. Last the receipt journals (they win over pending).
+  const posted = await tx
+    .select({ key: journalEntries.idempotencyKey })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        inArray(journalEntries.idempotencyKey, keys),
+      ),
+    );
+  const postedIds = new Set<string>();
+  for (const row of posted) {
+    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
+    if (intentId !== undefined) postedIds.add(intentId);
   }
   for (const intentId of postedIds) states.set(intentId, "posted");
   return states;
