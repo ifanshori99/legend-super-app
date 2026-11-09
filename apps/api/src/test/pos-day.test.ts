@@ -1188,6 +1188,7 @@ describe("TEN-01 end-of-day isolation (legend-6c0)", () => {
         "pos_shifts",
         "pos_shift_counts",
         "cash_movements",
+        "cash_movement_refusals",
       ]) {
         const { rows } = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM ${table} WHERE tenant_id = $1`,

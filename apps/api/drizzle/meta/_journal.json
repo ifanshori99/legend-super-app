@@ -743,6 +743,20 @@
       "when": 1794196986300,
       "tag": "0105_many_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794197135871,
+      "tag": "0106_noisy_silver_centurion",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1794197152606,
+      "tag": "0107_pos_shift_refusals_rls",
+      "breakpoints": true
     }
   ]
 }
