@@ -1198,6 +1198,13 @@
       "when": 1794252000000,
       "tag": "0173_goods_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1794253000000,
+      "tag": "0174_finance_policy_asset_register",
+      "breakpoints": true
     }
   ]
 }

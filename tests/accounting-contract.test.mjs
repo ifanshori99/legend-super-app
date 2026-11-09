@@ -833,6 +833,82 @@ describe("ACC-04 bank and gateway reconciliation", () => {
   });
 });
 
+describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas hari)", () => {
+  const body = (maxDaysUndeposited, dateToleranceDays) => ({
+    cashDepositPolicy: { maxDaysUndeposited },
+    matchingPolicy: { dateToleranceDays },
+  });
+
+  test("defaults are 2 days / 2 days and satisfy the strict policy schema", () => {
+    assert.deepEqual(acc.DEFAULT_FINANCE_POLICY, body(2, 2));
+    assert.deepEqual(
+      acc.financePolicySchema.parse(acc.DEFAULT_FINANCE_POLICY),
+      body(2, 2),
+    );
+  });
+
+  test("bounds reuse the banking limits: 0..30 undeposited days, 0..14 tolerance days", () => {
+    const ok = (value) => acc.putFinancePolicyInputSchema.safeParse(value);
+    assert.equal(ok(body(0, 0)).success, true);
+    assert.equal(ok(body(30, 14)).success, true);
+    for (const bad of [body(31, 2), body(-1, 2), body(2, 15), body(2, -1)])
+      assert.equal(ok(bad).success, false);
+    assert.equal(ok(body(1.5, 2)).success, false);
+    assert.equal(ok(body("2", 2)).success, false);
+  });
+
+  test("the body is strict: no tenantId (TEN-02), no foreign or missing sections", () => {
+    const ok = (value) => acc.putFinancePolicyInputSchema.safeParse(value);
+    assert.equal(
+      ok({ ...body(2, 2), tenantId: fx.users.owner.id }).success,
+      false,
+    );
+    assert.equal(
+      ok({
+        cashDepositPolicy: { maxDaysUndeposited: 2, extra: 1 },
+        matchingPolicy: { dateToleranceDays: 2 },
+      }).success,
+      false,
+    );
+    assert.equal(
+      ok({ cashDepositPolicy: { maxDaysUndeposited: 2 } }).success,
+      false,
+    );
+    assert.equal(
+      ok({ matchingPolicy: { dateToleranceDays: 2 } }).success,
+      false,
+    );
+    assert.equal(ok({}).success, false);
+  });
+
+  test("endpoints: GET/PUT /api/accounting/finance-policy, registered once, PUT body is the policy", () => {
+    assert.equal(acc.getFinancePolicy.method, "GET");
+    assert.equal(acc.putFinancePolicy.method, "PUT");
+    assert.equal(acc.getFinancePolicy.path, "/api/accounting/finance-policy");
+    assert.equal(acc.putFinancePolicy.path, "/api/accounting/finance-policy");
+    const registered = Object.values(acc.accountingEndpoints);
+    assert.ok(registered.includes(acc.getFinancePolicy));
+    assert.ok(registered.includes(acc.putFinancePolicy));
+    assert.equal(acc.getFinancePolicy.body, undefined);
+    assert.deepEqual(
+      acc.putFinancePolicy.response.parse({ data: body(5, 3) }),
+      { data: body(5, 3) },
+    );
+  });
+
+  test("ACC-05 the saved limit drives the alert: the policy's cashDepositPolicy plugs into undepositedCashAlerts", () => {
+    const run = (policy) =>
+      acc.undepositedCashAlerts(
+        fx.cashCollections,
+        fx.cashDeposits,
+        fx.asOf,
+        policy.cashDepositPolicy,
+      );
+    assert.equal(run(body(2, 2)).length, 1);
+    assert.deepEqual(run(body(5, 2)), []);
+  });
+});
+
 describe("ACC-05 cash deposits are matched and overdue cash raises alerts", () => {
   test("ACC-05 undeposited cash older than the tenant limit raises an alert (FIFO)", () => {
     const alerts = acc.undepositedCashAlerts(

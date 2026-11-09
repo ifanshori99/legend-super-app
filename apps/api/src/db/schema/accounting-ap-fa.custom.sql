@@ -20,6 +20,10 @@ SELECT app.enforce_tenant_rls('public.fixed_asset_revaluations'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.budgets'::regclass);
 --> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.asset_categories'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.finance_policies'::regclass);
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.accounting_command_idempotency'::regclass);
 --> statement-breakpoint
 -- Ledgers are append-only for the application role: depreciation postings and
