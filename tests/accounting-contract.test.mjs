@@ -994,6 +994,8 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
       "grossPayIdr",
       "netPayIdr",
       "pph21Idr",
+      "pph21ReceivableCollectedIdr",
+      "pph21ReceivableIdr",
       "totalBpjsIdr",
     ]);
   });
