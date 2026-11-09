@@ -65,6 +65,11 @@ subagent before the schema landed.
 10. **Case due date is a server default of 7 days** (`reconciliationPolicySchema`)
     until the finance policy carries `caseDueDays`: adding it now would change
     the strict PUT contract. Follow-up card filed.
+11. **A line in a case stays `in_case` after the case closes.** Resolving or
+    writing off the case is how that line is reconciled; unmatch refuses
+    `in_case` lines, and deposits in a case stay `discrepancy`. Refs of type
+    `gateway_settlement`, `edc_settlement` and `supplier_payment` are stored
+    on a case as given until legend-cs7 can validate them; nothing acts on them.
 
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
