@@ -41,6 +41,7 @@ import {
   deviceReceiptSequenceSyncSchema,
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
+  type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
   type DeviceSyncRecord,
@@ -60,6 +61,7 @@ import { z } from "zod";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
 import { stations } from "../db/schema/menu.ts";
+import { edgeNodes } from "../db/schema/edge-node.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -68,6 +70,7 @@ import { toDevice } from "./device.service.ts";
 import {
   applyCloudDeviceReceiptSequence,
   backfillDeviceReceiptSequences,
+  claimDeviceReceiptSequencesForEdge,
   listDeviceReceiptSequences,
 } from "./pos-receipt.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
@@ -99,6 +102,8 @@ export const deviceSyncQuerySchema = z.strictObject({
     .default(DEVICE_SYNC_LIMIT_DEFAULT),
   /** S-K1 (legend-3yqy): `1` adds the outlet's device receipt sequences. */
   receiptSequences: z.literal("1").optional(),
+  /** legend-zsdd: the edge's database id; sequences bind to (node, instance). */
+  edgeInstance: uuidSchema.optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -174,8 +179,11 @@ export async function listDeviceRecordsSince(
   options: ListDeviceRecordsOptions = {},
 ): Promise<DeviceSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
-  const { limit, receiptSequences: withSequences } =
-    deviceSyncQuerySchema.parse(query);
+  const {
+    limit,
+    receiptSequences: withSequences,
+    edgeInstance,
+  } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
   const settleMs = Math.max(0, options.settleMs ?? DEVICE_SYNC_SETTLE_MS);
@@ -219,8 +227,45 @@ export async function listDeviceRecordsSince(
     // idempotent (an existing row is returned unchanged), outlet-locked, and
     // runs in this same tenant/outlet-scoped transaction. Only for an edge
     // that asked for the sequences (S-K1).
-    if (withSequences === "1")
-      await backfillDeviceReceiptSequences(tx, context, verified.outletId);
+    // legend-zsdd: the claim (bind / rotate to this edge database) runs only
+    // for an active primary node that sent its instance id; a standby, a
+    // non-active node or an edge without an instance claims and gets nothing.
+    let binding: DeviceReceiptSequenceBinding | null = null;
+    if (withSequences === "1") {
+      const [nodeRow] = await tx
+        .select({ role: edgeNodes.role, status: edgeNodes.status })
+        .from(edgeNodes)
+        .where(
+          and(
+            eq(edgeNodes.tenantId, verified.tenantId),
+            eq(edgeNodes.outletId, verified.outletId),
+            eq(edgeNodes.id, verified.edgeNodeId),
+          ),
+        )
+        .limit(1);
+      if (
+        nodeRow?.role === "primary" &&
+        nodeRow.status === "active" &&
+        edgeInstance !== undefined
+      ) {
+        binding = {
+          edgeNodeId: verified.edgeNodeId,
+          edgeInstanceId: edgeInstance,
+        };
+        await backfillDeviceReceiptSequences(tx, context, verified.outletId);
+        const claim = await claimDeviceReceiptSequencesForEdge(tx, context, {
+          outletId: verified.outletId,
+          ...binding,
+        });
+        // legend-zsdd: a repeated rotation means two databases pull with one
+        // node id. Counts only, no ids.
+        if (claim.rotated > 0)
+          logger.warn(
+            { rotated: claim.rotated, claimed: claim.claimed },
+            "device receipt sequences rotated for an edge pull",
+          );
+      }
+    }
     const found = await tx
       .select({ row: devices, version: versionOf })
       .from(devices)
@@ -238,9 +283,16 @@ export async function listDeviceRecordsSince(
       .limit(limit + 1);
     // The full list on every page (a handful per outlet): no cursor to keep.
     const sequences =
-      withSequences === "1"
-        ? await listDeviceReceiptSequences(tx, context, verified.outletId)
-        : undefined;
+      withSequences !== "1"
+        ? undefined
+        : binding === null
+          ? []
+          : await listDeviceReceiptSequences(
+              tx,
+              context,
+              verified.outletId,
+              binding,
+            );
     return { found, sequences };
   });
   const { found: rows, sequences } = result;
@@ -426,7 +478,9 @@ export async function applyDeviceRecords(
 export type ReceiptSequenceApplyResult = {
   readonly inserted: number;
   readonly kept: number;
-  /** Skipped: prefix mismatch or cloud run already advanced (see below). */
+  /** legend-zsdd: a local current run retired, the pulled one inserted. */
+  readonly replaced: number;
+  /** Skipped: not our binding, prefix mismatch or advanced cloud run (see below). */
   readonly refused: number;
 };
 
@@ -439,10 +493,14 @@ export type ReceiptSequenceApplyResult = {
  * numbering namespaces) or an absent row whose cloud run is already past 0
  * (S-K1) skips only that sequence and is logged without device data: failing
  * the pull would also stop revocations from landing.
+ * legend-zsdd: `own` is this edge's binding (node id, instance id). A sequence
+ * bound to another database is refused; a pulled sequence with a new id or
+ * prefix for a device replaces the local current run (`replaced`).
  */
 export async function applyDeviceReceiptSequences(
   context: ScopedTenantContext,
   sequences: readonly unknown[],
+  own: DeviceReceiptSequenceBinding,
 ): Promise<ReceiptSequenceApplyResult> {
   // The tenant comes from `context` only (records carry none; RLS scopes the
   // writes to it).
@@ -460,27 +518,36 @@ export async function applyDeviceReceiptSequences(
   for (const sequence of parsed)
     if (sequence.outletId.toLowerCase() !== outletId)
       refuse("Receipt sequence belongs to another outlet.");
-  if (parsed.length === 0) return { inserted: 0, kept: 0, refused: 0 };
+  if (parsed.length === 0)
+    return { inserted: 0, kept: 0, replaced: 0, refused: 0 };
   const result = await withTenant(db, context, async (tx) => {
     let inserted = 0;
     let kept = 0;
+    let replaced = 0;
     let refused = 0;
     for (const sequence of parsed) {
       const outcome = await applyCloudDeviceReceiptSequence(
         tx,
         context,
         sequence,
+        own,
       );
       if (outcome === "inserted") inserted += 1;
       else if (outcome === "kept") kept += 1;
+      else if (outcome === "replaced") replaced += 1;
       else refused += 1;
     }
-    return { inserted, kept, refused };
+    return { inserted, kept, replaced, refused };
   });
   if (result.refused > 0)
     logger.error(
       { refused: result.refused },
-      "Edge receipt sequence refused (prefix mismatch or advanced cloud run): sequence skipped",
+      "Edge receipt sequence refused (other binding, prefix mismatch or advanced cloud run): sequence skipped",
+    );
+  if (result.replaced > 0)
+    logger.warn(
+      { replaced: result.replaced },
+      "Edge receipt sequence replaced by a new prefix from the cloud (legend-zsdd)",
     );
   return result;
 }
@@ -496,6 +563,11 @@ export type PullDeviceRegistryOptions = {
    * device run). Omitted = not applied (fail closed).
    */
   readonly role?: "primary" | "standby";
+  /**
+   * legend-zsdd: this edge's own binding (node id, instance id). Pulled
+   * sequences are applied only with a binding AND role primary (fail closed).
+   */
+  readonly binding?: DeviceReceiptSequenceBinding;
   /**
    * Stored watermark from the previous pull; null = first pull. The pull starts
    * `DEVICE_SYNC_OVERLAP_MS` before it.
@@ -514,6 +586,8 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
    * run already advanced, or a refused list: S-K1).
    */
   readonly receiptSequencesRefused: number;
+  /** legend-zsdd: local runs replaced by a new prefix from the cloud. */
+  readonly receiptSequencesReplaced: number;
   /** Store only after this function returned: every page was applied. */
   readonly watermark: string | null;
 };
@@ -527,17 +601,19 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
 async function applyPageReceiptSequences(
   context: ScopedTenantContext,
   raw: unknown,
-): Promise<number> {
+  own: DeviceReceiptSequenceBinding,
+): Promise<{ refused: number; replaced: number }> {
   const count = Array.isArray(raw) ? raw.length : 1;
   try {
     if (!Array.isArray(raw)) refuse("Receipt sequences are not a list.");
-    return (await applyDeviceReceiptSequences(context, raw)).refused;
+    const result = await applyDeviceReceiptSequences(context, raw, own);
+    return { refused: result.refused, replaced: result.replaced };
   } catch {
     logger.error(
       { refused: count },
       "Edge receipt sequences of a device page refused",
     );
-    return count;
+    return { refused: count, replaced: 0 };
   }
 }
 
@@ -567,6 +643,7 @@ export async function pullDeviceRegistry(
   let skipped = 0;
   let pages = 0;
   let receiptSequencesRefused = 0;
+  let receiptSequencesReplaced = 0;
   for (;;) {
     if (pages >= maxPages)
       throw new CoreError(
@@ -581,12 +658,21 @@ export async function pullDeviceRegistry(
     skipped += result.skipped;
     // legend-3yqy: after the device records, so a revocation on the same page
     // has landed whatever happens to the sequences. S-K1: primary only, and a
-    // sequence error never throws out of the pull.
-    if (raw.sequences !== undefined && options.role === "primary")
-      receiptSequencesRefused += await applyPageReceiptSequences(
+    // sequence error never throws out of the pull. legend-zsdd: and only
+    // with the edge's own binding.
+    if (
+      raw.sequences !== undefined &&
+      options.role === "primary" &&
+      options.binding !== undefined
+    ) {
+      const counts = await applyPageReceiptSequences(
         options.context,
         raw.sequences,
+        options.binding,
       );
+      receiptSequencesRefused += counts.refused;
+      receiptSequencesReplaced += counts.replaced;
+    }
     // An empty page echoes the rewound cursor: keep the stored one instead.
     if (page.data.length > 0) watermark = page.meta.watermark ?? watermark;
     if (page.meta.nextCursor === null) break;
@@ -597,5 +683,12 @@ export async function pullDeviceRegistry(
       );
     since = page.meta.nextCursor;
   }
-  return { applied, skipped, pages, watermark, receiptSequencesRefused };
+  return {
+    applied,
+    skipped,
+    pages,
+    watermark,
+    receiptSequencesRefused,
+    receiptSequencesReplaced,
+  };
 }

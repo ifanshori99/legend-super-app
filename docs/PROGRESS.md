@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-zsdd nomor struk perangkat terikat ke satu database edge (engineer, cabang `ws/receipt-seq-edge` dari batch16 cc188ee0, 2026-11-09)
+
+- Sudah: `receipt_sequences` dapat `edge_node_id` + `edge_instance_id` (database mana yang memegang counter) dan `retired_at`; satu baris aktif per perangkat (unique parsial), prefix tidak pernah dipakai ulang; trigger: ikatan sekali, pensiun final. `edge_nodes.instance_id` = id acak database edge (edge dibangun ulang = id baru). Pull cloud oleh primary aktif yang mengirim `edgeInstance`: klaim urutan bebas di 0, rotasi (prefix baru) untuk urutan yang mungkin sudah bernomor di tempat lain; standby atau tanpa instance dapat `[]`. Cloud tidak meneruskan counter edge. Edge menolak ikatan asing dan memakai run terikat hanya bila cocok dengan `edge_nodes` miliknya. Status urutan ditolak tampil di `GET /api/edge/status` (`deviceRegistry.receiptSequencesRefused`, `receiptSequencesRefusedAt`). Fetcher edge baru mundur tanpa `edgeInstance` bila cloud lama menjawab 400. Perbaikan sementara 3yqy dipertahankan sebagai backstop.
+- Migrasi `0152_receipt_sequence_edge_binding` (dinomori ulang dari 0148/0151; when 1794231000000). Urutan rilis: cloud dulu, lalu edge.
+- Prosedur restore/clone DB edge: set `edge_nodes.instance_id` ke uuid baru sebelum API edge jalan. Deteksi otomatis: legend-yd0h8. Gap struk per prefix di laporan shift: legend-nhmct.
+- Review K: architect + reviewer Opus; temuan nyata dibetulkan (R1). Berikut: second-opinion Codex (brief `docs/briefs/187b-second-opinion-receipt-seq-edge.md` di folder utama), merge train.
+
 ## legend-t9ii + legend-zclb + legend-7iti sinkron PIN edge-cloud dan audit override edge (engineer, cabang `ws/edge-pin-sync`, 2026-11-09)
 
 - Sudah: ekspor PIN cloud ke edge berurutan commit (kolom `staff_pins.sync_xid` xid8 + trigger, filter `pg_snapshot_xmin`, cursor `spin2` [tag, epoch, xid, id], epoch = system_identifier:timeline:postmaster start; cursor lama, epoch lain, atau xid dari masa depan mulai ulang dari awal). Edge membandingkan kunci generasi (`pin_generation_at`), bukan jam; kolom baru `cloud_generation_at` menjadi dasar cap set edge, jadi jam edge tertinggal 10 atau 30 menit tetap menang. Job edge sekali jalan `staff-pin-resend.ts` mengirim ulang set PIN v1 tanpa material (setAt = occurredAt lama, dibatasi jam edge). Cloud: material sama = no-op (lock tidak dibuka). Override `cash_shift_close` dari edge membawa `shiftCloseVariance` (hanya proses edge); audit cloud dan edge berisi expectedIdr, countedIdr, varianceIdr, valueIdr = |varians|.

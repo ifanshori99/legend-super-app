@@ -17,6 +17,10 @@ export type DeviceRegistrySyncState = {
   readonly consecutiveFailures: number;
   /** Computed on read: no success yet, or the last one is older than staleAfterMs. */
   readonly stale: boolean;
+  /** legend-zsdd: sequences the last successful pull refused (0 until one). */
+  readonly receiptSequencesRefused: number;
+  /** Time of the last successful pull that refused at least one, else null. */
+  readonly receiptSequencesRefusedAt: string | null;
 };
 
 export type DeviceRegistryPuller = {
@@ -33,7 +37,7 @@ export type DeviceRegistryPullerDeps = {
   pull(
     since: string | null,
     signal: AbortSignal,
-  ): Promise<{ watermark: string | null }>;
+  ): Promise<{ watermark: string | null; receiptSequencesRefused?: number }>;
   /** Called once, lazily, before the first pull (retried next run if it throws). */
   load(): Promise<{ watermark: string | null; lastSuccessAt: Date | null }>;
   /** After every successful pull. */
@@ -83,6 +87,8 @@ export function createDeviceRegistryPuller(
   let lastAttemptAt: Date | null = null;
   let lastError: string | null = null;
   let consecutiveFailures = 0;
+  let receiptSequencesRefused = 0;
+  let receiptSequencesRefusedAt: Date | null = null;
 
   let started = false;
   let stopped = false;
@@ -147,6 +153,8 @@ export function createDeviceRegistryPuller(
       await deps.save({ watermark: result.watermark, succeededAt });
       watermark = result.watermark;
       lastSuccessAt = succeededAt;
+      receiptSequencesRefused = result.receiptSequencesRefused ?? 0;
+      if (receiptSequencesRefused > 0) receiptSequencesRefusedAt = succeededAt;
       lastError = null;
       consecutiveFailures = 0;
       ok = true;
@@ -203,6 +211,10 @@ export function createDeviceRegistryPuller(
         lastError,
         consecutiveFailures,
         stale: isStale(),
+        receiptSequencesRefused,
+        receiptSequencesRefusedAt: receiptSequencesRefusedAt
+          ? receiptSequencesRefusedAt.toISOString()
+          : null,
       };
     },
   };

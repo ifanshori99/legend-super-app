@@ -89,6 +89,11 @@ export const edgeNodes = pgTable(
     previousCredentialExpiresAt: timestamp("previous_credential_expires_at", {
       withTimezone: true,
     }),
+    /**
+     * legend-zsdd: identity of the edge DATABASE. Set only on the edge's own
+     * local row (random UUID); a rebuilt edge gets a new one. Cloud rows NULL.
+     */
+    instanceId: uuid("instance_id"),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     lastSyncCursor: varchar("last_sync_cursor", { length: 1024 }),
     /** Better Auth user id; null for the edge's own provisioning row. */

@@ -23,7 +23,7 @@
 //
 // Never log or audit the credential.
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
@@ -641,7 +641,13 @@ export async function recordEdgeHeartbeat(
 export async function ensureLocalEdgeNode(
   token: string,
   input: { role: EdgeNodeRole; version: string },
-): Promise<{ context: ScopedTenantContext; scope: LinkScope; node: EdgeNode }> {
+): Promise<{
+  context: ScopedTenantContext;
+  scope: LinkScope;
+  node: EdgeNode;
+  /** Identity of this edge database (legend-zsdd); new for a rebuilt database. */
+  instanceId: string;
+}> {
   const claims = parseEdgeCredential(token);
   if (!claims) throw new Error("EDGE_NODE_CREDENTIAL is malformed");
   const context = edgeNodeContext(claims);
@@ -656,8 +662,16 @@ export async function ensureLocalEdgeNode(
         label: "local",
         version: input.version,
         credentialHash: claims.hash,
+        instanceId: randomUUID(),
       })
       .onConflictDoNothing();
+    // legend-zsdd: a row from before the instance id existed gets it once.
+    await tx
+      .update(edgeNodes)
+      .set({ instanceId: randomUUID() })
+      .where(
+        and(eq(edgeNodes.id, claims.edgeNodeId), isNull(edgeNodes.instanceId)),
+      );
     await tx
       .update(edgeNodes)
       .set({
@@ -684,6 +698,8 @@ export async function ensureLocalEdgeNode(
     throw new Error(
       "This edge node is revoked; re-provision it from the cloud",
     );
+  if (!row.instanceId)
+    throw new Error("The local edge node row has no instance id");
   return {
     context,
     scope: {
@@ -692,5 +708,6 @@ export async function ensureLocalEdgeNode(
       edgeNodeId: claims.edgeNodeId,
     },
     node: toEdgeNode(row),
+    instanceId: row.instanceId,
   };
 }

@@ -493,8 +493,16 @@ describe("EDG-02 the edge pulls the cloud device registry", () => {
     const sinceParams = registryCalls(spy).map((call) =>
       urlOf(call).searchParams.get("since"),
     );
-    expect(sinceParams[0]).not.toBeNull();
-    expect(sinceParams[1]).toBeNull();
+    // The fake cloud refuses the stored cursor on EVERY request that carries it,
+    // like a real cloud. The fetcher may resend the same page once without
+    // `edgeInstance` (legend-zsdd fallback): that retry still carries the
+    // stored cursor and is refused too. Only the recovery drops the cursor.
+    const stored = sinceParams[0];
+    expect(stored).not.toBeNull();
+    const last = sinceParams.length - 1;
+    expect(last).toBeGreaterThanOrEqual(1);
+    for (const since of sinceParams.slice(0, last)) expect(since).toBe(stored);
+    expect(sinceParams[last]).toBeNull();
     expect(getDeviceRegistrySyncState()?.consecutiveFailures).toBe(0);
   });
 
@@ -597,7 +605,14 @@ describe("EDG-03 staleness is visible on /api/edge/status", () => {
       ).toBeGreaterThanOrEqual(1),
     );
     const status = await edgeStatus();
-    expect(status.deviceRegistry).toEqual({ lastPulledAt: null, stale: true });
+    // legend-zsdd: the status also carries the refused-sequence count (0, no
+    // successful pull yet) and the time of the last pull that refused (null).
+    expect(status.deviceRegistry).toEqual({
+      lastPulledAt: null,
+      stale: true,
+      receiptSequencesRefused: 0,
+      receiptSequencesRefusedAt: null,
+    });
   });
 
   it("EDG-03 right after a successful pull it is not stale and shows when it last pulled", async () => {

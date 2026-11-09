@@ -395,10 +395,27 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
     const outletId = await freshOutlet();
     const advanced = pulledSequence(outletId, "P8", 40);
     const fresh = pulledSequence(outletId, "P1", 0);
+    // legend-zsdd: the edge's own edge_nodes row carries the instance the
+    // pulled sequences are bound to (an edge sells only on a matching binding).
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, instance_id)
+         VALUES ($1, $2, $3, 'primary', 'active', 'Server lokal', $4, $5)
+         ON CONFLICT (id) DO UPDATE SET instance_id = EXCLUDED.instance_id`,
+        [
+          EDGE_OWN.edgeNodeId,
+          tenant.tenantId,
+          outletId,
+          "b".repeat(64),
+          EDGE_OWN.edgeInstanceId,
+        ],
+      ),
+    );
     const pulled = await inEdgeMode(() =>
       pullDeviceRegistry({
         context: edgeContext(outletId),
         role: "primary",
+        binding: EDGE_OWN,
         fetchPage: async () => ({
           data: [],
           receiptSequences: [advanced, fresh],
@@ -479,8 +496,12 @@ function pulledSequence(outletId: string, prefix: string, lastNumber: number) {
     deviceId: randomUUID(),
     prefix,
     lastNumber,
+    // legend-zsdd: pulled sequences are bound to the applying edge database.
+    ...EDGE_OWN,
   };
 }
+
+const EDGE_OWN = { edgeNodeId: randomUUID(), edgeInstanceId: randomUUID() };
 
 /** Runs `run` with edge mode on and always restores the previous state. */
 async function inEdgeMode<T>(run: () => Promise<T>): Promise<T> {

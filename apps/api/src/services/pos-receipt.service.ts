@@ -2,10 +2,18 @@
 // Berurutan", §6 C `receipt_sequences`; POS-06; contract
 // @starter/shared/pos receipts.ts).
 //
-// - One `receipt_sequences` row per (tenant, outlet, device); a sale without a
-//   device (cloud / back-office POS) uses the outlet id as its device key and
-//   the fixed prefix `C`. Device sequences are `P1, P2, ...`; an edge never
-//   creates one and refuses a sale without a verified device.
+// - One CURRENT `receipt_sequences` row (retired_at IS NULL) per (tenant,
+//   outlet, device); a sale without a device (cloud / back-office POS) uses the
+//   outlet id as its device key and the fixed prefix `C`. Device sequences are
+//   `P1, P2, ...`; an edge never creates one and refuses a sale without a
+//   verified device.
+// - legend-zsdd: a sequence's counter lives in exactly ONE database. Both
+//   `edge_node_id` and `edge_instance_id` NULL: the cloud holds it; both set:
+//   the edge database `edge_instance_id` of node `edge_node_id` holds it. A
+//   run that may have numbered elsewhere is never continued: it is retired
+//   (`retired_at`, never numbers again) and the device continues under a NEW
+//   prefix. Prefixes are never reused in an outlet (retired rows included), so
+//   numbers never repeat. Retired runs still merge and still report gaps.
 // - Allocation is gapless because it runs inside the sale transaction: the
 //   UPDATE ... last_number + 1 row lock serialises devices and a rollback of
 //   the sale rolls the number back with it. Idempotent per order.
@@ -42,7 +50,10 @@ import {
   type PosReceipt,
   type ReceiptSequence,
 } from "@starter/shared/pos";
-import type { DeviceReceiptSequenceSync } from "@starter/shared/edge";
+import type {
+  DeviceReceiptSequenceBinding,
+  DeviceReceiptSequenceSync,
+} from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { devices } from "../db/schema/device.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
@@ -101,6 +112,7 @@ async function lockOutletSequences(
   );
 }
 
+/** The device's current (not retired) sequence; legend-zsdd. */
 async function findSequenceRow(
   tx: Tx,
   tenantId: TenantId,
@@ -115,11 +127,13 @@ async function findSequenceRow(
         eq(receiptSequences.tenantId, tenantId),
         eq(receiptSequences.outletId, outletId),
         eq(receiptSequences.deviceId, deviceId),
+        isNull(receiptSequences.retiredAt),
       ),
     );
   return row;
 }
 
+/** Every prefix of the outlet, retired runs included (never reused). */
 async function prefixesOfOutlet(
   tx: Tx,
   tenantId: TenantId,
@@ -140,11 +154,15 @@ async function prefixesOfOutlet(
   return new Map(rows.map((row) => [row.prefix, row.deviceId]));
 }
 
-/** First of `P1`, `P2`, ... not used by another device of the outlet. */
+/**
+ * First of `P1`, `P2`, ... not used by any row of the outlet, retired runs
+ * included (legend-zsdd: a prefix never numbers twice).
+ */
 function nextFreePrefix(used: ReadonlyMap<string, string>): string {
   for (let n = 1; ; n += 1) if (!used.has(`P${n}`)) return `P${n}`;
 }
 
+/** New sequence at 0; `binding` set = the counter lives on that edge (legend-zsdd). */
 async function insertSequence(
   tx: Tx,
   input: {
@@ -152,6 +170,7 @@ async function insertSequence(
     outletId: OutletId;
     deviceId: string;
     prefix: string;
+    binding?: DeviceReceiptSequenceBinding;
   },
 ): Promise<SequenceRow> {
   const [row] = await tx
@@ -162,16 +181,71 @@ async function insertSequence(
       deviceId: input.deviceId,
       prefix: input.prefix,
       lastNumber: 0,
+      edgeNodeId: input.binding?.edgeNodeId ?? null,
+      edgeInstanceId: input.binding?.edgeInstanceId ?? null,
     })
     .returning();
   if (!row) throw new Error("Receipt sequence insert returned no row");
   return row;
 }
 
+/** legend-zsdd: closes a run for good; the device continues under a new prefix. */
+async function retireSequence(
+  tx: Tx,
+  tenantId: TenantId,
+  sequenceId: string,
+): Promise<void> {
+  const [row] = await tx
+    .update(receiptSequences)
+    .set({ retiredAt: sql`now()`, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.id, sequenceId),
+        isNull(receiptSequences.retiredAt),
+      ),
+    )
+    .returning({ id: receiptSequences.id });
+  if (!row) throw new Error("Receipt sequence retire returned no row");
+}
+
+/**
+ * Edge (legend-zsdd, review K R1-A): a bound row numbers only in the database
+ * it is bound to, i.e. this database's own `edge_nodes` row has the row's node
+ * id AND instance id. This is what makes the restore procedure work: resetting
+ * `edge_nodes.instance_id` on a restored or cloned edge database stops its old
+ * runs from numbering until a pull rotates them to new prefixes. Rows with a
+ * NULL binding (3yqy-era) stay usable; the next pull binds them.
+ */
+async function boundToThisDatabase(
+  tx: Tx,
+  tenantId: TenantId,
+  row: SequenceRow,
+): Promise<boolean> {
+  if (row.edgeNodeId === null || row.edgeInstanceId === null) return false;
+  const [own] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, tenantId),
+        eq(edgeNodes.id, row.edgeNodeId),
+        eq(edgeNodes.instanceId, row.edgeInstanceId),
+      ),
+    )
+    .limit(1);
+  return own !== undefined;
+}
+
 /**
  * Existing sequence of the key. The outlet id key is the cloud-owned sequence
  * (prefix `C`). A device key gets a new row with the next free `P<n>` prefix in
  * the cloud; an edge never invents one (the cloud provisions it first).
+ * legend-zsdd: in the cloud, a device's current sequence bound to an edge is
+ * never continued (the edge may have numbered on it); it is retired and the
+ * device continues under a new unbound prefix. An edge process numbers only
+ * on an unbound row or a row bound to this very database
+ * (`boundToThisDatabase`); otherwise RECEIPT_SEQUENCE_NOT_PROVISIONED.
  */
 async function ensureSequence(
   tx: Tx,
@@ -179,16 +253,26 @@ async function ensureSequence(
   outletId: OutletId,
   deviceId: string,
 ): Promise<SequenceRow> {
+  // Not a type guard: `false` must not narrow a bound row to `undefined`.
+  const usable = async (row: SequenceRow): Promise<boolean> =>
+    row.edgeNodeId === null ||
+    (isEdgeProcess() && (await boundToThisDatabase(tx, tenantId, row)));
   const existing = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (existing) return existing;
+  if (existing && (await usable(existing))) return existing;
   const cloudOwned = deviceId === outletId;
   if (!cloudOwned && isEdgeProcess())
     throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   // Another sale may have created it while this one waited for the lock.
   const created = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (created) return created;
-  if (cloudOwned)
+  if (created && (await usable(created))) return created;
+  if (created) {
+    // legend-zsdd: the current row is bound to an edge (cloud process only).
+    // Sequence `C` is never claimed by an edge (prefix `C` cannot be reused).
+    if (cloudOwned)
+      throw new Error("Cloud-owned receipt sequence is bound to an edge");
+    await retireSequence(tx, tenantId, created.id);
+  } else if (cloudOwned)
     return insertSequence(tx, {
       tenantId,
       outletId,
@@ -381,6 +465,8 @@ export async function allocateReceipt(
     throw new PosError("RECEIPT_DEVICE_ON_EDGE");
   const sequence = await ensureSequence(tx, tenantId, outletId, deviceKey);
   // The row lock taken here serialises every device sale on this sequence.
+  // legend-zsdd (review K R1-A): a retired run never numbers, and in the cloud
+  // a claim may bind the row between the read above and this UPDATE.
   const [advanced] = await tx
     .update(receiptSequences)
     .set({
@@ -391,13 +477,19 @@ export async function allocateReceipt(
       and(
         eq(receiptSequences.tenantId, tenantId),
         eq(receiptSequences.id, sequence.id),
+        isNull(receiptSequences.retiredAt),
+        isEdgeProcess() ? undefined : isNull(receiptSequences.edgeNodeId),
       ),
     )
     .returning({
       prefix: receiptSequences.prefix,
       lastNumber: receiptSequences.lastNumber,
     });
-  if (!advanced) throw new Error("Receipt sequence update returned no row");
+  if (!advanced)
+    throw new CoreError(
+      "CONFLICT",
+      "Nomor struk perangkat sedang dipindahkan; ulangi transaksi.",
+    );
   const outletSnapshot = await outletSnapshotFor(tx, context, outletId);
   const [row] = await tx
     .insert(posReceipts)
@@ -506,6 +598,9 @@ export async function provisionReceiptSequence(
     outletId,
     input.deviceId,
   );
+  // legend-zsdd: a prefix of one of the device's retired runs never numbers again.
+  if (owner !== undefined && existing?.prefix !== prefix)
+    throw new PosError("RECEIPT_PREFIX_MISMATCH");
   if (!existing)
     return toReceiptSequence(
       await insertSequence(tx, {
@@ -517,6 +612,10 @@ export async function provisionReceiptSequence(
     );
   if (existing.prefix === prefix) return toReceiptSequence(existing);
   if (existing.lastNumber > 0) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  // legend-zsdd: an edge-bound row may have numbers the cloud never saw
+  // (its cloud lastNumber stays 0 until legend-ol6v), so its prefix is final.
+  if (existing.edgeNodeId !== null)
+    throw new PosError("RECEIPT_PREFIX_MISMATCH");
   const [row] = await tx
     .update(receiptSequences)
     .set({ prefix, updatedAt: sql`now()` })
@@ -537,7 +636,10 @@ export async function provisionReceiptSequence(
 // for every device that can create a POS order, at enroll and (for devices
 // enrolled earlier) when the edge pulls the device registry. The pull carries
 // the outlet's device sequences; the edge inserts a missing one and never
-// touches an existing one.
+// touches an existing one's counter. legend-zsdd: the pull first binds each
+// sequence to the pulling edge database (claimDeviceReceiptSequencesForEdge)
+// and lists only the ones bound to it; a run that may have numbered elsewhere
+// is retired and replaced by a new prefix, on the cloud and on the edge.
 
 /**
  * Device types that can create a POS order: the PIN terminals (§3 F6,
@@ -606,6 +708,8 @@ export async function backfillDeviceReceiptSequences(
         eq(receiptSequences.tenantId, devices.tenantId),
         eq(receiptSequences.outletId, devices.outletId),
         eq(receiptSequences.deviceId, devices.id),
+        // legend-zsdd: only a current row counts.
+        isNull(receiptSequences.retiredAt),
       ),
     )
     .where(
@@ -627,11 +731,116 @@ export async function backfillDeviceReceiptSequences(
   return missing.length;
 }
 
-/** Cloud: every device sequence of the outlet (not the cloud-owned `C`), for the edge pull. */
+const sameBinding = (
+  row: { edgeNodeId: string | null; edgeInstanceId: string | null },
+  binding: DeviceReceiptSequenceBinding,
+) =>
+  row.edgeNodeId === binding.edgeNodeId &&
+  row.edgeInstanceId === binding.edgeInstanceId;
+
+/**
+ * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
+ * database `edgeInstanceId` of node `edgeNodeId`. The caller has checked that
+ * the node is the outlet's active primary. For each current sequence of an
+ * active, not revoked, order-taking device:
+ * - bound to this edge database: nothing;
+ * - unbound at lastNumber 0: bound to it (claimed);
+ * - otherwise (the cloud already numbered on it, or another node or another
+ *   database of the node may have): retired, and the device continues under
+ *   the next free prefix, bound to this edge database at 0 (rotated).
+ */
+export async function claimDeviceReceiptSequencesForEdge(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: string } & DeviceReceiptSequenceBinding,
+): Promise<{ claimed: number; rotated: number }> {
+  if (isEdgeProcess())
+    throw new Error("Receipt sequences are claimed on the cloud only");
+  const tenantId = context.tenant.tenantId;
+  const outletId = input.outletId as OutletId;
+  const binding: DeviceReceiptSequenceBinding = {
+    edgeNodeId: input.edgeNodeId,
+    edgeInstanceId: input.edgeInstanceId,
+  };
+  await lockOutletSequences(tx, tenantId, outletId);
+  const current = await tx
+    .select({ sequence: receiptSequences })
+    .from(receiptSequences)
+    .innerJoin(
+      devices,
+      and(
+        eq(devices.tenantId, receiptSequences.tenantId),
+        eq(devices.outletId, receiptSequences.outletId),
+        eq(devices.id, receiptSequences.deviceId),
+      ),
+    )
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        isNull(receiptSequences.retiredAt),
+        sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        eq(devices.status, "active"),
+        isNull(devices.revokedAt),
+        inArray(devices.type, [...RECEIPT_DEVICE_TYPES]),
+      ),
+    )
+    .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id))
+    // A cloud sale on one of these rows waits until the claim commits.
+    .for("update", { of: receiptSequences });
+  let claimed = 0;
+  let rotated = 0;
+  let used: Map<string, string> | undefined;
+  for (const { sequence } of current) {
+    if (sameBinding(sequence, binding)) continue;
+    if (sequence.edgeNodeId === null && sequence.lastNumber === 0) {
+      const [bound] = await tx
+        .update(receiptSequences)
+        .set({
+          edgeNodeId: binding.edgeNodeId,
+          edgeInstanceId: binding.edgeInstanceId,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(receiptSequences.tenantId, tenantId),
+            eq(receiptSequences.id, sequence.id),
+            isNull(receiptSequences.retiredAt),
+            isNull(receiptSequences.edgeNodeId),
+            eq(receiptSequences.lastNumber, 0),
+          ),
+        )
+        .returning({ id: receiptSequences.id });
+      if (bound) {
+        claimed += 1;
+        continue;
+      }
+    }
+    await retireSequence(tx, tenantId, sequence.id);
+    used ??= await prefixesOfOutlet(tx, tenantId, outletId);
+    const prefix = nextFreePrefix(used);
+    await insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId: sequence.deviceId,
+      prefix,
+      binding,
+    });
+    used.set(prefix, sequence.deviceId);
+    rotated += 1;
+  }
+  return { claimed, rotated };
+}
+
+/**
+ * Cloud: the outlet's current device sequences (not the cloud-owned `C`) bound
+ * to exactly this edge database, for the edge pull (legend-zsdd).
+ */
 export async function listDeviceReceiptSequences(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: string,
+  binding: DeviceReceiptSequenceBinding,
 ): Promise<DeviceReceiptSequenceSync[]> {
   const rows = await tx
     .select()
@@ -641,6 +850,9 @@ export async function listDeviceReceiptSequences(
         eq(receiptSequences.tenantId, context.tenant.tenantId),
         eq(receiptSequences.outletId, outletId as OutletId),
         sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        isNull(receiptSequences.retiredAt),
+        eq(receiptSequences.edgeNodeId, binding.edgeNodeId),
+        eq(receiptSequences.edgeInstanceId, binding.edgeInstanceId),
       ),
     )
     .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
@@ -650,28 +862,39 @@ export async function listDeviceReceiptSequences(
     deviceId: row.deviceId,
     prefix: row.prefix,
     lastNumber: row.lastNumber,
+    edgeNodeId: binding.edgeNodeId,
+    edgeInstanceId: binding.edgeInstanceId,
   }));
 }
 
 /**
- * Edge: one pulled device sequence.
- * - inserted: no row for the device and the cloud's lastNumber is 0; created
- *   with the cloud's id and prefix at 0.
- * - kept: a row with the same prefix exists; untouched (its counter is ahead).
- * - refused: the device already numbers under another prefix, or the prefix or
- *   id belongs to another device (two numbering namespaces). Nothing written.
- * - refused (S-K1): no row here but the cloud run is already at L > 0. The
- *   edge holds none of receipts 1..L, so the gap check would refuse Tutup Hari
- *   forever. Fresh numbering comes from re-enrolling the terminal (new device,
- *   new prefix).
+ * Edge: one pulled device sequence, with this edge database's own binding
+ * `own` (node id, instance id; legend-zsdd). Nothing is written when refused.
+ * - refused: the pulled sequence is bound to another node or database, or it
+ *   is the outlet-owned key / prefix `C`.
+ * - kept: the device's current row here has the same id and prefix;
+ *   untouched (its counter is ahead), except a NULL local binding is set to
+ *   `own`.
+ * - replaced: the device's current row here has another id or prefix (the
+ *   cloud rotated the run). The local row is retired and the pulled one is
+ *   inserted at 0 bound to `own`. Refused if the pulled prefix or id already
+ *   exists here on another row, or the pulled run is already at L > 0 (same
+ *   3yqy backstop as `inserted`; review K R1-A); the local row stays current.
+ * - inserted: no current row for the device; created with the cloud's id and
+ *   prefix at 0 bound to `own`. Refused if the prefix or id is already used
+ *   here, or (S-K1, legend-3yqy backstop) the cloud run is already at L > 0:
+ *   the edge holds none of receipts 1..L, so the gap check would refuse Tutup
+ *   Hari forever.
  */
 export async function applyCloudDeviceReceiptSequence(
   tx: Tx,
   context: ScopedTenantContext,
   sequence: DeviceReceiptSequenceSync,
-): Promise<"inserted" | "kept" | "refused"> {
+  own: DeviceReceiptSequenceBinding,
+): Promise<"inserted" | "kept" | "replaced" | "refused"> {
   const tenantId = context.tenant.tenantId;
   const outletId = sequence.outletId as OutletId;
+  if (!sameBinding(sequence, own)) return "refused";
   if (
     sequence.deviceId === outletId ||
     sequence.prefix === CLOUD_RECEIPT_PREFIX
@@ -684,7 +907,33 @@ export async function applyCloudDeviceReceiptSequence(
     outletId,
     sequence.deviceId,
   );
-  if (existing) return existing.prefix === sequence.prefix ? "kept" : "refused";
+  if (
+    existing &&
+    existing.id === sequence.id &&
+    existing.prefix === sequence.prefix
+  ) {
+    if (existing.edgeNodeId === null) {
+      await tx
+        .update(receiptSequences)
+        .set({
+          edgeNodeId: own.edgeNodeId,
+          edgeInstanceId: own.edgeInstanceId,
+          updatedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(receiptSequences.tenantId, tenantId),
+            eq(receiptSequences.id, existing.id),
+            isNull(receiptSequences.retiredAt),
+            isNull(receiptSequences.edgeNodeId),
+          ),
+        );
+      return "kept";
+    }
+    // A local row bound elsewhere cannot be rebound (trigger); leave it.
+    return sameBinding(existing, own) ? "kept" : "refused";
+  }
+  // Backstop for both `inserted` and `replaced` (review K R1-A).
   if (sequence.lastNumber > 0) return "refused";
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   if (used.has(sequence.prefix)) return "refused";
@@ -698,6 +947,7 @@ export async function applyCloudDeviceReceiptSequence(
       ),
     );
   if (sameId) return "refused";
+  if (existing) await retireSequence(tx, tenantId, existing.id);
   await tx.insert(receiptSequences).values({
     id: sequence.id,
     tenantId,
@@ -705,8 +955,10 @@ export async function applyCloudDeviceReceiptSequence(
     deviceId: sequence.deviceId,
     prefix: sequence.prefix,
     lastNumber: 0,
+    edgeNodeId: own.edgeNodeId,
+    edgeInstanceId: own.edgeInstanceId,
   });
-  return "inserted";
+  return existing ? "replaced" : "inserted";
 }
 
 /** Void columns of a merged receipt, taken from the cloud void row. */
@@ -803,9 +1055,22 @@ export async function mergeDeviceReceiptRun(
   // The device's prefix comes only from the cloud (provisionReceiptSequence or
   // a cloud sale of the device); a run under a prefix the cloud never gave
   // out is refused, so two devices can never pick the same one offline.
-  const cloudRow = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (!cloudRow) throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
-  if (cloudRow.prefix !== prefix) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  // legend-zsdd (legend-ol6v): any run of the device, retired ones included,
+  // so a late run of a replaced sequence still merges.
+  const deviceRows = await tx
+    .select()
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outletId),
+        eq(receiptSequences.deviceId, deviceId),
+      ),
+    );
+  if (deviceRows.length === 0)
+    throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
+  const cloudRow = deviceRows.find((row) => row.prefix === prefix);
+  if (!cloudRow) throw new PosError("RECEIPT_PREFIX_MISMATCH");
   const cloudLast = cloudRow.lastNumber;
 
   // Validate the whole batch before anything is written.
@@ -1173,6 +1438,9 @@ export async function receiptGapsForOutletFast(
  * shift report lists the numbers (POS-06). Fast path like
  * `receiptGapsForOutletFast`: one SQL count first, the full scan only when the
  * count differs from lastNumber. Outlet-lifetime, not per business day.
+ * legend-zsdd: a device may have several runs (retired ones plus the current
+ * one); every run is checked and the missing ordinals of all runs are
+ * returned, sorted and without duplicates (the port carries ordinals only).
  */
 export async function receiptGapsForDevice(
   tx: Tx,
@@ -1180,7 +1448,7 @@ export async function receiptGapsForDevice(
   input: { outletId: string; deviceId: string },
 ): Promise<number[]> {
   const tenantId = context.tenant.tenantId;
-  const [sequence] = await tx
+  const sequences = await tx
     .select()
     .from(receiptSequences)
     .where(
@@ -1190,7 +1458,20 @@ export async function receiptGapsForDevice(
         eq(receiptSequences.deviceId, input.deviceId),
       ),
     );
-  if (!sequence || sequence.lastNumber === 0) return [];
+  const missing = new Set<number>();
+  for (const sequence of sequences)
+    for (const n of await receiptGapsOfRun(tx, tenantId, sequence))
+      missing.add(n);
+  return [...missing].sort((a, b) => a - b);
+}
+
+/** Missing ordinals of one run; fast path when the count matches lastNumber. */
+async function receiptGapsOfRun(
+  tx: Tx,
+  tenantId: TenantId,
+  sequence: SequenceRow,
+): Promise<number[]> {
+  if (sequence.lastNumber === 0) return [];
   const [counted] = await tx
     .select({
       issued:

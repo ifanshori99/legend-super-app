@@ -3,7 +3,12 @@
 // POS-07; contract @starter/shared/pos receipts.ts).
 //
 //   receipt_sequences       one gapless run per (outlet, device) with its own
-//                           prefix; `last_number` moves forward only.
+//                           prefix; `last_number` moves forward only. At most
+//                           one CURRENT (not retired) run per device; its
+//                           counter lives in exactly one database: the cloud
+//                           (edge_node_id/edge_instance_id NULL) or the edge
+//                           database named by that pair (legend-zsdd). A
+//                           retired run never numbers again.
 //   pos_receipts            one receipt per completed sale, allocated in the
 //                           sale's transaction. A void flips `status`; the row
 //                           and its number stay (POS-06). Never deleted.
@@ -29,6 +34,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -59,16 +65,24 @@ export const receiptSequences = pgTable(
     deviceId: uuid("device_id").notNull(),
     prefix: varchar("prefix", { length: 12 }).notNull(),
     lastNumber: integer("last_number").notNull().default(0),
+    /**
+     * legend-zsdd: the edge database that holds this counter. Both NULL = the
+     * cloud holds it; both set = edge node + its database instance
+     * (edge_nodes.instance_id of the edge's own row).
+     */
+    edgeNodeId: uuid("edge_node_id"),
+    edgeInstanceId: uuid("edge_instance_id"),
+    /** Set once: the run is closed and never numbers again. */
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },
   (table) => [
     unique("receipt_sequences_tenant_id_id_key").on(table.tenantId, table.id),
-    unique("receipt_sequences_device_key").on(
-      table.tenantId,
-      table.outletId,
-      table.deviceId,
-    ),
+    // One CURRENT run per device (legend-zsdd); retired runs stay as history.
+    uniqueIndex("receipt_sequences_device_current_key")
+      .on(table.tenantId, table.outletId, table.deviceId)
+      .where(sql`${table.retiredAt} IS NULL`),
     // Two terminals of one outlet never print the same number.
     unique("receipt_sequences_prefix_key").on(
       table.tenantId,
@@ -87,6 +101,10 @@ export const receiptSequences = pgTable(
     check(
       "receipt_sequences_last_number_check",
       sql`${table.lastNumber} BETWEEN 0 AND 999999999`,
+    ),
+    check(
+      "receipt_sequences_edge_binding_check",
+      sql`(${table.edgeNodeId} IS NULL) = (${table.edgeInstanceId} IS NULL)`,
     ),
   ],
 );

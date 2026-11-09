@@ -1065,6 +1065,13 @@
       "when": 1794230000000,
       "tag": "0151_staff_pin_sync_xid",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1794231000000,
+      "tag": "0152_receipt_sequence_edge_binding",
+      "breakpoints": true
     }
   ]
 }
