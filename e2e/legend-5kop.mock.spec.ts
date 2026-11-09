@@ -7,6 +7,7 @@
 // Runs against the FE mock runtime (VITE_API_MOCK=true):
 //   pnpm test:e2e:mock e2e/legend-5kop.mock.spec.ts
 import { expect, test, type Page } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 // The clock must come from the outlet, never from the device: the assertions
 // below still read Asia/Jakarta values in a New York browser.
@@ -15,18 +16,6 @@ test.use({ timezoneId: "America/New_York" });
 const DEFAULT_CUTOFF = "04:00";
 const EDITED_CUTOFF = "03:30";
 const SAVED_COPY = "Pengaturan outlet tersimpan.";
-
-/** Server HTML paints before React hydrates; a click needs the router up. */
-async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
-      ),
-    undefined,
-    { timeout: 60_000 },
-  );
-}
 
 /** Opens the outlet screen and saves one cutoff through the real mock PATCH. */
 async function saveCutoff(page: Page, cutoff: string): Promise<void> {

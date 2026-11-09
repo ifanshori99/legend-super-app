@@ -15,7 +15,6 @@ export const posKasirSupervisorMessages = {
     even: "Kas sesuai",
     hidden: "Selisih tidak ditampilkan",
     figureHidden: "Disembunyikan",
-    hiddenShort: "Angka sistem disembunyikan untuk shift Anda sendiri.",
     hiddenHint:
       "Angka sistem dan selisih disembunyikan untuk shift Anda sendiri. Supervisor lain yang menutup shift ini melihatnya.",
     systemOnlyHint:

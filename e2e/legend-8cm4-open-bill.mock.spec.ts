@@ -13,6 +13,7 @@
 // PIN 123456 and rejects any other PIN.
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 const baseURL =
   process.env.LEGEND_MOCK_WEB_URL ?? process.env.E2E_MOCK_BASE_URL;
@@ -47,18 +48,6 @@ type MockControl = {
     ) => void;
   };
 };
-
-/** Server HTML paints before React hydrates; a click needs the router up. */
-async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
-      ),
-    undefined,
-    { timeout: 60_000 },
-  );
-}
 
 async function openBoard(page: Page): Promise<void> {
   await page.goto("/pos/meja");

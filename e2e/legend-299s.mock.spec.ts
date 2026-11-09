@@ -18,6 +18,7 @@
 // in mock mode").
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(
@@ -39,12 +40,7 @@ async function openRoster(page: Page, path = ROSTER_PATH) {
   // timeout; the first assertion still gets COLD_START_TIMEOUT_MS.
   page.setDefaultNavigationTimeout(60_000);
   await page.goto(`${web}${path}`, { waitUntil: "networkidle" });
-  // The router global appears just before React hydrates; a click in that
-  // window is lost, so give the handlers a moment to attach.
-  await page.waitForFunction(() =>
-    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
-  );
-  await page.waitForTimeout(300);
+  await waitForHydration(page);
 }
 
 /** One employee's grid row; the sticky first cell carries the full name. */

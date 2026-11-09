@@ -36,6 +36,7 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 const expect = baseExpect.configure({ timeout: 15_000 });
@@ -60,18 +61,6 @@ const BACKSPACE = /^Hapus angka terakhir$/;
 
 const payUrl = (seed?: string, orderId = DEMO_ORDER_ID) =>
   `/pos/bayar/${orderId}${seed ? `?demo=${seed}` : ""}`;
-
-/** Server HTML paints before React hydrates; a click needs the router up. */
-async function waitForHydration(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
-      ),
-    undefined,
-    { timeout: 60_000 },
-  );
-}
 
 async function open(page: Page, url: string): Promise<void> {
   await page.goto(url);
@@ -595,6 +584,26 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
   );
 });
 
+// legend-doykg: with the first script held back the screen paints from server
+// HTML for seconds. open() must wait until it is interactive, so the typed code
+// reaches React state and the lookup finds the order (flaky ~1 in 8 before).
+test("legend-doykg CODE-01 a code typed right after open() survives slow hydration", async ({
+  page,
+}) => {
+  let held = false;
+  await page.route(/\.(js|mjs|ts|tsx)(\?|$)/, async (route) => {
+    if (!held) {
+      held = true;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    await route.continue();
+  });
+  await open(page, "/pos/kode");
+  await page.getByLabel(/Kode .Bayar di kasir./).fill("0044");
+  await page.getByRole("button", { name: /^Cari (ulang )?pesanan$/ }).click();
+  await expect(main(page)).toContainText("Pesanan ditemukan");
+});
+
 test("legend-mjmm CODE-02 a wrong code keeps the input, starts no payment and can be corrected", async ({
   page,
 }) => {
@@ -1014,6 +1023,15 @@ async function expectBlindDrawer(page: Page): Promise<void> {
   // Variance block: explicit "not shown", never a verdict.
   await expect(area).toContainText("Selisih tidak ditampilkan");
   await expect(area).not.toContainText(/Kas sesuai|Kas kurang|Kas lebih/);
+  // One explanation, inside the variance block (visible before the dashes at 390).
+  await expect(
+    page
+      .locator('[data-variance="hidden"]')
+      .getByText(/disembunyikan untuk shift Anda sendiri/),
+  ).toBeVisible();
+  await expect(
+    area.getByText(/disembunyikan untuk shift Anda sendiri/),
+  ).toHaveCount(1);
 
   // Every withheld figure reads "—", not a number or a fake zero.
   for (const label of BLIND_DRAWER_FIGURES) {

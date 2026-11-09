@@ -132,6 +132,11 @@ function VarianceBlock({ review }: { review: ShiftReview }) {
           amount: formatRupiah(review.countedIdr),
         })}
       </p>
+      {varianceIdr === null && (
+        <p className="mt-2 text-base leading-6 text-muted-foreground">
+          {t("posKasirSupervisor.result.hiddenHint")}
+        </p>
+      )}
     </div>
   );
 }
@@ -177,11 +182,6 @@ function ResultPanel({ review }: { review: ShiftReview }) {
     >
       <div className="grid gap-5">
         <VarianceBlock review={review} />
-        {review.varianceIdr === null && (
-          <p className="text-base font-semibold">
-            {t("posKasirSupervisor.result.hiddenShort")}
-          </p>
-        )}
         <dl className="grid gap-2.5">
           <BreakdownRow
             label={t("posKasirSupervisor.breakdown.openingFloat")}
@@ -225,11 +225,11 @@ function ResultPanel({ review }: { review: ShiftReview }) {
             </dd>
           </div>
         </dl>
-        <p className="border-t-(length:--border-w) border-border pt-4 text-base leading-6 text-muted-foreground">
-          {review.varianceIdr === null
-            ? t("posKasirSupervisor.result.hiddenHint")
-            : t("posKasirSupervisor.result.systemOnlyHint")}
-        </p>
+        {review.varianceIdr !== null && (
+          <p className="border-t-(length:--border-w) border-border pt-4 text-base leading-6 text-muted-foreground">
+            {t("posKasirSupervisor.result.systemOnlyHint")}
+          </p>
+        )}
       </div>
     </PosPanel>
   );
