@@ -56,6 +56,13 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Test `stock-ledger-posting-seq-migration` kini mencari snapshot sebelum 0186, bukan mengasumsikan 0170.
 - Nomor 0182, 0183 dan 0185 belum dikirim. Celah idx ini wajar untuk drizzle.
 
+## Tambahan batch41
+
+- ws/ws11-shared-3 (dc4a1014, tingkat K, tanpa migrasi baru): F5, F8, F10, legend-3nfc9 dan legend-fr62g (pesanan latihan tidak masuk metrik penjualan). Mock laporan WS-11 mengikuti ketersediaan API.
+- Langkah rilis: jalankan `recomputeMetricsDaily` untuk seluruh riwayat (legend-ka1hg), termasuk 6 kode jumlah fasilitas, sebelum laporan WS-11 meninggalkan mock.
+- Konflik hanya di `docs/DECISIONS.md` dan `docs/PROGRESS.md` (keep-both). Rantai migrasi tetap 0186 terakhir.
+- ws/audit-retention-purge (0187) menyusul sesudah tes migrasi pemilik non-superuser.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
