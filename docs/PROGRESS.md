@@ -1046,3 +1046,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti merah dulu: dengan sweep dimatikan, 3 dari 4 test baru gagal (baris tetap parkir). Hijau: `edge-access-applier.test.ts` 38/38, tsc api lewat heavy, eslint, prettier. 4 test: outlet tanpa event baru, batas batch, 12 baris dengan sweep dan drain lazy paralel (tepat 1 audit per override), lintas tenant/outlet plus baris refused tidak menahan yang lain.
 - Review S: 1 reviewer, tanpa temuan nyata. Batas diturunkan dari 50x4 ke 20x2 agar satu tick relay tidak panjang.
 - Risiko: drain yang gagal total (select/update) tetap diam dan mengembalikan 0 (perilaku lama), jadi `failedOutlets` tidak menghitungnya; outlet macet di depan antrean hanya mengganggu bila lebih dari 20 outlet macet sekaligus.
+
+## legend-8vgid failover otomatis bayar di kasir dari GatewayHealth (engineer, cabang `ws/gateway-failover-cashier` di atas 4c818489, 2026-11-09)
+
+- Sudah ada: `GatewayHealth` (tipe, dibaca live tiap request), metode online nonaktif saat `down`, `requestPayAtCashier` (hanya audit), kolom `fallbackProvider`. Dibangun: `payment-failover.service.ts` (insiden per outlet di `audit_logs`, tanpa tabel), satu alert supervisor per insiden (kategori baru `payment_failover`), penanda per bill per insiden, `requestPayAtCashier` idempoten dan tidak menunggu gateway, `reason: "unconfigured"` agar outlet tanpa akun gateway tidak dianggap gangguan.
+- Review K (architect): 6 temuan, 1-4 dan 6 dibetulkan (unconfigured, ack tanpa health, query dibatasi outlet+waktu dan baca tanpa lock, gateway naik-turun membuka ulang insiden yang sama tanpa alert baru, bill lunas tidak ditandai). Sisa: probe terjadwal di worker, indeks audit_logs (butuh migrasi).
+- Bukti: 5 file API 270/270 (payment-failover 13 baru, payment-api, payment-doit, ai-anomaly-summary, ws03-guest-va), `pnpm typecheck` lewat heavy exit 0, eslint, prettier.

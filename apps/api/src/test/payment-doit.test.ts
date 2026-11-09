@@ -799,7 +799,10 @@ describe("DOIT adapter: fails closed without usable credentials", () => {
       });
       const { gateway } = makeGateway({ creds: value });
 
-      expect(await gateway.health(tenantContext)).toEqual({ status: "down" });
+      expect(await gateway.health(tenantContext)).toEqual({
+        status: "down",
+        reason: "unconfigured",
+      });
       await expectCoreError(
         gateway.createIntent(intentRequest()),
         "SERVICE_UNAVAILABLE",

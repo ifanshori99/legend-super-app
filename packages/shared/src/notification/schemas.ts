@@ -112,6 +112,14 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3 F5 Sinkronisasi; EDG-02 (legend-wqc6)",
   },
+  // legend-8vgid: the payment gateway went down and bills move to the cashier.
+  payment_failover: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.13 Failover; PAY-04 (legend-8vgid)",
+  },
   cash_variance: {
     audience: "staff",
     realtime: true,
