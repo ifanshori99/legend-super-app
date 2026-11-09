@@ -64,6 +64,33 @@ export const tableSessionClosedPayloadSchema = z.strictObject({
   closedBy: z.enum(["staff", "system", "guest"]),
 });
 
+/** Staff moved a live session (and its bill) to another table. */
+export const tableSessionMovedPayloadSchema = z.strictObject({
+  sessionId: tableSessionIdSchema,
+  fromTableId: tableIdSchema,
+  toTableId: tableIdSchema,
+  billTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
+/** Staff merged the source session's orders into the target session's bill. */
+export const tableSessionMergedPayloadSchema = z.strictObject({
+  targetSessionId: tableSessionIdSchema,
+  sourceSessionId: tableSessionIdSchema,
+  targetTableId: tableIdSchema,
+  sourceTableId: tableIdSchema,
+  movedItemCount: z.number().int().nonnegative(),
+  movedTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
+/** Staff moved order items from one live session to another. */
+export const tableSessionItemsMovedPayloadSchema = z.strictObject({
+  fromSessionId: tableSessionIdSchema,
+  toSessionId: tableSessionIdSchema,
+  orderItemIds: z.array(orderItemIdSchema).min(1).max(50),
+  movedItemCount: z.number().int().positive(),
+  movedTotalIdr: idrSchema.refine((value) => value >= 0),
+});
+
 export const orderPlacedPayloadSchema = z.strictObject({
   orderId: orderIdSchema,
   sessionId: tableSessionIdSchema,
@@ -110,6 +137,9 @@ export const qrOrderEventNames = [
   "table_session.opened",
   "table_session.joined",
   "table_session.closed",
+  "table_session.moved",
+  "table_session.merged",
+  "table_session.items_moved",
   "order.placed",
   "item.failed",
   "service_request.created",
@@ -126,6 +156,9 @@ export const qrOrderEventPayloads: Record<
   "table_session.opened": tableSessionOpenedPayloadSchema,
   "table_session.joined": tableSessionJoinedPayloadSchema,
   "table_session.closed": tableSessionClosedPayloadSchema,
+  "table_session.moved": tableSessionMovedPayloadSchema,
+  "table_session.merged": tableSessionMergedPayloadSchema,
+  "table_session.items_moved": tableSessionItemsMovedPayloadSchema,
   "order.placed": orderPlacedPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,

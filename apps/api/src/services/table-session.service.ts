@@ -79,7 +79,7 @@ import { appendOutbox } from "./core-outbox";
 import { verifyTableQrToken } from "./qr-token";
 
 type Database = NodePgDatabase<typeof schema>;
-type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 type QrScanInput = z.infer<typeof qrScanInputSchema>;
 type CloseTableSessionInput = z.infer<typeof closeTableSessionInputSchema>;
@@ -102,9 +102,16 @@ const AUDIT_SAFE_FIELDS = [
   "tableCleaned",
   "waiterConfirmedEmpty",
   "action",
+  "fromTableId",
+  "toTableId",
+  "sourceId",
+  "toId",
+  "billTotalIdr",
+  "movedItemCount",
+  "movedTotalIdr",
 ] as const;
 
-type SessionRow = typeof tableSessions.$inferSelect;
+export type SessionRow = typeof tableSessions.$inferSelect;
 type ParticipantRow = typeof sessionParticipants.$inferSelect;
 
 function isActive(status: TableSessionStatus): boolean {
@@ -115,11 +122,11 @@ function credentialHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function sessionSealAad(tenantId: string, sessionId: string): string {
+export function sessionSealAad(tenantId: string, sessionId: string): string {
   return `table-session:${tenantId}:${sessionId}`;
 }
 
-function newSessionCredential(): { token: string; hash: string } {
+export function newSessionCredential(): { token: string; hash: string } {
   const token = randomBytes(32).toString("base64url");
   return { token, hash: credentialHash(token) };
 }
@@ -154,7 +161,7 @@ export function setTableSessionSettlementLookup(
   settlementLookup = lookup;
 }
 
-async function loadSettlement(
+export async function loadSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   sessionId: string,
@@ -219,7 +226,7 @@ function toSession(
   });
 }
 
-function toTable(row: typeof tables.$inferSelect): Table {
+export function toTable(row: typeof tables.$inferSelect): Table {
   return tableSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -233,7 +240,7 @@ function toTable(row: typeof tables.$inferSelect): Table {
   });
 }
 
-function toZone(row: typeof floorZones.$inferSelect): FloorZone {
+export function toZone(row: typeof floorZones.$inferSelect): FloorZone {
   return floorZoneSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -277,7 +284,7 @@ export async function sessionDto(
  * `forUpdate` so concurrent confirm/close requests serialize on the row and
  * the status edge is decided from the committed state (Codex pre-review HIGH).
  */
-async function loadSession(
+export async function loadSession(
   tx: Tx,
   tenantId: TenantId,
   sessionId: string,
@@ -316,7 +323,7 @@ export async function lockTableLiveState(
   );
 }
 
-async function activeSessionForTable(
+export async function activeSessionForTable(
   tx: Tx,
   tenantId: TenantId,
   tableId: string,
@@ -380,7 +387,7 @@ async function partySessionForSecondaryTable(
  * or expires) must not absorb the next session's call at the same table (the
  * open-dedupe key is per table and type). Same transaction as the close.
  */
-async function cancelOpenServiceRequests(
+export async function cancelOpenServiceRequests(
   tx: Tx,
   tenantId: TenantId,
   sessionId: string,
@@ -421,7 +428,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued QR-order event inside the caller's transaction. */
-async function appendSessionEvent(
+export async function appendSessionEvent(
   tx: Tx,
   context: ScopedTenantContext,
   name: QrOrderEventName,
@@ -465,7 +472,7 @@ async function appendSessionEvent(
   });
 }
 
-async function audit(
+export async function audit(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
