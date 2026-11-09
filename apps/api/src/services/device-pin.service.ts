@@ -247,6 +247,11 @@ export async function setStaffPin(
       // the columns stay null on the edge.
       generationEdgeNodeId: null,
       generationEdgeSequence: null,
+      // legend-7vv8h: a new pin has no cloud counter/lock history. A stale
+      // baseline from the previous pin would make the edge's same-material
+      // merge drop a cloud failure that equals the old baseline value.
+      cloudFailedAttempts: null,
+      cloudLockedUntil: null,
     };
     // Order key of the generation (Codex 160 C1), never below the current
     // one (round 3 R2): a clock stepping back still makes a newer key. The

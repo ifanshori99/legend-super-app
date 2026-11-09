@@ -70,6 +70,17 @@ async function newStaff(): Promise<string> {
   return id;
 }
 
+/** Polls the export for a staff pin (a test file that is open holds the horizon back). */
+async function exportedRecord(userId: string): Promise<StaffPinEdgeRecord> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const page = await listStaffPinRecordsSince(node, { limit: 100 });
+    const found = page.data.find((row) => row.userId === userId);
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("staff pin was not exported");
+}
+
 /** The cloud record of a fresh pin; the cloud row is then removed (edge copy). */
 async function cloudRecord(userId: string): Promise<StaffPinEdgeRecord> {
   await setStaffPin(
@@ -208,5 +219,69 @@ describe("legend-7vv8h edge apply never restores a cleared counter or lock", () 
     const row = await pinRow(userId);
     expect(row.failed_attempts).toBe(2);
     expect(row.cloud_failed_attempts).toBe(2);
+  });
+
+  it("a cloud counter that went down (correct PIN on the cloud) and rose again is not dropped as a replay", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId);
+    await applyStaffPinRecords(edgeContext, [record]);
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 3 }]);
+    expect((await pinRow(userId)).cloud_failed_attempts).toBe(3);
+    await clearOnEdge(userId);
+
+    // The cloud counter went 3 -> 0 (correct PIN there) -> 2 (two new
+    // failures) between two pulls: the edge never saw the 0. 2 is below the
+    // stored baseline (3) but differs from it and is above the local counter.
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 2 }]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(2);
+    expect(row.cloud_failed_attempts).toBe(2);
+  });
+
+  it("a cloud counter that went down (correct PIN on the cloud) and rose again is not dropped as a replay", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId);
+    await applyStaffPinRecords(edgeContext, [record]);
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 3 }]);
+    expect((await pinRow(userId)).cloud_failed_attempts).toBe(3);
+    await clearOnEdge(userId);
+
+    // The cloud counter is cleared by a correct PIN there: baseline 3 -> 0.
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 0 }]);
+    expect((await pinRow(userId)).cloud_failed_attempts).toBe(0);
+
+    // Two new cloud failures: 2 is below the old baseline (3) but differs from
+    // the current one (0) and is above the local counter.
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 2 }]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(2);
+    expect(row.cloud_failed_attempts).toBe(2);
+  });
+
+  it("a new pin set on the edge starts without a cloud baseline, so a same-material record with the old baseline value applies", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId);
+    await applyStaffPinRecords(edgeContext, [record]);
+    await applyStaffPinRecords(edgeContext, [{ ...record, failedAttempts: 4 }]);
+    expect((await pinRow(userId)).cloud_failed_attempts).toBe(4);
+
+    await setStaffPin(
+      tenant,
+      userId,
+      { outletId: bandung, userId },
+      { pin: "193746" },
+      { now: new Date(Date.now() - 5 * MINUTE) },
+    );
+    const afterSet = await pinRow(userId);
+    expect(afterSet.failed_attempts).toBe(0);
+    expect(afterSet.cloud_failed_attempts).toBeNull();
+
+    // The cloud record of the new pin carries counter 4 (same material as the
+    // edge row): it must raise the local counter again.
+    const fresh = await exportedRecord(userId);
+    await applyStaffPinRecords(edgeContext, [{ ...fresh, failedAttempts: 4 }]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(4);
+    expect(row.cloud_failed_attempts).toBe(4);
   });
 });

@@ -261,7 +261,11 @@ export async function applyStaffPinSet(
   const update = async (id: string) => {
     // A strictly newer key, or a later set of the node that gave the current
     // generation (legend-rucdm), and other material only: a tie of another
-    // origin keeps the cloud pin.
+    // origin keeps the cloud pin. An older set of that same node (lower or
+    // equal sequence) never wins through the key branch (review K R2): its
+    // later set may already hold a lower key after the clock stepped back. A
+    // null generation_edge_node_id (cloud set, older rows) still compares by
+    // key only.
     const written = await tx
       .update(staffPins)
       .set({
@@ -274,7 +278,7 @@ export async function applyStaffPinSet(
         and(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.id, id),
-          sql`(${staffPins.pinGenerationAt} < ${pinGenerationAt} OR (${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
+          sql`((${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}) OR (${staffPins.pinGenerationAt} < ${pinGenerationAt} AND NOT (${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} >= ${event.sequence})))`,
           otherMaterial,
         ),
       )
@@ -353,6 +357,13 @@ async function guardPinWrite<T>(work: () => Promise<T>): Promise<T> {
  * Copies an edge lock that is newer than the current pin generation and
  * still active; the lock never ends later than STAFF_PIN_LOCK_MINUTES from
  * now and never shortens a longer cloud lock.
+ *
+ * Review K F1: after an adoption by sequence (legend-rucdm) the cloud key is
+ * ahead of that node's clock, so its later locks would all look older than
+ * the generation. A lock of the node that gave the generation with a higher
+ * aggregate sequence is therefore also newer. Set and lock events of one
+ * staff pin share one aggregate stream on the edge (`appendDevicePinEvent`,
+ * aggregate = the staff pin row), so the sequences are comparable.
  */
 export async function applyStaffPinLocked(
   tx: EdgeTx,
@@ -379,8 +390,9 @@ export async function applyStaffPinLocked(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.outletId, outletId),
           eq(staffPins.userId, payload.userId),
-          // Same clock as an edge set's order key (both edge time).
-          sql`${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz`,
+          // Same clock as an edge set's order key (both edge time), or a
+          // later event of the node that gave the generation (F1).
+          sql`(${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz OR (${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
           // An edge clock far ahead (round 3 R1).
           sql`${event.occurredAt}::timestamptz <= ${edgeClockLimit}`,
           sql`${payload.lockedUntil}::timestamptz > now()`,

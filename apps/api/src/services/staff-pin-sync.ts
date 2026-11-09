@@ -578,21 +578,25 @@ export async function applyStaffPinRecords(
       // weakens the edge, at worst it locks one guess earlier).
       // The merge only follows the cloud's own movement (legend-7vv8h): the
       // cloud epoch changes on every cloud restart and the edge then replays
-      // the full export, so a record whose counter or lock is not above the
-      // last one this edge received (`cloud_failed_attempts`,
+      // the full export, so a record whose counter or lock equals the last
+      // one this edge received (`cloud_failed_attempts`,
       // `cloud_locked_until`) is a replay, not a new failure. Without that,
       // GREATEST against the raw cloud values restored a counter or lock the
-      // edge had already cleared (a correct PIN, AUTH-06). A null baseline (a
-      // row from before the columns existed) treats the record as new. The
+      // edge had already cleared (a correct PIN, AUTH-06). "Differs", not
+      // "above": the cloud counter can go down too (a correct PIN on the
+      // cloud resets it to 0), so a new cloud failure may sit below the
+      // stored baseline and must still count. The raise is still only taken
+      // when it is above the local value. A null baseline (a row from before
+      // the columns existed, or a new pin) treats the record as new. The
       // record's values always become the new baseline.
       const recordLock = material.lockedUntil;
       const counterRaised =
-        record.failedAttempts > (local.cloudFailedAttempts ?? -1) &&
+        record.failedAttempts !== (local.cloudFailedAttempts ?? -1) &&
         record.failedAttempts > local.failedAttempts;
       const lockRaised =
         recordLock !== null &&
         (local.cloudLockedUntil === null ||
-          recordLock.getTime() > local.cloudLockedUntil.getTime()) &&
+          recordLock.getTime() !== local.cloudLockedUntil.getTime()) &&
         (local.lockedUntil === null ||
           recordLock.getTime() > local.lockedUntil.getTime());
       const baselineMoved =

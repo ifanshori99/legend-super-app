@@ -10,16 +10,24 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { StaffPinEdgeRecord } from "@starter/shared/access/override";
-import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  createUlid,
+  outletIdSchema,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
+import { MAX_STAFF_PIN_ATTEMPTS } from "@starter/shared/identity";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { applyStaffPinSet } from "../edge/access-applier.ts";
+import {
+  applyStaffPinLocked,
+  applyStaffPinSet,
+} from "../edge/access-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import {
@@ -87,6 +95,8 @@ type PinRow = {
   pin_generation_at: Date;
   generation_edge_node_id: string | null;
   generation_edge_sequence: string | null;
+  failed_attempts: number;
+  locked_until: Date | null;
   sync_xid: string;
 };
 
@@ -94,6 +104,7 @@ async function pinRow(userId: string): Promise<PinRow> {
   const { rows } = await owner.query<PinRow>(
     `SELECT id, pin_hash, pin_salt, pin_generation_at, generation_edge_node_id,
             generation_edge_sequence::text AS generation_edge_sequence,
+            failed_attempts, locked_until,
             sync_xid::text AS sync_xid
        FROM staff_pins WHERE tenant_id = $1 AND user_id = $2`,
     [tenantId, userId],
@@ -142,6 +153,43 @@ const setPin = (userId: string, pin: string, now?: Date) =>
 function applyOnCloud(event: EventEnvelope, node: AuthenticatedEdgeNode) {
   return withTenant(db, node.context, (tx) =>
     applyStaffPinSet(tx, event, {
+      edgeNodeId: node.scope.edgeNodeId,
+      direction: "edge_to_cloud",
+      kind: "transaction_event",
+      context: node.context,
+    }),
+  );
+}
+
+/**
+ * A `staff_pin.locked` of the same aggregate stream as `set` (the edge row:
+ * set and lock events share one sequence per staff pin), at `sequence`.
+ */
+function lockedEvent(
+  set: EventEnvelope,
+  input: { sequence: number; occurredAtMs: number; lockedUntilMs: number },
+): EventEnvelope {
+  const payload = set.payload as { staffPinId: string; userId: string };
+  return {
+    ...set,
+    id: createUlid(Date.now()) as EventEnvelope["id"],
+    name: "staff_pin.locked",
+    sequence: input.sequence,
+    occurredAt: new Date(input.occurredAtMs).toISOString(),
+    idempotencyKey: `staff_pin.locked:${set.aggregateId}:${input.sequence}`,
+    payloadSchemaRef: "staff_pin.locked.v1",
+    payload: {
+      staffPinId: payload.staffPinId,
+      userId: payload.userId,
+      lockedUntil: new Date(input.lockedUntilMs).toISOString(),
+    } as EventEnvelope["payload"],
+  };
+}
+
+/** The cloud's lock applier, fed one event of `node`. */
+function lockOnCloud(event: EventEnvelope, node: AuthenticatedEdgeNode) {
+  return withTenant(db, node.context, (tx) =>
+    applyStaffPinLocked(tx, event, {
       edgeNodeId: node.scope.edgeNodeId,
       direction: "edge_to_cloud",
       kind: "transaction_event",
@@ -364,6 +412,79 @@ describe("legend-rucdm the cloud adopts a node's own later set whatever its cloc
 
     expect(await applyOnCloud(e2!, primary)).toBe("not_applicable");
     expect((await pinRow(userId)).pin_hash).toBe(cloud.pin_hash);
+  });
+
+  it("R2 an older set of the node (lower sequence, higher key) arriving after its later set was adopted is refused", async () => {
+    const userId = await newUser();
+    const now = Date.now();
+    // E1 (lower sequence, higher key), then the clock steps back and E2.
+    await asEdge(() => setPin(userId, PIN_E1, new Date(now - 10 * MINUTE)));
+    await asEdge(() => setPin(userId, PIN_E2, new Date(now - 70 * MINUTE)));
+    const [e1, e2] = await setEvents(userId);
+    const m2 = materialOf(e2!);
+    expect(e1!.sequence).toBeLessThan(e2!.sequence);
+    expect(Date.parse(materialOf(e1!).setAt)).toBeGreaterThan(
+      Date.parse(m2.setAt),
+    );
+    const row = await pinRow(userId);
+    await owner.query(
+      `UPDATE staff_pins SET pin_hash = $2, pin_generation_at = $3,
+              generation_edge_node_id = NULL, generation_edge_sequence = NULL
+        WHERE id = $1`,
+      [row.id, "0".repeat(64), new Date(now - 3 * HOUR)],
+    );
+
+    // Delivered out of order: E2 first (adopted by key), E1 late.
+    expect(await applyOnCloud(e2!, primary)).toBe("applied");
+    expect(await applyOnCloud(e1!, primary)).toBe("not_applicable");
+    const after = await pinRow(userId);
+    expect(after.pin_hash).toBe(m2.pinHash);
+    expect(after.pin_salt).toBe(m2.salt);
+    expect(after.generation_edge_sequence).toBe(String(e2!.sequence));
+  });
+
+  it("F1 the node's later lock is applied after an adoption by sequence moved the cloud key ahead of its clock; another node's older lock is not", async () => {
+    const userId = await newUser();
+    const now = Date.now();
+    await asEdge(() => setPin(userId, PIN_E1, new Date(now - 10 * MINUTE)));
+    await asEdge(() => setPin(userId, PIN_E2, new Date(now - 70 * MINUTE)));
+    const [e1, e2] = await setEvents(userId);
+    const row = await pinRow(userId);
+    await owner.query(
+      `UPDATE staff_pins SET pin_hash = $2, pin_generation_at = $3,
+              generation_edge_node_id = NULL, generation_edge_sequence = NULL,
+              failed_attempts = 0, locked_until = NULL
+        WHERE id = $1`,
+      [row.id, "0".repeat(64), new Date(now - 3 * HOUR)],
+    );
+    expect(await applyOnCloud(e1!, primary)).toBe("applied");
+    expect(await applyOnCloud(e2!, primary)).toBe("applied");
+    const adopted = await pinRow(userId);
+    // The cloud key is E1's + 1 ms: ahead of the node's stepped-back clock.
+    const lockAt = now - 60 * MINUTE;
+    expect(adopted.pin_generation_at.getTime()).toBeGreaterThan(lockAt);
+    const lockedUntilMs = now + 5 * MINUTE;
+
+    // Another node's lock with the same older time stays refused.
+    const foreign = lockedEvent(e2!, {
+      sequence: e2!.sequence + 1,
+      occurredAtMs: lockAt,
+      lockedUntilMs,
+    });
+    expect(await lockOnCloud(foreign, standby)).toBe("not_applicable");
+    expect((await pinRow(userId)).locked_until).toBeNull();
+
+    // The node's own later lock (higher sequence) is applied.
+    const own = lockedEvent(e2!, {
+      sequence: e2!.sequence + 1,
+      occurredAtMs: lockAt,
+      lockedUntilMs,
+    });
+    expect(await lockOnCloud(own, primary)).toBe("applied");
+    const locked = await pinRow(userId);
+    expect(locked.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
+    expect(locked.locked_until?.getTime()).toBeGreaterThan(now);
+    expect(locked.pin_hash).toBe(adopted.pin_hash);
   });
 });
 
