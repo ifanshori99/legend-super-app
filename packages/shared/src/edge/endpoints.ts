@@ -60,6 +60,10 @@ export const edgeStatusSchema = z.strictObject({
       receiptSequencesRefused: z.number().int().nonnegative().optional(),
       /** Last successful pull that refused at least one; null if never. */
       receiptSequencesRefusedAt: isoDateTimeSchema.nullable().optional(),
+      /** legend-yd0h8: the cloud flagged a restored or cloned edge database. */
+      receiptRunAlert: z.boolean().optional(),
+      /** Last successful pull with the alert; null if never. */
+      receiptRunAlertAt: isoDateTimeSchema.nullable().optional(),
     })
     // Optional: an edge image older than legend-2lp.7 does not send it; the
     // edge API always does.

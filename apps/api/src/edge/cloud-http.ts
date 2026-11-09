@@ -10,6 +10,10 @@
 // URL, an error message or a log line. Errors carry a status/code only, the
 // response body is never read into them.
 
+import {
+  encodeReceiptRunReport,
+  type ReceiptRunReport,
+} from "@starter/shared/edge";
 import { logger } from "../lib/logger.ts";
 
 const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
@@ -114,12 +118,20 @@ export type DeviceRecordsFetcherOptions = CloudGetOptions & {
 
 export function createDeviceRecordsFetcher(
   options: DeviceRecordsFetcherOptions,
-): (since: string | null, signal: AbortSignal) => Promise<unknown> {
+): (
+  since: string | null,
+  signal: AbortSignal,
+  receiptRuns?: ReceiptRunReport,
+) => Promise<unknown> {
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
 
-  const pathFor = (since: string | null, withSequences: boolean) => {
+  const pathFor = (
+    since: string | null,
+    withSequences: boolean,
+    receiptRuns?: ReceiptRunReport,
+  ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
     if (withSequences) {
@@ -129,15 +141,19 @@ export function createDeviceRecordsFetcher(
       // legend-zsdd: names this edge database so the cloud can bind sequences to it.
       if (options.edgeInstanceId !== undefined)
         query.set("edgeInstance", options.edgeInstanceId);
+      // legend-yd0h8: this database's local counters, so the cloud can spot a
+      // restored or cloned database. Absent = no check (an old edge).
+      if (receiptRuns !== undefined)
+        query.set("receiptRuns", encodeReceiptRunReport(receiptRuns));
     }
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };
 
-  return async (since, signal) => {
+  return async (since, signal, receiptRuns) => {
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true),
+        path: pathFor(since, true, receiptRuns),
         signal,
       });
     } catch (error) {
@@ -145,12 +161,34 @@ export function createDeviceRecordsFetcher(
       // 400. Retry the same page once without it and without the sequences
       // (the old cloud's device records and revocations keep flowing). A
       // second failure is thrown as is, so HTTP_400 recovery still sees it.
+      // legend-yd0h8: staged. A request that carried `receiptRuns` first
+      // retries WITH sequences and `edgeInstance` but without `receiptRuns`
+      // (a zsdd cloud); only a second 400
+      // drops the sequences too.
       if (
         options.edgeInstanceId === undefined ||
         !(error instanceof EdgeCloudHttpError) ||
         error.code !== "HTTP_400"
       )
         throw error;
+      if (receiptRuns !== undefined) {
+        logger.warn(
+          "cloud refused the receipt run report; retrying the page without it",
+        );
+        try {
+          return await cloudGetJson({
+            ...options,
+            path: pathFor(since, true),
+            signal,
+          });
+        } catch (second) {
+          if (
+            !(second instanceof EdgeCloudHttpError) ||
+            second.code !== "HTTP_400"
+          )
+            throw second;
+        }
+      }
       logger.warn(
         "cloud refused the edge instance query; retrying the page without receipt sequences",
       );

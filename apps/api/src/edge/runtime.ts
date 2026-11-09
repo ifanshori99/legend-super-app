@@ -680,11 +680,11 @@ export async function startEdgeRuntime(
               edgeInstanceId: local.instanceId,
             },
             since: from,
-            fetchPage: async (cursor) => {
+            fetchPage: async (cursor, receiptRuns) => {
               const isFirst = first;
               first = false;
               try {
-                return await fetchDeviceRecords(cursor, signal);
+                return await fetchDeviceRecords(cursor, signal, receiptRuns);
               } catch (error) {
                 if (
                   isFirst &&

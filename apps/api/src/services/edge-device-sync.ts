@@ -41,10 +41,13 @@ import {
   deviceReceiptSequenceSyncSchema,
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
+  decodeReceiptRunReport,
+  receiptRunReportQuerySchema,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
   type DeviceSyncRecord,
+  type ReceiptRunReport,
 } from "@starter/shared/edge";
 import {
   CoreError,
@@ -72,6 +75,7 @@ import {
   backfillDeviceReceiptSequences,
   claimDeviceReceiptSequencesForEdge,
   listDeviceReceiptSequences,
+  localReceiptRunReport,
 } from "./pos-receipt.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
@@ -104,6 +108,11 @@ export const deviceSyncQuerySchema = z.strictObject({
   receiptSequences: z.literal("1").optional(),
   /** legend-zsdd: the edge's database id; sequences bind to (node, instance). */
   edgeInstance: uuidSchema.optional(),
+  /**
+   * legend-yd0h8: the edge's local counter of every current local run
+   * (`P1:150,P3:7`, `""` = none). Absent = an old edge: no restore check.
+   */
+  receiptRuns: receiptRunReportQuerySchema.optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -183,6 +192,7 @@ export async function listDeviceRecordsSince(
     limit,
     receiptSequences: withSequences,
     edgeInstance,
+    receiptRuns,
   } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
@@ -231,6 +241,7 @@ export async function listDeviceRecordsSince(
     // for an active primary node that sent its instance id; a standby, a
     // non-active node or an edge without an instance claims and gets nothing.
     let binding: DeviceReceiptSequenceBinding | null = null;
+    let alert = false;
     if (withSequences === "1") {
       const [nodeRow] = await tx
         .select({ role: edgeNodes.role, status: edgeNodes.status })
@@ -256,13 +267,42 @@ export async function listDeviceRecordsSince(
         const claim = await claimDeviceReceiptSequencesForEdge(tx, context, {
           outletId: verified.outletId,
           ...binding,
+          // Validated by the query schema, so it decodes (null never here).
+          report:
+            receiptRuns === undefined
+              ? undefined
+              : (decodeReceiptRunReport(receiptRuns) ?? undefined),
+          // legend-yd0h8: cloud arrival time orders reports (not the edge
+          // clock). The route passes `now` taken before its credential check,
+          // so pool and outlet lock waits do not make an old report look new.
+          // Network / load balancer delay is not covered: the puller only
+          // retries after its 15 s timeout.
+          reportedAt: receiptRuns === undefined ? undefined : now,
         });
+        alert = claim.alert;
         // legend-zsdd: a repeated rotation means two databases pull with one
         // node id. Counts only, no ids.
         if (claim.rotated > 0)
           logger.warn(
             { rotated: claim.rotated, claimed: claim.claimed },
             "device receipt sequences rotated for an edge pull",
+          );
+        // legend-yd0h8: a restored or cloned edge database. Counts only.
+        if (
+          claim.regressed > 0 ||
+          claim.throttled > 0 ||
+          claim.stale > 0 ||
+          claim.alert
+        )
+          logger.warn(
+            {
+              edgeNodeId: verified.edgeNodeId,
+              regressed: claim.regressed,
+              throttled: claim.throttled,
+              stale: claim.stale,
+              alert: claim.alert,
+            },
+            "edge receipt runs regressed (restored or cloned edge database)",
           );
       }
     }
@@ -293,9 +333,9 @@ export async function listDeviceRecordsSince(
               verified.outletId,
               binding,
             );
-    return { found, sequences };
+    return { found, sequences, alert };
   });
-  const { found: rows, sequences } = result;
+  const { found: rows, sequences, alert } = result;
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
@@ -311,6 +351,9 @@ export async function listDeviceRecordsSince(
       }),
     ),
     ...(sequences === undefined ? {} : { receiptSequences: sequences }),
+    // legend-yd0h8: only to an edge that sent `receiptRuns` (old edges parse
+    // pages strictly).
+    ...(receiptRuns !== undefined && alert ? { receiptRunAlert: true } : {}),
     meta: {
       limit,
       nextCursor: rows.length > limit ? lastMark : null,
@@ -574,7 +617,10 @@ export type PullDeviceRegistryOptions = {
    */
   readonly since?: string | null;
   /** Fetches one page from the cloud (`GET /api/edge-sync/device-records`). */
-  readonly fetchPage: (since: string | null) => Promise<unknown>;
+  readonly fetchPage: (
+    since: string | null,
+    receiptRuns?: ReceiptRunReport,
+  ) => Promise<unknown>;
   /** Safety stop against a misbehaving cloud; default 1000 pages. */
   readonly maxPages?: number;
 };
@@ -588,6 +634,11 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
   readonly receiptSequencesRefused: number;
   /** legend-zsdd: local runs replaced by a new prefix from the cloud. */
   readonly receiptSequencesReplaced: number;
+  /**
+   * legend-yd0h8: the cloud flagged a restored or cloned edge database (some
+   * page carried `receiptRunAlert: true`).
+   */
+  readonly receiptRunAlert: boolean;
   /** Store only after this function returned: every page was applied. */
   readonly watermark: string | null;
 };
@@ -618,11 +669,37 @@ async function applyPageReceiptSequences(
 }
 
 /** Splits `receiptSequences` off a raw page (parsed apart, see above). */
-function splitPage(raw: unknown): { page: unknown; sequences: unknown } {
+function splitPage(raw: unknown): {
+  page: unknown;
+  sequences: unknown;
+  alert: unknown;
+} {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return { page: raw, sequences: undefined };
-  const { receiptSequences, ...page } = raw as Record<string, unknown>;
-  return { page, sequences: receiptSequences };
+    return { page: raw, sequences: undefined, alert: undefined };
+  // legend-yd0h8: `receiptRunAlert` is split off too, never refusing the page.
+  const { receiptSequences, receiptRunAlert, ...page } = raw as Record<
+    string,
+    unknown
+  >;
+  return { page, sequences: receiptSequences, alert: receiptRunAlert };
+}
+
+/**
+ * legend-yd0h8: this primary edge database's report for a pull: the local
+ * counter of every current local run, read in its own short transaction.
+ */
+async function reportLocalRuns(
+  context: ScopedTenantContext,
+): Promise<ReceiptRunReport> {
+  if (
+    context.outletScope.kind !== "outlets" ||
+    context.outletScope.outletIds.length !== 1
+  )
+    refuse("Device sync needs a context of exactly one outlet.");
+  const outletId = context.outletScope.outletIds[0]!.toLowerCase();
+  return withTenant(db, context, (tx) =>
+    localReceiptRunReport(tx, context, outletId),
+  );
 }
 
 /**
@@ -644,13 +721,26 @@ export async function pullDeviceRegistry(
   let pages = 0;
   let receiptSequencesRefused = 0;
   let receiptSequencesReplaced = 0;
+  let receiptRunAlert = false;
   for (;;) {
     if (pages >= maxPages)
       throw new CoreError(
         "CONFLICT",
         "Sinkronisasi registri perangkat melebihi batas halaman.",
       );
-    const raw = splitPage(await options.fetchPage(since));
+    // legend-yd0h8: a primary with a binding reports its local counters before
+    // each page; anything else sends no report (no check).
+    const report =
+      options.role === "primary" && options.binding !== undefined
+        ? await reportLocalRuns(options.context).catch(() => {
+            // legend-yd0h8: a failed report never stops the pull (device
+            // records, revocations); the page goes without the check.
+            logger.error("Edge receipt run report failed; pulling without it");
+            return undefined;
+          })
+        : undefined;
+    const raw = splitPage(await options.fetchPage(since, report));
+    if (raw.alert === true) receiptRunAlert = true;
     const page = deviceSyncPageSchema.parse(raw.page);
     pages += 1;
     const result = await applyDeviceRecords(options.context, page.data);
@@ -690,5 +780,6 @@ export async function pullDeviceRegistry(
     watermark,
     receiptSequencesRefused,
     receiptSequencesReplaced,
+    receiptRunAlert,
   };
 }

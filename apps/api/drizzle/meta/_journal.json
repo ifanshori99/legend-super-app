@@ -1079,6 +1079,13 @@
       "when": 1794232000000,
       "tag": "0153_staff_pin_pull",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1794233000000,
+      "tag": "0154_receipt_sequence_restore_detect",
+      "breakpoints": true
     }
   ]
 }

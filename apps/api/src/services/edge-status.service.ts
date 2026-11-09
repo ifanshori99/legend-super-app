@@ -55,6 +55,8 @@ export async function getEdgeStatus(input: {
       stale: registry?.stale ?? true,
       receiptSequencesRefused: registry?.receiptSequencesRefused ?? 0,
       receiptSequencesRefusedAt: registry?.receiptSequencesRefusedAt ?? null,
+      receiptRunAlert: registry?.receiptRunAlert ?? false,
+      receiptRunAlertAt: registry?.receiptRunAlertAt ?? null,
     },
     thisDevice,
   });

@@ -130,6 +130,64 @@ export type DeviceReceiptSequenceBinding = {
   edgeInstanceId: string;
 };
 
+/**
+ * legend-yd0h8: what an edge reports about its own database on a device-records
+ * pull: the local counter of every current local device run, `prefix -> last
+ * number`. The cloud compares it with a high-water per run to spot a restored
+ * or cloned edge database.
+ */
+export type ReceiptRunReport = ReadonlyMap<string, number>;
+
+/** `P1:150,P3:7` (sorted by prefix); an empty report is `""`. */
+export function encodeReceiptRunReport(report: ReceiptRunReport): string {
+  return [...report.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([prefix, lastNumber]) => `${prefix}:${lastNumber}`)
+    .join(",");
+}
+
+const RECEIPT_RUN_REPORT_MAX_ENTRIES = 500;
+const RECEIPT_RUN_ENTRY_NUMBER = /^\d{1,9}$/;
+
+/**
+ * legend-yd0h8: decodes the `receiptRuns` query param. `""` = the edge holds
+ * no run; else `<prefix>:<0..999999999>` entries joined by `,` (max 500, no
+ * duplicate prefix). Returns null when the value is malformed.
+ */
+export function decodeReceiptRunReport(
+  value: string,
+): Map<string, number> | null {
+  const report = new Map<string, number>();
+  if (value === "") return report;
+  const entries = value.split(",");
+  if (entries.length > RECEIPT_RUN_REPORT_MAX_ENTRIES) return null;
+  for (const entry of entries) {
+    const at = entry.lastIndexOf(":");
+    const prefix = at < 0 ? "" : entry.slice(0, at);
+    const number = at < 0 ? "" : entry.slice(at + 1);
+    if (
+      !receiptPrefixSchema.safeParse(prefix).success ||
+      !RECEIPT_RUN_ENTRY_NUMBER.test(number) ||
+      report.has(prefix)
+    )
+      return null;
+    report.set(prefix, Number(number));
+  }
+  return report;
+}
+
+/**
+ * legend-yd0h8: the `receiptRuns` query param, validated but kept as the
+ * string (a query schema is parsed twice: route and service), decode it with
+ * `decodeReceiptRunReport`.
+ */
+export const receiptRunReportQuerySchema = z
+  .string()
+  .max(12_000)
+  .refine((value) => decodeReceiptRunReport(value) !== null, {
+    message: "Bad receipt run report.",
+  });
+
 export const deviceSyncPageSchema = z.strictObject({
   data: z.array(deviceSyncRecordSchema),
   /**
@@ -139,6 +197,13 @@ export const deviceSyncPageSchema = z.strictObject({
    * parses it apart from the page, so a bad list never refuses the page.
    */
   receiptSequences: z.array(deviceReceiptSequenceSyncSchema).optional(),
+  /**
+   * legend-yd0h8: `true` when the cloud suspects a restored or cloned edge
+   * database on this node (repeated regressions). Sent only to an edge that
+   * sent `receiptRuns` (older edges parse pages strictly). The edge parses it
+   * apart from the page, so it never refuses the page.
+   */
+  receiptRunAlert: z.literal(true).optional(),
   meta: z.strictObject({
     limit: z.number().int().min(1).max(PAGE_LIMIT_MAX),
     /** Non-null while more rows follow: request again with `since` = this. */

@@ -33,6 +33,9 @@ import {
 export const deviceRecordSyncRouter = Router();
 
 deviceRecordSyncRouter.get("/", async (req, res) => {
+  // legend-yd0h8: arrival time, taken before the credential check's pool
+  // waits; it orders the edge's receipt run reports (stale = not newer).
+  const arrivedAt = new Date();
   // Authenticate before reading any input, so an anonymous caller learns
   // nothing about the query rules.
   const node = await verifyEdgeCredential(
@@ -52,5 +55,5 @@ deviceRecordSyncRouter.get("/", async (req, res) => {
     );
   const query = deviceSyncQuerySchema.parse(req.query);
   res.setHeader("Cache-Control", "private, no-store");
-  res.json(await listDeviceRecordsSince(node, query));
+  res.json(await listDeviceRecordsSince(node, query, { now: arrivedAt }));
 });

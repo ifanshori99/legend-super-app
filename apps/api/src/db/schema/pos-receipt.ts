@@ -54,6 +54,10 @@ const updatedAt = timestamp("updated_at", { withTimezone: true })
   .notNull()
   .defaultNow();
 
+/** legend-yd0h8: why a device run was retired. */
+export type ReceiptSequenceRetiredReason =
+  "claim_rotated" | "cloud_takeover" | "edge_replaced" | "edge_regressed";
+
 /** `receipt_sequences` (T, E): §6 C, one gapless run per outlet and device. */
 export const receiptSequences = pgTable(
   "receipt_sequences",
@@ -74,6 +78,22 @@ export const receiptSequences = pgTable(
     edgeInstanceId: uuid("edge_instance_id"),
     /** Set once: the run is closed and never numbers again. */
     retiredAt: timestamp("retired_at", { withTimezone: true }),
+    /**
+     * legend-yd0h8: high-water of the counter the bound edge database reported
+     * on its device-records pulls. Never decreases; a later lower report means
+     * the edge database was restored or cloned.
+     */
+    edgeReportedNumber: integer("edge_reported_number").notNull().default(0),
+    /**
+     * legend-yd0h8: cloud arrival time of the report that last raised
+     * the high-water; a report not newer than it is stale and skipped. Never
+     * goes backwards.
+     */
+    edgeReportedAt: timestamp("edge_reported_at", { withTimezone: true }),
+    /** legend-yd0h8: why the run was retired (audit + regression rate limit). */
+    retiredReason: varchar("retired_reason", {
+      length: 30,
+    }).$type<ReceiptSequenceRetiredReason>(),
     createdAt,
     updatedAt,
   },
@@ -105,6 +125,14 @@ export const receiptSequences = pgTable(
     check(
       "receipt_sequences_edge_binding_check",
       sql`(${table.edgeNodeId} IS NULL) = (${table.edgeInstanceId} IS NULL)`,
+    ),
+    check(
+      "receipt_sequences_edge_reported_number_check",
+      sql`${table.edgeReportedNumber} BETWEEN 0 AND 999999999`,
+    ),
+    check(
+      "receipt_sequences_retired_reason_check",
+      sql`${table.retiredReason} IS NULL OR (${table.retiredAt} IS NOT NULL AND ${table.retiredReason} IN ('claim_rotated','cloud_takeover','edge_replaced','edge_regressed'))`,
     ),
   ],
 );
