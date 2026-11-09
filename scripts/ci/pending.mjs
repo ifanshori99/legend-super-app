@@ -1,7 +1,7 @@
 // These checks depend on Legend modules that have not landed in this branch.
 // See the follow-up beads before replacing these explicit placeholders.
 console.log(
-  "SKIP: Lighthouse /menu and /t/* (routes and fixtures pending; legend-wwsa)",
+  "INFO: Lighthouse /menu and /t/* run in the separate `lighthouse` CI job (pnpm lighthouse).",
 );
 console.log(
   "SKIP: Real tenant isolation adapter (tenant modules pending; legend-wwsa)",

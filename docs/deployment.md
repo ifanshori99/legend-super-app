@@ -261,7 +261,31 @@ pnpm build
 
 The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The isolation harness accepts an adapter for two authenticated tenants; its in-memory tests verify the harness only, not application isolation.
 
-Lighthouse for `/menu` and `/t/*` and real tenant isolation remain explicit placeholders until the routes and modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+Real tenant isolation remains an explicit placeholder until the tenant modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+
+### Lighthouse
+
+The `lighthouse` CI job (after `check`) measures the public menu `/menu` and the guest QR menu `/t/<token>` with Lighthouse 13 in its mobile preset (simulated slow 4G, 4x CPU slowdown). Each page runs three times; the median of every score and metric is compared with the thresholds in `scripts/ci/lighthouse.config.mjs`, and the job fails when any median is out of bounds or a page cannot be measured.
+
+| Check                    | Threshold (median of 3)                                         |
+| ------------------------ | --------------------------------------------------------------- |
+| Performance              | at least 80                                                     |
+| Accessibility            | at least 90                                                     |
+| Best practices           | at least 90                                                     |
+| SEO                      | at least 90 (not applied to `/t/<token>`, which is not indexed) |
+| Largest Contentful Paint | at most 3500 ms                                                 |
+| Cumulative Layout Shift  | at most 0.1                                                     |
+| Total Blocking Time      | at most 400 ms                                                  |
+
+The numbers are a little looser than Lighthouse's "good" bands because CI runners are small and shared; tighten them in the config file once there is a baseline. Run it locally after a build made for the test API origin (the web bundle inlines `VITE_API_URL`; `pnpm test:e2e` builds the same way):
+
+```sh
+NODE_ENV=production VITE_API_URL=http://localhost:4101 heavy pnpm build
+pnpm exec playwright install chromium
+heavy pnpm lighthouse
+```
+
+`pnpm lighthouse --dry-run` prints the plan without starting anything. The script starts a disposable PostgreSQL (Docker), seeds Cafe Legend with a menu and one table QR (`apps/api/src/test/lighthouse-seed.ts`), starts the production API and web servers on the Playwright ports (4101 and 3101), and drives Chromium with `cafe-legend.platform.example` mapped to `127.0.0.1` because tenants resolve by `Host`. To reuse a migrated and seeded test database instead, set `STARTER_TEST_DATABASE_URL` and `STARTER_TEST_RUN` (starting with `starter-pg-test-`). Set `LIGHTHOUSE_CHROME_PATH` to use another Chromium. Results are written to `test-results/lighthouse/summary.json`.
 
 ## Single-VM deployment (legend-8br)
 

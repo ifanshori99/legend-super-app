@@ -36,6 +36,7 @@
     "test:e2e:mock:shard": "node scripts/e2e-mock-shard.mjs",
     "test:setup": "node scripts/test-setup.mjs",
     "traceability": "node scripts/ci/traceability.mjs",
+    "lighthouse": "node scripts/ci/lighthouse.mjs",
     "create:variant": "node scripts/create-variant.mjs"
   },
   "devDependencies": {
@@ -46,6 +47,7 @@
     "eslint": "9.39.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.12.0",
+    "lighthouse": "13.6.0",
     "pg": "catalog:",
     "prettier": "3.9.6",
     "turbo": "2.11.7",
