@@ -4,12 +4,13 @@
 // Balance proof. Gross includes the PPh 21 refund paid as a PPH21_REFUND
 // earning (rf), the service charge (SC) and reimbursements (RB); the net
 // scheme's employer-borne tax (B) has no line and is not in gross. Debits:
-//   (gross - rf - SC - RB) + B   salary_expense
+//   (gross - rf - SC - RB)       salary_expense
+//   + B                          pph21_borne_expense
 //   + SC + RB + bpjsCo + R       service_charge, reimbursement_expense,
 //                                bpjs_expense, employee_receivable
 //   = gross - rf + bpjsCo + B + R
-// Credits: net + (bpjsEmp + bpjsCo) + pph21 + collected + loan + other + erf,
-// where net = gross - (bpjsEmp + W + loan + collected + other) and
+// Credits (erf goes to pph21_borne_expense, other to salary_expense): net +
+// (bpjsEmp + bpjsCo) + pph21 + collected + loan + other + erf, where net = gross - (bpjsEmp + W + loan + collected + other) and
 // pph21 = W + B + R - rf - erf. Substituting:
 //   gross - bpjsEmp - W - loan - collected - other + bpjsEmp + bpjsCo
 //   + W + B + R - rf - erf + collected + loan + other + erf

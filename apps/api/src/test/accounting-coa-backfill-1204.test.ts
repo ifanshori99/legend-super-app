@@ -1,5 +1,5 @@
-// legend-s8a3: data migration 0134 backfills account 1204 / 6110 and the
-// employee_receivable / reimbursement_expense mappings for entities that were
+// legend-s8a3: data migration 0134 backfills account 1204 / 6110 / 6111 and the
+// employee_receivable / reimbursement_expense / pph21_borne_expense mappings for entities that were
 // provisioned before the payroll journal. Written as the migration owner, so
 // the SQL is proven directly, twice (idempotent), like the 0115 data test.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -104,7 +104,7 @@ const mappingsOf = async (entityId: string, role: string) =>
     )
   ).rows;
 
-describe("legend-s8a3 1204 / 6110 backfill migration", () => {
+describe("legend-s8a3 1204 / 6110 / 6111 backfill migration", () => {
   it("adds one account and one mapping each, twice over, under 1200 / 6100", async () => {
     const id = await provisioned();
 
@@ -113,15 +113,21 @@ describe("legend-s8a3 1204 / 6110 backfill migration", () => {
 
     const receivable = await accountsOf(id, "1204");
     const reimbursement = await accountsOf(id, "6110");
+    const borne = await accountsOf(id, "6111");
     expect(receivable).toHaveLength(1);
     expect(receivable[0]?.parent_code).toBe("1200");
     expect(reimbursement).toHaveLength(1);
     expect(reimbursement[0]?.parent_code).toBe("6100");
+    expect(borne).toHaveLength(1);
+    expect(borne[0]?.parent_code).toBe("6100");
     expect(await mappingsOf(id, "employee_receivable")).toEqual([
       { account_id: receivable[0]?.id },
     ]);
     expect(await mappingsOf(id, "reimbursement_expense")).toEqual([
       { account_id: reimbursement[0]?.id },
+    ]);
+    expect(await mappingsOf(id, "pph21_borne_expense")).toEqual([
+      { account_id: borne[0]?.id },
     ]);
   });
 
@@ -130,6 +136,12 @@ describe("legend-s8a3 1204 / 6110 backfill migration", () => {
     const existing1204 = await account(id, "1204", "asset", "current_asset");
     const other = await account(id, "6199", "expense", "operating_expense");
     await map(id, "reimbursement_expense", other);
+    const existing6111 = await account(
+      id,
+      "6111",
+      "expense",
+      "operating_expense",
+    );
 
     await migrate();
 
@@ -140,6 +152,41 @@ describe("legend-s8a3 1204 / 6110 backfill migration", () => {
     expect(await mappingsOf(id, "reimbursement_expense")).toEqual([
       { account_id: other },
     ]);
+    expect(await accountsOf(id, "6111")).toHaveLength(1);
+    expect(await mappingsOf(id, "pph21_borne_expense")).toEqual([
+      { account_id: existing6111 },
+    ]);
+  });
+
+  it("does not map a custom 6111 of the wrong type, an inactive one or a header", async () => {
+    const wrongType = await provisioned();
+    await account(wrongType, "6111", "asset", "current_asset");
+    const inactive = await provisioned();
+    await account(
+      inactive,
+      "6111",
+      "expense",
+      "operating_expense",
+      null,
+      false,
+    );
+    const header = await provisioned();
+    const headerId = await account(
+      header,
+      "6111",
+      "expense",
+      "operating_expense",
+    );
+    await account(header, "6112", "expense", "operating_expense", headerId);
+
+    await migrate();
+
+    for (const id of [wrongType, inactive, header]) {
+      expect(await accountsOf(id, "6111")).toHaveLength(1);
+      expect(await mappingsOf(id, "pph21_borne_expense")).toEqual([]);
+      // 6110 is still backfilled and mapped on its own.
+      expect(await mappingsOf(id, "reimbursement_expense")).toHaveLength(1);
+    }
   });
 
   it("does not map a custom 1204 of the wrong type, an inactive one or a header", async () => {
@@ -169,6 +216,8 @@ describe("legend-s8a3 1204 / 6110 backfill migration", () => {
 
     expect(await accountsOf(id, "1204")).toEqual([]);
     expect(await accountsOf(id, "6110")).toEqual([]);
+    expect(await accountsOf(id, "6111")).toEqual([]);
+    expect(await mappingsOf(id, "pph21_borne_expense")).toEqual([]);
     expect(await mappingsOf(id, "employee_receivable")).toEqual([]);
     expect(await mappingsOf(id, "reimbursement_expense")).toEqual([]);
   });
@@ -183,6 +232,7 @@ describe("legend-s8a3 1204 / 6110 backfill migration", () => {
 
     expect((await accountsOf(id, "1204"))[0]?.parent_code).toBeNull();
     expect((await accountsOf(id, "6110"))[0]?.parent_code).toBeNull();
+    expect((await accountsOf(id, "6111"))[0]?.parent_code).toBeNull();
     expect(await mappingsOf(id, "employee_receivable")).toHaveLength(1);
   });
 });

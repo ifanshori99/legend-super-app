@@ -173,8 +173,9 @@ function totalsOf(parts: Parts): PayrollRunTotals {
 }
 
 // Accounts: 6101 salary expense, 6102 employer BPJS, 6110 reimbursement,
-// 2103 salaries payable, 2104 BPJS payable, 2106 service charge, 2202 PPh 21
-// payable, 1204 employee receivable, 1101 cash.
+// 6111 employer-borne PPh 21, 2103 salaries payable, 2104 BPJS payable, 2106
+// service charge, 2202 PPh 21 payable, 1204 employee receivable, 1102 petty
+// cash.
 const base = {
   gross: 10_000_000,
   bpjsEmp: 300_000,
@@ -210,7 +211,8 @@ const cases: [string, Parts, ByCode][] = [
     "PPh 21 borne by the employer B 124.062 (the real case)",
     { ...base, borne: 124_062 },
     {
-      "6101": { debit: 10_124_062, credit: 0 },
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6111": { debit: 124_062, credit: 0 },
       "6102": { debit: 400_000, credit: 0 },
       "2103": { debit: 0, credit: 9_450_000 },
       "2104": { debit: 0, credit: 700_000 },
@@ -229,10 +231,11 @@ const cases: [string, Parts, ByCode][] = [
     },
   ],
   [
-    "employer refund 40.000 credits salary expense",
+    "employer refund 40.000 credits 6111",
     { ...base, employerRefund: 40_000 },
     {
-      "6101": { debit: 10_000_000, credit: 40_000 },
+      "6101": { debit: 10_000_000, credit: 0 },
+      "6111": { debit: 0, credit: 40_000 },
       "6102": { debit: 400_000, credit: 0 },
       "2103": { debit: 0, credit: 9_450_000 },
       "2104": { debit: 0, credit: 700_000 },
@@ -293,8 +296,9 @@ const cases: [string, Parts, ByCode][] = [
       reimbursement: 300_000,
     },
     {
-      // (20.000.000 - 90.000 - 1.000.000 - 300.000) + 124.062 borne
-      "6101": { debit: 18_734_062, credit: 115_000 },
+      // 20.000.000 - 90.000 - 1.000.000 - 300.000; credit = other 75.000
+      "6101": { debit: 18_610_000, credit: 75_000 },
+      "6111": { debit: 124_062, credit: 40_000 },
       "2106": { debit: 1_000_000, credit: 0 },
       "6110": { debit: 300_000, credit: 0 },
       "6102": { debit: 400_000, credit: 0 },
@@ -396,24 +400,24 @@ describe("payroll.reversed mirrors payroll.locked", () => {
 });
 
 describe("employee_loan.disbursed and reimbursement.paid#cash", () => {
-  it("disbursing a loan debits 1204 and credits cash", () => {
+  it("disbursing a loan debits 1204 and credits petty cash", () => {
     const { byCode, debit, credit } = summarise(
       build(rule("employee_loan.disbursed"), { principalIdr: 2_000_000 }),
     );
     expect(byCode).toEqual({
       "1204": { debit: 2_000_000, credit: 0 },
-      "1101": { debit: 0, credit: 2_000_000 },
+      "1102": { debit: 0, credit: 2_000_000 },
     });
     expect(debit).toBe(credit);
   });
 
-  it("a cash reimbursement debits 6110 and credits cash", () => {
+  it("a cash reimbursement debits 6110 and credits petty cash", () => {
     const { byCode, debit, credit } = summarise(
       build(rule("reimbursement.paid", "cash"), { amountIdr: 450_000 }),
     );
     expect(byCode).toEqual({
       "6110": { debit: 450_000, credit: 0 },
-      "1101": { debit: 0, credit: 450_000 },
+      "1102": { debit: 0, credit: 450_000 },
     });
     expect(debit).toBe(credit);
   });
@@ -841,6 +845,9 @@ describe("property: payroll journal balances for engine-built payslips", () => {
         );
         expect(owed("2106")).toBe(totals.serviceChargeIdr);
         expect(owed("6110")).toBe(totals.reimbursementIdr);
+        expect(owed("6111")).toBe(
+          totals.pph21EmployerBorneIdr - totals.pph21EmployerRefundIdr,
+        );
 
         if (totals.pph21RefundIdr > 0) seen.withRefund += 1;
         if (totals.pph21ReceivableIdr > 0) seen.withReceivable += 1;

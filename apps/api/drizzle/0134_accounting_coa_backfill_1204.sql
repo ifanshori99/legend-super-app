@@ -1,10 +1,12 @@
 -- Custom SQL migration file, put your code below! ---
 -- legend-s8a3: the balanced payroll journal (payroll.locked) posts employee
--- receivables (loan, PPh 21 receivable) to the employee_receivable role and
--- employee reimbursements to the new reimbursement_expense role. New entities
--- get account 1204 "Piutang Karyawan" and 6110 "Beban Reimbursement Karyawan"
--- with those mappings from the standard chart (packages/shared coa.ts). An
--- entity provisioned earlier lacks 6110 (and possibly 1204 or its mapping), so
+-- receivables (loan, PPh 21 receivable) to the employee_receivable role,
+-- employee reimbursements to the new reimbursement_expense role and
+-- employer-borne PPh 21 to the new pph21_borne_expense role. New entities get
+-- account 1204 "Piutang Karyawan", 6110 "Beban Reimbursement Karyawan" and
+-- 6111 "Beban PPh 21 Ditanggung Perusahaan" with those mappings from the
+-- standard chart (packages/shared coa.ts). An entity provisioned earlier lacks
+-- 6110 and 6111 (and possibly 1204 or its mapping), so
 -- the payroll journal could not resolve the role. Backfill them for every
 -- already provisioned (tenant_id, legal_entity_id) pair, meaning one that has
 -- at least one account_mappings row. Unprovisioned entities get nothing: the
@@ -12,7 +14,7 @@
 --
 -- Rules, all idempotent (a re-run changes nothing), never update or delete:
 --   * an account is inserted only when the entity has no account with that
---     code (a custom 1204 or 6110 is kept as is);
+--     code (a custom 1204, 6110 or 6111 is kept as is);
 --   * the parent is the entity's 1200 / 6100 only when it exists and has the
 --     same type (0027 assert_account_parent requires an equal-type parent),
 --     otherwise NULL;
@@ -57,12 +59,27 @@ WHERE NOT EXISTS (
 )
 ON CONFLICT (tenant_id, legal_entity_id, code) DO NOTHING;
 --> statement-breakpoint
+INSERT INTO public.chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group, parent_id)
+SELECT p.tenant_id, p.legal_entity_id, '6111', 'Beban PPh 21 Ditanggung Perusahaan', 'expense', 'operating_expense', parent.id
+FROM (SELECT DISTINCT tenant_id, legal_entity_id FROM public.account_mappings) p
+LEFT JOIN public.chart_of_accounts parent
+  ON parent.tenant_id = p.tenant_id
+  AND parent.legal_entity_id = p.legal_entity_id
+  AND parent.code = '6100'
+  AND parent.type = 'expense'
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.chart_of_accounts a
+  WHERE a.tenant_id = p.tenant_id AND a.legal_entity_id = p.legal_entity_id AND a.code = '6111'
+)
+ON CONFLICT (tenant_id, legal_entity_id, code) DO NOTHING;
+--> statement-breakpoint
 INSERT INTO public.account_mappings (tenant_id, legal_entity_id, role, account_id)
 SELECT a.tenant_id, a.legal_entity_id, m.role, a.id
 FROM public.chart_of_accounts a
 JOIN (VALUES
   ('employee_receivable', '1204', 'asset'),
-  ('reimbursement_expense', '6110', 'expense')
+  ('reimbursement_expense', '6110', 'expense'),
+  ('pph21_borne_expense', '6111', 'expense')
 ) AS m(role, code, type) ON m.code = a.code AND m.type = a.type
 WHERE a.is_active
   AND EXISTS (

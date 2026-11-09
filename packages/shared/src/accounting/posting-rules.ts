@@ -122,7 +122,7 @@ const AUTO = "§3.19 Jurnal Otomatis";
 /** Amount keys come from `payrollJournalAmounts` (payroll-journal.ts). */
 const PAYROLL_JOURNAL_LINES: L[] = [
   ["salary_expense", "debit", "salaryExpenseIdr"],
-  ["salary_expense", "debit", "pph21EmployerBorneIdr"],
+  ["pph21_borne_expense", "debit", "pph21EmployerBorneIdr"],
   ["service_charge", "debit", "serviceChargeIdr"],
   ["reimbursement_expense", "debit", "reimbursementIdr"],
   ["bpjs_expense", "debit", "bpjsCompanyIdr"],
@@ -136,7 +136,7 @@ const PAYROLL_JOURNAL_LINES: L[] = [
   ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
   ["employee_receivable", "credit", "loanRepaymentIdr"],
   ["salary_expense", "credit", "otherDeductionsIdr"],
-  ["salary_expense", "credit", "pph21EmployerRefundIdr"],
+  ["pph21_borne_expense", "credit", "pph21EmployerRefundIdr"],
 ];
 
 /** Default rules (system data; tenants change accounts through mappings, not rules). */
@@ -288,7 +288,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (payroll); §3 Jurnal Payroll`,
     [
       ["employee_receivable", "debit", "principalIdr"],
-      ["cash_on_hand", "credit", "principalIdr"],
+      // petty_cash (1102 Kas Kecil), not cash_on_hand: 1101 is the POS drawer
+      // reconciled by shift close, so crediting it here would double count.
+      ["petty_cash", "credit", "principalIdr"],
     ],
   ),
   // Payout `payroll` posts nothing here: the run's journal carries it
@@ -300,7 +302,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (payroll); §3 reimbursement via payroll atau kas`,
     [
       ["reimbursement_expense", "debit", "amountIdr"],
-      ["cash_on_hand", "credit", "amountIdr"],
+      // petty_cash (1102 Kas Kecil), not cash_on_hand: 1101 is the POS drawer
+      // reconciled by shift close, so crediting it here would double count.
+      ["petty_cash", "credit", "amountIdr"],
     ],
   ),
   rule(
