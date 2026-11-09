@@ -22,6 +22,9 @@
 // the money goes back through the same refund request. A code the guest
 // switched away from, paid after the order was already paid, is booked as
 // `double_payment` unallocated funds; it gets a system refund request too.
+// When both codes settled before either event is consumed, the order is fired
+// for the code that covered the bill, proven by WS-05 evidence less its
+// unallocated funds, never for the double-paid one (legend-mks0q).
 //
 // payment.expired / payment.failed (bead note: an expired code or link must
 // not strand the order in `awaiting_payment`). PRD silent on the exact rule;
@@ -295,6 +298,64 @@ async function lockOrderOfLink(
   return order && order.channel === "qr" ? order : null;
 }
 
+/**
+ * legend-mks0q: what each paid code of the link put toward the bill, from the
+ * durable WS-05 rows: the money its provider evidence brought in, less the
+ * part booked as unallocated funds (overpayment or double payment, whatever
+ * became of it later). WS-05 keeps no per-code allocation column; these two
+ * append-only tables, written in the settling transaction, are the allocation
+ * record. One statement, so one snapshot: a second payment of a code that
+ * commits mid-read can never make its evidence count without its fund (or
+ * the reverse) under READ COMMITTED.
+ */
+async function allocatedIdrByIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<Map<string, number>> {
+  const result = await tx.execute<{ id: string; allocated: string }>(sql`
+    SELECT i.id,
+           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = i.tenant_id
+                         AND e.payment_intent_id = i.id), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = i.tenant_id
+                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+      FROM payment_intents i
+     WHERE i.tenant_id = ${context.tenant.tenantId}
+       AND i.payment_link_id = ${paymentLinkId}
+       AND i.status = 'paid'`);
+  return new Map(result.rows.map((row) => [row.id, Number(row.allocated)]));
+}
+
+/**
+ * legend-mks0q: the code that paid the bill, proven by its allocation: the
+ * event's own code when it covered what the guest owed, else the one code of
+ * the link that did (the link never takes more than its total, so at most one
+ * can). A code whose money was all booked as a double payment is never the
+ * payer, whichever paid event is consumed first: its receipt backs only its
+ * own refund. A bill split over several codes (none covered it alone) keeps
+ * the event's code when it put money toward the bill. Null: the event's code
+ * put nothing toward the bill and no code covered it alone.
+ */
+async function payerIntentOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { paymentLinkId: string; intentId: string; owedIdr: number },
+): Promise<string | null> {
+  const allocated = await allocatedIdrByIntent(
+    tx,
+    context,
+    input.paymentLinkId,
+  );
+  const own = allocated.get(input.intentId) ?? 0;
+  if (allocated.has(input.intentId) && own >= input.owedIdr)
+    return input.intentId;
+  for (const [id, amount] of allocated)
+    if (amount > 0 && amount >= input.owedIdr) return id;
+  return own > 0 ? input.intentId : null;
+}
+
 async function voidAndNotify(
   tx: Tx,
   context: ScopedTenantContext,
@@ -460,11 +521,38 @@ export async function handleQrOrderPaymentPaid(
       ),
     );
   if (intent?.status !== "paid") return "not_settled";
-  // Pin the intent that paid: a superseded code may have settled the bill.
+  // Pin the intent that paid: a superseded code may have settled the bill,
+  // and a code paid after another covered it (`double_payment`, nothing
+  // allocated) is never the payer, whichever event is consumed first
+  // (legend-mks0q). Decided under the order lock from durable WS-05 rows.
+  const payerIntentId = await payerIntentOf(tx, context, {
+    paymentLinkId,
+    intentId,
+    owedIdr: link.totalIdr,
+  });
+  if (payerIntentId === null) {
+    // This code put nothing toward the bill and no code covered it alone:
+    // the codes that did fire the order with their own events. Its money is
+    // a double payment; it goes back.
+    const refundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
+    return refundIds.length > 0
+      ? "double_payment_refund_requested"
+      : "unchanged";
+  }
+  if (payerIntentId !== intentId)
+    logger.warn(
+      { orderId: order.id, intentId, payerIntentId },
+      "QR order: fired for the code that covered the bill, not the event's double-paid code",
+    );
   await fireQrOrder(tx, context, order, {
     now,
     reason: "verified_payment",
-    paidIntentId: intentId,
+    paidIntentId: payerIntentId,
   });
   // Outbox order across intents is not relied on: when this event's intent
   // also carries `double_payment` funds (another code covered the bill
