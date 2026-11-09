@@ -98,7 +98,8 @@ export async function generateScheduledChecklistRuns(
   // clock of now minus the cutoff, as a date.
   const businessDateSql = sql`((${nowIso}::timestamptz AT TIME ZONE ${outlets.timezone})
     - ${outlets.businessDayCutoff}::interval)::date`;
-  const validZoneSql = sql`${outlets.timezone} IN (SELECT name FROM pg_timezone_names)`;
+  // Postgres matches zone names case-insensitively in AT TIME ZONE; so does this.
+  const validZoneSql = sql`lower(${outlets.timezone}) IN (SELECT lower(name) FROM pg_timezone_names)`;
   // Outlets skipped for a bad time zone, logged once at the end of the tick.
   const badZoneOutlets = new Set<string>();
 
@@ -251,8 +252,9 @@ export async function generateScheduledChecklistRuns(
       );
     } catch {
       // A zone Postgres knows but the runtime does not: skip, log once per tick.
+      // null, like a malformed template, so it never fills the template cap.
       badZoneOutlets.add(template.outletId);
-      return 0;
+      return null;
     }
     // Never create a run that is born missed (no spurious alert).
     if (dueAt.getTime() <= now.getTime()) return 0;
