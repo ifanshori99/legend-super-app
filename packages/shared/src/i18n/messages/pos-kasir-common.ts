@@ -34,6 +34,7 @@ export const posKasirCommonMessages = {
   pinDialog: {
     reasonLabel: "Alasan",
     reasonRequired: "Alasan wajib diisi.",
+    reasonTooShort: "Alasan minimal {min} karakter.",
     pinLabel: "PIN supervisor",
     cancel: "Batal",
     checking: "Memeriksa PIN…",

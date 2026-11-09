@@ -79,6 +79,8 @@ import { posKasirCodeMessages } from "./pos-kasir-code.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
 import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
+import { openBillConvertMessages } from "./open-bill-convert.ts";
+import { openBillPolicyMessages } from "./open-bill-policy.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -122,6 +124,9 @@ export const id = {
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,
   posKasirDayclose: posKasirDaycloseMessages,
+  // Open bill by supervisor + outlet policy (legend-8cm4, legend-2zb5).
+  openBillConvert: openBillConvertMessages,
+  openBillPolicy: openBillPolicyMessages,
   // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews (legend-i026),
   // campaigns/automations (legend-hbad), delivery channels (legend-e8oa) and
   // the guest booking flow (legend-xm4y). One module per bead so they never

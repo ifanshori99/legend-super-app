@@ -67,6 +67,11 @@ import {
   updateTableInputSchema,
   voucherCodeSchema,
 } from "./schemas.ts";
+import {
+  convertSessionToOpenBillInputSchema,
+  openBillPolicySchema,
+  upsertOpenBillPolicyInputSchema,
+} from "./open-bill.ts";
 
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
 
@@ -182,6 +187,35 @@ export const confirmOpenBillSession = defineEndpoint({
   path: "/api/table-sessions/:sessionId/confirm",
   params: sessionParams,
   response: dataResponseSchema(tableSessionSchema),
+});
+
+/**
+ * Founder Q31/Q32: a supervisor+ (PIN + reason) turns a running pay-first
+ * session into an open bill, within the outlet's open-bill policy. Draft
+ * contract: the API lands in step 2 (bead legend-8cm4).
+ */
+export const convertSessionToOpenBill = defineEndpoint({
+  method: "POST",
+  path: "/api/table-sessions/:sessionId/open-bill",
+  params: sessionParams,
+  body: convertSessionToOpenBillInputSchema,
+  response: dataResponseSchema(tableSessionSchema),
+});
+
+/** Per-outlet open-bill limits (draft contract, bead legend-2zb5). */
+export const getOpenBillPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/open-bill-policy",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(openBillPolicySchema),
+});
+
+export const updateOpenBillPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/open-bill-policy",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  body: upsertOpenBillPolicyInputSchema,
+  response: dataResponseSchema(openBillPolicySchema),
 });
 
 /** ORD-10: close only when the bill is settled and the table is clean. */

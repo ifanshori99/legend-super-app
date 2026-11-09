@@ -16,6 +16,7 @@ import {
   tenantIdSchema,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/index.ts";
+import { staffPinPattern } from "../identity/schemas.ts";
 import {
   floorZoneIdSchema,
   tableIdSchema,
@@ -66,14 +67,42 @@ export type UpsertOpenBillPolicyInput = z.infer<
   typeof upsertOpenBillPolicyInputSchema
 >;
 
+/**
+ * A supervisor+ turns a running pay-first session into an open bill (founder
+ * Q31/Q32). The PIN is the staff PIN (6 digits); the server checks it belongs
+ * to a supervisor, outlet manager or owner and records reason and approver.
+ */
+export const convertSessionToOpenBillInputSchema = z.strictObject({
+  reason: z.string().trim().min(3).max(300),
+  pin: z.string().regex(staffPinPattern, "Expected a 6-digit pin"),
+});
+export type ConvertSessionToOpenBillInput = z.infer<
+  typeof convertSessionToOpenBillInputSchema
+>;
+
 /** A placed order would push the session over its limit (409). */
 export const QR_ORDER_OPEN_BILL_LIMIT = "QR_ORDER_OPEN_BILL_LIMIT" as const;
+/** Unpaid bill is already at or over the outlet limit: no conversion (409). */
+export const OPEN_BILL_CONVERT_LIMIT = "OPEN_BILL_CONVERT_LIMIT" as const;
+/** Wrong PIN, or the PIN is not a supervisor or above (403). */
+export const OPEN_BILL_PIN_REJECTED = "OPEN_BILL_PIN_REJECTED" as const;
+/** The session is not a running pay-first session (409). */
+export const OPEN_BILL_NOT_ELIGIBLE = "OPEN_BILL_NOT_ELIGIBLE" as const;
 export const openBillErrorHttpStatus = {
   [QR_ORDER_OPEN_BILL_LIMIT]: 409,
+  [OPEN_BILL_CONVERT_LIMIT]: 409,
+  [OPEN_BILL_PIN_REJECTED]: 403,
+  [OPEN_BILL_NOT_ELIGIBLE]: 409,
 } as const satisfies Record<string, number>;
 export const openBillErrorMessages = {
   [QR_ORDER_OPEN_BILL_LIMIT]:
     "Batas nilai tagihan open bill untuk meja ini sudah tercapai. Mohon minta waiter atau kasir membantu menyelesaikan tagihan sebelum memesan lagi.",
+  [OPEN_BILL_CONVERT_LIMIT]:
+    "Tagihan belum dibayar sudah mencapai batas open bill outlet. Minta tamu membayar sebagian dulu.",
+  [OPEN_BILL_PIN_REJECTED]:
+    "PIN salah atau bukan milik supervisor, manajer outlet, atau pemilik.",
+  [OPEN_BILL_NOT_ELIGIBLE]:
+    "Meja ini bukan sesi bayar dulu yang sedang berjalan.",
 } as const;
 
 export const openBillInactivePayloadSchema = z.strictObject({

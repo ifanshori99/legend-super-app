@@ -6,7 +6,7 @@
 // surface follows the state — empty = card + border, occupied = surface-3 with
 // no border, cleaning = dashed, inactive = surface-2 muted. A waiter call is
 // urgent: solid StatusPill, 2px border and a 6px start rule in the status color.
-import { Clock, Link2, Users } from "lucide-react";
+import { Clock, Link2, ReceiptText, Users } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Money } from "@/components/ui/money";
@@ -14,6 +14,7 @@ import { cn } from "cn";
 import type { TableLiveStatus } from "@starter/shared/qr-order";
 import {
   boardStatusLabel,
+  paymentModeLabel,
   seatDurationOf,
   tableBoardStatus,
   tableTileLook,
@@ -114,6 +115,15 @@ export function TableCard({
             <span aria-hidden="true">·</span>
             {t("floor.pax", { count: session.pax })}
           </span>
+          {session.paymentMode === "open_bill" && (
+            <span
+              data-slot="payment-mode"
+              className="flex items-center gap-1 text-sm text-muted-foreground"
+            >
+              <ReceiptText className="size-4" aria-hidden="true" />
+              {paymentModeLabel(session.paymentMode, t)}
+            </span>
+          )}
           {row.outstandingIdr > 0 && (
             <span className="flex items-baseline justify-between gap-2">
               <span className="text-sm text-muted-foreground">

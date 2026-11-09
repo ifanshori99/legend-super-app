@@ -187,6 +187,7 @@ import { Route as KelolaKelolaPengadaanReturRouteImport } from './routes/_kelola
 import { Route as KelolaKelolaPengaturanIntegrasiRouteImport } from './routes/_kelola/kelola.pengaturan_.integrasi'
 import { Route as KelolaKelolaPengaturanIstilahRouteImport } from './routes/_kelola/kelola.pengaturan_.istilah'
 import { Route as KelolaKelolaPengaturanKonfigurasiRouteImport } from './routes/_kelola/kelola.pengaturan_.konfigurasi'
+import { Route as KelolaKelolaPengaturanOpenBillRouteImport } from './routes/_kelola/kelola.pengaturan_.open-bill'
 import { Route as KelolaKelolaPengaturanOutletRouteImport } from './routes/_kelola/kelola.pengaturan_.outlet'
 import { Route as KelolaKelolaPengaturanTemaRouteImport } from './routes/_kelola/kelola.pengaturan_.tema'
 import { Route as KelolaKelolaPengumumanIndexRouteImport } from './routes/_kelola/kelola.pengumuman.index'
@@ -1283,6 +1284,12 @@ const KelolaKelolaPengaturanKonfigurasiRoute =
     path: '/kelola/pengaturan/konfigurasi',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengaturanOpenBillRoute =
+  KelolaKelolaPengaturanOpenBillRouteImport.update({
+    id: '/kelola/pengaturan_/open-bill',
+    path: '/kelola/pengaturan/open-bill',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaPengaturanOutletRoute =
   KelolaKelolaPengaturanOutletRouteImport.update({
     id: '/kelola/pengaturan_/outlet',
@@ -2268,6 +2275,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -2576,6 +2584,7 @@ export interface FileRoutesByTo {
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -2899,6 +2908,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pengaturan_/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/_kelola/kelola/pengaturan_/istilah': typeof KelolaKelolaPengaturanIstilahRoute
   '/_kelola/kelola/pengaturan_/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/_kelola/kelola/pengaturan_/open-bill': typeof KelolaKelolaPengaturanOpenBillRoute
   '/_kelola/kelola/pengaturan_/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/_kelola/kelola/pengaturan_/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/_kelola/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -3212,6 +3222,7 @@ export interface FileRouteTypes {
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
     | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/open-bill'
     | '/kelola/pengaturan/outlet'
     | '/kelola/pengaturan/tema'
     | '/kelola/persetujuan/$requestId'
@@ -3520,6 +3531,7 @@ export interface FileRouteTypes {
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
     | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/open-bill'
     | '/kelola/pengaturan/outlet'
     | '/kelola/pengaturan/tema'
     | '/kelola/persetujuan/$requestId'
@@ -3842,6 +3854,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pengaturan_/integrasi'
     | '/_kelola/kelola/pengaturan_/istilah'
     | '/_kelola/kelola/pengaturan_/konfigurasi'
+    | '/_kelola/kelola/pengaturan_/open-bill'
     | '/_kelola/kelola/pengaturan_/outlet'
     | '/_kelola/kelola/pengaturan_/tema'
     | '/_kelola/kelola/persetujuan/$requestId'
@@ -5273,6 +5286,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPengaturanKonfigurasiRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan_/open-bill': {
+      id: '/_kelola/kelola/pengaturan_/open-bill'
+      path: '/kelola/pengaturan/open-bill'
+      fullPath: '/kelola/pengaturan/open-bill'
+      preLoaderRoute: typeof KelolaKelolaPengaturanOpenBillRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/pengaturan_/outlet': {
       id: '/_kelola/kelola/pengaturan_/outlet'
       path: '/kelola/pengaturan/outlet'
@@ -6483,6 +6503,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPengaturanIntegrasiRoute: typeof KelolaKelolaPengaturanIntegrasiRoute
   KelolaKelolaPengaturanIstilahRoute: typeof KelolaKelolaPengaturanIstilahRoute
   KelolaKelolaPengaturanKonfigurasiRoute: typeof KelolaKelolaPengaturanKonfigurasiRoute
+  KelolaKelolaPengaturanOpenBillRoute: typeof KelolaKelolaPengaturanOpenBillRoute
   KelolaKelolaPengaturanOutletRoute: typeof KelolaKelolaPengaturanOutletRoute
   KelolaKelolaPengaturanTemaRoute: typeof KelolaKelolaPengaturanTemaRoute
   KelolaKelolaPersetujuanRequestIdRoute: typeof KelolaKelolaPersetujuanRequestIdRoute
@@ -6707,6 +6728,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPengaturanIstilahRoute: KelolaKelolaPengaturanIstilahRoute,
   KelolaKelolaPengaturanKonfigurasiRoute:
     KelolaKelolaPengaturanKonfigurasiRoute,
+  KelolaKelolaPengaturanOpenBillRoute: KelolaKelolaPengaturanOpenBillRoute,
   KelolaKelolaPengaturanOutletRoute: KelolaKelolaPengaturanOutletRoute,
   KelolaKelolaPengaturanTemaRoute: KelolaKelolaPengaturanTemaRoute,
   KelolaKelolaPersetujuanRequestIdRoute: KelolaKelolaPersetujuanRequestIdRoute,
