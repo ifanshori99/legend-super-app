@@ -1062,7 +1062,7 @@ describe("legend-18qw notification recipient resolver", () => {
     );
     await owner.query(
       `INSERT INTO "user" (id, name, email, email_verified, banned) VALUES
-       ($1, 'Supervisor diblokir', $3, true, true), ($2, 'Pemilik C', $4, true, false)`,
+       ($1, 'Supervisor diblokir', $3, true, false), ($2, 'Pemilik C', $4, true, false)`,
       [
         bannedSupervisor,
         ownerC,
@@ -1076,6 +1076,11 @@ describe("legend-18qw notification recipient resolver", () => {
             ($1, $4, $6, 'tenant', NULL, $4, now() - interval '1 hour')`,
       [tenantC, bannedSupervisor, supervisorRole, ownerC, outletC, ownerRole],
     );
+    // The ban comes after the grant, as in production: migration 0135 refuses a
+    // role assignment to an account that is already banned.
+    await owner.query(`UPDATE "user" SET banned = true WHERE id = $1`, [
+      bannedSupervisor,
+    ]);
     const contextC = tenantContext(tenantC);
     const event = {
       ...envelope("checklist.missed", bandung, {

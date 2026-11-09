@@ -714,26 +714,33 @@ describe("RSV-02 a late DP is refunded in full", () => {
   // chain when it is created, requested by the reserved system user.
   it("PAY-04 the late-DP refund opens its approval chain at creation", async () => {
     await setPolicy("required", 100_000);
-    // The tenant needs a refund approval matrix; add the supervisor-from-Rp0
-    // default only when no other suite has left one, and remove it again.
-    const existing = await asOwner((client) =>
-      client.query(
-        "SELECT 1 FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+    // The tenant needs a refund approval matrix whose lowest floor is at or
+    // below the deposit. Other suites share this tenant and may leave a custom
+    // matrix, so save it, use the supervisor-from-Rp0 default, restore after.
+    const saved = await asOwner((client) =>
+      client.query<{
+        id: string;
+        threshold_idr: string | null;
+        approver_role_id: string;
+        levels: number;
+        requires_distinct_actor: boolean;
+      }>(
+        "SELECT id, threshold_idr, approver_role_id, levels, requires_distinct_actor FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
         [seededTenantId],
       ),
     );
-    let addedPolicy = false;
-    if (existing.rowCount === 0) {
-      await asOwner((client) =>
-        client.query(
-          `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-           SELECT $1, 'refund', 0, id, 1, true FROM roles
-           WHERE tenant_id = $1 AND template_key = 'supervisor'`,
-          [seededTenantId],
-        ),
+    await asOwner(async (client) => {
+      await client.query(
+        "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+        [seededTenantId],
       );
-      addedPolicy = true;
-    }
+      await client.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+         SELECT $1, 'refund', 0, id, 1, true FROM roles
+         WHERE tenant_id = $1 AND template_key = 'supervisor'`,
+        [seededTenantId],
+      );
+    });
     let refundId: string | null = null;
     try {
       const f = await floor(1);
@@ -801,13 +808,25 @@ describe("RSV-02 a late DP is refunded in full", () => {
             [refundId],
           ),
         );
-      if (addedPolicy)
-        await asOwner((client) =>
-          client.query(
-            "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
-            [seededTenantId],
-          ),
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+          [seededTenantId],
         );
+        for (const row of saved.rows)
+          await client.query(
+            `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+             VALUES ($1, $2, 'refund', $3, $4, $5, $6)`,
+            [
+              row.id,
+              seededTenantId,
+              row.threshold_idr,
+              row.approver_role_id,
+              row.levels,
+              row.requires_distinct_actor,
+            ],
+          );
+      });
     }
   });
 

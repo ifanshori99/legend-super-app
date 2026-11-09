@@ -40,11 +40,21 @@ try {
   });
   pool.on("error", () => {});
   const { rows } = await pool.query(
-    'UPDATE "user" SET role = $1, updated_at = now() WHERE lower(email) = lower($2) RETURNING email, role',
+    // A banned account (including the reserved system account) never gets a
+    // role; the database refuses it too (migration 0135).
+    'UPDATE "user" SET role = $1, updated_at = now() WHERE lower(email) = lower($2) AND (banned IS NOT TRUE OR (ban_expires IS NOT NULL AND ban_expires <= now()) OR $1::text IS NULL) RETURNING email, role',
     [role || null, email],
   );
   if (!rows.length) {
-    console.error(`No account found for ${email}. Sign up first, then retry.`);
+    const banned = await pool.query(
+      'SELECT 1 FROM "user" WHERE lower(email) = lower($1) AND banned IS TRUE AND (ban_expires IS NULL OR ban_expires > now())',
+      [email],
+    );
+    console.error(
+      banned.rowCount
+        ? `${email} is banned and cannot be given a role.`
+        : `No account found for ${email}. Sign up first, then retry.`,
+    );
     process.exitCode = 1;
   } else {
     console.log(

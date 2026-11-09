@@ -11,8 +11,9 @@
 //
 // Assumptions where the brief is not exact:
 // - The reserved system user is id 00000000-0000-4000-8000-000000000002, name
-//   "Sistem", email system@legend.invalid, banned, no sign-in credentials and no
-//   role assignments. `SYSTEM_APPROVAL_REQUESTER` is the exported id.
+//   "Sistem", an email matching system-approval-%@legend.invalid (random part,
+//   so it never collides with a person's address), banned, no sign-in
+//   credentials and no role assignments. `SYSTEM_APPROVAL_REQUESTER` is the id.
 // - `openPendingRefundChains` returns how many chains it opened. Other suites
 //   may leave unrelated pending refunds in the shared tenant, so the first run
 //   only asserts "at least our two"; the state of every seeded row is exact.
@@ -21,10 +22,37 @@
 // - A forced chain failure is a database error raised inside
 //   `openApprovalRequest` (mocked once); the savepoint must keep the caller's
 //   transaction alive, shown by a later write of the caller that still commits.
+// - Re-running migration 0135 is tested by executing its SQL file statement by
+//   statement (split on `--> statement-breakpoint`) on a dedicated connection
+//   inside BEGIN ... ROLLBACK, so the shared database is never changed. The
+//   CREATE TRIGGER statements are skipped on a re-run because the triggers
+//   already exist; the trigger tests below exercise them directly.
+// - "No adoption" renames the system user (a plain name change passes the
+//   user_role_guard trigger, so it needs no ALTER TABLE ... DISABLE TRIGGER and
+//   no table-wide lock) and runs only the migration's DO block: it must raise.
+// - Trigger violations are asserted by SQLSTATE 23514 (check_violation).
+// - The starvation, lock-timeout and reason cases run in their own fresh
+//   isolated tenants (default matrix, floor Rp0), so refunds left by other
+//   cases cannot change which candidates a batch sees. A permanently failing
+//   chain is made by opening a refund's chain and then clearing
+//   approval_chain_id: the orphaned pending approval request makes the next
+//   open refuse.
+// - The lock-timeout bounds (6 s / 12 s) are loose on purpose: the lock wait is
+//   2 s per candidate; only a missing lock timeout (a wait that never ends)
+//   should fail them.
+// - `openPendingRefundChains(ctx, now, limit, budgetMs, shouldStop)`: a
+//   `shouldStop` that returns true makes it open nothing. `shouldStop` is asked
+//   once before each candidate, so "stops after one candidate was tried" is a
+//   `shouldStop` whose second call returns true.
+// - A ban is active when banned = true AND (ban_expires IS NULL OR ban_expires >
+//   now()), as Better Auth reads it. A person banned with an expiry in the past
+//   can be given a role again; one banned until a future time cannot.
 // - The sweep `sweepApprovedRefundPayouts(context, now, limit)` opens pending
 //   chains first; payout of approved refunds is covered in
 //   payment-refund-approval.test.ts.
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -62,6 +90,7 @@ import {
   openPendingRefundChains,
   openRefundChainAtRequest,
   openRefundChainSafely,
+  resetPendingRefundChainCursor,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
 import {
@@ -118,6 +147,9 @@ let finance: Client; // payment.reconcile only: files refunds, cannot decide the
 let financeId: string;
 let supervisor1: Client; // pos.refund.approve, NO payment.reconcile
 let supervisor1Id: string;
+let ownerClient: Client; // tenant owner: can grant role assignments
+let bannedUserId: string; // an ordinary person whose account is banned
+let expiredBanUserId: string; // banned, but the ban expired yesterday
 let fake: FakeRefundGateway;
 
 const userIds: string[] = [];
@@ -137,7 +169,7 @@ async function roleIdOf(templateKey: string, tenant: string = tenantId) {
 }
 
 async function signedIn(
-  templateKey: "finance" | "supervisor",
+  templateKey: "finance" | "supervisor" | "owner",
   label: string,
   scope: "tenant" | "outlet",
 ) {
@@ -243,6 +275,7 @@ async function insertPendingRefund(opts: {
   amountIdr: number;
   tenant?: { tenantId: string; outletId: string };
   paidIdr?: number;
+  reason?: string;
 }) {
   const tenant = opts.tenant ?? { tenantId, outletId: outletA };
   const intentId = await seedPaid(opts.paidIdr ?? 300_000, tenant);
@@ -250,7 +283,7 @@ async function insertPendingRefund(opts: {
   refundIds.push(refundId);
   await owner.query(
     `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-     VALUES ($1, $2, $3, $4, $5, 'Pengembalian otomatis sistem', 'pending', $6)`,
+     VALUES ($1, $2, $3, $4, $5, $7, 'pending', $6)`,
     [
       refundId,
       tenant.tenantId,
@@ -258,21 +291,33 @@ async function insertPendingRefund(opts: {
       intentId,
       opts.amountIdr,
       opts.requestedBy,
+      opts.reason ?? "Pengembalian otomatis sistem",
     ],
   );
   return { refundId, intentId };
 }
 
 /** Opens the chain the way a system refund's creation does, in a real transaction. */
-async function openChainAtCreation(refundId: string) {
-  return withTenant(db, outletContext(sessionTenant, outletA), async (tx) => {
-    const context = outletContext(sessionTenant, outletA);
+async function openChainAtCreation(
+  refundId: string,
+  tenant: { tenantId: string; outletId: string } = {
+    tenantId,
+    outletId: outletA,
+  },
+) {
+  const session = establishTenantContext({
+    tenantId: tenantIdSchema.parse(tenant.tenantId),
+    brandId: null,
+    source: "session",
+  });
+  const context = outletContext(session, tenant.outletId);
+  return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select()
       .from(paymentRefunds)
       .where(
         and(
-          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.tenantId, session.tenantId),
           eq(paymentRefunds.id, refundId),
         ),
       );
@@ -359,6 +404,25 @@ const intentStatus = async (intentId: string) =>
 
 let tenantB: Awaited<ReturnType<typeof createIsolatedTenant>>;
 
+/** A new tenant with the factory refund matrix (supervisor from Rp0). */
+async function freshTenant() {
+  const created = await createIsolatedTenant(
+    `sc${randomUUID().replaceAll("-", "").slice(0, 10)}`,
+  );
+  await withTenant(db, tenantContext(created.tenantId), (tx) =>
+    seedTenantRoleTemplates(tx, created.tenantId),
+  );
+  return created;
+}
+
+async function systemEmail() {
+  const { rows } = await owner.query<{ email: string }>(
+    'SELECT email FROM "user" WHERE id = $1',
+    [SYSTEM_USER_ID],
+  );
+  return rows[0]!.email;
+}
+
 beforeAll(async () => {
   ({ client: finance, userId: financeId } = await signedIn(
     "finance",
@@ -370,6 +434,37 @@ beforeAll(async () => {
     "System chain supervisor",
     "outlet",
   ));
+  ({ client: ownerClient } = await signedIn(
+    "owner",
+    "System chain owner",
+    "tenant",
+  ));
+  {
+    // An ordinary person whose account was banned: no role, never signs in.
+    const client = agent(app);
+    const email = await signUp(client, "System chain banned");
+    await setRole(email, null);
+    const session = await client.get("/api/auth/get-session");
+    bannedUserId = session.body.user.id as string;
+    userIds.push(bannedUserId);
+    await owner.query(
+      "UPDATE \"user\" SET banned = true, ban_reason = 'test' WHERE id = $1",
+      [bannedUserId],
+    );
+  }
+  {
+    // Banned with an expiry in the past: the ban no longer applies.
+    const client = agent(app);
+    const email = await signUp(client, "System chain expired ban");
+    await setRole(email, null);
+    const session = await client.get("/api/auth/get-session");
+    expiredBanUserId = session.body.user.id as string;
+    userIds.push(expiredBanUserId);
+    await owner.query(
+      "UPDATE \"user\" SET banned = true, ban_reason = 'test', ban_expires = now() - interval '1 day' WHERE id = $1",
+      [expiredBanUserId],
+    );
+  }
   savedPolicies = (
     await owner.query(
       "SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
@@ -562,17 +657,20 @@ describe("PAY-04 the system account cannot be used to sign in", () => {
       email: string;
       banned: boolean;
       role: string | null;
-    }>('SELECT name, email, banned, role FROM "user" WHERE id = $1', [
-      SYSTEM_USER_ID,
-    ]);
-    expect(rows).toEqual([
-      {
-        name: "Sistem",
-        email: "system@legend.invalid",
-        banned: true,
-        role: null,
-      },
-    ]);
+      ban_expires: Date | null;
+    }>(
+      'SELECT name, email, banned, role, ban_expires FROM "user" WHERE id = $1',
+      [SYSTEM_USER_ID],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      name: "Sistem",
+      banned: true,
+      role: null,
+      ban_expires: null,
+    });
+    // The address has a random part: it never collides with a person's address.
+    expect(rows[0]!.email).toMatch(/^system-approval-.+@legend\.invalid$/);
     const accounts = await owner.query(
       'SELECT 1 FROM "account" WHERE user_id = $1',
       [SYSTEM_USER_ID],
@@ -587,13 +685,15 @@ describe("PAY-04 the system account cannot be used to sign in", () => {
 
   it("PAY-04 signing in as the system user fails and starts no session", async () => {
     const client = agent(app);
-    for (const password of ["Test-password-123!", "system", ""]) {
-      const response = await client
-        .post("/api/auth/sign-in/email")
-        .set(originHeader)
-        .send({ email: "system@legend.invalid", password });
-      expect(response.status).toBeGreaterThanOrEqual(400);
-    }
+    const addresses = [await systemEmail(), "system@legend.invalid"];
+    for (const email of addresses)
+      for (const password of ["Test-password-123!", "system", ""]) {
+        const response = await client
+          .post("/api/auth/sign-in/email")
+          .set(originHeader)
+          .send({ email, password });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+      }
     const session = await client.get("/api/auth/get-session");
     expect(session.body?.user ?? null).toBeNull();
   });
@@ -719,6 +819,613 @@ describe("PAY-04 pending refunds from before the change get their chain from the
     expect((await refundRow(refundId)).status).toBe("completed");
     expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(1);
     expect(await intentStatus(intentId)).toBe("partially_refunded");
+  });
+});
+
+describe("PAY-04 migration 0135 and its guards keep the system user locked down", () => {
+  const migrationSql = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../drizzle/0135_system_approval_requester.sql",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const statements = migrationSql
+    .split("--> statement-breakpoint")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  // The INSERT, the DO block, and the rest (functions and triggers).
+  const insertStatement = statements.find((s) => /INSERT INTO "user"/.test(s))!;
+  const doStatement = statements.find((s) => /^DO \$\$/m.test(s))!;
+  // The triggers already exist on a migrated database: skip CREATE TRIGGER.
+  const rerunnable = statements.filter((s) => !/^\s*CREATE TRIGGER/m.test(s));
+
+  type Run = (
+    text: string,
+    values?: unknown[],
+  ) => Promise<{ rows: Record<string, unknown>[] }>;
+
+  async function inRolledBackTx(body: (run: Run) => Promise<void>) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await body((text, values) => client.query(text, values));
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  }
+
+  async function failureOf(run: () => Promise<unknown>) {
+    try {
+      await run();
+    } catch (error) {
+      return error as Error & { code?: string };
+    }
+    return null;
+  }
+
+  /** Each case runs in its own rolled-back transaction and must raise 23514. */
+  async function expectViolation(
+    statement: string,
+    values: unknown[],
+    message: RegExp,
+    setup?: (run: Run) => Promise<void>,
+  ) {
+    await inRolledBackTx(async (run) => {
+      await setup?.(run);
+      const failure = await failureOf(() => run(statement, values));
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure!.code).toBe("23514");
+      expect(failure!.message).toMatch(message);
+    });
+  }
+
+  const assignmentInsert = `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+    VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $4)`;
+
+  it("PAY-04 the migration file has the insert, the check and both guard triggers", () => {
+    expect(insertStatement).toMatch(/ON CONFLICT \(id\) DO NOTHING/);
+    expect(doStatement).toMatch(/RAISE EXCEPTION/);
+    expect(rerunnable.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("PAY-04 TEN-02 the guard triggers are installed on a migrated database", async () => {
+    const { rows } = await owner.query<{ tgname: string }>(
+      `SELECT tgname FROM pg_trigger
+       WHERE NOT tgisinternal AND tgname IN ('user_role_guard', 'role_assignments_grantee_guard')`,
+    );
+    expect(rows.map((r) => r.tgname).sort()).toEqual([
+      "role_assignments_grantee_guard",
+      "user_role_guard",
+    ]);
+  });
+
+  it("PAY-04 re-running the migration is a no-op for the committed system user", async () => {
+    const before = await owner.query('SELECT * FROM "user" WHERE id = $1', [
+      SYSTEM_USER_ID,
+    ]);
+    await inRolledBackTx(async (run) => {
+      for (const statement of rerunnable) await run(statement);
+      const after = await run('SELECT * FROM "user" WHERE id = $1', [
+        SYSTEM_USER_ID,
+      ]);
+      // ON CONFLICT DO NOTHING: no new random email, nothing else changed.
+      expect(after.rows).toEqual(before.rows);
+    });
+  });
+
+  it("PAY-04 a person who signed up as system@legend.invalid does not block the migration", async () => {
+    await inRolledBackTx(async (run) => {
+      await run(
+        `INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+         VALUES ($1, 'Orang Biasa', 'system@legend.invalid', false, now(), now())`,
+        [randomUUID()],
+      );
+      // The old fixed address is taken, but the system row has a random one.
+      for (const statement of rerunnable) await run(statement);
+      const system = await run('SELECT email FROM "user" WHERE id = $1', [
+        SYSTEM_USER_ID,
+      ]);
+      expect(system.rows).toHaveLength(1);
+      expect(system.rows[0]!.email).not.toBe("system@legend.invalid");
+    });
+    // The committed row carries the random-address pattern.
+    expect(await systemEmail()).toMatch(/^system-approval-.+@legend\.invalid$/);
+  });
+
+  it("PAY-04 the migration refuses to adopt a user row that is not the system account", async () => {
+    await inRolledBackTx(async (run) => {
+      // Rename only: banned, no role and no account stay as they were, so only
+      // the name check can catch it.
+      await run('UPDATE "user" SET name = $2 WHERE id = $1', [
+        SYSTEM_USER_ID,
+        "Budi",
+      ]);
+      const failure = await failureOf(() => run(doStatement));
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure!.message).toMatch(/is not the reserved system account/);
+    });
+    const { rows } = await owner.query(
+      'SELECT name FROM "user" WHERE id = $1',
+      [SYSTEM_USER_ID],
+    );
+    expect(rows).toEqual([{ name: "Sistem" }]);
+  });
+
+  it("PAY-04 the migration check fails when the system user has a sign-in account", async () => {
+    await inRolledBackTx(async (run) => {
+      await run(
+        `INSERT INTO "account" (id, account_id, provider_id, user_id, password)
+         VALUES ($1, $2, 'credential', $3, 'fake-hash')`,
+        [`fake-${randomUUID()}`, SYSTEM_USER_ID, SYSTEM_USER_ID],
+      );
+      const failure = await failureOf(() => run(doStatement));
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure!.message).toMatch(/is not the reserved system account/);
+    });
+    const accounts = await owner.query(
+      'SELECT 1 FROM "account" WHERE user_id = $1',
+      [SYSTEM_USER_ID],
+    );
+    expect(accounts.rowCount).toBe(0);
+  });
+
+  it("PAY-04 the system user cannot be unbanned", async () => {
+    await expectViolation(
+      'UPDATE "user" SET banned = false WHERE id = $1',
+      [SYSTEM_USER_ID],
+      /stays banned with no role/,
+    );
+  });
+
+  it("PAY-04 the system user cannot be given a role", async () => {
+    await expectViolation(
+      "UPDATE \"user\" SET role = 'admin' WHERE id = $1",
+      [SYSTEM_USER_ID],
+      /stays banned with no role/,
+    );
+  });
+
+  it("PAY-04 a banned person cannot be given a role", async () => {
+    await expectViolation(
+      "UPDATE \"user\" SET role = 'admin' WHERE id = $1",
+      [bannedUserId],
+      /banned account cannot be given a role/,
+    );
+  });
+
+  it("PAY-04 the system user cannot be given a tenant role assignment", async () => {
+    await expectViolation(
+      assignmentInsert,
+      [tenantId, SYSTEM_USER_ID, await roleIdOf("cashier"), financeId],
+      /banned or system account cannot be given a role/,
+    );
+  });
+
+  it("PAY-04 a banned person cannot be given a tenant role assignment", async () => {
+    await expectViolation(
+      assignmentInsert,
+      [tenantId, bannedUserId, await roleIdOf("cashier"), financeId],
+      /banned or system account cannot be given a role/,
+    );
+  });
+
+  it("PAY-04 an assignment already held cannot be moved onto the system user", async () => {
+    const roleId = await roleIdOf("cashier");
+    await expectViolation(
+      "UPDATE role_assignments SET user_id = $1 WHERE user_id = $2 AND role_id = $3",
+      [SYSTEM_USER_ID, financeId, roleId],
+      /banned or system account cannot be given a role/,
+      async (run) => {
+        // Give the case a row to move (rolled back with the rest).
+        await run(
+          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+           VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+          [tenantId, financeId, roleId],
+        );
+      },
+    );
+  });
+});
+
+describe("PAY-04 an expired ban no longer blocks roles, an active one still does", () => {
+  type Run = (text: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
+  async function inRolledBackTx(body: (run: Run) => Promise<void>) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await body((text, values) => client.query(text, values));
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  }
+  const failureOf = async (run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      return error as Error & { code?: string };
+    }
+    return null;
+  };
+
+  it("PAY-04 a person whose ban expired can be given a tenant role assignment", async () => {
+    await inRolledBackTx(async (run) => {
+      const inserted = await run(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $4)`,
+        [tenantId, expiredBanUserId, await roleIdOf("cashier"), financeId],
+      );
+      expect(inserted.rowCount).toBe(1);
+    });
+  });
+
+  it("PAY-04 a person whose ban expired can be given a global role", async () => {
+    await inRolledBackTx(async (run) => {
+      const updated = await run(
+        "UPDATE \"user\" SET role = 'admin' WHERE id = $1 RETURNING role",
+        [expiredBanUserId],
+      );
+      expect(updated.rows).toEqual([{ role: "admin" }]);
+    });
+  });
+
+  it("PAY-04 a person banned until a future time cannot be given a global role or a tenant role", async () => {
+    await inRolledBackTx(async (run) => {
+      await run(
+        "UPDATE \"user\" SET ban_expires = now() + interval '1 day' WHERE id = $1",
+        [expiredBanUserId],
+      );
+      const role = await failureOf(() =>
+        run("UPDATE \"user\" SET role = 'admin' WHERE id = $1", [expiredBanUserId]),
+      );
+      expect(role).toBeInstanceOf(Error);
+      expect(role!.code).toBe("23514");
+      // The failed statement aborts the transaction: assert the second case alone.
+    });
+    await inRolledBackTx(async (run) => {
+      await run(
+        "UPDATE \"user\" SET ban_expires = now() + interval '1 day' WHERE id = $1",
+        [expiredBanUserId],
+      );
+      const assignment = await failureOf(async () =>
+        run(
+          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+           VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $4)`,
+          [tenantId, expiredBanUserId, await roleIdOf("cashier"), financeId],
+        ),
+      );
+      expect(assignment).toBeInstanceOf(Error);
+      expect(assignment!.code).toBe("23514");
+    });
+  });
+
+  it("PAY-04 the system user stays locked even though its ban has no expiry to wait for", async () => {
+    await inRolledBackTx(async (run) => {
+      const failure = await failureOf(() =>
+        run(
+          "UPDATE \"user\" SET ban_expires = now() - interval '1 day' WHERE id = $1",
+          [SYSTEM_USER_ID],
+        ),
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure!.code).toBe("23514");
+    });
+  });
+
+  it("PAY-04 granting a role over the API to a person whose ban expired works with 201", async () => {
+    const response = await ownerClient
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId: expiredBanUserId,
+        roleId: await roleIdOf("cashier"),
+        scope: { type: "outlet", id: outletA },
+      });
+    expect(response.status).toBe(201);
+    expect(response.body.data).toMatchObject({ userId: expiredBanUserId });
+  });
+});
+
+describe("PAY-04 role assignments over the API never reach the system user or a banned person", () => {
+  const assignmentCount = async (userId: string) =>
+    (
+      await owner.query("SELECT 1 FROM role_assignments WHERE user_id = $1", [
+        userId,
+      ])
+    ).rowCount;
+
+  async function post(userId: string) {
+    return ownerClient
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId,
+        roleId: await roleIdOf("cashier"),
+        scope: { type: "outlet", id: outletA },
+      });
+  }
+
+  it("PAY-04 an owner granting a role to a person works (control)", async () => {
+    const control = await signedIn("finance", "System chain control", "tenant");
+    // That helper already assigned finance: grant the cashier role on top.
+    const response = await post(control.userId);
+    expect(response.status).toBe(201);
+    expect(response.body.data).toMatchObject({ userId: control.userId });
+  });
+
+  it("PAY-04 granting a role to the system user is refused with 422", async () => {
+    const response = await post(SYSTEM_USER_ID);
+    expect(response.status).toBe(422);
+    expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await assignmentCount(SYSTEM_USER_ID)).toBe(0);
+  });
+
+  it("PAY-04 granting a role to a banned person is refused with 422", async () => {
+    const response = await post(bannedUserId);
+    expect(response.status).toBe(422);
+    expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await assignmentCount(bannedUserId)).toBe(0);
+  });
+});
+
+describe("PAY-04 the sweep stops when told to", () => {
+  beforeEach(useFloorOf100k);
+
+  it("PAY-04 TEN-02 openPendingRefundChains opens nothing while shouldStop is true, then opens the refund once it is false", async () => {
+    const { refundId } = await insertPendingRefund({
+      requestedBy: "system:pos",
+      amountIdr: 150_000,
+    });
+    expect((await refundRow(refundId)).approval_chain_id).toBeNull();
+
+    const stopped = await openPendingRefundChains(
+      tenantWide,
+      new Date(),
+      50,
+      60_000,
+      () => true,
+    );
+    expect(stopped).toBe(0);
+    expect((await refundRow(refundId)).approval_chain_id).toBeNull();
+    expect(await requestsOf(refundId)).toHaveLength(0);
+
+    const running = await openPendingRefundChains(
+      tenantWide,
+      new Date(),
+      50,
+      60_000,
+      () => false,
+    );
+    expect(running).toBeGreaterThanOrEqual(1);
+    expect((await refundRow(refundId)).approval_chain_id).not.toBeNull();
+    expect(await requestsOf(refundId)).toMatchObject([
+      { level: 1, status: "pending", requested_by: SYSTEM_USER_ID },
+    ]);
+  });
+});
+
+describe("PAY-04 TEN-02 the sweep copes with odd pending refunds", () => {
+  it("PAY-04 a pending refund whose reason is only emoji gets its chain with a valid request reason", async () => {
+    const fresh = await freshTenant();
+    // Two code points (4 UTF-16 units): shorter than the 3-character minimum, so
+    // the request reason gets the "Refund " prefix.
+    const { refundId } = await insertPendingRefund({
+      requestedBy: "system:pos",
+      amountIdr: 50_000,
+      tenant: fresh,
+      reason: "\u{1F44D}\u{1F44D}",
+    });
+    resetPendingRefundChainCursor(fresh.tenantId);
+    const opened = await openPendingRefundChains(
+      tenantContext(fresh.tenantId),
+      new Date(),
+    );
+    expect(opened).toBe(1);
+    expect((await refundRow(refundId)).approval_chain_id).not.toBeNull();
+    const { rows } = await owner.query<{ request_reason: string }>(
+      `SELECT request_reason FROM approval_requests
+       WHERE object_type = 'payment_refund' AND object_id = $1`,
+      [refundId],
+    );
+    expect(rows).toEqual([{ request_reason: "Refund \u{1F44D}\u{1F44D}" }]);
+  });
+
+  it("PAY-04 refunds whose chain can never open do not starve newer ones", async () => {
+    const fresh = await freshTenant();
+    const context = tenantContext(fresh.tenantId);
+    const stuck: string[] = [];
+    for (const age of ["3 days", "2 days"]) {
+      const { refundId } = await insertPendingRefund({
+        requestedBy: "system:qr",
+        amountIdr: 50_000,
+        tenant: fresh,
+      });
+      // Open its chain, then detach it: the pending approval request stays as an
+      // orphan and every later open for this refund is refused.
+      await openChainAtCreation(refundId, fresh);
+      await owner.query(
+        `UPDATE payment_refunds SET approval_chain_id = NULL, created_at = now() - $2::interval
+         WHERE id = $1`,
+        [refundId, age],
+      );
+      stuck.push(refundId);
+    }
+    const { refundId: newer } = await insertPendingRefund({
+      requestedBy: "system:qr",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    await owner.query(
+      "UPDATE payment_refunds SET created_at = now() - interval '1 day' WHERE id = $1",
+      [newer],
+    );
+
+    resetPendingRefundChainCursor(fresh.tenantId);
+    // Batch of 2 sees only the two stuck refunds, and opens nothing.
+    expect(await openPendingRefundChains(context, new Date(), 2)).toBe(0);
+    expect((await refundRow(newer)).approval_chain_id).toBeNull();
+    // The next round moves on to the newer refund.
+    expect(await openPendingRefundChains(context, new Date(), 2)).toBe(1);
+    expect((await refundRow(newer)).approval_chain_id).not.toBeNull();
+    expect(await requestsOf(newer)).toMatchObject([
+      { level: 1, status: "pending", requested_by: SYSTEM_USER_ID },
+    ]);
+    for (const id of stuck)
+      expect((await refundRow(id)).approval_chain_id).toBeNull();
+  });
+
+  it("PAY-04 a refund locked elsewhere is skipped within seconds and the rest still open", async () => {
+    const fresh = await freshTenant();
+    const context = tenantContext(fresh.tenantId);
+    const locked = await insertPendingRefund({
+      requestedBy: "system:pos",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    await owner.query(
+      "UPDATE payment_refunds SET created_at = now() - interval '2 days' WHERE id = $1",
+      [locked.refundId],
+    );
+    const free = await insertPendingRefund({
+      requestedBy: "system:reservation",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    await owner.query(
+      "UPDATE payment_refunds SET created_at = now() - interval '1 day' WHERE id = $1",
+      [free.refundId],
+    );
+    resetPendingRefundChainCursor(fresh.tenantId);
+
+    // Another connection holds the locked refund's payment intent row.
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT id FROM payment_intents WHERE id = $1 FOR UPDATE",
+        [locked.intentId],
+      );
+
+      const started = Date.now();
+      const opened = await openPendingRefundChains(context, new Date());
+      expect(Date.now() - started).toBeLessThan(6_000);
+      expect(opened).toBe(1);
+      expect((await refundRow(free.refundId)).approval_chain_id).not.toBeNull();
+      expect((await refundRow(locked.refundId)).approval_chain_id).toBeNull();
+      expect(await requestsOf(locked.refundId)).toHaveLength(0);
+
+      // The payout sweep (which opens pending chains first) is not held up either.
+      resetPendingRefundChainCursor(fresh.tenantId);
+      const sweepStarted = Date.now();
+      await sweepApprovedRefundPayouts(context, new Date(), 100);
+      expect(Date.now() - sweepStarted).toBeLessThan(12_000);
+      expect((await refundRow(locked.refundId)).approval_chain_id).toBeNull();
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+
+    // Lock released: the next round opens it.
+    resetPendingRefundChainCursor(fresh.tenantId);
+    expect(await openPendingRefundChains(context, new Date())).toBe(1);
+    expect((await refundRow(locked.refundId)).approval_chain_id).not.toBeNull();
+  });
+});
+
+describe("PAY-04 TEN-02 a sweep cut short resumes where it stopped", () => {
+  it("PAY-04 an early stop keeps the cursor, so the next round moves past the refund that was tried", async () => {
+    const fresh = await freshTenant();
+    const context = tenantContext(fresh.tenantId);
+
+    // A (oldest): its chain can never open (orphaned pending request). B, C: fine.
+    const a = await insertPendingRefund({
+      requestedBy: "system:qr",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    await openChainAtCreation(a.refundId, fresh);
+    const ages: [string, string][] = [];
+    const b = await insertPendingRefund({
+      requestedBy: "system:qr",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    const c = await insertPendingRefund({
+      requestedBy: "system:qr",
+      amountIdr: 50_000,
+      tenant: fresh,
+    });
+    ages.push([a.refundId, "3 days"], [b.refundId, "2 days"], [c.refundId, "1 day"]);
+    for (const [id, age] of ages)
+      await owner.query(
+        "UPDATE payment_refunds SET created_at = now() - $2::interval WHERE id = $1",
+        [id, age],
+      );
+    await owner.query(
+      "UPDATE payment_refunds SET approval_chain_id = NULL WHERE id = $1",
+      [a.refundId],
+    );
+
+    // True from the second question on: exactly one candidate gets tried.
+    const stopAfterOne = () => {
+      let asked = 0;
+      return () => ++asked > 1;
+    };
+
+    resetPendingRefundChainCursor(fresh.tenantId);
+    // Round 1 (short page: limit 50, 3 candidates): A is tried and fails; stop.
+    expect(
+      await openPendingRefundChains(context, new Date(), 50, 60_000, stopAfterOne()),
+    ).toBe(0);
+    expect((await refundRow(a.refundId)).approval_chain_id).toBeNull();
+    expect((await refundRow(b.refundId)).approval_chain_id).toBeNull();
+    expect((await refundRow(c.refundId)).approval_chain_id).toBeNull();
+
+    // Round 2 resumes after A: B gets its chain, C waits for the next round.
+    expect(
+      await openPendingRefundChains(context, new Date(), 50, 60_000, stopAfterOne()),
+    ).toBe(1);
+    expect((await refundRow(b.refundId)).approval_chain_id).not.toBeNull();
+    expect(await requestsOf(b.refundId)).toMatchObject([
+      { level: 1, status: "pending", requested_by: SYSTEM_USER_ID },
+    ]);
+    expect((await refundRow(a.refundId)).approval_chain_id).toBeNull();
+    expect((await refundRow(c.refundId)).approval_chain_id).toBeNull();
+  });
+
+  it("PAY-04 a very long emoji reason gets its chain with a request reason that is capped and never splits a character", async () => {
+    const fresh = await freshTenant();
+    // 300 code points = 600 UTF-16 units: over the 500-unit cap.
+    const { refundId } = await insertPendingRefund({
+      requestedBy: "system:pos",
+      amountIdr: 50_000,
+      tenant: fresh,
+      reason: "\u{1F44D}".repeat(300),
+    });
+    resetPendingRefundChainCursor(fresh.tenantId);
+    expect(
+      await openPendingRefundChains(tenantContext(fresh.tenantId), new Date()),
+    ).toBe(1);
+    expect((await refundRow(refundId)).approval_chain_id).not.toBeNull();
+    const { rows } = await owner.query<{ request_reason: string }>(
+      `SELECT request_reason FROM approval_requests
+       WHERE object_type = 'payment_refund' AND object_id = $1`,
+      [refundId],
+    );
+    expect(rows).toHaveLength(1);
+    const reason = rows[0]!.request_reason;
+    expect(reason.length).toBeGreaterThan(0);
+    expect(reason.length).toBeLessThanOrEqual(500);
+    expect([...reason].length).toBeLessThanOrEqual(500);
+    // No lone high or low surrogate: the cap did not cut a pair in half.
+    expect(reason).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    );
+    expect(reason).toBe(reason.normalize("NFC"));
   });
 });
 

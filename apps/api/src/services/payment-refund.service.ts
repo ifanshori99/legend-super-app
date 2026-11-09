@@ -46,6 +46,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { SYSTEM_ACCOUNT_ID } from "../lib/system-account.ts";
 import {
   emitOperationsEvent,
   OPERATIONS_NOTIFICATION_DESTINATION,
@@ -103,11 +104,28 @@ const REFUND_REQUEST_DEADLINE_MINUTES = 10080;
  * satisfies the requested_by foreign key, can never sign in, and can never
  * decide (decided_by <> requested_by).
  */
-export const SYSTEM_APPROVAL_REQUESTER = userIdSchema.parse(
-  "00000000-0000-4000-8000-000000000002",
-);
+export const SYSTEM_APPROVAL_REQUESTER = userIdSchema.parse(SYSTEM_ACCOUNT_ID);
 /** Pre-deploy pending refunds opened per tenant by one sweep round. */
 const OPEN_PENDING_CHAINS_BATCH = 50;
+/**
+ * Lock wait of one backfill candidate: a refund whose intent, fund or refund row
+ * is held elsewhere (a payout, a webhook, a decision) is skipped for this round
+ * instead of holding up the rest of the backfill and the payouts after it.
+ */
+const OPEN_PENDING_CHAINS_LOCK_TIMEOUT_MS = 2_000;
+/**
+ * Rotating cursor of the backfill, per tenant: the (created_at, id) of the last
+ * refund tried. The next round starts after it, so refunds whose chain can never
+ * open do not take every batch and starve newer ones. Process memory only: a
+ * restart starts again from the oldest, which is safe (the backfill is idempotent).
+ */
+const pendingChainCursor = new Map<string, { createdAt: string; id: string }>();
+
+/** Test hook: forget the backfill cursor of one tenant (or all). */
+export function resetPendingRefundChainCursor(tenantId?: string): void {
+  if (tenantId === undefined) pendingChainCursor.clear();
+  else pendingChainCursor.delete(tenantId);
+}
 /** Lease on an in-flight provider call; another worker skips while it holds. */
 const PAYOUT_CLAIM_MS = 120_000;
 /** Deadline of one provider call; a timeout is an unknown outcome. */
@@ -567,9 +585,19 @@ function assertChainBound(rows: readonly ChainRow[], refund: Refund): void {
 }
 
 /** requestReason must be 3..500 characters. */
+/**
+ * The approval request reason: at most 500 and at least 3 characters, counted
+ * as PostgreSQL `char_length` does (code points, not UTF-16 units: "👍👍" is 2).
+ */
 function requestReasonOf(reason: string): string {
-  const trimmed = reason.trim().slice(0, 500);
-  return trimmed.length < 3 ? `Refund ${trimmed}`.trim() : trimmed;
+  // At most 500 code points and 500 UTF-16 units (openApprovalRequest checks
+  // `.length`), never splitting a surrogate pair.
+  let kept = "";
+  for (const char of reason.trim()) {
+    if (kept.length + char.length > 500) break;
+    kept += char;
+  }
+  return Array.from(kept).length >= 3 ? kept : `Refund ${kept}`.trim();
 }
 
 function isUserId(id: string): boolean {
@@ -681,7 +709,7 @@ export async function openRefundChainSafely(
       openRefundChainAtRequest(savepoint, context, refund, now),
     );
   } catch (error) {
-    logger.warn(
+    logger.error(
       { refundId: refund.id, code: errorCodeOf(error) },
       "Refund approval chain could not be opened at creation",
     );
@@ -692,20 +720,29 @@ export async function openRefundChainSafely(
 /**
  * Opens the approval chain of `pending` refunds that predate the request-time
  * open (legend-zi9o, legend-2dnh): no chain yet and an amount at or above the
- * lowest tier floor of the tenant's refund matrix. Oldest first, `limit` per
- * call, each in its own transaction under the refund locks (a failure is logged
- * and skipped). Idempotent: an opened refund no longer matches. Returns the
- * number of chains opened.
+ * lowest tier floor of the tenant's refund matrix. Oldest first from a rotating
+ * per-tenant cursor (`pendingChainCursor`), `limit` per call, each in its own
+ * transaction under the refund locks with a short lock wait (a failure or a held
+ * lock is logged and skipped). Stops early on `shouldStop` (worker shutdown) or once
+ * `budgetMs` is spent, so payouts in the same sweep are never starved.
+ * Idempotent: an opened refund no longer matches. Returns the number of chains
+ * opened.
  */
 export async function openPendingRefundChains(
   context: ScopedTenantContext,
   now: Date = new Date(),
   limit = OPEN_PENDING_CHAINS_BATCH,
+  budgetMs = PAYOUT_SWEEP_BUDGET_MS,
+  shouldStop: () => boolean = () => false,
 ): Promise<number> {
   const tenantId = context.tenant.tenantId;
+  const cursor = pendingChainCursor.get(tenantId);
   const candidates = await withTenant(db, context, (tx) =>
     tx
-      .select({ id: paymentRefunds.id })
+      .select({
+        id: paymentRefunds.id,
+        createdAt: sql<string>`${paymentRefunds.createdAt}::text`,
+      })
       .from(paymentRefunds)
       .where(
         and(
@@ -713,19 +750,40 @@ export async function openPendingRefundChains(
           eq(paymentRefunds.status, "pending"),
           isNull(paymentRefunds.approvalChainId),
           sql`${paymentRefunds.amountIdr} >= (SELECT min(coalesce(${approvalPolicies.thresholdIdr}, 0)) FROM ${approvalPolicies} WHERE ${approvalPolicies.tenantId} = ${tenantId} AND ${approvalPolicies.actionType} = ${REFUND_ACTION_TYPE})`,
+          cursor
+            ? sql`(${paymentRefunds.createdAt}, ${paymentRefunds.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`
+            : undefined,
         ),
       )
       .orderBy(asc(paymentRefunds.createdAt), asc(paymentRefunds.id))
       .limit(limit),
   );
+  // The cursor moves past each refund tried below. Only a short page that is
+  // worked to its end wraps the next round back to the oldest; a round cut short
+  // (budget, shutdown) resumes after the last refund it tried.
   // Plain read, then one short transaction per refund: the refund row is locked
   // only through lockRefundGraph (intent -> fund -> refund), the same order as
   // settle and payout, so the sweep never deadlocks with them and holds no lock
   // past one refund. The state is re-checked under that lock.
   let opened = 0;
+  let stoppedEarly = false;
+  const started = Date.now();
   for (const candidate of candidates) {
+    if (shouldStop() || Date.now() - started >= budgetMs) {
+      stoppedEarly = true;
+      break;
+    }
+    pendingChainCursor.set(tenantId, {
+      createdAt: candidate.createdAt,
+      id: candidate.id,
+    });
     try {
       const done = await withTenant(db, context, async (tx) => {
+        await tx.execute(
+          sql.raw(
+            `SET LOCAL lock_timeout = '${OPEN_PENDING_CHAINS_LOCK_TIMEOUT_MS}ms'`,
+          ),
+        );
         const { refund } = await lockRefundGraph(tx, tenantId, candidate.id);
         if (refund.status !== "pending" || refund.approvalChainId !== null)
           return false;
@@ -740,6 +798,8 @@ export async function openPendingRefundChains(
       );
     }
   }
+  if (!stoppedEarly && candidates.length < limit)
+    pendingChainCursor.delete(tenantId);
   return opened;
 }
 
@@ -2048,7 +2108,14 @@ export async function sweepApprovedRefundPayouts(
 ): Promise<{ attempted: number; exhausted: number; escalated: number }> {
   let escalated = 0;
   try {
-    await openPendingRefundChains(context, now);
+    // At most half the sweep budget: payouts below keep the other half.
+    await openPendingRefundChains(
+      context,
+      now,
+      OPEN_PENDING_CHAINS_BATCH,
+      Math.floor(budgetMs / 2),
+      shouldStop,
+    );
   } catch (error) {
     logger.warn(
       { tenantId: context.tenant.tenantId, code: errorCodeOf(error) },

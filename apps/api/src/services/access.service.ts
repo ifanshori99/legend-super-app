@@ -75,6 +75,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { SYSTEM_ACCOUNT_ID } from "../lib/system-account";
 import { recordAudit } from "./audit-writer";
 import { appendOutbox } from "./core-outbox";
 import {
@@ -673,12 +674,26 @@ export async function grantRoleAssignment(
       .limit(1);
     if (!roleRow) throw new HttpError(404, "NOT_FOUND", "Role not found.");
     const [grantee] = await tx
-      .select({ id: user.id })
+      .select({ id: user.id, banned: user.banned, banExpires: user.banExpires })
       .from(user)
       .where(eq(user.id, input.userId))
       .limit(1);
     if (!grantee)
       throw new HttpError(422, "VALIDATION_ERROR", "Unknown user account.");
+    // legend-2dnh: the reserved system account (approval requester of refunds the
+    // system creates) and an account under an active ban (no expiry, or one still
+    // ahead) never receive a role. Migration 0135 enforces the same rule in the
+    // database for every other path.
+    const banActive =
+      grantee.banned === true &&
+      (grantee.banExpires === null ||
+        grantee.banExpires.getTime() > Date.now());
+    if (grantee.id === SYSTEM_ACCOUNT_ID || banActive)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "This account cannot be given a role.",
+      );
     const data = await loadTenantAccessInTransaction(
       tx,
       context,
