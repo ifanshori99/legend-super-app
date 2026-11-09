@@ -517,7 +517,7 @@ export const payrollRuns = pgTable(
     // PAYR-05: a run is reversed only through an approved reversal.
     check(
       "payroll_runs_reversed_check",
-      sql`${table.status} <> 'reversed' OR ${table.reversal} ->> 'status' = 'approved'`,
+      sql`${table.status} <> 'reversed' OR COALESCE(${table.reversal} ->> 'status' = 'approved', false)`,
     ),
   ],
 );

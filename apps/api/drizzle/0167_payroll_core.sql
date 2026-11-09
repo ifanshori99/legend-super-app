@@ -168,7 +168,7 @@ CREATE TABLE "payroll_runs" (
         AND "payroll_runs"."locked_by" IS NOT NULL AND "payroll_runs"."locked_at" IS NOT NULL)),
 	CONSTRAINT "payroll_runs_paid_pair_check" CHECK (("payroll_runs"."status" = 'paid') = ("payroll_runs"."paid_at" IS NOT NULL)
         AND ("payroll_runs"."status" = 'paid') = ("payroll_runs"."paid_by" IS NOT NULL)),
-	CONSTRAINT "payroll_runs_reversed_check" CHECK ("payroll_runs"."status" <> 'reversed' OR "payroll_runs"."reversal" ->> 'status' = 'approved')
+	CONSTRAINT "payroll_runs_reversed_check" CHECK ("payroll_runs"."status" <> 'reversed' OR COALESCE("payroll_runs"."reversal" ->> 'status' = 'approved', false))
 );
 --> statement-breakpoint
 CREATE TABLE "payroll_tax_exports" (
