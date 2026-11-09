@@ -273,8 +273,7 @@ export const reportBuilderMessages = {
       "Jadwal gagal dimuat, jadi status pengiriman belum tampil. Muat ulang halaman.",
     errors: {
       form: "Periksa kembali isian jadwal.",
-      recipients:
-        "Pilih minimal satu pengguna, tanpa duplikat, maksimal 20.",
+      recipients: "Pilih minimal satu pengguna, tanpa duplikat, maksimal 20.",
       timeOfDay: "Isi jam dengan format JJ:MM.",
       dayOfMonth: "Pilih tanggal 1 sampai 28.",
     },

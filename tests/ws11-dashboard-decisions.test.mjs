@@ -68,10 +68,7 @@ describe("decision 4: one constant for identity splits", () => {
         true,
       );
       assert.equal(builder.queryHasPersonalData(query), true);
-      assert.equal(
-        dashboard.builderQueryPermittedFor(query, AGGREGATE),
-        false,
-      );
+      assert.equal(dashboard.builderQueryPermittedFor(query, AGGREGATE), false);
     }
   });
 });
@@ -233,7 +230,10 @@ describe("decision 1: shareholder-linked reports take report.aggregate.view, agg
 });
 
 describe("decision 1 (negative): an aggregate-only caller cannot reach a person through the builder", () => {
-  const withExport = new Set([...AGGREGATE, dashboard.REPORT_EXPORT_PERMISSION]);
+  const withExport = new Set([
+    ...AGGREGATE,
+    dashboard.REPORT_EXPORT_PERMISSION,
+  ]);
   const personalQueries = [
     { groupBy: ["employee"], filters: [] },
     { groupBy: ["customer"], filters: [] },

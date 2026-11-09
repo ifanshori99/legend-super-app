@@ -21,7 +21,10 @@ import {
   userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { accountIdSchema, type JournalLineInput } from "@starter/shared/accounting";
+import {
+  accountIdSchema,
+  type JournalLineInput,
+} from "@starter/shared/accounting";
 import {
   METRIC_ENTITY_LEVEL_OUTLET,
   metricQueryRequestSchema,
@@ -151,7 +154,9 @@ const rent = (w: World, date: string, outlet: string, amount: number) =>
   ]);
 
 async function makeWorld(label: string): Promise<World> {
-  const tenant = await createIsolatedTenant(`mrt-${label}-${randomUUID().slice(0, 6)}`);
+  const tenant = await createIsolatedTenant(
+    `mrt-${label}-${randomUUID().slice(0, 6)}`,
+  );
   const outlet2 = randomUUID();
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
@@ -338,11 +343,21 @@ describe("I1: money metrics equal the general ledger", () => {
       period: JUNE,
     });
     const range = { start: JUNE.startDate, end: JUNE.endDate };
-    const netSales = await gl(world, { ...range, groups: ["revenue"], sign: 1 });
+    const netSales = await gl(world, {
+      ...range,
+      groups: ["revenue"],
+      sign: 1,
+    });
     const hpp = await gl(world, { ...range, groups: ["cogs"], sign: -1 });
     const profit = await gl(world, {
       ...range,
-      groups: ["revenue", "other_income", "cogs", "operating_expense", "other_expense"],
+      groups: [
+        "revenue",
+        "other_income",
+        "cogs",
+        "operating_expense",
+        "other_expense",
+      ],
       sign: 1,
     });
     expect(netSales).toBe(1_350_000);
@@ -378,7 +393,10 @@ describe("I1: money metrics equal the general ledger", () => {
   });
 
   it("daily and per-outlet splits add up to the total", async () => {
-    const totalResponse = await run(world, { metricCodes: ["net_sales"], period: JUNE });
+    const totalResponse = await run(world, {
+      metricCodes: ["net_sales"],
+      period: JUNE,
+    });
     const daily = await run(world, {
       metricCodes: ["net_sales"],
       period: JUNE,
@@ -398,9 +416,15 @@ describe("I1: money metrics equal the general ledger", () => {
       groupBy: "outlet",
     });
     const values = Object.fromEntries(
-      byOutlet.data.series.map((s) => [s.dimension!.value, idrOf(s.points[0]!)]),
+      byOutlet.data.series.map((s) => [
+        s.dimension!.value,
+        idrOf(s.points[0]!),
+      ]),
     );
-    expect(values).toEqual({ [world.outlet1]: 950_000, [world.outlet2]: 400_000 });
+    expect(values).toEqual({
+      [world.outlet1]: 950_000,
+      [world.outlet2]: 400_000,
+    });
   });
 
   it("a period without journal lines answers null, never zero", async () => {
@@ -413,7 +437,10 @@ describe("I1: money metrics equal the general ledger", () => {
   });
 
   it("a money metric without a ledger source answers null instead of raw-table figures", async () => {
-    const response = await run(world, { metricCodes: ["delivery_sales"], period: JUNE });
+    const response = await run(world, {
+      metricCodes: ["delivery_sales"],
+      period: JUNE,
+    });
     expect(total(response, "delivery_sales").value).toBeNull();
   });
 
@@ -430,11 +457,15 @@ describe("I1: money metrics equal the general ledger", () => {
       changeValue: { unit: "idr", valueIdr: -850_000 },
       changePercent: "-62.9630",
     });
-    expect(previousMetricRange({ start: "2025-07-01", end: "2025-07-31" } as never)).toEqual({
+    expect(
+      previousMetricRange({ start: "2025-07-01", end: "2025-07-31" } as never),
+    ).toEqual({
       start: "2025-06-01",
       end: "2025-06-30",
     });
-    expect(previousMetricRange({ start: "2025-07-10", end: "2025-07-12" } as never)).toEqual({
+    expect(
+      previousMetricRange({ start: "2025-07-10", end: "2025-07-12" } as never),
+    ).toEqual({
       start: "2025-07-07",
       end: "2025-07-09",
     });
@@ -451,34 +482,62 @@ describe("I1: money metrics equal the general ledger", () => {
         WHERE s.tenant_id = $1 AND s.period = '2025-06' AND a.report_group = 'revenue'`,
       [world.tenantId],
     );
-    const response = await run(world, { metricCodes: ["net_sales"], period: JUNE });
+    const response = await run(world, {
+      metricCodes: ["net_sales"],
+      period: JUNE,
+    });
     expect(idrOf(total(response, "net_sales"))).toBe(Number(rows[0]!.v));
   });
 });
 
 describe("I2 / SH-02: finality", () => {
   it("a closed accounting month is final", async () => {
-    const response = await run(world, { metricCodes: ["net_sales", "food_cost_pct"], period: JUNE });
-    expect(response.data.period).toMatchObject({ status: "closed", accountingPeriodClosed: true });
+    const response = await run(world, {
+      metricCodes: ["net_sales", "food_cost_pct"],
+      period: JUNE,
+    });
+    expect(response.data.period).toMatchObject({
+      status: "closed",
+      accountingPeriodClosed: true,
+    });
     expect(total(response, "net_sales").finality).toBe("final");
     expect(total(response, "food_cost_pct").finality).toBe("final");
   });
 
   it("a past month whose books are open stays an estimate, even for a live metric", async () => {
-    const response = await run(world, { metricCodes: ["net_sales"], period: JULY });
-    expect(response.data.period).toMatchObject({ status: "closed", accountingPeriodClosed: false });
+    const response = await run(world, {
+      metricCodes: ["net_sales"],
+      period: JULY,
+    });
+    expect(response.data.period).toMatchObject({
+      status: "closed",
+      accountingPeriodClosed: false,
+    });
     expect(total(response, "net_sales").finality).toBe("estimate");
   });
 
   it("the running month is an estimate and requireFinal refuses it", async () => {
-    const response = await run(world, { metricCodes: ["net_sales"], period: SEPT });
+    const response = await run(world, {
+      metricCodes: ["net_sales"],
+      period: SEPT,
+    });
     expect(response.data.period.status).toBe("open");
     expect(total(response, "net_sales").finality).toBe("estimate");
     expect(idrOf(total(response, "net_sales"))).toBe(250_000);
     expect(
-      await codeOf(run(world, { metricCodes: ["net_sales"], period: SEPT, requireFinal: true })),
+      await codeOf(
+        run(world, {
+          metricCodes: ["net_sales"],
+          period: SEPT,
+          requireFinal: true,
+        }),
+      ),
     ).toBe("PERIOD_NOT_CLOSED");
-    const official = await run(world, { metricCodes: ["net_sales"], period: JUNE, requireFinal: true });
+    const official = await run(world, {
+      metricCodes: ["net_sales"],
+      period: JUNE,
+      requireFinal: true,
+    });
     expect(total(official, "net_sales").finality).toBe("final");
   });
 
@@ -502,7 +561,10 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
       { metricCodes: ["net_sales", "net_profit"], period: JUNE },
       { scope: { kind: "outlets", outletIds: [world.outlet1] } },
     );
-    expect(scoped.data.outletFilter).toEqual({ kind: "outlets", outletIds: [world.outlet1] });
+    expect(scoped.data.outletFilter).toEqual({
+      kind: "outlets",
+      outletIds: [world.outlet1],
+    });
     expect(idrOf(total(scoped, "net_sales"))).toBe(950_000);
     // Outlet 1: 950000 − 300000 HPP − 100000 rent; payroll has no outlet.
     expect(idrOf(total(scoped, "net_profit"))).toBe(550_000);
@@ -513,7 +575,11 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
       await codeOf(
         run(
           world,
-          { metricCodes: ["net_sales"], period: JUNE, outletIds: [world.outlet2] },
+          {
+            metricCodes: ["net_sales"],
+            period: JUNE,
+            outletIds: [world.outlet2],
+          },
           { scope: { kind: "outlets", outletIds: [world.outlet1] } },
         ),
       ),
@@ -523,7 +589,10 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
   it("another tenant's ledger never reaches the figures", async () => {
     const mine = await run(world, { metricCodes: ["net_sales"], period: JUNE });
     expect(idrOf(total(mine, "net_sales"))).toBe(1_350_000);
-    const theirs = await run(other, { metricCodes: ["net_sales"], period: JUNE });
+    const theirs = await run(other, {
+      metricCodes: ["net_sales"],
+      period: JUNE,
+    });
     expect(idrOf(total(theirs, "net_sales"))).toBe(9_000_000);
   });
 
@@ -531,17 +600,29 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
     for (const groupBy of ["employee", "customer", "member"])
       expect(
         await codeOf(
-          run(world, { metricCodes: ["net_sales"], period: JUNE, groupBy }, { viewer: "aggregate" }),
+          run(
+            world,
+            { metricCodes: ["net_sales"], period: JUNE, groupBy },
+            { viewer: "aggregate" },
+          ),
         ),
       ).toBe("PERMISSION_DENIED");
     expect(
-      await codeOf(run(world, { metricCodes: ["net_sales"], period: JUNE, groupBy: "employee" })),
+      await codeOf(
+        run(world, {
+          metricCodes: ["net_sales"],
+          period: JUNE,
+          groupBy: "employee",
+        }),
+      ),
     ).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
   });
 
   it("an unknown metric code is METRIC_NOT_FOUND", async () => {
     expect(
-      await codeOf(run(world, { metricCodes: ["metrik_tidak_ada"], period: JUNE })),
+      await codeOf(
+        run(world, { metricCodes: ["metrik_tidak_ada"], period: JUNE }),
+      ),
     ).toBe("METRIC_NOT_FOUND");
   });
 });
@@ -550,7 +631,11 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
 
 const CLOSER = randomUUID();
 
-async function closePeriod(w: World, periodId: string, expectedVersion: number) {
+async function closePeriod(
+  w: World,
+  periodId: string,
+  expectedVersion: number,
+) {
   await closeFiscalPeriod(
     context(w.tenantId),
     periodId,
@@ -575,7 +660,10 @@ async function reopenPeriod(w: World, periodId: string) {
 }
 
 /** Revenue movement of a closed month from balance snapshots (cumulative). */
-async function snapshotRevenueMovement(w: World, period: string): Promise<number> {
+async function snapshotRevenueMovement(
+  w: World,
+  period: string,
+): Promise<number> {
   const { rows } = await owner.query<{ period: string; v: string }>(
     `SELECT s.period, COALESCE(SUM(sl.credit_idr - sl.debit_idr), 0)::text AS v
        FROM fiscal_periods p
@@ -625,14 +713,20 @@ describe("review K: book state per entity, reopen and snapshot parity", () => {
   });
 
   it("an entity whose books start in March does not hold January open", async () => {
-    const response = await run(books, { metricCodes: ["net_sales"], period: MONTH("01") });
+    const response = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("01"),
+    });
     expect(response.data.period.accountingPeriodClosed).toBe(true);
     expect(total(response, "net_sales").finality).toBe("final");
     expect(response.meta.accountingPeriods).toEqual([
       { period: "2025-01", accountingVersion: 2, closed: true },
     ]);
     // March: B has books and has not closed them.
-    const march = await run(books, { metricCodes: ["net_sales"], period: MONTH("03") });
+    const march = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("03"),
+    });
     expect(march.meta.accountingPeriods).toEqual([
       { period: "2025-03", accountingVersion: 1, closed: false },
     ]);
@@ -640,7 +734,10 @@ describe("review K: book state per entity, reopen and snapshot parity", () => {
   });
 
   it("a month nobody keeps books for stays an estimate", async () => {
-    const response = await run(books, { metricCodes: ["net_sales"], period: MONTH("04") });
+    const response = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("04"),
+    });
     expect(response.meta.accountingPeriods).toEqual([
       { period: "2025-04", accountingVersion: 0, closed: false },
     ]);
@@ -648,23 +745,38 @@ describe("review K: book state per entity, reopen and snapshot parity", () => {
   });
 
   it("reopen turns a month into an estimate, re-close makes it final with the corrected ledger", async () => {
-    const before = await run(books, { metricCodes: ["net_sales"], period: MONTH("02") });
+    const before = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("02"),
+    });
     expect(total(before, "net_sales").finality).toBe("final");
     expect(idrOf(total(before, "net_sales"))).toBe(200_000);
 
     await reopenPeriod(books, periods.feb);
-    const reopened = await run(books, { metricCodes: ["net_sales"], period: MONTH("02") });
+    const reopened = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("02"),
+    });
     expect(total(reopened, "net_sales").finality).toBe("estimate");
     expect(reopened.meta.accountingPeriods).toEqual([
       { period: "2025-02", accountingVersion: 3, closed: false },
     ]);
     expect(
-      await codeOf(run(books, { metricCodes: ["net_sales"], period: MONTH("02"), requireFinal: true })),
+      await codeOf(
+        run(books, {
+          metricCodes: ["net_sales"],
+          period: MONTH("02"),
+          requireFinal: true,
+        }),
+      ),
     ).toBe("PERIOD_NOT_CLOSED");
 
     await sale(books, "2025-02-20", books.outlet1, 50_000);
     await closePeriod(books, periods.feb, 3);
-    const reclosed = await run(books, { metricCodes: ["net_sales"], period: MONTH("02") });
+    const reclosed = await run(books, {
+      metricCodes: ["net_sales"],
+      period: MONTH("02"),
+    });
     expect(total(reclosed, "net_sales").finality).toBe("final");
     expect(idrOf(total(reclosed, "net_sales"))).toBe(250_000);
     expect(reclosed.meta.accountingPeriods).toEqual([
@@ -675,12 +787,23 @@ describe("review K: book state per entity, reopen and snapshot parity", () => {
   it("every closed month: ledger figure == journal == snapshot movement", async () => {
     for (const month of ["01", "02"]) {
       const period = MONTH(month);
-      const response = await run(books, { metricCodes: ["net_sales"], period, requireFinal: true });
+      const response = await run(books, {
+        metricCodes: ["net_sales"],
+        period,
+        requireFinal: true,
+      });
       const fromRuntime = idrOf(total(response, "net_sales"));
       expect(fromRuntime).toBe(
-        await gl(books, { start: period.startDate, end: period.endDate, groups: ["revenue"], sign: 1 }),
+        await gl(books, {
+          start: period.startDate,
+          end: period.endDate,
+          groups: ["revenue"],
+          sign: 1,
+        }),
       );
-      expect(fromRuntime).toBe(await snapshotRevenueMovement(books, `2025-${month}`));
+      expect(fromRuntime).toBe(
+        await snapshotRevenueMovement(books, `2025-${month}`),
+      );
     }
   });
 });
@@ -695,21 +818,36 @@ describe("review K: ratios, entity-level series, child accounts, snapshot reads"
     );
     expect(total(scoped, "labor_cost_pct").value).toBeNull();
     // 300000 / 950000 × 100.
-    expect(total(scoped, "food_cost_pct").value).toEqual({ unit: "percent", value: "31.5789" });
+    expect(total(scoped, "food_cost_pct").value).toEqual({
+      unit: "percent",
+      value: "31.5789",
+    });
   });
 
   it("groupBy outlet adds an entity-level series so the split sums to net profit", async () => {
-    const totalResponse = await run(world, { metricCodes: ["net_profit"], period: JUNE });
-    const byOutlet = await run(world, { metricCodes: ["net_profit"], period: JUNE, groupBy: "outlet" });
+    const totalResponse = await run(world, {
+      metricCodes: ["net_profit"],
+      period: JUNE,
+    });
+    const byOutlet = await run(world, {
+      metricCodes: ["net_profit"],
+      period: JUNE,
+      groupBy: "outlet",
+    });
     const values = Object.fromEntries(
-      byOutlet.data.series.map((s) => [s.dimension!.value, idrOf(s.points[0]!)]),
+      byOutlet.data.series.map((s) => [
+        s.dimension!.value,
+        idrOf(s.points[0]!),
+      ]),
     );
     expect(values).toEqual({
       [world.outlet1]: 550_000,
       [world.outlet2]: 280_000,
       [METRIC_ENTITY_LEVEL_OUTLET]: -200_000,
     });
-    expect(byOutlet.data.series.at(-1)!.dimension!.value).toBe(METRIC_ENTITY_LEVEL_OUTLET);
+    expect(byOutlet.data.series.at(-1)!.dimension!.value).toBe(
+      METRIC_ENTITY_LEVEL_OUTLET,
+    );
     const sum = Object.values(values).reduce((acc, value) => acc + value, 0);
     expect(sum).toBe(idrOf(total(totalResponse, "net_profit")));
 
@@ -719,7 +857,9 @@ describe("review K: ratios, entity-level series, child accounts, snapshot reads"
       { metricCodes: ["net_profit"], period: JUNE, groupBy: "outlet" },
       { scope: { kind: "outlets", outletIds: [world.outlet1] } },
     );
-    expect(scoped.data.series.map((s) => s.dimension!.value)).toEqual([world.outlet1]);
+    expect(scoped.data.series.map((s) => s.dimension!.value)).toEqual([
+      world.outlet1,
+    ]);
   });
 
   it("a role term reads the child accounts of the mapped account", async () => {
@@ -741,15 +881,26 @@ describe("review K: ratios, entity-level series, child accounts, snapshot reads"
   });
 
   it("reads book state and ledger in one REPEATABLE READ READ ONLY transaction", async () => {
-    const state = await withTenantSnapshot(context(world.tenantId), async (tx) => {
-      const result = await tx.execute<{ iso: string; ro: string; tenant: string }>(
-        sql`SELECT current_setting('transaction_isolation') AS iso,
+    const state = await withTenantSnapshot(
+      context(world.tenantId),
+      async (tx) => {
+        const result = await tx.execute<{
+          iso: string;
+          ro: string;
+          tenant: string;
+        }>(
+          sql`SELECT current_setting('transaction_isolation') AS iso,
                    current_setting('transaction_read_only') AS ro,
                    current_setting('app.tenant_id') AS tenant`,
-      );
-      return result.rows[0]!;
+        );
+        return result.rows[0]!;
+      },
+    );
+    expect(state).toEqual({
+      iso: "repeatable read",
+      ro: "on",
+      tenant: world.tenantId,
     });
-    expect(state).toEqual({ iso: "repeatable read", ro: "on", tenant: world.tenantId });
   });
 });
 
@@ -758,7 +909,9 @@ describe("review K: one formula source", () => {
     for (const [code, source] of Object.entries(GL_METRIC_SOURCES)) {
       const definition = reportMetricByCode.get(code);
       expect(definition, code).toBeDefined();
-      expect(definition!.unit, code).toBe(source.kind === "amount" ? "idr" : "percent");
+      expect(definition!.unit, code).toBe(
+        source.kind === "amount" ? "idr" : "percent",
+      );
     }
   });
 
@@ -768,8 +921,12 @@ describe("review K: one formula source", () => {
     for (const code of nonGl) expect(mapped.has(code), code).toBe(false);
     for (const definition of reportMetricByCode.values())
       if (definition.unit === "idr")
-        expect(mapped.has(definition.code) || nonGl.has(definition.code), definition.code).toBe(true);
-    for (const code of nonGl) expect(reportMetricByCode.get(code)?.unit, code).toBe("idr");
+        expect(
+          mapped.has(definition.code) || nonGl.has(definition.code),
+          definition.code,
+        ).toBe(true);
+    for (const code of nonGl)
+      expect(reportMetricByCode.get(code)?.unit, code).toBe("idr");
   });
 
   it("the registry formula of a ledger metric describes the ledger", () => {
@@ -777,15 +934,31 @@ describe("review K: one formula source", () => {
     const describesLedger = (code: string): boolean => {
       const formula = reportMetricByCode.get(code)!.formula;
       if (formula.expression.includes("journal_lines")) return true;
-      return formula.inputs.length > 0 && formula.inputs.every((input) => mapped.has(input) && describesLedger(input));
+      return (
+        formula.inputs.length > 0 &&
+        formula.inputs.every(
+          (input) => mapped.has(input) && describesLedger(input),
+        )
+      );
     };
     const stale = [...mapped].filter((code) => !describesLedger(code));
     expect(stale).toEqual([]);
     for (const code of [
-      "net_sales", "net_profit", "food_cost_pct", "labor_cost_pct", "prime_cost_pct", "waste_cost",
-      "cogs", "discount_amount", "gross_payroll", "payment_fee",
+      "net_sales",
+      "net_profit",
+      "food_cost_pct",
+      "labor_cost_pct",
+      "prime_cost_pct",
+      "waste_cost",
+      "cogs",
+      "discount_amount",
+      "gross_payroll",
+      "payment_fee",
     ])
-      expect(reportMetricByCode.get(code)!.version, code).toBeGreaterThanOrEqual(2);
+      expect(
+        reportMetricByCode.get(code)!.version,
+        code,
+      ).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -806,12 +979,25 @@ describe("wire query", () => {
       comparePrevious: "true",
     });
     expect(flat).toEqual(bracket);
-    expect(flat).toMatchObject({ bucket: "total", requireFinal: false, comparePrevious: true });
+    expect(flat).toMatchObject({
+      bucket: "total",
+      requireFinal: false,
+      comparePrevious: true,
+    });
     expect(() =>
-      parseMetricQueryParams({ metricCodes: "net_sales", startDate: "2025-06-30", endDate: "2025-06-01" }),
+      parseMetricQueryParams({
+        metricCodes: "net_sales",
+        startDate: "2025-06-30",
+        endDate: "2025-06-01",
+      }),
     ).toThrow();
     expect(() =>
-      parseMetricQueryParams({ metricCodes: "net_sales", startDate: "2025-06-01", endDate: "2025-06-30", tenantId: "x" }),
+      parseMetricQueryParams({
+        metricCodes: "net_sales",
+        startDate: "2025-06-01",
+        endDate: "2025-06-30",
+        tenantId: "x",
+      }),
     ).toThrow();
   });
 });

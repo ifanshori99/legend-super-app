@@ -114,7 +114,8 @@ function addMonths(date: string, months: number): BusinessDate {
 
 const monthOf = (date: string) => date.slice(0, 7);
 const isMonthStart = (date: string) => date.endsWith("-01");
-const isMonthEnd = (date: string) => monthOf(addDays(date, 1)) !== monthOf(date);
+const isMonthEnd = (date: string) =>
+  monthOf(addDays(date, 1)) !== monthOf(date);
 
 function monthsBetween(start: string, end: string): string[] {
   const months: string[] = [];
@@ -192,7 +193,10 @@ function bucketsOf(range: Range, bucket: MetricBucket): Range[] {
 export function previousMetricRange(range: Range): Range {
   if (isMonthStart(range.start) && isMonthEnd(range.end)) {
     const months = monthsBetween(range.start, range.end).length;
-    return { start: addMonths(range.start, -months), end: addDays(range.start, -1) };
+    return {
+      start: addMonths(range.start, -months),
+      end: addDays(range.start, -1),
+    };
   }
   const days = (toTime(range.end) - toTime(range.start)) / DAY_MS + 1;
   return { start: addDays(range.start, -days), end: addDays(range.start, -1) };
@@ -420,7 +424,10 @@ async function componentAccounts(
     groups.size === 0
       ? []
       : await tx
-          .select({ id: chartOfAccounts.id, group: chartOfAccounts.reportGroup })
+          .select({
+            id: chartOfAccounts.id,
+            group: chartOfAccounts.reportGroup,
+          })
           .from(chartOfAccounts)
           .where(
             and(
@@ -556,7 +563,10 @@ class LedgerIndex {
     private readonly ranges: readonly Range[],
     currentCount: number,
   ) {
-    const byAccount = new Map<string, { component: GlComponent; sign: 1 | -1 }[]>();
+    const byAccount = new Map<
+      string,
+      { component: GlComponent; sign: 1 | -1 }[]
+    >();
     for (const [component, map] of accounts) {
       this.sums.set(
         component,
@@ -669,7 +679,10 @@ export async function queryMetrics(
   const now = options.now ?? new Date();
   const definitions = resolveDefinitions(request.metricCodes);
   assertDimensions(definitions, request, options.viewer);
-  const outletFilter = outletIdsForQuery(context.outletScope, request.outletIds);
+  const outletFilter = outletIdsForQuery(
+    context.outletScope,
+    request.outletIds,
+  );
   const tenantId = context.tenant.tenantId;
   const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const range: Range = {
@@ -775,8 +788,10 @@ export async function queryMetrics(
       // groupBy outlet: one series per outlet with lines, sorted, then the
       // entity-level lines (outlet null) as "Tingkat badan usaha", so the
       // series add up to the total (DASH-02).
-      let groups: { dimension: MetricDimensionValue | null; outletKey: string }[] =
-        [{ dimension: null, outletKey: ALL_OUTLETS }];
+      let groups: {
+        dimension: MetricDimensionValue | null;
+        outletKey: string;
+      }[] = [{ dimension: null, outletKey: ALL_OUTLETS }];
       if (request.groupBy === "outlet") {
         const keys = new Set<string>();
         for (const component of glComponentsOf(source))
@@ -800,8 +815,14 @@ export async function queryMetrics(
           const value = evaluate(source, index, at, group.outletKey);
           let comparison = null;
           if (previous && request.bucket === "total" && value !== null) {
-            const before = evaluate(source, index, previousIndex, group.outletKey);
-            if (before !== null) comparison = compareMetricValues(value, before);
+            const before = evaluate(
+              source,
+              index,
+              previousIndex,
+              group.outletKey,
+            );
+            if (before !== null)
+              comparison = compareMetricValues(value, before);
           }
           return {
             bucketStart: bucket.start,
