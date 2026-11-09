@@ -23,6 +23,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -62,6 +63,8 @@ export const orderIssues = pgTable(
     approvedBy: text("approved_by").references(() => user.id),
     /** Ingredient cost, whole rupiah, server-computed (KDS-07). */
     costIdr: idrColumn("cost_idr").notNull(),
+    /** Client retry key: a resend returns the stored row (unique per tenant). */
+    idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     status: varchar("status", { length: 20 }).notNull().default("open"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -70,6 +73,14 @@ export const orderIssues = pgTable(
   },
   (table) => [
     unique("order_issues_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("order_issues_tenant_idempotency_key").on(
+      table.tenantId,
+      table.idempotencyKey,
+    ),
+    // One live comp per order line, even under concurrent reports.
+    uniqueIndex("order_issues_comp_once_idx")
+      .on(table.tenantId, table.orderItemId)
+      .where(sql`${table.type} = 'comp' AND ${table.status} <> 'cancelled'`),
     foreignKey({
       name: "order_issues_order_fk",
       columns: [table.tenantId, table.orderId],

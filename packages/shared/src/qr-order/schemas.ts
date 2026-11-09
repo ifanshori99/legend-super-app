@@ -1451,8 +1451,17 @@ export type OrderIssueStatus = z.infer<typeof orderIssueStatusSchema>;
 // the kitchen contract and re-exported above. The QR recovery lifecycle
 // (status, resolvedAt, replacementItemId, priceDifferenceIdr) lives on it.
 
+/**
+ * remake and comp need the staff member (`employeeId`), which this input does
+ * not carry: guest-facing recovery reports only unfulfillable or complaint.
+ */
+export const QR_ORDER_ISSUE_INPUT_TYPES = [
+  "unfulfillable",
+  "complaint",
+] as const;
+
 export const createOrderIssueInputSchema = clientInputSchema({
-  type: orderIssueTypeSchema,
+  type: z.enum(QR_ORDER_ISSUE_INPUT_TYPES),
   reason: orderIssueReasonSchema,
   /** Written reason; stored as `order_issues.reasonNote`. */
   reasonNote: z.string().min(1).max(500),

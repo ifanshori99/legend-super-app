@@ -8,13 +8,13 @@
 // from the outbox.
 //
 // Assumptions where the brief is silent:
-// - A comp of a line that is still billed (not voided at kitchen/POS) records
-//   the issue and its cost but emits NO `order_issue.recorded`: the sale
-//   deduction of `order.paid` already drew that line, so a second draw would
-//   count the dish twice. A comp of a voided line emits it and draws once.
+// - A comp of a line that is still billed (not voided at kitchen/POS) is refused
+//   (422): the sale deduction of `order.paid` already drew that line, so a
+//   second draw would count the dish twice. A comp of a voided line emits the
+//   event and draws once.
 // - A remake always emits the event (the kitchen cooks the line again).
-// - Manual refund approval is the named supervisor holding `pos.refund.approve`
-//   in the outlet, and never the reporter.
+// - A manual refund is refused (422): an approver id alone is no proof and no
+//   approval flow exists yet.
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
@@ -393,6 +393,7 @@ function issueBody(order: Order, patch: Record<string, unknown> = {}) {
     resolution: null,
     voucherId: null,
     approvedBy: null,
+    idempotencyKey: `iss-${randomUUID()}`,
     ...patch,
   };
 }
@@ -587,17 +588,19 @@ describe("reportOrderIssue: remake", () => {
 });
 
 describe("reportOrderIssue: comp never deducts twice", () => {
-  it("a comp of a still-billed line records cost but draws no second time", async () => {
+  it("a comp of a still-billed line is refused (422) and stores nothing", async () => {
     const order = await seedOrder(kit.menuItem, { quantity: 1 });
     await deliver(paidEvent(order));
     const res = await api(recorder).report(
       order.ulid,
       issueBody(order, { type: "comp", reason: "late" }),
     );
-    expect(res.status).toBe(201);
-    expect(res.body.data.costIdr).toBe(CUP_COST);
-    const events = await issueEvents(res.body.data.id);
-    expect(events).toHaveLength(0);
+    expect(res.status).toBe(422);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [tenant.tenantId, order.itemUuid],
+    );
+    expect(rows).toHaveLength(0);
     expect((await deductionsOf(order)).map((d) => d.kind)).toEqual(["sale"]);
   });
 
@@ -628,7 +631,77 @@ describe("reportOrderIssue: comp never deducts twice", () => {
   });
 });
 
-describe("reportOrderIssue: R25 manual refund approval", () => {
+describe("reportOrderIssue: concurrent comps and idempotency", () => {
+  it("two concurrent comps of one voided line end in one 201 and one 409", async () => {
+    const order = await seedOrder(kit.menuItem, { quantity: 1, voided: true });
+    const results = await Promise.all(
+      [0, 1].map(() =>
+        api(recorder).report(
+          order.ulid,
+          issueBody(order, { type: "comp", reason: "wrong_order" }),
+        ),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2 AND type = 'comp'",
+      [tenant.tenantId, order.itemUuid],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a resend with the same key returns the stored row and no second event", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const body = issueBody(order, { idempotencyKey: `resend-${short()}-key` });
+    const first = await api(recorder).report(order.ulid, body);
+    const again = await api(recorder).report(order.ulid, body);
+    expect(first.status).toBe(201);
+    expect(again.status).toBe(201);
+    expect(again.body.data).toEqual(first.body.data);
+    expect(await issueEvents(first.body.data.id)).toHaveLength(1);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [tenant.tenantId, order.itemUuid],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("concurrent resends of one key store a single row", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const body = issueBody(order, { idempotencyKey: `race-${short()}-key` });
+    const results = await Promise.all(
+      [0, 1].map(() => api(recorder).report(order.ulid, body)),
+    );
+    expect(results.map((r) => r.status)).toEqual([201, 201]);
+    expect(results[1]!.body.data.id).toBe(results[0]!.body.data.id);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [tenant.tenantId, order.itemUuid],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a key reused for another order line conflicts (409)", async () => {
+    const first = await seedOrder(kit.menuItem);
+    const second = await seedOrder(kit.menuItem);
+    const key = `reuse-${short()}-key`;
+    expect(
+      (
+        await api(recorder).report(
+          first.ulid,
+          issueBody(first, { idempotencyKey: key }),
+        )
+      ).status,
+    ).toBe(201);
+    const res = await api(recorder).report(
+      second.ulid,
+      issueBody(second, { idempotencyKey: key }),
+    );
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("reportOrderIssue: R25 manual refund is refused", () => {
   const refund = (order: Order, approvedBy: string | null) =>
     issueBody(order, {
       type: "complaint",
@@ -639,37 +712,31 @@ describe("reportOrderIssue: R25 manual refund approval", () => {
       reasonNote: "Pelanggan kecewa, refund manual disetujui",
     });
 
-  it("accepts a supervisor who holds pos.refund.approve", async () => {
+  it("refuses a manual refund even with a valid supervisor id (422)", async () => {
     const order = await seedOrder(kit.menuItem);
     const res = await api(recorder).report(
       order.ulid,
       refund(order, supervisor.userId),
     );
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(res.body.data).toMatchObject({
-      approvedBy: supervisor.userId,
-      resolution: "manual_refund",
-      status: "resolved",
-    });
-    expect(res.body.data.resolvedAt).toBeTruthy();
+    expect(res.status).toBe(422);
+    expect(res.body.error.message).toContain("persetujuan");
   });
 
-  it("refuses an approver without the permission", async () => {
+  it("refuses an unprivileged approver and a self-approval alike", async () => {
     const order = await seedOrder(kit.menuItem);
-    const res = await api(recorder).report(
-      order.ulid,
-      refund(order, nobody.userId),
+    expect(
+      (await api(recorder).report(order.ulid, refund(order, nobody.userId)))
+        .status,
+    ).toBe(422);
+    expect(
+      (await api(recorder).report(order.ulid, refund(order, recorder.userId)))
+        .status,
+    ).toBe(422);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [tenant.tenantId, order.itemUuid],
     );
-    expect(res.status).toBe(403);
-  });
-
-  it("refuses the reporter approving their own refund", async () => {
-    const order = await seedOrder(kit.menuItem);
-    const res = await api(supervisor).report(
-      order.ulid,
-      refund(order, supervisor.userId),
-    );
-    expect(res.status).toBe(403);
+    expect(rows).toHaveLength(0);
   });
 });
 
@@ -764,19 +831,24 @@ describe("listOrderIssues projection (legend-0eq7)", () => {
   it("returns the order label, item name and staff names with each row", async () => {
     const order = await seedOrder(kit.menuItem);
     const remake = await api(recorder).report(order.ulid, issueBody(order));
-    const refund = await api(recorder).report(
-      order.ulid,
-      issueBody(order, {
-        type: "complaint",
-        reason: "complaint",
-        employeeId: null,
-        resolution: "manual_refund",
-        approvedBy: supervisor.userId,
-        reasonNote: "Pelanggan kecewa, refund manual disetujui",
-      }),
+    // The API refuses manual refunds (R25); seed the row the way a future
+    // approval flow would store it.
+    const refundId = await one<string>(
+      `INSERT INTO order_issues (tenant_id, outlet_id, order_id, order_item_id, type, reason,
+          reason_note, reported_by, resolution, approved_by, cost_idr, status, idempotency_key, resolved_at)
+       VALUES ($1, $2, $3, $4, 'complaint', 'complaint', 'Pelanggan kecewa, refund manual disetujui',
+          $5, 'manual_refund', $6, 0, 'resolved', $7, now()) RETURNING id`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        order.uuid,
+        order.itemUuid,
+        recorder.userId,
+        supervisor.userId,
+        `seed-${randomUUID()}`,
+      ],
     );
     expect(remake.status).toBe(201);
-    expect(refund.status).toBe(201);
     const res = await api(recorder).list("?limit=100");
     expect(res.status).toBe(200);
     const byId = new Map<string, Record<string, unknown>>(
@@ -795,7 +867,7 @@ describe("listOrderIssues projection (legend-0eq7)", () => {
       employeeName: "Koki",
       approvedByName: null,
     });
-    expect(byId.get(refund.body.data.id)).toMatchObject({
+    expect(byId.get(refundId)).toMatchObject({
       employeeName: null,
       approvedByName: "Supervisor",
     });

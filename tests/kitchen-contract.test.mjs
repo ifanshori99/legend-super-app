@@ -583,6 +583,17 @@ test("legend-d60m: kitchen and qr-order share ONE order_issues record shape", ()
     false,
     "a manual refund needs a written reason of 10+ characters (ORD-09)",
   );
+  // remake and comp need an employeeId the QR input lacks: refused here.
+  for (const type of ["remake", "comp"])
+    assert.equal(
+      qrOrder.createOrderIssueInputSchema.safeParse({
+        type,
+        reason: "quality",
+        reasonNote: "Dibuat ulang",
+      }).success,
+      false,
+      `QR input refuses ${type}`,
+    );
   // The QR staff-report input now speaks the unified vocabulary.
   assert.equal(
     qrOrder.createOrderIssueInputSchema.safeParse({
@@ -807,6 +818,7 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
       resolution: null,
       voucherId: null,
       approvedBy: null,
+      idempotencyKey: "issue-key-0001",
       tenantId: fixtures.tickets[0].tenantId,
     }).success,
     false,
@@ -821,11 +833,28 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
     resolution: null,
     voucherId: null,
     approvedBy: null,
+    idempotencyKey: "issue-key-0002",
   };
   assert.equal(
     kitchen.reportOrderIssue.body.safeParse(validIssueInput).success,
     true,
   );
+  // A retried report needs a key; a malformed key is refused.
+  const keyless = { ...validIssueInput };
+  delete keyless.idempotencyKey;
+  for (const [body, label] of [
+    [keyless, "missing idempotencyKey"],
+    [{ ...validIssueInput, idempotencyKey: "short" }, "key under 8 chars"],
+    [
+      { ...validIssueInput, idempotencyKey: "bad key with spaces" },
+      "bad chars",
+    ],
+  ])
+    assert.equal(
+      kitchen.reportOrderIssue.body.safeParse(body).success,
+      false,
+      label,
+    );
   // KDS-07: ingredient cost is computed by the API, never client input.
   assert.equal(
     kitchen.reportOrderIssue.body.safeParse({ ...validIssueInput, costIdr: 0 })

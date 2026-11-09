@@ -16,10 +16,12 @@ CREATE TABLE "order_issues" (
 	"price_difference_idr" bigint,
 	"approved_by" text,
 	"cost_idr" bigint NOT NULL,
+	"idempotency_key" varchar(100) NOT NULL,
 	"status" varchar(20) DEFAULT 'open' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"resolved_at" timestamp with time zone,
 	CONSTRAINT "order_issues_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "order_issues_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
 	CONSTRAINT "order_issues_type_check" CHECK ("order_issues"."type" IN ('unfulfillable', 'remake', 'comp', 'complaint')),
 	CONSTRAINT "order_issues_reason_check" CHECK ("order_issues"."reason" IN ('wrong_order', 'quality', 'late', 'complaint', 'out_of_stock', 'other')),
 	CONSTRAINT "order_issues_resolution_check" CHECK ("order_issues"."resolution" IS NULL OR "order_issues"."resolution" IN ('swap', 'voucher', 'manual_refund')),
@@ -42,7 +44,8 @@ CREATE TABLE "order_issues" (
 );
 --> statement-breakpoint
 CREATE INDEX "order_issues_outlet_created_idx" ON "order_issues" USING btree ("tenant_id","outlet_id","created_at","id");--> statement-breakpoint
-CREATE INDEX "order_issues_order_item_idx" ON "order_issues" USING btree ("tenant_id","order_item_id");
+CREATE INDEX "order_issues_order_item_idx" ON "order_issues" USING btree ("tenant_id","order_item_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "order_issues_comp_once_idx" ON "order_issues" USING btree ("tenant_id","order_item_id") WHERE "order_issues"."type" = 'comp' AND "order_issues"."status" <> 'cancelled';
 --> statement-breakpoint
 -- Tenant + outlet RLS (TEN-01/TEN-03). order_issues has outlet_id NOT NULL.
 -- Rows are updated when an open issue is resolved; the API never deletes one.

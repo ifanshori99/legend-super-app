@@ -39745,6 +39745,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "status": {
           "name": "status",
           "type": "varchar(20)",
@@ -39767,6 +39773,28 @@
         }
       },
       "indexes": {
+        "order_issues_comp_once_idx": {
+          "name": "order_issues_comp_once_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"order_issues\".\"type\" = 'comp' AND \"order_issues\".\"status\" <> 'cancelled'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "order_issues_outlet_created_idx": {
           "name": "order_issues_outlet_created_idx",
           "columns": [
@@ -39957,6 +39985,14 @@
           "columns": [
             "tenant_id",
             "id"
+          ]
+        },
+        "order_issues_tenant_idempotency_key": {
+          "name": "order_issues_tenant_idempotency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "idempotency_key"
           ]
         }
       },

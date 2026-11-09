@@ -8,13 +8,16 @@
 // - The ingredient cost is computed here from the recipe at the sale location
 //   moving-average cost; the client never sends it (KDS-07).
 // - Stock: a remake always appends `order_issue.recorded` (the kitchen cooks
-//   the line again; the sale deduction stays). A comp appends it only when the
-//   order line is voided (not billed): a comp of a still-billed line is already
+//   the line again; the sale deduction stays). A comp is accepted only on a
+//   voided line and then appends it: a comp of a still-billed line is already
 //   drawn by `order.paid`, and a second draw would count it twice
-//   (recipe-deduction.service.ts, consumer comment). complaint and
-//   unfulfillable draw nothing.
-// - R25: a manual refund names a supervisor who holds `pos.refund.approve` in
-//   the outlet and who is not the reporter. The id alone is never proof.
+//   (recipe-deduction.service.ts, consumer comment), so it is refused (422).
+//   complaint and unfulfillable draw nothing.
+// - R25: a supervisor id in the body is not proof of approval, so a manual
+//   refund is refused (422) until a real approval flow exists.
+// - Idempotency: `idempotencyKey` is unique per tenant; a resend returns the
+//   stored row without a second row or event. At most one live comp per line
+//   (partial unique index), so two concurrent comps end in one 409.
 
 import { and, desc, eq, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -24,6 +27,7 @@ import {
   CoreError,
   createUlid,
   encodeCursor,
+  idr,
   outletIdSchema,
   toIsoDateTime,
   userIdSchema,
@@ -68,9 +72,10 @@ import {
 } from "./station-access.ts";
 
 const RECORD = "kds.remake_comp.record";
-const REFUND_APPROVE = "pos.refund.approve";
 const EVENT_DESTINATION = "cloud-sync";
 const DEFAULT_LIMIT = 50;
+const COMP_ONCE_INDEX = "order_issues_comp_once_idx";
+const IDEMPOTENCY_KEY = "order_issues_tenant_idempotency_key";
 const AUDIT_SAFE_FIELDS = ["id", "type", "reason", "stationId", "costIdr"];
 
 const deniedOutlet = () =>
@@ -110,6 +115,19 @@ function toIssue(row: IssueRow): OrderIssue {
     createdAt: toIsoDateTime(row.createdAt),
     resolvedAt: row.resolvedAt ? toIsoDateTime(row.resolvedAt) : null,
   });
+}
+
+/** Name of the violated unique constraint, directly or in drizzle's cause chain. */
+function uniqueViolationOf(error: unknown, depth = 0): string | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  if (candidate.code === "23505")
+    return typeof candidate.constraint === "string" ? candidate.constraint : "";
+  return uniqueViolationOf(candidate.cause, depth + 1);
 }
 
 /** A user with an active role assignment in this tenant (a staff member). */
@@ -171,6 +189,28 @@ export async function reportOrderIssue(
 ): Promise<OrderIssue> {
   const outletId = outletIdSchema.parse(outletIdRaw);
   assertOutletInScope(context.outletScope, outletId);
+  const store = () =>
+    storeOrderIssue(context, actorUserId, outletId, orderId, input, now);
+  try {
+    return await store();
+  } catch (error) {
+    // The losing writer of a race: the failed transaction left nothing behind.
+    const violated = uniqueViolationOf(error);
+    if (violated === COMP_ONCE_INDEX)
+      throw new CoreError("CONFLICT", "Item ini sudah pernah di-comp.");
+    if (violated === IDEMPOTENCY_KEY) return store();
+    throw error;
+  }
+}
+
+async function storeOrderIssue(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletId: OutletId,
+  orderId: string,
+  input: CreateOrderIssueInput,
+  now: Date,
+): Promise<OrderIssue> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const snapshot = await accessSnapshotInTransaction(
@@ -191,6 +231,34 @@ export async function reportOrderIssue(
       await assertStationInOutlet(tx, context, outletId, input.stationId);
     } else if (!snapshot.allows(RECORD, { type: "outlet", id: outletId })) {
       throw deniedOutlet();
+    }
+
+    // R25: the approver id alone is no proof, and no approval flow exists here.
+    if (input.resolution === "manual_refund")
+      throw unprocessable(
+        "Refund manual butuh alur persetujuan yang belum tersedia di sini.",
+      );
+
+    const [replay] = await tx
+      .select()
+      .from(orderIssues)
+      .where(
+        and(
+          eq(orderIssues.tenantId, tenantId),
+          eq(orderIssues.idempotencyKey, input.idempotencyKey),
+        ),
+      );
+    if (replay) {
+      if (
+        replay.outletId !== outletId ||
+        replay.orderId !== orderId ||
+        replay.orderItemId !== input.orderItemId
+      )
+        throw new CoreError(
+          "CONFLICT",
+          "Kunci idempotensi ini sudah dipakai untuk laporan lain.",
+        );
+      return toIssue(replay);
     }
 
     const [order] = await tx
@@ -237,28 +305,14 @@ export async function reportOrderIssue(
       !(await isTenantStaff(tx, context, input.employeeId, now))
     )
       throw unprocessable("Staf yang dicatat bukan staf tenant ini.");
-    if (input.resolution === "manual_refund") {
-      const approver = input.approvedBy;
-      if (approver === null || approver === actorUserId)
-        throw new AccessError(
-          "PERMISSION_DENIED",
-          "Refund manual harus disetujui supervisor lain.",
-        );
-      const approverAccess = await accessSnapshotInTransaction(
-        tx,
-        context,
-        approver,
-        now,
-      );
-      if (
-        !approverAccess.allows(REFUND_APPROVE, { type: "outlet", id: outletId })
-      )
-        throw new AccessError(
-          "PERMISSION_DENIED",
-          "Penyetuju tidak berwenang menyetujui refund di outlet ini.",
-        );
-    }
 
+    const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
+    // A comp of a billed line is already drawn by `order.paid`; only a voided
+    // line leaves the stock for the comp to draw.
+    if (input.type === "comp" && !lineVoided)
+      throw unprocessable(
+        "Comp hanya untuk item yang sudah di-void; item yang masih tertagih tidak bisa di-comp.",
+      );
     if (input.type === "comp") {
       const [existing] = await tx
         .select({ id: orderIssues.id })
@@ -305,7 +359,8 @@ export async function reportOrderIssue(
         replacementItemId: input.replacementItemId,
         voucherId: input.voucherId,
         approvedBy: input.approvedBy,
-        costIdr,
+        idempotencyKey: input.idempotencyKey,
+        costIdr: idr(costIdr),
         // A resolution given with the report settles the issue at once.
         status: input.resolution === null ? "open" : "resolved",
         createdAt: now,
@@ -314,9 +369,7 @@ export async function reportOrderIssue(
       .returning();
     if (!row) throw new Error("order issue not stored");
 
-    const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
-    const drawsStock =
-      input.type === "remake" || (input.type === "comp" && lineVoided);
+    const drawsStock = input.type === "remake" || input.type === "comp";
     if (drawsStock) {
       const payload = orderIssueRecordedPayloadSchema.parse({
         issueId: row.id,

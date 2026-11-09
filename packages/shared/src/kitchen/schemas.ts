@@ -22,6 +22,7 @@ import {
   tenantIdSchema,
   outletIdSchema,
   userIdSchema,
+  idempotencyKeySchema,
   idrSchema,
   basisPointsSchema,
   businessDateSchema,
@@ -945,9 +946,9 @@ export const orderIssueViewSchema = z
  * the ingredient cost from the recipe/BOM at the time of the issue (KDS-07
  * "biaya bahan"), so a client cannot under-report it. The same cross-field
  * rules as the stored record apply, so the FE form fails before the request.
- * `approvedBy` names the supervisor who approved a manual refund (R25); the API
- * must verify that approval server-side (approval flow / supervisor PIN) and
- * reject an unverified id — the field alone is never proof of approval.
+ * `approvedBy` names the supervisor who approved a manual refund (R25); the
+ * field alone is never proof of approval, so `reportOrderIssue` refuses
+ * `manual_refund` until a real approval flow exists (422).
  */
 export const createOrderIssueInputSchema = z
   .strictObject({
@@ -961,6 +962,8 @@ export const createOrderIssueInputSchema = z
     replacementItemId: uuidSchema.nullable().default(null),
     voucherId: uuidSchema.nullable(),
     approvedBy: userIdSchema.nullable(),
+    /** A resend of the same key returns the stored issue, never a second one. */
+    idempotencyKey: idempotencyKeySchema,
   })
   .superRefine(orderIssueRules);
 
