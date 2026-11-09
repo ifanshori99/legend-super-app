@@ -17,6 +17,7 @@ import {
   businessDateSchema,
   ulidIdSchema,
 } from "../core/index.ts";
+import { customerWhatsappHashSchema } from "./customer-hash.ts";
 
 const name = z.string().min(1).max(150);
 const description = z.string().max(1000);
@@ -31,9 +32,6 @@ const nonnegativePointsSchema = pointsAmountSchema.refine(
 const positivePointsSchema = pointsAmountSchema.refine((value) => value > 0);
 const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
 const positiveIdr = idrSchema.refine((value) => value > 0);
-const sha256HexSchema = z
-  .string()
-  .regex(/^[a-f0-9]{64}$/, "Expected a lowercase SHA-256 hex digest");
 
 function before(left: string, right: string): boolean {
   return Date.parse(left) < Date.parse(right);
@@ -75,8 +73,12 @@ const customerProfileObjectSchema = z.strictObject({
   tenantId: tenantIdSchema,
   /** Customer account (WS-01 identity). Null until a member PWA account links. */
   userId: uuidSchema.nullable(),
-  /** SHA-256 of the normalized WhatsApp number; the verified identity key (F3). */
-  whatsappHash: sha256HexSchema.nullable(),
+  /**
+   * Keyed digest (HMAC-SHA-256 hex) of the normalized WhatsApp number; the
+   * verified identity key (F3). Equals the reservation `contactHash` for the
+   * same number (see customer-hash.ts).
+   */
+  whatsappHash: customerWhatsappHashSchema.nullable(),
   name,
   birthMonthDay: birthMonthDaySchema.nullable(),
   tierId: uuidSchema.nullable(),
@@ -417,6 +419,55 @@ export const earnRateSchema = z.strictObject({
 });
 export type EarnRate = z.infer<typeof earnRateSchema>;
 
+/**
+ * Program-level referral rules (legend-a8up). A referral qualifies on the
+ * referee's first paid order of at least `minFirstOrderIdr`; the service
+ * rejects further referrals once a referrer reaches the monthly cap.
+ * Defaults (referral off, 100/50 points, no minimum, 10 per month) apply when
+ * the field is omitted.
+ */
+export const referralRulesSchema = z.strictObject({
+  enabled: z.boolean(),
+  referrerPoints: nonnegativePointsSchema,
+  refereePoints: nonnegativePointsSchema,
+  /** The event that qualifies a referral; only the first paid order today. */
+  qualifyingEvent: z.literal("first_paid_order"),
+  minFirstOrderIdr: nonnegativeIdr,
+  maxReferralsPerCustomerPerMonth: z
+    .number()
+    .int()
+    .min(0)
+    .max(1000)
+    .refine(safeInt),
+});
+export type ReferralRules = z.infer<typeof referralRulesSchema>;
+export const defaultReferralRules: ReferralRules = referralRulesSchema.parse({
+  enabled: false,
+  referrerPoints: 100,
+  refereePoints: 50,
+  qualifyingEvent: "first_paid_order",
+  minFirstOrderIdr: 0,
+  maxReferralsPerCustomerPerMonth: 10,
+});
+
+/**
+ * Program-level anti-fraud limits (legend-a8up). The service enforces the
+ * daily cap when it books earn rows and blocks staff from earning points on
+ * their own profile when `employeeSelfServeBan` is on.
+ * A null cap means no daily limit. Defaults: 1.000 points per customer per
+ * day, ban on.
+ */
+export const loyaltyAntiFraudSchema = z.strictObject({
+  /** Null = no daily cap. */
+  dailyPointCapPerCustomer: positivePointsSchema.nullable(),
+  employeeSelfServeBan: z.boolean(),
+});
+export type LoyaltyAntiFraud = z.infer<typeof loyaltyAntiFraudSchema>;
+export const defaultLoyaltyAntiFraud: LoyaltyAntiFraud = {
+  dailyPointCapPerCustomer: 1000,
+  employeeSelfServeBan: true,
+};
+
 export const loyaltyProgramSchema = z.strictObject({
   id: uuidSchema,
   tenantId: tenantIdSchema,
@@ -428,6 +479,8 @@ export const loyaltyProgramSchema = z.strictObject({
   rollingMonths: z.number().int().min(1).max(60).refine(safeInt),
   /** Liability value of one point, used by accounting and the ledger. */
   pointValueIdr: positiveIdr,
+  referral: referralRulesSchema.default(defaultReferralRules),
+  antiFraud: loyaltyAntiFraudSchema.default(defaultLoyaltyAntiFraud),
   updatedAt: isoDateTimeSchema,
 });
 export type LoyaltyProgram = z.infer<typeof loyaltyProgramSchema>;

@@ -128,6 +128,7 @@ export const PROMO_AUDIT_SAFE_FIELDS: readonly string[] = [
   "promotionId",
   "orderId",
   "outletId",
+  "outletScope",
   "status",
   "change",
   "priority",
@@ -221,6 +222,7 @@ export function toPromotion(row: PromotionRow): Promotion {
     quotaPerCustomer: row.quotaPerCustomer,
     budgetIdr: row.budgetIdr,
     spentIdr: row.spentIdr,
+    outletScope: row.outletScope,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });

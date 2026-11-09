@@ -373,3 +373,17 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sudah: kolom `tax_scheme` (gross | gross_up | net) NOT NULL + CHECK. Migrasi 0103 (diregen jadi 0118 di batch3): kontrak lama di-backfill 'gross' lewat ADD COLUMN DEFAULT (tanpa UPDATE per baris, aman di bawah FORCE RLS tanpa BYPASSRLS), lalu DROP DEFAULT, jadi kontrak baru wajib menyebut skema. DTO `employmentContractSchema.taxScheme`; `createEmploymentContract` mewajibkan taxScheme dan mencatatnya di audit; tab kontrak di web menampilkan "Skema PPh 21".
 - Bukti: typecheck shared/api/web, eslint, dan prettier bersih; db:generate kosong. Test terarah lulus: 50 (hris-db, migrasi 0103, migrasi edge tanpa BYPASSRLS, migrasi policy PPh 21) + 16 (guard katalog RLS). Architect: rencana benar, DROP DEFAULT disetujui, renewal tidak menyalin skema. Reviewer Opus: tanpa temuan.
 - Sisa: legend-07eg memilih kontrak yang berlaku di periode, lalu mengisi `contractTaxScheme` ke `computePayslipTax`. Belum ada form atau route create kontrak, sehingga skema hanya diisi lewat service. Second-opinion Codex antre (migrasi, tingkat K).
+
+## WS-08 website brand + pelanggan + delivery (brief 99, cabang `ws/ws08-site`, worktree `.worktrees/ws08-site`)
+
+Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
+
+- legend-qgr6: `GET /api/public/site` + staff `GET/PUT /api/website/brands/:brandId/content` (tabel `brand_websites`, restrictive policy `tenant_wide_only`, `assertTenantWide` di semua jalur staff; syarat CTO terpenuhi: test 403 outlet-scope, tanpa kolom internal, reviewer Opus + architect: semua jalur terjaga).
+- legend-o9fc + a8up (kontrak CRM: hash WhatsApp HMAC, referral + anti-fraud), gbkw (kirim ulang tautan DP), u0q8 (admin kebijakan reservasi), nloi + jh27 (Idempotency-Key promo, allowlist outlet promo).
+- legend-5bn3 delivery: channel + sinkron menu/86, webhook ingest HMAC + idempoten, suntik ke POS/KDS, API pesanan, rekonsiliasi komisi, test penerimaan. Review Opus 3x + architect; semua blocker dibetulkan (void POS saat platform batal + event `order.voided`, kunci race KDS, indeks toko lewat fungsi SECURITY DEFINER).
+- Kontrak berubah: `orderVoidedPayloadSchema.approvedBy` nullable (void sistem). Event baru `delivery_order.updated`.
+- milestone/m1 sudah di-merge ke cabang (`a2dfc4ea`); migration WS-08 di-regen di atas 0098 m1.
+- Tabel `delivery_store_index` masuk daftar pengecualian TEN-02 (`provision-roles.ts`, `rls.test.ts`): menunggu persetujuan CTO.
+- Follow-up: legend-cbd0 (celah channel), legend-bk99 (panggilan platform setelah commit), legend-5d76 (selesaikan needs_review), kriteria keamanan di legend-im8n (penautan store id).
+- Parkir (keputusan owner): legend-q1e0 + 9be7 (recompute promo saat refund parsial).
+- Biaya sesi: ~21,5M token tertimbang (Opus utama 4,6M; subagent Opus 5,8M, Sonnet 11,0M, Haiku 0,2M); 54 subagent, puncak 7 bersamaan, rata-rata 1,65.

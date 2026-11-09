@@ -97,11 +97,14 @@ const SENSITIVE_FUNCTIONS = [
 ];
 // Tables with a tenant_id that are deliberately not under the restrictive
 // tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
-// each). The first two must still keep row-level security enabled: their
-// write policies are what stop cross-tenant writes.
+// each). The first three must still keep row-level security enabled: their
+// write policies are what stop cross-tenant writes (delivery_store_index has
+// no policy at all and no app-role grant; it is read only through
+// app.resolve_delivery_store: approved for review by CTO pending, WS-08 D3).
 const TENANT_RLS_EXCEPTIONS: Record<string, { rowSecurity: boolean }> = {
   "public.tenant_domains": { rowSecurity: true },
   "public.payment_link_tokens": { rowSecurity: true },
+  "public.delivery_store_index": { rowSecurity: true },
   "public.session": { rowSecurity: false },
   "public.login_challenges": { rowSecurity: false },
   "public.wa_inbound_messages": { rowSecurity: false },
@@ -674,7 +677,7 @@ async function assertTenantRls(client: ClientBase, user: string) {
   });
   if (broken.length)
     throw new ProvisionError(
-      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains or payment_link_tokens, which only need RLS enabled). For a write policy "not limited to the tenant" on tenant_domains or payment_link_tokens run DROP POLICY <policy> ON <table>, or, for one the migrations created (tenant_domain_* or payment_link_tokens_*), ALTER POLICY <policy> ON <table> so each of its USING and WITH CHECK expressions is (tenant_id = app.require_tenant_id()). Then re-run.`,
+      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains, payment_link_tokens or delivery_store_index, which only need RLS enabled). For a write policy "not limited to the tenant" on tenant_domains, payment_link_tokens or delivery_store_index run DROP POLICY <policy> ON <table>, or, for one the migrations created (tenant_domain_*, payment_link_tokens_* or delivery_store_index_*), ALTER POLICY <policy> ON <table> so each of its USING and WITH CHECK expressions is (tenant_id = app.require_tenant_id()). Then re-run.`,
     );
 }
 

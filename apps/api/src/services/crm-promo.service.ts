@@ -47,6 +47,7 @@ import {
   userIdSchema,
   z,
   type ScopedTenantContext,
+  type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
@@ -58,6 +59,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { openSecret, sealSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
 import {
   appendPromoEvent,
@@ -73,6 +75,7 @@ import {
   toVoucher,
   type PromotionRow,
 } from "./crm-promo-engine";
+import { promoIdempotentCommand } from "./crm-promo-idempotency";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
@@ -313,12 +316,31 @@ export async function createPromotion(
   actorUserId: string,
   input: CreatePromotionInput,
   now = new Date(),
+  idempotencyKey: string | null = null,
 ): Promise<Promotion> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     await assertPermission(tx, context, actor, MANAGE_PERMISSION, {
       type: "tenant",
     });
+    // legend-nloi: same key + same body replays the first promotion.
+    return promoIdempotentCommand(
+      tx,
+      context,
+      { key: idempotencyKey, operation: "promotion.create", request: input },
+      () => insertPromotion(tx, context, actor, input, now),
+    );
+  });
+}
+
+async function insertPromotion(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: UserId,
+  input: CreatePromotionInput,
+  now: Date,
+): Promise<Promotion> {
+  {
     const id = crypto.randomUUID();
     const promotion = validatePromotion({
       ...input,
@@ -352,6 +374,7 @@ export async function createPromotion(
           quotaTotal: promotion.quotaTotal,
           quotaPerCustomer: promotion.quotaPerCustomer,
           budgetIdr: promotion.budgetIdr,
+          outletScope: promotion.outletScope ?? "all_except",
           createdBy: actor,
           updatedBy: actor,
           createdAt: now,
@@ -391,7 +414,7 @@ export async function createPromotion(
       PROMO_AUDIT_SAFE_FIELDS,
     );
     return created;
-  });
+  }
 }
 
 export async function updatePromotion(
@@ -452,6 +475,7 @@ export async function updatePromotion(
           quotaTotal: next.quotaTotal,
           quotaPerCustomer: next.quotaPerCustomer,
           budgetIdr: next.budgetIdr,
+          outletScope: next.outletScope,
           updatedBy: actor,
           updatedAt: now,
         })
@@ -762,6 +786,7 @@ export async function issueVoucher(
   actorUserId: string,
   input: IssueVoucherInput,
   now = new Date(),
+  idempotencyKey: string | null = null,
 ): Promise<VoucherIssued> {
   const actor = userIdSchema.parse(actorUserId);
   if (input.promotionId === null && (input.valueIdr ?? 0) <= 0)
@@ -783,6 +808,41 @@ export async function issueVoucher(
     await assertPermission(tx, context, actor, MANAGE_PERMISSION, {
       type: "tenant",
     });
+    // legend-nloi: same key + same body replays the first voucher. Its one-time
+    // plain code is stored sealed, never in the clear.
+    const aad = `promo-voucher-idem:${context.tenant.tenantId}:${idempotencyKey}`;
+    return promoIdempotentCommand<VoucherIssued>(
+      tx,
+      context,
+      {
+        key: idempotencyKey,
+        operation: "voucher.issue",
+        request: input,
+        encode: (issued) => ({
+          voucher: issued.voucher,
+          code: sealSecret(issued.code, aad),
+        }),
+        decode: (stored) => {
+          const { voucher, code } = stored as {
+            voucher: VoucherDto;
+            code: string;
+          };
+          return { voucher, code: openSecret(code, aad) } as VoucherIssued;
+        },
+      },
+      () => mintVoucher(tx, context, actor, input, now),
+    );
+  });
+}
+
+async function mintVoucher(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: UserId,
+  input: IssueVoucherInput,
+  now: Date,
+): Promise<VoucherIssued> {
+  {
     if (input.promotionId !== null) {
       const [promotion] = await tx
         .select({ id: promotions.id, status: promotions.status })
@@ -882,7 +942,7 @@ export async function issueVoucher(
       "VOUCHER_CODE_UNAVAILABLE",
       "Kode voucher belum dapat dibuat. Coba lagi.",
     );
-  });
+  }
 }
 
 function dto(row: typeof vouchers.$inferSelect): VoucherDto {

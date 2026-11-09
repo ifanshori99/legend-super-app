@@ -25,15 +25,20 @@ import {
   listReservationsQuerySchema,
   markNoShowInputSchema,
   placePreOrderInputSchema,
+  putReservationPolicyInputSchema,
   reservationAvailabilityQuerySchema,
   reservationAvailabilitySchema,
   reservationCloseResultSchema,
   reservationCreatedSchema,
+  reservationDepositLinkSchema,
   reservationDetailSchema,
   reservationIdSchema,
   reservationPackageSchema,
+  reservationPolicyOverviewSchema,
+  reservationPolicySchema,
   reservationPreOrderSchema,
   reservationSchema,
+  resendDepositLinkInputSchema,
   resolveWaitlistEntryInputSchema,
   resolveWaitlistEntryResultSchema,
   seatReservationInputSchema,
@@ -144,6 +149,19 @@ export const markReservationNoShow = defineEndpoint({
   response: dataResponseSchema(reservationCloseResultSchema),
 });
 
+/**
+ * RSV-02: staff resend the DP payment link of a `pending_deposit` booking while
+ * the frozen payment window is open. The stored link is reused while valid,
+ * otherwise a new one is opened. The `paymentPath` is a guest credential.
+ */
+export const resendReservationDepositLink = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservations/:reservationId/deposit-link",
+  params: reservationParams,
+  body: resendDepositLinkInputSchema,
+  response: dataResponseSchema(reservationDepositLinkSchema),
+});
+
 /** §3.22 "Pre-order Event": attach or replace the group's menu package. */
 export const placeReservationPreOrder = defineEndpoint({
   method: "POST",
@@ -191,4 +209,23 @@ export const resolveWaitlistEntry = defineEndpoint({
   params: waitlistParams,
   body: resolveWaitlistEntryInputSchema,
   response: dataResponseSchema(resolveWaitlistEntryResultSchema),
+});
+
+// ---- Staff: DP & cancellation policy (§3.22 "DP & Kebijakan") -------------
+
+/** Active policy plus the retired versions of the outlet. */
+export const getReservationPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/reservation-policy",
+  params: outletParams,
+  response: dataResponseSchema(reservationPolicyOverviewSchema),
+});
+
+/** Saves a NEW version and retires the old one; bookings keep their snapshot. */
+export const putReservationPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/reservation-policy",
+  params: outletParams,
+  body: putReservationPolicyInputSchema,
+  response: dataResponseSchema(reservationPolicySchema),
 });

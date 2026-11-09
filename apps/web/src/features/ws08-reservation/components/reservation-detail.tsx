@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ErrorState } from "@/components/ui/feedback-state";
+import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
@@ -35,6 +36,7 @@ import {
 import {
   useFloorPlan,
   useReservationDetail,
+  useResendDepositLink,
   useSeatReservation,
 } from "../hooks";
 import { AssignTablesDialog } from "./assign-tables-dialog";
@@ -78,6 +80,7 @@ function DetailBody({
   const toast = useToast();
   const floor = useFloorPlan(outletId);
   const seat = useSeatReservation();
+  const resend = useResendDepositLink();
   const [assignOpen, setAssignOpen] = React.useState(false);
   const [preOrderOpen, setPreOrderOpen] = React.useState(false);
   const [closeMode, setCloseMode] = React.useState<"cancel" | "noShow" | null>(
@@ -96,6 +99,28 @@ function DetailBody({
   // the DP settled, so a refunded-DP guest can still be seated.
   const depositSettled = depositIsSettled(reservation.depositStatus);
   const seatError = seat.error ? t(reservationErrorKey(seat.error)) : null;
+
+  // RSV-02: only a booking still waiting for its DP can get the link again.
+  const canResendDeposit =
+    reservation.status === "pending_deposit" && reservation.depositIdr > 0;
+  const resendError = resend.error
+    ? t(reservationErrorKey(resend.error))
+    : null;
+  const depositLink = resend.data;
+
+  const resendDeposit = () => {
+    resend.mutate({ outletId, reservationId: reservation.id });
+  };
+
+  const copyDepositLink = () => {
+    if (!depositLink) return;
+    const url = new URL(depositLink.paymentPath, window.location.origin).href;
+    void navigator.clipboard
+      ?.writeText(url)
+      .then(() =>
+        toast({ title: t("reservation.depositLink.copied"), tone: "success" }),
+      );
+  };
 
   const seatNow = () => {
     seat.mutate(
@@ -325,6 +350,34 @@ function DetailBody({
           {t("reservation.detail.seatNeedsTable")}
         </p>
       )}
+      {depositLink && (
+        <section className="grid gap-1.5">
+          <h3 className="type-heading">{t("reservation.depositLink.label")}</h3>
+          <div className="flex items-center gap-2">
+            <Input
+              readOnly
+              aria-label={t("reservation.depositLink.label")}
+              value={
+                new URL(depositLink.paymentPath, window.location.origin).href
+              }
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <Button type="button" variant="outline" onClick={copyDepositLink}>
+              {t("reservation.depositLink.copy")}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground tabular">
+            {t("reservation.depositLink.expires", {
+              time: formatClock(depositLink.expiresAt, timeZone),
+            })}
+          </p>
+        </section>
+      )}
+      {resendError && (
+        <p role="alert" className="text-sm font-semibold text-danger">
+          {resendError}
+        </p>
+      )}
       {seatError && (
         <p role="alert" className="text-sm font-semibold text-danger">
           {seatError}
@@ -350,6 +403,16 @@ function DetailBody({
             onClick={() => setCloseMode("noShow")}
           >
             {t("reservation.detail.actions.noShow")}
+          </Button>
+        )}
+        {canResendDeposit && (
+          <Button
+            type="button"
+            variant="outline"
+            loading={resend.isPending}
+            onClick={resendDeposit}
+          >
+            {t("reservation.detail.actions.resendDeposit")}
           </Button>
         )}
         {actions.assign && (
@@ -443,6 +506,9 @@ export function ReservationDetailDialog({
           </>
         ) : (
           <DetailBody
+            // Per-reservation state (the resent DP link, open dialogs) must not
+            // carry over when the dialog shows another reservation.
+            key={detail.data.reservation.id}
             outletId={outletId}
             timeZone={timeZone}
             reservation={detail.data.reservation}

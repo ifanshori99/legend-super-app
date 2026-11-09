@@ -37,6 +37,7 @@ import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
+import { websiteAdminRouter } from "./website-admin.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -46,6 +47,7 @@ import { createShareholderDocumentsRouter } from "./shareholder-documents.routes
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
+import { reservationPolicyRouter } from "./reservation-policy.routes";
 import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityCustomerRouter } from "./facility-customer.routes";
 import { facilityRouter } from "./facility.routes";
@@ -77,6 +79,9 @@ import { edgeWifiRouter } from "./edge-wifi.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
+import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
+import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
+import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -153,6 +158,13 @@ apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
+// WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
+apiRouter.use("/outlets/:outletId/delivery-channels", deliveryChannelsRouter);
+apiRouter.use("/outlets/:outletId/delivery-orders", deliveryOrdersRouter);
+apiRouter.use(
+  "/outlets/:outletId/delivery-reconciliation",
+  deliveryReconciliationRouter,
+);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);
@@ -167,6 +179,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 apiRouter.use("/public/site", publicSiteRouter);
 // Public e-receipt page and PDF by link token, tenant from the host (legend-93a).
 apiRouter.use("/public/receipts", publicReceiptRouter);
+// Staff editor of the brand website content (WS-08, legend-qgr6).
+apiRouter.use("/website", websiteAdminRouter);
 // Supplier-facing PO PDF by share token (legend-9yz): hashed token, rate
 // limited, token redacted from request logs.
 apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
@@ -185,6 +199,8 @@ apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);
+// Reservation DP/cancellation policy versions (legend-u0q8): full paths inside.
+apiRouter.use(reservationPolicyRouter);
 // Guest self-service via signed link (legend-o5gr): full paths inside.
 apiRouter.use(reservationPublicRouter);
 // WS-09 guest-facing facility reads, public (legend-zjfi). Before facilityRouter, which requires a session.

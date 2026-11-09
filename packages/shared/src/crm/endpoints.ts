@@ -23,6 +23,8 @@ import {
   consentPurposeSchema,
   customerProfileDtoSchema,
   loyaltyProgramSchema,
+  referralRulesSchema,
+  loyaltyAntiFraudSchema,
   loyaltyProgramWithTiersSchema,
   loyaltyTierSchema,
   missionObjectSchema,
@@ -60,6 +62,7 @@ import {
   promotionApplicationResultSchema,
   promotionObjectSchema,
   promotionOutletSchema,
+  promotionOutletScopeSchema,
   promotionRoiSchema,
   promotionSchema,
   promotionStatusSchema,
@@ -222,10 +225,23 @@ export const getLoyaltyProgram = defineEndpoint({
   response: dataResponseSchema(loyaltyProgramWithTiersSchema),
 });
 
-export const updateLoyaltyProgramInputSchema = clientInputSchema(
-  loyaltyProgramSchema.omit({ id: true, tenantId: true, updatedAt: true })
-    .shape,
-);
+/**
+ * Update input. `referral` and `antiFraud` are optional WITHOUT defaults:
+ * omitted keeps the stored value (so a form that does not edit them never
+ * resets them); a sent object replaces that whole block. The response schema
+ * keeps the defaults for rows that predate the fields.
+ */
+export const updateLoyaltyProgramInputSchema = clientInputSchema({
+  ...loyaltyProgramSchema.omit({
+    id: true,
+    tenantId: true,
+    updatedAt: true,
+    referral: true,
+    antiFraud: true,
+  }).shape,
+  referral: referralRulesSchema.optional(),
+  antiFraud: loyaltyAntiFraudSchema.optional(),
+});
 
 export const updateLoyaltyProgram = defineEndpoint({
   method: "PUT",
@@ -339,15 +355,19 @@ export const listPromotions = defineEndpoint({
   response: page(promotionSchema),
 });
 
-export const createPromotionInputSchema = clientInputSchema(
-  promotionObjectSchema.omit({
-    id: true,
-    tenantId: true,
-    spentIdr: true,
-    createdAt: true,
-    updatedAt: true,
-  }).shape,
-);
+const promotionInputShape = promotionObjectSchema.omit({
+  id: true,
+  tenantId: true,
+  spentIdr: true,
+  createdAt: true,
+  updatedAt: true,
+}).shape;
+
+/** `outletScope` defaults to `all_except` on create only (never on PATCH). */
+export const createPromotionInputSchema = clientInputSchema({
+  ...promotionInputShape,
+  outletScope: promotionOutletScopeSchema.default("all_except"),
+});
 
 export const createPromotion = defineEndpoint({
   method: "POST",
@@ -356,7 +376,8 @@ export const createPromotion = defineEndpoint({
   response: dataResponseSchema(promotionSchema),
 });
 
-export const updatePromotionInputSchema = createPromotionInputSchema.partial();
+export const updatePromotionInputSchema =
+  clientInputSchema(promotionInputShape).partial();
 
 export const updatePromotion = defineEndpoint({
   method: "PATCH",

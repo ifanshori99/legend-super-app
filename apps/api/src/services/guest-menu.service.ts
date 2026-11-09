@@ -783,6 +783,8 @@ export async function getPublicMenuPage(
   context: ScopedTenantContext,
   now = new Date(),
   resolveMediaUrls: MenuMediaUrls = noMediaUrls,
+  /** The outlet to read; omitted keeps the brand's first active outlet. */
+  outletId?: string,
 ): Promise<PublicMenuPage> {
   return withTenant(db, context, async (tx) => {
     const [brand] = await tx
@@ -807,6 +809,7 @@ export async function getPublicMenuPage(
           eq(outlets.tenantId, context.tenant.tenantId),
           eq(outlets.brandId, brand.id),
           eq(outlets.status, "active"),
+          ...(outletId ? [eq(outlets.id, outletId)] : []),
         ),
       )
       .orderBy(asc(outlets.createdAt), asc(outlets.id))

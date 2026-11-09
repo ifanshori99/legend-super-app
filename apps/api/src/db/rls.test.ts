@@ -73,9 +73,19 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // services refuse a message received on another tenant's number
     // (identity-login.test.ts "AUTH-02 rejects a message received on another
     // tenant's number").
+    //
+    // public.delivery_store_index: the delivery platform webhook resolves the
+    // tenant FROM the platform's store id (legend-5bn3 D3), before any tenant
+    // context. Ids only (platform, store id, tenant, outlet); RLS enabled with
+    // no policy and no grant to the app role: the webhook reads one row through
+    // the SECURITY DEFINER app.resolve_delivery_store(platform, store id), and
+    // only the SECURITY DEFINER trigger on delivery_channels (which keeps the
+    // full restrictive policy) writes it. Also listed in provision-roles.ts
+    // TENANT_RLS_EXCEPTIONS. Approved for review by CTO pending (WS-08 D3).
     const allowlist = [
       "public.tenant_domains",
       "public.payment_link_tokens",
+      "public.delivery_store_index",
       "public.session",
       "public.login_challenges",
       "public.wa_inbound_messages",

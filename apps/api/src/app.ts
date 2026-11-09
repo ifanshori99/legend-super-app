@@ -32,6 +32,7 @@ import {
 import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { deliveryWebhookRouter } from "./routes/delivery-webhook.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
@@ -266,6 +267,9 @@ export function createApp({
     "/api/webhooks/whatsapp",
     createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
   );
+  // Delivery platform webhooks (GoFood, GrabFood, ShopeeFood; legend-5bn3):
+  // same server-to-server rules, signature per platform.
+  app.use("/api/webhooks/delivery", deliveryWebhookRouter);
   // Payment provider webhooks: tenant in the URL, signature per tenant secret.
   app.use("/api/webhooks/payments", createPaymentWebhookRouter());
 

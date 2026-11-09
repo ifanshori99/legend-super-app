@@ -140,6 +140,17 @@ export function useSeatReservation() {
   );
 }
 
+/** RSV-02: resend the DP link of a booking that still waits for its DP. */
+export function useResendDepositLink() {
+  return useReservationMutation(
+    (input: { outletId: string; reservationId: ReservationId }) =>
+      api.resendDepositLink({
+        outletId: input.outletId,
+        reservationId: input.reservationId,
+      }),
+  );
+}
+
 /** RSV-03: the result carries what the frozen policy says about the DP. */
 export function useCancelReservation() {
   return useReservationMutation(

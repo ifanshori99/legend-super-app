@@ -170,6 +170,82 @@ export type ReservationPolicySnapshot = z.infer<
   typeof reservationPolicySnapshotSchema
 >;
 
+// ---- Policy admin (§3.22 "DP & Kebijakan", bead legend-u0q8) ---------------
+
+export const reservationPolicyIdSchema = uuidIdSchema<"ReservationPolicyId">();
+
+/** The editable rules of one reservation policy version. */
+const policyRulesShape = {
+  depositRequirement: depositRequirementSchema,
+  /** DP per reservation in whole rupiah; 0 when no DP applies. */
+  depositAmountIdr: nonnegativeIdr,
+  paymentWindowMinutes: z.number().int().min(5).max(1440),
+  freeCancellationHours: z.number().int().min(0).max(720),
+  lateCancellationRefundBp: z.number().int().min(0).max(10_000),
+  noShowRefundBp: z.number().int().min(0).max(10_000),
+  minimumSpendIdr: nonnegativeIdr,
+  /** Slot length when the guest does not choose one (minutes). */
+  defaultDurationMinutes: z.number().int().min(15).max(720),
+  /** Spacing of the start times offered by the availability search. */
+  slotIntervalMinutes: z.number().int().min(5).max(240),
+};
+
+/** Mirrors the `reservation_policies` CHECK constraints on the DP amount. */
+function refineDepositRules(
+  policy: { depositRequirement: DepositRequirement; depositAmountIdr: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (policy.depositRequirement === "none" && policy.depositAmountIdr !== 0)
+    ctx.addIssue({
+      code: "custom",
+      path: ["depositAmountIdr"],
+      message: "A policy without DP carries a zero deposit",
+    });
+  if (policy.depositRequirement === "required" && policy.depositAmountIdr <= 0)
+    ctx.addIssue({
+      code: "custom",
+      path: ["depositAmountIdr"],
+      message: "A required DP must be above zero",
+    });
+}
+
+/**
+ * Body of `PUT /outlets/:outletId/reservation-policy`. Every save creates a new
+ * version (label assigned by the server). `expectedVersion` is the label of the
+ * active version the editor started from, or null when the outlet has no policy
+ * yet: a stale editor gets a 409 instead of silently stacking another version.
+ * Saving rules identical to the active version changes nothing.
+ */
+export const putReservationPolicyInputSchema = clientInputSchema({
+  ...policyRulesShape,
+  expectedVersion: reservationPolicySnapshotSchema.shape.version.nullable(),
+}).superRefine(refineDepositRules);
+export type PutReservationPolicyInput = z.infer<
+  typeof putReservationPolicyInputSchema
+>;
+
+/** One stored version of an outlet's policy. */
+export const reservationPolicySchema = z.strictObject({
+  id: reservationPolicyIdSchema,
+  outletId: outletIdSchema,
+  /** Server-assigned label (`v1`, `v2`, ...) copied into booking snapshots. */
+  version: reservationPolicySnapshotSchema.shape.version,
+  ...policyRulesShape,
+  /** True for the single version new bookings use. */
+  isActive: z.boolean(),
+  createdAt: isoDateTimeSchema,
+});
+export type ReservationPolicy = z.infer<typeof reservationPolicySchema>;
+
+/** Active version (null = bookings closed) and the retired versions, newest first. */
+export const reservationPolicyOverviewSchema = z.strictObject({
+  active: reservationPolicySchema.nullable(),
+  history: z.array(reservationPolicySchema),
+});
+export type ReservationPolicyOverview = z.infer<
+  typeof reservationPolicyOverviewSchema
+>;
+
 // ---- Reservation (§6.G reservations) --------------------------------------
 
 export const reservationSchema = z
@@ -462,6 +538,15 @@ export const markNoShowInputSchema = clientInputSchema({
   note: note300.optional(),
 });
 export type MarkNoShowInput = z.infer<typeof markNoShowInputSchema>;
+
+/**
+ * Staff resend of the DP link: no fields, the server reuses the stored link or
+ * opens a new one inside the frozen payment window.
+ */
+export const resendDepositLinkInputSchema = clientInputSchema({});
+export type ResendDepositLinkInput = z.infer<
+  typeof resendDepositLinkInputSchema
+>;
 
 // ---- Table slots (RSV-01) -------------------------------------------------
 

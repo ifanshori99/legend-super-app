@@ -677,3 +677,221 @@ describe("Vouchers", () => {
     expect(empty.status).toBe(422);
   });
 });
+
+describe("Promo create idempotency (legend-nloi)", () => {
+  const idemKey = () => `promo-${randomUUID()}`;
+  const postWithKey = (
+    client: Client_,
+    path: string,
+    key: string,
+    body: Record<string, unknown>,
+  ) =>
+    client.post(path).set(originHeader).set("Idempotency-Key", key).send(body);
+
+  it("replays the same promotion for the same key and body, 409 for another body", async () => {
+    const { client } = await ownerClient();
+    const key = idemKey();
+    const body = promoBody({ name: "Promo Idempoten" });
+    const first = await postWithKey(client, "/api/promotions", key, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    createdPromotions.push(first.body.data.id as string);
+    const replay = await postWithKey(client, "/api/promotions", key, body);
+    expect(replay.status).toBe(201);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+
+    const other = await postWithKey(client, "/api/promotions", key, {
+      ...body,
+      name: "Promo Lain",
+    });
+    expect(other.status).toBe(409);
+    expect(JSON.stringify(other.body)).toContain("IDEMPOTENCY_KEY_REUSED");
+
+    const rows = await owner.query(
+      "SELECT count(*)::int AS n FROM promotions WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, first.body.data.id],
+    );
+    expect(rows.rows[0].n).toBe(1);
+    const named = await asTenant((db) =>
+      db.query(
+        "SELECT count(*)::int AS n FROM promo_command_idempotency WHERE tenant_id = $1 AND key = $2",
+        [tenant.id, key],
+      ),
+    );
+    expect(named.rows[0].n).toBe(1);
+  });
+
+  it("creates two promotions without a key, and rejects a malformed key", async () => {
+    const { client } = await ownerClient();
+    const a = await createPromotion(client, promoBody());
+    const b = await createPromotion(client, promoBody());
+    expect(a).not.toBe(b);
+    const bad = await client
+      .post("/api/promotions")
+      .set(originHeader)
+      .set("Idempotency-Key", "x")
+      .send(promoBody());
+    expect(bad.status).toBe(422);
+  });
+
+  it("replays the same voucher and plain code; 409 for another body; the code is never stored in the clear", async () => {
+    const { client } = await ownerClient();
+    const key = idemKey();
+    const body = {
+      promotionId: null,
+      customerProfileId: null,
+      source: "manual",
+      valueIdr: 20_000,
+      validFrom: startsAt(),
+      validUntil: null,
+    };
+    const first = await postWithKey(client, "/api/vouchers", key, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await postWithKey(client, "/api/vouchers", key, body);
+    expect(replay.status).toBe(201);
+    expect(replay.body.data.voucher.id).toBe(first.body.data.voucher.id);
+    expect(replay.body.data.code).toBe(first.body.data.code);
+
+    const other = await postWithKey(client, "/api/vouchers", key, {
+      ...body,
+      valueIdr: 30_000,
+    });
+    expect(other.status).toBe(409);
+
+    const stored = await asTenant((db) =>
+      db.query(
+        "SELECT response::text AS response FROM promo_command_idempotency WHERE tenant_id = $1 AND key = $2",
+        [tenant.id, key],
+      ),
+    );
+    expect(stored.rows[0].response).not.toContain(
+      first.body.data.code as string,
+    );
+  });
+
+  it("protects the key table with forced tenant RLS", async () => {
+    const rows = await owner.query(
+      "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'promo_command_idempotency'",
+    );
+    expect(rows.rows[0]).toEqual({
+      relrowsecurity: true,
+      relforcerowsecurity: true,
+    });
+  });
+});
+
+describe("Promotion outletScope allowlist (legend-jh27)", () => {
+  it("defaults to all_except, and an `only` promotion runs only at allowlisted outlets", async () => {
+    const { client } = await ownerClient();
+    const itemId = await seedItem(50_000);
+    const quote = (item: string) =>
+      evaluate(client, {
+        channel: "takeaway",
+        lines: [{ menuItemId: item, quantity: 2 }],
+        voucherCode: null,
+      });
+
+    const open = await client
+      .post("/api/promotions")
+      .set(originHeader)
+      .send(itemPromoBody(itemId, { name: "Semua Outlet" }));
+    expect(open.status, JSON.stringify(open.body)).toBe(201);
+    createdPromotions.push(open.body.data.id as string);
+    expect(open.body.data.outletScope).toBe("all_except");
+    expect((await quote(itemId)).body.data.totalDiscountIdr).toBe(10_000);
+
+    const onlyItem = await seedItem(50_000);
+    const created = await client
+      .post("/api/promotions")
+      .set(originHeader)
+      .send(
+        itemPromoBody(onlyItem, { name: "Hanya Outlet", outletScope: "only" }),
+      );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const promotionId = created.body.data.id as string;
+    createdPromotions.push(promotionId);
+    expect(created.body.data.outletScope).toBe("only");
+
+    // No row: not allowlisted anywhere.
+    expect((await quote(onlyItem)).body.data.totalDiscountIdr).toBe(0);
+    const before = await client.get(`/api/promotions/${promotionId}/outlets`);
+    expect(
+      before.body.data.every((row: { enabled: boolean }) => !row.enabled),
+    ).toBe(true);
+
+    // An enabled=false row does not allowlist.
+    await client
+      .put(`/api/promotions/${promotionId}/outlets/${outlet.id}`)
+      .set(originHeader)
+      .send({ enabled: false });
+    expect((await quote(onlyItem)).body.data.totalDiscountIdr).toBe(0);
+
+    // enabled=true allowlists that outlet only.
+    await client
+      .put(`/api/promotions/${promotionId}/outlets/${outlet.id}`)
+      .set(originHeader)
+      .send({ enabled: true });
+    expect((await quote(onlyItem)).body.data.totalDiscountIdr).toBe(10_000);
+    const after = await client.get(`/api/promotions/${promotionId}/outlets`);
+    const effective = Object.fromEntries(
+      after.body.data.map((row: { outletId: string; enabled: boolean }) => [
+        row.outletId,
+        row.enabled,
+      ]),
+    );
+    expect(effective[outlet.id]).toBe(true);
+    expect(effective[secondOutlet.id]).toBe(false);
+
+    // PATCH back to all_except: the enabled=true row is the same as no row.
+    const patched = await client
+      .patch(`/api/promotions/${promotionId}`)
+      .set(originHeader)
+      .send({ outletScope: "all_except" });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(patched.body.data.outletScope).toBe("all_except");
+  });
+
+  it("emits promotion_outlet.changed from the effective `only` state, not the all_except default", async () => {
+    const { client } = await ownerClient();
+    const itemId = await seedItem(50_000);
+    const created = await client
+      .post("/api/promotions")
+      .set(originHeader)
+      .send(itemPromoBody(itemId, { name: "Hanya Event", outletScope: "only" }));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const promotionId = created.body.data.id as string;
+    createdPromotions.push(promotionId);
+    const changes = async () =>
+      (
+        await owner.query(
+          `SELECT event->'payload' AS payload FROM domain_event_outbox
+            WHERE tenant_id = $1 AND event->>'name' = 'promotion_outlet.changed'
+              AND event->'payload'->>'promotionId' = $2`,
+          [tenant.id, promotionId],
+        )
+      ).rows;
+
+    // Disabling a non-allowlisted outlet: off -> off, no event.
+    const off = await client
+      .put(`/api/promotions/${promotionId}/outlets/${outlet.id}`)
+      .set(originHeader)
+      .send({ enabled: false });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect(await changes()).toEqual([]);
+
+    // Enabling an outlet without an allowlist row: off -> on, one event.
+    const on = await client
+      .put(`/api/promotions/${promotionId}/outlets/${secondOutlet.id}`)
+      .set(originHeader)
+      .send({ enabled: true });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect(await changes()).toEqual([
+      {
+        payload: {
+          promotionId,
+          outletId: secondOutlet.id,
+          enabled: true,
+        },
+      },
+    ]);
+  });
+});
