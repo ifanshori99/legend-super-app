@@ -192,6 +192,9 @@ export const updateStationInputSchema = clientInputSchema({
   type: stationTypeSchema.optional(),
   printerDeviceId: uuidSchema.nullable().optional(),
   targetSeconds: z.number().int().positive().max(86_400).nullable().optional(),
+  // legend-4xai: the station's `updatedAt` as the form loaded it. Required
+  // with `printerDeviceId`; a newer change makes the write a 409.
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
 });
 
 export const listStations = defineEndpoint({

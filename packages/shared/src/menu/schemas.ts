@@ -29,6 +29,7 @@ export const stationSchema = z.strictObject({
   type: z.string().min(1).max(20),
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().positive().nullable(),
+  updatedAt: isoDateTimeSchema,
 });
 export const stationTypeSchema = z.enum([
   "coffee_bar",

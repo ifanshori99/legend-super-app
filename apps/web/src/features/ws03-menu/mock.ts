@@ -328,6 +328,7 @@ registerMock(createStation, ({ body }) => {
     type: body.type,
     printerDeviceId: body.printerDeviceId ?? null,
     targetSeconds: body.targetSeconds ?? null,
+    updatedAt: new Date().toISOString(),
   };
   state().stations.push(station);
   return { data: station };
@@ -339,7 +340,15 @@ registerMock(updateStation, ({ params, body }) => {
   );
   const station = state().stations[index];
   if (!station) notFound("Stasiun");
-  state().stations[index] = { ...station, ...body };
+  const { expectedUpdatedAt, ...changes } = body;
+  // Same rule as the API (legend-4xai): a stale form answers 409.
+  if (expectedUpdatedAt && expectedUpdatedAt !== station.updatedAt)
+    conflict("Stasiun sudah diubah orang lain. Muat ulang lalu coba lagi.");
+  state().stations[index] = {
+    ...station,
+    ...changes,
+    updatedAt: new Date().toISOString(),
+  };
   return { data: state().stations[index] };
 });
 

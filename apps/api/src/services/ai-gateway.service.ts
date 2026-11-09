@@ -84,7 +84,14 @@ const OWN_DATA_PII: ReadonlySet<PiiKind> = new Set([
   "npwp",
 ]);
 
-/** Server-minted tenant-scope context for the gateway's own bookkeeping. */
+/**
+ * Server-minted tenant-scope context for the gateway's own bookkeeping
+ * (usage, budget, audit) AND for server-side candidate reads such as menu
+ * items in draftPromoCopy and business accounts. RLS alone does not narrow
+ * those reads: every caller must filter the loaded rows by the caller's
+ * scoped reach before they reach the model or the response (legend-cy2e,
+ * Codex review 152).
+ */
 export function gatewayContext(access: AccessSnapshot): ScopedTenantContext {
   return establishScopedTenantContext(access.tenant, { kind: "tenant" });
 }

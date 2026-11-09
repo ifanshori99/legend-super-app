@@ -48,6 +48,7 @@ import {
   transitionDevice,
   type Device,
 } from "@starter/shared/edge";
+import { menuUpdatedEvent } from "@starter/shared/menu";
 import type { Request, RequestHandler } from "express";
 import type { z } from "zod";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
@@ -71,6 +72,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { findActiveDeviceForToken } from "./device-registry-check.ts";
+import { appendMenuEvent } from "./menu-internals.ts";
 import type { Tx } from "./permission-resolver.ts";
 import {
   deviceTakesReceipts,
@@ -444,6 +446,35 @@ export async function revokeDevice(
     if (!updated)
       throw new CoreError("CONFLICT", "Perangkat berubah, coba lagi.");
     await closeTrainingPeriod(tx, current.id, actorUserId, now);
+    // legend-4xai (Codex 159): a revoked printer must not stay bound to a
+    // station. Same transaction, after the device row lock: createStation and
+    // updateStation take the device FOR SHARE before writing the station, so
+    // a bind in flight commits first and is cleared here. A station shares
+    // its outlet with the device, so the caller's outlet RLS reaches it.
+    const clearedStations = await tx
+      .update(stations)
+      .set({ printerDeviceId: null, updatedAt: now })
+      .where(
+        and(
+          eq(stations.tenantId, tenantId),
+          eq(stations.printerDeviceId, current.id),
+        ),
+      )
+      .returning({ id: stations.id, outletId: stations.outletId });
+    // Same event updateStation emits, so KDS and menu clients refresh the
+    // cleared binding.
+    for (const station of clearedStations)
+      await appendMenuEvent(tx, context, menuUpdatedEvent, {
+        aggregateId: station.id,
+        actorUserId,
+        payload: {
+          entity: "station",
+          entityId: station.id,
+          operation: "updated",
+        },
+        affects: { kind: "outlet", outletId: station.outletId },
+        now,
+      });
     await recordAudit(
       {
         tenantId,
@@ -456,7 +487,10 @@ export async function revokeDevice(
         objectId: current.id,
         reason: input.reason,
         before: { status: "active" },
-        after: { status: "revoked" },
+        after: {
+          status: "revoked",
+          clearedStationIds: clearedStations.map((station) => station.id),
+        },
         sensitiveAccess: false,
       },
       { tx, context },
