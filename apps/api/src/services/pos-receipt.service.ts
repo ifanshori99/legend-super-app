@@ -75,6 +75,7 @@ import type {
   ReceiptRunReport,
 } from "@starter/shared/edge";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import type { PosReceiptGapRun } from "./pos-shift-ports.ts";
 import { devices } from "../db/schema/device.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { posOrders, posOrderVoids } from "../db/schema/pos-order.ts";
@@ -1651,14 +1652,17 @@ export async function receiptGapsForOutletFast(
  * `receiptGapsForOutletFast`: one SQL count first, the full scan only when the
  * count differs from lastNumber. Outlet-lifetime, not per business day.
  * legend-zsdd: a device may have several runs (retired ones plus the current
- * one); every run is checked and the missing ordinals of all runs are
- * returned, sorted and without duplicates (the port carries ordinals only).
+ * one); every run is checked. The port returns one entry per run (own prefix)
+ * with a missing ordinal or a lost range, oldest run first, so P1 missing #3
+ * and P2 missing #3 stay distinct. legend-yd0h8: `lost` is set for a run
+ * retired as `edge_regressed` whose edge high-water is above the cloud
+ * lastNumber.
  */
 export async function receiptGapsForDevice(
   tx: Tx,
   context: ScopedTenantContext,
   input: { outletId: string; deviceId: string },
-): Promise<number[]> {
+): Promise<PosReceiptGapRun[]> {
   const tenantId = context.tenant.tenantId;
   const sequences = await tx
     .select()
@@ -1669,12 +1673,20 @@ export async function receiptGapsForDevice(
         eq(receiptSequences.outletId, input.outletId as OutletId),
         eq(receiptSequences.deviceId, input.deviceId),
       ),
-    );
-  const missing = new Set<number>();
-  for (const sequence of sequences)
-    for (const n of await receiptGapsOfRun(tx, tenantId, sequence))
-      missing.add(n);
-  return [...missing].sort((a, b) => a - b);
+    )
+    .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
+  const runs: PosReceiptGapRun[] = [];
+  for (const sequence of sequences) {
+    const missing = await receiptGapsOfRun(tx, tenantId, sequence);
+    const lost =
+      sequence.retiredReason === "edge_regressed" &&
+      sequence.edgeReportedNumber > sequence.lastNumber
+        ? { from: sequence.lastNumber + 1, to: sequence.edgeReportedNumber }
+        : null;
+    if (missing.length > 0 || lost !== null)
+      runs.push({ prefix: sequence.prefix, missing, lost });
+  }
+  return runs;
 }
 
 /** Missing ordinals of one run; fast path when the count matches lastNumber. */

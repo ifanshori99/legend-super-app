@@ -998,7 +998,9 @@ describe("POS-05 the day cannot be closed while something is unfinished (legend-
   });
 
   it("POS-06 a device with a missing receipt number blocks the close with RECEIPT_SEQUENCE_GAP", async () => {
-    setPosReceiptGapsPort(async () => [3]);
+    setPosReceiptGapsPort(async () => [
+      { prefix: "P1", missing: [3], lost: null },
+    ]);
     try {
       const refused = await day().close();
       expect(refused.status, JSON.stringify(refused.body)).toBe(409);
