@@ -116,6 +116,7 @@ export const auditSettingsMessages = {
       notification: "Notifikasi",
       session: "Sesi",
       report: "Laporan",
+      support_access_grant: "Akses dukungan",
     },
     actions: {
       settings_updated: "Pengaturan diubah",
@@ -132,6 +133,12 @@ export const auditSettingsMessages = {
       report_exported: "Laporan diekspor",
       notification_rule_updated: "Aturan notifikasi diubah",
       ai_suggestion_applied: "Saran AI diterapkan",
+      support_access_granted: "Akses dukungan diberikan",
+      support_access_denied: "Akses dukungan ditolak",
+      support_access_ended: "Akses dukungan diakhiri",
+      support_access_expired: "Akses dukungan kedaluwarsa",
+      support_access_impersonation_started: "Sesi dukungan dimulai",
+      support_access_impersonation_ended: "Sesi dukungan diakhiri",
     },
   },
   hub: {

@@ -21,9 +21,11 @@ import {
   assertImpersonationAllowed,
   IMPERSONATION_SESSION_MAX_SECONDS,
   ImpersonationRefused,
+  impersonationSessionEnd,
   recordImpersonationEnded,
   recordImpersonationStarted,
   type ImpersonationEndCause,
+  type ImpersonationMatch,
 } from "../services/platform-support.service";
 import { logger } from "./logger";
 
@@ -38,7 +40,8 @@ const authLog = logger.child({ module: "better-auth" });
  *     in a tenant where the target holds a role (assertImpersonationAllowed);
  *   - the target is not the caller and not a platform admin;
  *   - an impersonated session cannot start another impersonation;
- *   - the session lasts at most IMPERSONATION_SESSION_MAX_SECONDS (60 min);
+ *   - the session lasts at most IMPERSONATION_SESSION_MAX_SECONDS (60 min)
+ *     and never outlives the grant behind it (legend-npkpz);
  *   - start and end write a sensitive audit row in each matched tenant.
  *
  * The check runs twice: hooks.before (HTTP route, gives a clean 403) and
@@ -112,8 +115,9 @@ export const auth = betterAuth({
           const adminUserId = session.impersonatedBy;
           if (typeof adminUserId !== "string" || !adminUserId) return;
           const now = new Date();
+          let matches: ImpersonationMatch[];
           try {
-            await assertImpersonationAllowed({
+            matches = await assertImpersonationAllowed({
               adminUserId,
               targetUserId: session.userId,
               now,
@@ -121,13 +125,14 @@ export const auth = betterAuth({
           } catch (error) {
             refuse(error);
           }
-          const cap = new Date(
-            now.getTime() + IMPERSONATION_SESSION_MAX_SECONDS * 1000,
-          );
           return {
             data: {
               ...session,
-              expiresAt: session.expiresAt < cap ? session.expiresAt : cap,
+              expiresAt: impersonationSessionEnd({
+                requested: session.expiresAt,
+                matches,
+                now,
+              }),
             },
           };
         },

@@ -25,15 +25,20 @@
 //     `role.updated` with objectId = role id (see access-audit.test.ts).
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   cafeLegendPlatformFixtures,
   requestSupportAccessInputSchema,
   type RequestSupportAccessInput,
 } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db as appDb } from "../db/index.ts";
+import { requestContext } from "../lib/request-context.ts";
 import {
+  assertImpersonationAllowed,
   endSupportAccess,
+  impersonationSessionEnd,
+  type ImpersonationMatch,
   requestSupportAccess,
   SUPPORT_ACCESS_WRITE_MAX_MINUTES,
 } from "../services/platform-support.service.ts";
@@ -593,5 +598,223 @@ describe("legend-6yfhc TEN-04 writes during a support session are attributed to 
     expect(tenantRow!.actorId).toBe(tenant.userId);
     expect(tenantRow!.support).toBeUndefined();
     expect(tenantRow!.sensitiveAccess).toBe(false);
+  });
+});
+
+// legend-npkpz: the impersonated session never outlives the grant, and the
+// cross-tenant grant scan runs once per request.
+// Assumptions (spec silent): the grant returned by requestSupportAccess carries
+// `expiresAt` as an ISO string (as the audit test above relies on); the start
+// audit row records the session's end as maskedChanges.after.impersonationEndsAt.
+describe("legend-npkpz TEN-04 impersonation expiry cap and single grant scan", () => {
+  const MINUTE_MS = 60 * 1000;
+  const extraTenantIds: string[] = [];
+
+  beforeAll(async () => {
+    // Throwaway tenants so a per-tenant scan is clearly countable.
+    for (let i = 0; i < 8; i += 1) {
+      const id = randomUUID();
+      extraTenantIds.push(id);
+      await db.query(
+        `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+         SELECT $1, $2, 'Impersonation scan tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+           FROM tenants WHERE id = $3`,
+        [id, `imp-scan-${id.slice(0, 8)}`, tenantId],
+      );
+    }
+  });
+
+  afterAll(async () => {
+    await db.query("DELETE FROM tenants WHERE id = ANY($1::uuid[])", [
+      extraTenantIds,
+    ]);
+  });
+
+  it("legend-npkpz TEN-04 a grant ending in 10 minutes caps the impersonated session at the grant's end", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    // Opened 5 minutes ago for 15 minutes: 10 minutes left.
+    const grant = await openGrant(
+      tenantId,
+      admin.userId,
+      { durationMinutes: 15 },
+      new Date(Date.now() - 5 * MINUTE_MS),
+    );
+
+    const started = await tryImpersonate(admin, tenant.userId);
+    expect(started.status).toBe(200);
+
+    const { expiresAt } = await sessionExpiry(admin.userId);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(
+      Date.parse(grant.expiresAt),
+    );
+    expect(expiresAt.getTime()).toBeGreaterThan(Date.now() + 9 * MINUTE_MS);
+
+    const rows = await auditRows(
+      tenantId,
+      "support_access.impersonation_started",
+      { actorId: admin.userId },
+    );
+    expect(rows).toHaveLength(1);
+    const endsAt = Date.parse(
+      String(rows[0]!.maskedChanges.after?.impersonationEndsAt),
+    );
+    expect(Math.abs(endsAt - expiresAt.getTime())).toBeLessThanOrEqual(1000);
+  });
+
+  it("legend-npkpz TEN-04 a 120-minute grant still caps the session at 60 minutes", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    await openGrant(tenantId, admin.userId, { durationMinutes: 120 });
+
+    const startTime = Date.now();
+    const started = await tryImpersonate(admin, tenant.userId);
+    expect(started.status).toBe(200);
+    const upperBound = Date.now() + SIXTY_MINUTES_MS;
+
+    const { expiresAt } = await sessionExpiry(admin.userId);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(upperBound);
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(
+      startTime + 59 * MINUTE_MS,
+    );
+  });
+
+  it("legend-npkpz TEN-04 the cross-tenant grant scan runs once per impersonation request", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId);
+
+    const count = await db.query<{ n: string }>(
+      "SELECT count(*) AS n FROM tenants",
+    );
+    const tenantCount = Number(count.rows[0]!.n);
+    expect(tenantCount).toBeGreaterThanOrEqual(8);
+
+    const spy = vi.spyOn(appDb, "transaction");
+    let calls = 0;
+    try {
+      const started = await tryImpersonate(admin, tenant.userId);
+      expect(started.status).toBe(200);
+      calls = spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+    // Scanning once costs about one transaction per tenant; the old triple
+    // scan cost at least three per tenant.
+    expect(calls).toBeLessThan(2 * tenantCount);
+
+    // Decisions are unchanged: granted tenant audited, the others are not.
+    const granted = await auditRows(
+      tenantId,
+      "support_access.impersonation_started",
+      { actorId: admin.userId, objectId: grant.id },
+    );
+    expect(granted).toHaveLength(1);
+    for (const other of [otherTenantId, ...extraTenantIds])
+      expect(
+        await auditRows(other, "support_access.impersonation_started", {
+          actorId: admin.userId,
+        }),
+      ).toHaveLength(0);
+  });
+
+  it("legend-npkpz TEN-04 the per-request memo never outlives the request: an ended grant is refused on the next impersonation", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId);
+
+    await impersonate(admin, tenant);
+    const stopped = await admin.client
+      .post("/api/auth/admin/stop-impersonating")
+      .set(originHeader)
+      .send({});
+    expect(stopped.status).toBe(200);
+
+    await endSupportAccess({
+      tenantId,
+      grantId: grant.id,
+      actorUserId: admin.userId,
+    });
+    await expectRefusedAndStillAdmin(
+      admin,
+      tenant.userId,
+      "SUPPORT_ACCESS_REQUIRED",
+    );
+  });
+  it("legend-npkpz TEN-04 within one request a grant ended after the first check is refused by the next check", async () => {
+    const tenant = await newTenantOwner();
+    const admin = await newSuperAdmin();
+    const grant = await openGrant(tenantId, admin.userId);
+
+    // Run both checks inside one request context, as Better Auth's three
+    // checks of one impersonate-user request do.
+    const inOneRequest = <T>(run: () => Promise<T>) =>
+      new Promise<T>((resolve, reject) => {
+        requestContext(
+          { get: () => undefined } as never,
+          { setHeader: () => undefined } as never,
+          () => {
+            run().then(resolve, reject);
+          },
+        );
+      });
+
+    await inOneRequest(async () => {
+      const first = await assertImpersonationAllowed({
+        adminUserId: admin.userId,
+        targetUserId: tenant.userId,
+        now: new Date(),
+      });
+      expect(first.map((match) => match.tenantId)).toEqual([tenantId]);
+
+      await endSupportAccess({
+        tenantId,
+        grantId: grant.id,
+        actorUserId: admin.userId,
+      });
+      await expect(
+        assertImpersonationAllowed({
+          adminUserId: admin.userId,
+          targetUserId: tenant.userId,
+          now: new Date(),
+        }),
+      ).rejects.toMatchObject({ code: "SUPPORT_ACCESS_REQUIRED" });
+    });
+  });
+  it("legend-npkpz TEN-04 with grants in two tenants the session ends with the later grant, never past 60 minutes or the requested end", () => {
+    const now = new Date("2026-11-09T10:00:00.000Z");
+    const at = (minutes: number) =>
+      new Date(now.getTime() + minutes * MINUTE_MS);
+    const match = (tenant: string, endsInMinutes: number) =>
+      ({
+        tenantId: tenant,
+        grant: { expiresAt: at(endsInMinutes) },
+      }) as unknown as ImpersonationMatch;
+
+    // Tenant A's grant ends in 10 minutes, tenant B's in 25: B keeps the
+    // session; the per-request guard refuses A's requests after 10 minutes.
+    expect(
+      impersonationSessionEnd({
+        requested: at(60),
+        matches: [match("a", 10), match("b", 25)],
+        now,
+      }),
+    ).toEqual(at(25));
+    // Both grants outlast the 60-minute cap.
+    expect(
+      impersonationSessionEnd({
+        requested: at(90),
+        matches: [match("a", 120), match("b", 90)],
+        now,
+      }),
+    ).toEqual(at(60));
+    // A shorter Better Auth expiry wins.
+    expect(
+      impersonationSessionEnd({
+        requested: at(5),
+        matches: [match("a", 10), match("b", 25)],
+        now,
+      }),
+    ).toEqual(at(5));
   });
 });
