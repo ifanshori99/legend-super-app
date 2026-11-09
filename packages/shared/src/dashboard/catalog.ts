@@ -105,7 +105,10 @@ export const AGGREGATE_VIEW_REPORT_CODES: readonly string[] = Object.freeze([
  * identity split (employee, customer, member) on offer.
  */
 export function reportAcceptsAggregateView(
-  report: Pick<ReportDefinition, "code" | "containsPersonalData" | "dimensions">,
+  report: Pick<
+    ReportDefinition,
+    "code" | "containsPersonalData" | "dimensions"
+  >,
 ): boolean {
   return (
     AGGREGATE_VIEW_REPORT_CODES.includes(report.code) &&

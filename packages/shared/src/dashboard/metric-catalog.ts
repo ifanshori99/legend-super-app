@@ -110,10 +110,12 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     code: "discount_amount",
     version: 2,
     name: "Nilai diskon",
-    description: "Total diskon di buku besar (akun diskon penjualan), dari jurnal yang sudah diposting.",
+    description:
+      "Total diskon di buku besar (akun diskon penjualan), dari jurnal yang sudah diposting.",
     ownerModule: "pos",
     formulaRef: "pos.discount_amount",
-    expression: "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'sales_discount' incl. child accounts",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'sales_discount' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "promo", "employee", "channel"],
@@ -241,7 +243,8 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
       "Harga pokok penjualan di buku besar (bagian HPP), dari jurnal yang sudah diposting.",
     ownerModule: "inventory",
     formulaRef: "inventory.cogs",
-    expression: "sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs'",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs'",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "menu_item", "menu_category"],
@@ -914,7 +917,8 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
       "Beban gaji di buku besar dari payroll yang sudah diposting; resmi setelah periode akuntansi ditutup.",
     ownerModule: "payroll",
     formulaRef: "payroll.gross_payroll",
-    expression: "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'salary_expense' incl. child accounts",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'salary_expense' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "employee"],
@@ -1021,7 +1025,8 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
       "Beban biaya gateway di buku besar atas transaksi pada periode, dari jurnal yang sudah diposting.",
     ownerModule: "payments",
     formulaRef: "payments.payment_fee",
-    expression: "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'gateway_fee_expense' incl. child accounts",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'gateway_fee_expense' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "payment_method", "channel"],
