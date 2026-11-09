@@ -455,7 +455,7 @@ async function outboxNames(shiftId: string): Promise<string[]> {
   const { rows } = await owner.query<{ name: string }>(
     `SELECT event->>'name' AS name FROM domain_event_outbox
      WHERE tenant_id = $1 AND event->'payload'->>'shiftId' = $2
-     ORDER BY sequence`,
+     ORDER BY created_at, sequence, id`,
     [tenant.tenantId, shiftId],
   );
   return rows.map((row) => row.name);

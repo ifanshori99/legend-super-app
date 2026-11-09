@@ -445,3 +445,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/provisioning-defaults.test.ts`.
 - Follow-up: legend-9ppw (lokasi, UOM, CoA belum ikut ke edge node; celah sudah ada sebelumnya).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
+## Brief 131 tiga bug kecil POS dan stok (engineer, cabang `ws/small-bugs-pos-stock`)
+
+- Sudah: `legend-2tcj` reject stock count kini mengunci kepala chain (`resolveApprovalChainOutcome`) sebelum membaca hasil approval; test balapan di `approval-expiry-race-modules.test.ts` (pg_locks, merah tanpa fix). `legend-t8xt` urutan outbox di `pos-shift.test.ts` kini `ORDER BY created_at, sequence, id` (sequence per agregat bisa sama); 3 run 62/62.
+- Ditahan: `legend-fbms` (order.paid total 0) butuh ubah skema `packages/shared` dan keputusan desain (A: order.paid total 0 tanpa tender, atau B: event baru `order.settled` plus konsumen recipe-deduction yang hanya ada di `integ/m1-batch3`). Menunggu CTO.
