@@ -204,8 +204,8 @@ async function requireSupplierWrite(
 
 /**
  * Suppliers are tenant-level, so an outlet-assigned buyer or approver reads
- * them too: any read permission held through an active assignment, with a
- * non-empty reach minted by the route gate.
+ * them too: a read permission that applies at the tenant or at an outlet in
+ * the request reach. A station-only grant never passes.
  */
 async function requireSupplierRead(
   tx: Tx,
@@ -218,13 +218,17 @@ async function requireSupplierRead(
     actorUserId,
     new Date(),
   );
-  const reaches =
-    context.outletScope.kind === "tenant" ||
-    context.outletScope.outletIds.length > 0;
+  // The snapshot is a flat union over every scope, so a read permission held
+  // at a station must not pass. Each permission is tested against the real
+  // target: the tenant, or an outlet this request reaches.
+  const outletIds =
+    context.outletScope.kind === "tenant" ? [] : context.outletScope.outletIds;
   const allowed = SUPPLIER_READ_PERMISSIONS.some(
     (permission) =>
       snapshot.allows(permission, { type: "tenant" }) ||
-      (reaches && snapshot.permissions.includes(permission)),
+      outletIds.some((id) =>
+        snapshot.allows(permission, { type: "outlet", id }),
+      ),
   );
   if (!allowed) throw new AccessError("PERMISSION_DENIED");
 }

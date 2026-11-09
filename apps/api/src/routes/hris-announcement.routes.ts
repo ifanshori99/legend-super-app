@@ -19,11 +19,14 @@ import {
   listAnnouncements as listAnnouncementsEndpoint,
   markAnnouncementRead as markAnnouncementReadEndpoint,
 } from "@starter/shared/hris";
-import { requireAuth } from "../middleware/auth.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { loadRequestAccess } from "../middleware/permissions.ts";
-import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  getTenantContext,
+  requireTenantContext,
+} from "../middleware/tenant.ts";
 import * as announcementService from "../services/hris-announcement.service.ts";
 import {
   hrisLearningActor,
@@ -31,6 +34,7 @@ import {
   requireBackOfficeSurface,
   requireHrisLearning,
   requireHrisLearningSurface,
+  resolveHrisLearningContext,
 } from "./hris-sop-gate.ts";
 
 const MANAGE: PermissionCode[] = ["hr.sop.manage"];
@@ -49,9 +53,15 @@ export function createHrisAnnouncementRouter(): Router {
   // the employee surface.
   const feedSurface: RequestHandler = async (req, res, next) => {
     const snapshot = await loadRequestAccess(req);
-    const surface = snapshot.permissions.includes("hr.sop.manage")
-      ? backOffice
-      : employeeSurface;
+    // Real reach of the manage code, not the flat union: a station-only grant
+    // has no outlet reach and reads the self feed (legend-dak5).
+    const manageContext = await resolveHrisLearningContext(
+      snapshot,
+      getTenantContext(req),
+      getAuth(req).user.id,
+      MANAGE,
+    );
+    const surface = manageContext ? backOffice : employeeSurface;
     return surface(req, res, next);
   };
 
