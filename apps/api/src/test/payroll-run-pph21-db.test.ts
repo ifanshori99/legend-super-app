@@ -256,7 +256,7 @@ const EMPLOYEES: PayrollRunTaxEmployee[] = [
 
 /** PayslipTax with plain numbers (the Idr brand is irrelevant to toEqual). */
 type PlainTax = {
-  [K in keyof PayslipTax]: PayslipTax[K] extends number
+  [K in keyof PayslipTax]: NonNullable<PayslipTax[K]> extends number
     ? number
     : PayslipTax[K];
 };

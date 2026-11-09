@@ -116,6 +116,8 @@ function simulate(
   allocation: Pph21PolicyParameters["mixedSchemeAllocation"],
   callerCapIdr?: number,
   lastMonthsWorked = 12,
+  /** December only: pass the history without its pph21CapExcessIdr (K4). */
+  dropPriorCapExcess = false,
 ): Outcome[] {
   const policy = policyOf(allocation);
   const prior = {
@@ -134,6 +136,7 @@ function simulate(
     lastTaxPeriod: boolean,
     monthsWorked: number,
     capArg: number | undefined,
+    forgetCapExcess = false,
   ) => {
     const deductible = spec.deductibleIdr ?? deductibleIdr;
     const benefit = spec.benefitIdr ?? 0;
@@ -149,7 +152,10 @@ function simulate(
         : { contractTaxScheme: spec.contract }),
       employeeDeductibleIdr: deductible,
       ...(capArg === undefined ? {} : { employeeWithholdingCapIdr: capArg }),
-      prior: { ...prior },
+      prior: {
+        ...prior,
+        ...(forgetCapExcess ? { pph21CapExcessIdr: 0 } : {}),
+      },
     });
     const pay = spec.lines.reduce((sum, line) => sum + line.amountIdr, 0);
     const w = r.pph21WithheldIdr - r.taxAllowanceIdr;
@@ -194,7 +200,13 @@ function simulate(
     const spec = asSpec(month);
     run(spec, false, index + 1, spec.capIdr);
   });
-  run(asSpec(december), true, lastMonthsWorked, callerCapIdr);
+  run(
+    asSpec(december),
+    true,
+    lastMonthsWorked,
+    callerCapIdr,
+    dropPriorCapExcess,
+  );
   return outcomes;
 }
 
@@ -815,6 +827,155 @@ describe("legend-4ndx: K3 (reviewer round 2) the employee leaves in February (mo
       expect(feb.employerRefund).toBe(121_827);
       expect(feb.deposit).toBe(-121_827);
       expect(feb.takeHome).toBe(1_000_000);
+    });
+  }
+});
+
+describe("legend-4ndx: K4 (architect round 2) the employee over-withheld Jan-Nov still owes in December: the excess is settled, not charged back", () => {
+  // TK/0 with a tax id, no deductible.
+  //   January : only an employer benefit of 8_000_000 under a `gross` agreement
+  //             (as K1: X 8_121_827, borne B = T = 121_827, W 0, cap excess
+  //             E1 = 119_999 proportional / 120_000 gross_first).
+  //   February: gross 30_000_000, TER 12% => 3_600_000 withheld (over-withheld
+  //             once the year is annualised).
+  //   Mar-Nov : gross 5_000_000, TER 0% (nine months).
+  //   December: gross 60_000_000 (cap 60_000_000, never binds), last period.
+  //
+  // Prior at December: X 83_121_827, withheld 3_600_000, borne 121_827 (no
+  // allowance), priorTax = 3_721_827, gross base 83_000_000, employer base
+  // 121_827. The cap excess is the company's money (priorEmployerTax = borne =
+  // 121_827), so the history alone leaves the employee with a NEGATIVE balance.
+  // annual(83_121_827): cost 4_156_091, net 78_965_736, PKP 24_965_000 x 5% =
+  // 1_248_250, so H = 1_248_250 - 3_721_827 = -2_473_577.
+  // December adds annual(143_121_827 + S) - annual(83_121_827): PKP of
+  // 83_121_827 + S is 83_121_000..., annual tax 3_000_000 + 15% of the PKP above
+  // 60_000_000 = 6_468_150, T = 6_468_150 - 3_721_827 = 2_746_323 at S = 0,
+  // D = T - H = 5_219_900.
+  //
+  // The year W of the employee in December is `employee part + employee balance`
+  // (the charge); the company settles min(E1, charge) of it with the excess it
+  // already paid (reviewer round 2 / architect): the employee does not pay the
+  // excess, the company's refund does not include it.
+  //
+  // proportional: employer balance bR = floor(1_248_250 x 121_827 / 83_121_827)
+  //   - 121_827 = 1_829 - 121_827 = -119_998; employee balance bE = H - bR =
+  //   -2_353_579.
+  //   S0=0         : X 60_000_000, employee part 5_219_900, employer part 0,
+  //                  charge 5_219_900 - 2_353_579 = 2_866_321, settled 119_999,
+  //                  employer net 0 - 119_998 + 119_999 = 1
+  //   S1=1         : X 60_000_001, employee part 5_219_899, employer part 1,
+  //                  employer net 1 - 119_998 + 119_999 = 2
+  //   S2=2         : X 60_000_002, employee part 5_219_899, employer part 1,
+  //                  employer net 2, stable.
+  //   W = 5_219_899 - 2_353_579 - 119_999 = 2_746_321, B = 2, no refund, T
+  //   2_746_323 = W + B. Without the excess in the history (same year, prior
+  //   pph21CapExcessIdr 0): employer net = -119_998 < 0, so the company is
+  //   refunded 119_998, X 60_000_000, W = 2_866_321. The settle lowers W by 120_000
+  //   (the 119_999 excess plus 1 rupiah that the company's borne tax took from the
+  //   employee's part) and leaves no refund to the company.
+  //
+  // gross_first: employee balance bE = annual(83_000_000) - 3_600_000 =
+  //   1_242_500 - 3_600_000 = -2_357_500; employer balance bR = H - bE =
+  //   -2_473_577 + 2_357_500 = -116_077. The employee's own December tax is the
+  //   increment of the 60_000_000 alone, D at S = 0 = 5_219_900, so the charge
+  //   is 5_219_900 - 2_357_500 = 2_862_400; settled min(120_000, 2_862_400) =
+  //   120_000, W = 2_742_400 (the employee never pays the excess). The employer
+  //   part is D(S) - 5_219_900; fixed point on S (X = 60_000_000 + S):
+  //   S0=0    : D 5_219_900, part 0, net 0 - 116_077 + 120_000 = 3_923
+  //   S1=3_923: PKP 83_125_000, annual 6_468_750, D 5_220_500, part 600, net 4_523
+  //   S2=4_523: PKP 83_126_000, annual 6_468_900, D 5_220_650, part 750, net 4_673
+  //   S3=4_673: PKP 83_126_000, same, part 750, net 4_673, stable.
+  //   X 60_004_673, T = 6_468_900 - 3_721_827 = 2_747_073 = W + B (2_742_400 +
+  //   4_673), no refund. Without the excess in the history: net = -116_077, the
+  //   company is refunded 116_077, X 60_000_000, W 2_862_400, T 2_746_323 (so
+  //   the settle lowers W by exactly 120_000).
+  const january: Spec = { lines: [], benefitIdr: 8_000_000, contract: "gross" };
+  const months: Spec[] = [
+    january,
+    { lines: [{ amountIdr: 30_000_000, taxScheme: "gross" }] },
+    ...Array.from({ length: 9 }, (): Spec => ({
+      lines: [{ amountIdr: 5_000_000, taxScheme: "gross" }],
+    })),
+  ];
+  const december: Month = [{ amountIdr: 60_000_000, taxScheme: "gross" }];
+
+  const cases = [
+    {
+      allocation: "proportional",
+      januaryExcess: 119_999,
+      x: 60_000_002,
+      t: 2_746_323,
+      w: 2_746_321,
+      b: 2,
+      withoutW: 2_866_321,
+      withoutEmployerRefund: 119_998,
+    },
+    {
+      allocation: "gross_first",
+      januaryExcess: 120_000,
+      x: 60_004_673,
+      t: 2_747_073,
+      w: 2_742_400,
+      b: 4_673,
+      withoutW: 2_862_400,
+      withoutEmployerRefund: 116_077,
+    },
+  ] as const;
+
+  for (const c of cases) {
+    it(`December: W ${c.w}, B ${c.b}, no refund to either payer, W is the no-excess W minus the 120_000 settled (${c.allocation})`, () => {
+      const all = simulate(months, december, 0, c.allocation);
+      const jan = all[0];
+      const dec = all.at(-1);
+      if (jan === undefined || dec === undefined) throw new Error("no outcome");
+      for (const o of all) expect(violationsOf(o)).toEqual([]);
+      // January: the company takes over the employee's tax (cap 0).
+      expect(jan.cap).toBe(0);
+      expect(jan.w).toBe(0);
+      expect(jan.borne).toBe(121_827);
+      expect(jan.capExcess).toBe(c.januaryExcess);
+      // February: TER 12% of 30_000_000, withheld from the employee.
+      expect(all[1]?.w).toBe(3_600_000);
+      for (const o of all.slice(2, 11)) expect(o.w).toBe(0);
+      // December.
+      expect(dec.cap).toBe(60_000_000);
+      expect(dec.x).toBe(c.x);
+      expect(dec.taxIdr).toBe(c.t);
+      expect(dec.w).toBe(c.w);
+      expect(dec.borne).toBe(c.b);
+      expect(dec.allowance).toBe(0);
+      expect(dec.refund).toBe(0);
+      expect(dec.employerRefund).toBe(0);
+      expect(dec.capExcess).toBe(0);
+      expect(dec.deposit).toBe(c.t);
+      expect(dec.w + dec.borne).toBe(c.t);
+      expect(dec.takeHome).toBe(60_000_000 - c.w);
+    });
+
+    it(`the same year without the excess in the history: the employee pays 120_000 more and the company is refunded ${c.withoutEmployerRefund} (${c.allocation})`, () => {
+      const settled = runYear(months, december, 0, c.allocation);
+      const without = simulate(
+        months,
+        december,
+        0,
+        c.allocation,
+        undefined,
+        12,
+        true,
+      ).at(-1);
+      if (without === undefined) throw new Error("no outcome");
+      expect(violationsOf(without)).toEqual([]);
+      expect(without.w).toBe(c.withoutW);
+      expect(without.x).toBe(60_000_000);
+      expect(without.borne).toBe(0);
+      expect(without.refund).toBe(0);
+      expect(without.employerRefund).toBe(c.withoutEmployerRefund);
+      // The employee does not carry the excess: W falls by it (settled 119_999
+      // + 1 rupiah proportional, exactly 120_000 gross_first), and the
+      // company's refund does not contain it (settled has none left).
+      expect(without.w - settled.w).toBe(120_000);
+      expect(settled.employerRefund).toBe(0);
+      expect(without.w - settled.w).toBeGreaterThanOrEqual(c.januaryExcess);
     });
   }
 });
