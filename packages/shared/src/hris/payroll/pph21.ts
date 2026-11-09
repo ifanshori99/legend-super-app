@@ -36,7 +36,10 @@
 // In the last period H = annual tax on the prior income alone - tax already
 // paid (0 in a TER month) and T = H + D, D >= 0 the tax this month adds.
 // - D follows this month's mix per policy (`proportional`: D x G* / X, G* the
-//   gross-scheme part; `gross_first`: the tax G* would add alone, capped at D);
+//   gross-scheme part; `gross_first`: the tax G* adds on top of the Jan-Nov
+//   gross-scheme part Gs alone, annual(Gs + G*) - annual(Gs), capped at D;
+//   without the earlier mix (Gs unknown) annual(P + G*) - annual(P), P all of
+//   Jan-Nov);
 //   the employer part is Dr.
 // - H is split into each payer's own balance of the prior year (by the
 //   earlier scheme mix, else the payer history), unclamped: one payer's
@@ -540,7 +543,21 @@ export function computePph21Period(
   // the net / gross-up part is the company's and a net-only employee is never
   // charged for it; `gross_first` the tax the employee's gross components add
   // alone, capped at D. Nothing paid this period (X = 0): D = 0.
-  const employeeAloneAdded = taxOf(employeeG).tax - history;
+  // `gross_first` scale (bead legend-y2lf, founder Q52): the employee's Jan-Nov
+  // balance is annual(Gs) - paid, so his December part is on the same scale,
+  // annual(Gs + G*) - annual(Gs) (Gs = `priorGrossScheme`), not
+  // annual(P + G*) - annual(P) (P = all earlier pay, which adds the employer
+  // scheme's pay to the bracket base and could charge him more than the tax his
+  // own gross pay carries). Gs is known only with the earlier scheme mix
+  // (priorMix > 0, as for the balances above); without it (priorMix = 0) the
+  // old rule stays, since no scheme base says what Gs is.
+  const employeeAloneAdded =
+    input.lastTaxPeriod &&
+    priorMix > 0n &&
+    policy.mixedSchemeAllocation === "gross_first"
+      ? annualOf(priorGrossScheme + employeeG).annualTax -
+        annualOf(priorGrossScheme).annualTax
+      : taxOf(employeeG).tax - history;
   const addedSplit = (at: bigint) => {
     const added = taxOf(at).tax - history;
     let employeePart: bigint;

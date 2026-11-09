@@ -497,21 +497,23 @@ describe("legend-4ndx: CTO S2 (net 30 jt Jan-Jun, gross 5.4 jt Jul-Nov, December
     expect(o.takeHome).toBe(0);
   });
 
-  it("S2 gross_first: unchanged by the cap (W 150_000, take-home 850_000, the company is refunded 8_857_026)", () => {
-    // annual(Gs) is 0 under gross_first, so the employee's own amount is only
-    // D = 150_000, below the cap 1_000_000: no excess. The company gets the
-    // rest of the overpayment: H = -8_857_026 -> refund 8_857_026.
-    // Deposit: 150_000 - 8_857_026 = -8_707_026 = T.
+  it("S2 gross_first: the employee pays nothing (W 0, take-home 1_000_000, the company is refunded 8_707_026)", () => {
+    // Updated for bead legend-y2lf (founder Q52): De = annual(Gs + G*) -
+    // annual(Gs) = annual(28_000_000) - annual(27_000_000) = 0 - 0 (both under
+    // PTKP), was D = 150_000. annual(Gs) is 0 so bE = 0 and the employee's own
+    // amount is 0: W 0, no excess. The company gets all of D back against its
+    // credit: Dr = 150_000, bR = H = -8_857_026 -> refund 8_857_026 - 150_000 =
+    // 8_707_026. Deposit: 0 - 8_707_026 = -8_707_026 = T.
     const o = runYear(months, december, 0, "gross_first");
     expect(o.x).toBe(1_000_000);
     expect(o.taxIdr).toBe(-8_707_026);
-    expect(o.w).toBe(150_000);
+    expect(o.w).toBe(0);
     expect(o.borne).toBe(0);
     expect(o.receivable).toBe(0);
     expect(o.refund).toBe(0);
-    expect(o.employerRefund).toBe(8_857_026);
+    expect(o.employerRefund).toBe(8_707_026);
     expect(o.deposit).toBe(-8_707_026);
-    expect(o.takeHome).toBe(850_000);
+    expect(o.takeHome).toBe(1_000_000);
   });
 });
 
