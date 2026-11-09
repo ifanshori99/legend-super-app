@@ -340,6 +340,68 @@ describe("legend-dxb §3 F6 staff pin storage", () => {
     expect(JSON.stringify(rows)).not.toContain(PIN);
   });
 
+  it("legend-kyie only an edge node puts the hash material on staff_pin.set; pin_set_at moves on a set, not on an attempt", async () => {
+    const cashier = await staffWithPin("cashier");
+    const first = await pinRow(cashier);
+    const payloads = async () =>
+      (
+        await owner.query<{ event: { payload: Record<string, unknown> } }>(
+          `SELECT event FROM domain_event_outbox
+           WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND aggregate_id = $2
+           ORDER BY sequence`,
+          [tenantId, first?.id],
+        )
+      ).rows.map((row) => row.event.payload);
+    // Cloud process: no material.
+    expect((await payloads())[0]).not.toHaveProperty("material");
+
+    // An attempt moves updated_at, never pin_set_at.
+    await expect(
+      verifyStaffPinOnDevice(deviceTenant, {
+        deviceId: deviceAt(bandung),
+        userId: cashier,
+        pin: WRONG,
+      }),
+    ).rejects.toMatchObject({ code: "PIN_INVALID" });
+    const attempted = await pinRow(cashier);
+    expect(attempted?.failed_attempts).toBe(1);
+    expect(attempted?.pin_set_at).toEqual(first?.pin_set_at);
+
+    // Edge process: a reset carries the material and moves pin_set_at.
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      await setStaffPin(
+        tenant,
+        cashier,
+        { outletId: bandung, userId: cashier },
+        { pin: PIN },
+      );
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    const reset = await pinRow(cashier);
+    expect((reset?.pin_set_at as Date).getTime()).toBeGreaterThan(
+      (first?.pin_set_at as Date).getTime(),
+    );
+    const material = (await payloads())[1]?.material;
+    expect(material).toEqual({
+      algorithm: "scrypt-hmac-sha256-v1",
+      salt: reset?.pin_salt,
+      pinHash: reset?.pin_hash,
+      params: {
+        N: reset?.kdf_n,
+        r: reset?.kdf_r,
+        p: reset?.kdf_p,
+        keyLength: 32,
+      },
+      pepperVersion: reset?.pepper_version,
+      setAt: (reset?.pin_set_at as Date).toISOString(),
+    });
+    expect(JSON.stringify(material)).not.toContain(PIN);
+  });
+
   it("§3 F6 a trivial pin is refused; another user's pin needs device.registry.manage on the outlet", async () => {
     const cashier = await createUser("cashier", {
       type: "outlet",
@@ -659,9 +721,11 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
       approvedBy: supervisor,
       valueIdr: 45_000,
       method: "supervisor_pin",
+      // legend-kyie: the cloud writes the audit row of an edge override.
+      reason: input.reason,
+      reasonCode: "salah_input",
     });
-    // The free-text reason and the pin stay out of the event.
-    expect(JSON.stringify(events)).not.toContain(input.reason);
+    // The pin stays out of the event.
     expect(JSON.stringify(events)).not.toContain(PIN);
   });
 

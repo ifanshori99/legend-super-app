@@ -14,8 +14,13 @@
 // - the POS override request (PIN on the device, or approval from the
 //   supervisor's phone through the generic approval inbox) and its view;
 // - the edge replication record of a staff pin (hash only, never the pin);
-// - the domain events. Payloads carry ids and enums only, never the pin or
-//   the free-text reason (the audit log holds the reason).
+// - the domain events. Payloads carry ids and enums, never the pin.
+//   `pos_override.recorded` also carries the reason (legend-kyie: the cloud
+//   writes the audit row of an override recorded offline on an edge), and an
+//   EDGE node's `staff_pin.set` carries the hash material (never the pin) so
+//   the cloud can take over a pin set on the edge. That material only travels
+//   edge -> cloud and is stripped before any event is stored for review
+//   (edge/access-applier.ts `redactEdgeEnvelopeSecrets`).
 
 import {
   clientInputSchema,
@@ -290,6 +295,25 @@ export const getPosOverride = defineEndpoint({
 
 // ------------------------------------------------------------------- events
 
+/**
+ * Hash material of a pin set on an edge node (legend-kyie), so the cloud can
+ * adopt it. Same shape as the edge replication record: hash, salt, cost and
+ * pepper version, never the pin or the pepper. `setAt` is the edge's
+ * `pin_set_at`, the ordering key of pin generations.
+ */
+export const staffPinSetMaterialSchema = z.strictObject({
+  algorithm: z.literal(STAFF_PIN_HASH_ALGORITHM),
+  /** Random per-pin salt, base64 (16 bytes). */
+  salt: z
+    .string()
+    .regex(/^[A-Za-z0-9+/]{22}==$/, "Expected a 16-byte base64 salt"),
+  pinHash: identityDigestSchema,
+  params: staffPinKdfParamsSchema,
+  pepperVersion: z.number().int().min(1),
+  setAt: isoDateTimeSchema,
+});
+export type StaffPinSetMaterial = z.infer<typeof staffPinSetMaterialSchema>;
+
 /** A pin was set or reset (the counter and lock are cleared with it). */
 export const staffPinSetEvent = defineDomainEvent({
   name: "staff_pin.set",
@@ -299,6 +323,8 @@ export const staffPinSetEvent = defineDomainEvent({
     setBy: userIdSchema,
     /** True when the staff member set their own pin. */
     self: z.boolean(),
+    /** Edge node only (legend-kyie); absent on the cloud and on old events. */
+    material: staffPinSetMaterialSchema.optional(),
   }),
 });
 
@@ -325,5 +351,8 @@ export const posOverrideRecordedEvent = defineDomainEvent({
     objectType: objectTypeSchema,
     objectId: objectIdSchema,
     approvalRequestId: z.uuid().toLowerCase().nullable(),
+    /** legend-kyie: for the cloud audit row; optional on old events. */
+    reasonCode: z.string().min(1).max(50).nullable().optional(),
+    reason: z.string().trim().min(3).max(500).optional(),
   }),
 });

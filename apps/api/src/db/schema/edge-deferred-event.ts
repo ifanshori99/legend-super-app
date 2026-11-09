@@ -27,6 +27,9 @@ import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
+/** What a later applier did with a parked row (legend-kyie). */
+export type EdgeDeferredApplyOutcome = "applied" | "not_applicable" | "refused";
+
 export const edgeDeferredEvents = pgTable(
   "edge_deferred_events",
   {
@@ -47,6 +50,15 @@ export const edgeDeferredEvents = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Set once a later applier processed the parked row (legend-kyie: access
+     * events drained by edge/access-applier.ts). NULL = still parked.
+     */
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    /** "applied" | "not_applicable" | "refused"; NULL while parked. */
+    applyOutcome: varchar("apply_outcome", {
+      length: 20,
+    }).$type<EdgeDeferredApplyOutcome>(),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.eventId] }),
@@ -64,5 +76,18 @@ export const edgeDeferredEvents = pgTable(
       table.aggregateType,
       table.receivedAt,
     ),
+    check(
+      "edge_deferred_events_apply_outcome_check",
+      sql`(${table.applyOutcome} IS NULL OR ${table.applyOutcome} IN ('applied', 'not_applicable', 'refused')) AND (${table.applyOutcome} IS NULL) = (${table.appliedAt} IS NULL)`,
+    ),
+    index("edge_deferred_events_pending_idx")
+      .on(
+        table.tenantId,
+        table.outletId,
+        table.aggregateType,
+        table.receivedAt,
+        table.eventId,
+      )
+      .where(sql`${table.appliedAt} IS NULL`),
   ],
 );

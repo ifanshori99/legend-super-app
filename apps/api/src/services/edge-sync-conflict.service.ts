@@ -327,6 +327,7 @@ async function guardReplay(
   const aggregate = {
     aggregateType: event.aggregateType,
     aggregateId: event.aggregateId,
+    sequence: event.sequence,
   };
   const lastSequence =
     (await applier.lastSequence?.(tx, aggregate, meta)) ??

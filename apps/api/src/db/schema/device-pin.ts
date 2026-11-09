@@ -61,6 +61,14 @@ export const staffPins = pgTable(
     setBy: text("set_by")
       .notNull()
       .references(() => user.id),
+    /**
+     * When the current pin generation (hash material) was set (legend-kyie).
+     * `updated_at` moves on every attempt, `created_at` not on a reset, so an
+     * edge `staff_pin.set` is ordered against this column only.
+     */
+    pinSetAt: timestamp("pin_set_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

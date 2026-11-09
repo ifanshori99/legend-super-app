@@ -40,6 +40,7 @@ import {
 } from "../services/edge-sync-conflict-alert.ts";
 import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
+import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
@@ -106,7 +107,7 @@ export async function defaultLastSequence(
  * A refusal by the domain itself: a CoreError or HttpError that is a client
  * error (4xx). Rate limits and timeouts are transient, so they are not.
  */
-function isDomainRefusal(error: unknown): boolean {
+export function isDomainRefusal(error: unknown): boolean {
   const status =
     error instanceof CoreError || error instanceof HttpError
       ? error.status
@@ -190,8 +191,10 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
   ) {
     const { event } = input;
     const conflictId = createUlid();
+    // legend-kyie: the stored event is readable through the conflict detail
+    // API, so pin hash material is stripped first.
     const inserted = await tx.execute(
-      sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${input.eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${input.reason}, ${input.resolution}, ${input.lastSequence}, ${input.detail}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+      sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${input.eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${input.reason}, ${input.resolution}, ${input.lastSequence}, ${input.detail}, ${JSON.stringify(redactEdgeEnvelopeSecrets(event))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
     );
     // Cloud side only (the edge database has no staff to alert), and only
     // when this call really inserted the row (legend-wqc6).
@@ -296,6 +299,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
             {
               aggregateType: event.aggregateType,
               aggregateId: event.aggregateId,
+              sequence: event.sequence,
             },
             meta,
           );

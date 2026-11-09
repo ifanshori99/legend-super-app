@@ -43,6 +43,7 @@ import {
 } from "@starter/shared/identity";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
+import { getEdgeRuntimeState } from "../edge/runtime";
 import { staffPins } from "../db/schema/device-pin";
 import { user } from "../db/schema/user";
 import { withTenant } from "../db/tenant";
@@ -149,6 +150,14 @@ function staffPinVersionStamp(explicit: Date | undefined): Date | SQL {
 }
 
 /**
+ * True on an edge node (same rule as pos-receipt.service.ts): the runtime
+ * flag, or the static `EDGE_MODE` setting during the boot window.
+ */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+/**
  * PUT /api/staff-pins/:outletId/:userId. Self, or `device.registry.manage` on
  * the outlet for another member. The pin is hashed before the transaction and
  * never stored, logged or audited.
@@ -228,14 +237,17 @@ export async function setStaffPin(
       failedAttempts: 0,
       lockedUntil: null,
       setBy: actorId,
+      // legend-kyie: a new pin generation; attempts never move this.
+      pinSetAt: staffPinVersionStamp(options.now),
       updatedAt: staffPinVersionStamp(options.now),
     };
+    const written = { id: staffPins.id, pinSetAt: staffPins.pinSetAt };
     const [row] = previous
       ? await tx
           .update(staffPins)
           .set(values)
           .where(eq(staffPins.id, previous.id))
-          .returning({ id: staffPins.id })
+          .returning(written)
       : await tx
           .insert(staffPins)
           .values({
@@ -245,16 +257,35 @@ export async function setStaffPin(
             createdAt: now,
             ...values,
           })
-          .returning({ id: staffPins.id });
+          .returning(written);
     if (!row) throw new Error("staff pin write returned no row");
 
+    // legend-kyie: only an edge node sends the hash material, so the cloud
+    // can adopt a pin set on the edge. The cloud never does (its pins reach
+    // the edge through staff-pin-sync.ts, never through an event).
+    const material = isEdgeProcess()
+      ? {
+          algorithm: STAFF_PIN_HASH_ALGORITHM,
+          salt: hashed.salt,
+          pinHash: hashed.pinHash,
+          params: hashed.params,
+          pepperVersion: STAFF_PIN_PEPPER_VERSION,
+          setAt: row.pinSetAt.toISOString(),
+        }
+      : undefined;
     await appendDevicePinEvent(tx, context, staffPinSetEvent, {
       aggregateId: row.id,
       outletId,
       actor: { type: "user", id: actorId },
       deviceId: options.deviceId ?? null,
       now,
-      payload: { staffPinId: row.id, userId, setBy: actorId, self },
+      payload: {
+        staffPinId: row.id,
+        userId,
+        setBy: actorId,
+        self,
+        ...(material ? { material } : {}),
+      },
     });
     await recordAudit(
       {

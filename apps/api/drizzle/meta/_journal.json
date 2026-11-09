@@ -939,6 +939,13 @@
       "when": 1794204874726,
       "tag": "0133_kind_hitman",
       "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "7",
+      "when": 1794211971801,
+      "tag": "0134_white_oracle",
+      "breakpoints": true
     }
   ]
 }
