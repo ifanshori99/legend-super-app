@@ -188,13 +188,14 @@ async function qrisTender(
   amountIdr: number,
   status: "captured" | "voided" | "authorized" = "captured",
   paymentLinkId: string | null = null,
-) {
-  await owner.query(
+): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
     `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
         payment_intent_id, amount_idr, status, requested_at, resolved_at, payment_link_id,
         payment_link_token_sealed)
      VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, $6, now(), $7, $8,
-             CASE WHEN $8::uuid IS NULL THEN NULL ELSE 'sealed-test' END)`,
+             CASE WHEN $8::uuid IS NULL THEN NULL ELSE 'sealed-test' END)
+     RETURNING id`,
     [
       seededTenantId,
       seededOutletA,
@@ -206,6 +207,7 @@ async function qrisTender(
       paymentLinkId,
     ],
   );
+  return rows[0]!.id;
 }
 
 /** A POS refund (PAY-04 sibling, POS-03) that returned `amountIdr` over QRIS. */
@@ -221,6 +223,32 @@ async function posQrisRefund(orderId: string, amountIdr: number) {
       orderId,
       amountIdr,
       JSON.stringify([{ method: "qris", amountIdr, reference: null }]),
+      randomUUID(),
+    ],
+  );
+}
+
+/** One POS refund row carrying exactly the given `lines` (per-tender or legacy). */
+type RefundLine = {
+  method: string;
+  amountIdr: number;
+  reference: string | null;
+  tenderId?: string;
+  paymentIntentId?: string | null;
+};
+async function posRefundLines(orderId: string, lines: RefundLine[]) {
+  const total = lines.reduce((sum, line) => sum + line.amountIdr, 0);
+  await owner.query(
+    `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
+        lines, requested_by, approved_by, approval_request_id, refunded_at)
+     VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
+             'kasir-uji', 'supervisor-uji', $6, now())`,
+    [
+      seededTenantId,
+      seededOutletA,
+      orderId,
+      total,
+      JSON.stringify(lines),
       randomUUID(),
     ],
   );
@@ -622,5 +650,211 @@ describe("PAY-04 the refundable list is net of POS tenders", () => {
     expect(await refundablePayment(free)).toMatchObject({
       refundableAmountIdr: 80_000,
     });
+  });
+});
+
+describe("PAY-04 refund lines name the tender (legend-9z1vm)", () => {
+  /** Two QRIS intents on one 100000 order: first 60000, second 40000. */
+  async function twoIntentOrder() {
+    const first = await paidIntent(60_000);
+    const second = await paidIntent(40_000);
+    const orderId = await posOrder(100_000);
+    const firstTender = await qrisTender(orderId, first, 60_000);
+    const secondTender = await qrisTender(orderId, second, 40_000);
+    return { first, second, orderId, firstTender, secondTender };
+  }
+
+  const expectHeld = async (intentId: string, amountIdr = 1) => {
+    const response = await requestRefund(intentId, amountIdr);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(GUARD_CODE);
+  };
+
+  it("PAY-04 T1 a refund line naming the first tender frees only the first intent: 30001 refused, 30000 accepted, second stays held", async () => {
+    const { first, second, orderId, firstTender } = await twoIntentOrder();
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        reference: null,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+    ]);
+
+    await expectHeld(first, 30_001);
+    expect(await refundRows(first)).toHaveLength(0);
+    const ok = await requestRefund(first, 30_000);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(ok.body.data.status).toBe("pending");
+
+    await expectHeld(second, 1);
+  });
+
+  it("PAY-04 T2 refund lines for both tenders free each intent by its own line: first 20000, second 10000", async () => {
+    const { first, second, orderId, firstTender, secondTender } =
+      await twoIntentOrder();
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 20_000,
+        reference: null,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        reference: null,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    await expectHeld(first, 20_001);
+    await expectHeld(second, 10_001);
+    const one = await requestRefund(first, 20_000);
+    expect(one.status, JSON.stringify(one.body)).toBe(201);
+    const two = await requestRefund(second, 10_000);
+    expect(two.status, JSON.stringify(two.body)).toBe(201);
+  });
+
+  it("PAY-04 T3 legacy lines without tenderId keep the per-method rule: 30000 holds both, 100000 in total frees both", async () => {
+    const { first, second, orderId } = await twoIntentOrder();
+    await posRefundLines(orderId, [
+      { method: "qris", amountIdr: 30_000, reference: null },
+    ]);
+
+    await expectHeld(first);
+    await expectHeld(second);
+
+    await posRefundLines(orderId, [
+      { method: "qris", amountIdr: 70_000, reference: null },
+    ]);
+
+    const one = await requestRefund(first, 60_000);
+    expect(one.status, JSON.stringify(one.body)).toBe(201);
+    const two = await requestRefund(second, 40_000);
+    expect(two.status, JSON.stringify(two.body)).toBe(201);
+  });
+
+  it("PAY-04 T4 a line naming a tender of another order, or an unknown tender, gives nothing back to any intent", async () => {
+    const { first, second, orderId } = await twoIntentOrder();
+    const elsewhere = await paidIntent(50_000);
+    const otherOrder = await posOrder(50_000);
+    const foreignTender = await qrisTender(otherOrder, elsewhere, 50_000);
+
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        reference: null,
+        tenderId: foreignTender,
+        paymentIntentId: first,
+      },
+    ]);
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        reference: null,
+        tenderId: randomUUID(),
+        paymentIntentId: second,
+      },
+    ]);
+
+    await expectHeld(first);
+    await expectHeld(second);
+  });
+
+  it("PAY-04 T4 a line whose paymentIntentId is not the tender's intent gives nothing back to either intent", async () => {
+    const { first, second, orderId, firstTender } = await twoIntentOrder();
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        reference: null,
+        tenderId: firstTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    await expectHeld(first);
+    await expectHeld(second);
+  });
+
+  it("PAY-04 T5a a legacy row plus tender lines that return the whole method frees both intents in full", async () => {
+    const { first, second, orderId, firstTender, secondTender } =
+      await twoIntentOrder();
+    // Row 1 is a legacy per-method line; row 2 names the tenders. Together they
+    // return the whole 100000 of QRIS, so each intent is freed in full.
+    await posRefundLines(orderId, [
+      { method: "qris", amountIdr: 50_000, reference: null },
+    ]);
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        reference: null,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+      {
+        method: "qris",
+        amountIdr: 40_000,
+        reference: null,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    const one = await requestRefund(first, 60_000);
+    expect(one.status, JSON.stringify(one.body)).toBe(201);
+    const two = await requestRefund(second, 40_000);
+    expect(two.status, JSON.stringify(two.body)).toBe(201);
+  });
+
+  it("PAY-04 T5b a legacy row plus one tender line, method not fully returned: first gets only its own 10000 back, second stays held", async () => {
+    const { first, second, orderId, firstTender } = await twoIntentOrder();
+    await posRefundLines(orderId, [
+      { method: "qris", amountIdr: 50_000, reference: null },
+    ]);
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        reference: null,
+        tenderId: firstTender,
+        paymentIntentId: first,
+      },
+    ]);
+
+    await expectHeld(first, 10_001);
+    expect(await refundRows(first)).toHaveLength(0);
+    const ok = await requestRefund(first, 10_000);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+
+    await expectHeld(second, 1);
+  });
+
+  it("PAY-04 T5c a legacy row of 60000 plus a separate tender line of 40000 returns the whole method: first 60000 and second 40000 are freed", async () => {
+    const { first, second, orderId, secondTender } = await twoIntentOrder();
+    await posRefundLines(orderId, [
+      { method: "qris", amountIdr: 60_000, reference: null },
+    ]);
+    await posRefundLines(orderId, [
+      {
+        method: "qris",
+        amountIdr: 40_000,
+        reference: null,
+        tenderId: secondTender,
+        paymentIntentId: second,
+      },
+    ]);
+
+    const one = await requestRefund(first, 60_000);
+    expect(one.status, JSON.stringify(one.body)).toBe(201);
+    const two = await requestRefund(second, 40_000);
+    expect(two.status, JSON.stringify(two.body)).toBe(201);
   });
 });

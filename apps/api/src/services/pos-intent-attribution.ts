@@ -9,11 +9,21 @@
 //   that method on the order;
 // - returned: what POS refund lines (pos_order_refunds.lines) of that order
 //   gave back for that method.
-// A POS refund line names a method, not a tender. The intent gets back:
-// - its whole on_intent when the refunds returned the whole method;
+// A POS refund line written since legend-186 names its tender (`tenderId`)
+// and that tender's intent (`paymentIntentId`), legend-9z1vm. Such a line
+// gives the intent back its amount (allocated) only when the tender is one of
+// the intent's tenders on that order and method and the line names this
+// intent; any other tender line gives nothing (fail closed). A legacy line
+// (no `tenderId`) names a method, not a tender; for those (returned) the
+// intent gets back:
+// - its whole on_intent when the refunds returned the whole method (total:
+//   legacy lines plus tender lines naming a counted tender of that order and
+//   method with that tender's own intent; the writer mixes both when legacy
+//   rows came first);
 // - least(returned, on_intent) when every tender of the method is the
 //   intent's (on_intent = on_method);
 // - else nothing (fail closed: the money stays attributed to the intent).
+// Both add up, never above on_intent.
 
 import { sql, type SQL } from "drizzle-orm";
 
@@ -73,7 +83,10 @@ export function netPosTendersOfIntentSql(
     WITH used AS (
       SELECT t.order_id, t.method,
              sum(t.amount_idr) FILTER (WHERE ${ofIntent("t")}) AS on_intent,
-             sum(t.amount_idr) AS on_method
+             sum(t.amount_idr) AS on_method,
+             array_agg(t.id::text) FILTER (WHERE ${ofIntent("t")}) AS intent_tenders,
+             array_agg(t.id::text || '/' || coalesce(t.payment_intent_id::text, ''))
+               AS method_tenders
         FROM pos_order_tenders t
         JOIN orders ON orders.tenant_id = t.tenant_id AND orders.id = t.order_id
        WHERE t.tenant_id = ${tenantId}
@@ -82,25 +95,43 @@ export function netPosTendersOfIntentSql(
            SELECT u.order_id FROM pos_order_tenders u
             WHERE u.tenant_id = ${tenantId} AND ${ofIntent("u")})
        GROUP BY t.order_id, t.method
-    ), returned AS (
-      SELECT pos_order_refunds.order_id, l.value->>'method' AS method,
-             sum((l.value->>'amountIdr')::numeric) AS amount
+    ), refund_lines AS (
+      SELECT pos_order_refunds.order_id, l.value AS line
         FROM pos_order_refunds
        CROSS JOIN LATERAL jsonb_array_elements(pos_order_refunds.lines) AS l(value)
        WHERE pos_order_refunds.tenant_id = ${tenantId}
          AND pos_order_refunds.order_id IN (SELECT order_id FROM used)
          AND ${posRefunds}
-       GROUP BY pos_order_refunds.order_id, l.value->>'method'
+    ), returned AS (
+      SELECT r.order_id, r.line->>'method' AS method,
+             sum((r.line->>'amountIdr')::numeric)
+               FILTER (WHERE r.line->>'tenderId' IS NULL) AS amount,
+             sum((r.line->>'amountIdr')::numeric) AS total
+        FROM refund_lines r
+        JOIN used u ON u.order_id = r.order_id AND u.method = r.line->>'method'
+       WHERE r.line->>'tenderId' IS NULL
+          OR (r.line->>'tenderId') || '/' || coalesce(r.line->>'paymentIntentId', '')
+             = ANY(u.method_tenders)
+       GROUP BY r.order_id, r.line->>'method'
+    ), allocated AS (
+      SELECT r.order_id, r.line->>'method' AS method,
+             sum((r.line->>'amountIdr')::numeric) AS amount
+        FROM refund_lines r
+        JOIN used u ON u.order_id = r.order_id AND u.method = r.line->>'method'
+       WHERE r.line->>'tenderId' = ANY(u.intent_tenders)
+         AND r.line->>'paymentIntentId' = ${intent}::text
+       GROUP BY r.order_id, r.line->>'method'
     )
     SELECT coalesce(sum(
-             u.on_intent - CASE
-               WHEN coalesce(f.amount, 0) >= u.on_method THEN u.on_intent
+             u.on_intent - least(u.on_intent, coalesce(a.amount, 0) + CASE
+               WHEN coalesce(f.total, 0) >= u.on_method THEN u.on_intent
                WHEN u.on_intent = u.on_method
                  THEN least(coalesce(f.amount, 0), u.on_intent)
                ELSE 0
-             END), 0)::text AS amount
+             END)), 0)::text AS amount
       FROM used u
       LEFT JOIN returned f ON f.order_id = u.order_id AND f.method = u.method
+      LEFT JOIN allocated a ON a.order_id = u.order_id AND a.method = u.method
      WHERE u.on_intent IS NOT NULL
   `;
 }
@@ -109,9 +140,13 @@ export function netPosTendersOfIntentSql(
  * legend-hxpd5 review: the POS refunds the ledger mode may attribute to the
  * intent: refunds `posRefunds` keeps with a line whose method is that of a
  * captured tender of the intent on the same order, the order kept by `sales`
- * (same filters as the ledger mode). Rows: `id` (pos_order_refunds.id). The
- * caller subtracts only those whose order.refunded journal posted (the credit
- * back to customer_deposit is booked).
+ * (same filters as the ledger mode). A line naming a tender (legend-9z1vm)
+ * counts only when it names a captured tender of that order and method with
+ * that tender's own intent: one of another intent gives this intent nothing
+ * itself but counts toward the whole method being returned. Rows: `id`
+ * (pos_order_refunds.id). The caller subtracts only those whose
+ * order.refunded journal posted (the credit back to customer_deposit is
+ * booked).
  */
 export function posRefundsOfIntentSql(
   tenantId: string,
@@ -133,5 +168,15 @@ export function posRefundsOfIntentSql(
             AND t.status = 'captured'
             AND t.payment_intent_id = ${intentId}::uuid
             AND ${filters.sales})
+       AND (l.value->>'tenderId' IS NULL
+            OR EXISTS (
+              SELECT 1 FROM pos_order_tenders n
+               WHERE n.tenant_id = ${tenantId}
+                 AND n.order_id = pos_order_refunds.order_id
+                 AND n.method = l.value->>'method'
+                 AND n.status = 'captured'
+                 AND n.id::text = l.value->>'tenderId'
+                 AND coalesce(n.payment_intent_id::text, '')
+                     = coalesce(l.value->>'paymentIntentId', '')))
   `;
 }
