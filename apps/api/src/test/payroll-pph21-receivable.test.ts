@@ -179,6 +179,51 @@ describe("legend-kn3n: caller cap below the tax in a TER month", () => {
   });
 });
 
+describe("legend-5yeyq: a caller cap is authoritative (non-taxable cash pays PPh 21)", () => {
+  // TK/0, NPWP. Jan-Nov taxable 10_000_000 a month: prior X 110_000_000,
+  // withheld 2_200_000. December has only non-taxable cash of 1_000_000, so no
+  // taxable line and no benefit (the engine's own taxable-based limit is 0),
+  // and the caller cap (payslipWithholdingCap) is 1_000_000.
+  // Hand computed: cost 5% x 110_000_000 = 5_500_000, net 104_500_000, PKP
+  // 50_500_000 x 5% = 2_525_000, T = 2_525_000 - 2_200_000 = 325_000. The cash
+  // covers it: W 325_000, receivable 0, take-home 1_000_000 - 325_000 = 675_000.
+  const december = (cap?: number) =>
+    compute(
+      base({
+        lastTaxPeriod: true,
+        monthsWorked: 12,
+        prior: priorOf(110_000_000, 2_200_000),
+        ...(cap === undefined ? {} : { employeeWithholdingCapIdr: cap }),
+      }),
+    );
+
+  it("non-taxable cash cap 1_000_000: W = T = 325_000, receivable 0", () => {
+    const r = december(1_000_000);
+    expect(r.pph21Idr).toBe(325_000);
+    expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBe(325_000);
+    expect(r.pph21ReceivableIdr).toBe(0);
+    expect(r.pph21EmployerBorneIdr).toBe(0);
+    expect(r.taxAllowanceIdr).toBe(0);
+    expect(r.taxableGrossIdr).toBe(0);
+    expect(1_000_000 - (r.pph21WithheldIdr - r.taxAllowanceIdr)).toBe(675_000);
+  });
+
+  it("non-taxable cash cap 100_000: W = cap, the rest is a receivable, never grossed up", () => {
+    const r = december(100_000);
+    expect(r.pph21Idr).toBe(325_000);
+    expect(r.pph21WithheldIdr).toBe(100_000);
+    expect(r.pph21ReceivableIdr).toBe(225_000);
+    expect(r.taxableGrossIdr).toBe(0);
+    expect(r.pph21WithheldIdr + r.pph21ReceivableIdr).toBe(r.pph21Idr);
+  });
+
+  it("no caller cap: the taxable-based limit still applies (W 0, receivable = T)", () => {
+    const r = december();
+    expect(r.pph21WithheldIdr).toBe(0);
+    expect(r.pph21ReceivableIdr).toBe(325_000);
+  });
+});
+
 // legend-6ajk (Codex 156 run 3): the old settlement of a cap excess entered X
 // and pushed PKP over a rounding threshold, which raised December W from
 // 658_540 to 658_589. With a receivable there is no settlement, so W cannot

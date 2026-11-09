@@ -421,6 +421,7 @@ async function insertPublishedRule(
   code: string,
   version: number,
   isActive: boolean,
+  itemIds: string[] = [],
 ) {
   await owner.query(
     `INSERT INTO tax_rules
@@ -436,7 +437,7 @@ async function insertPublishedRule(
       JSON.stringify({
         itemClasses: ["food_beverage"],
         categoryIds: [],
-        itemIds: [],
+        itemIds,
       }),
       isActive,
       version,
@@ -726,5 +727,50 @@ describe("legend-de3b existing duplicates are listed, not changed", () => {
     // Owner switches DUP-B off: an inactive v2 of the same code.
     await insertPublishedRule(tenantId, "DUP-B", 2, false);
     expect(await listConflicts(tenantId)).toEqual([]);
+  });
+});
+
+// legend-7gwap: the overlap probe used a fixed item id for the class and
+// category levels. A rule listing that id in itemIds (stored without catalog
+// validation) made the probe hit item specificity and hid the class tie.
+describe("legend-7gwap a rule listing the old probe item id still ties on its class", () => {
+  const OLD_PROBE_ITEM = "00000000-0000-4000-8000-00000000ffff";
+  const sentinelApplies = {
+    itemClasses: ["food_beverage"],
+    categoryIds: [],
+    itemIds: [OLD_PROBE_ITEM],
+  };
+
+  it("6. publish is refused 409 TAX_RULE_AMBIGUOUS and preview keeps working", async () => {
+    const { ownerClient, outletId } = await newTenantWithOutlet();
+    const id = await createRule(ownerClient, {
+      code: "SENTINEL-PBJT",
+      appliesTo: sentinelApplies,
+    });
+
+    const response = await publishRule(ownerClient, id);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe("TAX_RULE_AMBIGUOUS");
+    expect(await statusOf(id)).toBe("draft");
+    const after = await quote(ownerClient, outletId);
+    expect(after.status, JSON.stringify(after.body)).toBe(200);
+  });
+
+  it("7. the conflicts list names the pair when both are already published", async () => {
+    const tenantId = await seedTenant();
+    await insertPublishedRule(tenantId, "DUP-A", 1, true);
+    await insertPublishedRule(tenantId, "DUP-S", 1, true, [OLD_PROBE_ITEM]);
+    const { listTaxRuleConflicts } = await import("../services/tax.service.ts");
+
+    const { conflicts } = await listTaxRuleConflicts(
+      scopeOf(tenantId),
+      seededUserId,
+      {},
+    );
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]!.level).toBe("itemClass");
+    expect(conflicts[0]!.key).toBe("food_beverage");
   });
 });

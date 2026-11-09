@@ -15,7 +15,10 @@
 //   `id`. A local row with the same natural key (uoms tenant+code, accounts
 //   tenant+entity+code) but another id is never overwritten or re-keyed: the
 //   whole apply aborts with LOCAL_CONFLICT (ids must never fork), nothing is
-//   written.
+//   written. The same holds for a local chart_of_accounts id of the outlet's
+//   entity that the snapshot does not list (the snapshot is the cloud's full
+//   chart and the cloud never hard-deletes accounts, so it is a fork, e.g. the
+//   standard template provisioned locally before the import; legend-usa4b).
 // - uoms, stock_locations and chart_of_accounts rows missing from the snapshot
 //   are NEVER deleted locally: ledger and stock rows reference them by foreign
 //   key. A deactivated location or account arrives as `isActive: false`.
@@ -54,6 +57,10 @@ import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
+import {
+  lockChartOfAccounts,
+  lockOutletStockLocations,
+} from "../services/tenant-config-locks.ts";
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
 import { parseEdgeCredential } from "./credential.ts";
@@ -195,6 +202,19 @@ export async function applyEdgeMasterSnapshotInTransaction(
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`edge-master-sync:${tenantId}:${outletId}`}, 0))`,
   );
+  // Chart of accounts of the snapshot's legal entity (the only one this apply
+  // writes CoA and mappings for; the outlet check below proves it is the
+  // outlet's own). Shared with the provisioning backfill and the owner's chart
+  // writers (legend-usa4b), taken before the natural-key precheck and every
+  // write so the backfill can never see the chart empty while this import is
+  // about to commit, and mix the template into a cloud chart.
+  // The outlet's stock locations are written here too, so the location lock
+  // is shared with the default-location provisioning the same way.
+  // Lock order: `edge-master-sync` (above) first, then CoA, then stock
+  // locations, as documented in services/tenant-config-locks.ts. No other path
+  // takes `edge-master-sync`, so neither lock is held while waiting for it.
+  await lockChartOfAccounts(tx, tenantId, legalEntityId);
+  await lockOutletStockLocations(tx, tenantId, outletId);
 
   const [outlet] = await tx
     .select({ legalEntityId: outlets.legalEntityId })
@@ -203,6 +223,28 @@ export async function applyEdgeMasterSnapshotInTransaction(
     .limit(1);
   if (!outlet || !sameId(outlet.legalEntityId, legalEntityId))
     throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+
+  // The snapshot is the cloud's whole chart for this entity and the cloud never
+  // hard-deletes accounts, so a local account id outside it is a fork (e.g. the
+  // standard template a backfill committed before this import got the CoA
+  // lock): refuse before any write, otherwise the cloud accounts would sit
+  // beside it and the mapping replace below would delete its mappings.
+  const snapshotAccountIds = new Set(
+    accounts.map((row) => row.id.toLowerCase()),
+  );
+  const localAccounts = await tx
+    .select({ id: chartOfAccounts.id })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+      ),
+    );
+  if (
+    localAccounts.some((row) => !snapshotAccountIds.has(row.id.toLowerCase()))
+  )
+    throw new EdgeMasterSyncError("LOCAL_CONFLICT");
 
   // Natural-key collisions under another id: refuse, never fork ids.
   if (snapshot.uoms.length > 0) {

@@ -14,6 +14,10 @@
 //   2. stock locations, per outlet           (`lockOutletStockLocations`)
 //   3. tax rules and tax settings, per tenant (`lockTaxConfig`)
 //   4. service-charge rules, per tenant      (`lockServiceChargeConfig`)
+// The edge master import (edge/master-sync.ts) first takes its own per-outlet
+// `edge-master-sync` lock, no other path does, then lock 1 for its one legal
+// entity, then lock 2 for its outlet (it writes CoA, mappings and the outlet's
+// stock locations; tenant-wide uoms have no lock in this list).
 // Holders today: tenant creation takes 3 then 4; legal-entity creation takes 1;
 // outlet creation takes 2 then 4; each owner writer takes exactly one. The
 // backfill runs each domain in its own transaction and, within one domain,

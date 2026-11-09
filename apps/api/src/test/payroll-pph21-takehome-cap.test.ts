@@ -9,7 +9,7 @@
 // mixedSchemeAllocation policies:
 //   1. employee withheld W = pph21WithheldIdr - taxAllowanceIdr <= cap, where
 //      cap = max(0, sum of gross + gross_up + net line amounts - deductible),
-//      lowered by employeeWithholdingCapIdr when the caller gives one;
+//      replaced by employeeWithholdingCapIdr when the caller gives one;
 //   2. withheld + employer borne + receivable - refund - employer refund =
 //      pph21Idr (the deposit);
 //   3. take-home = pay - W + refund - employeeDeductible >= 0;
@@ -30,9 +30,9 @@
 // receivable counts as tax the employee owes, so December never charges it
 // again and a refund of it goes to the employee).
 //
-// Assumptions (spec silent): a caller cap above the default cap changes nothing
-// (the input can only lower the cap); "pay" is the sum of the period's line
-// amounts (the cap's own base); a payer is "charged" in a period when its
+// Assumptions (spec silent): a caller cap is authoritative (legend-5yeyq) and
+// replaces the default cap, so non-taxable cash can pay PPh 21; "pay" is the
+// sum of the period's line amounts (the cap's own base); a payer is "charged" in a period when its
 // withheld (net of the allowance for the employee) or borne tax is > 0; the
 // employeeDeductibleIdr is the same in each month of a case (and deducted from
 // the pay on the same footing), except that a month without salary has none
@@ -567,13 +567,18 @@ describe("legend-4ndx: C2 (TK/0, gross 10 jt Jan-Nov, December gross 200_000) th
       expect(o.takeHome).toBe(100_000);
     });
 
-    it(`a caller cap 500_000 above the default 200_000 is ignored: same as without it (${allocation})`, () => {
+    it(`a caller cap 500_000 above the taxable pay 200_000 is authoritative (non-taxable cash pays, legend-5yeyq): W = T = 334_500, receivable 0 (${allocation})`, () => {
+      // The caller cap is all the cash left (it may include non-taxable cash),
+      // so it is not clamped by the taxable lines: the employee pays the whole
+      // T = 334_500 and no receivable stays. X and the deposit do not change.
       const without = runYear(months, december, 0, allocation);
       const o = runYear(months, december, 0, allocation, 500_000);
-      expect(o).toEqual(without);
-      expect(o.x).toBe(200_000);
-      expect(o.w).toBe(200_000);
-      expect(o.receivable).toBe(134_500);
+      expect(o.x).toBe(without.x);
+      expect(o.taxIdr).toBe(334_500);
+      expect(o.w).toBe(334_500);
+      expect(o.borne).toBe(0);
+      expect(o.receivable).toBe(0);
+      expect(o.deposit).toBe(334_500);
     });
   }
 });

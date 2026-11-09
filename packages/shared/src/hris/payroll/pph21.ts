@@ -47,7 +47,7 @@
 //   borne amount may stand beside an employee refund (beads legend-u1xq,
 //   legend-mmgd).
 // - W never exceeds the pay left: cap = gross lines + U + N - employee JHT/JP
-//   (lowered by `employeeWithholdingCapIdr` when given), in every period (TER
+//   (replaced by `employeeWithholdingCapIdr` when given), in every period (TER
 //   months too, bead legend-4ndx). The employee's charge above the cap is an
 //   employee receivable (`pph21ReceivableIdr`): the employer deposits it and
 //   collects it from later pay (founder decision B8, bead legend-kn3n). It is
@@ -110,10 +110,11 @@ export type Pph21PeriodInput = {
   employeeDeductibleIdr: Idr | number;
   /**
    * Optional cap on the employee's PPh 21 (W): cash pay without the tax
-   * allowance, minus every employee BPJS share (JHT, JP, health). It can only
-   * lower the engine's own cap (gross lines + U + N - employeeDeductibleIdr);
-   * the employee's tax above it is `pph21ReceivableIdr` (beads legend-4ndx,
-   * legend-kn3n). Fill it with `payslipWithholdingCap` (payslip-tax.ts).
+   * allowance, minus every employee BPJS share (JHT, JP, health). When given it
+   * is authoritative (non-taxable cash can pay PPh 21, bead legend-5yeyq); only
+   * without it the engine's own cap (gross lines + U + N -
+   * employeeDeductibleIdr) applies. The employee's tax above it is
+   * `pph21ReceivableIdr` (beads legend-4ndx, legend-kn3n). Fill it with `payslipWithholdingCap` (payslip-tax.ts).
    */
   employeeWithholdingCapIdr?: Idr | number;
   /** Earlier periods of the tax year at this employer (last period only). */
@@ -549,14 +550,19 @@ export function computePph21Period(
     return { employeePart, employerPart: added - employeePart };
   };
 
-  const cashLeft = grossLines + u + n - deductible;
-  let cap = cashLeft > 0n ? cashLeft : 0n;
-  if (input.employeeWithholdingCapIdr !== undefined) {
-    const callerCap = nonNegativeInt(
+  // A caller cap is authoritative (bead legend-5yeyq): it already is all the
+  // cash without the tax allowance, minus every employee BPJS share and the
+  // non-loan pre-net deductions, so non-taxable cash can pay PPh 21. It is not
+  // clamped by the taxable lines. Without it, the taxable-based limit applies.
+  let cap: bigint;
+  if (input.employeeWithholdingCapIdr !== undefined)
+    cap = nonNegativeInt(
       input.employeeWithholdingCapIdr,
       "employeeWithholdingCapIdr",
     );
-    if (callerCap < cap) cap = callerCap;
+  else {
+    const cashLeft = grossLines + u + n - deductible;
+    cap = cashLeft > 0n ? cashLeft : 0n;
   }
   // Employer-covered tax S = max(0, Dr(X(S)) + employer balance): least fixed
   // point from 0. Dr rises with X, so the map is monotone. With the pro rata
