@@ -280,20 +280,6 @@ function deliver(type: string, data: Record<string, unknown>) {
   };
 }
 
-const flatRefund = (
-  refundId: string,
-  providerRefundId: string,
-  status: string,
-  extra: Record<string, unknown> = {},
-) => ({
-  object: "refund",
-  id: providerRefundId,
-  idempotency_key: `refund:${refundId}`,
-  amount: 30_000,
-  status,
-  ...extra,
-});
-
 /**
  * A paid intent (own payment p1) with a fund backed by a second payment p2 and a
  * fund refund settled by hand (completed, marker, no provider ref).

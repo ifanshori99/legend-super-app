@@ -38,7 +38,10 @@ import {
   setPaymentRefundGateway,
   type PaymentRefundPort,
 } from "../services/payment-refund-gateway";
-import { clearDoitWebhookSecretCache } from "../services/payment-webhook.service";
+import {
+  clearDoitWebhookSecretCache,
+  reprocessStoredWebhookEvents,
+} from "../services/payment-webhook.service";
 import {
   setIntegrationStatus,
   upsertIntegration,
@@ -51,6 +54,8 @@ const actor = randomUUID();
 const PAID_IDR = 100_000;
 const REFUND_IDR = 4_000;
 const INVALID_ACTION = "payment.webhook.refund_facts_invalid";
+const CONFLICT_ACTION = "payment.refund_provider_conflict";
+const SETTLED_OUTSIDE_PROVIDER = "SETTLED_OUTSIDE_PROVIDER";
 const webhookPath = `/api/webhooks/payments/doit/${tenantId}`;
 
 const apiKey = `doit-key-${randomBytes(12).toString("hex")}`;
@@ -62,6 +67,11 @@ const owner = new Pool({
 });
 const tenantWide: ScopedTenantContext = establishScopedTenantContext(
   establishTenantContext({ tenantId, brandId: null, source: "session" }),
+  { kind: "tenant" },
+);
+
+const webhookContext: ScopedTenantContext = establishScopedTenantContext(
+  establishTenantContext({ tenantId, brandId: null, source: "webhook" }),
   { kind: "tenant" },
 );
 
@@ -221,6 +231,49 @@ async function seedApprovedRefund() {
   return { refundId, intentId, paymentId, providerRef };
 }
 
+/** A refund finance settled by hand: completed, marker, no provider reference. */
+async function seedSettledByHandRefund() {
+  const { intentId, paymentId } = await seedPaidIntent();
+  const refundId = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                  requested_by, approved_by, decided_at, provider_ref, payout_attempts,
+                                  last_payout_error, completed_at, updated_at)
+     VALUES ($1, $2, $3, $4, 30000, 'Pengembalian dibayar manual', 'completed', 'system:reservation', $5, now(),
+             NULL, 8, $6, now(), now())`,
+    [
+      refundId,
+      tenantId,
+      outletA,
+      intentId,
+      randomUUID(),
+      SETTLED_OUTSIDE_PROVIDER,
+    ],
+  );
+  return { refundId, intentId, paymentId };
+}
+
+const backdate = (eventId: string, minutes: number) =>
+  owner.query(
+    `UPDATE gateway_webhook_events
+       SET received_at = now() - make_interval(mins => $3),
+           updated_at = now() - make_interval(mins => $3)
+     WHERE tenant_id = $1 AND event_id = $2`,
+    [tenantId, eventId, minutes],
+  );
+
+const reprocess = () =>
+  reprocessStoredWebhookEvents(webhookContext, new Date(), 100);
+
+async function conflictAudits(refundId: string) {
+  const { rows } = await owner.query(
+    `SELECT event FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2 AND event->>'action' = $3`,
+    [tenantId, refundId, CONFLICT_ACTION],
+  );
+  return rows;
+}
+
 async function refundRow(id: string) {
   const { rows } = await owner.query<{
     status: string;
@@ -236,7 +289,7 @@ async function refundRow(id: string) {
 }
 
 async function invalidAudits(eventId: string) {
-  const { rows } = await owner.query<{ event: Record<string, any> }>(
+  const { rows } = await owner.query<{ event: Record<string, unknown> }>(
     `SELECT event FROM audit_logs
      WHERE tenant_id = $1 AND event->>'action' = $2
        AND event->'maskedChanges'->'after'->>'eventId' = $3`,
@@ -487,5 +540,72 @@ describe("legend-2ol8g PAY-04 the parser marks present-but-invalid facts", () =>
         invalid: ["payment_id", "bogus", "amount", "amount"],
       }).invalid,
     ).toEqual(["amount", "payment_id"]);
+  });
+});
+
+describe("legend-2ol8g PAY-04 an unreadable fact on a success for a refund finance settled by hand", () => {
+  it('PAY-04 a keyed refund.succeeded with amount "4000.0" is ignored as REFUND_FACTS_INVALID and still audits the provider conflict', async () => {
+    const { refundId } = await seedSettledByHandRefund();
+    const before = await refundRow(refundId);
+    expect(before).toMatchObject({
+      status: "completed",
+      provider_ref: null,
+      last_payout_error: SETTLED_OUTSIDE_PROVIDER,
+    });
+
+    const sent = deliver("refund.succeeded", {
+      object: "refund",
+      id: `rf_${hex(6)}`,
+      idempotency_key: `refund:${refundId}`,
+      amount: "4000.0",
+      status: "succeeded",
+    });
+    const response = await sent.response;
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("ignored");
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFUND_FACTS_INVALID",
+      }),
+    ]);
+    expect(await invalidAudits(sent.eventId)).toHaveLength(1);
+    expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
+    expect(await refundRow(refundId)).toEqual(before);
+  });
+
+  it("PAY-04 a flat refund.succeeded with a valid payment_id and an invalid amount reaches the conflict after 15 minutes, still REFUND_FACTS_INVALID", async () => {
+    const { refundId, paymentId } = await seedSettledByHandRefund();
+    const before = await refundRow(refundId);
+
+    const sent = deliver("refund.succeeded", {
+      refund_id: `rf_${hex(6)}`,
+      amount: "30000.0",
+      payment_id: paymentId,
+    });
+    await sent.response;
+
+    // Fresh: the refund id may still be storing, so DOIT keeps resending.
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        last_error_code: "REFUND_UNMATCHED",
+      }),
+    ]);
+    expect(await conflictAudits(refundId)).toHaveLength(0);
+
+    await backdate(sent.eventId, 16);
+    await reprocess();
+
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFUND_FACTS_INVALID",
+      }),
+    ]);
+    expect(await invalidAudits(sent.eventId)).toHaveLength(1);
+    expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
+    expect(await refundRow(refundId)).toEqual(before);
   });
 });

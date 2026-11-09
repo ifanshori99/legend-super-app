@@ -1002,19 +1002,6 @@ async function processRefundEvent(
       return await ignoredWith("REJECTED_CONFLICT");
 
     const { refund, intent } = target;
-    // legend-2ol8g: an amount or payment_id that is there but unreadable (or
-    // missing on the flat shape) must never settle: no amount or payment check
-    // would run for it.
-    if (facts.invalid) {
-      await recordRefundFactsInvalid(
-        context,
-        row,
-        refund.id,
-        facts.invalid,
-        now,
-      );
-      return await ignoredWith("REFUND_FACTS_INVALID");
-    }
     if (
       intent.provider !== PROVIDER ||
       !(await paymentMatchesRefund(context, facts, refund, intent)) ||
@@ -1028,6 +1015,42 @@ async function processRefundEvent(
         now,
       );
       return await ignoredWith("REFERENCE_MISMATCH");
+    }
+
+    // legend-2ol8g: an amount or payment_id that is there but unreadable (or
+    // missing on the flat shape) must never settle: no amount or payment check
+    // would run for it.
+    if (facts.invalid) {
+      await recordRefundFactsInvalid(
+        context,
+        row,
+        refund.id,
+        facts.invalid,
+        now,
+      );
+      // A success on a refund finance settled by hand still means paying twice,
+      // whatever its amount: the updater records the provider conflict on the
+      // refund and refuses (a completed refund never changes state there).
+      if (
+        status === "succeeded" &&
+        refund.status === "completed" &&
+        refund.lastPayoutError === SETTLED_OUTSIDE_PROVIDER
+      ) {
+        try {
+          await applyRefundProviderUpdate(
+            context,
+            { idempotencyKey: `refund:${refund.id}`, status },
+            now,
+          );
+        } catch (error) {
+          if (!(
+            error instanceof HttpError &&
+            (error.status === 409 || error.status === 404)
+          ))
+            throw error;
+        }
+      }
+      return await ignoredWith("REFUND_FACTS_INVALID");
     }
 
     // legend-r7g2 (Codex 117 Run B): a payment object names the payment, not

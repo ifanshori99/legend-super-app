@@ -149,12 +149,32 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
     failureCode(refund.failure_code) ?? failureCode(record.failure_code);
   if (code) facts.failureCode = code;
   if (payment) facts.payment = payment;
-  const paymentId = paymentShaped ? undefined : text(record.payment_id);
+  // legend-2ol8g: the provider payment id may sit flat (`data.payment_id`) or
+  // in the refund object (`refund.payment_id`). Same rules for both: present
+  // but unreadable is invalid; both present and different is invalid; else it
+  // is the one readable id.
+  const flatPaymentId = paymentShaped ? undefined : text(record.payment_id);
+  const refundPaymentId = text(refund.payment_id);
+  const flatPaymentIdBad =
+    !paymentShaped && "payment_id" in record && !flatPaymentId;
+  const refundPaymentIdBad = "payment_id" in refund && !refundPaymentId;
+  const paymentIdConflict =
+    flatPaymentId !== undefined &&
+    refundPaymentId !== undefined &&
+    flatPaymentId !== refundPaymentId;
+  const paymentId =
+    flatPaymentIdBad || refundPaymentIdBad || paymentIdConflict
+      ? undefined
+      : (flatPaymentId ?? refundPaymentId);
   if (paymentId) facts.paymentId = paymentId;
   const invalid = new Set<DoitRefundInvalidFact>();
   if (rawAmount !== undefined && refundAmount === undefined)
     invalid.add("amount");
-  if (!paymentShaped && "payment_id" in record && !paymentId)
+  if (flatPaymentIdBad || refundPaymentIdBad || paymentIdConflict)
+    invalid.add("payment_id");
+  // A payment object (or payment-shaped data) we cannot read is a payment id
+  // we cannot trust.
+  if (!payment && (record.payment !== undefined || paymentShaped))
     invalid.add("payment_id");
   // The flat sandbox shape (only `refund_id`, no refund object, key or payment)
   // must carry both: a missing one is as bad as an unreadable one.

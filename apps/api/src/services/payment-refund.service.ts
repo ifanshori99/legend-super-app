@@ -1870,11 +1870,15 @@ export async function runRefundPayout(
     // quarantined refund is never sent.
     if (claim.send && !claim.lookupFirst) {
       const deadline = await takeSendRight(context, refund, claim.token);
-      if (deadline !== null) {
+      // The request provably never left: say so, so ops know a manual
+      // settlement is safe once the provider lookup agrees.
+      if (deadline === null) unknownCode = "PAYOUT_SEND_RIGHT_LOST";
+      else {
         // legend-3usn8: the send budget ends at the deadline the DB check
         // validated. A worker that stalled after the check must not get a fresh
         // 30 s; the adapter's fetch aborts before sending once it has passed.
-        const remaining = deadline - Date.now();
+        // Clamped: a clock stepping back never lengthens the send budget.
+        const remaining = Math.min(deadline - Date.now(), PROVIDER_TIMEOUT_MS);
         if (remaining <= 0) {
           unknownCode = "PAYOUT_SEND_WINDOW_MISSED";
         } else {
