@@ -11,6 +11,7 @@ Out of scope: kmd3 (wifi_sessions table, `/api/wifi/sessions*` routes, quota/spe
 ## 1. Provider semantics (doc only, `packages/shared/src/adapters/providers.ts`)
 
 Add JSDoc on `WifiProvider`, no type change:
+
 - `reference` is one grant. Same reference + same request replays; a different request fails `IDEMPOTENCY_KEY_REUSED`; a revoked reference never re-authorizes (`authorized: false`). (Matches the fake.)
 - A new `authorize` for a `deviceId` that already holds a grant **replaces** that device's rate and duration without a gap (RADIUS CoA or controller API update). The adapter must guarantee this; dpc implements it.
 - `revoke` of a reference that has been superseded on its device is a no-op for the device.
@@ -21,31 +22,32 @@ Add JSDoc on `WifiProvider`, no type change:
 
 File `apps/api/src/db/schema/edge-wifi.ts`, RLS in `edge-wifi.custom.sql`, folded into the generated migration `apps/api/drizzle/0099_<name>.sql` (renumber at merge if 0099 is taken). Never synced to the cloud. Same migration on the cloud and the edge (one image), empty on the cloud.
 
-| Column | Type | Rule |
-|---|---|---|
-| id | uuid PK default random | also the provider `reference` |
-| tenant_id | uuid NOT NULL | `tenantIdColumn` |
-| outlet_id | uuid NOT NULL | FK (tenant_id, outlet_id) -> outlets(tenant_id, id) |
-| wifi_session_id | uuid NOT NULL | opaque; kmd3 adds FK (tenant_id, wifi_session_id) -> wifi_sessions later |
-| device_hash | varchar(64) NOT NULL | sha256 hex of `${tenantId}:${normalized controller id}`; CHECK `^[0-9a-f]{64}$` |
-| controller_device_id | varchar(64) NULL | raw controller id (MAC). Needed to downgrade/renew without the guest. NULL on terminal rows (scrub) |
-| speed_tier | varchar(8) NOT NULL | CHECK in ('full','base') |
-| bandwidth_kbps | integer NOT NULL | CHECK 1..1000000 |
-| base_bandwidth_kbps | integer NOT NULL | CHECK 1..1000000, <= bandwidth_kbps; lets the loop downgrade without kmd3 |
-| duration_seconds | integer NOT NULL | CHECK 1..129600 |
-| status | varchar(16) NOT NULL | CHECK in ('pending','active','unknown','superseded','revoked','failed') |
-| attempt_count | integer NOT NULL default 0 | |
-| last_error_code | varchar(64) NULL | code only, never a message from the vendor |
-| renew_until | timestamptz NOT NULL | min(sessionEndsAt, now + 24 h) |
-| requested_at | timestamptz NOT NULL | |
-| authorized_at, expires_at | timestamptz NULL | NOT NULL when status = active |
-| revoke_requested_at | timestamptz NULL | write-ahead for revoke retries |
-| end_reason | varchar(32) NULL | only with revoked; CHECK in wifiEndReason values |
-| ended_at | timestamptz NULL | NOT NULL when terminal |
-| superseded_by | uuid NULL | FK (tenant_id, superseded_by) -> (tenant_id, id) |
-| created_at, updated_at | timestamptz NOT NULL default now | |
+| Column                    | Type                             | Rule                                                                                                |
+| ------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------- |
+| id                        | uuid PK default random           | also the provider `reference`                                                                       |
+| tenant_id                 | uuid NOT NULL                    | `tenantIdColumn`                                                                                    |
+| outlet_id                 | uuid NOT NULL                    | FK (tenant_id, outlet_id) -> outlets(tenant_id, id)                                                 |
+| wifi_session_id           | uuid NOT NULL                    | opaque; kmd3 adds FK (tenant_id, wifi_session_id) -> wifi_sessions later                            |
+| device_hash               | varchar(64) NOT NULL             | sha256 hex of `${tenantId}:${normalized controller id}`; CHECK `^[0-9a-f]{64}$`                     |
+| controller_device_id      | varchar(64) NULL                 | raw controller id (MAC). Needed to downgrade/renew without the guest. NULL on terminal rows (scrub) |
+| speed_tier                | varchar(8) NOT NULL              | CHECK in ('full','base')                                                                            |
+| bandwidth_kbps            | integer NOT NULL                 | CHECK 1..1000000                                                                                    |
+| base_bandwidth_kbps       | integer NOT NULL                 | CHECK 1..1000000, <= bandwidth_kbps; lets the loop downgrade without kmd3                           |
+| duration_seconds          | integer NOT NULL                 | CHECK 1..129600                                                                                     |
+| status                    | varchar(16) NOT NULL             | CHECK in ('pending','active','unknown','superseded','revoked','failed')                             |
+| attempt_count             | integer NOT NULL default 0       |                                                                                                     |
+| last_error_code           | varchar(64) NULL                 | code only, never a message from the vendor                                                          |
+| renew_until               | timestamptz NOT NULL             | min(sessionEndsAt, now + 24 h)                                                                      |
+| requested_at              | timestamptz NOT NULL             |                                                                                                     |
+| authorized_at, expires_at | timestamptz NULL                 | NOT NULL when status = active                                                                       |
+| revoke_requested_at       | timestamptz NULL                 | write-ahead for revoke retries                                                                      |
+| end_reason                | varchar(32) NULL                 | only with revoked; CHECK in wifiEndReason values                                                    |
+| ended_at                  | timestamptz NULL                 | NOT NULL when terminal                                                                              |
+| superseded_by             | uuid NULL                        | FK (tenant_id, superseded_by) -> (tenant_id, id)                                                    |
+| created_at, updated_at    | timestamptz NOT NULL default now |                                                                                                     |
 
 Constraints and indexes:
+
 - unique (tenant_id, id); unique (tenant_id, outlet_id, id).
 - CHECK `(controller_device_id IS NOT NULL) = (status IN ('pending','active','unknown'))`.
 - partial unique `wifi_device_grants_one_active` on (tenant_id, outlet_id, device_hash) WHERE status = 'active'.
@@ -53,6 +55,7 @@ Constraints and indexes:
 - index (tenant_id, outlet_id, wifi_session_id); index (tenant_id, outlet_id, status, expires_at) for the loop.
 
 `edge-wifi.custom.sql` (pattern: `edge-node.custom.sql`):
+
 - `SELECT app.enforce_tenant_rls('public.wifi_device_grants'::regclass);` and `app.enforce_outlet_rls(...)` (ENABLE + FORCE).
 - Trigger `app.guard_wifi_device_grant_update()`: the request columns are immutable (id, tenant_id, outlet_id, wifi_session_id, device_hash, speed_tier, bandwidth_kbps, base_bandwidth_kbps, duration_seconds, renew_until, requested_at), because a reference's request is fixed at the provider. A terminal status (superseded, revoked, failed) never changes. ERRCODE 42501.
 - Export from `apps/api/src/db/schema/index.ts` (one line).
@@ -76,7 +79,9 @@ Constraints and indexes:
 ## 4. Services
 
 ### Simulator: `apps/api/src/edge/wifi/simulator.ts`
+
 `WifiControllerSimulator implements WifiProvider, WifiWalledGardenSync`, constructor `{ now?: () => Date }`.
+
 - Scope checks like the fake: `assertTrustedScopedContext`, schema parse, tenant equality, `assertOutletInScope`.
 - Idempotent per (tenant, outlet, reference) with a fingerprint; reused reference with another request -> `IDEMPOTENCY_KEY_REUSED`; revoked reference -> `authorized: false`.
 - Per device: current reference; a new authorize replaces it with no gap; revoke of the current reference blocks the device; revoke of a superseded one is a no-op.
@@ -85,9 +90,11 @@ Constraints and indexes:
 - Probes: `deviceAccess(tenantId, outletId, deviceId)` -> `{ state: "blocked" } | { state: "online", bandwidthKbps, reference, expiresAt }`; `canReach(tenantId, outletId, deviceId | null, host)` (allowlist match, exact or `*.` suffix, or the device is online); `cuts()` records every time the clock passes the current grant's expiry while the device was never revoked; `calls` counters.
 
 ### Registry: `apps/api/src/edge/wifi/registry.ts`
+
 `createDefaultWifiProvider({ simulator: boolean; production?: boolean }): WifiProvider | null`. Simulator in production throws (same rule as `createDefaultEdcRegistry`). Production without a vendor adapter returns null until dpc registers one.
 
 ### Agent: `apps/api/src/services/edge-wifi-agent.service.ts`
+
 ```ts
 export function createWifiAgent(options: {
   provider: WifiProvider;
@@ -96,20 +103,42 @@ export function createWifiAgent(options: {
   providerTimeoutMs?: number; // default 5000
 }): WifiAgent;
 export type WifiAgent = {
-  applySession(ctx: ScopedTenantContext, input: ApplyWifiSessionInput): Promise<WifiGrantView>;
-  endSession(ctx: ScopedTenantContext, input: { outletId: OutletId; wifiSessionId: string; reason: WifiEndReason }): Promise<WifiGrantView[]>;
-  listLiveGrants(ctx: ScopedTenantContext, outletId: OutletId): Promise<WifiGrantView[]>;
-  walledGarden(ctx: ScopedTenantContext): Promise<{ hosts: string[]; version: string }>;
-  reconcile(ctx: ScopedTenantContext, outletId: OutletId): Promise<{ authorized: number; downgraded: number; renewed: number; revoked: number; failed: number }>;
+  applySession(
+    ctx: ScopedTenantContext,
+    input: ApplyWifiSessionInput,
+  ): Promise<WifiGrantView>;
+  endSession(
+    ctx: ScopedTenantContext,
+    input: { outletId: OutletId; wifiSessionId: string; reason: WifiEndReason },
+  ): Promise<WifiGrantView[]>;
+  listLiveGrants(
+    ctx: ScopedTenantContext,
+    outletId: OutletId,
+  ): Promise<WifiGrantView[]>;
+  walledGarden(
+    ctx: ScopedTenantContext,
+  ): Promise<{ hosts: string[]; version: string }>;
+  reconcile(
+    ctx: ScopedTenantContext,
+    outletId: OutletId,
+  ): Promise<{
+    authorized: number;
+    downgraded: number;
+    renewed: number;
+    revoked: number;
+    failed: number;
+  }>;
 };
 export const WIFI_RECONCILE_INTERVAL_MS = 30_000;
 export const WIFI_FULL_GRACE_SECONDS = 300;
 export const WIFI_RENEW_LEAD_SECONDS = 600;
 export const WIFI_BASE_CHUNK_SECONDS = 14_400;
 ```
+
 Every method: trusted context, outlet in scope, all queries inside `withTenant` and filtered by tenant_id + outlet_id. Provider calls never run inside a DB transaction.
 
 `applySession`:
+
 1. Parse input. `remainingSeconds = 0` means base. Full: bandwidth = fullSpeedKbps, duration = min(remaining, until renew_until) + 300 s grace. Base: bandwidth = baseSpeedKbps, duration = min(4 h, until renew_until) + 300 s.
 2. Tx + `pg_advisory_xact_lock(hashtext(tenant:outlet:device_hash))`. A live row of another wifi_session_id -> 409 `WIFI_DEVICE_BOUND_ELSEWHERE` (stops one guest claiming another's MAC). Same session, same tier and bandwidth, expiry far enough -> return it (no provider call). An in-flight row with the same request -> return it; with another request -> 409 `WIFI_GRANT_IN_FLIGHT`. Otherwise insert `pending`, commit.
 3. `provider.authorize` with reference = row id and `walledGarden` from `walledGarden()`, raced against the timeout.
@@ -118,6 +147,7 @@ Every method: trusted context, outlet in scope, all queries inside `withTenant` 
 `endSession`: tx sets revoke_requested_at + end_reason on every live row of the session; then `provider.revoke` per row; success -> `revoked`, ended_at, scrub. Failure keeps the row for the loop.
 
 `reconcile` (bounded to 100 rows per tick):
+
 1. Live rows with revoke_requested_at -> retry revoke.
 2. pending/unknown older than 10 s -> authorize again with the identical request (same reference, idempotent) -> active/failed.
 3. Active full rows with `expires_at - 300 s <= now` (quota spent) -> new base grant, make-before-break (FAC-13 holds even when kmd3 is late).
@@ -126,6 +156,7 @@ Every method: trusted context, outlet in scope, all queries inside `withTenant` 
 6. If the provider supports `WifiWalledGardenSync` and the version changed -> sync.
 
 ### Walled-garden source: `apps/api/src/services/edge-wifi-walled-garden.service.ts`
+
 `loadWalledGardenSources(ctx)`: `tenant_domains` hostnames of the tenant (SELECT is open by design), host of `env.WEB_URL` and `env.BETTER_AUTH_URL` (on the edge these are the edge's own origins serving `/wifi`, ordering and checkout), all `PAYMENT_WALLED_GARDEN_HOSTS`. No new env key. Feeds `buildWalledGarden`.
 
 ## 5. Edge call path
@@ -138,6 +169,7 @@ Every method: trusted context, outlet in scope, all queries inside `withTenant` 
 ## 6. Routes: `apps/api/src/routes/edge-wifi.routes.ts`
 
 Mounted in `apps/api/src/routes/index.ts` as `apiRouter.use("/edge/wifi", edgeWifiRouter)` before `/edge`. `/api/edge/*` is already edge-only in `edge/mode.ts`, so no prefix change. Guards: same as `edge-device.routes.ts` (node tenant, `requireAuth`, tenant context). Permission `device.registry.manage` on the node's outlet, checked in the service layer (no new permission code). Strict Zod on query, params and body; tenant and outlet always from the node identity, never the request.
+
 - GET `/grants` -> `agent.listLiveGrants`.
 - POST `/sessions/:wifiSessionId/revoke` -> `agent.endSession(reason "staff_revoked")`, audited with `auditFacility`-style audit row (action `wifi_grant.revoked`). Unknown session in this tenant/outlet -> 404.
 - GET `/walled-garden` -> `agent.walledGarden` (for manual controller provisioning when the vendor has no API).
@@ -157,13 +189,13 @@ Commands: node tests plain (`node --test tests/<file>.mjs`); API tests from the 
 
 S1 and S2 land first (types and table). S3, S4 and S5 may start at the same time against the signatures above; they run their tests after S1 and S2 are committed.
 
-| Slice | Owner | Files (only these) | Done when |
-|---|---|---|---|
-| S1 Contract + simulator | implementer | `packages/shared/src/edge/wifi.ts` (new), the edge barrel export line in `packages/shared/src/edge/index.ts`, JSDoc in `packages/shared/src/adapters/providers.ts`, `apps/api/src/edge/wifi/simulator.ts`, `apps/api/src/edge/wifi/registry.ts`, `tests/legend-hsk-wifi-contract.test.mjs`, `apps/api/src/test/edge-wifi-simulator.test.ts` | both test files pass; `tests/adapters-contract.test.mjs` unchanged and passing |
-| S2 Schema + migration + RLS | implementer (Opus, tier K) | `apps/api/src/db/schema/edge-wifi.ts`, `apps/api/src/db/schema/edge-wifi.custom.sql`, one export line in `apps/api/src/db/schema/index.ts`, `apps/api/drizzle/0099_*.sql` + `apps/api/drizzle/meta/*`, `apps/api/src/test/edge-wifi-rls.test.ts` | `pnpm db:generate` gives no further diff; RLS test passes |
-| S3 Agent + walled-garden source | implementer (Opus) | `apps/api/src/services/edge-wifi-agent.service.ts`, `apps/api/src/services/edge-wifi-walled-garden.service.ts`, `apps/api/src/test/edge-wifi-agent.test.ts` | agent test passes |
-| S4 Port + routes + runtime | implementer | `apps/api/src/edge/wifi/port.ts`, `apps/api/src/routes/edge-wifi.routes.ts`, mount line in `apps/api/src/routes/index.ts`, `apps/api/src/edge/runtime.ts`, `apps/api/src/test/edge-wifi-routes.test.ts` | routes test passes; existing `edge-link*.test.ts` and `edge-mode-guard.test.ts` still pass |
-| S5 Acceptance tests | test-writer | `apps/api/src/test/edge-wifi-acceptance.test.ts` | passes against S1-S4 |
+| Slice                           | Owner                      | Files (only these)                                                                                                                                                                                                                                                                                                                          | Done when                                                                                  |
+| ------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| S1 Contract + simulator         | implementer                | `packages/shared/src/edge/wifi.ts` (new), the edge barrel export line in `packages/shared/src/edge/index.ts`, JSDoc in `packages/shared/src/adapters/providers.ts`, `apps/api/src/edge/wifi/simulator.ts`, `apps/api/src/edge/wifi/registry.ts`, `tests/legend-hsk-wifi-contract.test.mjs`, `apps/api/src/test/edge-wifi-simulator.test.ts` | both test files pass; `tests/adapters-contract.test.mjs` unchanged and passing             |
+| S2 Schema + migration + RLS     | implementer (Opus, tier K) | `apps/api/src/db/schema/edge-wifi.ts`, `apps/api/src/db/schema/edge-wifi.custom.sql`, one export line in `apps/api/src/db/schema/index.ts`, `apps/api/drizzle/0099_*.sql` + `apps/api/drizzle/meta/*`, `apps/api/src/test/edge-wifi-rls.test.ts`                                                                                            | `pnpm db:generate` gives no further diff; RLS test passes                                  |
+| S3 Agent + walled-garden source | implementer (Opus)         | `apps/api/src/services/edge-wifi-agent.service.ts`, `apps/api/src/services/edge-wifi-walled-garden.service.ts`, `apps/api/src/test/edge-wifi-agent.test.ts`                                                                                                                                                                                 | agent test passes                                                                          |
+| S4 Port + routes + runtime      | implementer                | `apps/api/src/edge/wifi/port.ts`, `apps/api/src/routes/edge-wifi.routes.ts`, mount line in `apps/api/src/routes/index.ts`, `apps/api/src/edge/runtime.ts`, `apps/api/src/test/edge-wifi-routes.test.ts`                                                                                                                                     | routes test passes; existing `edge-link*.test.ts` and `edge-mode-guard.test.ts` still pass |
+| S5 Acceptance tests             | test-writer                | `apps/api/src/test/edge-wifi-acceptance.test.ts`                                                                                                                                                                                                                                                                                            | passes against S1-S4                                                                       |
 
 Wave close: heavy typecheck for api, full `pnpm test`, lint; reviewer (Opus, tier K) on the diff, architect pass on the migration and the MAC handling, second opinion queued.
 

@@ -384,7 +384,9 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     let started!: () => void;
-    const authorizeStarted = new Promise<void>((resolve) => (started = resolve));
+    const authorizeStarted = new Promise<void>(
+      (resolve) => (started = resolve),
+    );
     let hold = false;
     const forget = new Set<string>();
     const f = await fixture({
@@ -592,7 +594,11 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     await expect(f.agent.walledGarden(f.ctx)).rejects.toMatchObject({
       reason: "WIFI_WALLED_GARDEN_TOO_LARGE",
     });
-    f.advance(WIFI_BASE_CHUNK_SECONDS + WIFI_FULL_GRACE_SECONDS - WIFI_RENEW_LEAD_SECONDS);
+    f.advance(
+      WIFI_BASE_CHUNK_SECONDS +
+        WIFI_FULL_GRACE_SECONDS -
+        WIFI_RENEW_LEAD_SECONDS,
+    );
     expect((await f.agent.reconcile(f.ctx, f.outletId)).renewed).toBe(1);
     expect(f.sim.requests).toHaveLength(2);
     expect(f.sim.requests[1]!.walledGarden).toEqual(good.hosts);

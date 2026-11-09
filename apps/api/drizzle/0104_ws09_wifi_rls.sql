@@ -1,9 +1,9 @@
 -- Edge Wi-Fi agent grant ledger (bead legend-hsk; PRD v1.7 §3 F5 + F25,
 -- FAC-11, FAC-13). RLS and the update guard for wifi_device_grants
 -- (edge-wifi.ts). CHECK, unique and partial unique constraints live in the
--- drizzle schema; this file holds what drizzle cannot express. Fold into the
--- migration after the generated CREATE TABLE (0099). Same migration on the
--- cloud and on every edge node.
+-- drizzle schema; this file holds what drizzle cannot express. Runs after the
+-- generated CREATE TABLE (0103_broad_revanche). Same migration on the cloud and
+-- on every edge node.
 
 -- TEN-01/TEN-03: tenant + outlet owned (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.wifi_device_grants'::regclass);

@@ -62,8 +62,10 @@ export * from "./consents";
 export * from "./operations";
 // WS-02 edge node registry + cloud <-> edge link (legend-2pi).
 export * from "./edge-node";
+export * from "./edge-sync-conflict";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+export * from "./pos-receipt";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).

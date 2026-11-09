@@ -113,10 +113,15 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
     const stub = stubAgent();
     const other = await hold(outletId);
     const retryDelayMs = vi.fn(() => 5);
-    const handle = await start(outletId, stub, { retryDelayMs, intervalMs: 20 });
+    const handle = await start(outletId, stub, {
+      retryDelayMs,
+      intervalMs: 20,
+    });
     expect(handle).not.toBeNull();
     expect(installed(stub)).toBe(false);
-    await vi.waitFor(() => expect(retryDelayMs.mock.calls.length).toBeGreaterThan(1));
+    await vi.waitFor(() =>
+      expect(retryDelayMs.mock.calls.length).toBeGreaterThan(1),
+    );
     expect(installed(stub)).toBe(false);
     expect(stub.reconcile).not.toHaveBeenCalled();
 
@@ -168,7 +173,9 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
     const other = await hold(outletId);
     const connect = vi.fn(() => pool.connect());
     const handle = await start(outletId, stub, { connect });
-    await vi.waitFor(() => expect(connect.mock.calls.length).toBeGreaterThan(1));
+    await vi.waitFor(() =>
+      expect(connect.mock.calls.length).toBeGreaterThan(1),
+    );
     await handle!.stop();
     const calls = connect.mock.calls.length;
 

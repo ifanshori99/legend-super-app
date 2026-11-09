@@ -187,3 +187,9 @@ export function outletOptions(
 export function shortId(id: string): string {
   return id.slice(0, 8).toUpperCase();
 }
+
+/** Enroll form: a non-empty name that fits the API's 255 character limit. */
+export function enrollLabelValid(label: string): boolean {
+  const trimmed = label.trim();
+  return trimmed.length >= 1 && trimmed.length <= 255;
+}

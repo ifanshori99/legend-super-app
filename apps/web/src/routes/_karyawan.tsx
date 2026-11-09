@@ -8,7 +8,7 @@ export const Route = createFileRoute("/_karyawan")({
   beforeLoad: ({ context }) => runGuard(AREAS.karyawan.guard, context.access),
   head: () => ({
     ...areaHead("karyawan"),
-    // HRIS is an installable PWA (PRD F30); the manifest is a stub for now.
+    // HRIS is an installable PWA (PRD F30); the manifest is served per tenant.
     links: [{ rel: "manifest", href: "/manifest.webmanifest" }],
   }),
   component: Layout,
