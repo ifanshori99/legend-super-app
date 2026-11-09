@@ -44,3 +44,4 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - m1 1e2ab930: cherry-pick PRD d6a223d9 (docs/PRD.md saja). Cek tree identity setelah merge: selisih yang boleh hanya docs/PRD.md.
 - e2e-az sekarang c01e9c63 (docs QA di atas 263ce1ec).
 - Urutan: ws11, ws02, whitelabel, receipt, e2e-az.
+- ws-09-ws 1e94f33f (WS-09 fasilitas + Wi-Fi, tingkat K; gate lulus di cabang; second-opinion brief 105 paralel, tidak menahan). Antre setelah e2e-az. Stage A + regen migrasi saat giliran.
