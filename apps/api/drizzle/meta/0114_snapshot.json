@@ -1,6 +1,6 @@
 {
-  "id": "696efbde-c877-4c3c-8778-b0df93fed67f",
-  "prevId": "ebcded89-7dd6-425d-9d9e-064cdb1f5cad",
+  "id": "0ac22047-945c-4ea5-9a8a-14c51bf93b1a",
+  "prevId": "c3244c72-b17a-4ca9-a04a-0ef4eedf83a2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -27854,6 +27854,21 @@
           ],
           "tableTo": "tenants",
           "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "auto_journal_parked_outlet_fk": {
+          "name": "auto_journal_parked_outlet_fk",
+          "tableFrom": "auto_journal_parked",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "tableTo": "outlets",
+          "columnsTo": [
+            "tenant_id",
             "id"
           ],
           "onUpdate": "no action",

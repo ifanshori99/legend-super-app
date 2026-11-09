@@ -23,7 +23,6 @@
 //   with a different payload fails IDEMPOTENCY_KEY_REUSED (409);
 // - every exported boundary asserts trusted context before touching rows.
 
-import { createHash } from "node:crypto";
 import {
   and,
   asc,
@@ -333,7 +332,7 @@ function assertReplayMatches(
 
 /** Fingerprint of a post request, after parsing (trimmed description). */
 function postFingerprint(parsed: ParsedPost): string {
-  const base = journalRequestFingerprint({
+  return journalRequestFingerprint({
     legalEntityId: parsed.legalEntityId,
     outletId: parsed.outletId,
     entryDate: parsed.entryDate,
@@ -341,12 +340,8 @@ function postFingerprint(parsed: ParsedPost): string {
     sourceId: parsed.sourceId,
     description: parsed.description,
     lines: parsed.lines,
+    lateAdjustmentFrom: parsed.lateAdjustmentFrom,
   });
-  // Only a late adjustment changes the hash, so existing fingerprints stay valid.
-  if (!parsed.lateAdjustmentFrom) return base;
-  return createHash("sha256")
-    .update(`${base}|late:${parsed.lateAdjustmentFrom}`)
-    .digest("hex");
 }
 
 async function chartForEntity(

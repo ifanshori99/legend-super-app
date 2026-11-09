@@ -13,8 +13,15 @@
 //
 // Assumptions (the design fixes the contract, a few details are open):
 // - Journals are looked up by the result's `journalEntryId`; idempotency keys
-//   (`aj:receipt:<event.id>`, `aj:sale:<orderId>`, ...) are only used to find
-//   parked rows (design section 4).
+//   (`aj:receipt:<intentId>`, `aj:receipt-fund:<unallocatedFundId>`,
+//   `aj:sale:<orderId>`, ...) are only used to find parked rows (design
+//   section 4, fix wave F2: receipts are keyed by the money, not by the event).
+// - A deterministic non-accounting failure (bad payload, EDC-linked gateway
+//   tender) parks as non-retryable `AUTO_JOURNAL_PAYLOAD_INVALID` and never
+//   throws; those parked rows are found by tenant + error code (+ outlet).
+// - A gateway tender counts as customer_deposit (Dr) on order.paid only when
+//   its intent's receipt exists (journal) or is parked; otherwise it is
+//   gateway_clearing (cutover: pre-cutover intents never booked a receipt).
 // - A parked row is not retried before its `next_retry_at`; the sweep is run
 //   one day after `NOW`, far past any backoff, so tests do not depend on the
 //   exact backoff.
@@ -282,6 +289,8 @@ type IntentOptions = {
   amountIdr: number;
   reservationId?: string;
   edcTransactionId?: string;
+  /** Default "paid". An "expired" intent has no paid_at (money may still arrive). */
+  status?: "paid" | "expired";
 };
 
 /** A paid gateway (QRIS) intent with its payment link. */
@@ -307,7 +316,7 @@ async function seedIntent(
     `INSERT INTO payment_intents
        (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
         status, paid_at, instructions, expires_at, reservation_id, edc_transaction_id)
-     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', $7,
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $10, $7,
              '{"method":"qris","qrPayload":"test","issuer":null}', now(), $8, $9)`,
     [
       intentId,
@@ -316,26 +325,44 @@ async function seedIntent(
       linkId,
       options.amountIdr,
       `aj-${intentId}`,
-      DAY,
+      options.status === "expired" ? null : DAY,
       options.reservationId ?? null,
       options.edcTransactionId ?? null,
+      options.status ?? "paid",
     ],
   );
   return intentId;
 }
 
-/** A completed gateway refund (payout done) of an intent. */
+/** Money that arrived on an intent but belongs to no bill (PAY-04). */
+async function seedFund(
+  world: World,
+  intentId: string,
+  amountIdr: number,
+  reason: "overpayment" | "double_payment" = "double_payment",
+): Promise<string> {
+  const fundId = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [fundId, world.tenant.id, world.outletId, intentId, amountIdr, reason],
+  );
+  return fundId;
+}
+
+/** A completed gateway refund (payout done) of an intent or of one of its funds. */
 async function seedRefund(
   world: World,
   intentId: string,
   amountIdr: number,
+  unallocatedFundId?: string,
 ): Promise<string> {
   const refundId = randomUUID();
   await owner.query(
     `INSERT INTO payment_refunds
        (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
-        requested_by, approved_by, decided_at, completed_at)
-     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'completed', 'requester', 'approver', $6, $6)`,
+        requested_by, approved_by, decided_at, completed_at, unallocated_fund_id)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'completed', 'requester', 'approver', $6, $6, $7)`,
     [
       refundId,
       world.tenant.id,
@@ -343,6 +370,7 @@ async function seedRefund(
       intentId,
       amountIdr,
       REFUND_DAY,
+      unallocatedFundId ?? null,
     ],
   );
   return refundId;
@@ -499,18 +527,55 @@ function paymentPaid(
   });
 }
 
+/**
+ * `payment.funds_unallocated`: money that arrived with no payment.paid (an
+ * expired/failed/cancelled intent, or a second payment on a paid intent).
+ * The aggregate is the fund (design fix wave F1).
+ */
+function fundsUnallocated(
+  world: World,
+  fundId: string,
+  intentId: string,
+  receivedIdr: number,
+  extra: { id?: string; receivedAt?: string; reason?: string } = {},
+): EventEnvelope {
+  const receivedAt = extra.receivedAt ?? DAY;
+  return envelope(world, {
+    ...(extra.id === undefined ? {} : { id: extra.id }),
+    name: "payment.funds_unallocated",
+    aggregateType: "payment",
+    aggregateId: fundId,
+    occurredAt: receivedAt,
+    payload: {
+      unallocatedFundId: fundId,
+      intentId,
+      method: "qris",
+      provider: "doit",
+      receivedIdr,
+      receivedAt,
+      reason: extra.reason ?? "double_payment",
+    },
+  });
+}
+
 function paymentRefunded(
   world: World,
   refundId: string,
   intentId: string,
   amountIdr: number,
+  unallocatedFundId?: string,
 ): EventEnvelope {
   return envelope(world, {
     name: "payment.refunded",
     aggregateType: "payment",
     aggregateId: refundId,
     occurredAt: REFUND_DAY,
-    payload: { refundId, paymentIntentId: intentId, amountIdr },
+    payload: {
+      refundId,
+      paymentIntentId: intentId,
+      amountIdr,
+      ...(unallocatedFundId === undefined ? {} : { unallocatedFundId }),
+    },
   });
 }
 
@@ -727,6 +792,23 @@ async function parkedOf(tenant: Tenant, key: string): Promise<Parked[]> {
   });
 }
 
+/** Parked rows of a tenant by error code (optionally one outlet). */
+async function parkedByCode(
+  tenant: Tenant,
+  code: string,
+  outletId?: string,
+): Promise<Parked[]> {
+  return asTenant(tenant, async (client) => {
+    const { rows } = await client.query<Parked>(
+      `SELECT error_code, retryable, attempts, event_name, outlet_id
+         FROM auto_journal_parked
+        WHERE tenant_id = $1 AND error_code = $2 AND ($3::uuid IS NULL OR outlet_id = $3)`,
+      [tenant.id, code, outletId ?? null],
+    );
+    return rows;
+  });
+}
+
 async function lateAuditCount(
   tenant: Tenant,
   journalId: string,
@@ -812,6 +894,9 @@ describe("F19 order.paid posts the sale per tender", () => {
       ],
     };
     await seedPosOrder(world, orderUlid, sale);
+    // The intent's receipt is booked first (cutover guard: only then does the
+    // tender settle customer_deposit instead of gateway_clearing).
+    await post(world, paymentPaid(world, intentId, 40_000));
 
     const result = await post(world, orderPaid(world, orderUlid, sale));
     expect(await linesOf(world, result.journalEntryId)).toEqual([
@@ -868,6 +953,123 @@ describe("F19 order.paid posts the sale per tender", () => {
   });
 });
 
+describe("F19 order.paid cutover guard for gateway tenders with an intent", () => {
+  const gatewaySale = (intentId: string): SaleAmounts => ({
+    grossSalesIdr: 100_000,
+    pbjtIdr: 10_000,
+    tenders: [{ method: "qris", amountIdr: 110_000, intentId }],
+  });
+
+  it("AJ-CUTOVER-01 a gateway tender whose intent has no receipt (pre-cutover) debits gateway_clearing, not customer_deposit", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    // No payment.paid was ever booked for this intent.
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "gateway_clearing", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-CUTOVER-02 a gateway tender whose receipt is parked (not yet booked) debits customer_deposit; the receipt later nets it to 0", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant, { unmapped: ["gateway_clearing"] });
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    // The receipt cannot post (gateway_clearing unmapped) and is parked.
+    expect(
+      (await deliver(tenant, paymentPaid(world, intentId, 110_000))).status,
+    ).toBe("parked");
+    expect(await parkedOf(tenant, `aj:receipt:${intentId}`)).toHaveLength(1);
+
+    // The sale needs no gateway_clearing line: the tender settles the deposit.
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+
+    await mapRole(world, "gateway_clearing", world.accounts.gateway_clearing);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+  });
+
+  it("AJ-CUTOVER-03 a gateway tender whose intent is EDC-linked fails closed: parked non-retryable AUTO_JOURNAL_PAYLOAD_INVALID, nothing posted, no throw", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, {
+      amountIdr: 110_000,
+      edcTransactionId: randomUUID(),
+    });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+    const parked = await parkedByCode(
+      tenant,
+      "AUTO_JOURNAL_PAYLOAD_INVALID",
+      world.outletId,
+    );
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({
+      retryable: false,
+      event_name: "order.paid",
+    });
+  });
+});
+
+describe("F19 a deterministic bad event parks instead of throwing", () => {
+  it("AJ-INVALID-01 a payload that fails validation parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID, does not throw and leaves the surrounding transaction usable", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const bad = paymentPaid(world, randomUUID(), 10_000, {
+      payload: { receivedIdr: "bukan angka", intentId: "bukan-uuid" },
+    });
+
+    // A throw here would roll back the caller's transaction (the POS capture).
+    const marker = `m${short()}`;
+    const context = contextOf(tenant);
+    const result = await withTenant(db, context, async (tx) => {
+      const outcome = await deliverAutoJournalEvent(context, bad, tx, NOW);
+      await tx.execute(
+        sql`INSERT INTO uoms (tenant_id, code, name) VALUES (${tenant.id}, ${marker}, ${marker})`,
+      );
+      return outcome;
+    });
+    expect(result).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await markerExists(tenant, marker)).toBe(true);
+    expect(await journalCount(world)).toBe(0);
+    expect(
+      await parkedByCode(tenant, "AUTO_JOURNAL_PAYLOAD_INVALID"),
+    ).toMatchObject([{ retryable: false, event_name: "payment.paid" }]);
+  });
+});
+
 describe("F19 order.refunded mirrors the sale", () => {
   it("AJ-REFUND-01 a refund of cash + gateway: Dr revenue, tax / Cr cash and customer_deposit (owed until payout), balanced; replay no-op", async () => {
     const world = await makeWorld();
@@ -918,7 +1120,7 @@ describe("F19 payment.paid books the gateway receipt", () => {
     ]);
   });
 
-  it("AJ-PAY-02 replaying the same event is a no-op; a second payment of the same intent is a new money arrival and posts again", async () => {
+  it("AJ-PAY-02 the receipt is keyed by the intent: the same event, or the same intent under a different event id, posts once", async () => {
     const world = await makeWorld();
     const intentId = await seedIntent(world, { amountIdr: 50_000 });
     const event = paymentPaid(world, intentId, 50_000);
@@ -928,13 +1130,16 @@ describe("F19 payment.paid books the gateway receipt", () => {
       status: "already_posted",
       journalEntryId: first.journalEntryId,
     });
+    // Same intent, new event id (a re-emitted fact): still one receipt.
+    expect(
+      await deliver(world.tenant, paymentPaid(world, intentId, 50_000)),
+    ).toEqual({
+      status: "already_posted",
+      journalEntryId: first.journalEntryId,
+    });
     expect(await journalCount(world)).toBe(1);
-
-    // Double payment: another payment.paid event for the same intent.
-    const second = await post(world, paymentPaid(world, intentId, 50_000));
-    expect(second.journalEntryId).not.toBe(first.journalEntryId);
-    expect(await journalCount(world)).toBe(2);
-    expect(await balanceOf(world, "customer_deposit")).toBe(-100_000);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-50_000);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
   });
 
   it("AJ-PAY-03 an EDC-linked intent posts nothing (EDC money settles through edc_clearing)", async () => {
@@ -948,6 +1153,110 @@ describe("F19 payment.paid books the gateway receipt", () => {
       await deliver(world.tenant, paymentPaid(world, intentId, 75_000)),
     ).toEqual({ status: "ignored" });
     expect(await journalCount(world)).toBe(0);
+  });
+});
+
+describe("F19 payment.funds_unallocated books money that has no payment.paid", () => {
+  it("AJ-FUNDS-01 a double payment: the fund receipt then its refund payout net gateway_clearing and customer_deposit to 0", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 80_000 });
+    await post(world, paymentPaid(world, intentId, 80_000));
+
+    // The guest pays the same bill again: a fund, not a second receipt.
+    const fundId = await seedFund(world, intentId, 80_000, "double_payment");
+    const receiptEvent = fundsUnallocated(world, fundId, intentId, 80_000);
+    const receipt = await post(world, receiptEvent);
+    const entry = await entryOf(world, receipt.journalEntryId);
+    expect(entry.source_type).toBe("customer_deposit");
+    expect(entry.outlet_id).toBe(world.outletId);
+    expect(await linesOf(world, receipt.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 0, credit: 80_000 },
+      { role: "gateway_clearing", debit: 80_000, credit: 0 },
+    ]);
+    // Bill receipt + fund receipt: the money is owed twice until paid out.
+    expect(await balanceOf(world, "customer_deposit")).toBe(-160_000);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(160_000);
+
+    // Replay of the fund event posts nothing more.
+    expect(await deliver(world.tenant, receiptEvent)).toEqual({
+      status: "already_posted",
+      journalEntryId: receipt.journalEntryId,
+    });
+    expect(await journalCount(world)).toBe(2);
+
+    // The extra payment is refunded: the payout pays the fund back out.
+    const refundId = await seedRefund(world, intentId, 80_000, fundId);
+    const payout = await post(
+      world,
+      paymentRefunded(world, refundId, intentId, 80_000, fundId),
+    );
+    expect(await linesOf(world, payout.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 80_000, credit: 0 },
+      { role: "gateway_clearing", debit: 0, credit: 80_000 },
+    ]);
+    // Only the first (bill) receipt remains: the double payment nets to 0.
+    expect(await balanceOf(world, "customer_deposit")).toBe(-80_000);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(80_000);
+  });
+
+  it("AJ-FUNDS-02 money on an expired intent (no payment.paid ever) is booked as a receipt and paid out to 0", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, {
+      amountIdr: 65_000,
+      status: "expired",
+    });
+    const fundId = await seedFund(world, intentId, 65_000, "overpayment");
+
+    const receipt = await post(
+      world,
+      fundsUnallocated(world, fundId, intentId, 65_000, {
+        reason: "intent_expired",
+      }),
+    );
+    expect(receipt.entryDate).toBe("2026-10-15");
+    expect(await linesOf(world, receipt.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 0, credit: 65_000 },
+      { role: "gateway_clearing", debit: 65_000, credit: 0 },
+    ]);
+
+    const refundId = await seedRefund(world, intentId, 65_000, fundId);
+    await post(
+      world,
+      paymentRefunded(world, refundId, intentId, 65_000, fundId),
+    );
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(0);
+  });
+
+  it("AJ-FUNDS-03 two funds of one intent are two receipts (keyed by fund); a fund event under a new event id posts once", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, {
+      amountIdr: 30_000,
+      status: "expired",
+    });
+    const fundA = await seedFund(world, intentId, 30_000);
+    const fundB = await seedFund(world, intentId, 30_000);
+
+    const first = await post(
+      world,
+      fundsUnallocated(world, fundA, intentId, 30_000),
+    );
+    const second = await post(
+      world,
+      fundsUnallocated(world, fundB, intentId, 30_000),
+    );
+    expect(second.journalEntryId).not.toBe(first.journalEntryId);
+    expect(
+      await deliver(
+        world.tenant,
+        fundsUnallocated(world, fundA, intentId, 30_000),
+      ),
+    ).toEqual({
+      status: "already_posted",
+      journalEntryId: first.journalEntryId,
+    });
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-60_000);
   });
 });
 
@@ -1128,7 +1437,7 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
     expect(await markerExists(tenant, before)).toBe(true);
     expect(await markerExists(tenant, after)).toBe(true);
     expect(await journalCount(world)).toBe(0);
-    const parked = await parkedOf(tenant, `aj:receipt:${event.id}`);
+    const parked = await parkedOf(tenant, `aj:receipt:${intentId}`);
     expect(parked).toHaveLength(1);
     expect(parked[0]).toMatchObject({
       error_code: "ACCOUNT_MAPPING_MISSING",
@@ -1145,7 +1454,7 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
     });
     expect(await journalCount(world)).toBe(0);
     expect(
-      (await parkedOf(tenant, `aj:receipt:${event.id}`))[0]!.attempts,
+      (await parkedOf(tenant, `aj:receipt:${intentId}`))[0]!.attempts,
     ).toBeGreaterThan(1);
 
     await mapRole(world, "customer_deposit", world.accounts.customer_deposit);
@@ -1155,7 +1464,7 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
       failed: 0,
     });
     expect(await journalCount(world)).toBe(1);
-    expect(await parkedOf(tenant, `aj:receipt:${event.id}`)).toHaveLength(0);
+    expect(await parkedOf(tenant, `aj:receipt:${intentId}`)).toHaveLength(0);
     expect(await balanceOf(world, "customer_deposit")).toBe(-70_000);
 
     // The event delivered again finds the journal; nothing is re-parked.
@@ -1181,14 +1490,14 @@ describe("F19 a posting that cannot happen is parked, not lost", () => {
       code: "ACCOUNT_MAPPING_MISSING",
       retryable: true,
     });
-    expect(await parkedOf(world.tenant, `aj:receipt:${event.id}`)).toHaveLength(
+    expect(await parkedOf(world.tenant, `aj:receipt:${intentId}`)).toHaveLength(
       1,
     );
 
     await mapRole(world, "gateway_clearing", world.accounts.gateway_clearing);
     expect((await deliver(world.tenant, event)).status).toBe("posted");
     expect(await journalCount(world)).toBe(1);
-    expect(await parkedOf(world.tenant, `aj:receipt:${event.id}`)).toHaveLength(
+    expect(await parkedOf(world.tenant, `aj:receipt:${intentId}`)).toHaveLength(
       0,
     );
   });
@@ -1229,7 +1538,7 @@ describe("F19 tenant isolation", () => {
     const sharedEventId = createUlid();
     const eventA = paymentPaid(worldA, intentA, 10_000, { id: sharedEventId });
     const eventB = paymentPaid(worldB, intentB, 10_000, { id: sharedEventId });
-    const key = `aj:receipt:${sharedEventId}`;
+    const key = `aj:receipt:${intentA}`;
 
     // A parks (no mapping), B posts: same business key, different tenants.
     expect((await deliver(tenantA, eventA)).status).toBe("parked");
@@ -1303,7 +1612,7 @@ describe("F19 the accounting module gate and unhandled events", () => {
     await mapRole(world, "customer_deposit", world.accounts.customer_deposit);
     const intentFresh = await seedIntent(world, { amountIdr: 22_000 });
     const freshEvent = paymentPaid(world, intentFresh, 22_000);
-    const parkedKey = `aj:receipt:${parkedEvent.id}`;
+    const parkedKey = `aj:receipt:${intentParked}`;
     const attempts = (await parkedOf(tenant, parkedKey))[0]!.attempts;
 
     await setModules(tenant, FLAGS_OFF);
@@ -1315,9 +1624,9 @@ describe("F19 the accounting module gate and unhandled events", () => {
         failed: 0,
       });
       expect(await journalCount(world)).toBe(0);
-      expect(
-        await parkedOf(tenant, `aj:receipt:${freshEvent.id}`),
-      ).toHaveLength(0);
+      expect(await parkedOf(tenant, `aj:receipt:${intentFresh}`)).toHaveLength(
+        0,
+      );
       // The sweep skipped the tenant: the parked row is untouched.
       const untouched = await parkedOf(tenant, parkedKey);
       expect(untouched).toHaveLength(1);

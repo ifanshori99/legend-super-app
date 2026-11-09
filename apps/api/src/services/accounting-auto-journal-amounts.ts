@@ -7,21 +7,32 @@
 // `auto_journal_parked.payload` stores, so the sweep rebuilds the same fact
 // without an outbox replay.
 //
-// Slice 1 handles order.paid (POS), order.refunded, payment.paid and
-// payment.refunded. Gateway money is receipt-first: payment.paid books the
-// receipt into customer_deposit, order.paid moves the intent-backed gateway
-// tenders out of it. EDC-linked intents are skipped (EDC money posts through
-// edc_clearing on the sale).
+// Slice 1 handles order.paid (POS), order.refunded, payment.paid,
+// payment.funds_unallocated and payment.refunded. Gateway money is
+// receipt-first: payment.paid (one receipt per intent) and
+// payment.funds_unallocated (money no payment.paid counts: closed intent,
+// second payment) book the receipt into customer_deposit, order.paid moves the
+// intent-backed gateway tenders whose receipt is booked out of it. EDC-linked
+// intents are skipped (EDC money posts through edc_clearing on the sale); an
+// EDC-linked gateway tender fails closed.
+//
+// A payload, row or method that can never post as sent throws
+// AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
+// non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
+// consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
 import {
+  autoJournalParked,
+  journalEntries,
   paymentIntents,
   paymentRefunds,
+  paymentUnallocatedFunds,
   posOrderTenders,
 } from "../db/schema/index.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
@@ -32,6 +43,7 @@ export const AUTO_JOURNAL_EVENTS = [
   "order.paid",
   "order.refunded",
   "payment.paid",
+  "payment.funds_unallocated",
   "payment.refunded",
 ] as const;
 export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
@@ -40,9 +52,18 @@ export function isAutoJournalEvent(name: string): name is AutoJournalEventName {
   return (AUTO_JOURNAL_EVENTS as readonly string[]).includes(name);
 }
 
+/** The event can never post as sent: parked, never retried. */
+export class AutoJournalPayloadInvalid extends Error {
+  readonly code = "AUTO_JOURNAL_PAYLOAD_INVALID";
+}
+
 const idr = z.number().int().safe();
 const id = z.string().min(1).max(64);
-const time = z.string().min(1).max(64);
+const time = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => !Number.isNaN(Date.parse(value)), "Not a timestamp");
 
 const orderPaidSchema = z.object({
   orderId: id,
@@ -82,11 +103,24 @@ const paymentPaidSchema = z.object({
   paidAt: time.nullable().optional(),
 });
 
+const fundsUnallocatedSchema = z.object({
+  unallocatedFundId: z.string().uuid(),
+  intentId: z.string().uuid(),
+  receivedIdr: idr,
+  receivedAt: time,
+});
+
 const paymentRefundedSchema = z.object({
   refundId: z.string().uuid(),
   paymentIntentId: z.string().uuid(),
   amountIdr: idr,
 });
+
+const PAYMENT_SCHEMAS = {
+  "payment.paid": paymentPaidSchema,
+  "payment.funds_unallocated": fundsUnallocatedSchema,
+  "payment.refunded": paymentRefundedSchema,
+} as const;
 
 /**
  * What the consumer stores and rebuilds from: the event identity plus the
@@ -108,7 +142,10 @@ export type AutoJournalFact = {
   readonly moneyTime: Date;
 };
 
-/** Picks the stored subset of an event; throws on a payload it cannot read. */
+/**
+ * Picks the stored subset of an event; throws a ZodError or
+ * AutoJournalPayloadInvalid on a payload it cannot read.
+ */
 export function storedEventOf(event: {
   id: string;
   name: AutoJournalEventName;
@@ -128,12 +165,13 @@ export function storedEventOf(event: {
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
     case "payment.paid":
+    case "payment.funds_unallocated":
     case "payment.refunded": {
-      const payload = (
-        event.name === "payment.paid" ? paymentPaidSchema : paymentRefundedSchema
-      ).parse(event.payload);
+      const payload = PAYMENT_SCHEMAS[event.name].parse(event.payload);
       if (event.outletId === null)
-        throw new Error(`${event.name} event has no outlet`);
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
       return { ...base, outletId: event.outletId, occurredAt, payload };
     }
   }
@@ -141,27 +179,109 @@ export function storedEventOf(event: {
 
 const IDEMPOTENCY_KEY_MAX = 100;
 
-/** Business-fact key (design section 4), sha256 above 100 characters. */
-export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
-  const p = stored.payload;
-  const key =
-    stored.eventName === "order.paid"
-      ? `aj:sale:${String(p.orderId)}`
-      : stored.eventName === "order.refunded"
-        ? `aj:order-refund:${String(p.refundId)}`
-        : stored.eventName === "payment.paid"
-          ? `aj:receipt:${stored.eventId}`
-          : `aj:payout:${String(p.refundId)}`;
+function boundedKey(key: string): string {
   if (key.length <= IDEMPOTENCY_KEY_MAX) return key;
   return `aj:${createHash("sha256").update(key).digest("hex")}`;
 }
 
-/** EDC-linked intents post through edc_clearing, never as gateway receipts. */
-async function intentOf(
+/**
+ * Receipt key of a gateway intent: one per intent, so payment.paid replayed
+ * under another event id posts once, and order.paid can look it up.
+ */
+export function receiptKeyOf(intentId: string): string {
+  return boundedKey(`aj:receipt:${intentId}`);
+}
+
+/** Parking key of an event whose payload cannot be read at all. */
+export function invalidEventKeyOf(eventId: string): string {
+  return boundedKey(`aj:invalid:${eventId}`);
+}
+
+/** Business-fact key (design section 4), sha256 above 100 characters. */
+export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
+  const p = stored.payload;
+  switch (stored.eventName) {
+    case "order.paid":
+      return boundedKey(`aj:sale:${String(p.orderId)}`);
+    case "order.refunded":
+      return boundedKey(`aj:order-refund:${String(p.refundId)}`);
+    case "payment.paid":
+      return receiptKeyOf(String(p.intentId));
+    case "payment.funds_unallocated":
+      return boundedKey(`aj:receipt-fund:${String(p.unallocatedFundId)}`);
+    case "payment.refunded":
+      return boundedKey(`aj:payout:${String(p.refundId)}`);
+  }
+}
+
+/**
+ * Intent ids among `intentIds` whose gateway receipt is booked or waiting
+ * (journal or parked row under the receipt key). Cutover/ordering guard: an
+ * intent paid before the auto-journal consumer went live, or whose
+ * payment.paid booked nothing (accounting off then, payload invalid), never
+ * credited customer_deposit, so its tender must not debit it either; it posts
+ * the pre-deposit way, Dr gateway_clearing. Fails closed on an unknown or
+ * EDC-linked intent (EDC money is not gateway money).
+ */
+async function receiptBookedIntents(
   tx: Tx,
   tenantId: TenantId,
-  intentId: string,
-) {
+  intentIds: readonly string[],
+): Promise<Set<string>> {
+  const ids = [...new Set(intentIds)];
+  if (ids.length === 0) return new Set();
+  const intents = await tx
+    .select({
+      id: paymentIntents.id,
+      edcTransactionId: paymentIntents.edcTransactionId,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.id, ids),
+      ),
+    );
+  if (intents.length !== ids.length)
+    throw new AutoJournalPayloadInvalid(
+      "Payment intent of a gateway tender not found",
+    );
+  if (intents.some((intent) => intent.edcTransactionId !== null))
+    throw new AutoJournalPayloadInvalid(
+      "Gateway tender is linked to an EDC transaction",
+    );
+  const intentByKey = new Map(
+    ids.map((intentId) => [receiptKeyOf(intentId), intentId]),
+  );
+  const keys = [...intentByKey.keys()];
+  const posted = await tx
+    .select({ key: journalEntries.idempotencyKey })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        inArray(journalEntries.idempotencyKey, keys),
+      ),
+    );
+  const parked = await tx
+    .select({ key: autoJournalParked.idempotencyKey })
+    .from(autoJournalParked)
+    .where(
+      and(
+        eq(autoJournalParked.tenantId, tenantId),
+        inArray(autoJournalParked.idempotencyKey, keys),
+      ),
+    );
+  const booked = new Set<string>();
+  for (const row of [...posted, ...parked]) {
+    const intentId = row.key === null ? undefined : intentByKey.get(row.key);
+    if (intentId !== undefined) booked.add(intentId);
+  }
+  return booked;
+}
+
+/** EDC-linked intents post through edc_clearing, never as gateway receipts. */
+async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
   const [intent] = await tx
     .select({
       outletId: paymentIntents.outletId,
@@ -174,13 +294,16 @@ async function intentOf(
         eq(paymentIntents.id, intentId),
       ),
     );
-  if (!intent) throw new Error("Payment intent of the event not found");
+  if (!intent)
+    throw new AutoJournalPayloadInvalid(
+      "Payment intent of the event not found",
+    );
   return intent;
 }
 
 /**
  * Rule input of one stored event, or null when the event books nothing
- * (EDC-linked intent, zero receipt). Re-reads only rows that are final once
+ * (EDC-linked intent on a payment event, zero receipt). Re-reads only rows that are final once
  * the event exists (captured tenders, the intent, the completed refund).
  */
 export async function autoJournalFactOf(
@@ -205,25 +328,45 @@ export async function autoJournalFactOf(
             eq(posOrderTenders.status, "captured"),
           ),
         );
-      let withIntent = 0;
-      let withoutIntent = 0;
+      let gatewayIdr = 0;
+      const intentTenders: { intentId: string; amountIdr: number }[] = [];
       for (const tender of tenders) {
-        if (tenderBucket(tender.method as never) !== "gateway") continue;
-        if (tender.paymentIntentId === null) withoutIntent += tender.amountIdr;
-        else withIntent += tender.amountIdr;
+        let bucket: ReturnType<typeof tenderBucket>;
+        try {
+          bucket = tenderBucket(tender.method as never);
+        } catch {
+          throw new AutoJournalPayloadInvalid(
+            "Captured tender has an unknown method",
+          );
+        }
+        if (bucket !== "gateway") continue;
+        gatewayIdr += tender.amountIdr;
+        if (tender.paymentIntentId !== null)
+          intentTenders.push({
+            intentId: tender.paymentIntentId,
+            amountIdr: tender.amountIdr,
+          });
       }
-      if (withIntent + withoutIntent !== p.paidGatewayIdr)
+      if (gatewayIdr !== p.paidGatewayIdr)
         throw new AccountingError(
           "POSTING_AMOUNTS_MISMATCH",
           "Captured gateway tenders do not match paidGatewayIdr",
         );
+      const booked = await receiptBookedIntents(
+        tx,
+        tenantId,
+        intentTenders.map((tender) => tender.intentId),
+      );
+      let withReceipt = 0;
+      for (const tender of intentTenders)
+        if (booked.has(tender.intentId)) withReceipt += tender.amountIdr;
       return {
         ruleEvent: "order.paid",
         amounts: {
           paidCashIdr: p.paidCashIdr,
-          paidGatewayIntentIdr: withIntent,
+          paidGatewayIntentIdr: withReceipt,
           paidDepositIdr: p.paidDepositIdr,
-          paidGatewayIdr: withoutIntent,
+          paidGatewayIdr: gatewayIdr - withReceipt,
           paidEdcIdr: p.paidEdcIdr,
           paidPointsIdr: p.paidPointsIdr,
           discountIdr: p.discountIdr,
@@ -269,6 +412,42 @@ export async function autoJournalFactOf(
         moneyTime: new Date(p.paidAt ?? stored.occurredAt),
       };
     }
+    case "payment.funds_unallocated": {
+      const p = fundsUnallocatedSchema.parse(stored.payload);
+      if (p.receivedIdr <= 0) return null;
+      const [fund] = await tx
+        .select({
+          outletId: paymentUnallocatedFunds.outletId,
+          paymentIntentId: paymentUnallocatedFunds.paymentIntentId,
+          amountIdr: paymentUnallocatedFunds.amountIdr,
+        })
+        .from(paymentUnallocatedFunds)
+        .where(
+          and(
+            eq(paymentUnallocatedFunds.tenantId, tenantId),
+            eq(paymentUnallocatedFunds.id, p.unallocatedFundId),
+          ),
+        );
+      if (
+        !fund ||
+        fund.paymentIntentId !== p.intentId ||
+        Number(fund.amountIdr) !== p.receivedIdr
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Unallocated fund of the event not found or different",
+        );
+      const intent = await intentOf(tx, tenantId, p.intentId);
+      // Same as payment.refunded: the payout of a fund on an EDC-linked
+      // intent books nothing, so its receipt books nothing either.
+      if (intent.edcTransactionId !== null) return null;
+      return {
+        ruleEvent: "payment.funds_unallocated",
+        amounts: { receivedIdr: p.receivedIdr },
+        sourceId: p.unallocatedFundId,
+        outletId: fund.outletId,
+        moneyTime: new Date(p.receivedAt),
+      };
+    }
     case "payment.refunded": {
       const p = paymentRefundedSchema.parse(stored.payload);
       if (p.amountIdr <= 0) return null;
@@ -286,7 +465,10 @@ export async function autoJournalFactOf(
             eq(paymentRefunds.id, p.refundId),
           ),
         );
-      if (!refund) throw new Error("Payment refund of the event not found");
+      if (!refund)
+        throw new AutoJournalPayloadInvalid(
+          "Payment refund of the event not found",
+        );
       return {
         ruleEvent: "payment.refunded",
         amounts: { amountIdr: p.amountIdr },

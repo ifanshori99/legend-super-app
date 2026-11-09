@@ -252,6 +252,7 @@ export const paymentEventNames = [
   "payment.expired",
   "payment.failed",
   "payment.refunded",
+  "payment.funds_unallocated",
   "settlement.imported",
 ] as const;
 export const paymentEventCatalogEntries = paymentEventNames.map((name) =>
@@ -266,6 +267,26 @@ export const paymentEventCatalogEntries = paymentEventNames.map((name) =>
 export const paymentEventSchema = eventEnvelopeSchema.refine((event) =>
   (paymentEventNames as readonly string[]).includes(event.name),
 );
+/**
+ * Gateway money recorded as unallocated funds with no `payment.paid` beside it
+ * (PAY-04): money on a failed/expired/cancelled intent, or a second payment on
+ * an already settled intent. Overpayment on the settling confirmation is not
+ * emitted here: its `payment.paid.receivedIdr` already counts it. Aggregate is
+ * the unallocated-funds row; WS-07 books Dr gateway_clearing / Cr
+ * customer_deposit on `receivedAt`.
+ */
+export const paymentFundsUnallocatedEventPayloadSchema = z.strictObject({
+  unallocatedFundId: id,
+  intentId: id,
+  method: paymentMethodSchema,
+  provider: ref,
+  receivedIdr: positiveIdr,
+  receivedAt: isoDateTimeSchema,
+  reason: z.enum(["overpayment", "double_payment"]),
+});
+export type PaymentFundsUnallocatedEventPayload = z.infer<
+  typeof paymentFundsUnallocatedEventPayloadSchema
+>;
 export type PaymentIntent = z.infer<typeof paymentIntentSchema>;
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 export type PaymentRouting = z.infer<typeof paymentRoutingSchema>;

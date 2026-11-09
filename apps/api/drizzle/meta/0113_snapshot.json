@@ -1,5 +1,5 @@
 {
-  "id": "ebcded89-7dd6-425d-9d9e-064cdb1f5cad",
+  "id": "c3244c72-b17a-4ca9-a04a-0ef4eedf83a2",
   "prevId": "974c36ee-ff7f-436f-aea8-8a5b10ff21d8",
   "version": "7",
   "dialect": "postgresql",
@@ -27854,6 +27854,21 @@
             "tenant_id"
           ],
           "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auto_journal_parked_outlet_fk": {
+          "name": "auto_journal_parked_outlet_fk",
+          "tableFrom": "auto_journal_parked",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
             "id"
           ],
           "onDelete": "no action",

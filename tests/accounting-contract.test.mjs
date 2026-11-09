@@ -1040,6 +1040,21 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
     );
   });
 
+  test("payment.funds_unallocated receives into customer_deposit like payment.paid", () => {
+    const received = linesFor("payment.funds_unallocated", {
+      receivedIdr: 125_000,
+    });
+    assert.equal(sum(received, "1202", "debitIdr"), 125_000);
+    assert.equal(sum(received, "2107", "creditIdr"), 125_000);
+    assert.equal(received.length, 2);
+    assert.equal(
+      acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName: "payment.funds_unallocated",
+      }).sourceType,
+      "customer_deposit",
+    );
+  });
+
   test("order.paid draws intent-backed gateway and applied DP from customer_deposit", () => {
     const lines = linesFor("order.paid", {
       paidCashIdr: 0,

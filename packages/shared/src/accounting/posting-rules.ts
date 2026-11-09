@@ -14,9 +14,11 @@
 //   and the result must balance; anything else fails closed.
 //
 // One business fact posts once, receipt-first for gateway money: every gateway
-// receipt (`payment.paid`: sale, DP, late or double payment) books Dr
-// gateway_clearing / Cr customer_deposit on the day the money arrived, so
-// gateway_clearing equals what the gateway received and settlement reconciles.
+// receipt (`payment.paid`: sale, DP or late payment, overpayment included;
+// `payment.funds_unallocated`: money on a closed intent or a second payment on
+// a settled one) books Dr gateway_clearing / Cr customer_deposit on the day the
+// money arrived, so gateway_clearing equals what the gateway received and
+// settlement reconciles.
 // `order.paid` then moves the intent-backed gateway part and any DP applied
 // out of customer_deposit into the sale. `order.refunded` credits
 // customer_deposit for the gateway part (owed to the guest until payout) and
@@ -174,6 +176,16 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     "customer_deposit",
     "Penerimaan dana payment gateway (uang muka pelanggan)",
     `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran`,
+    [
+      ["gateway_clearing", "debit", "receivedIdr"],
+      ["customer_deposit", "credit", "receivedIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.funds_unallocated" },
+    "customer_deposit",
+    "Dana payment gateway belum teralokasi (bayar ganda atau intent tertutup)",
+    `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran (PAY-04)`,
     [
       ["gateway_clearing", "debit", "receivedIdr"],
       ["customer_deposit", "credit", "receivedIdr"],

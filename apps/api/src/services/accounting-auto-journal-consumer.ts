@@ -13,7 +13,11 @@
 //   mapping/account/legal-entity problems and the closed-period race; not
 //   retryable: any other AccountingError, which finance must see). The outbox
 //   consumption still commits, so cloud-sync is never held back by the GL.
-//   Any other error propagates (outbox retry, dead letter, replayOutbox).
+// - a deterministic non-accounting failure (unreadable payload, missing row,
+//   unknown tender method, EDC-linked gateway tender) parks as non-retryable
+//   AUTO_JOURNAL_PAYLOAD_INVALID: it never throws, because the consumer runs
+//   inside the POS capture transaction. Any other error (database, transient)
+//   propagates (outbox retry, dead letter, replayOutbox).
 //
 // Late adjustment (CTO decision 1): a money fact whose outlet business date
 // falls in a closed month posts on the first day of the month after the latest
@@ -21,6 +25,7 @@
 // suffix and an `accounting.journal.late_adjusted` audit row.
 
 import { and, asc, eq, lte, max, sql } from "drizzle-orm";
+import { z, ZodError } from "zod";
 import {
   AccountingError,
   defaultPostingRules,
@@ -46,8 +51,10 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  AutoJournalPayloadInvalid,
   autoJournalFactOf,
   autoJournalKeyOf,
+  invalidEventKeyOf,
   isAutoJournalEvent,
   storedEventOf,
   type AutoJournalEventName,
@@ -82,6 +89,8 @@ const RETRYABLE_CODES = [
   "PERIOD_CLOSED",
 ] as const;
 
+const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
+
 /** The outlet has no legal entity yet: parked until finance assigns one. */
 class OutletLegalEntityMissing extends Error {
   readonly code = "OUTLET_LEGAL_ENTITY_MISSING";
@@ -101,7 +110,87 @@ const LATE_AUDIT_FIELDS = [
 function parkCodeOf(error: unknown): string | null {
   if (error instanceof OutletLegalEntityMissing) return error.code;
   if (error instanceof AccountingError) return error.code;
+  if (error instanceof AutoJournalPayloadInvalid) return error.code;
+  if (error instanceof ZodError) return PAYLOAD_INVALID;
   return null;
+}
+
+const outletIdSchema = z.string().uuid();
+
+/** First candidate that is an outlet of the tenant (the parked row's owner). */
+async function parkOutletOf(
+  tx: Tx,
+  tenantId: TenantId,
+  candidates: readonly unknown[],
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    const parsed = outletIdSchema.safeParse(candidate);
+    if (!parsed.success) continue;
+    const [row] = await tx
+      .select({ id: outlets.id })
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, parsed.data)));
+    if (row) return row.id;
+  }
+  return null;
+}
+
+/**
+ * Parks (or re-parks) one event under its key. The outlet is checked first:
+ * a malformed envelope must not turn into a foreign-key error that rolls back
+ * the caller; with no outlet to own the row it is only logged.
+ */
+async function park(
+  tx: Tx,
+  tenantId: TenantId,
+  row: {
+    key: string;
+    outletCandidates: readonly unknown[];
+    eventId: string;
+    eventName: string;
+    payload: Record<string, unknown>;
+    code: string;
+  },
+  now: Date,
+): Promise<AutoJournalResult> {
+  const { code } = row;
+  const retryable = (RETRYABLE_CODES as readonly string[]).includes(code);
+  const outletId = await parkOutletOf(tx, tenantId, row.outletCandidates);
+  if (outletId === null) {
+    console.error(
+      `Auto-journal ${row.eventName} ${row.eventId} not parked (${code}): no outlet`,
+    );
+    return { status: "parked", code, retryable };
+  }
+  const nextRetryAt = retryable
+    ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
+    : null;
+  await tx
+    .insert(autoJournalParked)
+    .values({
+      tenantId,
+      outletId,
+      idempotencyKey: row.key,
+      eventId: row.eventId,
+      eventName: row.eventName,
+      payload: row.payload,
+      errorCode: code,
+      retryable,
+      firstFailedAt: now,
+      lastFailedAt: now,
+      nextRetryAt,
+    })
+    .onConflictDoUpdate({
+      target: [autoJournalParked.tenantId, autoJournalParked.idempotencyKey],
+      set: {
+        errorCode: code,
+        retryable,
+        attempts: sql`${autoJournalParked.attempts} + 1`,
+        lastFailedAt: now,
+        nextRetryAt,
+      },
+    });
+  return { status: "parked", code, retryable };
 }
 
 async function accountingEnabled(
@@ -125,13 +214,34 @@ export async function deliverAutoJournalEvent(
   if (!isAutoJournalEvent(event.name)) return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
-  const stored = storedEventOf({
-    id: event.id,
-    name: event.name,
-    outletId: event.outletId,
-    occurredAt: event.occurredAt,
-    payload: event.payload,
-  });
+  let stored: StoredAutoJournalEvent;
+  try {
+    stored = storedEventOf({
+      id: event.id,
+      name: event.name,
+      outletId: event.outletId,
+      occurredAt: event.occurredAt,
+      payload: event.payload,
+    });
+  } catch (error) {
+    if (parkCodeOf(error) !== PAYLOAD_INVALID) throw error;
+    // No business key without a readable payload: parked per event, with
+    // nothing but the time stored (the raw payload may hold personal data).
+    const raw = event.payload as { outletId?: unknown } | null;
+    return park(
+      tx,
+      context.tenant.tenantId,
+      {
+        key: invalidEventKeyOf(event.id),
+        outletCandidates: [event.outletId, raw?.outletId],
+        eventId: event.id,
+        eventName: event.name,
+        payload: { occurredAt: event.occurredAt },
+        code: PAYLOAD_INVALID,
+      },
+      now,
+    );
+  }
   return settleAutoJournal(tx, context, stored, now);
 }
 
@@ -168,36 +278,19 @@ async function settleAutoJournal(
   } catch (error) {
     const code = parkCodeOf(error);
     if (!code) throw error;
-    const retryable = (RETRYABLE_CODES as readonly string[]).includes(code);
-    const nextRetryAt = retryable
-      ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
-      : null;
-    await tx
-      .insert(autoJournalParked)
-      .values({
-        tenantId,
-        outletId: stored.outletId,
-        idempotencyKey: key,
+    return park(
+      tx,
+      tenantId,
+      {
+        key,
+        outletCandidates: [stored.outletId],
         eventId: stored.eventId,
         eventName: stored.eventName,
         payload: { ...stored.payload, occurredAt: stored.occurredAt },
-        errorCode: code,
-        retryable,
-        firstFailedAt: now,
-        lastFailedAt: now,
-        nextRetryAt,
-      })
-      .onConflictDoUpdate({
-        target: [autoJournalParked.tenantId, autoJournalParked.idempotencyKey],
-        set: {
-          errorCode: code,
-          retryable,
-          attempts: sql`${autoJournalParked.attempts} + 1`,
-          lastFailedAt: now,
-          nextRetryAt,
-        },
-      });
-    return { status: "parked", code, retryable };
+        code,
+      },
+      now,
+    );
   }
   // Posted, or nothing to book any more: either way no longer parked.
   await clearParked(tx, tenantId, key);
@@ -256,7 +349,10 @@ async function postAutoJournal(
     })
     .from(outlets)
     .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, fact.outletId)));
-  if (!outlet) throw new Error("Outlet of the auto-journal event not found");
+  if (!outlet)
+    throw new AutoJournalPayloadInvalid(
+      "Outlet of the auto-journal event not found",
+    );
   if (!outlet.legalEntityId) throw new OutletLegalEntityMissing();
   const legalEntityId = outlet.legalEntityId;
 
