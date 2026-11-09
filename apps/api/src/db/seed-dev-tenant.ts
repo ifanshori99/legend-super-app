@@ -222,6 +222,22 @@ try {
     );
   }
 
+  // Approval matrix defaults for AI/MCP write tools (AIG-03, legend-zw9r): one
+  // level, the outlet manager; same rows as migration 0089 and
+  // seedTenantRoleTemplates give other tenants. Only when the action has none.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT r.tenant_id, a.action_type, NULL, r.id, 1, true
+     FROM roles r
+     CROSS JOIN (VALUES ('ai_action'), ('mcp_action')) AS a(action_type)
+     WHERE r.tenant_id = $1 AND r.is_template AND r.template_key = 'outlet_manager'
+       AND NOT EXISTS (
+         SELECT 1 FROM approval_policies p
+         WHERE p.tenant_id = r.tenant_id AND p.action_type = a.action_type
+       )`,
+    [tenant.id],
+  );
+
   // Tax configuration (PRD §3.14 F11/F14, bead legend-559): the default PBJT
   // Bandung 10% F&B rule, a facility rule, the Private Room service charge and
   // the exclusive-price calculation options. Tenants created from the panel get

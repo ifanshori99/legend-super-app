@@ -55,6 +55,12 @@ import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
 import { hrisAnnouncementRouter } from "./hris-announcement.routes";
 import { hrisSopRouter } from "./hris-sop.routes";
 import { hrisTrainingRouter } from "./hris-training.routes";
+import { aiActionsRouter } from "./ai-actions.routes";
+import { aiChatRouter } from "./ai-chat.routes";
+import { aiGovernanceRouter } from "./ai-governance.routes";
+import { aiGuidelinesRouter } from "./ai-guidelines.routes";
+import { aiMcpAdminRouter } from "./ai-mcp-admin.routes";
+import { aiInsightsRouter } from "./ai-insights.routes";
 import { hrisLeaveRouter } from "./hris-leave.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
@@ -204,6 +210,18 @@ apiRouter.use("/hris", hrisLeaveRouter);
 // each applies its middleware per route so unmatched paths pass through.
 apiRouter.use("/operations", operationsRouter);
 apiRouter.use("/operations", operationsEquipmentRouter);
+// WS-12 AI (brief 96): Pedoman AI (legend-jk6s contract), Tanya AI chat
+// (legend-xq8y), action requests (legend-zw9r), governance + usage
+// (legend-zfi4), MCP client/token admin (legend-xkbt). All share /ai; each
+// router guards its own routes. The /mcp endpoint + OAuth are mounted in app.ts.
+apiRouter.use("/ai", aiGuidelinesRouter);
+apiRouter.use("/ai", aiChatRouter);
+apiRouter.use("/ai", aiActionsRouter);
+apiRouter.use("/ai", aiGovernanceRouter);
+apiRouter.use("/ai", aiMcpAdminRouter);
+// WS-12 AI insights: forecasts, purchase/roster inputs, anomalies, daily
+// summaries, promo copy and expense account drafts (legend-hkd4, legend-lely).
+apiRouter.use("/ai", aiInsightsRouter);
 // WS-02 edge mode (legend-2pi): /edge is served only by an edge node and
 // /edge-nodes (registry) only by the cloud; app.ts edgeRouteGuard enforces
 // the split before any router runs.

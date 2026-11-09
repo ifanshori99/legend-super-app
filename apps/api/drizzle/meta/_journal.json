@@ -792,6 +792,41 @@
       "when": 1794197676507,
       "tag": "0112_ws09_wifi_hardening_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1794198646803,
+      "tag": "0113_gorgeous_rachel_grey",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1794198669434,
+      "tag": "0114_ai_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1794198671233,
+      "tag": "0115_ai_role_templates_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1794198673056,
+      "tag": "0116_ai_approval_policies_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1794198674911,
+      "tag": "0117_ai_insights_rls",
+      "breakpoints": true
     }
   ]
 }

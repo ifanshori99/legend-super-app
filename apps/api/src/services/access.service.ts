@@ -285,6 +285,23 @@ export async function seedTenantRoleTemplates(
     .insert(roles)
     .values(values)
     .onConflictDoNothing({ target: [roles.tenantId, roles.templateKey] });
+  // AIG-03 (legend-zw9r): AI and MCP actions only propose, the matrix decides;
+  // with no policy the approval service fails closed. Default: one level, the
+  // outlet manager (same as migration 0089 for existing tenants). Only fills
+  // actions the tenant has no policy for.
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT r.tenant_id, a.action_type, NULL, r.id, 1, true
+    FROM roles r
+    CROSS JOIN (VALUES ('ai_action'), ('mcp_action')) AS a(action_type)
+    WHERE r.tenant_id = ${tenantId}
+      AND r.is_template
+      AND r.template_key = 'outlet_manager'
+      AND NOT EXISTS (
+        SELECT 1 FROM approval_policies p
+        WHERE p.tenant_id = r.tenant_id AND p.action_type = a.action_type
+      )
+  `);
 }
 
 export function roleTemplateValues(tenantId: string) {

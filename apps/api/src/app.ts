@@ -19,6 +19,7 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
@@ -290,6 +291,27 @@ export function createApp({
         : undefined,
     }),
   );
+  // MCP server (WS-12, legend-xkbt). `/mcp` is authenticated by its bearer
+  // token alone (the token names the tenant, MCP-01). The OAuth endpoints and
+  // discovery documents live outside `/api` (RFC 8414/9728) and resolve the
+  // tenant like `/api` does: registered domain, or in development with
+  // synthetic data the first seeded tenant (no session needed: discovery and
+  // dynamic registration are anonymous).
+  app.use("/mcp", mcpRouter);
+  app.use(
+    [
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource",
+      "/oauth",
+    ],
+    tenantContext({
+      required: false,
+      resolveDomain,
+      verifyCredential: deviceTenantCredential,
+      fallback: developmentSyntheticTenant ? firstSyntheticTenant : undefined,
+    }),
+  );
+  app.use(mcpOAuthRouter);
   // The public, session-free reads (guest QR scan and menu, brand website and
   // its menu, SSR brand context, customer payment links) have no session to
   // bound them, so one in-memory limiter caps them per client IP and per

@@ -52,7 +52,9 @@ import {
   type Reachability,
 } from "@starter/shared/notification";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
+import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
 import type * as schema from "../db/schema/index.ts";
+import { aiDailySummaries } from "../db/schema/ai-insights.ts";
 import {
   notificationPolicies,
   notificationPreferences,
@@ -575,6 +577,79 @@ async function facilityIncidentRaisedRule(input: RuleInput): Promise<Rule> {
   return { userIds, content };
 }
 
+// ---- AI insights (WS-12 wave 3: AI-09 anomaly, AI-10 daily summary) --------
+
+const ANOMALY_LABELS: Record<string, string> = {
+  void: "Void",
+  discount: "Diskon",
+  refund: "Refund",
+  waste: "Waste",
+};
+const rupiah = (value: number) =>
+  `Rp${new Intl.NumberFormat("id-ID").format(value)}`;
+
+/** Active holders of one permission code (through any role row) whose
+ * assignment scope covers the event's outlet. */
+async function permissionHolders(
+  input: RuleInput,
+  permission: string,
+): Promise<string[]> {
+  return activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify([permission])}::jsonb`,
+    await audienceOf(input.tx, input.event),
+  );
+}
+
+async function aiAnomalyRule(input: RuleInput): Promise<Rule> {
+  const payload = AI_EVENT_PAYLOAD_SCHEMAS["ai_insight.anomaly_detected"].parse(
+    input.event.payload,
+  );
+  if (input.event.outletId !== payload.outletId)
+    throw new Error("Anomaly notification outlet mismatch");
+  const label = ANOMALY_LABELS[payload.kind] ?? payload.kind;
+  return {
+    userIds: await permissionHolders(input, "report.operational.view"),
+    content: {
+      category: "operational_anomaly",
+      title: `Anomali ${label.toLowerCase()} ${payload.businessDate}`,
+      body:
+        `${label} ${payload.businessDate}: ${rupiah(payload.observedIdr)}, ` +
+        `rata-rata 28 hari ${rupiah(payload.baselineIdr)} ` +
+        `(tingkat ${payload.severity === "high" ? "tinggi" : "perlu dicek"}).`,
+      link: null,
+    },
+  };
+}
+
+async function aiDailySummaryRule(input: RuleInput): Promise<Rule> {
+  const payload = AI_EVENT_PAYLOAD_SCHEMAS[
+    "ai_insight.daily_summary_ready"
+  ].parse(input.event.payload);
+  if (input.event.outletId !== payload.outletId)
+    throw new Error("Daily summary notification outlet mismatch");
+  const [row] = await input.tx
+    .select({ text: aiDailySummaries.text })
+    .from(aiDailySummaries)
+    .where(
+      and(
+        eq(aiDailySummaries.tenantId, input.tenantId),
+        eq(aiDailySummaries.id, payload.summaryId),
+      ),
+    );
+  if (!row) throw new Error("Daily summary not found");
+  return {
+    userIds: await permissionHolders(input, "report.sales.view"),
+    content: {
+      category: "daily_summary",
+      title: `Ringkasan harian ${payload.businessDate}`,
+      body: row.text.slice(0, 1000),
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -590,6 +665,10 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return checklistRule(input, input.event.name);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
+    case "ai_insight.anomaly_detected":
+      return aiAnomalyRule(input);
+    case "ai_insight.daily_summary_ready":
+      return aiDailySummaryRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

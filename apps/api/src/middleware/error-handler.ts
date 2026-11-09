@@ -7,6 +7,7 @@ import {
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import { AccountingError } from "@starter/shared/accounting";
+import { AiError } from "@starter/shared/ai";
 import {
   DeliveryError,
   deliveryErrorHttpStatus,
@@ -54,6 +55,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof CoreError ||
     error instanceof AccessError ||
     error instanceof AccountingError ||
+    error instanceof AiError ||
     error instanceof FacilityError ||
     error instanceof IdentityError ||
     error instanceof NotificationError ||

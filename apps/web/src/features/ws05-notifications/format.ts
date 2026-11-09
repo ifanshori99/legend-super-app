@@ -15,6 +15,7 @@ import {
   Siren,
   Sun,
   Timer,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -48,6 +49,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   schedule_update: CalendarDays,
   payslip: FileText,
   daily_summary: Sun,
+  operational_anomaly: TriangleAlert,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

@@ -746,7 +746,7 @@ test("AIG-04 the per-tool kill switch hides and blocks a tool", () => {
 
 test("MCP-01 mcpScopesForRoles gives only scopes of tools the roles may use", () => {
   assert.deepEqual(ai.mcpScopesForRoles([]), []);
-  const scopes = ai.mcpScopesForRoles(["cashier"]);
+  const scopes = ai.mcpScopesForRoles(["employee"]);
   assert.ok(scopes.length > 0);
   assert.ok(!scopes.includes("mcp:finance:read"));
   for (const scope of scopes) assert.ok(ai.MCP_SCOPES.includes(scope));
@@ -834,7 +834,8 @@ test("AIG-02 governance settings: warn below stop, unique features, default limi
 
 test("WS-12 every AI event is registered in the event catalog with a payload schema", () => {
   const names = new Set(events.eventCatalog.map((entry) => entry.name));
-  assert.equal(ai.aiEventNames.length, 16);
+  // 16 WS-12 events + 2 AI insight notification events (wave 3).
+  assert.equal(ai.aiEventNames.length, 18);
   for (const name of ai.aiEventNames) {
     assert.ok(names.has(name), `${name} in catalog`);
     assert.ok(ai.AI_EVENT_PAYLOAD_SCHEMAS[name], `${name} payload schema`);
@@ -1026,7 +1027,7 @@ test("WS-12 catalog header comment matches tools that list ai.ask", () => {
   const listed = ai.AI_TOOL_CODES.filter((code) =>
     tool(code).requiredPermissions.includes("ai.ask"),
   );
-  assert.deepEqual(listed.sort(), ["TL-08", "TL-10"]);
+  assert.deepEqual(listed.sort(), ["TL-08"]);
   assert.match(src, /listed only where it is the tool's sole requirement/);
 });
 
@@ -1133,5 +1134,192 @@ test("events mirror stored rules: token scopes non-empty and unique, blockedReas
     ...done,
     status: "blocked",
     blockedReason: "quota_exceeded",
+  });
+});
+
+// ---- FE contract gaps (legend-hi82, jk6s, mlnu, tpw4) -----------------------
+
+test("legend-tpw4 tool_request.approved is gone from the event catalog", () => {
+  const names = new Set(events.eventCatalog.map((entry) => entry.name));
+  assert.ok(!names.has("tool_request.approved"));
+  assert.ok(names.has("action_request.approved"));
+});
+
+test("legend-hi82 governance tools list carries the kill switch state", () => {
+  const summary = ai.aiToolSummarySchema.parse({
+    code: "TL-01",
+    name: tool("TL-01").name,
+    kind: "read",
+    titleId: tool("TL-01").titleId,
+    description: tool("TL-01").description,
+    scope: tool("TL-01").scope,
+    mcpAnnotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  });
+  accepts(ai.aiGovernanceToolSchema, { ...summary, isEnabled: false });
+  rejects(ai.aiGovernanceToolSchema, summary);
+  assert.equal(ai.listAiGovernanceTools.path, "/api/ai/governance/tools");
+});
+
+test("legend-hi82 tenant usage and tool-call audit list schemas", () => {
+  const usage = {
+    month: "2026-11",
+    budget: {
+      monthlyBudgetIdr: 1000000,
+      usedIdr: 820000,
+      warnPct: 80,
+      stopPct: 100,
+      state: "warn",
+    },
+    byFeature: [
+      {
+        feature: f.aiJobs[0].feature,
+        jobs: 10,
+        blockedJobs: 1,
+        tokensIn: 1000,
+        tokensOut: 500,
+        costIdr: 1200,
+      },
+    ],
+    blockedByReason: [{ reason: "quota_exceeded", count: 1 }],
+    mcpToolCalls: 3,
+  };
+  accepts(ai.aiTenantUsageSchema, usage);
+  rejects(ai.aiTenantUsageSchema, { ...usage, month: "2026-13" });
+  rejects(ai.aiTenantUsageSchema, { ...usage, extra: 1 });
+  rejects(ai.aiTenantUsageSchema, {
+    ...usage,
+    blockedByReason: [{ reason: "nope", count: 1 }],
+  });
+  accepts(ai.aiTenantUsageQuerySchema, {});
+  rejects(ai.aiTenantUsageQuerySchema, { month: "Nov" });
+  accepts(ai.aiToolCallListQuerySchema, { channel: "mcp", outcome: "denied" });
+  rejects(ai.aiToolCallListQuerySchema, { outcome: "weird" });
+  for (const record of f.toolCallRecords)
+    accepts(ai.aiToolCallRecordSchema, record);
+  assert.equal(ai.listAiToolCalls.path, "/api/ai/tool-calls");
+});
+
+test("legend-hi82 token summary shows optional names, usage shows provider state", () => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- drop the hash from the summary
+  const { tokenHash: _hash, ...rest } = f.mcpTokens[0];
+  const summary = {
+    id: rest.id,
+    tenantId: rest.tenantId,
+    clientId: rest.clientId,
+    userId: rest.userId,
+    tokenPrefix: rest.tokenPrefix,
+    scopes: rest.scopes,
+    expiresAt: rest.expiresAt,
+    revokedAt: rest.revokedAt,
+    lastUsedAt: rest.lastUsedAt,
+    createdAt: rest.createdAt,
+  };
+  accepts(ai.mcpTokenSummarySchema, summary);
+  accepts(ai.mcpTokenSummarySchema, {
+    ...summary,
+    clientName: "Claude Desktop",
+    userDisplayName: "Rina",
+  });
+  const usage = {
+    aiEnabled: true,
+    month: "2026-11",
+    features: [],
+    budget: null,
+  };
+  accepts(ai.aiUsageSummarySchema, usage);
+  accepts(ai.aiUsageSummarySchema, { ...usage, providerAvailable: false });
+});
+
+test("legend-jk6s approval inbox reads an action request with a redacted summary", () => {
+  const review = {
+    actionRequest: pendingAi,
+    toolTitleId: "Ubah harga menu",
+    requestedByName: "Rina",
+    outletName: null,
+    summary: [{ label: "Harga baru", value: "Rp 25.000" }],
+  };
+  accepts(ai.actionRequestReviewSchema, review);
+  rejects(ai.actionRequestReviewSchema, {
+    ...review,
+    summary: [{ label: "", value: "x" }],
+  });
+  rejects(ai.actionRequestReviewSchema, { ...review, extra: 1 });
+  accepts(ai.actionRequestListQuerySchema, {
+    approvalRequestId: pendingAi.approvalRequestId,
+  });
+  rejects(ai.actionRequestListQuerySchema, { approvalRequestId: "nope" });
+  accepts(ai.getActionRequestByApproval.params, {
+    approvalRequestId: pendingAi.approvalRequestId,
+  });
+});
+
+test("legend-jk6s guidelines page content is strict and non-empty", () => {
+  const guidelines = {
+    version: "1",
+    updatedAt: f.now,
+    sections: [
+      {
+        id: "data-pribadi",
+        titleId: "Data pribadi",
+        paragraphsId: ["Jangan kirim NIK atau rekening."],
+      },
+    ],
+  };
+  accepts(ai.aiGuidelinesSchema, guidelines);
+  rejects(ai.aiGuidelinesSchema, { ...guidelines, sections: [] });
+  rejects(ai.aiGuidelinesSchema, {
+    ...guidelines,
+    sections: [{ ...guidelines.sections[0], paragraphsId: [] }],
+  });
+  assert.equal(ai.getAiGuidelines.path, "/api/ai/guidelines");
+});
+
+test("legend-mlnu chat answer carries sources, Dibantu AI flag and deletes by id", () => {
+  const assistant = f.messages.find((m) => m.role === "assistant");
+  const sourced = {
+    ...assistant,
+    sources: [
+      {
+        label: "Penjualan harian",
+        link: "/laporan/penjualan",
+        period: { from: "2026-11-01", to: "2026-11-07" },
+      },
+    ],
+  };
+  accepts(ai.aiMessageSchema, sourced);
+  rejects(ai.aiMessageSchema, { ...sourced, aiAssisted: false });
+  assert.equal(ai.deleteAiConversation.method, "DELETE");
+  assert.ok(ai.aiErrorHttpStatus.AI_PROVIDER_UNAVAILABLE === 503);
+});
+
+test("MCP-05 consent preview: strict query, labelled scopes, every scope has an Indonesian label", () => {
+  assert.equal(ai.previewMcpAuthorize.method, "GET");
+  assert.equal(ai.previewMcpAuthorize.path, "/api/ai/mcp/authorize/preview");
+  const query = {
+    client_id: "acc-1",
+    redirect_uri: "http://localhost:8123/cb",
+  };
+  accepts(ai.mcpAuthorizePreviewQuerySchema, query);
+  rejects(ai.mcpAuthorizePreviewQuerySchema, { ...query, extra: "x" });
+  rejects(ai.mcpAuthorizePreviewQuerySchema, { client_id: "acc-1" });
+  for (const scope of ai.MCP_SCOPES)
+    assert.ok(ai.MCP_SCOPE_LABELS_ID[scope], `${scope} has a label`);
+  const preview = {
+    clientName: "Klien uji",
+    redirectUri: query.redirect_uri,
+    scopes: [
+      { scope: "mcp:sop:read", label: ai.MCP_SCOPE_LABELS_ID["mcp:sop:read"] },
+    ],
+  };
+  accepts(ai.mcpAuthorizePreviewSchema, preview);
+  rejects(ai.mcpAuthorizePreviewSchema, { ...preview, scopes: [] });
+  rejects(ai.mcpAuthorizePreviewSchema, {
+    ...preview,
+    scopes: [{ scope: "mcp:evil:read", label: "x" }],
   });
 });

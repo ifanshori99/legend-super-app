@@ -9,7 +9,11 @@
 //
 // Permissions (enforced by the API, not by these schemas):
 //   ask, conversations, action requests (own), usage, tool catalog -> ai.ask
-//   governance get/update                                          -> ai.governance.manage
+//   governance get/update, governance tools, tenant usage, tool-call audit
+//                                                                  -> ai.governance.manage
+//   guidelines (Pedoman Penggunaan AI)                             -> any signed-in user
+//   action request review by approval id                           -> the requester OR a
+//     user who may decide that approval request (the approval module decides)
 //   MCP clients list/register/approve/revoke                       -> mcp.client.manage
 //   MCP tokens: own list/revoke needs mcp.client.manage OR token owner; the
 //   tenant-wide list and revoking another user's token need mcp.client.manage.
@@ -34,9 +38,11 @@ import {
   z,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
+import { approvalRequestIdSchema } from "../identity/ids.ts";
 import {
   actionRequestIdSchema,
   actionRequestStatusSchema,
+  aiChannelSchema,
   aiConversationIdSchema,
   aiFeatureCodeSchema,
   aiToolCodeSchema,
@@ -48,9 +54,12 @@ import {
 } from "./ids.ts";
 import {
   actionRequestSchema,
+  aiBlockedReasonSchema,
   aiConversationSchema,
   aiGovernanceSettingsSchema,
   aiMessageSchema,
+  aiToolCallOutcomeSchema,
+  aiToolCallRecordSchema,
   approveMcpClientSchema,
   askAiSchema,
   createAiConversationSchema,
@@ -124,6 +133,9 @@ export const mcpTokenSummarySchema = z.strictObject({
   revokedAt: isoDateTimeSchema.nullable(),
   lastUsedAt: isoDateTimeSchema.nullable(),
   createdAt: isoDateTimeSchema,
+  /** Display names so the token list needs no extra lookups (legend-hi82). */
+  clientName: z.string().trim().min(1).max(120).optional(),
+  userDisplayName: z.string().trim().min(1).max(120).optional(),
 });
 export type McpTokenSummary = z.infer<typeof mcpTokenSummarySchema>;
 
@@ -153,12 +165,115 @@ export type AiBudgetUsage = z.infer<typeof aiBudgetUsageSchema>;
  */
 export const aiUsageSummarySchema = z.strictObject({
   aiEnabled: z.boolean(),
+  /**
+   * False when the tenant switch is on but the provider is down or not
+   * configured (AIG-05); the chat shows the "tidak tersedia" state. Absent
+   * means unknown.
+   */
+  providerAvailable: z.boolean().optional(),
   /** First day of the budget month, "YYYY-MM". */
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
   features: z.array(aiFeatureUsageSchema).max(20),
   budget: aiBudgetUsageSchema.nullable(),
 });
 export type AiUsageSummary = z.infer<typeof aiUsageSummarySchema>;
+
+// ---- Gap-fill additions for the FE cards (legend-hi82, jk6s, mlnu) ----------
+// Additive: nothing above changed shape. Mockups are not approved yet, so these
+// carry data only; see docs/contracts/ws12-ai-fe.md for the per-screen map.
+
+/** A catalog tool as the AI admin sees it: disabled tools are listed too. */
+export const aiGovernanceToolSchema = aiToolSummarySchema.extend({
+  /** False when the tenant kill switch (`disabledToolCodes`) turns it off. */
+  isEnabled: z.boolean(),
+});
+export type AiGovernanceTool = z.infer<typeof aiGovernanceToolSchema>;
+
+/** Tenant usage of one feature in the month (admin usage page). */
+export const aiFeatureTenantUsageSchema = z.strictObject({
+  feature: aiFeatureCodeSchema,
+  jobs: z.number().int().nonnegative().safe(),
+  blockedJobs: z.number().int().nonnegative().safe(),
+  tokensIn: z.number().int().nonnegative().safe(),
+  tokensOut: z.number().int().nonnegative().safe(),
+  costIdr: idrSchema.refine(
+    (value) => value >= 0,
+    "costIdr cannot be negative",
+  ),
+});
+
+/** How many jobs were blocked in the month, per reason. */
+export const aiBlockedByReasonSchema = z.strictObject({
+  reason: aiBlockedReasonSchema,
+  count: z.number().int().nonnegative().safe(),
+});
+
+/** Tenant-wide AI usage of one month (ai.governance.manage, AIG-02). */
+export const aiTenantUsageSchema = z.strictObject({
+  /** "YYYY-MM". */
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+  budget: aiBudgetUsageSchema,
+  byFeature: z.array(aiFeatureTenantUsageSchema).max(50),
+  blockedByReason: z.array(aiBlockedByReasonSchema).max(20),
+  /** Calls through MCP in the month (MCP-03 counter, no content). */
+  mcpToolCalls: z.number().int().nonnegative().safe(),
+});
+export type AiTenantUsage = z.infer<typeof aiTenantUsageSchema>;
+
+export const aiTenantUsageQuerySchema = z.strictObject({
+  /** "YYYY-MM"; defaults to the current month. */
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
+    .optional(),
+});
+
+export const aiToolCallListQuerySchema = cursorPageQuerySchema.extend({
+  channel: aiChannelSchema.optional(),
+  toolCode: aiToolCodeSchema.optional(),
+  outcome: aiToolCallOutcomeSchema.optional(),
+  mcpClientId: mcpClientIdSchema.optional(),
+  userId: userIdSchema.optional(),
+});
+
+/** One labelled value of a write-tool payload, already redacted (no PII). */
+export const actionRequestSummaryLineSchema = z.strictObject({
+  label: z.string().trim().min(1).max(80),
+  value: z.string().max(300),
+});
+
+/**
+ * Action request as the approval inbox shows it. `actionRequest.payload` is
+ * the raw tool input snapshot; the readable `summary` is what the screen
+ * renders. `status` is the live status, so the inbox shows pending, approved,
+ * executed, failed or expired without asking the approval module.
+ */
+export const actionRequestReviewSchema = z.strictObject({
+  actionRequest: actionRequestSchema,
+  /** Indonesian tool title, e.g. for the card heading. */
+  toolTitleId: z.string().trim().min(1).max(120),
+  requestedByName: z.string().trim().min(1).max(120),
+  /** Outlet name; null for a tenant-level request. */
+  outletName: z.string().trim().min(1).max(120).nullable(),
+  summary: z.array(actionRequestSummaryLineSchema).max(30),
+});
+export type ActionRequestReview = z.infer<typeof actionRequestReviewSchema>;
+
+/** One block of the "Pedoman Penggunaan AI" page (§3 Fitur 40 Transparansi). */
+export const aiGuidelineSectionSchema = z.strictObject({
+  id: z.string().regex(/^[a-z][a-z0-9-]{1,40}$/),
+  titleId: z.string().trim().min(1).max(120),
+  /** Plain paragraphs in Indonesian; no markup. */
+  paragraphsId: z.array(z.string().trim().min(1).max(1000)).min(1).max(20),
+});
+
+export const aiGuidelinesSchema = z.strictObject({
+  /** Bumped when the text changes, so the UI can show "diperbarui". */
+  version: z.string().trim().min(1).max(20),
+  updatedAt: isoDateTimeSchema,
+  sections: z.array(aiGuidelineSectionSchema).min(1).max(30),
+});
+export type AiGuidelines = z.infer<typeof aiGuidelinesSchema>;
 
 // ---- List queries ---------------------------------------------------------
 
@@ -169,6 +284,8 @@ export const aiConversationListQuerySchema = cursorPageQuerySchema.extend({
 export const actionRequestListQuerySchema = cursorPageQuerySchema.extend({
   status: actionRequestStatusSchema.optional(),
   toolCode: aiToolCodeSchema.optional(),
+  /** Find the request behind one approval inbox item (own requests only). */
+  approvalRequestId: approvalRequestIdSchema.optional(),
 });
 
 export const mcpClientListQuerySchema = cursorPageQuerySchema.extend({
@@ -304,4 +421,80 @@ export const revokeMcpToken = defineEndpoint({
   params: z.strictObject({ mcpTokenId: mcpTokenIdSchema }),
   body: revokeMcpTokenSchema,
   response: dataResponseSchema(mcpTokenSummarySchema),
+});
+
+/**
+ * Consent screen preview (MCP-05). The screen forwards the OAuth query it
+ * received; the answer names the client and lists what the user may grant:
+ * requested scopes (all client scopes when none requested) cut to the client's
+ * approved scopes and the tools the user's permissions allow. Read-only; the
+ * code is issued only by POST /api/ai/mcp/authorize with `approve: true`.
+ */
+export const mcpAuthorizePreviewQuerySchema = z.strictObject({
+  client_id: z.string().trim().min(1).max(100),
+  redirect_uri: z.string().trim().min(1).max(2000),
+  response_type: z.string().max(20).optional(),
+  scope: z.string().max(1000).optional(),
+  state: z.string().max(2000).optional(),
+  code_challenge: z.string().max(200).optional(),
+  code_challenge_method: z.string().max(20).optional(),
+});
+export const mcpAuthorizePreviewSchema = z.strictObject({
+  clientName: z.string().min(1).max(100),
+  redirectUri: z.string().min(1).max(2000),
+  scopes: z
+    .array(z.strictObject({ scope: mcpScopeSchema, label: z.string().min(1) }))
+    .min(1)
+    .max(30),
+});
+export type McpAuthorizePreview = z.infer<typeof mcpAuthorizePreviewSchema>;
+export const previewMcpAuthorize = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/mcp/authorize/preview",
+  query: mcpAuthorizePreviewQuerySchema,
+  response: dataResponseSchema(mcpAuthorizePreviewSchema),
+});
+
+// ---- Gap-fill endpoints (legend-hi82, jk6s, mlnu) ---------------------------
+
+/** Every catalog tool with its kill-switch state (ai.governance.manage). */
+export const listAiGovernanceTools = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/governance/tools",
+  response: dataResponseSchema(z.array(aiGovernanceToolSchema).max(50)),
+});
+
+/** Tenant-wide usage and spend of a month (ai.governance.manage). */
+export const getAiTenantUsage = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/governance/usage",
+  query: aiTenantUsageQuerySchema,
+  response: dataResponseSchema(aiTenantUsageSchema),
+});
+
+/** Audit list of tool calls, no content (MCP-03, ai.governance.manage). */
+export const listAiToolCalls = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/tool-calls",
+  query: aiToolCallListQuerySchema,
+  response: cursorPageSchema(aiToolCallRecordSchema),
+});
+
+/**
+ * Approval inbox detail: the action request behind one approval request.
+ * 404 ACTION_REQUEST_NOT_FOUND when the approval request has none or the caller
+ * may not see it.
+ */
+export const getActionRequestByApproval = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/action-requests/by-approval/:approvalRequestId",
+  params: z.strictObject({ approvalRequestId: approvalRequestIdSchema }),
+  response: dataResponseSchema(actionRequestReviewSchema),
+});
+
+/** Pedoman Penggunaan AI page content. Static per release, not per tenant. */
+export const getAiGuidelines = defineEndpoint({
+  method: "GET",
+  path: "/api/ai/guidelines",
+  response: dataResponseSchema(aiGuidelinesSchema),
 });

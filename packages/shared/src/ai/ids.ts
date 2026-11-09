@@ -167,6 +167,31 @@ export type McpScope = (typeof MCP_SCOPES)[number];
 /** The real scope enum: an unknown scope such as `mcp:evil:read` is rejected. */
 export const mcpScopeSchema = z.enum(MCP_SCOPES);
 
+/** Plain Indonesian label for the consent screen, one per scope (MCP-01). */
+export const MCP_SCOPE_LABELS_ID: Record<McpScope, string> = {
+  "mcp:sales:read": "Melihat ringkasan penjualan",
+  "mcp:menu:read": "Melihat menu dan harga",
+  "mcp:inventory:read": "Melihat stok dan pergerakan stok",
+  "mcp:food_cost:read": "Melihat food cost dan resep",
+  "mcp:labor:read": "Melihat biaya tenaga kerja dan absensi",
+  "mcp:finance:read": "Melihat laporan keuangan",
+  "mcp:customers:read": "Melihat segmen pelanggan",
+  "mcp:schedule:read": "Melihat jadwal shift",
+  "mcp:payslip:read": "Melihat slip gaji Anda sendiri",
+  "mcp:profit_share:read": "Melihat bagi hasil Anda sendiri",
+  "mcp:sop:read": "Mencari dan membaca SOP",
+  "mcp:anomalies:read": "Melihat anomali operasional",
+  "mcp:actions:read": "Melihat status permintaan aksi",
+  "mcp:facility:read": "Melihat pemakaian fasilitas",
+  "mcp:purchasing:draft": "Menyusun draf pembelian (menunggu persetujuan)",
+  "mcp:inventory:draft":
+    "Menyusun draf penyesuaian stok (menunggu persetujuan)",
+  "mcp:promotion:draft": "Menyusun draf promosi (menunggu persetujuan)",
+  "mcp:schedule:draft": "Menyusun draf jadwal shift (menunggu persetujuan)",
+  "mcp:pricing:draft": "Menyusun draf perubahan harga (menunggu persetujuan)",
+  "mcp:menu:draft": "Menyusun draf ketersediaan menu (menunggu persetujuan)",
+};
+
 export function isMcpScope(value: unknown): value is McpScope {
   return mcpScopeSchema.safeParse(value).success;
 }

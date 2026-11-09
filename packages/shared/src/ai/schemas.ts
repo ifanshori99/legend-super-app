@@ -50,6 +50,11 @@ import type { ActionRequestStatus } from "./ids.ts";
 export const ACTION_REQUEST_APPROVAL_ACTION_TYPES = [
   "ai_action",
   "mcp_action",
+  // The module's own rule, when the tenant has one for the change (never
+  // weaker than making the change by hand).
+  "stock_adjustment",
+  "discount",
+  "price_change",
 ] as const;
 export type ActionRequestApprovalActionType =
   (typeof ACTION_REQUEST_APPROVAL_ACTION_TYPES)[number];
@@ -60,11 +65,22 @@ export const actionRequestApprovalActionTypeSchema = z.enum(
 const resultRefSchema = z.string().trim().min(1).max(200);
 const failureReasonSchema = z.string().trim().min(1).max(500);
 
-/** Source decides the approval action type: ai -> ai_action, mcp -> mcp_action. */
+/** Source decides the default approval action type: ai -> ai_action, mcp -> mcp_action. */
 function expectedApprovalActionType(
   source: "ai" | "mcp",
 ): ActionRequestApprovalActionType {
   return source === "ai" ? "ai_action" : "mcp_action";
+}
+
+/** The default type of the source, or a module action; never the other source's. */
+function approvalActionTypeFitsSource(
+  source: "ai" | "mcp",
+  type: ActionRequestApprovalActionType,
+): boolean {
+  return (
+    type === expectedApprovalActionType(source) ||
+    (type !== "ai_action" && type !== "mcp_action")
+  );
 }
 
 type ActionRequestShapeCheck = {
@@ -93,8 +109,8 @@ function checkActionRequestShape(
   );
   add(
     "approvalActionType",
-    "approvalActionType must match source (ai -> ai_action, mcp -> mcp_action)",
-    value.approvalActionType !== expectedApprovalActionType(value.source),
+    "approvalActionType must match source (ai -> ai_action, mcp -> mcp_action) or be a module action",
+    !approvalActionTypeFitsSource(value.source, value.approvalActionType),
   );
 }
 
