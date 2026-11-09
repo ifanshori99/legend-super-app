@@ -47,7 +47,7 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
@@ -70,6 +70,7 @@ import {
   assertForfeitWithinIntent,
   assertPayoutWithinReceipt,
   assertSaleWithinReceipt,
+  type Bound,
   backingKeyOf,
   backingStateOf,
   backingStatesOf,
@@ -627,24 +628,88 @@ async function qrSaleGatewayOf(
     throw new AutoJournalPayloadInvalid(
       "Pinned payment intent of the QR sale is not paid on its payment link",
     );
-  if (Number(intent.amountIdr) < gatewayIdr)
-    throw new AutoJournalPayloadInvalid(
-      "Pinned payment intent of the QR sale took less than total - DP",
-    );
-  const state = (await receiptStatesOf(tx, tenantId, [intentId])).get(intentId);
-  if (state === "pending")
+  // legend-gzu54: a bill split over several codes of the link is paid by
+  // every code that put money toward it, each for its part.
+  const shares = await qrSaleSharesOf(tx, tenantId, {
+    paymentLinkId: order.paymentLinkId,
+    pinnedIntentId: intentId,
+    dueIdr: gatewayIdr,
+  });
+  if (shares.size === 1) {
+    if (Number(intent.amountIdr) < gatewayIdr)
+      throw new AutoJournalPayloadInvalid(
+        "Pinned payment intent of the QR sale took less than total - DP",
+      );
+  } else {
+    let partsIdr = 0;
+    for (const share of shares.values()) partsIdr += share;
+    if (partsIdr < gatewayIdr)
+      throw new AutoJournalPayloadInvalid(
+        "Payment intents of the QR sale took less than total - DP together",
+      );
+  }
+  const states = await receiptStatesOf(tx, tenantId, [...shares.keys()]);
+  if ([...states.values()].includes("pending"))
     throw new AutoJournalReceiptPending(
       "Gateway receipt of the QR sale is not booked yet",
     );
-  // A refund of the intent final before the sale may have taken it back.
-  if (state === "posted")
-    await assertSaleWithinReceipt(
-      tx,
-      tenantId,
-      intentId,
-      await saleBoundOf(tx, tenantId, p.orderId),
-    );
-  return { gatewayIdr, withReceipt: state === "posted" ? gatewayIdr : 0 };
+  // A refund of an intent final before the sale may have taken it back.
+  let withReceipt = 0;
+  let saleBound: Bound | null = null;
+  for (const [id, share] of shares) {
+    if (states.get(id) !== "posted") continue;
+    saleBound ??= await saleBoundOf(tx, tenantId, p.orderId);
+    await assertSaleWithinReceipt(tx, tenantId, id, saleBound);
+    withReceipt += share;
+  }
+  return { gatewayIdr, withReceipt: Math.min(gatewayIdr, withReceipt) };
+}
+
+/**
+ * legend-gzu54: what each code of the order's payment link put toward a QR
+ * sale of `dueIdr` (total - DP), keyed by intent. A code paying alone (the
+ * pinned intent, no other code with money toward the bill) is the whole sale.
+ * On a split bill every code that put money toward it (evidence less its
+ * unallocated funds, a status that never reverts) backs `min(due, that)`,
+ * the pinned one included; same parts as the payout guard (intentBackedAt,
+ * legend-05cm9) and allocatedIdrByIntent (qr-order-consumers.ts).
+ * qrSaleInUseOfIntent (payment-admin.service.ts) holds the pinned code's whole
+ * due instead, which is stricter.
+ */
+async function qrSaleSharesOf(
+  tx: Tx,
+  tenantId: TenantId,
+  input: { paymentLinkId: string; pinnedIntentId: string; dueIdr: number },
+): Promise<Map<string, number>> {
+  const result = await tx.execute<{ id: string; allocated: string }>(sql`
+    SELECT i.id,
+           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = i.tenant_id
+                         AND e.payment_intent_id = i.id), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = i.tenant_id
+                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+      FROM payment_intents i
+     WHERE i.tenant_id = ${tenantId}
+       AND i.payment_link_id = ${input.paymentLinkId}
+       AND i.status IN (${sql.join(
+         DP_INTENT_STATUSES.map((status) => sql`${status}`),
+         sql`, `,
+       )})`);
+  const allocated = new Map(
+    result.rows.map((row) => [row.id, Number(row.allocated)]),
+  );
+  const others = [...allocated].filter(
+    ([id, amount]) => id !== input.pinnedIntentId && amount > 0,
+  );
+  if (others.length === 0)
+    return new Map([[input.pinnedIntentId, input.dueIdr]]);
+  const shares = new Map<string, number>();
+  const own = allocated.get(input.pinnedIntentId) ?? 0;
+  shares.set(input.pinnedIntentId, Math.min(input.dueIdr, Math.max(own, 0)));
+  for (const [id, amount] of others)
+    shares.set(id, Math.min(input.dueIdr, amount));
+  return shares;
 }
 
 /** EDC-linked intents post through edc_clearing, never as gateway receipts. */
