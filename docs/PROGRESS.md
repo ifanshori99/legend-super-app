@@ -10,6 +10,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Untuk legend-07eg: lock harus menolak periode tutup di transaksi lock; jalur paid-lalu-reversed dilarang state machine run.
 - `docs/briefs/174-dfuzz.mts` tidak bisa jalan (impor `./sim.mts` tidak ada); fuzz 2500 kasus di `accounting-payroll-journal.test.ts` dipakai dengan pemisahan baru.
 - Second-opinion Codex: `docs/briefs/182b-second-opinion-payroll-posting.md` di folder utama (tidak di-commit).
+- Metrik sesi 4479e5 (16:40-17:54, tugas s8a3 + 4n3r/w6vah): biaya* 7478k, 25 subagent (Claude saja, Codex 0), puncak 4 jalan bersamaan, rata-rata 0.56 subagent jalan.
 
 ## legend-s8a3: jurnal payroll seimbang (engineer, cabang `ws/payroll-journal`, 2026-11-09)
 
