@@ -45,6 +45,7 @@ import {
   reportResultSchema,
 } from "@starter/shared/dashboard";
 import { METRIC_UNAVAILABLE_MESSAGES } from "@starter/shared/metrics";
+import { metricSourceOf } from "../services/metric-sources";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
@@ -944,9 +945,24 @@ describe("management managerRole query", () => {
 
 describe("tile availability", () => {
   it("marks a built tile available and an unbuilt one unavailable with the Indonesian message", async () => {
+    // Unbuilt: a management tile whose every metric the registry answers
+    // `unavailable` (read from the registry, so families that build a source
+    // do not break this test).
+    const unbuiltTile = DASHBOARD_CATALOG.find(
+      (tile) =>
+        tile.dashboard === "management" &&
+        "metricCodes" in tile &&
+        tile.metricCodes.length > 0 &&
+        tile.metricCodes.every(
+          (code) => metricSourceOf(code)?.kind === "unavailable",
+        ),
+    );
+    expect(unbuiltTile, "a management tile with no built source").toBeDefined();
     const result = await values(
       a.full,
-      `${JUNE}&managerRole=purchasing`,
+      unbuiltTile!.managerRole
+        ? `${JUNE}&managerRole=${unbuiltTile!.managerRole}`
+        : JUNE,
       "management",
     );
     const built = await values(a.full, JUNE);
@@ -955,7 +971,7 @@ describe("tile availability", () => {
         ?.availability,
     ).toEqual({ status: "available" });
     const unbuilt = result.tiles.find(
-      (tile) => tile.tileKey === "management.purchasing_kpi",
+      (tile) => tile.tileKey === unbuiltTile!.key,
     );
     expect(unbuilt?.availability).toEqual({
       status: "unavailable",
