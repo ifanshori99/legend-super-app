@@ -6,7 +6,8 @@
 // - Every query runs on a `withTenant` transaction (tenant + outlet RLS); the
 //   path outlet is asserted against the caller's scope as well.
 // - One expo ticket = one order of the outlet with at least one non-cancelled
-//   kitchen ticket. Order voided = not on the board. `isComplete` = every
+//   kitchen ticket. Order voided = not on the board. An order of an earlier
+//   business day stays while undelivered (expo-pickup-window.ts). `isComplete` = every
 //   non-cancelled ticket is `done` (a `recalled` ticket reopens it); `readyAt`
 //   = the latest `done_at`.
 // - Assign and deliver of one order serialise on a transaction advisory lock,
@@ -23,8 +24,10 @@ import {
   asc,
   eq,
   gt,
+  gte,
   inArray,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -62,6 +65,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { expoPickupFloorDate } from "./expo-pickup-window.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { KdsActor } from "./kds-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -307,7 +311,15 @@ export async function readExpoBoard(
       tx,
       context,
       outlet,
-      eq(orders.businessDate, today),
+      // Today's orders, delivered or not; an earlier day only while undelivered.
+      or(
+        eq(orders.businessDate, today),
+        and(
+          lt(orders.businessDate, today),
+          gte(orders.businessDate, expoPickupFloorDate(today)),
+          isNull(expoAssignments.deliveredAt),
+        ),
+      ),
     );
     return expoBoardSchema.parse({
       tenantId: context.tenant.tenantId,

@@ -686,7 +686,7 @@ describe("expo board", () => {
     expect(ticket.readyAt).toBe(iso(doneAt));
   });
 
-  it("omits orders without an active ticket, voided orders, other days and other outlets", async () => {
+  it("omits orders without an active ticket, voided orders and other outlets", async () => {
     const outlet = await createOutlet(tenantA);
     const otherOutlet = await createOutlet(tenantA);
     const station = await seedStation(tenantA, outlet, "Dapur Utama");
@@ -703,10 +703,6 @@ describe("expo board", () => {
     });
     const voided = await seedOrder(tenantA, outlet, { status: "voided" });
     await seedTicket(tenantA, outlet, voided, { stationId: station });
-    const yesterday = await seedOrder(tenantA, outlet, {
-      businessDate: dayBefore(nowDate()),
-    });
-    await seedTicket(tenantA, outlet, yesterday, { stationId: station });
     const elsewhere = await seedOrder(tenantA, otherOutlet);
     await seedTicket(tenantA, otherOutlet, elsewhere, {
       stationId: otherStation,
@@ -714,13 +710,7 @@ describe("expo board", () => {
 
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     expect(board.tickets.map((t) => t.orderId)).toEqual([shown]);
-    for (const absent of [
-      noTickets,
-      cancelledOnly,
-      voided,
-      yesterday,
-      elsewhere,
-    ])
+    for (const absent of [noTickets, cancelledOnly, voided, elsewhere])
       expect(board.tickets.map((t) => t.orderId)).not.toContain(absent);
   });
 
@@ -839,6 +829,91 @@ describe("expo board", () => {
 
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     expect(board.tickets.map((t) => t.orderId)).toEqual([oldest, mid, newest]);
+  });
+
+  it("keeps an undelivered order of an earlier business day on the board, cooking or complete", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const yesterday = dayBefore(nowDate());
+
+    const cooking = await seedOrder(tenantA, outlet, {
+      businessDate: yesterday,
+    });
+    await seedTicket(tenantA, outlet, cooking, {
+      stationId: station,
+      status: "in_progress",
+    });
+    const complete = await seedOrder(tenantA, outlet, {
+      businessDate: yesterday,
+    });
+    await seedTicket(tenantA, outlet, complete, { stationId: station });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(ticketOf(board, cooking).isComplete).toBe(false);
+    expect(ticketOf(board, complete).isComplete).toBe(true);
+  });
+
+  it("drops an order delivered on an earlier business day, but keeps one delivered today", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const assignedAt = new Date(Date.now() - 6 * MINUTE);
+    const deliveredAt = new Date(Date.now() - 3 * MINUTE);
+
+    const oldDelivered = await seedOrder(tenantA, outlet, {
+      businessDate: dayBefore(nowDate()),
+    });
+    await seedTicket(tenantA, outlet, oldDelivered, { stationId: station });
+    await seedAssignment(tenantA, outlet, oldDelivered, {
+      runnerId: runner1.userId,
+      assignedAt,
+      deliveredAt,
+    });
+    const todayDelivered = await seedOrder(tenantA, outlet);
+    await seedTicket(tenantA, outlet, todayDelivered, { stationId: station });
+    await seedAssignment(tenantA, outlet, todayDelivered, {
+      runnerId: runner1.userId,
+      assignedAt,
+      deliveredAt,
+    });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([todayDelivered]);
+  });
+
+  it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const twoAgo = dayBefore(dayBefore(nowDate()));
+    const threeAgo = dayBefore(twoAgo);
+
+    const shown = await seedOrder(tenantA, outlet, { businessDate: twoAgo });
+    await seedTicket(tenantA, outlet, shown, { stationId: station });
+    const tooOld = await seedOrder(tenantA, outlet, { businessDate: threeAgo });
+    await seedTicket(tenantA, outlet, tooOld, { stationId: station });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([shown]);
+  });
+
+  it("puts an older business day before today", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+
+    const today = await seedOrder(tenantA, outlet);
+    await seedTicket(tenantA, outlet, today, {
+      stationId: station,
+      firedAt: new Date(Date.now() - 5 * MINUTE),
+    });
+    const older = await seedOrder(tenantA, outlet, {
+      businessDate: dayBefore(nowDate()),
+    });
+    await seedTicket(tenantA, outlet, older, {
+      stationId: station,
+      firedAt: new Date(Date.now() - 20 * 60 * MINUTE),
+    });
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId)).toEqual([older, today]);
   });
 });
 

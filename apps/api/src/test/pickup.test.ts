@@ -846,7 +846,6 @@ describe("pickup call transitions", () => {
 describe("pickup display feed", () => {
   it("lists only called numbers of the outlet's current business date, newest call first", async () => {
     const outlet = await createOutlet(tenantA);
-    const today = nowDate();
     await seedCall(tenantA, outlet, {
       number: 1,
       status: "called",
@@ -859,11 +858,6 @@ describe("pickup display feed", () => {
     });
     await seedCall(tenantA, outlet, { number: 3, status: "assigned" });
     await seedCall(tenantA, outlet, { number: 4, status: "picked_up" });
-    await seedCall(tenantA, outlet, {
-      number: 5,
-      status: "called",
-      businessDate: dayBefore(today),
-    });
     const voided = await seedCall(tenantA, outlet, {
       number: 6,
       status: "called",
@@ -875,8 +869,57 @@ describe("pickup display feed", () => {
     expect(feed.tenantId).toBe(tenantA.tenantId);
     expect(feed.outletId).toBe(outlet);
     expect(feed.calls.every((c) => c.status === "called")).toBe(true);
-    expect(feed.calls.every((c) => c.businessDate === today)).toBe(true);
     expect(feed.calls.map((c) => c.number)).toEqual([2, 1]);
+  });
+
+  it("an unfinished call stays on the feed after the day cutoff; picked up and assigned ones do not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "picked_up",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 3,
+      status: "assigned",
+      businessDate: yesterday,
+    });
+    const voided = await seedCall(tenantA, outlet, {
+      number: 4,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await voidOrder(tenantA, voided.orderId);
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => c.number)).toEqual([1]);
+    expect(feed.calls[0]?.businessDate).toBe(yesterday);
+  });
+
+  it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
+    const outlet = await createOutlet(tenantA);
+    const twoAgo = dayBefore(dayBefore(nowDate()));
+    const threeAgo = dayBefore(twoAgo);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: twoAgo,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: threeAgo,
+    });
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => c.number)).toEqual([1]);
   });
 
   it("a number moves onto the feed when called and off it when picked up", async () => {
