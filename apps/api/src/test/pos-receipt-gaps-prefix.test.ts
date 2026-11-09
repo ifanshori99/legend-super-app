@@ -399,18 +399,20 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       { prefix: "P2", missing: [3], lost: null },
     ]);
 
+    // Closed before the shift report opens a shift (an open shift refuses
+    // the close for another reason). The missing ordinals still block Tutup
+    // Hari and nothing is written.
+    const refused = await closeDay(outletId, device.businessDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(await dailyCloseCount(outletId)).toBe(0);
+
     expect(
       await shiftReport(outletId, device.deviceId, device.businessDate),
     ).toEqual([
       { prefix: "P1", missing: ["P1-000003"], lostRange: null },
       { prefix: "P2", missing: ["P2-000003"], lostRange: null },
     ]);
-
-    // The missing ordinals still block Tutup Hari and nothing is written.
-    const refused = await closeDay(outletId, device.businessDate);
-    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
-    expect(await dailyCloseCount(outletId)).toBe(0);
   });
 
   it("a run retired as edge_regressed lists the lost range 3..5, and the lost range does not block the day close", async () => {
@@ -432,6 +434,12 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       { prefix: "RG", missing: [], lost: { from: 3, to: 5 } },
     ]);
 
+    // No missing ordinal anywhere: the close goes through
+    // (before the shift report opens a shift).
+    const closed = await closeDay(outletId, device.businessDate);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(await dailyCloseCount(outletId)).toBe(1);
+
     expect(
       await shiftReport(outletId, device.deviceId, device.businessDate),
     ).toEqual([
@@ -441,11 +449,57 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
         lostRange: { from: "RG-000003", to: "RG-000005" },
       },
     ]);
+  });
 
-    // No missing ordinal anywhere: the close goes through.
-    const closed = await closeDay(outletId, device.businessDate);
-    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(await dailyCloseCount(outletId)).toBe(1);
+  it("a hole only in the retired run blocks the day close; the clean current run is omitted", async () => {
+    const outletId = await freshOutlet();
+    const device = await seedDevice(outletId, [
+      {
+        prefix: "RA",
+        lastNumber: 3,
+        present: [1, 3],
+        ageMinutes: 60,
+        retired: { reason: "claim_rotated", edgeReportedNumber: 0 },
+      },
+      { prefix: "RB", lastNumber: 2, present: [1, 2], ageMinutes: 30 },
+    ]);
+    expect(await askPort(outletId, device.deviceId)).toEqual([
+      { prefix: "RA", missing: [2], lost: null },
+    ]);
+    const refused = await closeDay(outletId, device.businessDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(await dailyCloseCount(outletId)).toBe(0);
+  });
+
+  it("an edge_regressed run with a missing ordinal and a lost range reports both and blocks the day close", async () => {
+    const outletId = await freshOutlet();
+    const device = await seedDevice(outletId, [
+      {
+        prefix: "RM",
+        lastNumber: 3,
+        present: [1, 3],
+        ageMinutes: 60,
+        retired: { reason: "edge_regressed", edgeReportedNumber: 6 },
+      },
+      { prefix: "RN", lastNumber: 0, present: [], ageMinutes: 30 },
+    ]);
+    expect(await askPort(outletId, device.deviceId)).toEqual([
+      { prefix: "RM", missing: [2], lost: { from: 4, to: 6 } },
+    ]);
+    const refused = await closeDay(outletId, device.businessDate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(errorCode(refused.body)).toBe("RECEIPT_SEQUENCE_GAP");
+    expect(await dailyCloseCount(outletId)).toBe(0);
+    expect(
+      await shiftReport(outletId, device.deviceId, device.businessDate),
+    ).toEqual([
+      {
+        prefix: "RM",
+        missing: ["RM-000002"],
+        lostRange: { from: "RM-000004", to: "RM-000006" },
+      },
+    ]);
   });
 
   it("a lost range is only reported for edge_regressed runs whose reported number is above lastNumber", async () => {
@@ -482,14 +536,16 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       await shiftReport(outletId, full.deviceId, full.businessDate),
     ).toEqual([]);
 
-    const holed = await seedDevice(outletId, [
+    // Own outlet: the cashier already has an open shift in the first one.
+    const holedOutletId = await freshOutlet();
+    const holed = await seedDevice(holedOutletId, [
       { prefix: "S2", lastNumber: 4, present: [1, 2, 4], ageMinutes: 10 },
     ]);
-    expect(await askPort(outletId, holed.deviceId)).toEqual([
+    expect(await askPort(holedOutletId, holed.deviceId)).toEqual([
       { prefix: "S2", missing: [3], lost: null },
     ]);
     expect(
-      await shiftReport(outletId, holed.deviceId, holed.businessDate),
+      await shiftReport(holedOutletId, holed.deviceId, holed.businessDate),
     ).toEqual([{ prefix: "S2", missing: ["S2-000003"], lostRange: null }]);
   });
 
