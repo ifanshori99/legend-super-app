@@ -175,4 +175,139 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
     );
     expect(state.rows[0]).toEqual({ relforcerowsecurity: true });
   });
+
+  it("pattern 2 on an empty FORCE child into a parent without RLS: the child must be lifted", async () => {
+    // Like a FORCE tenant table gaining a foreign key into tenants: the
+    // validation scan reads the child as the migrator, so FORCE there raises
+    // even with zero rows and no RLS on the parent.
+    await owner.query(`
+      CREATE TABLE parent_plain (id uuid PRIMARY KEY);
+      CREATE TABLE child_into_plain (tenant_id uuid NOT NULL, id uuid PRIMARY KEY, plain_id uuid NOT NULL);
+      ALTER TABLE child_into_plain ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE child_into_plain FORCE ROW LEVEL SECURITY;
+      CREATE POLICY tenant_isolation ON child_into_plain
+        USING (tenant_id = app.require_tenant_id())
+        WITH CHECK (tenant_id = app.require_tenant_id());
+    `);
+    const addFk = `ALTER TABLE child_into_plain ADD CONSTRAINT child_into_plain_fk FOREIGN KEY (plain_id) REFERENCES parent_plain (id)`;
+    await expect(owner.query(addFk)).rejects.toThrow(
+      /tenant context is required/,
+    );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `ALTER TABLE child_into_plain NO FORCE ROW LEVEL SECURITY`,
+      );
+      await client.query(addFk);
+      await client.query(
+        `ALTER TABLE child_into_plain FORCE ROW LEVEL SECURITY`,
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const state = await owner.query(
+      `SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.child_into_plain'::regclass`,
+    );
+    expect(state.rows[0]).toEqual({ relforcerowsecurity: true });
+  });
+
+  it("pattern 2 on a populated FORCE child: lift the child too, and validation still sees every row", async () => {
+    const tenant = "11111111-1111-4111-8111-111111111111";
+    const parentId = "22222222-2222-4222-8222-222222222222";
+    const orphanId = "33333333-3333-4333-8333-333333333333";
+    // A FORCE tenant child holding one valid row, like an existing table
+    // that gains a foreign key later.
+    await owner.query(`
+      ${createChild("child_forced")};
+      ALTER TABLE child_forced ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE child_forced FORCE ROW LEVEL SECURITY;
+      CREATE POLICY tenant_isolation ON child_forced
+        USING (tenant_id = app.require_tenant_id())
+        WITH CHECK (tenant_id = app.require_tenant_id());
+    `);
+    const seed = await owner.connect();
+    try {
+      await seed.query("BEGIN");
+      await seed.query(`SELECT set_config('app.tenant_id', $1, true)`, [
+        tenant,
+      ]);
+      await seed.query(
+        `INSERT INTO parent_forced (tenant_id, id) VALUES ($1, $2)`,
+        [tenant, parentId],
+      );
+      await seed.query(
+        `INSERT INTO child_forced (tenant_id, id, parent_id) VALUES ($1, gen_random_uuid(), $2)`,
+        [tenant, parentId],
+      );
+      await seed.query("COMMIT");
+    } finally {
+      seed.release();
+    }
+
+    const inTransaction = async (statements: string[]) => {
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        for (const statement of statements) await client.query(statement);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+    const liftBoth = (statement: string) => [
+      `ALTER TABLE parent_forced NO FORCE ROW LEVEL SECURITY`,
+      `ALTER TABLE child_forced NO FORCE ROW LEVEL SECURITY`,
+      statement,
+      `ALTER TABLE child_forced FORCE ROW LEVEL SECURITY`,
+      `ALTER TABLE parent_forced FORCE ROW LEVEL SECURITY`,
+    ];
+
+    // Lifting only the parent: the scan of the FORCE child still raises.
+    await expect(
+      inTransaction([
+        `ALTER TABLE parent_forced NO FORCE ROW LEVEL SECURITY`,
+        fk("child_forced"),
+        `ALTER TABLE parent_forced FORCE ROW LEVEL SECURITY`,
+      ]),
+    ).rejects.toThrow(/tenant context is required/);
+
+    // Both lifted, plus an orphan row: validation sees it and rejects.
+    await inTransaction([
+      `ALTER TABLE child_forced NO FORCE ROW LEVEL SECURITY`,
+      `INSERT INTO child_forced (tenant_id, id, parent_id) VALUES ('${tenant}', gen_random_uuid(), '${orphanId}')`,
+      `ALTER TABLE child_forced FORCE ROW LEVEL SECURITY`,
+    ]);
+    await expect(inTransaction(liftBoth(fk("child_forced")))).rejects.toThrow(
+      /violates foreign key constraint/,
+    );
+
+    // Orphan gone: both lifted, the foreign key validates and FORCE is back.
+    await inTransaction([
+      `ALTER TABLE child_forced NO FORCE ROW LEVEL SECURITY`,
+      `DELETE FROM child_forced WHERE parent_id = '${orphanId}'`,
+      `ALTER TABLE child_forced FORCE ROW LEVEL SECURITY`,
+    ]);
+    await inTransaction(liftBoth(fk("child_forced")));
+    const state = await owner.query(
+      `SELECT relname, relforcerowsecurity FROM pg_class
+        WHERE oid IN ('public.parent_forced'::regclass, 'public.child_forced'::regclass)
+        ORDER BY relname`,
+    );
+    expect(state.rows).toEqual([
+      { relname: "child_forced", relforcerowsecurity: true },
+      { relname: "parent_forced", relforcerowsecurity: true },
+    ]);
+    const constraint = await owner.query(
+      `SELECT convalidated FROM pg_constraint WHERE conname = 'child_forced_parent_fk'`,
+    );
+    expect(constraint.rows[0]).toEqual({ convalidated: true });
+  });
 });

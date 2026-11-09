@@ -12,7 +12,9 @@
 //
 // 1. Statically, on the SQL files: each NO FORCE has a later FORCE for the
 //    same table in the same file, and no migration from 0065 on adds a
-//    foreign key NOT VALID (the convention forbids it).
+//    foreign key NOT VALID or disables row level security (the end-state
+//    check below cannot see a table whose RLS was switched off entirely
+//    unless it has a tenant_id column, which src/db/rls.test.ts covers).
 // 2. On the test database after every migration: each public table with
 //    row level security enabled also forces it, except the two documented
 //    ENABLE-only tables. src/db/rls.test.ts already requires FORCE plus the
@@ -84,6 +86,12 @@ function notValidForeignKeys(sql: string): string[] {
   );
 }
 
+function rlsDisables(sql: string): string[] {
+  return statementsOf(sql).filter((statement) =>
+    /\bDISABLE ROW LEVEL SECURITY\b/i.test(statement),
+  );
+}
+
 // Refuse to create databases on anything but the disposable test server.
 function assertDisposableServer() {
   if (
@@ -100,16 +108,18 @@ describe("legend-m007 static scan of the migration SQL", () => {
   const sqlOf = (entry: JournalEntry) =>
     readFileSync(join(drizzleFolder, `${entry.tag}.sql`), "utf8");
 
-  it("the scanner sees lifts, restores and NOT VALID foreign keys", () => {
+  it("the scanner sees lifts, restores, NOT VALID foreign keys and RLS disables", () => {
     const sample = `
       ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
       ALTER TABLE "stations" NO FORCE ROW LEVEL SECURITY;
       -- ALTER TABLE public.stations FORCE ROW LEVEL SECURITY; (comment, ignored)
       ALTER TABLE child ADD CONSTRAINT c_fk FOREIGN KEY (x) REFERENCES outlets (id) NOT VALID;
       ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+      ALTER TABLE public.outlets DISABLE ROW LEVEL SECURITY;
     `;
     expect(unrestoredForce(sample)).toEqual(["stations"]);
     expect(notValidForeignKeys(sample)).toHaveLength(1);
+    expect(rlsDisables(sample)).toHaveLength(1);
     expect(
       notValidForeignKeys(
         "ALTER TABLE t ADD CONSTRAINT t_check CHECK (x > 0) NOT VALID;",
@@ -133,6 +143,17 @@ describe("legend-m007 static scan of the migration SQL", () => {
       .map((entry) => ({
         tag: entry.tag,
         statements: notValidForeignKeys(sqlOf(entry)),
+      }))
+      .filter((offender) => offender.statements.length > 0);
+    expect(offenders).toEqual([]);
+  });
+
+  it(`no migration from ${FIRST_PLAIN_OWNER_IDX} on disables row level security`, () => {
+    const offenders = entries
+      .filter((entry) => entry.idx >= FIRST_PLAIN_OWNER_IDX)
+      .map((entry) => ({
+        tag: entry.tag,
+        statements: rlsDisables(sqlOf(entry)),
       }))
       .filter((offender) => offender.statements.length > 0);
     expect(offenders).toEqual([]);
