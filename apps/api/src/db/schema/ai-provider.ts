@@ -25,7 +25,6 @@ import type { AiConnectionType } from "@starter/shared/ai";
 import { tenantIdColumn } from "../columns.ts";
 import { tenants } from "./platform-org.ts";
 
-
 /** `ai_provider_configs` (T): the AI provider of one tenant. */
 export const aiProviderConfigs = pgTable(
   "ai_provider_configs",

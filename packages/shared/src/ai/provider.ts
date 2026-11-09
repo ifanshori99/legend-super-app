@@ -90,13 +90,7 @@ export const upsertAiProviderConfigInputSchema = z.strictObject({
     .max(200)
     .regex(/^[\w.:/@+-]+$/),
   /** Omit to keep the stored key (only while `baseUrl` is unchanged). */
-  apiKey: z
-    .string()
-    .trim()
-    .min(16)
-    .max(500)
-    .regex(/^\S+$/)
-    .optional(),
+  apiKey: z.string().trim().min(16).max(500).regex(/^\S+$/).optional(),
 });
 export type UpsertAiProviderConfigInput = z.infer<
   typeof upsertAiProviderConfigInputSchema

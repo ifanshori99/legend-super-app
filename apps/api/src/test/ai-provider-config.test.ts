@@ -867,7 +867,8 @@ describe("13.5 connection test", () => {
 
 describe("13.6 save rules (PUT)", () => {
   it("13.6 a new config without apiKey is AI_PROVIDER_KEY_REQUIRED", async () => {
-    const { apiKey: _omit, ...withoutKey } = configA;
+    const withoutKey: Partial<typeof configA> = { ...configA };
+    delete withoutKey.apiKey;
     const res = await putCfg(adminA, withoutKey);
     expect(res.status, res.text).toBe(422);
     expect(codeOf(res)).toBe("AI_PROVIDER_KEY_REQUIRED");
@@ -876,7 +877,8 @@ describe("13.6 save rules (PUT)", () => {
 
   it("13.6 changing baseUrl without a new apiKey is AI_PROVIDER_KEY_REQUIRED; the old key is never sent to the new host", async () => {
     await putCfg(adminA, configA);
-    const { apiKey: _omit, ...withoutKey } = configA;
+    const withoutKey: Partial<typeof configA> = { ...configA };
+    delete withoutKey.apiKey;
 
     const moved = await putCfg(adminA, { ...withoutKey, baseUrl: URL_B });
     expect(moved.status, moved.text).toBe(422);
@@ -908,7 +910,8 @@ describe("13.6 save rules (PUT)", () => {
       lastTest: { status: "ok" },
     });
 
-    const { apiKey: _omit, ...withoutKey } = configA;
+    const withoutKey: Partial<typeof configA> = { ...configA };
+    delete withoutKey.apiKey;
     const edited = await putCfg(adminA, {
       ...withoutKey,
       baseUrl: `${URL_A}/`,

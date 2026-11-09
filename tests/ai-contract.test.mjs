@@ -1352,19 +1352,16 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
     ...config,
     lastTest: { ...config.lastTest, errorCode: "boom" },
   });
-  assert.deepEqual(
-    Object.keys(ai.aiProviderConfigSchema.shape).sort(),
-    [
-      "baseUrl",
-      "connectionType",
-      "defaultModel",
-      "hasKey",
-      "keyLast4",
-      "keySetAt",
-      "lastTest",
-      "updatedAt",
-    ],
-  );
+  assert.deepEqual(Object.keys(ai.aiProviderConfigSchema.shape).sort(), [
+    "baseUrl",
+    "connectionType",
+    "defaultModel",
+    "hasKey",
+    "keyLast4",
+    "keySetAt",
+    "lastTest",
+    "updatedAt",
+  ]);
 });
 
 test("legend-dwrr provider upsert input validation", () => {
@@ -1375,7 +1372,8 @@ test("legend-dwrr provider upsert input validation", () => {
     apiKey: "sk-0123456789abcdef",
   };
   accepts(ai.upsertAiProviderConfigInputSchema, input);
-  const { apiKey: _omit, ...withoutKey } = input;
+  const withoutKey = { ...input };
+  delete withoutKey.apiKey;
   accepts(ai.upsertAiProviderConfigInputSchema, withoutKey);
   accepts(ai.upsertAiProviderConfigInputSchema, {
     ...input,
