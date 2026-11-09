@@ -342,3 +342,4 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - 16:05 CTO verifikasi ws/refund-tier b169986a: 16 file, 450 lulus 8 skip. Masuk batch9.
 - 16:10 Codex 117 Run B: 3 P2 -> komentar legend-r7g2. Codex 154 Run 3: 2 P2 trigger 0135 (I15) -> G5xnj sisipkan sebelum q7jj; refund-tier ditahan dari batch9 sampai fix. Codex jalan: G8j38 160, G6dzs 122, 124 (akun 3).
 - 16:20 Codex 160 (edge-access-apply): 2 P2 (urutan generasi PIN hilang oleh LEAST(setAt, now()); hash/salt bisa bocor lewat DrizzleQueryError) -> G54my setelah uznb/8izz; edge-access-apply ditahan dari batch9. Codex G? 126 (akun 2).
+- 16:30 Codex 122 (provisioning, sudah di m1): 2 P2 -> legend-hd1m. Codex 124 (edge-master-sync): P2 galat DB mentah di log -> G54my bersama uznb/8izz. Akun Codex #2 limit 5 jam sampai 20:37: kapasitas Codex 2 (akun #3) sampai saat itu. Jalan: G3vo2 126, G0918 127. Antrean: 130, 133, 134, 138, 144, lalu brief baru 150b, 163/164, 166, 167.
