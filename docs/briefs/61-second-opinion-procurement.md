@@ -18,3 +18,5 @@ Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/procure
 
 ## Laporan
 Temuan urut paling berat: file:baris, masalah, skenario gagal konkret, fix. "Tidak ada blocker" bila memang tidak ada.
+
+Digabung ke `milestone/m1` sebagai merge `9f446f9b` lewat `prep2/procurement` a94ea4f3 (migration diregen 0092/0093). Rentang diff isi cabang di atas m1: `git diff b8fed67b 9f446f9b` (abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`: menyeret isi m1 lain.
