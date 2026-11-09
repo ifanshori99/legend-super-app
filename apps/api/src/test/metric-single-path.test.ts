@@ -4,7 +4,7 @@
 // Outside the accounting domain no file may read journal lines, and no file
 // but the engine and `metric-sources/gl.ts` may read `GL_METRIC_SOURCES`.
 //
-// The four AI helpers below still compute registry metrics from operational
+// The three AI helpers below still compute registry metrics from operational
 // tables (net_sales from orders, ...). Each family card moves its helper onto
 // the engine and removes its line here; INT requires this list to be empty.
 
@@ -18,7 +18,6 @@ const AI_HELPER_EXCEPTIONS: readonly string[] = [
   "services/ai-metrics/finance.ts",
   "services/ai-metrics/labor.ts",
   "services/ai-metrics/sales.ts",
-  "services/ai-metrics/stock.ts",
 ];
 
 /** Files that read or write journal lines as accounting, not as a metric. */
@@ -53,12 +52,11 @@ function filesMatching(pattern: RegExp): string[] {
 }
 
 describe("metric single path", () => {
-  it("lists exactly the four AI helper exceptions, all still present", () => {
+  it("lists exactly the three AI helper exceptions, all still present", () => {
     expect([...AI_HELPER_EXCEPTIONS].sort()).toEqual([
       "services/ai-metrics/finance.ts",
       "services/ai-metrics/labor.ts",
       "services/ai-metrics/sales.ts",
-      "services/ai-metrics/stock.ts",
     ]);
     for (const file of AI_HELPER_EXCEPTIONS) {
       expect(files, file).toContain(file);
@@ -76,7 +74,7 @@ describe("metric single path", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("no AI helper outside the four exceptions computes metrics beside the engine", () => {
+  it("no AI helper outside the three exceptions computes metrics beside the engine", () => {
     const helpers = files.filter(
       (file) =>
         file.startsWith("services/ai-metrics/") &&
