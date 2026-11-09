@@ -34,6 +34,10 @@ import {
   deliverInventoryGlEvent,
   retryBlockedInventoryGl,
 } from "./services/inventory-gl-consumer.ts";
+import {
+  deliverAutoJournalEvent,
+  retryParkedAutoJournals,
+} from "./services/accounting-auto-journal-consumer.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
@@ -169,6 +173,12 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // PRD §3.19 Jurnal Otomatis (legend-9pz9, legend-o9q9), cloud only:
+          // sales, refunds, gateway receipts and payouts post their journal in
+          // a savepoint; expected accounting failures park for the sweep and
+          // never fail this delivery.
+          if (postsInventoryGl)
+            await deliverAutoJournalEvent(context, event, tx);
           // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
           // or sale posts its GL journal in a savepoint; a closed period or a
           // missing mapping parks the source for the sweep, never fails this.
@@ -321,6 +331,15 @@ const relay = createRelayRuntime({
         await syncStaleDeliveryChannels(context, new Date());
       } catch {
         console.error("Delivery channel sync sweep failed");
+      }
+    }
+    // §3.19 (legend-9pz9), cloud only: retry parked auto-journals (mapping
+    // missing, period closed race). A sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await retryParkedAutoJournals(context, new Date());
+      } catch {
+        console.error("Auto-journal retry sweep failed");
       }
     }
     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
