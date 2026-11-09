@@ -269,3 +269,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+
+## Brief 101 retry webhook DOIT (engineer, cabang `ws/fix-doit-webhook`, 2026-11-09)
+
+- Bug: retry webhook dengan eventId sama memakai identitas integrasi row lama tetapi payload baru; integrasi lain bisa menyelesaikan intent milik integrasi pertama.
+- Fix (`payment-webhook.service.ts`): row tersimpan diproses memakai payload tersimpan. Bila integrasi penanda tangan tidak sama dengan row (atau row tanpa integrasi): tolak, audit `payment.webhook.integration_mismatch`, jawab 200 `ignored`. Pengisian row MALFORMED dijaga `payload IS NULL AND integration_id = penanda tangan` dengan `RETURNING`.
+- Test: `src/test/payment-webhook-retry-integration.test.ts` 7 test (4 dari 5 awal merah di kode lama). Webhook: retry 7/7, `payment-webhook-api.test.ts` 89/89 (rerun sendiri; timeout PAY-02 sebelumnya karena beban). Typecheck api lulus, eslint + prettier berkas berubah bersih, `db:generate` kosong.
+- Review: reviewer Opus + architect; temuan (null integrasi fail-open, UPDATE MALFORMED tanpa guard, celah test) dibetulkan.
+- Beads: legend-srf6 (kunci dedupe tanpa integrasi, risiko diterima), legend-dnkm (callback refund tanpa ikatan integrasi), legend-f03o (secret dipakai bersama antar integrasi).
+- Gate penuh: oleh merge train. Second opinion Codex: antre.
