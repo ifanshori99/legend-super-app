@@ -9,13 +9,13 @@ Baca `~/.agents/team/roles/second-opinion.md` dan `~/.agents/team/TEAM.md`.
 
 ## Repo
 
-Basis diff semua cabang: `ws/ws11-shared-1` (487c928a). Tiap cabang punya worktree di `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/`. HEAD diisi saat laporan implementer selesai (lihat `__SHA__`).
+Basis diff semua cabang: `ws/ws11-shared-1` (487c928a). Tiap cabang punya worktree di `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/`. HEAD per 2026-11-10 setelah review architect.
 
 | Cabang | Worktree | HEAD | Diff |
 |---|---|---|---|
-| `ws/ws11-inventory-purchasing` (F5) | `ws11-inventory-purchasing` | `__SHA_F5__` | `git diff 487c928a __SHA_F5__` |
-| `ws/ws11-reservation-delivery` (F8) | `ws11-reservation-delivery` | `__SHA_F8__` | `git diff 487c928a __SHA_F8__` |
-| `ws/ws11-facility` (F10) | `ws11-facility` | `__SHA_F10__` | `git diff 487c928a __SHA_F10__` |
+| `ws/ws11-inventory-purchasing` (F5) | `ws11-inventory-purchasing` | `8428980b` | `git diff 487c928a 8428980b` |
+| `ws/ws11-reservation-delivery` (F8) | `ws11-reservation-delivery` | `65733629` | `git diff 487c928a 65733629` |
+| `ws/ws11-facility` (F10) | `ws11-facility` | `adfe989a` | `git diff 487c928a adfe989a` |
 
 Konteks: `docs/DECISIONS.md` entri 2026-11-10 (butir 1-8), `docs/briefs/sub-ws11-foundation-design.md` §2, `docs/briefs/268-ws11-family-common.md`, `docs/briefs/268b-ws11-stock-reservation-facility.md`. Tes: `LEGEND_TEST_FILES="src/test/ms-<keluarga>.test.ts" pnpm test` dari root worktree.
 
