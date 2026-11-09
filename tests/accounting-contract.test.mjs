@@ -984,9 +984,10 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
     const keys = [
       "bpjsCompanyIdr",
       "bpjsTotalIdr",
+      "customDeductionsIdr",
+      "lateDeductionsIdr",
       "loanRepaymentIdr",
       "netIdr",
-      "otherDeductionsIdr",
       "pph21EmployerAllowanceRefundIdr",
       "pph21EmployerBorneIdr",
       "pph21EmployerBorneRefundIdr",

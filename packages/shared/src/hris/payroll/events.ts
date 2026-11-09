@@ -109,6 +109,12 @@ export const payslipCreated = defineDomainEvent({
   }),
 });
 
+/** How a kasbon was paid out: petty cash or a bank transfer. */
+export const employeeLoanDisbursedViaSchema = z.enum(["cash", "bank"]);
+export type EmployeeLoanDisbursedVia = z.infer<
+  typeof employeeLoanDisbursedViaSchema
+>;
+
 /** Kasbon paid out to the employee: cash/bank journal (piutang karyawan). */
 export const employeeLoanDisbursed = defineDomainEvent({
   name: "employee_loan.disbursed",
@@ -117,6 +123,11 @@ export const employeeLoanDisbursed = defineDomainEvent({
     employeeId: employeeIdSchema,
     legalEntityId: legalEntityIdSchema,
     principalIdr: idrSchema,
+    /**
+     * Absent on events emitted before legend-1coh: posts as before, petty
+     * cash.
+     */
+    disbursedVia: employeeLoanDisbursedViaSchema.optional(),
     disbursedBy: userIdSchema,
     disbursedAt: isoDateTimeSchema,
   }),

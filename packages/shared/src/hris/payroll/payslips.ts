@@ -376,6 +376,13 @@ export const payrollRunTotalsSchema = z
     pph21ReceivableCollectedIdr: nonNegativeIdr,
     /** Late and custom deductions. */
     otherDeductionsIdr: nonNegativeIdr,
+    /**
+     * Part of otherDeductionsIdr from custom_deduction lines (koperasi dues
+     * etc.). Journal: Cr payroll_custom_deduction. Default 0 keeps totals
+     * written before this field: they posted all other deductions to
+     * salary_expense.
+     */
+    customDeductionsIdr: nonNegativeIdr.default(idr(0)),
     /** Parts of gross the journal books differently (liability / expense). */
     serviceChargeIdr: nonNegativeIdr,
     reimbursementIdr: nonNegativeIdr,
@@ -416,6 +423,11 @@ export const payrollRunTotalsSchema = z
         "pph21Idr",
         "PPh 21 = withheld + employer borne + receivable - refund - employer refund",
       );
+    if (t.customDeductionsIdr > t.otherDeductionsIdr)
+      issue(
+        "customDeductionsIdr",
+        "custom deductions cannot exceed other deductions",
+      );
     if (t.pph21EmployerAllowanceRefundIdr > t.pph21EmployerRefundIdr)
       issue(
         "pph21EmployerAllowanceRefundIdr",
@@ -428,6 +440,8 @@ export const payrollRunTotalsSchema = z
       );
   });
 export type PayrollRunTotals = z.infer<typeof payrollRunTotalsSchema>;
+/** Totals before parsing: `customDeductionsIdr` may be absent (written before legend-75kr). */
+export type PayrollRunTotalsInput = z.input<typeof payrollRunTotalsSchema>;
 
 /** Run totals from its employee results (simulation or lock). */
 export function sumPayrollRunTotals(
@@ -470,6 +484,9 @@ export function sumPayrollRunTotals(
         l.category !== "pph21_receivable" &&
         l.category !== "bpjs_employee" &&
         l.category !== "pph21",
+    ),
+    customDeductionsIdr: lineTotal(
+      (l) => l.kind === "deduction" && l.category === "custom_deduction",
     ),
     serviceChargeIdr: total((s) => s.serviceChargeIdr),
     reimbursementIdr: lineTotal((l) => l.category === "reimbursement"),

@@ -1072,6 +1072,13 @@
       "when": 1794231000000,
       "tag": "0152_receipt_sequence_edge_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1794234000000,
+      "tag": "0155_payroll_custom_deduction_role",
+      "breakpoints": true
     }
   ]
 }

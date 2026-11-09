@@ -104,6 +104,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends floor.session.open_bill and floor.open_bill_policy.manage to the stored template role rows that hold them for existing tenants (legend-8cm4, legend-2zb5); idempotent, never touches a custom role",
   "0150_station_printer_binding_cleanup.sql":
     "clears stations.printer_device_id where it does not point at an active, unrevoked printer of the same tenant and outlet (legend-4xai); idempotent, edits no other column, a manager binds a valid printer again",
+  "0155_payroll_custom_deduction_role.sql":
+    "maps the payroll_custom_deduction role to the same account as salary_expense for every legal entity that has a salary_expense mapping and no payroll_custom_deduction mapping (legend-75kr); idempotent, never updates or deletes, FORCE RLS lifted for that one statement and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

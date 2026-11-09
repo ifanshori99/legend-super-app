@@ -32,7 +32,7 @@ import { z } from "zod";
 import type { Idr, OutletId } from "../core/index.ts";
 import { eventCatalogByName } from "../events/catalog.ts";
 import { postingAccountRoleSchema } from "./coa.ts";
-import type { PostingAccountRole } from "./coa.ts";
+import type { AccountType, PostingAccountRole } from "./coa.ts";
 import { AccountingError } from "./errors.ts";
 import type { AccountId } from "./ids.ts";
 import { assertJournalBalanced, journalSourceTypeSchema } from "./journal.ts";
@@ -145,13 +145,47 @@ const PAYROLL_JOURNAL_LINES: L[] = [
   ["pph21_payable", "credit", "pph21Idr"],
   ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
   ["employee_receivable", "credit", "loanRepaymentIdr"],
-  ["salary_expense", "credit", "otherDeductionsIdr"],
+  // Other deductions that are not custom (today: late) credit salary_expense;
+  // custom ones (koperasi dues etc.) have their own role so a tenant can map
+  // them to a liability (legend-75kr).
+  ["salary_expense", "credit", "lateDeductionsIdr"],
+  ["payroll_custom_deduction", "credit", "customDeductionsIdr"],
   // Employer lebih potong (legend-w6vah): the part that returns an earlier
   // gross-up allowance credits salary_expense (6101, where the allowance was
   // booked); the part that returns borne tax credits pph21_borne_expense.
   ["salary_expense", "credit", "pph21EmployerAllowanceRefundIdr"],
   ["pph21_borne_expense", "credit", "pph21EmployerBorneRefundIdr"],
 ];
+
+/**
+ * `payroll.locked#service_charge_expense`: the service charge payout debits
+ * salary_expense instead of the service_charge account. Same amount keys as
+ * the base rule, so the reversal cross-check still matches.
+ */
+const PAYROLL_JOURNAL_LINES_SC_EXPENSE: L[] = PAYROLL_JOURNAL_LINES.map(
+  (line): L =>
+    line[0] === "service_charge" && line[1] === "debit"
+      ? ["salary_expense", "debit", line[2]]
+      : line,
+);
+
+/**
+ * Variant of `payroll.locked` for the entity's service_charge mapping: the
+ * payout of service charge must never debit revenue. A revenue mapping (PRD
+ * F11: service charge kept as income) posts the payout on salary_expense: it is
+ * an employee cost. Every other type keeps the base rule, debiting the mapped
+ * account: a liability clears, and a legacy expense/asset/equity mapping saved
+ * before the type guard is debited where the POS credited it, so it clears
+ * too. No mapping (null): base rule (posting fails ACCOUNT_MAPPING_MISSING
+ * when the service charge is above zero).
+ */
+export function payrollLockedVariant(
+  serviceChargeAccountType: AccountType | null,
+): "service_charge_expense" | undefined {
+  return serviceChargeAccountType === "revenue"
+    ? "service_charge_expense"
+    : undefined;
+}
 
 /** Default rules (system data; tenants change accounts through mappings, not rules). */
 export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
@@ -347,6 +381,13 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     PAYROLL_JOURNAL_LINES,
   ),
   rule(
+    { event: "payroll.locked", variant: "service_charge_expense" },
+    "payroll",
+    "Payroll dikunci (service charge dibayarkan sebagai beban gaji)",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04; PRD F11 service charge`,
+    PAYROLL_JOURNAL_LINES_SC_EXPENSE,
+  ),
+  rule(
     { event: "payroll.reversed" },
     "payroll",
     "Payroll dibatalkan (jurnal balik)",
@@ -372,6 +413,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["petty_cash", "credit", "cashIdr"],
     ],
   ),
+  // No variant: events emitted before legend-1coh (no disbursedVia), petty cash.
   rule(
     { event: "employee_loan.disbursed" },
     "payroll",
@@ -382,6 +424,27 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       // petty_cash (1102 Kas Kecil), not cash_on_hand: 1101 is the POS drawer
       // reconciled by shift close, so crediting it here would double count.
       ["petty_cash", "credit", "principalIdr"],
+    ],
+  ),
+  rule(
+    { event: "employee_loan.disbursed", variant: "cash" },
+    "payroll",
+    "Kasbon karyawan dicairkan tunai (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
+    [
+      ["employee_receivable", "debit", "principalIdr"],
+      // petty_cash, not cash_on_hand: see the base rule above.
+      ["petty_cash", "credit", "principalIdr"],
+    ],
+  ),
+  rule(
+    { event: "employee_loan.disbursed", variant: "bank" },
+    "payroll",
+    "Kasbon karyawan dicairkan via bank (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
+    [
+      ["employee_receivable", "debit", "principalIdr"],
+      ["bank", "credit", "principalIdr"],
     ],
   ),
   // Payout `payroll` posts nothing here: the run's journal carries it
