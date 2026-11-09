@@ -141,3 +141,10 @@ test("TEN-02: outlet filter only offers outlets present in the scoped device lis
   );
   assert.deepEqual(options, [{ id: d.outletId, name: "Cafe Legend" }]);
 });
+
+test("EDG-03: enrolling needs a device name of 1 to 255 characters", () => {
+  assert.equal(logic.enrollLabelValid("   "), false);
+  assert.equal(logic.enrollLabelValid(" Kasir 1 "), true);
+  assert.equal(logic.enrollLabelValid("x".repeat(255)), true);
+  assert.equal(logic.enrollLabelValid("x".repeat(256)), false);
+});
