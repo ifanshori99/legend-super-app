@@ -62,3 +62,4 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - ws09-wifi / ws09-wifi-hardening / ws-09-ws: S30:P9mkl:G24vt
 - testdb-cleanup: S30:P9mkl:G7h0a
 - Ditolak hook RAM: lapor ke CTO saja.
+- 09-11 antrean CTO (prioritas rendah): ws/testdb-cleanup bd04eef1 (tanpa migrasi; compose.test.yaml mem_limit 512m; bila 'connection terminated' naikkan STARTER_TEST_PG_MEM default ke 768m). Pemilik G7h0a.
