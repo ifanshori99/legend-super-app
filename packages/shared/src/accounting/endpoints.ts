@@ -124,6 +124,30 @@ const list = <T extends z.ZodType>(item: T) =>
   dataResponseSchema(z.array(item));
 const commandBody = z.strictObject({ idempotencyKey: idempotencyKeySchema });
 
+// ---- Legal entities (finance picker) -----------------------------------------
+
+/** Read model for the finance screens' entity picker (legend-bddb): only what
+ * a report needs to label an entity. The NPWP stays masked to its last four
+ * digits; address, tenant id and bank accounts are not part of it. */
+export const accountingLegalEntitySchema = z.strictObject({
+  id: legalEntityIdSchema,
+  name: z.string().trim().min(1).max(150),
+  npwpLast4: z
+    .string()
+    .regex(/^\d{4}$/)
+    .nullable(),
+  isPkp: z.boolean(),
+});
+export type AccountingLegalEntity = z.infer<typeof accountingLegalEntitySchema>;
+
+/** Tenant-wide, `accounting.journal.view`; the org route stays
+ * `org.structure.manage`. */
+export const listLegalEntities = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/legal-entities`,
+  response: list(accountingLegalEntitySchema),
+});
+
 // ---- Chart of accounts -----------------------------------------------------
 
 export const listAccounts = defineEndpoint({
@@ -530,6 +554,23 @@ export const getAgingReport = defineEndpoint({
   }),
   response: dataResponseSchema(agingReportSchema),
 });
+/**
+ * Open invoices behind the aging report: one row per document with money
+ * still outstanding, oldest due date first (ties by id). `asOf` replays the
+ * past like the aging report; omitted = today's state.
+ */
+export const listOpenItems = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/open-items`,
+  query: cursorPageQuerySchema.extend({
+    legalEntityId: legalEntityIdSchema,
+    kind: openItemKindSchema,
+    counterpartyId: uuidSchema.optional(),
+    outletId: outletIdSchema.optional(),
+    asOf: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(openItemListRowSchema),
+});
 
 // ---- Fixed assets ----------------------------------------------------------
 
@@ -554,23 +595,6 @@ export const createFixedAsset = defineEndpoint({
 });
 export const getFixedAsset = defineEndpoint({
   method: "GET",
-/**
- * Open invoices behind the aging report: one row per document with money
- * still outstanding, oldest due date first (ties by id). `asOf` replays the
- * past like the aging report; omitted = today's state.
- */
-export const listOpenItems = defineEndpoint({
-  method: "GET",
-  path: `${BASE}/open-items`,
-  query: cursorPageQuerySchema.extend({
-    legalEntityId: legalEntityIdSchema,
-    kind: openItemKindSchema,
-    counterpartyId: uuidSchema.optional(),
-    outletId: outletIdSchema.optional(),
-    asOf: businessDateSchema.optional(),
-  }),
-  response: cursorPageSchema(openItemListRowSchema),
-});
   path: `${BASE}/fixed-assets/:fixedAssetId`,
   params: assetParams,
   response: dataResponseSchema(fixedAssetDetailSchema),
@@ -745,6 +769,7 @@ export const exportTaxReport = defineEndpoint({
 
 /** Every accounting endpoint, for registries and route-coverage tests. */
 export const accountingEndpoints = Object.freeze({
+  listLegalEntities,
   listAccounts,
   createAccount,
   updateAccount,
@@ -789,6 +814,7 @@ export const accountingEndpoints = Object.freeze({
   getReconciliationCase,
   actOnReconciliationCase,
   getAgingReport,
+  listOpenItems,
   listFixedAssets,
   createFixedAsset,
   getFixedAsset,
@@ -814,5 +840,4 @@ export const accountingEndpoints = Object.freeze({
   generateTaxReport,
   finalizeTaxReport,
   exportTaxReport,
-  listOpenItems,
 });
