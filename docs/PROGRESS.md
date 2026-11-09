@@ -2,6 +2,11 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-6b0ld Tutup Hari memeriksa celah struk semua run outlet (engineer, cabang `ws/day-close-all-gaps` dari `ws/receipt-gaps-prefix` 4087b661, 2026-11-09)
+
+- Sudah: port baru `posOutletReceiptGapsPort` (app.ts memasang `receiptGapsForOutletFast`) dicek sekali di `closePosDay` sesudah loop per perangkat. Tutup Hari kini ditolak (`RECEIPT_SEQUENCE_GAP`) bila ada nomor hilang di run mana pun milik outlet: perangkat yang tidak aktif hari itu, perangkat dicabut, run pensiun, dan urutan cloud prefix C. Pesan menyebut sampai 20 nomor (mis. `C-000002`). Rentang hilang `edge_regressed` tetap tidak menahan. Hitungan celah memakai kolom ordinal (indeks).
+- Review K: reviewer Opus (tanpa temuan) + architect (F1 pesan, F3 hitungan dibetulkan; F2 jadi legend-0hzqw: runbook/penghapusan teraudit untuk nomor yang benar-benar hilang, karena satu lubang kini menahan setiap Tutup Hari outlet; catatan ke legend-ol6v). Brief Codex: `docs/briefs/199b-second-opinion-day-close-all-gaps.md` (folder utama).
+
 ## legend-nhmct celah nomor struk per prefix di laporan shift (engineer, cabang `ws/receipt-gaps-prefix` dari `ws/edge-restore-detect` b6d6c8b4, 2026-11-09)
 
 - Sudah: port `PosReceiptGapsPort` mengembalikan satu entri per run perangkat `{prefix, missing[], lost}` (run tertua dulu; run tanpa masalah dihilangkan, perangkat bersih tetap `[]`). Laporan shift `receiptGaps` kini `[{prefix, missing: ["P2-000003"], lostRange}]`, jadi P1 #3 dan P2 #3 tampil terpisah. Run pensiun `edge_regressed` dengan `edge_reported_number` > `lastNumber` cloud menampilkan `lostRange` lastNumber+1..high-water untuk rekonsiliasi (dihitung saat dibaca, menyusut bila struk menyusul). Tutup Hari tetap menolak hanya bila ada nomor hilang; rentang hilang tidak menahan (satu baris di `pos-day.service.ts`).
