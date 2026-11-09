@@ -343,3 +343,9 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - 16:10 Codex 117 Run B: 3 P2 -> komentar legend-r7g2. Codex 154 Run 3: 2 P2 trigger 0135 (I15) -> G5xnj sisipkan sebelum q7jj; refund-tier ditahan dari batch9 sampai fix. Codex jalan: G8j38 160, G6dzs 122, 124 (akun 3).
 - 16:20 Codex 160 (edge-access-apply): 2 P2 (urutan generasi PIN hilang oleh LEAST(setAt, now()); hash/salt bisa bocor lewat DrizzleQueryError) -> G54my setelah uznb/8izz; edge-access-apply ditahan dari batch9. Codex G? 126 (akun 2).
 - 16:30 Codex 122 (provisioning, sudah di m1): 2 P2 -> legend-hd1m. Codex 124 (edge-master-sync): P2 galat DB mentah di log -> G54my bersama uznb/8izz. Akun Codex #2 limit 5 jam sampai 20:37: kapasitas Codex 2 (akun #3) sampai saat itu. Jalan: G3vo2 126, G0918 127. Antrean: 130, 133, 134, 138, 144, lalu brief baru 150b, 163/164, 166, 167.
+- 16:45 G4ncv selesai legend-tjwb: ws/edc-pan-fix 36599100 (migrasi baru 0141, 0135 tidak diubah), CTO verifikasi 14 file 186 lulus + kontrak 6/6. Codex 150b masuk antrean. G4ncv resolve.
+- G5qo3 selesai legend-4ndx: ws/pph21-overwithhold 1535d4d8, CTO verifikasi 16 file 322 lulus. Codex 156 Run 3 jalan (G8ke9). Bead baru legend-xzid (P2 cap BPJS Kes/LATE di builder payslip), legend-kn3n (kebijakan kekurangan pajak: founder B8 / konsultan B23). G5qo3 resolve.
+- Codex 127 (refund-promo, sudah di m1): 2 P1 -> legend-a0i7 (gabung dengan legend-ioyg, file pos-order-corrections.ts sama). Belum ada pemilik.
+- G6kfb mulai legend-em6p + fsl5 (brief 168, ws/dp-intent-lock dari m1).
+- G9syc dibuka lagi: batch9 = aj-fix142 d309b186, edc-pan-fix 36599100 (sebelum 0141 shift-close), pph21 1535d4d8. Ditahan: refund-tier (fix 0135), edge-access-apply (2 P2 Codex 160).
+- Kapasitas Codex: akun #2 limit sampai 20:37, akun #3 penuh (G08dj 130, G8ke9 156r3). Antrean: 150b, 133, 134, 138, 144, lalu brief baru 163/164, 166, 167, 168b.
