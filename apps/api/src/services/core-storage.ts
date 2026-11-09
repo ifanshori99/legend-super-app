@@ -141,6 +141,7 @@ export async function signedStorageUrl(
   id: string,
   variant: "original" | "thumbnail",
   deps: Pick<Dependencies, "storage" | "authorize">,
+  options: { downloadFileName?: string } = {},
 ) {
   assertTrustedScopedContext(context);
   const row = await withTenant(
@@ -179,6 +180,9 @@ export async function signedStorageUrl(
     key,
     visibility: "private",
     expiresInSeconds,
+    ...(options.downloadFileName && {
+      downloadFileName: options.downloadFileName,
+    }),
   });
   return {
     url,

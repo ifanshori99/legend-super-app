@@ -127,6 +127,15 @@ export const generateTaxReportInputSchema = z.strictObject({
   period: periodKeySchema,
 });
 
+/** Coretax export name `coretax-<type>-<period>.xml`: only `[a-z0-9-]` plus the
+ * extension, so it is safe in a Content-Disposition header. Throws on invalid input. */
+export function coretaxExportFileName(
+  type: TaxReportType,
+  period: string,
+): string {
+  return `coretax-${taxReportTypeSchema.parse(type)}-${periodKeySchema.parse(period)}.xml`;
+}
+
 export const taxReportExportSchema = z.strictObject({
   taxReportId: taxReportIdSchema,
   fileKey: z.string().min(1).max(500),

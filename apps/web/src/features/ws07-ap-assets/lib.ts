@@ -138,9 +138,9 @@ export function assetCode(asset: Pick<FixedAsset, "id">): string {
 }
 
 export function assetBookValueIdr(
-  asset: Pick<FixedAsset, "costIdr" | "accumulatedDepreciationIdr">,
+  asset: Pick<FixedAsset, "bookValueIdr">,
 ): number {
-  return asset.costIdr - asset.accumulatedDepreciationIdr;
+  return asset.bookValueIdr;
 }
 
 export type AssetTotals = {
@@ -207,17 +207,9 @@ export function disposalPreviewIdr(
 
 /** Gain (+) or loss (−) of an already disposed asset, for the detail sheet. */
 export function disposedResultIdr(
-  asset: Pick<
-    FixedAsset,
-    "costIdr" | "accumulatedDepreciationIdr" | "status" | "disposalProceedsIdr"
-  >,
+  asset: Pick<FixedAsset, "disposalResultIdr">,
 ): number | null {
-  if (asset.status !== "disposed" || asset.disposalProceedsIdr === null)
-    return null;
-  return (
-    asset.disposalProceedsIdr -
-    (asset.costIdr - asset.accumulatedDepreciationIdr)
-  );
+  return asset.disposalResultIdr;
 }
 
 /** A run with an amount posts exactly one journal (contract invariant). */

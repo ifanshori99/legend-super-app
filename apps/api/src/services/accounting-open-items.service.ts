@@ -13,26 +13,31 @@
 // re-reads the outstanding amount and refuses an over-allocation; the table
 // CHECK (settled <= original) repeats the rule for a writer that skipped it.
 
-import { and, eq, inArray, lte, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lte, or, sql, type SQL } from "drizzle-orm";
 import {
   buildAgingReport,
   counterpartyTypeSchema,
   legalEntityIdSchema,
   openItemKindSchema,
+  openItemListRowSchema,
   openItemSchema,
   type AgingReport,
   type OpenItem,
+  type OpenItemListRow,
   type OpenItemKind,
 } from "@starter/shared/accounting";
 import {
   businessDateSchema,
   CoreError,
+  decodeCursor,
+  encodeCursor,
   idempotencyKeySchema,
   idrSchema,
   outletIdSchema,
   outletIdsForQuery,
   uuidSchema,
   z,
+  type CursorPage,
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
@@ -410,5 +415,133 @@ export async function getAgingReport(
       query.asOf,
       DEFAULT_AGING_BUCKET_LIMITS,
     );
+  });
+}
+
+export type OpenItemListQuery = {
+  legalEntityId: string;
+  kind: OpenItemKind;
+  counterpartyId?: string;
+  outletId?: string;
+  asOf?: string;
+  cursor?: string;
+  limit: number;
+};
+
+/**
+ * Open invoices behind the aging cells: one row per document with money still
+ * outstanding, keyset-paged on (due_on, id) so the oldest due date comes
+ * first. `asOf` replays the past exactly like `getAgingReport` (documents
+ * dated on or before it, settlements dated on or before it); omitted, every
+ * settlement counts. TEN-03: an outlet-scoped caller sees its outlets' items
+ * only; entity-level items need tenant scope.
+ */
+export async function listOpenItems(
+  context: ScopedTenantContext,
+  query: OpenItemListQuery,
+): Promise<CursorPage<OpenItemListRow>> {
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    await requireLegalEntity(tx, tenantId, query.legalEntityId);
+    const filters: SQL[] = [
+      eq(accountingOpenItems.tenantId, tenantId),
+      eq(accountingOpenItems.legalEntityId, query.legalEntityId),
+      eq(accountingOpenItems.kind, query.kind),
+    ];
+    if (query.asOf)
+      filters.push(lte(accountingOpenItems.documentDate, query.asOf));
+    if (query.counterpartyId)
+      filters.push(
+        eq(accountingOpenItems.counterpartyId, query.counterpartyId),
+      );
+    const outlets = outletIdsForQuery(
+      context.outletScope,
+      query.outletId ? [query.outletId] : undefined,
+    );
+    if (outlets.kind === "outlets")
+      filters.push(
+        inArray(accountingOpenItems.outletId, [...outlets.outletIds]),
+      );
+    if (query.cursor) {
+      let keys: ReturnType<typeof decodeCursor>;
+      try {
+        keys = decodeCursor(query.cursor);
+      } catch {
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      }
+      const dueOn = businessDateSchema.safeParse(keys[0]);
+      const id = uuidSchema.safeParse(keys[1]);
+      if (!dueOn.success || !id.success)
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      const after = or(
+        gt(accountingOpenItems.dueOn, dueOn.data),
+        and(
+          eq(accountingOpenItems.dueOn, dueOn.data),
+          gt(accountingOpenItems.id, id.data),
+        ),
+      );
+      if (after) filters.push(after);
+    }
+    const settlementFilters: SQL[] = [
+      eq(accountingOpenItemSettlements.tenantId, tenantId),
+      eq(accountingOpenItemSettlements.kind, query.kind),
+    ];
+    if (query.asOf)
+      settlementFilters.push(
+        lte(accountingOpenItemSettlements.settledOn, query.asOf),
+      );
+    const settled = tx
+      .select({
+        openItemId: accountingOpenItemSettlements.openItemId,
+        settledIdr:
+          sql<string>`sum(${accountingOpenItemSettlements.amountIdr})`.as(
+            "settled_idr_listed",
+          ),
+      })
+      .from(accountingOpenItemSettlements)
+      .where(and(...settlementFilters))
+      .groupBy(accountingOpenItemSettlements.openItemId)
+      .as("settled_listed");
+    const settledSql = sql`coalesce(${settled.settledIdr}, 0)`;
+    const rows = await tx
+      .select({
+        item: accountingOpenItems,
+        settledIdr: sql<string>`${settledSql}`,
+      })
+      .from(accountingOpenItems)
+      .leftJoin(settled, eq(settled.openItemId, accountingOpenItems.id))
+      .where(
+        and(
+          ...filters,
+          sql`${accountingOpenItems.originalIdr} - ${settledSql} > 0`,
+        ),
+      )
+      .orderBy(asc(accountingOpenItems.dueOn), asc(accountingOpenItems.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map(({ item, settledIdr }) =>
+        openItemListRowSchema.parse({
+          id: item.id,
+          outletId: item.outletId,
+          counterpartyId: item.counterpartyId,
+          counterpartyName: item.counterpartyName,
+          documentNumber: item.documentNumber,
+          documentDate: item.documentDate,
+          dueOn: item.dueOn,
+          originalIdr: item.originalIdr,
+          settledIdr: Number(settledIdr),
+          outstandingIdr: item.originalIdr - Number(settledIdr),
+        }),
+      ),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.item.dueOn, last.item.id])
+            : null,
+      },
+    };
   });
 }

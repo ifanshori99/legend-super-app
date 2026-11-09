@@ -19,6 +19,7 @@ import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { createAccountingFinancePolicyRouter } from "./accounting-finance-policy.routes";
+import { createAccountingLegalEntitiesRouter } from "./accounting-legal-entities.routes";
 import { meRouter } from "./me.routes";
 import { orgRouter } from "./org.routes";
 import {
@@ -221,6 +222,8 @@ apiRouter.use("/accounting", accountingJournalRouter);
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // Per-tenant finance policy: bank matching tolerance, ACC-05 day limit (legend-pxcs).
 apiRouter.use("/accounting", createAccountingFinancePolicyRouter());
+// Legal-entity picker for finance screens, accounting.journal.view (legend-bddb).
+apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);

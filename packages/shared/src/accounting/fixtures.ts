@@ -7,10 +7,11 @@
 // the fixtures exercise the same code the BE runs and always balance.
 
 import { cafeLegendFixtures, idr } from "../core/index.ts";
-import type { OutletId, UserId } from "../core/index.ts";
+import type { Idr, OutletId, UserId } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import {
   straightLineSchedule,
+  fixedAssetDerivedFields,
   fixedAssetSchema,
   depreciationRunSchema,
 } from "./assets.ts";
@@ -73,6 +74,7 @@ import type {
   DistributionCalculation,
   DistributionRun,
 } from "./profit-share.ts";
+import { statementBasisFields } from "./statement-basis.ts";
 import {
   buildBalanceSheet,
   buildProfitAndLoss,
@@ -814,7 +816,13 @@ const payablesAndReceivables = openItems.map(
 
 // ---- Fixed assets + depreciation --------------------------------------------------
 
-const assetRow = (n: number, extra: Record<string, unknown>) =>
+const assetRow = (
+  n: number,
+  extra: Record<string, unknown> & {
+    costIdr: Idr;
+    accumulatedDepreciationIdr: Idr;
+  },
+) =>
   fixedAssetSchema.parse({
     id: fixedId("fa000000", n),
     tenantId,
@@ -833,6 +841,7 @@ const assetRow = (n: number, extra: Record<string, unknown>) =>
     disposalProceedsIdr: null,
     ...extra,
     originalCostIdr: extra.costIdr,
+    ...fixedAssetDerivedFields({ ...extra, disposalProceedsIdr: null }),
   });
 const fixedAssets = [
   assetRow(1, {
@@ -970,27 +979,36 @@ const trialBalance = buildTrialBalance(
   ledgerLines,
   legalEntityId,
   "2026-11-30",
+  fiscalPeriods,
 );
 const profitAndLossNovember = buildProfitAndLoss(accounts, ledgerLines, {
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
+  periods: fiscalPeriods,
 });
 const profitAndLossBandungNovember = buildProfitAndLoss(accounts, ledgerLines, {
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
   outletId: bandung,
+  periods: fiscalPeriods,
 });
 const balanceSheet = buildBalanceSheet(accounts, ledgerLines, {
   legalEntityId,
   asOf: "2026-11-30",
+  periods: fiscalPeriods,
 });
 
 const cashFlowNovember = cashFlowStatementSchema.parse({
   legalEntityId,
   from: "2026-11-01",
   to: "2026-11-30",
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-11-01",
+    to: "2026-11-30",
+    cumulative: true,
+  }),
   method: "direct",
   sections: [
     {
@@ -1015,6 +1033,11 @@ const equityChangesOctober = equityChangesSchema.parse({
   legalEntityId,
   from: "2026-10-01",
   to: "2026-10-31",
+  ...statementBasisFields(fiscalPeriods, {
+    from: "2026-10-01",
+    to: "2026-10-31",
+    cumulative: true,
+  }),
   rows: [
     {
       accountId: acc("3101"),
