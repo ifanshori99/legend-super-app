@@ -620,6 +620,7 @@ describe("expo board", () => {
     expect(open.channel).toBe("dine_in");
     expect(open.tableLabel).toBe("A12");
     expect(open.pickupNumber).toBeNull();
+    expect(open.pickupCode).toBeNull();
     expect(open.isComplete).toBe(false);
     expect(open.readyAt).toBeNull();
     expect(open.runnerId).toBeNull();
@@ -770,10 +771,30 @@ describe("expo board", () => {
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     const pickup = ticketOf(board, takeaway);
     expect(pickup.pickupNumber).toBe(42);
+    expect(pickup.pickupCode).toBe("A-042");
     expect(pickup.tableLabel).toBeNull();
     // Dine-in without a table session has no label and no call number.
     expect(ticketOf(board, bare).tableLabel).toBeNull();
     expect(ticketOf(board, bare).pickupNumber).toBeNull();
+    expect(ticketOf(board, bare).pickupCode).toBeNull();
+  });
+
+  it("a pickup number past 999 shows its letter code on the ticket (legend-ggpoe)", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const orderId = await seedOrder(tenantA, outlet, {
+      channel: "pos",
+      serviceType: "delivery",
+    });
+    await seedTicket(tenantA, outlet, orderId, { stationId: station });
+    await seedPickupCall(tenantA, outlet, orderId, 1000);
+
+    const board = expoBoardSchema.parse(
+      await readExpoBoard(ctxA(), outlet, new Date()),
+    );
+    const ticket = ticketOf(board, orderId);
+    expect(ticket.pickupNumber).toBe(1000);
+    expect(ticket.pickupCode).toBe("B-001");
   });
 
   it("carries the runner and the delivery from expo_assignments; delivered orders stay listed", async () => {

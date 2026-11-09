@@ -44,6 +44,7 @@ import {
   expoDeliveryBlock,
   expoRunnerSchema,
   expoTicketSchema,
+  formatPickupCode,
   type ExpoBoard,
   type ExpoRunner,
   type ExpoTicket,
@@ -199,6 +200,10 @@ async function loadExpoTickets(
         channel: expoChannel(o.channel, o.serviceType),
         tableLabel: o.tableLabel ?? null,
         pickupNumber: o.pickupNumber ?? null,
+        pickupCode:
+          o.pickupNumber === null || o.pickupNumber === undefined
+            ? null
+            : formatPickupCode(o.pickupNumber),
         stations: tickets.map((t) => ({
           stationId: t.stationId,
           stationName: t.stationName,

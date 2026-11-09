@@ -1019,3 +1019,12 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti: `LEGEND_TEST_FILES` 5 file 113/113 (`expo-pickup-rls.test.ts`, edge-received-events-migration, migration-fk-force-rls, migration-force-rls-guard, db/rls), `db:generate` kosong, tsc api lewat heavy, eslint, prettier.
 - Review K: reviewer Opus (FK ke tabel FORCE RLS lewat ALTER, dibetulkan dengan FK di dalam CREATE TABLE), architect (sama + celah trigger, dibetulkan), reviewer Opus ulang (logika benar, 3 celah cakupan test, ditutup). Second-opinion Codex: brief `docs/briefs/238b-second-opinion-expo-pickup-tables.md` (antre).
 - Untuk legend-mzhr0/him8j (komentar bd): alokasi nomor butuh advisory lock + retry; perilaku >999 dan order void belum diputuskan; runner_id tanpa FK, cek staf outlet di service.
+
+## legend-ggpoe nomor panggil berhuruf di order takeaway dan delivery (engineer, cabang `ws/pickup-call-letters` di atas 6fee08e3, 2026-11-10)
+
+- Keputusan founder Q51: pesanan tidak pernah ditolak karena nomor habis. Format: A-001..A-999, B-001.., Z-999, lalu AA-001, AB-001 dst (keputusan CTO), reset harian per outlet.
+- `pickup_calls.number` tetap urutan harian 1, 2, 3... (smallint jadi integer, check `>= 1`); kode dihitung dari urutan oleh `formatPickupCode` (`packages/shared/src/kitchen/pickup-code.ts`), tidak disimpan. Data lama (1..999) otomatis jadi A-001..A-999.
+- Migrasi `0175_pickup_call_letters` (`when` 1794254000000): ubah tipe `number`, ganti check nomor, tambah channel `delivery` (POS delivery sendiri) di check channel.
+- `allocatePickupCall`: tanpa batas 999 (`PICKUP_NUMBER_EXHAUSTED` dan `PICKUP_NUMBER_MAX` dihapus), `PickupCall.code`, service type `delivery` memakai channel `delivery`. Dipasang di `createPosOrder` (takeaway dan delivery, satu transaksi dengan order); dine-in dan perangkat training tidak dapat nomor.
+- Kontrak: `pickupCallSchema.code`, `expoTicketSchema.pickupCode`, `number` tanpa batas atas, channel `delivery`.
+- UI yang perlu menyusul (bukan scope): `ws04-expo/components/target-label.ts` ("Antrean {number}") dan `pickup-screen.tsx` + `sound.ts` (pengumuman suara) harus memakai `code`, bukan `number`.

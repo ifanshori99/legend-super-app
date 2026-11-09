@@ -1128,6 +1128,13 @@
       "when": 1794247000000,
       "tag": "0168_expo_pickup_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1794254000000,
+      "tag": "0175_pickup_call_letters",
+      "breakpoints": true
     }
   ]
 }

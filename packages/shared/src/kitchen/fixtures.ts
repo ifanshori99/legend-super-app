@@ -799,6 +799,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "dine_in",
       tableLabel: "A3",
       pickupNumber: null,
+      pickupCode: null,
       stations: [
         {
           stationId: stationId.kitchen,
@@ -825,6 +826,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "gofood",
       tableLabel: null,
       pickupNumber: 12,
+      pickupCode: "A-012",
       stations: [
         {
           stationId: stationId.kitchen,
@@ -851,6 +853,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "dine_in",
       tableLabel: "B7",
       pickupNumber: null,
+      pickupCode: null,
       stations: [
         {
           stationId: stationId.pastry,
@@ -871,6 +874,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "takeaway",
       tableLabel: null,
       pickupNumber: 14,
+      pickupCode: "A-014",
       stations: [
         {
           stationId: stationId.kitchen,
@@ -891,6 +895,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       channel: "takeaway",
       tableLabel: null,
       pickupNumber: 13,
+      pickupCode: "A-013",
       stations: [
         {
           stationId: stationId.beverage,
@@ -923,6 +928,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.gofood,
     channel: "gofood",
     number: 12,
+    code: "A-012",
     businessDate: "2026-11-01",
     status: "assigned",
     calledAt: null,
@@ -934,6 +940,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.takeaway,
     channel: "takeaway",
     number: 13,
+    code: "A-013",
     businessDate: "2026-11-01",
     status: "called",
     calledAt: "2026-11-01T04:12:00.000Z",
@@ -945,6 +952,7 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
     orderId: orderIds.takeawayDone,
     channel: "takeaway",
     number: 14,
+    code: "A-014",
     businessDate: "2026-11-01",
     status: "picked_up",
     calledAt: "2026-11-01T04:01:00.000Z",

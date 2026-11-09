@@ -11,8 +11,11 @@
 //
 // Assumptions where the contract is silent:
 //  - `orders.channel` has no `takeaway` value (ORDER_CHANNELS), so the cases
-//    that need a supported channel use `gofood`; `pos` and `qr` stand for the
-//    channels that get no call number.
+//    that need a supported channel use `gofood`; platform channels keep their
+//    own channel on the call.
+//  - legend-ggpoe: a POS/captain order gets a call by service type (takeaway ->
+//    channel "takeaway", delivery -> "delivery"); dine_in has no call number.
+//    The number never runs out: after 999 the code letter advances (B-001...).
 //  - A service-level scope or tenant mismatch is a thrown CoreError
 //    (OUTLET_OUT_OF_SCOPE) or HttpError (404); over HTTP that is 403 / 404.
 
@@ -32,7 +35,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { pickupDisplaySchema } from "@starter/shared/kitchen";
+import { pickupCallSchema, pickupDisplaySchema } from "@starter/shared/kitchen";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -145,6 +148,7 @@ async function seedOrder(
   outletId: string,
   input: {
     channel?: string;
+    serviceType?: string;
     status?: string;
     businessDate?: string;
   } = {},
@@ -156,7 +160,7 @@ async function seedOrder(
       `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
          subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
          status, business_date, placed_at, voided_at, void_reason)
-       VALUES ($1, $2, $3, $4, $5, 'delivery', 'pay_first', 10000, 0, 0, 0, 0, 10000,
+       VALUES ($1, $2, $3, $4, $5, $10, 'pay_first', 10000, 0, 0, 0, 0, 10000,
          $6, $7, now(), $8, $9)`,
       [
         ulidToUuid(ulid),
@@ -168,6 +172,7 @@ async function seedOrder(
         input.businessDate ?? nowDate(),
         status === "voided" ? new Date() : null,
         status === "voided" ? "Batal di kasir" : null,
+        input.serviceType ?? "delivery",
       ],
     ),
   );
@@ -536,6 +541,13 @@ describe("pickup number allocation", () => {
 
     const numbers = calls.map((c) => c.number).sort((a, b) => a - b);
     expect(numbers).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+    expect(new Set(calls.map((c) => c.code)).size).toBe(25);
+    expect(calls.map((c) => c.code).sort()).toEqual(
+      Array.from(
+        { length: 25 },
+        (_, i) => `A-${String(i + 1).padStart(3, "0")}`,
+      ),
+    );
     expect(new Set(calls.map((c) => c.orderId)).size).toBe(25);
     expect(calls.every((c) => c.status === "assigned")).toBe(true);
     expect((await callRows(tenantA, outlet)).map((r) => r.number)).toEqual(
@@ -605,30 +617,57 @@ describe("pickup number allocation", () => {
     }
   });
 
-  it("after number 999 the allocation fails 409 PICKUP_NUMBER_EXHAUSTED and writes nothing", async () => {
-    const outlet = await createOutlet(tenantA);
-    await seedCall(tenantA, outlet, { number: 999 });
-    const orderId = await seedOrder(tenantA, outlet);
-
-    await expect(allocate(ctxA(), orderId)).rejects.toMatchObject({
-      status: 409,
-      code: "PICKUP_NUMBER_EXHAUSTED",
-    });
-    expect((await callRows(tenantA, outlet)).map((r) => r.number)).toEqual([
-      999,
-    ]);
-    // Another outlet is not affected by this outlet running out.
-    const fresh = await createOutlet(tenantA);
-    expect(
-      (await allocate(ctxA(), await seedOrder(tenantA, fresh))).number,
-    ).toBe(1);
-  });
-
-  it("the last free number 999 is still handed out", async () => {
+  it("number 999 is A-999 and the next order gets number 1000 with code B-001, never refused", async () => {
     const outlet = await createOutlet(tenantA);
     await seedCall(tenantA, outlet, { number: 998 });
+    const last = await allocate(ctxA(), await seedOrder(tenantA, outlet));
+    expect([last.number, last.code]).toEqual([999, "A-999"]);
+
+    const next = await allocate(ctxA(), await seedOrder(tenantA, outlet));
+    expect([next.number, next.code]).toEqual([1000, "B-001"]);
+    const after = await allocate(ctxA(), await seedOrder(tenantA, outlet));
+    expect([after.number, after.code]).toEqual([1001, "B-002"]);
+    expect((await callRows(tenantA, outlet)).map((r) => r.number)).toEqual([
+      998, 999, 1000, 1001,
+    ]);
+  });
+
+  it("seeded at 999 the next order is B-001 and another outlet still starts at A-001", async () => {
+    const outlet = await createOutlet(tenantA);
+    await seedCall(tenantA, outlet, { number: 999 });
     const call = await allocate(ctxA(), await seedOrder(tenantA, outlet));
-    expect(call.number).toBe(999);
+    expect([call.number, call.code]).toEqual([1000, "B-001"]);
+    const fresh = await createOutlet(tenantA);
+    const first = await allocate(ctxA(), await seedOrder(tenantA, fresh));
+    expect([first.number, first.code]).toEqual([1, "A-001"]);
+  });
+
+  it("after Z-999 (number 25974) the code goes to two letters: AA-001", async () => {
+    const outlet = await createOutlet(tenantA);
+    await seedCall(tenantA, outlet, { number: 25974 });
+    const call = await allocate(ctxA(), await seedOrder(tenantA, outlet));
+    expect([call.number, call.code]).toEqual([25975, "AA-001"]);
+    const next = await allocate(ctxA(), await seedOrder(tenantA, outlet));
+    expect([next.number, next.code]).toEqual([25976, "AA-002"]);
+  });
+
+  it("a new business date restarts the code at A-001", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    await seedCall(tenantA, outlet, {
+      number: 1500,
+      businessDate: dayBefore(today),
+    });
+    const yesterday = await allocate(
+      ctxA(),
+      await seedOrder(tenantA, outlet, { businessDate: dayBefore(today) }),
+    );
+    expect(yesterday.code).toBe("B-502");
+    const fresh = await allocate(
+      ctxA(),
+      await seedOrder(tenantA, outlet, { businessDate: today }),
+    );
+    expect([fresh.number, fresh.code]).toEqual([1, "A-001"]);
   });
 
   it("a voided order gets no number: 409 PICKUP_ORDER_VOIDED", async () => {
@@ -641,16 +680,41 @@ describe("pickup number allocation", () => {
     expect(await callRows(tenantA, outlet)).toHaveLength(0);
   });
 
-  it("a channel without call numbers (pos, qr) is 409 PICKUP_CHANNEL_UNSUPPORTED", async () => {
+  it("a dine-in order (pos or qr channel) gets no call: 409 PICKUP_CHANNEL_UNSUPPORTED", async () => {
     const outlet = await createOutlet(tenantA);
     for (const channel of ["pos", "qr"]) {
-      const orderId = await seedOrder(tenantA, outlet, { channel });
+      const orderId = await seedOrder(tenantA, outlet, {
+        channel,
+        serviceType: "dine_in",
+      });
       await expect(allocate(ctxA(), orderId)).rejects.toMatchObject({
         status: 409,
         code: "PICKUP_CHANNEL_UNSUPPORTED",
       });
     }
     expect(await callRows(tenantA, outlet)).toHaveLength(0);
+  });
+
+  it("a pos takeaway order gets channel takeaway and a pos delivery order gets channel delivery", async () => {
+    const outlet = await createOutlet(tenantA);
+    const takeaway = await allocate(
+      ctxA(),
+      await seedOrder(tenantA, outlet, {
+        channel: "pos",
+        serviceType: "takeaway",
+      }),
+    );
+    const delivery = await allocate(
+      ctxA(),
+      await seedOrder(tenantA, outlet, {
+        channel: "captain",
+        serviceType: "delivery",
+      }),
+    );
+    expect([takeaway.channel, takeaway.code]).toEqual(["takeaway", "A-001"]);
+    expect([delivery.channel, delivery.code]).toEqual(["delivery", "A-002"]);
+    expect(pickupCallSchema.parse(takeaway)).toEqual(takeaway);
+    expect(pickupCallSchema.parse(delivery)).toEqual(delivery);
   });
 
   it("an unknown order is 404", async () => {
@@ -877,6 +941,28 @@ describe("pickup display feed", () => {
     expect(feed.calls.every((c) => c.status === "called")).toBe(true);
     expect(feed.calls.every((c) => c.businessDate === today)).toBe(true);
     expect(feed.calls.map((c) => c.number)).toEqual([2, 1]);
+    // Each feed row carries its display code next to the number.
+    expect(feed.calls.map((c) => c.code)).toEqual(["A-002", "A-001"]);
+  });
+
+  it("the feed shows letter codes past 999 and keeps the number", async () => {
+    const outlet = await createOutlet(tenantA);
+    await seedCall(tenantA, outlet, {
+      number: 999,
+      status: "called",
+      calledAt: "2031-03-15T10:00:00.000Z",
+    });
+    await seedCall(tenantA, outlet, {
+      number: 1000,
+      status: "called",
+      calledAt: "2031-03-15T10:10:00.000Z",
+    });
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(pickupDisplaySchema.parse(feed)).toEqual(feed);
+    expect(feed.calls.map((c) => [c.number, c.code])).toEqual([
+      [1000, "B-001"],
+      [999, "A-999"],
+    ]);
   });
 
   it("a number moves onto the feed when called and off it when picked up", async () => {
@@ -1169,6 +1255,7 @@ describe("pickup routes", () => {
     expect(called.body.data).toMatchObject({
       id: callId,
       number: 21,
+      code: "A-021",
       status: "called",
     });
     const calledAt = called.body.data.calledAt as string;

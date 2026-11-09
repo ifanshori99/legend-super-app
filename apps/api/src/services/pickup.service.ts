@@ -11,9 +11,12 @@
 //   (tenant, outlet, business_date, number). The same lock covers the unique
 //   (tenant, order_id): a repeat for an order returns the existing call.
 //   Decisions (legend-aiksz notes):
-//     * After 999 the allocation fails with 409 PICKUP_NUMBER_EXHAUSTED. The
-//       table allows 1..999 once per outlet-day and a number is never reused
-//       that day, because a reused number on the wall would call two customers.
+//     * The stored number is an unbounded sequence 1, 2, 3...; the code shown
+//       to the customer is derived from it (`formatPickupCode`): A-001..A-999,
+//       B-001..., Z-999, AA-001... An order is never refused because the
+//       numbers ran out (founder decision Q51, legend-ggpoe). A number is never
+//       reused that day, because a reused code on the wall would call two
+//       customers.
 //     * A voided order gets no number (409), and a call whose order was voided
 //       afterwards leaves the feed and cannot be called or picked up. The row
 //       stays (pickup_calls has no void status; numbers are not recycled).
@@ -32,6 +35,7 @@ import {
 } from "@starter/shared/core";
 import {
   canTransitionPickupCall,
+  formatPickupCode,
   isPickupCallRepeat,
   pickupCallBlock,
   pickupCallSchema,
@@ -53,8 +57,6 @@ import type { Tx } from "./permission-resolver.ts";
 
 type CallRow = typeof pickupCalls.$inferSelect;
 
-/** Highest daily number: the table CHECK and `pickupCallSchema.number`. */
-export const PICKUP_NUMBER_MAX = 999;
 const PROMOTION_BODY_MAX = 280;
 
 /**
@@ -74,6 +76,7 @@ function toCall(row: CallRow): PickupCall {
     orderId: row.orderId,
     channel: row.channel,
     number: row.number,
+    code: formatPickupCode(row.number),
     businessDate: row.businessDate,
     status: row.status,
     calledAt: row.calledAt?.toISOString() ?? null,
@@ -111,15 +114,16 @@ export async function allocatePickupCall(
     context.outletScope,
     outletIdSchema.parse(order.outletId),
   );
-  // The pickup channel is the delivery platform, or `takeaway` for any other
-  // channel (POS, QR, kiosk...) whose order is a takeaway; dine-in gets none.
+  // The pickup channel is the delivery platform, or `takeaway` / `delivery`
+  // (own POS delivery) by service type for any other channel (POS, QR,
+  // kiosk...); dine-in gets none.
   const channel = pickupChannelSchema.safeParse(
     order.channel === "gofood" ||
       order.channel === "grabfood" ||
       order.channel === "shopeefood"
       ? order.channel
-      : order.serviceType === "takeaway"
-        ? "takeaway"
+      : order.serviceType === "takeaway" || order.serviceType === "delivery"
+        ? order.serviceType
         : null,
   );
   if (!channel.success)
@@ -160,12 +164,6 @@ export async function allocatePickupCall(
       ),
     );
   const next = (top?.max ?? 0) + 1;
-  if (next > PICKUP_NUMBER_MAX)
-    throw new HttpError(
-      409,
-      "PICKUP_NUMBER_EXHAUSTED",
-      "Nomor panggil hari ini sudah habis (999). Hubungi manajer outlet.",
-    );
 
   const [row] = await tx
     .insert(pickupCalls)
