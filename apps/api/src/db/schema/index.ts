@@ -65,6 +65,10 @@ export * from "./edge-node";
 export * from "./pos-order";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
+// WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
+export * from "./purchasing";
+// WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
+export * from "./pos-shift";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
 export * from "./payroll-pph21-policy";
 // EDC agent framework (legend-apt).
@@ -79,3 +83,5 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// WS-06 inventory -> GL bridge tracking (legend-w1vo).
+export * from "./inventory-gl";

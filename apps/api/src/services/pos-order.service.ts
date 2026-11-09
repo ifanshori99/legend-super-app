@@ -123,6 +123,7 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
+import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
@@ -178,6 +179,10 @@ export async function mutatePosOrder<T>(
           input.outletId,
           input.orderId,
         );
+        await assertBusinessDayOpen(tx, context, {
+          outletId: input.outletId,
+          businessDates: [locked.order.businessDate],
+        });
         assertExpectedVersion(locked.pos, caller.expectedVersion);
         return run(tx, locked);
       },
@@ -600,6 +605,10 @@ export async function createPosOrder(
         }
 
         const businessDate = businessDateFor(outlet, now);
+        await assertBusinessDayOpen(tx, context, {
+          outletId,
+          businessDates: [businessDate],
+        });
         const channel = posPriceChannel(input.channel, input.serviceType);
         const catalogue = await loadPosCatalogue(tx, context, {
           brandId: outlet.brandId,

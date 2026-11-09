@@ -309,6 +309,7 @@ export type RejectRefundInput = z.infer<typeof rejectRefundInputSchema>;
 
 export const retryRefundPayoutInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
+  sourceEvidenceId: uuidSchema.optional(),
 });
 export type RetryRefundPayoutInput = z.infer<
   typeof retryRefundPayoutInputSchema

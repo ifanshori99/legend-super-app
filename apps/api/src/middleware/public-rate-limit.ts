@@ -58,6 +58,8 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   // authenticated staff configuration and must never share the guests'
   // per-IP budget at a venue NAT (Opus review legend-wd4b).
   "/api/payments/links",
+  // Supplier PO PDF share links (legend-9yz): token in the path, no session.
+  "/api/public/purchase-orders",
 ];
 
 export type PublicRateLimitOptions = {

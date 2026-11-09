@@ -1445,11 +1445,16 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     const real = run();
     assert.equal(real.status, 0, real.stderr);
     assertNoSecrets(real);
-    assert.equal(real.calls.length, 6);
+    assert.equal(real.calls.length, 7);
     checkedEffective(real.calls);
     assert.match(real.calls[3], /up -d --wait postgres\|/);
-    assert.match(real.calls[4], /--profile migration run --rm migrate\|/);
-    const [args, appEnv, workerEnv, apiFile] = real.calls[5].split("|");
+    // legend-jtnd, legend-k1np: the pre-deploy check runs before migrate.
+    assert.match(
+      real.calls[4],
+      /--profile migration run --rm migrate node dist\/predeploy-check\.js\|/,
+    );
+    assert.match(real.calls[5], /--profile migration run --rm migrate\|/);
+    const [args, appEnv, workerEnv, apiFile] = real.calls[6].split("|");
     assert.match(args, /--profile provisioning run --rm provision-roles$/);
     assert.equal(appEnv, app);
     assert.equal(workerEnv, worker);
@@ -1637,6 +1642,167 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     });
     const accented = run(["--dry-run"]);
     assert.equal(accented.status, 0, accented.stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legend-jtnd wrapper --migrator refuses a bad migrator login before docker and keeps passwords off argv", () => {
+  const dir = mkdtempSync(join(tmpdir(), "legend-jtnd-wrapper-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const log = join(dir, "log");
+    // Logs argv, the two bootstrap variables and the two restricted URLs the
+    // job must receive.
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/bin/sh\nprintf '%s|%s|%s|%s|%s\\n' "$*" "\${BOOTSTRAP_DATABASE_USER:-}" "\${BOOTSTRAP_DATABASE_PASSWORD:-}" "\${APP_DATABASE_URL:-}" "\${WORKER_DATABASE_URL:-}" >> "$TEST_LOG"\n`,
+      { mode: 0o755 },
+    );
+    const { write } = wrapperFixture(dir);
+    const bootstrapPassword = hex(16);
+    secrets.add(bootstrapPassword);
+    const run = (args = ["--migrator"]) => {
+      writeFileSync(log, "");
+      const result = spawnSync(
+        wrapper,
+        ["--env-file", join(dir, "compose.env"), ...args],
+        {
+          env: { PATH: `${bin}:${process.env.PATH}`, TEST_LOG: log },
+          encoding: "utf8",
+        },
+      );
+      const calls = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const call of calls)
+        assert.deepEqual(
+          leaks(call.split("|")[0]),
+          [],
+          "argv leaks a password",
+        );
+      return { ...result, calls };
+    };
+    const setCompose = (extra) => {
+      const path = join(dir, "compose.env");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8")
+          .split("\n")
+          .filter((line) => !/^POSTGRES_(USER|PASSWORD)=/.test(line))
+          .concat(extra)
+          .join("\n"),
+      );
+    };
+    const migrator = `legend_migrator_${hex(8)}`;
+    const migratorUrl = remember(
+      `postgresql://${migrator}:${hex(24)}@postgres:5432/legend`,
+    );
+
+    // Refused before any docker call.
+    const refusals = [
+      [
+        "postgresql://owner:" + hex(24) + "@postgres:5432/legend",
+        /MIGRATION_DATABASE_URL must look like postgresql:\/\/legend_migrator_<16 hex>/,
+      ],
+      [
+        `postgresql://legend_migrator_${hex(7)}:${hex(24)}@postgres:5432/legend`,
+        /MIGRATION_DATABASE_URL must look like/,
+      ],
+      [
+        `postgresql://${migrator}:${hex(8)}@postgres:5432/legend`,
+        /MIGRATION_DATABASE_URL must look like/,
+      ],
+    ];
+    for (const [url, message] of refusals) {
+      remember(url);
+      write({ migrator: `MIGRATION_DATABASE_URL=${url}\n` });
+      setCompose([
+        "POSTGRES_USER=postgres",
+        `POSTGRES_PASSWORD=${bootstrapPassword}`,
+      ]);
+      const refused = run();
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, message);
+      assertNoSecrets(refused);
+      assert.equal(refused.calls.length, 0, "docker must not run");
+    }
+    // A value Compose would resolve differently from the wrapper is refused,
+    // naming the key only.
+    write({ migrator: `MIGRATION_DATABASE_URL=${migratorUrl}\n` });
+    const hostile = [
+      ["POSTGRES_PASSWORD", `pa$$${hex(4)}`],
+      ["POSTGRES_PASSWORD", `pa\\${hex(4)}`],
+      ["POSTGRES_PASSWORD", `pa"${hex(4)}`],
+      ["POSTGRES_PASSWORD", `pa'${hex(4)}`],
+      ["POSTGRES_USER", `post$gres`],
+    ];
+    for (const [key, value] of hostile) {
+      secrets.add(value);
+      setCompose(
+        key === "POSTGRES_USER"
+          ? [`POSTGRES_USER=${value}`, `POSTGRES_PASSWORD=${bootstrapPassword}`]
+          : ["POSTGRES_USER=postgres", `POSTGRES_PASSWORD=${value}`],
+      );
+      const refused = run();
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(
+        refused.stderr,
+        new RegExp(`${key} in compose\\.env must not contain`),
+      );
+      assertNoSecrets(refused);
+      assert.equal(refused.calls.length, 0, "docker must not run");
+    }
+    // The bootstrap superuser is required.
+    setCompose([]);
+    const noBootstrap = run();
+    assert.equal(noBootstrap.status, 1);
+    assert.match(
+      noBootstrap.stderr,
+      /compose\.env must set POSTGRES_USER and POSTGRES_PASSWORD/,
+    );
+    assert.equal(noBootstrap.calls.length, 0, "docker must not run");
+    // Exclusive with the other modes.
+    for (const args of [
+      ["--migrator", "--audit"],
+      ["--dry-run", "--migrator"],
+    ]) {
+      const both = run(args);
+      assert.equal(both.status, 2, `${args}`);
+      assert.equal(both.calls.length, 0, "docker must not run");
+    }
+
+    // Success: start postgres, then the --migrator job; the bootstrap
+    // credentials arrive by environment only.
+    setCompose([
+      "POSTGRES_USER=postgres",
+      `POSTGRES_PASSWORD=${bootstrapPassword}`,
+    ]);
+    const ok = run();
+    assert.equal(ok.status, 0, ok.stderr);
+    assertNoSecrets(ok);
+    assert.equal(ok.calls.length, 5);
+    assert.match(ok.calls[3], /up -d --wait postgres\|/);
+    const [args, user, password] = ok.calls[4].split("|");
+    assert.match(
+      args,
+      /--profile provisioning run --rm -e BOOTSTRAP_DATABASE_USER -e BOOTSTRAP_DATABASE_PASSWORD provision-roles node dist\/provision-roles\.js --migrator$/,
+    );
+    assert.equal(user, "postgres");
+    assert.equal(password, bootstrapPassword);
+    // The validated restricted URLs reach the job by environment too.
+    const [, , , appUrl, workerUrl] = ok.calls[4].split("|");
+    assert.match(appUrl, /^postgresql:\/\/legend_runtime_[a-f0-9]{16}:/);
+    assert.match(workerUrl, /^postgresql:\/\/legend_worker_[a-f0-9]{16}:/);
+    // No migration, pre-deploy check or audit in this mode.
+    assert.doesNotMatch(
+      ok.calls.join("\n"),
+      /run --rm migrate|predeploy-check|--audit/,
+    );
+    for (const call of ok.calls.slice(0, 4))
+      assert.deepEqual(call.split("|").slice(1, 3), ["", ""]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

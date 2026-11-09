@@ -34,7 +34,11 @@ import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
-import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
+import {
+  setPosOrderPromoPort,
+  setPosShiftLookup,
+} from "./services/pos-order-ports.ts";
+import { findOpenShiftId } from "./services/pos-shift.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -50,13 +54,18 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // points tenders keep their fail-closed defaults (pos-order-ports.ts) until
 // those beads land.
 setPosOrderPromoPort(orderPromoPort);
+// WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
+setPosShiftLookup(findOpenShiftId);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [path, query] = url.split("?", 2);
+  const [rawPath, query] = url.split("?", 2);
+  // The purchase order share token is a path segment: bearer credential.
+  const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())
