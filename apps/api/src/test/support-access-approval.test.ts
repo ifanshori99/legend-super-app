@@ -1160,3 +1160,66 @@ describe("legend-c9kbk TEN-04 requester revoked before the decision", () => {
     await expectGuardRefuses(admin.userId);
   });
 });
+
+describe("legend-c9kbk TEN-04 re-review fixes", () => {
+  const LIST = "/api/org/support-access/requests";
+
+  it("legend-c9kbk TEN-04 an owner who is not independent of the requester can still reject", async () => {
+    const admin = await newSuperAdmin();
+    const insider = await newOwner();
+    await restampOwnerAssignment(
+      insider,
+      admin.userId,
+      new Date(Date.now() - 2 * HOUR_MS),
+    );
+    const request = await requestWrite(tenantId, admin.userId);
+    const rejected = await reject(insider, request.id);
+    expect(rejected.status).toBe("rejected");
+    expect(await grantCount(admin.userId)).toBe(0);
+  });
+
+  it("legend-c9kbk TEN-04 the database refuses an open read_write grant without an approved request", async () => {
+    const admin = await newSuperAdmin();
+    await expect(
+      db.query(
+        `INSERT INTO support_access_grants
+           (tenant_id, super_admin_user_id, reason, access_mode, duration_minutes,
+            started_at, expires_at, mfa_verified_at)
+         VALUES ($1, $2, $3, 'read_write', 30, now(), now() + interval '30 minutes', now())`,
+        [tenantId, admin.userId, REASON],
+      ),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "support_access_grant_write_approved_check",
+    });
+    expect(await grantCount(admin.userId)).toBe(0);
+  });
+
+  it("legend-c9kbk TEN-04 a legacy read_write grant without a request can still be closed", async () => {
+    // Shape of a write grant opened before migration 0160: ending it must not
+    // trip the approval check (NOT VALID still checks every UPDATE).
+    const admin = await newSuperAdmin();
+    const { rows } = await db.query<{ id: string }>(
+      `INSERT INTO support_access_grants
+         (tenant_id, super_admin_user_id, reason, access_mode, duration_minutes,
+          started_at, expires_at, mfa_verified_at, ended_at, ended_by)
+       VALUES ($1, $2, $3, 'read_write', 30, now() - interval '5 minutes',
+               now() + interval '25 minutes', now() - interval '6 minutes', now(), $2)
+       RETURNING id`,
+      [tenantId, admin.userId, REASON],
+    );
+    expect(rows).toHaveLength(1);
+    expect(await grantCount(admin.userId)).toBe(1);
+  });
+
+  it("legend-c9kbk TEN-04 a cursor whose id is not a uuid is a 422, not a 500", async () => {
+    const owner = await newOwner();
+    const cursor = Buffer.from(
+      JSON.stringify([new Date().toISOString(), "not-a-uuid"]),
+    ).toString("base64url");
+    const response = await owner.client.get(
+      `${LIST}?cursor=${encodeURIComponent(cursor)}`,
+    );
+    expect(response.status).toBe(422);
+  });
+});

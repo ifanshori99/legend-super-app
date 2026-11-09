@@ -82,12 +82,14 @@ export const supportAccessGrants = pgTable(
     uniqueIndex("support_access_grants_approval_request_key")
       .on(table.approvalRequestId)
       .where(sql`${table.approvalRequestId} IS NOT NULL`),
-    // legend-c9kbk (Q37): a new write session exists only through an approved
-    // request. The migration adds this NOT VALID, because open read_write
-    // grants predate it.
+    // legend-c9kbk (Q37): an open write session exists only through an
+    // approved request. Closed rows (ended or expiry recorded) are exempt, so
+    // a read_write grant opened before the approval flow can still be ended
+    // or recorded as expired (Postgres checks NOT VALID constraints on every
+    // UPDATE). An unapproved open write grant can never be inserted.
     check(
       "support_access_grant_write_approved_check",
-      sql`${table.accessMode} = 'read_only' OR ${table.approvalRequestId} IS NOT NULL`,
+      sql`${table.accessMode} = 'read_only' OR ${table.approvalRequestId} IS NOT NULL OR ${table.endedAt} IS NOT NULL OR ${table.expiryRecordedAt} IS NOT NULL`,
     ),
     check(
       "support_access_mode_check",

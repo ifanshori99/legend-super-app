@@ -538,6 +538,8 @@ export async function requestSupportAccess(input: {
  */
 
 const REQUEST_OBJECT_TYPE = "support_access_request";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const APPROVAL_WINDOW_MS = SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * 60 * 60_000;
 
 function requestStatus(row: RequestRow, now: Date): SupportAccessRequestStatus {
@@ -758,7 +760,11 @@ export async function listSupportAccessRequests(
     ];
     if (query.cursor) {
       const [requestedAt, id] = decodeCursor(query.cursor);
-      if (typeof requestedAt !== "string" || typeof id !== "string")
+      if (
+        typeof requestedAt !== "string" ||
+        typeof id !== "string" ||
+        !UUID_PATTERN.test(id)
+      )
         throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
       const at = new Date(requestedAt);
       if (Number.isNaN(at.getTime()))
@@ -921,7 +927,9 @@ async function decideSupportAccessRequest(
           current.superAdminUserId.toLowerCase() === actor.userId.toLowerCase()
         )
           return { kind: "self" } as const;
+        // Only approval opens access; any owner may still reject.
         if (
+          decision === "approve" &&
           !(await hasIndependentOwnerStanding(
             tx,
             tenantId,

@@ -50,9 +50,12 @@ ALTER TABLE public.support_access_grants NO FORCE ROW LEVEL SECURITY;--> stateme
 ALTER TABLE "support_access_grants" ADD CONSTRAINT "support_access_grants_approval_request_fk" FOREIGN KEY ("tenant_id","approval_request_id") REFERENCES "public"."support_access_requests"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE public.support_access_grants FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "support_access_grants_approval_request_key" ON "support_access_grants" USING btree ("approval_request_id") WHERE "support_access_grants"."approval_request_id" IS NOT NULL;--> statement-breakpoint
--- NOT VALID by hand: open read_write grants predate the approval flow. New and
--- updated rows are checked; existing ones are left alone.
-ALTER TABLE "support_access_grants" ADD CONSTRAINT "support_access_grant_write_approved_check" CHECK ("support_access_grants"."access_mode" = 'read_only' OR "support_access_grants"."approval_request_id" IS NOT NULL) NOT VALID;
+-- NOT VALID by hand: read_write grants opened before the approval flow have no
+-- request. Postgres still checks every INSERT and UPDATE, so closed rows
+-- (ended_at or expiry_recorded_at set) are exempt: a legacy open write grant can
+-- still be ended or recorded as expired, while an unapproved open write grant
+-- can never be inserted.
+ALTER TABLE "support_access_grants" ADD CONSTRAINT "support_access_grant_write_approved_check" CHECK ("support_access_grants"."access_mode" = 'read_only' OR "support_access_grants"."approval_request_id" IS NOT NULL OR "support_access_grants"."ended_at" IS NOT NULL OR "support_access_grants"."expiry_recorded_at" IS NOT NULL) NOT VALID;
 --> statement-breakpoint
 -- legend-c9kbk (founder Q37/Q38, TEN-04): requests for a read_write support
 -- session that a tenant owner must approve. Tenant-owned, so forced tenant RLS

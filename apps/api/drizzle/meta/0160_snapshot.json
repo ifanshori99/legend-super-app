@@ -5519,7 +5519,7 @@
       "checkConstraints": {
         "support_access_grant_write_approved_check": {
           "name": "support_access_grant_write_approved_check",
-          "value": "\"support_access_grants\".\"access_mode\" = 'read_only' OR \"support_access_grants\".\"approval_request_id\" IS NOT NULL"
+          "value": "\"support_access_grants\".\"access_mode\" = 'read_only' OR \"support_access_grants\".\"approval_request_id\" IS NOT NULL OR \"support_access_grants\".\"ended_at\" IS NOT NULL OR \"support_access_grants\".\"expiry_recorded_at\" IS NOT NULL"
         },
         "support_access_mode_check": {
           "name": "support_access_mode_check",
