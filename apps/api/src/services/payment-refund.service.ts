@@ -421,17 +421,21 @@ const LATE_PAYMENT_REFUND_KEY_PREFIXES = [
  * legend-leqj6: whether `refund` is the late-payment refund of its intent: the
  * request recorded its id under the once-per-intent key, so a refund that only
  * shares the requester (`system:pos`, `system:qr`) is not one.
+ * legend-p61pe: the QR request filed after another refund failed has its own
+ * key `<key>:<failedRefundId>` and counts the same.
  */
 async function isLatePaymentRefund(tx: Tx, refund: Refund): Promise<boolean> {
   const result = await tx.execute(sql`
     SELECT 1
       FROM payment_admin_idempotency
      WHERE tenant_id = ${refund.tenantId}
-       AND key IN (${sql.join(
+       AND (${sql.join(
          LATE_PAYMENT_REFUND_KEY_PREFIXES.map(
-           (prefix) => sql`${prefix + refund.paymentIntentId}`,
+           (prefix) =>
+             sql`key = ${prefix + refund.paymentIntentId}
+              OR key LIKE ${`${prefix}${refund.paymentIntentId}:%`}`,
          ),
-         sql`, `,
+         sql` OR `,
        )})
        AND response->>'refundId' = ${refund.id}
      LIMIT 1

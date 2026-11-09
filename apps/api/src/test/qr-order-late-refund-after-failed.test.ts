@@ -615,4 +615,59 @@ describe("QR order late refund after the committed refund failed (legend-p61pe)"
     expect(await refundsOf(w.intentId)).toHaveLength(2);
     expect(await systemRefunds(w.intentId)).toHaveLength(1);
   });
+
+  // Assumptions (P5): P is a raw pending staff refund inserted after R was
+  // approved (a raw insert skips the cap check at filing time). The amount of
+  // LP2 is not asserted (it depends on how the late refund counts P); only
+  // that approving LP2 while P is still pending is not rejected as
+  // cap_exceeded. The fake gateway answers "succeeded", so LP2 may end
+  // `approved` or `completed`.
+  it("QR-LATE-REFUND-P5 a replacement late refund approved while another staff refund is still pending is not failed cap_exceeded", async () => {
+    const w = await paidOrder();
+    const approver = await makeApprover();
+    const { refundId, providerRef } = await approvedRefund(
+      approver,
+      w.intentId,
+      w.totalIdr,
+    );
+    const partial = 1_000;
+    const pendingId = await filedRefund(
+      w.intentId,
+      partial,
+      "pending",
+      staff.userId,
+    );
+
+    await deliverToQr(w.event);
+    const order = await orderRow(w.orderId);
+    expect(order.void_reason).toBe("refund_committed");
+
+    await providerFails(providerRef, w.totalIdr);
+    expect(await refundStatus(refundId)).toBe("failed");
+    const [late] = await systemRefunds(w.intentId);
+    expect(late, "replacement late refund LP2 was not filed").toBeDefined();
+    expect(late!.status).toBe("pending");
+
+    const fake = new FakeRefundGateway();
+    fake.enqueue("succeeded");
+    setPaymentRefundGateway(fake);
+    try {
+      const response = await adminPost(approver, late!.id, "approve");
+      // Before the fix this is a 409 and LP2 is stored failed/cap_exceeded.
+      const after = (await refundsOf(w.intentId)).find(
+        (row) => row.id === late!.id,
+      )!;
+      expect(
+        response.status,
+        `${JSON.stringify(response.body)} stored=${after.status}/${after.failure_reason}`,
+      ).toBe(200);
+      expect(["approved", "completed"]).toContain(response.body.data.status);
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+
+    expect(["approved", "completed"]).toContain(await refundStatus(late!.id));
+    // The staff refund is untouched.
+    expect(await refundStatus(pendingId)).toBe("pending");
+  });
 });
