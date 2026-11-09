@@ -454,6 +454,8 @@ export async function regenerateMenuPrint(
         storage: deps.storage,
         scanner: deps.scanner ?? new NoopMalwareScanner(),
         authorize: async () => true, // callers authorised the outlet already
+        // System render (also run by the scheduled sweep): no user owns it.
+        actorUserId: null,
       },
     );
     await withTenant(db, context, (tx) =>

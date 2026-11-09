@@ -59,6 +59,7 @@ import {
   sealHrisPii,
 } from "../lib/hris-pii.ts";
 import { recordAudit } from "./core-audit.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
@@ -449,7 +450,11 @@ async function managedEmployee(
   employeeId: string,
 ) {
   const [employee] = await tx
-    .select({ id: employees.id, homeOutletId: employees.homeOutletId })
+    .select({
+      id: employees.id,
+      homeOutletId: employees.homeOutletId,
+      userId: employees.userId,
+    })
     .from(employees)
     .where(
       and(
@@ -543,6 +548,17 @@ export async function createEmploymentContract(
       })
       .returning();
     if (!row) throw new Error("Contract insert returned no row");
+    // The signed file belongs to the contract; the employee may read their own.
+    if (input.fileObjectId !== null)
+      await linkStorageObjectSource(tx, {
+        tenantId: context.tenant.tenantId,
+        objectId: input.fileObjectId,
+        sourceKind: "employment_contract",
+        sourceId: row.id,
+        actorUserId: access.actorUserId,
+        outletId: employee.homeOutletId,
+        ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+      });
     await recordAudit(
       tx,
       context,
@@ -610,6 +626,16 @@ export async function createEmployeeDocument(
       })
       .returning();
     if (!row) throw new Error("Document insert returned no row");
+    // The file belongs to the document; the employee may read their own.
+    await linkStorageObjectSource(tx, {
+      tenantId: context.tenant.tenantId,
+      objectId: input.storageObjectId,
+      sourceKind: "employee_document",
+      sourceId: row.id,
+      actorUserId: access.actorUserId,
+      outletId: employee.homeOutletId,
+      ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+    });
     await recordAudit(
       tx,
       context,

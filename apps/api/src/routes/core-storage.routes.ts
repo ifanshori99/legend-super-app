@@ -24,6 +24,7 @@ type Database = Parameters<typeof uploadStorage>[0];
 type ResolveRequest = (request: Request) => Promise<{
   context: ScopedTenantContext;
   authorize: UploadDependencies["authorize"];
+  actorUserId: string;
 }>;
 
 /** The caller supplies a server-side identity/scope and authorization resolver.
@@ -42,8 +43,8 @@ export function createStorageRouter(options: {
     limits: {
       fileSize: 10 * 1024 * 1024,
       files: 1,
-      fields: 2,
-      parts: 3,
+      fields: 3,
+      parts: 4,
       fieldSize: 256,
     },
   }).single("file");
@@ -94,6 +95,7 @@ export function createStorageRouter(options: {
           storage: options.storage,
           scanner: options.scanner,
           authorize: resolved.authorize,
+          actorUserId: resolved.actorUserId,
         },
       );
       res.status(201).json({ data: storageObjectSchema.parse(data) });

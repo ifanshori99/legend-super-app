@@ -2,6 +2,18 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-pszrm objek storage mencatat pemilik dan sumber, baca per objectId (engineer, cabang `ws/storage-object-owner` dari ws/support-storage-access b800ae30, 2026-11-10)
+
+- Migrasi `0177_storage_object_owner` (`when` 1794256000000, prevId = snapshot 0171 `2c41f8ad`): `core_storage_objects` + `owner_user_id`, `source_kind` (check daftar kind), `source_id` (check: id butuh kind), index (tenant, kind, id). Backfill tautan lama dokumen karyawan, kontrak, lampiran cuti. Wajib merge setelah 0172–0176.
+- Shared: `storageSourceKindSchema` (10 kind), `storageSourceKindPurpose`, `storageDefaultSourceKind` (selfie→attendance, menu_photo→menu_item), `sourceKind` opsional di metadata upload (harus cocok purpose).
+- `core-storage-access.ts`: baca per objectId. Pemilik selalu boleh; reviewer hanya kind yang cocok izinnya, di outlet objek; kind null (data lama) hanya `storageLegacyReadMap` (selfie `hr.attendance.manage`, document `hr.employee.manage`, receipt `accounting.reconcile`, menu `menu.item.manage`). Objek hilang, tenant lain, ditolak: jawaban sama. Receipt wajib punya kind saat upload.
+- `core-storage.ts`: upload mengisi pemilik = pengunggah dan kind; `linkStorageObjectSource` (sekali, purpose cocok, outlet cocok, hanya oleh pemilik; objek tanpa pemilik tidak pernah ditautkan, lampiran cuti juga wajib milik peminta). Render PDF menu otomatis: pemilik null. Dipakai kontrak, dokumen karyawan (pemilik → user karyawan), lampiran cuti.
+- Router storage tetap belum dipasang (legend-7nv1).
+- Review architect (K, lensa penyerang) 2 putaran: 2 temuan sedang (link tanpa cek outlet/pemilik + tanpa backfill; receipt tanpa kind) dan 1 rendah (PDF menu tanpa pemilik bisa diklaim sebagai lampiran cuti) semua dibetulkan.
+- Bukti: gagal-dulu 7/17 tes akses di implementasi lama (b800ae30). Akhir: 16 file test API, 239 lulus (termasuk `core-storage-backfill.test.ts` 11 dan RLS guard migrasi). `db:generate` kedua kosong. tsc shared + api exit 0 (heavy). eslint + prettier berkas berubah bersih. Tes root `tests/core-storage-contract.test.mjs` tidak dijalankan (hanya lewat `pnpm test` penuh; dibaca, kompatibel).
+- Brief Codex: `docs/briefs/261b-second-opinion-storage-owner.md` (belum dijalankan).
+- Sisa: kind untuk media SOP, maintenance, checklist, equipment, menu import belum ada (upload document tanpa kind tetap bisa, baca hanya pemilik + `hr.employee.manage`).
+
 ## legend-3k8no + legend-k7x4p order POS: replay idempoten lintas deploy, biaya layanan zona (engineer, cabang `ws/pos-order-replay-zone-charge` dari integ/m1-batch31 37ec911e, 2026-11-09)
 
 - Basis: integ/m1-batch31, bukan `milestone/m1` lokal (94d769c6, batch24), karena bug 3k8no ada di legend-63l6 (batch28) yang belum ada di `milestone/m1`.
