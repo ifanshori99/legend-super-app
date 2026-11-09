@@ -1156,6 +1156,13 @@
       "when": 1794246000000,
       "tag": "0167_payroll_core",
       "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "7",
+      "when": 1794247000000,
+      "tag": "0168_expo_pickup_tables",
+      "breakpoints": true
     }
   ]
 }

@@ -1087,3 +1087,14 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Risiko: rotasi kunci segel harus jalan sebagai owner role (app role tidak bisa UPDATE kolom tersegel); total run plaintext agregat; effectiveFrom gaji mundur belum ditolak (legend-8xf32).
 - Brief Codex `docs/briefs/237b-second-opinion-payroll-schema.md` (tidak di-commit).
 - Biaya sesi 479bb9e8: total biaya* 8596k (utama Opus 2779k, subagent Opus 819k, Sonnet 4946k, Haiku 52k), 19 subagent (Explore 5, implementer 8, test-writer 1, architect 2, test-runner 3), puncak sekitar 8 berjalan. `parallel-report` tidak menemukan sesi ini (transkrip di `.claude-swap-backup`).
+
+## legend-aiksz tabel pickup_calls dan expo_assignments (engineer, cabang `ws/expo-pickup-tables` di atas 4fe23687, 2026-11-09)
+
+- Migrasi `0168_expo_pickup_tables` (`when` 1794247000000). Skema `apps/api/src/db/schema/expo-pickup.ts`, trigger + RLS di `expo-pickup.custom.sql` (sudah ditempel ke migrasi).
+- `pickup_calls`: nomor harian per outlet 1..999, unik `(tenant, outlet, business_date, number)` dan `(tenant, order)`; check status/channel dan `called_at`/`picked_up_at` sesuai status; trigger: status tidak mundur, waktu pertama tetap.
+- `expo_assignments`: satu baris per order saat runner ditugaskan; `runner_id NOT NULL` (diantar selalu punya runner), `delivered_at`/`delivered_by` berpasangan; trigger: baris yang sudah diantar beku dan tidak bisa dihapus.
+- Kedua tabel: `enforce_tenant_rls` + `enforce_outlet_rls`, FK komposit ke orders/outlets ditulis di dalam CREATE TABLE (pola 1, aman untuk owner non-superuser).
+- Trigger tambahan (temuan architect): baris wajib di outlet order-nya (`app.order_outlet_match`, 23503, juga menolak order yang tak terlihat di RLS sesi); kolom identitas beku; status pickup tidak boleh loncat assigned->picked_up; baris expo yang sudah diantar beku penuh.
+- Bukti: `LEGEND_TEST_FILES` 5 file 113/113 (`expo-pickup-rls.test.ts`, edge-received-events-migration, migration-fk-force-rls, migration-force-rls-guard, db/rls), `db:generate` kosong, tsc api lewat heavy, eslint, prettier.
+- Review K: reviewer Opus (FK ke tabel FORCE RLS lewat ALTER, dibetulkan dengan FK di dalam CREATE TABLE), architect (sama + celah trigger, dibetulkan), reviewer Opus ulang (logika benar, 3 celah cakupan test, ditutup). Second-opinion Codex: brief `docs/briefs/238b-second-opinion-expo-pickup-tables.md` (antre).
+- Untuk legend-mzhr0/him8j (komentar bd): alokasi nomor butuh advisory lock + retry; perilaku >999 dan order void belum diputuskan; runner_id tanpa FK, cek staf outlet di service.
