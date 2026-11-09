@@ -12,6 +12,7 @@ import {
   dataResponseSchema,
   idempotencyKeySchema,
   outletIdSchema,
+  uuidSchema,
   z,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
@@ -86,7 +87,11 @@ import {
   reverseJournalInputSchema,
   updateManualJournalInputSchema,
 } from "./journal.ts";
-import { agingReportSchema, openItemKindSchema } from "./payables.ts";
+import {
+  agingReportSchema,
+  openItemKindSchema,
+  openItemListRowSchema,
+} from "./payables.ts";
 import { periodKeySchema } from "./period-key.ts";
 import {
   fiscalPeriodSchema,
@@ -549,6 +554,23 @@ export const createFixedAsset = defineEndpoint({
 });
 export const getFixedAsset = defineEndpoint({
   method: "GET",
+/**
+ * Open invoices behind the aging report: one row per document with money
+ * still outstanding, oldest due date first (ties by id). `asOf` replays the
+ * past like the aging report; omitted = today's state.
+ */
+export const listOpenItems = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/open-items`,
+  query: cursorPageQuerySchema.extend({
+    legalEntityId: legalEntityIdSchema,
+    kind: openItemKindSchema,
+    counterpartyId: uuidSchema.optional(),
+    outletId: outletIdSchema.optional(),
+    asOf: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(openItemListRowSchema),
+});
   path: `${BASE}/fixed-assets/:fixedAssetId`,
   params: assetParams,
   response: dataResponseSchema(fixedAssetDetailSchema),
@@ -792,4 +814,5 @@ export const accountingEndpoints = Object.freeze({
   generateTaxReport,
   finalizeTaxReport,
   exportTaxReport,
+  listOpenItems,
 });

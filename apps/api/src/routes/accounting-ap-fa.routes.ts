@@ -26,6 +26,7 @@ import {
   listBudgets,
   listDepreciationRuns,
   listFixedAssets,
+  listOpenItems,
   revalueFixedAsset,
   runDepreciation,
   upsertBudgets,
@@ -41,7 +42,10 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
-import { getAgingReport as getAgingReportService } from "../services/accounting-open-items.service.ts";
+import {
+  getAgingReport as getAgingReportService,
+  listOpenItems as listOpenItemsService,
+} from "../services/accounting-open-items.service.ts";
 import {
   createAssetCategory as createAssetCategoryService,
   listAssetCategories as listAssetCategoriesService,
@@ -111,6 +115,15 @@ export function createAccountingApFaRouter(): Router {
       res.json({
         data: await getAgingReportService(getScopedTenantContext(req), query),
       });
+    },
+  );
+
+  router.get(
+    route(listOpenItems.path),
+    outletOrTenant(VIEW, queryOutlet),
+    async (req, res) => {
+      const query = listOpenItems.query.parse(req.query);
+      res.json(await listOpenItemsService(getScopedTenantContext(req), query));
     },
   );
 
