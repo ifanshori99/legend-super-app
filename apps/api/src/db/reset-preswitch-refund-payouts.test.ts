@@ -2,11 +2,18 @@
 // claimed (payout_attempts > 0) without ever sending. Real PostgreSQL as the
 // migration owner, the same connection the script uses. Each test builds its
 // own rows; the switch-evidence guard counts every refund in the database, so
-// afterEach removes them. audit_logs is append-only (app.guard_audit_log), so
+// afterEach removes them. The script sees the whole database, and the shared
+// test database holds refund rows from other test files, so the script runs on
+// its own connection where a temp view named payment_refunds shadows the table
+// and exposes only the refunds of this file's intents (idempotency key rps-*).
+// A second temp view limits tenants to the fixture tenant: the test connection
+// bypasses RLS, so with N tenants in the database every refund would be read
+// once per tenant and the counts would be N times too high.
+// The script's selection and guards run unchanged on those rows. audit_logs is append-only (app.guard_audit_log), so
 // audit rows stay and each test reads only those of its own refund ids.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import {
   parseCutoff,
@@ -25,6 +32,12 @@ const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
 });
+/** One connection: the temp view below lives and dies with it (pg_temp is searched first). */
+const scoped = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 1,
+  idleTimeoutMillis: 0,
+});
 const now = new Date("2026-11-09T10:00:00.000Z");
 /** Deploy time of 5316426a in the tests; seeded rows default to before it. */
 const cutoff = new Date(now.getTime() - 60 * 60_000);
@@ -37,7 +50,7 @@ const apply = (
   extra: Extra = {},
 ) =>
   run({
-    pool: owner,
+    pool: scoped,
     apply: true,
     env,
     now,
@@ -49,9 +62,21 @@ const apply = (
 const dryRun = (
   env: Record<string, string | undefined> = {},
   extra: Extra = {},
-) => run({ pool: owner, apply: false, env, now, log, ...extra });
+) => run({ pool: scoped, apply: false, env, now, log, ...extra });
 
 const linkIds: string[] = [];
+beforeAll(async () => {
+  await scoped.query(
+    `CREATE TEMP VIEW tenants AS SELECT * FROM public.tenants WHERE id = '${tenantId}'`,
+  );
+  await scoped.query(
+    `CREATE TEMP VIEW payment_refunds AS
+       SELECT * FROM public.payment_refunds
+       WHERE payment_intent_id IN (
+         SELECT id FROM public.payment_intents WHERE idempotency_key LIKE 'rps-%')`,
+  );
+});
+
 const intentIds: string[] = [];
 let refundIds: string[] = [];
 
@@ -76,6 +101,7 @@ afterAll(async () => {
       linkIds,
     ]);
   });
+  await scoped.end();
   await owner.end();
 });
 
