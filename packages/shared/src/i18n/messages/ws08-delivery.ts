@@ -240,6 +240,8 @@ export const deliveryOpsMessages = {
     DELIVERY_MAPPING_INCOMPLETE:
       "Sebagian item belum terhubung ke menu outlet.",
     DELIVERY_CHANNEL_UNKNOWN: "Kanal pengiriman ini belum terhubung.",
+    DELIVERY_SYNC_NOT_PENDING:
+      "Pesanan ini sudah tidak menunggu tindakan. Muat ulang daftar.",
     fallback: "Permintaan tidak dapat diproses. Coba lagi sebentar lagi.",
   },
 };

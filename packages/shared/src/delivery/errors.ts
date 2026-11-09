@@ -16,6 +16,8 @@ export const deliveryErrorHttpStatus = {
   DELIVERY_MAPPING_INCOMPLETE: 422,
   /** Reconciliation was requested for a platform that is not connected. */
   DELIVERY_CHANNEL_UNKNOWN: 404,
+  /** The order is not flagged `needs_action` (already synced, resending, or never failed). */
+  DELIVERY_SYNC_NOT_PENDING: 409,
 } as const satisfies Record<string, number>;
 
 export type DeliveryErrorCode = keyof typeof deliveryErrorHttpStatus;
@@ -38,6 +40,8 @@ export const deliveryErrorMessages: Record<DeliveryErrorCode, string> = {
   DELIVERY_MAPPING_INCOMPLETE:
     "Sebagian item pesanan belum terhubung ke menu Cafe Legend.",
   DELIVERY_CHANNEL_UNKNOWN: "Kanal pengiriman ini belum terhubung.",
+  DELIVERY_SYNC_NOT_PENDING:
+    "Pesanan ini tidak sedang menunggu tindakan sinkronisasi platform.",
 };
 
 /** Domain error for delivery channel rules. */
