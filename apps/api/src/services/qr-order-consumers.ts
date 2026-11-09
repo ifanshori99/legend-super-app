@@ -40,11 +40,12 @@
 //   voided by `sweepUnpaidQrOrders` (relay tick), which also covers guests
 //   who stop polling (no expiry event is produced then).
 
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import {
+  domainEventOutbox,
   paymentIntents,
   paymentLinks,
   tableSessions,
@@ -182,19 +183,29 @@ async function orderSessionActive(
 }
 
 /**
- * A code the guest replaced (another bank or method): WS-05 expired it early,
- * before its own deadline, and a newer code exists on the same link. The
- * intent row keeps no reason, so this is read from the timestamps.
+ * Intents of the link that WS-05 superseded because the guest picked another
+ * bank or method (`supersedePending` appends `payment.expired` with reason
+ * `superseded`; the intent row keeps no reason). A provider or timeout expiry
+ * carries another reason, so it still counts as an attempt.
  */
-function wasSuperseded(
-  row: { status: string; expiresAt: Date; updatedAt: Date; createdAt: Date },
-  all: readonly { createdAt: Date }[],
-): boolean {
-  return (
-    row.status === "expired" &&
-    row.updatedAt.getTime() < row.expiresAt.getTime() &&
-    all.some((other) => other.createdAt.getTime() > row.createdAt.getTime())
-  );
+async function supersededIntentIds(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentIds: readonly string[],
+): Promise<Set<string>> {
+  if (intentIds.length === 0) return new Set();
+  const rows = await tx
+    .selectDistinct({ intentId: domainEventOutbox.aggregateId })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, context.tenant.tenantId),
+        inArray(domainEventOutbox.aggregateId, [...intentIds]),
+        sql`${domainEventOutbox.event}->>'name' = 'payment.expired'`,
+        sql`${domainEventOutbox.event}->'payload'->>'reason' = 'superseded'`,
+      ),
+    );
+  return new Set(rows.map((row) => row.intentId));
 }
 
 async function loadUnpaidState(
@@ -229,10 +240,9 @@ async function loadUnpaidState(
     );
   const intents = await tx
     .select({
+      id: paymentIntents.id,
       status: paymentIntents.status,
       expiresAt: paymentIntents.expiresAt,
-      updatedAt: paymentIntents.updatedAt,
-      createdAt: paymentIntents.createdAt,
     })
     .from(paymentIntents)
     .where(
@@ -241,6 +251,11 @@ async function loadUnpaidState(
         eq(paymentIntents.paymentLinkId, order.paymentLinkId),
       ),
     );
+  const superseded = await supersededIntentIds(
+    tx,
+    context,
+    intents.map((row) => row.id),
+  );
   const windowClosedAt = new Date(
     Math.max(
       order.placedAt.getTime(),
@@ -252,7 +267,7 @@ async function loadUnpaidState(
     // A missing link row fails closed: treated as expired.
     linkExpiresAt: link ? (link.expiresAt ?? null) : new Date(0),
     linkFullyPaid: link !== undefined && link.paidIdr >= link.totalIdr,
-    attempts: intents.filter((row) => !wasSuperseded(row, intents)).length,
+    attempts: intents.filter((row) => !superseded.has(row.id)).length,
     hasOpenIntent: intents.some(
       (row) =>
         row.status === "pending" &&
@@ -339,9 +354,18 @@ export async function handleQrOrderPaymentPaid(
       intentId,
       now,
     });
+    // A second code paid on the same bill (the guest switched bank and paid
+    // both) was booked as `double_payment` unallocated funds, which the
+    // request above cannot reach; it gets its own request.
+    const doubleRefundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
     // Identifiers only.
     logger.warn(
-      { orderId: order.id, intentId, refundId },
+      { orderId: order.id, intentId, refundId, doubleRefundIds },
       "QR order: payment settled after the unpaid order was voided; refund requested",
     );
     return "late_payment_on_voided_order";
@@ -393,8 +417,14 @@ export async function handleQrOrderPaymentPaid(
       intentId,
       now,
     });
+    const doubleRefundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
     logger.warn(
-      { orderId: order.id, intentId, refundId },
+      { orderId: order.id, intentId, refundId, doubleRefundIds },
       "QR order: payment settled after the table session closed; order voided, refund requested",
     );
     return "late_payment_on_closed_session";
@@ -431,6 +461,20 @@ export async function handleQrOrderPaymentPaid(
     );
   if (intent?.status !== "paid") return "not_settled";
   await fireQrOrder(tx, context, order, { now, reason: "verified_payment" });
+  // Outbox order across intents is not relied on: when this event's intent
+  // also carries `double_payment` funds (another code covered the bill
+  // first), they are returned here too; a replay files nothing new.
+  const doubleRefundIds = await requestQrDoublePaymentRefund(tx, context, {
+    order,
+    paymentLinkId,
+    intentId,
+    now,
+  });
+  if (doubleRefundIds.length > 0)
+    logger.warn(
+      { orderId: order.id, intentId, refundIds: doubleRefundIds },
+      "QR order: fired by a code whose bill another code already covered; refund requested",
+    );
   if (order.tableSessionId !== null)
     await notifyQrOrderChange(tx, context, {
       sessionId: order.tableSessionId,

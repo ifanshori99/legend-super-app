@@ -87,6 +87,8 @@ class FakeGateway implements PaymentGatewayPort {
   /** Outlets the guest flow asked channels for (the port takes an outlet). */
   readonly channelOutlets: (string | undefined)[] = [];
   banks: PaymentChannel[] = BANKS;
+  /** Set to make the provider report every code expired (early expiry). */
+  providerStatus: "pending" | "expired" = "pending";
   async health() {
     return { status: "available" as const };
   }
@@ -114,7 +116,7 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      status: this.providerStatus,
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -681,5 +683,74 @@ describe("QR guest virtual account (legend-3160)", () => {
     );
     expect(dispatch).toMatchObject({ route: "qr", outcome: "retry_allowed" });
     expect(await orderStatusOf(orderId)).toBe("awaiting_payment");
+  });
+
+  it("both VAs paid after the session closed: each payment gets a refund request", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const first = await as(guest).pay(orderId, "va", "bmri");
+    const second = await as(guest).pay(orderId, "va", "bnia");
+    expect(second.status).toBe(201);
+    const oldId = first.body.data.id as string;
+    const newId = second.body.data.id as string;
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE table_sessions SET status = 'voided', closed_at = now(), closed_reason = 'voided'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, guest.sessionId],
+      ),
+    );
+
+    expect(await payAndDeliver(newId, totalIdr)).toMatchObject({
+      outcome: "late_payment_on_closed_session",
+    });
+    expect(await orderStatusOf(orderId)).toBe("voided");
+    // The old VA is paid too: the bill is covered, so WS-05 books it as
+    // double-payment funds, which the late-payment request cannot reach.
+    expect(await payAndDeliver(oldId, totalIdr)).toMatchObject({
+      outcome: "late_payment_on_voided_order",
+    });
+    expect(await refundsOf(newId)).toMatchObject([
+      { amount_idr: String(totalIdr), unallocated_fund_id: null },
+    ]);
+    const [oldRefund] = await refundsOf(oldId);
+    expect(oldRefund).toMatchObject({
+      amount_idr: String(totalIdr),
+      status: "pending",
+      requested_by: "system:qr",
+    });
+    expect(oldRefund!.unallocated_fund_id).not.toBeNull();
+    expect(await refundsOf(oldId)).toHaveLength(1);
+  });
+
+  it("a provider's early expiry still counts as a payment attempt", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId } = await placeOrder(guest);
+    let last = "";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const opened = await as(guest).pay(orderId, "qris");
+      expect(opened.status).toBe(201);
+      last = opened.body.data.id as string;
+      // The provider closes the code before its own deadline.
+      gateway.providerStatus = "expired";
+      try {
+        const polled = await as(guest).payment(last);
+        expect(polled.body.data.status).toBe("expired");
+      } finally {
+        gateway.providerStatus = "pending";
+      }
+    }
+    const [expired] = await outboxEvents("payment.expired", last);
+    expect(expired?.payload.reason).toBe("gateway");
+    const context = contextOf(tenant.tenantId);
+    const dispatch = await withTenant(db, context, (tx) =>
+      deliverOrderPaymentEvent(context, expired!, tx, new Date()),
+    );
+    expect(dispatch).toMatchObject({ route: "qr", outcome: "voided" });
+    const { rows } = await owner.query<{ void_reason: string }>(
+      "SELECT void_reason FROM orders WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    expect(rows[0]!.void_reason).toBe("payment_attempts_exhausted");
   });
 });
