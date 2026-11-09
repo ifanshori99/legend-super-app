@@ -53,3 +53,21 @@ Pertanyaan khusus:
 ## Keluaran
 
 Satu berkas hasil per run (`264b-second-opinion-kds.resultA.md`, `.resultB.md`), temuan nyata saja: berkas:baris, skenario gagal, saran perbaikan. Tanpa pujian.
+
+## Run C: baca stasiun untuk cook dan peringatan staf (brief 278, legend-gt7f dan legend-078b)
+
+Cabang `ws/kds-cook-reads` (di atas `ws/kds-capacity-rules`), worktree `.worktrees/kds-cook-reads`. Tanpa migrasi. HEAD isi dari laporan engineer. Perintah diff:
+
+```
+git diff 34f0dc53 ws/kds-cook-reads -- apps/api packages/shared
+```
+
+Pertanyaan khusus:
+
+1. Dua endpoint baca baru `GET /api/outlets/:outletId/kitchen/station-labels` dan `GET /api/outlets/:outletId/kitchen/stations/:stationId/capacity-rules` memakai izin `kds.ticket.process`. Apakah cook yang hanya punya izin itu bisa membaca stasiun di luar jangkauannya, outlet lain, atau tenant lain? Pembatasan harus terjadi di SQL (`stationScopeCondition`), bukan di filter sesudah baca.
+2. Apakah ada kolom sensitif (aturan prioritas internal, id pengguna, biaya) yang ikut keluar di bentuk ramping untuk cook? Bandingkan dengan bentuk milik pengelola (`kds.station.manage`).
+3. PUT capacity-rules tetap `kds.station.manage`. Adakah jalur lain yang membuat cook bisa menulis?
+4. Peringatan `kitchen_ticket.unrouted` (baris QR tanpa stasiun dapur) dan `order.kitchen_voided` (void dapur untuk pesanan QR) lewat tabel `notification_outbox` dan `notifications` yang sudah ada. Apakah satu kejadian bisa menghasilkan lebih dari satu notifikasi per penerima (kunci `eventId:userId:category`, unik `(tenant_id, source_event_id)`), termasuk saat checkout dipanggil ulang atau dua pembayaran bersamaan?
+5. Penerima: hanya staf outlet yang sama? Penerima dari penugasan zona (waiter) harus aktif, tidak diblokir, dan punya `floor.table.operate` saat kirim; bila kosong, jatuh ke pemegang `kds.station.manage`. Adakah tenant atau outlet lain yang bisa menerima?
+6. Peringatan dikirim di dalam savepoint, jadi kegagalan ditelan agar checkout tidak gagal. Apakah konteks RLS pada jalur checkout tamu cukup agar baris notifikasi benar-benar tertulis (bukan hilang diam-diam)? Ada tes lewat jalur checkout nyata.
+7. Void tiket tanpa baris tidak boleh mengirim peringatan.
