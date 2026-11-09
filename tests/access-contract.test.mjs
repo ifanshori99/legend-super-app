@@ -1520,6 +1520,8 @@ describe("hr.announcement.manage (legend-poxk)", () => {
         key,
       );
     assert.ok(template("kitchen_lead").permissions.includes("hr.sop.manage"));
+    // Still reads the announcement feed (no regression from the split).
+    assert.ok(template("kitchen_lead").permissions.includes("self.sop.read"));
     assert.ok(
       !template("kitchen_lead").permissions.includes("hr.announcement.manage"),
     );

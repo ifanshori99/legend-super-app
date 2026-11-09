@@ -13,6 +13,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { roleTemplate } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type { Announcement } from "@starter/shared/hris";
 import { createApp } from "../app.ts";
@@ -1017,6 +1018,30 @@ describe("announcements over HTTP", () => {
       `/api/hris/announcements/${id}/receipts`,
     );
     expect(receipts.status).toBe(403);
+  });
+
+  it("[legend-poxk] a kitchen_lead (template permissions) still reads the feed but cannot publish", async () => {
+    const kitchen = (
+      await signedIn(
+        "Kitchen",
+        [...roleTemplate("kitchen_lead").permissions],
+        { type: "outlet", id: outletA },
+        outletA,
+      )
+    ).client;
+    const feed = await kitchen.get("/api/hris/announcements?limit=10");
+    expect(feed.status, JSON.stringify(feed.body)).toBe(200);
+    const create = await kitchen
+      .post("/api/hris/announcements")
+      .set(originHeader)
+      .send({
+        title: `Kitchen ${run}`,
+        body: "Isi.",
+        audience: { kind: "outlets", outletIds: [outletA] },
+        requiresReceipt: false,
+        expiresAt: null,
+      });
+    expect(create.status).toBe(403);
   });
 
   it("[TEN-01] anonymous requests answer 401", async () => {

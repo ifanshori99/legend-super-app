@@ -3,8 +3,9 @@
 // resolver reads stored role rows, not the catalog):
 // - hr.announcement.manage -> owner, general_manager, hr
 // - self.loan.request      -> employee
-// Not tenant_admin, kitchen_lead or any other template, and never a custom
-// role. Idempotent. The test runs the real SQL file against rows in the
+// - self.sop.read          -> kitchen_lead (keeps reading the announcement feed
+//   now that managing announcements no longer rides on hr.sop.manage)
+// Not tenant_admin or any other template, and never a custom role. Idempotent. The test runs the real SQL file against rows in the
 // pre-0171 shape, twice.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -25,6 +26,7 @@ const tenantIds: string[] = [];
 
 const ANNOUNCE = "hr.announcement.manage";
 const LOAN = "self.loan.request";
+const SOP_READ = "self.sop.read";
 
 function migrationStatements(): string[] {
   const sql = readFileSync(
@@ -135,6 +137,12 @@ describe("legend-9yb5u migration 0171 permission backfill", () => {
       ...base,
       ANNOUNCE,
     ]);
+    const kitchenHolds = await insertRole(
+      otherTenant,
+      "Dapur",
+      "kitchen_lead",
+      [...base, SOP_READ],
+    );
 
     await applyMigration();
     await applyMigration();
@@ -144,8 +152,9 @@ describe("legend-9yb5u migration 0171 permission backfill", () => {
     expect(await permissionsOf(hr)).toEqual([...base, ANNOUNCE]);
     expect(await permissionsOf(employee)).toEqual([...base, LOAN]);
     expect(await permissionsOf(admin)).toEqual(base);
-    expect(await permissionsOf(kitchen)).toEqual(base);
+    expect(await permissionsOf(kitchen)).toEqual([...base, SOP_READ]);
     expect(await permissionsOf(custom)).toEqual(base);
     expect(await permissionsOf(already)).toEqual([...base, ANNOUNCE]);
+    expect(await permissionsOf(kitchenHolds)).toEqual([...base, SOP_READ]);
   });
 });

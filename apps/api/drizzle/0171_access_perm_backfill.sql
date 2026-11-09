@@ -33,4 +33,15 @@ WHERE "is_template"
   AND "template_key" = 'employee'
   AND NOT ("permissions" @> '["self.loan.request"]'::jsonb);
 --> statement-breakpoint
+-- self.sop.read (read the announcement feed and confirm receipts): kitchen_lead.
+-- Announcements were managed with hr.sop.manage, which kitchen_lead holds, so
+-- it read the feed; the split to hr.announcement.manage would otherwise cut
+-- that off (legend-poxk, CTO decision: no regression).
+UPDATE "roles"
+SET "permissions" = "permissions" || '["self.sop.read"]'::jsonb,
+    "updated_at" = now()
+WHERE "is_template"
+  AND "template_key" = 'kitchen_lead'
+  AND NOT ("permissions" @> '["self.sop.read"]'::jsonb);
+--> statement-breakpoint
 ALTER TABLE public.roles FORCE ROW LEVEL SECURITY;
