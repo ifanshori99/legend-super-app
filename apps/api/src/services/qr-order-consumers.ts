@@ -49,10 +49,8 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
-  paymentEvidence,
   paymentIntents,
   paymentLinks,
-  paymentUnallocatedFunds,
   tableSessions,
 } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
@@ -305,64 +303,29 @@ async function lockOrderOfLink(
  * durable WS-05 rows: the money its provider evidence brought in, less the
  * part booked as unallocated funds (overpayment or double payment, whatever
  * became of it later). WS-05 keeps no per-code allocation column; these two
- * append-only tables are the allocation record.
+ * append-only tables, written in the settling transaction, are the allocation
+ * record. One statement, so one snapshot: a second payment of a code that
+ * commits mid-read can never make its evidence count without its fund (or
+ * the reverse) under READ COMMITTED.
  */
 async function allocatedIdrByIntent(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string,
 ): Promise<Map<string, number>> {
-  const tenantId = context.tenant.tenantId;
-  const paid = await tx
-    .select({ id: paymentIntents.id })
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.paymentLinkId, paymentLinkId),
-        eq(paymentIntents.status, "paid"),
-      ),
-    );
-  const intentIds = paid.map((row) => row.id);
-  if (intentIds.length === 0) return new Map();
-  const received = await tx
-    .select({
-      intentId: paymentEvidence.paymentIntentId,
-      total: sql<string>`coalesce(sum(${paymentEvidence.amountIdr}), 0)::text`,
-    })
-    .from(paymentEvidence)
-    .where(
-      and(
-        eq(paymentEvidence.tenantId, tenantId),
-        inArray(paymentEvidence.paymentIntentId, intentIds),
-      ),
-    )
-    .groupBy(paymentEvidence.paymentIntentId);
-  const unallocated = await tx
-    .select({
-      intentId: paymentUnallocatedFunds.paymentIntentId,
-      total: sql<string>`coalesce(sum(${paymentUnallocatedFunds.amountIdr}), 0)::text`,
-    })
-    .from(paymentUnallocatedFunds)
-    .where(
-      and(
-        eq(paymentUnallocatedFunds.tenantId, tenantId),
-        inArray(paymentUnallocatedFunds.paymentIntentId, intentIds),
-      ),
-    )
-    .groupBy(paymentUnallocatedFunds.paymentIntentId);
-  const receivedBy = new Map(
-    received.map((row) => [row.intentId, Number(row.total)]),
-  );
-  const unallocatedBy = new Map(
-    unallocated.map((row) => [row.intentId, Number(row.total)]),
-  );
-  return new Map(
-    intentIds.map((id) => [
-      id,
-      (receivedBy.get(id) ?? 0) - (unallocatedBy.get(id) ?? 0),
-    ]),
-  );
+  const result = await tx.execute<{ id: string; allocated: string }>(sql`
+    SELECT i.id,
+           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                       WHERE e.tenant_id = i.tenant_id
+                         AND e.payment_intent_id = i.id), 0)
+          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                       WHERE f.tenant_id = i.tenant_id
+                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+      FROM payment_intents i
+     WHERE i.tenant_id = ${context.tenant.tenantId}
+       AND i.payment_link_id = ${paymentLinkId}
+       AND i.status = 'paid'`);
+  return new Map(result.rows.map((row) => [row.id, Number(row.allocated)]));
 }
 
 /**
@@ -579,7 +542,7 @@ export async function handleQrOrderPaymentPaid(
     });
     return refundIds.length > 0
       ? "double_payment_refund_requested"
-      : "not_settled";
+      : "unchanged";
   }
   if (payerIntentId !== intentId)
     logger.warn(

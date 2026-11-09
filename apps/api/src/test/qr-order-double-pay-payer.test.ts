@@ -688,3 +688,103 @@ describe("QR order paid twice keeps the first code as payer (legend-mks0q)", () 
     });
   }
 });
+
+// ---- extra delivery orders (legend-mks0q, brief 2) ---------------------------
+//
+// Assumptions:
+// - When B's event is consumed first, A (settled, covers the link total) is the
+//   one paid code that covers it, so the order is fired pinned to A and B's
+//   double-payment fund is refunded; A's event afterwards changes nothing.
+// - Only the consumer result's `outcome` ("fired" / "unchanged") is asserted;
+//   its other fields are not pinned.
+
+/** Two codes (A superseded, B fresh), both settled; returns events in outbox order. */
+async function orderPaidTwice() {
+  await freshWorld();
+  const guest = await seatAtNewTable();
+  const { orderId, totalIdr } = await placeOrder(guest);
+  const intentA = await openPayment(guest, orderId);
+  await owner.query(
+    `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 minute'
+      WHERE tenant_id = $1 AND id = $2`,
+    [tenant.tenantId, intentA],
+  );
+  const intentB = await openPayment(guest, orderId);
+  await settle(intentA, totalIdr);
+  await settle(intentB, totalIdr);
+  return {
+    orderId,
+    totalIdr,
+    intentA,
+    intentB,
+    eventA: await onlyPaidEvent(intentA),
+    eventB: await onlyPaidEvent(intentB),
+  };
+}
+
+describe("QR order paid twice: delivery order and replay (legend-mks0q)", () => {
+  it("QR-DOUBLE-PAY-03 B's event alone fires the order pinned to A; A's event afterwards changes nothing", async () => {
+    const w = await orderPaidTwice();
+
+    expect(await deliverToQr(w.eventB)).toMatchObject({ outcome: "fired" });
+    expect(await orderRow(w.orderId)).toMatchObject({
+      status: "sent",
+      payment_intent_id: w.intentA,
+    });
+    expect(await orderPaidEvents(w.orderId)).toHaveLength(1);
+    expect(await doublePaymentRefunds(w.intentB)).toEqual([
+      { id: expect.any(String), status: "pending", amount: String(w.totalIdr) },
+    ]);
+    expect(await allRefunds(w.intentA)).toHaveLength(0);
+
+    expect(await deliverToQr(w.eventA)).toMatchObject({
+      outcome: "unchanged",
+    });
+    expect(await orderRow(w.orderId)).toMatchObject({
+      status: "sent",
+      payment_intent_id: w.intentA,
+    });
+    expect(await orderPaidEvents(w.orderId)).toHaveLength(1);
+    expect(await doublePaymentRefunds(w.intentB)).toHaveLength(1);
+    expect(await allRefunds(w.intentA)).toHaveLength(0);
+  });
+
+  it("QR-DOUBLE-PAY-04 replaying both events leaves one order.paid, payer A, one refund for B and none for A", async () => {
+    const w = await orderPaidTwice();
+    await deliverToQr(w.eventB);
+    await deliverToQr(w.eventA);
+    await deliverToQr(w.eventB);
+    await deliverToQr(w.eventA);
+
+    expect(await orderRow(w.orderId)).toMatchObject({
+      status: "sent",
+      payment_intent_id: w.intentA,
+    });
+    expect(await orderPaidEvents(w.orderId)).toHaveLength(1);
+    expect(await doublePaymentRefunds(w.intentB)).toHaveLength(1);
+    expect(await doublePaymentRefunds(w.intentA)).toHaveLength(0);
+    expect(await allRefunds(w.intentA)).toHaveLength(0);
+  });
+
+  it("QR-DOUBLE-PAY-05 one code paid twice: that code is the payer and its extra payment is refunded once", async () => {
+    await freshWorld();
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const intent = await openPayment(guest, orderId);
+
+    // Two settlements with different provider refs on the same intent.
+    await settle(intent, totalIdr);
+    await settle(intent, totalIdr);
+    const event = await onlyPaidEvent(intent);
+
+    expect(await deliverToQr(event)).toMatchObject({ outcome: "fired" });
+    expect(await orderRow(orderId)).toMatchObject({
+      status: "sent",
+      payment_intent_id: intent,
+    });
+    expect(await orderPaidEvents(orderId)).toHaveLength(1);
+    expect(await doublePaymentRefunds(intent)).toEqual([
+      { id: expect.any(String), status: "pending", amount: String(totalIdr) },
+    ]);
+  });
+});
