@@ -57,6 +57,9 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import type { Tx } from "./menu-internals.ts";
+import { refundableBalance } from "./payment-admin.service.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import {
   requestQrDoublePaymentRefund,
   requestQrLatePaymentRefund,
@@ -96,6 +99,7 @@ export type QrPaymentPaidOutcome =
   | "currency_mismatch"
   | "late_payment_on_voided_order"
   | "late_payment_on_closed_session"
+  | "late_payment_refund_committed"
   | "double_payment_refund_requested";
 
 export type QrPaymentClosedOutcome =
@@ -324,7 +328,7 @@ async function allocatedIdrByIntent(
       FROM payment_intents i
      WHERE i.tenant_id = ${context.tenant.tenantId}
        AND i.payment_link_id = ${paymentLinkId}
-       AND i.status = 'paid'`);
+       AND i.status IN ('paid', 'partially_refunded', 'refunded')`);
   return new Map(result.rows.map((row) => [row.id, Number(row.allocated)]));
 }
 
@@ -520,7 +524,15 @@ export async function handleQrOrderPaymentPaid(
         eq(paymentIntents.paymentLinkId, paymentLinkId),
       ),
     );
-  if (intent?.status !== "paid") return "not_settled";
+  // A refund that completed before this event moves the intent on to
+  // (partially_)refunded; it is still the money that paid the bill, so the
+  // refund guard below decides (void, refund the rest), never "not_settled"
+  // (the order would stay awaiting_payment for good; legend-9vzvs).
+  if (
+    !intent ||
+    !["paid", "partially_refunded", "refunded"].includes(intent.status)
+  )
+    return "not_settled";
   // Pin the intent that paid: a superseded code may have settled the bill,
   // and a code paid after another covered it (`double_payment`, nothing
   // allocated) is never the payer, whichever event is consumed first
@@ -549,8 +561,60 @@ export async function handleQrOrderPaymentPaid(
       { orderId: order.id, intentId, payerIntentId },
       "QR order: fired for the code that covered the bill, not the event's double-paid code",
     );
-  await fireQrOrder(tx, context, order, {
+  // legend-9vzvs: the sale takes the payer intent's money, so the fire is
+  // decided under the same intent row lock the refund writers hold (lock
+  // order: order row -> intent, as the POS paid consumer). An approved or
+  // completed refund (`reserved - pending`) that leaves less than this
+  // order's money means firing would also pay the guest back: void the order
+  // and refund what is left (the late-payment request). A refund still
+  // `pending` does not block: the sale wins, and its approval then finds the
+  // fired sale held and fails `cap_exceeded` (qrSaleInUse).
+  const at = await lockIntentsForFact(
+    tx,
+    context.tenant.tenantId,
+    [payerIntentId],
     now,
+  );
+  const [payer] = await tx
+    .select()
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, payerIntentId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+      ),
+    );
+  if (!payer) return "not_settled";
+  const balance = await refundableBalance(tx, payer);
+  const committed =
+    balance.reserved -
+    (await pendingRefundIdr(tx, context.tenant.tenantId, payer.id));
+  if (
+    committed > 0n &&
+    committed + BigInt(order.totalIdr - order.depositAppliedIdr) > balance.cap
+  ) {
+    await voidAndNotify(tx, context, order, "refund_committed", at);
+    const refundId = await requestQrLatePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId: payer.id,
+      now: at,
+    });
+    const doubleRefundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now: at,
+    });
+    logger.warn(
+      { orderId: order.id, intentId, payerIntentId, refundId, doubleRefundIds },
+      "QR order: a refund already took the payment's money; order voided, remainder refunded",
+    );
+    return "late_payment_refund_committed";
+  }
+  await fireQrOrder(tx, context, order, {
+    now: at,
     reason: "verified_payment",
     paidIntentId: payerIntentId,
   });

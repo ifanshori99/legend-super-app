@@ -166,9 +166,8 @@ async function posSaleInUseOfIntent(
  * order.paid) and takes total - DP. An unpaid or voided order never fired
  * and holds nothing, so a late payment on it is still refundable. Same
  * predicate as the payout guard (accounting-auto-journal-guards.ts qrSales).
- * Read under the intent row lock the refund writers hold; the QR fire path
- * does not take that lock yet (follow-up card), so a fire racing an approval
- * is not covered here.
+ * Read under the intent row lock the writers hold; the QR fire path takes it
+ * too (qr-order-consumers.ts, legend-9vzvs).
  */
 async function qrSaleInUseOfIntent(
   tx: Tx,

@@ -4,6 +4,8 @@
 // - refund completion    payment_refunds.completed_at
 // - POS sale completion  pos_orders.completed_at (DP or gateway tenders)
 // - reservation close    reservations.closed_at (DP forfeit)
+// - QR pay-first sale    orders.fired_at (legend-9vzvs; the paid consumer
+//                        locks the payer intent and fires at this time)
 //
 // Each writer used to take its time before commit without a shared lock, so a
 // sale stamped T1 could commit after a refund stamped T2 > T1 had already been
@@ -48,7 +50,8 @@ function sortedIntentIds(intentIds: Iterable<string>): string[] {
  * there is no intent to lock.
  *
  * A sale counts on an intent when its order's table session holds a DP
- * allocation of the intent, or when it captured a tender paid by the intent.
+ * allocation of the intent, when it captured a tender paid by the intent, or
+ * when it is a fired QR pay-first order pinned to the intent.
  */
 export async function lockIntentsForFact(
   tx: Tx,
@@ -85,6 +88,13 @@ export async function lockIntentsForFact(
           AND o.table_session_id IN (
             SELECT a.table_session_id FROM reservation_deposit_allocations a
              WHERE a.tenant_id = ${tenantId} AND a.payment_intent_id IN (${list}))),
+      (SELECT max(q.fired_at) FROM orders q
+        WHERE q.tenant_id = ${tenantId}
+          AND q.payment_intent_id IN (${list})
+          AND q.channel = 'qr' AND q.payment_mode = 'pay_first'
+          AND q.fired_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM pos_orders sp
+            WHERE sp.tenant_id = q.tenant_id AND sp.order_id = q.id)),
       (SELECT max(p.completed_at) FROM pos_orders p
          JOIN pos_order_tenders t
            ON t.tenant_id = p.tenant_id AND t.order_id = p.order_id
