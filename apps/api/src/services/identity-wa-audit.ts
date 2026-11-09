@@ -15,6 +15,7 @@
 
 import { createUlid } from "@starter/shared/core";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { normalizeWhatsAppNumber } from "@starter/shared/identity";
 import { recordAudit } from "./core-audit.ts";
 
 type Transaction = Parameters<typeof recordAudit>[0];
@@ -40,13 +41,24 @@ export const LOGIN_AUDIT_SAFE_FIELDS = [
   "cause",
 ] as const;
 
+/**
+ * Data minimisation (CTO decision 2026-11-10): an audit row keeps only the last
+ * three digits of the sender ("•••123"), for every event including rejected.
+ */
+export function maskSenderForAudit(
+  number: string | null | undefined,
+): string | null {
+  const digits = normalizeWhatsAppNumber(number);
+  return digits === null ? null : `•••${digits.slice(-3)}`;
+}
+
 export type LoginAuditDetails = {
   readonly channel?: "whatsapp_inbound";
   readonly status?: string;
   readonly expiresAt?: string;
   readonly linking?: boolean;
   readonly matchedUserId?: string | null;
-  /** `maskWhatsAppNumber` output only, never the raw number. */
+  /** `maskSenderForAudit` output only, never the raw number. */
   readonly senderMasked?: string | null;
   readonly cause?: string;
 };

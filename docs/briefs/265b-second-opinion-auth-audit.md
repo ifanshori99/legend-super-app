@@ -31,7 +31,7 @@ Test terkait (boleh dijalankan lewat `LEGEND_TEST_FILES` dari root worktree): `i
 
 ## Invariant (tingkat K, auth)
 
-1. Baris audit login tidak pernah memuat kode OTP (mentah atau terformat), nonce binding, id/token sesi, IP mentah, atau nomor WhatsApp penuh. Hanya nomor tersamar (`maskWhatsAppNumber`) dan digest IP berkunci.
+1. Baris audit login tidak pernah memuat kode OTP (mentah atau terformat), nonce binding, id/token sesi, IP mentah, atau nomor WhatsApp penuh. Hanya 3 digit akhir nomor (`•••123`, `maskSenderForAudit`, minimisasi data) dan digest IP berkunci.
 2. Tiap baris audit ditulis dalam transaksi yang sama dengan perubahan statusnya, kecuali dua jalur best-effort yang disengaja: `rate_limited` (transaksi issue sudah rollback) dan `claim_failed` (sesi gagal dibuat). Periksa apakah ada jalur lain yang bisa mengubah status tanpa audit, atau audit tanpa perubahan status.
 3. Audit gagal pada jalur sukses (`created`, `completed`, `claimed`) harus menggagalkan operasinya (fail closed), tidak boleh meninggalkan sesi tanpa catatan. Periksa urutan reservasi klaim dan pembuatan sesi di `pollWhatsAppChallenge`.
 4. Isolasi tenant: baris audit login hanya terbaca oleh tenant pemilik (RLS `audit_logs`); `tenantId` baris berasal dari tenant challenge, bukan dari input pengguna.

@@ -17,7 +17,6 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { signKirimWebhook } from "@starter/shared/adapters";
-import { maskWhatsAppNumber } from "@starter/shared/identity";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -43,6 +42,8 @@ const NUMBER_A = "628111000001";
 const NUMBER_B = "628111000071";
 const NUMBER_B_CHANGED = "628111000099";
 const SENDER = "6281234567890";
+// Data minimisation: only the last three digits of the sender are kept.
+const SENDER_MASK = `•••${SENDER.slice(-3)}`;
 const ISSUED_CODE = "K7Q4M2XD";
 const ISSUED_CODE_FORMATTED = "K7Q4-M2XD";
 const CLIENT_IP = "203.0.113.45";
@@ -305,9 +306,12 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     expect(completed.maskedChanges.after).toMatchObject({
       status: "completed",
       matchedUserId: session.userId,
-      senderMasked: maskWhatsAppNumber(SENDER),
+      senderMasked: SENDER_MASK,
     });
-    expect(maskWhatsAppNumber(SENDER)).not.toBe(SENDER);
+    expect(SENDER_MASK).not.toBe(SENDER);
+    expect(SENDER_MASK).toBe("•••890");
+    // Not even the leading digits of the sender survive in any row.
+    expect(JSON.stringify(events)).not.toContain("628123");
     expect(byAction("login_challenge.claimed").actorId).toBe(session.userId);
     // The claim row carries the claiming request's keyed IP digest.
     expect(byAction("login_challenge.claimed").ipHash).toMatch(
@@ -513,7 +517,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     expect(rejected.tenantId).toBe(TENANT_B);
     expect(rejected.objectId).toBe(issued.challenge.id);
     expect(rejected.maskedChanges.after).toMatchObject({
-      senderMasked: maskWhatsAppNumber(SENDER),
+      senderMasked: SENDER_MASK,
     });
     expectNoSecrets(events, [ISSUED_CODE, issued.codeFormatted]);
     // The challenge is untouched: still pending, nobody signed in.
@@ -745,7 +749,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     ]);
     expect(events[1]!.maskedChanges.after).toMatchObject({
       linking: true,
-      senderMasked: maskWhatsAppNumber(SENDER),
+      senderMasked: SENDER_MASK,
     });
     expectNoSecrets(events, [codeFormatted, codeFormatted.replace("-", "")]);
   });

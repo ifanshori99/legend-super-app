@@ -41,7 +41,6 @@ import {
   loginCodeFromMessage,
   MINUTE_MS,
   normalizeWhatsAppNumber,
-  maskWhatsAppNumber,
   identityLinkedEvent,
 } from "@starter/shared/identity";
 import { CoreError, createUlid, z } from "@starter/shared/core";
@@ -69,6 +68,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
 import {
+  maskSenderForAudit,
   recordLoginAudit,
   type LoginAuditAction,
 } from "./identity-wa-audit.ts";
@@ -396,7 +396,7 @@ export async function processInboundWhatsApp(
         brandId: challenge.brandId,
         receivingNumber: message.receivingNumber,
         userId: account.userId,
-        senderMasked: maskWhatsAppNumber(message.sender),
+        senderMasked: maskSenderForAudit(message.sender),
         now,
       });
       const kind: InboundKind = completed ? "login" : "rejected";
@@ -430,7 +430,7 @@ async function auditRejected(
       channel: "whatsapp_inbound",
       cause: "completion_refused",
       linking,
-      senderMasked: maskWhatsAppNumber(sender),
+      senderMasked: maskSenderForAudit(sender),
     },
     now,
   });
@@ -795,7 +795,7 @@ async function completeLink(
           status: "completed",
           linking: true,
           matchedUserId: userId,
-          senderMasked: maskWhatsAppNumber(input.sender),
+          senderMasked: maskSenderForAudit(input.sender),
         },
         now: input.now,
       });
