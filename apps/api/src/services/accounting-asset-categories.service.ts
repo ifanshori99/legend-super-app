@@ -14,6 +14,7 @@ import {
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
+import type { TenantId } from "@starter/shared/core";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { assetCategories } from "../db/schema/accounting-ap-fa.ts";
@@ -39,7 +40,7 @@ export function toAssetCategory(row: AssetCategoryRow): AssetCategory {
 /** A category of this tenant; another tenant's is indistinguishable from a missing one. */
 export async function requireAssetCategory(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   categoryId: string,
 ): Promise<AssetCategoryRow> {
   const [row] = await tx
@@ -52,8 +53,7 @@ export async function requireAssetCategory(
       ),
     )
     .limit(1);
-  if (!row)
-    throw new HttpError(404, "NOT_FOUND", "Asset category not found.");
+  if (!row) throw new HttpError(404, "NOT_FOUND", "Asset category not found.");
   return row;
 }
 
@@ -66,7 +66,10 @@ export async function listAssetCategories(
       .select()
       .from(assetCategories)
       .where(eq(assetCategories.tenantId, context.tenant.tenantId))
-      .orderBy(asc(sql`lower(${assetCategories.name})`), asc(assetCategories.id));
+      .orderBy(
+        asc(sql`lower(${assetCategories.name})`),
+        asc(assetCategories.id),
+      );
     return { data: rows.map(toAssetCategory) };
   });
 }

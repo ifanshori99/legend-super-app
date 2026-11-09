@@ -4,20 +4,25 @@ Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/financ
 `bash -c 'cd <worktree> && pwd && LEGEND_TEST_FILES="src/test/<file>" pnpm test'` (root `tests/*.test.mjs` hanya lewat `pnpm test`, bukan `node --test`). Tulis tes gagal-dulu. Bahasa kode/komentar: Inggris, ikuti gaya berkas sekitar.
 
 ## Skema yang sudah ada
+
 - `finance_policies`: PK `tenant_id`; `bank_matching_date_tolerance_days` (0..14, default 2), `max_days_undeposited` (0..30, default 2), `updated_by`, timestamps. Tidak ada baris = default. Satu baris per tenant (keputusan: tenant, bukan legal entity).
 - `asset_categories`: `id`, `tenant_id`, `name` (1..80; unik per tenant tanpa peka huruf besar), `created_by`, timestamps.
 - `fixed_assets` tambah `code` varchar(40) NOT NULL unik per (tenant, legal_entity), `category_id` nullable FK komposit (tenant_id, category_id) ke `asset_categories`.
 - Surplus revaluasi tidak disimpan; dihitung saat baca dari `fixed_asset_revaluations`: tiap baris delta = `new_carrying_amount_idr - (previous_cost_idr - previous_accumulated_idr)`; surplus = jumlah delta positif, loss = jumlah |delta| negatif. Setelah revaluasi `cost_idr` sudah di-restate (metode eliminasi), jadi nilai di atas cost harus tampil di ringkasan.
 
 ## Potongan A (finance policy, legend-pxcs)
+
 Berkas milik A: `packages/shared/src/accounting/finance-policy.ts` (baru; re-export di index accounting), endpoint `getFinancePolicy` (GET `${BASE}/finance-policy`) dan `putFinancePolicy` (PUT, strict body) ditambah ke `packages/shared/src/accounting/endpoints.ts` (edit kecil, baca ulang berkas sebelum edit karena potongan B juga menyentuhnya), `apps/api/src/services/accounting-finance-policy.service.ts`, `apps/api/src/routes/accounting-finance-policy.routes.ts` (router baru `createAccountingFinancePolicyRouter`, JANGAN mount; agent induk yang mount di `routes/index.ts`), tes `apps/api/src/test/accounting-finance-policy.test.ts`, tes kontrak di `tests/`.
+
 - Validator strict: `{ cashDepositPolicy: {maxDaysUndeposited}, matchingPolicy: {dateToleranceDays} }` memakai `cashDepositPolicySchema` dan batas `dateToleranceDays` yang sudah ada di `banking.ts` (:280, :409); respons `{data: ...}` gaya endpoint lain. Default 2/2 bila belum ada baris.
 - Izin: GET `accounting.journal.view`, PUT `accounting.reconcile` (izin akuntansi yang sudah ada; cek `permissions.ts` :155-168, pilih yang paling pas dan sebut alasannya). Tenant dari konteks server, bukan body.
 - ACC-05: API belum punya endpoint alert/tabel setoran kas. Jangan bikin tabel baru. Sediakan fungsi service `loadCashDepositPolicy(ctx)` untuk konsumen alert, dan tes yang memakai `undepositedCashAlerts(...)` dari shared dengan kebijakan yang dibaca dari API setelah PUT (batas baru berlaku, bukan angka 2 tetap).
 - Tes: GET default; PUT lalu GET; alert memakai batas baru; PUT di luar batas/ field asing ditolak 400; isolasi tenant (tenant lain tetap default); tanpa izin 403.
 
 ## Potongan B (register aset tetap, legend-dux2)
+
 Berkas milik B: `packages/shared/src/accounting/assets.ts`, `fixtures.ts` bila perlu, endpoint kategori ditambah di `endpoints.ts` (baca ulang sebelum edit), `apps/api/src/services/accounting-fixed-assets.service.ts` (+ berkas service kategori baru bila lebih rapi), `apps/api/src/routes/accounting-ap-fa.routes.ts`, tes `apps/api/src/test/accounting-fixed-asset-register.test.ts`, tes kontrak di `tests/ws07-ap-assets.test.mjs` bila ada yang pecah.
+
 - `fixedAssetSchema`: tambah `code` (trim 1..40), `categoryId` (nullable), `categoryName`? (opsional, nullable; hanya bila murah), dan ringkasan revaluasi di bacaan: `originalCostIdr` (previousCost dari revaluasi paling awal, atau cost bila belum pernah), `revaluationSurplusIdr`, `revaluationLossIdr` (nonneg). `createFixedAssetInputSchema`: `code` opsional (kosong = server membuat `FA-nnnnn` berikutnya per tenant+entity, aman dari balapan lewat advisory lock yang sudah dipakai atau retry unik), `categoryId` opsional nullable.
 - Kode ganda dalam satu entity ditolak dengan error domain gaya yang ada (409/422 sesuai kode `AccountingError` terdekat). Kode sama di entity/tenant lain boleh.
 - `categoryId` milik tenant lain atau tak ada: ditolak (404/422 sesuai pola). Kategori: endpoint daftar + buat (`GET/POST ${BASE}/asset-categories`, izin view = `accounting.journal.view`, tulis = `accounting.asset.manage`), nama ganda tanpa peka huruf besar ditolak.
@@ -25,4 +30,5 @@ Berkas milik B: `packages/shared/src/accounting/assets.ts`, `fixtures.ts` bila p
 - Jalur existing (create, depresiasi, dispose) tidak boleh rusak; update tes lama yang membaca bentuk `FixedAsset` lama.
 
 ## Potongan C (tes migrasi, test-writer)
+
 Tes bahwa backfill `code` pada data lama unik dan deterministik: ambil pernyataan UPDATE backfill dari `apps/api/drizzle/0174_finance_policy_asset_register.sql`, jalankan pada sebuah tabel sementara bentuk (id, tenant_id, legal_entity_id, created_at, code) berisi data campuran (2 tenant, 2 entity, created_at sama untuk beberapa baris) dan periksa: tiap (tenant, entity) memperoleh FA-00001.. tanpa duplikat, urutan created_at lalu id, dua kali jalan memberi hasil sama. Lihat pola tes migrasi/skema di `tests/database.test.mjs`. Berkas: `apps/api/src/test/accounting-asset-code-backfill.test.ts` (atau pola yang paling cocok).

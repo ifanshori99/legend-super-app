@@ -35,7 +35,8 @@ const entityA2 = randomUUID();
 const entityB1 = randomUUID();
 
 // Fixed ids so the id tie-break is visible: same created_at, ids in reverse insert order.
-const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const id = (n: number) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const t1 = "2026-01-01T00:00:00Z";
 const t2 = "2026-01-02T00:00:00Z";
 const t3 = "2026-01-03T00:00:00Z";
@@ -91,6 +92,24 @@ afterAll(async () => {
 describe("0174 fixed_assets.code backfill", () => {
   it("finds the backfill UPDATE in the migration file", () => {
     expect(backfill).toBeTruthy();
+  });
+
+  it("lifts FORCE RLS on fixed_assets around the backfill (migrator may lack BYPASSRLS) and restores it", () => {
+    const statements = migration
+      .split("--> statement-breakpoint")
+      .map(stripComments);
+    const at = (pattern: RegExp) =>
+      statements.findIndex((statement) => pattern.test(statement));
+    const lift = at(/NO FORCE ROW LEVEL SECURITY/i);
+    const update = at(/^UPDATE\s+"fixed_assets"/i);
+    const restore = at(
+      /^ALTER TABLE public\.fixed_assets FORCE ROW LEVEL SECURITY/i,
+    );
+    const notNull = at(/"code" SET NOT NULL/i);
+    expect(lift).toBeGreaterThanOrEqual(0);
+    expect(lift).toBeLessThan(update);
+    expect(update).toBeLessThan(restore);
+    expect(restore).toBeLessThan(notNull);
   });
 
   it("numbers each (tenant, entity) FA-00001.. by created_at then id, without gaps or duplicates", async () => {

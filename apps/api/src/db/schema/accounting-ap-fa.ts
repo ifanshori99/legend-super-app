@@ -233,10 +233,7 @@ export const assetCategories = pgTable(
       table.tenantId,
       sql`lower(${table.name})`,
     ),
-    check(
-      "asset_categories_name_check",
-      sql`length(btrim(${table.name})) > 0`,
-    ),
+    check("asset_categories_name_check", sql`length(btrim(${table.name})) > 0`),
   ],
 );
 

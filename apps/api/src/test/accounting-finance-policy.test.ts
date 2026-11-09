@@ -20,6 +20,7 @@ import {
 } from "@starter/shared/core/server";
 import {
   idr,
+  tenantIdSchema,
   userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -133,8 +134,8 @@ const policy = (maxDaysUndeposited: number, dateToleranceDays: number) => ({
   matchingPolicy: { dateToleranceDays },
 });
 
-async function newTenant(): Promise<string> {
-  const id = randomUUID();
+async function newTenant() {
+  const id = tenantIdSchema.parse(randomUUID());
   otherTenantIds.push(id);
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)

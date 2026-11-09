@@ -231,8 +231,7 @@ register(createFixedAsset, ({ body }) => {
     legalEntityId: body.legalEntityId,
     outletId: body.outletId,
     code:
-      body.code ||
-      `FA-${String(current.assets.length + 1).padStart(5, "0")}`,
+      body.code || `FA-${String(current.assets.length + 1).padStart(5, "0")}`,
     categoryId: body.categoryId ?? null,
     categoryName: null,
     name: body.name,

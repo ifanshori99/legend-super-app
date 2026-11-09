@@ -24,6 +24,7 @@ import {
   assertTrustedScopedContext,
   createUlid,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -41,7 +42,7 @@ function defaultPolicy(): FinancePolicy {
 
 async function readPolicy(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
 ): Promise<FinancePolicy> {
   const [row] = await tx
     .select({

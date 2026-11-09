@@ -13,6 +13,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  tenantIdSchema,
   userIdSchema,
   type ScopedTenantContext,
   type UserId,
@@ -258,9 +259,9 @@ describe("legend-dux2 asset register code", () => {
 
   it("rejects an over-long code and an unknown field at the contract", async () => {
     const entity = await createEntity("Register strict");
-    await expect(
-      asset(entity, { code: "X".repeat(41) }),
-    ).rejects.toMatchObject({ name: "ZodError" });
+    await expect(asset(entity, { code: "X".repeat(41) })).rejects.toMatchObject(
+      { name: "ZodError" },
+    );
     await expect(
       createFixedAsset(
         tenantScope(),
@@ -307,7 +308,7 @@ describe("legend-dux2 asset categories", () => {
     expect(plain.categoryId).toBeNull();
     expect(plain.categoryName).toBeNull();
 
-    const otherTenant = randomUUID();
+    const otherTenant = tenantIdSchema.parse(randomUUID());
     const foreignCategory = randomUUID();
     otherTenantIds.push(otherTenant);
     await owner.query(
@@ -416,16 +417,16 @@ describe("legend-dux2 revaluation summary", () => {
 describe("legend-dux2 HTTP", () => {
   it("lists and creates categories with the right permissions; a duplicate name is 409", async () => {
     const anonymous = agent(app);
-    expect((await anonymous.get("/api/accounting/asset-categories")).status).toBe(
-      401,
-    );
+    expect(
+      (await anonymous.get("/api/accounting/asset-categories")).status,
+    ).toBe(401);
     const stranger = agent(app);
     await signUp(stranger, "No accounting role");
     const session = await stranger.get("/api/auth/get-session");
     createdUserIds.push(session.body.user.id as string);
-    expect((await stranger.get("/api/accounting/asset-categories")).status).toBe(
-      403,
-    );
+    expect(
+      (await stranger.get("/api/accounting/asset-categories")).status,
+    ).toBe(403);
     expect(
       (
         await stranger
@@ -462,9 +463,9 @@ describe("legend-dux2 HTTP", () => {
     ).toBe(422);
     const listed = await finance.get("/api/accounting/asset-categories");
     expect(listed.status).toBe(200);
-    expect(
-      listed.body.data.map((row: { id: string }) => row.id),
-    ).toContain(created.body.data.id);
+    expect(listed.body.data.map((row: { id: string }) => row.id)).toContain(
+      created.body.data.id,
+    );
   });
 
   it("creates an asset over HTTP with a generated code and a category", async () => {
