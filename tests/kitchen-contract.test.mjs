@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as kitchen from "../packages/shared/src/kitchen/index.ts";
+import * as qrOrder from "../packages/shared/src/qr-order/index.ts";
 import * as menu from "../packages/shared/src/menu/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import * as api from "../packages/shared/src/api/index.ts";
@@ -478,6 +479,56 @@ test("KDS-07 + F41 + R25: remake and comp record reason, staff and ingredient co
     kitchen.orderIssueSchema.safeParse({ ...remake, reason: "terlalu asin" })
       .success,
     false,
+  );
+});
+
+test("legend-d60m: kitchen and qr-order share ONE order_issues record shape", () => {
+  assert.equal(
+    qrOrder.orderIssueSchema,
+    kitchen.orderIssueSchema,
+    "qr-order re-exports the kitchen record, no second definition",
+  );
+  // Every kitchen fixture parses under the QR entry point and carries the QR lifecycle.
+  for (const issue of fixtures.orderIssues) {
+    assert.equal(qrOrder.orderIssueSchema.safeParse(issue).success, true);
+    assert.ok(["open", "resolved", "cancelled"].includes(issue.status));
+  }
+  // And every QR fixture parses under the kitchen entry point.
+  for (const issue of qrOrder.cafeLegendQrOrderFixtures?.orderIssues ?? []) {
+    assert.equal(kitchen.orderIssueSchema.safeParse(issue).success, true);
+  }
+  const resolved = fixtures.orderIssues.find((i) => i.resolution === "swap");
+  assert.ok(resolved);
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...resolved, replacementItemId: null })
+      .success,
+    false,
+    "a swap names the replacement item",
+  );
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...resolved, resolvedAt: null })
+      .success,
+    false,
+    "a resolved issue has resolvedAt",
+  );
+  const refund = fixtures.orderIssues.find(
+    (i) => i.resolution === "manual_refund",
+  );
+  assert.ok(refund);
+  assert.equal(
+    kitchen.orderIssueSchema.safeParse({ ...refund, reasonNote: "salah" })
+      .success,
+    false,
+    "a manual refund needs a written reason of 10+ characters (ORD-09)",
+  );
+  // The QR staff-report input now speaks the unified vocabulary.
+  assert.equal(
+    qrOrder.createOrderIssueInputSchema.safeParse({
+      type: "unfulfillable",
+      reason: "out_of_stock",
+      reasonNote: "Bahan habis",
+    }).success,
+    true,
   );
 });
 

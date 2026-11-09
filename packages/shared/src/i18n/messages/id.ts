@@ -405,6 +405,7 @@ export const id = {
         quality: "Kualitas",
         late: "Terlambat",
         complaint: "Keluhan",
+        out_of_stock: "Bahan habis",
         other: "Lainnya",
       },
       resolutions: {
