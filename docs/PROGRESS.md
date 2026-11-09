@@ -514,3 +514,14 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - legend-nib1: permintaan approval tutup shift lewat HP dibuka tanpa nominal (`amountIdr` null), jadi routing selalu tier tertinggi matriks. Penutupan dicek terhadap tier tertinggi dan `payload.valueIdr` (angka, sama dengan selisih). Chain lama yang punya nominal ditolak; kasir minta ulang. Respons ke kasir (pending, requiredLevels, 403 PIN) tidak lagi bergantung pada selisih.
 - Keputusan bisnis terbuka (untuk founder lewat CTO): setiap tutup shift, termasuk selisih 0, sekarang butuh penyetuju tier tertinggi `cash_shift_close`. Bila tier tertinggi 2 level, PIN tidak pernah cukup dan semua tutup shift lewat HP.
 - Lanjutan: `legend-6om3` (UI inbox membaca `payload.valueIdr`), `legend-o0w6` (event `pos_override.recorded` membawa selisih ke cloud-sync).
+
+## legend-e087 + legend-qqvf: printer station dan 404 tiket KDS (engineer, cabang `ws/station-printer`, 2026-11-09)
+
+- Basis `integ/m1-batch7` 6f3063c7. `ws/print-agent` belum masuk batch integ mana pun; tabel `devices` (tipe `printer`) sudah ada di batch7, jadi validasi tidak menunggu print-agent.
+- legend-e087 (8663be44, 5864a36c): `printerDeviceId` station harus device `printer` aktif (tidak revoked) di tenant dan outlet station. Semua kasus tidak valid (outlet lain, tenant lain, bukan printer, revoked, UUID acak) menjawab 422 yang sama. Nilai yang tidak berubah (echo, beda huruf besar-kecil) tidak divalidasi dan tidak ditulis, jadi form lama tidak menimpa perubahan manager. Baris device dibaca `FOR SHARE`.
+- legend-qqvf (91db56eb): tiket dan item dari station lain menjawab 404 `NOT_FOUND`, sama dengan tiket yang tidak ada (detail, aksi tiket, prioritas, aksi item). Perubahan kontrak 403 ke 404 di `kds.test.ts` dan `e2e-az/az-d-kds.test.ts`. List dan feed station tidak berubah (sudah 403 untuk station asing maupun tidak ada).
+- Review: reviewer Opus (5 Low, 3 dibetulkan, 2 diterima) dan architect (qqvf disetujui, 1 Medium e087 race echo dibetulkan dengan test yang gagal di kode lama).
+- Gate: 8 file test 131 lulus 8 skip; setelah fix review station-printer, station-scope, kds 66/66; tsc api, eslint, prettier bersih. Suite penuh belum.
+- Bead baru: `legend-z76q` (P2, dispatcher print cek ulang printer saat cetak), `legend-4qon` (P3, oracle 404 vs 422 station brand lain di `menu.service`).
+- Biaya sesi 8d51c681 (06:43-07:53 UTC, termasuk akhir dak5): total biaya* 9922k (utama Opus 4869k, subagent Opus 2089k, Sonnet 2865k, Haiku 99k), 37 subagent sesi, task ini 6 subagent, maks 2 paralel.
+- Berikut: verifikasi CTO, second opinion Codex rentang 6f3063c7..5864a36c sebelum gerbang rilis, merge train.
