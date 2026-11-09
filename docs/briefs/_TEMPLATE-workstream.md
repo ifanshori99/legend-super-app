@@ -15,7 +15,7 @@ Agent menerima satu workstream besar (5–15 kartu atau satu cabang besar), buka
 - Legend: test terarah `LEGEND_TEST_FILES="src/test/x.test.ts" pnpm test` dari root worktree (ringan, tanpa `heavy`); `pnpm test` penuh dan `pnpm check` hanya merge train, sekali, lewat `heavy`; jangan suite penuh paralel dari worktree yang sama.
 - `reviewer` (Opus untuk K) dan `architect` (K) bersamaan.
 - `ui-auditor` bila ada UI.
-- Gate: thread tidak menjalankan `pnpm check` penuh. Cukup lint dan typecheck paket yang berubah lewat `heavy`, test terarah, dan `db:generate` harus kosong. Gate penuh dijalankan merge train. Dev server dan Playwright hanya bila agent butuh UI (maks 2 seluruh Mac).
+- Gate: thread tidak menjalankan `pnpm check` penuh. Cukup lint dan typecheck paket yang berubah lewat `heavy`, test terarah, dan `db:generate` harus kosong. Paket tidak punya script `lint`: pakai `pnpm exec eslint <files>`. Di zsh, `$files` tidak dipecah per kata; kirim daftar file lewat `xargs`. Gate penuh dijalankan merge train. Dev server dan Playwright hanya bila agent butuh UI (maks 2 seluruh Mac).
 
 ## Laporan
 SHA, kartu bd yang selesai (id), jumlah subagent yang di-spawn dan maksimum yang berjalan bersamaan, hasil gate, temuan review dan fixnya, yang belum teruji.
