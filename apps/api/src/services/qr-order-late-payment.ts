@@ -14,6 +14,13 @@
 //   an event replay return the first answer, and the intent row lock plus
 //   `refundableBalance` (what is not already reserved) stop a second row.
 // - The amount is re-read from the locked intent, never from the event.
+//
+// A second code of the same order paid after the order was already paid
+// (legend-3160: a guest switched bank or method and paid both) lands on the
+// bill as `double_payment` unallocated funds. `requestQrDoublePaymentRefund`
+// files one system refund request per such fund row, the same request the
+// payment admin opens by hand (payment-admin-funds.service.ts), so the money
+// is returned instead of waiting in the unallocated list.
 
 import {
   createUlid,
@@ -21,8 +28,12 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
-import { and, eq } from "drizzle-orm";
-import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
+import { and, eq, isNull, ne } from "drizzle-orm";
+import {
+  paymentIntents,
+  paymentRefunds,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./menu-internals.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -93,7 +104,7 @@ export async function requestQrLatePaymentRefund(
           paymentIntentId: intent.id,
           amountIdr: idr(Number(amount)),
           reason:
-            "Refund pembayaran QRIS terlambat (pesanan QR sudah dibatalkan)",
+            "Refund pembayaran online terlambat (pesanan QR batal atau meja sudah ditutup)",
           note: null,
           requestedBy: QR_SYSTEM_ACTOR,
         })
@@ -150,7 +161,8 @@ export async function requestQrLatePaymentRefund(
           action: "qr_order.late_payment_refund_requested",
           objectType: "order",
           objectId: input.order.id,
-          reason: "QRIS paid after the QR order was voided",
+          reason:
+            "Online payment arrived after the QR order was voided or its session closed",
           maskedChanges: {
             before: null,
             after: {
@@ -170,4 +182,117 @@ export async function requestQrLatePaymentRefund(
     },
   );
   return response.refundId;
+}
+
+/**
+ * Files a refund request for every unresolved `double_payment` fund row of
+ * `intentId` that has no live refund yet. Returns the new refund ids (empty on
+ * a replay). Run inside the consumption transaction with the order locked.
+ */
+export async function requestQrDoublePaymentRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: { id: string; outletId: string };
+    paymentLinkId: string;
+    intentId: string;
+    now: Date;
+  },
+): Promise<string[]> {
+  const tenantId = context.tenant.tenantId;
+  // Lock order: payment intent -> fund -> refund (same as the admin resolve).
+  const [intent] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, input.intentId),
+        eq(paymentIntents.paymentLinkId, input.paymentLinkId),
+      ),
+    )
+    .for("update");
+  if (!intent) return [];
+  const funds = await tx
+    .select()
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
+        eq(paymentUnallocatedFunds.reason, "double_payment"),
+        isNull(paymentUnallocatedFunds.resolution),
+      ),
+    )
+    .for("update");
+  const refundIds: string[] = [];
+  for (const fund of funds) {
+    const [live] = await tx
+      .select({ id: paymentRefunds.id })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.unallocatedFundId, fund.id),
+          ne(paymentRefunds.status, "failed"),
+        ),
+      );
+    if (live) continue;
+    const [row] = await tx
+      .insert(paymentRefunds)
+      .values({
+        tenantId,
+        outletId: fund.outletId,
+        paymentIntentId: fund.paymentIntentId,
+        unallocatedFundId: fund.id,
+        amountIdr: fund.amountIdr,
+        reason:
+          "Refund pembayaran ganda (pesanan QR sudah dibayar dengan kode lain)",
+        note: null,
+        requestedBy: QR_SYSTEM_ACTOR,
+        status: "pending",
+      })
+      .returning();
+    if (!row) throw new Error("Refund insert returned no row");
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(input.now.getTime()),
+        tenantId,
+        outletId: row.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.unallocated_refund_requested",
+        objectType: "payment_refund",
+        objectId: row.id,
+        reason: row.reason,
+        maskedChanges: {
+          before: null,
+          after: { amountIdr: row.amountIdr, status: row.status },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: input.now.toISOString(),
+      },
+      AUDIT_FIELDS,
+    );
+    await appendPaymentEvent(tx, context, {
+      name: "payment.refund_requested",
+      aggregateId: row.id,
+      outletId: row.outletId,
+      actor: { type: "system" },
+      payload: {
+        refundId: row.id,
+        paymentIntentId: row.paymentIntentId,
+        amountIdr: row.amountIdr,
+        unallocatedFundId: fund.id,
+      },
+      now: input.now,
+    });
+    refundIds.push(row.id);
+  }
+  return refundIds;
 }

@@ -34,11 +34,15 @@ import { withTenant } from "../db/tenant.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
   setPaymentGateway,
+  type GatewayCancelRequest,
   type GatewayIntentRequest,
   type OnlinePaymentMethod,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
-import { confirmPayment } from "../services/payment.service.ts";
+import {
+  confirmPayment,
+  expireDueIntents,
+} from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader } from "./helpers.ts";
@@ -79,8 +83,15 @@ const BANKS: PaymentChannel[] = [
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   readonly requests: GatewayIntentRequest[] = [];
+  readonly cancelled: GatewayCancelRequest[] = [];
+  /** Outlets the guest flow asked channels for (the port takes an outlet). */
+  readonly channelOutlets: (string | undefined)[] = [];
+  banks: PaymentChannel[] = BANKS;
   async health() {
     return { status: "available" as const };
+  }
+  async cancel(_context: ScopedTenantContext, intent: GatewayCancelRequest) {
+    this.cancelled.push(intent);
   }
   async createIntent(input: GatewayIntentRequest) {
     this.requests.push(input);
@@ -108,8 +119,14 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels(_context: ScopedTenantContext, method: OnlinePaymentMethod) {
-    return method === "va" ? [...BANKS] : [];
+  // The outlet is recorded, never used: this double has one account.
+  async channels(
+    _context: ScopedTenantContext,
+    method: OnlinePaymentMethod,
+    outletId?: string,
+  ) {
+    this.channelOutlets.push(outletId);
+    return method === "va" ? [...this.banks] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -245,6 +262,45 @@ async function intentRow(intentId: string) {
   return rows[0]!;
 }
 
+async function orderStatusOf(orderId: string): Promise<string> {
+  const { rows } = await owner.query<{ status: string }>(
+    "SELECT status FROM orders WHERE tenant_id = $1 AND id = $2::uuid",
+    [tenant.tenantId, ulidToUuid(orderId)],
+  );
+  return rows[0]!.status;
+}
+
+async function refundsOf(intentId: string) {
+  const { rows } = await owner.query<{
+    amount_idr: string;
+    status: string;
+    requested_by: string;
+    unallocated_fund_id: string | null;
+  }>(
+    `SELECT amount_idr::text AS amount_idr, status, requested_by, unallocated_fund_id
+     FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2`,
+    [tenant.tenantId, intentId],
+  );
+  return rows;
+}
+
+/** Confirms a verified webhook payment and delivers its `payment.paid`. */
+async function payAndDeliver(intentId: string, amountIdr: number) {
+  const context = contextOf(tenant.tenantId);
+  await confirmPayment(context, intentId, {
+    source: "verified_webhook",
+    method: "va",
+    amountIdr,
+    providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
+    at: new Date().toISOString(),
+  });
+  const [paid] = await outboxEvents("payment.paid", intentId);
+  expect(paid).toBeDefined();
+  return withTenant(db, context, (tx) =>
+    deliverOrderPaymentEvent(context, paid!, tx, new Date()),
+  );
+}
+
 async function outboxEvents(
   name: string,
   intentId: string,
@@ -329,6 +385,24 @@ describe("QR guest virtual account (legend-3160)", () => {
       { method: "qris", enabled: true, unavailableReason: null, banks: [] },
       { method: "va", enabled: true, unavailableReason: null, banks: BANKS },
     ]);
+    expect(gateway.channelOutlets.at(-1)).toBe(tenant.outletId);
+  });
+
+  it("says no_channels when the gateway is up but offers no VA bank", async () => {
+    const guest = await seatAtNewTable();
+    gateway.banks = [];
+    try {
+      const options = await as(guest).options();
+      expect(options.status).toBe(200);
+      expect(options.body.data.methods[1]).toEqual({
+        method: "va",
+        enabled: false,
+        unavailableReason: "no_channels",
+        banks: [],
+      });
+    } finally {
+      gateway.banks = BANKS;
+    }
   });
 
   it("opens a VA for a listed bank at the order total and refuses others", async () => {
@@ -336,7 +410,8 @@ describe("QR guest virtual account (legend-3160)", () => {
     const { orderId, totalIdr } = await placeOrder(guest);
     expect(totalIdr).toBe(await totalIdrOf(orderId));
 
-    const unlisted = await as(guest).pay(orderId, "va", "bca");
+    // A DOIT VA bank this gateway does not list right now.
+    const unlisted = await as(guest).pay(orderId, "va", "brin");
     expect(unlisted.status).toBeGreaterThanOrEqual(400);
     expect(unlisted.body.error.code).toBe("VALIDATION_ERROR");
     const noBank = await as(guest).pay(orderId, "va");
@@ -420,6 +495,18 @@ describe("QR guest virtual account (legend-3160)", () => {
       bankName: "CIMB Niaga",
     });
     expect((await intentRow(first.body.data.id)).status).toBe("expired");
+    // The provider is asked to close the old VA so it stops taking money.
+    expect(gateway.cancelled.at(-1)).toMatchObject({
+      intentId: first.body.data.id,
+    });
+    // The old code still answers its poll, with its real status.
+    const old = await as(guest).payment(first.body.data.id);
+    expect(old.status).toBe(200);
+    expect(old.body.data).toMatchObject({
+      id: first.body.data.id,
+      status: "expired",
+      bankCode: "bmri",
+    });
     const superseded = await outboxEvents(
       "payment.expired",
       first.body.data.id,
@@ -485,5 +572,114 @@ describe("QR guest virtual account (legend-3160)", () => {
     const response = await as(stranger).pay(orderId, "va", "bmri");
     expect(response.status).toBe(404);
     expect(response.body.error.code).toBe("NOT_FOUND");
+  });
+
+  it("a VA paid after the table session closed never fires; the money is refunded", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const opened = await as(guest).pay(orderId, "va", "bmri");
+    expect(opened.status).toBe(201);
+    const intentId = opened.body.data.id as string;
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE table_sessions SET status = 'voided', closed_at = now(), closed_reason = 'voided'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, guest.sessionId],
+      ),
+    );
+
+    const dispatch = await payAndDeliver(intentId, totalIdr);
+    expect(dispatch).toMatchObject({
+      route: "qr",
+      outcome: "late_payment_on_closed_session",
+    });
+    expect(await orderStatusOf(orderId)).toBe("voided");
+    const { rows: items } = await owner.query<{ status: string }>(
+      "SELECT status FROM order_items WHERE tenant_id = $1 AND order_id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    expect(items.map((item) => item.status)).toEqual(["voided"]);
+    expect(await refundsOf(intentId)).toEqual([
+      {
+        amount_idr: String(totalIdr),
+        status: "pending",
+        requested_by: "system:qr",
+        unallocated_fund_id: null,
+      },
+    ]);
+
+    // A replay files nothing new.
+    const [paid] = await outboxEvents("payment.paid", intentId);
+    const context = contextOf(tenant.tenantId);
+    await withTenant(db, context, (tx) =>
+      deliverOrderPaymentEvent(context, paid!, tx, new Date()),
+    );
+    expect(await refundsOf(intentId)).toHaveLength(1);
+  });
+
+  it("a switched-away VA paid after the order was paid gets a refund request", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const first = await as(guest).pay(orderId, "va", "bmri");
+    const second = await as(guest).pay(orderId, "va", "bnia");
+    expect(second.status).toBe(201);
+    const oldId = first.body.data.id as string;
+    const newId = second.body.data.id as string;
+
+    expect(await payAndDeliver(newId, totalIdr)).toMatchObject({
+      outcome: "fired",
+    });
+    expect(await orderStatusOf(orderId)).toBe("sent");
+    expect(await refundsOf(newId)).toEqual([]);
+
+    // The guest pays the old VA too: the bill is covered, so WS-05 books it
+    // as unallocated funds and the QR consumer files the refund request.
+    expect(await payAndDeliver(oldId, totalIdr)).toMatchObject({
+      outcome: "double_payment_refund_requested",
+    });
+    const [refund] = await refundsOf(oldId);
+    expect(refund).toMatchObject({
+      amount_idr: String(totalIdr),
+      status: "pending",
+      requested_by: "system:qr",
+    });
+    expect(refund!.unallocated_fund_id).not.toBeNull();
+    expect(await orderStatusOf(orderId)).toBe("sent");
+
+    // Replay: one request per fund.
+    const [paid] = await outboxEvents("payment.paid", oldId);
+    const context = contextOf(tenant.tenantId);
+    const replay = await withTenant(db, context, (tx) =>
+      deliverOrderPaymentEvent(context, paid!, tx, new Date()),
+    );
+    expect(replay).toMatchObject({ outcome: "unchanged" });
+    expect(await refundsOf(oldId)).toHaveLength(1);
+  });
+
+  it("bank switches are not payment attempts: the last code's expiry allows a retry", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId } = await placeOrder(guest);
+    let last = "";
+    for (const [method, bank] of [
+      ["va", "bmri"],
+      ["va", "bnia"],
+      ["qris", undefined],
+      ["va", "bmri"],
+    ] as const) {
+      const response = await as(guest).pay(orderId, method, bank);
+      expect(response.status).toBe(201);
+      last = response.body.data.id as string;
+    }
+    // Past the VA's 180 minutes and the late-payment grace.
+    const context = contextOf(tenant.tenantId);
+    const later = new Date(Date.now() + 184 * 60_000);
+    await expireDueIntents(context, later);
+    const [expired] = await outboxEvents("payment.expired", last);
+    expect(expired?.payload.reason).toBe("timeout");
+    const dispatch = await withTenant(db, context, (tx) =>
+      deliverOrderPaymentEvent(context, expired!, tx, later),
+    );
+    expect(dispatch).toMatchObject({ route: "qr", outcome: "retry_allowed" });
+    expect(await orderStatusOf(orderId)).toBe("awaiting_payment");
   });
 });

@@ -35,12 +35,15 @@ import {
   createGuestPaymentInputSchema,
   guestPaymentSchema,
   guestPaymentOptionsSchema,
+  tableSessionTokenExpiresAt,
   type GuestPayment,
   type GuestPaymentMethod,
   type GuestPaymentOptions,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
+import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { paymentIntents } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
@@ -128,6 +131,7 @@ function linkToken(context: ScopedTenantContext, order: QrOrderRow): string {
  * Step 1: the order's WS-05 bill, opened once. The link is created through
  * `createPaymentLink` (its own transaction) while this transaction holds the
  * order row, so concurrent payers never open two bills for one order.
+ * Returns the session's outlet (the gateway picks that outlet's account).
  */
 async function ensurePaymentLink(
   context: ScopedTenantContext,
@@ -135,8 +139,8 @@ async function ensurePaymentLink(
   sessionId: string,
   orderId: string,
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+): Promise<string> {
+  return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,
       context,
@@ -153,7 +157,7 @@ async function ensurePaymentLink(
           ? "Pesanan ini sudah dibatalkan."
           : "Pesanan ini tidak menunggu pembayaran.",
       );
-    if (order.paymentLinkId !== null) return;
+    if (order.paymentLinkId !== null) return session.outletId;
     const { tableCode } = await loadQrZoneOfSession(tx, context, session);
     const payable = order.totalIdr - order.depositAppliedIdr;
     // The deposit is shown as a reduction of the bill: the link's total is
@@ -168,9 +172,7 @@ async function ensurePaymentLink(
         // legend-zmc2: an inclusive order's subtotal already contains the
         // service charge and tax; the link adds them, so it gets the subtotal
         // without them (same total, payment_links_total_check holds).
-        subtotalIdr: order.pricesIncludeTax
-          ? order.subtotalIdr - order.serviceChargeIdr - order.taxIdr
-          : order.subtotalIdr,
+        subtotalIdr: orderNetSubtotalIdr(order),
         discountIdr: order.discountIdr + order.depositAppliedIdr,
         serviceChargeIdr: order.serviceChargeIdr,
         taxIdr: order.taxIdr,
@@ -197,6 +199,7 @@ async function ensurePaymentLink(
           eq(orders.id, order.id),
         ),
       );
+    return session.outletId;
   });
 }
 
@@ -220,8 +223,9 @@ function sameChoice(
 async function assertVaBank(
   context: ScopedTenantContext,
   bankCode: string,
+  outletId: string,
 ): Promise<void> {
-  const banks = await paymentGateway().channels(context, "va");
+  const banks = await paymentGateway().channels(context, "va", outletId);
   if (!banks.some((bank) => bank.code === bankCode))
     throw new CoreError(
       "VALIDATION_ERROR",
@@ -259,15 +263,16 @@ export async function getGuestPaymentOptions(
       );
       rules.push({ method, enabled: rule.enabled });
     }
-    return rules;
+    return { outletId: session.outletId, rules };
   });
   const gateway = paymentGateway();
-  const gatewayUsable = (await gateway.health(context)).status !== "down";
+  const gatewayUsable =
+    (await gateway.health(context, routed.outletId)).status !== "down";
   const methods = [];
-  for (const entry of routed) {
+  for (const entry of routed.rules) {
     const banks =
       entry.method === "va" && entry.enabled && gatewayUsable
-        ? await gateway.channels(context, "va")
+        ? await gateway.channels(context, "va", routed.outletId)
         : [];
     const configured = entry.method === "qris" || banks.length > 0;
     const enabled = entry.enabled && gatewayUsable && configured;
@@ -276,9 +281,11 @@ export async function getGuestPaymentOptions(
       enabled,
       unavailableReason: enabled
         ? null
-        : !entry.enabled || gatewayUsable
+        : !entry.enabled
           ? ("routing_disabled" as const)
-          : ("gateway_down" as const),
+          : !gatewayUsable
+            ? ("gateway_down" as const)
+            : ("no_channels" as const),
       banks,
     });
   }
@@ -304,9 +311,16 @@ export async function createGuestPayment(
       "Pembayaran bagian atau tagihan open bill belum tersedia di sini.",
     );
   const bankCode = parsed.method === "va" ? (parsed.bankCode ?? null) : null;
-  if (bankCode !== null) await assertVaBank(context, bankCode);
   const orderId = parsed.target.orderId;
-  await ensurePaymentLink(context, credential, sessionId, orderId, now);
+  const outletId = await ensurePaymentLink(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    now,
+  );
+  // Checked after the session lock so the outlet's own channel list decides.
+  if (bankCode !== null) await assertVaBank(context, bankCode, outletId);
   return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,
@@ -361,6 +375,12 @@ export async function createGuestPayment(
               .update(`${order.id}:${idempotencyKey}`)
               .digest("hex")
               .slice(0, 48)}`,
+            // A code never outlives the guest's session credential; WS-05
+            // caps it at the method default (VA 180 minutes).
+            expiresAt: tableSessionTokenExpiresAt({
+              openedAt: session.openedAt.toISOString(),
+              closedAt: session.closedAt?.toISOString() ?? null,
+            }),
           },
           now,
         );
@@ -397,16 +417,29 @@ export async function getGuestPayment(
       now,
       "none",
     );
-    const [order] = await tx
-      .select()
-      .from(orders)
+    // Through the intent's bill, not `orders.paymentIntentId`: a code the
+    // guest switched away from (superseded) still answers with its status.
+    const [intent] = await tx
+      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .from(paymentIntents)
       .where(
         and(
-          eq(orders.tenantId, context.tenant.tenantId),
-          eq(orders.tableSessionId, session.id),
-          eq(orders.paymentIntentId, intentId),
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
         ),
       );
+    const [order] = intent
+      ? await tx
+          .select()
+          .from(orders)
+          .where(
+            and(
+              eq(orders.tenantId, context.tenant.tenantId),
+              eq(orders.tableSessionId, session.id),
+              eq(orders.paymentLinkId, intent.paymentLinkId),
+            ),
+          )
+      : [];
     if (!order || order.paymentLinkTokenSealed === null)
       throw new CoreError("NOT_FOUND", "Pembayaran tidak ditemukan.");
     return { orderId: order.id, token: linkToken(context, order) };

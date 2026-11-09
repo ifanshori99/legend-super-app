@@ -364,7 +364,10 @@ export const guestPaymentOptionSchema = z
   .strictObject({
     method: guestPaymentMethodSchema,
     enabled: z.boolean(),
-    unavailableReason: z.enum(["gateway_down", "routing_disabled"]).nullable(),
+    /** `no_channels`: gateway up and routing on, but no VA bank offered. */
+    unavailableReason: z
+      .enum(["gateway_down", "routing_disabled", "no_channels"])
+      .nullable(),
     /** Banks for `va`; empty for `qris`. */
     banks: z.array(paymentChannelSchema),
   })

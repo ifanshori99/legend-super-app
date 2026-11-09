@@ -16,14 +16,20 @@
 // the PRD accepts and WS-05 flags `late_payment`) never revives it: the stock
 // and promotion were released; the money WS-05 booked on the bill goes back
 // through one pending system refund request per intent (`system:qr`,
-// qr-order-late-payment.ts; beads legend-b0au, legend-dahl).
+// qr-order-late-payment.ts; beads legend-b0au, legend-dahl). The same holds
+// when the order's table session closed while a code (a VA lives 3 hours)
+// was still payable (legend-3160): the order is voided instead of fired and
+// the money goes back through the same refund request. A code the guest
+// switched away from, paid after the order was already paid, is booked as
+// `double_payment` unallocated funds; it gets a system refund request too.
 //
 // payment.expired / payment.failed (bead note: an expired code or link must
 // not strand the order in `awaiting_payment`). PRD silent on the exact rule;
 // the decision (`decideUnpaidQrOrder`, safest option):
 // - a new QRIS code is offered while the table session is open, the WS-05
 //   link is still valid and fewer than MAX_QR_PAYMENT_ATTEMPTS codes were
-//   issued (PRD "QRIS Dinamis": the QR refreshes when it expires);
+//   issued (PRD "QRIS Dinamis": the QR refreshes when it expires); a code
+//   superseded by the guest's own switch of bank or method is not an attempt;
 // - otherwise the order is voided (`voidUnpaidQrOrderTx`: items voided, daily
 //   limit and promotion released exactly once), but only after
 //   LATE_PAYMENT_GRACE_MS past the last code's expiry for a local timeout,
@@ -47,7 +53,10 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import type { Tx } from "./menu-internals.ts";
-import { requestQrLatePaymentRefund } from "./qr-order-late-payment.ts";
+import {
+  requestQrDoublePaymentRefund,
+  requestQrLatePaymentRefund,
+} from "./qr-order-late-payment.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   fireQrOrder,
@@ -81,7 +90,9 @@ export type QrPaymentPaidOutcome =
   | "not_settled"
   | "amount_mismatch"
   | "currency_mismatch"
-  | "late_payment_on_voided_order";
+  | "late_payment_on_voided_order"
+  | "late_payment_on_closed_session"
+  | "double_payment_refund_requested";
 
 export type QrPaymentClosedOutcome =
   "ignored" | "unchanged" | "voided" | "retry_allowed" | "awaiting_grace";
@@ -93,7 +104,8 @@ export type UnpaidQrOrderState = {
   /** null: the guests never opened the payment link (never pressed pay). */
   readonly linkExpiresAt: Date | null;
   readonly linkFullyPaid: boolean;
-  /** Payment codes (WS-05 intents) issued on the order's link. */
+  /** Payment codes (WS-05 intents) issued on the order's link, less the
+   * ones superseded by the guest switching bank or method. */
   readonly attempts: number;
   /** A pending code that is not past its expiry plus the late grace. */
   readonly hasOpenIntent: boolean;
@@ -144,13 +156,12 @@ export function decideUnpaidQrOrder(
   return { action: "keep", why: "retry_allowed" };
 }
 
-async function loadUnpaidState(
+/** False once the order's table session closed or was voided. */
+async function orderSessionActive(
   tx: Tx,
   context: ScopedTenantContext,
   order: QrOrderRow,
-  now: Date,
-): Promise<UnpaidQrOrderState> {
-  const tenantId = context.tenant.tenantId;
+): Promise<boolean> {
   const [session] =
     order.tableSessionId === null
       ? []
@@ -159,14 +170,41 @@ async function loadUnpaidState(
           .from(tableSessions)
           .where(
             and(
-              eq(tableSessions.tenantId, tenantId),
+              eq(tableSessions.tenantId, context.tenant.tenantId),
               eq(tableSessions.id, order.tableSessionId),
             ),
           );
-  const sessionActive =
+  return (
     session !== undefined &&
     session.status !== "closed" &&
-    session.status !== "voided";
+    session.status !== "voided"
+  );
+}
+
+/**
+ * A code the guest replaced (another bank or method): WS-05 expired it early,
+ * before its own deadline, and a newer code exists on the same link. The
+ * intent row keeps no reason, so this is read from the timestamps.
+ */
+function wasSuperseded(
+  row: { status: string; expiresAt: Date; updatedAt: Date; createdAt: Date },
+  all: readonly { createdAt: Date }[],
+): boolean {
+  return (
+    row.status === "expired" &&
+    row.updatedAt.getTime() < row.expiresAt.getTime() &&
+    all.some((other) => other.createdAt.getTime() > row.createdAt.getTime())
+  );
+}
+
+async function loadUnpaidState(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: QrOrderRow,
+  now: Date,
+): Promise<UnpaidQrOrderState> {
+  const tenantId = context.tenant.tenantId;
+  const sessionActive = await orderSessionActive(tx, context, order);
   if (order.paymentLinkId === null)
     return {
       sessionActive,
@@ -193,6 +231,8 @@ async function loadUnpaidState(
     .select({
       status: paymentIntents.status,
       expiresAt: paymentIntents.expiresAt,
+      updatedAt: paymentIntents.updatedAt,
+      createdAt: paymentIntents.createdAt,
     })
     .from(paymentIntents)
     .where(
@@ -212,7 +252,7 @@ async function loadUnpaidState(
     // A missing link row fails closed: treated as expired.
     linkExpiresAt: link ? (link.expiresAt ?? null) : new Date(0),
     linkFullyPaid: link !== undefined && link.paidIdr >= link.totalIdr,
-    attempts: intents.length,
+    attempts: intents.filter((row) => !wasSuperseded(row, intents)).length,
     hasOpenIntent: intents.some(
       (row) =>
         row.status === "pending" &&
@@ -306,8 +346,59 @@ export async function handleQrOrderPaymentPaid(
     );
     return "late_payment_on_voided_order";
   }
-  if (order.status !== "awaiting_payment") return "unchanged";
+  if (order.status !== "awaiting_payment") {
+    // The order was already paid by another code of the same bill (the
+    // guest switched bank and paid both): WS-05 booked this payment as
+    // `double_payment` unallocated funds; return it to the guest.
+    const refundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
+    if (refundIds.length === 0) return "unchanged";
+    logger.warn(
+      { orderId: order.id, intentId, refundIds },
+      "QR order: a second code was paid after the order was paid; refund requested",
+    );
+    return "double_payment_refund_requested";
+  }
   if (currency !== undefined && currency !== "IDR") return "currency_mismatch";
+  if (!(await orderSessionActive(tx, context, order))) {
+    // The table session closed while the code was still payable (a VA lives
+    // 3 hours): never fire to the kitchen for a table that is gone. The order
+    // is voided (stock and promotion released) and the money goes back
+    // through the late-payment refund request.
+    const [late] = await tx
+      .select({ status: paymentIntents.status })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+          eq(paymentIntents.paymentLinkId, paymentLinkId),
+        ),
+      );
+    if (late?.status !== "paid") return "not_settled";
+    await voidAndNotify(
+      tx,
+      context,
+      order,
+      "payment_unpaid_session_closed",
+      now,
+    );
+    const refundId = await requestQrLatePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
+    logger.warn(
+      { orderId: order.id, intentId, refundId },
+      "QR order: payment settled after the table session closed; order voided, refund requested",
+    );
+    return "late_payment_on_closed_session";
+  }
   const [link] = await tx
     .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
     .from(paymentLinks)
