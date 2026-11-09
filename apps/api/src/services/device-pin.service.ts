@@ -90,6 +90,14 @@ export function setDeviceOutletResolver(
   deviceOutletResolver = next ?? denyAllDevices;
 }
 
+/** The outlet a registered device belongs to, or null (fail closed). */
+export function resolveDeviceOutlet(
+  tenantId: string,
+  deviceId: string,
+): Promise<string | null> {
+  return deviceOutletResolver({ tenantId, deviceId });
+}
+
 // ------------------------------------------------------------------ helpers
 
 function bindingOf(row: Pick<PinRow, "tenantId" | "outletId" | "userId">) {
