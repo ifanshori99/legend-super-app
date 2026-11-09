@@ -2,8 +2,8 @@
 -- FAC-11, FAC-13). RLS and the update guard for wifi_device_grants
 -- (edge-wifi.ts). CHECK, unique and partial unique constraints live in the
 -- drizzle schema; this file holds what drizzle cannot express. Fold into the
--- migration after the generated CREATE TABLE (0099; trigger function
--- replaced in 0101). Same migration on the cloud and on every edge node.
+-- migration after the generated CREATE TABLE (0103; trigger function
+-- replaced in 0106). Same migration on the cloud and on every edge node.
 
 -- TEN-01/TEN-03: tenant + outlet owned (outlet_id NOT NULL).
 SELECT app.enforce_tenant_rls('public.wifi_device_grants'::regclass);
@@ -15,7 +15,7 @@ SELECT app.enforce_outlet_rls('public.wifi_device_grants'::regclass);
 -- at the controller: the request columns never change. A terminal status
 -- (superseded, revoked, failed) is final; a new speed or a new session is a
 -- new grant.
--- legend-1mbi (0101, CREATE OR REPLACE): a terminal row is frozen except
+-- legend-1mbi (0106, CREATE OR REPLACE): a terminal row is frozen except
 -- revoke_retry_at, the pending controller revoke of its reference. RLS and the
 -- DELETE grant are unchanged: enforce_tenant_rls granted SELECT, INSERT,
 -- UPDATE, DELETE to legend_app and both policies are FOR ALL, so retention

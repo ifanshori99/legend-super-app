@@ -736,6 +736,20 @@
       "when": 1794192396030,
       "tag": "0104_ws09_wifi_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1794193287046,
+      "tag": "0105_shiny_wonder_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794193306407,
+      "tag": "0106_ws09_wifi_hardening_rls",
+      "breakpoints": true
     }
   ]
 }
