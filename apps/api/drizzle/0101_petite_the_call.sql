@@ -1,0 +1,2 @@
+ALTER TABLE "ops_checklist_runs" ADD COLUMN "scheduled" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "ops_checklist_runs_scheduled_key" ON "ops_checklist_runs" USING btree ("tenant_id","template_id","shift_date") WHERE "ops_checklist_runs"."scheduled";

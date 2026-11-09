@@ -47,6 +47,7 @@ import { retryPendingRefunds } from "./services/reservation-refunds.ts";
 import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
 import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
+import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
 import { createPgBoss, createWorkerRuntime } from "./worker/runtime";
@@ -297,6 +298,15 @@ const relay = createRelayRuntime({
       });
     } catch {
       console.error("Purchasing PO email sweep failed");
+    }
+    // F45 (legend-5v69): create today's checklist runs from role templates
+    // before the missed sweep. Fail closed like the other sweeps.
+    try {
+      await withTenant(db, context, (tx) =>
+        generateScheduledChecklistRuns(tx, context),
+      );
+    } catch {
+      console.error("Checklist run generation failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:
