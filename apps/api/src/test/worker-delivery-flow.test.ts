@@ -3,6 +3,7 @@
 // (WORKER_TRANSPORT=builtin, channels explicitly disabled), then the relay and
 // consumption run the real outbox functions.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -17,6 +18,7 @@ import {
   relayOutbox,
 } from "../services/core-outbox.ts";
 import { resolveFilledOutboxGaps } from "../services/core-outbox-gaps.ts";
+import { syncStaleDeliveryChannels } from "../services/delivery-sync-consumer.ts";
 import { loadWorkerConfig } from "../worker/production-config.ts";
 
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
@@ -185,5 +187,28 @@ describe("legend-18qw production worker delivery", () => {
         sql`SELECT count(*) AS total FROM domain_event_gap_requests WHERE resolved_at IS NOT NULL`,
       ),
     ).toBe(1);
+  });
+});
+
+describe("legend-cbd0 delivery channel sweep wiring", () => {
+  it("legend-cbd0 worker-main runs syncStaleDeliveryChannels in the cloud-only relay sweep, isolated from the relay", () => {
+    const source = readFileSync(
+      new URL("../worker-main.ts", import.meta.url),
+      "utf8",
+    );
+    // Cloud only (an edge node never talks to the platform), and a sweep error
+    // never blocks the relay.
+    expect(source).toMatch(
+      /if \(postsInventoryGl\) \{\s*try \{\s*await syncStaleDeliveryChannels\(context, new Date\(\)\);\s*\} catch \{\s*console\.error\("Delivery channel sync sweep failed"\);/,
+    );
+    // The consumption path feeds the same channels (stale marking, 86 push).
+    expect(source).toMatch(
+      /if \(postsInventoryGl\)\s*await deliverDeliveryChannelEvent\(context, event, tx\);/,
+    );
+  });
+
+  it("legend-cbd0 the sweep runs with the context the worker resolves and finds nothing for a tenant without channels", async () => {
+    const { context } = await setup();
+    expect(await syncStaleDeliveryChannels(context, new Date())).toBe(0);
   });
 });

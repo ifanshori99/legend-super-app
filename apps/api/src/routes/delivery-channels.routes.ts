@@ -8,6 +8,7 @@
 // store state and menu sync are the supervisor's job, so the list needs it too).
 import { Router, type Request } from "express";
 import {
+  linkDeliveryChannel,
   listDeliveryChannels,
   setDeliveryChannelState,
   syncDeliveryChannelMenu,
@@ -39,6 +40,21 @@ deliveryChannelsRouter.get("/", manage, async (req, res) => {
     data: await channels.listDeliveryChannels(
       getScopedTenantContext(req),
       outletId,
+    ),
+  });
+});
+
+// legend-cbd0: create the channel or change its store id.
+deliveryChannelsRouter.put("/:platform", manage, jsonBody, async (req, res) => {
+  const { outletId, platform } = linkDeliveryChannel.params.parse(req.params);
+  const body = linkDeliveryChannel.body.parse(req.body);
+  res.json({
+    data: await channels.linkDeliveryChannel(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      outletId,
+      platform,
+      body,
     ),
   });
 });

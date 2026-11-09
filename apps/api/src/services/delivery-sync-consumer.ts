@@ -37,6 +37,7 @@ import { logger } from "../lib/logger.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
 import {
   pushDeliveryMenu,
+  reopenDueDeliveryChannels,
   soldOutItemIds,
 } from "./delivery-channels.service.ts";
 import { outletsAffectedByEvent } from "./menu-print.service.ts";
@@ -277,12 +278,15 @@ export async function deliverDeliveryChannelEvent(
 /**
  * Trailing edge of the debounce: pushes every open channel of the tenant that
  * is `stale` (or errored) and past the window. Returns the number pushed.
- * Run by the relay sweep in worker-main.ts (cloud only).
+ * Run by the relay sweep in worker-main.ts (cloud only). First reopens the
+ * channels whose pause (`closedUntil`) has lapsed (legend-cbd0), so a channel
+ * left stale while paused is pushed in the same tick.
  */
 export async function syncStaleDeliveryChannels(
   context: ScopedTenantContext,
   now = new Date(),
 ): Promise<number> {
+  await reopenDueDeliveryChannels(context, now);
   const cutoff = new Date(now.getTime() - DELIVERY_SYNC_DEBOUNCE_MS);
   return withTenant(db, context, async (tx) => {
     const due = await tx

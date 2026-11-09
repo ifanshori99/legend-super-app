@@ -331,6 +331,17 @@ export type SetDeliveryChannelStateInput = z.infer<
   typeof setDeliveryChannelStateInputSchema
 >;
 
+/**
+ * Create or link the channel of one outlet and platform (legend-cbd0): the
+ * platform's merchant/store id. The channel is born closed and stale.
+ */
+export const linkDeliveryChannelInputSchema = clientInputSchema({
+  storeExternalId: z.string().trim().min(1).max(100),
+});
+export type LinkDeliveryChannelInput = z.infer<
+  typeof linkDeliveryChannelInputSchema
+>;
+
 export const listDeliveryOrdersQuerySchema = z.strictObject({
   platform: deliveryPlatformSchema.optional(),
   status: deliveryOrderStatusSchema.optional(),
