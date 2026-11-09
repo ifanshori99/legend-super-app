@@ -117,7 +117,7 @@ export function GeneralTab({
   );
   const [formError, setFormError] = React.useState<string>();
 
-  // After a 409/412 the hook refetches the config. Once the refetched row
+  // After a 412 the hook refetches the config. Once the refetched row
   // differs from the one the form was filled from, refill the form and take
   // its stamp, or every retry would send the old stamp and fail again. Plain
   // refetches never get here, so unsaved edits survive them. Set during render
@@ -342,10 +342,9 @@ export function GeneralTab({
           toast({ title: t("facilityAdmin.general.saved"), tone: "success" });
         },
         onError: (error) => {
-          if (
-            error instanceof ApiError &&
-            (error.status === 409 || error.status === 412)
-          )
+          // Only a stale stamp (412) means another admin saved first. A 409
+          // is a refused change, so the typed values stay for a retry.
+          if (error instanceof ApiError && error.status === 412)
             setConflictPending(true);
           setFormError(
             error instanceof ApiError
