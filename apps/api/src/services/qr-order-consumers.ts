@@ -78,6 +78,17 @@ export const LATE_PAYMENT_GRACE_MS = 2 * 60_000;
 /** PRD silent: no open code for 15 minutes means the guests walked away. */
 export const UNPAID_ORDER_ABANDON_MS = 15 * 60_000;
 
+/**
+ * legend-g510l: intent statuses that still hold money to return. A refund that
+ * completed before the paid event was consumed moves the intent on to
+ * `partially_refunded`; its rest goes back like a full `paid` payment
+ * (`refunded` holds nothing).
+ */
+const HOLDS_REFUNDABLE_MONEY: readonly string[] = [
+  "paid",
+  "partially_refunded",
+];
+
 const paidPayloadSchema = z.looseObject({
   intentId: uuidSchema,
   paymentLinkId: uuidSchema,
@@ -409,7 +420,8 @@ export async function handleQrOrderPaymentPaid(
           eq(paymentIntents.paymentLinkId, paymentLinkId),
         ),
       );
-    if (late?.status !== "paid") return "unchanged";
+    if (!late || !HOLDS_REFUNDABLE_MONEY.includes(late.status))
+      return "unchanged";
     // WS-05 booked the money on this voided order's bill; it is never the
     // order's revenue. One system refund request per intent returns it
     // (beads legend-b0au, legend-dahl); a replay finds the first one.
@@ -468,7 +480,8 @@ export async function handleQrOrderPaymentPaid(
           eq(paymentIntents.paymentLinkId, paymentLinkId),
         ),
       );
-    if (late?.status !== "paid") return "not_settled";
+    if (!late || !HOLDS_REFUNDABLE_MONEY.includes(late.status))
+      return "not_settled";
     await voidAndNotify(
       tx,
       context,
