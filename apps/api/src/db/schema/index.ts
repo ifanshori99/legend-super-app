@@ -79,3 +79,5 @@ export * from "./inventory-count";
 export * from "./device";
 // WS-12 Tanya AI, MCP server and AI governance (legend-zfi4, xq8y, zw9r, xkbt).
 export * from "./ai";
+// WS-12 AI insights: forecasts, anomaly alerts, daily summaries (legend-hkd4, legend-lely).
+export * from "./ai-insights";

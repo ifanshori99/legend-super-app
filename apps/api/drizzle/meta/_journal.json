@@ -631,6 +631,20 @@
       "when": 1794180945917,
       "tag": "0089_ai_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794186967859,
+      "tag": "0090_ai_insights_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794186969855,
+      "tag": "0091_ai_insights_rls",
+      "breakpoints": true
     }
   ]
 }

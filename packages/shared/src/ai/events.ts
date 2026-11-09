@@ -10,10 +10,12 @@
 // consumer; action_request.approved covers it.
 
 import {
+  businessDateSchema,
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
   userIdSchema,
+  uuidSchema,
   z,
 } from "../core/index.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
@@ -38,6 +40,7 @@ import {
   mcpClientIdSchema,
   mcpTokenIdSchema,
 } from "./ids.ts";
+import { anomalyKindSchema, anomalyAlertSeveritySchema } from "./insights.ts";
 
 export const aiEventNames = [
   "ai_job.completed",
@@ -56,6 +59,8 @@ export const aiEventNames = [
   "ai_settings.updated",
   "ai_budget.threshold_reached",
   "ai_tool.invoked",
+  "ai_insight.anomaly_detected",
+  "ai_insight.daily_summary_ready",
 ] as const;
 export type AiEventName = (typeof aiEventNames)[number];
 
@@ -264,6 +269,33 @@ export type AiToolInvokedEventPayload = z.infer<
   typeof aiToolInvokedEventPayloadSchema
 >;
 
+/** AI-09: a new anomaly alert row (destination `notification`). Amounts are
+ * whole rupiah; the alert row stays the source of truth. */
+export const aiInsightAnomalyDetectedEventPayloadSchema = z.strictObject({
+  alertId: uuidSchema,
+  outletId: outletIdSchema,
+  businessDate: businessDateSchema,
+  kind: anomalyKindSchema,
+  severity: anomalyAlertSeveritySchema,
+  observedIdr: idrSchema,
+  baselineIdr: idrSchema,
+});
+export type AiInsightAnomalyDetectedEventPayload = z.infer<
+  typeof aiInsightAnomalyDetectedEventPayloadSchema
+>;
+
+/** AI-10: a new daily summary row (destination `notification`). The text is
+ * read from the row by the consumer, never carried in the event. */
+export const aiInsightDailySummaryReadyEventPayloadSchema = z.strictObject({
+  summaryId: uuidSchema,
+  outletId: outletIdSchema,
+  businessDate: businessDateSchema,
+  aiAssisted: z.boolean(),
+});
+export type AiInsightDailySummaryReadyEventPayload = z.infer<
+  typeof aiInsightDailySummaryReadyEventPayloadSchema
+>;
+
 /** Payload schema per event name, for the outbox writer and consumers. */
 export const AI_EVENT_PAYLOAD_SCHEMAS = {
   "ai_job.completed": aiJobCompletedEventPayloadSchema,
@@ -282,6 +314,9 @@ export const AI_EVENT_PAYLOAD_SCHEMAS = {
   "ai_settings.updated": aiSettingsUpdatedEventPayloadSchema,
   "ai_budget.threshold_reached": aiBudgetThresholdReachedEventPayloadSchema,
   "ai_tool.invoked": aiToolInvokedEventPayloadSchema,
+  "ai_insight.anomaly_detected": aiInsightAnomalyDetectedEventPayloadSchema,
+  "ai_insight.daily_summary_ready":
+    aiInsightDailySummaryReadyEventPayloadSchema,
 } as const satisfies Record<AiEventName, z.ZodType<Record<string, unknown>>>;
 
 /**

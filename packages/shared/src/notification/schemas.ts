@@ -175,6 +175,16 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "AI-10",
   },
+  // AI-09: rule-based void / discount / refund / waste anomaly of one outlet
+  // day. Its own category because `cash_variance` means a counted-cash
+  // difference and would mislead for waste or discount spikes.
+  operational_anomaly: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "AI-09",
+  },
 } as const satisfies Record<string, CategoryMeta>;
 
 export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;

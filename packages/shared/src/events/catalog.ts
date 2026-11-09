@@ -56,7 +56,7 @@ const namesByWorkstream = {
     "employee.updated attendance.logged shift.published leave.approved payroll_run.completed payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12":
-    "ai_job.completed action_request.rejected action_request.failed action_request.expired ai_conversation.deleted mcp_client.registered mcp_client.approved mcp_client.revoked mcp_token.issued mcp_token.revoked ai_settings.updated ai_budget.threshold_reached ai_tool.invoked",
+    "ai_job.completed action_request.rejected action_request.failed action_request.expired ai_conversation.deleted mcp_client.registered mcp_client.approved mcp_client.revoked mcp_token.issued mcp_token.revoked ai_settings.updated ai_budget.threshold_reached ai_tool.invoked ai_insight.anomaly_detected ai_insight.daily_summary_ready",
   "WS-14":
     "checklist.completed checklist.reminded equipment_service.reminded prep_list.created checklist.missed checklist.failed temperature.out_of_range equipment.broken prep_label.expired",
   // Adapter layer (packages/shared/src/adapters). Emitted by the services that

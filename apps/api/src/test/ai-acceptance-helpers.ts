@@ -6,7 +6,10 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { ROLE_TEMPLATES, type RoleTemplateKey } from "@starter/shared/access";
-import { cafeLegendFixtures } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import type {
   AiCompletionRequest,
   AiCompletionResult,
@@ -14,19 +17,81 @@ import type {
   AiProvider,
 } from "../lib/ai/types.ts";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { seedTenantRoleTemplates } from "../services/access.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import {
+  createIsolatedTenant,
+  fixtures,
+  owner as floorPool,
+  seededTenantId,
+} from "./floor-test-helpers.ts";
 
 export const app = createApp();
-export const { tenant, brand, outlets } = cafeLegendFixtures;
-export const tenantId = tenant.id;
-export const brandId = brand.id;
-export const outletA = outlets[0].id;
-export const outletB = outlets[1].id;
 
 export const ownerPool = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
 });
+
+// The AI suites never write into the shared seeded tenant (other suites assert
+// its exact rows, e.g. guest-menu-api Q23). Each test file gets a tenant of its
+// own: one brand, two outlets of that brand (the availability toggle refuses an
+// outlet of another brand), the seeded tenant's modules and limits, the role
+// templates and the AI/MCP approval policies (migration 0089 only seeds tenants
+// that already exist; seedTenantRoleTemplates does it for new ones). AI settings
+// are written by resetGovernance through the governance endpoint.
+async function createAiTenant() {
+  const suffix = `ai${randomUUID().replaceAll("-", "").slice(0, 10)}`;
+  const isolated = await createIsolatedTenant(suffix);
+  const second = randomUUID();
+  await floorPool.query(
+    `UPDATE tenants t SET feature_flags = s.feature_flags, limits = s.limits
+       FROM tenants s WHERE t.id = $1 AND s.id = $2`,
+    [isolated.tenantId, seededTenantId],
+  );
+  await floorPool.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Uji 2', 'Asia/Jakarta', $7, 'active')`,
+    [
+      second,
+      isolated.tenantId,
+      isolated.brandId,
+      isolated.legalEntityId,
+      `OUT-${suffix}B`.slice(0, 20).toUpperCase(),
+      `Outlet ${suffix} B`,
+      JSON.stringify(fixtures.outlets[0].openingHours),
+    ],
+  );
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: isolated.tenantId,
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+  await withTenant(db, context, (tx) =>
+    seedTenantRoleTemplates(tx, isolated.tenantId),
+  );
+  return { ...isolated, outletB: second };
+}
+
+const aiTenant = await createAiTenant();
+export const tenantId = aiTenant.tenantId;
+export const brandId = aiTenant.brandId;
+export const outletA = aiTenant.outletId;
+export const outletB = aiTenant.outletB;
+/** Requests resolve the tenant from this host (TEN-02); the dev fallback would pick the seeded tenant. */
+export const tenantHost = aiTenant.hostname;
+
+/** A supertest agent that reaches the AI tenant's host. Cookies persist like a browser. */
+export function tenantAgent(): ReturnType<typeof agent> {
+  const client = agent(app);
+  client.set("Host", tenantHost);
+  return client;
+}
 
 export const created = {
   users: [] as string[],
@@ -62,6 +127,7 @@ export type Scope = { type: "tenant" } | { type: "outlet"; id: string };
 export async function signedIn(name: string): Promise<Actor> {
   const client = agent(app);
   const email = await signUp(client, name);
+  client.set("Host", tenantHost);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   created.users.push(userId);
@@ -185,7 +251,6 @@ export async function newOwner(name = "Owner AI"): Promise<Actor> {
 }
 
 export async function cleanupAcceptance(): Promise<void> {
-  await cleanupAiMenuBrand();
   await asTenant(async (db) => {
     await db.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
@@ -354,64 +419,18 @@ export async function outboxEvents(
   return rows.map((row) => ({ payload: row.event.payload }));
 }
 
-// Menu fixtures live under a brand of their own: the guest/public menu reads
-// are per brand, so suites that assert the seeded brand's exact catalogue
-// (guest-menu-api Q23) never see these categories and items, even when test
-// files run in parallel against the shared tenant.
-let aiMenuBrandId: string | null = null;
-
-async function ensureAiMenuBrand(): Promise<string> {
-  if (aiMenuBrandId) return aiMenuBrandId;
-  const id = randomUUID();
-  await asTenant((db) =>
-    db.query(
-      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, $4)",
-      [id, tenantId, `ai-${id.slice(0, 8)}`, `Brand AI ${id.slice(0, 8)}`],
-    ),
-  );
-  aiMenuBrandId = id;
-  return id;
-}
-
-/** Best effort: drops the AI menu brand and its rows; leftovers are invisible to other brands. */
-async function cleanupAiMenuBrand(): Promise<void> {
-  if (!aiMenuBrandId) return;
-  const id = aiMenuBrandId;
-  aiMenuBrandId = null;
-  await asTenant(async (db) => {
-    const items = "(SELECT id FROM menu_items WHERE tenant_id = $1 AND brand_id = $2)";
-    for (const [table, column] of [
-      ["item_availability", "menu_item_id"],
-      ["item_variants", "menu_item_id"],
-      ["menu_item_modifier_groups", "menu_item_id"],
-      ["menu_item_daily_usage", "menu_item_id"],
-      ["combo_components", "menu_item_id"],
-      ["price_list_items", "menu_item_id"],
-    ]) {
-      await db.query(
-        `DELETE FROM ${table} WHERE tenant_id = $1 AND ${column} IN ${items}`,
-        [tenantId, id],
-      );
-    }
-    await db.query("DELETE FROM menu_items WHERE tenant_id = $1 AND brand_id = $2", [tenantId, id]);
-    await db.query("DELETE FROM menu_categories WHERE tenant_id = $1 AND brand_id = $2", [tenantId, id]);
-    await db.query("DELETE FROM brands WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
-  }).catch(() => undefined);
-}
-
 export async function createMenuItem(owner: Actor): Promise<string> {
-  const menuBrandId = await ensureAiMenuBrand();
   const category = await owner.client
     .post("/api/menu/categories")
     .set(originHeader)
-    .send({ brandId: menuBrandId, name: `Kategori AI ${randomUUID().slice(0, 8)}` });
+    .send({ brandId, name: `Kategori AI ${randomUUID().slice(0, 8)}` });
   if (category.status !== 201)
     throw new Error(`category failed ${category.status}`);
   const item = await owner.client
     .post("/api/menu/items")
     .set(originHeader)
     .send({
-      brandId: menuBrandId,
+      brandId,
       categoryId: category.body.data.id,
       name: `Menu AI ${randomUUID().slice(0, 8)}`,
     });

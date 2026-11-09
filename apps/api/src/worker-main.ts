@@ -51,6 +51,9 @@ import {
 } from "./worker/relay";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
+import { runAiForecastJob } from "./worker/ai-forecast.job.ts";
+import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
+import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 import { logger } from "./lib/logger";
@@ -249,6 +252,25 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // WS-12 AI-07 rule-based forecast, next 7 days per outlet (legend-hkd4);
+    // self-throttled, never blocks the relay.
+    try {
+      await runAiForecastJob(context);
+    } catch {
+      console.error("AI forecast sweep failed");
+    }
+    // WS-12 AI-09 anomaly alerts + AI-10 daily summary for the previous
+    // business day (legend-lely); idempotent via unique keys.
+    try {
+      await runAiAnomalyJob(context);
+    } catch {
+      console.error("AI anomaly sweep failed");
+    }
+    try {
+      await runAiDailySummaryJob(context);
+    } catch {
+      console.error("AI daily summary sweep failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:

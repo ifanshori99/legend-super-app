@@ -772,10 +772,13 @@ async function transition(
       and(
         eq(actionRequests.tenantId, row.tenantId),
         eq(actionRequests.id, row.id),
+        // Compare-and-set on the status read under the row lock: a second
+        // writer can never move the row again (no double execution).
+        eq(actionRequests.status, row.status),
       ),
     )
     .returning();
-  if (!updated) throw new Error("Action request update returned no row");
+  if (!updated) throw new AiError("ACTION_REQUEST_INVALID_TRANSITION");
   return updated;
 }
 

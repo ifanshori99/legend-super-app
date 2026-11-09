@@ -7,4 +7,5 @@ export * from "./tools.ts";
 export * from "./events.ts";
 export * from "./errors.ts";
 export * from "./endpoints.ts";
+export * from "./insights.ts";
 export * from "./fixtures.ts";

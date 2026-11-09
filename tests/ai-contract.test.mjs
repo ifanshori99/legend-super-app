@@ -834,7 +834,8 @@ test("AIG-02 governance settings: warn below stop, unique features, default limi
 
 test("WS-12 every AI event is registered in the event catalog with a payload schema", () => {
   const names = new Set(events.eventCatalog.map((entry) => entry.name));
-  assert.equal(ai.aiEventNames.length, 16);
+  // 16 WS-12 events + 2 AI insight notification events (wave 3).
+  assert.equal(ai.aiEventNames.length, 18);
   for (const name of ai.aiEventNames) {
     assert.ok(names.has(name), `${name} in catalog`);
     assert.ok(ai.AI_EVENT_PAYLOAD_SCHEMAS[name], `${name} payload schema`);

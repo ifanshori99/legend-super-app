@@ -63,6 +63,7 @@ import {
   removeAssignments,
   resetGovernance,
   signedIn,
+  tenantAgent,
   tenantId,
   type Actor,
 } from "./ai-acceptance-helpers.ts";
@@ -171,7 +172,7 @@ const denied = (reply: Reply) =>
 // ---- OAuth helpers --------------------------------------------------------
 
 async function metadata(): Promise<Record<string, string>> {
-  const res = await request(app).get(METADATA_PATH);
+  const res = await tenantAgent().get(METADATA_PATH);
   expect(res.status, "RFC 8414 metadata").toBe(200);
   return res.body;
 }
@@ -257,7 +258,7 @@ async function authorize(
 
 async function exchange(fields: Record<string, string>) {
   const meta = await metadata();
-  return request(app)
+  return tenantAgent()
     .post(pathOf(meta.token_endpoint!))
     .type("form")
     .send({
@@ -578,7 +579,7 @@ describe("[wave 2: M] MCP-05 only admin-approved clients get tokens", () => {
     ).toBe(200);
     const on = await metadata();
     expect(on.registration_endpoint).toBeTruthy();
-    const reg = await request(app)
+    const reg = await tenantAgent()
       .post(pathOf(on.registration_endpoint!))
       .send({
         client_name: "Klien dinamis uji",
@@ -776,7 +777,7 @@ describe("[wave 2: M] MCP-05 consent: a code is issued only by the user's own ap
     const meta = await metadata();
     const user = await powerUser("Pengguna Persetujuan");
     const { query } = consentQuery();
-    for (const who of [user.client, request(app)]) {
+    for (const who of [user.client, tenantAgent()]) {
       const res = await who
         .get(pathOf(meta.authorization_endpoint!))
         .query(query)

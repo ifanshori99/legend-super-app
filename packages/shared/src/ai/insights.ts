@@ -138,7 +138,7 @@ export const anomalyKindSchema = z.enum([
   "refund",
   "waste",
 ]);
-export const anomalySeveritySchema = z.enum(["warn", "high"]);
+export const anomalyAlertSeveritySchema = z.enum(["warn", "high"]);
 export const anomalyStatusSchema = z.enum(["open", "acknowledged"]);
 
 export const anomalyAlertSchema = z.strictObject({
@@ -149,7 +149,7 @@ export const anomalyAlertSchema = z.strictObject({
   observedIdr: idrSchema,
   baselineIdr: idrSchema,
   ratio: z.number().min(0),
-  severity: anomalySeveritySchema,
+  severity: anomalyAlertSeveritySchema,
   status: anomalyStatusSchema,
   createdAt: isoDateTimeSchema,
 });
@@ -222,6 +222,8 @@ export type PromoCopyDraftOutput = z.infer<typeof promoCopyDraftOutputSchema>;
 export const expenseAccountSuggestInputSchema = z.strictObject({
   description: z.string().trim().min(1).max(300),
   amountIdr: idrSchema.optional(),
+  /** Required when the tenant has charts for more than one legal entity. */
+  legalEntityId: uuidSchema.optional(),
 });
 export type ExpenseAccountSuggestInput = z.infer<
   typeof expenseAccountSuggestInputSchema

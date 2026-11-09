@@ -1293,6 +1293,7 @@ export const id = {
       schedule_update: "Perubahan jadwal",
       payslip: "Slip gaji",
       daily_summary: "Ringkasan harian",
+      operational_anomaly: "Anomali operasional",
     },
     inbox: {
       heading: "Kotak masuk",

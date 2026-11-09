@@ -36,7 +36,6 @@ import {
   grantTemplateRole,
   newOwner,
   originHeader,
-  outboxEvents,
   outletA,
   outletB,
   ownerPool,
@@ -62,6 +61,16 @@ async function accessOf(userId: string): Promise<AccessSnapshot> {
     mfaVerified: true,
     now: new Date(),
   });
+}
+
+/** Events of one name for one action request, read by aggregate so other suites' events never crowd it out. */
+async function eventCount(name: string, actionRequestId: string) {
+  const { rows } = await ownerPool.query(
+    `SELECT 1 FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = $3`,
+    [tenantId, actionRequestId, name],
+  );
+  return rows.length;
 }
 
 async function ctxOf(actor: Actor): Promise<AiToolContext> {
@@ -137,10 +146,9 @@ describe("action requests (AIG-03)", () => {
         receipt.approvalRequestId,
       ),
     ).rejects.toMatchObject({ code: "ACTION_REQUEST_NOT_FOUND" });
-    const created = await outboxEvents("action_request.created");
     expect(
-      created.some((e) => e.payload.actionRequestId === receipt.actionRequestId),
-    ).toBe(true);
+      await eventCount("action_request.created", receipt.actionRequestId),
+    ).toBe(1);
 
     // Chain still open: settle does nothing.
     expect(await settleActionRequest(workerContext, receipt.actionRequestId)).toBe(
@@ -161,10 +169,9 @@ describe("action requests (AIG-03)", () => {
       "executed",
     );
     expect(await availabilityFingerprint(menuItemId)).toBe(after);
-    const executed = (await outboxEvents("action_request.executed")).filter(
-      (e) => e.payload.actionRequestId === receipt.actionRequestId,
-    );
-    expect(executed).toHaveLength(1);
+    expect(
+      await eventCount("action_request.executed", receipt.actionRequestId),
+    ).toBe(1);
 
     const status = (await writeTools["TL-19"]!(ctx, {
       actionRequestId: receipt.actionRequestId,
