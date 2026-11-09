@@ -26,3 +26,10 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - ws02-edge (G0c95): `.worktrees/prep-ws02-edge`, cabang `prep/ws02-edge` (dari ws/ws02-edge 756b45ae). Migration cabang 0079/0080 → regen. PENTING: FK `edge_sync_conflict_resolutions` wajib tetap di dalam CREATE TABLE (jangan dipisah jadi ALTER TABLE ADD CONSTRAINT oleh drizzle-kit; bila generate memisahkannya, susun SQL agar FK inline seperti SQL lama). Custom 0080 = salinan apa adanya `apps/api/src/db/schema/edge-sync-conflict.custom.sql`. Tahap A: merge head m1 terbaru. Gate gagal (bukan konflik merge) → reopen G0c95.
 - fix-auth06 (AUTH-06, bcad09cf, web saja): `prep/fix-auth06` dirantai di atas refund f5025cf9 (e75ea4b2 + merge). Masuk m1 setelah refund. Gate: `pnpm check` + format:check; e2e auth/roles sudah hijau di cabang (CTO).
 - Urutan rantai kini: refund f5025cf9 → fix-auth06 → procurement → kds → doit → ws02-edge → e2e-az → ws11-reports → fix-whitelabel → struk.
+- pos-receipt (struk): `.worktrees/prep-pos-receipt`, cabang BARU `prep2/pos-receipt` (dari ws/pos-receipt 1657797e). Tahap A: merge m1 13425b65 (sudah berisi pos-shift + doit). Rujukan penyelesaian konflik: commit 87b21e8d (merge lama di atas f98c95f7) dan fix 85723463 (G1vpr: tes struk ikut aturan shift, `pos-order.routes.ts` memakai `deviceIdOf` m1, BUKAN `verifiedDeviceId` lokal). Terapkan isi 85723463 (cherry-pick; abaikan bagian drizzle bila ada). Migration cabang 0068/0069 lama → regen di tahap B setelah fix-whitelabel.
+
+## e2e-az (antrean, 09-11)
+
+- prep/e2e-az 263ce1ec (di atas f7497336, basis chain fef266fe ws02-edge). Hasil G4k8i: 7 file, 83 lulus, 38 skip, 0 gagal.
+- Skip EDC-01/02/04 menunggu legend-dahk/m4fv (G106p, brief 102). Jangan unskip di merge train.
+- Urutan: setelah ws02-edge, ws11-reports, fix-whitelabel, pos-receipt. Merge chain head terakhir, unskip skenario pos-receipt (az-e:1301, az-r:338/342), jalankan e2e-az + gate penuh, lalu merge ke m1.
