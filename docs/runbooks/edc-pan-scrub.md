@@ -23,22 +23,39 @@ are not card-like.
 
 ## What it masks per column
 
-| Column                                               | Action                                                                                                                          |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `card_type`                                          | replaced with `UNKNOWN`                                                                                                         |
-| `rrn`, `invoice_no`, `batch_no`, `dispatch_batch_no` | set to `NULL`                                                                                                                   |
-| `message`                                            | each card-like run replaced with `[disamarkan]`; digits joined to a `[disamarkan]` by spaces, tabs or dashes are folded into it |
-| `masked_pan`                                         | a bare 13-19 digit number (with separators) becomes first 6 + `*` + last 4; anything else card-like becomes `NULL`              |
+| Column                                               | Action                                                                                                             |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `card_type`                                          | replaced with `UNKNOWN`                                                                                            |
+| `rrn`, `invoice_no`, `batch_no`, `dispatch_batch_no` | set to `NULL`                                                                                                      |
+| `message`                                            | each card-like run replaced with `[disamarkan]`; a 0135 leftover next to a mask is folded into it (below)          |
+| `masked_pan`                                         | a bare 13-19 digit number (with separators) becomes first 6 + `*` + last 4; anything else card-like becomes `NULL` |
 
 Only rows holding a card-like value are updated. Amount, status,
 `completed_at`, `updated_at` and all other columns are unchanged. Replacements
 hold no matching run, so a second run matches no row (idempotent).
 
-The folding in 0141 removes what 0135 left behind: 0135 masked only the
-single-separator part of a run, so `411111111111 - 1111111` became
-`[disamarkan] - 1111111` (7 card digits). Folding errs on the safe side and
-cannot be undone: a legitimate number joined to a mask is removed too, for
-example `[disamarkan] - 51` (a response code) becomes `[disamarkan]`.
+0135 (and the write path before legend-tjwb) masked only the part of a run
+split by single spaces or dashes, so `411111111111 - 1111111` became
+`[disamarkan] - 1111111`: 7 card digits left. 0141 folds such a leftover into
+the mask, but only when both hold:
+
+- It is joined to the mask by a separator run the old pattern could not
+  cross: anything but exactly one space or one dash (two or more separators,
+  or a tab). A digit after a single space would have been masked by the old
+  pattern, so it was never part of the card.
+- It shows more than the receipt rule allows: 7 or more digits before the
+  mask (only the first 6 may show) or 5 or more after it (only the last 4).
+
+So `[disamarkan] - 1111111` and `4111111 - [disamarkan]` become
+`[disamarkan]`, while `[disamarkan] - 51` (a response code the old write path
+left after a masked card), `[disamarkan] 05`, `[disamarkan] - 1111` and
+`4111 - [disamarkan]` stay exactly as they are. The API applies the same rule
+when it reads a message, so a leftover is hidden even before 0141 runs.
+
+This cannot be undone. A real number with 5 or more digits after a mask, or 7
+or more before it, joined by two or more separators or a tab, is removed for
+good: `[disamarkan] - 123456` (an approval code) becomes `[disamarkan]`. It
+cannot be told apart from the end of a 17 to 19 digit card.
 
 Both migrations run `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY`, the update,
 then `FORCE ROW LEVEL SECURITY`. 0141 puts these three statements in one
@@ -60,7 +77,9 @@ SELECT
   count(*) FILTER (WHERE "invoice_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}') AS invoice_no,
   count(*) FILTER (WHERE "batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}') AS batch_no,
   count(*) FILTER (WHERE "dispatch_batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}') AS dispatch_batch_no,
-  count(*) FILTER (WHERE "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}') AS message,
+  count(*) FILTER (WHERE "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
+    OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
+    OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}') AS message,
   count(*) FILTER (WHERE "masked_pan" ~ '[0-9](?:[ \t-]*[0-9]){11,}') AS masked_pan,
   count(*) FILTER (WHERE "card_type" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
     OR "rrn" ~ '[0-9](?:[ \t-]*[0-9]){12,}'
@@ -68,6 +87,8 @@ SELECT
     OR "batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}'
     OR "dispatch_batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}'
     OR "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
+    OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
+    OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
     OR "masked_pan" ~ '[0-9](?:[ \t-]*[0-9]){11,}') AS any_row
 FROM "edc_transactions";
 

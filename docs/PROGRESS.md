@@ -577,3 +577,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bead baru: `legend-2z04` (P3, oracle satu pemisah di edc-agent, edc-simulator, edc-contract).
 - Biaya sesi a311d4dc (15:34-15:53 UTC+7 sebagian): total biaya* 3357k (utama Opus 1617k, subagent Opus 1269k, Sonnet 292k, Haiku 180k); parallel-report: 13 spawn, maks 3, rata 1,34 subagent berjalan.
 - Berikut: CTO tentukan urutan merge (0141 bentrok nomor dengan `ws/shift-close-fix`), second opinion Codex brief 150b, merge train.
+
+## legend-ymhh 0141 tidak lagi menghapus kode respons sah (engineer, cabang `ws/edc-pan-fix` di atas 36599100, 2026-11-09)
+
+- Masalah (Codex 150b P2): 0141 melipat semua digit yang menempel ke `[disamarkan]`, jadi baris bersih `Kartu [disamarkan] - 51` kehilangan kode respons.
+- Aturan baru, sama di SQL 0141, JS `maskCardNumbers` (tulis dan baca), dan query deteksi runbook: digit di samping mask dilipat hanya bila (a) disambung pemisah yang tidak bisa dilewati pola lama 0135 (2+ spasi/strip atau tab) dan (b) melebihi aturan struk: 7+ digit sebelum mask atau 5+ sesudah. `[disamarkan] - 51`, `[disamarkan] 05`, `- 1111`, `4111 - [disamarkan]` tetap.
+- Efek yang diterima dan dicatat di runbook: angka sah 5+ digit sesudah mask dengan ` - ` (mis. kode approval `- 123456`) ikut terhapus, tidak bisa dikembalikan.
+- Review K: reviewer Opus + architect paralel, keduanya setuju aturan lengkap (fuzz 300k-500k PAN, paritas SQL Postgres vs JS 3000 input, idempoten). Dibetulkan: catatan "tidak bisa dikembalikan" dikembalikan ke runbook dan header SQL, fixture `- 123456`.
+- Gate: test gagal dulu (migrasi 2/14, pola 1/20), lalu 3 file `edc-pan*` 44/44; 14 file EDC/POS EDC 189/189; `edc-contract` 6/6; tsc api dan shared lewat heavy, eslint, prettier lulus.
+- Bead baru: `legend-lg45` (P2, sisa PAN di pesan yang terpotong 200 karakter oleh jalur tulis lama; celah lama, bukan dari diff ini).
+- Berikut: second opinion Codex run 2 (brief 150b, bagian Run 2), urutan merge 0141 vs `ws/shift-close-fix`.

@@ -17,17 +17,25 @@
 --   rrn, invoice_no, batch_no,
 --   dispatch_batch_no                 -> NULL
 --   message                           -> each run replaced by '[disamarkan]';
---                                        digits joined to a '[disamarkan]'
---                                        by spaces, tabs or dashes are
---                                        folded into it (0135 masked only the
---                                        single-separator part of a run, so
---                                        '411111111111 - 1111111' became
---                                        '[disamarkan] - 1111111': 7 PAN
---                                        digits left)
+--                                        then 0135 leftovers are folded in
+--                                        (see below)
 --   masked_pan                        -> a value that is only 13-19 digits
 --                                        and separators becomes first 6 + '*'
 --                                        + last 4; anything else card-like
 --                                        -> NULL
+--
+-- 0135 leftovers: 0135 (and the write path before legend-tjwb) masked only
+-- the part of a run split by single spaces or dashes, so
+-- '411111111111 - 1111111' became '[disamarkan] - 1111111'. Such a leftover is
+-- joined to the mask by a separator run the old pattern could not cross
+-- (anything but exactly one space or one dash). It is folded into the mask
+-- only when it would show more than the receipt rule allows: 7+ digits before
+-- the mask (first 6 may show) or 5+ after it (last 4 may show). So
+-- '[disamarkan] - 51' (a response code the old write path left after a
+-- masked card) and '4111 - [disamarkan]' stay as they are. The fold cannot be
+-- undone: a real number of that size joined that way, e.g.
+-- '[disamarkan] - 123456' (approval code), is removed for good, since it
+-- cannot be told apart from the end of a 17-19 digit card.
 --
 -- Only rows that hold a card-number-like run are updated; every other column
 -- (amount, status, completed_at, updated_at, ...) stays as it is. Replacements
@@ -73,12 +81,13 @@ BEGIN
       ELSE "dispatch_batch_no" END,
     "message" = CASE
       WHEN "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
-        OR "message" ~ '[0-9][ \t-]*\[disamarkan\]|\[disamarkan\][ \t-]*[0-9]'
+        OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
+        OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
         THEN regexp_replace(
           regexp_replace(
             regexp_replace("message", '[0-9](?:[ \t-]*[0-9]){11,}', '[disamarkan]', 'g'),
-            '(?:[0-9][ \t-]*)+\[disamarkan\]', '[disamarkan]', 'g'),
-          '\[disamarkan\](?:[ \t-]*[0-9])+', '[disamarkan]', 'g')
+            '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]', '[disamarkan]', 'g'),
+          '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}', '[disamarkan]', 'g')
       ELSE "message" END,
     "masked_pan" = CASE
       WHEN "masked_pan" !~ '[0-9](?:[ \t-]*[0-9]){11,}' THEN "masked_pan"
@@ -93,7 +102,8 @@ BEGIN
      OR "batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}'
      OR "dispatch_batch_no" ~ '[0-9](?:[ \t-]*[0-9]){12,}'
      OR "message" ~ '[0-9](?:[ \t-]*[0-9]){11,}'
-     OR "message" ~ '[0-9][ \t-]*\[disamarkan\]|\[disamarkan\][ \t-]*[0-9]'
+     OR "message" ~ '[0-9](?:[ \t-]*[0-9]){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]'
+     OR "message" ~ '\[disamarkan\](?:[ \t-]{2,}|\t)[0-9](?:[ \t-]*[0-9]){4,}'
      OR "masked_pan" ~ '[0-9](?:[ \t-]*[0-9]){11,}';
 
   ALTER TABLE "edc_transactions" FORCE ROW LEVEL SECURITY;

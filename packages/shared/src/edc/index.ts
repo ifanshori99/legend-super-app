@@ -167,8 +167,20 @@ function referenceField(max: number) {
 /** A run of 12+ digits (split by spaces, tabs or dashes, repeated or mixed) looks
  * like a card number: the terminal's free text is masked before it is stored. */
 const cardNumberLike = /\d(?:[ \t-]*\d){11,}/g;
+/** Card digits the old single-separator scrub (0135, the write path before
+ * legend-tjwb) left next to a mask: joined by a separator run it could not
+ * cross (anything but exactly one space or dash), and more than the receipt
+ * rule shows (7+ before = past the first 6, 5+ after = past the last 4).
+ * Same rule as migration 0141; shorter groups such as a response code after
+ * the mask (`[disamarkan] - 51`) stay. */
+const leftoverBeforeMask =
+  /\d(?:[ \t-]*\d){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]/g;
+const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
 const maskCardNumbers = (text: string): string =>
-  text.replace(cardNumberLike, "[disamarkan]");
+  text
+    .replace(cardNumberLike, "[disamarkan]")
+    .replace(leftoverBeforeMask, "[disamarkan]")
+    .replace(leftoverAfterMask, "[disamarkan]");
 const safeMessage = z
   .string()
   .transform((text) => maskCardNumbers(text).slice(0, 200));

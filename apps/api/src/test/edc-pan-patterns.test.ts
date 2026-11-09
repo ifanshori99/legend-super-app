@@ -123,6 +123,48 @@ describe("free-text message (read path)", () => {
   });
 });
 
+describe("masks left by the old single-separator scrub (read path)", () => {
+  // Rows masked by 0135 or the old write path can hold card digits next to a
+  // mask, joined by a separator run the old pattern could not cross. They are
+  // folded only when they show more than the first 6 / last 4 digits.
+  const read = (message: string) =>
+    edcTransactionSchema.parse({ ...row, message }).message;
+  const M = "[disamarkan]";
+
+  it("folds 5+ digits after or 7+ digits before a mask", () => {
+    expect(read(`Kartu ${M} - 1111111 ditolak`)).toBe(`Kartu ${M} ditolak`);
+    expect(read(`Kartu ${M}\t1111111 ditolak`)).toBe(`Kartu ${M} ditolak`);
+    expect(read(`Kartu ${M} - 11 - 11111 ditolak`)).toBe(`Kartu ${M} ditolak`);
+    expect(read(`Kartu 4111111 - ${M} ditolak`)).toBe(`Kartu ${M} ditolak`);
+    expect(read(`Kartu 1111111\t${M} ditolak`)).toBe(`Kartu ${M} ditolak`);
+    // Accepted loss: a 6-digit approval code joined by " - " is folded too.
+    expect(read(`Kartu ${M} - 123456`)).toBe(`Kartu ${M}`);
+  });
+
+  it("keeps response codes and digits within first 6 / last 4", () => {
+    for (const clean of [
+      `Kartu ${M} - 51`,
+      `Kartu ${M} 05`,
+      `Kartu ${M} - 1111 ditolak`,
+      `Kartu 4111 - ${M} ditolak`,
+      `Kartu ${M} 12345`,
+      `Kartu 411111 ${M}\t1111 ditolak`,
+    ]) {
+      expect(read(clean)).toBe(clean);
+    }
+  });
+
+  it("write path: a response code after a card number goes with it", () => {
+    // Dirty input: the card-number run is greedy across " - ", so the code
+    // joined to it is masked too. PAN removal wins.
+    expect(
+      ecrResultDetailsSchema.parse({
+        message: "Kartu 4111111111111111 - 51",
+      }).message,
+    ).toBe(`Kartu ${M}`);
+  });
+});
+
 describe("reference columns on read", () => {
   const read = (value: string) =>
     edcTransactionSchema.parse({

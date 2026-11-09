@@ -71,6 +71,10 @@ const REF20_DOUBLE = "4111  1111  11111111";
 const REF20_MIXED = "4111 - 11111111 1111";
 const REF20_DDASH = "4111--1111--11111111";
 const SCRUBBED = "[disamarkan]";
+/** Digits the old single-separator scrub left next to a mask, joined by a
+ * separator run it could not cross: 7+ before or 5+ after the mask. */
+const LEFTOVER =
+  /\d(?:[ \t-]*\d){6,}(?:[ \t-]{2,}|\t)\[disamarkan\]|\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/;
 const MASKED_16 = "411111******1111";
 
 /** Digits of a 12..20 digit card number split by repeated and mixed separators. */
@@ -336,9 +340,14 @@ const specs: Spec[] = [
       status: "declined",
       cols: { message: `Kartu ${pan} ditolak` },
       // "4111 - 1111-1111 1111": 0135 runs first and masks only the
-      // single-separator 12-digit tail; 0141 folds the 4-digit head joined to
-      // that marker into it.
-      expect: { message: `Kartu ${SCRUBBED} ditolak` },
+      // single-separator 12-digit tail. The 4-digit head left in front of the
+      // mask is within the first-6 display rule, so 0141 keeps it.
+      expect: {
+        message:
+          form === "mixed"
+            ? `Kartu 4111 - ${SCRUBBED} ditolak`
+            : `Kartu ${SCRUBBED} ditolak`,
+      },
     },
     {
       name: `masked-pan-${form}`,
@@ -348,8 +357,18 @@ const specs: Spec[] = [
       expect: { masked_pan: form === "mixed" ? null : MASKED_16 },
     },
   ]),
-  // ---- 0135 leftovers: 0135 masked only the single-separator part of a
-  // run, leaving more PAN digits than first 6 / last 4 next to the marker.
+  // ---- 0135 leftovers: 0135 (and the old write path) masked only the
+  // single-separator part of a run. Digits it left next to the mask, joined by
+  // a separator run it could not cross (not exactly one space or dash), are
+  // folded into the mask when they show more than the first 6 / last 4.
+  {
+    // Known, accepted loss: a 6-digit approval code after " - " looks like
+    // the end of a 17-19 digit card and is folded.
+    name: "message-leftover-approval-code-folded",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} - 123456` },
+    expect: { message: `Kartu ${SCRUBBED}` },
+  },
   {
     name: "message-0135-leftover-tail",
     status: "declined",
@@ -363,10 +382,55 @@ const specs: Spec[] = [
     expect: { message: `Kartu ${SCRUBBED} ditolak` },
   },
   {
-    name: "message-marker-joined-digits",
+    name: "message-0135-leftover-tab-tail",
+    status: "declined",
+    cols: { message: "Kartu 411111111111\t1111111 ditolak" },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "message-leftover-tail-in-groups",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} - 11 - 11111 ditolak` },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "message-leftover-head-tab",
+    status: "declined",
+    cols: { message: `Kartu 1111111\t${SCRUBBED} ditolak` },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  // ---- clean rows with digits next to a mask: must stay byte-identical
+  // (response codes after a mask written by the old write path; groups
+  // within first 6 / last 4; a single space the old scrub would have crossed).
+  {
+    name: "clean-marker-response-code-dash",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} - 51` },
+  },
+  {
+    name: "clean-marker-response-code-space",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} 05` },
+  },
+  {
+    name: "clean-marker-last-4",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} - 1111 ditolak` },
+  },
+  {
+    name: "clean-marker-first-4",
+    status: "declined",
+    cols: { message: `Kartu 4111 - ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "clean-marker-single-space-digits",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} 12345` },
+  },
+  {
+    name: "clean-marker-first-6-last-4",
     status: "declined",
     cols: { message: `Kartu 411111 ${SCRUBBED}\t1111 ditolak` },
-    expect: { message: `Kartu ${SCRUBBED} ditolak` },
   },
   {
     name: "clean-marker-apart-from-digits",
@@ -808,11 +872,9 @@ describe("EDC-01 legend-5gub + legend-tjwb migrations 0135 + 0141 PAN scrub", ()
       for (const [col, value] of Object.entries(row)) {
         if (typeof value === "string" && !uuid.test(value)) {
           expect(cardLike(col, value), `${id} ${col}=${value}`).toBe(false);
-          // No PAN digits left joined to a mask (0135 partial leftovers).
-          expect(
-            /\d[ \t-]*\[disamarkan\]|\[disamarkan\][ \t-]*\d/.test(value),
-            `${id} ${col}=${value}`,
-          ).toBe(false);
+          // No 0135 leftover next to a mask that shows more than the first 6
+          // or last 4 digits.
+          expect(LEFTOVER.test(value), `${id} ${col}=${value}`).toBe(false);
         }
       }
     }
