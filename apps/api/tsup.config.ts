@@ -11,6 +11,7 @@ export default defineConfig({
     migrate: "src/migrate.ts",
     "provision-roles": "src/provision-roles.ts",
     "predeploy-check": "src/predeploy-check.ts",
+    "reset-preswitch-refunds": "src/reset-preswitch-refunds.ts",
     worker: "src/worker-main.ts",
   },
   format: "esm",

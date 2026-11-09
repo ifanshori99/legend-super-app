@@ -10,16 +10,19 @@
 // stored as SERVICE_UNAVAILABLE and ends MANUAL_RECONCILIATION with no
 // provider_ref and no polls: the same shape as a pre-switch row. Ops may also
 // have paid MANUAL_RECONCILIATION refunds by hand. So --apply only touches rows
-// last updated before the deploy of 5316426a (--touched-before) AND listed in a
+// last updated before the cutoff (--touched-before: start of the FIRST worker
+// built from 5316426a or later in that environment) AND listed in a
 // file that finance has reviewed (--ids).
 //
 // Run order, per environment:
-//   (a) deploy 5316426a with DOIT_REFUNDS_ENABLED off; note the deploy time.
-//   (b) pnpm db:reset-preswitch-refunds --touched-before <deploy time>
+//   (a) deploy a build that contains this runner, DOIT_REFUNDS_ENABLED off. The
+//       cutoff is the start time of the FIRST worker built from 5316426a or later
+//       (too early is safe, too late is not), not this deploy's time.
+//   (b) pnpm db:reset-preswitch-refunds --touched-before <cutoff>
 //       (dry-run: prints the rows, their amount and decision time, and an id list)
 //   (c) finance confirms no listed refund was paid by hand; save the reviewed
 //       ids to a file, one per line.
-//   (d) pnpm db:reset-preswitch-refunds --apply --touched-before <deploy time> --ids <file>
+//   (d) pnpm db:reset-preswitch-refunds --apply --touched-before <cutoff> --ids <file>
 //   (e) dry-run with --touched-before <t> --ids <file>; expect 0 rows. A plain
 //       dry-run must list only the ids finance kept out (close those by hand).
 //   (f) only then turn on DOIT_REFUNDS_ENABLED.
@@ -58,13 +61,16 @@ const RESETTABLE_ERRORS = [
 
 export const USAGE =
   "Usage: db:reset-preswitch-refunds [--dry-run | --apply] [--touched-before <ISO>] [--ids <file>]\n" +
+  "  (production image: node dist/reset-preswitch-refunds.js with the same options)\n" +
   "  --dry-run                 (default) list the refunds that would be reset, write nothing\n" +
   "  --apply                   reset them and write one audit row per refund\n" +
-  "  --touched-before <ISO>    only rows last updated before this time (deploy time of\n" +
-  "                            5316426a, with offset, e.g. 2026-11-09T03:00:00Z); required for --apply\n" +
+  "  --touched-before <ISO>    only rows last updated before this time: start of the FIRST\n" +
+  "                            worker built from 5316426a or later, with offset,\n" +
+  "                            e.g. 2026-11-09T03:00:00Z; required for --apply\n" +
   "  --ids <file>              reviewed refund ids, one uuid per line (blank and # lines\n" +
   "                            ignored); required for --apply, only these rows are touched\n" +
-  "Run order: (a) deploy 5316426a with DOIT_REFUNDS_ENABLED off, note the time;\n" +
+  "Run order: (a) deploy a build with this runner, DOIT_REFUNDS_ENABLED off; take the cutoff\n" +
+  "  from the first worker built from 5316426a or later (too early is safe, too late is not);\n" +
   "  (b) dry-run with --touched-before; (c) finance confirms no listed refund was paid\n" +
   "  by hand, save the reviewed ids to a file; (d) --apply --touched-before <t> --ids <file>;\n" +
   "  (e) dry-run with the same --touched-before and --ids, expect 0 (a plain dry-run lists only ids kept out);\n" +
@@ -215,7 +221,7 @@ export async function run(options: {
     throw new PreswitchResetUsageError("--touched-before is not a valid time.");
   if (touchedBefore && touchedBefore.getTime() > now.getTime())
     throw new PreswitchResetUsageError(
-      "--touched-before is in the future; use the deploy time of 5316426a.",
+      "--touched-before is in the future; use the start time of the first worker built from 5316426a or later.",
     );
   if (ids?.some((id) => !UUID.test(id)))
     throw new PreswitchResetUsageError(
@@ -393,8 +399,11 @@ export async function run(options: {
   };
 }
 
-/** MIGRATION_DATABASE_URL or _FILE (not both); else the local dev DATABASE_URL. */
-function migrationDatabaseUrl() {
+/**
+ * MIGRATION_DATABASE_URL or _FILE (not both). The dev path falls back to the
+ * local DATABASE_URL; the production bundle (`requireMigrationUrl`) does not.
+ */
+function migrationDatabaseUrl(requireMigrationUrl: boolean) {
   const direct = process.env.MIGRATION_DATABASE_URL;
   const file = process.env.MIGRATION_DATABASE_URL_FILE;
   if (direct && file)
@@ -412,10 +421,15 @@ function migrationDatabaseUrl() {
     }
     return databaseUrl(value);
   }
+  if (!direct && requireMigrationUrl)
+    throw new PreswitchResetUsageError(
+      "MIGRATION_DATABASE_URL or MIGRATION_DATABASE_URL_FILE is required.",
+    );
   return direct ? databaseUrl(direct) : databaseUrl();
 }
 
-function parseArgs(args: string[]) {
+/** Parses the CLI arguments and reads the --ids file. Throws PreswitchResetUsageError. */
+export function parseArgs(args: string[]) {
   let apply = false;
   let dryRun = false;
   let touchedBefore: Date | undefined;
@@ -448,19 +462,53 @@ function parseArgs(args: string[]) {
   return { apply, touchedBefore, ids };
 }
 
-async function main(args: string[]) {
+/**
+ * The CLI shared by `pnpm db:reset-preswitch-refunds` (tsx, `loadEnv: true`)
+ * and `node dist/reset-preswitch-refunds.js` (production, `loadEnv: false`:
+ * no .env files, MIGRATION_DATABASE_URL or _FILE required). Returns the exit
+ * code: 2 usage, 1 abort or error, 0 ok. Never prints a URL.
+ */
+export async function cli(
+  args: string[],
+  options: { loadEnv: boolean },
+): Promise<number> {
   let parsed: ReturnType<typeof parseArgs>;
   try {
     parsed = parseArgs(args);
   } catch (error) {
     if (!(error instanceof PreswitchResetUsageError)) throw error;
     console.error(`${error.message}\n${USAGE}`);
-    process.exit(2);
+    return 2;
   }
-  await import("../load-env");
+  if (options.loadEnv) await import("../load-env");
   let pool: Pool | undefined;
   try {
-    pool = new Pool({ connectionString: migrationDatabaseUrl(), max: 1 });
+    // The migrator image's env file does not hold the switch. In production
+    // deploy/single-vm/reset-preswitch-refunds.sh reads it from the api and
+    // worker env files and containers and passes it in; without it the
+    // switch check would be blind, so --apply fails closed.
+    if (
+      !options.loadEnv &&
+      parsed.apply &&
+      process.env.DOIT_REFUNDS_ENABLED === undefined
+    )
+      throw new PreswitchResetUsageError(
+        "DOIT_REFUNDS_ENABLED is not set, so the switch check is blind. Run --apply through deploy/single-vm/reset-preswitch-refunds.sh.",
+      );
+    // The wrapper also sets LEGEND_RESET_WRAPPER=1. A raw `compose run`
+    // --apply fails closed even if migrator.env sets the switch to false.
+    if (
+      !options.loadEnv &&
+      parsed.apply &&
+      process.env.LEGEND_RESET_WRAPPER !== "1"
+    )
+      throw new PreswitchResetUsageError(
+        "LEGEND_RESET_WRAPPER is not 1, so this --apply did not come through the wrapper that checks the api and worker switch. Run --apply through deploy/single-vm/reset-preswitch-refunds.sh.",
+      );
+    pool = new Pool({
+      connectionString: migrationDatabaseUrl(!options.loadEnv),
+      max: 1,
+    });
     await run({
       pool,
       ...parsed,
@@ -468,22 +516,30 @@ async function main(args: string[]) {
       now: new Date(),
       log: (line) => console.log(line),
     });
+    return 0;
   } catch (error) {
     if (error instanceof PreswitchResetUsageError) {
       console.error(`${error.message}\n${USAGE}`);
-      process.exitCode = 2;
-    } else {
-      console.error(
-        error instanceof PreswitchResetAborted
-          ? error.message
-          : databaseError(error),
-      );
-      process.exitCode = 1;
+      return 2;
     }
+    console.error(
+      error instanceof PreswitchResetAborted
+        ? error.message
+        : databaseError(error),
+    );
+    return 1;
   } finally {
     await pool?.end();
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  await main(process.argv.slice(2));
+// tsx entry point only. tsup inlines this module into
+// dist/reset-preswitch-refunds.js, where import.meta.url is the wrapper's own
+// URL, so the file name check keeps the bundle from running the CLI twice.
+const entry = process.argv[1];
+if (
+  entry &&
+  /reset-preswitch-refund-payouts\.ts$/.test(entry) &&
+  import.meta.url === pathToFileURL(entry).href
+)
+  process.exitCode = await cli(process.argv.slice(2), { loadEnv: true });

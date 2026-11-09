@@ -642,3 +642,78 @@ What to do when it fails:
 - legend-k1np: either write and test a backfill, or confirm the consumers start
   clean and empty the outbox. Do not enable the relay first. The relay must stay
   off until the check passes.
+
+### Reset refund pra-switch DOIT (legend-d21p)
+
+A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.
+Builds before 5316426a counted payout attempts on approved refunds that were
+never sent to DOIT. `reset-preswitch-refunds.js` puts those refunds back to
+"never attempted" and writes one audit row per refund. It runs in the migrator
+image with `MIGRATION_DATABASE_URL` (or `MIGRATION_DATABASE_URL_FILE`) from
+`migrator.env`, does not read `.env` files, and never prints a URL. Exit codes:
+2 for a usage error, 1 for a refused or failed run, 0 for success.
+
+Always run it through `deploy/single-vm/reset-preswitch-refunds.sh`, never
+with a raw `docker compose run`. `migrator.env` does not hold
+`DOIT_REFUNDS_ENABLED`, so the job cannot see the switch by itself. The wrapper
+reads it from `api.env`, `worker.env` and `migrator.env` and from the `api` and
+`worker` containers, stopped ones included (a container started before an env
+file change still has the old value). It refuses `--apply` unless every one is
+absent, `false` or `0` (a bare `DOIT_REFUNDS_ENABLED` line counts as on), when
+either service has no container to read, or when the shell exports
+`COMPOSE_PROJECT_NAME` with a value other than `compose.env`'s. It passes the
+result to the job together with `LEGEND_RESET_WRAPPER=1`. The job's `--apply`
+exits 2 when either is missing, so a raw `docker compose run` cannot write.
+The wrapper names files and containers only; it never prints their contents or
+a URL.
+
+The `--ids` file is on the VM, not in the image. Give the wrapper its absolute
+host path: it mounts the file read-only at a fixed path in the container. The
+image runs as user `node`, so the file must be readable by all users (for
+example mode `0644`); the wrapper refuses it otherwise.
+
+```sh
+reset=deploy/single-vm/reset-preswitch-refunds.sh
+env=/absolute/path/compose.env
+cutoff=2026-11-09T03:00:00Z   # see step (a)
+# (b) dry-run
+"$reset" --env-file "$env" --dry-run --touched-before "$cutoff"
+# (d) apply
+"$reset" --env-file "$env" --apply --touched-before "$cutoff" --ids /absolute/path/refund-ids.txt
+# (e) check
+"$reset" --env-file "$env" --dry-run --touched-before "$cutoff" --ids /absolute/path/refund-ids.txt
+```
+
+Run order, per environment:
+
+1. (a) Deploy a build that contains this runner (`dist/reset-preswitch-refunds.js`
+   in the migrator image), with `DOIT_REFUNDS_ENABLED` off. The cutoff for
+   `--touched-before` is still the start time of the FIRST worker built from
+   5316426a or later in that environment, which may be an earlier deploy than
+   this one, with its offset, for example
+   `2026-11-09T03:00:00Z`. Take it from the deploy record of that first
+   deploy; a later redeploy replaces the container, so its own start time is
+   too late. When unsure, pick an earlier time: too early is safe (it only
+   leaves rows out), too late is not.
+2. (b) Dry-run with `--touched-before <cutoff>`. It prints each matching
+   refund (tenant, id, amount, decision time) and an id list.
+3. (c) Finance review: finance confirms that no listed refund was paid by
+   hand. Save only the confirmed ids to a file, one per line (blank lines and
+   `#` lines are ignored).
+4. (d) Apply with `--apply --touched-before <cutoff> --ids <file>`.
+5. (e) Dry-run again with the same `--touched-before` and `--ids`: expect 0
+   rows. A plain dry-run must list only the ids finance kept out; close those
+   by hand.
+6. (f) Only then turn on `DOIT_REFUNDS_ENABLED`.
+
+Read the output of every run. A `SKIPPED refund=<id>` line means a listed id
+was not reset (it no longer matches, or it changed during the run), and the
+run still exits 0. In step (e), SKIPPED lines for the ids reset in step (d)
+are expected: they no longer match because the reset worked. Only rows step
+(e) still lists, and SKIPPED lines from step (d) itself, need a decision
+before step (f).
+
+`--apply` refuses before any write when the wrapper finds the switch on, when
+`DOIT_REFUNDS_ENABLED` is on in the job's environment, or when any refund row
+shows the switch was on (a provider ref, pending polls, a DOIT error code, or
+a provider decline).
