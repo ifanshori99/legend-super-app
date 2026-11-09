@@ -41,6 +41,10 @@ const NOT_A_WRITER: Record<string, string> = {
     "pure spreadsheet/CSV parser: returns rows, performs no database write",
   "apps/api/src/config/data-import.ts":
     "the guard registry itself: decides whether an import may run",
+  "apps/api/src/routes/edge-bootstrap.routes.ts":
+    "HTTP route serving the signed bundle: only calls the read-only export service",
+  "apps/api/src/services/edge-bootstrap.service.ts":
+    "cloud-side export: only reads and signs the bundle that edge/bootstrap.ts writes",
   "apps/api/src/routes/menu-import.routes.ts":
     "HTTP route only: delegates to menu-import.service.ts, which calls the guard",
 };
@@ -50,6 +54,38 @@ const NOT_A_WRITER: Record<string, string> = {
 const SCRIPT_NOT_A_WRITER: Record<string, string> = {
   "apps/api/src/db/provision-roles.ts":
     "role provisioning (database roles and grants), writes no application data",
+};
+
+// SQL migrations that contain INSERT/UPDATE statements. They are schema
+// upgrades of existing data, never imports. A new data statement in a
+// migration must be added here with a reason, so it gets looked at.
+const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0013_outbox_dispatch_recovery.sql":
+    "sets a lease on already queued outbox rows",
+  "0027_accounting_invariants.sql":
+    "trigger body that seals journal entries at runtime",
+  "0042_safe_hydra.sql":
+    "backfills paid_idr on existing promotion applications",
+  "0065_edge_received_events.sql":
+    "copies existing edge inbound events into the renamed table",
+  "0090_pos_day_close_permission.sql":
+    "adds a permission string to each tenant's existing roles",
+  "0096_menu_station_type_backfill.sql":
+    "derives station_type of existing menu items from stations",
+  "0104_edc_standalone_permission.sql":
+    "adds a permission string to each tenant's existing roles",
+};
+
+// Entrypoints that open a database pool but import no data.
+const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
+  "apps/api/src/migrate.ts": "applies DDL migrations only",
+  "apps/api/src/set-role.ts": "single admin UPDATE of one user's role",
+  "apps/api/src/worker-main.ts":
+    "job runner: delivery state of its own tenant's work, no imports",
+  "apps/api/src/db/role.ts": "runtime role helper, no data writes",
+  "scripts/doctor.mjs": "read-only health query",
+  "scripts/test-setup.mjs":
+    "writes a marker table into a disposable test database only",
 };
 
 // package.json script names matching /seed|import|backfill/ that are not
@@ -88,7 +124,10 @@ describe("data import registry: registered sources call the guard", () => {
         .replace(/^\s*\/\/.*$/gm, "");
       const entry = source.entry === undefined ? 0 : code.indexOf(source.entry);
       expect(entry).toBeGreaterThanOrEqual(0);
-      const guard = code.indexOf(`guardDataImport("${id}")`, entry);
+      const call = new RegExp(`guardDataImport\\(\\s*"${id}"`).exec(
+        code.slice(entry),
+      );
+      const guard = call ? entry + call.index : -1;
       expect(guard).toBeGreaterThanOrEqual(0);
       const write = code.indexOf(source.beforeWrite, entry);
       expect(write).toBeGreaterThanOrEqual(0);
@@ -99,7 +138,7 @@ describe("data import registry: registered sources call the guard", () => {
 
 describe("data import registry: no unregistered import/seed/backfill file", () => {
   const candidates = walk(API_SRC).filter((file) =>
-    /import|seed|backfill/i.test(path.posix.basename(file)),
+    /import|seed|backfill|bootstrap/i.test(path.posix.basename(file)),
   );
 
   it("finds the registered importer files while walking apps/api/src", () => {
@@ -175,6 +214,177 @@ describe("data import registry: scripts and package scripts", () => {
   });
 });
 
+describe("data import registry: migrations, pools and bootstrap", () => {
+  it("every SQL migration with INSERT/UPDATE statements is acknowledged", () => {
+    const dir = path.join(REPO_ROOT, "apps/api/drizzle");
+    const withData = readdirSync(dir)
+      .filter((f) => f.endsWith(".sql"))
+      .filter((f) =>
+        /^\s*(INSERT\s+INTO|UPDATE\s)/im.test(
+          readFileSync(path.join(dir, f), "utf8"),
+        ),
+      );
+    const unexplained = withData.filter(
+      (f) => !(f in MIGRATION_DATA_STATEMENTS),
+    );
+    expect(
+      unexplained,
+      "a migration writes rows: explain it in MIGRATION_DATA_STATEMENTS (backfills only, never imports)",
+    ).toEqual([]);
+    for (const f of Object.keys(MIGRATION_DATA_STATEMENTS))
+      expect(withData, f).toContain(f);
+  });
+
+  it("every non-test file that opens a Pool is registered or explained", () => {
+    const files = [
+      ...walk(API_SRC),
+      ...readdirSync(path.join(REPO_ROOT, "scripts"))
+        .filter((f) => f.endsWith(".mjs"))
+        .map((f) => `scripts/${f}`),
+    ].filter((file) => file !== "apps/api/src/config/data-import.ts");
+    const openers = files.filter((file) =>
+      /new\s+(?:pg\.)?Pool\(/.test(
+        readRepoFile(file)
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/^\s*\/\/.*$/gm, ""),
+      ),
+    );
+    const unexplained = openers.filter(
+      (file) =>
+        !registeredFiles.has(file) && !(file in POOL_OPENERS_NOT_IMPORTERS),
+    );
+    expect(
+      unexplained,
+      "register in DATA_IMPORT_SOURCES or add to POOL_OPENERS_NOT_IMPORTERS with a reason",
+    ).toEqual([]);
+    for (const file of Object.keys(POOL_OPENERS_NOT_IMPORTERS))
+      expect(openers, file).toContain(file);
+  });
+});
+
+describe("seed.dev-tenant fails closed without an explicit deployment mode", () => {
+  const deployment = (
+    DEPLOYMENT_MODE: DeploymentMode,
+    DATA_CLASSIFICATION: DataClassification,
+  ) =>
+    ({
+      DEPLOYMENT_MODE,
+      EDGE_MODE: false,
+      DATA_CLASSIFICATION,
+    }) as DeploymentSettings;
+  const dev = {
+    DEPLOYMENT_MODE: "development",
+    EDGE_MODE: false,
+    DATA_CLASSIFICATION: "synthetic",
+  } as DeploymentSettings;
+
+  it("refuses a remote database when DEPLOYMENT_MODE is unset", () => {
+    for (const databaseUrl of [
+      "postgres://u:p@db.prod.example.com:5432/legend",
+      "postgres://u:p@10.0.0.5/legend",
+      undefined,
+      "not a url",
+    ])
+      expect(
+        () => guardDataImport("seed.dev-tenant", dev, { databaseUrl, env: {} }),
+        String(databaseUrl),
+      ).toThrow(DataImportBlockedError);
+  });
+
+  it("is not fooled by host tricks in the URL", () => {
+    for (const databaseUrl of [
+      "postgres://u:p@localhost/db?host=db.prod.example.com",
+      "postgres://u:p@localhost/db?hostaddr=10.0.0.5",
+      "postgres://u:p@localhost/db?service=prod",
+      "postgres://localhost@evil.example.com/db",
+      "postgres://u:p@localhost.example.com/db",
+      "postgres://u:p@localhost./db",
+      "postgres:///db",
+    ])
+      expect(
+        () => guardDataImport("seed.dev-tenant", dev, { databaseUrl, env: {} }),
+        databaseUrl,
+      ).toThrow(DataImportBlockedError);
+    expect(() =>
+      guardDataImport("seed.dev-tenant", dev, {
+        databaseUrl: "postgres://u:p@LOCALHOST:5432/db",
+        env: {},
+      }),
+    ).not.toThrow();
+  });
+
+  it("seed-dev-tenant hands the guard the URL its pool will use", () => {
+    const code = readRepoFile("apps/api/src/db/seed-dev-tenant.ts");
+    expect(code).toMatch(
+      /process\.env\.MIGRATION_DATABASE_URL\s*\?\?\s*process\.env\.DATABASE_URL/,
+    );
+  });
+
+  it("treats a blank DEPLOYMENT_MODE as unset", () => {
+    expect(() =>
+      guardDataImport("seed.dev-tenant", dev, {
+        databaseUrl: "postgres://u:p@db.example.com/legend",
+        env: { DEPLOYMENT_MODE: "  " },
+      }),
+    ).toThrow(DataImportBlockedError);
+  });
+
+  it("allows a local database when DEPLOYMENT_MODE is unset", () => {
+    for (const host of ["localhost", "127.0.0.1", "[::1]", "db.localhost"])
+      expect(() =>
+        guardDataImport("seed.dev-tenant", dev, {
+          databaseUrl: `postgres://u:p@${host}:5433/legend`,
+          env: {},
+        }),
+      ).not.toThrow();
+  });
+
+  it("allows any host once DEPLOYMENT_MODE is explicit development", () => {
+    expect(() =>
+      guardDataImport("seed.dev-tenant", dev, {
+        databaseUrl: "postgres://u:p@db.example.com/legend",
+        env: { DEPLOYMENT_MODE: "development" },
+      }),
+    ).not.toThrow();
+  });
+
+  it("explicit staging or production is still blocked for the seed", () => {
+    for (const mode of ["staging", "production"] as const)
+      expect(() =>
+        guardDataImport("seed.dev-tenant", deployment(mode, "synthetic"), {
+          databaseUrl: "postgres://u:p@localhost/legend",
+          env: { DEPLOYMENT_MODE: mode },
+        }),
+      ).toThrow(DataImportBlockedError);
+  });
+});
+
+describe("edge.bootstrap follows the node's own deployment policy", () => {
+  const edge = (mode: DeploymentMode, cls: DataClassification) =>
+    ({
+      DEPLOYMENT_MODE: mode,
+      EDGE_MODE: true,
+      DATA_CLASSIFICATION: cls,
+    }) as DeploymentSettings;
+
+  it("passes for synthetic data anywhere and real data in production", () => {
+    for (const mode of ["development", "staging", "production"] as const)
+      expect(() =>
+        guardDataImport("edge.bootstrap", edge(mode, "synthetic")),
+      ).not.toThrow();
+    expect(() =>
+      guardDataImport("edge.bootstrap", edge("production", "real")),
+    ).not.toThrow();
+  });
+
+  it("blocks real data outside production", () => {
+    for (const mode of ["development", "staging"] as const)
+      expect(() =>
+        guardDataImport("edge.bootstrap", edge(mode, "real")),
+      ).toThrow(DataImportBlockedError);
+  });
+});
+
 describe("guardDataImport behaviour", () => {
   const modes: DeploymentMode[] = ["development", "staging", "production"];
   const classifications: DataClassification[] = ["synthetic", "real"];
@@ -205,7 +415,10 @@ describe("guardDataImport behaviour", () => {
       for (const classification of classifications)
         it(`is blocked in ${mode} with ${classification} classification`, () => {
           expect(() =>
-            guardDataImport("seed.dev-tenant", deployment(mode, classification)),
+            guardDataImport(
+              "seed.dev-tenant",
+              deployment(mode, classification),
+            ),
           ).toThrow(DataImportBlockedError);
         });
   });

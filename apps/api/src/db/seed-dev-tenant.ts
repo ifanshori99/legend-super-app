@@ -16,7 +16,9 @@ import { databaseUrl } from "./connection";
 // Data import guard (legend-v4ld): synthetic, development-only source. The
 // explicit checks below are defence in depth (NODE_ENV is not part of the
 // deployment settings the guard reads).
-guardDataImport("seed.dev-tenant");
+guardDataImport("seed.dev-tenant", undefined, {
+  databaseUrl: process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL,
+});
 if (
   (process.env.DATA_CLASSIFICATION ?? "synthetic") !== "synthetic" ||
   process.env.NODE_ENV === "production"

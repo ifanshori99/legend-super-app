@@ -31,6 +31,12 @@ export type DataImportSource = {
   modes?: readonly DeploymentMode[];
   /** Where the guard call lives, checked by the registry test. */
   file: string;
+  /**
+   * Fail closed: when DEPLOYMENT_MODE is not set explicitly (the shared parser
+   * would default it to development), the source may only run against a local
+   * database host. Set it to the explicit mode to target any other host.
+   */
+  failClosedMode?: boolean;
   /** Text that starts the write entrypoint inside `file` (default: file start). */
   entry?: string;
   /** Text of the first write/connection; the guard call must come before it. */
@@ -49,9 +55,20 @@ export const DATA_IMPORT_SOURCES = {
   "seed.dev-tenant": {
     classification: "synthetic",
     modes: ["development"],
+    failClosedMode: true,
     file: "apps/api/src/db/seed-dev-tenant.ts",
     beforeWrite: "new Pool(",
     description: "Synthetic Cafe Legend tenant seeded as the migration owner.",
+  },
+  "edge.bootstrap": {
+    // The bundle comes from the cloud API of the deployment this node belongs
+    // to; its rows are that deployment's data, so it follows its classification.
+    classification: "deployment",
+    file: "apps/api/src/edge/bootstrap.ts",
+    entry: "export async function bootstrapEdgeNodeIfNeeded(",
+    beforeWrite: "insertBundle(claims",
+    description:
+      "Edge node first start: tenant, legal entity, brand and outlet rows from the signed cloud bundle.",
   },
 } as const satisfies Record<string, DataImportSource>;
 
@@ -65,6 +82,30 @@ export class DataImportBlockedError extends HttpError {
   ) {
     super(403, "DATA_IMPORT_BLOCKED", message);
     this.name = "DataImportBlockedError";
+  }
+}
+
+/** Where the import will write; read by sources with `failClosedMode`. */
+export type DataImportTarget = {
+  databaseUrl?: string;
+  /** Raw process environment, to tell "unset" apart from the parsed default. */
+  env?: Record<string, string | undefined>;
+};
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+// libpq-style parameters that make the driver connect elsewhere than the URL host.
+const HOST_OVERRIDE_PARAMS = ["host", "hostaddr", "service"];
+
+export function isLocalDatabaseUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    if (HOST_OVERRIDE_PARAMS.some((name) => url.searchParams.has(name)))
+      return false;
+    const host = url.hostname.toLowerCase();
+    return LOCAL_HOSTS.has(host) || host.endsWith(".localhost");
+  } catch {
+    return false;
   }
 }
 
@@ -87,6 +128,7 @@ function deploymentFromProcess(): DeploymentSettings {
 export function guardDataImport(
   sourceId: DataImportSourceId,
   deployment: DeploymentSettings = deploymentFromProcess(),
+  target: DataImportTarget = {},
 ): void {
   const source: DataImportSource | undefined = DATA_IMPORT_SOURCES[sourceId];
   if (!source)
@@ -98,6 +140,16 @@ export function guardDataImport(
     throw new DataImportBlockedError(
       sourceId,
       `Data import blocked: "${sourceId}" is not permitted in ${deployment.DEPLOYMENT_MODE}.`,
+    );
+  if (
+    "failClosedMode" in source &&
+    source.failClosedMode &&
+    !(target.env ?? process.env).DEPLOYMENT_MODE?.trim() &&
+    !isLocalDatabaseUrl(target.databaseUrl)
+  )
+    throw new DataImportBlockedError(
+      sourceId,
+      `Data import blocked: DEPLOYMENT_MODE is not set, so "${sourceId}" only runs against a local database. Set DEPLOYMENT_MODE explicitly.`,
     );
   const classification =
     source.classification === "deployment"
