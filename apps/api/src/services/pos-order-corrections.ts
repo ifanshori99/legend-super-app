@@ -414,7 +414,7 @@ export async function voidPosOrderCorrection(
  * 20k off, item 50k: gross 50k / discount 20k, not 37.5k / 7.5k). The sum rule
  * above still holds because the goods part is the same as before.
  */
-function refundSplit(
+export function refundSplit(
   order: Locked["order"],
   amountIdr: number,
   refundedSubtotalIdr: number | null = null,
@@ -433,9 +433,20 @@ function refundSplit(
     order.taxIdr,
   ]).map(Number);
   if (refundedSubtotalIdr !== null) {
+    // An inclusive order's item prices already contain service and tax, but
+    // its sale books gross without them (order-revenue.ts): bring the refunded
+    // value to the same basis, pro rata. Exclusive orders scale by 1.
+    const refundedGross =
+      order.subtotalIdr > 0
+        ? Number(
+            (BigInt(refundedSubtotalIdr) *
+              BigInt(Math.max(0, orderNetSubtotalIdr(order)))) /
+              BigInt(order.subtotalIdr),
+          )
+        : refundedSubtotalIdr;
     // The goods part never exceeds what the refunded items carried: a bigger
     // value would mean a negative discount, which has no place in a refund.
-    const grossPart = Math.max(refundedSubtotalIdr, netPart);
+    const grossPart = Math.max(refundedGross, netPart);
     return {
       grossSalesIdr: grossPart,
       discountIdr: grossPart - netPart,
