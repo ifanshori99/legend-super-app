@@ -22,9 +22,7 @@ export const qrGlassCheckoutMessages = {
   method: {
     title: "Metode bayar",
     qris: "QRIS",
-    qrisHint: "Scan dari bank / e-wallet",
-    ewallet: "E-wallet",
-    ewalletHint: "Pilih aplikasi saat melanjutkan",
+    qrisHint: "Scan dari bank atau aplikasi e-wallet",
     va: "Virtual Account",
     vaHint: "Transfer dari m-banking / ATM",
     unavailableHint: "Belum tersedia untuk pesanan meja",
@@ -43,7 +41,6 @@ export const qrGlassCheckoutMessages = {
     // Shown while the total without the code is not known yet: no amount.
     held: "Menunggu total pembayaran",
     va: "Buat nomor Virtual Account",
-    ewallet: "Pilih e-wallet dan bayar",
     cashier: "Buat kode bayar di kasir",
   },
 } as const;

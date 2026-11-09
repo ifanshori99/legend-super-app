@@ -734,6 +734,7 @@ export function createEngine(
       taxIdr: q.taxIdr,
       roundingIdr: q.rounding.adjustmentIdr,
       totalIdr: q.totalIdr,
+      pricesIncludeTaxAndService: false,
       status: payFirst ? "awaiting_payment" : "sent",
       items,
       createdAt: iso(now),
@@ -932,10 +933,7 @@ export function createEngine(
         body.method === "qris"
           ? `00020101021226610016ID.CO.QRIS.WWW01189360091400${rand("0123456789", 10)}5204581253033605802ID5913Cafe Legend6007Bandung6304${rand("ABCDEF0123456789", 4)}`
           : null,
-      redirectUrl:
-        body.method === "ewallet"
-          ? "https://pay.example/legend/checkout"
-          : null,
+      redirectUrl: null,
       expiresAt: iso(now + 15 * 60_000),
       paidAt: null,
       idemKey: body.idempotencyKey,

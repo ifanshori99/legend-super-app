@@ -1,16 +1,16 @@
 // Payment method picker of "Keranjang & bayar" (founder Q3, legend-2re1):
-// QRIS and e-wallet go through the gateway, "Bayar di kasir" holds the order
-// until the cashier takes the money. Virtual Account has no table
+// QRIS goes through the gateway (e-wallet apps pay by scanning it), "Bayar di
+// kasir" holds the order until the cashier takes the money. Virtual Account has no table
 // payment in the contract yet: it is a demo flow in mock mode and shown
 // disabled with the real API. Radix radio group = real radio inputs.
-import { Landmark, QrCode, Store, Wallet } from "lucide-react";
+import { Landmark, QrCode, Store } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
-export type PayMethod = "qris" | "va" | "ewallet" | "cashier";
+export type PayMethod = "qris" | "va" | "cashier";
 
 const METHODS = [
   {
@@ -25,12 +25,6 @@ const METHODS = [
     label: "qrGlass.checkout.method.va",
     hint: "qrGlass.checkout.method.vaHint",
     demoOnly: true,
-  },
-  {
-    value: "ewallet",
-    icon: Wallet,
-    label: "qrGlass.checkout.method.ewallet",
-    hint: "qrGlass.checkout.method.ewalletHint",
   },
   {
     value: "cashier",
@@ -48,9 +42,7 @@ export function useCtaLabel() {
       ? t("qrGlass.checkout.cta.qris", { total: formatRupiah(totalIdr) })
       : method === "va"
         ? t("qrGlass.checkout.cta.va")
-        : method === "ewallet"
-          ? t("qrGlass.checkout.cta.ewallet")
-          : t("qrGlass.checkout.cta.cashier");
+        : t("qrGlass.checkout.cta.cashier");
 }
 
 export function PaymentMethods({

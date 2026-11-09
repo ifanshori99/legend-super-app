@@ -1,6 +1,6 @@
 // Payment step (PRD §3 F13 QRIS dinamis). The page polls the payment until the
 // gateway confirms; it never marks anything paid itself (ORD-02). QRIS shows a
-// code to scan, e-wallet shows a hand-off link. Layout: final arah A + liquid
+// code to scan (e-wallet apps pay by scanning it). Layout: final arah A + liquid
 // glass (legend-2re1, final-a-qris-menunggu-mobile.png).
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -9,7 +9,6 @@ import {
   CircleCheck,
   Clock,
   Download,
-  ExternalLink,
   TriangleAlert,
 } from "lucide-react";
 import { cn } from "cn";
@@ -23,7 +22,6 @@ import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
-import { Notice } from "../notice";
 import { useGuestPayment, useRefreshSession } from "../../hooks";
 import {
   QrFooter,
@@ -138,11 +136,7 @@ function PayWaiting({ payment }: { payment: GuestPayment }) {
   return (
     <div className="grid gap-4 lg:mx-auto lg:w-full lg:max-w-xl">
       <QrTopBar
-        title={
-          qris
-            ? t("qrGlass.pay.qris.title")
-            : t("qrGlass.pay.qris.ewalletTitle")
-        }
+        title={t("qrGlass.pay.qris.title")}
         leading={
           <Link
             to="/t/$token/checkout"
@@ -212,9 +206,7 @@ function PayWaiting({ payment }: { payment: GuestPayment }) {
           {t("qrGlass.pay.qris.statusWaiting")}
         </p>
         <p className="text-lg leading-7 text-muted-foreground">
-          {qris
-            ? t("qrGlass.pay.qris.qrisHint")
-            : t("qrGlass.pay.qris.ewalletHint")}
+          {t("qrGlass.pay.qris.qrisHint")}
         </p>
         <p className="text-sm text-muted-foreground">
           {t("qrGlass.pay.qris.autoUpdate")}
@@ -234,27 +226,12 @@ function PayWaiting({ payment }: { payment: GuestPayment }) {
         )}
       </section>
 
-      {!qris && !payment.redirectUrl && (
-        <Notice tone="warning" title={t("qrGlass.pay.qris.ewalletLinkMissing")}>
-          {t("qrGlass.pay.qris.ewalletLinkMissingHint")}
-        </Notice>
-      )}
-
       <QrFooter>
-        {qris ? (
+        {qris && (
           <Button type="button" onClick={save}>
             <Download aria-hidden="true" />
             {t("qrGlass.pay.qris.saveQr")}
           </Button>
-        ) : (
-          payment.redirectUrl && (
-            <Button asChild>
-              <a href={payment.redirectUrl} target="_blank" rel="noreferrer">
-                <ExternalLink aria-hidden="true" />
-                {t("qrGlass.pay.qris.openEwallet")}
-              </a>
-            </Button>
-          )
         )}
         <Link
           to="/t/$token/checkout"
@@ -354,7 +331,8 @@ export function PayPage({ paymentId }: { paymentId: string }) {
             : null
         }
         amountIdr={payment.amountIdr}
-        method={payment.method}
+        // Guest gateway methods are QRIS and VA; e-wallet is not offered.
+        method={payment.method === "qris" ? "qris" : "va"}
         returnTo={`/t/${encodeURIComponent(qrToken)}/pay/${encodeURIComponent(paymentId)}`}
       />
     );

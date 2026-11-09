@@ -4,7 +4,6 @@
 export const qrGlassPayMessages = {
   qris: {
     title: "Bayar dengan QRIS",
-    ewalletTitle: "Bayar dengan e-wallet",
     back: "Kembali ke ringkasan pesanan",
     eyebrow: "TOTAL PEMBAYARAN",
     timeLeft: "Sisa waktu {time}",
@@ -13,17 +12,11 @@ export const qrGlassPayMessages = {
     statusWaiting: "Menunggu pembayaran",
     qrisHint:
       "Scan atau simpan QR, lalu bayar melalui aplikasi bank atau e-wallet Anda.",
-    ewalletHint:
-      "Buka aplikasi e-wallet untuk menyetujui pembayaran. Anda akan kembali ke halaman ini.",
     autoUpdate: "Status pembayaran diperbarui otomatis.",
     saveQr: "Simpan QR",
     saveQrDone: "QR tersimpan di perangkat Anda.",
     saveQrFailed: "QR belum bisa disimpan. Coba lagi atau tangkap layar.",
     saveQrFile: "qris-{amount}.png",
-    openEwallet: "Buka aplikasi e-wallet",
-    ewalletLinkMissing: "Tautan aplikasi e-wallet belum tersedia",
-    ewalletLinkMissingHint:
-      "Pembayaran ini belum bisa dibuka dari sini. Ganti metode bayar untuk melanjutkan.",
     changeMethod: "Ganti metode bayar",
   },
   cashier: {
@@ -67,7 +60,7 @@ export const qrGlassPayMessages = {
   online: {
     unavailableTitle: "Metode ini belum tersedia untuk pesanan meja",
     unavailableHint:
-      "Pesanan tersimpan dan belum masuk dapur. Pilih QRIS, e-wallet, atau bayar di kasir.",
+      "Pesanan tersimpan dan belum masuk dapur. Pilih QRIS atau bayar di kasir.",
     toCheckout: "Pilih metode lain",
   },
   va: {
@@ -113,7 +106,6 @@ export const qrGlassPayMessages = {
     paidLabel: "Total dibayar",
     methodQris: "QRIS",
     methodVa: "Virtual Account",
-    methodEwallet: "E-wallet",
     methodCashier: "Kasir",
     orderRow: "Pesanan",
     tableRow: "Meja",

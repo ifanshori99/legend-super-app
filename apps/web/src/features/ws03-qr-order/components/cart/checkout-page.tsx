@@ -1,7 +1,7 @@
 // "Keranjang & bayar": the shared cart and checkout on one page (legend-2re1,
 // mockup final-a-checkout-mobile; PRD §3 F10 "Mode Bayar", "Estimasi Waktu
-// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS or
-// e-wallet, or hold it for the cashier (founder Q3); the kitchen sees it only
+// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS
+// or hold it for the cashier (founder Q3); the kitchen sees it only
 // after payment is confirmed (ORD-02). Open bill: the order goes straight to
 // the kitchen and is paid at the end. Menu prices exclude tax and service
 // charge, so the breakdown shows both (owner rule, ORD-03).
@@ -221,11 +221,11 @@ export function CheckoutPage() {
       search: { item: itemId },
     });
 
-  // Pay an order that is already placed: gateway for QRIS / e-wallet, the
+  // Pay an order that is already placed: gateway for QRIS, the
   // cashier code screen for "Bayar di kasir", the demo VA screen
   // (mock mode only: the picker disables them with the real API, and that
   // screen itself shows "not available" there, so neither ever reaches
-  // useStartPayment, whose contract takes only QRIS / e-wallet).
+  // useStartPayment, whose contract takes only the gateway methods).
   const payOrder = (orderId: OrderId, fresh = false) => {
     if (method === "va") {
       void navigate({
