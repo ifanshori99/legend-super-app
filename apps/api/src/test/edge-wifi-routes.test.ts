@@ -275,7 +275,7 @@ describe("legend-hsk edge-only and fail-closed", () => {
 
   it("the port default fails closed for the sessions services, and installing then clearing restores it", async () => {
     const input = {
-      outletId: seededOutletA,
+      outletId: outletIdSchema.parse(seededOutletA),
       wifiSessionId: randomUUID(),
       controllerDeviceId: MAC,
       speedTier: "full",
@@ -290,7 +290,7 @@ describe("legend-hsk edge-only and fail-closed", () => {
     ).rejects.toMatchObject({ status: 503, code: "WIFI_AGENT_NOT_READY" });
     await expect(
       wifiEnforcement().endSession(context, {
-        outletId: input.outletId as never,
+        outletId: input.outletId,
         wifiSessionId: input.wifiSessionId,
         reason: "session_ended",
       }),
@@ -301,7 +301,7 @@ describe("legend-hsk edge-only and fail-closed", () => {
 
     const stub = stubAgent();
     installWifiAgent(stub);
-    await wifiEnforcement().applySession(context, input as never);
+    await wifiEnforcement().applySession(context, input);
     expect(stub.applySession).toHaveBeenCalledOnce();
     expect(wifiAgent()).toBe(stub);
 
@@ -312,7 +312,7 @@ describe("legend-hsk edge-only and fail-closed", () => {
 
     // The narrow port alone also installs and clears.
     installWifiEnforcement(stub);
-    await wifiEnforcement().applySession(context, input as never);
+    await wifiEnforcement().applySession(context, input);
     installWifiEnforcement(null);
     await expect(
       wifiEnforcement().applySession(context, input),
@@ -530,8 +530,15 @@ describe("legend-hsk runtime wiring", () => {
 
     // One owner per outlet: a second process on the same outlet stays off.
     const second = stubAgent();
-    expect(await start({ outletId, agent: second })).toBeNull();
+    // It keeps retrying the lock (edge-wifi-runtime), so it hands back a handle.
+    const waiting = await start({
+      outletId,
+      agent: second,
+      retryDelayMs: () => 3_600_000,
+    });
+    expect(waiting).not.toBeNull();
     expect(wifiAgent()).toBe(stub);
+    await waiting!.stop();
 
     await first!.stop();
     expect(() => wifiAgent()).toThrow();

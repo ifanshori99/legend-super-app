@@ -17,7 +17,7 @@
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
 import type { IncomingMessage, Server } from "node:http";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
@@ -245,14 +245,23 @@ export type EdgeRuntimeHandle = { stop(): Promise<void> };
 
 export type WifiAgentHandle = { stop(): Promise<void> };
 
+/** Default lock retry backoff: 1 s, doubling, capped at 30 s. */
+export function defaultWifiLockRetryDelayMs(attempt: number): number {
+  return Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
+}
+
 /**
  * Wi-Fi agent (bead legend-hsk, plan section 5). Primary node only: a standby
  * never talks to the venue controller. Starts nothing, and installs nothing
  * (the port stays fail-closed, 503), when there is no provider for this
- * environment or another process owns the outlet. One owner per outlet: a
- * session-level advisory lock on a dedicated connection, like the EDC agent;
- * if that connection dies the lock is gone and the agent is uninstalled.
- * The reconcile loop errors are logged by name/code only.
+ * environment. One owner per outlet: a session-level advisory lock on a
+ * dedicated connection, like the EDC agent. While another process owns the
+ * lock, or the connection could not be opened, the agent is not installed and
+ * the acquisition is retried with backoff (an exiting process frees the lock
+ * for us); if the connection dies later the lock is gone, the agent is
+ * uninstalled and the acquisition starts over. Without that retry a node would
+ * stop renewing grants for good and cut every guest within hours. stop() ends
+ * the retries cleanly. The errors are logged by name/code only.
  */
 export async function startWifiAgent(options: {
   context: ScopedTenantContext;
@@ -264,6 +273,10 @@ export async function startWifiAgent(options: {
   intervalMs?: number;
   /** Test seam: use this agent instead of building one from the registry. */
   agent?: WifiAgent;
+  /** Test seam: delay before retry number `attempt` (0-based), in ms. */
+  retryDelayMs?: (attempt: number) => number;
+  /** Test seam: the dedicated lock connection. Defaults to `pool.connect()`. */
+  connect?: () => Promise<PoolClient>;
 }): Promise<WifiAgentHandle | null> {
   if (options.role !== "primary") return null;
   const { context, scope } = options;
@@ -293,72 +306,156 @@ export async function startWifiAgent(options: {
   }
   const active = agent;
   const lockName = `wifi-agent:${scope.tenantId}:${scope.outletId}`;
-  const client = await pool.connect();
-  let released = false;
-  let stopped = false;
-  const loop: { timer?: ReturnType<typeof setInterval> } = {};
-  let inflight: Promise<void> = Promise.resolve();
+  const connect = options.connect ?? (() => pool.connect());
+  const retryDelayMs = options.retryDelayMs ?? defaultWifiLockRetryDelayMs;
   const uninstall = () => {
     if (wifiEnforcement() === active) installWifiAgent(null);
   };
-  const lost = () => {
+
+  type Owned = {
+    client: PoolClient;
+    timer?: ReturnType<typeof setInterval>;
+    inflight: Promise<void>;
+    released: boolean;
+    ended: boolean;
+    lost(): void;
+  };
+  let stopped = false;
+  let owned: Owned | null = null;
+  let acquiring: Promise<void> = Promise.resolve();
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let attempt = 0;
+  let loggedBusy = false;
+
+  const scheduleRetry = () => {
+    if (stopped || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      acquiring = acquire();
+    }, retryDelayMs(attempt++));
+    retryTimer.unref();
+  };
+
+  const release = (session: Owned, destroy: boolean) => {
+    if (session.released) return;
+    session.released = true;
+    session.client.removeListener("error", session.lost);
+    session.client.removeListener("end", session.lost);
+    session.client.release(destroy);
+  };
+
+  async function acquire(): Promise<void> {
     if (stopped) return;
-    stopped = true;
-    if (loop.timer) clearInterval(loop.timer);
-    uninstall();
-    logger.error("Wi-Fi agent lost its database connection: agent stopped");
-    release(true);
-  };
-  const release = (destroy: boolean) => {
-    if (released) return;
-    released = true;
-    client.removeListener("error", lost);
-    client.removeListener("end", lost);
-    client.release(destroy);
-  };
-  client.on("error", lost);
-  client.on("end", lost);
-  try {
-    const result = await client.query<{ locked: boolean }>(
-      "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
-      [lockName],
-    );
-    if (result.rows[0]?.locked !== true) {
-      logger.warn("Another process owns the Wi-Fi agent of this outlet");
-      release(false);
-      return null;
+    let client: PoolClient;
+    try {
+      client = await connect();
+    } catch (error) {
+      logger.warn(
+        safeError(error),
+        "Wi-Fi agent could not open its connection",
+      );
+      scheduleRetry();
+      return;
     }
-  } catch (error) {
-    release(true);
-    throw error;
+    const session: Owned = {
+      client,
+      inflight: Promise.resolve(),
+      released: false,
+      ended: false,
+      lost: () => {
+        if (session.ended) return;
+        session.ended = true;
+        if (session.timer) clearInterval(session.timer);
+        if (owned === session) owned = null;
+        uninstall();
+        release(session, true);
+        if (stopped) return;
+        logger.error(
+          "Wi-Fi agent lost its database connection: agent uninstalled, retrying",
+        );
+        attempt = 0;
+        scheduleRetry();
+      },
+    };
+    client.on("error", session.lost);
+    client.on("end", session.lost);
+    try {
+      const result = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+        [lockName],
+      );
+      if (result.rows[0]?.locked !== true) {
+        if (!loggedBusy)
+          logger.warn("Another process owns the Wi-Fi agent of this outlet");
+        loggedBusy = true;
+        session.ended = true;
+        release(session, false);
+        scheduleRetry();
+        return;
+      }
+    } catch (error) {
+      logger.warn(safeError(error), "Wi-Fi agent could not take its lock");
+      session.ended = true;
+      release(session, true);
+      scheduleRetry();
+      return;
+    }
+    if (session.ended) return;
+    if (stopped) {
+      // stop() ran while the lock was being taken: give it back at once.
+      session.ended = true;
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [lockName],
+        );
+        release(session, false);
+      } catch {
+        release(session, true);
+      }
+      return;
+    }
+    loggedBusy = false;
+    attempt = 0;
+    owned = session;
+    installWifiAgent(active);
+    let busy = false;
+    session.timer = setInterval(() => {
+      if (busy || stopped || session.ended) return;
+      busy = true;
+      session.inflight = active
+        .reconcile(context, outletIdSchema.parse(scope.outletId))
+        .then(
+          () => undefined,
+          (error: unknown) =>
+            logger.warn(safeError(error), "Wi-Fi reconcile failed"),
+        )
+        .finally(() => {
+          busy = false;
+        });
+    }, options.intervalMs ?? WIFI_RECONCILE_INTERVAL_MS);
+    session.timer.unref();
   }
-  installWifiAgent(active);
-  let busy = false;
-  loop.timer = setInterval(() => {
-    if (busy || stopped) return;
-    busy = true;
-    inflight = active
-      .reconcile(context, scope.outletId)
-      .then(
-        () => undefined,
-        (error: unknown) =>
-          logger.warn(safeError(error), "Wi-Fi reconcile failed"),
-      )
-      .finally(() => {
-        busy = false;
-      });
-  }, options.intervalMs ?? WIFI_RECONCILE_INTERVAL_MS);
-  loop.timer.unref();
+
+  acquiring = acquire();
+  await acquiring;
   return {
     async stop() {
       if (stopped) return;
       stopped = true;
-      if (loop.timer) clearInterval(loop.timer);
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = undefined;
+      await acquiring;
+      const session = owned as Owned | null;
+      owned = null;
+      if (!session) return;
+      session.ended = true;
+      if (session.timer) clearInterval(session.timer);
       uninstall();
-      await inflight;
+      await session.inflight;
       let broken = false;
       try {
-        await client.query(
+        await session.client.query(
           "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
           [lockName],
         );
@@ -366,7 +463,7 @@ export async function startWifiAgent(options: {
         // Destroying the connection drops the session lock all the same.
         broken = true;
       }
-      release(broken);
+      release(session, broken);
     },
   };
 }
