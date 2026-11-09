@@ -788,6 +788,9 @@ async function paymentMatchesRefund(
   const named = [facts.payment?.id, facts.paymentId].filter(
     (id): id is string => id !== undefined,
   );
+  // legend-r7g2: a refund object's own `reference` must name this intent too.
+  if (facts.reference !== undefined && facts.reference !== intent.id)
+    return false;
   if (named.length === 0) return true;
   if (facts.payment && facts.payment.reference !== intent.id) return false;
   const source = await refundSourcePayment(context, refund, intent);
@@ -935,8 +938,14 @@ async function processRefundEvent(
       return await ignoredWith("REFERENCE_MISMATCH");
     }
 
+    // legend-r7g2 (Codex 117 Run B): a payment object names the payment, not
+    // the refund. A refund that already holds its own provider ref (`rf_…`
+    // from the send) keeps it; the payment id is only a fallback when the
+    // refund has none, so the updater never sees a false ref conflict.
     const providerRef =
-      match.kind === "payment_object" ? match.payment.id : facts.refundId;
+      match.kind === "payment_object"
+        ? (refund.providerRef ?? match.payment.id)
+        : facts.refundId;
     try {
       await applyRefundProviderUpdate(
         context,

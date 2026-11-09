@@ -18,6 +18,8 @@ const expected = {
   paymentProviderRef: PAYMENT_ID,
   paymentIntentId: "0b0f8f8e-6a3e-4c1e-9c55-2f1d1f0c1a01",
   amountIdr: 4000,
+  // legend-r7g2: the key of the request; the replay answer must echo it.
+  idempotencyKey: "refund:3875dc37-0d8e-4f4e-9a8e-5c2b1f6d7e90",
 };
 
 /** 201 answer of the first `POST /v1/payments/{id}/refunds`. */

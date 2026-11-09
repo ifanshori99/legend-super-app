@@ -17,6 +17,14 @@
 //   (`loadCredentials(context, outletId)`), like `getStatus` does.
 // - A refund object only has `id`, `status` and optionally `amount`; the status
 //   words are compared as given (lower case).
+// - (legend-r7g2) A refund object must prove its identity: `payment_id` and
+//   `amount` present and equal to the request, `idempotency_key` / `reference`
+//   equal when present. Only the clear identity mismatches (another payment id,
+//   another idempotency key, another reference, another amount) are asserted
+//   with the code DOIT_REFUND_IDENTITY_MISMATCH when the brief names it (the
+//   Codex example); a MISSING `payment_id` / `amount` and an `object` of the
+//   wrong branch are only asserted to throw DoitRefundUnknownError, because the
+//   brief does not say which of the two codes applies there.
 // - `getRefundStatus` on a `refunded` payment whose `amount` differs from
 //   `amountIdr` (a partial refund) is UNKNOWN (throw), as the brief says.
 import http from "node:http";
@@ -42,6 +50,10 @@ import {
 } from "@starter/shared/core";
 import { logger } from "../lib/logger";
 import { createDoitGateway } from "../services/payment-doit";
+import {
+  DoitRefundUnknownError,
+  parseDoitRefundAnswer,
+} from "../services/payment-doit-wire";
 import type {
   GatewayRefundRequest,
   PaymentRefundPort,
@@ -259,9 +271,17 @@ function payment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A refund object; its shape is not documented by DOIT (brief section A.4). */
+/** A refund object as the DOIT sandbox sends the 201 answer (legend-0yd1,
+ * legend-r7g2): `id`, `payment_id`, `amount` (number), `status`, `reason`. */
 function refundObject(overrides: Record<string, unknown> = {}) {
-  return { id: "ref_0001", status: "succeeded", amount: AMOUNT, ...overrides };
+  return {
+    id: "ref_0001",
+    payment_id: PAYMENT_REF,
+    amount: AMOUNT,
+    status: "succeeded",
+    reason: "Pengembalian sandbox",
+    ...overrides,
+  };
 }
 
 const REFUND_PATH = `/v1/payments/${PAYMENT_REF}/refunds`;
@@ -417,7 +437,7 @@ describe("DOIT refund: request", () => {
     route = (req) =>
       req.method === "POST" &&
       req.path === "/v1/payments/pay_0001%2F..%2Fx%20y/refunds"
-        ? { json: refundObject() }
+        ? { json: refundObject({ payment_id: "pay_0001/../x y" }) }
         : { status: 404 };
     const result = await makeGateway().gateway.refund(
       refundRequest({ paymentProviderRef: "pay_0001/../x y" }),
@@ -545,16 +565,13 @@ describe("DOIT refund: 2xx responses", () => {
     });
   });
 
-  it("a refund object without an amount field is accepted", async () => {
+  // legend-r7g2: was "is accepted"; a refund object without `amount` has no
+  // proof of identity any more.
+  it("a refund object without an amount field throws", async () => {
     route = refundRoute({
       json: refundObject({ amount: undefined, status: "pending" }),
     });
-    await expect(
-      makeGateway().gateway.refund(refundRequest()),
-    ).resolves.toEqual({
-      status: "pending",
-      providerRef: "ref_0001",
-    });
+    await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
   });
 
   it("a refund object whose amount differs from the requested amount throws", async () => {
@@ -646,6 +663,245 @@ describe("DOIT refund: 2xx responses", () => {
     await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
     route = refundRoute({ text: '{"id":"ref_0001","status":"succ' });
     await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
+  });
+});
+
+// --------------------------------------------------------------------------
+// refund(): the answer must prove it belongs to this refund (legend-r7g2)
+// --------------------------------------------------------------------------
+
+describe("DOIT refund: identity of the 2xx answer (legend-r7g2)", () => {
+  const expected = {
+    paymentProviderRef: "pay_EXPECTED",
+    paymentIntentId: "intent_EXPECTED",
+    amountIdr: 50_000,
+    idempotencyKey: "refund:r-expected",
+  };
+  /** 201 answer as the sandbox sends it. */
+  const created = (overrides: Record<string, unknown> = {}) => ({
+    id: "rf_actual",
+    payment_id: "pay_EXPECTED",
+    amount: 50_000,
+    status: "succeeded",
+    reason: "Pengembalian sandbox",
+    ...overrides,
+  });
+  /** 200 replay answer: adds idempotency_key, provider_ref, created_at; amount is a string. */
+  const replayed = (overrides: Record<string, unknown> = {}) =>
+    created({
+      idempotency_key: "refund:r-expected",
+      amount: "50000",
+      provider_ref: "MOCKRF-E9C54AD2A908",
+      created_at: "2026-11-09T06:47:58.334Z",
+      ...overrides,
+    });
+
+  function thrown(payload: unknown): DoitRefundUnknownError {
+    try {
+      parseDoitRefundAnswer(payload, expected);
+    } catch (error) {
+      expect(error).toBeInstanceOf(DoitRefundUnknownError);
+      return error as DoitRefundUnknownError;
+    }
+    throw new Error("Expected parseDoitRefundAnswer to throw");
+  }
+
+  it("the Codex example (another payment's refunded object) is an identity mismatch, never a success", () => {
+    const error = thrown({
+      id: "pay_OTHER",
+      status: "refunded",
+      amount: 50_000,
+      reference: "intent_OTHER",
+    });
+    expect(error.code).toBe("DOIT_REFUND_IDENTITY_MISMATCH");
+  });
+
+  it.each(["succeeded", "pending", "failed", "refunded"])(
+    "a refund-like object of another id without payment_id, status %s, is unknown",
+    (status) => {
+      thrown({
+        id: "pay_OTHER",
+        status,
+        amount: 50_000,
+        reference: "intent_OTHER",
+      });
+      thrown({ id: "rf_other", status, amount: 50_000 });
+    },
+  );
+
+  it.each(["succeeded", "pending", "failed"])(
+    "a refund object without payment_id (status %s) is unknown",
+    (status) => {
+      thrown(created({ payment_id: undefined, status }));
+      thrown(created({ payment_id: null, status }));
+      thrown(created({ payment_id: 7, status }));
+    },
+  );
+
+  it("a refund object naming another payment_id is an identity mismatch", () => {
+    expect(thrown(created({ payment_id: "pay_OTHER" })).code).toBe(
+      "DOIT_REFUND_IDENTITY_MISMATCH",
+    );
+    expect(thrown(replayed({ payment_id: "pay_OTHER" })).code).toBe(
+      "DOIT_REFUND_IDENTITY_MISMATCH",
+    );
+  });
+
+  it.each(["succeeded", "pending", "failed"])(
+    "a refund object without amount (status %s) is unknown",
+    (status) => {
+      thrown(created({ amount: undefined, status }));
+      thrown(created({ amount: null, status }));
+    },
+  );
+
+  it("a refund object with another amount is unknown", () => {
+    thrown(created({ amount: 25_000 }));
+    thrown(replayed({ amount: "25000" }));
+  });
+
+  it("a refund object with another idempotency_key is an identity mismatch", () => {
+    expect(thrown(replayed({ idempotency_key: "refund:r-other" })).code).toBe(
+      "DOIT_REFUND_IDENTITY_MISMATCH",
+    );
+    thrown(created({ idempotency_key: "refund:r-other", status: "pending" }));
+    thrown(created({ idempotency_key: 12 }));
+  });
+
+  it("a refund object whose reference is another intent is an identity mismatch", () => {
+    expect(thrown(created({ reference: "intent_OTHER" })).code).toBe(
+      "DOIT_REFUND_IDENTITY_MISMATCH",
+    );
+    thrown(created({ reference: 12 }));
+  });
+
+  it("a refund object whose reference is our intent is still accepted", () => {
+    expect(
+      parseDoitRefundAnswer(
+        created({ reference: "intent_EXPECTED" }),
+        expected,
+      ),
+    ).toEqual({ status: "succeeded", providerRef: "rf_actual" });
+  });
+
+  it("object: payment on another id is unknown; so is an object value that is neither refund nor payment", () => {
+    thrown(created({ id: "pay_OTHER", object: "payment" }));
+    thrown({
+      id: "pay_OTHER",
+      object: "payment",
+      status: "refunded",
+      amount: 50_000,
+      reference: "intent_OTHER",
+    });
+    thrown(created({ object: "invoice" }));
+    thrown(created({ object: 5 }));
+    // the payment branch needs object payment (or none), not refund
+    thrown({
+      id: "pay_EXPECTED",
+      object: "refund",
+      status: "refunded",
+      amount: 50_000,
+      reference: "intent_EXPECTED",
+    });
+  });
+
+  it("object: refund with our identity is accepted", () => {
+    expect(
+      parseDoitRefundAnswer(created({ object: "refund" }), expected),
+    ).toEqual({ status: "succeeded", providerRef: "rf_actual" });
+  });
+
+  it("the sandbox 201 shape stays accepted: succeeded, pending and failed", () => {
+    expect(parseDoitRefundAnswer(created(), expected)).toEqual({
+      status: "succeeded",
+      providerRef: "rf_actual",
+    });
+    expect(
+      parseDoitRefundAnswer(created({ status: "pending" }), expected),
+    ).toEqual({ status: "pending", providerRef: "rf_actual" });
+    expect(
+      parseDoitRefundAnswer(created({ status: "failed" }), expected),
+    ).toMatchObject({
+      status: "failed",
+      providerRef: "rf_actual",
+      code: "DOIT_REFUND_FAILED",
+    });
+  });
+
+  it("the sandbox 200 replay shape stays accepted: same key, amount as a string, extra fields", () => {
+    expect(parseDoitRefundAnswer(replayed(), expected)).toEqual({
+      status: "succeeded",
+      providerRef: "rf_actual",
+    });
+    expect(
+      parseDoitRefundAnswer(replayed({ status: "pending" }), expected),
+    ).toEqual({ status: "pending", providerRef: "rf_actual" });
+  });
+
+  it("a payment object of the right payment is still a success", () => {
+    expect(
+      parseDoitRefundAnswer(
+        {
+          id: "pay_EXPECTED",
+          status: "refunded",
+          amount: 50_000,
+          reference: "intent_EXPECTED",
+        },
+        expected,
+      ),
+    ).toEqual({ status: "succeeded", providerRef: "pay_EXPECTED" });
+  });
+
+  // Through the gateway: what the refund service reads as the payout error.
+  // The refund service keeps the refund `approved` with this code as
+  // lastPayoutError (never `completed`) when refund() throws.
+  it("refund(): the Codex example is an unknown outcome with code DOIT_REFUND_IDENTITY_MISMATCH", async () => {
+    route = refundRoute({
+      json: {
+        id: "pay_OTHER",
+        status: "refunded",
+        amount: AMOUNT,
+        reference: "intent_OTHER",
+      },
+    });
+    const error = await expectUnknownOutcome(
+      makeGateway().gateway.refund(refundRequest()),
+    );
+    expect(error.code).toBe("DOIT_REFUND_IDENTITY_MISMATCH");
+    expect(error.status).toBe(503);
+  });
+
+  it("refund(): an answer with another idempotency_key than the request header throws", async () => {
+    route = refundRoute({
+      json: refundObject({ idempotency_key: "refund:someone-else" }),
+    });
+    const error = await expectUnknownOutcome(
+      makeGateway().gateway.refund(refundRequest()),
+    );
+    expect(error.code).toBe("DOIT_REFUND_IDENTITY_MISMATCH");
+  });
+
+  it("refund(): the sandbox replay (our key, amount as a string) is accepted", async () => {
+    route = refundRoute({
+      status: 200,
+      json: refundObject({
+        idempotency_key: IDEM_KEY,
+        amount: String(AMOUNT),
+        provider_ref: "MOCKRF-E9C54AD2A908",
+        created_at: "2026-11-09T06:47:58.334Z",
+      }),
+    });
+    await expect(
+      makeGateway().gateway.refund(refundRequest()),
+    ).resolves.toEqual({ status: "succeeded", providerRef: "ref_0001" });
+  });
+
+  it("refund(): an answer naming another payment_id throws", async () => {
+    route = refundRoute({ json: refundObject({ payment_id: "pay_OTHER" }) });
+    const error = await expectUnknownOutcome(
+      makeGateway().gateway.refund(refundRequest()),
+    );
+    expect(error.code).toBe("DOIT_REFUND_IDENTITY_MISMATCH");
   });
 });
 

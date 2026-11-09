@@ -640,6 +640,7 @@ export function createDoitGateway(
         paymentProviderRef: input.paymentProviderRef,
         paymentIntentId: input.paymentIntentId,
         amountIdr: input.amountIdr,
+        idempotencyKey: input.idempotencyKey,
       });
     },
 

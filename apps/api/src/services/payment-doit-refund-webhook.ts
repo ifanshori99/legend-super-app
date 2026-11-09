@@ -56,9 +56,13 @@ export type DoitRefundFacts = {
   payment?: DoitRefundPaymentFacts;
   /** Provider payment id named by a flat `payment_id` (no payment object). */
   paymentId?: string;
+  /** Intent reference carried by a refund object (legend-r7g2): checked
+   * against the refund's intent like a payment object's `reference`. */
+  reference?: string;
 };
 
 const textSchema = z.string().min(1).max(100);
+const referenceSchema = z.string().min(1).max(128);
 const amountSchema = z.number().int().nonnegative();
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -90,7 +94,7 @@ function paymentFacts(value: unknown): DoitRefundPaymentFacts | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
   const id = text(record.id);
-  const reference = z.string().min(1).max(128).safeParse(record.reference);
+  const reference = referenceSchema.safeParse(record.reference);
   const status = doitPaymentStatusSchema.safeParse(record.status);
   const paid = amount(record.amount);
   if (!id || !reference.success || !status.success || paid === undefined)
@@ -109,7 +113,10 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
   const refund = asRecord(record.refund) ?? {};
   const isRefundObject = record.object === "refund";
   // A payment-shaped `data` (has `reference`): its `amount` is the payment's.
-  const paymentShaped = typeof record.reference === "string";
+  // legend-r7g2 (Codex 117 Run B): a refund object that also carries a
+  // `reference` stays a refund object; its `id` is the refund's, never the
+  // payment's (an explicit `payment` record is still read).
+  const paymentShaped = !isRefundObject && typeof record.reference === "string";
   const payment =
     paymentFacts(record.payment) ??
     (paymentShaped ? paymentFacts(record) : undefined);
@@ -131,6 +138,10 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
   if (payment) facts.payment = payment;
   const paymentId = paymentShaped ? undefined : text(record.payment_id);
   if (paymentId) facts.paymentId = paymentId;
+  const reference = referenceSchema.safeParse(
+    refund.reference ?? (isRefundObject ? record.reference : undefined),
+  );
+  if (reference.success) facts.reference = reference.data;
   return facts;
 }
 
@@ -157,6 +168,7 @@ export const doitRefundWebhookEventSchema =
     if (facts.refundId) refund.id = facts.refundId;
     if (facts.amountIdr !== undefined) refund.amount = facts.amountIdr;
     if (facts.failureCode) refund.failure_code = facts.failureCode;
+    if (facts.reference) refund.reference = facts.reference;
     const data: Record<string, unknown> = { refund };
     if (facts.idempotencyKey) data.idempotency_key = facts.idempotencyKey;
     if (facts.payment) data.payment = facts.payment;
