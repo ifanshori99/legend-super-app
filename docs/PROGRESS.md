@@ -9,7 +9,8 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - legend-hdfd2: `REPORT_RUN_MAX_SPLIT_DIMENSIONS = 1` (outlet + 1 dimensi); lebih dalam butuh perubahan skema `metrics_daily`. Dicatat di DECISIONS entri 2026-11-10 butir 6 dan 8.
 - Konflik terbuka: `ws11-gl-parity.acceptance.test.ts` "SH-01 can read aggregate money figures equal to the ledger" mengharapkan 200 untuk pemegang saham yang meminta `cogs`; kini 403 karena `inventory.food_cost` tidak di daftar putih agregat. Test tidak diubah, menunggu keputusan CTO (kartu legend-upmn7).
 - Review K architect: tanpa HIGH; 2 MEDIUM (pelebaran akses tak tercatat; baris hari terpotong diam-diam) dan LOW dibetulkan. Kartu baru: legend-e0fhh (mock handler report-runs abaikan bucket), legend-t5ujz (cache akses per request).
-- Langkah berikut: keputusan SH-01, merge train, second opinion Codex 260b sesudah 15 Nov.
+- legend-e0fhh: mock handler `report-runs` kini memakai bucket di kunci run; bucket yang tidak terdaftar dijawab 400 `REPORT_FILTER_NOT_SUPPORTED`, bukan total diam-diam. Review S reviewer sonnet: tanpa temuan nyata.
+- Langkah berikut: keputusan SH-01 (Q59), merge train, second opinion Codex 260b sesudah 15 Nov.
 
 ## legend-5wzoc WS-11 fondasi laporan dan metrik, kartu A (engineer, cabang `ws/ws11-foundation` dari milestone/m1 d8ea5e0b, 2026-11-10)
 

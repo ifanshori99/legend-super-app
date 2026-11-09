@@ -558,6 +558,125 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
   });
 });
 
+describe("ws11 mock report runs · the run key carries the bucket (legend-e0fhh)", () => {
+  const outletA = ownerLayout.availableOutlets[0];
+  const period = { startDate: "2031-05-05", endDate: "2031-05-07" };
+  const days = ["2031-05-05", "2031-05-06", "2031-05-07"];
+  const run = (bucket, rows) =>
+    dashboard.reportResultSchema.parse({
+      reportCode: "sales.target",
+      period: {
+        ...period,
+        bucket,
+        status: "open",
+        accountingPeriodClosed: false,
+      },
+      bucket,
+      outletFilter: { kind: "outlets", outletIds: [outletA] },
+      definitions: [dashboard.reportMetricByCode.get("net_sales")].map(
+        (definition) =>
+          metrics.metricDefinitionRefSchema.parse({
+            id: definition.id,
+            code: definition.code,
+            version: definition.version,
+            name: definition.name,
+            ownerModule: definition.ownerModule,
+            formula: definition.formula,
+            unit: definition.unit,
+            aggregation: definition.aggregation,
+            dimensions: definition.dimensions,
+            grain: definition.grain,
+            officiality: definition.officiality,
+            sourceReport: definition.sourceReport,
+          }),
+      ),
+      availability: [{ metricCode: "net_sales", status: "available" }],
+      groupBy: [],
+      rows: rows.map(([bucketStart, bucketEnd, valueIdr]) => ({
+        bucketStart,
+        bucketEnd,
+        dimensions: [],
+        values: [
+          {
+            metricCode: "net_sales",
+            value: { unit: "idr", valueIdr },
+            finality: "estimate",
+          },
+        ],
+      })),
+      generatedAt: dashboard.ownerBoardGeneratedAt,
+      rowLimit: 100,
+      truncated: false,
+    });
+  const totalRun = run("total", [[period.startDate, period.endDate, 6_000]]);
+  const dayRun = run(
+    "day",
+    days.map((date, index) => [date, date, (index + 1) * 1_000]),
+  );
+  const body = (bucket) => ({
+    reportCode: "sales.target",
+    period,
+    outletIds: [outletA],
+    groupBy: [],
+    filters: [],
+    bucket,
+    limit: 100,
+  });
+  const nets = (result) =>
+    result.rows.map((row) => row.values[0].value.valueIdr);
+
+  test("a total run and a day run of one question register side by side", () => {
+    registerMockReportRuns({ total: totalRun, day: dayRun });
+  });
+
+  test("a day request gets the daily rows", async () => {
+    const result = await post(body("day"));
+    assert.equal(result.bucket, "day");
+    assert.deepEqual(nets(result), [1_000, 2_000, 3_000]);
+    assert.deepEqual(
+      result.rows.map((row) => row.bucketStart),
+      days,
+    );
+  });
+
+  test("a total request gets the total, and a request without bucket defaults to total", async () => {
+    const result = await post(body("total"));
+    assert.equal(result.bucket, "total");
+    assert.deepEqual(nets(result), [6_000]);
+    const withoutBucket = body("total");
+    delete withoutBucket.bucket;
+    assert.deepEqual(nets(await post(withoutBucket)), [6_000]);
+  });
+
+  test("a bucket nobody registered gets the contract's filter error, not a silent total", async () => {
+    const error = await dispatchMock({
+      method: "POST",
+      path: "/api/reports/run",
+      body: body("week"),
+    }).then(
+      () => null,
+      (reason) => reason,
+    );
+    assert.equal(error?.code, "REPORT_FILTER_NOT_SUPPORTED");
+  });
+
+  test("hasMockReportRun takes an optional bucket, default total", () => {
+    assert.equal(
+      hasMockReportRun("sales.target", [], period, [outletA], "day"),
+      true,
+    );
+    assert.equal(hasMockReportRun("sales.target", [], period, [outletA]), true);
+    assert.equal(
+      hasMockReportRun("sales.target", [], period, [outletA], "week"),
+      false,
+    );
+    assert.equal(
+      hasMockReportRun("sales.target", [], period, undefined, "day"),
+      true,
+    );
+  });
+});
+
 describe("ws11 mock reports · review findings (legend-3nuv)", () => {
   const outletA = ownerLayout.availableOutlets[0];
   const outletB = "b7d2c1a0-4e3f-4a5b-8c6d-0e1f2a3b4c5d";
