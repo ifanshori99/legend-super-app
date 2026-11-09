@@ -289,6 +289,12 @@ export function buildPreviewResult(
         ? { kind: "all" }
         : { kind: "outlets", outletIds: query.outletIds },
     definitions: definitions.map(definitionRef),
+    availability: definitions
+      .map((definition) => definition.code)
+      .map((metricCode) => ({
+        metricCode,
+        status: "available",
+      })),
     groupBy: query.groupBy,
     // The limit applies after the sort, like the service.
     rows: rows.slice(0, query.limit),

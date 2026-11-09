@@ -1212,6 +1212,13 @@
       "when": 1794254000000,
       "tag": "0175_pickup_call_letters",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1794255000000,
+      "tag": "0176_metrics_daily",
+      "breakpoints": true
     }
   ]
 }

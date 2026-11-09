@@ -110,3 +110,5 @@ export * from "./delivery";
 export * from "./recipe";
 // WS-06 goods receipts: partial receiving, QC, photos (legend-o1o4s).
 export * from "./inventory-receiving";
+// WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
+export * from "./metrics";

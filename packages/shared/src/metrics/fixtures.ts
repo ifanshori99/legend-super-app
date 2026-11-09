@@ -634,6 +634,11 @@ export const queryResponseFixture = metricQueryResponseSchema.parse({
       definitionRef(metricDefinitionByCode.pax),
       definitionRef(metricDefinitionByCode.food_cost_pct),
     ],
+    availability: [
+      { metricCode: "net_sales", status: "available" },
+      { metricCode: "pax", status: "available" },
+      { metricCode: "food_cost_pct", status: "available" },
+    ],
     series: [
       {
         metricCode: "net_sales",
@@ -690,6 +695,7 @@ export const estimateQueryResponseFixture = metricQueryResponseSchema.parse({
     period: openDayPeriod,
     outletFilter: { kind: "all" },
     definitions: [definitionRef(metricDefinitionByCode.net_sales)],
+    availability: [{ metricCode: "net_sales", status: "available" }],
     series: [
       {
         metricCode: "net_sales",

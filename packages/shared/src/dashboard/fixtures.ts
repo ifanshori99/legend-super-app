@@ -162,6 +162,10 @@ function kpiRun(
     },
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: cells.map((cell) => metricRef(cell.metricCode)),
+    availability: cells.map((cell) => ({
+      metricCode: cell.metricCode,
+      status: "available",
+    })),
     groupBy: [],
     rows: [
       {
@@ -303,6 +307,10 @@ export const reportRunResultFixture = reportResultSchema.parse({
   }),
   outletFilter: { kind: "outlets", outletIds: [outlet.id] },
   definitions: [metricRef("net_sales"), metricRef("transaction_count")],
+  availability: [
+    { metricCode: "net_sales", status: "available" },
+    { metricCode: "transaction_count", status: "available" },
+  ],
   groupBy: ["channel"],
   rows: [
     {
@@ -601,6 +609,10 @@ function ownerBoardRun(
     period: ownerBoardPeriod,
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: report.metrics.map(ownerBoardMetricRef),
+    availability: report.metrics.map((metricCode) => ({
+      metricCode,
+      status: "available",
+    })),
     groupBy,
     rows: rows.map((row) => ({
       dimensions: (row.dims ?? []).map(([key, value]) => ({ key, value })),

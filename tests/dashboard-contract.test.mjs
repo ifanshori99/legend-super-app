@@ -196,6 +196,55 @@ test("DASH-02: report run rows keep groupBy order and one typed value per defini
     );
 });
 
+test("report results require availability and null cells for unavailable metrics", () => {
+  const result = fixtures.runResult;
+  const withoutAvailability = { ...result, availability: undefined };
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(withoutAvailability).success,
+    false,
+    "availability is required",
+  );
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...result,
+      availability: [...result.availability].reverse(),
+    }).success,
+    false,
+    "availability follows definitions order",
+  );
+  const unavailableEntry = {
+    metricCode: "net_sales",
+    status: "unavailable",
+    reason: "source_not_built",
+    message: "Data metrik ini belum tersedia.",
+  };
+  const withUnavailable = (cellValue) => ({
+    ...result,
+    availability: result.availability.map((entry) =>
+      entry.metricCode === "net_sales" ? unavailableEntry : entry,
+    ),
+    rows: result.rows.map((row) => ({
+      ...row,
+      values: row.values.map((cell) =>
+        cell.metricCode === "net_sales"
+          ? { ...cell, value: cellValue(cell) }
+          : cell,
+      ),
+    })),
+  });
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(
+      withUnavailable((cell) => cell.value),
+    ).success,
+    false,
+    "unavailable metric with a non-null cell is rejected",
+  );
+  assert.ok(
+    dashboard.reportResultSchema.parse(withUnavailable(() => null)),
+    "unavailable metric with null cells is accepted",
+  );
+});
+
 test("SH-02: shareholder official tiles stay closed-period only and open periods are estimates", () => {
   const metricTiles = dashboard.SHAREHOLDER_DASHBOARD_TILES.filter(
     (tile) => tile.kind === "metric",
