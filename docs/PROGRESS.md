@@ -569,7 +569,7 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - G878y lanjut `legend-jcby0` (brief 210, basis f448cf94 + 996cc889). G5gti lanjut `legend-nd3cu` (desain kolom peer_instance_id/peer_seq_offset di sync_cursors disetujui, migrasi 0162 when 1794241000000). G3chm: tiga temuan DOIT diperbaiki (3eeb3fa0, 7b2cdfae), scope diperluas ke celah adapter (sendBy) dan webhook tanpa fakta sah.
 - Pesanan migrasi: 0160 c9kbk, 0161 jcby0, 0162 nd3cu. Merge train boleh menomori ulang idx sesuai urutan masuk, `when` harus naik.
 
-## Serah terima CTO 9 Nov 21:25 (sesi G8flk compact 2x)
+## Serah terima CTO 9 Nov 21:21 (sesi G8flk compact 2x)
 
 Keputusan founder hari ini:
 - Q41: admin tenant boleh mengatur semuanya, termasuk batas biaya WhatsApp (legend-kz1m dikomentari; catatan PRD masih perlu). Tidak mencakup membuat Owner baru (legend-7vsby).
@@ -607,4 +607,4 @@ Langkah berikut CTO baru:
 2. Slot lowong: brief 213 (legend-76azz, lock_timeout 0135), lalu legend-3k8no, verifikasi k7x4p, legend-umzos, paket triase (vm6+usw3+5rzy, 316, j2l2, 5f7+m0k).
 3. Catatan PRD Q41; page review founder legend-31fi; sesudah m1 berisi ekaca: `heavy pnpm lighthouse` (legend-6crc).
 4. Retro cron (:13 tiap 2 jam) milik sesi G8flk: buat ulang di sesi baru.
-- 21:28 architect D (200b, legend-dhbt1): bersih, tanpa kartu baru. dhbt1 sudah ada di batch25 (rantai batch27). 3 catatan P3 di `docs/briefs/200b-second-opinion-master-sync-role-tolerance.result-architect.md`; catatan rilis: enum snapshot lain (accountType, reportGroup, stockLocationType, version) hanya boleh ditambah, edge dibangun dulu.
+- 21:22 architect D (200b, legend-dhbt1): bersih, tanpa kartu baru. dhbt1 sudah ada di batch25 (rantai batch27). 3 catatan P3 di `docs/briefs/200b-second-opinion-master-sync-role-tolerance.result-architect.md`; catatan rilis: enum snapshot lain (accountType, reportGroup, stockLocationType, version) hanya boleh ditambah, edge dibangun dulu.
