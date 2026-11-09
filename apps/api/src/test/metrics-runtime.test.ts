@@ -612,7 +612,7 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
         run(world, {
           metricCodes: ["net_sales"],
           period: JUNE,
-          groupBy: "payment_method",
+          groupBy: "promo", // net_sales declares it, no card builds the split
         }),
       ),
     ).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
@@ -999,5 +999,68 @@ describe("wire query", () => {
         tenantId: "x",
       }),
     ).toThrow();
+  });
+});
+
+describe("GL split finality counts total rows per outlet", () => {
+  // June is closed, so the ledger total is final; a split row is final only
+  // when every outlet has a stored total row on every day of the bucket.
+  async function cogsRow(
+    outlet: string,
+    date: string,
+    value: number,
+    dimension?: string,
+  ) {
+    const definition = reportMetricByCode.get("cogs")!;
+    await owner.query(
+      `INSERT INTO metrics_daily (tenant_id, outlet_id, metric_date, metric_code, definition_id, definition_version,
+         dimension_key, dimension_value, unit, value_int, finality, computed_at)
+       VALUES ($1, $2, $3, 'cogs', $4, $5, $6, $7, 'idr', $8, 'final', now())`,
+      [
+        world.tenantId,
+        outlet,
+        date,
+        definition.id,
+        definition.version,
+        dimension ? "menu_item" : null,
+        dimension ?? null,
+        value,
+      ],
+    );
+  }
+  const finalities = async (start: string, end: string) => {
+    const response = await run(world, {
+      metricCodes: ["cogs"],
+      period: { startDate: start, endDate: end },
+      groupBy: "menu_item",
+    });
+    return response.data.series
+      .filter((entry) => entry.dimension?.key === "menu_item")
+      .map((entry) => entry.points[0]!.finality);
+  };
+
+  it("two outlets that each miss a different day do not cover the bucket together", async () => {
+    // outlet 1 has a total row on the 10th only, outlet 2 on the 11th only:
+    // the union of dates is complete, the per-outlet sets are not.
+    await cogsRow(world.outlet1, "2025-06-10", 100);
+    await cogsRow(world.outlet1, "2025-06-10", 100, "menu-a");
+    await cogsRow(world.outlet2, "2025-06-11", 50);
+    await cogsRow(world.outlet2, "2025-06-11", 50, "menu-a");
+    expect(await finalities("2025-06-10", "2025-06-11")).toEqual([
+      "estimate",
+      "estimate",
+    ]);
+  });
+
+  it("every outlet with a total row on every day keeps the split final", async () => {
+    for (const outlet of [world.outlet1, world.outlet2])
+      for (const date of ["2025-06-12", "2025-06-13"]) {
+        await cogsRow(outlet, date, 10);
+        await cogsRow(outlet, date, 10, "menu-b");
+      }
+    expect(await finalities("2025-06-12", "2025-06-13")).toEqual([
+      "final",
+      "final",
+    ]);
   });
 });

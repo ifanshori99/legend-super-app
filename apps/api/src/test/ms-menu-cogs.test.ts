@@ -14,6 +14,8 @@
 // pin the reader, and one test pins the production state (no snapshot: only
 // the residual row, equal to the whole ledger total).
 // `menu_sold_qty` is sales family (F1); `menu_gross_margin` is unavailable.
+// `menu_popularity_pct` is a "share" source over `menu_sold_qty` (portions of
+// a menu / portions of all menus in the period), read through the sales reader.
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -77,7 +79,12 @@ const D10 = "2025-06-10";
 const D11 = "2025-06-11";
 const D12 = "2025-06-12";
 const D13 = "2025-06-13";
-const READERS = [{ family: "menu-cogs", reader: menuCogsReader }];
+const soldSource = metricSourceOf("menu_sold_qty");
+if (soldSource.kind !== "daily") throw new Error("menu_sold_qty is not daily");
+const READERS = [
+  { family: "menu-cogs", reader: menuCogsReader },
+  { family: "sales", reader: soldSource.reader },
+];
 let world: World;
 let foreign: World;
 let closerUserId: string;
@@ -447,12 +454,14 @@ describe("menu-cogs registry", () => {
     expect(metricSplitOf("cogs", "menu_item")?.reader).toBe(menuCogsReader);
     expect(metricSplitOf("cogs", "menu_category")).toBeNull();
     expect(menuCogsReader.metricCodes).toEqual(["cogs"]);
-    for (const code of [
-      "menu_gross_margin",
-      "menu_popularity_pct",
-      "sold_out_menu_count",
-    ])
+    for (const code of ["menu_gross_margin", "sold_out_menu_count"])
       expect(metricSourceOf(code)).toMatchObject({ kind: "unavailable" });
+    expect(metricSourceOf("menu_popularity_pct")).toEqual({
+      kind: "share",
+      code: "menu_popularity_pct",
+      of: "menu_sold_qty",
+      dimension: "menu_item",
+    });
     const claimed = METRIC_SOURCE_MODULES.find(
       (module) => module.family === "menu-cogs",
     )!.sources.map((source) => source.code);
@@ -522,18 +531,97 @@ describe("menu-cogs figures", () => {
     // cogs.trend and cogs.production by outlet (ledger, no split needed)
     for (const code of ["cogs", "food_cost_pct"])
       expect((await status(code, ["outlet"])).status, code).toBe("available");
+    // menu.engineering: popularity is the share of menu_sold_qty by menu item
+    expect((await status("menu_popularity_pct", ["menu_item"])).status).toBe(
+      "available",
+    );
     // no data source, or no engine support yet
-    for (const code of [
-      "menu_gross_margin",
-      "menu_popularity_pct",
-      "sold_out_menu_count",
-    ])
+    for (const code of ["menu_gross_margin", "sold_out_menu_count"])
       expect((await status(code, ["menu_item"])).status, code).toBe(
         "unavailable",
       );
     expect((await status("food_cost_pct", ["menu_item"])).status).toBe(
       "unavailable",
     );
+  });
+});
+
+describe("menu_popularity_pct: share of the period total", () => {
+  const D20 = "2025-06-20";
+  const D21 = "2025-06-21";
+  const popularity = async (
+    request: Parameters<typeof evaluate>[1],
+  ): Promise<Map<string, number | null>> =>
+    splitOf(
+      await evaluate(world, {
+        ...request,
+        metricCodes: ["menu_popularity_pct"],
+      }),
+      "menu_popularity_pct",
+      "menu_item",
+    );
+
+  it("one day: portions of a menu over portions of all menus", async () => {
+    // The sales reader of menu_sold_qty counts every completed order, the
+    // training one too: outlet 1 Kopi 2 + 1 + 7, Nasi 1, Teh 1; outlet 2
+    // Kopi 4 -> Kopi 14, Nasi 1, Teh 1 of 16.
+    const shares = await popularity({ groupBy: ["menu_item"] });
+    expect(shares.get(world.kopi)).toBe(87.5);
+    expect(shares.get(world.nasi)).toBe(6.25);
+    expect(shares.get(world.teh)).toBe(6.25);
+  });
+
+  it("several days: share of the summed portions, not the mean of daily percents", async () => {
+    await asOwner(world.tenantId, async (client) => {
+      await seedOrder(client, world, world.outlet1, D20, [
+        { menuItemId: world.kopi, quantity: 1, unitPrice: 20_000, cost: null },
+        { menuItemId: world.nasi, quantity: 3, unitPrice: 30_000, cost: null },
+      ]);
+      await seedOrder(client, world, world.outlet1, D21, [
+        { menuItemId: world.kopi, quantity: 9, unitPrice: 20_000, cost: null },
+      ]);
+    });
+    for (const date of [D20, D21]) await refresh(world, world.outlet1, date);
+    // Kopi 10, Nasi 3 of 13 = 76.9231 / 23.0769 (daily percents would give
+    // Kopi (25 + 100) / 2 = 62.5).
+    const shares = await popularity({
+      groupBy: ["menu_item"],
+      period: { start: D20, end: D21 },
+      outletIds: [world.outlet1],
+    });
+    expect(shares.get(world.kopi)).toBe(76.9231);
+    expect(shares.get(world.nasi)).toBe(23.0769);
+  });
+
+  it("per outlet: each outlet is its own total", async () => {
+    const result = await evaluate(world, {
+      metricCodes: ["menu_popularity_pct"],
+      groupBy: ["outlet", "menu_item"],
+    });
+    const share = (outlet: string, item: string) =>
+      num(
+        result.series.find(
+          (series) =>
+            series.dimensions.some(
+              (d) => d.key === "outlet" && d.value === outlet,
+            ) &&
+            series.dimensions.some(
+              (d) => d.key === "menu_item" && d.value === item,
+            ),
+        )!.points[0]!,
+      );
+    expect(share(world.outlet2, world.kopi)).toBe(100);
+    expect(share(world.outlet1, world.kopi)).toBe(83.3333); // 10 of 12
+  });
+
+  it("without a menu_item split there is nothing to share: dimension_not_supported", async () => {
+    const result = await evaluate(world, {
+      metricCodes: ["menu_popularity_pct"],
+    });
+    expect(result.availability[0]).toMatchObject({
+      status: "unavailable",
+      reason: "dimension_not_supported",
+    });
   });
 });
 

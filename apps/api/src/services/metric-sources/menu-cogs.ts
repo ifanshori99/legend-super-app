@@ -26,9 +26,12 @@
 // - `menu_gross_margin` is `unavailable`: it needs the same cost snapshot, and
 //   without it a margin would read as the full sales price. It turns into a
 //   source when the snapshot is written.
-// - `menu_popularity_pct` needs a "share of total" source kind the registry
-//   lacks; `sold_out_menu_count` has no history per day (the schema keeps only
-//   the current 86 status).
+// - `sold_out_menu_count` has no history per day (the schema keeps only the
+//   current 86 status).
+//
+// `menu_popularity_pct` is a `share` source: portions of each menu over
+// portions of all menus (`menu_sold_qty` by menu_item) in the bucket, computed
+// from the summed portions, never as a mean of daily percents.
 
 import { sql } from "drizzle-orm";
 import { idr } from "@starter/shared/core";
@@ -90,9 +93,10 @@ export const menuCogsSources: MetricSourceFamilyModule = {
       reason: "source_not_built",
     },
     {
-      kind: "unavailable",
+      kind: "share",
       code: "menu_popularity_pct",
-      reason: "source_not_built",
+      of: "menu_sold_qty",
+      dimension: "menu_item",
     },
     {
       kind: "unavailable",

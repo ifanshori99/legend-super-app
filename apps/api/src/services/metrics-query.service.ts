@@ -922,7 +922,8 @@ type Plan =
       numerator: string;
       denominator: string;
       scale: 1 | 100;
-    };
+    }
+  | { kind: "share"; of: string; dimension: string };
 
 const NOT_SUPPORTED: Plan = {
   kind: "unavailable",
@@ -974,6 +975,15 @@ function planOf(
         )
           return NOT_SUPPORTED;
         return { kind: "daily", reader: source.reader };
+      }
+      case "share": {
+        // Without the split an unsplit value would always read 100 %; a
+        // filter would drop the siblings the total needs.
+        if (shape.splitKey !== source.dimension || shape.filter)
+          return NOT_SUPPORTED;
+        const inputPlan = planOf(source.of, shape, sources, plans, visiting);
+        if (inputPlan.kind === "unavailable") return inputPlan;
+        return { kind: "share", of: source.of, dimension: source.dimension };
       }
       case "derived": {
         for (const input of [source.numerator, source.denominator]) {
@@ -1058,6 +1068,11 @@ export async function evaluateMetrics(
       const inputs = [plan.numerator, plan.denominator].map(officialityOf);
       if (inputs.includes("closed_period_only")) return "closed_period_only";
     }
+    if (
+      plan?.kind === "share" &&
+      officialityOf(plan.of) === "closed_period_only"
+    )
+      return "closed_period_only";
     return definitionOf(code).officiality;
   };
 
@@ -1168,13 +1183,34 @@ export async function evaluateMetrics(
    * filter. A missing day may hide activity the sum does not see (the job
    * refreshes only the last days), so it keeps the value an estimate.
    * Entity-level ledger lines have no operational rows to wait for.
+   *
+   * `perOutlet` (ledger splits): without an outlet split, every outlet that
+   * has a total row of the code in the query must have its own rows on every
+   * day, so the days of different outlets are never pooled into one set.
    */
-  const covered = (code: string, outletKey: string, at: number) => {
+  const covered = (
+    code: string,
+    outletKey: string,
+    at: number,
+    perOutlet = false,
+  ) => {
     if (outletKey === ENTITY_LEVEL) return true;
     if (at >= currentCount) return false;
     const bucket = ranges[at]!;
     const days = (toTime(bucket.end) - toTime(bucket.start)) / DAY_MS + 1;
-    return (coverage.get(code)?.get(outletKey)?.[at]?.size ?? 0) === days;
+    const byOutlet = coverage.get(code);
+    if (!perOutlet || outletKey !== ALL_OUTLETS)
+      return (byOutlet?.get(outletKey)?.[at]?.size ?? 0) === days;
+    const outlets =
+      outletFilter.kind === "outlets"
+        ? outletFilter.outletIds
+        : [...(byOutlet?.keys() ?? [])].filter((key) => key !== ALL_OUTLETS);
+    return (
+      outlets.length > 0 &&
+      outlets.every(
+        (outlet) => (byOutlet?.get(outlet)?.[at]?.size ?? 0) === days,
+      )
+    );
   };
 
   // Entity-level lines get their own series only when they are in the query
@@ -1230,7 +1266,7 @@ export async function evaluateMetrics(
       // and need a stored total row on every day of it; the residual row
       // makes them add up to that total.
       const splitFinal = totals.map(
-        (total, at) => total.final && covered(code, outlet.key, at),
+        (total, at) => total.final && covered(code, outlet.key, at, true),
       );
       const sums = new Map<string, (bigint | null)[]>();
       for (const row of splitRows) {
@@ -1383,6 +1419,48 @@ export async function evaluateMetrics(
       case "daily":
         groups = storedGroups(code);
         break;
+      case "share": {
+        // Value / sum of the values sharing the other dimensions (the outlet),
+        // per bucket; final only when every value of the sum is final.
+        const unit = definitionOf(code).unit;
+        const officiality = definitionOf(code).officiality;
+        const parts = groupsOf(plan.of);
+        const familyOf = (group: Group) =>
+          groupKeyOf(group.dims.filter((dim) => dim.key !== plan.dimension));
+        const totals = new Map<string, Cell[]>();
+        for (const group of parts) {
+          const family = familyOf(group);
+          const cells = totals.get(family) ?? ranges.map(() => EMPTY_CELL);
+          totals.set(
+            family,
+            cells.map((total, at) => {
+              const cell = group.cells[at]!;
+              return {
+                value:
+                  cell.value === null
+                    ? total.value
+                    : valueOf(
+                        cell.value.unit,
+                        (total.value ? nativeOf(total.value) : 0n) +
+                          nativeOf(cell.value),
+                      ),
+                final: total.final && cell.final,
+              };
+            }),
+          );
+        }
+        groups = parts.map((group) => {
+          const total = totals.get(familyOf(group))!;
+          return {
+            dims: group.dims,
+            cells: group.cells.map((cell, at) => ({
+              value: ratioValue(cell.value, total[at]!.value, 100, unit),
+              final: total[at]!.final && ruleFinal(at, officiality),
+            })),
+          };
+        });
+        break;
+      }
       case "derived": {
         // Recomputed per bucket and group from its two inputs; final only
         // when both inputs are final.

@@ -80,6 +80,19 @@ export type MetricSource =
       readonly scale: 1 | 100; // 100 for percent
     }
   | {
+      /**
+       * Share of a total, recomputed per bucket and never stored: each
+       * `dimension` value of the registry code `of`, divided by the sum of all
+       * values of that dimension in the same bucket (and outlet group), × 100.
+       * Answers `dimension_not_supported` unless the query splits by
+       * `dimension` (an unsplit total would always read 100 %).
+       */
+      readonly kind: "share";
+      readonly code: string; // percent unit
+      readonly of: string;
+      readonly dimension: Exclude<MetricDimensionKey, "outlet">;
+    }
+  | {
       readonly kind: "unavailable";
       readonly code: string;
       readonly reason: MetricUnavailableReason;
