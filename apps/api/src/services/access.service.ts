@@ -460,19 +460,10 @@ export async function updateCustomRole(
     /** Last successful re-authentication of the editor, or null (no bypass). */
     reauthenticatedAt: Date | null;
     mfaVerified: boolean;
-    now?: Date;
   },
 ): Promise<Role> {
   const { actorUserId } = options;
-  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
-    await assertTenantPermission(
-      tx,
-      context,
-      actorUserId,
-      "access.role.manage",
-      now,
-    );
     const [current] = await tx
       .select()
       .from(roles)
@@ -481,6 +472,19 @@ export async function updateCustomRole(
       )
       .limit(1)
       .for("update");
+    // legend-tegsk: "now" is read AFTER the role row lock. An editor ended
+    // while this call waited for another editor's lock would otherwise still
+    // look active at a clock read taken before the wait. The permission check
+    // runs before the 404 so an unauthorized caller learns nothing about the
+    // role.
+    const now = new Date();
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.manage",
+      now,
+    );
     if (!current) throw new HttpError(404, "NOT_FOUND", "Role not found.");
     if (current.isTemplate)
       throw new HttpError(
