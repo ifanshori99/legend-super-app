@@ -1,3 +1,15 @@
+-- legend-wg5t: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated against outlets and pos_orders. Lift FORCE on those two for this
+-- transaction only; it is restored right after the last foreign key, before
+-- commit (drizzle applies pending migrations in one transaction, so no other
+-- session ever sees the lifted state). tenants never had FORCE, so it is left
+-- alone.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_orders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "pos_invoices" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -128,6 +140,10 @@ ALTER TABLE "pos_receipts" ADD CONSTRAINT "pos_receipts_outlet_fk" FOREIGN KEY (
 ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "receipt_sequences" ADD CONSTRAINT "receipt_sequences_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.pos_orders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE INDEX "pos_invoices_order_idx" ON "pos_invoices" USING btree ("tenant_id","order_id");--> statement-breakpoint
 CREATE INDEX "pos_receipt_deliveries_queue_idx" ON "pos_receipt_deliveries" USING btree ("tenant_id","channel","status");--> statement-breakpoint
 CREATE INDEX "pos_receipts_outlet_issued_idx" ON "pos_receipts" USING btree ("tenant_id","outlet_id","issued_at");
