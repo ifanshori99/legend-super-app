@@ -71,6 +71,8 @@ describe("notification center (PRD §3.15)", () => {
         webPushEnabled: true,
         emailEnabled: false,
         whatsapp: { enabled: false },
+        maxAttempts: 3,
+        retryBackoffSeconds: [30, 120],
       },
     });
   });

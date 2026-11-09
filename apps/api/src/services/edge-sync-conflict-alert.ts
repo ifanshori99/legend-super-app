@@ -21,7 +21,6 @@ import {
 import type { RoleTemplateKey } from "@starter/shared/access";
 import {
   createUlid,
-  idr,
   toIsoDateTime,
   ulidToUuid,
   type OutletId,
@@ -29,7 +28,10 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
-import { notificationPolicySchema } from "@starter/shared/notification";
+import {
+  defaultNotificationPolicy,
+  notificationPolicySchema,
+} from "@starter/shared/notification";
 import {
   notificationOutbox,
   notificationPolicies,
@@ -154,32 +156,17 @@ async function notifyOutletSupervisors(
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, alert.tenantId));
-  const policy = notificationPolicySchema.parse(
-    policyRow
-      ? {
-          tenantId: alert.tenantId,
-          webPushEnabled: policyRow.webPushEnabled,
-          emailEnabled: policyRow.emailEnabled,
-          whatsapp: policyRow.whatsapp,
-          maxAttempts: policyRow.maxAttempts,
-          retryBackoffSeconds: policyRow.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(policyRow.updatedAt),
-        }
-      : {
-          tenantId: alert.tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  const policy = policyRow
+    ? notificationPolicySchema.parse({
+        tenantId: alert.tenantId,
+        webPushEnabled: policyRow.webPushEnabled,
+        emailEnabled: policyRow.emailEnabled,
+        whatsapp: policyRow.whatsapp,
+        maxAttempts: policyRow.maxAttempts,
+        retryBackoffSeconds: policyRow.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(policyRow.updatedAt),
+      })
+    : defaultNotificationPolicy(alert.tenantId, now);
   const subscribed = new Set(
     (
       await tx

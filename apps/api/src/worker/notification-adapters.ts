@@ -26,7 +26,6 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
-  idr,
   toIsoDateTime,
   z,
   type TenantId,
@@ -44,6 +43,7 @@ import {
   approvalResolvedEvent,
 } from "@starter/shared/identity";
 import {
+  defaultNotificationPolicy,
   notificationPolicySchema,
   notificationPreferenceSchema,
   type NotificationCategory,
@@ -123,32 +123,17 @@ async function loadPolicy(
     .select()
     .from(notificationPolicies)
     .where(eq(notificationPolicies.tenantId, tenantId));
-  return notificationPolicySchema.parse(
-    row
-      ? {
-          tenantId,
-          webPushEnabled: row.webPushEnabled,
-          emailEnabled: row.emailEnabled,
-          whatsapp: row.whatsapp,
-          maxAttempts: row.maxAttempts,
-          retryBackoffSeconds: row.retryBackoffSeconds,
-          updatedAt: toIsoDateTime(row.updatedAt),
-        }
-      : {
-          tenantId,
-          webPushEnabled: true,
-          emailEnabled: false,
-          whatsapp: {
-            enabled: false,
-            allowedCategories: [],
-            monthlyCap: 0,
-            costPerMessageIdr: idr(0),
-          },
-          maxAttempts: 3,
-          retryBackoffSeconds: [30, 120],
-          updatedAt: toIsoDateTime(now),
-        },
-  );
+  return row
+    ? notificationPolicySchema.parse({
+        tenantId,
+        webPushEnabled: row.webPushEnabled,
+        emailEnabled: row.emailEnabled,
+        whatsapp: row.whatsapp,
+        maxAttempts: row.maxAttempts,
+        retryBackoffSeconds: row.retryBackoffSeconds,
+        updatedAt: toIsoDateTime(row.updatedAt),
+      })
+    : defaultNotificationPolicy(tenantId, now);
 }
 
 async function loadRecipientState(

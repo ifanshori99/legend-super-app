@@ -491,3 +491,17 @@ test("legend-307w3 other categories keep the tenant email switch and the user op
     );
   }
 });
+
+test("legend-md0zx the no-policy fallback is one shared, valid policy: web push only, email off, 3 tries", () => {
+  const tenantId = f.policy.tenantId;
+  const now = new Date("2026-11-09T10:00:00.000Z");
+  const policy = n.defaultNotificationPolicy(tenantId, now);
+  assert.deepEqual(n.notificationPolicySchema.parse(policy), policy);
+  assert.equal(policy.tenantId, tenantId);
+  assert.equal(policy.webPushEnabled, true);
+  assert.equal(policy.emailEnabled, false);
+  assert.equal(policy.whatsapp.enabled, false);
+  assert.equal(policy.maxAttempts, 3);
+  assert.deepEqual(policy.retryBackoffSeconds, [30, 120]);
+  assert.equal(policy.updatedAt, now.toISOString());
+});

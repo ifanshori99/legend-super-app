@@ -249,6 +249,32 @@ export const notificationPolicySchema = z
   );
 export type NotificationPolicy = z.infer<typeof notificationPolicySchema>;
 
+/**
+ * The policy a tenant has before it saves one (no `notification_policies`
+ * row): web push only, no email, no WhatsApp, 3 tries with 30 s / 120 s
+ * backoff. The worker, service requests, edge sync alerts and the
+ * notification center all read this one fallback (legend-md0zx).
+ */
+export function defaultNotificationPolicy(
+  tenantId: string,
+  now: Date,
+): NotificationPolicy {
+  return notificationPolicySchema.parse({
+    tenantId,
+    webPushEnabled: true,
+    emailEnabled: false,
+    whatsapp: {
+      enabled: false,
+      allowedCategories: [],
+      monthlyCap: 0,
+      costPerMessageIdr: 0,
+    },
+    maxAttempts: 3,
+    retryBackoffSeconds: [30, 120],
+    updatedAt: now.toISOString(),
+  });
+}
+
 // ---- User preferences -------------------------------------------------------
 
 export const channelPreferenceSchema = z.strictObject({
