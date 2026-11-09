@@ -5,6 +5,9 @@
 // prevented before the API refuses it. Loaded in Node by the mock and tests:
 // relative `.ts` imports and bare package imports only, no `@/` alias.
 import {
+  PERSONAL_DATA_DIMENSIONS,
+  aggregateOnlyCaller,
+  builderQueryPermittedFor,
   REPORT_BUILDER_MAX_DIMENSIONS,
   REPORT_BUILDER_MAX_FILTERS,
   REPORT_BUILDER_MAX_METRICS,
@@ -13,6 +16,7 @@ import {
   reportByCode,
   reportMetricByCode,
   reportMetricDefinitions,
+  reportPermittedFor,
   selectionContainsPersonalData,
   type ReportBuilderQuery,
   type ReportErrorCode,
@@ -178,44 +182,61 @@ export function usableMetrics(
     .filter((metric) => {
       if (metric.status !== "active") return false;
       const report = reportByCode(metric.sourceReport.reportCode);
-      return (
-        report !== undefined &&
-        report.requiredPermissions.every((code) => permissions.includes(code))
-      );
+      return report !== undefined && reportPermittedFor(report, permissions);
     })
     .sort((a, b) => a.name.localeCompare(b.name, "id"));
 }
 
 /** Dimensions every selected metric declares, in the first metric's order. */
-export function sharedDimensions(metricCodes: readonly string[]): string[] {
+export function sharedDimensions(
+  metricCodes: readonly string[],
+  hidePersonal = false,
+): string[] {
   const definitions = metricCodes
     .map((code) => reportMetricByCode.get(code))
     .filter((definition): definition is MetricDefinition => !!definition);
   const [first] = definitions;
   if (first === undefined) return [];
-  return first.dimensions.filter((key) =>
-    definitions.every((definition) => definition.dimensions.includes(key)),
+  return first.dimensions.filter(
+    (key) =>
+      !(hidePersonal && PERSONAL_DATA_DIMENSIONS.includes(key)) &&
+      definitions.every((definition) => definition.dimensions.includes(key)),
   );
 }
+
+/**
+ * SH-01: a caller holding only `report.aggregate.view` (the shareholder) gets
+ * aggregates: no split or filter by an employee, customer or member. The rule
+ * lives in the shared contract so the server applies the same one.
+ */
+export { aggregateOnlyCaller, builderQueryPermittedFor };
 
 /**
  * Keys a filter may use: the shared dimensions without `outlet`, which is
  * chosen with outletIds only (TEN-03, the contract refuses an outlet filter).
  */
-export function filterableDimensions(metricCodes: readonly string[]): string[] {
-  return sharedDimensions(metricCodes).filter((key) => key !== "outlet");
+export function filterableDimensions(
+  metricCodes: readonly string[],
+  hidePersonal = false,
+): string[] {
+  return sharedDimensions(metricCodes, hidePersonal).filter(
+    (key) => key !== "outlet",
+  );
 }
 
 /**
  * After the metric selection changes, drops the splits, filters and sort that
  * the new selection no longer offers; `dropped` lists them for a notice.
  */
-export function reconcileDraft(draft: BuilderDraft): {
+export function reconcileDraft(
+  draft: BuilderDraft,
+  hidePersonal = false,
+): {
   draft: BuilderDraft;
   dropped: string[];
 } {
-  const shared = sharedDimensions(draft.metricCodes);
-  const filterable = filterableDimensions(draft.metricCodes);
+  const shared = sharedDimensions(draft.metricCodes, hidePersonal);
+  const filterable = filterableDimensions(draft.metricCodes, hidePersonal);
   const dropped: string[] = [];
   const groupBy = draft.groupBy.filter((key) => {
     const keep = shared.includes(key);
@@ -361,7 +382,8 @@ export type ScheduleDraft = {
   dayOfWeek: number;
   dayOfMonth: number;
   format: "csv" | "xlsx" | "pdf";
-  recipientsText: string;
+  /** Tenant user ids picked in the form (never typed addresses). */
+  recipientUserIds: string[];
 };
 
 export function emptyScheduleDraft(): ScheduleDraft {
@@ -371,16 +393,18 @@ export function emptyScheduleDraft(): ScheduleDraft {
     dayOfWeek: 1,
     dayOfMonth: 1,
     format: "pdf",
-    recipientsText: "",
+    recipientUserIds: [],
   };
 }
 
-export function parseRecipients(text: string): string[] {
-  const values = text
-    .split(/[,;\s]+/)
-    .map((value) => value.trim().toLowerCase())
-    .filter((value) => value !== "");
-  return [...new Set(values)];
+/** Adds or removes one picked user; each user appears once, in pick order. */
+export function toggleRecipient(
+  current: readonly string[],
+  userId: string,
+): string[] {
+  return current.includes(userId)
+    ? current.filter((id) => id !== userId)
+    : [...current, userId];
 }
 
 /** The create/update schedule fields, day fields set only for their frequency. */
@@ -391,6 +415,6 @@ export function scheduleSettings(draft: ScheduleDraft) {
     dayOfWeek: draft.frequency === "weekly" ? draft.dayOfWeek : null,
     dayOfMonth: draft.frequency === "monthly" ? draft.dayOfMonth : null,
     format: draft.format,
-    recipients: parseRecipients(draft.recipientsText),
+    recipientUserIds: [...new Set(draft.recipientUserIds)],
   };
 }

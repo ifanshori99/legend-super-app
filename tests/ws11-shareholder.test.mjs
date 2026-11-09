@@ -71,6 +71,10 @@ describe("shareholder dashboard · SH-01 closed official, running estimate", () 
       board.formatPeriod({ startDate: "2026-11-01", endDate: "2026-11-05" }),
       /^1 – 5 Nov 2026$/,
     );
+    assert.match(
+      board.formatPeriod({ startDate: "2026-11-01", endDate: "2026-11-01" }),
+      /^1 Nov 2026$/,
+    );
   });
 });
 
@@ -125,14 +129,44 @@ describe("shareholder dashboard · SH-02 own data only", () => {
     }
   });
 
-  test("SH-02: the shareholder role can open no source report, so no tile links to one", () => {
+  test("SH-01: a shareholder gets no report link until the report route for shareholders is decided (legend-5bjh)", () => {
     const permissions = roleTemplate("shareholder").permissions;
+    assert.deepEqual(
+      permissions.filter((code) => code.startsWith("report.")),
+      ["report.aggregate.view"],
+    );
+    assert.equal(permissions.includes(board.REPORT_AREA_PERMISSION), false);
     for (const tile of layout.tiles)
       assert.equal(
         board.permittedReportPath(tile, permissions),
         null,
         tile.key,
       );
+  });
+
+  test("SH-01: once the report area opens, a tile links only to an aggregate report", () => {
+    const permissions = [
+      ...roleTemplate("shareholder").permissions,
+      board.REPORT_AREA_PERMISSION,
+    ];
+    for (const tile of layout.tiles) {
+      const path = board.permittedReportPath(tile, permissions);
+      if (tile.kind !== "metric") {
+        assert.equal(path, null, tile.key);
+        continue;
+      }
+      const report = dashboard.reportByCode(tile.reportCode);
+      assert.equal(path, report.route, tile.key);
+      assert.equal(report.containsPersonalData, false, tile.key);
+      assert.equal(
+        dashboard.selectionContainsPersonalData({
+          groupBy: report.dimensions,
+          filters: [],
+        }),
+        false,
+        tile.key,
+      );
+    }
   });
 });
 
@@ -228,8 +262,14 @@ describe("shareholder dashboard · DASH-02 one key, one number across screens", 
 
   test("DASH-02: the running estimate's net profit is the profit-share estimate's basis", async () => {
     const running = board.runningPeriodOf(layout);
-    const estimate =
-      cafeLegendAccountingFixtures.profitShare.myProfitShare.estimates[0];
+    // The mock rebuilds the fixture's whole-month estimate as month to date
+    // (legend-zc3g), so the basis is the served estimate, not the fixture row.
+    const estimate = (
+      await dispatchMock({
+        method: "GET",
+        path: "/api/accounting/my-profit-share",
+      })
+    ).data.estimates[0];
     assert.deepEqual(
       await cell(board.RUNNING_ESTIMATE_REPORT, "net_profit", running),
       { unit: "idr", valueIdr: Number(estimate.estimatedNetProfitIdr) },

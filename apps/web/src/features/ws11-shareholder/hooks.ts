@@ -3,6 +3,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import {
   useInfiniteQuery,
+  useMutation,
   useQueries,
   useQuery,
   useQueryClient,
@@ -24,6 +25,7 @@ import {
   visibleDocuments,
   type SharePeriod,
 } from "./board.ts";
+import { fetchShareholderDocumentUrl } from "./api";
 import {
   myProfitShareQuery,
   shareholderDashboardQuery,
@@ -167,4 +169,12 @@ export function useShareholderDocuments(): DocumentsState {
     return { ...base, status: failureStatus(query.error), items: [] };
   if (query.data === undefined) return { ...base, status: "loading" };
   return { ...base, status: items.length === 0 ? "empty" : "ready" };
+}
+
+/** Asks for a fresh signed URL on every click (they expire after 300 s). */
+export function useShareholderDocumentDownload() {
+  return useMutation({
+    mutationFn: (documentId: ShareholderDocument["id"]) =>
+      fetchShareholderDocumentUrl(documentId),
+  });
 }

@@ -131,7 +131,8 @@ export const cafeLegendManagementLayoutFixture = dashboardLayoutSchema.parse({
   businessDate: "2026-11-01",
   availableOutlets: [outlet.id],
   tiles: MANAGEMENT_DASHBOARD_TILES,
-  generatedAt: "2026-11-01T22:45:00.000Z",
+  // Same instant as the owner board: both describe 1 Nov at 11:40 WIB.
+  generatedAt: ownerBoardGeneratedAt,
   monitoringPeriod: {
     startDate: "2026-11-01",
     endDate: "2026-11-01",
@@ -173,7 +174,7 @@ function kpiRun(
         })),
       },
     ],
-    generatedAt: "2026-11-01T22:46:00.000Z",
+    generatedAt: ownerBoardGeneratedAt,
     rowLimit: 100,
   });
 }
@@ -236,7 +237,9 @@ export const managementDashboardKpiRuns: Readonly<
       },
       {
         metricCode: "purchase_total",
-        value: { unit: "idr", valueIdr: 38_600_000 },
+        // One business day: 35% of the day's net sales (7.420.000), the same
+        // figure the report viewer's purchasing reports give for 1 Nov.
+        value: { unit: "idr", valueIdr: 2_597_000 },
       },
     ],
   ),
@@ -307,12 +310,12 @@ export const reportRunResultFixture = reportResultSchema.parse({
       values: [
         {
           metricCode: "net_sales",
-          value: { unit: "idr", valueIdr: 18_450_000 },
+          value: { unit: "idr", valueIdr: 230_878_706 },
           finality: "final",
         },
         {
           metricCode: "transaction_count",
-          value: { unit: "count", value: 412 },
+          value: { unit: "count", value: 2_893 },
           finality: "final",
         },
       ],
@@ -322,12 +325,42 @@ export const reportRunResultFixture = reportResultSchema.parse({
       values: [
         {
           metricCode: "net_sales",
-          value: { unit: "idr", valueIdr: 26_300_000 },
+          value: { unit: "idr", valueIdr: 110_154_178 },
           finality: "final",
         },
         {
           metricCode: "transaction_count",
-          value: { unit: "count", value: 388 },
+          value: { unit: "count", value: 1_558 },
+          finality: "final",
+        },
+      ],
+    },
+    {
+      dimensions: [{ key: "channel", value: "gofood" }],
+      values: [
+        {
+          metricCode: "net_sales",
+          value: { unit: "idr", valueIdr: 43_394_070 },
+          finality: "final",
+        },
+        {
+          metricCode: "transaction_count",
+          value: { unit: "count", value: 556 },
+          finality: "final",
+        },
+      ],
+    },
+    {
+      dimensions: [{ key: "channel", value: "grabfood" }],
+      values: [
+        {
+          metricCode: "net_sales",
+          value: { unit: "idr", valueIdr: 28_373_046 },
+          finality: "final",
+        },
+        {
+          metricCode: "transaction_count",
+          value: { unit: "count", value: 334 },
           finality: "final",
         },
       ],
@@ -385,7 +418,7 @@ export const reportScheduleFixture = reportScheduleSchema.parse({
   dayOfWeek: 1,
   dayOfMonth: null,
   format: "pdf",
-  recipients: ["owner@cafelegend.id"],
+  recipientUserIds: [userId],
   isEnabled: true,
   nextRunAt: "2026-11-09T00:30:00.000Z",
   lastRunAt: null,

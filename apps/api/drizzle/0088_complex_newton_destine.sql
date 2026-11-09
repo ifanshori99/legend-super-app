@@ -1,0 +1,195 @@
+-- legend-6c0: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS; see 0065). The foreign keys below are validated by a query that
+-- FORCE ROW LEVEL SECURITY would run under the tenant policies, which raise
+-- 42501 without app.tenant_id. Lift FORCE on the existing tables they touch
+-- for this transaction only; it is restored at the end of this migration
+-- (drizzle applies pending migrations in one transaction).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_voids NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_refunds NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+CREATE TABLE "cash_movements" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"shift_id" uuid NOT NULL,
+	"type" varchar(10) NOT NULL,
+	"amount_idr" bigint NOT NULL,
+	"reason_note" varchar(500) NOT NULL,
+	"recorded_by" text NOT NULL,
+	"recorded_at" timestamp with time zone NOT NULL,
+	"approved_by" text,
+	"idempotency_key" varchar(100) NOT NULL,
+	"request_fingerprint" varchar(64) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "cash_movements_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "cash_movements_idempotency_key" UNIQUE("tenant_id","shift_id","idempotency_key"),
+	CONSTRAINT "cash_movements_type_check" CHECK ("cash_movements"."type" IN ('cash_in', 'cash_out', 'drop')),
+	CONSTRAINT "cash_movements_amount_check" CHECK ("cash_movements"."amount_idr" > 0),
+	CONSTRAINT "cash_movements_reason_check" CHECK (char_length("cash_movements"."reason_note") >= 4)
+);
+--> statement-breakpoint
+CREATE TABLE "pos_daily_closes" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"business_date" date NOT NULL,
+	"order_count" integer NOT NULL,
+	"total_sales_idr" bigint NOT NULL,
+	"total_refunds_idr" bigint NOT NULL,
+	"total_voids_idr" bigint NOT NULL,
+	"total_variance_idr" bigint NOT NULL,
+	"inventory_deduction_applied" boolean NOT NULL,
+	"recap" jsonb NOT NULL,
+	"closed_by" text NOT NULL,
+	"closed_at" timestamp with time zone NOT NULL,
+	"idempotency_key" varchar(100) NOT NULL,
+	"request_fingerprint" varchar(64) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pos_daily_closes_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "pos_daily_closes_day_key" UNIQUE("tenant_id","outlet_id","business_date"),
+	CONSTRAINT "pos_daily_closes_idempotency_key" UNIQUE("tenant_id","outlet_id","idempotency_key"),
+	CONSTRAINT "pos_daily_closes_amounts_check" CHECK ("pos_daily_closes"."order_count" >= 0 AND "pos_daily_closes"."total_sales_idr" >= 0
+        AND "pos_daily_closes"."total_refunds_idr" >= 0 AND "pos_daily_closes"."total_voids_idr" >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "pos_shift_counts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"shift_id" uuid NOT NULL,
+	"sequence" integer NOT NULL,
+	"counts" jsonb NOT NULL,
+	"counts_fingerprint" varchar(64) NOT NULL,
+	"counted_idr" bigint NOT NULL,
+	"expected_idr" bigint NOT NULL,
+	"variance_idr" bigint NOT NULL,
+	"submitted_by" text NOT NULL,
+	"submitted_at" timestamp with time zone NOT NULL,
+	"forced" boolean DEFAULT false NOT NULL,
+	"idempotency_key" varchar(100) NOT NULL,
+	"request_fingerprint" varchar(64) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pos_shift_counts_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "pos_shift_counts_sequence_key" UNIQUE("tenant_id","shift_id","sequence"),
+	CONSTRAINT "pos_shift_counts_idempotency_key" UNIQUE("tenant_id","shift_id","idempotency_key"),
+	CONSTRAINT "pos_shift_counts_sequence_check" CHECK ("pos_shift_counts"."sequence" >= 1),
+	CONSTRAINT "pos_shift_counts_counted_check" CHECK ("pos_shift_counts"."counted_idr" >= 0),
+	CONSTRAINT "pos_shift_counts_variance_check" CHECK ("pos_shift_counts"."variance_idr" = "pos_shift_counts"."counted_idr" - "pos_shift_counts"."expected_idr"),
+	CONSTRAINT "pos_shift_counts_counts_check" CHECK (jsonb_typeof("pos_shift_counts"."counts") = 'array')
+);
+--> statement-breakpoint
+CREATE TABLE "pos_shifts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"device_id" uuid NOT NULL,
+	"cashier_id" text NOT NULL,
+	"business_date" date NOT NULL,
+	"status" varchar(10) NOT NULL,
+	"opened_at" timestamp with time zone NOT NULL,
+	"opening_float_idr" bigint NOT NULL,
+	"cash_sales_idr" bigint DEFAULT 0 NOT NULL,
+	"cash_refunds_idr" bigint DEFAULT 0 NOT NULL,
+	"cash_in_idr" bigint DEFAULT 0 NOT NULL,
+	"cash_out_idr" bigint DEFAULT 0 NOT NULL,
+	"cash_drop_idr" bigint DEFAULT 0 NOT NULL,
+	"expected_idr" bigint,
+	"counted_idr" bigint,
+	"variance_idr" bigint,
+	"variance_note" varchar(500),
+	"counts" jsonb,
+	"count_id" uuid,
+	"approved_by" text,
+	"approval_request_id" uuid,
+	"approval_override_id" uuid,
+	"approved_at" timestamp with time zone,
+	"closed_at" timestamp with time zone,
+	"closed_by" text,
+	"open_key" varchar(100) NOT NULL,
+	"open_fingerprint" varchar(64) NOT NULL,
+	"close_key" varchar(100),
+	"close_fingerprint" varchar(64),
+	"version" integer DEFAULT 1 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pos_shifts_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "pos_shifts_open_key" UNIQUE("tenant_id","outlet_id","open_key"),
+	CONSTRAINT "pos_shifts_status_check" CHECK ("pos_shifts"."status" IN ('open', 'closed')),
+	CONSTRAINT "pos_shifts_amounts_check" CHECK ("pos_shifts"."opening_float_idr" >= 0 AND "pos_shifts"."cash_sales_idr" >= 0
+        AND "pos_shifts"."cash_refunds_idr" >= 0 AND "pos_shifts"."cash_in_idr" >= 0
+        AND "pos_shifts"."cash_out_idr" >= 0 AND "pos_shifts"."cash_drop_idr" >= 0
+        AND ("pos_shifts"."expected_idr" IS NULL OR "pos_shifts"."expected_idr" >= 0)
+        AND ("pos_shifts"."counted_idr" IS NULL OR "pos_shifts"."counted_idr" >= 0)),
+	CONSTRAINT "pos_shifts_open_check" CHECK ("pos_shifts"."status" <> 'open' OR ("pos_shifts"."expected_idr" IS NULL
+        AND "pos_shifts"."counted_idr" IS NULL AND "pos_shifts"."variance_idr" IS NULL
+        AND "pos_shifts"."variance_note" IS NULL AND "pos_shifts"."counts" IS NULL
+        AND "pos_shifts"."approved_by" IS NULL AND "pos_shifts"."approval_request_id" IS NULL
+        AND "pos_shifts"."approval_override_id" IS NULL AND "pos_shifts"."approved_at" IS NULL
+        AND "pos_shifts"."closed_at" IS NULL AND "pos_shifts"."closed_by" IS NULL
+        AND "pos_shifts"."close_key" IS NULL AND "pos_shifts"."close_fingerprint" IS NULL
+        AND "pos_shifts"."count_id" IS NULL)),
+	CONSTRAINT "pos_shifts_closed_check" CHECK ("pos_shifts"."status" <> 'closed' OR ("pos_shifts"."expected_idr" IS NOT NULL
+        AND "pos_shifts"."counted_idr" IS NOT NULL AND "pos_shifts"."variance_idr" IS NOT NULL
+        AND "pos_shifts"."counts" IS NOT NULL
+        AND "pos_shifts"."approved_by" IS NOT NULL AND "pos_shifts"."approval_request_id" IS NOT NULL
+        AND "pos_shifts"."approval_override_id" IS NOT NULL AND "pos_shifts"."approved_at" IS NOT NULL
+        AND "pos_shifts"."closed_at" IS NOT NULL AND "pos_shifts"."closed_by" IS NOT NULL
+        AND "pos_shifts"."close_key" IS NOT NULL AND "pos_shifts"."close_fingerprint" IS NOT NULL
+        AND "pos_shifts"."expected_idr" = "pos_shifts"."opening_float_idr" + "pos_shifts"."cash_sales_idr"
+          - "pos_shifts"."cash_refunds_idr" + "pos_shifts"."cash_in_idr" - "pos_shifts"."cash_out_idr"
+          - "pos_shifts"."cash_drop_idr"
+        AND "pos_shifts"."variance_idr" = "pos_shifts"."counted_idr" - "pos_shifts"."expected_idr"
+        AND ("pos_shifts"."variance_idr" = 0 OR "pos_shifts"."variance_note" IS NOT NULL))),
+	CONSTRAINT "pos_shifts_closed_count_check" CHECK ("pos_shifts"."status" <> 'closed' OR "pos_shifts"."count_id" IS NOT NULL),
+	CONSTRAINT "pos_shifts_approver_check" CHECK ("pos_shifts"."approved_by" IS NULL OR lower("pos_shifts"."approved_by") <> lower("pos_shifts"."cashier_id"))
+);
+--> statement-breakpoint
+ALTER TABLE "pos_overrides" DROP CONSTRAINT "pos_overrides_action_check";--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD COLUMN "shift_id" uuid;--> statement-breakpoint
+ALTER TABLE "pos_order_tenders" ADD COLUMN "shift_id" uuid;--> statement-breakpoint
+ALTER TABLE "pos_order_voids" ADD COLUMN "shift_id" uuid;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_recorded_by_user_id_fk" FOREIGN KEY ("recorded_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_approved_by_user_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cash_movements" ADD CONSTRAINT "cash_movements_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_daily_closes" ADD CONSTRAINT "pos_daily_closes_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_daily_closes" ADD CONSTRAINT "pos_daily_closes_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_daily_closes" ADD CONSTRAINT "pos_daily_closes_closed_by_user_id_fk" FOREIGN KEY ("closed_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_daily_closes" ADD CONSTRAINT "pos_daily_closes_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shift_counts" ADD CONSTRAINT "pos_shift_counts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shift_counts" ADD CONSTRAINT "pos_shift_counts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shift_counts" ADD CONSTRAINT "pos_shift_counts_submitted_by_user_id_fk" FOREIGN KEY ("submitted_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shift_counts" ADD CONSTRAINT "pos_shift_counts_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shift_counts" ADD CONSTRAINT "pos_shift_counts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_cashier_id_user_id_fk" FOREIGN KEY ("cashier_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_approved_by_user_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_closed_by_user_id_fk" FOREIGN KEY ("closed_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_shifts" ADD CONSTRAINT "pos_shifts_count_fk" FOREIGN KEY ("tenant_id","count_id") REFERENCES "public"."pos_shift_counts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "cash_movements_shift_idx" ON "cash_movements" USING btree ("tenant_id","shift_id","recorded_at");--> statement-breakpoint
+CREATE INDEX "pos_shift_counts_shift_idx" ON "pos_shift_counts" USING btree ("tenant_id","shift_id","sequence");--> statement-breakpoint
+CREATE UNIQUE INDEX "pos_shifts_open_device_key" ON "pos_shifts" USING btree ("tenant_id","outlet_id","device_id") WHERE "pos_shifts"."status" = 'open';--> statement-breakpoint
+CREATE UNIQUE INDEX "pos_shifts_open_cashier_key" ON "pos_shifts" USING btree ("tenant_id","outlet_id","cashier_id") WHERE "pos_shifts"."status" = 'open';--> statement-breakpoint
+CREATE UNIQUE INDEX "pos_shifts_approval_override_key" ON "pos_shifts" USING btree ("tenant_id","approval_override_id") WHERE "pos_shifts"."approval_override_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "pos_shifts_outlet_date_idx" ON "pos_shifts" USING btree ("tenant_id","outlet_id","business_date","opened_at");--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_order_tenders" ADD CONSTRAINT "pos_order_tenders_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_order_voids" ADD CONSTRAINT "pos_order_voids_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "pos_overrides" ADD CONSTRAINT "pos_overrides_action_check" CHECK ("pos_overrides"."action" IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction', 'cash_shift_close'));
+--> statement-breakpoint
+ALTER TABLE public.pos_order_refunds FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_voids FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
