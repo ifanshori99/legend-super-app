@@ -273,6 +273,8 @@ import { Route as KelolaReportsReservationBookingsRouteImport } from './routes/_
 import { Route as KelolaReportsReservationByZoneRouteImport } from './routes/_kelola/reports.reservation.by-zone'
 import { Route as KelolaReportsReservationNoShowRouteImport } from './routes/_kelola/reports.reservation.no-show'
 import { Route as KelolaReportsReservationPeakHoursRouteImport } from './routes/_kelola/reports.reservation.peak-hours'
+import { Route as KelolaReportsSalesByCategoryRouteImport } from './routes/_kelola/reports.sales.by-category'
+import { Route as KelolaReportsSalesByDayRouteImport } from './routes/_kelola/reports.sales.by-day'
 import { Route as KelolaReportsSalesDailyRouteImport } from './routes/_kelola/reports.sales.daily'
 import { Route as KelolaReportsSalesDiscountRouteImport } from './routes/_kelola/reports.sales.discount'
 import { Route as KelolaReportsSalesPerChannelRouteImport } from './routes/_kelola/reports.sales.per-channel'
@@ -281,6 +283,7 @@ import { Route as KelolaReportsSalesPerHourRouteImport } from './routes/_kelola/
 import { Route as KelolaReportsSalesPerMenuRouteImport } from './routes/_kelola/reports.sales.per-menu'
 import { Route as KelolaReportsSalesPerPaxRouteImport } from './routes/_kelola/reports.sales.per-pax'
 import { Route as KelolaReportsSalesRefundRouteImport } from './routes/_kelola/reports.sales.refund'
+import { Route as KelolaReportsSalesTargetRouteImport } from './routes/_kelola/reports.sales.target'
 import { Route as KelolaReportsSalesTransactionsRouteImport } from './routes/_kelola/reports.sales.transactions'
 import { Route as KelolaReportsSalesVoidRouteImport } from './routes/_kelola/reports.sales.void'
 import { Route as KelolaReportsTaxByRuleRouteImport } from './routes/_kelola/reports.tax.by-rule'
@@ -1793,6 +1796,17 @@ const KelolaReportsReservationPeakHoursRoute =
     path: '/reports/reservation/peak-hours',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaReportsSalesByCategoryRoute =
+  KelolaReportsSalesByCategoryRouteImport.update({
+    id: '/reports/sales/by-category',
+    path: '/reports/sales/by-category',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsSalesByDayRoute = KelolaReportsSalesByDayRouteImport.update({
+  id: '/reports/sales/by-day',
+  path: '/reports/sales/by-day',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaReportsSalesDailyRoute = KelolaReportsSalesDailyRouteImport.update({
   id: '/reports/sales/daily',
   path: '/reports/sales/daily',
@@ -1838,6 +1852,12 @@ const KelolaReportsSalesRefundRoute =
   KelolaReportsSalesRefundRouteImport.update({
     id: '/reports/sales/refund',
     path: '/reports/sales/refund',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaReportsSalesTargetRoute =
+  KelolaReportsSalesTargetRouteImport.update({
+    id: '/reports/sales/target',
+    path: '/reports/sales/target',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaReportsSalesTransactionsRoute =
@@ -2340,6 +2360,8 @@ export interface FileRoutesByFullPath {
   '/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
   '/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
   '/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -2348,6 +2370,7 @@ export interface FileRoutesByFullPath {
   '/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
   '/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
@@ -2647,6 +2670,8 @@ export interface FileRoutesByTo {
   '/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
   '/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
   '/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -2655,6 +2680,7 @@ export interface FileRoutesByTo {
   '/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
   '/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
@@ -2968,6 +2994,8 @@ export interface FileRoutesById {
   '/_kelola/reports/reservation/by-zone': typeof KelolaReportsReservationByZoneRoute
   '/_kelola/reports/reservation/no-show': typeof KelolaReportsReservationNoShowRoute
   '/_kelola/reports/reservation/peak-hours': typeof KelolaReportsReservationPeakHoursRoute
+  '/_kelola/reports/sales/by-category': typeof KelolaReportsSalesByCategoryRoute
+  '/_kelola/reports/sales/by-day': typeof KelolaReportsSalesByDayRoute
   '/_kelola/reports/sales/daily': typeof KelolaReportsSalesDailyRoute
   '/_kelola/reports/sales/discount': typeof KelolaReportsSalesDiscountRoute
   '/_kelola/reports/sales/per-channel': typeof KelolaReportsSalesPerChannelRoute
@@ -2976,6 +3004,7 @@ export interface FileRoutesById {
   '/_kelola/reports/sales/per-menu': typeof KelolaReportsSalesPerMenuRoute
   '/_kelola/reports/sales/per-pax': typeof KelolaReportsSalesPerPaxRoute
   '/_kelola/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
+  '/_kelola/reports/sales/target': typeof KelolaReportsSalesTargetRoute
   '/_kelola/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/_kelola/reports/sales/void': typeof KelolaReportsSalesVoidRoute
   '/_kelola/reports/tax/by-rule': typeof KelolaReportsTaxByRuleRoute
@@ -3280,6 +3309,8 @@ export interface FileRouteTypes {
     | '/reports/reservation/by-zone'
     | '/reports/reservation/no-show'
     | '/reports/reservation/peak-hours'
+    | '/reports/sales/by-category'
+    | '/reports/sales/by-day'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
     | '/reports/sales/per-channel'
@@ -3288,6 +3319,7 @@ export interface FileRouteTypes {
     | '/reports/sales/per-menu'
     | '/reports/sales/per-pax'
     | '/reports/sales/refund'
+    | '/reports/sales/target'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
     | '/reports/tax/by-rule'
@@ -3587,6 +3619,8 @@ export interface FileRouteTypes {
     | '/reports/reservation/by-zone'
     | '/reports/reservation/no-show'
     | '/reports/reservation/peak-hours'
+    | '/reports/sales/by-category'
+    | '/reports/sales/by-day'
     | '/reports/sales/daily'
     | '/reports/sales/discount'
     | '/reports/sales/per-channel'
@@ -3595,6 +3629,7 @@ export interface FileRouteTypes {
     | '/reports/sales/per-menu'
     | '/reports/sales/per-pax'
     | '/reports/sales/refund'
+    | '/reports/sales/target'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
     | '/reports/tax/by-rule'
@@ -3907,6 +3942,8 @@ export interface FileRouteTypes {
     | '/_kelola/reports/reservation/by-zone'
     | '/_kelola/reports/reservation/no-show'
     | '/_kelola/reports/reservation/peak-hours'
+    | '/_kelola/reports/sales/by-category'
+    | '/_kelola/reports/sales/by-day'
     | '/_kelola/reports/sales/daily'
     | '/_kelola/reports/sales/discount'
     | '/_kelola/reports/sales/per-channel'
@@ -3915,6 +3952,7 @@ export interface FileRouteTypes {
     | '/_kelola/reports/sales/per-menu'
     | '/_kelola/reports/sales/per-pax'
     | '/_kelola/reports/sales/refund'
+    | '/_kelola/reports/sales/target'
     | '/_kelola/reports/sales/transactions'
     | '/_kelola/reports/sales/void'
     | '/_kelola/reports/tax/by-rule'
@@ -5856,6 +5894,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaReportsReservationPeakHoursRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/reports/sales/by-category': {
+      id: '/_kelola/reports/sales/by-category'
+      path: '/reports/sales/by-category'
+      fullPath: '/reports/sales/by-category'
+      preLoaderRoute: typeof KelolaReportsSalesByCategoryRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/sales/by-day': {
+      id: '/_kelola/reports/sales/by-day'
+      path: '/reports/sales/by-day'
+      fullPath: '/reports/sales/by-day'
+      preLoaderRoute: typeof KelolaReportsSalesByDayRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/sales/daily': {
       id: '/_kelola/reports/sales/daily'
       path: '/reports/sales/daily'
@@ -5910,6 +5962,13 @@ declare module '@tanstack/react-router' {
       path: '/reports/sales/refund'
       fullPath: '/reports/sales/refund'
       preLoaderRoute: typeof KelolaReportsSalesRefundRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/reports/sales/target': {
+      id: '/_kelola/reports/sales/target'
+      path: '/reports/sales/target'
+      fullPath: '/reports/sales/target'
+      preLoaderRoute: typeof KelolaReportsSalesTargetRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/reports/sales/transactions': {
@@ -6534,6 +6593,8 @@ interface KelolaRouteChildren {
   KelolaReportsReservationByZoneRoute: typeof KelolaReportsReservationByZoneRoute
   KelolaReportsReservationNoShowRoute: typeof KelolaReportsReservationNoShowRoute
   KelolaReportsReservationPeakHoursRoute: typeof KelolaReportsReservationPeakHoursRoute
+  KelolaReportsSalesByCategoryRoute: typeof KelolaReportsSalesByCategoryRoute
+  KelolaReportsSalesByDayRoute: typeof KelolaReportsSalesByDayRoute
   KelolaReportsSalesDailyRoute: typeof KelolaReportsSalesDailyRoute
   KelolaReportsSalesDiscountRoute: typeof KelolaReportsSalesDiscountRoute
   KelolaReportsSalesPerChannelRoute: typeof KelolaReportsSalesPerChannelRoute
@@ -6542,6 +6603,7 @@ interface KelolaRouteChildren {
   KelolaReportsSalesPerMenuRoute: typeof KelolaReportsSalesPerMenuRoute
   KelolaReportsSalesPerPaxRoute: typeof KelolaReportsSalesPerPaxRoute
   KelolaReportsSalesRefundRoute: typeof KelolaReportsSalesRefundRoute
+  KelolaReportsSalesTargetRoute: typeof KelolaReportsSalesTargetRoute
   KelolaReportsSalesTransactionsRoute: typeof KelolaReportsSalesTransactionsRoute
   KelolaReportsSalesVoidRoute: typeof KelolaReportsSalesVoidRoute
   KelolaReportsTaxByRuleRoute: typeof KelolaReportsTaxByRuleRoute
@@ -6777,6 +6839,8 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaReportsReservationNoShowRoute: KelolaReportsReservationNoShowRoute,
   KelolaReportsReservationPeakHoursRoute:
     KelolaReportsReservationPeakHoursRoute,
+  KelolaReportsSalesByCategoryRoute: KelolaReportsSalesByCategoryRoute,
+  KelolaReportsSalesByDayRoute: KelolaReportsSalesByDayRoute,
   KelolaReportsSalesDailyRoute: KelolaReportsSalesDailyRoute,
   KelolaReportsSalesDiscountRoute: KelolaReportsSalesDiscountRoute,
   KelolaReportsSalesPerChannelRoute: KelolaReportsSalesPerChannelRoute,
@@ -6785,6 +6849,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaReportsSalesPerMenuRoute: KelolaReportsSalesPerMenuRoute,
   KelolaReportsSalesPerPaxRoute: KelolaReportsSalesPerPaxRoute,
   KelolaReportsSalesRefundRoute: KelolaReportsSalesRefundRoute,
+  KelolaReportsSalesTargetRoute: KelolaReportsSalesTargetRoute,
   KelolaReportsSalesTransactionsRoute: KelolaReportsSalesTransactionsRoute,
   KelolaReportsSalesVoidRoute: KelolaReportsSalesVoidRoute,
   KelolaReportsTaxByRuleRoute: KelolaReportsTaxByRuleRoute,
