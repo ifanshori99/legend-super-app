@@ -449,6 +449,62 @@ describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled 
     expect(await refundRow(refundId)).toEqual(before);
   });
 
+  it("PAY-04 legend-0yd1 the sandbox's flat event (refund_id + payment_id, no payment object) reaches the conflict after 15 minutes", async () => {
+    const { refundId, paymentId } = await seedCompletedRefund(true);
+    const before = await refundRow(refundId);
+
+    const sent = deliver("refund.succeeded", {
+      amount: 30_000,
+      refund_id: `rf_${hex(6)}`,
+      payment_id: paymentId,
+    });
+    await sent.response;
+
+    // Fresh: the refund id may still be storing, so DOIT keeps resending.
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        last_error_code: "REFUND_UNMATCHED",
+      }),
+    ]);
+    expect(await conflictAudits(refundId)).toHaveLength(0);
+
+    await backdate(sent.eventId, 16);
+    await reprocess();
+
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REJECTED_CONFLICT",
+      }),
+    ]);
+    expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
+    expect(await refundRow(refundId)).toEqual(before);
+  });
+
+  it("PAY-04 legend-0yd1 a flat event naming another payment_id never reaches the settled refund", async () => {
+    const { refundId } = await seedCompletedRefund(true);
+    const before = await refundRow(refundId);
+
+    const sent = deliver("refund.succeeded", {
+      amount: 30_000,
+      refund_id: `rf_${hex(6)}`,
+      payment_id: `dp_${hex(8)}`,
+    });
+    await sent.response;
+    await backdate(sent.eventId, 16);
+    await reprocess();
+
+    expect(await eventRows(sent.eventId)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFUND_UNMATCHED",
+      }),
+    ]);
+    expect(await conflictAudits(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toEqual(before);
+  });
+
   it("PAY-04 when the bill has another non-failed refund the fallback is ambiguous: no conflict on the settled refund", async () => {
     const { refundId, intentId, paymentId } = await seedCompletedRefund(true);
     const otherId = await seedApprovedRefundOn(intentId);

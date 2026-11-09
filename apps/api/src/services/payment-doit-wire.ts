@@ -400,7 +400,26 @@ const REFUND_SUCCEEDED_STATUSES = [
 ];
 const REFUND_PENDING_STATUSES = ["pending", "processing", "requested"];
 
-/** Loose reading of the 2xx answer of `POST …/refunds`. */
+const CANONICAL_INTEGER = /^(0|[1-9][0-9]{0,15})$/;
+
+/** A canonical non-negative integer string ("4000") as a number; any other
+ * string (decimals, signs, padding, unsafe size) is undefined (legend-0yd1). */
+export function parseDoitIntegerString(value: string): number | undefined {
+  if (!CANONICAL_INTEGER.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+/** A refund amount as DOIT sends it: a number on create (201), a canonical
+ * integer string on an idempotent replay (200, legend-0yd1). Anything else
+ * (decimals, signs, padding, other types) is unreadable: undefined. */
+function refundAmount(value: unknown): number | undefined {
+  if (typeof value === "number") return value;
+  return typeof value === "string" ? parseDoitIntegerString(value) : undefined;
+}
+
+/** Loose reading of the 2xx answer of `POST …/refunds`. Extra fields (the
+ * replay adds `idempotency_key`, `provider_ref`, `created_at`) are ignored. */
 export function parseDoitRefundAnswer(
   payload: unknown,
   expected: {
@@ -414,10 +433,12 @@ export function parseDoitRefundAnswer(
   if (typeof payload !== "object" || payload === null || Array.isArray(payload))
     throw unrecognized();
   const body = payload as Record<string, unknown>;
-  const { id, status, amount, reference } = body;
+  const { id, status, reference } = body;
   if (typeof id !== "string" || id === "" || id.length > 100)
     throw unrecognized();
-  if (amount !== undefined && amount !== expected.amountIdr)
+  const amount =
+    body.amount === undefined ? undefined : refundAmount(body.amount);
+  if (body.amount !== undefined && amount !== expected.amountIdr)
     throw unrecognized();
   // The payment object (the refund moved it to `refunded`).
   if (id === expected.paymentProviderRef) {
@@ -426,7 +447,12 @@ export function parseDoitRefundAnswer(
       return { status: "succeeded", providerRef: id };
     throw unrecognized();
   }
-  // A refund object.
+  // A refund object. When it names its payment, that must be ours.
+  if (
+    typeof body.payment_id === "string" &&
+    body.payment_id !== expected.paymentProviderRef
+  )
+    throw unrecognized();
   if (typeof status !== "string") throw unrecognized();
   if (REFUND_SUCCEEDED_STATUSES.includes(status))
     return { status: "succeeded", providerRef: id };

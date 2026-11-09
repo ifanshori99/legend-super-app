@@ -175,3 +175,44 @@ Semua perubahan di area uang masuk review architect dan second opinion (aturan d
 5. Hapus `DOIT_REFUNDS_ENABLED=true` dari perintah atau env yang dipakai.
 6. Hentikan API dan worker. Jalankan `pnpm db:down` bila database tidak dipakai lagi (volume tetap disimpan).
 7. Pastikan `docs/qa/evidence/doit-sandbox/` hanya berisi versi tersensor yang akan di-commit.
+
+## 9. Hasil uji sandbox 9 Nov 2026
+
+Bukti tersensor: `docs/qa/evidence/doit-sandbox/0yd1-results.redacted.json`. Uji dilakukan di host sandbox DOIT dengan kunci `pb_test_`.
+
+| #   | Yang dicek                                             | Hasil | Catatan                                                                                                                                                                                    |
+| --- | ------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Respons POST refund                                    | Lulus | 201, sinkron. `id` berprefiks `rf_`, `status` `succeeded`, `amount` berupa angka.                                                                                                          |
+| 2   | Replay dengan kunci dan body sama                      | Lulus | Replay mengembalikan refund yang sama, tanpa refund ganda. Namun kode HTTP 200 dan bentuk body berbeda: `amount` berupa string `"4000"`.                                                   |
+| 3   | Angka `amount` dan `total_amount`                      | Lulus | `amount` refund sama dengan yang dikirim. Refund tidak memuat `total_amount`.                                                                                                              |
+| 4   | Status payment setelah refund                          | Gagal | Refund penuh: status `refunded`, `amount` sama dengan jumlah awal. Refund parsial: status tetap `paid`, tidak ada field jumlah yang direfund.                                              |
+| 5   | Webhook `refund.succeeded`                             | Gagal | Data webhook flat (`refund_id`, `amount`, `payment_id`), tanpa objek refund dan tanpa `idempotency_key`. Kode saat ini tidak mencocokkan event ini, sehingga statusnya `REFUND_UNMATCHED`. |
+| 6   | Webhook `refund.failed`                                | Belum | Tidak bisa dipicu di sandbox. Tidak ada skenario yang terdokumentasi.                                                                                                                      |
+| 7   | Finalitas `refund.failed`                              | Belum | Perlu jawaban tertulis dari DOIT.                                                                                                                                                          |
+| 8   | `502 provider_refund_failed` berarti uang belum keluar | Belum | Perlu jawaban tertulis dari DOIT. Skenario 502 belum dipastikan muncul di sandbox.                                                                                                         |
+| 9   | Masa retensi idempotency key                           | Belum | Perlu jawaban tertulis dari DOIT.                                                                                                                                                          |
+
+Catatan tambahan:
+
+- Event `payment.paid` datang dengan tanda tangan valid. `data` berisi objek payment lengkap, dan `reference` berisi referensi merchant.
+- Event `webhook.test` valid.
+- Tombol "Webhook test" di portal bisa mengirim tanda tangan yang salah. Satu kiriman tercatat `SIGNATURE_INVALID`.
+
+### Perubahan kode yang dibutuhkan
+
+- Parser webhook refund membaca `refund_id`, `amount`, dan `payment_id` dari level flat `data`.
+- `parseDoitRefundAnswer` menerima `amount` berupa string angka pada replay, dengan syarat sama dengan `amountIdr`.
+- Fallback legend-xd2q mencocokkan payment lewat `payment_id` bila objek payment tidak ada.
+
+### Temuan risiko
+
+- Sandbox DOIT tidak membatasi total refund parsial kumulatif. Pada payment 10000, refund 4000 dan 6000 disusul refund 1000 tetap diterima (201). Legend wajib membatasi jumlah refund kumulatif sendiri.
+- Kunci idempotency yang dipakai ulang dengan body berbeda mengembalikan refund asli, bukan error. Legend tidak boleh mengandalkan penolakan dari DOIT.
+- Status payment tetap `paid` setelah refund parsial. Pengecekan status payment tidak bisa memastikan refund parsial. Sudah dicatat di legend-17ml.
+
+### Pertanyaan tertulis ke DOIT
+
+1. Item 7: apakah `refund.failed` bersifat final, atau bisa berubah menjadi `succeeded`? Jika bisa, apa aturan retry-nya?
+2. Item 8: apakah `502 provider_refund_failed` berarti uang belum keluar?
+3. Item 9: berapa lama idempotency key disimpan DOIT?
+4. Apakah production juga tidak membatasi total refund parsial kumulatif? Jika ada batas, berapa dan bagaimana aturannya?

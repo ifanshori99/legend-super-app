@@ -685,17 +685,28 @@ async function findRefundTarget(
  * legend-xd2q: a `refund.succeeded` that names no known refund may be for a
  * refund finance settled by hand (no provider ref, so the `refund_id` and
  * payment-object paths cannot find it): the customer would be paid twice. Only
- * through the event's payment object, and only when the intent's one live
- * (not `failed`) refund is a `completed` refund marked SETTLED_OUTSIDE_PROVIDER
- * (another live refund may be the one the event is about); it is then
- * reported as a provider conflict, never changed.
+ * through the payment the event names (its payment object, or the flat
+ * `payment_id` DOIT really sends, legend-0yd1), and only when the intent's one
+ * live (not `failed`) refund is a `completed` refund marked
+ * SETTLED_OUTSIDE_PROVIDER (another live refund may be the one the event is
+ * about); it is then reported as a provider conflict, never changed.
  */
 async function findSettledOutsideTarget(
   context: ScopedTenantContext,
-  payment: NonNullable<ReturnType<typeof readDoitRefundFacts>["payment"]>,
+  facts: DoitRefundFacts,
 ): Promise<RefundTarget> {
-  const reference = uuidSchema.safeParse(payment.reference);
-  if (!reference.success) return { kind: "none" };
+  const { payment, paymentId } = facts;
+  // Both named and not the same payment: never a guess.
+  if (payment && paymentId !== undefined && payment.id !== paymentId)
+    return { kind: "none" };
+  const providerRef = payment?.id ?? paymentId;
+  if (providerRef === undefined) return { kind: "none" };
+  let intentId: string | undefined;
+  if (payment) {
+    const reference = uuidSchema.safeParse(payment.reference);
+    if (!reference.success) return { kind: "none" };
+    intentId = reference.data;
+  }
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx): Promise<RefundTarget> => {
     const rows = await tx
@@ -711,9 +722,9 @@ async function findSettledOutsideTarget(
       .where(
         and(
           eq(paymentRefunds.tenantId, tenantId),
-          eq(paymentIntents.id, reference.data),
+          intentId === undefined ? undefined : eq(paymentIntents.id, intentId),
           eq(paymentIntents.provider, PROVIDER),
-          eq(paymentIntents.providerRef, payment.id),
+          eq(paymentIntents.providerRef, providerRef),
           ne(paymentRefunds.status, "failed"),
         ),
       )
@@ -764,21 +775,26 @@ async function refundSourcePayment(
   });
 }
 
-/** The payment object of the event (when it carries one) must be the payment
- * the refund pays back: the intent's reference always, the provider payment
- * id when known (see `refundSourcePayment`). */
+/** The payment the event names (its payment object or flat `payment_id`,
+ * when it carries one) must be the payment the refund pays back: the intent's
+ * reference always, the provider payment id when known (see
+ * `refundSourcePayment`). */
 async function paymentMatchesRefund(
   context: ScopedTenantContext,
   facts: DoitRefundFacts,
   refund: typeof paymentRefunds.$inferSelect,
   intent: PaymentIntentRow,
 ): Promise<boolean> {
-  if (!facts.payment) return true;
-  if (facts.payment.reference !== intent.id) return false;
+  const named = [facts.payment?.id, facts.paymentId].filter(
+    (id): id is string => id !== undefined,
+  );
+  if (named.length === 0) return true;
+  if (facts.payment && facts.payment.reference !== intent.id) return false;
   const source = await refundSourcePayment(context, refund, intent);
   return (
     source === null ||
-    (source.provider === PROVIDER && source.providerRef === facts.payment.id)
+    (source.provider === PROVIDER &&
+      named.every((id) => id === source.providerRef))
   );
 }
 
@@ -861,9 +877,9 @@ async function processRefundEvent(
     const settledOutside =
       target.kind === "none" &&
       status === "succeeded" &&
-      facts.payment &&
+      (facts.payment || facts.paymentId) &&
       (match.kind === "payment_object" || retryWindowOver)
-        ? await findSettledOutsideTarget(context, facts.payment)
+        ? await findSettledOutsideTarget(context, facts)
         : null;
     if (settledOutside?.kind === "found") target = settledOutside;
     const viaSettled = settledOutside?.kind === "found";
