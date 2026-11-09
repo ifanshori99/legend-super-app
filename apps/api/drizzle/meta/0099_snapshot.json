@@ -39462,7 +39462,7 @@
         },
         "cash_movements_reason_check": {
           "name": "cash_movements_reason_check",
-          "value": "char_length(btrim(\"cash_movements\".\"reason_note\")) >= 4"
+          "value": "char_length(btrim(\"cash_movements\".\"reason_note\", E' \\t\\r\\n')) >= 4"
         }
       },
       "isRLSEnabled": false

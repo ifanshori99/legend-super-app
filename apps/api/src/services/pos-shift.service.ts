@@ -476,9 +476,10 @@ export async function recordCashMovement(
 ): Promise<PosCashMovement> {
   const { idempotencyKey, ...rest } = input;
   // Spaces alone are not a reason: trim before the length check (the contract
-  // schema trims too; this keeps direct callers honest).
+  // schema trims too; this keeps direct callers honest). Length is in code
+  // points, as the database check counts them ("😀😀" is 2, not 4).
   const reasonNote = input.reasonNote.trim();
-  if (reasonNote.length < MIN_REASON_LENGTH)
+  if (Array.from(reasonNote).length < MIN_REASON_LENGTH)
     throw new CoreError(
       "VALIDATION_ERROR",
       "Alasan kas minimal 4 karakter (tanpa spasi di awal dan akhir).",
@@ -527,9 +528,11 @@ export async function recordCashMovement(
         );
       return movementDto(replay);
     }
-    // A refused cash out is replayed by key too (legend-uw47): the same key
-    // and body get the same refusal, with no new audit row, so a retry does
-    // not use up the shift's refusal allowance.
+    // A refused cash out is remembered by key (legend-uw47) so a retry does
+    // not use up the shift's refusal allowance. It is not frozen: the checks
+    // below run again (the cashier may have added cash since), and a refusal
+    // that repeats writes no new audit row and no new refusal row, since the
+    // attempt is already counted. Another body under the key is a conflict.
     const [refusedBefore] = await tx
       .select()
       .from(cashMovementRefusals)
@@ -540,19 +543,16 @@ export async function recordCashMovement(
           eq(cashMovementRefusals.idempotencyKey, idempotencyKey),
         ),
       );
-    if (refusedBefore) {
-      if (refusedBefore.requestFingerprint !== fingerprint)
-        throw new CoreError(
-          "IDEMPOTENCY_KEY_REUSED",
-          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
-        );
-      return { refused: true as const };
-    }
+    if (refusedBefore && refusedBefore.requestFingerprint !== fingerprint)
+      throw new CoreError(
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+      );
     assertCashMovementAllowed(shift);
     // legend-1hza: a cash in must keep every drawer figure a safe integer
     // (count and close sum opening + sales + cash in with sumIdr, which
-    // throws past the bound). Checked in bigint before the insert, so the
-    // shift can never be pushed into a state it cannot count or close.
+    // throws past the bound). Checked in bigint before the insert. This bounds
+    // cash in only: cash tenders (pos-order-payment.ts) are not bounded here.
     if (input.type === "cash_in") {
       const live = await computeShiftAggregates(tx, shift);
       const inflow =
@@ -598,6 +598,7 @@ export async function recordCashMovement(
         (refusals?.n ?? 0) >= MAX_CASH_OUT_REFUSALS ||
         input.amountIdr > expected
       ) {
+        if (refusedBefore) return { refused: true as const };
         await auditShift(
           tx,
           context,

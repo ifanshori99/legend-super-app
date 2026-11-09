@@ -324,12 +324,13 @@ export const cashMovements = pgTable(
       sql`${table.type} IN ('cash_in', 'cash_out', 'drop')`,
     ),
     check("cash_movements_amount_check", sql`${table.amountIdr} > 0`),
-    // The service trims the note first; btrim keeps spaces alone out even for
-    // a writer that skips it (legend-vor4). Migration 0099 adds it NOT VALID
-    // so rows written before it are not re-checked.
+    // The service trims the note first; btrim keeps spaces, tabs and newlines
+    // alone out even for a writer that skips it (legend-vor4). char_length
+    // counts code points, as the service does. Migration 0099 adds it NOT
+    // VALID so rows written before it are not re-checked.
     check(
       "cash_movements_reason_check",
-      sql`char_length(btrim(${table.reasonNote})) >= 4`,
+      sql`char_length(btrim(${table.reasonNote}, E' \\t\\r\\n')) >= 4`,
     ),
   ],
 );
