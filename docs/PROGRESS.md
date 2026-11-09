@@ -1080,3 +1080,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Sudah: legend-d60m `d73a19a4` (satu bentuk `order_issues`, dimiliki kontrak kitchen, qr-order re-export), legend-tsp5 `cb63b7d9` (GET station-summary), legend-4b5 `2a75a8c4` + perbaikan review `6bbcb6cc` (tabel `order_issues`, migrasi 0180 idx 167 when 1794259000000, route report/list), legend-rutl `3bf87664` (tableLabel + channel di tiket), legend-0eq7 `3795a148` (proyeksi nama order/item/staf).
 - Diparkir: legend-44jm (tidak ada tabel capacity rules di API) jadi kartu legend-w4nq4. Baru: legend-uyw0v (alur persetujuan refund manual; kini 422), legend-o8quo (validasi voucher/replacement), legend-xz3ll (UI).
 - Bukti: API 10 file 142 tes lulus, root 6 file 86 tes lulus, tsc shared/api/web bersih, db:generate kosong dua kali. Review K: 1 architect, 4 temuan nyata dan 2 lebih ringan, dibetulkan (kecuali voucher/replacement jadi kartu).
+
+## WS-04 KDS capacity rules (engineer, cabang `ws/kds-capacity-rules` di atas 038d8201, 2026-11-10)
+
+- Sudah: legend-w4nq4 `dc6f2c43` (tabel `kitchen_capacity_rules`, migrasi 0184 idx 168 when 1794263000000 prevId 28dfdeab, service, GET dan PUT, izin `kds.station.manage`), legend-44jm `f7991157` (test dan komentar route GET).
+- Bukti: API 5 file 112 tes lulus, tsc shared/api/web bersih, db:generate kosong dua kali, review S: tanpa temuan nyata (catatan kecil: CHECK DB tidak mengulang batas atas capacity_points dan near_capacity_bp).
+- Bagian 1 (bukti gagal-dulu untuk 6bbcb6cc, tsp5, rutl): tes comp ganda diperkuat jadi 8 paralel (`038d8201`).
