@@ -406,7 +406,10 @@ export async function saveBrandWebsiteContent(
         // Content stays out of the log: it can be long and is public once live.
         maskedChanges: {
           before: previous
-            ? { outletId: previous.outletId, state: state(previous.publishedAt) }
+            ? {
+                outletId: previous.outletId,
+                state: state(previous.publishedAt),
+              }
             : null,
           after: { outletId: row.outletId, state: state(row.publishedAt) },
         },

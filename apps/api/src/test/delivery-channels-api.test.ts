@@ -17,7 +17,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import type { DeliveryChannel, DeliveryRequest } from "@starter/shared/adapters";
+import type {
+  DeliveryChannel,
+  DeliveryRequest,
+} from "@starter/shared/adapters";
 import { itemRestoredEvent, itemSoldOutEvent } from "@starter/shared/menu";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -52,9 +55,7 @@ const spy: DeliveryChannel = {
   },
 };
 const actionsOf = (platform: string) =>
-  calls
-    .filter((call) => call.channel === platform)
-    .map((call) => call.action);
+  calls.filter((call) => call.channel === platform).map((call) => call.action);
 
 const base = `/api/outlets/${seededOutletA}/delivery-channels`;
 const tenantContext: ScopedTenantContext = establishScopedTenantContext(
@@ -77,7 +78,12 @@ let cashier: Awaited<ReturnType<typeof staffWithRole>>;
 let outletManager: Awaited<ReturnType<typeof staffWithRole>>;
 
 async function asOwner<T>(
-  run: (query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>) => Promise<T>,
+  run: (
+    query: (
+      sql: string,
+      params?: unknown[],
+    ) => Promise<{ rows: Record<string, unknown>[] }>,
+  ) => Promise<T>,
 ): Promise<T> {
   const client = await owner.connect();
   try {
@@ -210,7 +216,9 @@ afterAll(async () => {
     await q("DELETE FROM delivery_channels WHERE tenant_id = $1", [
       seededTenantId,
     ]);
-    await q("DELETE FROM item_availability WHERE menu_item_id = $1", [ids.item]);
+    await q("DELETE FROM item_availability WHERE menu_item_id = $1", [
+      ids.item,
+    ]);
     await q("DELETE FROM price_list_items WHERE price_list_id = $1", [
       ids.priceList,
     ]);
@@ -455,8 +463,14 @@ describe("delivery sync consumer", () => {
   });
 
   it("never fails the event when the platform refuses an 86: open channel error, closed channel stale", async () => {
-    await setChannel("gofood", "is_open = true, sync_status = 'ok', sync_error = NULL");
-    await setChannel("grabfood", "is_open = false, sync_status = 'ok', sync_error = NULL");
+    await setChannel(
+      "gofood",
+      "is_open = true, sync_status = 'ok', sync_error = NULL",
+    );
+    await setChannel(
+      "grabfood",
+      "is_open = false, sync_status = 'ok', sync_error = NULL",
+    );
     const soldOut = menuEvent(itemSoldOutEvent, {
       itemId: ids.item,
       availabilityId: randomUUID(),
@@ -481,7 +495,10 @@ describe("delivery sync consumer", () => {
   });
 
   it("marks or pushes the channels of every outlet of the brand on a menu change", async () => {
-    await setChannel("gofood", "is_open = true, sync_status = 'ok', sync_error = NULL, last_synced_at = now()");
+    await setChannel(
+      "gofood",
+      "is_open = true, sync_status = 'ok', sync_error = NULL, last_synced_at = now()",
+    );
     await asOwner((q) =>
       q(
         "INSERT INTO delivery_channels (tenant_id, outlet_id, platform, store_external_id, is_open) VALUES ($1, $2, 'gofood', 'd2-gofood-store-b', true)",
@@ -516,7 +533,9 @@ describe("delivery sync consumer", () => {
       expect(calls.map((call) => [call.outletId, call.action])).toEqual([
         [seededOutletB, "sync_menu"],
       ]);
-      expect((await channelRow("gofood", seededOutletB)).sync_status).toBe("ok");
+      expect((await channelRow("gofood", seededOutletB)).sync_status).toBe(
+        "ok",
+      );
     } finally {
       await asOwner((q) =>
         q(

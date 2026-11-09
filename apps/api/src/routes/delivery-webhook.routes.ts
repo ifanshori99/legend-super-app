@@ -97,9 +97,14 @@ export function createDeliveryWebhookRouter(options?: {
         "Isi webhook pesanan platform tidak valid.",
       );
     // The signed instant orders deliveries of one order (older ones ignored).
-    const result = await ingestDeliveryWebhook(platform.data, payload.data, raw, {
-      signedAt: new Date(signedAt * 1000),
-    });
+    const result = await ingestDeliveryWebhook(
+      platform.data,
+      payload.data,
+      raw,
+      {
+        signedAt: new Date(signedAt * 1000),
+      },
+    );
     res.json({ data: result });
   });
 

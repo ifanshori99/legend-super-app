@@ -72,7 +72,9 @@ async function channelsOfOutlets(
         outletIds === "tenant"
           ? undefined
           : inArray(deliveryChannels.outletId, [...outletIds]),
-        platforms ? inArray(deliveryChannels.platform, [...platforms]) : undefined,
+        platforms
+          ? inArray(deliveryChannels.platform, [...platforms])
+          : undefined,
       ),
     )
     .orderBy(deliveryChannels.outletId, deliveryChannels.platform)
@@ -94,7 +96,11 @@ async function writeInSavepoint(
     });
   } catch {
     logger.error(
-      { job: "delivery_sync", channelId: channel.id, platform: channel.platform },
+      {
+        job: "delivery_sync",
+        channelId: channel.id,
+        platform: channel.platform,
+      },
       "delivery channel sync state could not be recorded",
     );
   }
@@ -254,7 +260,13 @@ export async function deliverDeliveryChannelEvent(
     if (!event.outletId) return;
     const platform = deliveryPlatformSchema.safeParse(event.payload.channel);
     if (!platform.success) return;
-    return deliverMenuChange(tx, context, [event.outletId], [platform.data], now);
+    return deliverMenuChange(
+      tx,
+      context,
+      [event.outletId],
+      [platform.data],
+      now,
+    );
   }
   if ((MENU_CHANGE_EVENTS as readonly string[]).includes(event.name)) {
     const outletIds = await outletsOfMenuEvent(tx, context, event);
@@ -288,7 +300,8 @@ export async function syncStaleDeliveryChannels(
         ),
       )
       .for("update");
-    for (const channel of due) await pushDeliveryMenu(tx, context, channel, now);
+    for (const channel of due)
+      await pushDeliveryMenu(tx, context, channel, now);
     return due.length;
   });
 }

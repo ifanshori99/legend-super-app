@@ -43,21 +43,26 @@ deliveryChannelsRouter.get("/", manage, async (req, res) => {
   });
 });
 
-deliveryChannelsRouter.patch("/:platform", manage, jsonBody, async (req, res) => {
-  const { outletId, platform } = setDeliveryChannelState.params.parse(
-    req.params,
-  );
-  const body = setDeliveryChannelState.body.parse(req.body);
-  res.json({
-    data: await channels.setDeliveryChannelState(
-      getScopedTenantContext(req),
-      getAuth(req).user.id,
-      outletId,
-      platform,
-      body,
-    ),
-  });
-});
+deliveryChannelsRouter.patch(
+  "/:platform",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, platform } = setDeliveryChannelState.params.parse(
+      req.params,
+    );
+    const body = setDeliveryChannelState.body.parse(req.body);
+    res.json({
+      data: await channels.setDeliveryChannelState(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        outletId,
+        platform,
+        body,
+      ),
+    });
+  },
+);
 
 // No request body (contract): the menu is read server-side.
 deliveryChannelsRouter.post("/:platform/sync", manage, async (req, res) => {

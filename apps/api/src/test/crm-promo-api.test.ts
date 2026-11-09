@@ -856,7 +856,9 @@ describe("Promotion outletScope allowlist (legend-jh27)", () => {
     const created = await client
       .post("/api/promotions")
       .set(originHeader)
-      .send(itemPromoBody(itemId, { name: "Hanya Event", outletScope: "only" }));
+      .send(
+        itemPromoBody(itemId, { name: "Hanya Event", outletScope: "only" }),
+      );
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const promotionId = created.body.data.id as string;
     createdPromotions.push(promotionId);

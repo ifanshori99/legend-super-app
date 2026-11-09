@@ -28,7 +28,11 @@ import * as deliveryOrders from "../services/delivery-orders.service.ts";
 
 export const deliveryOrdersRouter = Router({ mergeParams: true });
 
-deliveryOrdersRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+deliveryOrdersRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+);
 
 const handle = requireOutletPermission("delivery.order.handle", (req) =>
   String(req.params.outletId ?? ""),
@@ -95,9 +99,8 @@ deliveryOrdersRouter.post(
   handle,
   jsonBody,
   async (req, res) => {
-    const { outletId, deliveryOrderId } = updateDeliveryOrderStatus.params.parse(
-      req.params,
-    );
+    const { outletId, deliveryOrderId } =
+      updateDeliveryOrderStatus.params.parse(req.params);
     const body = updateDeliveryOrderStatus.body.parse(req.body);
     res.json({
       data: await deliveryOrders.updateDeliveryOrderStatus(

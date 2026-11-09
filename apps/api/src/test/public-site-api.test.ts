@@ -539,9 +539,7 @@ describe("staff content endpoints /api/website/brands/:brandId/content", () => {
       .set({ ...originHeader, Host: admin.hostname })
       .send({ content: siteContent("anon", admin.hostname), publish: true });
     expect(put.status).toBe(401);
-    const get = await agent(app)
-      .get(path(admin))
-      .set({ Host: admin.hostname });
+    const get = await agent(app).get(path(admin)).set({ Host: admin.hostname });
     expect(get.status).toBe(401);
   });
 
@@ -577,7 +575,10 @@ describe("staff content endpoints /api/website/brands/:brandId/content", () => {
     const response = await adminStaff.client
       .put(path(alpha))
       .set({ ...originHeader, Host: admin.hostname })
-      .send({ content: siteContent("intruder", alpha.hostname), publish: true });
+      .send({
+        content: siteContent("intruder", alpha.hostname),
+        publish: true,
+      });
     expect([403, 404]).toContain(response.status);
     const site = await getSite(alpha.hostname).expect(200);
     expect(site.body.data.brand.tagline).toBe("Tagline alpha");
@@ -741,7 +742,9 @@ describe("featured outlet and publishability (WS08-S1 review)", () => {
       .set(headers)
       .send({ content: body, publish: true });
     expect(publish.status).toBe(422);
-    expect(publish.body.error.code).toBe("BRAND_WEBSITE_OUTLET_NOT_PUBLISHABLE");
+    expect(publish.body.error.code).toBe(
+      "BRAND_WEBSITE_OUTLET_NOT_PUBLISHABLE",
+    );
     // A draft can still be saved.
     const draft = await adminStaff.client
       .put(path(admin))
