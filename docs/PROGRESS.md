@@ -1008,3 +1008,12 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Idempoten: pickup di `picked_up` dan diantar di tiket yang sudah diantar menjawab 200 tanpa ubah (stempel pertama dipakai). `assigned -> picked_up` ditolak `PICKUP_CALL_NOT_CALLED`; `call` dari `picked_up` ditolak `PICKUP_CALL_CLOSED`.
 - Bukti: `tests/kitchen-contract.test.mjs` 15/15 (3 test baru), tsc shared/api/web lewat heavy bersih, eslint, prettier. Review S: 1 reviewer, 2 temuan dibetulkan (refine deliveredAt tanpa isComplete, helper kode tolak pickup).
 - Belum: mock web (`ws04-expo/mock.ts`) tanpa handler picked-up/delivered dan kode `PICKUP_CALL_CLOSED` (UI belum memakai); event realtime pickup/delivered tidak ada.
+
+## legend-aiksz tabel pickup_calls dan expo_assignments (engineer, cabang `ws/expo-pickup-tables` di atas 4fe23687, 2026-11-09)
+
+- Migrasi `0168_expo_pickup_tables` (`when` 1794247000000). Skema `apps/api/src/db/schema/expo-pickup.ts`, trigger + RLS di `expo-pickup.custom.sql` (sudah ditempel ke migrasi).
+- `pickup_calls`: nomor harian per outlet 1..999, unik `(tenant, outlet, business_date, number)` dan `(tenant, order)`; check status/channel dan `called_at`/`picked_up_at` sesuai status; trigger: status tidak mundur, waktu pertama tetap.
+- `expo_assignments`: satu baris per order saat runner ditugaskan; `runner_id NOT NULL` (diantar selalu punya runner), `delivered_at`/`delivered_by` berpasangan; trigger: baris yang sudah diantar beku dan tidak bisa dihapus.
+- Kedua tabel: `enforce_tenant_rls` + `enforce_outlet_rls`, FK komposit ke orders/outlets ditulis di dalam CREATE TABLE (pola 1, aman untuk owner non-superuser).
+- Bukti: `LEGEND_TEST_FILES` 5 file 80/80 (termasuk `expo-pickup-rls.test.ts` baru, edge-received-events-migration, migration-fk-force-rls), `db:generate` kosong, tsc api lewat heavy, eslint, prettier.
+- Review K: reviewer Opus (1 temuan FK ke tabel FORCE RLS, dibetulkan) + architect. Second-opinion Codex: brief `docs/briefs/238b-second-opinion-expo-pickup-tables.md` (antre).
