@@ -7,6 +7,8 @@ const payload = {
   tenantId: "11111111-1111-4111-8111-111111111111",
   brandId: null,
   deviceId: "22222222-2222-4222-8222-222222222222",
+  // Registry floor (bead legend-165): when the token was minted.
+  issuedAt: 1_700_000_000,
 };
 
 describe("TEN-02 signed device token", () => {
@@ -51,6 +53,28 @@ describe("TEN-02 signed device token", () => {
     ).toString("base64url");
     const signingInput = `dv1.${body}`;
     // Signed with the real key, but the payload version is wrong.
+    const key = createHmac("sha256", process.env.BETTER_AUTH_SECRET ?? "")
+      .update("legend.device-token.v1")
+      .digest();
+    const signature = createHmac("sha256", key)
+      .update(signingInput)
+      .digest("base64url");
+    expect(verifyDeviceToken(`${signingInput}.${signature}`)).toBeNull();
+  });
+
+  it("carries the issuedAt the registry compares with the device's token floor", () => {
+    const token = signDeviceToken({ ...payload, issuedAt: 1_800_000_000 });
+    expect(verifyDeviceToken(token)).toMatchObject({ issuedAt: 1_800_000_000 });
+  });
+
+  it("refuses a correctly signed payload that has no issuedAt", () => {
+    const withoutIssuedAt: Partial<typeof payload> = { ...payload };
+    delete withoutIssuedAt.issuedAt;
+    const body = Buffer.from(
+      JSON.stringify({ ...withoutIssuedAt, expiresAt: 4_000_000_000 }),
+      "utf8",
+    ).toString("base64url");
+    const signingInput = `dv1.${body}`;
     const key = createHmac("sha256", process.env.BETTER_AUTH_SECRET ?? "")
       .update("legend.device-token.v1")
       .digest();

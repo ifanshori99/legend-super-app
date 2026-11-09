@@ -16,9 +16,9 @@
 //   `ETag: "<version>"`; a write may send `If-Match: "<version>"` and gets
 //   412 PRECONDITION_FAILED when the order moved on. Without the header the
 //   contract's `expectedStatus` is the stale-screen guard.
-// - The device id is the signed X-Device-Token's device (same checks as
-//   `deviceIdOf` in device-pin.routes.ts) and null otherwise: a body or header
-//   device id without a valid signature is never trusted.
+// - The device id is the signed `X-Device-Token` (device-id.ts), null without
+//   one: a client-claimed device is never trusted. Cash needs it (the drawer
+//   is per device).
 
 import { Router, type Request, type Response } from "express";
 import { CoreError, userIdSchema, type OutletId } from "@starter/shared/core";
@@ -41,8 +41,6 @@ import {
   voidPosOrderItem,
 } from "@starter/shared/pos";
 import type { PermissionCode } from "@starter/shared/access";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
-import { verifyDeviceToken } from "../lib/device-token.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -50,10 +48,8 @@ import {
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
-import {
-  getTenantContext,
-  requireTenantContext,
-} from "../middleware/tenant.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import { deviceIdOf } from "./device-id.ts";
 import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
@@ -88,24 +84,10 @@ function expectedVersion(req: Request): number | null {
   return Number(match[1]);
 }
 
-/** The signed device id, only when the token names the resolved tenant. */
-function verifiedDeviceId(req: Request): string | null {
-  const tenant = getTenantContext(req);
-  const raw = req.get(DEVICE_TOKEN_HEADER);
-  const payload = raw ? verifyDeviceToken(raw) : null;
-  if (
-    tenant.source !== "device" ||
-    payload === null ||
-    payload.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase()
-  )
-    return null;
-  return payload.deviceId;
-}
-
 function caller(req: Request): PosCaller {
   return {
     userId: userIdSchema.parse(getAuth(req).user.id),
-    deviceId: verifiedDeviceId(req),
+    deviceId: deviceIdOf(req),
     expectedVersion: expectedVersion(req),
   };
 }

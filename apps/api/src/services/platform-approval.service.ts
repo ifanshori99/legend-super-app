@@ -155,9 +155,24 @@ function toDto(row: Row): ApprovalRequest {
   });
 }
 
-/** Inbox view: a pending row past its deadline reads as expired before the sweep. */
-function toView(row: Row, now: Date): ApprovalRequest {
-  return expireApprovalRequest(toDto(row), now);
+/**
+ * Inbox view: a pending row past its deadline reads as expired before the
+ * sweep. A blind cash count (`cash_shift_close`) hides its amount (the
+ * |variance|) from the requester, so the cashier never learns the expected
+ * cash; other viewers (approvers) still see it.
+ */
+function toView(row: Row, now: Date, viewerId?: string): ApprovalRequest {
+  const view = expireApprovalRequest(toDto(row), now);
+  if (
+    row.actionType !== "cash_shift_close" ||
+    viewerId === undefined ||
+    viewerId.toLowerCase() !== row.requestedBy.toLowerCase()
+  )
+    return view;
+  const payload = Object.fromEntries(
+    Object.entries(view.payload).filter(([key]) => key !== "valueIdr"),
+  );
+  return { ...view, amountIdr: null, payload };
 }
 
 function targetOf(outletId: string | null): AccessTarget {
@@ -904,7 +919,7 @@ export async function listApprovalRequests(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map((row) => toView(row, now)),
+      data: page.map((row) => toView(row, now, actorUserId)),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -949,7 +964,7 @@ export async function getApprovalRequest(
         );
       return found;
     });
-    if (row) return toView(row, now);
+    if (row) return toView(row, now, actorUserId);
   }
   throw notFound();
 }

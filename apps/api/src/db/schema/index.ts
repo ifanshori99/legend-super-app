@@ -28,6 +28,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+export * from "./payment-gateway-webhook";
 // WS-01 generic approval requests (legend-y5q).
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
@@ -39,10 +40,15 @@ export * from "./device-pin";
 // WS-03 QR order carts/orders (legend-e2x).
 export * from "./qr-order";
 export * from "./reservation";
+// Guest reservation self-service links (legend-o5gr).
+export * from "./reservation-public";
 export * from "./facility";
 export * from "./hris";
+// WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
+export * from "./hris-leave";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
+export * from "./accounting-journal-requests";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";
 // WS-03 menu import + printable menu (legend-dmi).
@@ -59,3 +65,25 @@ export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
 export * from "./pos-receipt";
+// WS-04 KDS routing + ticket lifecycle (legend-4d5).
+export * from "./kds";
+// WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
+export * from "./purchasing";
+// WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
+export * from "./pos-shift";
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
+export * from "./payroll-pph21-policy";
+// EDC agent framework (legend-apt).
+export * from "./edc";
+// HRIS SOP library, training and announcements (legend-7df1).
+export * from "./hris-sop";
+export * from "./hris-training";
+export * from "./hris-announcement";
+// WS-07 shareholder documents (legend-69yq).
+export * from "./shareholder-documents";
+// WS-06 stock count / stok opname (legend-j5x).
+export * from "./inventory-count";
+// WS-02 device registry + training periods (legend-165).
+export * from "./device";
+// WS-06 inventory -> GL bridge tracking (legend-w1vo).
+export * from "./inventory-gl";
