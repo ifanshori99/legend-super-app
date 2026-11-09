@@ -131,7 +131,9 @@ describe("legend-z6a5 Content-Disposition on signed download", () => {
   });
 
   it("signedStorageUrl omits downloadFileName by default", async () => {
-    const signedGetUrl = vi.fn(async () => "https://storage.example/s");
+    const signedGetUrl = vi.fn<
+      (key: string, options: Record<string, unknown>) => Promise<string>
+    >(async () => "https://storage.example/s");
     await signedStorageUrl({} as never, context, objectId, "original", {
       storage: { signedGetUrl } as never,
       authorize: async () => true,
