@@ -80,6 +80,13 @@ export const fixedAssetSchema = z
     status: z.enum(["active", "fully_depreciated", "disposed"]),
     disposedOn: businessDateSchema.nullable(),
     disposalProceedsIdr: nonNegativeIdr.nullable(),
+    /** Carrying amount: cost − accumulated depreciation (frozen at disposal). */
+    bookValueIdr: nonNegativeIdr,
+    /**
+     * Gain (+) or loss (−) booked at disposal: proceeds − book value. Null
+     * until disposed; equals the `resultIdr` the disposal journal carries.
+     */
+    disposalResultIdr: idrSchema.nullable(),
   })
   .superRefine((asset, ctx) => {
     const issue = (path: string, message: string) =>
@@ -97,6 +104,17 @@ export const fixedAssetSchema = z
       (asset.disposedOn !== null && asset.disposalProceedsIdr !== null)
     )
       issue("disposedOn", "disposal fields are set exactly when disposed");
+    if (asset.bookValueIdr !== asset.costIdr - asset.accumulatedDepreciationIdr)
+      issue("bookValueIdr", "Book value must equal cost − accumulated");
+    const expectedResult =
+      asset.disposalProceedsIdr === null
+        ? null
+        : asset.disposalProceedsIdr - asset.bookValueIdr;
+    if (asset.disposalResultIdr !== expectedResult)
+      issue(
+        "disposalResultIdr",
+        "Disposal result must equal proceeds − book value, and be null until disposed",
+      );
   });
 export type FixedAsset = z.infer<typeof fixedAssetSchema>;
 
@@ -161,6 +179,24 @@ export function depreciationForPeriod(
     (entry) => entry.period === period,
   );
   return (row?.amountIdr ?? 0) as Idr;
+}
+
+/** Derived read-side fields of an asset: book value and disposal result. */
+export function fixedAssetDerivedFields(
+  asset: Pick<
+    FixedAsset,
+    "costIdr" | "accumulatedDepreciationIdr" | "disposalProceedsIdr"
+  >,
+): Pick<FixedAsset, "bookValueIdr" | "disposalResultIdr"> {
+  const bookValueIdr = (asset.costIdr -
+    asset.accumulatedDepreciationIdr) as Idr;
+  return {
+    bookValueIdr,
+    disposalResultIdr:
+      asset.disposalProceedsIdr === null
+        ? null
+        : ((asset.disposalProceedsIdr - bookValueIdr) as Idr),
+  };
 }
 
 /** Gain (+) or loss (−) on disposal: proceeds − carrying amount. */

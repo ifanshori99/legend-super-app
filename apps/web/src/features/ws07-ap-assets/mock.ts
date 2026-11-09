@@ -249,6 +249,8 @@ register(createFixedAsset, ({ body }) => {
     status: "active",
     disposedOn: null,
     disposalProceedsIdr: null,
+    bookValueIdr: body.costIdr,
+    disposalResultIdr: null,
   });
   current.assets.unshift(asset);
   current.created.set(replayKey, asset.id);
@@ -280,6 +282,7 @@ register(disposeFixedAsset, ({ params, body }) => {
     status: "disposed",
     disposedOn: body.disposedOn,
     disposalProceedsIdr: body.proceedsIdr,
+    disposalResultIdr: disposalResultIdr(asset, body.proceedsIdr),
   });
   current.assets = current.assets.map((row) =>
     row.id === next.id ? next : row,
@@ -312,6 +315,7 @@ register(revalueFixedAsset, ({ params, body }) => {
   const next = fixedAssetSchema.parse({
     ...asset,
     accumulatedDepreciationIdr,
+    bookValueIdr: body.newCarryingAmountIdr,
     status:
       accumulatedDepreciationIdr >= depreciableBase
         ? "fully_depreciated"
@@ -411,6 +415,7 @@ register(runDepreciation, ({ body }) => {
     return fixedAssetSchema.parse({
       ...asset,
       accumulatedDepreciationIdr,
+      bookValueIdr: asset.costIdr - accumulatedDepreciationIdr,
       status:
         accumulatedDepreciationIdr >= depreciableBase
           ? "fully_depreciated"

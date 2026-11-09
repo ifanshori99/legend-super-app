@@ -40,6 +40,7 @@ import {
   depreciationRunSchema,
   disposalResultIdr,
   disposeFixedAssetInputSchema,
+  fixedAssetDerivedFields,
   fixedAssetSchema,
   nextPeriod,
   periodBounds,
@@ -225,6 +226,7 @@ export function toFixedAsset(
     status: row.status,
     disposedOn: row.disposedOn,
     disposalProceedsIdr: row.disposalProceedsIdr,
+    ...fixedAssetDerivedFields(row),
   });
 }
 
