@@ -21,7 +21,9 @@ import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
   idr,
+  toIsoDateTime,
   outletIdSchema,
   tenantIdSchema,
   uuidSchema,
@@ -45,15 +47,16 @@ import { db } from "../db/index.ts";
 import {
   deliveryChannelOrders,
   deliveryChannels,
-  deliveryStoreIndex,
 } from "../db/schema/delivery.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
+import { recordAudit } from "./core-audit.ts";
 import {
   advisoryLock,
   appendDeliveryEvent,
   injectDeliveryOrder,
   latestSignedAt,
+  voidQueuedKdsLines,
   withSeenHash,
 } from "./delivery-inject.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -96,28 +99,20 @@ export type ResolvedDeliveryStore = {
 };
 
 /**
- * Tenant and outlet of a platform store id, or null. Reads the id-only
- * `delivery_store_index` outside any tenant context (open SELECT, like
- * `payment_link_tokens`); everything after runs under RLS.
+ * Tenant and outlet of a platform store id, or null. Runs outside any tenant
+ * context through the SECURITY DEFINER `app.resolve_delivery_store` (one row
+ * for an exact platform + store id; the app role has no SELECT on
+ * `delivery_store_index`); everything after runs under RLS.
  */
 export async function resolveDeliveryStore(
   platform: DeliveryPlatform,
   storeId: string,
 ): Promise<ResolvedDeliveryStore | null> {
-  const [row] = await db
-    .select({
-      tenantId: deliveryStoreIndex.tenantId,
-      outletId: deliveryStoreIndex.outletId,
-    })
-    .from(deliveryStoreIndex)
-    .where(
-      and(
-        eq(deliveryStoreIndex.platform, platform),
-        eq(deliveryStoreIndex.storeExternalId, storeId),
-      ),
-    )
-    .limit(1);
-  return row ?? null;
+  const result = await db.execute<{ tenant_id: string; outlet_id: string }>(
+    sql`SELECT tenant_id, outlet_id FROM app.resolve_delivery_store(${platform}, ${storeId})`,
+  );
+  const row = result.rows[0];
+  return row ? { tenantId: row.tenant_id, outletId: row.outlet_id } : null;
 }
 
 // ---- Line mapping -----------------------------------------------------------
@@ -437,12 +432,13 @@ async function cancelFromPlatform(
     actorUserId: null,
     now: input.now,
   });
-  // TODO(legend-5bn3, after milestone/m1 merge): a cancel of an injected order
-  // must void its queued KDS lines. D4's `voidQueuedKdsLines`
-  // (delivery-orders.service.ts) does the order/line side and is where
-  // `cancelKitchenItemsForVoidedLines(tx, context, { outletId, orderId,
-  // itemIds, reason, actor, now })` is added; export it and call it here with
-  // `row` and a null actor.
+  // The kitchen stops: lines not started are voided (KDS too), their daily
+  // limit released, and the POS order voided once no live line is left.
+  await voidQueuedKdsLines(tx, context, row, {
+    reason: input.reason,
+    actorUserId: null,
+    now: input.now,
+  });
   return row;
 }
 
@@ -519,6 +515,169 @@ async function autoAccept(
   });
 }
 
+/** Longest wait for a row or advisory lock inside one webhook import. */
+export const DELIVERY_INGEST_LOCK_TIMEOUT_MS = 5_000;
+
+/**
+ * What the kitchen cooks from a line, in platform terms: item, variant,
+ * quantity, unit price, modifiers and note. Names and mapping are not part
+ * of it (a renamed item is the same line).
+ */
+function lineSignature(
+  lines: readonly {
+    itemId: string | null;
+    variantId: string | null;
+    quantity: number;
+    unitPriceIdr: number;
+    modifiers: readonly { name: string; priceIdr: number }[];
+    note: string | null;
+  }[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        lines.map((line) => [
+          line.itemId,
+          line.variantId,
+          line.quantity,
+          line.unitPriceIdr,
+          line.modifiers.map((modifier) => [modifier.name, modifier.priceIdr]),
+          line.note,
+        ]),
+      ),
+    )
+    .digest("hex");
+}
+
+/** True when the payload's lines differ from the lines the kitchen has. */
+export function deliveryLinesChanged(
+  stored: readonly DeliveryOrderLine[],
+  items: DeliveryWebhookPayload["items"],
+): boolean {
+  return (
+    lineSignature(
+      stored.map((line) => ({
+        itemId: line.externalItemId,
+        variantId: line.variantId,
+        quantity: line.quantity,
+        unitPriceIdr: line.unitPriceIdr,
+        modifiers: line.modifiers,
+        note: line.note,
+      })),
+    ) !==
+    lineSignature(
+      items.map((item) => ({
+        itemId: item.itemId.slice(0, 100),
+        variantId: item.variantId ?? null,
+        quantity: item.quantity,
+        unitPriceIdr: item.unitPriceIdr,
+        modifiers: item.modifiers,
+        note: item.note ?? null,
+      })),
+    )
+  );
+}
+
+/**
+ * A changed payload for an injected order: money and note updated, lines kept
+ * as cooked. Appends `delivery_order.updated` and an audit entry with the
+ * money before and after and whether the lines changed.
+ */
+async function applyPayloadUpdate(
+  tx: Tx,
+  context: ScopedTenantContext,
+  existing: DeliveryChannelOrderRow,
+  input: {
+    payload: DeliveryWebhookPayload;
+    payloadHash: string;
+    signedAt: Date | null;
+    commissionIdr: number;
+    now: Date;
+  },
+): Promise<{ row: DeliveryChannelOrderRow; linesChanged: boolean }> {
+  const { payload, now } = input;
+  const tenantId = context.tenant.tenantId;
+  const linesChanged = deliveryLinesChanged(existing.lines, payload.items);
+  const [row] = await tx
+    .update(deliveryChannelOrders)
+    .set({
+      grossIdr: idr(payload.grossIdr),
+      commissionIdr: idr(input.commissionIdr),
+      customerNote: payload.customerNote ?? null,
+      payloadHash: input.payloadHash,
+      seenPayloadHashes: withSeenHash(
+        existing.seenPayloadHashes,
+        input.payloadHash,
+      ),
+      lastSignedAt: latestSignedAt(existing.lastSignedAt, input.signedAt),
+      updatedAt: now,
+      version: sql`${deliveryChannelOrders.version} + 1`,
+    })
+    .where(
+      and(
+        eq(deliveryChannelOrders.tenantId, tenantId),
+        eq(deliveryChannelOrders.id, existing.id),
+      ),
+    )
+    .returning();
+  if (!row) throw new Error("Delivery channel order update returned none");
+  await appendDeliveryEvent(tx, context, "delivery_order.updated", {
+    deliveryOrderId: row.id,
+    outletId: row.outletId,
+    payload: {
+      deliveryChannelOrderId: row.id,
+      platform: row.platform,
+      externalOrderId: row.externalOrderId,
+      orderId: row.orderId,
+      grossBeforeIdr: existing.grossIdr,
+      grossIdr: payload.grossIdr,
+      commissionBeforeIdr: existing.commissionIdr,
+      commissionIdr: input.commissionIdr,
+      payloadHash: input.payloadHash,
+      linesChanged,
+    },
+    actorUserId: null,
+    now,
+  });
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId: row.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: "delivery_order.updated",
+      objectType: "delivery_channel_order",
+      objectId: row.id,
+      reason: linesChanged
+        ? "Platform mengubah item pesanan setelah dikirim ke dapur; perlu ditinjau."
+        : null,
+      maskedChanges: {
+        before: {
+          platform: existing.platform,
+          grossIdr: existing.grossIdr,
+          commissionIdr: existing.commissionIdr,
+        },
+        after: {
+          platform: row.platform,
+          grossIdr: payload.grossIdr,
+          commissionIdr: input.commissionIdr,
+          linesChanged,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    ["platform", "grossIdr", "commissionIdr", "linesChanged"],
+  );
+  return { row, linesChanged };
+}
+
 type Stored = {
   result: DeliveryIngestResult;
   /**
@@ -556,6 +715,13 @@ export async function ingestDeliveryWebhook(
   const payloadHash = hashDeliveryPayload(raw);
 
   const stored = await withTenant(db, context, async (tx): Promise<Stored> => {
+    // A stuck writer of the same order must not hold the platform's request:
+    // past this the webhook fails and the platform retries.
+    await tx.execute(
+      sql.raw(
+        `SET LOCAL lock_timeout = '${DELIVERY_INGEST_LOCK_TIMEOUT_MS}ms'`,
+      ),
+    );
     await advisoryLock(
       tx,
       `delivery-order:${tenantId}:${platform}:${payload.orderId}`,
@@ -635,34 +801,26 @@ export async function ingestDeliveryWebhook(
     }
 
     // A changed payload for an order the kitchen already has: only the money
-    // and note the platform reports are updated; the fired lines stay as cooked.
+    // and note the platform reports are updated; the fired lines stay as
+    // cooked. Changed lines are not applied: the answer is needs_review and
+    // the change is on the event and the audit for staff to act on.
     if (existing && existing.orderId !== null) {
       const channel = await loadChannel(tx, tenantId, outletId, platform);
-      const commission = channel ? commissionFor(payload, channel) : 0;
-      const [row] = await tx
-        .update(deliveryChannelOrders)
-        .set({
-          grossIdr: idr(payload.grossIdr),
-          commissionIdr: idr(commission),
-          customerNote: payload.customerNote ?? null,
-          payloadHash,
-          seenPayloadHashes: withSeenHash(
-            existing.seenPayloadHashes,
-            payloadHash,
-          ),
-          lastSignedAt: latestSignedAt(existing.lastSignedAt, signedAt),
-          updatedAt: now,
-          version: sql`${deliveryChannelOrders.version} + 1`,
-        })
-        .where(
-          and(
-            eq(deliveryChannelOrders.tenantId, tenantId),
-            eq(deliveryChannelOrders.id, existing.id),
-          ),
-        )
-        .returning();
-      if (!row) throw new Error("Delivery channel order update returned none");
-      return { result: outcome("updated", row), accept: null, rejected: null };
+      const updated = await applyPayloadUpdate(tx, context, existing, {
+        payload,
+        payloadHash,
+        signedAt,
+        commissionIdr: channel ? commissionFor(payload, channel) : 0,
+        now,
+      });
+      return {
+        result: outcome(
+          updated.linesChanged ? "needs_review" : "updated",
+          updated.row,
+        ),
+        accept: null,
+        rejected: null,
+      };
     }
     // Closed on the platform side already (rejected/cancelled): a changed
     // payload cannot reopen it.
@@ -744,6 +902,13 @@ export async function ingestDeliveryWebhook(
       actorUserId: null,
       now,
     });
+    // Linked to a POS twin the cashier voided: kept for review, not accepted.
+    if (injected.needsReview)
+      return {
+        result: outcome("needs_review", injected.row),
+        accept: null,
+        rejected: null,
+      };
     return {
       result: outcome("injected", injected.row),
       accept: injected.row,

@@ -98,7 +98,9 @@ const SENSITIVE_FUNCTIONS = [
 // Tables with a tenant_id that are deliberately not under the restrictive
 // tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
 // each). The first three must still keep row-level security enabled: their
-// write policies are what stop cross-tenant writes.
+// write policies are what stop cross-tenant writes (delivery_store_index has
+// no policy at all and no app-role grant; it is read only through
+// app.resolve_delivery_store: approved for review by CTO pending, WS-08 D3).
 const TENANT_RLS_EXCEPTIONS: Record<string, { rowSecurity: boolean }> = {
   "public.tenant_domains": { rowSecurity: true },
   "public.payment_link_tokens": { rowSecurity: true },

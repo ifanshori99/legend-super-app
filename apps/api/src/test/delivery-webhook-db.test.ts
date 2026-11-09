@@ -78,9 +78,15 @@ async function seedTenant(label: string): Promise<Seeded> {
       [categoryId, tenant.tenantId, tenant.brandId],
     );
     await db.query(
-      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
-       VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5)`,
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_type)
+       VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5, 'coffee_bar')`,
       [kopiId, tenant.tenantId, tenant.brandId, categoryId, randomUUID()],
+    );
+    // Kopi Susu is routed to the outlet's coffee bar (KDS-01).
+    await db.query(
+      `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+       VALUES ($1, $2, $3, 'Bar Kopi', 'coffee_bar')`,
+      [randomUUID(), tenant.tenantId, tenant.outletId],
     );
     await db.query(
       `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
@@ -229,6 +235,26 @@ describe("signature and routing", () => {
     );
     expect(response.status).toBe(404);
     expect(errorCode(response.body)).toBe("DELIVERY_CHANNEL_UNKNOWN");
+  });
+
+  it("the store index is reachable only through app.resolve_delivery_store", async () => {
+    const { rows } = await owner.query<{
+      select: boolean;
+      resolve: boolean;
+      sync: boolean;
+      public_resolve: boolean;
+    }>(
+      `SELECT has_table_privilege('legend_app', 'public.delivery_store_index', 'SELECT') AS select,
+              has_function_privilege('legend_app', 'app.resolve_delivery_store(varchar, varchar)', 'EXECUTE') AS resolve,
+              has_function_privilege('legend_app', 'app.sync_delivery_store_index()', 'EXECUTE') AS sync,
+              has_function_privilege('public', 'app.resolve_delivery_store(varchar, varchar)', 'EXECUTE') AS public_resolve`,
+    );
+    expect(rows[0]).toEqual({
+      select: false,
+      resolve: true,
+      sync: false,
+      public_resolve: false,
+    });
   });
 
   it("a store id of another platform does not resolve (the key is platform + store)", async () => {
@@ -565,6 +591,74 @@ describe("platform cancel", () => {
   });
 });
 
+describe("platform cancel voids the POS order", () => {
+  it("voids the queued lines and the KDS lines, releases the daily limit and voids the order", async () => {
+    const body = payloadOf(a);
+    const created = await send("gofood", body);
+    expect(created.body.data.result).toBe("injected");
+    const orderUuid = await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const { rows } = await db.query<{ id: string }>(
+        `SELECT id FROM orders WHERE tenant_id = $1 AND external_ref = $2`,
+        [a.tenant.tenantId, body.orderId],
+      );
+      return rows[0]!.id;
+    });
+    const usage = async () =>
+      asOwnerTenant(a.tenant.tenantId, async (db) => {
+        const { rows } = await db.query<{ quantity: number }>(
+          `SELECT u.quantity FROM menu_item_daily_usage u
+             JOIN orders o ON o.tenant_id = u.tenant_id AND o.business_date = u.business_date
+            WHERE u.tenant_id = $1 AND u.outlet_id = $2 AND u.menu_item_id = $3
+              AND o.id = $4::uuid`,
+          [a.tenant.tenantId, a.tenant.outletId, a.kopiId, orderUuid],
+        );
+        return rows[0]?.quantity ?? 0;
+      });
+    const reserved = await usage();
+    expect(reserved).toBeGreaterThanOrEqual(2);
+
+    const cancel = await send("gofood", {
+      storeId: a.goStore,
+      orderId: body.orderId,
+      event: "order.cancelled",
+      reason: "Driver tidak ditemukan",
+      grossIdr: 0,
+    });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.data.status).toBe("cancelled");
+
+    await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const order = await db.query<{ status: string }>(
+        `SELECT status FROM orders WHERE tenant_id = $1 AND id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(order.rows[0]?.status).toBe("voided");
+      const items = await db.query<{
+        status: string;
+        voided_by: string | null;
+      }>(
+        `SELECT status, voided_by FROM order_items WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(items.rows.length).toBeGreaterThan(0);
+      for (const item of items.rows)
+        expect(item).toEqual({ status: "voided", voided_by: null });
+      const kitchen = await db.query<{ status: string }>(
+        `SELECT status FROM kitchen_ticket_items WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(kitchen.rows.length).toBeGreaterThan(0);
+      for (const line of kitchen.rows) expect(line.status).toBe("voided");
+      const tickets = await db.query<{ status: string }>(
+        `SELECT status FROM kitchen_tickets WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(tickets.rows.map((row) => row.status)).toEqual(["cancelled"]);
+    });
+    expect(await usage()).toBe(reserved - 2);
+  });
+});
+
 describe("replays, ordering and final orders", () => {
   const moneyOf = async (orderId: string) => {
     const { rows } = await asOwnerTenant(a.tenant.tenantId, (db) =>
@@ -702,6 +796,41 @@ describe("replays, ordering and final orders", () => {
         "AND external_order_id = $2 AND order_id IS NOT NULL",
         [body.orderId],
       ),
+    ).toBe(1);
+  });
+});
+
+describe("voided POS twin", () => {
+  it("a webhook for an order the cashier rang up and voided is kept for review, never auto-accepted", async () => {
+    const body = payloadOf(a);
+    const injected = await send("gofood", body);
+    expect(injected.body.data.result).toBe("injected");
+    clearRecordedDeliveryCalls();
+    // Only the POS order with the platform number is left, and it is voided.
+    await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      await db.query(
+        `DELETE FROM delivery_channel_orders
+          WHERE tenant_id = $1 AND external_order_id = $2`,
+        [a.tenant.tenantId, body.orderId],
+      );
+      await db.query(
+        `UPDATE orders SET status = 'voided', voided_at = now(), void_reason = 'Batal di kasir'
+          WHERE tenant_id = $1 AND external_ref = $2`,
+        [a.tenant.tenantId, body.orderId],
+      );
+    });
+    const response = await send("gofood", { ...body, customerNote: "Lagi" });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      result: "needs_review",
+      orderId: null,
+      status: "received",
+    });
+    expect(
+      recordedDeliveryCalls().filter((call) => call.action === "accept_order"),
+    ).toEqual([]);
+    expect(
+      await count(a, "orders", "AND external_ref = $2", [body.orderId]),
     ).toBe(1);
   });
 });

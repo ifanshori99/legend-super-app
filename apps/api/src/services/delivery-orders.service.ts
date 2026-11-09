@@ -14,7 +14,9 @@
 //   (fail closed, 502), and the adapter reference `<order id>:<status>` makes a
 //   retry idempotent. When the commit itself fails after the platform took the
 //   step, a `delivery_order.platform_desync` audit entry records the gap for
-//   reconciliation; a retry re-sends the same reference and lands the step.
+//   reconciliation (outcome `accepted`); an adapter call that threw or timed
+//   out is recorded the same way with outcome `unknown`. A retry re-sends the
+//   same reference and lands the step.
 //   Manual orders live only in our POS: no adapter call.
 // - A platform order the webhook kept for review (`order_id` null, never on
 //   the KDS) can only be rejected or cancelled; it is never moved forward.
@@ -28,7 +30,7 @@
 //   duplicate.
 // - `Idempotency-Key` (optional header) is stored through `posIdempotent`
 //   with the operation name and the order as target.
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   CoreError,
@@ -63,21 +65,18 @@ import {
   deliveryChannels,
 } from "../db/schema/delivery.ts";
 import { domainEventOutbox } from "../db/schema/index.ts";
-import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
-import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
-import { injectDeliveryOrder } from "./delivery-inject.ts";
+import { injectDeliveryOrder, voidQueuedKdsLines } from "./delivery-inject.ts";
 import {
   lockDeliveryOrder,
   toDeliveryChannelOrder,
   type DeliveryChannelOrderRow,
 } from "./delivery-store.ts";
-import { releaseMenuItemDailyLimit } from "./menu-availability.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
   businessDateFor,
@@ -380,98 +379,6 @@ async function appendStatusChangedEvent(
   });
 }
 
-/**
- * Voids the KDS lines of a cancelled or rejected delivery order that the
- * kitchen has not started (status `queued`), once each, and releases their
- * daily limit. The order is `voided` only when no live line is left.
- */
-async function voidQueuedKdsLines(
-  tx: Tx,
-  context: ScopedTenantContext,
-  row: DeliveryChannelOrderRow,
-  input: { reason: string; actorUserId: UserId; now: Date },
-): Promise<void> {
-  if (row.orderId === null) return;
-  const tenantId = context.tenant.tenantId;
-  const { now } = input;
-  const [order] = await tx
-    .select()
-    .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, row.orderId)))
-    .limit(1)
-    .for("update");
-  if (!order || order.status === "voided" || order.status === "completed")
-    return;
-  // The UPDATE ... WHERE status = 'queued' RETURNING is the once-only key.
-  const voided = await tx
-    .update(orderItems)
-    .set({
-      status: "voided",
-      voidReason: input.reason.slice(0, 100),
-      voidedBy: input.actorUserId,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(orderItems.tenantId, tenantId),
-        eq(orderItems.orderId, order.id),
-        eq(orderItems.status, "queued"),
-      ),
-    )
-    .returning();
-  for (const item of voided)
-    await releaseMenuItemDailyLimit(tx, context, {
-      outletId: order.outletId,
-      menuItemId: item.menuItemId,
-      businessDate: item.reservedBusinessDate,
-      quantity: item.quantity,
-      now,
-    });
-  if (voided.length > 0)
-    await tx
-      .update(posOrderItems)
-      .set({
-        voidedAt: now,
-        voidReasonNote: input.reason.slice(0, 500),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(posOrderItems.tenantId, tenantId),
-          inArray(
-            posOrderItems.itemId,
-            voided.map((item) => item.id),
-          ),
-        ),
-      );
-  const [live] = await tx
-    .select({ count: sql<number>`count(*)::int` })
-    .from(orderItems)
-    .where(
-      and(
-        eq(orderItems.tenantId, tenantId),
-        eq(orderItems.orderId, order.id),
-        sql`${orderItems.status} <> 'voided'`,
-      ),
-    );
-  if (Number(live?.count ?? 0) > 0) return;
-  await tx
-    .update(posOrders)
-    .set({ voidReasonNote: input.reason.slice(0, 500), updatedAt: now })
-    .where(
-      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
-    );
-  await tx
-    .update(orders)
-    .set({
-      status: "voided",
-      voidedAt: now,
-      voidReason: input.reason.slice(0, 100),
-      updatedAt: now,
-    })
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
-}
-
 function stepColumns(
   to: DeliveryOrderStatus,
   reason: string | undefined,
@@ -626,11 +533,22 @@ export async function updateDeliveryOrderStatus(
           // and nothing but the commit can fail after the platform took the step.
           // Fail closed: a platform that does not take the step rolls it back.
           if (platformOrder && action !== null) {
-            await pushPlatformAction(context, outletId, row, to, {
-              action,
-              reason: input.reason,
-            });
-            pushed = { platform: row.platform, from, to, action };
+            const step = { platform: row.platform, from, to, action };
+            const outcome = await pushPlatformAction(
+              context,
+              outletId,
+              row,
+              to,
+              {
+                action,
+                reason: input.reason,
+              },
+            );
+            // A thrown or timed-out call may still have reached the platform:
+            // the step rolls back here, and the gap is recorded as unknown.
+            if (outcome === "unknown") pushed = { ...step, outcome };
+            if (outcome !== "accepted") throw platformStepFailed();
+            pushed = { ...step, outcome };
           }
           return toDeliveryChannelOrder(updated);
         },
@@ -651,18 +569,33 @@ type PlatformPush = {
   from: DeliveryOrderStatus;
   to: DeliveryOrderStatus;
   action: DeliveryAction;
+  /**
+   * `accepted`: the platform took the step and our commit then failed.
+   * `unknown`: the adapter threw (timeout, network): the platform may or may
+   * not have taken it.
+   */
+  outcome: "accepted" | "unknown";
 };
 
-/** Sends the adapter action; a refused or failed call answers 502. */
+const platformStepFailed = () =>
+  new HttpError(
+    502,
+    "BAD_GATEWAY",
+    "Platform tidak merespons perubahan status pesanan. Coba lagi.",
+  );
+
+/**
+ * Sends the adapter action: `accepted`, `refused` (a clear no) or `unknown`
+ * (the call threw, e.g. the adapter timeout in delivery-ports.ts).
+ */
 async function pushPlatformAction(
   context: ScopedTenantContext,
   outletId: OutletId,
   row: DeliveryChannelOrderRow,
   to: DeliveryOrderStatus,
   input: { action: DeliveryAction; reason: string | undefined },
-): Promise<void> {
+): Promise<"accepted" | "refused" | "unknown"> {
   const { action, reason } = input;
-  let accepted = false;
   try {
     const result = await deliveryChannelAdapterFor(row.platform).execute(
       context,
@@ -679,21 +612,15 @@ async function pushPlatformAction(
         },
       },
     );
-    accepted = result.accepted;
+    return result.accepted ? "accepted" : "refused";
   } catch {
-    accepted = false;
+    return "unknown";
   }
-  if (!accepted)
-    throw new HttpError(
-      502,
-      "BAD_GATEWAY",
-      "Platform tidak merespons perubahan status pesanan. Coba lagi.",
-    );
 }
 
 /**
- * The platform took a step our commit then lost: the order there is ahead of
- * ours. Records it in its own transaction for reconciliation; best effort,
+ * The platform took a step our commit then lost (or may have, when the call
+ * threw): the order there can be ahead of ours. Records it in its own transaction for reconciliation; best effort,
  * the caller still gets the original error and may retry the same step.
  */
 async function recordPlatformDesync(
@@ -719,17 +646,24 @@ async function recordPlatformDesync(
           action: "delivery_order.platform_desync",
           objectType: "delivery_channel_order",
           objectId: deliveryOrderId,
-          reason: `Platform menerima ${input.action}, status lokal gagal disimpan.`,
+          reason:
+            input.outcome === "unknown"
+              ? `Platform tidak menjawab ${input.action} dengan jelas; status di platform tidak diketahui.`
+              : `Platform menerima ${input.action}, status lokal gagal disimpan.`,
           maskedChanges: {
             before: { platform: input.platform, status: input.from },
-            after: { platform: input.platform, status: input.to },
+            after: {
+              platform: input.platform,
+              status: input.to,
+              outcome: input.outcome,
+            },
           },
           ipHash: null,
           sensitiveAccess: false,
           retentionClass: "audit_2y",
           createdAt: toIsoDateTime(new Date()),
         },
-        [],
+        ["platform", "status", "outcome"],
       ),
     );
   } catch {
@@ -739,6 +673,7 @@ async function recordPlatformDesync(
         platform: input.platform,
         from: input.from,
         to: input.to,
+        outcome: input.outcome,
       },
       "delivery order platform step could not be recorded after a failed commit",
     );

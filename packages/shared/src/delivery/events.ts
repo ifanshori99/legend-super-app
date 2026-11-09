@@ -25,6 +25,7 @@ const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const deliveryEventNames = [
   "delivery_order.received",
   "delivery_order.status_changed",
+  "delivery_order.updated",
   "delivery_order.settled",
 ] as const;
 export type DeliveryEventName = (typeof deliveryEventNames)[number];
@@ -60,6 +61,26 @@ export type DeliveryOrderStatusChangedPayload = z.infer<
   typeof deliveryOrderStatusChangedPayloadSchema
 >;
 
+/**
+ * The platform changed an order already injected to the KDS: money and note
+ * are applied, the cooked lines are not; `linesChanged` asks staff to review.
+ */
+export const deliveryOrderUpdatedPayloadSchema = z.strictObject({
+  deliveryChannelOrderId: deliveryChannelOrderIdSchema,
+  platform: deliveryPlatformSchema,
+  externalOrderId: reference,
+  orderId: orderIdSchema.nullable(),
+  grossBeforeIdr: nonnegativeIdr,
+  grossIdr: nonnegativeIdr,
+  commissionBeforeIdr: nonnegativeIdr,
+  commissionIdr: nonnegativeIdr,
+  payloadHash: sha256HexSchema,
+  linesChanged: z.boolean(),
+});
+export type DeliveryOrderUpdatedPayload = z.infer<
+  typeof deliveryOrderUpdatedPayloadSchema
+>;
+
 export const deliveryOrderSettledPayloadSchema = z.strictObject({
   deliveryChannelOrderId: deliveryChannelOrderIdSchema,
   platform: deliveryPlatformSchema,
@@ -80,6 +101,7 @@ const payloadSchemas: Record<
 > = {
   "delivery_order.received": deliveryOrderReceivedPayloadSchema,
   "delivery_order.status_changed": deliveryOrderStatusChangedPayloadSchema,
+  "delivery_order.updated": deliveryOrderUpdatedPayloadSchema,
   "delivery_order.settled": deliveryOrderSettledPayloadSchema,
 };
 

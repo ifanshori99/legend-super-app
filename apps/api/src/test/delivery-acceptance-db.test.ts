@@ -7,18 +7,27 @@
 // server from `pnpm test`), in two fresh isolated tenants. Covered:
 //   - a manual delivery order reaches the KDS with its channel tag and a
 //     pickup number (the webhook shares the same injection path),
-//   - the same platform order id is never a second order (manual path),
+//   - the same platform order id is never a second order (manual path and
+//     webhook replay: one order, one KDS fire),
+//   - a changed webhook payload updates the order, never a second order,
+//   - a sold-out item is pushed to every open channel's adapter, not closed ones,
 //   - tenant A cannot see tenant B delivery orders or channels,
 //   - commission reconciliation matches gross - commission.
-// Webhook idempotency and sold-out -> adapter are `it.todo` until the webhook
-// wire format (D3) and the adapter registry (D2) are fixed.
+// The webhook cases call the ingest service with the parsed payload and its
+// raw bytes (the signature is the route's job, see delivery-webhook-db.test.ts).
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ulidToUuid } from "@starter/shared/core";
+import { createUlid, tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { itemSoldOutEvent } from "@starter/shared/menu";
 import { tenantPermissionCodeSchema } from "@starter/shared/access";
+import { deliveryWebhookPayloadSchema } from "@starter/shared/adapters";
 import { PERMISSION_CODES } from "@starter/shared/access";
 import {
   deliveryChannelOrderSchema,
@@ -26,6 +35,14 @@ import {
   deliveryReconciliationSchema,
 } from "@starter/shared/delivery";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { ingestDeliveryWebhook } from "../services/delivery-ingest.service.ts";
+import {
+  clearRecordedDeliveryCalls,
+  recordedDeliveryCalls,
+} from "../services/delivery-ports.ts";
+import { deliverDeliveryChannelEvent } from "../services/delivery-sync-consumer.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -109,9 +126,15 @@ async function seedTenant(label: string): Promise<Seeded> {
       [categoryId, tenant.tenantId, tenant.brandId],
     );
     await db.query(
-      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
-       VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5)`,
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_type)
+       VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5, 'coffee_bar')`,
       [kopiId, tenant.tenantId, tenant.brandId, categoryId, randomUUID()],
+    );
+    // The outlet's coffee bar: Kopi Susu is routed there (KDS-01).
+    await db.query(
+      `INSERT INTO stations (id, tenant_id, outlet_id, name, type)
+       VALUES ($1, $2, $3, 'Bar Kopi', 'coffee_bar')`,
+      [randomUUID(), tenant.tenantId, tenant.outletId],
     );
     // The platform price list: the server prices manual orders from it.
     await db.query(
@@ -285,6 +308,39 @@ function api(s: Seeded, outletId = s.tenant.outletId) {
 const errorCode = (body: { error?: { code?: string }; code?: string }) =>
   body.error?.code ?? body.code;
 
+/** A platform webhook payload for one Kopi Susu line (quantity 2). */
+function webhookPayload(s: Seeded, storeId: string) {
+  return deliveryWebhookPayloadSchema.parse({
+    storeId,
+    orderId: `WH-${randomUUID().slice(0, 8)}`,
+    grossIdr: KOPI_IDR * 2,
+    items: [
+      {
+        itemId: s.kopiId,
+        name: "Kopi Susu",
+        quantity: 2,
+        unitPriceIdr: KOPI_IDR,
+        modifiers: [],
+      },
+    ],
+  });
+}
+
+const rawOf = (payload: unknown) =>
+  new TextEncoder().encode(JSON.stringify(payload));
+
+/** Kitchen tickets and ticket lines of one order (KDS fires). */
+async function kitchenFires(db: PoolClient, s: Seeded, orderId: string) {
+  const { rows } = await db.query<{ tickets: number; items: number }>(
+    `SELECT (SELECT count(*)::int FROM kitchen_tickets
+              WHERE tenant_id = $1 AND order_id = $2::uuid) AS tickets,
+            (SELECT count(*)::int FROM kitchen_ticket_items
+              WHERE tenant_id = $1 AND order_id = $2::uuid) AS items`,
+    [s.tenant.tenantId, ulidToUuid(orderId)],
+  );
+  return rows[0];
+}
+
 beforeAll(async () => {
   app = createApp();
   a = await seedTenant("a");
@@ -367,14 +423,26 @@ describe("delivery order reaches the KDS (PRD Alur G)", () => {
       expect(items.rows.length).toBeGreaterThan(0);
       for (const item of items.rows) expect(item.fire_status).toBe("fired");
 
-      // `order.placed` tells the KDS to build tickets, with the channel tag.
+      // The order is announced like a POS submit (`order.submitted`; the
+      // QR-only `order.placed` cannot carry a platform channel), with the
+      // channel tag.
       const outbox = await db.query<{ channel: string }>(
         `SELECT event->'payload'->>'channel' AS channel FROM domain_event_outbox
-          WHERE tenant_id = $1 AND event->>'name' = 'order.placed'
+          WHERE tenant_id = $1 AND event->>'name' = 'order.submitted'
             AND event->'payload'->>'orderId' = $2`,
         [a.tenant.tenantId, order.orderId],
       );
       expect(outbox.rows.map((row) => row.channel)).toEqual(["gofood"]);
+
+      // The kitchen has the ticket, built in the same transaction.
+      const tickets = await db.query<{ items: string }>(
+        `SELECT (SELECT count(*) FROM kitchen_ticket_items i
+                  WHERE i.tenant_id = t.tenant_id AND i.ticket_id = t.id)::text AS items
+           FROM kitchen_tickets t
+          WHERE t.tenant_id = $1 AND t.order_id = $2::uuid`,
+        [a.tenant.tenantId, orderUuid],
+      );
+      expect(tickets.rows).toEqual([{ items: "1" }]);
 
       // The pickup display number is stored on the delivery order.
       const stored = await db.query<{ pickup_number: string | null }>(
@@ -439,17 +507,179 @@ describe("delivery order reaches the KDS (PRD Alur G)", () => {
     });
   });
 
-  // Filled in once the webhook wire format (D3: signature header, payload
-  // shape, per-platform secret env name) and the adapter registry (D2) land.
-  it.todo(
-    "webhook: the same platform order delivered twice (same payload hash) is one order and one KDS fire",
-  );
-  it.todo(
-    "webhook: the same external id with a changed payload updates the order via the state machine, never a second order",
-  );
-  it.todo(
-    "adapter: a sold-out menu item calls `sold_out` on the fake delivery adapter for every open channel, not for closed ones",
-  );
+  it("webhook: the same platform order delivered twice (same payload hash) is one order and one KDS fire", async () => {
+    const payload = webhookPayload(a, storeA);
+    const raw = rawOf(payload);
+    const first = await ingestDeliveryWebhook("gofood", payload, raw);
+    const second = await ingestDeliveryWebhook("gofood", payload, raw);
+    expect(first.result).toBe("injected");
+    expect(second).toMatchObject({
+      result: "duplicate",
+      deliveryOrderId: first.deliveryOrderId,
+      orderId: first.orderId,
+    });
+    await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const orders = await db.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM orders
+          WHERE tenant_id = $1 AND external_ref = $2`,
+        [a.tenant.tenantId, payload.orderId],
+      );
+      expect(orders.rows[0]?.count).toBe("1");
+      expect(await kitchenFires(db, a, first.orderId!)).toEqual({
+        tickets: 1,
+        items: 1,
+      });
+    });
+  });
+
+  it("webhook: the same external id with a changed payload updates the order via the state machine, never a second order", async () => {
+    const payload = webhookPayload(a, storeA);
+    const first = await ingestDeliveryWebhook(
+      "gofood",
+      payload,
+      rawOf(payload),
+    );
+    expect(first.result).toBe("injected");
+    const changed = { ...payload, grossIdr: KOPI_IDR * 2 + 4_000 };
+    const updated = await ingestDeliveryWebhook(
+      "gofood",
+      changed,
+      rawOf(changed),
+    );
+    expect(updated).toMatchObject({
+      result: "updated",
+      deliveryOrderId: first.deliveryOrderId,
+      orderId: first.orderId,
+      status: first.status,
+    });
+    // Changed lines are not applied to a cooked order: kept for review.
+    const relined = {
+      ...changed,
+      items: [{ ...changed.items[0]!, quantity: 3 }],
+    };
+    const review = await ingestDeliveryWebhook(
+      "gofood",
+      relined,
+      rawOf(relined),
+    );
+    expect(review).toMatchObject({
+      result: "needs_review",
+      deliveryOrderId: first.deliveryOrderId,
+      orderId: first.orderId,
+    });
+    await asOwnerTenant(a.tenant.tenantId, async (db) => {
+      const delivery = await db.query<{ gross_idr: string; lines: unknown[] }>(
+        `SELECT gross_idr, lines FROM delivery_channel_orders
+          WHERE tenant_id = $1 AND platform = 'gofood' AND external_order_id = $2`,
+        [a.tenant.tenantId, payload.orderId],
+      );
+      expect(delivery.rows).toHaveLength(1);
+      expect(delivery.rows[0]?.gross_idr).toBe(String(KOPI_IDR * 2 + 4_000));
+      expect(delivery.rows[0]?.lines).toMatchObject([{ quantity: 2 }]);
+      const orders = await db.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM orders
+          WHERE tenant_id = $1 AND external_ref = $2`,
+        [a.tenant.tenantId, payload.orderId],
+      );
+      expect(orders.rows[0]?.count).toBe("1");
+      expect(await kitchenFires(db, a, first.orderId!)).toEqual({
+        tickets: 1,
+        items: 1,
+      });
+      // Each change is an event and an audit entry with the money before/after.
+      const events = await db.query<{
+        before: string;
+        after: string;
+        lines: boolean;
+      }>(
+        `SELECT event->'payload'->>'grossBeforeIdr' AS before,
+                event->'payload'->>'grossIdr' AS after,
+                (event->'payload'->>'linesChanged')::boolean AS lines
+           FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->>'name' = 'delivery_order.updated'
+            AND event->>'aggregateId' = $2
+          ORDER BY sequence`,
+        [a.tenant.tenantId, first.deliveryOrderId],
+      );
+      expect(events.rows).toEqual([
+        {
+          before: String(KOPI_IDR * 2),
+          after: String(KOPI_IDR * 2 + 4_000),
+          lines: false,
+        },
+        {
+          before: String(KOPI_IDR * 2 + 4_000),
+          after: String(KOPI_IDR * 2 + 4_000),
+          lines: true,
+        },
+      ]);
+      const audit = await db.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'delivery_order.updated'
+            AND event->>'objectId' = $2`,
+        [a.tenant.tenantId, first.deliveryOrderId],
+      );
+      expect(audit.rows[0]?.count).toBe("2");
+    });
+  });
+
+  it("adapter: a sold-out menu item calls `sold_out` on the fake delivery adapter for every open channel, not for closed ones", async () => {
+    // GoFood and ShopeeFood are open; a paused GrabFood channel must not be called.
+    await seedChannel(
+      a,
+      "grabfood",
+      `store-a-grab-${randomUUID().slice(0, 8)}`,
+    );
+    await asOwnerTenant(a.tenant.tenantId, (db) =>
+      db.query(
+        `UPDATE delivery_channels SET is_open = false
+          WHERE tenant_id = $1 AND outlet_id = $2 AND platform = 'grabfood'`,
+        [a.tenant.tenantId, a.tenant.outletId],
+      ),
+    );
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(a.tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const event = itemSoldOutEvent.envelopeSchema.parse({
+      id: createUlid(),
+      tenantId: a.tenant.tenantId,
+      outletId: a.tenant.outletId,
+      name: itemSoldOutEvent.name,
+      version: itemSoldOutEvent.version,
+      aggregateType: itemSoldOutEvent.entry.aggregateType,
+      aggregateId: randomUUID(),
+      sequence: 1,
+      occurredAt: new Date().toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: createUlid(),
+      payloadSchemaRef: itemSoldOutEvent.payloadSchemaRef,
+      payload: {
+        itemId: a.kopiId,
+        availabilityId: randomUUID(),
+        outletId: a.tenant.outletId,
+        soldOutUntil: null,
+      },
+    });
+    clearRecordedDeliveryCalls();
+    await withTenant(db, context, (tx) =>
+      deliverDeliveryChannelEvent(context, event, tx),
+    );
+    const soldOut = recordedDeliveryCalls().filter(
+      (call) => call.action === "sold_out",
+    );
+    expect(soldOut.map((call) => call.channel).sort()).toEqual([
+      "gofood",
+      "shopeefood",
+    ]);
+    for (const call of soldOut)
+      expect(call.payload).toMatchObject({ itemId: a.kopiId, soldOut: true });
+  });
 });
 
 // ---- Tenant isolation (TEN-01 / TEN-03) -----------------------------------------

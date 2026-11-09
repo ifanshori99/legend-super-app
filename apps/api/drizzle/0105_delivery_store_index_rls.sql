@@ -1,33 +1,53 @@
 -- Hand-copied from src/db/schema/delivery.custom.sql (legend-5bn3 D3).
 -- delivery_store_index (legend-5bn3 D3): the webhook resolves tenant + outlet
--- from the platform store id BEFORE a tenant context exists (TEN-02), so this
--- id-only index follows the payment_link_tokens pattern (0021_payment_rls):
--- RLS enabled, not forced, open SELECT. The app role gets SELECT only: rows are
--- written by the SECURITY DEFINER trigger below, never by a service.
+-- from the platform store id BEFORE a tenant context exists (TEN-02). The
+-- id-only index has RLS enabled, not forced, and NO policy: the app role can
+-- neither read nor write it. The webhook reads exactly one row through the
+-- SECURITY DEFINER function app.resolve_delivery_store below; rows are written
+-- only by the SECURITY DEFINER trigger below, never by a service.
 ALTER TABLE public.delivery_store_index ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
-CREATE POLICY delivery_store_index_read ON public.delivery_store_index
-  AS PERMISSIVE FOR SELECT USING (true);
+REVOKE ALL ON public.delivery_store_index FROM legend_app;
 --> statement-breakpoint
-GRANT SELECT ON public.delivery_store_index TO legend_app;
+REVOKE ALL ON public.delivery_store_index FROM PUBLIC;
+--> statement-breakpoint
+-- Tenant and outlet of one platform store id, or no row. SECURITY DEFINER
+-- (owner of the index, which is not FORCED) so the app role never gets SELECT
+-- on the table: a caller must already know both the platform and the exact
+-- store id, and gets back only that store's tenant and outlet ids.
+CREATE OR REPLACE FUNCTION app.resolve_delivery_store(
+  p_platform varchar, p_store_external_id varchar
+) RETURNS TABLE (tenant_id uuid, outlet_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT i.tenant_id, i.outlet_id
+    FROM public.delivery_store_index i
+   WHERE i.platform = p_platform
+     AND i.store_external_id = p_store_external_id
+   LIMIT 1;
+$$;
+--> statement-breakpoint
+REVOKE EXECUTE ON FUNCTION app.resolve_delivery_store(varchar, varchar) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.resolve_delivery_store(varchar, varchar) TO legend_app;
 --> statement-breakpoint
 -- Keeps the index in step with delivery_channels.store_external_id. SECURITY
 -- DEFINER (owner of the index, which is not FORCED) because the app role
 -- cannot write the index; it is safe because it only ever copies ids from the
 -- channel row being written, and that row already passed the channel's FORCED
--- tenant + outlet RLS. Tenant, outlet, platform and store id all come from NEW;
--- nothing is read from the session.
--- BEFORE UPDATE drops the old index row (its foreign key names the old store
--- id, so it must go before the channel row changes); AFTER INSERT OR UPDATE
--- adds the new one.
+-- tenant + outlet RLS. Tenant, outlet, platform and store id all come from the
+-- trigger row; nothing is read from the session.
+-- BEFORE UPDATE drops the old index row (keyed by OLD: its foreign key names
+-- the old store id, so it must go before the channel row changes); AFTER
+-- INSERT OR UPDATE adds the new one. Only the triggers call it: EXECUTE is
+-- revoked from PUBLIC (trigger functions run without the caller's EXECUTE).
 CREATE OR REPLACE FUNCTION app.sync_delivery_store_index() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
   IF TG_WHEN = 'BEFORE' THEN
     DELETE FROM public.delivery_store_index
-     WHERE tenant_id = NEW.tenant_id
-       AND outlet_id = NEW.outlet_id
-       AND platform = NEW.platform;
+     WHERE tenant_id = OLD.tenant_id
+       AND outlet_id = OLD.outlet_id
+       AND platform = OLD.platform;
   ELSIF NEW.store_external_id IS NOT NULL THEN
     INSERT INTO public.delivery_store_index
       (platform, store_external_id, tenant_id, outlet_id)
@@ -36,6 +56,8 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+--> statement-breakpoint
+REVOKE EXECUTE ON FUNCTION app.sync_delivery_store_index() FROM PUBLIC;
 --> statement-breakpoint
 CREATE TRIGGER delivery_channels_store_index_clear
   BEFORE UPDATE OF store_external_id ON public.delivery_channels

@@ -75,11 +75,13 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // tenant's number").
     //
     // public.delivery_store_index: the delivery platform webhook resolves the
-    // tenant FROM the platform's store id (legend-5bn3 D3), the same shape as
-    // payment_link_tokens: ids only (platform, store id, tenant, outlet), open
-    // SELECT, tenant-checked writes, kept in step by a trigger on
-    // delivery_channels, which keeps the full restrictive policy. Also listed in
-    // provision-roles.ts TENANT_RLS_EXCEPTIONS. Pending CTO approval (WS-08 D3).
+    // tenant FROM the platform's store id (legend-5bn3 D3), before any tenant
+    // context. Ids only (platform, store id, tenant, outlet); RLS enabled with
+    // no policy and no grant to the app role: the webhook reads one row through
+    // the SECURITY DEFINER app.resolve_delivery_store(platform, store id), and
+    // only the SECURITY DEFINER trigger on delivery_channels (which keeps the
+    // full restrictive policy) writes it. Also listed in provision-roles.ts
+    // TENANT_RLS_EXCEPTIONS. Approved for review by CTO pending (WS-08 D3).
     const allowlist = [
       "public.tenant_domains",
       "public.payment_link_tokens",

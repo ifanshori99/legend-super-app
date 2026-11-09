@@ -29,16 +29,28 @@ import {
   type DeliveryOrderLine,
   type DeliveryPlatform,
 } from "@starter/shared/delivery";
-import { domainEventOutbox, menuItems } from "../db/schema/index.ts";
+import {
+  domainEventOutbox,
+  kitchenTicketItems,
+  menuItems,
+} from "../db/schema/index.ts";
 import { deliveryChannelOrders } from "../db/schema/delivery.ts";
 import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { logger } from "../lib/logger.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import {
   findByExternalId,
   type DeliveryChannelOrderRow,
 } from "./delivery-store.ts";
-import { reserveMenuItemDailyLimit } from "./menu-availability.ts";
+import {
+  cancelKitchenItemsForVoidedLines,
+  routeFiredItemsToKitchen,
+} from "./kds.service.ts";
+import {
+  releaseMenuItemDailyLimit,
+  reserveMenuItemDailyLimit,
+} from "./menu-availability.ts";
 import { uniqueViolationOf } from "./pos-shift-support.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
@@ -94,10 +106,16 @@ export type InjectDeliveryOrderInput = {
 
 export type InjectDeliveryOrderResult = {
   deliveryOrderId: string;
-  orderId: string;
-  pickupNumber: string;
+  /** Null only when `needsReview` (nothing was injected or linked). */
+  orderId: string | null;
+  pickupNumber: string | null;
   /** The stored row, as inserted. */
   row: DeliveryChannelOrderRow;
+  /**
+   * The platform order matches a POS order the cashier already voided: the
+   * row is stored unlinked (needs_review) and must not be auto-accepted.
+   */
+  needsReview: boolean;
 };
 
 /** Modifier names then the customer's line note, for the kitchen ticket. */
@@ -113,10 +131,7 @@ function kitchenNote(line: DeliveryOrderLine): string | null {
 const SEEN_HASH_LIMIT = 32;
 
 /** `seen` plus `hash` (moved to the end), keeping the newest SEEN_HASH_LIMIT. */
-export function withSeenHash(
-  seen: readonly string[],
-  hash: string,
-): string[] {
+export function withSeenHash(seen: readonly string[], hash: string): string[] {
   return [...seen.filter((entry) => entry !== hash), hash].slice(
     -SEEN_HASH_LIMIT,
   );
@@ -432,26 +447,30 @@ async function injectOrLink(
     })),
   );
 
-  // TODO(legend-5bn3, wire after milestone/m1 is merged into this branch): fire
-  // the lines to the KDS exactly like POS/QR fire, in this same transaction.
-  // Signature on milestone/m1 (apps/api/src/services/kds.service.ts):
-  //
-  //   import { routeFiredItemsToKitchen } from "./kds.service.ts";
-  //   await routeFiredItemsToKitchen(tx, context, {
-  //     outletId,
-  //     orderId,
-  //     itemIds: itemRows.map(({ id }) => id),
-  //     actor: input.actorUserId
-  //       ? { userId: input.actorUserId, deviceId: null }
-  //       : null,
-  //     now,
-  //     // A platform order is already paid: never fail it on a missing station.
-  //     onUnresolved: "skip",
-  //   });
-  //
-  // Until then the order exists in `orders`/`order_items` (status sent, lines
-  // fired) but has no kitchen ticket. The KDS test "ticket exists after
-  // injection" goes with this call.
+  // Fire to the KDS exactly like POS/QR fire, in this same transaction. A
+  // platform order is already paid: a line whose station cannot be resolved
+  // never fails it; it is fired without a ticket and audited
+  // (`kitchen_ticket.unrouted`).
+  const routed = await routeFiredItemsToKitchen(tx, context, {
+    outletId,
+    orderId,
+    itemIds: itemRows.map(({ id }) => id),
+    actor: input.actorUserId
+      ? { userId: input.actorUserId, deviceId: null }
+      : null,
+    now,
+    onUnresolved: "skip",
+  });
+  if (routed.unroutedItemIds.length > 0)
+    logger.warn(
+      {
+        orderId,
+        outletId,
+        platform,
+        unroutedCount: routed.unroutedItemIds.length,
+      },
+      "Delivery injection: items have no KDS station and were fired without a ticket",
+    );
   const acceptedAt = input.initialStatus === "accepted" ? now : null;
   const stored = {
     orderId,
@@ -520,11 +539,10 @@ async function injectOrLink(
     caller,
     now,
   });
-  // POS contract event for downstream consumers (cloud-sync, reports). It is
-  // NOT what builds KDS tickets: the KDS routes fired lines synchronously
-  // (kds.service `routeFiredItemsToKitchen`, called from POS/QR fire in the
-  // same transaction), and that module is not in this branch yet. See the
-  // report of legend-5bn3 D3: the call belongs right here once KDS merges.
+  // POS contract event for downstream consumers (cloud-sync, reports), the
+  // same one a POS submit emits (`order.placed` is the QR channel's event,
+  // shared/qr-order/events.ts). It is NOT what builds KDS tickets: those were
+  // routed synchronously above (`routeFiredItemsToKitchen`).
   await appendPosEvent(tx, context, "order.submitted", {
     order,
     payload: {
@@ -599,7 +617,13 @@ async function injectOrLink(
       now,
     });
 
-  return { deliveryOrderId: row.id, orderId, pickupNumber, row };
+  return {
+    deliveryOrderId: row.id,
+    orderId,
+    pickupNumber,
+    row,
+    needsReview: false,
+  };
 }
 
 /** Replay-detection columns of a write of `input` (see delivery-ingest). */
@@ -620,26 +644,33 @@ function seenFields(input: InjectDeliveryOrderInput) {
  * Stores the platform's delivery row for an order the cashier already rang up
  * at the POS with this platform number: linked to that order, which keeps its
  * own lines, number and kitchen state. Nothing is fired a second time.
+ *
+ * A twin the cashier already voided is not linked: the row is stored with
+ * `order_id` null (needs_review, never auto-accepted) so staff decide whether
+ * the platform order is cooked again or turned down.
  */
 async function linkManualTwin(
   tx: Tx,
   context: ScopedTenantContext,
   input: InjectDeliveryOrderInput,
-  orderId: string,
+  twinOrderId: string,
 ): Promise<InjectDeliveryOrderResult> {
   const tenantId = context.tenant.tenantId;
   const { now, outletId, platform } = input;
   const [order] = await tx
-    .select({ number: orders.number })
+    .select({ number: orders.number, status: orders.status })
     .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, twinOrderId)))
     .limit(1);
   if (!order) throw new DeliveryError("DELIVERY_ORDER_DUPLICATE");
-  const pickupNumber = order.number;
+  const needsReview = order.status === "voided";
+  const orderId = needsReview ? null : twinOrderId;
+  const pickupNumber = needsReview ? null : order.number;
+  const status = needsReview ? "received" : input.initialStatus;
   const stored = {
     orderId,
     pickupNumber,
-    status: input.initialStatus,
+    status,
     source: input.source,
     grossIdr: idr(input.grossIdr),
     commissionIdr: idr(input.commissionIdr),
@@ -647,7 +678,7 @@ async function linkManualTwin(
     ...seenFields(input),
     customerNote: input.customerNote,
     lines: [...input.lines],
-    acceptedAt: input.initialStatus === "accepted" ? now : null,
+    acceptedAt: status === "accepted" ? now : null,
     updatedAt: now,
   };
   const [row] = input.existing
@@ -691,7 +722,7 @@ async function linkManualTwin(
       actorUserId: input.actorUserId,
       now,
     });
-  if (input.initialStatus === "accepted")
+  if (status === "accepted")
     await appendDeliveryEvent(tx, context, "delivery_order.status_changed", {
       deliveryOrderId: row.id,
       outletId,
@@ -707,5 +738,119 @@ async function linkManualTwin(
       actorUserId: input.actorUserId,
       now,
     });
-  return { deliveryOrderId: row.id, orderId, pickupNumber, row };
+  return { deliveryOrderId: row.id, orderId, pickupNumber, row, needsReview };
+}
+
+/**
+ * Voids the lines of a cancelled or rejected delivery order that the kitchen
+ * has not started, once each, in the caller's transaction (D4 staff step and
+ * the platform's own cancel): POS line `voided`, daily limit released, KDS
+ * ticket line voided (ticket cancelled once empty). A line whose KDS ticket
+ * line is already in progress, ready or served is left alone. The order is
+ * `voided` only when no live line is left. `actorUserId` null is the system
+ * (platform cancel): `voided_by` stays null.
+ */
+export async function voidQueuedKdsLines(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: Pick<DeliveryChannelOrderRow, "orderId">,
+  input: { reason: string; actorUserId: UserId | null; now: Date },
+): Promise<void> {
+  if (row.orderId === null) return;
+  const tenantId = context.tenant.tenantId;
+  const { now } = input;
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, row.orderId)))
+    .limit(1)
+    .for("update");
+  if (!order || order.status === "voided" || order.status === "completed")
+    return;
+  // The UPDATE ... WHERE status = 'queued' RETURNING is the once-only key.
+  const voided = await tx
+    .update(orderItems)
+    .set({
+      status: "voided",
+      voidReason: input.reason.slice(0, 100),
+      voidedBy: input.actorUserId,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.orderId, order.id),
+        eq(orderItems.status, "queued"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${kitchenTicketItems}
+           WHERE ${kitchenTicketItems.tenantId} = ${orderItems.tenantId}
+             AND ${kitchenTicketItems.orderItemId} = ${orderItems.id}
+             AND ${kitchenTicketItems.status} IN ('in_progress', 'ready', 'served')
+        )`,
+      ),
+    )
+    .returning();
+  for (const item of voided)
+    await releaseMenuItemDailyLimit(tx, context, {
+      outletId: order.outletId,
+      menuItemId: item.menuItemId,
+      businessDate: item.reservedBusinessDate,
+      quantity: item.quantity,
+      now,
+    });
+  if (voided.length > 0) {
+    await tx
+      .update(posOrderItems)
+      .set({
+        voidedAt: now,
+        voidReasonNote: input.reason.slice(0, 500),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(posOrderItems.tenantId, tenantId),
+          inArray(
+            posOrderItems.itemId,
+            voided.map((item) => item.id),
+          ),
+        ),
+      );
+    await cancelKitchenItemsForVoidedLines(tx, context, {
+      outletId: order.outletId,
+      orderId: order.id,
+      itemIds: voided.map((item) => item.id),
+      reason: input.reason,
+      actor:
+        input.actorUserId === null
+          ? null
+          : { userId: input.actorUserId, deviceId: null },
+      now,
+    });
+  }
+  const [live] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(orderItems)
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.orderId, order.id),
+        sql`${orderItems.status} <> 'voided'`,
+      ),
+    );
+  if (Number(live?.count ?? 0) > 0) return;
+  await tx
+    .update(posOrders)
+    .set({ voidReasonNote: input.reason.slice(0, 500), updatedAt: now })
+    .where(
+      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
+    );
+  await tx
+    .update(orders)
+    .set({
+      status: "voided",
+      voidedAt: now,
+      voidReason: input.reason.slice(0, 100),
+      updatedAt: now,
+    })
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
 }

@@ -355,6 +355,39 @@ describe("delivery orders: platform orders push the adapter action", () => {
     expect(res.status).toBe(502);
     const read = await get(`/delivery-orders/${id}`);
     expect(read.body.data.status).toBe("received");
+    // A thrown call may still have reached the platform: recorded as unknown.
+    await asOwnerTenant(async (db) => {
+      const audit = await db.query<{ outcome: string }>(
+        `SELECT event->'maskedChanges'->'after'->>'outcome' AS outcome FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'delivery_order.platform_desync'`,
+        [tenant.tenantId, id],
+      );
+      expect(audit.rows.map((row) => row.outcome)).toEqual(["unknown"]);
+    });
+  });
+
+  it("a refused platform call rolls the step back without a desync entry", async () => {
+    setDeliveryChannelAdapter("gofood", {
+      execute: async (_context, input) => ({
+        reference: input.reference,
+        accepted: false,
+      }),
+    });
+    const id = await seedInjectedPlatformOrder();
+    const res = await post(`/delivery-orders/${id}/status`, {
+      status: "accepted",
+    });
+    expect(res.status).toBe(502);
+    await asOwnerTenant(async (db) => {
+      const audit = await db.query(
+        `SELECT 1 FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'delivery_order.platform_desync'`,
+        [tenant.tenantId, id],
+      );
+      expect(audit.rows).toEqual([]);
+    });
   });
 
   it("refuses to accept while the store is closed but still allows reject", async () => {

@@ -24,11 +24,57 @@ const fake: DeliveryChannelAdapter = {
   },
 };
 
-/** The adapter of one platform: the installed one, else the shared fake. */
+/**
+ * Upper bound of one adapter call. Callers hold a delivery row lock (D4 status
+ * step) or a webhook request open while it runs; a hung platform must not.
+ */
+export const DELIVERY_ADAPTER_TIMEOUT_MS = 8_000;
+
+/**
+ * `adapter` whose calls reject after `timeoutMs` (AbortSignal.timeout). The
+ * `DeliveryChannel` port takes no signal, so the underlying call is not
+ * cancelled, only abandoned: callers treat the rejection as an unknown
+ * outcome (the platform may still take the step; the reference keeps the
+ * retry idempotent).
+ */
+export function withDeliveryTimeout(
+  adapter: DeliveryChannelAdapter,
+  timeoutMs = DELIVERY_ADAPTER_TIMEOUT_MS,
+): DeliveryChannelAdapter {
+  return {
+    execute(context, input) {
+      const signal = AbortSignal.timeout(timeoutMs);
+      return new Promise((resolve, reject) => {
+        const onAbort = () =>
+          reject(
+            new Error(
+              `Delivery adapter ${input.action} timed out after ${timeoutMs} ms`,
+            ),
+          );
+        signal.addEventListener("abort", onAbort, { once: true });
+        adapter.execute(context, input).then(
+          (result) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(result);
+          },
+          (error: unknown) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(error);
+          },
+        );
+      });
+    },
+  };
+}
+
+/**
+ * The adapter of one platform (the installed one, else the shared fake),
+ * bounded by DELIVERY_ADAPTER_TIMEOUT_MS.
+ */
 export function deliveryChannelAdapterFor(
   platform: DeliveryPlatform,
 ): DeliveryChannelAdapter {
-  return installed.get(platform) ?? fake;
+  return withDeliveryTimeout(installed.get(platform) ?? fake);
 }
 
 /** Wiring point for real adapters and test doubles; null restores the fake. */
