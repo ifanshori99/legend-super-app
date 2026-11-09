@@ -18,7 +18,9 @@ import {
   CoreError,
   brandIdSchema,
   createUlid,
+  outletIdSchema,
   toIsoDateTime,
+  userIdSchema,
 } from "@starter/shared/core";
 import {
   brandWebsiteContentSchema,
@@ -151,7 +153,7 @@ export async function getPublicSite(
       .where(
         and(
           eq(reservationPolicies.tenantId, context.tenant.tenantId),
-          eq(reservationPolicies.outletId, outlet.id),
+          eq(reservationPolicies.outletId, outletIdSchema.parse(outlet.id)),
           eq(reservationPolicies.isActive, true),
         ),
       )
@@ -304,6 +306,7 @@ export async function saveBrandWebsiteContent(
 ): Promise<BrandWebsite> {
   assertTenantWide(context);
   const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
   brandIdSchema.parse(brandId);
   if (input.publish && input.content.geo === null)
     throw new HttpError(
@@ -369,7 +372,7 @@ export async function saveBrandWebsiteContent(
         outletId: outlet.id,
         content: input.content,
         publishedAt,
-        updatedBy: actorUserId,
+        updatedBy: actorId,
       })
       .onConflictDoUpdate({
         target: [brandWebsites.tenantId, brandWebsites.brandId],
@@ -377,7 +380,7 @@ export async function saveBrandWebsiteContent(
           outletId: outlet.id,
           content: input.content,
           publishedAt,
-          updatedBy: actorUserId,
+          updatedBy: actorId,
           updatedAt: now,
         },
       })
