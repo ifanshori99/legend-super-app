@@ -1245,9 +1245,13 @@ async function decide(
       if (
         row.status === "pending_approval" &&
         row.approvalChainId !== null &&
-        (await getApprovalChainOutcome(tx, {
+        // Locks the chain head like settle does (legend-2tcj): an inbox
+        // approval already in flight commits first, so this reject sees it and
+        // cannot settle a request that was approved.
+        (await resolveApprovalChainOutcome(tx, context, {
           chainId: row.approvalChainId,
           sourceModule: COUNT_APPROVAL_MODULE,
+          now,
         })) === "approved"
       )
         throw invalid();

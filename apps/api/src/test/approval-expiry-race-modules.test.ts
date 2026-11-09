@@ -397,6 +397,19 @@ function postCount(actor: string, countId: string, now: Date) {
   );
 }
 
+function rejectCount(actor: string, countId: string, now: Date) {
+  return transitionStockCount(
+    outletContext,
+    actor,
+    countId,
+    transitionStockCountInputSchema.parse({
+      action: "reject",
+      idempotencyKey: `reject-${randomUUID()}`,
+    }),
+    { mfaVerified: true, now },
+  );
+}
+
 async function ledgerOf(countId: string) {
   const { rows } = await owner.query<{ quantity: string }>(
     `SELECT quantity::text AS quantity FROM stock_ledger
@@ -617,6 +630,32 @@ describe("approval expiry race: stock count", () => {
       ),
     ).rejects.toMatchObject({ code: "APPROVAL_REQUEST_EXPIRED" });
     expect(await countStatus(prepared.countId)).toBe("counting");
+  });
+
+  it("a reject races an inbox approval already in flight: the reject waits for the chain lock, sees the approval and settles nothing (legend-2tcj)", async () => {
+    const counter = await createUser("warehouse", outletA);
+    const approver = await createUser("outlet_manager", outletA);
+    const prepared = await seedCountedStock(counter, "6.0000");
+    const approval = await countApproval(prepared.countId);
+    // Past the deadline the reject skips decideApprovalRequest and settles
+    // itself, so only the chain lock can order it against the inbox decision.
+    const now = await afterDeadline(approval.chain_id);
+
+    const decision = await startInboxDecision(approval.chain_id, approver);
+    const { result, waited } = await settleDuringDecision(decision, () =>
+      rejectCount(approver, prepared.countId, now).then(
+        (count) => count,
+        (error: unknown) => error,
+      ),
+    );
+
+    expect(waited, "the reject waits for the uncommitted decision").toBe(true);
+    expect(result).toMatchObject({ code: "STOCK_COUNT_INVALID_TRANSITION" });
+    expect(await countStatus(prepared.countId)).toBe("pending_approval");
+    expect(await ledgerOf(prepared.countId)).toEqual([]);
+    expect((await chainOf(approval.chain_id)).map((row) => row.status)).toEqual(
+      ["approved"],
+    );
   });
 
   it("a level-1 approval in flight that opens level 2 keeps the count pending: the overdue level 1 is not expired", async () => {
