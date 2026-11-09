@@ -4,9 +4,11 @@
 //
 // - Receipt gaps (POS-06, legend-93a). The shift report shows the device's
 //   missing receipt ordinals per run (prefix) and the day close refuses while
-//   any device has a missing ordinal. Default: no receipt has been issued yet, so no gap (the order service
-//   cannot complete a sale until the numbering bead installs its allocator,
-//   see pos-order-ports.ts), and the numbering bead replaces this lookup.
+//   any device has a missing ordinal (a lost range, legend-yd0h8, is shown
+//   but does not block). Default: no receipt has been issued yet, so no gap
+//   (the order service cannot complete a sale until the numbering bead
+//   installs its allocator, see pos-order-ports.ts), and the numbering bead
+//   replaces this lookup.
 // - Inventory deduction (WS-06, F8 "pemotongan stok akhir hari bila
 //   dipilih"). Default: refused, so a day close that asks for it fails closed
 //   instead of claiming a deduction nobody made.
