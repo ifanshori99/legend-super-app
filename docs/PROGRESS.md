@@ -735,3 +735,10 @@ Langkah berikut CTO baru:
 - RAM kuning (batas 4, aktif 7): CTO baru belum bisa dibuat; jangan tambah thread sampai hijau.
 - CTO baru G54dy dibuat (serah terima). Sesudahnya: G4zsm lapor hjaot + aturan founder (ws/payroll-loan-policy-api e7bd72fb, basis dd72324c, 0169 diubah di tempat: max_total_open_idr; reimburse mundur maks 30 hari). CTO putuskan maxTotalOpenIdr >= maxPrincipalIdr (422) + REIMBURSEMENT_BACKDATE_DAYS ke shared: dikirim ke G4zsm, SHA final menyusul. Merge train diberi tahu: cabang ini menggantikan dd72324c, bangun ulang integ/DB yang sudah menjalankan 0169 lama, rechain 0169. Kartu UI perlu: form policy kasbon, min tanggal reimburse.
 - G5gym selesai: ws/accounting-small-fixes 73a02f78 (3r6r + test bqup), antre merge train, resolved. pxcs + dux2 butuh migrasi (finance_policies; kode + kategori aset): CTO setujui satu kartu migrasi gabungan, nomor 0174 when 1794253000000. Kartu baru perlu: batas payout payment.refunded menunggu receipt dead-letter (guards.ts, sesudah thread refund merge).
+
+### 9 Nov 23:50 (CTO G54dy, pengganti G6nvg)
+- Thread di-link ke G54dy: G81x9 G4zsm G2h1s G9ktk G5p25. G6nvg berhenti (menunggu Auto Sleep atau ditutup).
+- legend-gzu54: G7b4u dibuka lagi (Sonnet, konteks 05cm9), brief 255, cabang ws/qr-split-sale-journal dari ff571dc9.
+- Brief siap, menunggu slot (Claude 8/8, akun #2): 256 y2lf+v9fh (ws/pph21-dec-minspend), 257 pxcs+dux2 (migrasi 0174 when 1794253000000), 258 ggpoe (dari ws/pickup-feed-service 6fee08e3; migrasi 0175 when 1794254000000 bila perlu). Berikut bebas 0176 when 1794255000000.
+- Kartu baru legend-v9bfj (P2 K): batas payout payment.refunded menunggu receipt dead-letter, sesudah refund merge.
+- legend-31fi: subagent Plan memecah 105 laporan + 64 angka dasbor jadi kartu paralel WS-11.
