@@ -38,6 +38,7 @@ import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
+import { salesTargetsRouter } from "./sales-targets.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -167,6 +168,8 @@ apiRouter.use(
   "/outlets/:outletId/delivery-reconciliation",
   deliveryReconciliationRouter,
 );
+// WS-11 sales targets per outlet and day (legend-ne81z).
+apiRouter.use("/outlets/:outletId/sales-targets", salesTargetsRouter);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);

@@ -1,12 +1,21 @@
-// Sales family of the report viewer mock: no derived figures (the sales atoms
-// are the day model's), the cells of the sales metrics and the sales reports.
+// Sales family of the report viewer mock: the sales target (the sales atoms are
+// the day model's), the cells of the sales metrics and the sales reports.
 import type { Atoms } from "../mock-day-model.ts";
-import { count, idr, ratio, type Cell } from "./cells.ts";
+import { count, idr, ratio, type Cell, type DerivedSpec } from "./cells.ts";
 
-export const derived = {} as const;
+export const derived = {
+  // The day's target sits a little above the open day's net sales.
+  salesTarget: { from: "net", ratio: 1.05 },
+} as const satisfies Record<string, DerivedSpec>;
 
-export function cellFor(metricCode: string, atoms: Atoms): Cell | undefined {
+type Figures = Atoms & Record<keyof typeof derived, number>;
+
+export function cellFor(metricCode: string, atoms: Figures): Cell | undefined {
   switch (metricCode) {
+    case "sales_target":
+      return idr(atoms.salesTarget);
+    case "target_achievement_pct":
+      return ratio(atoms.net, atoms.salesTarget);
     case "net_sales":
       return idr(atoms.net);
     case "gross_sales":
@@ -51,5 +60,18 @@ export const SALES_REPORTS = [
   "sales.refund",
 ] as const;
 
+/**
+ * Sales reports the report builder's preview mock does not know (target, day
+ * of week, category): served by the viewer only, so `buildSalesRuns` (the
+ * builder comparison, DASH-02) keeps to `SALES_REPORTS`.
+ */
+export const SALES_VIEWER_ONLY_REPORTS = [
+  "sales.target",
+  "sales.by_day",
+  "sales.by_category",
+] as const;
+
 /** Report codes served here, by code prefix. */
-export const reportsByPrefix = { sales: SALES_REPORTS } as const;
+export const reportsByPrefix = {
+  sales: [...SALES_REPORTS, ...SALES_VIEWER_ONLY_REPORTS],
+} as const;

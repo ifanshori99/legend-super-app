@@ -596,7 +596,7 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
     expect(idrOf(total(theirs, "net_sales"))).toBe(9_000_000);
   });
 
-  it("an aggregate viewer cannot split by a person; nobody splits ledger money by employee", async () => {
+  it("an aggregate viewer cannot split by a person; a ledger metric split without a source is unsupported", async () => {
     for (const groupBy of ["employee", "customer", "member"])
       expect(
         await codeOf(
@@ -612,7 +612,7 @@ describe("TEN-03 / TEN-01 / SH-01: scope", () => {
         run(world, {
           metricCodes: ["net_sales"],
           period: JUNE,
-          groupBy: "employee",
+          groupBy: "payment_method",
         }),
       ),
     ).toBe("METRIC_DIMENSION_NOT_SUPPORTED");
