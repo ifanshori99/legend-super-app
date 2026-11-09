@@ -943,6 +943,13 @@ describe("POS-05 the day cannot be closed while something is unfinished (legend-
     };
     expect(shift.status).toBe("closed");
     expect(shift.countedIdr).toBe(500_000);
+    // legend-4wrfd: the cashier's close is blind; the variance is stored.
+    expect(shift.varianceIdr).toBeNull();
+    const { rows } = await owner.query<{ variance: number }>(
+      "SELECT variance_idr::float8 AS variance FROM pos_shifts WHERE id = $1",
+      [closed.body.data.id],
+    );
+    shift.varianceIdr = rows[0]!.variance;
     expect(closed.body.data.countId).toBe(countId);
     // The drawer cannot balance by accident, so there is a variance to carry.
     expect(shift.varianceIdr).not.toBe(0);

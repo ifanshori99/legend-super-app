@@ -21,6 +21,7 @@ import { IDR_CASH_DENOMINATIONS } from "./schemas.ts";
 import type {
   BlindCashCount,
   PosShift,
+  PosShiftWithFigures,
   PosTender,
   TenderBucket,
 } from "./schemas.ts";
@@ -257,7 +258,10 @@ export type CloseShiftInput = {
  * selisih memiliki penjelasan dan persetujuan"). The result is the stored row;
  * after this the variance is locked.
  */
-export function closeShift(shift: PosShift, input: CloseShiftInput): PosShift {
+export function closeShift(
+  shift: PosShiftWithFigures,
+  input: CloseShiftInput,
+): PosShiftWithFigures {
   if (shift.status === "closed") throw new PosError("SHIFT_ALREADY_CLOSED");
   const countedIdr = blindCountTotalIdr(input.counts);
   const expectedIdr = shiftExpectedCashIdr(shift);

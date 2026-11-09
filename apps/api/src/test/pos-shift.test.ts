@@ -615,6 +615,36 @@ afterAll(async () => {
 
 // ---- Open -------------------------------------------------------------------------
 
+/**
+ * legend-4wrfd: the cashier's own shift is blind (no drawer breakdown,
+ * expected or variance). Checks that, then adds the stored figures so the
+ * assertions on the close maths keep working.
+ */
+async function withStoredFigures<T extends { id: string }>(dto: T): Promise<T> {
+  for (const key of [
+    "cashSalesIdr",
+    "cashRefundsIdr",
+    "cashInIdr",
+    "cashOutIdr",
+    "cashDropIdr",
+    "expectedIdr",
+    "varianceIdr",
+  ])
+    expect((dto as Record<string, unknown>)[key], key).toBeNull();
+  const { rows } = await owner.query<Record<string, number | null>>(
+    `SELECT cash_sales_idr::float8 AS "cashSalesIdr",
+            cash_refunds_idr::float8 AS "cashRefundsIdr",
+            cash_in_idr::float8 AS "cashInIdr",
+            cash_out_idr::float8 AS "cashOutIdr",
+            cash_drop_idr::float8 AS "cashDropIdr",
+            expected_idr::float8 AS "expectedIdr",
+            variance_idr::float8 AS "varianceIdr"
+       FROM pos_shifts WHERE id = $1`,
+    [dto.id],
+  );
+  return { ...dto, ...rows[0] };
+}
+
 describe("POS-03 open a cashier shift", () => {
   it("opens from a registered terminal with the opening float, and records cashier_shift.opened", async () => {
     const cashier = await newCashier();
@@ -803,7 +833,10 @@ describe("POS-03 cash in, cash out and drops", () => {
       varianceNote: "Kas keluar menunggu persetujuan supervisor",
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data).toMatchObject({ expectedIdr: 0, varianceIdr: 0 });
+    expect(await withStoredFigures(closed.body.data)).toMatchObject({
+      expectedIdr: 0,
+      varianceIdr: 0,
+    });
   });
 
   it("records cash_in, cash_out and drop with a reason, lists them and emits cash_movement.recorded", async () => {
@@ -1405,7 +1438,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       varianceNote: "Uang kembalian terselip, kurang Rp5.000",
     });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
-    expect(ok.body.data).toMatchObject({
+    expect(await withStoredFigures(ok.body.data)).toMatchObject({
       status: "closed",
       expectedIdr: FLOAT_IDR,
       countedIdr: FLOAT_IDR - 5_000,
@@ -1427,7 +1460,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
         varianceNote: "Selisih dihitung ulang dua kali",
       });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      expect(response.body.data).toMatchObject({
+      expect(await withStoredFigures(response.body.data)).toMatchObject({
         status: "closed",
         countedIdr: counted,
         expectedIdr: FLOAT_IDR,
@@ -1463,12 +1496,13 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       amountIdr: 30_000,
       reasonNote: "Setor ke brankas",
     });
+    // legend-4wrfd: the cashier's own shift is blind (null, not zero).
     const zeros = {
-      cashSalesIdr: 0,
-      cashRefundsIdr: 0,
-      cashInIdr: 0,
-      cashOutIdr: 0,
-      cashDropIdr: 0,
+      cashSalesIdr: null,
+      cashRefundsIdr: null,
+      cashInIdr: null,
+      cashOutIdr: null,
+      cashDropIdr: null,
       expectedIdr: null,
       countedIdr: null,
       varianceIdr: null,
@@ -1556,11 +1590,11 @@ describe("POS-03 close with blind count and supervisor approval", () => {
     expect(blind.status).toBe(200);
     expect(blind.body.data.shift).toMatchObject({
       status: "open",
-      cashSalesIdr: 0,
-      cashRefundsIdr: 0,
-      cashInIdr: 0,
-      cashOutIdr: 0,
-      cashDropIdr: 0,
+      cashSalesIdr: null,
+      cashRefundsIdr: null,
+      cashInIdr: null,
+      cashOutIdr: null,
+      cashDropIdr: null,
       expectedIdr: null,
       countedIdr: null,
       varianceIdr: null,
@@ -1588,7 +1622,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
     const body = { countId, ...approval, idempotencyKey };
     const response = await close(cashier, shift.id, body);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body.data).toMatchObject({
+    expect(await withStoredFigures(response.body.data)).toMatchObject({
       id: shift.id,
       status: "closed",
       openingFloatIdr: FLOAT_IDR,
@@ -1619,7 +1653,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
 
     // The closed shift reads back with the same locked figures and movements.
     const after = await report(cashier, shift.id);
-    expect(after.body.data.shift).toMatchObject({
+    expect(await withStoredFigures(after.body.data.shift)).toMatchObject({
       status: "closed",
       expectedIdr: expected,
       countedIdr: expected,
@@ -1630,7 +1664,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
     // The same request replayed returns the stored close; no second event.
     const replay = await close(cashier, shift.id, body);
     expect([200, 201]).toContain(replay.status);
-    expect(replay.body.data).toMatchObject({
+    expect(await withStoredFigures(replay.body.data)).toMatchObject({
       id: shift.id,
       countedIdr: expected,
       varianceIdr: 0,
@@ -2042,7 +2076,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
       ...note,
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data).toMatchObject({
+    expect(await withStoredFigures(closed.body.data)).toMatchObject({
       status: "closed",
       countId: big.id,
       countedIdr: FLOAT_IDR + 1_000_000,
@@ -2099,7 +2133,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
       ...note,
     });
     expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
-    expect(fresh.body.data).toMatchObject({
+    expect(await withStoredFigures(fresh.body.data)).toMatchObject({
       countId: second.id,
       varianceIdr: -10_000,
     });
@@ -2217,7 +2251,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
 
     const closed = await closeShift(cashier, shift.id, FLOAT_IDR + 20_000);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data).toMatchObject({
+    expect(await withStoredFigures(closed.body.data)).toMatchObject({
       expectedIdr: FLOAT_IDR + 20_000,
       varianceIdr: 0,
     });
@@ -2302,7 +2336,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
             rightRole.status,
             `variance ${variance}: ${JSON.stringify(rightRole.body)}`,
           ).toBe(200);
-          expect(rightRole.body.data).toMatchObject({
+          expect(await withStoredFigures(rightRole.body.data)).toMatchObject({
             status: "closed",
             varianceIdr: variance,
             approvedBy: senior.member.userId,
@@ -2390,7 +2424,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
           ...note,
         });
         expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-        expect(closed.body.data).toMatchObject({
+        expect(await withStoredFigures(closed.body.data)).toMatchObject({
           status: "closed",
           varianceIdr: variance,
         });
@@ -2410,7 +2444,9 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
           ...noteFor(variance),
         });
         expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-        expect(closed.body.data.varianceIdr).toBe(variance);
+        expect((await withStoredFigures(closed.body.data)).varianceIdr).toBe(
+          variance,
+        );
       },
     );
   });
@@ -2498,7 +2534,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
           ...note,
         });
         expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-        expect(closed.body.data).toMatchObject({
+        expect(await withStoredFigures(closed.body.data)).toMatchObject({
           status: "closed",
           varianceIdr: variance,
         });
@@ -2755,7 +2791,7 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
       varianceNote: "Selisih dicek supervisor",
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data).toMatchObject({
+    expect(await withStoredFigures(closed.body.data)).toMatchObject({
       status: "closed",
       countId: count.id,
       varianceIdr: 60_000,
@@ -2955,7 +2991,9 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
       varianceNote: "Kas keluar menunggu persetujuan supervisor",
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-    expect(closed.body.data.expectedIdr).toBe(FLOAT_IDR);
+    expect((await withStoredFigures(closed.body.data)).expectedIdr).toBe(
+      FLOAT_IDR,
+    );
   });
 
   it("stores the verified override's approver, not the client's spelling of the id, on the shift, its event and the audit row", async () => {
@@ -4069,7 +4107,7 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
         heldIdr > 0 ? { varianceNote: "Kas keluar menunggu persetujuan" } : {},
       );
       expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-      expect(closed.body.data).toMatchObject({
+      expect(await withStoredFigures(closed.body.data)).toMatchObject({
         status: "closed",
         expectedIdr: recountIdr,
         varianceIdr: 0,
@@ -4165,7 +4203,7 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       expect(receipt.noteRequired).toBe(false);
       const closed = await closeShift(cashier, shift.id, honestIdr);
       expect(closed.status, JSON.stringify(closed.body)).toBe(200);
-      expect(closed.body.data).toMatchObject({
+      expect(await withStoredFigures(closed.body.data)).toMatchObject({
         status: "closed",
         expectedIdr: FLOAT_IDR + 100_000,
         varianceIdr: 0,

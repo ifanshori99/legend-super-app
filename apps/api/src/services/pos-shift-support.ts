@@ -26,6 +26,7 @@ import {
   posShiftCountReceiptSchema,
   posShiftCountSchema,
   posShiftSchema,
+  POS_SHIFT_BLIND_FIELDS,
   recordCashMovementInputSchema,
   submitPosShiftCountInputSchema,
   type PosCashMovement,
@@ -33,6 +34,7 @@ import {
   type PosShiftCountReceipt,
   type PosEventName,
   type PosShift,
+  type PosShiftWithFigures,
 } from "@starter/shared/pos";
 import { domainEventOutbox } from "../db/schema/index.ts";
 import {
@@ -757,13 +759,36 @@ export async function auditShift(
 // ---- Contract mappers -------------------------------------------------------
 
 /**
- * The contract shift. An open shift shows the live aggregates (`live`); a
- * closed one shows the figures frozen at close.
+ * The contract shift for a caller. `blind` (a caller without the variance
+ * permission, or the shift's own cashier: POS-03, legend-4wrfd) nulls the
+ * drawer breakdown, expected and variance, open or closed. Otherwise the
+ * full view (shiftFiguresDto).
  */
 export function shiftDto(
   row: ShiftRow,
   live: ShiftAggregates = emptyAggregates,
+  options: { blind?: boolean } = {},
 ): PosShift {
+  const dto = shiftFiguresDto(row, live);
+  return options.blind ? blindShiftDto(dto) : dto;
+}
+
+/** The blind view of a full shift (legend-4wrfd). */
+export function blindShiftDto(dto: PosShift): PosShift {
+  const blind: Record<string, unknown> = { ...dto };
+  for (const key of POS_SHIFT_BLIND_FIELDS) blind[key] = null;
+  return posShiftSchema.parse(blind);
+}
+
+/**
+ * The full shift (supervisor reads, internal maths, events, audit). An open
+ * shift shows the live aggregates (`live`); a closed one shows the figures
+ * frozen at close.
+ */
+export function shiftFiguresDto(
+  row: ShiftRow,
+  live: ShiftAggregates = emptyAggregates,
+): PosShiftWithFigures {
   const closed = row.status === "closed";
   const figures = closed
     ? {
@@ -798,7 +823,7 @@ export function shiftDto(
     approvedAt: row.approvedAt ? toIsoDateTime(row.approvedAt) : null,
     closedAt: row.closedAt ? toIsoDateTime(row.closedAt) : null,
     countId: row.countId ?? null,
-  });
+  }) as PosShiftWithFigures;
 }
 
 /** Supervisor view of one blind count submission (expected and variance). */
@@ -870,7 +895,7 @@ export function shiftAuditView(
   row: ShiftRow,
   live: ShiftAggregates = emptyAggregates,
 ): Record<string, unknown> {
-  const dto = shiftDto(row, live);
+  const dto = shiftFiguresDto(row, live);
   return {
     id: dto.id,
     status: dto.status,
