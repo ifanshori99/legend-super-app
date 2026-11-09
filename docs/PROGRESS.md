@@ -254,6 +254,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Gagal tarik: replika lama tetap dipakai, tidak ada akses device yang dibuka. Basi bila tarik sukses terakhir lebih tua dari `EDGE_DEVICE_SYNC_STALE_SECONDS` (default 900): log error, `deviceRegistry.stale` di `/api/edge/status` dan `/api/edge/health` (status HTTP health tidak berubah).
 - Kontrak: `edgeStatusSchema.deviceRegistry` opsional (edge lama tidak mengirimnya). Lanjutan web: tampilkan status basi di panel edge dan isi mock `apps/web/src/features/ws02-edge/mock.ts`.
 
+## WS-13 alur bisnis A–Z (qa/test-writer, cabang `ws/e2e-az`, brief 91, 2026-11-09)
+
+- Sudah: 7 berkas tes integrasi `apps/api/src/test/e2e-az/` (A/Y, E/W, D, J, K+cuti, H, R) + `e2e/az-whitelabel.spec.ts`. API: 57 lulus, 64 skip (`PENDING-BRANCH`/`PENDING-CARD`/`PENDING-DECISION`), 0 gagal. Laporan: `docs/qa/2026-11-09-e2e-az.md`.
+- Bug P1 dibuat: legend-vj37 (bundel API crash di boot karena `sharp`, `pnpm test:e2e` m1 merah), legend-ozud (manifest PWA nama platform), legend-ww29 (`/design-system` nama platform).
+- Langkah berikut: tiap merge train menggabungkan cabang di daftar `PENDING-BRANCH`, ganti `describeUntilMerged` → `describe` di berkas terkait lalu jalankan. Spec Playwright jalan setelah legend-vj37 fix.
+- Merge train m1 (`prep/e2e-az`, setelah unskip 6 cabang): 83 lulus, 38 skip, 0 gagal (run gabungan lewat `heavy`). Perbaikan tes 263ce1ec: polling PAY-02 pakai `GET` status intent; refund PAY-04 diajukan keuangan, disetujui supervisor, kebijakan approval di-seed.
+- Keputusan CTO: legend-dahk (port tender EDC) disambung; legend-m4fv aksi `edc_standalone` izin `pos.edc_standalone.approve`. Dikerjakan G106p; EDC-01/02/04 tetap skip sampai masuk.
+- Keputusan perlu CTO: kartu online (PRD 223: P1 Duitku, bukan DOIT); teks transfer bank di PRD 223/257/680/1754.
+- Biaya sesi: utama Opus 95 req, subagent Sonnet 443 req, total biaya* 8008k; 18 subagent, maks ~8 bersamaan.
+
 ## WS-02 edge hardening (engineer, cabang `ws/ws02-edge`, kartu legend-x3lv, 0835, wqc6, khu5, 2lp.8, 2lp.9, s4r6)
 
 - Sudah: rotasi kredensial edge + masa tenggang (`graceHours`, `force`), lockout per alamat + bypass kredensial dikenal, revoke via LISTEN, prune antrean ack (simpan baris terbaru per agregat); QR order diteruskan ke edge, edge putus = 503 "Silakan pesan melalui waiter."; layar konflik sinkron + replay berurutan (kunci kursor, tolak bila konflik lebih rendah masih terbuka) + notifikasi `edge_sync_conflict`; event yang ditolak applier jadi konflik `applier_refused`, batch lanjut; bootstrap bundel tenant/outlet ke edge baru (HMAC hanya deteksi korupsi, autentisitas dari TLS); `pos_orders.is_training`; UI perangkat pakai kontrak shared (dialog daftar, terbitkan ulang token); applier `stock.moved` edge→cloud (allowlist sumber, tolak tabrakan ledger id dan dokumen beda outlet).
