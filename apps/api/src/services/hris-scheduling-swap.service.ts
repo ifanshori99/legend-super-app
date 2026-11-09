@@ -53,6 +53,7 @@ import {
   type ShiftSwapRequest,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
@@ -95,9 +96,12 @@ type Page<T> = {
   meta: { limit: number; nextCursor: string | null };
 };
 
-/** Same destination as `leave.approved`: the notification adapter has no rule for it. */
 const SHIFT_EVENT_DESTINATIONS = ["cloud-sync", "notification"] as const;
-const SCHEDULED_STATUSES = ["draft", "published", "swapped"] as const;
+// Drafts are unpublished plans: compliance never counts them, so a swap
+// diff cannot leak or be blocked by a colleague's draft.
+const COMPLIANCE_STATUSES = ["published", "swapped"] as const;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const lower = (value: string) => value.toLowerCase();
 const same = (left: string, right: string) => lower(left) === lower(right);
@@ -167,6 +171,40 @@ async function findSwap(
   return row ?? null;
 }
 
+/**
+ * The request already stored under this create key, if any. The same key for
+ * a different request is `IDEMPOTENCY_KEY_REUSED`.
+ */
+async function findCreateReplay(
+  tx: Tx,
+  tenantId: TenantId,
+  requesterId: string,
+  input: CreateBody,
+): Promise<SwapRow | null> {
+  const [replayed] = await tx
+    .select()
+    .from(shiftSwapRequests)
+    .where(
+      and(
+        eq(shiftSwapRequests.tenantId, tenantId),
+        eq(shiftSwapRequests.createIdempotencyKey, input.idempotencyKey),
+      ),
+    )
+    .limit(1);
+  if (!replayed) return null;
+  if (
+    !same(replayed.requestedBy, requesterId) ||
+    !same(replayed.fromAssignmentId, input.fromAssignmentId) ||
+    !same(replayed.toEmployeeId, input.toEmployeeId) ||
+    (replayed.toAssignmentId ?? null) !== (input.toAssignmentId ?? null)
+  )
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "Idempotency key already used for a different request.",
+    );
+  return replayed;
+}
+
 /** Locks assignments in id order, so two swaps touching the same rows cannot deadlock. */
 async function lockAssignments(
   tx: Tx,
@@ -206,7 +244,7 @@ async function activeEmployee(
 }
 
 /**
- * Every scheduled assignment of the given employees around the swapped shifts,
+ * Every published or swapped assignment of the given employees around the swapped shifts,
  * across outlets, so rest between outlets and the weekly total are judged on
  * the whole person. The window is padded by the consecutive-day limit and one
  * week, which is as far as any compliance rule can look.
@@ -228,7 +266,7 @@ async function loadEmployeeAssignments(
       and(
         eq(shiftAssignments.tenantId, tenantId),
         inArray(shiftAssignments.employeeId, [...employeeIds]),
-        inArray(shiftAssignments.status, [...SCHEDULED_STATUSES]),
+        inArray(shiftAssignments.status, [...COMPLIANCE_STATUSES]),
         sql`${shiftAssignments.businessDate} >= ${from}::date`,
         sql`${shiftAssignments.businessDate} <= ${to}::date`,
       ),
@@ -262,6 +300,26 @@ async function swapCompliance(
     toAssignmentId: input.to?.id ?? null,
     policy: limits,
   });
+}
+
+/**
+ * HR-05 must judge the person, not the caller's reach: an outlet-scoped
+ * approver or requester still has to see the employees' shifts at every
+ * outlet. The read runs in a server-built tenant-wide context; the permission
+ * and outlet checks stay on the real context. The result is only a list of
+ * issue codes about the two employees, never the rows themselves.
+ */
+async function tenantWideSwapCompliance(
+  context: ScopedTenantContext,
+  outletId: string,
+  input: Parameters<typeof swapCompliance>[3],
+): Promise<ShiftComplianceIssue[]> {
+  const wide = establishScopedTenantContext(context.tenant, {
+    kind: "tenant",
+  });
+  return withTenant(db, wide, (tx) =>
+    swapCompliance(tx, context.tenant.tenantId, outletId, input),
+  );
 }
 
 async function nextShiftEventSequence(
@@ -399,6 +457,8 @@ export async function listShiftSwapRequests(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const reach = manageReach(access);
     const own = access.own;
+    if (query.mine && !own)
+      return { data: [], meta: { limit: query.limit, nextCursor: null } };
     const conditions: SQL[] = [];
     if (own)
       conditions.push(
@@ -435,7 +495,12 @@ export async function listShiftSwapRequests(
     if (query.cursor) {
       const [requestedAt, id] = cursorPair(query.cursor);
       const at = new Date(requestedAt);
-      if (Number.isNaN(at.getTime())) throw invalid("Check the cursor.");
+      if (
+        !UUID_PATTERN.test(id) ||
+        Number.isNaN(at.getTime()) ||
+        at.toISOString() !== requestedAt
+      )
+        throw invalid("Check the cursor.");
       filters.push(
         or(
           lt(shiftSwapRequests.requestedAt, at),
@@ -490,29 +555,8 @@ export async function createShiftSwapRequest(
       throw forbidden();
     const tenantId = context.tenant.tenantId;
 
-    const [replayed] = await tx
-      .select()
-      .from(shiftSwapRequests)
-      .where(
-        and(
-          eq(shiftSwapRequests.tenantId, tenantId),
-          eq(shiftSwapRequests.createIdempotencyKey, input.idempotencyKey),
-        ),
-      )
-      .limit(1);
-    if (replayed) {
-      if (
-        !same(replayed.requestedBy, own.id) ||
-        !same(replayed.fromAssignmentId, input.fromAssignmentId) ||
-        !same(replayed.toEmployeeId, input.toEmployeeId) ||
-        (replayed.toAssignmentId ?? null) !== (input.toAssignmentId ?? null)
-      )
-        throw new CoreError(
-          "IDEMPOTENCY_KEY_REUSED",
-          "Idempotency key already used for a different request.",
-        );
-      return toShiftSwapRequest(replayed);
-    }
+    const replayed = await findCreateReplay(tx, tenantId, own.id, input);
+    if (replayed) return toShiftSwapRequest(replayed);
 
     const ids = [input.fromAssignmentId, input.toAssignmentId].filter(
       (id): id is NonNullable<typeof id> => id !== null && id !== undefined,
@@ -520,6 +564,16 @@ export async function createShiftSwapRequest(
     if (ids.length === 2 && same(ids[0], ids[1]))
       throw invalid("Shift asal dan shift tujuan harus berbeda.");
     const locked = await lockAssignments(tx, tenantId, ids);
+    // A concurrent retry with the same key waited on the lock above; look
+    // again so it returns the first result instead of failing on the rows
+    // the first call just changed or filed.
+    const replayedAfterLock = await findCreateReplay(
+      tx,
+      tenantId,
+      own.id,
+      input,
+    );
+    if (replayedAfterLock) return toShiftSwapRequest(replayedAfterLock);
     const from = locked.find((row) => same(row.id, input.fromAssignmentId));
     if (
       !from ||
@@ -577,9 +631,8 @@ export async function createShiftSwapRequest(
         "Sudah ada permintaan tukar yang menunggu untuk shift ini.",
       );
 
-    const complianceIssues = await swapCompliance(
-      tx,
-      tenantId,
+    const complianceIssues = await tenantWideSwapCompliance(
+      context,
       input.outletId,
       {
         from,
@@ -589,30 +642,39 @@ export async function createShiftSwapRequest(
       },
     );
 
-    const [inserted] = await tx
-      .insert(shiftSwapRequests)
-      .values({
-        tenantId,
-        outletId: from.outletId,
-        fromAssignmentId: from.id,
-        toAssignmentId: to?.id ?? null,
-        requestedBy: own.id,
-        toEmployeeId: input.toEmployeeId,
-        status: "pending",
-        complianceIssues,
-        requestedByUserId: access.actorUserId,
-        requestedAt: now,
-        createIdempotencyKey: input.idempotencyKey,
-        updatedAt: now,
+    // Savepoint: a unique violation aborts only the insert, so the stored row
+    // can still be read back in this transaction.
+    const created = await tx
+      .transaction(async (savepoint) => {
+        const [row] = await savepoint
+          .insert(shiftSwapRequests)
+          .values({
+            tenantId,
+            outletId: from.outletId,
+            fromAssignmentId: from.id,
+            toAssignmentId: to?.id ?? null,
+            requestedBy: own.id,
+            toEmployeeId: input.toEmployeeId,
+            status: "pending",
+            complianceIssues,
+            requestedByUserId: access.actorUserId,
+            requestedAt: now,
+            createIdempotencyKey: input.idempotencyKey,
+            updatedAt: now,
+          })
+          .returning();
+        return { row, replayed: false };
       })
-      .returning()
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         const constraint = uniqueViolation(error)?.constraint;
-        if (constraint === "shift_swap_requests_tenant_idempotency_key")
+        if (constraint === "shift_swap_requests_tenant_idempotency_key") {
+          const stored = await findCreateReplay(tx, tenantId, own.id, input);
+          if (stored) return { row: stored, replayed: true };
           throw new CoreError(
             "IDEMPOTENCY_KEY_REUSED",
             "Idempotency key already used for a different request.",
           );
+        }
         if (constraint === "shift_swap_requests_open_from_key")
           throw conflict(
             "SHIFT_SWAP_EXISTS",
@@ -620,7 +682,9 @@ export async function createShiftSwapRequest(
           );
         throw error;
       });
+    const inserted = created.row;
     if (!inserted) throw new Error("Shift swap insert returned no row");
+    if (created.replayed) return toShiftSwapRequest(inserted);
     await auditSwap(
       tx,
       context,
@@ -700,6 +764,8 @@ export async function decideShiftSwapRequest(
     const ids = [row.fromAssignmentId, row.toAssignmentId].filter(
       (id): id is string => id !== null,
     );
+    // Lock order: swap row (findSwap above), then assignments. Cancelling an
+    // assignment in the roster service takes the same order.
     const locked = await lockAssignments(tx, tenantId, ids);
     const from = locked.find((item) => same(item.id, row.fromAssignmentId));
     const to = row.toAssignmentId
@@ -728,12 +794,16 @@ export async function decideShiftSwapRequest(
     if (!(await activeEmployee(tx, tenantId, row.toEmployeeId))) throw stale;
 
     // Recomputed against the roster as it is now; the copy on the row may be stale.
-    const complianceIssues = await swapCompliance(tx, tenantId, row.outletId, {
-      from,
-      to,
-      requesterId: row.requestedBy,
-      toEmployeeId: row.toEmployeeId,
-    });
+    const complianceIssues = await tenantWideSwapCompliance(
+      context,
+      row.outletId,
+      {
+        from,
+        to,
+        requesterId: row.requestedBy,
+        toEmployeeId: row.toEmployeeId,
+      },
+    );
     const overrideReason =
       input.action === "approve_with_override"
         ? (input.overrideReason?.trim() ?? null)

@@ -1333,3 +1333,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## legend-jstx WS-10 penjadwalan karyawan (engineer, cabang `ws/hr-scheduling` dari d2080951, 2026-11-10)
+
+- Dibangun: 5 tabel (`shift_templates`, `shift_assignments`, `roster_publications`, `shift_swap_requests`, `shift_compliance_policies`), migrasi 0199 (satu berkas, RLS tenant di semua, RLS outlet di 4 tabel). 15 endpoint di `/api/hris` (template, kebijakan kepatuhan, draft jadwal, salin minggu, publikasi, tukar/gantikan dengan HR-05). Event `shift.published` ke outbox `cloud-sync` + `notification`; aturan penerima di `worker/notification-adapters.ts`.
+- Default yang bisa diubah (perlu konfirmasi founder): batas kepatuhan 600 menit per shift, 720 per hari, 2700 per minggu, istirahat 660 menit, maks 6 hari beruntun; karyawan hanya boleh dijadwalkan di outlet asalnya.
+- Bukti: API 7 file 125 tes lulus (3 file baru + guard migrasi/RLS), root hris+payroll 39 tes lulus, tsc shared dan api lewat heavy bersih, eslint + prettier bersih, `db:generate` kedua kosong. Review S (reviewer) 8 temuan dan K (architect) 5 temuan: HR-05 lintas outlet, bocor draft, idempotensi, urutan lock, cursor sudah dibetulkan.
+- Belum dikerjakan (lihat laporan): event/notifikasi saat shift terpublikasi dibatalkan, notifikasi untuk peminta cover, id assignment per publikasi, FK outlet komposit, aturan siapa boleh melonggarkan kebijakan outlet.

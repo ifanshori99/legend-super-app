@@ -36,6 +36,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { encodeCursor } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -1051,6 +1052,29 @@ describe("§28 Roster Mingguan: draft shifts", () => {
         })
       ).status,
     ).toBe(404);
+  });
+
+  it("[TEN-02] a malformed list cursor is refused (422), never a 500", async () => {
+    const goodId = randomUUID();
+    const cursors = [
+      encodeCursor([day(3, 3), "not-a-uuid"]),
+      encodeCursor(["2026-02-31", goodId]),
+      encodeCursor(["2026-13-01", goodId]),
+      encodeCursor(["tomorrow", goodId]),
+      "%%%",
+    ];
+    for (const cursor of cursors) {
+      const res = await mgr.get(
+        `/api/hris/shifts?outletId=${jkt}&cursor=${encodeURIComponent(cursor)}`,
+      );
+      expect(res.status, cursor).toBe(422);
+    }
+    const ok = await mgr.get(
+      `/api/hris/shifts?outletId=${jkt}&cursor=${encodeURIComponent(
+        encodeCursor([day(3, 3), goodId]),
+      )}`,
+    );
+    expect(ok.status).toBe(200);
   });
 
   it("[§28 Roster Mingguan] an outlet-week without shifts is an empty, unpublished roster", async () => {

@@ -31,6 +31,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { encodeCursor } from "@starter/shared/core";
 import { addBusinessDays } from "@starter/shared/hris";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -453,6 +454,25 @@ async function openCover(assignmentId: string, toEmployeeId: string) {
   };
 }
 
+/** Seeds a published copy of `likeAssignmentId` for the employee at another outlet. */
+async function publishedShiftElsewhere(
+  employeeId: string,
+  outletId: string,
+  likeAssignmentId: string,
+) {
+  await asTenant((db) =>
+    db.query(
+      `INSERT INTO shift_assignments
+         (tenant_id, outlet_id, employee_id, business_date, segments, break_minutes,
+          status, source, published_by, published_at, created_by)
+       SELECT tenant_id, $2, $3, business_date, segments, break_minutes,
+              'published', 'user', created_by, now(), created_by
+         FROM shift_assignments WHERE tenant_id = $1 AND id = $4`,
+      [tenant.id, outletId, employeeId, likeAssignmentId],
+    ),
+  );
+}
+
 const decide = (
   client: Client,
   swapId: string,
@@ -797,8 +817,10 @@ describe("HR-05 tukar shift tidak boleh melanggar jam kerja tanpa approval ekspl
     const swap = await openCover(shift, employeeT);
     expect(swap.complianceIssues).toEqual([]);
 
-    // After the request, T is rostered malam the night before.
+    // After the request, T is rostered malam the night before and the week is
+    // published again (drafts do not count towards compliance).
     await createShift(employeeT, dayOf(7, 1), malamId);
+    await publishWeek(7);
     const refused = await decide(hr.client, swap.id, "approve");
     expect(refused.status).toBe(409);
     expect(await shiftNow(7, shift)).toMatchObject({ employeeId: employeeR });
@@ -813,6 +835,61 @@ describe("HR-05 tukar shift tidak boleh melanggar jam kerja tanpa approval ekspl
     expect(override.body.data.overrideReason).toBe(
       "Disetujui dengan istirahat singkat",
     );
+  });
+
+  it("[HR-05] an outlet-only approver still sees the target's published shifts at another outlet: plain approve is 409, an override passes", async () => {
+    const [shift] = await publishedWeek(30, [
+      { employeeId: employeeR, day: 2, templateId: pagiId },
+    ]);
+    const swap = await openCover(shift, employeeT);
+    expect(swap.complianceIssues).toEqual([]);
+
+    // T also works the same hours at the other outlet, published.
+    await publishedShiftElsewhere(employeeT, secondOutlet.id, shift);
+    const approverA = await signedInClient("Penyetuju Outlet A Tukar API", {
+      mfa: true,
+    });
+    await grantCustomRole(tenant.id, approverA.userId, MANAGER_PERMISSIONS, {
+      type: "outlet",
+      id: outlet.id,
+    });
+
+    const refused = await decide(approverA.client, swap.id, "approve");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await shiftNow(30, shift)).toMatchObject({ employeeId: employeeR });
+
+    const override = await decide(
+      approverA.client,
+      swap.id,
+      "approve_with_override",
+      "Disetujui, tahu bentrok outlet lain",
+    );
+    expect(override.status, JSON.stringify(override.body)).toBe(200);
+    expect(override.body.data.complianceIssues.length).toBeGreaterThan(0);
+    expect(await shiftNow(30, shift)).toMatchObject({ employeeId: employeeT });
+  }, 60_000);
+
+  it("[HR-05] a request sees the target's published shifts at another outlet when filed (frozen issues)", async () => {
+    const [shift] = await publishedWeek(31, [
+      { employeeId: employeeR, day: 2, templateId: pagiId },
+    ]);
+    await publishedShiftElsewhere(employeeT, secondOutlet.id, shift);
+    const swap = await openCover(shift, employeeT);
+    expect(swap.complianceIssues.length).toBeGreaterThan(0);
+    expect(
+      swap.complianceIssues.every((issue) => issue.employeeId === employeeT),
+    ).toBe(true);
+  });
+
+  it("[HR-05] compliance ignores draft shifts: a colleague's unpublished draft neither blocks nor shows in the issues", async () => {
+    const [shift] = await publishedWeek(32, [
+      { employeeId: employeeR, day: 2, templateId: pagiId },
+    ]);
+    await createShift(employeeT, dayOf(32, 1), malamId);
+    const swap = await openCover(shift, employeeT);
+    expect(swap.complianceIssues).toEqual([]);
+    const approved = await decide(hr.client, swap.id, "approve");
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   });
 
   it("[HR-05] compliance is recomputed at decision time: a conflict that disappeared after the request no longer needs an override", async () => {
@@ -888,6 +965,44 @@ describe("pengajuan tukar/ganti", () => {
         (row) => row.id === first.body.data.id,
       ),
     ).toHaveLength(1);
+  });
+
+  it("[F26 swap] concurrent creates with the same idempotency key return one request, not a 409", async () => {
+    const [shift] = await publishedWeek(33, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+    ]);
+    const body = {
+      fromAssignmentId: shift,
+      toEmployeeId: employeeT,
+      idempotencyKey: key(),
+    };
+    const results = await Promise.all([
+      requestSwap(requester.client, body),
+      requestSwap(requester.client, body),
+      requestSwap(requester.client, body),
+    ]);
+    for (const result of results)
+      expect([200, 201], JSON.stringify(result.body)).toContain(result.status);
+    expect(new Set(results.map((result) => result.body.data.id)).size).toBe(1);
+  });
+
+  it("[F26 swap] a malformed list cursor is 422, not 500; mine=true without an employee record is an empty page", async () => {
+    const cursor = (parts: string[]) => encodeCursor(parts);
+    for (const bad of [
+      cursor(["2036-01-01T00:00:00.000Z", "not-a-uuid"]),
+      cursor(["not-a-date", randomUUID()]),
+    ]) {
+      const response = await hr.client.get(
+        `/api/hris/shift-swaps?limit=10&cursor=${bad}`,
+      );
+      expect(response.status, bad).toBe(422);
+    }
+    const mine = await hr.client.get(
+      "/api/hris/shift-swaps?mine=true&limit=10",
+    );
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mine.body.data).toEqual([]);
+    expect(mine.body.meta.nextCursor).toBeNull();
   });
 
   it("[F26 swap] a colleague cannot request a swap for someone else's shift", async () => {

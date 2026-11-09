@@ -116,9 +116,7 @@ export const shiftAssignments = pgTable(
     shiftTemplateId: uuid("shift_template_id"),
     stationId: uuid("station_id"),
     businessDate: businessDate("business_date").notNull(),
-    segments: jsonb("segments")
-      .$type<ShiftAssignmentSegment[]>()
-      .notNull(),
+    segments: jsonb("segments").$type<ShiftAssignmentSegment[]>().notNull(),
     breakMinutes: integer("break_minutes").notNull().default(0),
     status: varchar("status", { length: 20 })
       .$type<ShiftAssignmentStatus>()
@@ -231,10 +229,7 @@ export const rosterPublications = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
-    check(
-      "roster_publications_count_check",
-      sql`${table.assignmentCount} > 0`,
-    ),
+    check("roster_publications_count_check", sql`${table.assignmentCount} > 0`),
   ],
 );
 

@@ -99,6 +99,7 @@ import {
 export const HRIS_SCHEDULE_MANAGE_CODE = "hr.schedule.manage";
 export const HRIS_SHIFT_OBJECT_TYPE = "shift_assignment";
 export const HRIS_ROSTER_OBJECT_TYPE = "roster_publication";
+const HRIS_SWAP_OBJECT_TYPE = "shift_swap_request";
 
 type ShiftRow = typeof shiftAssignments.$inferSelect;
 type CreateBody = z.output<typeof createShiftAssignmentEndpoint.body>;
@@ -114,10 +115,21 @@ type Page<T> = {
 
 const lower = (value: string) => value.toLowerCase();
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
+}
+
 /**
- * `shift.published` goes to cloud sync only until the notification adapter
- * (worker/notification-adapters.ts `ruleFor`) has a rule for it: an unknown
- * event name there throws and the outbox row would retry until dead-letter.
+ * `shift.published` goes to cloud sync and to the notification consumer; the
+ * notification rule for it lives in worker/notification-adapters.ts `ruleFor`.
  */
 export const SHIFT_EVENT_DESTINATIONS = ["cloud-sync", "notification"] as const;
 
@@ -477,7 +489,7 @@ export async function listShiftAssignments(
     if (query.to) filters.push(lte(shiftAssignments.businessDate, query.to));
     if (query.cursor) {
       const [businessDate, id] = cursorPair(query.cursor);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate))
+      if (!isCalendarDate(businessDate) || !UUID_PATTERN.test(id))
         throw validation("Check the cursor.");
       filters.push(
         or(
@@ -739,9 +751,31 @@ export async function cancelShiftAssignment(
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const tenantId = context.tenant.tenantId;
+    const found = await findAssignment(tx, tenantId, assignmentId);
+    if (!found) throw scheduleNotFound();
+    assertManage(access, found.outletId);
+
+    // Lock order is swap -> assignment, the same as decideShiftSwapRequest.
+    const pendingSwaps = await tx
+      .select({
+        id: shiftSwapRequests.id,
+        outletId: shiftSwapRequests.outletId,
+      })
+      .from(shiftSwapRequests)
+      .where(
+        and(
+          eq(shiftSwapRequests.tenantId, tenantId),
+          eq(shiftSwapRequests.status, "pending"),
+          or(
+            eq(shiftSwapRequests.fromAssignmentId, found.id),
+            eq(shiftSwapRequests.toAssignmentId, found.id),
+          ),
+        ),
+      )
+      .orderBy(asc(shiftSwapRequests.id))
+      .for("update");
     const current = await findAssignment(tx, tenantId, assignmentId, true);
     if (!current) throw scheduleNotFound();
-    assertManage(access, current.outletId);
     if (current.status === "cancelled") return toShiftAssignment(current);
 
     const status = transitionShiftAssignment(current.status, "cancel");
@@ -755,19 +789,30 @@ export async function cancelShiftAssignment(
         ),
       )
       .returning();
-    await tx
-      .update(shiftSwapRequests)
-      .set({ status: "cancelled", updatedAt: now })
-      .where(
-        and(
-          eq(shiftSwapRequests.tenantId, tenantId),
-          eq(shiftSwapRequests.status, "pending"),
-          or(
-            eq(shiftSwapRequests.fromAssignmentId, current.id),
-            eq(shiftSwapRequests.toAssignmentId, current.id),
+    if (pendingSwaps.length > 0) {
+      await tx
+        .update(shiftSwapRequests)
+        .set({ status: "cancelled", updatedAt: now })
+        .where(
+          and(
+            eq(shiftSwapRequests.tenantId, tenantId),
+            inArray(
+              shiftSwapRequests.id,
+              pendingSwaps.map((swap) => swap.id),
+            ),
           ),
-        ),
-      );
+        );
+      for (const swap of pendingSwaps)
+        await auditShift(
+          tx,
+          context,
+          actorUserId,
+          now,
+          { ...swap, status: "cancelled" },
+          "hris.shift_swap.cancelled",
+          HRIS_SWAP_OBJECT_TYPE,
+        );
+    }
     await auditShift(
       tx,
       context,
