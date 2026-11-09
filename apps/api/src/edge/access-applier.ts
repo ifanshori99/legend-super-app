@@ -364,6 +364,12 @@ async function guardPinWrite<T>(work: () => Promise<T>): Promise<T> {
  * aggregate sequence is therefore also newer. Set and lock events of one
  * staff pin share one aggregate stream on the edge (`appendDevicePinEvent`,
  * aggregate = the staff pin row), so the sequences are comparable.
+ *
+ * legend-lhffb: the reverse also holds. A lock of that same node at a lower
+ * or equal sequence than the generation set predates it (a reset), even when
+ * the edge clock stepped back and its timestamp looks newer, so it is
+ * refused before the timestamp comparison, as in the set guard. A null
+ * generation node keeps the timestamp-only rule.
  */
 export async function applyStaffPinLocked(
   tx: EdgeTx,
@@ -391,8 +397,10 @@ export async function applyStaffPinLocked(
           eq(staffPins.outletId, outletId),
           eq(staffPins.userId, payload.userId),
           // Same clock as an edge set's order key (both edge time), or a
-          // later event of the node that gave the generation (F1).
-          sql`(${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz OR (${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
+          // later event of the node that gave the generation (F1). Mirrors
+          // the set guard: a lock of that same node at a lower or equal
+          // sequence never passes through the timestamp branch (legend-lhffb).
+          sql`((${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}) OR (${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz AND NOT (${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} >= ${event.sequence})))`,
           // An edge clock far ahead (round 3 R1).
           sql`${event.occurredAt}::timestamptz <= ${edgeClockLimit}`,
           sql`${payload.lockedUntil}::timestamptz > now()`,
