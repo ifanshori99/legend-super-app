@@ -1525,6 +1525,174 @@ describe("F19 order.paid cutover guard for gateway tenders with an intent", () =
     expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
   });
 
+  // legend-3r6r: a dead-lettered payment.paid must not park the sale for ever.
+  async function deadLetterReceipt(
+    world: World,
+    outboxId: string,
+    ageDays: number,
+  ): Promise<void> {
+    await owner.query(
+      `UPDATE domain_event_outbox
+          SET dispatch_state = 'dead',
+              dead_lettered_at = now() - make_interval(days => $3)
+        WHERE tenant_id = $1 AND id = $2`,
+      [world.tenant.id, outboxId, ageDays],
+    );
+  }
+
+  // Sweeps at a fixed offset from the delivery clock (NOW), independent of the
+  // shared hourly sweep counter.
+  const sweepAfter = (tenant: Tenant, hours: number) =>
+    retryParkedAutoJournals(
+      contextOf(tenant),
+      new Date(NOW.getTime() + hours * 60 * 60 * 1000),
+    );
+
+  it("AJ-3R6R-01 a sale behind a receipt dead-lettered past the bound parks non-retryable AUTO_JOURNAL_RECEIPT_DEAD_LETTERED, books nothing and the sweep leaves it", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    await deadLetterReceipt(world, outboxId, 30);
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED",
+      retryable: false,
+    });
+    expect(
+      await parkedByCode(
+        tenant,
+        "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED",
+        world.outletId,
+      ),
+    ).toMatchObject([{ retryable: false, event_name: "order.paid" }]);
+    expect(await sweepAfter(tenant, 1)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+    // No fallback to gateway_clearing: the receipt may still be replayed.
+    expect(await journalCount(world)).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(0);
+  });
+
+  it("AJ-3R6R-02 a receipt dead-lettered only recently still parks RECEIPT_PENDING (retryable)", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    await deadLetterReceipt(world, outboxId, 0);
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+  });
+
+  it("AJ-3R6R-03 once the dead-lettered receipt is replayed and booked, the parked sale is released and books the money once", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    await deadLetterReceipt(world, outboxId, 30);
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED",
+      retryable: false,
+    });
+
+    // Replay: the receipt is consumed (journal and delivered status commit together).
+    await markDelivered(world, outboxId);
+    await post(world, paymentPaid(world, intentId, 110_000));
+
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+  });
+
+  it("AJ-3R6R-04 a dead-lettered event ahead of a ready payment.paid (sequence gate) bounds the sale too", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    // sequence 1: payment.expired, dead for 30 days; sequence 2: payment.paid, ready.
+    const paid = paymentPaid(world, intentId, 110_000);
+    for (const [sequence, name, state, age] of [
+      [1, "payment.expired", "dead", 30],
+      [2, "payment.paid", "ready", 0],
+    ] as const)
+      await owner.query(
+        `INSERT INTO domain_event_outbox
+           (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination,
+            dispatch_state, dead_lettered_at)
+         VALUES ($1, $2, $3, $4, 'payment', $5, $6, $7, 'cloud-sync', $8::varchar,
+                 CASE WHEN $8::text = 'dead' THEN now() - make_interval(days => $9::int) END)`,
+        [
+          world.tenant.id,
+          randomUUID(),
+          world.outletId,
+          randomUUID(),
+          intentId,
+          sequence,
+          JSON.stringify({ ...paid, name, sequence }),
+          state,
+          age,
+        ],
+      );
+
+    expect(await deliver(tenant, orderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED",
+      retryable: false,
+    });
+  });
+
+  it("AJ-3R6R-05 the daily recheck of a DEAD_LETTERED row books the sale the plain way when the receipt will never post", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const sale = gatewaySale(intentId);
+    await seedPosOrder(world, orderUlid, sale);
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    await deadLetterReceipt(world, outboxId, 30);
+    await deliver(tenant, orderPaid(world, orderUlid, sale));
+    // Not due yet: the sweep leaves the row.
+    expect(await sweepAfter(tenant, 1)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+
+    // The replayed receipt was consumed without booking (it will never post).
+    await markDelivered(world, outboxId);
+    // Past the daily recheck.
+    expect(await sweepAfter(tenant, 25)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
   it("AJ-CUTOVER-05 a receipt parked non-retryable does not hold the sale", async () => {
     const world = await makeWorld();
     const orderUlid = createUlid();
