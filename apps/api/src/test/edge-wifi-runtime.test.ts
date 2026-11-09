@@ -219,7 +219,9 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
 
   it("purges expired grants once after the lock is taken and again on the interval", async () => {
     const outletId = randomUUID();
-    const purge = vi.fn(async () => 3);
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 3,
+    );
     const handle = await start(outletId, stubAgent(), {
       purge,
       retentionIntervalMs: 20,
@@ -236,7 +238,9 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
 
   it("does not purge while another process owns the lock", async () => {
     const outletId = randomUUID();
-    const purge = vi.fn(async () => 0);
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 0,
+    );
     const other = await hold(outletId);
     await start(outletId, stubAgent(), { purge, retentionIntervalMs: 10 });
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -290,7 +294,9 @@ describe("legend-hsk Wi-Fi agent lock retry", () => {
   it("a lost lock connection ends the purge schedule until the lock is taken again", async () => {
     const outletId = randomUUID();
     const clients: PoolClient[] = [];
-    const purge = vi.fn(async () => 0);
+    const purge = vi.fn<(context: unknown, now: Date) => Promise<number>>(
+      async () => 0,
+    );
     await start(outletId, stubAgent(), {
       purge,
       retentionIntervalMs: 10_000,
