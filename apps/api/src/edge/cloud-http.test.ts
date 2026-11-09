@@ -7,6 +7,7 @@ import {
   createDeviceRecordsFetcher,
 } from "./cloud-http.ts";
 
+const INSTANCE = "0b6f4c1e-8f3a-4f55-9a52-3f1d2c4b5a60";
 const CREDENTIAL = "edg1.tenant.outlet.node.s3cr3t-value";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -85,6 +86,78 @@ describe("createDeviceRecordsFetcher", () => {
     expect(url.searchParams.get("receiptSequences")).toBe("1");
     expect(url.search).toContain("since=2026-11-08T10%3A00%3A00.000Z");
     expect(url.toString()).not.toContain(CREDENTIAL);
+  });
+
+  it("legend-zsdd sends edgeInstance next to receiptSequences when set", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
+    await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal);
+    const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    expect(url.searchParams.get("receiptSequences")).toBe("1");
+    expect(url.searchParams.get("edgeInstance")).toBe(INSTANCE);
+  });
+
+  it("legend-zsdd HTTP 400 on a request with edgeInstance retries once without it and without receiptSequences", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const result = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })("v1", new AbortController().signal);
+    expect(result).toEqual({ data: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const first = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    const second = new URL((fetchImpl.mock.calls[1] as unknown as [string])[0]);
+    expect(first.searchParams.get("edgeInstance")).toBe(INSTANCE);
+    expect(second.searchParams.has("edgeInstance")).toBe(false);
+    expect(second.searchParams.has("receiptSequences")).toBe(false);
+    expect(second.searchParams.get("since")).toBe("v1");
+    expect(second.searchParams.get("limit")).toBe("100");
+  });
+
+  it("legend-zsdd a second failure after the retry is thrown (HTTP_400 stays visible)", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }));
+    const error = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal).catch((e: unknown) => e);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
+
+    const other = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    const second = await createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: other as unknown as typeof fetch,
+      edgeInstanceId: INSTANCE,
+    })(null, new AbortController().signal).catch((e: unknown) => e);
+    expect((second as EdgeCloudHttpError).code).toBe("HTTP_503");
+  });
+
+  it("legend-zsdd HTTP 400 without an edgeInstance is not retried", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
+    const error = await fetcherWith(fetchImpl as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+    ).catch((e: unknown) => e);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
   });
 
   it("legend-2lp.7 non-2xx becomes EdgeCloudHttpError with the status code only", async () => {

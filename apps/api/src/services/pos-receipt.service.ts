@@ -210,12 +210,42 @@ async function retireSequence(
 }
 
 /**
+ * Edge (legend-zsdd, review K R1-A): a bound row numbers only in the database
+ * it is bound to, i.e. this database's own `edge_nodes` row has the row's node
+ * id AND instance id. This is what makes the restore procedure work: resetting
+ * `edge_nodes.instance_id` on a restored or cloned edge database stops its old
+ * runs from numbering until a pull rotates them to new prefixes. Rows with a
+ * NULL binding (3yqy-era) stay usable; the next pull binds them.
+ */
+async function boundToThisDatabase(
+  tx: Tx,
+  tenantId: TenantId,
+  row: SequenceRow,
+): Promise<boolean> {
+  if (row.edgeNodeId === null || row.edgeInstanceId === null) return false;
+  const [own] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, tenantId),
+        eq(edgeNodes.id, row.edgeNodeId),
+        eq(edgeNodes.instanceId, row.edgeInstanceId),
+      ),
+    )
+    .limit(1);
+  return own !== undefined;
+}
+
+/**
  * Existing sequence of the key. The outlet id key is the cloud-owned sequence
  * (prefix `C`). A device key gets a new row with the next free `P<n>` prefix in
  * the cloud; an edge never invents one (the cloud provisions it first).
  * legend-zsdd: in the cloud, a device's current sequence bound to an edge is
  * never continued (the edge may have numbered on it); it is retired and the
- * device continues under a new unbound prefix. An edge process is unchanged.
+ * device continues under a new unbound prefix. An edge process numbers only
+ * on an unbound row or a row bound to this very database
+ * (`boundToThisDatabase`); otherwise RECEIPT_SEQUENCE_NOT_PROVISIONED.
  */
 async function ensureSequence(
   tx: Tx,
@@ -224,17 +254,18 @@ async function ensureSequence(
   deviceId: string,
 ): Promise<SequenceRow> {
   // Not a type guard: `false` must not narrow a bound row to `undefined`.
-  const usable = (row: SequenceRow): boolean =>
-    row.edgeNodeId === null || isEdgeProcess();
+  const usable = async (row: SequenceRow): Promise<boolean> =>
+    row.edgeNodeId === null ||
+    (isEdgeProcess() && (await boundToThisDatabase(tx, tenantId, row)));
   const existing = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (existing && usable(existing)) return existing;
+  if (existing && (await usable(existing))) return existing;
   const cloudOwned = deviceId === outletId;
   if (!cloudOwned && isEdgeProcess())
     throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   // Another sale may have created it while this one waited for the lock.
   const created = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (created && usable(created)) return created;
+  if (created && (await usable(created))) return created;
   if (created) {
     // legend-zsdd: the current row is bound to an edge (cloud process only).
     // Sequence `C` is never claimed by an edge (prefix `C` cannot be reused).
@@ -434,6 +465,8 @@ export async function allocateReceipt(
     throw new PosError("RECEIPT_DEVICE_ON_EDGE");
   const sequence = await ensureSequence(tx, tenantId, outletId, deviceKey);
   // The row lock taken here serialises every device sale on this sequence.
+  // legend-zsdd (review K R1-A): a retired run never numbers, and in the cloud
+  // a claim may bind the row between the read above and this UPDATE.
   const [advanced] = await tx
     .update(receiptSequences)
     .set({
@@ -444,13 +477,19 @@ export async function allocateReceipt(
       and(
         eq(receiptSequences.tenantId, tenantId),
         eq(receiptSequences.id, sequence.id),
+        isNull(receiptSequences.retiredAt),
+        isEdgeProcess() ? undefined : isNull(receiptSequences.edgeNodeId),
       ),
     )
     .returning({
       prefix: receiptSequences.prefix,
       lastNumber: receiptSequences.lastNumber,
     });
-  if (!advanced) throw new Error("Receipt sequence update returned no row");
+  if (!advanced)
+    throw new CoreError(
+      "CONFLICT",
+      "Nomor struk perangkat sedang dipindahkan; ulangi transaksi.",
+    );
   const outletSnapshot = await outletSnapshotFor(tx, context, outletId);
   const [row] = await tx
     .insert(posReceipts)
@@ -839,7 +878,8 @@ export async function listDeviceReceiptSequences(
  * - replaced: the device's current row here has another id or prefix (the
  *   cloud rotated the run). The local row is retired and the pulled one is
  *   inserted at 0 bound to `own`. Refused if the pulled prefix or id already
- *   exists here on another row.
+ *   exists here on another row, or the pulled run is already at L > 0 (same
+ *   3yqy backstop as `inserted`; review K R1-A); the local row stays current.
  * - inserted: no current row for the device; created with the cloud's id and
  *   prefix at 0 bound to `own`. Refused if the prefix or id is already used
  *   here, or (S-K1, legend-3yqy backstop) the cloud run is already at L > 0:
@@ -893,7 +933,8 @@ export async function applyCloudDeviceReceiptSequence(
     // A local row bound elsewhere cannot be rebound (trigger); leave it.
     return sameBinding(existing, own) ? "kept" : "refused";
   }
-  if (!existing && sequence.lastNumber > 0) return "refused";
+  // Backstop for both `inserted` and `replaced` (review K R1-A).
+  if (sequence.lastNumber > 0) return "refused";
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   if (used.has(sequence.prefix)) return "refused";
   const [sameId] = await tx

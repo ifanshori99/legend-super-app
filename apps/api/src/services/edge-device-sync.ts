@@ -253,10 +253,17 @@ export async function listDeviceRecordsSince(
           edgeInstanceId: edgeInstance,
         };
         await backfillDeviceReceiptSequences(tx, context, verified.outletId);
-        await claimDeviceReceiptSequencesForEdge(tx, context, {
+        const claim = await claimDeviceReceiptSequencesForEdge(tx, context, {
           outletId: verified.outletId,
           ...binding,
         });
+        // legend-zsdd: a repeated rotation means two databases pull with one
+        // node id. Counts only, no ids.
+        if (claim.rotated > 0)
+          logger.warn(
+            { rotated: claim.rotated, claimed: claim.claimed },
+            "device receipt sequences rotated for an edge pull",
+          );
       }
     }
     const found = await tx

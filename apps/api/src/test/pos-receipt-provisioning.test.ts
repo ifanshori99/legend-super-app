@@ -365,12 +365,13 @@ function cloudPage(
 }
 
 /** The edge pulls one page the cloud would have sent. */
-function edgePull(
+async function edgePull(
   outletId: string,
   page: unknown,
   role: "primary" | "standby" = "primary",
   binding: DeviceReceiptSequenceBinding = OWN,
 ) {
+  await localEdgeNode(outletId, binding, role);
   return pullDeviceRegistry({
     context: edgeScope(outletId),
     role,
@@ -384,6 +385,34 @@ const OWN: DeviceReceiptSequenceBinding = {
   edgeNodeId: randomUUID(),
   edgeInstanceId: randomUUID(),
 };
+
+/**
+ * This edge database's own `edge_nodes` row (id = node id, `instance_id` = its
+ * instance), as `ensureLocalEdgeNode` writes it (legend-zsdd). An edge
+ * allocation honours a sequence binding only when this row matches it, so every
+ * edge-side pull below registers it first. Copied from pos-receipt-seq-edge.test.ts.
+ */
+async function localEdgeNode(
+  outletId: string,
+  own: DeviceReceiptSequenceBinding,
+  role: "primary" | "standby" = "primary",
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, instance_id)
+       VALUES ($1, $2, $3, $4, 'active', 'Server lokal', $5, $6)
+       ON CONFLICT (id) DO UPDATE SET instance_id = EXCLUDED.instance_id`,
+      [
+        own.edgeNodeId,
+        tenant.tenantId,
+        outletId,
+        role,
+        "b".repeat(64),
+        own.edgeInstanceId,
+      ],
+    ),
+  );
+}
 
 /** An edge node row of the outlet in the cloud registry (owner SQL). */
 async function edgeNodeAt(

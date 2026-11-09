@@ -493,8 +493,16 @@ describe("EDG-02 the edge pulls the cloud device registry", () => {
     const sinceParams = registryCalls(spy).map((call) =>
       urlOf(call).searchParams.get("since"),
     );
-    expect(sinceParams[0]).not.toBeNull();
-    expect(sinceParams[1]).toBeNull();
+    // The fake cloud refuses the stored cursor on EVERY request that carries it,
+    // like a real cloud. The fetcher may resend the same page once without
+    // `edgeInstance` (legend-zsdd fallback): that retry still carries the
+    // stored cursor and is refused too. Only the recovery drops the cursor.
+    const stored = sinceParams[0];
+    expect(stored).not.toBeNull();
+    const last = sinceParams.length - 1;
+    expect(last).toBeGreaterThanOrEqual(1);
+    for (const since of sinceParams.slice(0, last)) expect(since).toBe(stored);
+    expect(sinceParams[last]).toBeNull();
     expect(getDeviceRegistrySyncState()?.consecutiveFailures).toBe(0);
   });
 

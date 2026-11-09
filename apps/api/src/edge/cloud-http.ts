@@ -10,6 +10,8 @@
 // URL, an error message or a log line. Errors carry a status/code only, the
 // response body is never read into them.
 
+import { logger } from "../lib/logger.ts";
+
 const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
@@ -116,19 +118,46 @@ export function createDeviceRecordsFetcher(
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
 
-  return (since, signal) => {
+  const pathFor = (since: string | null, withSequences: boolean) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
-    // legend-3yqy: opt in to the outlet's device receipt sequences; a cloud
-    // sends them only on request so older edges keep parsing their pages.
-    query.set("receiptSequences", "1");
-    // legend-zsdd: names this edge database so the cloud can bind sequences to it.
-    if (options.edgeInstanceId !== undefined)
-      query.set("edgeInstance", options.edgeInstanceId);
-    return cloudGetJson({
-      ...options,
-      path: `${DEVICE_RECORDS_PATH}?${query.toString()}`,
-      signal,
-    });
+    if (withSequences) {
+      // legend-3yqy: opt in to the outlet's device receipt sequences; a cloud
+      // sends them only on request so older edges keep parsing their pages.
+      query.set("receiptSequences", "1");
+      // legend-zsdd: names this edge database so the cloud can bind sequences to it.
+      if (options.edgeInstanceId !== undefined)
+        query.set("edgeInstance", options.edgeInstanceId);
+    }
+    return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
+  };
+
+  return async (since, signal) => {
+    try {
+      return await cloudGetJson({
+        ...options,
+        path: pathFor(since, true),
+        signal,
+      });
+    } catch (error) {
+      // legend-zsdd: an older cloud's strict query refuses `edgeInstance` with
+      // 400. Retry the same page once without it and without the sequences
+      // (the old cloud's device records and revocations keep flowing). A
+      // second failure is thrown as is, so HTTP_400 recovery still sees it.
+      if (
+        options.edgeInstanceId === undefined ||
+        !(error instanceof EdgeCloudHttpError) ||
+        error.code !== "HTTP_400"
+      )
+        throw error;
+      logger.warn(
+        "cloud refused the edge instance query; retrying the page without receipt sequences",
+      );
+      return cloudGetJson({
+        ...options,
+        path: pathFor(since, false),
+        signal,
+      });
+    }
   };
 }

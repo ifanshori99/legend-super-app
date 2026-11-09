@@ -132,3 +132,26 @@ S1-S4 are implemented in this worktree (read the diff: `git diff`). Files: `apps
 
 - Pulled sequences now carry `edgeNodeId` + `edgeInstanceId`; the cloud only lists sequences for an active primary that sent `edgeInstance`; edge apply takes `own` and a prefix change becomes `replaced` (old local row retired), not `refused`. Keep every old intent (standby never applies, lastNumber>0 backstop, cross-tenant, flag, RECEIPT_DEVICE_ON_EDGE) and rewrite assertions only where the Design changed the outcome; say which ones in your report.
 - Run: `bash -c 'cd "/Users/ifanshori99/Projects/legend super app/legend/.worktrees/receipt-seq-edge" && pwd && shopt -s nullglob && files=(apps/api/src/test/pos-receipt-provisioning.test.ts apps/api/src/test/pos-day-receipt-gaps.test.ts apps/api/src/test/pos-receipt.test.ts apps/api/src/test/pos-receipt-kfix.test.ts apps/api/src/test/device-edge.test.ts apps/api/src/test/edge-registry-pull.test.ts apps/api/src/test/edge-bootstrap.test.ts apps/api/src/edge/cloud-http.test.ts apps/api/src/test/data-import-registry.test.ts apps/api/src/test/edge-status*.test.ts) && echo "files=${#files[@]}" && LEGEND_TEST_FILES="${files[*]#apps/api/}" heavy pnpm test'`. Report file count, pass/fail per file, and failures (shortest decisive line).
+
+## R1: review K fixes (commit 2283ae9c)
+
+Reproduce each with a failing test first where feasible.
+
+### R1-A (implementer): `apps/api/src/services/pos-receipt.service.ts` only
+
+1. Edge allocation honours the binding: in `ensureSequence` on an edge process, a current row with a binding is usable only if this database's own `edge_nodes` row matches it (`edge_nodes.id = row.edge_node_id AND edge_nodes.instance_id = row.edge_instance_id`, one query, same tx). Otherwise throw `RECEIPT_SEQUENCE_NOT_PROVISIONED`. Rows with NULL binding stay usable (3yqy-era rows; the next pull binds them). Comment: this is what makes the restore procedure work (reset `edge_nodes.instance_id` on a restored/cloned edge database: its old runs stop numbering until a pull rotates them).
+2. Allocation UPDATE guard: the `last_number + 1` UPDATE in `allocateReceipt` adds `retired_at IS NULL`, and on the cloud process also `edge_node_id IS NULL` (a claim may bind the row between the read and the UPDATE). No row updated: throw `CoreError("CONFLICT", "Nomor struk perangkat sedang dipindahkan; ulangi transaksi.")`.
+3. `applyCloudDeviceReceiptSequence` `replaced` path: refuse when the pulled `lastNumber > 0` too (same 3yqy backstop as the insert path).
+
+### R1-B (implementer): `apps/api/src/edge/cloud-http.ts`, `apps/api/src/edge/cloud-http.test.ts`, `apps/api/src/services/edge-device-sync.ts`
+
+1. Fetcher fallback (new edge on an older cloud whose strict query refuses `edgeInstance`): when a request that carried `edgeInstance` gets HTTP 400, retry the same page ONCE without `edgeInstance` and without `receiptSequences`. If that also fails, throw the second error (so the stored-cursor recovery in runtime.ts still sees HTTP_400). Log a warning (no ids). Unit test both paths in cloud-http.test.ts and run it: `bash -c 'cd "/Users/ifanshori99/Projects/legend super app/legend/.worktrees/receipt-seq-edge" && pwd && LEGEND_TEST_FILES="src/edge/cloud-http.test.ts" heavy pnpm test'`.
+2. `listDeviceRecordsSince`: when the claim rotated at least one run, `logger.warn({ rotated, claimed }, ...)` (counts only): a repeated rotation means two databases pull with one node id.
+
+### R1-C (test-writer): `apps/api/src/test/pos-receipt-seq-edge.test.ts` only
+
+Add cases (they must fail before R1-A lands; run once now, report the fail lines, then again after the lead says R1-A landed):
+
+- Edge process, device row bound to (N, I_old) while this database's own `edge_nodes` row has instance I_new (owner SQL update of instance_id = the restore procedure): allocation refused `RECEIPT_SEQUENCE_NOT_PROVISIONED`; after a pull bound to (N, I_new) applies the rotated sequence, allocation gives `<newPrefix>-000001`.
+- Edge apply `replaced` with pulled `lastNumber > 0` is `refused` and the local row stays current.
+- Run: `bash -c 'cd "/Users/ifanshori99/Projects/legend super app/legend/.worktrees/receipt-seq-edge" && pwd && LEGEND_TEST_FILES="src/test/pos-receipt-seq-edge.test.ts" heavy pnpm test'`.

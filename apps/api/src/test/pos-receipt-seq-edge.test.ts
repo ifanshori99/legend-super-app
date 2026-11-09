@@ -469,8 +469,38 @@ function shipTo(page: DeviceSyncPage, edgeOutletId: string): unknown {
   };
 }
 
+/**
+ * This edge database's own `edge_nodes` row (id = node id, `instance_id` =
+ * its instance), as `ensureLocalEdgeNode` writes it. Upsert: the instance of
+ * an existing row is overwritten, which is the restore procedure of
+ * legend-zsdd (reset `edge_nodes.instance_id` on a restored database).
+ * Assumption: in this single-database simulation a cloud row of the same node
+ * id (case 1) doubles as the edge's local row; an edge allocation honours the
+ * binding only when `edge_nodes.id` and `instance_id` match the sequence row.
+ */
+async function localEdgeNode(
+  edgeOutletId: string,
+  own: Binding,
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash, instance_id)
+       VALUES ($1, $2, $3, 'primary', 'active', 'Server lokal', $4, $5)
+       ON CONFLICT (id) DO UPDATE SET instance_id = EXCLUDED.instance_id`,
+      [
+        own.edgeNodeId,
+        tenant.tenantId,
+        edgeOutletId,
+        "b".repeat(64),
+        own.edgeInstanceId,
+      ],
+    ),
+  );
+}
+
 /** The edge database of `own` applies one page. */
-function edgeApply(edgeOutletId: string, pulled: unknown, own: Binding) {
+async function edgeApply(edgeOutletId: string, pulled: unknown, own: Binding) {
+  await localEdgeNode(edgeOutletId, own);
   return inEdgeMode(() =>
     pullDeviceRegistry({
       context: edgeScope(edgeOutletId),
@@ -711,30 +741,30 @@ describe("zsdd-3 two edges never hold one sequence", () => {
         "UPDATE receipt_sequences SET edge_node_id = $2, edge_instance_id = $3 WHERE id = $1",
         [current.id, randomUUID(), randomUUID()],
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/POS-06: .*already bound/);
     await expect(
       update(
         "UPDATE receipt_sequences SET edge_node_id = NULL, edge_instance_id = NULL WHERE id = $1",
         [current.id],
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/POS-06: .*already bound/);
     await expect(
       update("UPDATE receipt_sequences SET retired_at = NULL WHERE id = $1", [
         retired.id,
       ]),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/POS-06: .*is retired and cannot change/);
     await expect(
       update(
         "UPDATE receipt_sequences SET retired_at = now() + interval '1 day' WHERE id = $1",
         [retired.id],
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/POS-06: .*is retired and cannot change/);
     await expect(
       update(
         "UPDATE receipt_sequences SET edge_node_id = $2, edge_instance_id = $3 WHERE id = $1",
         [retired.id, randomUUID(), randomUUID()],
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/POS-06: .*(already bound|is retired|cannot be bound)/);
     // Nothing moved.
     expect(await fullRows(outletId)).toEqual(rows);
   });
@@ -926,5 +956,87 @@ describe("zsdd-6 the edge replaces its current sequence of a device", () => {
       edge_instance_id: own.edgeInstanceId,
     });
     expect(await edgeSell(edgeOutlet, deviceId)).toBe("P2-000001");
+  });
+});
+
+describe("zsdd-R1 the edge allocation honours the binding (review of 2283ae9c)", () => {
+  it("EDG-02 POS-06 restored database: the row bound to the old instance stops numbering until a pull rotates it, then P2-000001", async () => {
+    const edgeOutlet = await freshOutlet();
+    const nodeId = randomUUID();
+    const [iOld, iNew] = [randomUUID(), randomUUID()];
+    const deviceId = randomUUID();
+    const oldOwn: Binding = { edgeNodeId: nodeId, edgeInstanceId: iOld };
+    const newOwn: Binding = { edgeNodeId: nodeId, edgeInstanceId: iNew };
+
+    // Before the restore: this database is instance iOld and numbers P1.
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", oldOwn)]),
+      oldOwn,
+    );
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
+
+    // Restore procedure: owner SQL resets the instance of the local node row.
+    await localEdgeNode(edgeOutlet, newOwn);
+
+    // The P1 run is bound to iOld, so it must not number any more.
+    const orderId = await draftOrder(edgeOutlet);
+    await expect(
+      inEdgeMode(() => allocate(edgeOutlet, orderId, deviceId)),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_NOT_PROVISIONED" });
+    expect(
+      (await fullRows(edgeOutlet)).find((r) => r.prefix === "P1")?.last_number,
+    ).toBe(1);
+
+    // A pull bound to (N, iNew) delivers the rotated sequence: P2 at 0.
+    const pulled = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P2", newOwn)]),
+      newOwn,
+    );
+    expect(pulled.receiptSequencesReplaced).toBe(1);
+    expect(pulled.receiptSequencesRefused).toBe(0);
+    const receipt = await inEdgeMode(() =>
+      allocate(edgeOutlet, orderId, deviceId),
+    );
+    expect(receipt.number).toBe("P2-000001");
+
+    const rows = await fullRows(edgeOutlet);
+    expect(rowOf(rows, "P1").retired_at).not.toBeNull();
+    expect(rowOf(rows, "P1").last_number).toBe(1);
+    expect(rowOf(rows, "P2")).toMatchObject({
+      last_number: 1,
+      retired_at: null,
+      edge_node_id: nodeId,
+      edge_instance_id: iNew,
+    });
+  });
+
+  it("EDG-02 a replacement the cloud already advanced (lastNumber > 0) is refused and the local current row stays", async () => {
+    const edgeOutlet = await freshOutlet();
+    const own: Binding = {
+      edgeNodeId: randomUUID(),
+      edgeInstanceId: randomUUID(),
+    };
+    const deviceId = randomUUID();
+    await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P1", own)]),
+      own,
+    );
+
+    const result = await edgeApply(
+      edgeOutlet,
+      pageOf([seq(edgeOutlet, deviceId, "P2", own, 3)]),
+      own,
+    );
+    expect(result.receiptSequencesRefused).toBe(1);
+    expect(result.receiptSequencesReplaced).toBe(0);
+
+    const rows = await fullRows(edgeOutlet);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
+    expect(rowOf(rows, "P1").retired_at).toBeNull();
+    // The old run keeps numbering: nothing was handed over or skipped.
+    expect(await edgeSell(edgeOutlet, deviceId)).toBe("P1-000001");
   });
 });
