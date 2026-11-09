@@ -166,8 +166,14 @@ describe("legend-m007 FORCE ROW LEVEL SECURITY after all migrations", () => {
   // ENABLE without FORCE on purpose: read before a tenant context exists, and
   // the owner keeps repair access (0007_platform_org_rls.sql,
   // 0021_payment_rls.sql; also allowlisted in src/db/rls.test.ts and
-  // docs/deployment.md). Anything else lifted and never restored lands here.
-  const enableOnly = ["payment_link_tokens", "tenant_domains"];
+  // docs/deployment.md). delivery_store_index (0126_ws08_delivery_store_index_rls.sql)
+  // is the same TEN-02 exception: the webhook resolves it before a tenant
+  // context exists. Anything else lifted and never restored lands here.
+  const enableOnly = [
+    "delivery_store_index",
+    "payment_link_tokens",
+    "tenant_domains",
+  ];
 
   beforeAll(() => {
     assertDisposableServer();
