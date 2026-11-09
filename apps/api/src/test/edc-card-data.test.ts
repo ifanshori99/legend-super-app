@@ -171,3 +171,62 @@ describe("EDC card data at the provider response boundary", () => {
     ).not.toMatch(/4111/);
   });
 });
+
+describe("EDC ledger row message on read", () => {
+  const row = {
+    id: "7b1c1c0e-8f0e-4c11-9a43-2f2f6f0c9a11",
+    tenantId: "7b1c1c0e-8f0e-4c11-9a43-2f2f6f0c9a12",
+    outletId: "7b1c1c0e-8f0e-4c11-9a43-2f2f6f0c9a13",
+    terminalId: "7b1c1c0e-8f0e-4c11-9a43-2f2f6f0c9a14",
+    bank: "bca",
+    reference: "R1",
+    idempotencyKey: "7b1c1c0e-8f0e-4c11-9a43-2f2f6f0c9a15",
+    amountIdr: 1000,
+    method: "card",
+    status: "approved",
+    trace: "TRACE1",
+    approvalCode: null,
+    rrn: null,
+    cardType: null,
+    maskedPan: null,
+    responseCode: null,
+    message: null,
+    invoiceNo: null,
+    batchNo: null,
+    needsReconciliation: false,
+    dispatchedAt: null,
+    inquiryCount: 0,
+    createdAt: "2026-11-09T00:00:00.000Z",
+    updatedAt: "2026-11-09T00:00:00.000Z",
+    completedAt: null,
+  };
+  const readMessage = (message: string | null) =>
+    edcTransactionSchema.parse({ ...row, message }).message;
+
+  it("masks a plain card number in the message", () => {
+    expect(readMessage("kartu 4111111111111111 ditolak")).toBe(
+      "kartu [disamarkan] ditolak",
+    );
+  });
+
+  it("masks a card number split by spaces", () => {
+    expect(readMessage("kartu 4111 1111 1111 1111 ditolak")).toBe(
+      "kartu [disamarkan] ditolak",
+    );
+  });
+
+  it("masks a card number split by dashes", () => {
+    expect(readMessage("kartu 4111-1111-1111-1111 ditolak")).toBe(
+      "kartu [disamarkan] ditolak",
+    );
+  });
+
+  it("leaves a clean message and an 11-digit run unchanged", () => {
+    expect(readMessage("Transaksi disetujui")).toBe("Transaksi disetujui");
+    expect(readMessage("ref 12345678901 ok")).toBe("ref 12345678901 ok");
+  });
+
+  it("keeps a null message null", () => {
+    expect(readMessage(null)).toBeNull();
+  });
+});

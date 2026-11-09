@@ -159,11 +159,11 @@ function referenceField(max: number) {
 /** A run of 12+ digits (optionally split by spaces or dashes) looks like a
  * card number: the terminal's free text is masked before it is stored. */
 const cardNumberLike = /\d(?:[ -]?\d){11,}/g;
+const maskCardNumbers = (text: string): string =>
+  text.replace(cardNumberLike, "[disamarkan]");
 const safeMessage = z
   .string()
-  .transform((text) =>
-    text.replace(cardNumberLike, "[disamarkan]").slice(0, 200),
-  );
+  .transform((text) => maskCardNumbers(text).slice(0, 200));
 
 /** Details a terminal returns with a final answer. All optional: a decline
  * or cancel usually has none of them. Never a full PAN or track data. */
@@ -381,7 +381,10 @@ export const edcTransactionSchema = z.strictObject({
     .transform((v) => (v === null ? null : normaliseCardType(v))),
   maskedPan: maskedPanSchema.nullable(),
   responseCode: z.string().nullable(),
-  message: z.string().nullable(),
+  message: z
+    .string()
+    .nullable()
+    .transform((v) => (v === null ? null : maskCardNumbers(v))),
   invoiceNo: z.string().nullable().transform(dropPanLike),
   batchNo: z.string().nullable().transform(dropPanLike),
   /** Set when the terminal approved a second sale for a reference that

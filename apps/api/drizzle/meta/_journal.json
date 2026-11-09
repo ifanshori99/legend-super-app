@@ -946,6 +946,13 @@
       "when": 1794207753780,
       "tag": "0134_icy_synch",
       "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1794208382262,
+      "tag": "0135_edc_pan_scrub",
+      "breakpoints": true
     }
   ]
 }

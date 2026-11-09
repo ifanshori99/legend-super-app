@@ -82,6 +82,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "adds a permission string to each tenant's existing roles",
   "0126_ws08_delivery_store_index_rls.sql":
     "trigger body and backfill of the delivery store index from existing delivery channels",
+  "0135_edc_pan_scrub.sql":
+    "masks card-number-like digit runs in existing edc_transactions rows (legend-5gub); edits no other column",
 };
 
 // Entrypoints that open a database pool but import no data.

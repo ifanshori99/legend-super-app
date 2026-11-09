@@ -44,6 +44,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Test: `src/test/recipe-pos-hpp.test.ts` 10 kasus (jalur POS asli, replay, biaya asli, refund tidak menggerakkan stok, void final, tutup hari, tombstone, remake tidak ikut, parkir+ulang).
 - Keputusan: hanya void yang membalik stok (CTO, 9 Nov 2026). Lanjutan: legend-078n, legend-9fhs.
 
+## legend-5gub PAN lama di data EDC (engineer, cabang `ws/edc-pan-scrub`, 2026-11-09)
+
+- Sudah: migrasi data `0113_edc_pan_scrub` menyamarkan nomor kartu di baris lama `edc_transactions` (card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message, masked_pan), ambang sama dengan filter tulis; idempoten, baris bersih dan jumlah/status tidak berubah; `lock_timeout` 5 detik. `message` juga disamarkan saat dibaca. Log EDC diperiksa: tidak ada data kartu. Runbook `docs/runbooks/edc-pan-scrub.md`.
+- DB dev lokal baru 54 migrasi (tabel EDC belum ada): 0 baris terdeteksi, tidak membuktikan apa-apa. Deteksi perlu dijalankan di staging, pilot, dan tiap node edge.
+- Review K: reviewer Opus 2x dan architect, temuan sudah dibetulkan. Second opinion Codex: antre, brief 150.
+- Berikut: merge train meregenerasi nomor migrasi.
+
 ## Sedang
 
 - (kosong selain thread di bawah)
