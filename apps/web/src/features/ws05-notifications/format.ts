@@ -2,6 +2,7 @@ import {
   BellRing,
   CalendarClock,
   CalendarDays,
+  ChefHat,
   ClipboardCheck,
   CookingPot,
   CreditCard,
@@ -50,6 +51,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   payslip: FileText,
   daily_summary: Sun,
   operational_anomaly: TriangleAlert,
+  kitchen_alert: ChefHat,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

@@ -40,6 +40,7 @@ import {
 import {
   notificationPolicySchema,
   notificationPreferenceSchema,
+  type NotificationCategory,
 } from "@starter/shared/notification";
 import {
   assignZoneWaiterInputSchema,
@@ -162,7 +163,7 @@ async function nextSequence(
 }
 
 /** Zone waiters (user ids) of one zone; the only push audience. */
-async function zoneWaiterIds(
+export async function zoneWaiterIds(
   tx: Tx,
   tenantId: TenantId,
   zoneId: string,
@@ -185,6 +186,7 @@ export async function buildRecipients(
   userIds: string[],
   content: { title: string; body: string },
   now: Date,
+  category: NotificationCategory = "waiter_call",
 ): Promise<NotificationRecipient[]> {
   if (userIds.length === 0) return [];
   const [policyRow] = await tx
@@ -263,7 +265,7 @@ export async function buildRecipients(
   }
   return userIds.map((userId) => ({
     userId,
-    category: "waiter_call" as const,
+    category,
     title: content.title,
     body: content.body,
     link: null,

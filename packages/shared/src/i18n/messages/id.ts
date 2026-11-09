@@ -1301,6 +1301,7 @@ export const id = {
       payslip: "Slip gaji",
       daily_summary: "Ringkasan harian",
       operational_anomaly: "Anomali operasional",
+      kitchen_alert: "Peringatan dapur",
     },
     inbox: {
       heading: "Kotak masuk",
