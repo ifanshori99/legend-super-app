@@ -1143,3 +1143,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti merah dulu: modul probe belum ada (suite gagal impor); setelah modul ada tanpa heartbeat, test gangguan panjang gagal (alert 15 vs 14), lalu hijau.
 - Review K (architect, diff baru): 3 temuan, semua dibetulkan: sweep tidak lagi menahan relay, daftar probe memakai usia baris terbaru (bukan 7 hari) dan dipilih sesudah baris terbaru per outlet, `now` per outlet sesudah `health()`.
 - Test: `payment-failover.test.ts` 20, `payment-failover-tenants.test.ts` 4 (isolasi dua tenant: insiden, penanda bill, penerima alert, sweep per tenant). 6 file API 272/272, `pnpm typecheck` heavy exit 0, eslint, prettier.
+
+## legend-6g29 DOIT getPayment untuk PaymentProvider (engineer, cabang `ws/doit-get-payment` dari 3517283b, 2026-11-10)
+
+- Temuan: `PaymentProvider` hanya dipakai `FakePaymentProvider`; DOIT hanya lewat `PaymentGatewayPort.getStatus` (lifecycle: `refunded` jadi `pending`). Verifier `verifyDoitSignature` sudah cocok dengan dokumen publik DOIT (https://doit.id/docs/en/: `PayBridge-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>." + raw body)>`, `timingSafeEqual`), jadi tidak diubah. Memakai `node:crypto`, bukan `adapters/hmac.ts` (WebCrypto, async; verifier dan pemanggil sinkron).
+- Dibangun: `doitPaymentToProviderStatus`/`doitPaymentToProviderResult` (5 status DOIT ke enum 6, `refunded` tetap `refunded`, tak dikenal = SERVICE_UNAVAILABLE, tak pernah `paid`), `DoitGateway.lookupPayment` (GET /v1/payments/{id}, id dan reference jawaban harus sama), `createDoitPaymentReader` (`payment-doit-provider.ts`, resolver diinjeksi, cek tenant/outlet/scope), log `DOIT answer failed validation` (hanya path).
+- Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
+- Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
+- Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
