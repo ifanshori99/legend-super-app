@@ -107,6 +107,17 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
 - Langkah: riset psikologi warna untuk F&B order (warna CTA/tombol, warna yang mendorong nafsu makan dan nilai pesanan lebih besar, bukti dari sumber kredibel, bedakan mitos vs bukti, tetap lolos kontras WCAG), tulis `design/COLOR-RESEARCH.md`, lalu designer (Codex) ulang `final-a-*` dengan palet baru, review founder lagi. Pola upsell/menambah pesanan (rekomendasi "tambah minuman", bundling) boleh diusulkan bersama.
 
+## Brief 94 WS-03 menu dan QR order (engineer, cabang `ws/ws03-menu` + `ws/ws03-menu-w2`)
+
+- Gelombang 1 (`ws/ws03-menu`, daf21029, 11b9b775, 0eb3adc2, e20d52ee): konteks tamu QR per outlet + limiter tamu (7csf, 6ipw, fpi9, khiv), gabung sesi rombongan dari meja sekunder + tutup sesi membatalkan panggilan (rml8), API zone waiter + `resolved_by` (xlzl, migrasi 0086), pajak/inklusif/`unavailable_until` menu tamu (lf8g, nx3f, 49pw), sweep 86 + seed ketersediaan outlet baru (1am2, 2nb9), event bayar QR + skema realtime ke shared (8pye), kartu online dibuang dari checkout QR (vbzu, keputusan founder 9 Nov). n1p1 ditutup (43/43 endpoint sudah dilayani).
+- Perbaikan gate 1: 0086 mengangkat FORCE RLS `roles` untuk migrator non-superuser; helper tes floor menulis `created_by` UUID (daftar tenant platform 422 di suite penuh).
+- Gelombang 2 (`ws/ws03-menu-w2`): link modifier + media per outlet (un0j, dcz0), kontrak import di shared + XLSX lewat parser server (l8zb, az32), saran menu tamu (bagian cpq2), tes RBAC stasiun + batas body media (ra7s, ogzf), perbaikan back-office (ujkf, afig), sampel QR di subpath `qr-order/sample` (33uj), kontrol open-bill + migrasi 0087 (cqrw). 9pes dan 6ohy terverifikasi tanpa perubahan.
+- Keputusan: batas open-bill default Rp 3.000.000 sisa tagihan belum dibayar, 45 menit tanpa aktivitas, SLO minta tagihan 180 s (sweep lama); pelanggaran 409 `QR_ORDER_OPEN_BILL_LIMIT`, diaudit maks 1/menit/sesi. Media menu tingkat outlet, `outletId` opsional.
+- Kartu lanjutan: 4qls, n1mp, 541h (sisa read model tamu), iuvq (consumer cetak menu), n64n (fixture modul lain di bundle), tny6 (rute + layar kebijakan open-bill), zmc2 (order QR inklusif).
+- Review: semua slice K lewat reviewer Opus + architect; temuan nyata dibetulkan (0087 FORCE, pool/lock, banjir audit, eksposur kasir). Second-opinion Codex antre untuk slice K kedua gelombang.
+- Metrik sesi 9e42e731 (06:27, 159 menit): biaya* 21022k (utama Opus 4395k, subagent Sonnet 12721k, Opus 3835k, Haiku 72k); 45 subagent, puncak 9, rata 1,65 berjalan.
+- Gate: gelombang 1 `pnpm check` di 11b9b775 gagal 4 tes (0086 migrator non-superuser, daftar tenant 422), dibetulkan. Gelombang 2 di fc692f1d: lint + typecheck lolos, tes 2244 lolos / 1 gagal (`guest-menu-api.test.ts:261`, kategori bocor dari `ws03-menu-link.test.ts`), dibetulkan; tes terarah 2 file 14/14. Gate penuh berikut oleh merge train (aturan CTO 9 Nov).
+
 ## Langkah berikut
 
 1. (selesai) fix brief 06.
