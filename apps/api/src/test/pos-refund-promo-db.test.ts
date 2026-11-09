@@ -1130,3 +1130,99 @@ describe("legend-15by Q19 kept discount is capped by what the promo still gives"
     expect(await refundRows(sale.orderId)).toMatchObject([{ amount: 23_478 }]);
   });
 });
+
+// ---- Q19b (founder review fix, brief sub-115 "Q19b"): path-independent, stack-ordered, ----
+// ---- per-line kept discount -----------------------------------------------------------
+// Rule per still-applied redemption row i (brief):
+//   o_i = its ORIGINAL discount, share_i = o_i x kept / subtotal (original basis),
+//   r_i = re-check of the kept lines in stack order (free items first, then the
+//   bill-level promos / value vouchers on what is left),
+//   k_i = min(share_i, o_i, r_i); kept discount = sum k_i; every redemption row and
+//   its promotion's spent_idr drop by exactly their own cut (o_i - k_i).
+//
+// Case (a) here, through the POS. BOGO + 10% stacked and BOGO + value voucher
+// cannot be built through the POS (one code per order, tenant stacking off), so they
+// live in order-promo-db.test.ts against orderPromoPartialRefundPort.
+//
+// Assumptions:
+// - Prices: coffee 30k, croissant 25k; BOGO = "buy 2 coffee, 1 croissant free".
+// - A request for more than is due is paid at the due amount.
+
+/** The still-applied redemption rows of an order, with the discount each one carries. */
+async function appliedRedemptions(orderId: string) {
+  const { rows } = await asOwnerTenant((client) =>
+    client.query(
+      `SELECT promotion_id, voucher_id, discount_idr FROM promotion_redemptions
+        WHERE tenant_id = $1 AND order_id = $2 AND status = 'applied'`,
+      [tenant.tenantId, ulidToUuid(orderId as never)],
+    ),
+  );
+  return rows.map((row) => ({
+    promotionId: row.promotion_id as string | null,
+    voucherId: row.voucher_id as string | null,
+    discount: Number(row.discount_idr),
+  }));
+}
+
+/** Invariant: the applied redemption rows add up to the application's discount. */
+async function expectRowsMatchApplication(orderId: string) {
+  const rows = await appliedRedemptions(orderId);
+  const sum = rows.reduce((total, row) => total + row.discount, 0);
+  expect(sum).toBe((await application(orderId)).totalDiscount);
+}
+
+describe("legend-15by Q19b path-independent, stack-ordered, per-line kept discount", () => {
+  // q19 menu items are seeded once by the Q19 describe above (same file, runs first).
+
+  it("(a) BOGO 4 coffee + 2 croissant (170k, 50k off, paid 120k): returning coffee then coffee pays 5k + 30k = 35k, the same as returning both at once", async () => {
+    const sale = await bogoSale(
+      [
+        { menuItemId: q19.coffee, quantity: 4 },
+        { menuItemId: q19.croissant, quantity: 2 },
+      ],
+      { subtotalIdr: 170_000, discountIdr: 50_000 },
+    );
+    const coffeeLine = sale.lineOf(q19.coffee);
+
+    // Step 1: kept 140k, BOGO still gives 25k -> pays 120k - (140k - 25k) = 5k.
+    const first = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: COFFEE_IDR,
+        items: [{ itemId: coffeeLine, quantity: 1 }],
+      }),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBeLessThan(300);
+    expect(first.body.data.amountIdr).toBe(5_000);
+    await expectRowsMatchApplication(sale.orderId);
+
+    // Step 2: kept 110k, BOGO still gives 25k -> cumulative 120k - (110k - 25k)
+    // = 35k, so this step pays 30k (not the 24.643k of the old pro-rata-on-current rule).
+    const second = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: COFFEE_IDR,
+        items: [{ itemId: coffeeLine, quantity: 1 }],
+      }),
+    );
+    expect(second.status, JSON.stringify(second.body)).toBeLessThan(300);
+    expect(second.body.data.amountIdr).toBe(30_000);
+
+    expect(
+      (await refundRows(sale.orderId)).reduce(
+        (sum, row) => sum + row.amount,
+        0,
+      ),
+    ).toBe(35_000);
+    expect(await application(sale.orderId)).toMatchObject({
+      paid: 120_000,
+      refundedPaid: 35_000,
+      totalDiscount: 25_000,
+    });
+    expect(await spentOf(sale.promotionId)).toBe(25_000);
+    expect(await appliedRedemptions(sale.orderId)).toMatchObject([
+      { promotionId: sale.promotionId, discount: 25_000 },
+    ]);
+    await expectRowsMatchApplication(sale.orderId);
+  });
+});

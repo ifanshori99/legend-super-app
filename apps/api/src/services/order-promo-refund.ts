@@ -2,20 +2,24 @@
 // v1.7 §3.10, §3.21). Wraps `recomputeAfterPartialRefund`
 // (crm-promo-refund.ts) and closes the gap noted in the promo Q41 review:
 //
-//   The recompute keeps only the kept goods' pro-rata share of the order's
-//   remaining discount (founder rule, 9 Nov 2026), but only withdrawn
-//   promotions give their discount back to `promotions.spent_idr`. The share
-//   that belonged to the refunded items ("clamp" below) is no longer given to
-//   the guest, so the promotion budget and the ROI cost (sum of
+//   The recompute keeps, per still-applied redemption line, only what the
+//   kept goods still earn (founder rule, 9 Nov 2026: the line's pro-rata
+//   share by price; Q19: capped by what its promotion gives when re-evaluated
+//   in stack order on the kept lines), but only withdrawn promotions give
+//   their discount back to `promotions.spent_idr`. The part that belonged to
+//   the refunded items ("clamp" below) is no longer given to the guest, so
+//   the promotion budget and the ROI cost (sum of
 //   `promotion_redemptions.discount_idr`) would still count it.
 //
-// This wrapper lowers, by exactly that amount, the still-applied
-// redemption lines of the order (pro rata to their discount, largest
-// remainder) and the `spent_idr` of their promotions (value vouchers have no
-// promotion row: only their line is lowered). The invariant kept is
-// sum(applied line discount_idr) == application.total_discount_idr, so a later
-// full void (`releasePromotions`) gives back exactly what is still counted and
-// never drives `spent_idr` below zero.
+// This wrapper lowers each still-applied redemption line to the discount the
+// recompute says it keeps (`keptLineDiscounts`), and the `spent_idr` of its
+// promotion by the same cut (value vouchers have no promotion row: only their
+// line is lowered). So the budget a promotion gets back is what that
+// promotion actually lost, never a share of another promotion's loss. The
+// invariant kept is sum(applied line discount_idr) ==
+// application.total_discount_idr, so a later full void (`releasePromotions`)
+// gives back exactly what is still counted and never drives `spent_idr` below
+// zero.
 //
 // Lock order is the engine's (crm-promo-engine `redeemPromotions` doc): the
 // caller holds the order row; then the per-order advisory lock and the
@@ -23,12 +27,11 @@
 // same transaction), and the promotion rows lowered below are already held
 // FOR UPDATE by the recompute.
 //
-// Idempotent: repeating the same refund withdraws nothing and the clamp is
-// already applied, so the correction is Rp0.
+// Idempotent: repeating the same refund withdraws nothing and every line
+// already carries what it keeps, so the correction is Rp0.
 
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
-  allocateIdr,
   assertTrustedScopedContext,
   createUlid,
   idr,
@@ -67,8 +70,9 @@ async function lockOrder(tx: Tx, tenantId: TenantId, orderId: string) {
 
 /**
  * How much of the order discount went with the refunded items (>= 0): what was
- * standing before, minus what was withdrawn, minus the kept goods' share that
- * remains. It goes back to the promotion budget.
+ * standing before, minus what was withdrawn, minus what the kept lines keep.
+ * While the invariant holds it equals the sum of the per-line cuts that
+ * `lowerAppliedDiscount` gives back to the promotion budget.
  */
 export function clampedDiscountOf(
   standingBeforeIdr: number,
@@ -81,14 +85,15 @@ export function clampedDiscountOf(
 }
 
 /**
- * Lowers the still-applied redemption lines of one order (and their
- * promotions' spent_idr) by `amount` in total. Returns the amount lowered.
+ * Lowers each still-applied redemption line of one order to the discount it
+ * keeps (never raises one), and its promotion's spent_idr by the same cut.
+ * Returns the total lowered.
  */
 async function lowerAppliedDiscount(
   tx: Tx,
   tenantId: TenantId,
   orderId: string,
-  amount: number,
+  kept: Extract<PartialRefundResult, { adjusted: true }>["keptLineDiscounts"],
   now: Date,
 ): Promise<number> {
   const lines = await tx
@@ -110,18 +115,22 @@ async function lowerAppliedDiscount(
       asc(promotionRedemptions.id),
     )
     .for("update");
-  const standing = lines.reduce((sum, line) => sum + line.discountIdr, 0);
-  // Rows from before this wrapper may not keep the invariant: never lower
-  // more than the lines still carry (CHECK discount_idr >= 0).
-  const lowered = Math.min(amount, standing);
-  if (lowered <= 0) return 0;
-  const shares = allocateIdr(
-    idr(lowered),
-    lines.map((line) => line.discountIdr),
+  const keptById = new Map(
+    kept.map((entry) => [entry.redemptionId, entry.keptDiscountIdr]),
   );
+  // Never lower below zero (CHECK discount_idr >= 0) and never raise a line.
+  const cuts = lines.map((line) => {
+    const keep = keptById.get(line.id);
+    return keep === undefined
+      ? 0
+      : Math.max(0, line.discountIdr - Math.max(0, keep));
+  });
+  const lowered = cuts.reduce((sum, cut) => sum + cut, 0);
+  if (lowered <= 0) return 0;
   const promotionIds = [
     ...new Set(
       lines
+        .filter((_, index) => (cuts[index] ?? 0) > 0)
         .map((line) => line.promotionId)
         .filter((id): id is string => id !== null),
     ),
@@ -140,7 +149,7 @@ async function lowerAppliedDiscount(
       .orderBy(asc(promotions.id))
       .for("update");
   for (const [index, line] of lines.entries()) {
-    const share = Math.min(shares[index] ?? 0, line.discountIdr);
+    const share = cuts[index] ?? 0;
     if (share <= 0) continue;
     await tx
       .update(promotionRedemptions)
@@ -201,13 +210,11 @@ export async function recomputeOrderPromoAfterPartialRefund(
   const result = await recomputeAfterPartialRefund(tx, context, refund);
   if (!result.adjusted || !before) return result;
 
-  const clamped = clampedDiscountOf(before.totalDiscountIdr, result);
-  if (clamped === 0) return result;
   const lowered = await lowerAppliedDiscount(
     tx,
     tenantId,
     orderId,
-    clamped,
+    result.keptLineDiscounts,
     refund.at,
   );
   if (lowered > 0)

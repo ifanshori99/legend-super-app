@@ -111,6 +111,7 @@ describe("legend-souz clampedDiscountOf (owner Q41 clamp)", () => {
     keptPayableIdr: idr(0),
     remainingPaidIdr: idr(0),
     withdrawn: [],
+    keptLineDiscounts: [],
     voucherIds: [],
     facilityRewardIds: [],
   });

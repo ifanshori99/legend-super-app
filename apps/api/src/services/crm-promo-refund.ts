@@ -22,18 +22,22 @@
 //   Q41 snapshot decision), so editing a promotion after the sale never
 //   changes what an already-paid bill earned. Rows from before migration 0042
 //   have no snapshot and fall back to the current rule.
-// - A promotion that still applies keeps its discount on the kept items only:
-//   the discount still standing is split pro rata (by price) between the kept
-//   and the refunded goods (founder rule, 9 Nov 2026), so refunding an item
-//   gives back its price minus its share of the discount. The kept discount
-//   is capped at the kept bill value, so the remaining bill can never go
-//   negative.
-// - Q19 (founder 9 Nov 2026): the kept discount is also capped by what the
-//   still-applied promotions give when re-evaluated on the kept lines. So a
-//   returned free item (buy 2 coffee, get 1 croissant free, croissant sent
-//   back) pays Rp0 instead of a pro-rata share. Value vouchers and rules that
-//   no longer exist have nothing to re-evaluate and keep their full discount
-//   in that cap. The cap only ever lowers the kept discount.
+// - A promotion that still applies keeps its discount on the kept items only,
+//   per redemption line (founder rule, 9 Nov 2026; Q19b): the line's ORIGINAL
+//   discount (its applied evaluation at checkout) is split pro rata (by
+//   price) between the kept goods and the rest of the ORIGINAL bill, so
+//   refunding an item gives back its price minus its share of the discount,
+//   and two refunds pay the same as one refund of the same items.
+// - Q19 (founder 9 Nov 2026): each kept line is also capped by what its
+//   promotion gives when the kept promotions are re-evaluated on the kept
+//   lines in stack order (free items/bundle first, then bill-level on what is
+//   left, each by priority then id, as `applyPromotions`). So a returned free
+//   item (buy 2 coffee, get 1 croissant free, croissant sent back) pays Rp0
+//   instead of a pro-rata share. A value voucher re-checks as a nominal on
+//   what is left; a rule that no longer exists (or a re-check refused by a
+//   gate it cannot reproduce) keeps its original discount in that cap. A line
+//   never keeps more than it carries now, and the kept discount is capped at
+//   the kept bill value, so the remaining bill can never go negative.
 // - A same-day minimum-spend facility reward (Q40) is re-checked against the
 //   customer's day total at that outlet with this bill reduced.
 // - The payout is cumulative: what the guest still has paid in
@@ -142,6 +146,12 @@ export type WithdrawnPromotion = {
   readonly reason: PromoRejectionReason;
 };
 
+/** Discount a still-applied redemption line keeps after the refund. */
+export type KeptLineDiscount = {
+  readonly redemptionId: string;
+  readonly keptDiscountIdr: Idr;
+};
+
 export type PartialRefundResult =
   | {
       /** The order used no promotion (or the caller cannot reach it). */
@@ -168,6 +178,11 @@ export type PartialRefundResult =
       /** Goods amount still paid in and not refunded, before this refund. */
       readonly remainingPaidIdr: Idr;
       readonly withdrawn: readonly WithdrawnPromotion[];
+      /**
+       * Per still-applied redemption line (withdrawn lines excluded): what it
+       * keeps. Sums to `totalDiscountIdr`.
+       */
+      readonly keptLineDiscounts: readonly KeptLineDiscount[];
       readonly voucherIds: readonly string[];
       readonly facilityRewardIds: readonly string[];
     };
@@ -222,18 +237,12 @@ function sumLines(lines: readonly PromoLine[]): number {
 }
 
 /**
- * Does the reduced bill still earn `promotion`? Only the bill-content
- * conditions are re-checked (see header); gates such as status, validity,
- * quota and budget are neutralized because the order already consumed them.
- * `recomputedIdr` is what the promotion gives on the reduced bill (Q19);
- * null when the re-check is rejected for a reason that is not a withdrawal
- * (a gate this re-check cannot reproduce): the line then keeps its discount.
+ * `promotion` with only the bill-content conditions (see header); gates such
+ * as status, validity, quota and budget are neutralized because the order
+ * already consumed them.
  */
-function stillEarned(
-  promotion: Promotion,
-  bill: PromoEvaluationInput,
-): { failure: PromoRejectionReason | null; recomputedIdr: number | null } {
-  const neutral: Promotion = {
+function neutralized(promotion: Promotion): Promotion {
+  return {
     ...promotion,
     status: "active",
     startsAt: "1970-01-01T00:00:00.000Z",
@@ -247,13 +256,32 @@ function stillEarned(
       CONTENT_CONDITIONS.has(condition.kind),
     ),
   };
+}
+
+/**
+ * Does the reduced bill still earn `neutral` (see `neutralized`)? Eligibility
+ * reads the whole kept bill. `failure` is the withdrawal reason; `applied` is
+ * false when the re-check is refused for a reason that is not a withdrawal (a
+ * gate this re-check cannot reproduce): the line then keeps its discount.
+ */
+function stillEarned(
+  neutral: Promotion,
+  bill: PromoEvaluationInput,
+): { failure: PromoRejectionReason | null; applied: boolean } {
   const evaluation = evaluatePromotion(neutral, bill);
-  if (evaluation.applied)
-    return { failure: null, recomputedIdr: evaluation.discountIdr };
+  if (evaluation.applied) return { failure: null, applied: true };
   return {
     failure: WITHDRAW_REASONS.has(evaluation.reason) ? evaluation.reason : null,
-    recomputedIdr: null,
+    applied: false,
   };
+}
+
+/** Same stack order as `applyPromotions` (legend-7x4g): item-level first. */
+function stackTierOf(promotion: Promotion): number {
+  return promotion.benefit.kind === "free_items" ||
+    promotion.benefit.kind === "bundle_price"
+    ? 0
+    : 1;
 }
 
 /**
@@ -417,36 +445,69 @@ export async function recomputeAfterPartialRefund(
     voucherPromotionId: null,
   };
 
+  // Q19b: each line's ORIGINAL discount is its applied evaluation at
+  // checkout (refunds never re-price evaluations, a withdrawal only flips
+  // them to rejected). A value voucher's evaluation id is the voucher id.
+  const previous = promotionApplicationResultSchema.parse(application.result);
+  const originalById = new Map<string, number>();
+  for (const evaluation of previous.evaluations)
+    if (evaluation.applied)
+      originalById.set(evaluation.promotionId, evaluation.discountIdr);
+
+  type KeptEntry = {
+    readonly line: (typeof lines)[number];
+    readonly originalIdr: number;
+    readonly tier: number;
+    readonly priority: number;
+    readonly stackId: string;
+    /** Stack re-check: a value voucher, keep the original, or a rule. */
+    readonly recheck: "voucher" | "keep" | Promotion;
+  };
+  const keptEntries: KeptEntry[] = [];
+  const keep = (
+    line: (typeof lines)[number],
+    stackId: string | null,
+    recheck: KeptEntry["recheck"],
+  ) => {
+    const id = stackId ?? line.promotionId ?? line.id;
+    const isRule = typeof recheck !== "string";
+    keptEntries.push({
+      line,
+      originalIdr: originalById.get(id) ?? line.discountIdr,
+      tier: isRule ? stackTierOf(recheck) : 1,
+      priority: isRule ? recheck.priority : 0,
+      stackId: id,
+      recheck,
+    });
+  };
+
   const withdrawn: WithdrawnPromotion[] = [];
-  // Q19: what the kept promotions give on the kept lines (cap on the kept
-  // discount).
-  let keptCap = 0;
   for (const line of lines) {
     if (line.promotionId === null) {
-      keptCap += line.discountIdr; // value voucher: no condition
+      // Value voucher: no condition (never withdrawn; it keeps Rp0 when
+      // nothing is kept), re-checked as a nominal in the stack.
+      keep(line, line.voucherId, "voucher");
       continue;
     }
     let failure: PromoRejectionReason | null = "no_matching_items";
-    let recomputedIdr: number | null = null;
     if (!returnsAll) {
       const current = rules.get(line.promotionId);
       if (!current) {
-        keptCap += line.discountIdr;
+        keep(line, line.promotionId, "keep");
         continue;
       }
       const rule = withSnapshot(current);
-      const promotion =
+      const promotion = neutralized(
         earlierSpend !== null && isSameDayMinSpendReward(rule)
           ? withSameDaySpend(rule, earlierSpend, false)
-          : rule;
-      ({ failure, recomputedIdr } = stillEarned(promotion, bill));
-    }
-    if (failure === null) {
-      keptCap +=
-        recomputedIdr === null
-          ? line.discountIdr
-          : Math.min(line.discountIdr, recomputedIdr);
-      continue;
+          : rule,
+      );
+      const earned = stillEarned(promotion, bill);
+      failure = earned.failure;
+      if (failure === null) {
+        keep(line, line.promotionId, earned.applied ? promotion : "keep");
+        continue;
+      }
     }
     withdrawn.push({
       promotionId: line.promotionId,
@@ -536,25 +597,73 @@ export async function recomputeAfterPartialRefund(
     (sum, entry) => sum + entry.discountIdr,
     0,
   );
-  // Founder rule (9 Nov 2026): the discount still standing after the
-  // withdrawals is split pro rata by price between the kept and the refunded
-  // goods; the kept part stays (capped at the kept bill value, so the payable
-  // is never negative, and at what the kept promotions still give on the kept
-  // lines, Q19). The payout is cumulative: what the guest still has
-  // paid in minus the kept goods at their payable price.
-  const discountAfter = Math.max(
-    0,
-    application.totalDiscountIdr - withdrawnDiscount,
-  );
-  let keptDiscount = 0;
-  if (keptSubtotal > 0 && discountAfter > 0) {
-    // keptSubtotal > 0 and standing >= keptSubtotal, so the weights sum > 0.
-    const [keptShare = 0] = allocateIdr(idr(discountAfter), [
-      keptSubtotal,
-      standing - keptSubtotal,
-    ]);
-    keptDiscount = Math.min(keptSubtotal, keptShare, keptCap);
+  // Founder rule (9 Nov 2026) per kept line (Q19b): k_i = min(share_i, o_i,
+  // r_i), where o_i is the line's original discount, share_i its pro-rata
+  // (by price) part on the kept goods over the ORIGINAL bill, and r_i what it
+  // gives when the kept promotions are re-evaluated in stack order on the kept
+  // lines (Q19). A line never keeps more than it carries now. The payout is
+  // cumulative: what the guest still has paid in minus the kept goods at
+  // their payable price.
+  const stack = [...keptEntries].sort((left, right) => {
+    const tier = left.tier - right.tier;
+    if (tier !== 0) return tier;
+    const priority = right.priority - left.priority;
+    if (priority !== 0) return priority;
+    if (left.stackId !== right.stackId)
+      return left.stackId < right.stackId ? -1 : 1;
+    return left.line.id < right.line.id ? -1 : 1;
+  });
+  const keptAmounts: number[] = [];
+  let discountableLeft = keptSubtotal;
+  for (const entry of stack) {
+    const original = entry.originalIdr;
+    let recheckedIdr: number;
+    if (entry.recheck === "voucher")
+      recheckedIdr = Math.min(original, discountableLeft);
+    else if (entry.recheck === "keep") recheckedIdr = original;
+    else {
+      const evaluation = evaluatePromotion(entry.recheck, bill, undefined, {
+        discountableIdr: idr(discountableLeft),
+      });
+      // `stillEarned` already passed on the kept bill, so a rejection here
+      // only means the promotions earlier in the stack used up the room
+      // (`applyPromotions` gives such a promotion Rp0, e.g. a free unit that
+      // no longer fits): it keeps nothing.
+      recheckedIdr = evaluation.applied ? evaluation.discountIdr : 0;
+    }
+    discountableLeft = Math.max(
+      0,
+      discountableLeft - Math.min(original, recheckedIdr),
+    );
+    // keptSubtotal > 0 and subtotal >= keptSubtotal, so the weights sum > 0.
+    const [share = 0] =
+      keptSubtotal === 0
+        ? [0]
+        : allocateIdr(idr(original), [
+            keptSubtotal,
+            application.subtotalIdr - keptSubtotal,
+          ]);
+    keptAmounts.push(
+      Math.max(
+        0,
+        Math.min(share, original, recheckedIdr, entry.line.discountIdr),
+      ),
+    );
   }
+  // Capped at the kept bill value: the excess comes off the last lines in
+  // stack order, so the lines still sum to the kept discount.
+  let excess =
+    keptAmounts.reduce((sum, amount) => sum + amount, 0) - keptSubtotal;
+  for (let index = keptAmounts.length - 1; excess > 0 && index >= 0; index--) {
+    const cut = Math.min(excess, keptAmounts[index] ?? 0);
+    keptAmounts[index] = (keptAmounts[index] ?? 0) - cut;
+    excess -= cut;
+  }
+  const keptLineDiscounts: KeptLineDiscount[] = stack.map((entry, index) => ({
+    redemptionId: entry.line.id,
+    keptDiscountIdr: idr(keptAmounts[index] ?? 0),
+  }));
+  const keptDiscount = keptAmounts.reduce((sum, amount) => sum + amount, 0);
   const totalDiscount = keptDiscount;
   const keptPayableIdr = keptSubtotal - keptDiscount;
   const paidIdr =
@@ -566,7 +675,6 @@ export async function recomputeAfterPartialRefund(
     Math.min(remainingPaidIdr, remainingPaidIdr - keptPayableIdr),
   );
   const uncoveredIdr = Math.max(0, keptPayableIdr - remainingPaidIdr);
-  const previous = promotionApplicationResultSchema.parse(application.result);
   const withdrawnReason = new Map(
     withdrawn.map((entry) => [entry.promotionId, entry.reason]),
   );
@@ -673,6 +781,7 @@ export async function recomputeAfterPartialRefund(
     keptPayableIdr: idr(keptPayableIdr),
     remainingPaidIdr: idr(remainingPaidIdr),
     withdrawn,
+    keptLineDiscounts,
     voucherIds,
     facilityRewardIds: revoked.map((row) => row.id),
   };
