@@ -619,3 +619,4 @@ Langkah berikut CTO baru:
 - 21:41 Codex 219 (G7w5m, pajak): 170b -> legend-5yeyq P2 (pph21 kas non-pajak diabaikan), 177b -> legend-7gwap P2 (UUID probe lolos deteksi overlap), 173b -> legend-usa4b P2 (import CoA edge tanpa lock). Resolved.
 - 21:42 RAM kuning (free 35%, swap 1,4 GB): brief 221 dan perbaikan pajak menunggu slot. legend-4fzhu: komentar architect belum ada (subagent di sesi G8flk). Kuota Codex mingguan #2 96%, #3 91% (reset 15 Nov): antrean Codex tidak cukup, ditanyakan ke founder (Q43).
 - 21:47 RAM hijau: brief 221 dimulai di G3lqr (engineer Opus, cabang ws/edge-pin-race-fixes).
+- 21:35 legend-4fzhu: akar masalah bug test (ORDER BY created_at + jam VM Colima mundur ~120 ms tiap 20 detik); produk aman (refundedAt, id). Diteruskan ke CTO G6nvg. Kartu P3 untuk 43 file serupa.
