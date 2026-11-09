@@ -896,10 +896,11 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.revenue",
     name: "Pendapatan fasilitas",
-    description: "Pendapatan shower room dan jumlah sesi per fasilitas.",
+    description:
+      "Pendapatan shower room dan jumlah sesi per fasilitas dan per unit (bilik).",
     family: "facility",
     metrics: ["shower_revenue", "shower_sessions"],
-    dimensions: ["outlet", "facility"],
+    dimensions: ["outlet", "facility", "unit"],
   }),
   defineReport({
     code: "facility.revpash",
@@ -912,10 +913,10 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.occupancy",
     name: "Utilisasi shower room",
-    description: "Utilisasi bilik dan jumlah sesi per fasilitas.",
+    description: "Utilisasi bilik dan jumlah sesi per fasilitas dan per unit.",
     family: "facility",
     metrics: ["shower_occupancy_pct", "shower_sessions"],
-    dimensions: ["facility"],
+    dimensions: ["facility", "unit"],
   }),
   defineReport({
     code: "facility.subscriptions",
@@ -936,10 +937,56 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "facility.fnb_conversion",
     name: "Konversi fasilitas ke F&B",
-    description: "Sesi shower dengan pesanan F&B dan konversinya.",
+    description:
+      "Sesi shower dengan pesanan F&B dan konversinya per fasilitas dan per unit.",
     family: "facility",
     metrics: ["shower_fnb_conversion_pct", "shower_sessions_with_fnb"],
-    dimensions: ["facility"],
+    dimensions: ["facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.overtime",
+    name: "Kelebihan waktu fasilitas",
+    description:
+      "Sesi yang melewati durasi dan total waktu kelebihan per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_overtime_sessions", "facility_overtime_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.cleaning_time",
+    name: "Waktu pembersihan",
+    description:
+      "Jumlah pembersihan dan rata-rata lama pembersihan per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_cleaning_count", "facility_cleaning_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.incidents",
+    name: "Insiden fasilitas",
+    description:
+      "Jumlah insiden dan rata-rata waktu respons per fasilitas dan per unit.",
+    family: "facility",
+    metrics: ["facility_incident_count", "facility_incident_response_seconds"],
+    dimensions: ["outlet", "facility", "unit"],
+  }),
+  defineReport({
+    code: "facility.product_revenue",
+    name: "Pendapatan per produk fasilitas",
+    description:
+      "Pendapatan dan jumlah terjual tiap produk fasilitas: tiket, paket, day pass, reservasi kursi, dan langganan.",
+    family: "facility",
+    metrics: ["facility_product_revenue", "facility_product_sales"],
+    dimensions: ["outlet", "facility", "product"],
+  }),
+  defineReport({
+    code: "facility.unit_utilization",
+    name: "Utilisasi unit per jam",
+    description:
+      "Persentase menit terpakai tiap unit (bilik atau kursi), per unit dan per jam buka.",
+    family: "facility",
+    metrics: ["unit_utilization_pct"],
+    dimensions: ["outlet", "unit", "hour", "facility"],
   }),
 
   // ---- Operations ----------------------------------------------------------

@@ -78,6 +78,16 @@ import { unitAcceptsSlot, unitIsBookable } from "./facility-rules.ts";
 /** How long a `pending_payment` hold keeps its unit (PRD silent: 10 min). */
 export const SLOT_HOLD_TTL_MINUTES = 10;
 
+/**
+ * How long a `notified` queue guest may claim the freed unit (legend-ke4z;
+ * PRD silent: 10 min, same as the hold TTL). After that the entry expires and
+ * the next guest in line is notified.
+ */
+export const QUEUE_CLAIM_WINDOW_MINUTES = 10;
+
+const claimCutoff = (now: Date) =>
+  new Date(now.getTime() - QUEUE_CLAIM_WINDOW_MINUTES * 60_000);
+
 const holdSql = sql.raw(SLOT_HOLD_PREDICATE_SQL);
 const occupiedRange = sql`tstzrange(${accessTickets.startsAt}, ${accessTickets.cleaningEndsAt}, '[)')`;
 const rangeOf = (from: Date, to: Date) =>
@@ -121,9 +131,13 @@ async function queueCounts(
   tenantId: TenantId,
   facilityId: string,
   areaId: string | null,
+  now: Date,
 ) {
   const rows = await tx
-    .select({ status: facilityQueueEntries.status })
+    .select({
+      status: facilityQueueEntries.status,
+      notifiedAt: facilityQueueEntries.notifiedAt,
+    })
     .from(facilityQueueEntries)
     .where(
       and(
@@ -135,7 +149,13 @@ async function queueCounts(
     );
   return {
     waiting: rows.filter((row) => row.status === "waiting").length,
-    notified: rows.filter((row) => row.status === "notified").length,
+    // A notified guest past the claim window no longer holds a unit; the
+    // sweeper expires the row, until then it must not inflate the estimate.
+    notified: rows.filter(
+      (row) =>
+        row.status === "notified" &&
+        (row.notifiedAt === null || row.notifiedAt >= claimCutoff(now)),
+    ).length,
   };
 }
 
@@ -160,19 +180,21 @@ export async function computeWaitEstimate(
       (facility.sessionMinutes + facility.cleaningMinutes) * 60_000,
   );
   const serving = units.filter((unit) => unit.status !== "maintenance");
+  // Holds up to one more turn ahead, so a unit whose next hold starts before
+  // turnEnd is known to be busy until that hold (and its cleaning) ends.
   const windows = await holdWindows(
     tx,
     tenantId,
     serving.map((unit) => unit.id),
     now,
-    turnEnd,
+    new Date(turnEnd.getTime() + (turnEnd.getTime() - now.getTime())),
   );
   const free = serving.filter(
     (unit) =>
       unit.status === "available" &&
       !windows.some((w) => w.unitId === unit.id && overlaps(w, now, turnEnd)),
   );
-  const queue = await queueCounts(tx, tenantId, facility.id, areaId);
+  const queue = await queueCounts(tx, tenantId, facility.id, areaId, now);
   // Notified guests already have a unit reserved in spirit; they use up free units.
   const freeForQueue = Math.max(0, free.length - queue.notified);
   const queueLength = queue.waiting;
@@ -187,16 +209,24 @@ export async function computeWaitEstimate(
       freeForQueue,
     );
   } else {
+    // Earliest start with a whole turn clear of holds: a unit with a hold
+    // that begins before turnEnd is not free now even when no hold covers now.
+    const turnMs = turnEnd.getTime() - now.getTime();
     const untilFree = serving.map((unit) => {
-      const covering = windows
-        .filter((w) => w.unitId === unit.id && w.startsAt <= now)
-        .map((w) => w.cleaningEndsAt.getTime());
-      if (covering.length > 0)
-        return Math.max(
-          0,
-          Math.ceil((Math.max(...covering) - now.getTime()) / 60_000),
+      let start =
+        now.getTime() +
+        (unit.status === "available" ? 0 : facility.cleaningMinutes * 60_000);
+      for (;;) {
+        const clash = windows.filter(
+          (w) =>
+            w.unitId === unit.id &&
+            w.startsAt.getTime() < start + turnMs &&
+            start < w.cleaningEndsAt.getTime(),
         );
-      return unit.status === "available" ? 0 : facility.cleaningMinutes;
+        if (clash.length === 0) break;
+        start = Math.max(...clash.map((w) => w.cleaningEndsAt.getTime()));
+      }
+      return Math.max(0, Math.ceil((start - now.getTime()) / 60_000));
     });
     minutes =
       Math.min(...untilFree) +
@@ -416,6 +446,9 @@ export async function holdFacilitySlot(
     );
   for (const { id } of lapsed)
     await cancelFacilitySlotHold(tx, context, id, null, now);
+  // Same for queue guests who did not claim in time (legend-ke4z): they must
+  // not keep the guests behind them waiting.
+  await expireStaleQueueNotifications(tx, context, now, facility.id);
 
   const fingerprint = holdFingerprint(input);
   const [existing] = await tx
@@ -753,4 +786,60 @@ export async function notifyNextInQueue(
       ),
     );
   return next.id;
+}
+
+/**
+ * Sweeper (legend-ke4z): a `notified` guest who did not book within
+ * `QUEUE_CLAIM_WINDOW_MINUTES` loses the place (status `expired`) and the next
+ * waiting guest of that area is notified. `facilityId` narrows the sweep to one
+ * facility (used under the facility lock by `holdFacilitySlot`). Returns the
+ * expired entry ids.
+ */
+export async function expireStaleQueueNotifications(
+  tx: Tx,
+  context: ScopedTenantContext,
+  now = new Date(),
+  facilityId?: string,
+): Promise<string[]> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const stale = await tx
+    .select()
+    .from(facilityQueueEntries)
+    .where(
+      and(
+        eq(facilityQueueEntries.tenantId, tenantId),
+        eq(facilityQueueEntries.status, "notified"),
+        lt(facilityQueueEntries.notifiedAt, claimCutoff(now)),
+        ...(facilityId
+          ? [eq(facilityQueueEntries.facilityId, facilityId)]
+          : []),
+      ),
+    )
+    .orderBy(asc(facilityQueueEntries.notifiedAt), asc(facilityQueueEntries.id))
+    .for("update", { skipLocked: true });
+  const expired: string[] = [];
+  for (const entry of stale) {
+    assertOutletInScope(context.outletScope, entry.outletId);
+    await tx
+      .update(facilityQueueEntries)
+      .set({ status: "expired", updatedAt: now })
+      .where(
+        and(
+          eq(facilityQueueEntries.tenantId, tenantId),
+          eq(facilityQueueEntries.id, entry.id),
+        ),
+      );
+    await auditFacility(tx, context, null, now, {
+      action: "facility_queue.claim_expired",
+      objectType: "facility_queue_entry",
+      objectId: entry.id,
+      outletId: entry.outletId,
+      before: { id: entry.id, status: entry.status },
+      after: { id: entry.id, status: "expired" },
+    });
+    await notifyNextInQueue(tx, tenantId, entry.facilityId, entry.areaId, now);
+    expired.push(entry.id);
+  }
+  return expired;
 }

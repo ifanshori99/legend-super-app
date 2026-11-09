@@ -8,7 +8,7 @@ export const facilityReportMessages = {
   hub: {
     title: "Laporan fasilitas & WFC",
     intro:
-      "Enam laporan standar fasilitas dan WFC: pendapatan shower, RevPASH dan okupansi zona, utilisasi bilik, langganan, Wi-Fi tamu, serta konversi shower ke F&B. Setiap laporan memakai angka yang sama dengan dashboard pemilik yang menautkannya.",
+      "Sebelas laporan standar fasilitas dan WFC: pendapatan shower, RevPASH dan okupansi zona, utilisasi bilik, langganan, Wi-Fi tamu, konversi shower ke F&B, kelebihan waktu, waktu pembersihan, insiden, pendapatan per produk, serta utilisasi unit per jam. Setiap laporan memakai angka yang sama dengan dashboard pemilik yang menautkannya.",
     sampleNote:
       "Angka di layar demo berasal dari data contoh Cafe Legend, bukan data tenant sungguhan.",
     metrics: "Ukuran",

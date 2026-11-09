@@ -149,6 +149,7 @@ export function toFacility(row: FacilityRow): Facility {
     operatingHours: row.operatingHours,
     overtimePolicy: row.overtimePolicy,
     cancellationPolicy: row.cancellationPolicy,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -161,6 +162,7 @@ export function toArea(row: AreaRow): FacilityArea {
     name: row.name,
     entranceLockDeviceId: row.entranceLockDeviceId,
     sortOrder: row.sortOrder,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -176,6 +178,7 @@ export function toUnit(row: UnitRow): FacilityUnit {
     panicDeviceId: row.panicDeviceId,
     status: row.status,
     sortOrder: row.sortOrder,
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -231,6 +234,26 @@ export const FACILITY_AUDIT_SAFE_FIELDS: readonly string[] = [
   "cleaningEndsAt",
   "source",
   "timing",
+  // Price and quota values: an admin's change must stay readable as old and
+  // new (bead legend-6jms). Money amounts and counts, never personal data.
+  "priceIdr",
+  "quotaPerPeriod",
+  // `sessions` itself is on the audit deny list ("session"); `quota` is the
+  // sessions a purchase or rule grants.
+  "quota",
+  "maxPerDay",
+  "interval",
+  "isActive",
+  "isEnabled",
+  "freeMinutes",
+  "peakFreeMinutes",
+  "spendPerExtraHourIdr",
+  "extraMinutes",
+  "maxDevices",
+  "minSpendPerHourIdr",
+  "minSpendIdr",
+  "baseSpeedKbps",
+  "fullSpeedKbps",
 ];
 
 export async function auditFacility(

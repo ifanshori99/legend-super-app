@@ -48,6 +48,7 @@ import {
   createFacilityAddonSchema,
   createFacilityAreaSchema,
   createFacilityProductSchema,
+  createFacilitySchema,
   createFacilityUnitSchema,
   createSubscriptionPlanSchema,
   facilityConfigQuerySchema,
@@ -70,6 +71,7 @@ import {
   updateFacilityAreaSchema,
   updateFacilityProductSchema,
   updateFacilitySchema,
+  updateFacilityUnitConfigSchema,
   updateFacilityUnitSchema,
   updateSubscriptionPlanSchema,
   updateSubscriptionSchema,
@@ -89,6 +91,7 @@ import {
   facilityUnitIdSchema,
   subscriptionPlanIdSchema,
 } from "./ids.ts";
+import { facilityCustomerEndpoints } from "./customer.ts";
 
 const ticketIdParams = z.strictObject({ ticketId: accessTicketIdSchema });
 const unitIdParams = z.strictObject({ unitId: facilityUnitIdSchema });
@@ -361,6 +364,14 @@ export const getFacilityConfig = defineEndpoint({
   response: dataResponseSchema(facilityConfigSchema),
 });
 
+/** Creates a facility of an outlet, so no data needs seeding by SQL (legend-nngz). */
+export const createFacility = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/facilities",
+  body: createFacilitySchema,
+  response: dataResponseSchema(facilitySchema),
+});
+
 export const updateFacility = defineEndpoint({
   method: "PUT",
   path: "/api/facility/facilities/:facilityId",
@@ -389,6 +400,15 @@ export const createFacilityUnit = defineEndpoint({
   method: "POST",
   path: "/api/facility/units",
   body: createFacilityUnitSchema,
+  response: dataResponseSchema(facilityUnitSchema),
+});
+
+/** Edits how a unit is configured; `PATCH /units/:unitId` only moves its state. */
+export const updateFacilityUnitConfig = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/units/:unitId/config",
+  params: unitIdParams,
+  body: updateFacilityUnitConfigSchema,
   response: dataResponseSchema(facilityUnitSchema),
 });
 
@@ -485,10 +505,12 @@ export const facilityEndpoints = [
   endWifiSession,
   listFacilities,
   getFacilityConfig,
+  createFacility,
   updateFacility,
   createFacilityArea,
   updateFacilityArea,
   createFacilityUnit,
+  updateFacilityUnitConfig,
   createFacilityProduct,
   updateFacilityProduct,
   createFacilityAddon,
@@ -497,4 +519,5 @@ export const facilityEndpoints = [
   createSubscriptionPlanEndpoint,
   updateSubscriptionPlan,
   putWifiPolicy,
+  ...facilityCustomerEndpoints,
 ] as const;

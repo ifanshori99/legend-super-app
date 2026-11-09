@@ -13,5 +13,6 @@ export * from "./wifi.ts";
 export * from "./lock.ts";
 export * from "./inputs.ts";
 export * from "./endpoints.ts";
+export * from "./customer.ts";
 export * from "./events.ts";
 export * from "./fixtures.ts";

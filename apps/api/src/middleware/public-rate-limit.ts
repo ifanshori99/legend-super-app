@@ -58,6 +58,9 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   // authenticated staff configuration and must never share the guests'
   // per-IP budget at a venue NAT (Opus review legend-wd4b).
   "/api/payments/links",
+  // Guest facility price board and QR entry lookup, no login (FAC-11, legend-zjfi).
+  "/api/facility/catalog",
+  "/api/facility/entry",
 ];
 
 export type PublicRateLimitOptions = {

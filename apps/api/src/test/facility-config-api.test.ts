@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  createFacility,
   createFacilityAddon,
   createFacilityProduct,
   createSubscriptionPlanEndpoint,
@@ -21,6 +22,7 @@ import {
   putWifiPolicy,
   updateFacilityAddon,
   updateFacilityProduct,
+  updateFacilityUnitConfig,
   updateSubscriptionPlan,
 } from "@starter/shared/facility";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
@@ -42,6 +44,9 @@ const otherFacilityId = randomUUID();
 const zoneId = randomUUID();
 const ruleId = randomUUID();
 const policyId = randomUUID();
+const key = () => `facility-config-${randomUUID()}`;
+/** Facilities the tests create through the API (cleaned up in afterAll). */
+const createdFacilityIds: string[] = [];
 
 async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -168,7 +173,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await asTenant(async (client) => {
+    const allFacilityIds = [facilityId, otherFacilityId, ...createdFacilityIds];
     for (const table of [
+      "facility_units",
+      "facility_areas",
       "facility_products",
       "facility_addons",
       "entitlement_rules",
@@ -178,15 +186,19 @@ afterAll(async () => {
     ])
       await client.query(
         `DELETE FROM ${table} WHERE tenant_id = $1 AND facility_id = ANY($2)`,
-        [tenant.id, [facilityId, otherFacilityId]],
+        [tenant.id, allFacilityIds],
       );
+    await client.query(
+      "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND key LIKE 'facility-config-%'",
+      [tenant.id],
+    );
     await client.query(
       "DELETE FROM floor_zones WHERE tenant_id = $1 AND id = $2",
       [tenant.id, zoneId],
     );
     await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND id = ANY($2)",
-      [tenant.id, [facilityId, otherFacilityId]],
+      [tenant.id, allFacilityIds],
     );
   });
   if (createdUsers.length > 0) {
@@ -306,6 +318,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
         type: "single",
         priceIdr: 25000,
         sessions: 1,
+        idempotencyKey: key(),
       });
     expect(product.status, JSON.stringify(product.body)).toBe(201);
     createFacilityProduct.response.parse(product.body);
@@ -313,7 +326,11 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
     const updatedProduct = await client
       .patch(`/api/facility/products/${product.body.data.id}`)
       .set(originHeader)
-      .send({ priceIdr: 30000, isActive: false });
+      .send({
+        priceIdr: 30000,
+        isActive: false,
+        expectedUpdatedAt: product.body.data.updatedAt,
+      });
     expect(updatedProduct.status, JSON.stringify(updatedProduct.body)).toBe(
       200,
     );
@@ -324,14 +341,24 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
     const addon = await client
       .post("/api/facility/addons")
       .set(originHeader)
-      .send({ facilityId, name: "Handuk", priceIdr: 10000, sortOrder: 1 });
+      .send({
+        facilityId,
+        name: "Handuk",
+        priceIdr: 10000,
+        sortOrder: 1,
+        idempotencyKey: key(),
+      });
     expect(addon.status, JSON.stringify(addon.body)).toBe(201);
     createFacilityAddon.response.parse(addon.body);
     expect(addon.body.data.isEnabled).toBe(true);
     const updatedAddon = await client
       .patch(`/api/facility/addons/${addon.body.data.id}`)
       .set(originHeader)
-      .send({ isEnabled: false, sortOrder: 2 });
+      .send({
+        isEnabled: false,
+        sortOrder: 2,
+        expectedUpdatedAt: addon.body.data.updatedAt,
+      });
     expect(updatedAddon.status, JSON.stringify(updatedAddon.body)).toBe(200);
     updateFacilityAddon.response.parse(updatedAddon.body);
     expect(updatedAddon.body.data.isEnabled).toBe(false);
@@ -359,6 +386,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
           type: "single",
           priceIdr: -1,
           sessions: 1,
+          idempotencyKey: key(),
         })
       ).status,
     ).toBe(422);
@@ -369,6 +397,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
           name: "Handuk",
           priceIdr: 1000,
           tenantId: tenant.id,
+          idempotencyKey: key(),
         })
       ).status,
     ).toBe(422);
@@ -377,7 +406,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
         await client
           .patch(`/api/facility/products/${randomUUID()}`)
           .set(originHeader)
-          .send({})
+          .send({ expectedUpdatedAt: new Date().toISOString() })
       ).status,
     ).toBe(422);
     expect(
@@ -385,7 +414,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
         await client
           .patch(`/api/facility/products/${randomUUID()}`)
           .set(originHeader)
-          .send({ priceIdr: 1000 })
+          .send({ priceIdr: 1000, expectedUpdatedAt: new Date().toISOString() })
       ).status,
     ).toBe(404);
   });
@@ -402,25 +431,26 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
     const foreignTax = await client
       .post("/api/facility/products")
       .set(originHeader)
-      .send({ ...base, taxRuleId: randomUUID() });
+      .send({ ...base, taxRuleId: randomUUID(), idempotencyKey: key() });
     expect(foreignTax.status, JSON.stringify(foreignTax.body)).toBe(404);
     const foreignMenu = await client
       .post("/api/facility/products")
       .set(originHeader)
-      .send({ ...base, menuItemId: randomUUID() });
+      .send({ ...base, menuItemId: randomUUID(), idempotencyKey: key() });
     expect(foreignMenu.status, JSON.stringify(foreignMenu.body)).toBe(404);
 
     const product = await client
       .post("/api/facility/products")
       .set(originHeader)
-      .send(base);
+      .send({ ...base, idempotencyKey: key() });
     expect(product.status, JSON.stringify(product.body)).toBe(201);
+    const stamp = product.body.data.updatedAt as string;
     expect(
       (
         await client
           .patch(`/api/facility/products/${product.body.data.id}`)
           .set(originHeader)
-          .send({ taxRuleId: randomUUID() })
+          .send({ taxRuleId: randomUUID(), expectedUpdatedAt: stamp })
       ).status,
     ).toBe(404);
     // Clearing a reference is always allowed.
@@ -429,7 +459,11 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
         await client
           .patch(`/api/facility/products/${product.body.data.id}`)
           .set(originHeader)
-          .send({ taxRuleId: null, menuItemId: null })
+          .send({
+            taxRuleId: null,
+            menuItemId: null,
+            expectedUpdatedAt: stamp,
+          })
       ).status,
     ).toBe(200);
 
@@ -445,6 +479,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
             sessions: 1,
             validity: { kind: "operating_day" },
             isEnabled: true,
+            expectedUpdatedAt: null,
           })
       ).status,
     ).toBe(404);
@@ -462,6 +497,7 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
         quotaPerPeriod: 10,
         interval: "month",
         maxPerDay: 1,
+        idempotencyKey: key(),
       });
     expect(plan.status, JSON.stringify(plan.body)).toBe(201);
     createSubscriptionPlanEndpoint.response.parse(plan.body);
@@ -469,7 +505,11 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
     const updated = await client
       .patch(`/api/facility/subscription-plans/${plan.body.data.id}`)
       .set(originHeader)
-      .send({ quotaPerPeriod: 20, isActive: false });
+      .send({
+        quotaPerPeriod: 20,
+        isActive: false,
+        expectedUpdatedAt: plan.body.data.updatedAt,
+      });
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     updateSubscriptionPlan.response.parse(updated.body);
     expect(updated.body.data.quotaPerPeriod).toBe(20);
@@ -496,6 +536,7 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
         sessions: 1,
         validity: { kind: "operating_day" },
         isEnabled: true,
+        expectedUpdatedAt: null,
       });
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     putEntitlementRule.response.parse(created.body);
@@ -512,6 +553,7 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
         sessions: 2,
         validity: { kind: "billing_period" },
         isEnabled: false,
+        expectedUpdatedAt: created.body.data.updatedAt,
       });
     expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
     putEntitlementRule.response.parse(replaced.body);
@@ -536,6 +578,7 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
             sessions: 1,
             validity: { kind: "operating_day" },
             isEnabled: true,
+            expectedUpdatedAt: replaced.body.data.updatedAt,
           })
       ).status,
     ).toBe(422);
@@ -571,7 +614,7 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
     const created = await client
       .put(`/api/wifi/policies/${policyId}`)
       .set(originHeader)
-      .send(body);
+      .send({ ...body, expectedUpdatedAt: null });
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     putWifiPolicy.response.parse(created.body);
     expect(created.body.data.id).toBe(policyId);
@@ -580,7 +623,12 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
     const replaced = await client
       .put(`/api/wifi/policies/${policyId}`)
       .set(originHeader)
-      .send({ ...body, freeMinutes: 180, peakFreeMinutes: 90 });
+      .send({
+        ...body,
+        freeMinutes: 180,
+        peakFreeMinutes: 90,
+        expectedUpdatedAt: created.body.data.updatedAt,
+      });
     expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
     putWifiPolicy.response.parse(replaced.body);
     expect(replaced.body.data.id).toBe(policyId);
@@ -594,7 +642,12 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
         await client
           .put(`/api/wifi/policies/${policyId}`)
           .set(originHeader)
-          .send({ ...body, freeMinutes: 60, peakFreeMinutes: 120 })
+          .send({
+            ...body,
+            freeMinutes: 60,
+            peakFreeMinutes: 120,
+            expectedUpdatedAt: replaced.body.data.updatedAt,
+          })
       ).status,
     ).toBe(422);
     // The facility must belong to the zone's outlet.
@@ -603,7 +656,11 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
         await client
           .put(`/api/wifi/policies/${policyId}`)
           .set(originHeader)
-          .send({ ...body, facilityId: otherFacilityId })
+          .send({
+            ...body,
+            facilityId: otherFacilityId,
+            expectedUpdatedAt: replaced.body.data.updatedAt,
+          })
       ).status,
     ).toBe(422);
     // A zone of another outlet is invisible to an outlet-scoped caller (TEN-03).
@@ -613,7 +670,7 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
         await outletBRole
           .put(`/api/wifi/policies/${randomUUID()}`)
           .set(originHeader)
-          .send(body)
+          .send({ ...body, expectedUpdatedAt: null })
       ).status,
     ).toBe(404);
 
@@ -644,12 +701,15 @@ describe("Facility config authorization (legend-8dpm)", () => {
           type: "single",
           priceIdr: 1000,
           sessions: 1,
+          idempotencyKey: key(),
         }),
       () =>
-        client
-          .post("/api/facility/addons")
-          .set(originHeader)
-          .send({ facilityId, name: "Tanpa Izin", priceIdr: 1000 }),
+        client.post("/api/facility/addons").set(originHeader).send({
+          facilityId,
+          name: "Tanpa Izin",
+          priceIdr: 1000,
+          idempotencyKey: key(),
+        }),
       () =>
         client
           .put(`/api/facility/entitlement-rules/${randomUUID()}`)
@@ -661,6 +721,7 @@ describe("Facility config authorization (legend-8dpm)", () => {
             sessions: 1,
             validity: { kind: "operating_day" },
             isEnabled: true,
+            expectedUpdatedAt: null,
           }),
       () =>
         client.post("/api/facility/subscription-plans").set(originHeader).send({
@@ -669,6 +730,7 @@ describe("Facility config authorization (legend-8dpm)", () => {
           priceIdr: 1000,
           quotaPerPeriod: 1,
           interval: "month",
+          idempotencyKey: key(),
         }),
       () =>
         client
@@ -686,6 +748,7 @@ describe("Facility config authorization (legend-8dpm)", () => {
             fullSpeedKbps: 10240,
             minSpendPerHourIdr: null,
             tierBonusMinutes: {},
+            expectedUpdatedAt: null,
           }),
     ];
     for (const request of requests) expect((await request()).status).toBe(403);
@@ -701,6 +764,7 @@ describe("Facility config authorization (legend-8dpm)", () => {
           type: "single",
           priceIdr: 1000,
           sessions: 1,
+          idempotencyKey: key(),
         })
       ).status,
     ).toBe(404);
@@ -716,6 +780,7 @@ describe("Facility config authorization (legend-8dpm)", () => {
             sessions: 1,
             validity: { kind: "operating_day" },
             isEnabled: true,
+            expectedUpdatedAt: null,
           })
       ).status,
     ).toBe(404);
@@ -723,5 +788,561 @@ describe("Facility config authorization (legend-8dpm)", () => {
       (await client.get(`/api/facility/config?facilityId=${facilityId}`))
         .status,
     ).toBe(404);
+  });
+});
+
+async function auditEntries(objectId: string) {
+  const { rows } = await owner.query<{
+    action: string;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+  }>(
+    `SELECT event->>'action' AS action,
+            event->'maskedChanges'->'before' AS before,
+            event->'maskedChanges'->'after' AS after
+       FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'objectId' = $2
+      ORDER BY created_at, id`,
+    [tenant.id, objectId],
+  );
+  return rows;
+}
+
+const facilityBody = {
+  name: "Ruang Kerja 6jms",
+  type: "coworking",
+  sessionMinutes: 60,
+  cleaningMinutes: 10,
+  arrivalGraceMinutes: 10,
+  operatingHours: [
+    { daysOfWeek: [0, 1, 2, 3, 4, 5, 6], opensAt: "08:00", closesAt: "20:00" },
+  ],
+  overtimePolicy: { graceMinutes: 5, blockMinutes: 15, feePerBlockIdr: 5000 },
+  cancellationPolicy: {
+    freeCancelMinutesBefore: 30,
+    lateCancelResolution: "no_refund",
+    lateCancelFeeIdr: 0,
+    noShowResolution: "no_refund",
+  },
+};
+
+describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () => {
+  it("[FAC-02][legend-6jms] PATCH answers 409 on a stale expectedUpdatedAt and the loser changes nothing", async () => {
+    const { client } = await ownerClient();
+    const product = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({
+        facilityId,
+        name: "Produk Konflik",
+        type: "single",
+        priceIdr: 20000,
+        sessions: 1,
+        idempotencyKey: key(),
+      });
+    expect(product.status, JSON.stringify(product.body)).toBe(201);
+    const stamp = product.body.data.updatedAt as string;
+    const url = `/api/facility/products/${product.body.data.id}`;
+    const first = await client
+      .patch(url)
+      .set(originHeader)
+      .send({ priceIdr: 22000, expectedUpdatedAt: stamp });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.data.updatedAt).not.toBe(stamp);
+    const loser = await client
+      .patch(url)
+      .set(originHeader)
+      .send({ priceIdr: 99000, expectedUpdatedAt: stamp });
+    expect(loser.status, JSON.stringify(loser.body)).toBe(409);
+    expect(loser.body.error.code).toBe("FACILITY_CONFIG_STALE");
+    const config = await client.get(
+      `/api/facility/config?facilityId=${facilityId}`,
+    );
+    const stored = config.body.data.products.find(
+      (row: { id: string }) => row.id === product.body.data.id,
+    );
+    expect(stored.priceIdr).toBe(22000);
+    // The stamp is required by the contract.
+    expect(
+      (await client.patch(url).set(originHeader).send({ priceIdr: 1000 }))
+        .status,
+    ).toBe(422);
+  });
+
+  it("[FAC-02][legend-6jms] addon, plan, area, rule and Wi-Fi writes refuse a stale stamp", async () => {
+    const { client } = await ownerClient();
+    const old = "2000-01-01T00:00:00.000Z";
+    const addon = await client
+      .post("/api/facility/addons")
+      .set(originHeader)
+      .send({
+        facilityId,
+        name: "Add-on 6jms",
+        priceIdr: 5000,
+        idempotencyKey: key(),
+      });
+    expect(
+      (
+        await client
+          .patch(`/api/facility/addons/${addon.body.data.id}`)
+          .set(originHeader)
+          .send({ priceIdr: 6000, expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+    const plan = await client
+      .post("/api/facility/subscription-plans")
+      .set(originHeader)
+      .send({
+        facilityId,
+        name: "Paket 6jms",
+        priceIdr: 100000,
+        quotaPerPeriod: 5,
+        interval: "month",
+        idempotencyKey: key(),
+      });
+    expect(
+      (
+        await client
+          .patch(`/api/facility/subscription-plans/${plan.body.data.id}`)
+          .set(originHeader)
+          .send({ quotaPerPeriod: 6, expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+    const area = await client
+      .post("/api/facility/areas")
+      .set(originHeader)
+      .send({ facilityId, name: "Area 6jms", idempotencyKey: key() });
+    expect(area.status, JSON.stringify(area.body)).toBe(201);
+    expect(
+      (
+        await client
+          .patch(`/api/facility/areas/${area.body.data.id}`)
+          .set(originHeader)
+          .send({ name: "Area Baru", expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+    // The facility itself (PUT).
+    expect(
+      (
+        await client
+          .put(`/api/facility/facilities/${facilityId}`)
+          .set(originHeader)
+          .send({ name: "Dirubah", expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+
+    const ruleBody = {
+      facilityId,
+      type: "min_spend",
+      condition: { minSpendIdr: 50000 },
+      sessions: 1,
+      validity: { kind: "operating_day" },
+      isEnabled: true,
+    };
+    const newRuleId = randomUUID();
+    const rulePath = `/api/facility/entitlement-rules/${newRuleId}`;
+    const createdRule = await client
+      .put(rulePath)
+      .set(originHeader)
+      .send({ ...ruleBody, expectedUpdatedAt: null });
+    expect(createdRule.status, JSON.stringify(createdRule.body)).toBe(200);
+    // A row that exists cannot be "created" again, and a stale stamp loses.
+    expect(
+      (
+        await client
+          .put(rulePath)
+          .set(originHeader)
+          .send({ ...ruleBody, expectedUpdatedAt: null })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await client
+          .put(rulePath)
+          .set(originHeader)
+          .send({ ...ruleBody, expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await client
+          .put(rulePath)
+          .set(originHeader)
+          .send({
+            ...ruleBody,
+            sessions: 3,
+            expectedUpdatedAt: createdRule.body.data.updatedAt,
+          })
+      ).status,
+    ).toBe(200);
+    // A stamp for a row that does not exist is also a conflict.
+    expect(
+      (
+        await client
+          .put(`/api/facility/entitlement-rules/${randomUUID()}`)
+          .set(originHeader)
+          .send({ ...ruleBody, expectedUpdatedAt: old })
+      ).status,
+    ).toBe(409);
+    await owner.query("DELETE FROM entitlement_rules WHERE id = $1", [
+      newRuleId,
+    ]);
+  });
+
+  it("[FAC-14][legend-6jms] a stale Wi-Fi policy PUT answers 409 and keeps the stored numbers", async () => {
+    const { client } = await ownerClient();
+    const id = randomUUID();
+    const zone = randomUUID();
+    await asTenant((db) =>
+      db.query(
+        `INSERT INTO floor_zones (id, tenant_id, outlet_id, name, payment_mode,
+           service_charge_bp, minimum_spend_idr, hours, status, sort_order)
+         VALUES ($1, $2, $3, 'Zona WFC 6jms', 'pay_first', 0, 0, $4, 'active', 1)`,
+        [zone, tenant.id, outletA.id, JSON.stringify([])],
+      ),
+    );
+    try {
+      const body = {
+        zoneId: zone,
+        facilityId,
+        freeMinutes: 120,
+        peakFreeMinutes: 60,
+        spendPerExtraHourIdr: 30000,
+        extraMinutes: 60,
+        maxDevices: 2,
+        peakSchedule: [],
+        baseSpeedKbps: 2048,
+        fullSpeedKbps: 10240,
+        minSpendPerHourIdr: null,
+        tierBonusMinutes: {},
+      };
+      const created = await client
+        .put(`/api/wifi/policies/${id}`)
+        .set(originHeader)
+        .send({ ...body, expectedUpdatedAt: null });
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      const stamp = created.body.data.updatedAt as string;
+      expect(
+        (
+          await client
+            .put(`/api/wifi/policies/${id}`)
+            .set(originHeader)
+            .send({ ...body, freeMinutes: 150, expectedUpdatedAt: stamp })
+        ).status,
+      ).toBe(200);
+      const stale = await client
+        .put(`/api/wifi/policies/${id}`)
+        .set(originHeader)
+        .send({ ...body, freeMinutes: 90, expectedUpdatedAt: stamp });
+      expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+      const stored = await owner.query(
+        "SELECT free_minutes FROM wifi_policies WHERE id = $1",
+        [id],
+      );
+      expect(stored.rows[0].free_minutes).toBe(150);
+      // Old and new quota are readable in the audit.
+      const audit = await auditEntries(id);
+      const replaced = audit.find(
+        (row) => row.action === "wifi_policy.replaced",
+      );
+      expect(replaced?.before?.freeMinutes).toBe(120);
+      expect(replaced?.after?.freeMinutes).toBe(150);
+    } finally {
+      await owner.query("DELETE FROM wifi_policies WHERE zone_id = $1", [zone]);
+      await asTenant((db) =>
+        db.query("DELETE FROM floor_zones WHERE id = $1", [zone]),
+      );
+    }
+  });
+
+  it("[FAC-02][legend-6jms] POST create with the same idempotencyKey returns the first row; another payload is refused", async () => {
+    const { client } = await ownerClient();
+    const idempotencyKey = key();
+    const body = {
+      facilityId,
+      name: "Produk Idempoten",
+      type: "single",
+      priceIdr: 15000,
+      sessions: 1,
+      idempotencyKey,
+    };
+    const first = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send(body);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data).toEqual(first.body.data);
+    const rows = await owner.query(
+      "SELECT 1 FROM facility_products WHERE tenant_id = $1 AND facility_id = $2 AND name = 'Produk Idempoten'",
+      [tenant.id, facilityId],
+    );
+    expect(rows.rowCount).toBe(1);
+    const reused = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({ ...body, priceIdr: 16000 });
+    expect(reused.status, JSON.stringify(reused.body)).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    // The same key on another kind of row is also a reuse, not a second write.
+    const otherKind = await client
+      .post("/api/facility/addons")
+      .set(originHeader)
+      .send({ facilityId, name: "Lain", priceIdr: 1000, idempotencyKey });
+    expect(otherKind.status).toBe(409);
+    // A key is required.
+    const { idempotencyKey: _omit, ...withoutKey } = body;
+    expect(
+      (
+        await client
+          .post("/api/facility/products")
+          .set(originHeader)
+          .send(withoutKey)
+      ).status,
+    ).toBe(422);
+  });
+
+  it("[FAC-02][legend-6jms] a price and quota change is audited with the old and the new value", async () => {
+    const { client } = await ownerClient();
+    const product = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({
+        facilityId,
+        name: "Produk Audit",
+        type: "single",
+        priceIdr: 25000,
+        sessions: 1,
+        idempotencyKey: key(),
+      });
+    const updated = await client
+      .patch(`/api/facility/products/${product.body.data.id}`)
+      .set(originHeader)
+      .send({
+        priceIdr: 30000,
+        sessions: 2,
+        expectedUpdatedAt: product.body.data.updatedAt,
+      });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    const entries = await auditEntries(product.body.data.id);
+    const change = entries.find(
+      (row) => row.action === "facility_product.updated",
+    );
+    expect(change?.before).toMatchObject({ priceIdr: 25000, quota: 1 });
+    expect(change?.after).toMatchObject({ priceIdr: 30000, quota: 2 });
+
+    const plan = await client
+      .post("/api/facility/subscription-plans")
+      .set(originHeader)
+      .send({
+        facilityId,
+        name: "Paket Audit",
+        priceIdr: 100000,
+        quotaPerPeriod: 10,
+        interval: "month",
+        idempotencyKey: key(),
+      });
+    await client
+      .patch(`/api/facility/subscription-plans/${plan.body.data.id}`)
+      .set(originHeader)
+      .send({
+        quotaPerPeriod: 12,
+        priceIdr: 110000,
+        expectedUpdatedAt: plan.body.data.updatedAt,
+      });
+    const planChange = (await auditEntries(plan.body.data.id)).find(
+      (row) => row.action === "facility_subscription_plan.updated",
+    );
+    expect(planChange?.before).toMatchObject({
+      quotaPerPeriod: 10,
+      priceIdr: 100000,
+    });
+    expect(planChange?.after).toMatchObject({
+      quotaPerPeriod: 12,
+      priceIdr: 110000,
+    });
+  });
+});
+
+describe("Facility admin create/update endpoints without SQL seeding (legend-nngz)", () => {
+  it("[FAC-02][legend-nngz] creates a facility, an area and a unit, edits the unit config, and replays by key", async () => {
+    const { client } = await ownerClient();
+    const facilityKey = key();
+    const created = await client
+      .post("/api/facility/facilities")
+      .set(originHeader)
+      .send({
+        ...facilityBody,
+        outletId: outletA.id,
+        idempotencyKey: facilityKey,
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    createFacility.response.parse(created.body);
+    const newFacilityId = created.body.data.id as string;
+    createdFacilityIds.push(newFacilityId);
+    const replay = await client
+      .post("/api/facility/facilities")
+      .set(originHeader)
+      .send({
+        ...facilityBody,
+        outletId: outletA.id,
+        idempotencyKey: facilityKey,
+      });
+    expect(replay.status).toBe(201);
+    expect(replay.body.data.id).toBe(newFacilityId);
+
+    const area = await client
+      .post("/api/facility/areas")
+      .set(originHeader)
+      .send({
+        facilityId: newFacilityId,
+        name: "Lantai 1",
+        idempotencyKey: key(),
+      });
+    expect(area.status, JSON.stringify(area.body)).toBe(201);
+    const area2 = await client
+      .post("/api/facility/areas")
+      .set(originHeader)
+      .send({
+        facilityId: newFacilityId,
+        name: "Lantai 2",
+        idempotencyKey: key(),
+      });
+    const unit = await client
+      .post("/api/facility/units")
+      .set(originHeader)
+      .send({
+        facilityId: newFacilityId,
+        areaId: area.body.data.id,
+        code: "M1",
+        idempotencyKey: key(),
+      });
+    expect(unit.status, JSON.stringify(unit.body)).toBe(201);
+    const unitPath = `/api/facility/units/${unit.body.data.id}/config`;
+    const edited = await client.patch(unitPath).set(originHeader).send({
+      code: "M2",
+      areaId: area2.body.data.id,
+      expectedUpdatedAt: unit.body.data.updatedAt,
+    });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    updateFacilityUnitConfig.response.parse(edited.body);
+    expect(edited.body.data.code).toBe("M2");
+    expect(edited.body.data.areaId).toBe(area2.body.data.id);
+    expect(edited.body.data.status).toBe("available");
+    // Stale stamp, empty change and an area of another facility are refused.
+    expect(
+      (
+        await client
+          .patch(unitPath)
+          .set(originHeader)
+          .send({ code: "M3", expectedUpdatedAt: unit.body.data.updatedAt })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await client
+          .patch(unitPath)
+          .set(originHeader)
+          .send({ expectedUpdatedAt: edited.body.data.updatedAt })
+      ).status,
+    ).toBe(422);
+    const foreignArea = await client
+      .post("/api/facility/areas")
+      .set(originHeader)
+      .send({ facilityId, name: "Area Asing 6jms", idempotencyKey: key() });
+    expect(
+      (
+        await client.patch(unitPath).set(originHeader).send({
+          areaId: foreignArea.body.data.id,
+          expectedUpdatedAt: edited.body.data.updatedAt,
+        })
+      ).status,
+    ).toBe(422);
+    // An invalid slot (session + cleaning above 12 hours) is a 422.
+    expect(
+      (
+        await client
+          .post("/api/facility/facilities")
+          .set(originHeader)
+          .send({
+            ...facilityBody,
+            sessionMinutes: 480,
+            cleaningMinutes: 241,
+            outletId: outletA.id,
+            idempotencyKey: key(),
+          })
+      ).status,
+    ).toBe(422);
+    const audit = await auditEntries(newFacilityId);
+    expect(audit.map((row) => row.action)).toContain("facility.created");
+    const config = await client.get(
+      `/api/facility/config?facilityId=${newFacilityId}`,
+    );
+    expect(config.status).toBe(200);
+    expect(config.body.data.units[0].code).toBe("M2");
+  });
+
+  it("[TEN-03][legend-nngz] another outlet's caller cannot create a facility or edit a unit there; nobody gets 403", async () => {
+    const owned = await ownerClient();
+    const area = await owned.client
+      .post("/api/facility/areas")
+      .set(originHeader)
+      .send({ facilityId, name: "Area Lintas 6jms", idempotencyKey: key() });
+    const unit = await owned.client
+      .post("/api/facility/units")
+      .set(originHeader)
+      .send({
+        facilityId,
+        areaId: area.body.data.id,
+        code: "X1",
+        idempotencyKey: key(),
+      });
+    expect(unit.status, JSON.stringify(unit.body)).toBe(201);
+    const { client: outletBRole } = await outletClient(outletB.id);
+    expect(
+      (
+        await outletBRole
+          .post("/api/facility/facilities")
+          .set(originHeader)
+          .send({
+            ...facilityBody,
+            outletId: outletA.id,
+            idempotencyKey: key(),
+          })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await outletBRole
+          .patch(`/api/facility/units/${unit.body.data.id}/config`)
+          .set(originHeader)
+          .send({ code: "X2", expectedUpdatedAt: unit.body.data.updatedAt })
+      ).status,
+    ).toBe(404);
+    const { client: nobody } = await signedIn("Facility Config Nobody 2");
+    expect(
+      (
+        await nobody
+          .post("/api/facility/facilities")
+          .set(originHeader)
+          .send({
+            ...facilityBody,
+            outletId: outletA.id,
+            idempotencyKey: key(),
+          })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await nobody
+          .patch(`/api/facility/units/${unit.body.data.id}/config`)
+          .set(originHeader)
+          .send({ code: "X2", expectedUpdatedAt: unit.body.data.updatedAt })
+      ).status,
+    ).toBe(403);
   });
 });

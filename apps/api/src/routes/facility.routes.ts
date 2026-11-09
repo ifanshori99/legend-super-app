@@ -19,6 +19,7 @@
 import { Router, type Request } from "express";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
+  createFacility as createFacilityEndpoint,
   createFacilityAddon as createFacilityAddonEndpoint,
   createFacilityArea as createFacilityAreaEndpoint,
   createFacilityProduct as createFacilityProductEndpoint,
@@ -38,6 +39,7 @@ import {
   updateFacilityArea as updateFacilityAreaEndpoint,
   updateFacilityProduct as updateFacilityProductEndpoint,
   updateFacilityUnit as updateFacilityUnitEndpoint,
+  updateFacilityUnitConfig as updateFacilityUnitConfigEndpoint,
   updateSubscriptionPlan as updateSubscriptionPlanEndpoint,
 } from "@starter/shared/facility";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -49,6 +51,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { facilityIncidentsRouter } from "./facility-incidents.routes.ts";
 import * as config from "../services/facility-config.service.ts";
 import * as incidents from "../services/facility-incidents.service.ts";
 import * as products from "../services/facility-products.service.ts";
@@ -94,6 +97,8 @@ const manage = requireMenuPermission("facility.config.manage");
 
 export const facilityRouter = Router();
 facilityRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// Incident raise/respond + plan list (bead legend-1cj0).
+facilityRouter.use(facilityIncidentsRouter);
 
 // ------------------------------------------------------------ availability
 
@@ -187,6 +192,19 @@ facilityRouter.get("/config", manage, async (req, res) => {
   });
 });
 
+facilityRouter.post("/facilities", manage, jsonBody, async (req, res) => {
+  const input = createFacilityEndpoint.body.parse(req.body);
+  const facility = await config.createFacility(
+    getScopedTenantContext(req),
+    getAuth(req).user.id,
+    input,
+  );
+  res
+    .status(201)
+    .location(`/api/facility/facilities/${facility.id}`)
+    .json({ data: facility });
+});
+
 facilityRouter.put(
   "/facilities/:facilityId",
   manage,
@@ -230,6 +248,27 @@ facilityRouter.patch("/areas/:areaId", manage, jsonBody, async (req, res) => {
     ),
   });
 });
+
+// Fixed sub-path of the unit; the operational PATCH /units/:unitId stays above.
+facilityRouter.patch(
+  "/units/:unitId/config",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { unitId } = updateFacilityUnitConfigEndpoint.params.parse(
+      req.params,
+    );
+    const input = updateFacilityUnitConfigEndpoint.body.parse(req.body);
+    res.json({
+      data: await config.updateFacilityUnitConfig(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        unitId,
+        input,
+      ),
+    });
+  },
+);
 
 facilityRouter.post("/units", manage, jsonBody, async (req, res) => {
   const input = createFacilityUnitEndpoint.body.parse(req.body);
