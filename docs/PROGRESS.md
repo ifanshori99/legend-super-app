@@ -20,6 +20,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sesi tutup, kedaluwarsa, atau jadi sumber gabung: anggota keluar (`session_closed` / `session_merged`). Pindah meja: anggota ikut ke meja baru. Event baru: `table_session.linked`, `table_session.unlinked`, `table.status_changed` (aksi staf, tutup, pindah, sumber gabung), audit link/unlink.
 - Bukti: tes gagal-dulu 19 merah dari 29 di `table-link-api.test.ts` (rute belum ada), kini 29/29; regresi 4 file 67/67 + qr-order-api; contract node 51/51; tsc api lulus (heavy); eslint dan prettier bersih. Review S: tanpa temuan nyata; tercatat: `note` diterima tapi tidak disimpan, perluasan grup hanya memberi event `linked` ke sesi baru.
 
+## WS-08 fondasi member: desain identitas pelanggan dan buku poin (architect, cabang `docs/arch-member-loyalty` dari m1 d2080951, 2026-11-10)
+
+- Putaran 2: temuan challenger dan reviewer dilipat. Magic link pakai `login_challenges` (bukan plugin Better Auth); `auth_method` menjaga gerbang management (hanya `password`), staf tidak ditolak di metode member; magic link lintas perangkat tidak bisa menautkan WhatsApp (403); void dan refund membalik poin; restore menjaga kedaluwarsa asli; nilai poin disalin trigger.
+- Sudah: desain `docs/design/ws08-member-loyalty.md`, bagian baru `docs/architecture.md` "WS-08 member foundation", entri `docs/DECISIONS.md` 2026-11-10 "Member identity and point ledger", brief 290a (111j), 290b (k2l), 290c (m4p5), 290d (ts50), 290e (3zd1), 290f (kartu baru jurnal poin), 290g (u57q).
+- Keputusan: satu tabel `user` untuk semua orang (member = baris `customer_profiles` per tenant, staf = role); login member WhatsApp + magic link email + Google, menolak akun staf; merge hanya akun WhatsApp-saja; saldo poin dijaga trigger database dan tidak bisa negatif; earn/reverse dari `order.paid`/`order.refunded`; RLS `member_self` lewat `app.customer_profile_id`.
+- Migrasi dipesan menurut urutan merge: 0193 111j, 0194 k2l, 0195 m4p5, 0196 ts50, 0197 3zd1 (`when` 1794272000000-1794276000000).
+- Berikut: 290a dan 290b paralel; sesudah 290a: 290c, 290d, 290e, 290f paralel; terakhir 290g. Pertanyaan founder (A15 dan lain-lain) di laporan architect; default dipakai lewat setting.
+
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
 - Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).
