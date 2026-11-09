@@ -76,6 +76,7 @@ import {
   createRelayScheduler,
   createWakeListener,
 } from "./worker/relay";
+import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
@@ -234,6 +235,8 @@ const relay = createRelayRuntime({
       )
     ).rows.map((row) => row.id),
   resolveContext,
+  // legend-z649: compose healthcheck reads this file's age.
+  onProgress: () => touchHeartbeat(),
   relay: async (context) => {
     // A failing gap record is an alerting problem, not a delivery one: it
     // must not abort the relay (claimed rows unenqueued) or the sweeps below.
