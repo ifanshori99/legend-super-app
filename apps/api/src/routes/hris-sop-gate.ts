@@ -25,13 +25,17 @@ import {
   userIdSchema,
   type OutletId,
   type ScopedTenantContext,
+  type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "../middleware/auth.ts";
 import { requireIdentitySurface } from "../middleware/identity.ts";
 import { loadRequestAccess } from "../middleware/permissions.ts";
 import { getTenantContext } from "../middleware/tenant.ts";
-import { loadTenantAccess } from "../services/permission-resolver.ts";
+import {
+  loadTenantAccess,
+  type AccessSnapshot,
+} from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
 
 export { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
@@ -52,6 +56,57 @@ export function hrisLearningActor(req: Request) {
 }
 
 /**
+ * The union-reach context for `codes`, or null when none of them reaches
+ * anything. Tenant-wide if any code is held tenant-wide, otherwise the outlets
+ * the codes reach through outlet or brand grants. A station-only grant has no
+ * outlet reach here, so it never counts (legend-dak5).
+ */
+export async function resolveHrisLearningContext(
+  snapshot: AccessSnapshot,
+  tenant: TenantContext,
+  userId: string,
+  codes: readonly PermissionCode[],
+): Promise<ScopedTenantContext | null> {
+  for (const code of codes) {
+    const context = snapshot.contextFor(code, { type: "tenant" });
+    if (context) return context;
+  }
+  if (!codes.some((code) => snapshot.permissions.includes(code))) return null;
+  const data = await loadTenantAccess(
+    establishScopedTenantContext(tenant, { kind: "tenant" }),
+    userIdSchema.parse(userId),
+  );
+  const outletIds = new Set<OutletId>();
+  let tenantWide = false;
+  for (const code of codes) {
+    const reach = outletReachOf({
+      principal: {
+        tenantId: tenant.tenantId,
+        userId: userIdSchema.parse(userId),
+        assignments: data.assignments,
+      },
+      roles: data.roles,
+      org: data.org,
+      now: new Date(),
+      permission: code,
+    });
+    if (reach === null) continue;
+    if (reach.kind === "tenant") tenantWide = true;
+    else
+      for (const id of reach.outletIds)
+        outletIds.add(outletIdSchema.parse(id.toLowerCase()));
+  }
+  if (tenantWide)
+    return establishScopedTenantContext(tenant, { kind: "tenant" });
+  if (outletIds.size > 0)
+    return establishScopedTenantContext(tenant, {
+      kind: "outlets",
+      outletIds: [...outletIds],
+    });
+  return null;
+}
+
+/**
  * Admits the caller when they hold any of `codes` with some reach, and mints
  * the union-reach context. Deny by default: no reach → PERMISSION_DENIED.
  */
@@ -60,46 +115,12 @@ export function requireHrisLearning(
 ): RequestHandler {
   return async (req, res, next) => {
     const snapshot = await loadRequestAccess(req);
-    const tenant = getTenantContext(req);
-    let context: ScopedTenantContext | null = null;
-    for (const code of codes) {
-      context = snapshot.contextFor(code, { type: "tenant" });
-      if (context) break;
-    }
-    if (!context && codes.some((code) => snapshot.permissions.includes(code))) {
-      const userId = userIdSchema.parse(getAuth(req).user.id);
-      const data = await loadTenantAccess(
-        establishScopedTenantContext(tenant, { kind: "tenant" }),
-        userId,
-      );
-      const outletIds = new Set<OutletId>();
-      let tenantWide = false;
-      for (const code of codes) {
-        const reach = outletReachOf({
-          principal: {
-            tenantId: tenant.tenantId,
-            userId,
-            assignments: data.assignments,
-          },
-          roles: data.roles,
-          org: data.org,
-          now: new Date(),
-          permission: code,
-        });
-        if (reach === null) continue;
-        if (reach.kind === "tenant") tenantWide = true;
-        else
-          for (const id of reach.outletIds)
-            outletIds.add(outletIdSchema.parse(id.toLowerCase()));
-      }
-      if (tenantWide)
-        context = establishScopedTenantContext(tenant, { kind: "tenant" });
-      else if (outletIds.size > 0)
-        context = establishScopedTenantContext(tenant, {
-          kind: "outlets",
-          outletIds: [...outletIds],
-        });
-    }
+    const context = await resolveHrisLearningContext(
+      snapshot,
+      getTenantContext(req),
+      getAuth(req).user.id,
+      codes,
+    );
     if (!context)
       throw new AccessError(
         "PERMISSION_DENIED",

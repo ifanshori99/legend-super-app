@@ -13,24 +13,30 @@
 
 import { Router, type Request, type RequestHandler } from "express";
 import type { PermissionCode } from "@starter/shared/access";
+import type { TenantContext } from "@starter/shared/core";
 import {
   createAnnouncement as createAnnouncementEndpoint,
   listAnnouncementReceipts as listAnnouncementReceiptsEndpoint,
   listAnnouncements as listAnnouncementsEndpoint,
   markAnnouncementRead as markAnnouncementReadEndpoint,
 } from "@starter/shared/hris";
-import { requireAuth } from "../middleware/auth.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { loadRequestAccess } from "../middleware/permissions.ts";
-import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  getTenantContext,
+  requireTenantContext,
+} from "../middleware/tenant.ts";
 import * as announcementService from "../services/hris-announcement.service.ts";
+import type { AccessSnapshot } from "../services/permission-resolver.ts";
 import {
   hrisLearningActor,
   hrisLearningContext,
   requireBackOfficeSurface,
   requireHrisLearning,
   requireHrisLearningSurface,
+  resolveHrisLearningContext,
 } from "./hris-sop-gate.ts";
 
 const MANAGE: PermissionCode[] = ["hr.sop.manage"];
@@ -38,6 +44,25 @@ const SELF: PermissionCode[] = ["self.sop.read"];
 const FEED: PermissionCode[] = ["self.sop.read", "hr.sop.manage"];
 
 const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
+
+/**
+ * Surface of the shared feed: back office only when the manage code has real
+ * reach (tenant, brand or outlet). The flat union is not used: a station-only
+ * grant has no manage reach and reads the self feed (legend-dak5).
+ */
+export async function feedSurfaceOf(
+  snapshot: AccessSnapshot,
+  tenant: TenantContext,
+  userId: string,
+): Promise<"back_office" | "hris"> {
+  const manage = await resolveHrisLearningContext(
+    snapshot,
+    tenant,
+    userId,
+    MANAGE,
+  );
+  return manage ? "back_office" : "hris";
+}
 
 export function createHrisAnnouncementRouter(): Router {
   const router = Router();
@@ -48,10 +73,12 @@ export function createHrisAnnouncementRouter(): Router {
   // A manager reads the feed through the back office, everyone else through
   // the employee surface.
   const feedSurface: RequestHandler = async (req, res, next) => {
-    const snapshot = await loadRequestAccess(req);
-    const surface = snapshot.permissions.includes("hr.sop.manage")
-      ? backOffice
-      : employeeSurface;
+    const kind = await feedSurfaceOf(
+      await loadRequestAccess(req),
+      getTenantContext(req),
+      getAuth(req).user.id,
+    );
+    const surface = kind === "back_office" ? backOffice : employeeSurface;
     return surface(req, res, next);
   };
 
