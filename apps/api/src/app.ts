@@ -40,6 +40,8 @@ import {
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -57,6 +59,8 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 setPosOrderPromoPort(orderPromoPort);
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
+// INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
+setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;

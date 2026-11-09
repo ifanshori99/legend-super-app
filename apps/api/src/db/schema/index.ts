@@ -87,3 +87,5 @@ export * from "./inventory-count";
 export * from "./device";
 // WS-06 inventory -> GL bridge tracking (legend-w1vo).
 export * from "./inventory-gl";
+// WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
+export * from "./recipe";

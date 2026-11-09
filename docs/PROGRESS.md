@@ -269,3 +269,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+## legend-db6 resep/BOM + potong stok otomatis (engineer, cabang `ws/recipe-bom`)
+
+- Selesai di worktree `.worktrees/recipe-bom`: tabel `recipes`, `recipe_lines`, `modifier_recipe_rules`, `outlet_inventory_settings`, `recipe_deductions`, `recipe_deduction_lines` (migration 0063 + RLS 0064; nomor dirapikan saat merge). Mesin ledakan resep bertingkat (sub-resep tanpa output diledakkan, sub-resep dengan output item diambil dari stok semi-finished), varian, modifier add/replace/remove, konversi satuan, waste gross-up. Mode real-time / tutup hari per outlet (override atas setelan tenant). Consumer `order.paid`, `day.closed`, `order_issue.recorded` (event baru) lewat worker cloud-sync; idempoten per order/issue/kunci. Duty meal via `POST /api/inventory/duty-meals`. CRUD resep memakai kontrak yang sudah ada (`/api/inventory/recipes`, `/versions`).
+- Keputusan: semua bahan diambil dari `sale_location_id` outlet; konfigurasi kurang (tanpa resep, tanpa lokasi, resep nonaktif) dicatat `skipped`, tidak melempar error (supaya outbox tidak macet). Comp = barang gratis yang tidak ada di baris tertagih.
+- Bead lanjutan: `legend-p4z1` (KDS emit order_issue.recorded), `legend-fbms` (order total 0 tidak emit order.paid), `legend-q55i` (repost skipped), `legend-3kdd` (FK menu → recipes), `legend-89zm` (rute lokasi per item).
+- Berikut: review CTO, merge ke `main` (rapikan nomor migration).
