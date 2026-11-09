@@ -320,6 +320,8 @@ export async function readExpoBoard(
           lt(orders.businessDate, today),
           gte(orders.businessDate, expoPickupFloorDate(today)),
           isNull(expoAssignments.deliveredAt),
+          // A picked-up pickup number is finished even if nobody tapped Diantar.
+          or(isNull(pickupCalls.status), ne(pickupCalls.status, "picked_up")),
         ),
       ),
     );

@@ -227,6 +227,12 @@ export async function readPickupDisplay(
           // Past the cutoff a called number stays until it is picked up.
           lte(pickupCalls.businessDate, today),
           gte(pickupCalls.businessDate, expoPickupFloorDate(today)),
+          // Numbers restart each day: an earlier day's number is hidden once
+          // today reuses it, so the wall never shows two of the same number.
+          or(
+            eq(pickupCalls.businessDate, today),
+            sql`NOT EXISTS (SELECT 1 FROM pickup_calls AS today_calls WHERE today_calls.tenant_id = ${pickupCalls.tenantId} AND today_calls.outlet_id = ${pickupCalls.outletId} AND today_calls.business_date = ${today} AND today_calls.number = ${pickupCalls.number})`,
+          ),
           eq(pickupCalls.status, "called"),
           sql`${orders.status} <> 'voided'`,
         ),

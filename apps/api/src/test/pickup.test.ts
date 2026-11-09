@@ -903,6 +903,80 @@ describe("pickup display feed", () => {
     expect(feed.calls[0]?.businessDate).toBe(yesterday);
   });
 
+  it("hides yesterday's called number when today has the same number (called or assigned), so the wall never shows two #N", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    // #1: today's twin is called. #2: today's twin is only assigned.
+    // #3: yesterday only, so it still shows.
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 3,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: today,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "assigned",
+      businessDate: today,
+    });
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    const byNumber = (n: number) => feed.calls.filter((c) => c.number === n);
+    expect(byNumber(1).map((c) => c.businessDate)).toEqual([today]);
+    expect(byNumber(2)).toEqual([]);
+    expect(byNumber(3).map((c) => c.businessDate)).toEqual([yesterday]);
+  });
+
+  it("shows yesterday's number again when today's same number is absent or deleted", async () => {
+    const outlet = await createOutlet(tenantA);
+    const today = nowDate();
+    const yesterday = dayBefore(today);
+    await seedCall(tenantA, outlet, {
+      number: 1,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: yesterday,
+    });
+    await seedCall(tenantA, outlet, {
+      number: 2,
+      status: "called",
+      businessDate: today,
+    });
+    // Today's #2 is deleted: yesterday's #2 comes back. #1 never had a twin.
+    await asOwnerTenant(tenantA.tenantId, (client) =>
+      client.query(
+        `DELETE FROM pickup_calls
+         WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3 AND number = 2`,
+        [tenantA.tenantId, outlet, today],
+      ),
+    );
+
+    const feed = await readPickupDisplay(ctxA(), outlet, new Date());
+    expect(feed.calls.map((c) => [c.number, c.businessDate]).sort()).toEqual([
+      [1, yesterday],
+      [2, yesterday],
+    ]);
+  });
+
   it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
     const outlet = await createOutlet(tenantA);
     const twoAgo = dayBefore(dayBefore(nowDate()));

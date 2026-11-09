@@ -354,18 +354,27 @@ async function seedPickupCall(
   outletId: string,
   orderUlid: string,
   number: number,
+  input: {
+    status?: "assigned" | "called" | "picked_up";
+    businessDate?: string;
+  } = {},
 ) {
+  const status = input.status ?? "assigned";
   await asOwnerTenant(forTenant.tenantId, (client) =>
     client.query(
-      `INSERT INTO pickup_calls (id, tenant_id, outlet_id, order_id, channel, number, business_date, status)
-       VALUES ($1, $2, $3, $4, 'takeaway', $5, $6, 'assigned')`,
+      `INSERT INTO pickup_calls (id, tenant_id, outlet_id, order_id, channel, number, business_date,
+         status, called_at, picked_up_at)
+       VALUES ($1, $2, $3, $4, 'takeaway', $5, $6, $7, $8, $9)`,
       [
         randomUUID(),
         forTenant.tenantId,
         outletId,
         ulidToUuid(orderUlid),
         number,
-        nowDate(),
+        input.businessDate ?? nowDate(),
+        status,
+        status === "assigned" ? null : "2031-03-15T10:00:00.000Z",
+        status === "picked_up" ? "2031-03-15T10:05:00.000Z" : null,
       ],
     ),
   );
@@ -914,6 +923,41 @@ describe("expo board", () => {
 
     const board = await readExpoBoard(ctxA(), outlet, new Date());
     expect(board.tickets.map((t) => t.orderId)).toEqual([todayDelivered]);
+  });
+
+  it("drops an earlier-day order whose pickup call is picked_up, but keeps one whose call is called, assigned or absent", async () => {
+    const outlet = await createOutlet(tenantA);
+    const station = await seedStation(tenantA, outlet, "Dapur Utama");
+    const yesterday = dayBefore(nowDate());
+    const seedOld = async () => {
+      const orderId = await seedOrder(tenantA, outlet, {
+        businessDate: yesterday,
+      });
+      await seedTicket(tenantA, outlet, orderId, { stationId: station });
+      return orderId;
+    };
+
+    const pickedUp = await seedOld();
+    await seedPickupCall(tenantA, outlet, pickedUp, 1, {
+      status: "picked_up",
+      businessDate: yesterday,
+    });
+    const called = await seedOld();
+    await seedPickupCall(tenantA, outlet, called, 2, {
+      status: "called",
+      businessDate: yesterday,
+    });
+    const assigned = await seedOld();
+    await seedPickupCall(tenantA, outlet, assigned, 3, {
+      status: "assigned",
+      businessDate: yesterday,
+    });
+    const noCall = await seedOld();
+
+    const board = await readExpoBoard(ctxA(), outlet, new Date());
+    expect(board.tickets.map((t) => t.orderId).sort()).toEqual(
+      [called, assigned, noCall].sort(),
+    );
   });
 
   it("looks back at most 2 business days: 2 days ago is listed, 3 days ago is not", async () => {
