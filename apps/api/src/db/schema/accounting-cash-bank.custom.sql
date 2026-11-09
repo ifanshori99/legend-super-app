@@ -18,6 +18,8 @@ SELECT app.enforce_tenant_rls('public.bank_statement_lines'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.bank_statement_line_matches'::regclass);
 --> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.bank_statement_match_rejections'::regclass);
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.cash_deposits'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.cash_deposits'::regclass);

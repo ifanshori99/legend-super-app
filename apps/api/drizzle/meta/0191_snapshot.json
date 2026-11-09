@@ -1,5 +1,5 @@
 {
-  "id": "901a7691-03bb-44ea-9990-f5dbdd9646ef",
+  "id": "5af3140e-e949-462b-b47e-45ceda886d5b",
   "prevId": "8948ed96-6289-4fe9-b7a9-ad1ee9ef60a3",
   "version": "7",
   "dialect": "postgresql",
@@ -30893,6 +30893,116 @@
         "bank_statement_lines_version_check": {
           "name": "bank_statement_lines_version_check",
           "value": "\"bank_statement_lines\".\"version\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bank_statement_match_rejections": {
+      "name": "bank_statement_match_rejections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bank_account_id": {
+          "name": "bank_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "line_id": {
+          "name": "line_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref_type": {
+          "name": "ref_type",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref_id": {
+          "name": "ref_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rejected_by": {
+          "name": "rejected_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rejected_at": {
+          "name": "rejected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "bank_statement_match_rejections_tenant_id_tenants_id_fk": {
+          "name": "bank_statement_match_rejections_tenant_id_tenants_id_fk",
+          "tableFrom": "bank_statement_match_rejections",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "bank_statement_match_rejections_line_fk": {
+          "name": "bank_statement_match_rejections_line_fk",
+          "tableFrom": "bank_statement_match_rejections",
+          "tableTo": "bank_statement_lines",
+          "columnsFrom": [
+            "tenant_id",
+            "bank_account_id",
+            "line_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "bank_account_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bank_statement_match_rejections_pair_key": {
+          "name": "bank_statement_match_rejections_pair_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "line_id",
+            "ref_type",
+            "ref_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "bank_statement_match_rejections_ref_type_check": {
+          "name": "bank_statement_match_rejections_ref_type_check",
+          "value": "\"bank_statement_match_rejections\".\"ref_type\" IN ('journal_entry','cash_deposit','gateway_settlement','edc_settlement','supplier_payment','bank_statement_line')"
         }
       },
       "isRLSEnabled": false

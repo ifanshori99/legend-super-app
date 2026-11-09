@@ -448,6 +448,51 @@ export const bankStatementLineMatches = pgTable(
   ],
 );
 
+/**
+ * A (line, document) pair a person unmatched. Automatic matching never pairs
+ * them again (ACC-04: no guessing twice); a manual match of the same pair is
+ * still allowed and clears the row. Deleted with the line.
+ */
+export const bankStatementMatchRejections = pgTable(
+  "bank_statement_match_rejections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    bankAccountId: uuid("bank_account_id").notNull(),
+    lineId: uuid("line_id").notNull(),
+    refType: varchar("ref_type", { length: 30 }).notNull(),
+    refId: uuid("ref_id").notNull(),
+    rejectedBy: text("rejected_by").notNull(),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("bank_statement_match_rejections_pair_key").on(
+      t.tenantId,
+      t.lineId,
+      t.refType,
+      t.refId,
+    ),
+    foreignKey({
+      name: "bank_statement_match_rejections_line_fk",
+      columns: [t.tenantId, t.bankAccountId, t.lineId],
+      foreignColumns: [
+        bankStatementLines.tenantId,
+        bankStatementLines.bankAccountId,
+        bankStatementLines.id,
+      ],
+    }).onDelete("cascade"),
+    check(
+      "bank_statement_match_rejections_ref_type_check",
+      sql`${t.refType} IN (${sql.raw(MATCH_REF_TYPE_SQL)})`,
+    ),
+  ],
+);
+
+export type BankStatementMatchRejectionRow =
+  typeof bankStatementMatchRejections.$inferSelect;
+
 // ------------------------------------------------------------ cash deposits
 
 export const cashDeposits = pgTable(

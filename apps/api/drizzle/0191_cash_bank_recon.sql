@@ -170,6 +170,24 @@ CREATE TABLE "bank_statement_line_matches" (
 	CONSTRAINT "bank_statement_line_matches_line_fk" FOREIGN KEY ("tenant_id","bank_account_id","line_id") REFERENCES "public"."bank_statement_lines"("tenant_id","bank_account_id","id") ON DELETE cascade ON UPDATE no action
 );
 --> statement-breakpoint
+CREATE TABLE "bank_statement_match_rejections" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"bank_account_id" uuid NOT NULL,
+	"line_id" uuid NOT NULL,
+	"ref_type" varchar(30) NOT NULL,
+	"ref_id" uuid NOT NULL,
+	"rejected_by" text NOT NULL,
+	"rejected_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "bank_statement_match_rejections_pair_key" UNIQUE("tenant_id","line_id","ref_type","ref_id"),
+	CONSTRAINT "bank_statement_match_rejections_ref_type_check" CHECK ("bank_statement_match_rejections"."ref_type" IN ('journal_entry','cash_deposit','gateway_settlement','edc_settlement','supplier_payment','bank_statement_line')),
+	-- Foreign keys inline (docs/plan/contracts.md "Migrations: foreign keys
+	-- into FORCE RLS tables", pattern 1): inside CREATE TABLE no validation
+	-- scan runs under the FORCE RLS parents' policies.
+	CONSTRAINT "bank_statement_match_rejections_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "bank_statement_match_rejections_line_fk" FOREIGN KEY ("tenant_id","bank_account_id","line_id") REFERENCES "public"."bank_statement_lines"("tenant_id","bank_account_id","id") ON DELETE cascade ON UPDATE no action
+);
+--> statement-breakpoint
 CREATE TABLE "cash_deposits" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -243,6 +261,8 @@ SELECT app.enforce_tenant_rls('public.bank_reconciliation_case_events'::regclass
 SELECT app.enforce_tenant_rls('public.bank_statement_lines'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.bank_statement_line_matches'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.bank_statement_match_rejections'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.cash_deposits'::regclass);
 --> statement-breakpoint
