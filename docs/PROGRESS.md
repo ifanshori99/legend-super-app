@@ -743,3 +743,4 @@ Langkah berikut CTO baru:
 - Kartu baru legend-v9bfj (P2 K): batas payout payment.refunded menunggu receipt dead-letter, sesudah refund merge.
 - legend-31fi: subagent Plan memecah 105 laporan + 64 angka dasbor jadi kartu paralel WS-11.
 - 23:5x G4zsm selesai legend-hjaot: ws/payroll-loan-policy-api c7f63491 (0169 diubah di tempat, CHECK total >= per pengajuan; DB integ dibuat ulang), menggantikan dd72324c di antrean G81x9; resolved. Brief 256 dimulai di G8gkq (Sonnet, akun #2).
+- 9 Nov 23:58 G2h1s selesai legend-o1o4s: ws/goods-receipt-partial-qc 9541fd34 (0173 idx 173, prevId 0166; gabung sesudah 0167-0172 dan rantai ulang), antre G81x9; resolved. Kartu baru legend-5v7oq (P3). Codex 252b antre sesudah 15 Nov (xhigh: stok, uang, migrasi). Brief 257 dimulai di G3xjx (Sonnet, akun #2, 0174).
