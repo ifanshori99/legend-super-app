@@ -141,6 +141,7 @@ import {
   decideApprovalRequest,
   getApprovalChainOutcome,
   openApprovalRequest,
+  resolveApprovalChainOutcome,
 } from "./platform-approval.service.ts";
 
 export type StockCountQuery = z.infer<typeof stockCountQuerySchema>;
@@ -1394,9 +1395,16 @@ async function settle(
   if (row.status !== "pending_approval") return row;
   if (row.approvalChainId === null)
     throw new Error("A pending stock count has no approval chain");
-  let outcome = await getApprovalChainOutcome(tx, {
-    chainId: row.approvalChainId,
+  const chainId = row.approvalChainId;
+  // Locks the chain head and applies the deadline atomically: an inbox
+  // decision already in flight commits first and wins. A chain that expires
+  // here frees the pending-only unique index, so a resubmit is not blocked and
+  // revertToCounting handles the outcome. Read the levels only afterwards so
+  // `decidedBy` is fresh.
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
+    chainId,
     sourceModule: COUNT_APPROVAL_MODULE,
+    now,
   });
   const levels = await tx
     .select({
@@ -1405,7 +1413,7 @@ async function settle(
       requestedBy: approvalRequests.requestedBy,
     })
     .from(approvalRequests)
-    .where(eq(approvalRequests.chainId, row.approvalChainId))
+    .where(eq(approvalRequests.chainId, chainId))
     .orderBy(desc(approvalRequests.level));
   const last = levels[0];
   if (!last) throw notFound();
@@ -1418,17 +1426,6 @@ async function settle(
       .update(stockCounts)
       .set({ deciderIds: [...new Set([...row.deciderIds, ...newDeciders])] })
       .where(eq(stockCounts.id, row.id));
-  // Past the deadline the count stays blocked even before the sweep runs; the
-  // still open request is withdrawn so a resubmit is not blocked by it.
-  if (outcome === "pending" && last.deadlineAt.getTime() <= now.getTime()) {
-    await cancelApprovalRequest(tx, context, {
-      chainId: row.approvalChainId,
-      sourceModule: COUNT_APPROVAL_MODULE,
-      actorUserId: null,
-      now,
-    });
-    outcome = "expired";
-  }
   if (outcome === "pending") return row;
   if (outcome === "cancelled") {
     const [cancelled] = await tx

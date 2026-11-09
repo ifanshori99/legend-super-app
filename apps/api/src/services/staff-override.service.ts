@@ -74,8 +74,8 @@ import {
   type Tx,
 } from "./permission-resolver";
 import {
-  getApprovalChainOutcome,
   openApprovalRequest,
+  resolveApprovalChainOutcome,
 } from "./platform-approval.service";
 
 type Row = typeof posOverrides.$inferSelect;
@@ -633,9 +633,13 @@ async function settlePending(
 ): Promise<Row> {
   if (row.status !== "pending" || row.approvalRequestId === null) return row;
   const chainId = row.approvalRequestId;
-  let outcome = await getApprovalChainOutcome(tx, {
+  // Locks the chain head and applies the deadline atomically (§3 F7 "batas
+  // waktu", fail closed): an inbox decision already in flight commits first
+  // and wins. Read the last level only afterwards so `decidedBy` is fresh.
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
     chainId,
     sourceModule: POS_OVERRIDE_SOURCE_MODULE,
+    now,
   });
   const levels = await tx
     .select({
@@ -655,10 +659,6 @@ async function settlePending(
     .orderBy(desc(approvalRequests.level));
   const last = levels[0];
   if (!last) throw notFound();
-  // Past the deadline the action stays blocked even before the sweep runs
-  // (§3 F7 "batas waktu", fail closed).
-  if (outcome === "pending" && last.deadlineAt.getTime() <= now.getTime())
-    outcome = "expired";
   if (outcome === "pending") return row;
 
   let status: PosOverrideStatus = outcome === "approved" ? "approved" : outcome;

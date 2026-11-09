@@ -296,3 +296,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sudah: `buildPph21Prior` (payslip-tax.ts) mengisi semua field `prior`, termasuk tunjangan pajak gross-up dan basis skema. `PayslipTax` kini menyimpan `grossSchemeBaseIdr`/`employerSchemeBaseIdr`. Run service menerima `priorPeriods` (payslip masa kerja berjalan), bukan jumlah mentah.
 - Bukti: 231 test terarah lulus (11 file payroll/PPh 21), typecheck shared/api/web dan eslint bersih. Reviewer Opus 2x (fuzz 40k + 30k tahun) tanpa temuan, architect: arah benar, saran simpan basis diterapkan.
 - Sisa: sambungan lock ke `lockPayrollRunTax` menunggu run service (legend-07eg). Bug engine pembagian shortfall: legend-6q7o (K, P1). Merge BPA1 rehire: legend-70dm.
+
+## Brief 100: race expiry approval (9 Nov 2026, ws/fix-journals-expiry)
+
+- Sudah: `resolveApprovalChainOutcome` di `platform-approval.service.ts` (kunci chain head, expire bersyarat `status='pending'`, emit `approval.resolved` + audit sekali, helper bersama dengan sweep). Dipakai settle jurnal manual, jurnal berulang, POS override, dan stock count (cancel lokal dibuang; multi-level aman).
+- Bukti: test race baru 10/10 GAGAL di kode lama (13425b65), lulus di kode baru. `heavy pnpm check` hijau (1432 test). Reviewer Opus 2 putaran + architect; temuan multi-level stock count dibetulkan.
+- Bead: legend-2tcj (jalur reject stock count masih baca outcome tanpa lock, lama).
+- Keputusan: expiry lewat deadline kini tercatat `expired` di layanan approval (bukan override lokal); stock count yang lewat deadline tercatat `expired`, bukan `cancelled`.
