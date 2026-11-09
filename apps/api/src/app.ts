@@ -14,6 +14,7 @@ import {
 } from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
+import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
 import {
   PUBLIC_RATE_LIMIT_PATHS,
   guestSessionRateLimit,
@@ -255,6 +256,12 @@ export function createApp({
       ? { tenantId: row.id, brandId: null, source: "session" as const }
       : null;
   };
+
+  // An impersonated (support) session may only call the allowlisted
+  // /api/auth paths. The guard covers the login-challenge router,
+  // identityAuthRouter and Better Auth below, and reads headers only (never
+  // the body).
+  app.use("/api/auth", guardImpersonatedAuthRoutes);
 
   // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
   // session. It must run before Better Auth's catch-all because the identity

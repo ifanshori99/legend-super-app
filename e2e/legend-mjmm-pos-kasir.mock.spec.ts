@@ -85,7 +85,7 @@ async function shot(page: Page, mockupName: string): Promise<void> {
   // The mock tenant has an active support-access session from WS-01; a real
   // cashier session has none, so hide that banner in the evidence shots only.
   await page.addStyleTag({
-    content: '[data-slot="support-session-banner"]{display:none !important}',
+    content: '[data-slot="support-session-bar"]{display:none !important}',
   });
   await captureScreenshot(page, `legend-mjmm/${mockupName}.png`, {
     fullPage: false,

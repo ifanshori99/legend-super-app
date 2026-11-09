@@ -133,6 +133,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       mfaVerified: false,
       // No assignment, no station reach (legend-fsb7).
       stations: [],
+      // Not an impersonated support session (legend-cg071).
+      supportSession: null,
     });
 
     const ownerUser = await signedIn("Owner Access", { mfa: false });

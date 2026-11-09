@@ -13,6 +13,9 @@
 //   outlet; the minted context is the station one (its RLS reach is the station's outlet), and the
 //   service re-asserts the station on every read.
 //
+// - a support (impersonated) session also needs an active support access grant
+//   for this tenant (TEN-04), re-checked on every wakeup and recheck;
+//
 // Any failure answers null (deny by default).
 
 import type { IncomingMessage } from "node:http";
@@ -31,6 +34,7 @@ import {
 import { env } from "../config/env.ts";
 import { pool } from "../db/index.ts";
 import { auth } from "../lib/auth.ts";
+import { assertSupportAccess } from "./platform-support.service.ts";
 import { parseKdsRealtimeUrl } from "./kds-realtime.ts";
 import { resolveHostname } from "./org-resolve.service.ts";
 import {
@@ -88,6 +92,19 @@ export async function resolveKdsStaffConnection(
     if (!session) return null;
     const tenant = await tenantOf(request);
     if (!tenant) return null;
+    // A support (impersonated) session keeps the socket only while its support
+    // access grant is active. connect, every wakeup and every recheck pass
+    // here, so expiry or revocation cuts the socket (throw -> deny).
+    const impersonatedBy = (
+      session.session as { impersonatedBy?: string | null }
+    ).impersonatedBy;
+    if (impersonatedBy)
+      await assertSupportAccess({
+        tenantId: tenant.tenantId,
+        actorUserId: impersonatedBy,
+        dataClass: "personal",
+        intent: "read",
+      });
     const userId = session.user.id;
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),

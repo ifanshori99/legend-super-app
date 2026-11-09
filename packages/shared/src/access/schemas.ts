@@ -111,6 +111,18 @@ export const myAccessViewSchema = z.strictObject({
   mfaRequired: z.boolean(),
   mfaVerified: z.boolean(),
   stations: z.array(stationIdSchema),
+  /**
+   * Set only while the request runs in a support session (a platform admin
+   * impersonating a tenant user under an active support access grant); null
+   * for every normal session. The web app uses it to show the notice and to
+   * make the screens read-only. Presentation only: the API enforces the mode.
+   */
+  supportSession: z
+    .strictObject({
+      accessMode: z.enum(["read_only", "read_write"]),
+      expiresAt: z.string(),
+    })
+    .nullable(),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
 

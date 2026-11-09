@@ -4,6 +4,7 @@ import type { Permissions } from "@starter/shared/permissions";
 import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
 import { setRequestUser } from "../lib/request-context";
+import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
 // signed-out or revoked session stops working immediately. Answers JSON 401.
@@ -16,6 +17,10 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
     throw new HttpError(401, "UNAUTHORIZED", "Sign in to continue.");
   req.auth = session;
   setRequestUser(session.user.id);
+  // A support (impersonated) session is checked against its support access
+  // grant here, the one chokepoint of every cookie router. See
+  // middleware/support-session.ts.
+  await enforceSupportSession(req);
   next();
 };
 
