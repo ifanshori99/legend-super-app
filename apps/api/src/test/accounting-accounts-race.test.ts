@@ -11,6 +11,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
+import type { AccountId } from "@starter/shared/accounting";
 import type { TenantId, UserId } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -119,7 +120,7 @@ async function raceBehindChartLock<A, B>(
 describe("legend-bqup chart writes are serialized per legal entity", () => {
   it("two concurrent parent edits that would form a cycle: exactly one wins, no cycle is committed", async () => {
     const { entityId, ids } = await seedEntity(["1101", "1102"]);
-    const [a, b] = ids as [string, string];
+    const [a, b] = ids as [AccountId, AccountId];
 
     const { resultA, resultB } = await raceBehindChartLock(
       entityId,
