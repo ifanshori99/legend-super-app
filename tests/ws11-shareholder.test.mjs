@@ -180,12 +180,24 @@ describe("shareholder dashboard · DASH-02 / DASH-03 states", () => {
         board.tilePeriod(layout, tile),
       );
       const result = (await post(input)).data;
-      for (const code of tile.metricCodes)
+      for (const code of tile.metricCodes) {
+        // The API answers some metrics unavailable (ebitda, ...): the run
+        // carries that entry and no number (brief 284 T4).
+        const entry = result.availability.find((e) => e.metricCode === code);
+        if (entry?.status === "unavailable") {
+          assert.equal(
+            board.metricCell(result, code),
+            null,
+            `${tile.key} ${code}`,
+          );
+          continue;
+        }
         assert.notEqual(
           board.metricCell(result, code),
           null,
           `${tile.key} ${code}`,
         );
+      }
     }
   });
 
@@ -223,7 +235,9 @@ describe("shareholder dashboard · DASH-02 one key, one number across screens", 
     assert.deepEqual(pax, await cell("sales.per_pax", "pax"));
     assert.deepEqual(perPax, await cell("sales.per_pax", "avg_spend_per_pax"));
     assert.deepEqual(pax, { unit: "count", value: 8_222 });
-    assert.deepEqual(perPax, { unit: "idr", valueIdr: 50_207 });
+    // avg_spend_per_pax has no source in the API yet (registry
+    // source_not_built): both runs carry no number (brief 284 T4).
+    assert.equal(perPax, null);
   });
 
   test("DASH-02: closed-month net sales tie across sales.daily, sales.per_pax and the income statement", async () => {

@@ -63,3 +63,11 @@ export const reportsByPrefix = {
     "finance.supplier_due",
   ],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "bank_balance",
+  "cash_balance",
+  "ebitda",
+  "pending_settlement",
+]);

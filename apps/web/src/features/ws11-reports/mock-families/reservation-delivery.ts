@@ -45,3 +45,6 @@ export const reportsByPrefix = {
     "delivery.settlement",
   ],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([]);

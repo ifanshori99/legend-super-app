@@ -114,6 +114,8 @@ describe("batch A + B mock runs · DASH-02, I1", () => {
         const def = run.definitions[index];
         // Sums only: ratios, averages and balances do not add up across rows.
         if (def.aggregation !== "sum" || cell.value?.unit !== "idr") continue;
+        // Unavailable in the split (tax_payable by outlet): no number to add.
+        if (run.availability[index].status === "unavailable") continue;
         const parts = run.rows.reduce(
           (sum, row) => sum + row.values[index].value.valueIdr,
           0,

@@ -72,3 +72,14 @@ export const reportsByPrefix = {
     "operations.alerts",
   ],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "apology_voucher_count",
+  "avg_spend_per_pax",
+  "device_offline_count",
+  "failed_item_count",
+  "new_customers",
+  "returning_customers",
+  "table_occupancy_pct",
+]);

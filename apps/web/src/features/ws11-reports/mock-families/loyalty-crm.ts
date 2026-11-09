@@ -56,3 +56,14 @@ export const reportsByPrefix = {
     "crm.segments",
   ],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "active_members",
+  "new_customers",
+  "points_redeemed",
+  "promo_cost",
+  "returning_customers",
+  "review_count",
+  "review_rating",
+]);

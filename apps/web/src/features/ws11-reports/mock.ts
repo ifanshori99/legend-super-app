@@ -50,7 +50,12 @@ import {
   type ReportExport,
   type ReportResult,
 } from "@starter/shared/dashboard";
-import { metricDefinitionRefSchema } from "@starter/shared/metrics";
+import {
+  METRIC_UNAVAILABLE_MESSAGES,
+  metricDefinitionRefSchema,
+  type MetricAvailability,
+  type MetricUnavailableReason,
+} from "@starter/shared/metrics";
 import { ApiError } from "../../lib/api/errors.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
@@ -291,6 +296,50 @@ function cellFor(metricCode: string, atoms: Figures, totals: Figures): Cell {
   return null;
 }
 
+// ---- Availability ------------------------------------------------------------
+//
+// What the API answers `unavailable`, per family (`unavailableMetrics`, kept
+// exact by apps/api/src/test/ws11-mock-drift.test.ts) and per split
+// (`unsupportedSplits`): the run carries the same availability entry and no
+// number for it, never a mock figure for what the API cannot compute.
+
+const UNAVAILABLE_METRICS: ReadonlySet<string> = new Set([
+  ...sales.unavailableMetrics,
+  ...trafficOperations.unavailableMetrics,
+  ...menuCogs.unavailableMetrics,
+  ...paymentsTax.unavailableMetrics,
+  ...inventoryPurchasing.unavailableMetrics,
+  ...finance.unavailableMetrics,
+  ...loyaltyCrm.unavailableMetrics,
+  ...reservationDelivery.unavailableMetrics,
+  ...hr.unavailableMetrics,
+  ...facility.unavailableMetrics,
+]);
+
+const UNSUPPORTED_SPLITS: Readonly<Record<string, readonly string[]>> =
+  paymentsTax.unsupportedSplits;
+
+function availabilityOf(
+  metricCode: string,
+  groupBy: string | null,
+): MetricAvailability {
+  const reason: MetricUnavailableReason | null = UNAVAILABLE_METRICS.has(
+    metricCode,
+  )
+    ? "source_not_built"
+    : groupBy !== null && UNSUPPORTED_SPLITS[metricCode]?.includes(groupBy)
+      ? "dimension_not_supported"
+      : null;
+  return reason === null
+    ? { metricCode, status: "available" }
+    : {
+        metricCode,
+        status: "unavailable",
+        reason,
+        message: METRIC_UNAVAILABLE_MESSAGES[reason],
+      };
+}
+
 function metricRef(code: string) {
   const definition = reportMetricByCode.get(code);
   if (definition === undefined)
@@ -327,6 +376,14 @@ function buildRun(
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
   const refs = report.metrics.map(metricRef);
+  const availability = report.metrics.map((metricCode) =>
+    availabilityOf(metricCode, groupBy),
+  );
+  const unavailable = new Set(
+    availability
+      .filter((entry) => entry.status === "unavailable")
+      .map((entry) => entry.metricCode),
+  );
 
   function row(
     dims: readonly (readonly [string, string])[],
@@ -337,7 +394,9 @@ function buildRun(
       bucketEnd: range.endDate,
       dimensions: dims.map(([key, value]) => ({ key, value })),
       values: refs.map((ref) => {
-        const value = cellFor(ref.code, atoms, totals);
+        const value = unavailable.has(ref.code)
+          ? null
+          : cellFor(ref.code, atoms, totals);
         // SH-02: final only for a closed period, and for closed-period-only
         // figures only once the books of that period are closed.
         const official =
@@ -387,10 +446,7 @@ function buildRun(
     bucket: "total",
     outletFilter: { kind: "outlets", outletIds: [outlet.id] },
     definitions: refs,
-    availability: report.metrics.map((metricCode) => ({
-      metricCode,
-      status: "available",
-    })),
+    availability,
     groupBy: groupBy === null ? [] : [groupBy],
     rows,
     generatedAt: "2026-11-01T04:40:00.000Z",
@@ -421,6 +477,7 @@ const SERVED_REPORTS: readonly string[] = [
   ...loyaltyCrm.reportsByPrefix.loyalty,
   ...loyaltyCrm.reportsByPrefix.crm,
   ...reservationDelivery.reportsByPrefix.reservation,
+  ...reservationDelivery.reportsByPrefix.delivery,
   ...hr.reportsByPrefix.attendance,
   ...hr.reportsByPrefix.payroll,
   ...hr.reportsByPrefix.performance,

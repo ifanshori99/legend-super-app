@@ -52,3 +52,20 @@ export const reportsByPrefix = {
   ],
   tax: ["tax.by_rule", "tax.pbjt", "tax.receivable", "tax.service_charge"],
 } as const;
+
+/** Metrics the API answers `unavailable` (metric registry): the mock shows no number. */
+export const unavailableMetrics: ReadonlySet<string> = new Set([
+  "edc_settlement",
+  "gateway_settlement",
+  "pending_settlement",
+]);
+
+/**
+ * Splits the API refuses with `dimension_not_supported`: a ledger balance is a
+ * tenant figure (tax_payable by outlet), and the channel fee has no channel
+ * split (payment_fee by channel, delivery.settlement).
+ */
+export const unsupportedSplits: Readonly<Record<string, readonly string[]>> = {
+  tax_payable: ["outlet"],
+  payment_fee: ["channel"],
+};
