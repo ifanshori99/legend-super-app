@@ -26,6 +26,7 @@ import {
   approveRefund as approveRefundWithPayout,
   openRefundChainAtRequest,
 } from "./payment-refund.service.ts";
+import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
 import { depositInUseOfIntent } from "./reservation-deposit-credit.ts";
 import {
   appendPaymentEvent,
@@ -123,6 +124,10 @@ export async function refundableBalance(
  * approved in between would pay the guest for a sale that then completes. An
  * authorized tender of a completed or voided order is never captured (its
  * money goes back as a late payment refund) and holds nothing.
+ * legend-060xt: an authorized tender holds every intent of its payment link
+ * (a QR refresh opens a new intent on the link; the tender names the first).
+ * legend-hxpd5: the SQL is shared with the payout check
+ * (pos-intent-attribution.ts).
  * Read under the intent row lock the writers hold.
  */
 async function posSaleInUseOfIntent(
@@ -130,48 +135,10 @@ async function posSaleInUseOfIntent(
   tenantId: Intent["tenantId"],
   intentId: string,
 ): Promise<bigint> {
-  const result = await tx.execute(sql`
-    WITH used AS (
-      SELECT t.order_id, t.method,
-             sum(t.amount_idr) FILTER (WHERE t.payment_intent_id = ${intentId}::uuid) AS on_intent,
-             sum(t.amount_idr) AS on_method
-        FROM pos_order_tenders t
-        JOIN orders o ON o.tenant_id = t.tenant_id AND o.id = t.order_id
-       WHERE t.tenant_id = ${tenantId}
-         AND (t.status = 'captured'
-              OR (t.status = 'authorized'
-                  AND o.status NOT IN ('completed', 'voided')))
-         AND t.order_id IN (
-           SELECT u.order_id FROM pos_order_tenders u
-            WHERE u.tenant_id = ${tenantId}
-              AND u.payment_intent_id = ${intentId}::uuid
-              AND u.status IN ('captured', 'authorized'))
-         AND NOT EXISTS (
-           SELECT 1 FROM pos_order_voids v
-            WHERE v.tenant_id = ${tenantId}
-              AND v.order_id = t.order_id)
-       GROUP BY t.order_id, t.method
-    ), returned AS (
-      SELECT r.order_id, l.value->>'method' AS method,
-             sum((l.value->>'amountIdr')::numeric) AS amount
-        FROM pos_order_refunds r
-       CROSS JOIN LATERAL jsonb_array_elements(r.lines) AS l(value)
-       WHERE r.tenant_id = ${tenantId}
-         AND r.order_id IN (SELECT order_id FROM used)
-       GROUP BY r.order_id, l.value->>'method'
-    )
-    SELECT coalesce(sum(
-             u.on_intent - CASE
-               WHEN coalesce(f.amount, 0) >= u.on_method THEN u.on_intent
-               WHEN u.on_intent = u.on_method
-                 THEN least(coalesce(f.amount, 0), u.on_intent)
-               ELSE 0
-             END), 0)::text AS held
-      FROM used u
-      LEFT JOIN returned f ON f.order_id = u.order_id AND f.method = u.method
-     WHERE u.on_intent IS NOT NULL
-  `);
-  const held = BigInt(String(result.rows[0]?.held ?? "0"));
+  const result = await tx.execute(
+    netPosTendersOfIntentSql(tenantId, intentId, { kind: "held" }),
+  );
+  const held = BigInt(String(result.rows[0]?.amount ?? "0"));
   return held > 0n ? held : 0n;
 }
 

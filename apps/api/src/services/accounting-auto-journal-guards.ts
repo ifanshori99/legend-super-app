@@ -27,7 +27,7 @@ import {
   orders,
   paymentIntents,
   paymentRefunds,
-  posOrderTenders,
+  posOrderRefunds,
   reservationDepositAllocations,
   reservations,
 } from "../db/schema/index.ts";
@@ -38,6 +38,7 @@ import {
 } from "./accounting-auto-journal-amounts.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
+import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -345,6 +346,16 @@ function refundsAt(bound: Bound) {
     : and(done, sql`${paymentRefunds.completedAt} < ${timeOf(bound)}`);
 }
 
+/**
+ * POS refunds (pos_order_refunds) that count at `bound` (legend-hxpd5): a POS
+ * refund earlier than or at a payout, strictly earlier than a sale.
+ */
+function posRefundsAt(bound: Bound) {
+  return bound.kind === "refund"
+    ? sql`${posOrderRefunds.refundedAt} <= ${timeOf(bound)}`
+    : sql`${posOrderRefunds.refundedAt} < ${timeOf(bound)}`;
+}
+
 /** Closed reservations that count at `bound` (forfeit earlier than a refund). */
 function forfeitsAt(bound: Bound) {
   const closed = isNotNull(reservations.closedAt);
@@ -497,7 +508,9 @@ async function sumOf(rows: PromiseLike<{ total: string }[]>): Promise<bigint> {
 
 /**
  * What an intent's receipt backs at `bound`: POS tenders of the intent
- * captured by sales made by the bound + what QR pay-first sales pinned to it
+ * captured by sales made by the bound, less the part POS refunds by the bound
+ * returned that is attributed to the intent (pos-intent-attribution.ts,
+ * legend-hxpd5) + what QR pay-first sales pinned to it
  * took (total - DP) by the bound + forfeits of reservations whose DP it is
  * closed by the bound + completed payouts of the intent by the bound that its
  * receipt backs (a fund payout with its own fund receipt is not one). Tie
@@ -509,27 +522,20 @@ async function intentBackedAt(
   intentId: string,
   bound: Bound,
 ): Promise<bigint> {
-  const tenders = await sumOf(
-    tx
-      .select({
-        total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
-      })
-      .from(posOrderTenders)
-      .innerJoin(
-        orders,
-        and(
-          eq(orders.tenantId, posOrderTenders.tenantId),
-          eq(orders.id, posOrderTenders.orderId),
-        ),
-      )
-      .where(
-        and(
-          eq(posOrderTenders.tenantId, tenantId),
-          eq(posOrderTenders.paymentIntentId, intentId),
-          eq(posOrderTenders.status, "captured"),
-          salesAt(bound),
-        ),
-      ),
+  // legend-hxpd5: less the gateway part POS refunds of those sales gave back
+  // (order.refunded credits it to customer_deposit), attributed to the intent.
+  const tenders = BigInt(
+    String(
+      (
+        await tx.execute(
+          netPosTendersOfIntentSql(tenantId, intentId, {
+            kind: "ledger",
+            sales: salesAt(bound),
+            posRefunds: posRefundsAt(bound),
+          }),
+        )
+      ).rows[0]?.amount ?? "0",
+    ),
   );
   // QR pay-first sales pin the intent that paid them (orders.payment_intent_id)
   // and carry no tenders: the money taken is total - DP.
@@ -595,7 +601,8 @@ async function intentBackedAt(
  * backing receipt put in, judged at its own bound B:
  * - fund backing: the completed payouts of the fund up to B <= the fund receipt;
  * - intent backing: the receipt >= POS tenders of that intent captured by
- *   sales completed by B (tie: sale earlier) + what QR pay-first sales pinned
+ *   sales completed by B (tie: sale earlier), less what POS refunds by B
+ *   returned of them (legend-hxpd5) + what QR pay-first sales pinned
  *   to it took (total - DP) by B + forfeits of reservations whose
  *   DP it is closed by B + every completed payout of the intent up to B that
  *   its receipt backs (this one included; a fund payout with its own fund

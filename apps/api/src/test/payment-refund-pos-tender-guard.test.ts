@@ -152,17 +152,49 @@ async function posOrder(
   return id;
 }
 
+/**
+ * An earlier intent of the payment link of `paidIntentId` (legend-060xt): a
+ * QR refresh opens a new intent on the same link, the first one expires.
+ */
+async function supersededIntentOf(paidIntentId: string): Promise<string> {
+  const intentId = randomUUID();
+  await asOwner(async (client) => {
+    await client.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr,
+          idempotency_key, status, instructions, expires_at)
+       SELECT $1, tenant_id, outlet_id, payment_link_id, 'qris', 'doit', amount_idr,
+              $2, 'expired', instructions, now()
+         FROM payment_intents WHERE tenant_id = $3 AND id = $4`,
+      [intentId, `tg-old-${intentId}`, seededTenantId, paidIntentId],
+    );
+  });
+  intentIds.push(intentId);
+  return intentId;
+}
+
+async function linkOf(intentId: string): Promise<string> {
+  const { rows } = await owner.query<{ link: string }>(
+    "SELECT payment_link_id AS link FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+    [seededTenantId, intentId],
+  );
+  return rows[0]!.link;
+}
+
 /** A QRIS tender of `amountIdr` on the order that uses `intentId`. */
 async function qrisTender(
   orderId: string,
   intentId: string,
   amountIdr: number,
   status: "captured" | "voided" | "authorized" = "captured",
+  paymentLinkId: string | null = null,
 ) {
   await owner.query(
     `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
-        payment_intent_id, amount_idr, status, requested_at, resolved_at)
-     VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, $6, now(), $7)`,
+        payment_intent_id, amount_idr, status, requested_at, resolved_at, payment_link_id,
+        payment_link_token_sealed)
+     VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, $6, now(), $7, $8,
+             CASE WHEN $8::uuid IS NULL THEN NULL ELSE 'sealed-test' END)`,
     [
       seededTenantId,
       seededOutletA,
@@ -171,6 +203,7 @@ async function qrisTender(
       amountIdr,
       status,
       status === "authorized" ? null : new Date(),
+      paymentLinkId,
     ],
   );
 }
@@ -517,6 +550,38 @@ describe("PAY-04 an authorized tender of an open order holds the intent too", ()
     const intentId = await paidIntent(100_000);
     const orderId = await posOrder(100_000);
     await qrisTender(orderId, intentId, 100_000, "authorized");
+
+    const response = await requestRefund(intentId, 100_000);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  });
+});
+
+describe("PAY-04 an authorized tender holds every intent of its payment link (legend-060xt)", () => {
+  it("PAY-04 R9 the tender still names intent A, the refreshed QR intent B on the same link is paid: refunding B is refused with REFUND_INTENT_IN_POS_SALE", async () => {
+    const paidB = await paidIntent(100_000);
+    const intentA = await supersededIntentOf(paidB);
+    const orderId = await posOrder(100_000, "awaiting_payment");
+    await qrisTender(
+      orderId,
+      intentA,
+      100_000,
+      "authorized",
+      await linkOf(paidB),
+    );
+
+    const response = await requestRefund(paidB, 100_000);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(GUARD_CODE);
+    expect(await refundRows(paidB)).toHaveLength(0);
+  });
+
+  it("PAY-04 R9 an authorized tender on another payment link does not hold the intent", async () => {
+    const intentId = await paidIntent(100_000);
+    const other = await paidIntent(100_000);
+    const orderId = await posOrder(100_000, "awaiting_payment");
+    await qrisTender(orderId, other, 100_000, "authorized", await linkOf(other));
 
     const response = await requestRefund(intentId, 100_000);
 
