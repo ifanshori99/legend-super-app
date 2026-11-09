@@ -5,8 +5,11 @@
 // in-memory ECR simulator wrapped so it can return RAW (unparsed) answers.
 //
 // Assumptions (spec silent):
-// - "Looks like a PAN" = /\d([ -]?\d){12,}/ (13+ digits, optional single
-//   space/dash between digits), and the literal PAN strings used below.
+// - "Looks like a PAN" = /\d(?:[ \t-]*\d){11,}/ (12+ digits, any number of
+//   spaces/dashes, repeated or mixed, between digits), and the literal PAN
+//   strings used below. 12+ is the free-text threshold of the stored-data
+//   scrub (message, card_type, masked_pan); the 13+ reference-column
+//   threshold is looser, so this oracle is the stricter of the two.
 // - Every level of the agent's module-level `logger` is spied; `child` is
 //   spied too and must stay unused (a child logger would escape the spies).
 // - A ledger row's free-text/card columns are checked (not ids/timestamps,
@@ -59,8 +62,20 @@ const PAN_PLAIN = "4111111111111111";
 const PAN_SPACED = "4111 1111 1111 1111";
 const PAN_DASHED = "4111-1111-1111-1111";
 const PAN_OTHER = "5500005555555559";
-const PAN_LITERALS = [PAN_PLAIN, PAN_SPACED, PAN_DASHED, PAN_OTHER];
-const PAN_LIKE = /\d([ -]?\d){12,}/;
+// Repeated and mixed separators (legend-tjwb), and a 12-digit run.
+const PAN_MULTI = "4111  1111  1111  1111";
+const PAN_MIXED = "4111 - 1111-1111 1111";
+const PAN_12 = "411111111111";
+const PAN_LITERALS = [
+  PAN_PLAIN,
+  PAN_SPACED,
+  PAN_DASHED,
+  PAN_OTHER,
+  PAN_MULTI,
+  PAN_MIXED,
+  PAN_12,
+];
+const PAN_LIKE = /\d(?:[ \t-]*\d){11,}/;
 const AMOUNT = 55_000;
 
 const owner = new Pool({
@@ -336,7 +351,7 @@ const panLadenApproval = (r: EcrTraceRequest | EcrSaleRequest) => ({
   approvalCode: "AP1234",
   responseCode: "00",
   cardType: PAN_PLAIN,
-  message: `CARD ${PAN_SPACED} / ${PAN_DASHED} APPROVED`,
+  message: `CARD ${PAN_SPACED} / ${PAN_DASHED} / ${PAN_MULTI} / ${PAN_MIXED} / ${PAN_12} APPROVED`,
   rrn: PAN_PLAIN,
   invoiceNo: `A${PAN_PLAIN}`,
   batchNo: `${PAN_OTHER}XY`,
@@ -409,7 +424,7 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
       sale: async () => {
         throw new EcrTransportError(
           "protocol",
-          `bad frame for card ${PAN_SPACED} (${PAN_PLAIN})`,
+          `bad frame for card ${PAN_SPACED} (${PAN_PLAIN}) ${PAN_MULTI} ${PAN_MIXED} ${PAN_12}`,
         );
       },
     });
@@ -425,7 +440,9 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
   it("PAN-04 a plain Error carrying a PAN is not logged either", async () => {
     const f = await fixture(tenantA, cashierA, {
       sale: async () => {
-        throw new Error(`socket reset, last frame: ${PAN_DASHED}`);
+        throw new Error(
+          `socket reset, last frame: ${PAN_DASHED} ${PAN_MIXED} ${PAN_12}`,
+        );
       },
     });
     const tx = await pay(f, request(f));

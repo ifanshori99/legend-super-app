@@ -1,17 +1,23 @@
-// legend-5gub Part A: migration 0135_edc_pan_scrub.sql masks card numbers left
-// in old edc_transactions rows. The test inserts dirty and clean rows in two
-// tenants as the owner, runs the migration file twice in one transaction and
-// checks the result column by column.
+// legend-5gub Part A + legend-tjwb: migrations 0135_edc_pan_scrub.sql and
+// 0141_edc_pan_scrub_separators.sql mask card numbers left in old
+// edc_transactions rows. 0135 matched digits split by ONE space or dash only;
+// 0141 repeats the scrub for digits split by any number of spaces, tabs or
+// dashes. The test inserts dirty and clean rows in two tenants as the owner,
+// runs 0135 (one transaction), then 0141 twice (one transaction each), as a
+// fresh database or a dev/staging database that already applied 0135 would,
+// and checks the final state column by column.
 //
 // Assumptions (recorded in the report):
-// - "Card-like" = 13+ digits with an optional single space or dash between
-//   digits (brief); 12 digit values are clean.
-// - A masked_pan holding only a 13-19 digit number, plain or split by spaces
-//   or dashes, is masked to first 6 + '*' + last 4; anything else card-like
+// - "Card-like" = a run of digits with any number of spaces, tabs or dashes
+//   between them: 13+ digits in rrn, invoice_no, batch_no, dispatch_batch_no
+//   (a 12-digit RRN is legitimate), 12+ digits in every other text column.
+//   Dots are not separators ("Rp 1.250.000.000.000" is an amount).
+// - A masked_pan holding only a 13-19 digit number, plain or split by
+//   separators, is masked to first 6 + '*' + last 4; anything else card-like
 //   becomes NULL.
 // - Rows are compared by id, so rows other test files leave behind do not
-//   matter; the UPDATE rowcount is asserted as ">= dirty rows" on run 1 and
-//   exactly 0 on run 2.
+//   matter; the 0141 update count is asserted as ">= rows 0141 changed" on run
+//   1 and exactly 0 on run 2.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
@@ -29,20 +35,50 @@ const owner = new Pool({
   max: 3,
 });
 
-const migrationSql = readFileSync(
-  new URL("../../drizzle/0135_edc_pan_scrub.sql", import.meta.url),
-  "utf8",
-);
-const statements = migrationSql
-  .split("--> statement-breakpoint")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const readMigration = (file: string) =>
+  readFileSync(new URL(`../../drizzle/${file}`, import.meta.url), "utf8");
+const splitStatements = (sql: string) =>
+  sql
+    .split("--> statement-breakpoint")
+    .map((s) => s.trim())
+    .filter(Boolean);
+const sql0141 = readMigration("0141_edc_pan_scrub_separators.sql");
+const statements0135 = splitStatements(readMigration("0135_edc_pan_scrub.sql"));
+const statements0141 = splitStatements(sql0141);
 
-const CARD_LIKE = /\d([ -]?\d){12,}/;
+// Per-column oracle (write-path thresholds, any spaces/tabs/dashes between).
+const REF_COLUMNS = new Set([
+  "rrn",
+  "invoice_no",
+  "batch_no",
+  "dispatch_batch_no",
+]);
+const REF_CARD_LIKE = /\d(?:[ \t-]*\d){12,}/;
+const TEXT_CARD_LIKE = /\d(?:[ \t-]*\d){11,}/;
+const cardLike = (col: string, value: string) =>
+  (REF_COLUMNS.has(col) ? REF_CARD_LIKE : TEXT_CARD_LIKE).test(value);
+
 const PAN = "4111111111111111";
 const PAN_SPACED = "4111 1111 1111 1111";
 const PAN_DASHED = "4111-1111-1111-1111";
+// Separator forms 0135 missed.
+const PAN_DOUBLE = "4111  1111  1111  1111";
+const PAN_MIXED = "4111 - 1111-1111 1111";
+const PAN_DDASH = "4111--1111--1111--1111";
+const PAN_TAB = "4111\t1111\t1111\t1111";
+// Same forms, short enough for the varchar(20) reference columns.
+const REF20_DOUBLE = "4111  1111  11111111";
+const REF20_MIXED = "4111 - 11111111 1111";
+const REF20_DDASH = "4111--1111--11111111";
 const SCRUBBED = "[disamarkan]";
+const MASKED_16 = "411111******1111";
+
+/** Digits of a 12..20 digit card number split by repeated and mixed separators. */
+const DIGITS = "41111111111111112222";
+const spread = (n: number) =>
+  `${DIGITS.slice(0, 4)}  ${DIGITS.slice(4, 8)} -${DIGITS.slice(8, n)}`;
+const maskOf = (n: number) =>
+  DIGITS.slice(0, 6) + "*".repeat(n - 10) + DIGITS.slice(n - 4, n);
 
 type Cols = {
   card_type: string | null;
@@ -265,6 +301,130 @@ const specs: Spec[] = [
     cols: { ...cleanCols, rrn: PAN },
     expect: { rrn: null },
   },
+  // ---- legend-tjwb: repeated, mixed and tab separators (0141)
+  ...(
+    [
+      ["double", PAN_DOUBLE, REF20_DOUBLE],
+      ["mixed", PAN_MIXED, REF20_MIXED],
+      ["ddash", PAN_DDASH, REF20_DDASH],
+      ["tab", PAN_TAB, PAN_TAB],
+    ] as const
+  ).flatMap(([form, pan, ref20]): Spec[] => [
+    {
+      name: `card-type-${form}`,
+      cols: { card_type: pan },
+      expect: { card_type: "UNKNOWN" },
+    },
+    { name: `rrn-${form}`, cols: { rrn: pan }, expect: { rrn: null } },
+    {
+      name: `invoice-${form}`,
+      cols: { invoice_no: ref20 },
+      expect: { invoice_no: null },
+    },
+    {
+      name: `batch-${form}`,
+      cols: { batch_no: ref20 },
+      expect: { batch_no: null },
+    },
+    {
+      name: `dispatch-batch-${form}`,
+      cols: { dispatch_batch_no: ref20 },
+      expect: { dispatch_batch_no: null },
+    },
+    {
+      name: `message-${form}`,
+      status: "declined",
+      cols: { message: `Kartu ${pan} ditolak` },
+      // "4111 - 1111-1111 1111": 0135 runs first and masks only the
+      // single-separator 12-digit tail; 0141 folds the 4-digit head joined to
+      // that marker into it.
+      expect: { message: `Kartu ${SCRUBBED} ditolak` },
+    },
+    {
+      name: `masked-pan-${form}`,
+      cols: { masked_pan: pan },
+      // mixed: 0135 sees the 12-digit tail, the value is not its bare PAN
+      // shape, so 0135 already sets NULL.
+      expect: { masked_pan: form === "mixed" ? null : MASKED_16 },
+    },
+  ]),
+  // ---- 0135 leftovers: 0135 masked only the single-separator part of a
+  // run, leaving more PAN digits than first 6 / last 4 next to the marker.
+  {
+    name: "message-0135-leftover-tail",
+    status: "declined",
+    cols: { message: "Kartu 411111111111 - 1111111 ditolak" },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "message-0135-leftover-head",
+    status: "declined",
+    cols: { message: "Kartu 4111111 - 411111111111 ditolak" },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "message-marker-joined-digits",
+    status: "declined",
+    cols: { message: `Kartu 411111 ${SCRUBBED}\t1111 ditolak` },
+    expect: { message: `Kartu ${SCRUBBED} ditolak` },
+  },
+  {
+    name: "clean-marker-apart-from-digits",
+    status: "declined",
+    cols: { message: `Kartu ${SCRUBBED} kode 51` },
+  },
+  // ---- boundary lengths 12..19 with repeated and mixed separators
+  ...[12, 13, 14, 15, 16, 17, 18, 19].map((n): Spec => ({
+    name: `boundary-${n}-digits`,
+    cols: {
+      card_type: spread(n),
+      rrn: spread(n),
+      message: `Ref ${spread(n)} ok`,
+      masked_pan: spread(n),
+      // varchar(20): spread(n) is n + 4 chars.
+      ...(n <= 16
+        ? {
+            invoice_no: spread(n),
+            batch_no: spread(n),
+            dispatch_batch_no: spread(n),
+          }
+        : {}),
+    },
+    expect: {
+      card_type: "UNKNOWN",
+      message: `Ref ${SCRUBBED} ok`,
+      // 12 digits: card-like in masked_pan, but not a 13-19 digit PAN.
+      masked_pan: n === 12 ? null : maskOf(n),
+      // 12 digits stay in the reference columns (legitimate RRN length).
+      ...(n >= 13
+        ? {
+            rrn: null,
+            ...(n <= 16
+              ? { invoice_no: null, batch_no: null, dispatch_batch_no: null }
+              : {}),
+          }
+        : {}),
+    },
+  })),
+  {
+    name: "masked-pan-20-digits-separated",
+    cols: { masked_pan: "4111111111  1111112222" },
+    expect: { masked_pan: null },
+  },
+  {
+    name: "clean-11-digits-double-spaced",
+    status: "declined",
+    cols: {
+      message: "Ref 1234  5678  901 ditolak, kode 51",
+      rrn: "1234  5678  9012",
+      invoice_no: "1234\t5678\t9012",
+      masked_pan: MASKED_16,
+    },
+  },
+  {
+    name: "clean-dotted-amount",
+    cols: { message: "Total Rp 1.250.000.000.000 lunas" },
+  },
 ];
 
 type Fixture = {
@@ -306,6 +466,51 @@ async function asTenant<T>(
   }
 }
 
+async function insertRow(
+  client: PoolClient,
+  row: {
+    id: string;
+    tenantId: string;
+    outletId: string;
+    terminalId: string;
+    label: string;
+    status?: Spec["status"];
+    cols: Partial<Cols>;
+  },
+) {
+  const status = row.status ?? "approved";
+  seq += 1;
+  await client.query(
+    `INSERT INTO edc_transactions
+       (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+        request_fingerprint, amount_idr, method, status, trace, completed_at,
+        card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message,
+        masked_pan, updated_at, created_at)
+     VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp-scrub', $7, 'card', $8::varchar, $9,
+             CASE WHEN $8::varchar = 'pending' THEN NULL ELSE '2024-01-02T03:04:05Z'::timestamptz END,
+             $10, $11, $12, $13, $14, $15, $16,
+             '2024-01-02T03:04:06Z', '2024-01-02T03:00:00Z')`,
+    [
+      row.id,
+      row.tenantId,
+      row.outletId,
+      row.terminalId,
+      `REF-SCRUB-${row.label}-${seq}`,
+      randomUUID(),
+      10_000 + seq,
+      status,
+      `TS${row.label}${String(seq).padStart(6, "0")}`,
+      row.cols.card_type ?? null,
+      row.cols.rrn ?? null,
+      row.cols.invoice_no ?? null,
+      row.cols.batch_no ?? null,
+      row.cols.dispatch_batch_no ?? null,
+      row.cols.message ?? null,
+      row.cols.masked_pan ?? null,
+    ],
+  );
+}
+
 async function makeFixture(
   label: "A" | "B",
   tenantId: string,
@@ -325,37 +530,15 @@ async function makeFixture(
     );
     for (const spec of subset) {
       const id = randomUUID();
-      const status = spec.status ?? "approved";
-      seq += 1;
-      await client.query(
-        `INSERT INTO edc_transactions
-           (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
-            request_fingerprint, amount_idr, method, status, trace, completed_at,
-            card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message,
-            masked_pan, updated_at, created_at)
-         VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp-scrub', $7, 'card', $8::varchar, $9,
-                 CASE WHEN $8::varchar = 'pending' THEN NULL ELSE '2024-01-02T03:04:05Z'::timestamptz END,
-                 $10, $11, $12, $13, $14, $15, $16,
-                 '2024-01-02T03:04:06Z', '2024-01-02T03:00:00Z')`,
-        [
-          id,
-          tenantId,
-          outletId,
-          terminalId,
-          `REF-SCRUB-${label}-${seq}`,
-          randomUUID(),
-          10_000 + seq,
-          status,
-          `TS${label}${String(seq).padStart(6, "0")}`,
-          spec.cols.card_type ?? null,
-          spec.cols.rrn ?? null,
-          spec.cols.invoice_no ?? null,
-          spec.cols.batch_no ?? null,
-          spec.cols.dispatch_batch_no ?? null,
-          spec.cols.message ?? null,
-          spec.cols.masked_pan ?? null,
-        ],
-      );
+      await insertRow(client, {
+        id,
+        tenantId,
+        outletId,
+        terminalId,
+        label,
+        status: spec.status,
+        cols: spec.cols,
+      });
       ids.set(spec.name, id);
     }
   });
@@ -374,49 +557,63 @@ async function snapshot(fix: Fixture): Promise<Map<string, RowJson>> {
   return new Map(rows.rows.map((r) => [r.id, r.j]));
 }
 
-/** The whole migration file in ONE transaction, as the drizzle migrator does. */
-async function runMigration(): Promise<number> {
+/** Rows of edc_transactions updated so far in the current transaction. */
+async function updatedInTransaction(client: PoolClient): Promise<number> {
+  const result = await client.query<{ n: number }>(
+    `SELECT n_tup_upd::int AS n FROM pg_stat_xact_user_tables
+     WHERE relid = 'public.edc_transactions'::regclass`,
+  );
+  return result.rows[0]?.n ?? 0;
+}
+
+/**
+ * A whole migration file in ONE transaction, as the drizzle migrator does.
+ * Returns the number of edc_transactions rows it updated.
+ */
+async function runMigration(stmts: string[]): Promise<number> {
   const client = await owner.connect();
-  let updated = -1;
   try {
     await client.query("BEGIN");
-    for (const statement of statements) {
-      const result = await client.query(statement);
-      if (/^\s*(--[^\n]*\n\s*)*UPDATE/i.test(statement)) {
-        updated = result.rowCount ?? -1;
-      }
-    }
+    const start = await updatedInTransaction(client);
+    for (const statement of stmts) await client.query(statement);
+    const updated = (await updatedInTransaction(client)) - start;
     await client.query("COMMIT");
+    return updated;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
   }
-  return updated;
+}
+
+async function forcedRls(): Promise<boolean> {
+  const result = await owner.query<{ forced: boolean }>(
+    `SELECT relforcerowsecurity AS forced FROM pg_class
+     WHERE oid = 'public.edc_transactions'::regclass`,
+  );
+  return result.rows[0].forced;
 }
 
 const isDirty = (spec: Spec) =>
   spec.expect !== undefined || spec.expectOneOf !== undefined;
 
 let before: Map<string, RowJson>;
+let after0135: Map<string, RowJson>;
 let afterFirst: Map<string, RowJson>;
 let afterSecond: Map<string, RowJson>;
 let firstRunUpdated = -1;
 let secondRunUpdated = -1;
 let dirtyCount = 0;
 
+const snapshotAll = async () =>
+  new Map([...(await snapshot(fixA)), ...(await snapshot(fixB))]);
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  // SET LOCAL lock_timeout, NO FORCE, UPDATE, FORCE, reset lock_timeout.
-  expect(statements.length).toBe(5);
-  expect(statements[0]).toMatch(/SET LOCAL lock_timeout/i);
-  expect(statements[1]).toMatch(/NO FORCE ROW LEVEL SECURITY/i);
-  expect(statements[2]).toMatch(/UPDATE\s+"edc_transactions"/i);
-  expect(statements[3]).toMatch(/FORCE ROW LEVEL SECURITY/i);
-  expect(statements[3]).not.toMatch(/NO FORCE/i);
-  expect(statements[4]).toMatch(/lock_timeout/i);
+  // 0135: SET LOCAL lock_timeout, NO FORCE, UPDATE, FORCE, reset lock_timeout.
+  expect(statements0135.length).toBe(5);
   isolated = await createIsolatedTenant(`pan-${randomUUID().slice(0, 8)}`);
   // Tenant A: seeded fixture tenant, all specs. Tenant B: isolated tenant,
   // a mixed subset, so a tenant-scoped migration bug would show.
@@ -426,11 +623,13 @@ beforeAll(async () => {
   dirtyCount =
     fixA.specs.filter(isDirty).length + fixB.specs.filter(isDirty).length;
 
-  before = new Map([...(await snapshot(fixA)), ...(await snapshot(fixB))]);
-  firstRunUpdated = await runMigration();
-  afterFirst = new Map([...(await snapshot(fixA)), ...(await snapshot(fixB))]);
-  secondRunUpdated = await runMigration();
-  afterSecond = new Map([...(await snapshot(fixA)), ...(await snapshot(fixB))]);
+  before = await snapshotAll();
+  await runMigration(statements0135);
+  after0135 = await snapshotAll();
+  firstRunUpdated = await runMigration(statements0141);
+  afterFirst = await snapshotAll();
+  secondRunUpdated = await runMigration(statements0141);
+  afterSecond = await snapshotAll();
 });
 
 afterAll(async () => {
@@ -450,12 +649,43 @@ afterAll(async () => {
   await owner.end();
 });
 
-describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
+/** The UPDATE inside the 0141 DO block, run alone. */
+const bareUpdate0141 = () => {
+  const match = /UPDATE "edc_transactions"[\s\S]*?;/.exec(sql0141);
+  if (!match) throw new Error("0141 holds no UPDATE");
+  return match[0];
+};
+
+describe("EDC-01 legend-5gub + legend-tjwb migrations 0135 + 0141 PAN scrub", () => {
+  it("0141 is one DO block: NO FORCE, UPDATE and FORCE commit or fail together", () => {
+    expect(statements0141.length).toBe(1);
+    const body = statements0141[0];
+    expect(body).toMatch(/^(--[^\n]*\n)*DO \$scrub\$/);
+    const noForce = body.indexOf("NO FORCE ROW LEVEL SECURITY");
+    const update = body.indexOf('UPDATE "edc_transactions"');
+    const force = body.lastIndexOf(
+      '"edc_transactions" FORCE ROW LEVEL SECURITY',
+    );
+    expect(noForce).toBeGreaterThan(0);
+    expect(update).toBeGreaterThan(noForce);
+    expect(force).toBeGreaterThan(update);
+  });
+
   it("covers both tenants with dirty and clean rows", () => {
     expect(before.size).toBe(fixA.ids.size + fixB.ids.size);
     expect(dirtyCount).toBeGreaterThan(30);
     expect(fixB.specs.some(isDirty)).toBe(true);
     expect(fixB.specs.some((s) => !isDirty(s))).toBe(true);
+  });
+
+  it("0135 alone leaves repeated, mixed and tab separated card numbers (the bug 0141 fixes)", () => {
+    const after = (name: string) => after0135.get(fixA.ids.get(name)!)!;
+    expect(after("rrn-double").rrn).toBe(PAN_DOUBLE);
+    expect(after("rrn-mixed").rrn).toBe(PAN_MIXED);
+    expect(after("rrn-tab").rrn).toBe(PAN_TAB);
+    expect(after("message-ddash").message).toBe(`Kartu ${PAN_DDASH} ditolak`);
+    expect(after("masked-pan-double").masked_pan).toBe(PAN_DOUBLE);
+    expect(after("boundary-13-digits").rrn).toBe(spread(13));
   });
 
   it("masks every dirty column exactly as specified", () => {
@@ -541,14 +771,28 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
       batch_no: "000045",
       dispatch_batch_no: "000044",
       message: "Transaksi disetujui",
-      masked_pan: "411111******1111",
+      masked_pan: MASKED_16,
     });
     const rrnRow = afterFirst.get(fixA.ids.get("clean-12-digit-rrn")!)!;
     expect(rrnRow.rrn).toBe("123456789012");
+    const boundary12 = afterFirst.get(fixA.ids.get("boundary-12-digits")!)!;
+    expect(boundary12).toMatchObject({
+      rrn: spread(12),
+      invoice_no: spread(12),
+      batch_no: spread(12),
+      dispatch_batch_no: spread(12),
+    });
   });
 
-  it("a second run is a no-op: zero rows updated and every row unchanged", () => {
-    expect(firstRunUpdated).toBeGreaterThanOrEqual(dirtyCount);
+  it("a second 0141 run is a no-op: zero rows updated and every row unchanged", () => {
+    let changedBy0141 = 0;
+    for (const [id, row] of afterFirst) {
+      if (JSON.stringify(row) !== JSON.stringify(after0135.get(id))) {
+        changedBy0141 += 1;
+      }
+    }
+    expect(changedBy0141).toBeGreaterThan(20);
+    expect(firstRunUpdated).toBeGreaterThanOrEqual(changedBy0141);
     expect(secondRunUpdated).toBe(0);
     expect(JSON.stringify([...afterSecond])).toBe(
       JSON.stringify([...afterFirst]),
@@ -563,7 +807,12 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
     for (const [id, row] of afterSecond) {
       for (const [col, value] of Object.entries(row)) {
         if (typeof value === "string" && !uuid.test(value)) {
-          expect(CARD_LIKE.test(value), `${id} ${col}=${value}`).toBe(false);
+          expect(cardLike(col, value), `${id} ${col}=${value}`).toBe(false);
+          // No PAN digits left joined to a mask (0135 partial leftovers).
+          expect(
+            /\d[ \t-]*\[disamarkan\]|\[disamarkan\][ \t-]*\d/.test(value),
+            `${id} ${col}=${value}`,
+          ).toBe(false);
         }
       }
     }
@@ -582,7 +831,7 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
     expect(seen).toBeGreaterThan(10);
   });
 
-  it("forced row level security is on again after the migration", async () => {
+  it("forced row level security is on again after the migrations", async () => {
     const result = await owner.query(
       `SELECT c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced
        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -590,10 +839,93 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
     );
     expect(result.rows).toEqual([{ enabled: true, forced: true }]);
   });
+
+  // Run by hand without -1 (psql autocommit), statement by statement, and the
+  // UPDATE fails. A BEFORE UPDATE trigger scoped to one marker row forces the
+  // failure; vitest runs files one at a time, so it touches nothing else.
+  async function withFailingMarker(
+    run: (client: PoolClient, markerId: string) => Promise<void>,
+  ) {
+    const tag = randomUUID().replaceAll("-", "").slice(0, 12);
+    const fn = `edc_scrub_probe_fail_${tag}`;
+    const trigger = `edc_scrub_probe_${tag}`;
+    const markerId = randomUUID();
+    const markerCols = {
+      rrn: PAN,
+      message: `Kartu ${PAN_DOUBLE} ditolak`,
+      masked_pan: PAN_TAB,
+    };
+    await owner.query(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS
+       $$ BEGIN RAISE EXCEPTION 'scrub probe: forced failure'; END $$`,
+    );
+    await owner.query(
+      `CREATE TRIGGER ${trigger} BEFORE UPDATE ON edc_transactions FOR EACH ROW
+       WHEN (OLD.id = '${markerId}'::uuid) EXECUTE FUNCTION ${fn}()`,
+    );
+    const client = await owner.connect();
+    try {
+      await asTenant(fixA.tenantId, (c) =>
+        insertRow(c, {
+          id: markerId,
+          tenantId: fixA.tenantId,
+          outletId: fixA.outletId,
+          terminalId: fixA.terminalId,
+          label: "M",
+          cols: markerCols,
+        }),
+      );
+      await run(client, markerId);
+      // The marker row is exactly as inserted.
+      const marker = await asTenant(fixA.tenantId, (c) =>
+        c.query(
+          "SELECT rrn, message, masked_pan FROM edc_transactions WHERE id = $1",
+          [markerId],
+        ),
+      );
+      expect(marker.rows).toEqual([markerCols]);
+    } finally {
+      client.release();
+      await owner.query(
+        'ALTER TABLE "edc_transactions" FORCE ROW LEVEL SECURITY',
+      );
+      await owner.query(
+        `DROP TRIGGER IF EXISTS ${trigger} ON edc_transactions`,
+      );
+      await owner.query(`DROP FUNCTION IF EXISTS ${fn}()`);
+      await asTenant(fixA.tenantId, (c) =>
+        c.query("DELETE FROM edc_transactions WHERE id = $1", [markerId]),
+      );
+    }
+  }
+
+  const runAutocommit = async (client: PoolClient, stmts: string[]) => {
+    for (const statement of stmts) await client.query(statement);
+  };
+
+  it("0141 in autocommit with a failing UPDATE keeps FORCE RLS on and the row unchanged", async () => {
+    await withFailingMarker(async (client) => {
+      await expect(runAutocommit(client, statements0141)).rejects.toThrow(
+        /scrub probe: forced failure/,
+      );
+      expect(await forcedRls()).toBe(true);
+    });
+  });
+
+  it("0135 in autocommit with a failing UPDATE leaves FORCE RLS off (documents the 0135 bug)", async () => {
+    await withFailingMarker(async (client) => {
+      await expect(runAutocommit(client, statements0135)).rejects.toThrow(
+        /scrub probe: forced failure/,
+      );
+      expect(await forcedRls()).toBe(false);
+    });
+    expect(await forcedRls()).toBe(true);
+  });
+
   // Realistic deploy: the migration role owns the table but is NOT a superuser
   // and does NOT bypass RLS, and no tenant context is set. Everything runs in
   // one transaction that is rolled back, so ownership and data revert.
-  it("under a NOSUPERUSER NOBYPASSRLS owner role the bare UPDATE fails and the 5 statements scrub", async () => {
+  it("under a NOSUPERUSER NOBYPASSRLS owner role the bare UPDATE fails and the 0141 file scrubs", async () => {
     const role = `scrub_probe_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     const rowId = randomUUID();
     const setContext = (client: PoolClient, tenant: string, outlets: string) =>
@@ -622,50 +954,42 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
         { rolsuper: false, rolbypassrls: false, owner_is_me: true },
       ]);
 
-      seq += 1;
-      await client.query(
-        `INSERT INTO edc_transactions
-           (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
-            request_fingerprint, amount_idr, method, status, trace, completed_at,
-            card_type, rrn, invoice_no, batch_no, dispatch_batch_no, message,
-            masked_pan, updated_at, created_at)
-         VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp-scrub', 12345, 'card', 'approved', $7,
-                 '2024-01-02T03:04:05Z', $8, $9, '000123', '000045', '000044', $10, $11,
-                 '2024-01-02T03:04:06Z', '2024-01-02T03:00:00Z')`,
-        [
-          rowId,
-          fixA.tenantId,
-          fixA.outletId,
-          fixA.terminalId,
-          `REF-SCRUB-ROLE-${seq}`,
-          randomUUID(),
-          `TSR${String(seq).padStart(6, "0")}`,
-          PAN_SPACED,
-          PAN,
-          `Kartu ${PAN_DASHED} ditolak`,
-          PAN,
-        ],
-      );
+      await insertRow(client, {
+        id: rowId,
+        tenantId: fixA.tenantId,
+        outletId: fixA.outletId,
+        terminalId: fixA.terminalId,
+        label: "ROLE",
+        cols: {
+          card_type: PAN_TAB,
+          rrn: PAN_DOUBLE,
+          invoice_no: "000123",
+          message: `Kartu ${PAN_DDASH} ditolak`,
+          masked_pan: PAN_DOUBLE,
+        },
+      });
 
       // Migration time: no tenant context.
       await setContext(client, "", "");
 
-      // The bare UPDATE (statement 3 alone) hits FORCE RLS and fails.
+      // The bare UPDATE (the DO block's UPDATE alone) hits FORCE RLS and fails.
       await client.query("SAVEPOINT bare_update");
-      await expect(client.query(statements[2])).rejects.toThrow(
+      await expect(client.query(bareUpdate0141())).rejects.toThrow(
         /tenant context is required/,
       );
       await client.query("ROLLBACK TO SAVEPOINT bare_update");
 
-      // The 5 statements together, as the migrator runs them, succeed.
-      let updated = -1;
-      for (const statement of statements) {
-        const result = await client.query(statement);
-        if (/^\s*(--[^\n]*\n\s*)*UPDATE/i.test(statement)) {
-          updated = result.rowCount ?? -1;
-        }
-      }
-      expect(updated).toBeGreaterThanOrEqual(1);
+      // The 0141 file as the migrator runs it succeeds and restores
+      // lock_timeout.
+      const lockBefore = await client.query("SHOW lock_timeout");
+      const start = await updatedInTransaction(client);
+      for (const statement of statements0141) await client.query(statement);
+      expect(
+        (await updatedInTransaction(client)) - start,
+      ).toBeGreaterThanOrEqual(1);
+      expect((await client.query("SHOW lock_timeout")).rows).toEqual(
+        lockBefore.rows,
+      );
 
       // FORCE is back on: reading without tenant context fails again.
       await client.query("SAVEPOINT forced_again");
@@ -677,7 +1001,7 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
       // With the tenant context back, the row is masked.
       await setContext(client, fixA.tenantId, "*");
       const scrubbed = await client.query(
-        `SELECT card_type, rrn, message, masked_pan, invoice_no, amount_idr, status
+        `SELECT card_type, rrn, message, masked_pan, invoice_no, status
          FROM edc_transactions WHERE id = $1`,
         [rowId],
       );
@@ -686,9 +1010,8 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
           card_type: "UNKNOWN",
           rrn: null,
           message: `Kartu ${SCRUBBED} ditolak`,
-          masked_pan: "411111******1111",
+          masked_pan: MASKED_16,
           invoice_no: "000123",
-          amount_idr: "12345", // bigint column: node-pg returns a string
           status: "approved",
         },
       ]);
