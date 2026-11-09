@@ -3,6 +3,7 @@
 Worktree `.worktrees/refund-followups-2`, cabang `ws/refund-followups-2` dari `ws/refund-payout-followups` d2f8c072. Konteks: `docs/briefs/sub-181-refund-payout-followups.md`, `git log 27ba1fb9..d2f8c072`, `docs/design/auto-journals.md` (§4, §10, void sekitar :373), runbook `docs/runbooks/auto-journal-sale-missing.md`. Path relatif ke `apps/api/src` kecuali disebut.
 
 Aturan bersama:
+
 - Hanya file di potonganmu. Jangan sentuh `pos-shift.service.ts`, `tax.service.ts`, payroll, open bill, `pos-order.service.ts` (baca saja), `app.ts`, `routes/index.ts`, `worker-main.ts`, `edge/runtime.ts`.
 - Test reproduksi dulu, harus GAGAL di d2f8c072. Bukti tanpa mengembalikan berkas service: tulis test lalu jalankan sebelum mengubah service, atau `git worktree add --detach <scratchpad>/old d2f8c072`. Laporkan nama test + baris gagal.
 - Jalankan test dari root worktree: `LEGEND_TEST_FILES="src/test/<file>.test.ts" pnpm test > <scratchpad>/<nama>.log 2>&1; tail -40 <scratchpad>/<nama>.log`. Jangan `pnpm test` penuh, jangan tsc.
