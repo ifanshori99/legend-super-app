@@ -10,7 +10,11 @@ import { S3ObjectStorage } from "../services/core-storage-provider";
 
 const row = vi.hoisted(() => ({ value: undefined as unknown }));
 vi.mock("../db/tenant", () => ({
-  withTenant: async (_db: unknown, _ctx: unknown, fn: (tx: unknown) => unknown) =>
+  withTenant: async (
+    _db: unknown,
+    _ctx: unknown,
+    fn: (tx: unknown) => unknown,
+  ) =>
     fn({
       select: () => ({
         from: () => ({ where: () => ({ limit: async () => [row.value] }) }),
@@ -36,8 +40,8 @@ const lookup = {
 const objectId = "11111111-1111-4111-8111-111111111111";
 
 function s3() {
-  const sign = vi.fn(
-    async (_c: S3Client, _cmd: GetObjectCommand) => "https://storage.example/s",
+  const sign = vi.fn(async (...args: [S3Client, GetObjectCommand]) =>
+    args.length > 0 ? "https://storage.example/s" : "",
   );
   const storage = new S3ObjectStorage({
     client: { send: vi.fn() } as unknown as S3Client,

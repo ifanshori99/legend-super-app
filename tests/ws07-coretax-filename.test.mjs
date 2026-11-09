@@ -34,7 +34,7 @@ describe("coretaxExportFileName", () => {
       ["pbjt", "2026-13"],
       ["pbjt", "2026-3"],
       ["pbjt", "2026-03\r\n"],
-      ['pbjt', '2026-03"; x="'],
+      ["pbjt", '2026-03"; x="'],
       ["pbjt", ""],
       ["pbjt", undefined],
       ["pbjt", "../2026-03"],
