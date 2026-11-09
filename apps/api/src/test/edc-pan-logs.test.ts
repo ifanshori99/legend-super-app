@@ -220,7 +220,10 @@ const loggedMessages = () =>
 
 beforeEach(() => {
   captured = [];
-  const target = logger as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const target = logger as unknown as Record<
+    string,
+    (...a: unknown[]) => unknown
+  >;
   for (const level of LEVELS) {
     spies.push(
       vi.spyOn(target, level).mockImplementation((...args: unknown[]) => {
@@ -239,7 +242,8 @@ beforeEach(() => {
 afterEach(async () => {
   for (const spy of spies.splice(0)) spy.mockRestore();
   const all = startedAgents.splice(0);
-  for (const { agent, ctx } of all) await agent.stop(ctx).catch(() => undefined);
+  for (const { agent, ctx } of all)
+    await agent.stop(ctx).catch(() => undefined);
 });
 
 // --- fixture --------------------------------------------------------------
@@ -281,9 +285,7 @@ async function fixture(
     sale: (r) =>
       over.sale ? (over.sale(r, sim) as Promise<EcrResult>) : sim.sale(r),
     cancel: (r) =>
-      over.cancel
-        ? (over.cancel(r, sim) as Promise<EcrResult>)
-        : sim.cancel(r),
+      over.cancel ? (over.cancel(r, sim) as Promise<EcrResult>) : sim.cancel(r),
     inquiry: (r) =>
       over.inquiry
         ? (over.inquiry(r, sim) as Promise<EcrInquiryResult>)
@@ -488,7 +490,9 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
 
     // Assumption: cancelling an unknown row asks the terminal; the failing
     // adapter leaves it unknown (or the agent refuses). Either way: no PAN.
-    await f.agent.cancel(f.ctx, f.actor, refTo(f, first)).catch(() => undefined);
+    await f.agent
+      .cancel(f.ctx, f.actor, refTo(f, first))
+      .catch(() => undefined);
     expect(loggedMessages()).toContain("EDC cancel gave no answer");
     expectNoPan("log output", loggedText());
     expectLedgerClean(await ledger(f.tenant));
@@ -522,7 +526,11 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
       expect(f.sim.callsFor(f.terminalId).sale).toBe(1);
       rowId = row!.id as string;
     });
-    const cancelled = await f.agent.cancel(f.ctx, f.actor, refTo(f, { id: rowId }));
+    const cancelled = await f.agent.cancel(
+      f.ctx,
+      f.actor,
+      refTo(f, { id: rowId }),
+    );
     expect(cancelled.status).toBe("cancelled");
 
     open();

@@ -13,12 +13,12 @@ spaces or dashes, with the write path's thresholds: 13 or more digits in
 
 ## What it masks per column
 
-| Column | Action |
-|---|---|
-| `card_type` | replaced with `UNKNOWN` |
-| `rrn`, `invoice_no`, `batch_no`, `dispatch_batch_no` | set to `NULL` |
-| `message` | each card-like run replaced with `[disamarkan]` |
-| `masked_pan` | bare 13-19 digit number becomes first 6 + `*` + last 4; anything else card-like becomes `NULL` |
+| Column                                               | Action                                                                                         |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `card_type`                                          | replaced with `UNKNOWN`                                                                        |
+| `rrn`, `invoice_no`, `batch_no`, `dispatch_batch_no` | set to `NULL`                                                                                  |
+| `message`                                            | each card-like run replaced with `[disamarkan]`                                                |
+| `masked_pan`                                         | bare 13-19 digit number becomes first 6 + `*` + last 4; anything else card-like becomes `NULL` |
 
 Only rows holding a card-like value are updated. Amount, status,
 `completed_at`, `updated_at` and all other columns are unchanged. The

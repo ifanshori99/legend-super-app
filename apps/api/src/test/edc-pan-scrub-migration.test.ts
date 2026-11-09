@@ -18,7 +18,10 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import { maskedPanSchema } from "@starter/shared/edc";
-import { createIsolatedTenant, dropIsolatedTenant } from "./floor-test-helpers.ts";
+import {
+  createIsolatedTenant,
+  dropIsolatedTenant,
+} from "./floor-test-helpers.ts";
 import type { IsolatedTenant } from "./floor-test-helpers.ts";
 
 const owner = new Pool({
@@ -98,20 +101,52 @@ const specs: Spec[] = [
     cols: { message: "Ref 1234 5678 9012 ditolak, kode 51" },
     expect: { message: "Ref [disamarkan] ditolak, kode 51" },
   },
-  { name: "card-type-12-digits", cols: { card_type: "4111 1111 1111" }, expect: { card_type: "UNKNOWN" } },
-  { name: "masked-pan-12-digits", cols: { masked_pan: "411111111111" }, expect: { masked_pan: null } },
+  {
+    name: "card-type-12-digits",
+    cols: { card_type: "4111 1111 1111" },
+    expect: { card_type: "UNKNOWN" },
+  },
+  {
+    name: "masked-pan-12-digits",
+    cols: { masked_pan: "411111111111" },
+    expect: { masked_pan: null },
+  },
   { name: "clean-masked-x", cols: { masked_pan: "4111XXXXXX1111" } },
   // ---- PAN in each column separately
-  { name: "card-type-plain", cols: { card_type: PAN }, expect: { card_type: "UNKNOWN" } },
-  { name: "card-type-spaced", cols: { card_type: PAN_SPACED }, expect: { card_type: "UNKNOWN" } },
-  { name: "card-type-dashed", cols: { card_type: PAN_DASHED }, expect: { card_type: "UNKNOWN" } },
+  {
+    name: "card-type-plain",
+    cols: { card_type: PAN },
+    expect: { card_type: "UNKNOWN" },
+  },
+  {
+    name: "card-type-spaced",
+    cols: { card_type: PAN_SPACED },
+    expect: { card_type: "UNKNOWN" },
+  },
+  {
+    name: "card-type-dashed",
+    cols: { card_type: PAN_DASHED },
+    expect: { card_type: "UNKNOWN" },
+  },
   { name: "rrn-plain", cols: { rrn: PAN }, expect: { rrn: null } },
   { name: "rrn-spaced", cols: { rrn: PAN_SPACED }, expect: { rrn: null } },
   { name: "rrn-dashed", cols: { rrn: PAN_DASHED }, expect: { rrn: null } },
-  { name: "invoice-plain", cols: { invoice_no: PAN }, expect: { invoice_no: null } },
-  { name: "invoice-dashed", cols: { invoice_no: PAN_DASHED }, expect: { invoice_no: null } },
+  {
+    name: "invoice-plain",
+    cols: { invoice_no: PAN },
+    expect: { invoice_no: null },
+  },
+  {
+    name: "invoice-dashed",
+    cols: { invoice_no: PAN_DASHED },
+    expect: { invoice_no: null },
+  },
   { name: "batch-plain", cols: { batch_no: PAN }, expect: { batch_no: null } },
-  { name: "batch-spaced", cols: { batch_no: PAN_SPACED }, expect: { batch_no: null } },
+  {
+    name: "batch-spaced",
+    cols: { batch_no: PAN_SPACED },
+    expect: { batch_no: null },
+  },
   {
     name: "dispatch-batch-plain",
     cols: { dispatch_batch_no: PAN },
@@ -361,7 +396,8 @@ async function runMigration(): Promise<number> {
   return updated;
 }
 
-const isDirty = (spec: Spec) => spec.expect !== undefined || spec.expectOneOf !== undefined;
+const isDirty = (spec: Spec) =>
+  spec.expect !== undefined || spec.expectOneOf !== undefined;
 
 let before: Map<string, RowJson>;
 let afterFirst: Map<string, RowJson>;
@@ -401,9 +437,10 @@ afterAll(async () => {
   for (const fix of [fixA, fixB]) {
     if (!fix) continue;
     await asTenant(fix.tenantId, async (client) => {
-      await client.query("DELETE FROM edc_transactions WHERE id = ANY($1::uuid[])", [
-        [...fix.ids.values()],
-      ]);
+      await client.query(
+        "DELETE FROM edc_transactions WHERE id = ANY($1::uuid[])",
+        [[...fix.ids.values()]],
+      );
       await client.query("DELETE FROM payment_edc_terminals WHERE id = $1", [
         fix.terminalId,
       ]);
@@ -521,7 +558,8 @@ describe("EDC-01 legend-5gub migration 0135 PAN scrub", () => {
   it("no text column of any row holds a card-number-like run afterwards", () => {
     // Random uuid columns (id, idempotency_key) can hold digit runs split by
     // dashes by chance, so uuid-shaped values are skipped.
-    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     for (const [id, row] of afterSecond) {
       for (const [col, value] of Object.entries(row)) {
         if (typeof value === "string" && !uuid.test(value)) {
