@@ -37,6 +37,7 @@ import {
 } from "@starter/shared/core/server";
 import {
   createProductionOrderInputSchema,
+  createStockCountInputSchema,
   createStockTransferInputSchema,
   createWasteLogInputSchema,
   productionOrderQuerySchema,
@@ -59,6 +60,7 @@ import {
   setInventoryRecipeSource,
   type RecipeForStock,
 } from "../services/inventory-ops.shared.ts";
+import { createStockCount } from "../services/inventory-count.service.ts";
 import { listStockAlerts } from "../services/inventory-par-alerts.service.ts";
 import {
   createProductionOrder,
@@ -1144,6 +1146,53 @@ describe("F16 par levels, critical alerts and AI-08 suggestions", () => {
       { resolved: false },
     ]);
     expect(await criticalEventsOf(item)).toBe(2);
+  });
+
+  it("legend-r2zv stock.critical withholds quantity while a blind count of the pair is open", async () => {
+    const location = await insertLocation("Gudang Buta");
+    const item = await insertItem("Kopi Buta", gramId);
+    const free = await insertItem("Teh Bebas", gramId);
+    await insertParLevel(location, item, "5.0000", "20.0000");
+    await insertParLevel(location, free, "5.0000", "20.0000");
+    await receive(location, item, "10.0000", "100.0000");
+    await receive(location, free, "10.0000", "100.0000");
+    const { rows: outletRows } = await owner.query<{
+      timezone: string;
+      business_day_cutoff: string;
+    }>(
+      "SELECT timezone, business_day_cutoff FROM outlets WHERE tenant_id = $1 AND id = $2",
+      [tenantA, outletA],
+    );
+    await createStockCount(
+      tenantContext(),
+      ownerUserId,
+      createStockCountInputSchema.parse({
+        outletId: outletA,
+        locationId: location,
+        type: "cycle",
+        blind: true,
+        businessDate: businessDateOf(new Date(), {
+          timeZone: outletRows[0]!.timezone,
+          cutoff: outletRows[0]!.business_day_cutoff,
+        }),
+        inventoryItemIds: [item],
+        idempotencyKey: key("r2zv-count"),
+      }),
+    );
+
+    await waste(location, item, "6.0000");
+    await waste(location, free, "6.0000");
+    const quantityOf = async (itemId: string) => {
+      const { rows } = await owner.query<{ quantity: string | null }>(
+        "SELECT event->'payload'->>'quantity' AS quantity FROM domain_event_outbox WHERE tenant_id = $1 AND event->>'name' = 'stock.critical' AND event->'payload'->>'inventoryItemId' = $2",
+        [tenantA, itemId],
+      );
+      return rows.map((row) => row.quantity);
+    };
+    // The event still fires (the alert is real) but carries no quantity for
+    // the pair under blind count; an unrelated pair keeps its quantity.
+    expect(await quantityOf(item)).toEqual([null]);
+    expect(await quantityOf(free)).toEqual(["4.0000"]);
   });
 
   it("AI-08 SUGGEST-01 refills below-min pairs to parMax, location par over item default", async () => {
