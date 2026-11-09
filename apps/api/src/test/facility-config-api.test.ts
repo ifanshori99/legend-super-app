@@ -1107,6 +1107,36 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
     ).toBe(422);
   });
 
+  it("[TEN-03][FAC-02] one idempotencyKey used on outlet A then outlet B is a 409 conflict, not a 500", async () => {
+    const { client: clientA } = await outletClient(outletA.id);
+    const { client: clientB } = await outletClient(outletB.id);
+    const idempotencyKey = key();
+    const body = {
+      name: "Produk Dua Outlet",
+      type: "single",
+      priceIdr: 15000,
+      sessions: 1,
+      idempotencyKey,
+    };
+    const first = await clientA
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({ ...body, facilityId });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    // Outlet B cannot see outlet A's key (outlet RLS), so the lookup misses.
+    const other = await clientB
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({ ...body, facilityId: otherFacilityId });
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    expect(other.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const rows = await owner.query(
+      "SELECT 1 FROM facility_products WHERE tenant_id = $1 AND facility_id = $2 AND name = 'Produk Dua Outlet'",
+      [tenant.id, otherFacilityId],
+    );
+    expect(rows.rowCount).toBe(0);
+  });
+
   it("[FAC-02][legend-6jms] a price and quota change is audited with the old and the new value", async () => {
     const { client } = await ownerClient();
     const product = await client

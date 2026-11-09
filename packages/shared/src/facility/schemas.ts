@@ -23,7 +23,12 @@ import {
   ulidSchema,
   uuidSchema,
 } from "../core/index.ts";
-import { facilityHoursSchema, minutesOfDay } from "./slots.ts";
+import {
+  facilityHoursSchema,
+  minutesOfDay,
+  windowEndMinutes,
+  windowEndSchema,
+} from "./slots.ts";
 import {
   accessEventIdSchema,
   accessTicketIdSchema,
@@ -863,15 +868,22 @@ export type SubscriptionQuota = z.infer<typeof subscriptionQuotaSchema>;
 
 // ---- Wi-Fi and WFC (PRD §6 K wifi_policies / wifi_sessions, §3 F39) ---------
 
-/** Recurring local window, e.g. weekday peak 11:30–14:00 (PRD §3 F39 Jam Ramai). */
+/**
+ * Recurring local window, e.g. weekday peak 11:30–14:00 (PRD §3 F39 Jam Ramai).
+ * `endsAt` may be `24:00` (end of day); `startsAt` may not.
+ */
 export const peakWindowSchema = z
   .strictObject({
     daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7),
     startsAt: timeOfDaySchema,
-    endsAt: timeOfDaySchema,
+    endsAt: windowEndSchema,
   })
   .refine(
-    (window) => minutesOfDay(window.endsAt) > minutesOfDay(window.startsAt),
+    (window) =>
+      // Field errors are already reported; do not throw from the refinement.
+      !timeOfDaySchema.safeParse(window.startsAt).success ||
+      !windowEndSchema.safeParse(window.endsAt).success ||
+      windowEndMinutes(window.endsAt) > minutesOfDay(window.startsAt),
     { path: ["endsAt"], message: "endsAt must be after startsAt" },
   );
 export type PeakWindow = z.infer<typeof peakWindowSchema>;

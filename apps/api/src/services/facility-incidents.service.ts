@@ -39,10 +39,10 @@ import {
   notFound,
   OPERATE_PERMISSION,
 } from "./facility-shared.ts";
+import { storeFacilityIdempotentResult } from "./facility-config-guard.ts";
 import {
   operationsFingerprint,
   readIdempotentResult,
-  storeIdempotentResult,
 } from "./operations-idempotency.ts";
 
 /** Outbox destination of facility events (same as the WS-06 inventory writers). */
@@ -260,7 +260,7 @@ export async function raiseFacilityIncident(
       })
       .returning();
     if (idempotencyKey)
-      await storeIdempotentResult(tx, context, {
+      await storeFacilityIdempotentResult(tx, context, {
         key: idempotencyKey,
         fingerprint,
         outletId: facility.outletId,

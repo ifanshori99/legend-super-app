@@ -39,6 +39,7 @@ import {
   shortId,
   zodFieldErrors,
 } from "../lib.ts";
+import { peakEndToBody, peakEndToInput } from "../peak-window.ts";
 import { ConfigSection } from "./config-section";
 import { FormError } from "./form-error";
 
@@ -86,7 +87,7 @@ function initialDraft(policy: WifiPolicy): WifiDraft {
     peakSchedule: policy.peakSchedule.map((window) => ({
       daysOfWeek: [...window.daysOfWeek],
       startsAt: window.startsAt,
-      endsAt: window.endsAt,
+      endsAt: peakEndToInput(window.endsAt),
     })),
     tierBonus: Object.entries(policy.tierBonusMinutes).map(
       ([key, minutes]) => ({ key, minutes: String(minutes) }),
@@ -367,7 +368,7 @@ function WifiDialog({
         return;
       }
       const start = clockMinutes(window.startsAt);
-      const end = clockMinutes(window.endsAt);
+      const end = clockMinutes(peakEndToBody(window.endsAt));
       if (start === null || end === null) {
         nextPeaks[index] = t("facilityAdmin.errors.timeRequired");
         return;
@@ -431,7 +432,7 @@ function WifiDialog({
       peakSchedule: draft.peakSchedule.map((window) => ({
         daysOfWeek: [...window.daysOfWeek].sort((a, b) => a - b),
         startsAt: window.startsAt,
-        endsAt: window.endsAt,
+        endsAt: peakEndToBody(window.endsAt),
       })),
       baseSpeedKbps,
       fullSpeedKbps,
@@ -760,6 +761,7 @@ function WifiDialog({
                       label={t("facilityAdmin.wifi.peakEndsAt", {
                         index: index + 1,
                       })}
+                      hint={t("facilityAdmin.wifi.peakEndsAtHint")}
                       required
                     >
                       <Input

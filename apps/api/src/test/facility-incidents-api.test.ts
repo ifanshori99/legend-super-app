@@ -25,6 +25,9 @@ const createdUsers: string[] = [];
 const facilityId = randomUUID();
 const areaId = randomUUID();
 const unitId = randomUUID();
+const facilityBId = randomUUID();
+const areaBId = randomUUID();
+const unitBId = randomUUID();
 
 async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -126,6 +129,24 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, $4, $5, 'I1', 'available', 0)`,
       [unitId, tenant.id, outletA.id, facilityId, areaId],
     );
+    await client.query(
+      `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                               arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+       SELECT $1, tenant_id, $2, 'Incident API B', type, session_minutes, cleaning_minutes,
+              arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy
+         FROM facilities WHERE tenant_id = $3 AND id = $4`,
+      [facilityBId, outletB.id, tenant.id, facilityId],
+    );
+    await client.query(
+      `INSERT INTO facility_areas (id, tenant_id, outlet_id, facility_id, name, sort_order)
+       VALUES ($1, $2, $3, $4, 'Area Insiden B', 0)`,
+      [areaBId, tenant.id, outletB.id, facilityBId],
+    );
+    await client.query(
+      `INSERT INTO facility_units (id, tenant_id, outlet_id, facility_id, area_id, code, status, sort_order)
+       VALUES ($1, $2, $3, $4, $5, 'I1', 'available', 0)`,
+      [unitBId, tenant.id, outletB.id, facilityBId, areaBId],
+    );
   });
 });
 
@@ -148,9 +169,18 @@ afterAll(async () => {
         `DELETE FROM ${table} WHERE tenant_id = $1 AND facility_id = $2`,
         [tenant.id, facilityId],
       );
+    for (const table of [
+      "facility_incidents",
+      "facility_units",
+      "facility_areas",
+    ])
+      await client.query(
+        `DELETE FROM ${table} WHERE tenant_id = $1 AND facility_id = $2`,
+        [tenant.id, facilityBId],
+      );
     await client.query(
-      "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
-      [tenant.id, facilityId],
+      "DELETE FROM facilities WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenant.id, [facilityId, facilityBId]],
     );
   });
   if (createdUsers.length > 0) {
@@ -373,6 +403,29 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
           .send({ unitId, type: "panic" })
       ).status,
     ).toBe(422);
+  });
+
+  it("[TEN-03] one Idempotency-Key used on outlet A then outlet B is a 409 conflict, not a 500", async () => {
+    const { client: clientA } = await outletClient(outletA.id);
+    const { client: clientB } = await outletClient(outletB.id);
+    const key = `incident-${randomUUID()}`;
+    const send = (client: typeof clientA, unit: string) =>
+      client
+        .post("/api/facility/incidents")
+        .set(originHeader)
+        .set("Idempotency-Key", key)
+        .send({ unitId: unit, type: "damage" });
+    const first = await send(clientA, unitId);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    // Outlet RLS hides outlet A's key from outlet B's lookup.
+    const other = await send(clientB, unitBId);
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    expect(other.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const rows = await owner.query(
+      "SELECT 1 FROM facility_incidents WHERE tenant_id = $1 AND facility_id = $2",
+      [tenant.id, facilityBId],
+    );
+    expect(rows.rowCount).toBe(0);
   });
 
   it("responds once; the same answer replays, another answer is 409", async () => {

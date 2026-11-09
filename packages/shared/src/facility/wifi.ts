@@ -13,7 +13,7 @@
 
 import { FacilityError } from "./errors.ts";
 import type { WifiPolicy, WifiSession, WifiSpeedTier } from "./schemas.ts";
-import { minutesOfDay, wallClockAt } from "./slots.ts";
+import { minutesOfDay, wallClockAt, windowEndMinutes } from "./slots.ts";
 
 /** PRD §3 F39 / D38 defaults, used by the Legend fixtures and the BE seed. */
 export const WIFI_POLICY_DEFAULTS = Object.freeze({
@@ -38,7 +38,7 @@ export function isPeakAt(
     (window) =>
       window.daysOfWeek.includes(clock.dayOfWeek) &&
       clock.minutesOfDay >= minutesOfDay(window.startsAt) &&
-      clock.minutesOfDay < minutesOfDay(window.endsAt),
+      clock.minutesOfDay < windowEndMinutes(window.endsAt),
   );
 }
 

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import {
   cafeLegendFixtures,
@@ -569,8 +569,6 @@ describe("legend-18qw notification recipient resolver", () => {
     await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
       [...createdUserIds, tenantBUser],
     ]);
-    await owner.end();
-    await appPool.end();
   });
 
   it("legend-18qw approval.requested reaches in-scope approvers only, never the requester or another tenant", async () => {
@@ -1155,4 +1153,187 @@ describe("legend-18qw notification recipient resolver", () => {
       ),
     ).rejects.toThrow("No notification recipient rule for order.paid");
   });
+});
+
+describe("legend-5rgl facility_incident.raised owner fallback", () => {
+  // Assumption (brief W3a, no PRD text): no active booth-operator holder on the
+  // outlet pages the tenant owners instead; with no owner either, nobody is
+  // paged (fail closed, empty list, no throw). Isolated tenant: the fixture
+  // tenant has seeded roles that would blur an exact assertion.
+  const tenantC = randomUUID();
+  const brandC = randomUUID();
+  const legalC = randomUUID();
+  const outletC = randomUUID();
+  const outletC2 = randomUUID();
+  const facilityC = randomUUID();
+  const boothRole = randomUUID();
+  const ownerRole = randomUUID();
+  const userIds: string[] = [];
+  const contextC = tenantContext(tenantC);
+
+  const makeUser = async (name: string) => {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, true)`,
+      [id, name, `${id}@example.test`],
+    );
+    userIds.push(id);
+    return id;
+  };
+  const assign = (
+    userId: string,
+    roleId: string,
+    scope: { type: string; id?: string },
+  ) =>
+    owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, assigned_by, valid_from)
+       VALUES ($1, $2, $3, $4, $5, $2, now() - interval '1 hour')`,
+      [tenantC, userId, roleId, scope.type, scope.id ?? null],
+    );
+  const newIncident = async (outletId: string) => {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO facility_incidents (id, tenant_id, outlet_id, facility_id, type, triggered_at)
+       VALUES ($1, $2, $3, $4, 'panic', now())`,
+      [id, tenantC, outletId, facilityC],
+    );
+    return id;
+  };
+  const page = async (incidentId: string) => {
+    const event = {
+      ...envelope("facility_incident.raised", outletC, {
+        incidentId,
+        facilityId: facilityC,
+        unitId: null,
+        type: "panic",
+        triggeredAt: new Date().toISOString(),
+        offline: false,
+      }),
+      tenantId: tenantC,
+      outletId: outletC,
+    } as ReturnType<typeof envelope>;
+    return withTenant(database, contextC, (tx) =>
+      createNotificationRecipientResolver({ email: true, push: true })(
+        contextC,
+        event,
+        tx,
+      ),
+    );
+  };
+
+  beforeAll(async () => {
+    const creator = await makeUser("Pembuat C");
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, 'Owner fallback tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":2,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
+      [tenantC, `adapters-5rgl-${tenantC}`, creator],
+    );
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Brand 5rgl')",
+      [brandC, tenantC, `adapters-5rgl-${tenantC.slice(0, 8)}`],
+    );
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT 5rgl', false)",
+      [legalC, tenantC],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+       VALUES ($1, $3, $4, $5, 'OUT-5A', 'Outlet 5A', 'Jl. A', '{}'),
+              ($2, $3, $4, $5, 'OUT-5B', 'Outlet 5B', 'Jl. B', '{}')`,
+      [outletC, outletC2, tenantC, brandC, legalC],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, allowed_scope_types)
+       VALUES ($1, $3, 'Operator bilik', false, NULL, $4::jsonb, '["tenant","brand","outlet"]'::jsonb),
+              ($2, $3, 'Owner', true, 'owner', '[]'::jsonb, '["tenant","outlet"]'::jsonb)`,
+      [
+        boothRole,
+        ownerRole,
+        tenantC,
+        JSON.stringify(["facility.booth.operate"]),
+      ],
+    );
+    await owner.query(
+      `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                               arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+       VALUES ($1, $2, $3, 'Notif fallback', 'shower', 20, 10, 10, '[]', $4, $5)`,
+      [
+        facilityC,
+        tenantC,
+        outletC,
+        JSON.stringify({
+          graceMinutes: 5,
+          blockMinutes: 15,
+          feePerBlockIdr: 5000,
+        }),
+        JSON.stringify({
+          freeCancelMinutesBefore: 30,
+          lateCancelResolution: "no_refund",
+          lateCancelFeeIdr: 0,
+          noShowResolution: "no_refund",
+        }),
+      ],
+    );
+  });
+
+  afterEach(async () => {
+    await owner.query("DELETE FROM role_assignments WHERE tenant_id = $1", [
+      tenantC,
+    ]);
+    await owner.query("DELETE FROM facility_incidents WHERE tenant_id = $1", [
+      tenantC,
+    ]);
+  });
+
+  afterAll(async () => {
+    await owner.query("DELETE FROM facilities WHERE id = $1", [facilityC]);
+    await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
+      userIds,
+    ]);
+  });
+
+  it("legend-5rgl holders on the outlet are paged and the owners are not", async () => {
+    const holder = await makeUser("Operator outlet");
+    const ownerUser = await makeUser("Pemilik");
+    await assign(holder, boothRole, { type: "outlet", id: outletC });
+    await assign(ownerUser, ownerRole, { type: "tenant" });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([holder]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl a holder on another outlet is not paged; with no holder here the owners are", async () => {
+    const otherHolder = await makeUser("Operator outlet lain");
+    const ownerUser = await makeUser("Pemilik");
+    await assign(otherHolder, boothRole, { type: "outlet", id: outletC2 });
+    await assign(ownerUser, ownerRole, { type: "tenant" });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([ownerUser]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl with no operator on the outlet the tenant owner is paged, an owner scoped to another outlet is not", async () => {
+    const tenantOwner = await makeUser("Pemilik tenant");
+    const otherOutletOwner = await makeUser("Pemilik outlet lain");
+    await assign(tenantOwner, ownerRole, { type: "tenant" });
+    await assign(otherOutletOwner, ownerRole, {
+      type: "outlet",
+      id: outletC2,
+    });
+    const recipients = await page(await newIncident(outletC));
+    expect(recipients.map((r) => r.userId)).toEqual([tenantOwner]);
+    expect(recipients[0]?.category).toBe("emergency");
+  });
+
+  it("legend-5rgl with no holder and no owner nobody is paged (fail closed)", async () => {
+    const otherHolder = await makeUser("Operator outlet lain");
+    await assign(otherHolder, boothRole, { type: "outlet", id: outletC2 });
+    expect(await page(await newIncident(outletC))).toEqual([]);
+  });
+});
+
+// Pools close once every suite in this file has finished.
+afterAll(async () => {
+  await owner.end();
+  await appPool.end();
 });

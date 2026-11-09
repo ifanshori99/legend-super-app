@@ -22,12 +22,12 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
+import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import {
   expireStaleQueueNotifications,
   releaseExpiredSlotHolds,
 } from "./services/facility-slots.service.ts";
-import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
-import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import {
   deliverInventoryGlEvent,

@@ -21,8 +21,8 @@ const [wfcPolicy] = facility.cafeLegendWifiPolicies;
 const prdPeakSchedule = [
   { daysOfWeek: [1, 2, 3, 4, 5], startsAt: "11:30", endsAt: "14:00" },
   { daysOfWeek: [1, 2, 3, 4, 5], startsAt: "18:00", endsAt: "21:00" },
-  // The time format has no "24:00", so the PRD's whole day is written 23:59.
-  { daysOfWeek: [0, 6], startsAt: "00:00", endsAt: "23:59" },
+  // "24:00" is accepted as a window end only, so the whole day is expressible.
+  { daysOfWeek: [0, 6], startsAt: "00:00", endsAt: "24:00" },
 ];
 
 const policy = {
@@ -200,24 +200,40 @@ describe("jam ramai: 1 jam gratis (FAC-14)", () => {
     }
   });
 
-  // Known gap vs PRD ("sepanjang akhir pekan"): time-of-day cannot express
-  // 24:00 and the window end is exclusive, so 23:59 can never be peak.
-  // `todo` keeps the suite green while the gap is reported.
-  test(
-    "whole weekend is peak, including 23.59",
-    { todo: "no way to cover 23:59 (end exclusive, no 24:00)" },
-    () => {
-      const fixtureSchedule = { peakSchedule: wfcPolicy.peakSchedule };
-      assert.equal(
-        facility.isPeakAt(fixtureSchedule, at(SAT, "23:59"), TZ),
-        true,
-      );
-      assert.equal(
-        facility.isPeakAt(fixtureSchedule, at(SUN, "23:59"), TZ),
-        true,
-      );
-    },
-  );
+  test("whole weekend is peak, including 23.59", () => {
+    const fixtureSchedule = { peakSchedule: wfcPolicy.peakSchedule };
+    assert.equal(
+      facility.isPeakAt(fixtureSchedule, at(SAT, "23:59"), TZ),
+      true,
+    );
+    assert.equal(
+      facility.isPeakAt(fixtureSchedule, at(SUN, "23:59"), TZ),
+      true,
+    );
+  });
+
+  test("24:00 is accepted only as a window end", () => {
+    const window = { daysOfWeek: [0], startsAt: "00:00", endsAt: "24:00" };
+    assert.equal(facility.peakWindowSchema.safeParse(window).success, true);
+    assert.equal(
+      facility.peakWindowSchema.safeParse({ ...window, startsAt: "24:00" })
+        .success,
+      false,
+    );
+    assert.equal(
+      facility.peakWindowSchema.safeParse({ ...window, endsAt: "24:01" })
+        .success,
+      false,
+    );
+    assert.equal(
+      facility.peakWindowSchema.safeParse({
+        ...window,
+        startsAt: "23:59",
+        endsAt: "24:00",
+      }).success,
+      true,
+    );
+  });
 
   test("fixture WFC schedule matches the PRD on weekdays and weekend daytime", () => {
     const fixtureSchedule = { peakSchedule: wfcPolicy.peakSchedule };
