@@ -23,3 +23,6 @@ Baca `bd show` tiap kartu dulu. Jangan sentuh posting jurnal otomatis atau refun
 
 ## Laporan
 Sekali di akhir: per kartu (hasil, SHA), bukti, file berubah, kontrak baru untuk UI, risiko, jumlah subagent dan puncak bersamaan.
+
+## Sesudah 6 kartu
+Satu subagent `Explore` (tanpa kode): sisa scope `legend-fnxl` (kas-bank: akun, impor CSV, auto-match, kasus PIC, setoran kas + alert ACC-05) terhadap basis, termasuk konsumen `loadCashDepositPolicy` dan `matchingPolicy`. Tulis hasilnya di laporan; CTO memutuskan model dan nomor migrasi.
