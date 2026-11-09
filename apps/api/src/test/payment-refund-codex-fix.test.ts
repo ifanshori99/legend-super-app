@@ -1340,10 +1340,185 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
       "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2",
       [tenantId, oldChain],
     );
-    expect(oldRows.rows.map((r) => r.status)).toEqual([
-      "approved",
-      "approved",
+    expect(oldRows.rows.map((r) => r.status)).toEqual(["approved", "approved"]);
+  });
+
+  const chainStatuses = async (chainId: string) =>
+    (
+      await owner.query<{ status: string }>(
+        "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 ORDER BY level",
+        [tenantId, chainId],
+      )
+    ).rows.map((r) => r.status);
+
+  /** A Rp2.000.000 refund whose chain is opened (level 1 pending), then left approved and quarantined before any send. */
+  async function seedQuarantinedWithPendingChain() {
+    const intent = await seedPaid(2_000_000);
+    const refundId = await insertPendingRefund(
+      intent.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const chainId = (await refundRow(refundId)).approval_chain_id!;
+    expect(await chainStatuses(chainId)).toEqual(["pending"]);
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
+              updated_at = now() - interval '2 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId, supervisorId],
+    );
+    await runRefundPayout(tenantWide, refundId);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "chain_not_approved" },
     ]);
+    return { refundId, chainId };
+  }
+
+  it("PAY-04 re-open of a refund whose chain id points at another refund's live chain leaves that chain and refund alone", async () => {
+    // Refund B: its chain is open (level 1 pending).
+    const intentB = await seedPaid(2_000_000);
+    const refundB = await insertPendingRefund(
+      intentB.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundB)).status).toBe(200);
+    const chainB = (await refundRow(refundB)).approval_chain_id!;
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+
+    // Refund A: approved with B's chain id (unbound), quarantined before any
+    // send. payment_refunds_approval_chain_uq lets one row hold a chain id, so
+    // B's pointer is moved off first; the chain rows stay B's and pending.
+    await owner.query(
+      "UPDATE payment_refunds SET approval_chain_id = NULL WHERE tenant_id = $1 AND id = $2",
+      [tenantId, refundB],
+    );
+    const intentA = await seedPaid(2_000_000);
+    const refundA = randomUUID();
+    refundIds.push(refundA);
+    await owner.query(
+      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                    requested_by, approved_by, decided_at, approval_chain_id, updated_at)
+       VALUES ($1, $2, $3, $4, 2000000, 'Pengembalian uji', 'approved', 'system:reservation', $5,
+               now() - interval '3 hours', $6, now() - interval '2 hours')`,
+      [refundA, tenantId, outletA, intentA.intentId, supervisorId, chainB],
+    );
+    await runRefundPayout(tenantWide, refundA);
+    expect((await refundRow(refundA)).last_payout_error).toBe(
+      PAYOUT_QUARANTINED,
+    );
+    expect(await quarantineAudits(refundA)).toEqual([
+      { reason: "chain_unbound" },
+    ]);
+
+    const reopened = await act(ownerB, "reopen", refundA);
+    expect(reopened.status).toBe(200);
+    expect(await refundRow(refundA)).toMatchObject({
+      status: "pending",
+      approval_chain_id: null,
+    });
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+    expect(await refundRow(refundB)).toMatchObject({
+      status: "pending",
+      failure_reason: null,
+    });
+    expect(await decisions(refundB)).toMatchObject([
+      { level: 1, status: "pending" },
+    ]);
+
+    // A opens its own chain on approve; B's stays open.
+    expect((await approve(financeA, refundA)).status).toBe(200);
+    const chainA = (await refundRow(refundA)).approval_chain_id;
+    expect(chainA).not.toBeNull();
+    expect(chainA).not.toBe(chainB);
+    expect(await decisions(refundA)).toMatchObject([
+      { level: 1, status: "pending" },
+    ]);
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+    expect((await refundRow(refundB)).status).toBe("pending");
+    expect(fake.calls.filter((c) => c.refundId === refundA)).toHaveLength(0);
+  });
+
+  it("PAY-04 release of a chain_not_approved refund cancels its pending level, fails it, audits once, and the cancelled event changes nothing", async () => {
+    const { refundId, chainId } = await seedQuarantinedWithPendingChain();
+
+    const released = await act(ownerB, "release", refundId);
+    expect(released.status).toBe(200);
+    expect(released.body.data.status).toBe("failed");
+    expect(await chainStatuses(chainId)).toEqual(["cancelled"]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "approver_unauthorized",
+    });
+    const audits = await opsAudits(
+      refundId,
+      "payment.refund_quarantine_released",
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toMatchObject({ defect: "chain_not_approved" });
+
+    // The approval.resolved(cancelled) delivery finds it already failed.
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(chainId),
+    );
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "approver_unauthorized",
+    });
+    expect(await opsAudits(refundId, "payment.refund_expired")).toHaveLength(0);
+    expect(callsOf(refundId)).toHaveLength(0);
+  });
+
+  it("PAY-04 re-open with its own still-pending chain cancels the old level, and a second chain opens and pays out", async () => {
+    const { refundId, chainId: oldChain } =
+      await seedQuarantinedWithPendingChain();
+
+    const reopened = await act(ownerB, "reopen", refundId);
+    expect(reopened.status).toBe(200);
+    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "pending",
+      approval_chain_id: null,
+    });
+    // The old chain's cancelled event settles nothing now.
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(oldChain),
+    );
+    expect((await refundRow(refundId)).status).toBe("pending");
+
+    // A second pending row for the same refund (approval_requests_one_pending_key).
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const newChain = (await refundRow(refundId)).approval_chain_id!;
+    expect(newChain).not.toBeNull();
+    expect(newChain).not.toBe(oldChain);
+    const level1 = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 1",
+      [tenantId, newChain],
+    );
+    await decide(financeBId, level1.rows[0]!.id, "approved");
+    const level2 = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
+      [tenantId, newChain],
+    );
+    await decide(supervisorId, level2.rows[0]!.id, "approved");
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(newChain),
+    );
+    expect((await refundRow(refundId)).status).toBe("approved");
+    await ageRefund(refundId);
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
   });
 
   for (const action of ["release", "reopen"] as const) {

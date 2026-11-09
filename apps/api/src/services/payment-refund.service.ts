@@ -1603,11 +1603,40 @@ function maybeSentOf(refund: Refund): boolean {
 type QuarantineAction = "release" | "reopen";
 
 /**
+ * Withdraws the refund's own still-pending chain. Only a chain bound to this
+ * refund (chainBound): a chain id pointing at another refund's live chain
+ * (`chain_unbound`) is left alone, or that refund would fail as expired.
+ */
+async function cancelOwnOpenChain(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  actor: string,
+  now: Date,
+): Promise<void> {
+  if (refund.approvalChainId === null) return;
+  const rows = await chainRowsOf(tx, refund.tenantId, refund.approvalChainId);
+  if (
+    !chainBound(rows, refund) ||
+    !rows.some((row) => row.status === "pending")
+  )
+    return;
+  await cancelApprovalRequest(tx, context, {
+    chainId: refund.approvalChainId,
+    sourceModule: REFUND_SOURCE_MODULE,
+    actorUserId: actor,
+    now,
+  });
+}
+
+/**
  * Ops action on a never-sent quarantined refund, which otherwise reserves its
  * amount forever. `release` ends it `failed` (`approver_unauthorized`, frees
  * the amount); `reopen` returns it to `pending` without its approval, so the
  * normal approve/reject flow (matrix, supervisor, MFA, distinct actor) decides
- * it again; the old chain stays as history. A maybe-sent refund is refused: it
+ * it again; the old chain stays as history. Both first cancel the refund's
+ * own still-pending level (its approval.resolved then settles nothing: the
+ * refund is failed or no longer points at it). A maybe-sent refund is refused: it
  * still settles through its provider lookup. Never use either after ops paid
  * the customer by hand at the provider.
  *
@@ -1682,6 +1711,9 @@ async function actOnQuarantine(
             "A payout attempt may have reached the provider; the provider lookup settles this refund.",
           );
         const defect = await approvalDefectOf(tx, context, refund, now);
+        // Its own chain still open (never resolved) would block a new one
+        // and leave a level in the inbox.
+        await cancelOwnOpenChain(tx, context, refund, actor, now);
         if (action === "release") {
           await failRefund(tx, context, refund, {
             reason: "approver_unauthorized",
@@ -1692,24 +1724,6 @@ async function actOnQuarantine(
             now,
           });
           return { action };
-        }
-        // An old chain still open (never resolved) would block the new one.
-        if (refund.approvalChainId !== null) {
-          const rows = await chainRowsOf(
-            tx,
-            refund.tenantId,
-            refund.approvalChainId,
-          );
-          if (
-            rows[0]?.sourceModule === REFUND_SOURCE_MODULE &&
-            rows.some((row) => row.status === "pending")
-          )
-            await cancelApprovalRequest(tx, context, {
-              chainId: refund.approvalChainId,
-              sourceModule: REFUND_SOURCE_MODULE,
-              actorUserId: actor,
-              now,
-            });
         }
         const [reopened] = await tx
           .update(paymentRefunds)
