@@ -684,7 +684,10 @@ describe("legend-knev multi-fund unallocated resolve", () => {
         evidences: [20_000, 20_000],
         funds: [],
       });
-      const seedFund = async (intentIndex: number, evidenceId: string | null) => {
+      const seedFund = async (
+        intentIndex: number,
+        evidenceId: string | null,
+      ) => {
         const fundId = randomUUID();
         const refundId = randomUUID();
         const intentId = bill.intentIds[intentIndex]!;
