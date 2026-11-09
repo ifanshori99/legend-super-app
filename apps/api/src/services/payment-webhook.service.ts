@@ -42,6 +42,7 @@ import {
   isNull,
   lt,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import { db } from "../db";
@@ -109,6 +110,8 @@ const REFUND_MISMATCH_AUDIT_FIELDS = [
   "refundId",
   "integrationId",
 ] as const;
+/** Audit snapshot keys of a refund event with unreadable facts (ids only). */
+const REFUND_FACTS_AUDIT_FIELDS = ["eventId", "refundId", "invalid"] as const;
 
 export type WebhookResultStatus =
   "processed" | "duplicate" | "ignored" | "failed";
@@ -690,6 +693,7 @@ async function findRefundTarget(
  * live (not `failed`) refund is a `completed` refund marked
  * SETTLED_OUTSIDE_PROVIDER (another live refund may be the one the event is
  * about); it is then reported as a provider conflict, never changed.
+ * legend-kl46s: a fund refund is looked up through its fund's evidence payment.
  */
 async function findSettledOutsideTarget(
   context: ScopedTenantContext,
@@ -709,6 +713,9 @@ async function findSettledOutsideTarget(
   }
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx): Promise<RefundTarget> => {
+    // legend-kl46s: the payment the refund pays back is the intent's own for an
+    // ordinary refund, the fund's evidence payment for a fund refund (never the
+    // intent's own: an event naming p1 must not reach a fund refund paid from p2).
     const rows = await tx
       .select({ refund: paymentRefunds, intent: paymentIntents })
       .from(paymentRefunds)
@@ -719,13 +726,37 @@ async function findSettledOutsideTarget(
           eq(paymentIntents.id, paymentRefunds.paymentIntentId),
         ),
       )
+      .leftJoin(
+        paymentUnallocatedFunds,
+        and(
+          eq(paymentUnallocatedFunds.tenantId, paymentRefunds.tenantId),
+          eq(paymentUnallocatedFunds.id, paymentRefunds.unallocatedFundId),
+        ),
+      )
+      .leftJoin(
+        paymentEvidence,
+        and(
+          eq(paymentEvidence.tenantId, paymentUnallocatedFunds.tenantId),
+          eq(paymentEvidence.id, paymentUnallocatedFunds.evidenceId),
+        ),
+      )
       .where(
         and(
           eq(paymentRefunds.tenantId, tenantId),
           intentId === undefined ? undefined : eq(paymentIntents.id, intentId),
           eq(paymentIntents.provider, PROVIDER),
-          eq(paymentIntents.providerRef, providerRef),
           ne(paymentRefunds.status, "failed"),
+          or(
+            and(
+              isNull(paymentRefunds.unallocatedFundId),
+              eq(paymentIntents.providerRef, providerRef),
+            ),
+            and(
+              isNotNull(paymentRefunds.unallocatedFundId),
+              eq(paymentEvidence.provider, PROVIDER),
+              eq(paymentEvidence.providerRef, providerRef),
+            ),
+          ),
         ),
       )
       .limit(2);
@@ -851,6 +882,54 @@ async function recordRefundIntegrationMismatch(
   });
 }
 
+/** legend-2ol8g: audit of a refund event that was not applied because a fact
+ * it carries is unreadable (`invalid`: "amount" / "payment_id") or the amount
+ * differs from the refund's ("amount_mismatch"). Ids only: no payload. */
+async function recordRefundFactsInvalid(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refundId: string,
+  invalid: readonly string[],
+  now: Date,
+): Promise<void> {
+  logger.warn(
+    {
+      module: "payment-webhook",
+      tenantId: context.tenant.tenantId,
+      webhookEventId: row.id,
+      invalid,
+    },
+    "DOIT refund webhook not applied: refund facts invalid",
+  );
+  await withTenant(db, context, async (tx) => {
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.webhook.refund_facts_invalid",
+        objectType: "gateway_webhook_event",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: { eventId: row.eventId, refundId },
+          after: { eventId: row.eventId, refundId, invalid: [...invalid] },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      REFUND_FACTS_AUDIT_FIELDS,
+    );
+  });
+}
+
 /**
  * Applies a stored, verified `refund.succeeded` / `refund.failed`. The provider
  * result is authoritative (`applyRefundProviderUpdate` also closes a
@@ -923,6 +1002,19 @@ async function processRefundEvent(
       return await ignoredWith("REJECTED_CONFLICT");
 
     const { refund, intent } = target;
+    // legend-2ol8g: an amount or payment_id that is there but unreadable (or
+    // missing on the flat shape) must never settle: no amount or payment check
+    // would run for it.
+    if (facts.invalid) {
+      await recordRefundFactsInvalid(
+        context,
+        row,
+        refund.id,
+        facts.invalid,
+        now,
+      );
+      return await ignoredWith("REFUND_FACTS_INVALID");
+    }
     if (
       intent.provider !== PROVIDER ||
       !(await paymentMatchesRefund(context, facts, refund, intent)) ||
@@ -965,8 +1057,22 @@ async function processRefundEvent(
         now,
       );
     } catch (error) {
-      if (error instanceof HttpError && error.status === 409)
+      if (error instanceof HttpError && error.status === 409) {
+        // legend-2ol8g: a readable amount that is not the refund's.
+        if (
+          match.kind !== "payment_object" &&
+          facts.amountIdr !== undefined &&
+          facts.amountIdr !== refund.amountIdr
+        )
+          await recordRefundFactsInvalid(
+            context,
+            row,
+            refund.id,
+            ["amount_mismatch"],
+            now,
+          );
         return await ignoredWith("REJECTED_CONFLICT");
+      }
       if (error instanceof HttpError && error.status === 404)
         return await unmatched();
       throw error;
