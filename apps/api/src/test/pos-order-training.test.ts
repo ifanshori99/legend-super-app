@@ -37,9 +37,15 @@ import { posOrders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { enrollDevice, setDeviceTrainingMode } from "../services/device.service.ts";
+import {
+  enrollDevice,
+  setDeviceTrainingMode,
+} from "../services/device.service.ts";
 import { reportablePosOrders } from "../services/device-training.ts";
-import { setPosReceiptPort, type PosReceiptPort } from "../services/pos-order-ports.ts";
+import {
+  setPosReceiptPort,
+  type PosReceiptPort,
+} from "../services/pos-order-ports.ts";
 import { createPosOrder } from "../services/pos-order.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -79,7 +85,9 @@ const outletContext = (): ScopedTenantContext =>
     { kind: "outlets", outletIds: [outletIdSchema.parse(tenant.outletId)] },
   );
 
-async function asOwnerTenant<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
+async function asOwnerTenant<T>(
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -181,20 +189,28 @@ async function isTraining(orderId: string): Promise<boolean> {
   return rows[0]!.is_training;
 }
 
-const canon = (id: string) => (id.includes("-") ? id.toLowerCase() : ulidToUuid(id));
+const canon = (id: string) =>
+  id.includes("-") ? id.toLowerCase() : ulidToUuid(id);
 async function reportableIds(): Promise<string[]> {
   const rows = await withTenant(db, tenantContext(), (tx) =>
     tx
       .select({ orderId: posOrders.orderId })
       .from(posOrders)
-      .where(and(eq(posOrders.tenantId, tenantIdSchema.parse(tenant.tenantId)), reportablePosOrders())),
+      .where(
+        and(
+          eq(posOrders.tenantId, tenantIdSchema.parse(tenant.tenantId)),
+          reportablePosOrders(),
+        ),
+      ),
   );
   return rows.map((row) => canon(String(row.orderId)));
 }
 
 const posHttp = (path: string, body: Record<string, unknown>) =>
   cashier.client
-    .post(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders${path}`)
+    .post(
+      `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders${path}`,
+    )
     .set(headers)
     .set(originHeader)
     .send({ idempotencyKey: randomUUID(), ...body });
@@ -327,13 +343,17 @@ describe("legend-2lp.8 training stamp on pos_orders", () => {
     const normalId = await createOrder(await newDevice(false));
     for (const orderId of [trainingId, normalId]) {
       const read = await cashier.client
-        .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders/${orderId}`)
+        .get(
+          `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders/${orderId}`,
+        )
         .set(headers)
         .set(originHeader);
       expect(read.status).toBe(200);
       let status = read.body.data.status as string;
       if (status === "draft") {
-        const submitted = await posHttp(`/${orderId}/submit`, { expectedStatus: status });
+        const submitted = await posHttp(`/${orderId}/submit`, {
+          expectedStatus: status,
+        });
         expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
         status = submitted.body.data.status;
       }

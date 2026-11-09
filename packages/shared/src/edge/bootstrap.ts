@@ -158,9 +158,7 @@ export const edgeBootstrapResponseSchema = z.strictObject({
   /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
   signature: z.string().regex(/^[0-9a-f]{64}$/),
 });
-export type EdgeBootstrapResponse = z.infer<
-  typeof edgeBootstrapResponseSchema
->;
+export type EdgeBootstrapResponse = z.infer<typeof edgeBootstrapResponseSchema>;
 
 /**
  * Edge node only: `Authorization: Bearer <edge credential>`. Tenant and

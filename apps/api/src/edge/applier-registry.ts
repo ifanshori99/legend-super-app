@@ -63,7 +63,9 @@ function entryFor(direction: SyncDirection): DirectionEntry {
         return entry.fallback.apply(tx, event, meta);
       },
       async lastSequence(tx, aggregate, meta) {
-        return (await entry.fallback?.lastSequence?.(tx, aggregate, meta)) ?? null;
+        return (
+          (await entry.fallback?.lastSequence?.(tx, aggregate, meta)) ?? null
+        );
       },
     },
   };

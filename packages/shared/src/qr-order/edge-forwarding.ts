@@ -7,12 +7,7 @@
 // The event is its own aggregate (`qr_order`, one event, sequence 1) so it
 // never collides with the cloud's `order` stream (`order.placed` outbox event).
 // The event id IS the order id (a ULID), so queueing twice is a no-op.
-import {
-  z,
-  uuidSchema,
-  idrSchema,
-  isoDateTimeSchema,
-} from "../core/index.ts";
+import { z, uuidSchema, idrSchema, isoDateTimeSchema } from "../core/index.ts";
 
 export const QR_ORDER_FORWARD_AGGREGATE = "qr_order" as const;
 export const QR_ORDER_PLACED_EDGE_EVENT = "qr_order.placed" as const;

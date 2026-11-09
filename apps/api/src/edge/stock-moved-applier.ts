@@ -38,7 +38,10 @@ export async function applyEdgeStockMoved(
   meta: EdgeApplyMeta,
 ): Promise<void> {
   if (meta.direction !== "edge_to_cloud")
-    throw new CoreError("FORBIDDEN", "stock.moved is only accepted from an edge");
+    throw new CoreError(
+      "FORBIDDEN",
+      "stock.moved is only accepted from an edge",
+    );
   const tenantId = meta.context.tenant.tenantId;
   if (event.tenantId !== tenantId)
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
@@ -52,7 +55,10 @@ export async function applyEdgeStockMoved(
       and(eq(edgeNodes.tenantId, tenantId), eq(edgeNodes.id, meta.edgeNodeId)),
     );
   if (!node || node.outletId !== outletId)
-    throw new CoreError("FORBIDDEN", "Event outlet does not match the edge node");
+    throw new CoreError(
+      "FORBIDDEN",
+      "Event outlet does not match the edge node",
+    );
 
   const parsed = stockMovedEventPayloadSchema.safeParse(event.payload);
   if (!parsed.success)
@@ -62,7 +68,10 @@ export async function applyEdgeStockMoved(
     event.aggregateType !== STOCK_AGGREGATE ||
     event.aggregateId !== payload.ledgerEntryId
   )
-    throw new CoreError("VALIDATION_ERROR", "Event does not match its ledger row");
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Event does not match its ledger row",
+    );
 
   await recordReplicatedStockMovementInTransaction(
     tx,
@@ -78,6 +87,10 @@ export async function applyEdgeStockMoved(
  * Idempotent.
  */
 export function registerStockMovedEdgeApplier(): void {
-  registerEdgeEventHandler("edge_to_cloud", STOCK_MOVED_EVENT, applyEdgeStockMoved);
+  registerEdgeEventHandler(
+    "edge_to_cloud",
+    STOCK_MOVED_EVENT,
+    applyEdgeStockMoved,
+  );
   registerEdgeAggregateKind(STOCK_AGGREGATE, "transaction_event");
 }

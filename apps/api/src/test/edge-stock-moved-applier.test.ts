@@ -187,7 +187,10 @@ async function deliver(events: EventEnvelope[]) {
   await link.applyInbound({
     fromSeq: from,
     toSeq: from + events.length,
-    events: events.map((event, index) => ({ linkSeq: from + index + 1, event })),
+    events: events.map((event, index) => ({
+      linkSeq: from + index + 1,
+      event,
+    })),
   });
 }
 
@@ -299,7 +302,9 @@ afterAll(async () => {
       "legal_entities",
       "brands",
     ])
-      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [tenantId]);
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+        tenantId,
+      ]);
     await client.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
     await client.query("COMMIT");
   } catch (error) {
@@ -329,7 +334,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
     expect(outbox[0]!.destination).toBe("cloud-sync");
     expect(outbox[0]!.direction).toBeNull();
     expect(outbox[0]!.event.name).toBe("stock.moved");
-    expect(outbox[0]!.event.idempotencyKey).toBe(`stock.moved:${ledgerEntryId}`);
+    expect(outbox[0]!.event.idempotencyKey).toBe(
+      `stock.moved:${ledgerEntryId}`,
+    );
     expect(await cloudToEdgeQueue()).toBe(queueBefore);
   });
 
@@ -350,7 +357,10 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
     const { event, ledgerEntryId } = stockMoved();
     await deliver([event]);
     const balance = await balanceOf(locationA);
-    const { event: colliding } = stockMoved({ ledgerEntryId, quantity: "-5.0000" });
+    const { event: colliding } = stockMoved({
+      ledgerEntryId,
+      quantity: "-5.0000",
+    });
     await expect(
       withTenant(db, node.context, (tx) =>
         applyEdgeStockMoved(tx, colliding, meta()),
@@ -375,7 +385,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
       quantity: "3.0000",
     });
     await expect(
-      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+      withTenant(db, node.context, (tx) =>
+        applyEdgeStockMoved(tx, event, meta()),
+      ),
     ).rejects.toMatchObject({ status: 422 });
     // Through the link the refusal becomes a reviewable conflict.
     await deliver([event]);
@@ -390,17 +402,28 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
       `INSERT INTO stock_ledger (id, tenant_id, outlet_id, location_id, inventory_item_id, movement_type,
          quantity, unit_cost_idr, batch_id, source_type, source_id, occurred_at)
        VALUES ($1::uuid, $2, $3, $4, $5, 'sale', -1, 1000, NULL, 'order', $6::uuid, now())`,
-      [ulidToUuid(createUlid(clock + 1)), tenantId, outletB, locationB, itemId, ulidToUuid(sourceId)],
+      [
+        ulidToUuid(createUlid(clock + 1)),
+        tenantId,
+        outletB,
+        locationB,
+        itemId,
+        ulidToUuid(sourceId),
+      ],
     );
     const { event, ledgerEntryId } = stockMoved({ sourceId });
     await expect(
-      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+      withTenant(db, node.context, (tx) =>
+        applyEdgeStockMoved(tx, event, meta()),
+      ),
     ).rejects.toMatchObject({ status: 409 });
     expect(await ledgerRows(ledgerEntryId)).toHaveLength(0);
     expect(await outboxRows(ledgerEntryId)).toHaveLength(0);
     // The same document on the node's own outlet is fine (more lines).
     const first = stockMoved({ sourceId: createUlid(clock + 2) });
-    const second = stockMoved({ sourceId: first.event.payload.sourceId as string });
+    const second = stockMoved({
+      sourceId: first.event.payload.sourceId as string,
+    });
     await deliver([first.event, second.event]);
     expect(await ledgerRows(first.ledgerEntryId)).toHaveLength(1);
     expect(await ledgerRows(second.ledgerEntryId)).toHaveLength(1);
@@ -409,7 +432,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
   it("refuses an event of another tenant", async () => {
     const { event, ledgerEntryId } = stockMoved({ tenantId: randomUUID() });
     await expect(
-      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+      withTenant(db, node.context, (tx) =>
+        applyEdgeStockMoved(tx, event, meta()),
+      ),
     ).rejects.toThrow();
     expect(await ledgerRows(ledgerEntryId)).toHaveLength(0);
   });
@@ -420,7 +445,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
       locationId: locationB,
     });
     await expect(
-      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+      withTenant(db, node.context, (tx) =>
+        applyEdgeStockMoved(tx, event, meta()),
+      ),
     ).rejects.toThrow();
     // Even with a tenant-wide context, the node's own outlet decides.
     const tenantWide = scopeOf("tenant");
@@ -454,7 +481,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
       payload: {},
     };
     expect(registeredEdgeEventClassifier(unknown)).toBeNull();
-    expect(() => classifyEdgeEvent(unknown)).toThrow(EdgeEventUnclassifiedError);
+    expect(() => classifyEdgeEvent(unknown)).toThrow(
+      EdgeEventUnclassifiedError,
+    );
     await expect(
       withTenant(db, node.context, (tx) =>
         edgeEventApplier("edge_to_cloud").apply(tx, unknown, meta()),

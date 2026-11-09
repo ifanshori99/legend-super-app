@@ -89,7 +89,9 @@ export function ReissueTokenDialog({
           </p>
         )}
         <DialogFooter>
-          <Button type="button" variant="outline"
+          <Button
+            type="button"
+            variant="outline"
             disabled={pending}
             onClick={close}
           >

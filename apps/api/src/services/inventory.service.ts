@@ -1215,7 +1215,11 @@ export async function recordReplicatedStockMovementInTransaction(
   payload: StockMovedEventPayload,
 ): Promise<boolean> {
   if (!event.outletId)
-    throw new HttpError(422, "VALIDATION_ERROR", "Stock event needs an outlet.");
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Stock event needs an outlet.",
+    );
   assertOutlet(context, event.outletId);
   if (!EDGE_STOCK_SOURCE_TYPES.has(payload.sourceType))
     throw new HttpError(

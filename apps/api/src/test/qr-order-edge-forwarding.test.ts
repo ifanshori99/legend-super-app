@@ -32,7 +32,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { eventEnvelopeSchema, type EventEnvelope } from "@starter/shared/events";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
 import type { PaymentInstructions } from "@starter/shared/payment";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
@@ -46,7 +49,10 @@ import {
 } from "../edge/ports.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { registerEdgeNode, revokeEdgeNode } from "../services/edge-node.service.ts";
+import {
+  registerEdgeNode,
+  revokeEdgeNode,
+} from "../services/edge-node.service.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -330,7 +336,9 @@ afterAll(async () => {
   setPaymentGateway(null);
   setTableSessionSettlementLookup(null);
   setAuditWriter(null);
-  await owner.query("DROP FUNCTION IF EXISTS qr_forwarding_test_fail() CASCADE");
+  await owner.query(
+    "DROP FUNCTION IF EXISTS qr_forwarding_test_fail() CASCADE",
+  );
   // Orders, edge rows and audit rows are append-only: the isolated tenant
   // stays; give it a valid creator so the platform tenant list parses it.
   await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
@@ -345,7 +353,11 @@ afterAll(async () => {
 describe("legend-0835 outlet without an edge node", () => {
   it("the QR flow is unchanged: ordering is available, the order is placed and nothing is enqueued", async () => {
     const state = await withTenant(db, outletContext(), (tx) =>
-      getOutletEdgeLinkState(tx, outletContext(), outletIdSchema.parse(tenant.outletId)),
+      getOutletEdgeLinkState(
+        tx,
+        outletContext(),
+        outletIdSchema.parse(tenant.outletId),
+      ),
     );
     expect(state.hasEdge).toBe(false);
     expect(state.edgeNodeId ?? null).toBeNull();
@@ -382,7 +394,12 @@ describe("legend-0835 edge node with a live link", () => {
   it("reports hasEdge and linkUp from the node's last heartbeat", async () => {
     const stateAt = (now: Date) =>
       withTenant(db, outletContext(), (tx) =>
-        getOutletEdgeLinkState(tx, outletContext(), outletIdSchema.parse(tenant.outletId), now),
+        getOutletEdgeLinkState(
+          tx,
+          outletContext(),
+          outletIdSchema.parse(tenant.outletId),
+          now,
+        ),
       );
     await setHeartbeat(5);
     expect(await stateAt(new Date())).toMatchObject({
@@ -407,10 +424,12 @@ describe("legend-0835 edge node with a live link", () => {
 
   it("orderingAvailable stays true and the order is queued once for the edge in the same transaction", async () => {
     await setHeartbeat(5);
-    const { guest, body } = await guestWithCart().then(({ guest, version }) => ({
-      guest,
-      body: { expectedCartVersion: version, idempotencyKey: randomUUID() },
-    }));
+    const { guest, body } = await guestWithCart().then(
+      ({ guest, version }) => ({
+        guest,
+        body: { expectedCartVersion: version, idempotencyKey: randomUUID() },
+      }),
+    );
     const view = await as(guest).view();
     expect(view.body.data.orderingAvailable).toBe(true);
 
@@ -464,7 +483,9 @@ describe("legend-0835 edge node with a live link", () => {
     expect(b.response.status).toBe(201);
     const rows = await queueRows();
     expect(rows).toHaveLength(before.length + 2);
-    const ids = rows.slice(-2).map((row) => eventEnvelopeSchema.parse(row.event).id);
+    const ids = rows
+      .slice(-2)
+      .map((row) => eventEnvelopeSchema.parse(row.event).id);
     expect(new Set(ids).size).toBe(2);
   });
 });
@@ -563,7 +584,9 @@ describe("legend-0835 the queue row shares the order's transaction", () => {
         queue: await count("edge_outbound_queue"),
       }).toEqual(before);
     } finally {
-      await owner.query(`DROP TRIGGER IF EXISTS ${trigger} ON edge_outbound_queue`);
+      await owner.query(
+        `DROP TRIGGER IF EXISTS ${trigger} ON edge_outbound_queue`,
+      );
     }
     // Nothing was left half done: the same checkout now succeeds once.
     const retried = await as(guest).checkout(body);
@@ -576,7 +599,10 @@ describe("legend-0835 the queue row shares the order's transaction", () => {
 // ---- edge side: applier --------------------------------------------------------------
 
 describe("legend-0835 edge applier for qr_order.placed", () => {
-  async function queuedEvent(): Promise<{ event: EventEnvelope; orderId: string }> {
+  async function queuedEvent(): Promise<{
+    event: EventEnvelope;
+    orderId: string;
+  }> {
     await setHeartbeat(5);
     const placed = await placeOrder();
     expect(placed.response.status).toBe(201);
@@ -626,10 +652,10 @@ describe("legend-0835 edge applier for qr_order.placed", () => {
         "DELETE FROM order_items WHERE tenant_id = $1 AND order_id = $2::uuid",
         [tenant.tenantId, ulidToUuid(orderId)],
       );
-      await client.query("DELETE FROM orders WHERE tenant_id = $1 AND id = $2::uuid", [
-        tenant.tenantId,
-        ulidToUuid(orderId),
-      ]);
+      await client.query(
+        "DELETE FROM orders WHERE tenant_id = $1 AND id = $2::uuid",
+        [tenant.tenantId, ulidToUuid(orderId)],
+      );
     });
     expect(await orderShape(orderId)).toEqual({ orders: 0, items: 0 });
     registerQrOrderEdgeApplier();
@@ -684,7 +710,11 @@ describe("legend-0835 outlet whose edge node was revoked", () => {
       reason: "Unit diganti",
     });
     const state = await withTenant(db, outletContext(), (tx) =>
-      getOutletEdgeLinkState(tx, outletContext(), outletIdSchema.parse(tenant.outletId)),
+      getOutletEdgeLinkState(
+        tx,
+        outletContext(),
+        outletIdSchema.parse(tenant.outletId),
+      ),
     );
     expect(state.hasEdge).toBe(false);
     expect((await as(guest).view()).body.data.orderingAvailable).toBe(true);

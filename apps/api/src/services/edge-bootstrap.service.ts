@@ -82,7 +82,10 @@ export function edgeBootstrapSignatureMatches(
 }
 
 const denied = () =>
-  new CoreError("FORBIDDEN", "Edge node tidak dapat mengambil data awal outlet ini.");
+  new CoreError(
+    "FORBIDDEN",
+    "Edge node tidak dapat mengambil data awal outlet ini.",
+  );
 
 /**
  * The signed bundle for one verified edge node. `presentedCredential` is the
@@ -108,111 +111,107 @@ export async function buildEdgeBootstrapBundle(
     outletId,
   );
 
-  const bundle = await withTenant(
-    db,
-    context,
-    async (tx) => {
-      const [tenant] = await tx
-        .select({
-          id: tenants.id,
-          slug: tenants.slug,
-          name: tenants.name,
-          plan: tenants.plan,
-          status: tenants.status,
-          deploymentMode: tenants.deploymentMode,
-          featureFlags: tenants.featureFlags,
-          limits: tenants.limits,
-          createdBy: tenants.createdBy,
-          createdAt: tenants.createdAt,
-        })
-        .from(tenants)
-        .where(eq(tenants.id, tenantId))
-        .limit(1);
-      const [outlet] = await tx
-        .select({
-          id: outlets.id,
-          tenantId: outlets.tenantId,
-          brandId: outlets.brandId,
-          legalEntityId: outlets.legalEntityId,
-          code: outlets.code,
-          name: outlets.name,
-          address: outlets.address,
-          geofence: outlets.geofence,
-          timezone: outlets.timezone,
-          businessDayCutoff: outlets.businessDayCutoff,
-          openingHours: outlets.openingHours,
-          edgeNodeId: outlets.edgeNodeId,
-          status: outlets.status,
-          createdAt: outlets.createdAt,
-        })
-        .from(outlets)
-        .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
-        .limit(1);
-      if (tenant?.status !== "active" || !outlet || outlet.status === "closed")
-        throw denied();
-      const [edgeNode] = await tx
-        .select({ id: edgeNodes.id })
-        .from(edgeNodes)
-        .where(
-          and(
-            eq(edgeNodes.tenantId, tenantId),
-            eq(edgeNodes.outletId, outletId),
-            eq(edgeNodes.id, edgeNodeId),
-            eq(edgeNodes.status, "active"),
-          ),
-        )
-        .limit(1);
-      if (!edgeNode) throw denied();
-      const [legalEntity] = await tx
-        .select({
-          id: legalEntities.id,
-          tenantId: legalEntities.tenantId,
-          name: legalEntities.name,
-          isPkp: legalEntities.isPkp,
-          address: legalEntities.address,
-          createdAt: legalEntities.createdAt,
-        })
-        .from(legalEntities)
-        .where(
-          and(
-            eq(legalEntities.tenantId, tenantId),
-            eq(legalEntities.id, outlet.legalEntityId),
-          ),
-        )
-        .limit(1);
-      const brandRows = await tx
-        .select({
-          id: brands.id,
-          tenantId: brands.tenantId,
-          slug: brands.slug,
-          name: brands.name,
-          logoMediaId: brands.logoMediaId,
-          themeId: brands.themeId,
-          createdAt: brands.createdAt,
-        })
-        .from(brands)
-        .where(and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)))
-        .limit(1);
-      // The composite FKs make both present; a missing one is corrupt data.
-      if (!legalEntity || brandRows.length === 0)
-        throw new Error("Outlet parent rows are missing");
-      const draft: EdgeBootstrapBundle = edgeBootstrapBundleSchema.parse({
-        version: EDGE_BOOTSTRAP_VERSION,
-        issuedAt: (options.now ?? new Date()).toISOString(),
-        tenant: { ...tenant, createdAt: tenant.createdAt.toISOString() },
-        legalEntity: {
-          ...legalEntity,
-          createdAt: legalEntity.createdAt.toISOString(),
-        },
-        brands: brandRows.map((brand) => ({
-          ...brand,
-          createdAt: brand.createdAt.toISOString(),
-        })),
-        outlet: { ...outlet, createdAt: outlet.createdAt.toISOString() },
-      });
-      return draft;
-    },
-  );
+  const bundle = await withTenant(db, context, async (tx) => {
+    const [tenant] = await tx
+      .select({
+        id: tenants.id,
+        slug: tenants.slug,
+        name: tenants.name,
+        plan: tenants.plan,
+        status: tenants.status,
+        deploymentMode: tenants.deploymentMode,
+        featureFlags: tenants.featureFlags,
+        limits: tenants.limits,
+        createdBy: tenants.createdBy,
+        createdAt: tenants.createdAt,
+      })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    const [outlet] = await tx
+      .select({
+        id: outlets.id,
+        tenantId: outlets.tenantId,
+        brandId: outlets.brandId,
+        legalEntityId: outlets.legalEntityId,
+        code: outlets.code,
+        name: outlets.name,
+        address: outlets.address,
+        geofence: outlets.geofence,
+        timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
+        openingHours: outlets.openingHours,
+        edgeNodeId: outlets.edgeNodeId,
+        status: outlets.status,
+        createdAt: outlets.createdAt,
+      })
+      .from(outlets)
+      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+      .limit(1);
+    if (tenant?.status !== "active" || !outlet || outlet.status === "closed")
+      throw denied();
+    const [edgeNode] = await tx
+      .select({ id: edgeNodes.id })
+      .from(edgeNodes)
+      .where(
+        and(
+          eq(edgeNodes.tenantId, tenantId),
+          eq(edgeNodes.outletId, outletId),
+          eq(edgeNodes.id, edgeNodeId),
+          eq(edgeNodes.status, "active"),
+        ),
+      )
+      .limit(1);
+    if (!edgeNode) throw denied();
+    const [legalEntity] = await tx
+      .select({
+        id: legalEntities.id,
+        tenantId: legalEntities.tenantId,
+        name: legalEntities.name,
+        isPkp: legalEntities.isPkp,
+        address: legalEntities.address,
+        createdAt: legalEntities.createdAt,
+      })
+      .from(legalEntities)
+      .where(
+        and(
+          eq(legalEntities.tenantId, tenantId),
+          eq(legalEntities.id, outlet.legalEntityId),
+        ),
+      )
+      .limit(1);
+    const brandRows = await tx
+      .select({
+        id: brands.id,
+        tenantId: brands.tenantId,
+        slug: brands.slug,
+        name: brands.name,
+        logoMediaId: brands.logoMediaId,
+        themeId: brands.themeId,
+        createdAt: brands.createdAt,
+      })
+      .from(brands)
+      .where(and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)))
+      .limit(1);
+    // The composite FKs make both present; a missing one is corrupt data.
+    if (!legalEntity || brandRows.length === 0)
+      throw new Error("Outlet parent rows are missing");
+    const draft: EdgeBootstrapBundle = edgeBootstrapBundleSchema.parse({
+      version: EDGE_BOOTSTRAP_VERSION,
+      issuedAt: (options.now ?? new Date()).toISOString(),
+      tenant: { ...tenant, createdAt: tenant.createdAt.toISOString() },
+      legalEntity: {
+        ...legalEntity,
+        createdAt: legalEntity.createdAt.toISOString(),
+      },
+      brands: brandRows.map((brand) => ({
+        ...brand,
+        createdAt: brand.createdAt.toISOString(),
+      })),
+      outlet: { ...outlet, createdAt: outlet.createdAt.toISOString() },
+    });
+    return draft;
+  });
 
   return {
     bundle,

@@ -76,8 +76,7 @@ const bodyOutlet = (req: { body?: unknown }) =>
     (req.body as { outletId?: unknown } | undefined)?.outletId,
   );
 
-const notFound = () =>
-  new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
+const notFound = () => new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
 const nodeOutlets = new WeakMap<Request, string>();
 
 /**

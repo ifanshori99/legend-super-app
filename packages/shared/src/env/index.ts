@@ -156,7 +156,8 @@ export function parseEdgeHardeningEnv(
   const parsed = edgeHardeningEnvSchema.safeParse({
     EDGE_CREDENTIAL_ROTATION_GRACE_HOURS:
       source.EDGE_CREDENTIAL_ROTATION_GRACE_HOURS || undefined,
-    EDGE_LINK_AUTH_FAILURE_LIMIT: source.EDGE_LINK_AUTH_FAILURE_LIMIT || undefined,
+    EDGE_LINK_AUTH_FAILURE_LIMIT:
+      source.EDGE_LINK_AUTH_FAILURE_LIMIT || undefined,
     EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS:
       source.EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS || undefined,
     EDGE_QUEUE_ACKED_RETENTION_DAYS:

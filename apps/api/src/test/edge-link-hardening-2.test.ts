@@ -326,13 +326,9 @@ describe("legend-x3lv #1 credential rotation (service)", () => {
       await rotateEdgeNodeCredential(node.context, actor, node.id),
     );
     const third = credentialOf(
-      await rotateEdgeNodeCredential(
-        node.context,
-        actor,
-        node.id,
-        new Date(),
-        { force: true },
-      ),
+      await rotateEdgeNodeCredential(node.context, actor, node.id, new Date(), {
+        force: true,
+      }),
     );
     // v1 (the registration credential) is no longer the previous one.
     expect(await authenticateEdgeCredential(node.credential)).toBeNull();

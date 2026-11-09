@@ -196,7 +196,9 @@ export function EnrollDialog({
             </p>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline"
+            <Button
+              type="button"
+              variant="outline"
               disabled={pending}
               onClick={close}
             >

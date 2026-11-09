@@ -255,6 +255,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Kontrak: `edgeStatusSchema.deviceRegistry` opsional (edge lama tidak mengirimnya). Lanjutan web: tampilkan status basi di panel edge dan isi mock `apps/web/src/features/ws02-edge/mock.ts`.
 
 ## WS-02 edge hardening (engineer, cabang `ws/ws02-edge`, kartu legend-x3lv, 0835, wqc6, khu5, 2lp.8, 2lp.9, s4r6)
+
 - Sudah: rotasi kredensial edge + masa tenggang (`graceHours`, `force`), lockout per alamat + bypass kredensial dikenal, revoke via LISTEN, prune antrean ack (simpan baris terbaru per agregat); QR order diteruskan ke edge, edge putus = 503 "Silakan pesan melalui waiter."; layar konflik sinkron + replay berurutan (kunci kursor, tolak bila konflik lebih rendah masih terbuka) + notifikasi `edge_sync_conflict`; event yang ditolak applier jadi konflik `applier_refused`, batch lanjut; bootstrap bundel tenant/outlet ke edge baru (HMAC hanya deteksi korupsi, autentisitas dari TLS); `pos_orders.is_training`; UI perangkat pakai kontrak shared (dialog daftar, terbitkan ulang token); applier `stock.moved` edge→cloud (allowlist sumber, tolak tabrakan ledger id dan dokumen beda outlet).
 - Migrasi 0079/0080 dibuat dari merge-base e4938167; `milestone/m1` sudah sampai 0085, jadi merge train perlu regenerasi nomor.
 - Keputusan: NPWP dan regionId kosong di edge setelah bootstrap; link "up" = heartbeat < 45 dtk; izin konflik = `device.registry.manage`, rotasi = `device.registry.revoke`; cek outlet lintas dokumen di s4r6 baca transaksi tenant-wide (hanya baris committed).
