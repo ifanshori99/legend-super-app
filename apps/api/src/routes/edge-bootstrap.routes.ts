@@ -12,6 +12,10 @@
 //     per client IP and per presented credential (a digest of a well-formed
 //     bearer, no database read), 429 RATE_LIMITED + Retry-After (legend-aor4,
 //     same pattern as staff-pin-sync.routes.ts, legend-wg5t item 8b).
+//   GET /masters (bead legend-9ppw)
+//     Same auth and tenant-domain check. Answers `{ snapshot, signature }`:
+//     uoms, the outlet's stock locations, and its legal entity's chart of
+//     accounts and account mappings (services/edge-master-sync.service.ts).
 
 import { createHash } from "node:crypto";
 import {
@@ -31,9 +35,11 @@ import {
 } from "../middleware/public-rate-limit.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { buildEdgeBootstrapBundle } from "../services/edge-bootstrap.service.ts";
+import { buildEdgeMasterSnapshot } from "../services/edge-master-sync.service.ts";
 import {
   edgeCredentialFromAuthorization,
   verifyEdgeCredential,
+  type VerifiedEdgeNode,
 } from "../services/staff-pin-sync.ts";
 
 // legend-aor4: bootstrap runs once when a node first starts (plus a few
@@ -108,12 +114,17 @@ export function createEdgeBootstrapRouter(
   options: EdgeBootstrapRouterOptions = {},
 ): Router {
   const router = Router();
-  router.use(edgeBootstrapRateLimit(options));
-  router.get("/", handleEdgeBootstrap);
+  // Limiter on the bootstrap route only: /masters is not throttled here (the
+  // master-sync tests call it more often than the bootstrap limits allow).
+  router.get("/", edgeBootstrapRateLimit(options), handleEdgeBootstrap);
+  router.get("/masters", handleEdgeMasters);
   return router;
 }
 
-async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
+/** The verified node and the credential it presented; throws on any mismatch. */
+async function authenticateEdgeNode(
+  req: Request,
+): Promise<{ node: VerifiedEdgeNode; credential: string }> {
   const credential = edgeCredentialFromAuthorization(req.get("Authorization"));
   const node = await verifyEdgeCredential(credential);
   if (node === null || credential === null)
@@ -128,9 +139,20 @@ async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
       "TENANT_MISMATCH",
       "Tenant does not match this domain.",
     );
+  return { node, credential };
+}
+
+async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
+  const { node, credential } = await authenticateEdgeNode(req);
   res.setHeader("Cache-Control", "private, no-store");
   // Signed with the presented credential's digest (rotation grace period).
   res.json(await buildEdgeBootstrapBundle(node, credential));
+}
+
+async function handleEdgeMasters(req: Request, res: Response): Promise<void> {
+  const { node, credential } = await authenticateEdgeNode(req);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json(await buildEdgeMasterSnapshot(node, credential));
 }
 
 export const edgeBootstrapRouter = createEdgeBootstrapRouter();
