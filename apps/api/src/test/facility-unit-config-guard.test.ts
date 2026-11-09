@@ -198,7 +198,10 @@ describe("Unit config guard (WS-09 F2)", () => {
       const renamed = await client
         .patch(`/api/facility/units/${seed.unitId}/config`)
         .set(originHeader)
-        .send({ code: `R-${status.slice(0, 4)}`, expectedUpdatedAt: seed.stamp });
+        .send({
+          code: `R-${status.slice(0, 4)}`,
+          expectedUpdatedAt: seed.stamp,
+        });
       expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
     }
   });
