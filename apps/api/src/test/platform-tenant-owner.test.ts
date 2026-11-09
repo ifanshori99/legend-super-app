@@ -291,6 +291,60 @@ async function outboxEvents(
   return rows.map((row) => row.event);
 }
 
+const CHANGED = "tenant_owner.changed";
+
+/**
+ * legend-fmpgz: tenant_owner.changed events in the outbox. The event has its
+ * own aggregate id, so it is looked up by tenant + name (+ destination).
+ */
+async function changedEvents(tenantId: string) {
+  const { rows } = await owner.query<{
+    destination: string;
+    event: {
+      name: string;
+      actor: { type: string; id: string };
+      payload: Record<string, unknown>;
+    };
+  }>(
+    `SELECT destination, event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = $2
+      ORDER BY created_at, id`,
+    [tenantId, CHANGED],
+  );
+  return rows;
+}
+
+/**
+ * Temporary DB trigger that makes appending tenant_owner.changed for ONE tenant
+ * fail; other events and tenants are untouched. Always dropped in `finally`.
+ */
+async function withFailingChangedEnqueue<T>(
+  tenantId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const fn = `fmpgz_fail_${randomBytes(4).toString("hex")}`;
+  await owner.query(
+    `CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+     BEGIN
+       IF NEW.tenant_id = '${tenantId}'::uuid
+          AND NEW.event->>'name' = '${CHANGED}' THEN
+         RAISE EXCEPTION 'fmpgz forced enqueue failure';
+       END IF;
+       RETURN NEW;
+     END $$`,
+  );
+  try {
+    await owner.query(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON domain_event_outbox
+         FOR EACH ROW EXECUTE FUNCTION public.${fn}()`,
+    );
+    return await run();
+  } finally {
+    await owner.query(`DROP TRIGGER IF EXISTS ${fn} ON domain_event_outbox`);
+    await owner.query(`DROP FUNCTION IF EXISTS public.${fn}()`);
+  }
+}
+
 function scopedContext(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "domain" }),
@@ -897,5 +951,186 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
       (await outboxEvents(tenant.tenantId, "role_assignment.ended", firstId))
         .length,
     ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("legend-fmpgz appointing and replacing an Owner each queue one tenant_owner.changed notification event", async () => {
+    const admin = await platformAdmin();
+    const tenant = await newTenant(admin);
+
+    // Nothing queued before any appointment.
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(0);
+
+    const first = await appoint(admin, tenant.tenantId, invite());
+    expect(first.status).toBe(201);
+    const firstId = first.body.data.assignmentId as string;
+    const firstUserId = first.body.data.userId as string;
+
+    const afterAssign = await changedEvents(tenant.tenantId);
+    expect(afterAssign).toHaveLength(1);
+    expect(afterAssign[0]!.destination).toBe("notification");
+    expect(afterAssign[0]!.event.name).toBe(CHANGED);
+    expect(afterAssign[0]!.event.payload).toMatchObject({
+      kind: "assigned",
+      actorUserId: admin.userId,
+      reason: REASON,
+      newAssignmentId: firstId,
+      replacedAssignmentId: null,
+    });
+
+    const second = await replace(admin, tenant.tenantId, firstId, invite());
+    expect(second.status).toBe(201);
+    const secondId = second.body.data.assignmentId as string;
+    const secondUserId = second.body.data.userId as string;
+
+    const afterReplace = await changedEvents(tenant.tenantId);
+    expect(afterReplace).toHaveLength(2);
+    const replacedEvent = afterReplace.find(
+      (row) => row.event.payload.kind === "replaced",
+    )!;
+    expect(replacedEvent.destination).toBe("notification");
+    expect(replacedEvent.event.payload).toMatchObject({
+      kind: "replaced",
+      actorUserId: admin.userId,
+      reason: REASON,
+      newAssignmentId: secondId,
+      replacedAssignmentId: firstId,
+    });
+
+    // The payload names assignments, never recipients: the notification
+    // consumer resolves who to tell. The only user id is the acting admin.
+    for (const row of afterReplace) {
+      expect(Object.keys(row.event.payload).sort()).toEqual([
+        "actorUserId",
+        "changedAt",
+        "kind",
+        "newAssignmentId",
+        "reason",
+        "replacedAssignmentId",
+      ]);
+      const serialized = JSON.stringify(row.event);
+      expect(serialized).not.toContain(firstUserId);
+      expect(serialized).not.toContain(secondUserId);
+    }
+  });
+
+  it("legend-fmpgz a failed notification enqueue keeps the appointment and the replacement, and audits tenant_owner.notify_failed", async () => {
+    const admin = await platformAdmin();
+    const tenant = await newTenant(admin);
+
+    // Appointment with a failing enqueue.
+    const assigned = await withFailingChangedEnqueue(tenant.tenantId, () =>
+      appoint(admin, tenant.tenantId, invite()),
+    );
+    expect(assigned.status).toBe(201);
+    const firstId = assigned.body.data.assignmentId as string;
+    expect((await activeOwners(tenant.tenantId)).map((row) => row.id)).toEqual([
+      firstId,
+    ]);
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(0);
+    const failedAssign = await auditRows(
+      tenant.tenantId,
+      "tenant_owner.notify_failed",
+    );
+    expect(failedAssign).toHaveLength(1);
+    expect(failedAssign[0]).toMatchObject({
+      actorId: admin.userId,
+      objectId: firstId,
+      reason: REASON,
+    });
+    // The normal audit trail of the appointment is still written.
+    expect(
+      await auditRows(tenant.tenantId, "tenant_owner.assigned", firstId),
+    ).toHaveLength(1);
+
+    // Replacement with a failing enqueue.
+    const replaced = await withFailingChangedEnqueue(tenant.tenantId, () =>
+      replace(admin, tenant.tenantId, firstId, invite()),
+    );
+    expect(replaced.status).toBe(201);
+    const secondId = replaced.body.data.assignmentId as string;
+    expect((await activeOwners(tenant.tenantId)).map((row) => row.id)).toEqual([
+      secondId,
+    ]);
+    const ended = await assignmentRow(firstId);
+    expect(ended?.valid_until).not.toBeNull();
+    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(0);
+    const failedReplace = await auditRows(
+      tenant.tenantId,
+      "tenant_owner.notify_failed",
+      secondId,
+    );
+    expect(failedReplace).toHaveLength(1);
+    expect(
+      await auditRows(tenant.tenantId, "tenant_owner.replaced", secondId),
+    ).toHaveLength(1);
+
+    // With the trigger gone, notifications flow again and no further failure
+    // is audited.
+    const third = await replace(admin, tenant.tenantId, secondId, invite());
+    expect(third.status).toBe(201);
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(1);
+    expect(
+      await auditRows(tenant.tenantId, "tenant_owner.notify_failed"),
+    ).toHaveLength(2);
+  });
+
+  it("legend-fmpgz refused requests (403, 409, 422, 404) queue no tenant_owner.changed event", async () => {
+    const admin = await platformAdmin();
+    const tenant = await newTenant(admin);
+    const first = await appoint(admin, tenant.tenantId, invite());
+    expect(first.status).toBe(201);
+    const firstId = first.body.data.assignmentId as string;
+    const firstUserId = first.body.data.userId as string;
+    // Only the successful appointment above queued an event.
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(1);
+
+    // 403: wrong MFA code, on appoint and on replace.
+    expect(
+      (
+        await appoint(admin, tenant.tenantId, invite(), {
+          mfaCode: admin.wrongCode(),
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await replace(admin, tenant.tenantId, firstId, invite(), {
+          mfaCode: admin.wrongCode(),
+        })
+      ).status,
+    ).toBe(403);
+    // 403: a tenant admin who is not a platform admin.
+    const member = await tenantMember(tenant.tenantId, "tenant_admin");
+    const forbidden = await member.client
+      .post(ownersPath(tenant.tenantId))
+      .set(originHeader)
+      .send({ account: invite(), reason: REASON, mfaCode: "123456" });
+    expect(forbidden.status).toBe(403);
+    // 409: the account is already an active Owner.
+    expect(
+      (await appoint(admin, tenant.tenantId, { userId: firstUserId })).status,
+    ).toBe(409);
+    // 422: replace with the same account; empty reason.
+    expect(
+      (await replace(admin, tenant.tenantId, firstId, { userId: firstUserId }))
+        .status,
+    ).toBe(422);
+    expect(
+      (await appoint(admin, tenant.tenantId, invite(), { reason: "" })).status,
+    ).toBe(422);
+    // 404: unknown assignment.
+    expect(
+      (await replace(admin, tenant.tenantId, randomUUID(), invite())).status,
+    ).toBe(404);
+
+    // Still exactly the one event of the first appointment; no failure audit.
+    expect(await changedEvents(tenant.tenantId)).toHaveLength(1);
+    expect(
+      await auditRows(tenant.tenantId, "tenant_owner.notify_failed"),
+    ).toHaveLength(0);
+    expect((await activeOwners(tenant.tenantId)).map((row) => row.id)).toEqual([
+      firstId,
+    ]);
   });
 });
