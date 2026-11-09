@@ -304,22 +304,41 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
         // Per-address failure lockout, checked before authenticate
         // (legend-x3lv).
         // A credential that authenticated before skips it (shared address).
+        // An unknown credential reserves its failure slot now, before the
+        // authenticate await: a peek here only sees failures already counted,
+        // so a parallel burst would all pass it (legend-12ku). The slot is
+        // handed back when authentication succeeds.
         const failureKey = `ip:${address}`;
         const known = isKnownCredential(credentialKey, at);
-        const lockedFor = known ? null : failures.peek(failureKey, at);
-        if (lockedFor !== null)
+        const slot = known ? null : failures.reserve(failureKey, at);
+        if (slot && slot.retryAfter !== null) {
+          // A refused reserve is not a failure: hand its count back so only
+          // real failures and in-flight attempts count. Otherwise a reconnect
+          // burst behind one venue NAT (after a cloud restart) would lock the
+          // address out for the whole window (legend-12ku).
+          slot.release();
           return refuse(socket, 429, {
-            "retry-after": String(lockedFor),
+            "retry-after": String(slot.retryAfter),
             "cache-control": "no-store",
           });
+        }
         const failed = () => {
           if (credentialKey) knownCredentials.delete(credentialKey);
-          failures.take(failureKey, now());
+          // A reserved slot already counts this failure; take only otherwise.
+          if (!slot) failures.take(failureKey, now());
           refuseCredential(socket);
         };
         if (!token) return failed();
-        const identity = await deps.authenticate(token);
+        let identity: Identity | null;
+        try {
+          identity = await deps.authenticate(token);
+        } catch (error) {
+          // A cloud-side failure is not a bad credential: do not charge it.
+          slot?.release();
+          throw error;
+        }
         if (!identity) return failed();
+        slot?.release();
         rememberCredential(credentialKey, now());
         if (socket.destroyed) return;
         wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));

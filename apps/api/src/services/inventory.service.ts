@@ -35,6 +35,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import {
   assertOutletInScope,
   createUlid,
@@ -96,14 +97,18 @@ import type { z } from "zod";
 import type * as schema from "../db/schema";
 import {
   inventoryItems,
+  orders,
+  productionOrders,
   stockBalances,
   stockBatches,
   stockLedger,
   stockLocations,
   stockTransferLines,
   stockTransfers,
+  stockCounts,
   uomConversions,
   uoms,
+  wasteLogs,
 } from "../db/schema";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
@@ -233,6 +238,36 @@ async function lockInventoryLocations(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${inventoryLocationLockKey(tenantId, locationId)}, 0))`,
     );
+}
+
+/**
+ * Transaction lock on one stock source document (bead legend-ddoy). Two
+ * outlets posting the same (tenant, source_type, source_id) hold different
+ * location locks, so nothing else serialises them and each would pass the
+ * other-outlet check on committed rows only. The second poster blocks here
+ * until the first commits, then reads its rows and is refused.
+ *
+ * Order is source lock first, then location locks. That removes the cycle of
+ * one document posted over two locations in one batch (primary and standby of
+ * one outlet): both take the same source lock before any location. It does
+ * not remove every deadlock: db-link-store applies a batch in one
+ * transaction, so a batch that already holds locks from earlier events (a
+ * source or a location) can wait on another batch that waits on it.
+ * PostgreSQL aborts one of them (40P01), which is not a domain refusal, so
+ * that batch rolls back and is resent, and the retry is applied, replayed,
+ * or refused with 409.
+ */
+async function lockStockSource(
+  tx: Tx,
+  tenantId: string,
+  sourceType: string,
+  sourceId: string,
+): Promise<void> {
+  const key =
+    `stock-source:${tenantId}:${sourceType}:${sourceIdToDb(sourceId)}`.toLowerCase();
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
 }
 
 // ------------------------------------------------------------------ mappers
@@ -1142,14 +1177,65 @@ export const EDGE_STOCK_SOURCE_TYPES: ReadonlySet<StockSourceType> = new Set([
   "production_order",
 ]);
 
+/** The columns of a source document's own table that the owner check reads. */
+interface SourceDocumentTable {
+  table: PgTable;
+  tenantId: AnyPgColumn;
+  id: AnyPgColumn;
+  outletId: AnyPgColumn;
+}
+
+function sourceDocumentOf(
+  table: PgTable & {
+    tenantId: AnyPgColumn;
+    id: AnyPgColumn;
+    outletId: AnyPgColumn;
+  },
+): SourceDocumentTable {
+  return {
+    table,
+    tenantId: table.tenantId,
+    id: table.id,
+    outletId: table.outletId,
+  };
+}
+
 /**
- * Whether another outlet already holds ledger rows of this source document.
+ * Own table of each source document an edge posts (EDGE_STOCK_SOURCE_TYPES).
+ * Typed columns, so a table without `outlet_id` fails tsc instead of throwing
+ * at runtime (a throw would be a 503 and the edge batch would retry forever).
+ * `stock_transfers` has one `outlet_id`: both its locations are FK-bound to
+ * that same outlet (stock_transfers_from/to_location_fk), so there is no
+ * separate sending or receiving outlet to choose between.
+ */
+const EDGE_SOURCE_DOCUMENT_TABLES: Readonly<
+  Record<string, SourceDocumentTable>
+> = {
+  order: sourceDocumentOf(orders),
+  waste_log: sourceDocumentOf(wasteLogs),
+  stock_count: sourceDocumentOf(stockCounts),
+  stock_transfer: sourceDocumentOf(stockTransfers),
+  production_order: sourceDocumentOf(productionOrders),
+};
+
+/** Any hex 8-4-4-4-12 value; ULID-derived ids are not RFC-versioned uuids. */
+const DB_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether the source document already belongs to another outlet: either
+ * another outlet holds ledger rows of it, or the cloud holds the document
+ * itself (bead legend-ddoy) under another outlet, so the check does not
+ * depend on a ledger row being posted first. A document the cloud does not
+ * hold passes: an edge document never reaches the cloud before its stock does.
  * The node's own context only sees its outlet (outlet RLS), so this reads
  * through a tenant-wide trusted job context in its own short transaction,
- * like the worker jobs. It sees committed rows only; a concurrent posting of
- * the same document by two outlets is not caught here.
+ * like the worker jobs. It sees committed rows only, so callers must hold the
+ * `lockStockSource` claim first: the claim lasts until the caller's commit,
+ * which makes a concurrent posting of the same document by another outlet
+ * wait and then see that outlet's committed rows here.
  */
-async function sourcePostedByOtherOutlet(
+async function sourceBelongsToOtherOutlet(
   entry: StockLedgerEntry,
 ): Promise<boolean> {
   const tenantWide = establishScopedTenantContext(
@@ -1160,8 +1246,8 @@ async function sourcePostedByOtherOutlet(
     }),
     { kind: "tenant" },
   );
-  const rows = await withTenant(db, tenantWide, (tx) =>
-    tx
+  return withTenant(db, tenantWide, async (tx) => {
+    const rows = await tx
       .select({ id: stockLedger.id })
       .from(stockLedger)
       .where(
@@ -1172,9 +1258,27 @@ async function sourcePostedByOtherOutlet(
           ne(stockLedger.outletId, entry.outletId),
         ),
       )
-      .limit(1),
-  );
-  return rows.length > 0;
+      .limit(1);
+    if (rows.length > 0) return true;
+    const document = EDGE_SOURCE_DOCUMENT_TABLES[entry.sourceType];
+    const documentId = sourceIdToDb(entry.sourceId);
+    // A malformed id would make the `::uuid` cast throw; it cannot name a
+    // cloud document, so there is nothing to compare.
+    if (!document || !DB_UUID_PATTERN.test(documentId)) return false;
+    const documents = await tx
+      .select({ outletId: document.outletId })
+      .from(document.table)
+      .where(
+        and(
+          eq(document.tenantId, entry.tenantId),
+          // Raw compare: the ULID-in-uuid columns would re-encode a uuid.
+          sql`${document.id} = ${documentId}::uuid`,
+          ne(document.outletId, entry.outletId),
+        ),
+      )
+      .limit(1);
+    return documents.length > 0;
+  });
 }
 
 /** True when the stored ledger row is exactly the replicated movement. */
@@ -1252,11 +1356,14 @@ export async function recordReplicatedStockMovementInTransaction(
   if (entry.batchId !== null)
     await requireBatch(tx, entry.outletId, entry.batchId, entry);
 
+  // legend-ddoy: claim the source first, then the location, and only then the
+  // cross-outlet read below (lock order is explained on lockStockSource).
+  await lockStockSource(tx, tenantId, entry.sourceType, entry.sourceId);
   await lockInventoryLocations(tx, tenantId, [entry.locationId]);
   // The GL bridge re-reads a document's rows by (tenant, sourceType,
   // sourceId) across outlets: a source already posted by another outlet is
   // never extended from this edge.
-  if (await sourcePostedByOtherOutlet(entry))
+  if (await sourceBelongsToOtherOutlet(entry))
     throw new HttpError(
       409,
       "CONFLICT",
