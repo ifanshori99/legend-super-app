@@ -9,25 +9,17 @@
 // (viewer `aggregate`, never split by a person, SH-01). A permission granted at
 // outlet or brand scope admits the caller for the outlets it reaches; the scope
 // of a report needing several permissions is the outlets all of them reach.
-// Same resolution as routes/metrics.routes.ts.
+// Same resolution as routes/metrics.routes.ts (routes/report-viewer.ts).
 //
 // Exported as a factory; app.ts mounts it at /api/reports.
 
-import { Router, type Request } from "express";
-import { outletReachOf, type PermissionCode } from "@starter/shared/access";
-import {
-  userIdSchema,
-  type OutletScopeData,
-  type ScopedTenantContext,
-} from "@starter/shared/core";
-import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { Router } from "express";
 import {
   aggregateOnlyCaller,
   builderQueryPermittedFor,
   getReportEndpoint,
   listReportsEndpoint,
   previewReportBuilderEndpoint,
-  reportAcceptsAggregateView,
   reportByCode,
   reportMetricByCode,
   reportPermittedFor,
@@ -36,13 +28,11 @@ import {
   type ReportDefinition,
 } from "@starter/shared/dashboard";
 import { jsonBody } from "../middleware/body";
-import { requireAuth, getAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { loadRequestAccess } from "../middleware/permissions";
-import { getTenantContext, requireTenantContext } from "../middleware/tenant";
-import { loadTenantAccess } from "../services/permission-resolver";
-import type { MetricViewer } from "../services/metrics-query.service";
+import { requireTenantContext } from "../middleware/tenant";
 import {
   getReportDefinition,
   listReportCatalog,
@@ -50,106 +40,10 @@ import {
   reportHttpError,
   runReport,
 } from "../services/report-run.service";
+import { resolveReportViewer } from "./report-viewer";
 
 const BASE = "/api/reports";
 const route = (path: string) => path.slice(BASE.length) || "/";
-
-/** The caller's outlet reach for `permission`, null when it grants none. */
-async function scopeOf(
-  req: Request,
-  permission: string,
-): Promise<OutletScopeData | null> {
-  const snapshot = await loadRequestAccess(req);
-  if (!snapshot.permissions.includes(permission as PermissionCode)) return null;
-  if (snapshot.contextFor(permission as PermissionCode, { type: "tenant" }))
-    return { kind: "tenant" };
-  const tenant = getTenantContext(req);
-  const userId = userIdSchema.parse(getAuth(req).user.id);
-  const data = await loadTenantAccess(
-    establishScopedTenantContext(tenant, { kind: "tenant" }),
-    userId,
-  );
-  return outletReachOf({
-    principal: {
-      tenantId: tenant.tenantId,
-      userId,
-      assignments: data.assignments,
-    },
-    roles: data.roles,
-    org: data.org,
-    now: new Date(),
-    permission: permission as PermissionCode,
-  });
-}
-
-/** Outlets both scopes reach; null when they share none. */
-function intersectScopes(
-  a: OutletScopeData,
-  b: OutletScopeData,
-): OutletScopeData | null {
-  if (a.kind === "tenant") return b;
-  if (b.kind === "tenant") return a;
-  const reach = new Set<string>(b.outletIds);
-  const outletIds = a.outletIds.filter((id) => reach.has(id));
-  return outletIds.length === 0 ? null : { kind: "outlets", outletIds };
-}
-
-/**
- * Outlets every one of `permissions` reaches. `missing`: the caller holds one
- * of them with no reach at all; `empty`: each reaches outlets but no outlet is
- * reached by all (never widened to the tenant).
- */
-async function commonScope(
-  req: Request,
-  permissions: readonly string[],
-): Promise<OutletScopeData | "missing" | "empty"> {
-  let common: OutletScopeData = { kind: "tenant" };
-  for (const permission of permissions) {
-    const scope = await scopeOf(req, permission);
-    if (scope === null) return "missing";
-    const next = intersectScopes(common, scope);
-    if (next === null) return "empty";
-    common = next;
-  }
-  return common;
-}
-
-/**
- * Context and viewer for a query whose metrics come from `sources` (the
- * catalog reports that own them). Per source report: the caller's outlets for
- * the permissions it requires (viewer `full`); when the caller lacks them, the
- * `report.aggregate.view` reach, but only for a report that accepts the
- * aggregate view (SH-01, `reportAcceptsAggregateView`). Otherwise 403. The
- * query reads the outlets every source allows, and is `aggregate` as soon as
- * one source needed the aggregate permission. An empty intersection is 403,
- * never a tenant-wide read.
- */
-async function resolveReportViewer(
-  req: Request,
-  sources: readonly ReportDefinition[],
-): Promise<{ context: ScopedTenantContext; viewer: MetricViewer }> {
-  if (sources.length === 0) throw reportHttpError("REPORT_NOT_PERMITTED");
-  let scope: OutletScopeData | null = { kind: "tenant" };
-  let viewer: MetricViewer = "full";
-  let aggregate: OutletScopeData | null | undefined;
-  for (const source of sources) {
-    const full = await commonScope(req, source.requiredPermissions);
-    let reach: OutletScopeData;
-    if (typeof full === "object") reach = full;
-    else if (full === "missing" && reportAcceptsAggregateView(source)) {
-      aggregate ??= await scopeOf(req, "report.aggregate.view");
-      if (aggregate === null) throw reportHttpError("REPORT_NOT_PERMITTED");
-      reach = aggregate;
-      viewer = "aggregate";
-    } else throw reportHttpError("REPORT_NOT_PERMITTED");
-    scope = intersectScopes(scope, reach);
-    if (scope === null) throw reportHttpError("REPORT_NOT_PERMITTED");
-  }
-  return {
-    context: establishScopedTenantContext(getTenantContext(req), scope),
-    viewer,
-  };
-}
 
 export function createReportsRouter() {
   const router = Router();
