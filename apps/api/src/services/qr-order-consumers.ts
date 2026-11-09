@@ -22,6 +22,9 @@
 // the money goes back through the same refund request. A code the guest
 // switched away from, paid after the order was already paid, is booked as
 // `double_payment` unallocated funds; it gets a system refund request too.
+// When both codes settled before either event is consumed, the order is fired
+// for the code that covered the bill, proven by WS-05 evidence less its
+// unallocated funds, never for the double-paid one (legend-mks0q).
 //
 // payment.expired / payment.failed (bead note: an expired code or link must
 // not strand the order in `awaiting_payment`). PRD silent on the exact rule;
@@ -46,8 +49,10 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
+  paymentEvidence,
   paymentIntents,
   paymentLinks,
+  paymentUnallocatedFunds,
   tableSessions,
 } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
@@ -295,6 +300,99 @@ async function lockOrderOfLink(
   return order && order.channel === "qr" ? order : null;
 }
 
+/**
+ * legend-mks0q: what each paid code of the link put toward the bill, from the
+ * durable WS-05 rows: the money its provider evidence brought in, less the
+ * part booked as unallocated funds (overpayment or double payment, whatever
+ * became of it later). WS-05 keeps no per-code allocation column; these two
+ * append-only tables are the allocation record.
+ */
+async function allocatedIdrByIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<Map<string, number>> {
+  const tenantId = context.tenant.tenantId;
+  const paid = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        eq(paymentIntents.status, "paid"),
+      ),
+    );
+  const intentIds = paid.map((row) => row.id);
+  if (intentIds.length === 0) return new Map();
+  const received = await tx
+    .select({
+      intentId: paymentEvidence.paymentIntentId,
+      total: sql<string>`coalesce(sum(${paymentEvidence.amountIdr}), 0)::text`,
+    })
+    .from(paymentEvidence)
+    .where(
+      and(
+        eq(paymentEvidence.tenantId, tenantId),
+        inArray(paymentEvidence.paymentIntentId, intentIds),
+      ),
+    )
+    .groupBy(paymentEvidence.paymentIntentId);
+  const unallocated = await tx
+    .select({
+      intentId: paymentUnallocatedFunds.paymentIntentId,
+      total: sql<string>`coalesce(sum(${paymentUnallocatedFunds.amountIdr}), 0)::text`,
+    })
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        inArray(paymentUnallocatedFunds.paymentIntentId, intentIds),
+      ),
+    )
+    .groupBy(paymentUnallocatedFunds.paymentIntentId);
+  const receivedBy = new Map(
+    received.map((row) => [row.intentId, Number(row.total)]),
+  );
+  const unallocatedBy = new Map(
+    unallocated.map((row) => [row.intentId, Number(row.total)]),
+  );
+  return new Map(
+    intentIds.map((id) => [
+      id,
+      (receivedBy.get(id) ?? 0) - (unallocatedBy.get(id) ?? 0),
+    ]),
+  );
+}
+
+/**
+ * legend-mks0q: the code that paid the bill, proven by its allocation: the
+ * event's own code when it covered what the guest owed, else the one code of
+ * the link that did (the link never takes more than its total, so at most one
+ * can). A code whose money was all booked as a double payment is never the
+ * payer, whichever paid event is consumed first: its receipt backs only its
+ * own refund. A bill split over several codes (none covered it alone) keeps
+ * the event's code when it put money toward the bill. Null: the event's code
+ * put nothing toward the bill and no code covered it alone.
+ */
+async function payerIntentOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { paymentLinkId: string; intentId: string; owedIdr: number },
+): Promise<string | null> {
+  const allocated = await allocatedIdrByIntent(
+    tx,
+    context,
+    input.paymentLinkId,
+  );
+  const own = allocated.get(input.intentId) ?? 0;
+  if (allocated.has(input.intentId) && own >= input.owedIdr)
+    return input.intentId;
+  for (const [id, amount] of allocated)
+    if (amount > 0 && amount >= input.owedIdr) return id;
+  return own > 0 ? input.intentId : null;
+}
+
 async function voidAndNotify(
   tx: Tx,
   context: ScopedTenantContext,
@@ -460,11 +558,38 @@ export async function handleQrOrderPaymentPaid(
       ),
     );
   if (intent?.status !== "paid") return "not_settled";
-  // Pin the intent that paid: a superseded code may have settled the bill.
+  // Pin the intent that paid: a superseded code may have settled the bill,
+  // and a code paid after another covered it (`double_payment`, nothing
+  // allocated) is never the payer, whichever event is consumed first
+  // (legend-mks0q). Decided under the order lock from durable WS-05 rows.
+  const payerIntentId = await payerIntentOf(tx, context, {
+    paymentLinkId,
+    intentId,
+    owedIdr: link.totalIdr,
+  });
+  if (payerIntentId === null) {
+    // This code put nothing toward the bill and no code covered it alone:
+    // the codes that did fire the order with their own events. Its money is
+    // a double payment; it goes back.
+    const refundIds = await requestQrDoublePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
+    return refundIds.length > 0
+      ? "double_payment_refund_requested"
+      : "not_settled";
+  }
+  if (payerIntentId !== intentId)
+    logger.warn(
+      { orderId: order.id, intentId, payerIntentId },
+      "QR order: fired for the code that covered the bill, not the event's double-paid code",
+    );
   await fireQrOrder(tx, context, order, {
     now,
     reason: "verified_payment",
-    paidIntentId: intentId,
+    paidIntentId: payerIntentId,
   });
   // Outbox order across intents is not relied on: when this event's intent
   // also carries `double_payment` funds (another code covered the bill
