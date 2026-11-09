@@ -346,10 +346,9 @@ async function lines(bank: Bank): Promise<Record<string, LineRow>> {
 }
 const count = async (table: string, bank: Bank) =>
   (
-    await owner.query(
-      `SELECT 1 FROM ${table} WHERE bank_account_id = $1`,
-      [bank.id],
-    )
+    await owner.query(`SELECT 1 FROM ${table} WHERE bank_account_id = $1`, [
+      bank.id,
+    ])
   ).rowCount;
 
 beforeAll(async () => {
@@ -387,9 +386,10 @@ afterAll(async () => {
     "DELETE FROM bank_statement_line_matches WHERE bank_account_id = ANY($1::uuid[])",
     [bankAccountIds],
   );
-  await quiet("DELETE FROM cash_deposits WHERE legal_entity_id = ANY($1::uuid[])", [
-    entityIds,
-  ]);
+  await quiet(
+    "DELETE FROM cash_deposits WHERE legal_entity_id = ANY($1::uuid[])",
+    [entityIds],
+  );
   await quiet(
     "DELETE FROM bank_statement_lines WHERE tenant_id = ANY($1::uuid[]) AND bank_account_id IN (SELECT id FROM bank_accounts WHERE legal_entity_id = ANY($2::uuid[]) OR tenant_id = ANY($3::uuid[]))",
     [tenants, entityIds, otherTenantIds],
@@ -410,9 +410,10 @@ afterAll(async () => {
     "DELETE FROM journal_entries WHERE legal_entity_id = ANY($1::uuid[])",
     [entityIds],
   );
-  await quiet("DELETE FROM fiscal_periods WHERE legal_entity_id = ANY($1::uuid[])", [
-    entityIds,
-  ]);
+  await quiet(
+    "DELETE FROM fiscal_periods WHERE legal_entity_id = ANY($1::uuid[])",
+    [entityIds],
+  );
   await quiet(
     "DELETE FROM chart_of_accounts WHERE legal_entity_id = ANY($1::uuid[]) OR tenant_id = ANY($2::uuid[])",
     [entityIds, otherTenantIds],
@@ -423,9 +424,10 @@ afterAll(async () => {
     entityIds,
   ]);
   if (otherTenantIds.length > 0) {
-    await quiet("DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])", [
-      otherTenantIds,
-    ]);
+    await quiet(
+      "DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])",
+      [otherTenantIds],
+    );
     await quiet("DELETE FROM tenants WHERE id = ANY($1::uuid[])", [
       otherTenantIds,
     ]);
@@ -435,7 +437,9 @@ afterAll(async () => {
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
       [tenantId, createdUserIds],
     );
-    await quiet("DELETE FROM roles WHERE id = ANY($1::uuid[])", [createdRoleIds]);
+    await quiet("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
+      createdRoleIds,
+    ]);
     await quiet('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       createdUserIds,
     ]);
@@ -594,8 +598,16 @@ describe("legend-fnxl.3 bank statement import", () => {
     const onUtcDay = await seedDeposit(bank, 260_000, "2026-11-01T18:30:00Z");
 
     const response = await post(finance.cookie, bank.id, [
-      { date: "2026-11-02", description: "Setoran tanggal lokal", amount: 250_000 },
-      { date: "2026-11-01", description: "Setoran tanggal UTC", amount: 260_000 },
+      {
+        date: "2026-11-02",
+        description: "Setoran tanggal lokal",
+        amount: 250_000,
+      },
+      {
+        date: "2026-11-01",
+        description: "Setoran tanggal UTC",
+        amount: 260_000,
+      },
     ]);
     await setTolerance(2);
     expect(response.status, JSON.stringify(response.body)).toBe(201);
@@ -609,9 +621,10 @@ describe("legend-fnxl.3 bank statement import", () => {
       id: string;
       status: string;
       bank_statement_line_id: string | null;
-    }>("SELECT id, status, bank_statement_line_id FROM cash_deposits WHERE bank_account_id = $1", [
-      bank.id,
-    ]);
+    }>(
+      "SELECT id, status, bank_statement_line_id FROM cash_deposits WHERE bank_account_id = $1",
+      [bank.id],
+    );
     const byId = Object.fromEntries(deposits.rows.map((row) => [row.id, row]));
     expect(byId[onLocalDay]).toMatchObject({ status: "matched" });
     expect(byId[onLocalDay]!.bank_statement_line_id).not.toBeNull();
@@ -744,7 +757,10 @@ describe("legend-fnxl.3 bank statement import", () => {
 
     await expect(
       importBankStatement(
-        scopeFor({ kind: "outlets", outletIds: [outletIdSchema.parse(outletA)] }),
+        scopeFor({
+          kind: "outlets",
+          outletIds: [outletIdSchema.parse(outletA)],
+        }),
         bank.id,
         {
           fileName: "x.csv",

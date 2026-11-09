@@ -265,7 +265,9 @@ async function newJournal(fx: Fixture, amountIdr: number): Promise<string> {
 }
 
 /** A line (with its account, import, entity) that belongs to another tenant. */
-async function foreignLine(other: string): Promise<{ account: string; line: string }> {
+async function foreignLine(
+  other: string,
+): Promise<{ account: string; line: string }> {
   const { rows: e } = await owner.query<{ id: string }>(
     "INSERT INTO legal_entities (tenant_id, name) VALUES ($1, $2) RETURNING id",
     [other, `Foreign PT ${unique()}`],
@@ -307,7 +309,12 @@ async function newCase(fx: Fixture, ownerId: string): Promise<string> {
        (tenant_id, legal_entity_id, type, difference_idr, owner_id, due_at, refs, opened_by)
      VALUES ($1, $2, 'bank_statement', 1000, $3, now() + interval '7 days', $4::jsonb, $3)
      RETURNING id`,
-    [tenantId, fx.entity, ownerId, JSON.stringify([{ type: "bank_statement_line", id: randomUUID() }])],
+    [
+      tenantId,
+      fx.entity,
+      ownerId,
+      JSON.stringify([{ type: "bank_statement_line", id: randomUUID() }]),
+    ],
   );
   return rows[0]!.id;
 }
@@ -389,9 +396,10 @@ afterAll(async () => {
     "bank_statement_lines",
     "bank_statement_imports",
   ])
-    await owner.query(`DELETE FROM ${table} WHERE bank_account_id = ANY($1::uuid[])`, [
-      accountIds,
-    ]);
+    await owner.query(
+      `DELETE FROM ${table} WHERE bank_account_id = ANY($1::uuid[])`,
+      [accountIds],
+    );
   await owner.query(
     "DELETE FROM bank_reconciliation_cases WHERE legal_entity_id = $1",
     [fx.entity],
@@ -459,7 +467,9 @@ describe("legend-fnxl.4 bank statement lines", () => {
     expect(second.body.data).toHaveLength(1);
     expect(second.body.meta.nextCursor).toBeNull();
     expect(
-      [...first.body.data, ...second.body.data].map((l: { id: string }) => l.id).sort(),
+      [...first.body.data, ...second.body.data]
+        .map((l: { id: string }) => l.id)
+        .sort(),
     ).toEqual([a, b, c].sort());
 
     const excluded = await get(
@@ -487,12 +497,17 @@ describe("legend-fnxl.4 bank statement lines", () => {
   });
 
   it("manual match of a cash deposit, then unmatch restores the exact prior state of line and deposit", async () => {
-    const line = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 500_000 });
+    const line = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 500_000,
+    });
     const deposit = await newDeposit(fx, 500_000);
     const lineBefore = await dbLine(line);
     const depositBefore = await dbDeposit(deposit);
 
-    const matched = await match(finance.cookie, line, [ref("cash_deposit", deposit)]);
+    const matched = await match(finance.cookie, line, [
+      ref("cash_deposit", deposit),
+    ]);
     expect(matched.status).toBe(200);
     expect(matched.body.data).toMatchObject({
       id: line,
@@ -511,7 +526,9 @@ describe("legend-fnxl.4 bank statement lines", () => {
       status_changed_by: finance.userId,
       version: lineBefore.version + 1,
     });
-    expect(await auditCount("accounting.bank_statement_line.matched", line)).toBe(1);
+    expect(
+      await auditCount("accounting.bank_statement_line.matched", line),
+    ).toBe(1);
 
     const unmatched = await unmatch(finance.cookie, line);
     expect(unmatched.status).toBe(200);
@@ -536,15 +553,22 @@ describe("legend-fnxl.4 bank statement lines", () => {
     expect(strip(depositAfter)).toEqual(strip(depositBefore));
     expect(lineAfter.version).toBe(lineBefore.version + 2);
     expect(depositAfter.version).toBe(depositBefore.version + 2);
-    expect(await auditCount("accounting.bank_statement_line.unmatched", line)).toBe(1);
+    expect(
+      await auditCount("accounting.bank_statement_line.unmatched", line),
+    ).toBe(1);
 
     // The freed deposit can be matched again.
-    const again = await match(finance.cookie, line, [ref("cash_deposit", deposit)]);
+    const again = await match(finance.cookie, line, [
+      ref("cash_deposit", deposit),
+    ]);
     expect(again.status).toBe(200);
   });
 
   it("unmatch is idempotent: a replay returns the stored answer, a new key on an unmatched line is refused", async () => {
-    const line = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 710_000 });
+    const line = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 710_000,
+    });
     const deposit = await newDeposit(fx, 710_000);
     await match(finance.cookie, line, [ref("cash_deposit", deposit)]);
     const key = randomUUID();
@@ -553,7 +577,9 @@ describe("legend-fnxl.4 bank statement lines", () => {
     expect(first.status).toBe(200);
     expect(replay.status).toBe(200);
     expect(replay.body).toEqual(first.body);
-    expect(await auditCount("accounting.bank_statement_line.unmatched", line)).toBe(1);
+    expect(
+      await auditCount("accounting.bank_statement_line.unmatched", line),
+    ).toBe(1);
     expect((await dbLine(line)).version).toBe(3);
 
     const other = await unmatch(finance.cookie, line, randomUUID());
@@ -568,7 +594,10 @@ describe("legend-fnxl.4 bank statement lines", () => {
   });
 
   it("matches a line to several documents that add up exactly (deposit + journal)", async () => {
-    const line = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 750_000 });
+    const line = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 750_000,
+    });
     const deposit = await newDeposit(fx, 500_000);
     const journal = await newJournal(fx, 250_000);
     const response = await match(finance.cookie, line, [
@@ -582,8 +611,13 @@ describe("legend-fnxl.4 bank statement lines", () => {
     );
 
     // The journal is now taken: another line cannot claim it.
-    const other = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 250_000 });
-    const taken = await match(finance.cookie, other, [ref("journal_entry", journal)]);
+    const other = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 250_000,
+    });
+    const taken = await match(finance.cookie, other, [
+      ref("journal_entry", journal),
+    ]);
     expect(taken.status).toBe(409);
     expect(taken.body.error.code).toBe("STATEMENT_LINE_ALREADY_MATCHED");
 
@@ -593,10 +627,15 @@ describe("legend-fnxl.4 bank statement lines", () => {
   });
 
   it("amount mismatch answers 422 and changes nothing", async () => {
-    const line = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 600_000 });
+    const line = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 600_000,
+    });
     const deposit = await newDeposit(fx, 599_999);
     const before = await dbLine(line);
-    const response = await match(finance.cookie, line, [ref("cash_deposit", deposit)]);
+    const response = await match(finance.cookie, line, [
+      ref("cash_deposit", deposit),
+    ]);
     expect(response.status).toBe(422);
     expect(response.body.error.code).toBe("MATCH_AMOUNT_MISMATCH");
     expect(await dbLine(line)).toEqual(before);
@@ -606,10 +645,21 @@ describe("legend-fnxl.4 bank statement lines", () => {
 
   it("a document already used by another line answers 409 STATEMENT_LINE_ALREADY_MATCHED", async () => {
     const deposit = await newDeposit(fx, 420_000);
-    const first = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 420_000 });
-    const second = await newLine(fx, { postedOn: "2026-11-05", amountIdr: 420_000 });
-    expect((await match(finance.cookie, first, [ref("cash_deposit", deposit)])).status).toBe(200);
-    const response = await match(finance.cookie, second, [ref("cash_deposit", deposit)]);
+    const first = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 420_000,
+    });
+    const second = await newLine(fx, {
+      postedOn: "2026-11-05",
+      amountIdr: 420_000,
+    });
+    expect(
+      (await match(finance.cookie, first, [ref("cash_deposit", deposit)]))
+        .status,
+    ).toBe(200);
+    const response = await match(finance.cookie, second, [
+      ref("cash_deposit", deposit),
+    ]);
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe("STATEMENT_LINE_ALREADY_MATCHED");
     expect((await dbLine(second)).match_status).toBe("unmatched");
@@ -635,11 +685,16 @@ describe("legend-fnxl.4 bank statement lines", () => {
   });
 
   it("refuses a match from matched, excluded and in_case; refuses documents of another account, other types and unknown ids", async () => {
-    const matchedLine = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 100_000 });
+    const matchedLine = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 100_000,
+    });
     const d1 = await newDeposit(fx, 100_000);
     await match(finance.cookie, matchedLine, [ref("cash_deposit", d1)]);
     const d2 = await newDeposit(fx, 100_000);
-    const again = await match(finance.cookie, matchedLine, [ref("cash_deposit", d2)]);
+    const again = await match(finance.cookie, matchedLine, [
+      ref("cash_deposit", d2),
+    ]);
     expect(again.status).toBe(409);
     expect(again.body.error.code).toBe("STATEMENT_LINE_ALREADY_MATCHED");
 
@@ -649,7 +704,9 @@ describe("legend-fnxl.4 bank statement lines", () => {
       status: "excluded",
       reason: "salah akun",
     });
-    const refused = await match(finance.cookie, excludedLine, [ref("cash_deposit", d2)]);
+    const refused = await match(finance.cookie, excludedLine, [
+      ref("cash_deposit", d2),
+    ]);
     expect(refused.status).toBe(409);
     expect(refused.body.error.code).toBe("INVALID_TRANSITION");
 
@@ -660,15 +717,22 @@ describe("legend-fnxl.4 bank statement lines", () => {
       status: "in_case",
       caseId,
     });
-    const inCase = await match(finance.cookie, caseLine, [ref("cash_deposit", d2)]);
+    const inCase = await match(finance.cookie, caseLine, [
+      ref("cash_deposit", d2),
+    ]);
     expect(inCase.status).toBe(409);
     expect(inCase.body.error.code).toBe("INVALID_TRANSITION");
     // The failed attempts left d2 free.
     expect((await dbDeposit(d2)).status).toBe("recorded");
 
-    const target = await newLine(fx, { postedOn: "2026-11-04", amountIdr: 100_000 });
+    const target = await newLine(fx, {
+      postedOn: "2026-11-04",
+      amountIdr: 100_000,
+    });
     const foreignDeposit = await newDeposit(fx, 100_000, fx.otherAccount);
-    const wrongAccount = await match(finance.cookie, target, [ref("cash_deposit", foreignDeposit)]);
+    const wrongAccount = await match(finance.cookie, target, [
+      ref("cash_deposit", foreignDeposit),
+    ]);
     expect(wrongAccount.status).toBe(404);
     expect(wrongAccount.body.error.code).toBe("NOT_FOUND");
 
@@ -679,7 +743,9 @@ describe("legend-fnxl.4 bank statement lines", () => {
     expect(unsupported.status).toBe(400);
     expect(unsupported.body.error.code).toBe("VALIDATION_ERROR");
 
-    const unknown = await match(finance.cookie, target, [ref("cash_deposit", randomUUID())]);
+    const unknown = await match(finance.cookie, target, [
+      ref("cash_deposit", randomUUID()),
+    ]);
     expect(unknown.status).toBe(404);
     const unknownJournal = await match(finance.cookie, target, [
       ref("journal_entry", randomUUID()),
@@ -695,7 +761,10 @@ describe("legend-fnxl.4 bank statement lines", () => {
   });
 
   it("exclude only from unmatched; unmatch clears the reason; unmatch refused for in_case and unmatched lines", async () => {
-    const line = await newLine(fx, { postedOn: "2026-11-06", amountIdr: -2500 });
+    const line = await newLine(fx, {
+      postedOn: "2026-11-06",
+      amountIdr: -2500,
+    });
     const excluded = await post(finance.cookie, linePath(line, "exclude"), {
       reason: "biaya admin bulanan",
     });
@@ -708,28 +777,45 @@ describe("legend-fnxl.4 bank statement lines", () => {
       status_changed_by: finance.userId,
       version: 2,
     });
-    expect(await auditCount("accounting.bank_statement_line.excluded", line)).toBe(1);
+    expect(
+      await auditCount("accounting.bank_statement_line.excluded", line),
+    ).toBe(1);
 
-    const twice = await post(finance.cookie, linePath(line, "exclude"), { reason: "lagi" });
+    const twice = await post(finance.cookie, linePath(line, "exclude"), {
+      reason: "lagi",
+    });
     expect(twice.status).toBe(409);
     expect(twice.body.error.code).toBe("INVALID_TRANSITION");
     expect((await dbLine(line)).excluded_reason).toBe("biaya admin bulanan");
 
     const restored = await unmatch(finance.cookie, line);
     expect(restored.status).toBe(200);
-    expect(restored.body.data).toMatchObject({ matchStatus: "unmatched", excludedReason: null });
-    expect(await dbLine(line)).toMatchObject({ excluded_reason: null, version: 3 });
+    expect(restored.body.data).toMatchObject({
+      matchStatus: "unmatched",
+      excludedReason: null,
+    });
+    expect(await dbLine(line)).toMatchObject({
+      excluded_reason: null,
+      version: 3,
+    });
 
     const notMatched = await unmatch(finance.cookie, line);
     expect(notMatched.status).toBe(409);
     expect(notMatched.body.error.code).toBe("INVALID_TRANSITION");
 
-    const matchedLine = await newLine(fx, { postedOn: "2026-11-06", amountIdr: 90_000 });
+    const matchedLine = await newLine(fx, {
+      postedOn: "2026-11-06",
+      amountIdr: 90_000,
+    });
     const deposit = await newDeposit(fx, 90_000);
     await match(finance.cookie, matchedLine, [ref("cash_deposit", deposit)]);
-    const excludeMatched = await post(finance.cookie, linePath(matchedLine, "exclude"), {
-      reason: "x",
-    });
+    const excludeMatched = await post(
+      finance.cookie,
+      linePath(matchedLine, "exclude"),
+      {
+        reason: "x",
+      },
+    );
     expect(excludeMatched.status).toBe(409);
 
     const caseId = await newCase(fx, finance.userId);
@@ -743,12 +829,18 @@ describe("legend-fnxl.4 bank statement lines", () => {
     expect(inCaseUnmatch.status).toBe(409);
     expect(inCaseUnmatch.body.error.code).toBe("INVALID_TRANSITION");
     expect((await dbLine(caseLine)).match_status).toBe("in_case");
-    const inCaseExclude = await post(finance.cookie, linePath(caseLine, "exclude"), {
-      reason: "x",
-    });
+    const inCaseExclude = await post(
+      finance.cookie,
+      linePath(caseLine, "exclude"),
+      {
+        reason: "x",
+      },
+    );
     expect(inCaseExclude.status).toBe(409);
 
-    const noReason = await post(finance.cookie, linePath(line, "exclude"), { reason: " " });
+    const noReason = await post(finance.cookie, linePath(line, "exclude"), {
+      reason: " ",
+    });
     expect(noReason.status).toBe(422);
   });
 
@@ -793,10 +885,17 @@ describe("legend-fnxl.4 bank statement lines", () => {
       finance.cookie,
       summaryPath(solo.account, "?from=2027-01-01&to=2027-01-31"),
     );
-    expect(empty.body.data).toMatchObject({ lineCount: 0, autoMatchRateBp: 10_000 });
+    expect(empty.body.data).toMatchObject({
+      lineCount: 0,
+      autoMatchRateBp: 10_000,
+    });
     expect(
-      (await get(finance.cookie, summaryPath(solo.account, "?from=2026-11-30&to=2026-11-01")))
-        .status,
+      (
+        await get(
+          finance.cookie,
+          summaryPath(solo.account, "?from=2026-11-30&to=2026-11-01"),
+        )
+      ).status,
     ).toBe(422);
   });
 
@@ -805,42 +904,99 @@ describe("legend-fnxl.4 bank statement lines", () => {
     const foreign = await foreignLine(other);
     const deposit = await newDeposit(fx, 12_000);
     const before = (
-      await owner.query("SELECT * FROM bank_statement_lines WHERE id = $1", [foreign.line])
+      await owner.query("SELECT * FROM bank_statement_lines WHERE id = $1", [
+        foreign.line,
+      ])
     ).rows[0];
 
-    expect((await get(finance.cookie, linesPath(foreign.account, "?from=2026-11-01&to=2026-11-30"))).status).toBe(404);
-    expect((await get(finance.cookie, summaryPath(foreign.account, "?from=2026-11-01&to=2026-11-30"))).status).toBe(404);
-    const m = await match(finance.cookie, foreign.line, [ref("cash_deposit", deposit)]);
+    expect(
+      (
+        await get(
+          finance.cookie,
+          linesPath(foreign.account, "?from=2026-11-01&to=2026-11-30"),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await get(
+          finance.cookie,
+          summaryPath(foreign.account, "?from=2026-11-01&to=2026-11-30"),
+        )
+      ).status,
+    ).toBe(404);
+    const m = await match(finance.cookie, foreign.line, [
+      ref("cash_deposit", deposit),
+    ]);
     expect(m.status).toBe(404);
     expect(m.body.error.code).toBe("NOT_FOUND");
-    expect((await post(finance.cookie, linePath(foreign.line, "exclude"), { reason: "x" })).status).toBe(404);
+    expect(
+      (
+        await post(finance.cookie, linePath(foreign.line, "exclude"), {
+          reason: "x",
+        })
+      ).status,
+    ).toBe(404);
     expect((await unmatch(finance.cookie, foreign.line)).status).toBe(404);
     expect(
-      (await owner.query("SELECT * FROM bank_statement_lines WHERE id = $1", [foreign.line]))
-        .rows[0],
+      (
+        await owner.query("SELECT * FROM bank_statement_lines WHERE id = $1", [
+          foreign.line,
+        ])
+      ).rows[0],
     ).toEqual(before);
     expect((await dbDeposit(deposit)).status).toBe("recorded");
 
     // A tenant that has no role in the pinned tenant is refused before any lookup.
-    expect((await get(finance.cookie, linesPath(fx.account, "?from=2026-11-01&to=2026-11-30"), other)).status).toBe(403);
-    expect((await match(finance.cookie, randomUUID(), [ref("cash_deposit", deposit)])).status).toBe(404);
+    expect(
+      (
+        await get(
+          finance.cookie,
+          linesPath(fx.account, "?from=2026-11-01&to=2026-11-30"),
+          other,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await match(finance.cookie, randomUUID(), [
+          ref("cash_deposit", deposit),
+        ])
+      ).status,
+    ).toBe(404);
   });
 
   it("TEN-03 without the permission every endpoint answers 403; a viewer cannot write; without a session 401", async () => {
     const stranger = await signedIn(); // no role assignment at all
     const line = await newLine(fx, { postedOn: "2026-11-08", amountIdr: 8000 });
     const window = "?from=2026-11-01&to=2026-11-30";
-    expect((await get(stranger.cookie, linesPath(fx.account, window))).status).toBe(403);
-    expect((await get(stranger.cookie, summaryPath(fx.account, window))).status).toBe(403);
-    expect((await match(stranger.cookie, line, [ref("cash_deposit", randomUUID())])).status).toBe(403);
-    expect((await post(stranger.cookie, linePath(line, "exclude"), { reason: "x" })).status).toBe(403);
+    expect(
+      (await get(stranger.cookie, linesPath(fx.account, window))).status,
+    ).toBe(403);
+    expect(
+      (await get(stranger.cookie, summaryPath(fx.account, window))).status,
+    ).toBe(403);
+    expect(
+      (await match(stranger.cookie, line, [ref("cash_deposit", randomUUID())]))
+        .status,
+    ).toBe(403);
+    expect(
+      (await post(stranger.cookie, linePath(line, "exclude"), { reason: "x" }))
+        .status,
+    ).toBe(403);
     expect((await unmatch(stranger.cookie, line)).status).toBe(403);
     expect((await dbLine(line)).match_status).toBe("unmatched");
 
-    expect((await request(host).get(linesPath(fx.account, window))).status).toBe(401);
     expect(
-      (await request(host).post(linePath(line, "exclude")).set(originHeader).send({ reason: "x" }))
-        .status,
+      (await request(host).get(linesPath(fx.account, window))).status,
+    ).toBe(401);
+    expect(
+      (
+        await request(host)
+          .post(linePath(line, "exclude"))
+          .set(originHeader)
+          .send({ reason: "x" })
+      ).status,
     ).toBe(401);
   });
 

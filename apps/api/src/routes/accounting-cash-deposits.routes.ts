@@ -65,7 +65,9 @@ export function createAccountingCashDepositsRouter(): Router {
     requireMenuPermission(RECORD),
     async (req, res) => {
       const query = listCashDeposits.query.parse(req.query);
-      res.json(await listCashDepositsService(getScopedTenantContext(req), query));
+      res.json(
+        await listCashDepositsService(getScopedTenantContext(req), query),
+      );
     },
   );
 

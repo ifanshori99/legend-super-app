@@ -21,8 +21,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
+  tenantIdSchema,
   userIdSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { createApp } from "../app";
 import { errorHandler, notFound } from "../middleware/error-handler";
@@ -73,12 +75,18 @@ const ALERTS = "/api/accounting/cash-deposits/alerts";
 
 function scope(tenant = tenantId): ScopedTenantContext {
   return establishScopedTenantContext(
-    establishTenantContext({ tenantId: tenant, brandId: null, source: "session" }),
+    establishTenantContext({
+      tenantId: tenant,
+      brandId: null,
+      source: "session",
+    }),
     { kind: "tenant" },
   );
 }
 
-async function asTenant<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
+async function asTenant<T>(
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -129,13 +137,7 @@ async function assignTemplate(
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
      VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
-    [
-      tenantId,
-      userId,
-      rows[0].id,
-      outletId ? "outlet" : "tenant",
-      outletId,
-    ],
+    [tenantId, userId, rows[0].id, outletId ? "outlet" : "tenant", outletId],
   );
 }
 
@@ -165,7 +167,14 @@ async function newOutlet(entity: string, label: string): Promise<string> {
       `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
        SELECT $1, tenant_id, brand_id, $2, $3, $4, 'Jl. Uji 1', 'Asia/Jakarta', opening_hours, 'active'
        FROM outlets WHERE tenant_id = $5 AND id = $6`,
-      [id, entity, `C${unique()}`.toUpperCase().slice(0, 12), label, tenantId, seedOutlet],
+      [
+        id,
+        entity,
+        `C${unique()}`.toUpperCase().slice(0, 12),
+        label,
+        tenantId,
+        seedOutlet,
+      ],
     ),
   );
   return id;
@@ -186,7 +195,7 @@ async function newBankAccount(entity: string, gl: string): Promise<string> {
   return account.id;
 }
 
-async function newTenant(): Promise<string> {
+async function newTenant(): Promise<TenantId> {
   const id = randomUUID();
   otherTenantIds.push(id);
   await owner.query(
@@ -195,7 +204,7 @@ async function newTenant(): Promise<string> {
        FROM tenants WHERE id = $3`,
     [id, `cashdep-${unique()}`, tenantId],
   );
-  return id;
+  return tenantIdSchema.parse(id);
 }
 
 /** An unmatched statement line (own import) for the auto-match test. */
@@ -218,7 +227,15 @@ async function seedStatementLine(
       `INSERT INTO bank_statement_lines
          (id, tenant_id, bank_account_id, import_id, posted_on, amount_idr, description, dedupe_key)
        VALUES ($1, $2, $3, $4, $5, $6, 'SETORAN TUNAI', $7)`,
-      [lineId, tenantId, bankAccountId, importId, postedOn, amountIdr, randomUUID()],
+      [
+        lineId,
+        tenantId,
+        bankAccountId,
+        importId,
+        postedOn,
+        amountIdr,
+        randomUUID(),
+      ],
     );
   });
   return lineId;
@@ -283,7 +300,16 @@ async function seedClosedShift(
           counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
           idempotency_key, request_fingerprint)
        VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, $6, $6, 0, $7, now(), false, $8, $5)`,
-      [countId, tenantId, outletId, shiftId, "b".repeat(64), expected, cashierId, randomUUID()],
+      [
+        countId,
+        tenantId,
+        outletId,
+        shiftId,
+        "b".repeat(64),
+        expected,
+        cashierId,
+        randomUUID(),
+      ],
     );
     await client.query(
       `UPDATE pos_shifts SET status = 'closed', expected_idr = $3, counted_idr = $3,
@@ -451,7 +477,10 @@ describe("legend-fnxl.5 cash deposits", () => {
     expect(mismatch.status).toBe(400);
     const bad = await post(
       finance.cookie,
-      depositBody(outletA, bank, { coversFrom: "2026-03-12", coversTo: "2026-03-11" }),
+      depositBody(outletA, bank, {
+        coversFrom: "2026-03-12",
+        coversTo: "2026-03-11",
+      }),
     );
     expect(bad.status).toBe(422);
     const foreign = await post(finance.cookie, {
@@ -538,18 +567,18 @@ describe("legend-fnxl.5 cash deposits", () => {
       to: "2026-04-30",
     });
     expect(all.status, JSON.stringify(all.body)).toBe(200);
-    expect(all.body.data.map((row: { amountIdr: number }) => row.amountIdr)).toEqual([
-      300_000, 200_000, 100_000,
-    ]);
+    expect(
+      all.body.data.map((row: { amountIdr: number }) => row.amountIdr),
+    ).toEqual([300_000, 200_000, 100_000]);
 
     const window = await list(finance.cookie, {
       legalEntityId: entityB,
       from: "2026-04-02",
       to: "2026-04-02",
     });
-    expect(window.body.data.map((row: { amountIdr: number }) => row.amountIdr)).toEqual([
-      200_000,
-    ]);
+    expect(
+      window.body.data.map((row: { amountIdr: number }) => row.amountIdr),
+    ).toEqual([200_000]);
 
     const firstPage = await list(finance.cookie, {
       legalEntityId: entityB,
@@ -566,9 +595,9 @@ describe("legend-fnxl.5 cash deposits", () => {
       limit: 2,
       cursor: firstPage.body.meta.nextCursor,
     });
-    expect(secondPage.body.data.map((row: { amountIdr: number }) => row.amountIdr)).toEqual([
-      100_000,
-    ]);
+    expect(
+      secondPage.body.data.map((row: { amountIdr: number }) => row.amountIdr),
+    ).toEqual([100_000]);
     expect(secondPage.body.meta.nextCursor).toBeNull();
 
     const badCursor = await list(finance.cookie, {
@@ -582,7 +611,9 @@ describe("legend-fnxl.5 cash deposits", () => {
 
   describe("permissions and isolation", () => {
     it("a signed-in user without the permission gets 403 on all three routes", async () => {
-      expect((await post(nobody.cookie, depositBody(outletA, bank))).status).toBe(403);
+      expect(
+        (await post(nobody.cookie, depositBody(outletA, bank))).status,
+      ).toBe(403);
       expect(
         (
           await list(nobody.cookie, {
@@ -593,8 +624,12 @@ describe("legend-fnxl.5 cash deposits", () => {
         ).status,
       ).toBe(403);
       expect(
-        (await alerts(nobody.cookie, { legalEntityId: entity, asOf: "2026-03-31" }))
-          .status,
+        (
+          await alerts(nobody.cookie, {
+            legalEntityId: entity,
+            asOf: "2026-03-31",
+          })
+        ).status,
       ).toBe(403);
     });
 
@@ -606,18 +641,30 @@ describe("legend-fnxl.5 cash deposits", () => {
       expect(own.status, JSON.stringify(own.body)).toBe(201);
       expect(own.body.data.depositedBy).toBe(outletScoped.userId);
 
-      const foreign = await post(outletScoped.cookie, depositBody(outletA, bank));
+      const foreign = await post(
+        outletScoped.cookie,
+        depositBody(outletA, bank),
+      );
       expect(foreign.status).toBe(403);
 
-      const query = { legalEntityId: entity, from: "2026-03-01", to: "2026-03-31" };
+      const query = {
+        legalEntityId: entity,
+        from: "2026-03-01",
+        to: "2026-03-31",
+      };
       const seen = await list(outletScoped.cookie, query);
       expect(seen.status, JSON.stringify(seen.body)).toBe(200);
       expect(seen.body.data.length).toBeGreaterThan(0);
       expect(
-        seen.body.data.every((row: { outletId: string }) => row.outletId === outletB),
+        seen.body.data.every(
+          (row: { outletId: string }) => row.outletId === outletB,
+        ),
       ).toBe(true);
 
-      const asked = await list(outletScoped.cookie, { ...query, outletId: outletA });
+      const asked = await list(outletScoped.cookie, {
+        ...query,
+        outletId: outletA,
+      });
       expect(asked.status).toBe(403);
 
       // The finance user (tenant-wide) sees both outlets.
@@ -652,7 +699,11 @@ describe("legend-fnxl.5 undeposited cash alerts (ACC-05)", () => {
   it("is absent at exactly maxDaysUndeposited days and present one day later (FIFO, refunds and petty cash netted)", async () => {
     const { maxDaysUndeposited } = await loadCashDepositPolicy(scope());
     // Two shifts the same day: 500k + 100k sales, 60k refunds, 40k petty cash.
-    await seedClosedShift(outletAlert, D1, { sales: 500_000, refunds: 60_000, out: 40_000 });
+    await seedClosedShift(outletAlert, D1, {
+      sales: 500_000,
+      refunds: 60_000,
+      out: 40_000,
+    });
     await seedClosedShift(outletAlert, D1, { sales: 100_000 });
     // Net cash of the day: 600_000 - 60_000 - 40_000 = 500_000.
     const query = (days: number) => ({
@@ -711,7 +762,11 @@ describe("legend-fnxl.5 undeposited cash alerts (ACC-05)", () => {
   it("floors a net-negative day at 0 and keeps open shifts out", async () => {
     const outlet = await newOutlet(entity, "Setoran Lantai");
     // Opening float 50k, petty cash out 50k: expected 0, net collection -50k.
-    await seedClosedShift(outlet, "2026-02-10", { sales: 0, out: 50_000, float: 50_000 });
+    await seedClosedShift(outlet, "2026-02-10", {
+      sales: 0,
+      out: 50_000,
+      float: 50_000,
+    });
     const { maxDaysUndeposited } = await loadCashDepositPolicy(scope());
     const response = await alerts(finance.cookie, {
       legalEntityId: entity,
@@ -725,10 +780,15 @@ describe("legend-fnxl.5 undeposited cash alerts (ACC-05)", () => {
     const { maxDaysUndeposited } = await loadCashDepositPolicy(scope());
     await seedClosedShift(outletB, "2026-02-20", { sales: 400_000 });
     const asOf = addDays("2026-02-20", maxDaysUndeposited + 1);
-    const own = await alerts(outletScoped.cookie, { legalEntityId: entity, asOf });
+    const own = await alerts(outletScoped.cookie, {
+      legalEntityId: entity,
+      asOf,
+    });
     expect(own.status, JSON.stringify(own.body)).toBe(200);
     expect(
-      own.body.data.every((row: { outletId: string }) => row.outletId === outletB),
+      own.body.data.every(
+        (row: { outletId: string }) => row.outletId === outletB,
+      ),
     ).toBe(true);
     expect(own.body.data.length).toBeGreaterThan(0);
     const foreign = await alerts(outletScoped.cookie, {

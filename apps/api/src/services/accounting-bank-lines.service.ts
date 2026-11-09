@@ -56,7 +56,11 @@ import {
   idempotentCommand,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
-import { applyMatch, entityLock, resolveRefs } from "./accounting-bank-matching.ts";
+import {
+  applyMatch,
+  entityLock,
+  resolveRefs,
+} from "./accounting-bank-matching.ts";
 import {
   loadBankAccount,
   loadMatchesByLine,
@@ -66,9 +70,14 @@ import {
 
 const MATCHED: readonly string[] = ["auto_matched", "manually_matched"];
 
-const badCursor = () => new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+const badCursor = () =>
+  new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
 const badRange = () =>
-  new HttpError(422, "VALIDATION_ERROR", "Tanggal awal harus sebelum tanggal akhir.");
+  new HttpError(
+    422,
+    "VALIDATION_ERROR",
+    "Tanggal awal harus sebelum tanggal akhir.",
+  );
 
 export type ReconciliationSummary = {
   bankAccountId: string;
@@ -220,7 +229,10 @@ export async function matchStatementLine(
       throw new AccountingError("INVALID_TRANSITION");
     const documents = await resolveRefs(tx, tenantId, account, input.refs);
     assertManualMatch(
-      { amountIdr: line.amountIdr, matchStatus: line.matchStatus as MatchStatus },
+      {
+        amountIdr: line.amountIdr,
+        matchStatus: line.matchStatus as MatchStatus,
+      },
       documents,
     );
     await applyMatch(tx, tenantId, {
@@ -426,9 +438,7 @@ export async function getReconciliationSummary(
       unmatchedCount: count("unmatched"),
       inCaseCount: count("in_case"),
       excludedCount: count("excluded"),
-      autoMatchRateBp: autoMatchRateBp(
-        rows as { matchStatus: MatchStatus }[],
-      ),
+      autoMatchRateBp: autoMatchRateBp(rows as { matchStatus: MatchStatus }[]),
     };
   });
 }

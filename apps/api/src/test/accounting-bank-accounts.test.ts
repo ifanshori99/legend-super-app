@@ -21,8 +21,10 @@ import {
 } from "@starter/shared/core/server";
 import {
   outletIdSchema,
+  tenantIdSchema,
   userIdSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { createApp } from "../app";
 import { openSecret } from "../lib/secrets";
@@ -138,7 +140,7 @@ async function newAccount(
   return rows[0]!.id;
 }
 
-async function newTenant(): Promise<string> {
+async function newTenant(): Promise<TenantId> {
   const id = randomUUID();
   otherTenantIds.push(id);
   await owner.query(
@@ -147,7 +149,7 @@ async function newTenant(): Promise<string> {
        FROM tenants WHERE id = $3`,
     [id, `bnkacc-${unique()}`, tenantId],
   );
-  return id;
+  return tenantIdSchema.parse(id);
 }
 
 const post = (cookie: string, body: unknown, tenantHeader?: string) => {

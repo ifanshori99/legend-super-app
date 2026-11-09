@@ -50,8 +50,8 @@ subagent before the schema landed.
    belong to the entity and its GL account, and two bank accounts may share a
    GL account, so a per-account lock would let them race for one journal.
 8. **Cash collections are not stored.** ACC-05 collections are derived from
-   closed `pos_shifts` per (outlet, business date): `cash_sales − cash_refunds
-   − cash_out`, floored at 0. Cash drops stay in the outlet (not banked) and
+   closed `pos_shifts` per (outlet, business date):
+   `cash_sales − cash_refunds − cash_out`, floored at 0. Cash drops stay in the outlet (not banked) and
    cash in is float, so neither counts. Deposits in every status cover cash
    FIFO (shared `undepositedCashAlerts`); alerts are computed on read with
    `loadCashDepositPolicy`, no alert table.

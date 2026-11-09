@@ -195,10 +195,7 @@ export async function createCashDeposit(
         "Outlet dan rekening bank harus milik badan usaha yang sama.",
       );
     if (!bankAccount.isActive)
-      throw new CoreError(
-        "VALIDATION_ERROR",
-        "Rekening bank ini tidak aktif.",
-      );
+      throw new CoreError("VALIDATION_ERROR", "Rekening bank ini tidak aktif.");
 
     await advisoryLock(
       tx,

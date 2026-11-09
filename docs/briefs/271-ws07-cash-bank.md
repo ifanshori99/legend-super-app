@@ -20,6 +20,7 @@ Out of scope: automatic journal posting (legend-9pz9), gateway/EDC settlement ma
 - D10 `bank_reconciliation_cases` (new name; `payment_reconciliation_cases` untouched): id, tenant, legal_entity_id, outlet_id nullable, type, difference_idr ≠0, owner_id (user FK), status, due_at, refs jsonb (1..50), opened_by, opened_at, resolved_by/at, resolution_note, adjustment_journal_entry_id, version. CHECKs mirror zod. `bank_reconciliation_case_events` append-only log (tenant, case_id, seq, action, actor_id, from_status, to_status, from_owner_id, to_owner_id, note, at): one row per open/start/reassign/resolve/write_off; app role gets no UPDATE/DELETE (REVOKE in custom SQL like ap-fa ledgers). `caseDueDays` (Q2): no tenant policy field exists yet.
 
 ## Open questions for architect
+
 - Q1 Outlet RLS on `cash_deposits` (and on cases with outlet_id nullable)?
 - Q2 Case `dueAt`: extend finance policy with `reconciliationPolicy.caseDueDays` (schema + PUT contract) or default constant + follow-up card?
 - Q3 D5 child table vs jsonb `matched_refs` on the line.
@@ -27,6 +28,7 @@ Out of scope: automatic journal posting (legend-9pz9), gateway/EDC settlement ma
 - Q5 Write-off: `adjustmentJournalEntryId` must reference an existing posted journal of the same entity — validate only, no posting.
 
 ## Slices after schema lands (one implementer each; files do not overlap)
+
 - S2 bank accounts: `services/accounting-bank-accounts.service.ts`, `routes/accounting-bank-accounts.routes.ts`, test `src/test/accounting-bank-accounts.test.ts`.
 - S3 import + auto-match (engineer): `services/accounting-bank-statements.service.ts`, `services/accounting-bank-matching.ts`, `routes/accounting-bank-statements.routes.ts`.
 - S4 match/exclude/unmatch/summary: `services/accounting-bank-lines.service.ts`, `routes/accounting-bank-lines.routes.ts`, test `src/test/accounting-bank-lines.test.ts`.
@@ -35,29 +37,34 @@ Out of scope: automatic journal posting (legend-9pz9), gateway/EDC settlement ma
 - Router registration in `routes/index.ts`: engineer only (one line per router) after slices land.
 
 ## Architect resolutions (binding)
+
 - Q1: outlet RLS on `cash_deposits` only. Import, match, exclude, unmatch, case-open, bank-account create/list: `assertTenantScope(context)` (`accounting-ap-fa-shared.ts`). Cases: `outletVisible`/`assertOutletReach` for reads/writes.
 - Q2: case due = server constant `reconciliationPolicySchema.parse({ caseDueDays: 7 })`; follow-up card adds it to finance policy.
 - Q3: child table `bank_statement_line_matches` (done in schema).
 - Q4: collections = Σ closed `pos_shifts` per (outlet, business_date) of `cash_sales_idr − cash_refunds_idr − cash_out_idr`, floored at 0; deposits in every status count.
 - Q5: write-off journal validated only (same entity `ACCOUNT_ENTITY_MISMATCH`; not reversal/reversed `JOURNAL_ALREADY_REVERSED`; Σdebit = |difference| `POSTING_AMOUNTS_MISMATCH`; not used by another case → CoreError `CONFLICT`; not a deposit's journal nor a matched ref).
 - No new error codes. Ref taken → `STATEMENT_LINE_ALREADY_MATCHED`; unsupported ref type → CoreError `VALIDATION_ERROR` (422); missing row → `notFound()` in `accounting-cash-bank-shared.ts` (404 NOT_FOUND); duplicate account number → CoreError `CONFLICT`. Map PG 23505 on unique keys to these, never 500.
-- Locks: every write that touches lines/matches/deposits takes `advisoryLock(tx, \`acc-cashbank:${tenantId}:${legalEntityId}\`)` (entity lock) first, then `SELECT … FOR UPDATE` on the line/deposit rows.
+- Locks: every write that touches lines/matches/deposits takes `advisoryLock(tx, \`acc-cashbank:${tenantId}:${legalEntityId}\`)`(entity lock) first, then`SELECT … FOR UPDATE` on the line/deposit rows.
 - Line state machine: manual match only from `unmatched`; exclude only from `unmatched`; unmatch from matched or excluded (clears reason, deletes match rows, deposits back to `recorded` + line id null); refused for `in_case` (`INVALID_TRANSITION`). Every change bumps `version`, sets `status_changed_by/at`, and `recordAudit`.
 
 ## Already written (engineer) — import, do not edit
+
 - Schema `apps/api/src/db/schema/accounting-cash-bank.ts`, migration `drizzle/0191_cash_bank_recon.sql`.
 - `services/accounting-cash-bank-shared.ts`: DTO mappers (`bankAccountDto`, `statementLineDto`, `cashDepositDto`, `reconciliationCaseDto`), `loadBankAccount`, `loadMatchesByLine`, `notFound`.
 - `services/accounting-bank-csv.ts`: CSV parser (S3).
 - `services/accounting-bank-matching.ts` (S3, engineer, coming): `entityLock(tx, tenantId, legalEntityId)`, `resolveRefs(tx, context, bankAccount, refs)` → `{ref, amountIdr, date}[]` (validates type/ownership/not taken), `autoMatchBankAccount(tx, context, bankAccount, actorId)` → number of new auto matches.
 
 ## Slice specs
+
 Common: route file pattern = `accounting-finance-policy.routes.ts` (BASE `/api/accounting`, `route()`, `requireAuth, requireTrustedOrigin, requireTenantContext`, body via `<endpoint>.body.parse`, query via `<endpoint>.query.parse`). Service: `withTenant(db, context, tx => …)`, idempotency via `idempotentCommand` where the input has `idempotencyKey`, `recordAudit` on every write (look at `accounting-open-items.service.ts` for audit + cursor usage). Do NOT edit `routes/index.ts` (engineer registers). Tests: vitest + supertest like `src/test/accounting-finance-policy.test.ts`; mount your router on a test app or use the full app after engineer registers — prefer building the app the same way that test does and registering your router locally in the test if needed. Each test file must cover tenant isolation (other tenant's id → 404) and permission (no permission → 403).
+
 - S2 bank accounts (`legend-fnxl.2`): `GET /legal-entities/:legalEntityId/bank-accounts` (VIEW `accounting.journal.view`), `POST /bank-accounts` (RECONCILE `accounting.reconcile`). Seal number: `Buffer.from(sealSecret(number, aad), "base64")`, aad `bank:bank_accounts:<tenantLower>:<rowIdLower>:account_number:k1` (generate row id with `randomUUID()` first), hmac `blindIndex(number, \`bank:account_number:${tenantLower}\`)`, last4. GL account must be active, postable (no children), same entity (FK guarantees entity; check active/postable → `ACCOUNT_INACTIVE`/`ACCOUNT_NOT_POSTABLE`). Audit must not contain the number. Test: number never in any response/audit row; duplicate number same entity → 409.
 - S4 lines (`legend-fnxl.4`): `GET /bank-accounts/:id/statement-lines` (VIEW, cursor on (posted_on, id), filters from/to/matchStatus), `POST /statement-lines/:lineId/match` (RECONCILE; `resolveRefs` then `assertManualMatch`; insert match rows source `manual`; cash_deposit refs → deposit status `matched`, `bank_statement_line_id` = line), `/exclude`, `/unmatch`, `GET /bank-accounts/:id/reconciliation-summary` (counts by status in [from,to] by posted_on, `autoMatchRateBp` from shared). Tests: unmatch restores exact prior state (line + deposit), match from in_case/excluded refused, amount mismatch 422, ref already used by another line 409.
 - S5 cash deposits (`legend-fnxl.5`): `GET /cash-deposits` (VIEW or outlet-scoped; outlet RLS applies), `POST /cash-deposits` (`requireOutletPermission("accounting.cash_deposit.record")` on body outletId if such middleware exists, else tenant permission + `assertOutletReach`; outlet's legal_entity_id must equal the bank account's; idempotent; after insert call `autoMatchBankAccount` under entity lock), `GET /cash-deposits/alerts` (collections per Q4 over closed shifts with business_date ≤ asOf, deposits of the entity/outlet, `undepositedCashAlerts(..., loadCashDepositPolicy(context))`). Tests: alert absent at exactly `maxDaysUndeposited` days and present at +1 day; outlet-scoped user cannot see another outlet's deposit; idempotent replay.
 - S6 cases (`legend-fnxl.6`): `GET /reconciliation-cases` (filters, cursor on opened_at,id, outlet visibility), `POST /reconciliation-cases` (RECONCILE; owner must hold an active assignment in tenant; refs of type `bank_statement_line` must be `unmatched` lines of the entity → set `in_case` + case id; `cash_deposit` refs `recorded` → `discrepancy` + case id; event seq 1 `open`), `GET /reconciliation-cases/:caseId`, `POST /reconciliation-cases/:caseId/actions` (RECONCILE; `transitionReconciliationCase`; case row `FOR UPDATE`, seq = max+1; write_off journal checks per Q5; event row per action). Tests: each action writes exactly one event row with actor/from/to; resolved case refuses further actions; reassign changes owner and logs from/to owner.
 
 ## Matching module is written: `services/accounting-bank-matching.ts`
+
 - `entityLock(tx, tenantId, legalEntityId)` — call first in every write touching lines/matches/deposits.
 - `resolveRefs(tx, tenantId, bankAccountRow, refs)` → `MatchCandidate[]` (validates type, ownership, free; throws NOT_FOUND / VALIDATION_ERROR / STATEMENT_LINE_ALREADY_MATCHED).
 - `applyMatch(tx, tenantId, {bankAccountId, lineId, documents, source, actorId})` — writes match rows, line → matched, deposits → matched. S4 manual match: lock, line FOR UPDATE, check `unmatched`, `resolveRefs`, `assertManualMatch(line, documents)`, `applyMatch(source "manual")`.
@@ -65,7 +72,9 @@ Common: route file pattern = `accounting-finance-policy.routes.ts` (BASE `/api/a
 - Unmatch (S4): delete match rows of the line; deposits with `bank_statement_line_id = line` → `recorded`, line id null, version+1; line → `unmatched`, excluded_reason null, version+1.
 
 ## S3 tests (test-writer)
+
 Code under test (do not edit; report bugs): `services/accounting-bank-csv.ts`, `services/accounting-bank-matching.ts`, `services/accounting-bank-statements.service.ts`, `routes/accounting-bank-statements.routes.ts` (`createAccountingBankStatementsRouter`; mount it in the test app like other routers, under `/api/accounting`).
+
 - Unit `src/services/accounting-bank-csv.test.ts` (or wherever API unit tests live next to code): signed + debit/credit layouts, "0,00" in unused column, both filled refused, fraction "1.234,50" refused with message naming the row ("Baris N"), unterminated quote refused, identical rows in one file kept apart (different dedupe keys), header skip.
 - Integration `src/test/accounting-bank-statements.test.ts` (seed bank account, journals, cash deposits by direct owner-pool INSERTs; set a finance policy via owner pool or PUT): (a) re-import same file (new idempotency key) → lineCount 0, duplicateCount = rows, no new rows; same key → replay identical body; (b) auto-match only on exact amount AND date within `dateToleranceDays` (one day outside tolerance stays unmatched; amount off by 1 stays unmatched); policy change to 0 days is honoured; (c) two candidates with same amount/date → line stays unmatched (no guess); two lines wanting one document → both stay unmatched; (d) deposit date uses outlet time zone (deposit at 2026-11-01T18:30Z with Asia/Jakarta = 2026-11-02); (e) reversed journal is not a candidate; (f) tenant isolation: other tenant's bankAccountId → 404; outlet-scoped caller → 403 OUTLET_OUT_OF_SCOPE; no permission → 403; (g) unreadable row → 422 STATEMENT_VALUE_INVALID with "Baris" in message and nothing written.
-Write tests to FAIL first if the behaviour were absent (assert concrete counts/statuses).
+  Write tests to FAIL first if the behaviour were absent (assert concrete counts/statuses).

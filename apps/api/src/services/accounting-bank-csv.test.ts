@@ -137,7 +137,10 @@ describe("legend-fnxl bank CSV parser", () => {
 
   it("an unreadable date is refused with the row", () => {
     const error = refusal(() =>
-      parseStatementCsv(`${HEADER}\n2026-11-05,Salah format,"1.000,00"`, signed),
+      parseStatementCsv(
+        `${HEADER}\n2026-11-05,Salah format,"1.000,00"`,
+        signed,
+      ),
     );
     expect(error.code).toBe("STATEMENT_VALUE_INVALID");
     expect(error.message).toContain("Baris 2");
@@ -203,7 +206,10 @@ describe("legend-fnxl bank CSV parser", () => {
     // A header read as data is an unreadable date: refused, not skipped.
     expect(
       refusal(() =>
-        parseStatementCsv(`${HEADER}\n${body}`, { ...signed, hasHeader: false }),
+        parseStatementCsv(`${HEADER}\n${body}`, {
+          ...signed,
+          hasHeader: false,
+        }),
       ).message,
     ).toContain("Baris 1");
   });
