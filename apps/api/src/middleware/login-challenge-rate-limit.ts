@@ -28,6 +28,7 @@
 // bounded work per request. Several API instances each hold their own window.
 
 import type { Request, RequestHandler } from "express";
+import { clientIpKey } from "../lib/client-ip-key";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import { browserBindingDigest } from "../lib/identity-digest";
 import { readBindingNonce } from "../lib/login-binding";
@@ -94,7 +95,7 @@ export function loginChallengeRateLimit(
     const ip = clientIp(req);
     const ipRetry = internalIps.has(ip)
       ? null
-      : (issue ? issueIp : pollIp).take(`ip:${ip}`, now);
+      : (issue ? issueIp : pollIp).take(`ip:${clientIpKey(ip)}`, now);
     // Both buckets are charged, so a client rotating cookies still spends its
     // IP bucket and one IP cannot spend another browser's binding bucket.
     const nonce = readBindingNonce(req);
