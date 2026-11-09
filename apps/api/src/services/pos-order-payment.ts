@@ -47,7 +47,10 @@ import {
   createIntent,
   createPaymentLink,
 } from "./payment.service.ts";
-import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
+import {
+  isBusinessDayClosed,
+  lockCashierShiftForCash,
+} from "./pos-cash-guard.ts";
 import { requestPosLatePaymentRefund } from "./pos-order-late-payment.ts";
 import { settlePosEdcStandalone } from "./pos-edc-standalone.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
@@ -61,7 +64,9 @@ import {
   remainingIdr,
   tenderDto,
   tendersOf,
+  type OrderRow,
   type PosCaller,
+  type PosRow,
 } from "./pos-order-support.ts";
 
 type AddTenderInput = z.output<typeof addTenderEndpoint.body>;
@@ -493,6 +498,69 @@ export async function addPosTender(
 }
 
 /**
+ * Voids the order's pending QRIS tenders (event + audit with `reason`), bumps
+ * the order, and requests the full late-payment refund for the paid intent.
+ * Shared by the webhook branches that cannot capture the money
+ * (`bill_below_tender`, `business_day_closed`). Never throws for these cases.
+ */
+async function voidTendersAndRefundPaidQris(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: OrderRow;
+    pos: PosRow;
+    paymentLinkId: string;
+    intentId: string;
+    reason: "bill_below_tender" | "business_day_closed";
+    now: Date;
+  },
+): Promise<void> {
+  const { order, pos, now } = input;
+  const voided = await voidPendingQrisTenders(tx, context, {
+    orderId: order.id,
+    now,
+  });
+  await bumpPos(tx, context, pos, now);
+  for (const row of voided) {
+    await appendOrderEvent(tx, context, {
+      order,
+      type: "order.tender_voided",
+      payload: {
+        tenderId: row.id,
+        method: row.method,
+        amountIdr: row.amountIdr,
+        reason: input.reason,
+      },
+      caller: null,
+      now,
+    });
+    await auditPos(
+      tx,
+      context,
+      {
+        action: "pos_order.tender_voided",
+        order,
+        caller: null,
+        before: { id: order.id, status: "authorized" },
+        after: {
+          id: order.id,
+          method: row.method,
+          amountIdr: row.amountIdr,
+          status: "voided",
+        },
+      },
+      now,
+    );
+  }
+  await requestPosLatePaymentRefund(tx, context, {
+    order,
+    paymentLinkId: input.paymentLinkId,
+    intentId: input.intentId,
+    now,
+  });
+}
+
+/**
  * Outbox consumer entry for WS-05 `payment.paid` (wired by legend-x4qy).
  * Captures the POS QRIS tender whose payment link the event names, once the
  * link is fully covered by verified money and a `paid` intent exists on it
@@ -589,52 +657,42 @@ export async function handlePosPaymentPaid(
       )
       .limit(1);
     if (!paid) return;
+    // legend-mf0.1 (safety net): the order's business day is closed. Today
+    // closePosDay refuses while an order of that date is unfinished, so an
+    // open QRIS on a closed day should not exist; if one does, capturing would
+    // strand the money on an order that can never complete (complete is
+    // refused), so the tender is voided and the intent refunded. This is a
+    // decision, never a throw: the consumer would retry forever. Lock order:
+    // orders row -> pos_orders row -> tender row -> day lock (shared);
+    // closePosDay takes no order row locks, so no cycle.
+    if (
+      await isBusinessDayClosed(tx, context, {
+        outletId: order.outletId,
+        businessDates: [order.businessDate],
+      })
+    ) {
+      await voidTendersAndRefundPaidQris(tx, context, {
+        order,
+        pos,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: payload.data.intentId,
+        reason: "business_day_closed",
+        now,
+      });
+      return;
+    }
     // A tender may never take the order above its total (contract refine).
     const tenders = await tendersOf(tx, context, order.id);
     if (tender.amountIdr > remainingIdr(order, tenders)) {
       // legend-b0au: the bill shrank under the open QRIS (e.g. more deposit
       // applied). The tender cannot take the money, so it is voided, its link
       // closed, and what the intent holds is refunded instead of stranded.
-      const voided = await voidPendingQrisTenders(tx, context, {
-        orderId: order.id,
-        now,
-      });
-      await bumpPos(tx, context, pos, now);
-      for (const row of voided) {
-        await appendOrderEvent(tx, context, {
-          order,
-          type: "order.tender_voided",
-          payload: {
-            tenderId: row.id,
-            method: row.method,
-            amountIdr: row.amountIdr,
-            reason: "bill_below_tender",
-          },
-          caller: null,
-          now,
-        });
-        await auditPos(
-          tx,
-          context,
-          {
-            action: "pos_order.tender_voided",
-            order,
-            caller: null,
-            before: { id: order.id, status: "authorized" },
-            after: {
-              id: order.id,
-              method: row.method,
-              amountIdr: row.amountIdr,
-              status: "voided",
-            },
-          },
-          now,
-        );
-      }
-      await requestPosLatePaymentRefund(tx, context, {
+      await voidTendersAndRefundPaidQris(tx, context, {
         order,
+        pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: payload.data.intentId,
+        reason: "bill_below_tender",
         now,
       });
       return;
