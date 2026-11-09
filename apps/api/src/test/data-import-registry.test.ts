@@ -161,6 +161,41 @@ describe("data import registry: registered sources call the guard", () => {
   }
 });
 
+describe("data import registry: edge master sync (legend-8izz)", () => {
+  // master-sync.ts is not import-named, so the filename scan below skips it;
+  // pin the guard statically next to the behaviour test in
+  // edge-master-sync.test.ts.
+  const code = readRepoFile("apps/api/src/edge/master-sync.ts")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it('guardMasterImport calls guardDataImport("edge.bootstrap")', () => {
+    const body = code.slice(code.indexOf("function guardMasterImport("));
+    expect(code.indexOf("function guardMasterImport(")).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(body.slice(0, body.indexOf("\n}"))).toMatch(
+      /guardDataImport\(\s*"edge\.bootstrap"/,
+    );
+  });
+
+  for (const entry of [
+    "function applyEdgeMasterSnapshotInTransaction(",
+    "function syncEdgeMasters(",
+  ])
+    it(`${entry} calls the guard before anything else writes or fetches`, () => {
+      const start = code.indexOf(entry);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const guard = code.indexOf("guardMasterImport()", start);
+      expect(guard).toBeGreaterThan(start);
+      const firstWrite = code.indexOf(".insert(", start);
+      const firstFetch = code.indexOf("fetch", start + entry.length);
+      if (firstWrite >= 0) expect(guard).toBeLessThan(firstWrite);
+      if (entry.includes("syncEdgeMasters") && firstFetch >= 0)
+        expect(guard).toBeLessThan(firstFetch);
+    });
+});
+
 describe("data import registry: no unregistered import/seed/backfill file", () => {
   const candidates = walk(API_SRC).filter((file) =>
     /import|seed|backfill|bootstrap/i.test(path.posix.basename(file)),

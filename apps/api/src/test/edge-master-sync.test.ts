@@ -24,6 +24,7 @@
 //    whose message contains "MASTERS".
 //  - The edge writes nothing when it refuses a snapshot.
 import { randomBytes, randomUUID } from "node:crypto";
+import { DrizzleQueryError } from "drizzle-orm";
 import express from "express";
 import { Pool } from "pg";
 import request from "supertest";
@@ -38,6 +39,7 @@ import {
   type MockInstance,
 } from "vitest";
 import {
+  CoreError,
   createUlid,
   outletIdSchema,
   ulidToUuid,
@@ -61,11 +63,13 @@ import { bootstrapEdgeNodeIfNeeded } from "../edge/bootstrap.ts";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import {
+  applyEdgeMasterSnapshot,
   startEdgeMasterSyncLoop,
   syncEdgeMasters,
 } from "../edge/master-sync.ts";
 import { EdgeBootError } from "../edge/runtime.ts";
 import { applyEdgeStockMoved } from "../edge/stock-moved-applier.ts";
+import { logger } from "../lib/logger.ts";
 import { errorHandler } from "../middleware/error-handler.ts";
 import { tenantContext } from "../middleware/tenant.ts";
 import { edgeBootstrapRouter } from "../routes/edge-bootstrap.routes.ts";
@@ -85,7 +89,11 @@ import {
   provisionOutletStockLocations,
   provisionStandardUoms,
 } from "../services/inventory-provisioning.service.ts";
-import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { buildEdgeMasterSnapshot } from "../services/edge-master-sync.service.ts";
+import {
+  setEdgeCredentialVerifier,
+  verifyEdgeCredential,
+} from "../services/staff-pin-sync.ts";
 
 const CLOUD_LINK_URL = "wss://cloud.master.test/api/edge-link";
 const BOOTSTRAP_PATH = "/api/edge-sync/bootstrap";
@@ -1415,5 +1423,186 @@ describe("legend-9ppw 8 cloud endpoint over its size cap", () => {
     expect(JSON.stringify(response.body)).not.toContain(big.credential);
     // Other nodes are unaffected.
     expect((await cloudMasters(main)).status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-8izz: master writes go through guardDataImport("edge.bootstrap"),
+// like the bootstrap bundle. The guard is the deployment policy (real data
+// only in production); "real" outside production makes it refuse.
+describe("legend-8izz master sync behind the data import guard", () => {
+  const KINDS = ["uoms", "stockLocations", "accounts", "mappings"] as const;
+
+  function blockImports() {
+    vi.stubEnv("DEPLOYMENT_MODE", "staging");
+    vi.stubEnv("DATA_CLASSIFICATION", "real");
+  }
+
+  async function expectNoMasters() {
+    const view = await dbView(fresh);
+    for (const kind of KINDS) expect(view[kind], kind).toEqual([]);
+  }
+
+  /** Tenant and outlet present locally, no masters of any kind. */
+  async function presentWithoutMasters() {
+    await purgeAll(fresh);
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json(capturedFresh.masters),
+    });
+    await bootstrapEdgeNodeIfNeeded(config(fresh));
+    vi.restoreAllMocks();
+    await purgeMasters(fresh);
+    await expectNoMasters();
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("syncEdgeMasters refuses with DATA_IMPORT_BLOCKED before any cloud call and writes none of the four kinds", async () => {
+    await presentWithoutMasters();
+    blockImports();
+    const spy = spyCloud({ masters: () => json(capturedFresh.masters) });
+    expect(await failureCode(syncEdgeMasters(config(fresh)))).toBe(
+      "DATA_IMPORT_BLOCKED",
+    );
+    expect(spy).not.toHaveBeenCalled();
+    await expectNoMasters();
+  });
+
+  it("a direct apply of a valid snapshot is refused too, and writes none of the four kinds", async () => {
+    await presentWithoutMasters();
+    blockImports();
+    const claims = parseEdgeCredential(fresh.credential)!;
+    expect(
+      await failureCode(
+        applyEdgeMasterSnapshot(claims, capturedFresh.masters.snapshot),
+      ),
+    ).toBe("DATA_IMPORT_BLOCKED");
+    await expectNoMasters();
+  });
+
+  it("a present node boots as present, without a masters call, and writes none of the four kinds", async () => {
+    await presentWithoutMasters();
+    blockImports();
+    const spy = spyCloud({ masters: () => json(capturedFresh.masters) });
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+    expect(mastersCalls(spy)).toHaveLength(0);
+    await expectNoMasters();
+  });
+
+  it("accepts and writes all four kinds when the guard allows", async () => {
+    await presentWithoutMasters();
+    spyCloud({ masters: () => json(capturedFresh.masters) });
+    await syncEdgeMasters(config(fresh));
+    const view = await dbView(fresh);
+    for (const kind of KINDS)
+      expect(view[kind].length, kind).toBeGreaterThan(0);
+    expect(view).toEqual(viewOf(capturedFresh.masters.snapshot));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex 124: a database failure while reading the masters must not reach the
+// error handler as a raw DrizzleQueryError (its message holds the SQL and the
+// bound tenant/outlet/node ids, and res.err would log it).
+describe("Codex 124 masters read failure is a fixed 503 without the raw error", () => {
+  const SENTINEL = "SENTINEL_SQL_c124";
+
+  function rawDbError(f: Fixture) {
+    const cause = Object.assign(
+      new Error(`canceling statement due to statement timeout ${SENTINEL}`),
+      { code: "57014" },
+    );
+    return new DrizzleQueryError(
+      `select "id" from "uoms" where "tenant_id" = $1 /* ${SENTINEL} */`,
+      [f.tenantId, f.outletA, f.edgeNodeId],
+      cause,
+    );
+  }
+
+  // The request opens other transactions first (tenant resolution, credential
+  // check); the masters read is the handler's last one. Let `passCount`
+  // through and fail the next.
+  function failMastersRead(error: unknown, passCount: number) {
+    const original = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction");
+    for (let i = 0; i < passCount; i += 1) spy.mockImplementationOnce(original);
+    spy.mockRejectedValueOnce(error);
+    return spy;
+  }
+
+  function assertClean(text: string, f: Fixture) {
+    for (const secret of [
+      SENTINEL,
+      f.tenantId,
+      f.outletA,
+      f.edgeNodeId,
+      f.credential,
+      "Failed query",
+      "uoms",
+    ])
+      expect(text, secret).not.toContain(secret);
+  }
+
+  it("the service throws SERVICE_UNAVAILABLE with no cause, SQL or ids, and logs only class and SQLSTATE", async () => {
+    const verified = await verifyEdgeCredential(main.credential);
+    expect(verified).not.toBeNull();
+    const warn = vi.spyOn(logger, "warn");
+    const spy = failMastersRead(rawDbError(main), 0);
+    let thrown: unknown;
+    try {
+      await buildEdgeMasterSnapshot(verified!, main.credential);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(thrown).toBeInstanceOf(CoreError);
+    const error = thrown as CoreError & { cause?: unknown };
+    expect(error.code).toBe("SERVICE_UNAVAILABLE");
+    expect(error.cause).toBeUndefined();
+    assertClean(
+      [
+        error.message,
+        error.stack ?? "",
+        JSON.stringify(error),
+        JSON.stringify(
+          Object.getOwnPropertyNames(error).map((k) => (error as never)[k]),
+        ),
+      ].join("\n"),
+      main,
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      errorClass: "DrizzleQueryError",
+      sqlState: "57014",
+    });
+    assertClean(JSON.stringify(warn.mock.calls), main);
+  });
+
+  it("the route answers 503 with a fixed body and the next request works", async () => {
+    const probe = vi.spyOn(db, "transaction");
+    expect((await cloudMasters(main)).status).toBe(200);
+    const perRequest = probe.mock.calls.length;
+    probe.mockRestore();
+    expect(perRequest).toBeGreaterThan(0);
+    const spy = failMastersRead(rawDbError(main), perRequest - 1);
+    const response = await cloudMasters(main);
+    expect(spy).toHaveBeenCalledTimes(perRequest);
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe("SERVICE_UNAVAILABLE");
+    assertClean(JSON.stringify(response.body), main);
+    spy.mockRestore();
+    expect((await cloudMasters(main)).status).toBe(200);
+  });
+
+  it("a non-database error is not turned into a 503", async () => {
+    const verified = await verifyEdgeCredential(main.credential);
+    const bug = new Error("Unsafe database role for tenant access");
+    failMastersRead(bug, 0);
+    await expect(
+      buildEdgeMasterSnapshot(verified!, main.credential),
+    ).rejects.toBe(bug);
   });
 });

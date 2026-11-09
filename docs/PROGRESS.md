@@ -18,6 +18,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus dan architect, dua putaran; temuan nyata dibetulkan.
 - Berikut: legend-zclb (kirim ulang PIN v1), legend-0q3r (drain lintas tenant di worker), legend-t9ii (versi sinkron PIN berurutan commit). Brief: `docs/briefs/160-second-opinion-edge-access-apply.md` (tidak di-commit).
 
+## legend-uznb + legend-8izz + Codex 119/124 guard master edge dan limiter (engineer, cabang `ws/edge-masters-guard`, 2026-11-09)
+
+- Sudah: `/api/edge-sync/bootstrap/masters` punya limiter sendiri (120 per IP, 30 per IP + hash bearer), dipasang di `app.ts` sebelum resolusi tenant (Codex 119). `syncEdgeMasters` dan `applyEdgeMasterSnapshotInTransaction` lewat `guardDataImport("edge.bootstrap")` (legend-8izz). Galat DB di endpoint masters menjadi 503 tetap tanpa SQL atau id (Codex 124).
+- Test: `edge-bootstrap-rate-limit.test.ts` (mounted app hitung query domain), `edge-master-sync.test.ts` (8izz, Codex 124 sentinel), `data-import-registry.test.ts` (cek statis).
+- Review K: reviewer Opus dan architect; temuan nyata dibetulkan. Batas NAT outlet dan `TRUST_PROXY` dicatat di `docs/deployment.md`.
+- Berikut: Codex 160 dua P2 di `ws/edge-access-apply` (urutan generasi PIN, galat outbox berisi material), lalu legend-t9ii dan legend-zclb. Brief second opinion: `docs/briefs/166-second-opinion-edge-masters-guard.md` (tidak di-commit).
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.
