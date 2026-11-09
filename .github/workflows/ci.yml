@@ -49,6 +49,39 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # Lighthouse on /menu and /t/<token> (bead legend-wwsa): production builds,
+  # a disposable PostgreSQL started by the script, mobile preset, median of 3
+  # runs against the thresholds in scripts/ci/lighthouse.config.mjs. It needs
+  # `check` so it only runs on a tree that already passed lint, tests and
+  # build; it rebuilds because jobs do not share the build output. The build
+  # uses the e2e API origin because the web bundle inlines VITE_API_URL.
+  lighthouse:
+    needs: [check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm run setup
+      - name: Build for Lighthouse
+        run: pnpm build
+        env:
+          NODE_ENV: production
+          VITE_API_URL: http://localhost:4101
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Lighthouse /menu and /t/<token>
+        run: pnpm lighthouse
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse-results
+          path: test-results/lighthouse/
+          retention-days: 7
+
   # Mock-mode FE specs (bead legend-n2sp): a Vite dev server with
   # VITE_API_MOCK=true, no database. The suite is ~224 tests / ~11 min on one
   # worker, so CI shards it over two parallel jobs (bead legend-x5be). Each job
