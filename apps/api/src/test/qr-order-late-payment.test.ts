@@ -34,6 +34,7 @@ import type { PaymentInstructions } from "@starter/shared/payment";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { seedTenantRoleTemplates } from "../services/access.service.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
   setPaymentGateway,
@@ -461,5 +462,83 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
     await Promise.all([deliver(paid), deliver(paid)]);
     expect(await refundsOfIntent(intentId)).toHaveLength(1);
     expect(await refundAudits(intentId)).toBe(1);
+  });
+
+  // legend-2dnh (PAY-04): the system refund opens its approval chain when it is
+  // created, so a supervisor finds it without anyone submitting it first.
+  it("PAY-04 the QR late-payment refund opens its approval chain at creation", async () => {
+    // The tenant needs its refund approval matrix (supervisor from Rp0).
+    await withTenant(db, contextOf(tenant.tenantId), (tx) =>
+      seedTenantRoleTemplates(tx, tenant.tenantId),
+    );
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const intentId = await openPayment(guest, orderId);
+    const failedAt = new Date();
+    gateway.status = "failed";
+    try {
+      await getGuestPayment(
+        contextOf(tenant.tenantId),
+        guest.token,
+        guest.sessionId,
+        intentId,
+        failedAt,
+      );
+    } finally {
+      gateway.status = "pending";
+    }
+    const failed = await onlyEvent("payment.failed", intentId);
+    const { payment_link_id: linkId } = await orderRow(orderId);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        "UPDATE payment_links SET expires_at = now() - interval '1 minute' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, linkId],
+      ),
+    );
+    const { expires_at: codeEnd } = await intentRow(intentId);
+    const afterGrace = new Date(
+      codeEnd.getTime() + LATE_PAYMENT_GRACE_MS + MINUTE,
+    );
+    await deliver(failed, afterGrace);
+    expect((await orderRow(orderId)).status).toBe("voided");
+    await settle(
+      intentId,
+      totalIdr,
+      `WEBHOOK-${randomBytes(6).toString("hex")}`,
+    );
+    const paid = await onlyEvent("payment.paid", intentId);
+    expect(await deliver(paid)).toEqual({
+      route: "qr",
+      outcome: "late_payment_on_voided_order",
+    });
+
+    const { rows } = await owner.query<{
+      id: string;
+      approval_chain_id: string | null;
+    }>(
+      "SELECT id, approval_chain_id FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenant.tenantId, intentId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.approval_chain_id).not.toBeNull();
+    const chain = await owner.query<{ status: string; requested_by: string }>(
+      `SELECT status, requested_by FROM approval_requests
+       WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2`,
+      [tenant.tenantId, rows[0]!.id],
+    );
+    expect(chain.rows).toEqual([
+      {
+        status: "pending",
+        requested_by: "00000000-0000-4000-8000-000000000002",
+      },
+    ]);
+
+    // A replay creates no second refund and no second chain.
+    await deliver(paid);
+    const again = await owner.query(
+      "SELECT 1 FROM approval_requests WHERE tenant_id = $1 AND object_id = $2",
+      [tenant.tenantId, rows[0]!.id],
+    );
+    expect(again.rowCount).toBe(1);
   });
 });

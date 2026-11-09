@@ -28,6 +28,7 @@
 //   refund is never paid and ends failed (approver_unauthorized).
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { and, eq } from "drizzle-orm";
 import {
   afterAll,
   afterEach,
@@ -46,10 +47,15 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createApp } from "../app";
+import { db } from "../db";
+import { paymentRefunds } from "../db/schema/index";
+import { withTenant } from "../db/tenant";
+import { outletContext } from "../services/device-pin-support";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import {
   handleRefundApprovalResolved,
+  openRefundChainAtRequest,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
@@ -366,6 +372,28 @@ async function resolvedEventOfChain(chainId: string) {
   return eventEnvelopeSchema.parse(rows[0]!.event);
 }
 
+/**
+ * Opens the approval chain the way a system refund's creation does (legend-2dnh):
+ * requester is the reserved system user, so the first human who acts decides
+ * level 1. Idempotent: a refund that already has a chain is returned unchanged.
+ */
+async function openChainAtCreation(refundId: string) {
+  const context = outletContext(sessionTenant, outletA);
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    if (!row) throw new Error("refund row missing");
+    return openRefundChainAtRequest(tx, context, row, new Date());
+  });
+}
+
 const decide = (
   actorId: string,
   requestId: string,
@@ -534,24 +562,22 @@ describe("PAY-04 review A: refunds of sales documents go through the owning modu
     });
   });
 
-  it("PAY-04 a refund requested by system:pos on a sales-document payment still needs two humans and pays out", async () => {
+  it("PAY-04 a refund requested by system:pos on a sales-document payment waits for one human approver and pays out once", async () => {
+    // legend-2dnh: the chain is opened at creation with the system user as
+    // requester, so the first human approver decides (no separate "submit" step).
     const intent = await seedPaid(100_000, 100_000, { orderId: randomUUID() });
     const refundId = await insertPendingRefund(
       intent.intentId,
       50_000,
       "system:pos",
     );
-    const submitKey = key("submit");
-    const submitted = await approve(financeA, refundId, submitKey);
-    expect(submitted.status).toBe(200);
-    expect(submitted.body.data.status).toBe("pending");
+    await openChainAtCreation(refundId);
+    expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
+    expect((await refundRow(refundId)).approval_chain_id).not.toBeNull();
     expect(fake.calls).toHaveLength(0);
-    // Review: a retried submit (same key) replays, never APPROVER_IS_REQUESTER.
-    const resubmitted = await approve(financeA, refundId, submitKey);
-    expect(resubmitted.status).toBe(200);
-    expect(resubmitted.body.data.status).toBe("pending");
 
-    const approved = await approve(financeB, refundId);
+    const approveKey = key("approve");
+    const approved = await approve(financeA, refundId, approveKey);
     expect(approved.status).toBe(200);
     expect(approved.body.data).toMatchObject({
       status: "completed",
@@ -559,6 +585,12 @@ describe("PAY-04 review A: refunds of sales documents go through the owning modu
     });
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]).toMatchObject({ refundId, amountIdr: 50_000 });
+    // Review: a retried approve (same key) replays, never APPROVER_IS_REQUESTER
+    // and never a second payout.
+    const replayed = await approve(financeA, refundId, approveKey);
+    expect(replayed.status).toBe(200);
+    expect(replayed.body.data.status).toBe("completed");
+    expect(fake.calls).toHaveLength(1);
   });
 
   it("PAY-04 an unallocated fund on a sales-document payment can still be refunded", async () => {
@@ -845,11 +877,10 @@ describe("PAY-04 review F: every approver of the chain must hold reconcile or su
       2_000_000,
       "system:reservation",
     );
-    // The first human only files the chain; Finance then decides level 1 and the
+    // The chain opens at creation (system requester); Finance decides level 1 and the
     // Supervisor (no payment.reconcile) level 2, both through the approval inbox.
-    const submitted = await approve(financeA, refundId);
-    expect(submitted.status).toBe(200);
-    expect(submitted.body.data.status).toBe("pending");
+    await openChainAtCreation(refundId);
+    expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
     const chainId = (await refundRow(refundId)).approval_chain_id;
     expect(chainId).not.toBeNull();
 
@@ -919,9 +950,8 @@ describe("PAY-04 review F: every approver of the chain must hold reconcile or su
       2_000_000,
       "system:reservation",
     );
-    const submitted = await approve(financeA, refundId);
-    expect(submitted.status).toBe(200);
-    expect(submitted.body.data.status).toBe("pending");
+    await openChainAtCreation(refundId);
+    expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
     const chainId = (await refundRow(refundId)).approval_chain_id;
     expect(chainId).not.toBeNull();
 

@@ -2,6 +2,11 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-2dnh refund sistem membuka rantai approval (merge train batch11, cabang `ws/refund-tier` 40800ce2, 2026-11-09)
+
+- Sudah: refund buatan sistem (late payment POS dan QR, deposit reservasi) membuka rantai approval lewat akun sistem terkunci (banned, tanpa role, tanpa akun login). Migrasi `0135_system_approval_requester` diurutkan ulang menjadi `0144_system_approval_requester` (custom, isi apa adanya), terdaftar di `MIGRATION_DATA_STATEMENTS`.
+- Berikut: gate batch11, lalu merge ke `milestone/m1`.
+
 ## Codex 160 dua P2 di legend-kyie (engineer, cabang `ws/edge-access-apply`, 2026-11-09)
 
 - Sudah: urutan set PIN memakai kolom baru `staff_pins.pin_generation_at` (migrasi `0142_high_scrambler`), terpisah dari `pin_set_at` yang dibatasi. Set lebih dari 5 menit di depan jam cloud ditolak; lock begitu diabaikan. Kunci generation di edge dan cloud tidak pernah mundur, dan kunci edge yang tertinggal jauh di depan pulih setelah jam dibetulkan. Galat tulis yang membawa hash atau salt dibungkus galat generik tanpa cause (`withoutSecretErrorDetail`).

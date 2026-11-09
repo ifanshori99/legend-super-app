@@ -22,6 +22,7 @@
 //   completed refunds cover the whole payment, else `partially_refunded`.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { and, eq } from "drizzle-orm";
 import {
   afterAll,
   afterEach,
@@ -40,11 +41,17 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createApp } from "../app";
+import { db } from "../db";
+import { paymentRefunds } from "../db/schema/index";
+import { withTenant } from "../db/tenant";
+import { outletContext } from "../services/device-pin-support";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import {
+  SYSTEM_APPROVAL_REQUESTER,
   applyRefundProviderUpdate,
   handleRefundApprovalResolved,
+  openRefundChainAtRequest,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
@@ -922,27 +929,50 @@ describe("PAY-04 approval matrix", () => {
 });
 
 describe("PAY-04 system-requested refunds", () => {
-  it("PAY-04 a refund requested by the system needs two humans, then pays out", async () => {
-    const intent = await seedPaid();
+  // legend-2dnh: a system refund opens its approval chain at creation, with the
+  // reserved system user as requester, so one human approval settles it.
+  async function insertSystemRefund(
+    intentId: string,
+    requestedBy = "system:reservation",
+  ) {
     const refundId = randomUUID();
     refundIds.push(refundId);
     await owner.query(
       `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-       VALUES ($1, $2, $3, $4, 50000, 'Pengembalian DP reservasi', 'pending', 'system:reservation')`,
-      [refundId, tenantId, outletA, intent.intentId],
+       VALUES ($1, $2, $3, $4, 50000, 'Pengembalian DP reservasi', 'pending', $5)`,
+      [refundId, tenantId, outletA, intentId, requestedBy],
     );
+    return refundId;
+  }
 
-    // The first human to act files the approval request; that is not approval.
-    const submitted = await approve(financeA, refundId);
-    expect(submitted.status).toBe(200);
-    expect(submitted.body.data.status).toBe("pending");
+  it("PAY-04 a refund requested by the system has its chain open from creation and one approver pays it out", async () => {
+    const intent = await seedPaid();
+    const refundId = await insertSystemRefund(intent.intentId);
+
+    // Creation opens the chain; the requester is the reserved system user.
+    const opened = await openChainForSystemRefund(refundId);
+    expect(opened.approvalChainId).not.toBeNull();
+    expect(await decisions(refundId)).toMatchObject([
+      { level: 1, status: "pending" },
+    ]);
+    const { rows } = await owner.query<{ requested_by: string }>(
+      `SELECT requested_by FROM approval_requests
+       WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2`,
+      [tenantId, refundId],
+    );
+    expect(rows).toEqual([{ requested_by: SYSTEM_APPROVAL_REQUESTER }]);
+
+    // An approver finds it in the inbox with nobody having submitted it first.
+    const inbox = await financeB.get(
+      "/api/approvals?status=pending&actionType=refund&limit=100",
+    );
+    expect(inbox.status).toBe(200);
+    expect(
+      (inbox.body.data as Array<{ objectId: string }>).map((r) => r.objectId),
+    ).toContain(refundId);
     expect(fake.calls).toHaveLength(0);
 
-    // The same person cannot also approve what they submitted.
-    const self = await approve(financeA, refundId);
-    expect([403, 409]).toContain(self.status);
-    expect(fake.calls).toHaveLength(0);
-
+    // One approval is enough; the first human is a real approver, not a submitter.
     const approved = await approve(financeB, refundId);
     expect(approved.status).toBe(200);
     expect(approved.body.data).toMatchObject({
@@ -952,6 +982,7 @@ describe("PAY-04 system-requested refunds", () => {
     });
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]).toMatchObject({ refundId, amountIdr: 50_000 });
+    expect(fake.executionCount).toBe(1);
     expect(await refundRow(refundId)).toMatchObject({
       status: "completed",
       approved_by: financeBId,
@@ -959,25 +990,62 @@ describe("PAY-04 system-requested refunds", () => {
     expect(await intentStatus(intent.intentId)).toBe("partially_refunded");
   });
 
-  it("PAY-04 the human who submitted a system-requested refund cannot approve it again", async () => {
+  it("PAY-04 a refund the system filed before chains opened at creation is decided by the first approver", async () => {
+    // Pre-deploy refund: no chain yet. The approver decides level 1 directly.
     const intent = await seedPaid();
-    const refundId = randomUUID();
+    const refundId = await insertSystemRefund(intent.intentId);
+    const approved = await approve(financeA, refundId);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toMatchObject({
+      status: "completed",
+      approvedBy: financeAId,
+    });
+    expect(fake.calls).toHaveLength(1);
+    const { rows } = await owner.query<{ requested_by: string }>(
+      `SELECT requested_by FROM approval_requests
+       WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2`,
+      [tenantId, refundId],
+    );
+    // The chain was filed by the system user, not by the approver.
+    expect(rows).toEqual([{ requested_by: SYSTEM_APPROVAL_REQUESTER }]);
+  });
+
+  it("PAY-04 the human who opened the chain of a system-requested refund cannot approve it, another approver can", async () => {
+    // Assumption: a chain opened by a human submitter before this change is
+    // reproduced by filing the refund as financeA and then marking it as
+    // system-requested, which leaves a chain whose requester is financeA.
+    const intent = await seedPaid();
+    const filed = await financeA
+      .post(`${ADMIN}/refunds`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("req"),
+        paymentIntentId: intent.intentId,
+        amountIdr: 50_000,
+        reason: "Pengembalian DP reservasi",
+      });
+    expect(filed.status).toBe(201);
+    const refundId = filed.body.data.id as string;
     refundIds.push(refundId);
     await owner.query(
-      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-       VALUES ($1, $2, $3, $4, 50000, 'Pengembalian DP reservasi', 'pending', 'system:reservation')`,
-      [refundId, tenantId, outletA, intent.intentId],
+      "UPDATE payment_refunds SET requested_by = 'system:reservation' WHERE tenant_id = $1 AND id = $2",
+      [tenantId, refundId],
     );
-    const submitted = await approve(financeA, refundId);
-    expect(submitted.status).toBe(200);
-    expect(submitted.body.data.status).toBe("pending");
 
     // Not a silent 200: the submitter is refused outright.
-    const again = await approve(financeA, refundId);
-    expect(again.status).toBe(403);
+    const self = await approve(financeA, refundId);
+    expect(self.status).toBe(403);
     expect(fake.calls).toHaveLength(0);
     expect((await refundRow(refundId)).status).toBe("pending");
     expect(await intentStatus(intent.intentId)).toBe("paid");
+
+    const other = await approve(financeB, refundId);
+    expect(other.status).toBe(200);
+    expect(other.body.data).toMatchObject({
+      status: "completed",
+      approvedBy: financeBId,
+    });
+    expect(fake.calls).toHaveLength(1);
   });
 
   it("PAY-04 a system-requested refund can be rejected by a human", async () => {
@@ -1329,6 +1397,26 @@ async function seedApprovedRefund(opts: {
   return { intent, refundId };
 }
 
+/** Opens a system refund's chain as its creation does, in a real transaction. */
+async function openChainForSystemRefund(refundId: string) {
+  const context = outletContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    outletA,
+  );
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    return openRefundChainAtRequest(tx, context, row!, new Date());
+  });
+}
+
 /** A pending refund requested by the system, with its approval chain open. */
 async function seedSystemRefundWithOpenChain(amountIdr = 50_000) {
   const intent = await seedPaid();
@@ -1339,10 +1427,9 @@ async function seedSystemRefundWithOpenChain(amountIdr = 50_000) {
      VALUES ($1, $2, $3, $4, $5, 'Pengembalian DP reservasi', 'pending', 'system:reservation')`,
     [refundId, tenantId, outletA, intent.intentId, amountIdr],
   );
-  // The first human only submits; the chain is now waiting for someone else.
-  const submitted = await approve(financeA, refundId);
-  expect(submitted.status).toBe(200);
-  expect(submitted.body.data.status).toBe("pending");
+  // legend-2dnh: creation opens the chain (requester: the system user), and it
+  // waits for an approver.
+  await openChainForSystemRefund(refundId);
   const { rows } = await owner.query<{ id: string }>(
     `SELECT id FROM approval_requests
      WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2 AND status = 'pending'

@@ -31,6 +31,7 @@
 //   instead of the exported const.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { and, eq } from "drizzle-orm";
 import {
   afterAll,
   afterEach,
@@ -49,10 +50,15 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createApp } from "../app";
+import { db } from "../db";
+import { paymentRefunds } from "../db/schema/index";
+import { withTenant } from "../db/tenant";
+import { outletContext } from "../services/device-pin-support";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import {
   handleRefundApprovalResolved,
+  openRefundChainAtRequest,
   runRefundPayout,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
@@ -84,7 +90,6 @@ const EVIDENCE_MAPPING_REQUIRED = "EVIDENCE_MAPPING_REQUIRED";
 
 type Client = ReturnType<typeof agent>;
 let requesterId: string; // Owner: owns the seeded payments, never approves
-let financeA: Client;
 let financeAId: string;
 let financeB: Client;
 let financeSup: Client;
@@ -303,8 +308,31 @@ const decide = (
   );
 
 /**
- * A system-requested refund on a fresh paid intent: the approver submits it,
- * the first two deciders then settle the chain through the approval inbox.
+ * Opens the approval chain the way a system refund's creation does (legend-2dnh):
+ * requester is the reserved system user, so the first human who acts decides
+ * level 1. Idempotent: a refund that already has a chain is returned unchanged.
+ */
+async function openChainAtCreation(refundId: string) {
+  const context = outletContext(sessionTenant, outletA);
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    if (!row) throw new Error("refund row missing");
+    return openRefundChainAtRequest(tx, context, row, new Date());
+  });
+}
+
+/**
+ * A system-requested refund on a fresh paid intent: the chain opens at
+ * creation with the system requester, the first two deciders then settle the
+ * chain through the approval inbox.
  * Returns once the `approval.resolved` event was consumed (and, if the refund
  * is still approved, once one payout sweep ran).
  */
@@ -319,9 +347,8 @@ async function settleChain(
     amountIdr,
     "system:reservation",
   );
-  const submitted = await approve(financeA, refundId);
-  expect(submitted.status).toBe(200);
-  expect(submitted.body.data.status).toBe("pending");
+  await openChainAtCreation(refundId);
+  expect(await refundRow(refundId)).toMatchObject({ status: "pending" });
   const chainId = (await refundRow(refundId)).approval_chain_id;
   expect(chainId).not.toBeNull();
 
@@ -416,10 +443,7 @@ async function seedExtraFundRefund(intentId: string) {
 
 beforeAll(async () => {
   ({ userId: requesterId } = await signedIn("owner", "Codex fix requester"));
-  ({ client: financeA, userId: financeAId } = await signedIn(
-    "finance",
-    "Codex fix finance A",
-  ));
+  ({ userId: financeAId } = await signedIn("finance", "Codex fix finance A"));
   ({ client: financeB, userId: financeBId } = await signedIn(
     "finance",
     "Codex fix finance B",
@@ -815,7 +839,7 @@ describe("PAY-04 legend-tvhq: every payout send re-validates the approval", () =
       5_000_000,
       "system:reservation",
     );
-    expect((await approve(financeA, refundId)).status).toBe(200);
+    await openChainAtCreation(refundId);
     const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
     await decide(financeBId, level1.id, "approved");
     const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
@@ -1285,7 +1309,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
       2_000_000,
       "system:reservation",
     );
-    expect((await approve(financeA, refundId)).status).toBe(200);
+    await openChainAtCreation(refundId);
     const oldChain = (await refundRow(refundId)).approval_chain_id!;
     const old1 = (await decisions(refundId)).find((d) => d.level === 1)!;
     await decide(financeBId, old1.id, "approved");
@@ -1312,7 +1336,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
     );
     expect((await refundRow(refundId)).status).toBe("pending");
 
-    expect((await approve(financeA, refundId)).status).toBe(200);
+    await openChainAtCreation(refundId);
     const newChain = (await refundRow(refundId)).approval_chain_id;
     expect(newChain).not.toBeNull();
     expect(newChain).not.toBe(oldChain);
@@ -1359,7 +1383,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
       2_000_000,
       "system:reservation",
     );
-    expect((await approve(financeA, refundId)).status).toBe(200);
+    await openChainAtCreation(refundId);
     const chainId = (await refundRow(refundId)).approval_chain_id!;
     expect(await chainStatuses(chainId)).toEqual(["pending"]);
     await owner.query(
@@ -1387,7 +1411,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
       2_000_000,
       "system:reservation",
     );
-    expect((await approve(financeA, refundB)).status).toBe(200);
+    await openChainAtCreation(refundB);
     const chainB = (await refundRow(refundB)).approval_chain_id!;
     expect(await chainStatuses(chainB)).toEqual(["pending"]);
 
@@ -1432,7 +1456,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
     ]);
 
     // A opens its own chain on approve; B's stays open.
-    expect((await approve(financeA, refundA)).status).toBe(200);
+    await openChainAtCreation(refundA);
     const chainA = (await refundRow(refundA)).approval_chain_id;
     expect(chainA).not.toBeNull();
     expect(chainA).not.toBe(chainB);
@@ -1494,7 +1518,7 @@ describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined re
     expect((await refundRow(refundId)).status).toBe("pending");
 
     // A second pending row for the same refund (approval_requests_one_pending_key).
-    expect((await approve(financeA, refundId)).status).toBe(200);
+    await openChainAtCreation(refundId);
     const newChain = (await refundRow(refundId)).approval_chain_id!;
     expect(newChain).not.toBeNull();
     expect(newChain).not.toBe(oldChain);

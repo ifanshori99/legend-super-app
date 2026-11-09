@@ -25,6 +25,7 @@ import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 import { auditPos } from "./pos-order-support.ts";
@@ -83,7 +84,7 @@ export async function requestPosLatePaymentRefund(
       const { cap, reserved } = await refundableBalance(tx, intent);
       const amount = cap - reserved;
       if (amount <= 0n) return { refundId: null };
-      const [row] = await tx
+      const [inserted] = await tx
         .insert(paymentRefunds)
         .values({
           tenantId: intent.tenantId,
@@ -96,7 +97,8 @@ export async function requestPosLatePaymentRefund(
           requestedBy: POS_SYSTEM_ACTOR,
         })
         .returning();
-      if (!row) throw new Error("Refund insert returned no row");
+      if (!inserted) throw new Error("Refund insert returned no row");
+      const row = await openRefundChainSafely(tx, context, inserted, input.now);
       await recordAudit(
         tx,
         context,

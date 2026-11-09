@@ -94,6 +94,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "sets pin_generation_at of existing staff_pins rows to their pin_set_at (legend-kyie, Codex 160); FORCE RLS lifted for that one statement and restored; edits no other column",
   "0143_edc_pan_scrub_separators.sql":
     "second pass of the 0135 scrub: masks card-number-like digit runs split by repeated or mixed separators in existing edc_transactions rows (legend-tjwb); idempotent, edits no other column",
+  "0144_system_approval_requester.sql":
+    "inserts the reserved banned system user (id 00000000-0000-4000-8000-000000000002, no role, no sign-in account) that opens system refund approval chains, ON CONFLICT DO NOTHING with a check that an existing row is that account; adds the user and role-assignment guard triggers (legend-2dnh)",
 };
 
 // Entrypoints that open a database pool but import no data.
