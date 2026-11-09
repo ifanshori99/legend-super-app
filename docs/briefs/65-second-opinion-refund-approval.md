@@ -33,3 +33,5 @@ Satu baris per temuan: `path:baris`, tingkat, masalah, skenario gagal, saran per
 
 ## Larangan
 Jangan edit atau commit. Jangan baca `.env*` atau `~/.ssh`.
+
+Putaran fix (brief 92): cabang ws/refund-approval 7c24b7b8, digabung m1 `baf6d615` lewat prep2/refund-approval f5025cf9. Rentang diff fix: `git diff 30a31a3c baf6d615`.

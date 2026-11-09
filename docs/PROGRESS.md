@@ -11,7 +11,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
 |---|---|---|---|---|---|
 | ws/pos-shift | 69ddb9a4 | K | uang kas, 5 migration | DIGABUNG m1 `30a31a3c` (prep 1eda3a4b, migration diregen 0088-0090); gate prep 2d7fe62a hijau API 2289 / root 1427; kartu 6c0 xvyr ditutup | Codex R1 brief 59 (rentang 71751c8f..30a31a3c) |
-| ws/refund-approval | 09385266 | K | refund, approval, payout | DIGABUNG m1 `1056e208` (prep 55084e9c, migration diregen 0079); gate prep hijau API 1784 / root 1420; kartu rbjw hvvn ditutup | Codex R2 selesai: 2 P1 (brief 92) BELUM di cabang maupun m1; fix brief 92 harus digabung ke m1 sebelum rilis |
+| ws/refund-approval | 09385266 | K | refund, approval, payout | DIGABUNG m1 `1056e208` (prep 55084e9c, migration diregen 0079); gate prep hijau API 1784 / root 1420; kartu rbjw hvvn ditutup | Codex R2 selesai: 2 P1 dibetulkan (ws 7c24b7b8) dan DIGABUNG m1 `baf6d615` (prep f5025cf9, migration 0091; gate API 2301 / root 1427) |
 | ws/journals | 4ec3babb | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih); regen 0075/0076 di atas m1 8e2e7bc0; DIGABUNG milestone/m1 4e0bacd4 (brief 89, 00:2x); gate: lint+typecheck hijau, API 1496 + 9 file timeout diulang 147/147, root 1419 + 1 artefak diulang 21/21 | Codex R3 brief 70 (SHA 4ec3babb) |
 | ws/payroll-pph21-tests | 461a94bf | K | uang PPh21 | DIGABUNG m1 `4a040820` (prep 53379722, migration diregen 0084/0085); gate prep hijau API 2147 / root 1426; kartu oo3q y4wp iwgb 5cnk ditutup; legend-s5c1 P1 prasyarat run service | Codex R4 (rentang 658b055b..4a040820; brief belum ditulis) |
 | ws/edc-framework | a6d022d3 | K | uang EDC, tagih dobel | DIGABUNG m1 `658b055b` (prep 81038feb, migration diregen 0082/0083); gate prep hijau API 1961 / root 1426; kartu apt ditutup | Codex R5 brief 60 (rentang fd2616f4..658b055b) |
@@ -218,3 +218,4 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `71751c8f` fix-sharp (legend-vj37, prioritas: build produksi crash). Gate prep b2eef70a API 2177 / root 1427 + build API tsup sukses; format:check bersih; vj37 ditutup.
 - m1 `30a31a3c` pos-shift (0088-0090; fix ULID legend-xvyr + nama migration pos-day; 6c0 xvyr ditutup).
 - Keputusan founder (9 Nov pagi): rilis TANPA kartu online. Online: QRIS + VA (DOIT). Kasir: tunai, EDC (debit/kredit), QRIS. Kartu online menyusul via Duitku pascarilis. PRD dirapikan (subagent doc-writer).
+- m1 `baf6d615` fix refund Codex R2 (brief 92; 0091 partial unique index fund evidence; gate API 2301 / root 1427).
