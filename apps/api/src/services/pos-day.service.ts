@@ -55,6 +55,7 @@ import {
 import {
   closeBusinessDayInputSchema,
   endOfDayRecapSchema,
+  formatReceiptNumber,
   PosError,
   POS_TENDER_METHODS,
   posEvents,
@@ -771,7 +772,18 @@ export async function closePosDay(
     const outletGaps = await posOutletReceiptGapsPort()(tx, context, {
       outletId,
     });
-    if (outletGaps.length > 0) throw new PosError("RECEIPT_SEQUENCE_GAP");
+    if (outletGaps.length > 0) {
+      // Name the numbers: the run may be an idle device or the cloud
+      // sequence, which no shift report shows. Capped at 20, like the merge.
+      const numbers = outletGaps.flatMap((run) =>
+        run.missing.slice(0, 21).map((n) => formatReceiptNumber(run.prefix, n)),
+      );
+      const more = numbers.length > 20 ? " dan lainnya" : "";
+      throw new PosError(
+        "RECEIPT_SEQUENCE_GAP",
+        `Ada nomor struk yang hilang di outlet ini: ${numbers.slice(0, 20).join(", ")}${more}.`,
+      );
+    }
 
     if (body.inventoryDeduction)
       await posDayInventoryPort()(tx, context, {
