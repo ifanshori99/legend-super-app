@@ -12,7 +12,9 @@
 //   `provider_declined`), which releases the reserved amount.
 // The provider is never called inside a database transaction. Lock order is
 // payment intent -> unallocated fund -> refund everywhere; the payout claim
-// transaction locks only the refund (a short lease, then the provider call).
+// transaction locks only the refund, or that same chain for a fund refund (a
+// short lease, then the provider call). Every send first re-validates the
+// approval; one that no longer holds is quarantined, never sent.
 
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import {
@@ -86,6 +88,11 @@ const PAYOUT_PENDING_MAX_HOURS = 72;
 export const MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION";
 /** The fund has no usable evidence of its own: ops must map it (retry with sourceEvidenceId). */
 export const EVIDENCE_MAPPING_REQUIRED = "EVIDENCE_MAPPING_REQUIRED";
+/**
+ * The approval of an `approved` refund failed the send-time re-validation
+ * (legend-tvhq): it is never sent again by sweep or retry. Ops reconcile it.
+ */
+export const PAYOUT_QUARANTINED = "PAYOUT_QUARANTINED";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
@@ -440,8 +447,8 @@ async function chainRowsOf(
 }
 
 /** The chain must be this refund's own: bound to its value and payment (single use). */
-function assertChainBound(rows: readonly ChainRow[], refund: Refund): void {
-  const bound =
+function chainBound(rows: readonly ChainRow[], refund: Refund): boolean {
+  return (
     rows.length > 0 &&
     rows.every(
       (row) =>
@@ -450,8 +457,12 @@ function assertChainBound(rows: readonly ChainRow[], refund: Refund): void {
         row.objectType === REFUND_OBJECT_TYPE &&
         row.objectId.toLowerCase() === refund.id.toLowerCase() &&
         row.amountIdr === refund.amountIdr,
-    );
-  if (!bound)
+    )
+  );
+}
+
+function assertChainBound(rows: readonly ChainRow[], refund: Refund): void {
+  if (!chainBound(rows, refund))
     throw new CoreError(
       "VALIDATION_ERROR",
       "Approval chain does not match this refund.",
@@ -864,6 +875,99 @@ function errorCodeOf(error: unknown): string {
   return raw.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 100) || "UNKNOWN";
 }
 
+/** Why an `approved` refund's approval no longer allows a payout. */
+type ApprovalDefect =
+  | "approver_unauthorized"
+  | "supervisor_required"
+  | "chain_unbound"
+  | "chain_not_approved";
+
+/**
+ * Re-validates the approval of an `approved` refund under the current rules,
+ * right before a payout send (legend-tvhq): an approval recorded before the
+ * supervisor rule, whose payout failed, must not be paid by a later sweep or
+ * retry. Same rules as decideRefund's direct path (one approver with
+ * payment.reconcile and pos.refund.approve) and settleLocked (every chain
+ * approver holds either, at least one holds pos.refund.approve). Permissions
+ * are read at `now`. Returns the defect, or null when the approval holds.
+ */
+async function approvalDefectOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<ApprovalDefect | null> {
+  const approver = refund.approvedBy;
+  if (
+    approver === null ||
+    approver.toLowerCase() === refund.requestedBy.toLowerCase()
+  )
+    return "approver_unauthorized";
+  const holds = (userId: string, permission: PermissionCode) =>
+    holdsPermission(tx, context, userId, permission, refund.outletId, now);
+  if (refund.approvalChainId === null) {
+    if (!(await holds(approver, SUPERVISOR_PERMISSION)))
+      return "supervisor_required";
+    if (!(await holds(approver, "payment.reconcile")))
+      return "approver_unauthorized";
+    return null;
+  }
+  const rows = await chainRowsOf(tx, refund.tenantId, refund.approvalChainId);
+  if (!chainBound(rows, refund)) return "chain_unbound";
+  const outcome = await getApprovalChainOutcome(tx, {
+    chainId: refund.approvalChainId,
+    sourceModule: REFUND_SOURCE_MODULE,
+  });
+  if (outcome !== "approved") return "chain_not_approved";
+  let supervisorApproved = false;
+  for (const row of rows) {
+    if (row.status !== "approved" || !row.decidedBy) continue;
+    const supervisor = await holds(row.decidedBy, SUPERVISOR_PERMISSION);
+    if (supervisor) supervisorApproved = true;
+    else if (!(await holds(row.decidedBy, "payment.reconcile")))
+      return "approver_unauthorized";
+  }
+  return supervisorApproved ? null : "supervisor_required";
+}
+
+/**
+ * Quarantines a refund whose approval failed re-validation: it stays
+ * `approved` (the amount stays reserved; an earlier attempt may have reached
+ * the provider) but is never sent again. Audited and logged once.
+ */
+async function quarantinePayout(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  defect: ApprovalDefect,
+  now: Date,
+): Promise<Refund> {
+  const [held] = await tx
+    .update(paymentRefunds)
+    .set({ lastPayoutError: PAYOUT_QUARANTINED, updatedAt: now })
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, refund.tenantId),
+        eq(paymentRefunds.id, refund.id),
+      ),
+    )
+    .returning();
+  if (!held) throw new Error("refund changed under its row lock");
+  await refundAudit(tx, context, {
+    actorId: null,
+    row: held,
+    action: "payment.refund_payout_quarantined",
+    now,
+    reason: defect,
+    before: { status: refund.status },
+  });
+  logger.error(
+    { refundId: refund.id, defect },
+    "Refund payout quarantined: approval failed re-validation; reconcile manually",
+  );
+  return held;
+}
+
 type PayoutClaim =
   | { readonly run: false; readonly refund: Refund }
   | {
@@ -953,20 +1057,46 @@ export async function runRefundPayout(
     db,
     context,
     async (tx): Promise<PayoutClaim> => {
-      const [refund] = await tx
-        .select()
+      const [probe] = await tx
+        .select({ unallocatedFundId: paymentRefunds.unallocatedFundId })
         .from(paymentRefunds)
         .where(
           and(
             eq(paymentRefunds.tenantId, context.tenant.tenantId),
             eq(paymentRefunds.id, refundId),
           ),
-        )
-        .for("update");
+        );
+      if (!probe) throw missing();
+      // A fund refund may store its evidence mapping below: lock intent -> fund
+      // -> refund like mapFundEvidence. Any other refund locks only itself.
+      const [refund] = probe.unallocatedFundId
+        ? [
+            (await lockRefundGraph(tx, context.tenant.tenantId, refundId))
+              .refund,
+          ]
+        : await tx
+            .select()
+            .from(paymentRefunds)
+            .where(
+              and(
+                eq(paymentRefunds.tenantId, context.tenant.tenantId),
+                eq(paymentRefunds.id, refundId),
+              ),
+            )
+            .for("update");
       if (!refund) throw missing();
       if (refund.status !== "approved") return { run: false, refund };
       if (refund.payoutClaimedUntil && refund.payoutClaimedUntil > now)
         return { run: false, refund };
+      // Quarantine is final for the payout path: no lookup, no send.
+      if (refund.lastPayoutError === PAYOUT_QUARANTINED)
+        return { run: false, refund };
+      const defect = await approvalDefectOf(tx, context, refund, now);
+      if (defect !== null)
+        return {
+          run: false,
+          refund: await quarantinePayout(tx, context, refund, defect, now),
+        };
       const [intent] = await tx
         .select()
         .from(paymentIntents)
@@ -1032,7 +1162,30 @@ export async function runRefundPayout(
               ),
             )
             .limit(1);
-          if (!owned) evidence = evidenceRows[0];
+          if (!owned) {
+            evidence = evidenceRows[0]!;
+            // Store the mapping with the send (legend-wam2): once a second
+            // evidence row arrives the fallback no longer resolves, and a
+            // pending payout must still be polled with this source.
+            await tx
+              .update(paymentUnallocatedFunds)
+              .set({ evidenceId: evidence.id })
+              .where(
+                and(
+                  eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
+                  eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+                  isNull(paymentUnallocatedFunds.evidenceId),
+                ),
+              );
+            await refundAudit(tx, context, {
+              actorId: null,
+              row: refund,
+              action: "payment.refund_fund_evidence_mapped",
+              now,
+              before: { evidenceId: null },
+              after: { evidenceId: evidence.id },
+            });
+          }
         }
         if (!evidence) {
           const [held] = await tx
@@ -1249,6 +1402,7 @@ export async function sweepApprovedRefundPayouts(
           eq(paymentRefunds.status, "approved"),
           sql`${paymentRefunds.payoutAttempts} < ${PAYOUT_MAX_ATTEMPTS}`,
           sql`NOT ${pendingTooLong}`,
+          sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_QUARANTINED}`,
           leaseFree,
           sql`${paymentRefunds.updatedAt} + least(power(2, ${paymentRefunds.payoutAttempts} + ${paymentRefunds.payoutPendingPolls}), ${PAYOUT_BACKOFF_CAP_MINUTES}) * interval '1 minute' <= ${now}`,
         ),
@@ -1265,6 +1419,8 @@ export async function sweepApprovedRefundPayouts(
           sql`(${paymentRefunds.payoutAttempts} >= ${PAYOUT_MAX_ATTEMPTS} OR ${pendingTooLong})`,
           leaseFree,
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${MANUAL_RECONCILIATION}`,
+          // A quarantine keeps its own (more specific) flag.
+          sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_QUARANTINED}`,
         ),
       )
       .returning({ id: paymentRefunds.id });
@@ -1296,6 +1452,13 @@ export async function sweepApprovedRefundPayouts(
   return { attempted, exhausted: exhausted.length };
 }
 
+const quarantined = () =>
+  new HttpError(
+    409,
+    "PAYOUT_QUARANTINED",
+    "Refund approval failed re-validation; it cannot be paid out. Reconcile it manually.",
+  );
+
 export async function retryRefundPayout(
   context: ScopedTenantContext,
   actor: string,
@@ -1318,6 +1481,7 @@ export async function retryRefundPayout(
     await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
     if (refund.status !== "approved")
       throw conflict("Only an approved refund can be retried.");
+    if (refund.lastPayoutError === PAYOUT_QUARANTINED) throw quarantined();
     if (params.sourceEvidenceId)
       await mapFundEvidence(
         tx,
@@ -1328,6 +1492,11 @@ export async function retryRefundPayout(
       );
   });
   const result = await runRefundPayout(context, params.refundId);
+  if (
+    result.status === "approved" &&
+    result.lastPayoutError === PAYOUT_QUARANTINED
+  )
+    throw quarantined();
   if (
     result.status === "approved" &&
     result.lastPayoutError === EVIDENCE_MAPPING_REQUIRED

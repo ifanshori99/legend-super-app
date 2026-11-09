@@ -87,6 +87,7 @@ let financeA: Client;
 let financeAId: string;
 let financeB: Client;
 let financeSup: Client;
+let financeSupId: string;
 let financeBId: string;
 let financeCId: string;
 let ownerB: Client;
@@ -379,7 +380,8 @@ async function seedApprovedFundRefund(evidenceCount: 1 | 2) {
       outletA,
       intent.intentId,
       requesterId,
-      financeAId,
+      // Supervisor authority: payouts re-validate the approval (legend-tvhq).
+      financeSupId,
       fundId,
     ],
   );
@@ -406,7 +408,7 @@ async function seedExtraFundRefund(intentId: string) {
     `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
                                   requested_by, approved_by, decided_at, payout_attempts, updated_at, unallocated_fund_id)
      VALUES ($1, $2, $3, $4, 20000, 'Kembalikan kelebihan bayar', 'approved', $5, $6, now(), 0, now() - interval '2 hours', $7)`,
-    [refundId, tenantId, outletA, intentId, requesterId, financeAId, fundId],
+    [refundId, tenantId, outletA, intentId, requesterId, financeSupId, fundId],
   );
   return { fundId, refundId };
 }
@@ -421,7 +423,7 @@ beforeAll(async () => {
     "finance",
     "Codex fix finance B",
   ));
-  ({ client: financeSup } = await signedIn(
+  ({ client: financeSup, userId: financeSupId } = await signedIn(
     "finance",
     "Codex fix finance supervisor",
     true,
@@ -714,5 +716,163 @@ describe("PAY-04 codex F2: a fund without its own evidence never pays out", () =
       last_payout_error: EVIDENCE_MAPPING_REQUIRED,
     });
     expect(await fundEvidenceId(seeded.fundId)).toBeNull();
+  });
+});
+
+// legend-tvhq: an approval recorded before the supervisor rule (status
+// approved, no supervisor among its approvers) is re-validated before every
+// payout send (first send, sweep, retry). It fails: no provider call, the
+// refund is quarantined (PAYOUT_QUARANTINED) and audited once.
+const PAYOUT_QUARANTINED = "PAYOUT_QUARANTINED";
+
+async function quarantineAudits(refundId: string) {
+  const { rows } = await owner.query<{ reason: string | null }>(
+    `SELECT event->>'reason' AS reason FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2
+       AND event->>'action' = 'payment.refund_payout_quarantined'`,
+    [tenantId, refundId],
+  );
+  return rows;
+}
+
+/** A legacy approved refund decided by a finance-only approver; `attempts` gateway calls already failed (unknown outcome). */
+async function seedLegacyApprovedRefund(attempts: number) {
+  const intent = await seedPaid(100_000);
+  const refundId = randomUUID();
+  refundIds.push(refundId);
+  await owner.query(
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                  requested_by, approved_by, decided_at, payout_attempts, last_payout_error, updated_at)
+     VALUES ($1, $2, $3, $4, 30000, 'Pengembalian lama', 'approved', $5, $6, now() - interval '3 hours', $7::int,
+             CASE WHEN $7::int > 0 THEN 'Error' ELSE NULL END, now() - interval '2 hours')`,
+    [
+      refundId,
+      tenantId,
+      outletA,
+      intent.intentId,
+      requesterId,
+      financeAId,
+      attempts,
+    ],
+  );
+  return refundId;
+}
+
+describe("PAY-04 legend-tvhq: every payout send re-validates the approval", () => {
+  it("PAY-04 a legacy approved refund without supervisor whose gateway call failed is quarantined by sweep and retry, never sent", async () => {
+    const refundId = await seedLegacyApprovedRefund(1);
+
+    await sweep();
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.statusCalls).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 1,
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "supervisor_required" },
+    ]);
+
+    await ageRefund(refundId);
+    await sweep();
+    const retried = await retryWith(financeSup, refundId);
+    expect(retried.status).toBe(409);
+    expect(retried.body.error.code).toBe(PAYOUT_QUARANTINED);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.statusCalls).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 1,
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 the first send of a legacy approved refund without supervisor is quarantined, not sent", async () => {
+    const refundId = await seedLegacyApprovedRefund(0);
+
+    await sweep();
+
+    expect(fake.calls).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 0,
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 a chain approved only by finance and left approved (before the rule) is quarantined, not sent", async () => {
+    const intent = await seedPaid(5_000_000);
+    const refundId = await insertPendingRefund(
+      intent.intentId,
+      5_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+    await decide(financeBId, level1.id, "approved");
+    const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+    await decide(financeCId, level2.id, "approved");
+    // The old settle step approved it without the supervisor check.
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
+              updated_at = now() - interval '2 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId, financeCId],
+    );
+
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "supervisor_required" },
+    ]);
+  });
+});
+
+describe("PAY-04 legend-wam2: the single-evidence fallback is persisted before the first payout", () => {
+  it("PAY-04 payout from the only evidence E1 is pending, evidence E2 arrives, the next poll reads the provider result and completes", async () => {
+    const seeded = await seedApprovedFundRefund(1);
+    fake.enqueue("pending");
+
+    await sweep();
+    expect(callsOf(seeded.refundId)).toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({
+      paymentProviderRef: seeded.evidenceA.ref,
+    });
+    expect(await refundRow(seeded.refundId)).toMatchObject({
+      status: "approved",
+    });
+
+    // A second evidence row for the same intent arrives later.
+    await owner.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 20000, now())`,
+      [tenantId, outletA, seeded.intentId, `evidence-e2-${seeded.intentId}`],
+    );
+    const idempotencyKey = `refund:${seeded.refundId}`;
+    const providerRef = fake.storedResult(idempotencyKey)!.providerRef!;
+    fake.setStatus(idempotencyKey, { status: "succeeded", providerRef });
+    await ageRefund(seeded.refundId);
+
+    await sweep();
+
+    expect(callsOf(seeded.refundId)).toHaveLength(1);
+    expect(
+      fake.statusCalls.filter((c) => c.idempotencyKey === idempotencyKey),
+    ).toHaveLength(1);
+    expect(await refundRow(seeded.refundId)).toMatchObject({
+      status: "completed",
+      provider_ref: providerRef,
+      last_payout_error: null,
+    });
+    // The fallback mapping was stored with the first send.
+    expect(await fundEvidenceId(seeded.fundId)).toBe(seeded.evidenceA.id);
   });
 });
