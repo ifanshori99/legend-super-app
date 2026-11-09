@@ -52,3 +52,13 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - 09-11 antrean CTO: ws/ws09-wifi-hardening d2710c47 (basis ws/ws09-wifi b9d7e40b; merge sesudah wifi; migrasi 0101/0102 regen setelah 0104 wifi).
 - 09-11 antrean CTO (prioritas): fix-doit-webhook 63a544f8 (P1 uang, tanpa migrasi; prep f336a85c di atas m1 726515a4), fix-edc-codex 164fa725 (P1 penahan rilis; migrasi tulis tangan 0099/0100 -> 0103/0104 di atas m1, brief 89f; setelah masuk buka skip EDC-01/02/04 di e2e-az), fix-journals-expiry dfae77ae (tanpa migrasi; prep f4b06b99).
 - Akibat EDC duluan: wifi (0103/0104) dan wifi-hardening (0105/0106, prep 3d87bf54) diregen lagi setelah EDC menjadi 0105-0108.
+
+## Pemilik cabang (gate gagal: kirim test gagal + path log via `ghostex agents send`, ulangi file flake beban sekali dulu)
+- DOIT / EDC / journals-expiry: S30:P9mkl:G106p
+- ws12-ai + ai-tool-catalog: S30:P9mkl:G7ck7
+- ws03-menu: S30:P9mkl:G10uu
+- ws08-site: S30:P9mkl:G89ef
+- fix-codex-procurement / shift / kds + checklist-schedule: S30:P9mkl:G3dvi
+- ws09-wifi / ws09-wifi-hardening / ws-09-ws: S30:P9mkl:G24vt
+- testdb-cleanup: S30:P9mkl:G7h0a
+- Ditolak hook RAM: lapor ke CTO saja.
