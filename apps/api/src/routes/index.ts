@@ -86,6 +86,10 @@ import { aiMcpAdminRouter } from "./ai-mcp-admin.routes";
 import { aiInsightsRouter } from "./ai-insights.routes";
 import { hrisLeaveRouter } from "./hris-leave.routes";
 import { hrisSchedulingRouter } from "./hris-scheduling.routes";
+import { hrisChecklistRouter } from "./hris-checklist.routes";
+import { hrisOffboardingRouter } from "./hris-offboarding.routes";
+import { hrisWorkCertificateRouter } from "./hris-work-certificate.routes";
+import { hrisKpiRouter } from "./hris-kpi.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -285,6 +289,15 @@ apiRouter.use("/hris", hrisLeaveRouter);
 // WS-10 employee scheduling: shift templates, roster, publication, swaps
 // (legend-jstx).
 apiRouter.use("/hris", hrisSchedulingRouter);
+// WS-10 lifecycle: onboarding/offboarding checklists, exit clearance, final
+// settlement summary, work certificate, KPI (legend-ovxw).
+apiRouter.use(
+  "/hris",
+  hrisChecklistRouter,
+  hrisOffboardingRouter,
+  hrisWorkCertificateRouter,
+  hrisKpiRouter,
+);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.

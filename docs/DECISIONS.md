@@ -3,6 +3,95 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: WS-10 lifecycle: checklists, exit clearance, settlement summary, KPI (legend-ovxw)
+
+Context: PRD F24 (onboarding/offboarding: checklist per jabatan, exit
+clearance with asset return and access/device revocation, final entitlements,
+work certificate) and F29 (KPI per jabatan from system data or manager
+judgement, monthly or quarterly review). Nothing existed on m1. Designed with
+an architect consult; tier K (access revocation, money summary).
+
+1. **Seven tenant tables, one migration (0206).** `hris_checklist_templates`
+   (items as jsonb validated by `checklistTemplateSchema`, one active template
+   per tenant+kind+position, null position = default), `hris_checklist_tasks`
+   (instances; `block_reason` / `waive_reason` required by CHECK when the
+   status says so; `system_managed` tasks cannot be completed by hand),
+   `hris_checklist_task_actions` (append only, `UPDATE`/`DELETE` revoked from
+   `legend_app`; block and waive need a reason), `hris_offboardings` (one
+   non-cancelled row per employee; status open → revoked → completed, or open
+   → cancelled), `hris_kpi_definitions` (`metric_code` set exactly when
+   `source = system`), `hris_kpi_reviews` (one per employee, cycle and period
+   start), `hris_kpi_scores` (definition snapshot, system actual with its
+   availability, manager actual and score). Every table has tenant RLS
+   forced; none has a NOT NULL `outlet_id`, so outlet reach is checked in the
+   service through the employee's home outlet, like `employees`.
+2. **The login account is shared across tenants, so it is never banned.**
+   Exit clearance (`POST /api/hris/offboardings/:id/revoke-access`) runs in
+   one tenant transaction, after the last working day only:
+   1. the tenant role-assignment advisory lock
+      (`legend:role-assignment-end:<tenant>`, the key `endRoleAssignment`
+      takes), then the offboarding row `FOR UPDATE`; a row already revoked
+      returns its stored `revocation_result` without writing anything, so a
+      second call equals the first;
+   2. every active role assignment of the employee's user in this tenant is
+      ended with reason `offboarding`, each with the `role_assignment.ended`
+      event and audit row. An employee who holds an Owner assignment is
+      refused (409 `OFFBOARDING_OWNER`): the Owner is replaced through the
+      access flow first. A future-dated assignment is refused too (409
+      `FUTURE_ASSIGNMENT`). The helper is a new function appended to
+      `access.service.ts`; `endRoleAssignment` itself is not touched, because
+      `ws/end-role-assignment-lock` is changing it. The
+      `role_assignment.ended` events and audit rows are written under the
+      tenant scope even when the HR caller is outlet scoped: access events
+      have no outlet, the outbox refuses them under an outlet scope, and the
+      caller's reach was already checked on the employee's home outlet;
+   3. the user's staff sessions of this tenant are revoked (`revoked_at`,
+      expiry moved to creation + 1 ms). Customer sessions, impersonated
+      sessions and other tenants' sessions are left alone;
+   4. the user's web push subscriptions in this tenant are deleted, so the
+      phone stops receiving this tenant's notifications;
+   5. shifts after the last working day that are not cancelled are cancelled
+      through `cancelShiftAssignmentInTx`, split out of
+      `cancelShiftAssignment` without changing it (swap withdrawal,
+      `shift.cancelled` event and audit stay);
+   6. staff PIN rows are kept. `attemptStaffPin` already answers `not_member`
+      once the role assignments end, a deleted row would never reach an edge
+      node (the export has no tombstone), and a rehire reuses the key;
+   7. outlet devices are not revoked: `devices` are outlet hardware with no
+      user. The person's own devices are their sessions and push
+      subscriptions (steps 3 and 4);
+   8. the employee becomes `terminated` (termination) or `resigned`
+      (resignation, contract end), `end_date` = last working day; open
+      `access_revocation` tasks become done with an action row; the
+      offboarding row stores the result; one audit row with counts only.
+      An offline edge node keeps accepting the PIN until it pulls the ended
+      assignments. Revocation does not run by itself on the last day: a job is a
+      follow-up bead.
+3. **KPI system actuals go through `evaluateMetrics`.** The `employee`
+   dimension value of `metrics_daily` is the user id (`orders.cashier_id`,
+   `pos_shifts.cashier_id`), so an employee without a user account gets
+   `no_user_account`. A definition may only name a catalog metric that
+   declares the `employee` dimension, with the catalog unit. Actuals are
+   computed when a review is created and on refresh while it is a draft; a
+   submitted review is frozen. An unavailable metric stores null with its
+   reason and the reviewer enters a manual actual. `kpiScoreSchema.actual`
+   becomes signed and nullable (cash variance can be negative; a draft has no
+   value yet); submit needs a score on every row.
+4. **The final settlement is a summary of recorded data, not a payment or
+   a calculation.** Running salary (last payroll run covering the employee,
+   its period end, and the unpaid business days from the day after it up to
+   the last working day; no amount), outstanding kasbon, approved unpaid
+   reimbursements, leave balances (days only, no cash value), and a
+   `pendingPayrollEngine` list naming what is not computed yet (prorated
+   salary, THR, BPJS, leave cash-out, net payout). No THR or BPJS arithmetic
+   runs here and no net is shown: those wait for the payroll engine
+   (legend-j2l2, follow-up bead). The pure kasbon and reimbursement helpers
+   move from the web preview into `packages/shared/src/hris/lifecycle.ts`.
+   Completing the offboarding freezes the summary in `settlement_snapshot`.
+5. **Work certificate: render data plus a PDF on the existing pdf-lib
+   pattern** (`purchasing-po-pdf.ts`). Available to HR once access is revoked
+   and to the employee after completion; numbered once per offboarding.
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope
@@ -88,9 +177,9 @@ in parallel. Reviewed with an architect consult before implementation.
    value, finality or definition version changes, so a rerun leaves
    `updated_at` unchanged. Rows of that code whose dimension no longer exists
    are deleted. A changed `final` row is logged as `metrics_daily final row
-   changed` (late data) and still written. Dates older than the window are
+changed` (late data) and still written. Dates older than the window are
    recomputed only through `recomputeMetricsDaily(context, outletId, from,
-   to)`. A family card that bumps a definition version runs it over the
+to)`. A family card that bumps a definition version runs it over the
    history it changes. A family card that ships a new reader also runs it
    over the history its reports cover, before its reports leave the mock.
    Every reader writes a total row (no dimension) per outlet-day, zero when
@@ -110,7 +199,7 @@ in parallel. Reviewed with an architect consult before implementation.
    `METRIC_DIMENSION_NOT_SUPPORTED` for a split the metric does not declare
    (unchanged). A split the metric declares but no card has built yet is
    marked `unavailable` by the engine and by report runs; `GET
-   /api/metrics/query` keeps its m1 answer (400) for that case too, so the
+/api/metrics/query` keeps its m1 answer (400) for that case too, so the
    existing ledger regression tests stay unchanged. A split of a percent
    ledger metric is `dimension_not_supported` until a family card builds its
    numerator and denominator splits. Report run rows carry their bucket
@@ -272,7 +361,7 @@ terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
    ke log.
 8. **Bentuk.** Berkas baru `apps/api/src/services/order-cost-snapshot.service.ts`:
    `computeLineCostSnapshots(tx, context, outletId, lines) -> Promise<(number |
-   null)[]>` (urutan sama dengan `lines`; baris =
+null)[]>` (urutan sama dengan `lines`; baris =
    `{menuItemId, variantId, modifierIds, quantity}`). Nama tidak bentrok dengan
    `estimateDeductionCostIdr` (cabang KDS, yang mengembalikan 0, kontrak
    berbeda), dan tidak mengimpor dari `recipe-deduction.service.ts`. Satu

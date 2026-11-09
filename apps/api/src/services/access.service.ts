@@ -55,6 +55,7 @@ import {
   userIdSchema,
 } from "@starter/shared/core";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { ReplaceApprovalMatrixInput } from "@starter/shared/identity";
 import {
   and,
@@ -1175,4 +1176,131 @@ export async function replaceApprovalMatrix(
     );
     return { data: after };
   });
+}
+
+// ------------------------------------------------- offboarding (legend-ovxw)
+
+export type OffboardingRoleEndResult = { endedAssignmentIds: string[] };
+
+/**
+ * Ends every active or future role assignment of `userId` in this tenant,
+ * inside the caller's tenant transaction, for exit clearance
+ * (`hris-offboarding.service.ts`; docs/DECISIONS.md "WS-10 lifecycle" §2).
+ * The caller has already authorised the offboarding (`hr.employee.manage` on
+ * the employee), so `access.role.assign` is not asked here.
+ *
+ * Takes the same tenant advisory lock as `endRoleAssignment`, before any row
+ * lock, so it serialises with grants and other ends. Refuses (409, nothing
+ * written) an employee who holds an Owner assignment: the Owner is replaced
+ * through the access flow first, never by HR. A future-dated assignment is
+ * refused too, because "end" can only shorten a validity window that has
+ * started. Each ended row gets the `role_assignment.ended` event and audit
+ * row, like `endRoleAssignment`. Already ended rows are skipped, so a rerun
+ * ends nothing.
+ */
+export async function endUserRoleAssignmentsForOffboardingInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  actorUserId: string,
+  reason: string,
+): Promise<OffboardingRoleEndResult> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+  );
+  // Read after the lock, like endRoleAssignment (legend-qr1uv).
+  const now = new Date();
+  const open = await tx
+    .select({
+      assignment: roleAssignments,
+      templateKey: roles.templateKey,
+    })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .where(
+      and(
+        eq(roleAssignments.tenantId, context.tenant.tenantId),
+        eq(roleAssignments.userId, userId),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, now),
+        ),
+      ),
+    )
+    .orderBy(asc(roleAssignments.id))
+    .for("update", { of: roleAssignments });
+  if (open.some((row) => row.templateKey === "owner"))
+    throw new HttpError(
+      409,
+      "OFFBOARDING_OWNER",
+      "Karyawan ini masih Owner. Ganti Owner lewat pengaturan akses dulu.",
+    );
+  if (open.some((row) => row.assignment.validFrom.getTime() > now.getTime()))
+    throw new HttpError(
+      409,
+      "FUTURE_ASSIGNMENT",
+      "Karyawan ini punya peran yang baru berlaku nanti. Cabut peran itu dulu.",
+    );
+  // Access events are tenant-wide (no outlet), and the outbox refuses them
+  // under an outlet-scoped context. The caller already proved HR reach over
+  // the employee's home outlet, and ending every assignment of a leaver is the
+  // point of exit clearance, so the events go out under the tenant scope.
+  const eventContext = establishScopedTenantContext(context.tenant, {
+    kind: "tenant",
+  });
+  const endedAssignmentIds: string[] = [];
+  for (const { assignment: current } of open) {
+    const [row] = await tx
+      .update(roleAssignments)
+      .set({ validUntil: now })
+      .where(
+        and(
+          eq(roleAssignments.tenantId, context.tenant.tenantId),
+          eq(roleAssignments.id, current.id),
+        ),
+      )
+      .returning();
+    await appendAccessEvent(tx, eventContext, roleAssignmentEndedEvent, {
+      aggregateId: row.id,
+      actorUserId,
+      now,
+      payload: {
+        assignmentId: row.id,
+        userId: row.userId,
+        roleId: row.roleId,
+        validUntil: now.toISOString(),
+        endedBy: actorUserId,
+        reason,
+      },
+    });
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "role_assignment.ended",
+        objectType: "role_assignment",
+        objectId: row.id,
+        reason,
+        before: {
+          userId: row.userId,
+          roleId: row.roleId,
+          validUntil: current.validUntil?.toISOString() ?? null,
+        },
+        after: { validUntil: now.toISOString() },
+        sensitiveAccess: false,
+      },
+      { tx, context: eventContext },
+    );
+    endedAssignmentIds.push(row.id);
+  }
+  return { endedAssignmentIds };
 }

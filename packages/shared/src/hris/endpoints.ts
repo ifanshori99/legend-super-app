@@ -34,7 +34,11 @@ import {
   overtimeRequestIdSchema,
   overtimeFormulaIdSchema,
   holidayIdSchema,
+  kpiDefinitionIdSchema,
   kpiReviewIdSchema,
+  checklistTemplateIdSchema,
+  checklistTaskIdSchema,
+  offboardingIdSchema,
   sopDocumentIdSchema,
   trainingIdSchema,
   announcementIdSchema,
@@ -53,10 +57,23 @@ import {
   updateEmployeePiiInputSchema,
 } from "./organization.ts";
 import {
+  checklistTaskActionInputSchema,
+  checklistTaskActionSchema,
   checklistTaskSchema,
+  checklistTemplateSchema,
   checklistKindSchema,
   checklistTaskStatusSchema,
+  createChecklistTemplateInputSchema,
+  updateChecklistTemplateInputSchema,
 } from "./checklists.ts";
+import {
+  cancelOffboardingInputSchema,
+  createOffboardingInputSchema,
+  finalSettlementSummarySchema,
+  offboardingSchema,
+  updateOffboardingInputSchema,
+  workCertificateSchema,
+} from "./lifecycle.ts";
 import {
   attendanceCorrectionSchema,
   attendanceCorrectionStatusSchema,
@@ -100,7 +117,13 @@ import {
 import {
   announcementReceiptSchema,
   announcementSchema,
+  createKpiDefinitionInputSchema,
+  createKpiReviewInputSchema,
+  kpiDefinitionSchema,
   kpiReviewSchema,
+  kpiSourceSchema,
+  updateKpiDefinitionInputSchema,
+  updateKpiScoresInputSchema,
   sopAcknowledgementSchema,
   sopDocumentSchema,
   trainingCompletionSchema,
@@ -231,6 +254,137 @@ export const listChecklistTasks = defineEndpoint({
     status: checklistTaskStatusSchema.optional(),
   }),
   response: cursorPageSchema(checklistTaskSchema),
+});
+
+export const listChecklistTemplates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/checklist-templates",
+  query: cursorPageQuerySchema.extend({
+    kind: checklistKindSchema.optional(),
+    positionId: positionIdSchema.optional(),
+    isActive: z.enum(["true", "false"]).optional(),
+  }),
+  response: cursorPageSchema(checklistTemplateSchema),
+});
+
+/** Writing a template needs tenant-wide reach (a template is not per outlet). */
+export const createChecklistTemplate = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/checklist-templates",
+  body: createChecklistTemplateInputSchema,
+  response: dataResponseSchema(checklistTemplateSchema),
+});
+
+export const updateChecklistTemplate = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/checklist-templates/:templateId",
+  params: z.strictObject({ templateId: checklistTemplateIdSchema }),
+  body: updateChecklistTemplateInputSchema,
+  response: dataResponseSchema(checklistTemplateSchema),
+});
+
+/**
+ * Creates the onboarding tasks from the active template of the employee's
+ * position (else the default one). A repeat call returns the existing tasks.
+ */
+export const startEmployeeOnboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees/:employeeId/onboarding",
+  params: employeeIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(z.array(checklistTaskSchema)),
+});
+
+const checklistTaskIdParams = z.strictObject({ taskId: checklistTaskIdSchema });
+
+export const actOnChecklistTask = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/checklist-tasks/:taskId/actions",
+  params: checklistTaskIdParams,
+  body: checklistTaskActionInputSchema,
+  response: dataResponseSchema(checklistTaskSchema),
+});
+
+export const listChecklistTaskActions = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/checklist-tasks/:taskId/actions",
+  params: checklistTaskIdParams,
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(checklistTaskActionSchema),
+});
+
+const offboardingIdParams = z.strictObject({
+  offboardingId: offboardingIdSchema,
+});
+
+export const createOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees/:employeeId/offboarding",
+  params: employeeIdParams,
+  body: createOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const getOffboarding = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId",
+  params: offboardingIdParams,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const updateOffboarding = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/offboardings/:offboardingId",
+  params: offboardingIdParams,
+  body: updateOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const cancelOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/cancel",
+  params: offboardingIdParams,
+  body: cancelOffboardingInputSchema,
+  response: dataResponseSchema(offboardingSchema),
+});
+
+/** Cuts access (roles, sessions, devices, PIN, future shifts); idempotent. */
+export const revokeOffboardingAccess = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/revoke-access",
+  params: offboardingIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const completeOffboarding = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/offboardings/:offboardingId/complete",
+  params: offboardingIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(offboardingSchema),
+});
+
+export const getOffboardingSettlement = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/settlement",
+  params: offboardingIdParams,
+  response: dataResponseSchema(finalSettlementSummarySchema),
+});
+
+/** The first call assigns the certificate number; repeats return the same. */
+export const getWorkCertificate = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/work-certificate",
+  params: offboardingIdParams,
+  response: dataResponseSchema(workCertificateSchema),
+});
+
+/** Same data as `getWorkCertificate`, answered as `application/pdf` bytes. */
+export const getWorkCertificatePdf = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/offboardings/:offboardingId/work-certificate.pdf",
+  params: offboardingIdParams,
 });
 
 // ---- Attendance ----------------------------------------------------------
@@ -746,6 +900,68 @@ export const listKpiReviews = defineEndpoint({
   response: cursorPageSchema(kpiReviewSchema),
 });
 
+export const listKpiDefinitions = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/kpi-definitions",
+  query: cursorPageQuerySchema.extend({
+    positionId: positionIdSchema.optional(),
+    source: kpiSourceSchema.optional(),
+    isActive: z.enum(["true", "false"]).optional(),
+  }),
+  response: cursorPageSchema(kpiDefinitionSchema),
+});
+
+/** A system KPI must name a metric of the catalog that has an employee split. */
+export const createKpiDefinition = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-definitions",
+  body: createKpiDefinitionInputSchema,
+  response: dataResponseSchema(kpiDefinitionSchema),
+});
+
+export const updateKpiDefinition = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/kpi-definitions/:kpiDefinitionId",
+  params: z.strictObject({ kpiDefinitionId: kpiDefinitionIdSchema }),
+  body: updateKpiDefinitionInputSchema,
+  response: dataResponseSchema(kpiDefinitionSchema),
+});
+
+/** Opens a draft review and computes the system actuals for the period. */
+export const createKpiReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews",
+  body: createKpiReviewInputSchema,
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+const kpiReviewIdParams = z.strictObject({ reviewId: kpiReviewIdSchema });
+
+export const updateKpiScores = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/kpi-reviews/:reviewId/scores",
+  params: kpiReviewIdParams,
+  body: updateKpiScoresInputSchema,
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+/** Recomputes the system actuals of a draft review; a submitted one is frozen. */
+export const refreshKpiActuals = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews/:reviewId/refresh-actuals",
+  params: kpiReviewIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
+export const submitKpiReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/kpi-reviews/:reviewId/submit",
+  params: kpiReviewIdParams,
+  body: clientInputSchema({}),
+  response: dataResponseSchema(kpiReviewSchema),
+});
+
 export const listSopDocuments = defineEndpoint({
   method: "GET",
   path: "/api/hris/sop-documents",
@@ -826,6 +1042,21 @@ export const hrisEndpoints = [
   getEmploymentContract,
   listEmployeeDocuments,
   listChecklistTasks,
+  listChecklistTemplates,
+  createChecklistTemplate,
+  updateChecklistTemplate,
+  startEmployeeOnboarding,
+  actOnChecklistTask,
+  listChecklistTaskActions,
+  createOffboarding,
+  getOffboarding,
+  updateOffboarding,
+  cancelOffboarding,
+  revokeOffboardingAccess,
+  completeOffboarding,
+  getOffboardingSettlement,
+  getWorkCertificate,
+  getWorkCertificatePdf,
   clockAttendance,
   listAttendanceLogs,
   getAttendanceQr,
@@ -870,6 +1101,13 @@ export const hrisEndpoints = [
   createOvertimeFormula,
   publishOvertimeFormula,
   listKpiReviews,
+  listKpiDefinitions,
+  createKpiDefinition,
+  updateKpiDefinition,
+  createKpiReview,
+  updateKpiScores,
+  refreshKpiActuals,
+  submitKpiReview,
   listSopDocuments,
   acknowledgeSopDocument,
   listTrainings,

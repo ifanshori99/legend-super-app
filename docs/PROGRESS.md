@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ovxw WS-10 onboarding/offboarding, exit clearance, KPI (engineer Opus, cabang `ws/hr-lifecycle-kpi` dari ws/hr-scheduling 88cc626e, brief 299, 2026-11-10)
+
+- Satu migrasi `0206_hris_lifecycle_kpi` (when 1794285000000, prevId 9f64bc61 = id snapshot 0199): 7 tabel baru (template checklist, offboarding, task, log aksi append-only, definisi KPI, review KPI, skor KPI), RLS dipaksa di semua.
+- Slice: checklist (complete/block/unblock/waive + log), exit clearance (akhiri role assignment, cabut sesi staf, hapus push subscription, batalkan shift sesudah hari terakhir, PIN ditolak karena keanggotaan berakhir; idempoten), KPI dari `evaluateMetrics` + siklus review manajer, ringkasan hak akhir tanpa THR/BPJS/neto (beku saat selesai), surat keterangan kerja + PDF.
+- Keputusan: `docs/DECISIONS.md` entri "WS-10 lifecycle". Event `role_assignment.ended` ditulis dengan lingkup tenant walau HR lingkup outlet.
+- Bukti: 6 file test 82/82 (clearance, checklist, kpi, certificate, 2 migration RLS); db:generate kedua kosong; tsc shared dan web lulus, api sedang dibetulkan (tipe `UserId` dan Drizzle).
+- Kartu baru: legend-arj.5 (angka hak akhir dari mesin payroll, tunggu legend-j2l2), legend-arj.6 (job clearance otomatis).
+- Berikut: review architect (K), second-opinion Codex `docs/briefs/299b-second-opinion-hr-lifecycle.md` (belum dijalankan), UI web.
+
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
 - Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).

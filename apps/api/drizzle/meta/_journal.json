@@ -1275,6 +1275,13 @@
       "when": 1794278000000,
       "tag": "0199_hris_scheduling",
       "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1794285000000,
+      "tag": "0206_hris_lifecycle_kpi",
+      "breakpoints": true
     }
   ]
 }

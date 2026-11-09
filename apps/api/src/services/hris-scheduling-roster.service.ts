@@ -745,89 +745,120 @@ export async function cancelShiftAssignment(
 ): Promise<ShiftAssignment> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
-    const tenantId = context.tenant.tenantId;
-    const found = await findAssignment(tx, tenantId, assignmentId);
+    const found = await findAssignment(
+      tx,
+      context.tenant.tenantId,
+      assignmentId,
+    );
     if (!found) throw scheduleNotFound();
     assertManage(access, found.outletId);
+    return cancelShiftAssignmentInTx(
+      tx,
+      context,
+      access.actorUserId,
+      assignmentId,
+      now,
+    );
+  });
+}
 
-    // Lock order is swap -> assignment, the same as decideShiftSwapRequest.
-    const pendingSwaps = await tx
-      .select({
-        id: shiftSwapRequests.id,
-        outletId: shiftSwapRequests.outletId,
-      })
-      .from(shiftSwapRequests)
+/**
+ * The cancel itself, inside the caller's tenant transaction, for a caller
+ * that has already authorised it: `cancelShiftAssignment` above (schedule
+ * manager of the outlet) and exit clearance (`hris-offboarding.service.ts`,
+ * HR manager of the employee; legend-ovxw), which cancels every shift after
+ * the last working day in the same transaction as the access revocation.
+ * Same effects either way: pending swaps withdrawn, `shift.cancelled` for a
+ * published or swapped shift, audit rows. A cancelled row is returned as is.
+ */
+export async function cancelShiftAssignmentInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  assignmentId: string,
+  now: Date,
+): Promise<ShiftAssignment> {
+  const tenantId = context.tenant.tenantId;
+  const found = await findAssignment(tx, tenantId, assignmentId);
+  if (!found) throw scheduleNotFound();
+
+  // Lock order is swap -> assignment, the same as decideShiftSwapRequest.
+  const pendingSwaps = await tx
+    .select({
+      id: shiftSwapRequests.id,
+      outletId: shiftSwapRequests.outletId,
+    })
+    .from(shiftSwapRequests)
+    .where(
+      and(
+        eq(shiftSwapRequests.tenantId, tenantId),
+        eq(shiftSwapRequests.status, "pending"),
+        or(
+          eq(shiftSwapRequests.fromAssignmentId, found.id),
+          eq(shiftSwapRequests.toAssignmentId, found.id),
+        ),
+      ),
+    )
+    .orderBy(asc(shiftSwapRequests.id))
+    .for("update");
+  const current = await findAssignment(tx, tenantId, assignmentId, true);
+  if (!current) throw scheduleNotFound();
+  if (current.status === "cancelled") return toShiftAssignment(current);
+
+  const status = transitionShiftAssignment(current.status, "cancel");
+  const [updated] = await tx
+    .update(shiftAssignments)
+    .set({ status, updatedAt: now })
+    .where(
+      and(
+        eq(shiftAssignments.tenantId, tenantId),
+        eq(shiftAssignments.id, current.id),
+      ),
+    )
+    .returning();
+  if (pendingSwaps.length > 0) {
+    await tx
+      .update(shiftSwapRequests)
+      .set({ status: "cancelled", updatedAt: now })
       .where(
         and(
           eq(shiftSwapRequests.tenantId, tenantId),
-          eq(shiftSwapRequests.status, "pending"),
-          or(
-            eq(shiftSwapRequests.fromAssignmentId, found.id),
-            eq(shiftSwapRequests.toAssignmentId, found.id),
+          inArray(
+            shiftSwapRequests.id,
+            pendingSwaps.map((swap) => swap.id),
           ),
         ),
-      )
-      .orderBy(asc(shiftSwapRequests.id))
-      .for("update");
-    const current = await findAssignment(tx, tenantId, assignmentId, true);
-    if (!current) throw scheduleNotFound();
-    if (current.status === "cancelled") return toShiftAssignment(current);
-
-    const status = transitionShiftAssignment(current.status, "cancel");
-    const [updated] = await tx
-      .update(shiftAssignments)
-      .set({ status, updatedAt: now })
-      .where(
-        and(
-          eq(shiftAssignments.tenantId, tenantId),
-          eq(shiftAssignments.id, current.id),
-        ),
-      )
-      .returning();
-    if (pendingSwaps.length > 0) {
-      await tx
-        .update(shiftSwapRequests)
-        .set({ status: "cancelled", updatedAt: now })
-        .where(
-          and(
-            eq(shiftSwapRequests.tenantId, tenantId),
-            inArray(
-              shiftSwapRequests.id,
-              pendingSwaps.map((swap) => swap.id),
-            ),
-          ),
-        );
-      for (const swap of pendingSwaps)
-        await auditShift(
-          tx,
-          context,
-          actorUserId,
-          now,
-          { ...swap, status: "cancelled" },
-          "hris.shift_swap.cancelled",
-          HRIS_SWAP_OBJECT_TYPE,
-        );
-    }
-    if (current.status === "published" || current.status === "swapped")
-      await appendShiftCancelled(
+      );
+    for (const swap of pendingSwaps)
+      await auditShift(
         tx,
         context,
-        updated,
-        current.employeeId,
-        "cancelled",
-        access.actorUserId,
+        actorUserId,
         now,
+        { ...swap, status: "cancelled" },
+        "hris.shift_swap.cancelled",
+        HRIS_SWAP_OBJECT_TYPE,
       );
-    await auditShift(
+  }
+  if (current.status === "published" || current.status === "swapped")
+    await appendShiftCancelled(
       tx,
       context,
+      updated,
+      current.employeeId,
+      "cancelled",
       actorUserId,
       now,
-      updated,
-      "hris.shift_assignment.cancelled",
     );
-    return toShiftAssignment(updated);
-  });
+  await auditShift(
+    tx,
+    context,
+    actorUserId,
+    now,
+    updated,
+    "hris.shift_assignment.cancelled",
+  );
+  return toShiftAssignment(updated);
 }
 
 /** The roster as the first copy left it: the ledger's ids, whatever their status now. */
