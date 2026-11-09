@@ -15,7 +15,11 @@ import {
   redeemReward as redeemRewardEndpoint,
   voucherDtoSchema,
 } from "@starter/shared/crm";
-import { decodeCursor, encodeCursor } from "@starter/shared/core";
+import {
+  decodeCursor,
+  encodeCursor,
+  tenantIdSchema,
+} from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { withMemberScope } from "../db/member-scope.ts";
 import { vouchers } from "../db/schema/index.ts";
@@ -161,7 +165,7 @@ memberRewardsRouter.get(
       scope,
       async (tx) => {
         const filters: SQL[] = [
-          eq(vouchers.tenantId, scope.tenantId),
+          eq(vouchers.tenantId, tenantIdSchema.parse(scope.tenantId)),
           eq(vouchers.customerProfileId, profileId),
         ];
         if (query.cursor) {

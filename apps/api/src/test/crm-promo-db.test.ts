@@ -28,6 +28,7 @@ import {
   type RedeemPromotionsInput,
 } from "../services/crm-promo-engine";
 import { orderPromoPartialRefundPort } from "../services/order-promo-refund";
+import { seedProfile } from "./member-loyalty-helpers";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
@@ -637,11 +638,13 @@ describe("Idempotent redeem and release on void", () => {
 
   it("a customer-bound voucher is refused for another customer", async () => {
     const voucherCode = code();
+    // legend-m4p5: vouchers.customer_profile_id now references a real profile.
+    const holder = await seedProfile(tenantId);
     await seedVoucher({
       code: voucherCode,
       promotionId: null,
       valueIdr: 5_000,
-      customerProfileId: randomUUID(),
+      customerProfileId: holder.id,
     });
     await expect(
       redeem(

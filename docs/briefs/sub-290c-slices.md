@@ -186,3 +186,31 @@ GREATEST(0, … − spendDelta)`, and `visits_count = GREATEST(0, visits_count �
 or cumulative refund reaches `eligible > 0`) and the visit was not removed before. `customer_visits`: decrement
 `spend_idr` (≥0); DELETE the row when the visit is removed. Append `sourceId` to `applied_reversal_ids` in the same
 `settleRecord` update. Keep all existing 290a behaviour (ledger, anomaly) unchanged.
+
+## Review fixes (architect, round 1)
+
+Add a failing test first for each fix, in the test file named, then fix. Run only that test file plus the files you touch.
+
+- Fix A (files `services/reward-redemption.service.ts`, `services/loyalty-rewards-admin.service.ts`,
+  `worker/redemption-expiry.job.ts`, tests in `test/member-rewards.test.ts`):
+  1. Fulfil and expiry branch on `redemption.voucherId !== null`, never on the current `reward.type`.
+  2. Reward PATCH: 409 (code `VALIDATION_ERROR` style already used in the file, or `REWARD_EXPIRED`? no: use
+     `HttpError(409, "REWARD_HAS_PENDING_REDEMPTIONS", "Hadiah masih punya penukaran yang belum selesai.")`) when
+     `type`, `menuItemId` or `voucherValueIdr` change while the reward has `pending` redemptions.
+  3. Expiry: one transaction per redemption. Export `expireRedemption(tx, context, redemptionId, now)` (profile lock
+     → redemption FOR UPDATE → re-check still pending and due → act). Job scans due ids (limit 100) in one read tx,
+     then one `withTenant` per id; one failure is logged and does not stop the rest. Keep
+     `expireDueRedemptions` as a thin loop for tests or remove it and update the tests.
+- Fix B (files `services/loyalty-earn-consumer.ts` `reverseForOrder`, `services/loyalty-earn-mission-step.ts`, tests
+  in `test/member-visit-reversal.test.ts`, `test/member-missions.test.ts`):
+  1. wa4hp counters run for every record whose visit was counted (`booked`, `capped`, self-serve `blocked`, and
+     `reversed` from an earlier partial refund); return early only when no visit was counted. Ledger reversal stays
+     gated on `state === 'booked'` exactly as before. `refundedEligibleIdr` and `appliedReversalIds` always update.
+     Read the record states and outcome reasons in the consumer to get the exact values.
+  2. Mission step: do nothing when the order was blocked as self-serve (read the record's outcome reason field).
+- Fix C (files `db/schema/crm-rewards.custom.sql`, `apps/api/drizzle/0207_loyalty_rewards_missions.sql` (same text
+  in the hand-SQL section), `test/data-import-registry.test.ts`): before adding `vouchers_profile_fk`, with FORCE
+  lifted, neutralise orphan rows: vouchers whose `customer_profile_id` has no `customer_profiles` row in the same
+  tenant get `customer_profile_id = NULL`, and if `status = 'issued'` also `status = 'cancelled'` with
+  `cancelled_reason = 'profile_missing_0207'` (respect the vouchers CHECKs in `drizzle/0034_*.sql`). Start the
+  statement at line start with `UPDATE` and add the `MIGRATION_DATA_STATEMENTS` entry (reason text like 0186).
