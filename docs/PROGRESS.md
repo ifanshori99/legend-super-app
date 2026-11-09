@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-rzirp + legend-6yfhc impersonate butuh grant, 60 menit, audit atas nama impersonator (engineer, cabang `ws/impersonate-grant`, 2026-11-09)
+
+- Sudah: `/admin/impersonate-user` di-gate di `lib/auth.ts` (`hooks.before` + ulang di `databaseHooks.session.create.before`): pemanggil platform admin, target bukan platform admin/bukan diri sendiri, grant aktif di tenant tempat target punya peran; sesi dibatasi 60 menit (`impersonationSessionDuration`, cap saat dibuat, `touchSession` tidak memperpanjang, `disableSessionRefresh`). Audit tenant `support_access.impersonation_started` (fail closed) dan `support_access.impersonation_ended` (stopped/signed_out/revoked/expired, `impersonationId` memasangkan baris). Revoke sesi support oleh user tenant menghapus sesi dan mencatat akhir.
+- Sudah (6yfhc): `enforceSupportSession` menaruh grant di request context; `core-audit.recordAudit` (satu-satunya penulis `audit_logs`) mengganti actor user tenant dengan impersonator, `sensitiveAccess` true, alasan grant, tag `support` (field opsional di event jsonb, tanpa migrasi).
+- Gate: test baru `impersonation-grant.test.ts` (13 kasus, 11 gagal di base) + `support-session-readonly.test.ts` diperbarui; 9 file 91 test API lulus; tsc api/shared (heavy), eslint, prettier. Review K: reviewer Opus + architect, temuan Medium (refresh Better Auth) dan Low dibetulkan.
+- Sisa: sesi impersonasi yang kedaluwarsa tanpa dipakai lagi tidak menulis baris akhir (grant expiry tetap tercatat); `findImpersonationGrants` loop semua tenant. Codex: `docs/briefs/195b-second-opinion-impersonate-grant.md` (tidak di-commit).
+
 ## legend-cg071 sesi support baca-saja (engineer, cabang `ws/support-readonly`, 2026-11-09)
 
 - Sudah (`6618970d`): API menolak semua mutasi sesi impersonasi tanpa grant atau dengan grant read_only (satu guard di `requireAuth` + `guardImpersonatedAuthRoutes` untuk `/api/auth`), kredensial (MCP, device, edge node, PIN) ditolak bahkan dengan read_write. `/api/me/access` membawa `supportSession`.

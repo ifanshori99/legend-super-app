@@ -2,6 +2,7 @@ import type { Request, RequestHandler } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { PlatformError } from "@starter/shared/platform";
 import { auth } from "../lib/auth";
+import { setRequestSupport } from "../lib/request-context";
 import { assertSupportAccess } from "../services/platform-support.service";
 import { findTenantContext } from "./tenant";
 
@@ -157,6 +158,17 @@ export async function enforceSupportSession(req: Request): Promise<void> {
   // valid for reads too. A rejection must not poison supportSessionOf.
   const grant = await decision;
   grants.set(req, Promise.resolve(grant));
+  // Tell the audit writer who is really acting (legend-6yfhc): recordAudit
+  // swaps the impersonated tenant user for the admin on this tenant's rows.
+  if (grant && req.auth?.user)
+    setRequestSupport({
+      tenantId: tenant.tenantId,
+      grantId: grant.id,
+      impersonatorUserId: impersonatedBy,
+      impersonatedUserId: req.auth.user.id,
+      accessMode: grant.accessMode,
+      reason: grant.reason,
+    });
 }
 
 /**

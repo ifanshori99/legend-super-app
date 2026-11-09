@@ -2,7 +2,22 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { RequestHandler } from "express";
 
-type RequestContext = { reqId: string; userId?: string };
+// Set by the support-session guard (legend-6yfhc) when the request runs on an
+// impersonated session under an active support access grant.
+export type RequestSupport = {
+  tenantId: string;
+  grantId: string;
+  impersonatorUserId: string;
+  impersonatedUserId: string;
+  accessMode: "read_only" | "read_write";
+  reason: string;
+};
+
+type RequestContext = {
+  reqId: string;
+  userId?: string;
+  support?: RequestSupport;
+};
 
 const storage = new AsyncLocalStorage<RequestContext>();
 
@@ -16,6 +31,17 @@ export function getRequestContext() {
 export function setRequestUser(userId: string) {
   const store = storage.getStore();
   if (store) store.userId = userId;
+}
+
+export function setRequestSupport(value: RequestSupport) {
+  const store = storage.getStore();
+  if (store) store.support = value;
+}
+
+// Read by recordAudit so writes made through a support session are attributed
+// to the platform admin, not the impersonated tenant user.
+export function getRequestSupport() {
+  return storage.getStore()?.support;
 }
 
 const SAFE_REQUEST_ID = /^[\w-]{1,128}$/;

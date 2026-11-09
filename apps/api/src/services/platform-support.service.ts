@@ -48,6 +48,7 @@ import { db } from "../db/index.ts";
 import {
   domainEventOutbox,
   platformAdmins,
+  roleAssignments,
   supportAccessGrants,
   tenants,
 } from "../db/schema/index.ts";
@@ -703,3 +704,202 @@ export async function assertSupportAccess(input: {
 
 /** @deprecated Same guard; kept for existing callers. Use assertSupportAccess. */
 export const requireSupportAccess = assertSupportAccess;
+
+// ------------------------------------------------- impersonation (rzirp)
+
+/*
+ * Starting a Better Auth impersonation needs a grant, not only the admin role
+ * (TEN-04, legend-rzirp). The target must hold a role in a tenant where the
+ * caller has an active grant; the session lasts at most 60 minutes; start and
+ * end each write a sensitive audit row in every matched tenant.
+ */
+
+/** Hard cap of an impersonated session, whatever the grant length. */
+export const IMPERSONATION_SESSION_MAX_SECONDS = 60 * 60;
+
+export type ImpersonationRefusalCode =
+  "SUPPORT_ACCESS_REQUIRED" | "IMPERSONATION_NOT_ALLOWED";
+
+/** Refusal that lib/auth.ts maps to a Better Auth 403. */
+export class ImpersonationRefused extends Error {
+  readonly code: ImpersonationRefusalCode;
+  constructor(code: ImpersonationRefusalCode, message: string) {
+    super(message);
+    this.name = "ImpersonationRefused";
+    this.code = code;
+  }
+}
+
+export type ImpersonationMatch = { tenantId: string; grant: GrantRow };
+export type ImpersonationEndCause =
+  "stopped" | "signed_out" | "expired" | "revoked";
+
+/**
+ * Tenants where `adminUserId` holds a grant active at `at` (default `now`)
+ * and `targetUserId` has a role assignment active at `at` (the end audit
+ * passes the session start, so it finds the tenants the start row went to). One entry per
+ * tenant, carrying the grant that expires last.
+ */
+export async function findImpersonationGrants(input: {
+  adminUserId: string;
+  targetUserId: string;
+  now: Date;
+  at?: Date;
+}): Promise<ImpersonationMatch[]> {
+  const at = input.at ?? input.now;
+  const matches: ImpersonationMatch[] = [];
+  for (const tenantId of await allTenantIds()) {
+    const match = await withTenant(
+      db,
+      platformTenantContext(tenantId),
+      async (tx): Promise<ImpersonationMatch | null> => {
+        const [grant] = await tx
+          .select()
+          .from(supportAccessGrants)
+          .where(
+            and(
+              eq(supportAccessGrants.tenantId, tenantId),
+              eq(supportAccessGrants.superAdminUserId, input.adminUserId),
+              lte(supportAccessGrants.startedAt, at),
+              gt(supportAccessGrants.expiresAt, at),
+              or(
+                isNull(supportAccessGrants.endedAt),
+                gt(supportAccessGrants.endedAt, at),
+              ),
+            ),
+          )
+          .orderBy(desc(supportAccessGrants.expiresAt))
+          .limit(1);
+        if (!grant) return null;
+        const [assignment] = await tx
+          .select({ id: roleAssignments.id })
+          .from(roleAssignments)
+          .where(
+            and(
+              eq(roleAssignments.tenantId, tenantId),
+              eq(roleAssignments.userId, input.targetUserId),
+              lte(roleAssignments.validFrom, at),
+              or(
+                isNull(roleAssignments.validUntil),
+                gt(roleAssignments.validUntil, at),
+              ),
+            ),
+          )
+          .limit(1);
+        return assignment ? { tenantId, grant } : null;
+      },
+    );
+    if (match) matches.push(match);
+  }
+  return matches;
+}
+
+/** Throws ImpersonationRefused unless the impersonation is covered by a grant. */
+export async function assertImpersonationAllowed(input: {
+  adminUserId: string;
+  targetUserId: string;
+  now: Date;
+}): Promise<ImpersonationMatch[]> {
+  if (!(await isPlatformAdmin(input.adminUserId)))
+    throw new ImpersonationRefused(
+      "SUPPORT_ACCESS_REQUIRED",
+      "Only a platform admin with an active support access can impersonate.",
+    );
+  if (
+    input.targetUserId === input.adminUserId ||
+    (await isPlatformAdmin(input.targetUserId))
+  )
+    throw new ImpersonationRefused(
+      "IMPERSONATION_NOT_ALLOWED",
+      "This user cannot be impersonated.",
+    );
+  const matches = await findImpersonationGrants(input);
+  if (matches.length === 0)
+    throw new ImpersonationRefused(
+      "SUPPORT_ACCESS_REQUIRED",
+      "No active support access covers this user.",
+    );
+  return matches;
+}
+
+async function auditImpersonation(
+  matches: ImpersonationMatch[],
+  entry: (match: ImpersonationMatch) => {
+    action: string;
+    after: Record<string, unknown>;
+  },
+  adminUserId: string,
+): Promise<void> {
+  for (const match of matches) {
+    const { action, after } = entry(match);
+    const context = platformTenantContext(match.tenantId);
+    await withTenant(db, context, (tx) =>
+      audit(tx, context, {
+        actorType: "user",
+        actorId: adminUserId,
+        action,
+        objectId: match.grant.id,
+        reason: match.grant.reason,
+        before: null,
+        after,
+        sensitiveAccess: true,
+      }),
+    );
+  }
+}
+
+export async function recordImpersonationStarted(input: {
+  adminUserId: string;
+  targetUserId: string;
+  sessionId: string;
+  sessionExpiresAt: Date;
+  matches: ImpersonationMatch[];
+  now: Date;
+}): Promise<void> {
+  await auditImpersonation(
+    input.matches,
+    ({ grant }) => ({
+      action: "support_access.impersonation_started",
+      after: {
+        impersonatedUserId: input.targetUserId,
+        // Pairs start and end rows. Not named *session*: masking redacts it.
+        impersonationId: input.sessionId,
+        accessMode: grant.accessMode,
+        impersonationEndsAt: input.sessionExpiresAt.toISOString(),
+        grantExpiresAt: grant.expiresAt.toISOString(),
+      },
+    }),
+    input.adminUserId,
+  );
+}
+
+export async function recordImpersonationEnded(input: {
+  adminUserId: string;
+  targetUserId: string;
+  sessionId: string;
+  sessionCreatedAt: Date;
+  cause: ImpersonationEndCause;
+  now: Date;
+}): Promise<void> {
+  const matches = await findImpersonationGrants({
+    adminUserId: input.adminUserId,
+    targetUserId: input.targetUserId,
+    now: input.now,
+    at: input.sessionCreatedAt,
+  });
+  await auditImpersonation(
+    matches,
+    ({ grant }) => ({
+      action: "support_access.impersonation_ended",
+      after: {
+        impersonatedUserId: input.targetUserId,
+        // Pairs start and end rows. Not named *session*: masking redacts it.
+        impersonationId: input.sessionId,
+        accessMode: grant.accessMode,
+        cause: input.cause,
+        grantExpiresAt: grant.expiresAt.toISOString(),
+      },
+    }),
+    input.adminUserId,
+  );
+}

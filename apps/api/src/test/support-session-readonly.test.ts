@@ -19,6 +19,11 @@
 // body.error.code = "SUPPORT_ACCESS_REQUIRED" | "SUPPORT_ACCESS_READ_ONLY";
 // "nothing changed" is checked through the same public list endpoints, read by
 // the normal (non-impersonated) tenant session.
+// legend-rzirp: starting an impersonation is itself gated by an active grant
+// (see impersonation-grant.test.ts). The no-grant and other-tenant cases here
+// therefore expect the impersonate call to be refused (403); the post-start
+// guard of legend-cg071 stays tested through grants that end or lapse AFTER
+// the session started.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -143,15 +148,23 @@ function openGrant(
   });
 }
 
+/** Asks to start an impersonation and returns the raw response. */
+function tryImpersonate(
+  admin: Awaited<ReturnType<typeof newSuperAdmin>>,
+  tenant: Tenant,
+) {
+  return admin.client
+    .post("/api/auth/admin/impersonate-user")
+    .set(originHeader)
+    .send({ userId: tenant.userId });
+}
+
 /** The Super Admin's client turned into an impersonated tenant-user session. */
 async function impersonate(
   admin: Awaited<ReturnType<typeof newSuperAdmin>>,
   tenant: Tenant,
 ) {
-  const response = await admin.client
-    .post("/api/auth/admin/impersonate-user")
-    .set(originHeader)
-    .send({ userId: tenant.userId });
+  const response = await tryImpersonate(admin, tenant);
   expect(response.status).toBe(200);
   // The impersonated session belongs to the tenant user; /api/org and
   // /api/access are closed until that session verified a second factor
@@ -271,41 +284,23 @@ describe("legend-cg071 TEN-04 support session read-only", () => {
     expect(await roleNameOf(tenant)).toBe(tenant.roleName);
   });
 
-  it("TEN-04 no grant: every request of an impersonated session is refused, reads included", async () => {
+  it("TEN-04 no grant: the impersonation itself is refused and the admin stays themself", async () => {
     const tenant = await newTenantOwner();
     const admin = await newSuperAdmin();
-    const support = await impersonate(admin, tenant);
-
-    expectCode(
-      await support.get("/api/org/domains"),
-      "SUPPORT_ACCESS_REQUIRED",
-    );
-    expectCode(
-      await support
-        .post("/api/org/domains")
-        .set(originHeader)
-        .send({ brandId: tenant.brandId, hostname: newHostname() }),
-      "SUPPORT_ACCESS_REQUIRED",
-    );
+    const refused = await tryImpersonate(admin, tenant);
+    expect(refused.status).toBe(403);
+    const me = await admin.client.get("/api/auth/get-session");
+    expect(me.body.user.id).toBe(admin.userId);
   });
 
   it("TEN-04 a grant for another tenant does not open this tenant", async () => {
     const tenant = await newTenantOwner();
     const admin = await newSuperAdmin();
     await openGrant(otherTenantId, admin.userId);
-    const support = await impersonate(admin, tenant);
-
-    expectCode(
-      await support.get("/api/org/domains"),
-      "SUPPORT_ACCESS_REQUIRED",
-    );
-    expectCode(
-      await support
-        .post("/api/org/domains")
-        .set(originHeader)
-        .send({ brandId: tenant.brandId, hostname: newHostname() }),
-      "SUPPORT_ACCESS_REQUIRED",
-    );
+    const refused = await tryImpersonate(admin, tenant);
+    expect(refused.status).toBe(403);
+    const me = await admin.client.get("/api/auth/get-session");
+    expect(me.body.user.id).toBe(admin.userId);
   });
 
   it("TEN-04 read_write grant: tenant mutations are allowed", async () => {
@@ -432,15 +427,22 @@ describe("legend-cg071 TEN-04 support session read-only", () => {
   it("TEN-04 an expired grant no longer opens the tenant", async () => {
     const tenant = await newTenantOwner();
     const admin = await newSuperAdmin();
-    // Opened two hours ago for 60 minutes: expired an hour ago.
-    await openGrant(
-      tenantId,
-      admin.userId,
-      { durationMinutes: 60 },
-      new Date(Date.now() - 2 * 3_600_000),
-    );
+    const grant = await openGrant(tenantId, admin.userId, {
+      durationMinutes: 60,
+    });
     const support = await impersonate(admin, tenant);
+    expect((await support.get("/api/org/domains")).status).toBe(200);
 
+    // The grant lapses while the support session is still open: move its whole
+    // window two hours back (the window and MFA checks keep their relations).
+    await db.query(
+      `UPDATE support_access_grants
+          SET started_at = started_at - interval '2 hours',
+              expires_at = expires_at - interval '2 hours',
+              mfa_verified_at = mfa_verified_at - interval '2 hours'
+        WHERE id = $1`,
+      [grant.id],
+    );
     expectCode(
       await support.get("/api/org/domains"),
       "SUPPORT_ACCESS_REQUIRED",
@@ -537,20 +539,22 @@ describe("legend-cg071 TEN-04 support session read-only", () => {
 
   it("TEN-04 an impersonated session is never a platform admin, even when the user is one", async () => {
     const tenant = await newTenantOwner();
-    // The tenant user also holds a platform_admins row.
+    const admin = await newSuperAdmin();
+    await openGrant(tenantId, admin.userId);
+    const support = await impersonate(admin, tenant);
+
+    // legend-rzirp: a platform admin cannot be impersonated, so the tenant
+    // user only becomes a platform admin AFTER the support session started.
     await db.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
       tenant.userId,
     ]);
     platformAdminIds.push(tenant.userId);
-    const admin = await newSuperAdmin();
-    await openGrant(tenantId, admin.userId);
 
     // Control: the user's own normal session may use the platform API.
     expect(
       (await tenant.client.get("/api/platform/support-access")).status,
     ).toBe(200);
 
-    const support = await impersonate(admin, tenant);
     // Tenant routes still work (the grant is open), so the refusal below comes
     // from the platform check and not from the missing grant.
     expect((await support.get("/api/org/domains")).status).toBe(200);
