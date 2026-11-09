@@ -4,14 +4,17 @@
 // `org.structure.manage` from stored role assignments (legend-4f9); the service
 // then enforces the caller's outlet scope.
 
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
+import { AccessError } from "@starter/shared/access";
 import {
   addDomainInputSchema,
   createBrandInputSchema,
   createLegalEntityInputSchema,
   createOutletInputSchema,
+  decideSupportAccessRequestInputSchema,
   legalEntityIdSchema,
   setOutletStatusInputSchema,
+  supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   updateBrandInputSchema,
   updateLegalEntityInputSchema,
@@ -26,6 +29,7 @@ import {
 import { getAuth, requireAuth } from "../middleware/auth";
 import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import {
+  getAccessSnapshot,
   getScopedTenantContext,
   requireTenantPermission,
 } from "../middleware/permissions";
@@ -48,7 +52,13 @@ import {
   updateLegalEntity,
   updateOutlet,
 } from "../services/org.service";
-import { listSupportAccess } from "../services/platform-support.service";
+import { HttpError } from "../lib/http-error";
+import {
+  approveSupportAccessRequest,
+  listSupportAccess,
+  listSupportAccessRequests,
+  rejectSupportAccessRequest,
+} from "../services/platform-support.service";
 
 export const orgRouter = Router();
 
@@ -204,3 +214,88 @@ orgRouter.get("/support-access", manage, async (req, res) => {
     .parse(req.query);
   res.json(await listSupportAccess(getScopedTenantContext(req), query));
 });
+
+// legend-c9kbk (TEN-04, Q37): a Super Admin's read_write request waits for the
+// tenant owner. Only holders of `org.support_access.approve` (owner template)
+// list and decide; deciding also needs a second factor verified in this
+// session and is never allowed from an impersonated (support) session. The
+// service re-checks the active owner-template assignment and self-approval.
+const approveSupportAccess = requireTenantPermission(
+  "org.support_access.approve",
+);
+
+const requireOwnerDecision: RequestHandler = (req, _res, next) => {
+  const impersonatedBy = (
+    getAuth(req).session as { impersonatedBy?: string | null }
+  ).impersonatedBy;
+  if (impersonatedBy)
+    throw new HttpError(
+      403,
+      "IMPERSONATION_NOT_ALLOWED",
+      "A support session cannot decide a support access request.",
+    );
+  if (!getAccessSnapshot(req).mfaVerified)
+    throw new AccessError("MFA_REQUIRED");
+  next();
+};
+
+const supportAccessRequestParams = z.strictObject({
+  requestId: supportAccessRequestIdSchema,
+});
+
+orgRouter.get(
+  "/support-access/requests",
+  approveSupportAccess,
+  requireOwnerDecision,
+  async (req, res) => {
+    const query = z
+      .strictObject({
+        cursor: cursorPageQuerySchema.shape.cursor,
+        limit: cursorPageQuerySchema.shape.limit,
+      })
+      .parse(req.query);
+    res.json(
+      await listSupportAccessRequests(
+        getScopedTenantContext(req),
+        { userId: getAuth(req).user.id },
+        query,
+      ),
+    );
+  },
+);
+
+orgRouter.post(
+  "/support-access/requests/:requestId/approve",
+  approveSupportAccess,
+  requireOwnerDecision,
+  jsonBody,
+  async (req, res) => {
+    const { requestId } = supportAccessRequestParams.parse(req.params);
+    decideSupportAccessRequestInputSchema.parse(req.body);
+    res.json({
+      data: await approveSupportAccessRequest(
+        getScopedTenantContext(req),
+        { userId: getAuth(req).user.id },
+        requestId,
+      ),
+    });
+  },
+);
+
+orgRouter.post(
+  "/support-access/requests/:requestId/reject",
+  approveSupportAccess,
+  requireOwnerDecision,
+  jsonBody,
+  async (req, res) => {
+    const { requestId } = supportAccessRequestParams.parse(req.params);
+    decideSupportAccessRequestInputSchema.parse(req.body);
+    res.json({
+      data: await rejectSupportAccessRequest(
+        getScopedTenantContext(req),
+        { userId: getAuth(req).user.id },
+        requestId,
+      ),
+    });
+  },
+);

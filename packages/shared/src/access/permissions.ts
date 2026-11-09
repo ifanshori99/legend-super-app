@@ -59,6 +59,8 @@ const entries = [
   ["org.integration.manage", []],
   ["org.theme.manage", []],
   ["org.config.export", []],
+  // owner only (Q37, legend-c9kbk)
+  ["org.support_access.approve", ["approve"]],
   ["org.tax_config.manage", []],
   ["device.registry.manage", []],
   ["device.registry.revoke", []],

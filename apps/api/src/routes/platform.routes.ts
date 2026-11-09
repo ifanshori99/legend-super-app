@@ -16,6 +16,7 @@ import {
   setTenantStatusInputSchema,
   platformEndpoints,
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   supportAccessGrantIdSchema,
 } from "@starter/shared/platform";
 import { tenantIdSchema, z } from "@starter/shared/core";
@@ -37,6 +38,7 @@ import {
   endSupportAccess,
   listPlatformSupportAccess,
   requestSupportAccess,
+  requestSupportWriteAccess,
 } from "../services/platform-support.service.ts";
 
 export const platformRouter = Router();
@@ -110,6 +112,24 @@ platformRouter.post(
     res.status(201).location(`/api/platform/support-access/${grant.id}`).json({
       data: grant,
     });
+  },
+);
+
+// legend-c9kbk: read_write is a request the tenant owner must approve; the
+// grant only exists after approval. Same TOTP re-verification as above.
+platformRouter.post(
+  "/tenants/:tenantId/support-access-requests",
+  jsonBody,
+  async (req, res) => {
+    const { tenantId } = tenantParams.parse(req.params);
+    const input = requestSupportWriteAccessInputSchema.parse(req.body);
+    const request = await requestSupportWriteAccess({
+      tenantId,
+      actorUserId: getAuth(req).user.id,
+      request: input,
+      mfaVerifiedAt: await verifiedMfaAt(req),
+    });
+    res.status(201).json({ data: request });
   },
 );
 

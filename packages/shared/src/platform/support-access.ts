@@ -19,7 +19,10 @@ import {
 } from "../core/index.ts";
 import type { TenantId, UserId } from "../core/index.ts";
 import { PlatformError } from "./errors.ts";
-import { supportAccessGrantIdSchema } from "./ids.ts";
+import {
+  supportAccessGrantIdSchema,
+  supportAccessRequestIdSchema,
+} from "./ids.ts";
 
 /** Durations offered (minutes); 60 is the PRD default. */
 export const SUPPORT_ACCESS_DURATIONS = [15, 30, 60, 120] as const;
@@ -94,6 +97,111 @@ export const requestSupportAccessInputSchema = z.strictObject({
 });
 export type RequestSupportAccessInput = z.infer<
   typeof requestSupportAccessInputSchema
+>;
+
+/** read_write needs tenant owner approval (founder Q37, legend-c9kbk): a
+ * request not decided within this window expires. */
+export const SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS = 24;
+
+/** Durations a read_write request may ask for (30 min cap). */
+export const SUPPORT_ACCESS_WRITE_DURATIONS = [15, 30] as const;
+export const SUPPORT_ACCESS_WRITE_DEFAULT_MINUTES = 30;
+
+export const supportAccessRequestStatusSchema = z.enum([
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+]);
+export type SupportAccessRequestStatus = z.infer<
+  typeof supportAccessRequestStatusSchema
+>;
+
+const writeDurationSchema = z.union(
+  SUPPORT_ACCESS_WRITE_DURATIONS.map((minutes) => z.literal(minutes)),
+);
+
+/** `support_access_requests` (tenant-owned). Until the tenant owner approves
+ * a request no grant exists, so every guard sees "no grant" (fail closed). */
+export const supportAccessRequestSchema = z
+  .strictObject({
+    id: supportAccessRequestIdSchema,
+    tenantId: tenantIdSchema,
+    superAdminUserId: userIdSchema,
+    reason: reasonSchema,
+    accessMode: z.literal("read_write"),
+    durationMinutes: writeDurationSchema,
+    mfaVerifiedAt: isoDateTimeSchema,
+    requestedAt: isoDateTimeSchema,
+    approvalExpiresAt: isoDateTimeSchema,
+    status: supportAccessRequestStatusSchema,
+    decidedAt: isoDateTimeSchema.nullable(),
+    decidedBy: userIdSchema.nullable(),
+    grantId: supportAccessGrantIdSchema.nullable(),
+    /** Set when the owner notification was queued (support_access.requested). */
+    ownerNotifiedAt: isoDateTimeSchema.nullable(),
+  })
+  .refine(
+    (request) =>
+      Date.parse(request.approvalExpiresAt) -
+        Date.parse(request.requestedAt) ===
+      SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * 3_600_000,
+    {
+      path: ["approvalExpiresAt"],
+      message: "approvalExpiresAt = requestedAt + 24 hours",
+    },
+  )
+  .refine(
+    (request) =>
+      Date.parse(request.mfaVerifiedAt) <= Date.parse(request.requestedAt),
+    { path: ["mfaVerifiedAt"], message: "MFA must precede the request" },
+  )
+  .refine(
+    (request) =>
+      (request.status === "pending") === (request.decidedAt === null),
+    {
+      path: ["decidedAt"],
+      message: "pending <-> decidedAt is null",
+    },
+  )
+  .refine(
+    (request) =>
+      (request.status === "approved" || request.status === "rejected") ===
+      (request.decidedBy !== null),
+    { path: ["decidedBy"], message: "approved/rejected <-> decidedBy is set" },
+  )
+  .refine(
+    (request) => (request.status === "approved") === (request.grantId !== null),
+    {
+      path: ["grantId"],
+      message: "approved <-> grantId is set",
+    },
+  )
+  .refine(
+    (request) =>
+      request.decidedBy === null ||
+      request.decidedBy !== request.superAdminUserId,
+    { path: ["decidedBy"], message: "the requester cannot decide" },
+  );
+export type SupportAccessRequest = z.infer<typeof supportAccessRequestSchema>;
+
+/** Super Admin files a read_write request (tenant in the path). The TOTP
+ * code is checked by the API; this schema checks its shape only. */
+export const requestSupportWriteAccessInputSchema = z.strictObject({
+  reason: reasonSchema,
+  durationMinutes: writeDurationSchema.default(
+    SUPPORT_ACCESS_WRITE_DEFAULT_MINUTES,
+  ),
+  mfaCode: z.string().regex(/^\d{6}$/),
+});
+export type RequestSupportWriteAccessInput = z.infer<
+  typeof requestSupportWriteAccessInputSchema
+>;
+
+/** Tenant owner approves or rejects (request id in the path, no body). */
+export const decideSupportAccessRequestInputSchema = z.strictObject({});
+export type DecideSupportAccessRequestInput = z.infer<
+  typeof decideSupportAccessRequestInputSchema
 >;
 
 export type SupportAccessStatus = "active" | "expired" | "ended";

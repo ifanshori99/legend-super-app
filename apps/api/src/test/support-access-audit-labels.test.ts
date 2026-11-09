@@ -13,6 +13,10 @@ const SUPPORT_ACCESS_ACTIONS = {
   "support_access.expired": "Akses dukungan kedaluwarsa",
   "support_access.impersonation_started": "Sesi dukungan dimulai",
   "support_access.impersonation_ended": "Sesi dukungan diakhiri",
+  "support_access.requested": "Akses dukungan diminta",
+  "support_access.approved": "Akses dukungan disetujui",
+  "support_access.rejected": "Permintaan akses dukungan ditolak",
+  "support_access.request_expired": "Permintaan akses dukungan kedaluwarsa",
 } as const;
 
 const t = createTranslator();
@@ -31,5 +35,11 @@ describe("legend-npkpz TEN-04 support access audit labels", () => {
     const key = "auditSettings.audit.objectTypes.support_access_grant";
     expect(isMessageKey(key)).toBe(true);
     if (isMessageKey(key)) expect(t(key)).toBe("Akses dukungan");
+  });
+
+  it("legend-c9kbk TEN-04 the support access request object type has a label", () => {
+    const key = "auditSettings.audit.objectTypes.support_access_request";
+    expect(isMessageKey(key)).toBe(true);
+    if (isMessageKey(key)) expect(t(key)).toBe("Permintaan akses dukungan");
   });
 });

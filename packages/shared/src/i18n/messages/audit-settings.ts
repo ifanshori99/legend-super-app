@@ -117,6 +117,7 @@ export const auditSettingsMessages = {
       session: "Sesi",
       report: "Laporan",
       support_access_grant: "Akses dukungan",
+      support_access_request: "Permintaan akses dukungan",
     },
     actions: {
       settings_updated: "Pengaturan diubah",
@@ -133,6 +134,10 @@ export const auditSettingsMessages = {
       report_exported: "Laporan diekspor",
       notification_rule_updated: "Aturan notifikasi diubah",
       ai_suggestion_applied: "Saran AI diterapkan",
+      support_access_requested: "Akses dukungan diminta",
+      support_access_approved: "Akses dukungan disetujui",
+      support_access_rejected: "Permintaan akses dukungan ditolak",
+      support_access_request_expired: "Permintaan akses dukungan kedaluwarsa",
       support_access_granted: "Akses dukungan diberikan",
       support_access_denied: "Akses dukungan ditolak",
       support_access_ended: "Akses dukungan diakhiri",

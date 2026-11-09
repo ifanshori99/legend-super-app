@@ -860,6 +860,43 @@ describe("legend-18qw notification recipient resolver", () => {
     }
   });
 
+  it("legend-c9kbk TEN-04 support_access.requested pages only tenant-scope owner-template holders", async () => {
+    // A non-owner who nevertheless holds the approve permission through a custom
+    // tenant-scope role must not be paged: only owners may decide the request.
+    const customRoleId = randomUUID();
+    const customUserId = await createUser(
+      "Pemegang izin kustom",
+      "supervisor",
+      { type: "tenant" },
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, 'Penyetuju dukungan kustom notif', false, $3::jsonb, '["tenant"]'::jsonb)`,
+      [customRoleId, tenantId, JSON.stringify(["org.support_access.approve"])],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 hour', $2)`,
+      [tenantId, customUserId, customRoleId],
+    );
+    try {
+      const event = envelope("support_access.requested", null, {});
+      const recipients = await resolve({ email: true, push: true }, event);
+      // Only the tenant-scope owner; not the outlet-scope owner, supervisors,
+      // the cashier, the lapsed approver or the custom-role holder.
+      expect(ours(recipients).map((r) => r.userId)).toEqual([
+        users.tenantOwner,
+      ]);
+    } finally {
+      await owner.query(
+        `DELETE FROM role_assignments WHERE tenant_id = $1 AND role_id = $2`,
+        [tenantId, customRoleId],
+      );
+      await owner.query(`DELETE FROM roles WHERE id = $1`, [customRoleId]);
+    }
+  });
+
   it("legend-18qw checklist events alert outlet supervisors, not the assignee", async () => {
     const payload = {
       runId: randomUUID(),

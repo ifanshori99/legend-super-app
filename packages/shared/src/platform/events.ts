@@ -3,7 +3,8 @@
 // Payloads carry no secrets, no NPWP, no credential values (integration
 // events name the changed fields only).
 //
-// - `support_access.granted` drives the tenant-admin notification and the
+// - `support_access.requested` asks the tenant owner to approve a read_write
+//   session (legend-c9kbk); `support_access.granted` drives the tenant-admin notification and the
 //   audit row (TEN-04); `support_access.ended` closes it (expiry or early end).
 // - `usage_limit.reached` is the R18 alert at 80% and the stop at 100%.
 // - `tenant.status_changed` lets consumers stop serving a suspended tenant
@@ -23,6 +24,7 @@ import {
   configTemplateIdSchema,
   legalEntityIdSchema,
   supportAccessGrantIdSchema,
+  supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   tenantIntegrationIdSchema,
   tenantThemeIdSchema,
@@ -116,6 +118,13 @@ export const PLATFORM_EVENT_PAYLOADS = {
     brandId: brandIdSchema,
     version: z.number().int().positive(),
     previousThemeId: tenantThemeIdSchema.nullable(),
+  }),
+  "support_access.requested": z.strictObject({
+    requestId: supportAccessRequestIdSchema,
+    superAdminUserId: userIdSchema,
+    reason,
+    durationMinutes: z.union([z.literal(15), z.literal(30)]),
+    approvalExpiresAt: isoDateTimeSchema,
   }),
   "support_access.granted": z.strictObject({
     grantId: supportAccessGrantIdSchema,

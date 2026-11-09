@@ -28,11 +28,16 @@ import {
   assertSupportAccess as assertSupportAccessPolicy,
   PlatformError,
   platformEvents,
+  SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS,
   supportAccessExpiry,
   supportAccessGrantSchema,
+  supportAccessRequestSchema,
   type DataClass,
   type RequestSupportAccessInput,
+  type RequestSupportWriteAccessInput,
   type SupportAccessGrant,
+  type SupportAccessRequest,
+  type SupportAccessRequestStatus,
 } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
@@ -49,7 +54,9 @@ import {
   domainEventOutbox,
   platformAdmins,
   roleAssignments,
+  roles,
   supportAccessGrants,
+  supportAccessRequests,
   tenants,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -63,6 +70,7 @@ import {
 import { appendOutbox } from "./core-outbox.ts";
 
 type GrantRow = typeof supportAccessGrants.$inferSelect;
+type RequestRow = typeof supportAccessRequests.$inferSelect;
 type Tx = AuditTransaction;
 type Page = {
   data: SupportAccessGrant[];
@@ -145,7 +153,10 @@ async function assertTenantExists(tenantId: string): Promise<void> {
 async function audit(
   tx: Tx,
   context: ScopedTenantContext,
-  entry: Omit<AuditEntry, "tenantId" | "outletId" | "deviceId" | "objectType">,
+  entry: Omit<
+    AuditEntry,
+    "tenantId" | "outletId" | "deviceId" | "objectType"
+  > & { objectType?: string },
 ): Promise<void> {
   await recordAudit(
     {
@@ -153,13 +164,13 @@ async function audit(
       tenantId: context.tenant.tenantId,
       outletId: null,
       deviceId: null,
-      objectType: OBJECT_TYPE,
+      objectType: entry.objectType ?? OBJECT_TYPE,
     },
     { tx, context },
   );
 }
 
-async function nextSequence(tx: Tx, tenantId: string, grantId: string) {
+async function nextSequence(tx: Tx, tenantId: string, aggregateId: string) {
   const [row] = await tx
     .select({
       last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
@@ -170,7 +181,7 @@ async function nextSequence(tx: Tx, tenantId: string, grantId: string) {
         eq(domainEventOutbox.tenantId, tenantId),
         eq(domainEventOutbox.destination, NOTIFICATION_DESTINATION),
         eq(domainEventOutbox.aggregateType, AGGREGATE_TYPE),
-        eq(domainEventOutbox.aggregateId, grantId),
+        eq(domainEventOutbox.aggregateId, aggregateId),
       ),
     );
   return Number(row?.last ?? 0) + 1;
@@ -181,9 +192,13 @@ async function nextSequence(tx: Tx, tenantId: string, grantId: string) {
 async function appendSupportEvent(
   tx: Tx,
   context: ScopedTenantContext,
-  name: "support_access.granted" | "support_access.ended",
+  name:
+    | "support_access.granted"
+    | "support_access.ended"
+    | "support_access.requested",
   input: {
-    grantId: string;
+    /** The grant, or the request for support_access.requested. */
+    aggregateId: string;
     actor: { type: "user"; id: string } | { type: "system" };
     payload: Record<string, unknown>;
     now: Date;
@@ -193,7 +208,7 @@ async function appendSupportEvent(
   const sequence = await nextSequence(
     tx,
     context.tenant.tenantId,
-    input.grantId,
+    input.aggregateId,
   );
   const event = definition.envelopeSchema.parse({
     id: createUlid(input.now.getTime()),
@@ -202,12 +217,12 @@ async function appendSupportEvent(
     name: definition.name,
     version: definition.version,
     aggregateType: definition.entry.aggregateType,
-    aggregateId: input.grantId,
+    aggregateId: input.aggregateId,
     sequence,
     occurredAt: input.now.toISOString(),
     actor: input.actor,
     deviceId: null,
-    idempotencyKey: `${name}:${input.grantId}`,
+    idempotencyKey: `${name}:${input.aggregateId}`,
     payloadSchemaRef: definition.payloadSchemaRef,
     payload: input.payload,
   });
@@ -260,7 +275,7 @@ async function recordExpiry(
     sensitiveAccess: false,
   });
   await appendSupportEvent(tx, context, "support_access.ended", {
-    grantId: updated.id,
+    aggregateId: updated.id,
     actor: { type: "system" },
     now,
     payload: {
@@ -274,6 +289,174 @@ async function recordExpiry(
 
 // ------------------------------------------------------------ request
 
+/**
+ * The second factor must have been verified for this request (at most
+ * SUPPORT_ACCESS_MFA_MAX_AGE_MS ago). A refused attempt is itself recorded for
+ * the tenant (TEN-04 "setiap sesi tercatat") and nothing is opened.
+ */
+async function assertFreshMfa(input: {
+  context: ScopedTenantContext;
+  actorUserId: string;
+  mfaVerifiedAt: string | null;
+  reason: string;
+  accessMode: "read_only" | "read_write";
+  durationMinutes: number;
+  now: Date;
+}): Promise<number> {
+  const mfaAt =
+    input.mfaVerifiedAt === null ? Number.NaN : Date.parse(input.mfaVerifiedAt);
+  const mfaFresh =
+    Number.isFinite(mfaAt) &&
+    mfaAt <= input.now.getTime() &&
+    input.now.getTime() - mfaAt <= SUPPORT_ACCESS_MFA_MAX_AGE_MS;
+  if (mfaFresh) return mfaAt;
+  await withTenant(db, input.context, (tx) =>
+    audit(tx, input.context, {
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "support_access.denied",
+      objectId: null,
+      reason: input.reason,
+      before: null,
+      after: {
+        cause: "mfa_not_verified",
+        accessMode: input.accessMode,
+        durationMinutes: input.durationMinutes,
+      },
+      sensitiveAccess: false,
+    }),
+  );
+  throw new HttpError(
+    403,
+    "FORBIDDEN",
+    "Verifikasi MFA wajib sebelum membuka sesi support access.",
+  );
+}
+
+/** Serialises every grant/request change of one Super Admin in one tenant. */
+async function lockAdminTenant(
+  tx: Tx,
+  tenantId: string,
+  superAdminUserId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`support_access:${tenantId}:${superAdminUserId}`}, 0))`,
+  );
+}
+
+/**
+ * Records this admin's lapsed open sessions in the tenant and returns the
+ * still-live ones. Caller holds lockAdminTenant.
+ */
+async function liveOpenGrants(
+  tx: Tx,
+  context: ScopedTenantContext,
+  superAdminUserId: string,
+  now: Date,
+): Promise<GrantRow[]> {
+  const open = await tx
+    .select()
+    .from(supportAccessGrants)
+    .where(
+      and(
+        eq(supportAccessGrants.tenantId, context.tenant.tenantId),
+        eq(supportAccessGrants.superAdminUserId, superAdminUserId),
+        isNull(supportAccessGrants.endedAt),
+        isNull(supportAccessGrants.expiryRecordedAt),
+      ),
+    );
+  // A lapsed session that the sweep has not reached yet is recorded now,
+  // so its expiry is audited before the next session opens.
+  for (const row of open)
+    if (row.expiresAt.getTime() <= now.getTime())
+      await recordExpiry(tx, context, row, now);
+  return open.filter((row) => row.expiresAt.getTime() > now.getTime());
+}
+
+/**
+ * Inserts the grant with its `support_access.granted` audit row and outbox
+ * event (the tenant-admin notification), in the caller's tenant transaction.
+ * The window starts now: for read_write that is the owner's approval
+ * (legend-c9kbk, Q37).
+ */
+async function insertGrant(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    superAdminUserId: string;
+    actorUserId: string;
+    reason: string;
+    accessMode: "read_only" | "read_write";
+    durationMinutes: 15 | 30 | 60 | 120;
+    mfaVerifiedAt: Date;
+    now: Date;
+    requestId?: string;
+  },
+): Promise<GrantRow> {
+  const startedAt = input.now.toISOString();
+  const [row] = await tx
+    .insert(supportAccessGrants)
+    .values({
+      tenantId: context.tenant.tenantId,
+      superAdminUserId: input.superAdminUserId,
+      reason: input.reason,
+      accessMode: input.accessMode,
+      durationMinutes: input.durationMinutes,
+      startedAt: new Date(startedAt),
+      expiresAt: new Date(
+        supportAccessExpiry(startedAt, input.durationMinutes),
+      ),
+      // mfaVerifiedAt <= startedAt is a table check; the verified instant
+      // is never later than the session it authorizes.
+      mfaVerifiedAt: input.mfaVerifiedAt,
+      // Queued in this transaction (outbox below), so it is notified iff
+      // the grant exists.
+      tenantAdminNotifiedAt: new Date(startedAt),
+      // A read_write grant must name the approved request it comes from
+      // (support_access_grant_write_approved_check, migration 0160).
+      approvalRequestId: input.requestId ?? null,
+    })
+    .returning();
+  if (!row) throw new Error("support access insert returned no row");
+  await audit(tx, context, {
+    actorType: "user",
+    actorId: input.actorUserId,
+    action: "support_access.granted",
+    objectId: row.id,
+    reason: row.reason,
+    before: null,
+    after: {
+      accessMode: row.accessMode,
+      durationMinutes: row.durationMinutes,
+      startedAt: row.startedAt.toISOString(),
+      expiresAt: row.expiresAt.toISOString(),
+      superAdminUserId: row.superAdminUserId,
+      ...(input.requestId ? { requestId: input.requestId } : {}),
+    },
+    sensitiveAccess: true,
+  });
+  await appendSupportEvent(tx, context, "support_access.granted", {
+    aggregateId: row.id,
+    actor: { type: "user", id: input.actorUserId },
+    now: input.now,
+    payload: {
+      grantId: row.id,
+      superAdminUserId: row.superAdminUserId,
+      reason: row.reason,
+      accessMode: row.accessMode,
+      startedAt: row.startedAt.toISOString(),
+      expiresAt: row.expiresAt.toISOString(),
+    },
+  });
+  return row;
+}
+
+/**
+ * Opens a read_only session at once. A read_write session needs the tenant
+ * owner's approval first (founder Q37, legend-c9kbk): it is requested with
+ * requestSupportWriteAccess and only exists as a grant once approved, so it is
+ * refused here without any row.
+ */
 export async function requestSupportAccess(input: {
   tenantId: string;
   actorUserId: string;
@@ -293,122 +476,45 @@ export async function requestSupportAccess(input: {
       "VALIDATION_ERROR",
       `Sesi read_write paling lama ${SUPPORT_ACCESS_WRITE_MAX_MINUTES} menit.`,
     );
+  if (request.accessMode === "read_write")
+    throw new HttpError(
+      409,
+      "SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED",
+      "Akses ubah data perlu persetujuan Owner tenant. Ajukan permintaan akses.",
+    );
   if (!(await isPlatformAdmin(input.actorUserId)))
     throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
   await assertTenantExists(input.tenantId);
   const context = platformTenantContext(input.tenantId);
+  const mfaAt = await assertFreshMfa({
+    context,
+    actorUserId: input.actorUserId,
+    mfaVerifiedAt: input.mfaVerifiedAt,
+    reason: request.reason,
+    accessMode: request.accessMode,
+    durationMinutes: request.durationMinutes,
+    now,
+  });
 
-  const mfaAt =
-    input.mfaVerifiedAt === null ? Number.NaN : Date.parse(input.mfaVerifiedAt);
-  const mfaFresh =
-    Number.isFinite(mfaAt) &&
-    mfaAt <= now.getTime() &&
-    now.getTime() - mfaAt <= SUPPORT_ACCESS_MFA_MAX_AGE_MS;
-  if (!mfaFresh) {
-    // The refused attempt is itself recorded for the tenant (TEN-04 "setiap
-    // sesi tercatat"); nothing is opened.
-    await withTenant(db, context, (tx) =>
-      audit(tx, context, {
-        actorType: "user",
-        actorId: input.actorUserId,
-        action: "support_access.denied",
-        objectId: null,
-        reason: request.reason,
-        before: null,
-        after: {
-          cause: "mfa_not_verified",
-          accessMode: request.accessMode,
-          durationMinutes: request.durationMinutes,
-        },
-        sensitiveAccess: false,
-      }),
-    );
-    throw new HttpError(
-      403,
-      "FORBIDDEN",
-      "Verifikasi MFA wajib sebelum membuka sesi support access.",
-    );
-  }
-
-  const startedAt = now.toISOString();
   try {
     return await withTenant(db, context, async (tx) => {
       // Serialise concurrent requests by the same Super Admin for the same
       // tenant; the partial unique index is the backstop.
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`support_access:${input.tenantId}:${input.actorUserId}`}, 0))`,
-      );
-      const open = await tx
-        .select()
-        .from(supportAccessGrants)
-        .where(
-          and(
-            eq(supportAccessGrants.tenantId, input.tenantId),
-            eq(supportAccessGrants.superAdminUserId, input.actorUserId),
-            isNull(supportAccessGrants.endedAt),
-            isNull(supportAccessGrants.expiryRecordedAt),
-          ),
-        );
-      // A lapsed session that the sweep has not reached yet is recorded now,
-      // so its expiry is audited before the next session opens.
-      for (const row of open)
-        if (row.expiresAt.getTime() <= now.getTime())
-          await recordExpiry(tx, context, row, now);
+      await lockAdminTenant(tx, input.tenantId, input.actorUserId);
+      const live = await liveOpenGrants(tx, context, input.actorUserId, now);
       assertCanOpenSupportAccess(
-        open
-          .filter((row) => row.expiresAt.getTime() > now.getTime())
-          .map(toGrant),
+        live.map(toGrant),
         { tenantId: input.tenantId, superAdminUserId: input.actorUserId },
         now,
       );
-      const [row] = await tx
-        .insert(supportAccessGrants)
-        .values({
-          tenantId: input.tenantId,
-          superAdminUserId: input.actorUserId,
-          reason: request.reason,
-          accessMode: request.accessMode,
-          durationMinutes: request.durationMinutes,
-          startedAt: new Date(startedAt),
-          expiresAt: new Date(
-            supportAccessExpiry(startedAt, request.durationMinutes),
-          ),
-          // mfaVerifiedAt <= startedAt is a table check; the verified instant
-          // is never later than the session it authorizes.
-          mfaVerifiedAt: new Date(mfaAt),
-          // Queued in this transaction (outbox below), so it is notified iff
-          // the grant exists.
-          tenantAdminNotifiedAt: new Date(startedAt),
-        })
-        .returning();
-      if (!row) throw new Error("support access insert returned no row");
-      await audit(tx, context, {
-        actorType: "user",
-        actorId: input.actorUserId,
-        action: "support_access.granted",
-        objectId: row.id,
-        reason: row.reason,
-        before: null,
-        after: {
-          accessMode: row.accessMode,
-          durationMinutes: row.durationMinutes,
-          startedAt: row.startedAt.toISOString(),
-          expiresAt: row.expiresAt.toISOString(),
-        },
-        sensitiveAccess: true,
-      });
-      await appendSupportEvent(tx, context, "support_access.granted", {
-        grantId: row.id,
-        actor: { type: "user", id: input.actorUserId },
+      const row = await insertGrant(tx, context, {
+        superAdminUserId: input.actorUserId,
+        actorUserId: input.actorUserId,
+        reason: request.reason,
+        accessMode: request.accessMode,
+        durationMinutes: request.durationMinutes,
+        mfaVerifiedAt: new Date(mfaAt),
         now,
-        payload: {
-          grantId: row.id,
-          superAdminUserId: row.superAdminUserId,
-          reason: row.reason,
-          accessMode: row.accessMode,
-          startedAt: row.startedAt.toISOString(),
-          expiresAt: row.expiresAt.toISOString(),
-        },
       });
       return toGrant(row);
     });
@@ -417,6 +523,553 @@ export async function requestSupportAccess(input: {
       throw new PlatformError("SUPPORT_ACCESS_ALREADY_ACTIVE");
     throw error;
   }
+}
+
+// ------------------------------------- read_write owner approval (c9kbk)
+
+/*
+ * Founder Q37: a read_write session starts as a request the tenant owner
+ * approves or rejects. While pending (or after rejection/expiry) no grant row
+ * exists, so the guard, impersonation and the session cap see no grant at all
+ * (fail closed by construction). Approval inserts an ordinary read_write grant
+ * whose window starts at the approval. An unanswered request expires after
+ * SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS. Every transition writes a tenant audit
+ * row (TEN-04).
+ */
+
+const REQUEST_OBJECT_TYPE = "support_access_request";
+const APPROVAL_WINDOW_MS = SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * 60 * 60_000;
+
+function requestStatus(row: RequestRow, now: Date): SupportAccessRequestStatus {
+  if (
+    row.status === "pending" &&
+    row.approvalExpiresAt.getTime() <= now.getTime()
+  )
+    return "expired";
+  return row.status as SupportAccessRequestStatus;
+}
+
+function toRequest(row: RequestRow, now: Date): SupportAccessRequest {
+  const status = requestStatus(row, now);
+  return supportAccessRequestSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    superAdminUserId: row.superAdminUserId,
+    reason: row.reason,
+    accessMode: row.accessMode,
+    durationMinutes: row.durationMinutes,
+    mfaVerifiedAt: row.mfaVerifiedAt.toISOString(),
+    requestedAt: row.requestedAt.toISOString(),
+    approvalExpiresAt: row.approvalExpiresAt.toISOString(),
+    status,
+    // A pending row past its window reads as expired at its deadline until
+    // the sweep records it.
+    decidedAt:
+      row.decidedAt?.toISOString() ??
+      (status === "expired" ? row.approvalExpiresAt.toISOString() : null),
+    decidedBy: row.decidedBy,
+    grantId: row.grantId,
+    ownerNotifiedAt: row.ownerNotifiedAt?.toISOString() ?? null,
+  });
+}
+
+/** Records a lapsed pending request once (status expired + audit row). */
+async function recordRequestExpiry(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: RequestRow,
+  now: Date,
+): Promise<RequestRow | null> {
+  const [updated] = await tx
+    .update(supportAccessRequests)
+    .set({ status: "expired", decidedAt: now })
+    .where(
+      and(
+        eq(supportAccessRequests.id, row.id),
+        eq(supportAccessRequests.tenantId, context.tenant.tenantId),
+        eq(supportAccessRequests.status, "pending"),
+        lte(supportAccessRequests.approvalExpiresAt, now),
+      ),
+    )
+    .returning();
+  if (!updated) return null;
+  await audit(tx, context, {
+    actorType: "system",
+    actorId: null,
+    action: "support_access.request_expired",
+    objectType: REQUEST_OBJECT_TYPE,
+    objectId: updated.id,
+    reason: "Permintaan akses dukungan tidak dijawab dalam 24 jam.",
+    before: { status: "pending" },
+    after: {
+      status: "expired",
+      superAdminUserId: updated.superAdminUserId,
+      approvalExpiresAt: updated.approvalExpiresAt.toISOString(),
+    },
+    sensitiveAccess: false,
+  });
+  return updated;
+}
+
+/**
+ * A Super Admin asks the tenant owner for a read_write session (Q37). Same
+ * Super Admin and fresh-MFA rules as requestSupportAccess; the MFA instant is
+ * carried to the grant opened on approval.
+ */
+export async function requestSupportWriteAccess(input: {
+  tenantId: string;
+  actorUserId: string;
+  request: RequestSupportWriteAccessInput;
+  mfaVerifiedAt: string | null;
+  now?: Date;
+}): Promise<SupportAccessRequest> {
+  const now = input.now ?? new Date();
+  const { request } = input;
+  if (request.durationMinutes > SUPPORT_ACCESS_WRITE_MAX_MINUTES)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      `Sesi read_write paling lama ${SUPPORT_ACCESS_WRITE_MAX_MINUTES} menit.`,
+    );
+  if (!(await isPlatformAdmin(input.actorUserId)))
+    throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
+  await assertTenantExists(input.tenantId);
+  const context = platformTenantContext(input.tenantId);
+  const mfaAt = await assertFreshMfa({
+    context,
+    actorUserId: input.actorUserId,
+    mfaVerifiedAt: input.mfaVerifiedAt,
+    reason: request.reason,
+    accessMode: "read_write",
+    durationMinutes: request.durationMinutes,
+    now,
+  });
+
+  const outcome = await (async () => {
+    try {
+      return await withTenant(db, context, async (tx) => {
+        await lockAdminTenant(tx, input.tenantId, input.actorUserId);
+        const pending = await tx
+          .select()
+          .from(supportAccessRequests)
+          .where(
+            and(
+              eq(supportAccessRequests.tenantId, input.tenantId),
+              eq(supportAccessRequests.superAdminUserId, input.actorUserId),
+              eq(supportAccessRequests.status, "pending"),
+            ),
+          )
+          .for("update");
+        for (const row of pending)
+          if (row.approvalExpiresAt.getTime() <= now.getTime())
+            await recordRequestExpiry(tx, context, row, now);
+        if (
+          pending.some((row) => row.approvalExpiresAt.getTime() > now.getTime())
+        )
+          return { kind: "pending" } as const;
+        const [row] = await tx
+          .insert(supportAccessRequests)
+          .values({
+            tenantId: input.tenantId,
+            superAdminUserId: input.actorUserId,
+            reason: request.reason,
+            accessMode: "read_write",
+            durationMinutes: request.durationMinutes,
+            mfaVerifiedAt: new Date(mfaAt),
+            requestedAt: now,
+            approvalExpiresAt: new Date(now.getTime() + APPROVAL_WINDOW_MS),
+            // Queued below in this transaction: notified iff it exists.
+            ownerNotifiedAt: now,
+          })
+          .returning();
+        if (!row)
+          throw new Error("support access request insert returned no row");
+        await audit(tx, context, {
+          actorType: "user",
+          actorId: input.actorUserId,
+          action: "support_access.requested",
+          objectType: REQUEST_OBJECT_TYPE,
+          objectId: row.id,
+          reason: row.reason,
+          before: null,
+          after: {
+            status: "pending",
+            accessMode: row.accessMode,
+            durationMinutes: row.durationMinutes,
+            approvalExpiresAt: row.approvalExpiresAt.toISOString(),
+          },
+          sensitiveAccess: true,
+        });
+        await appendSupportEvent(tx, context, "support_access.requested", {
+          aggregateId: row.id,
+          actor: { type: "user", id: input.actorUserId },
+          now,
+          payload: {
+            requestId: row.id,
+            superAdminUserId: row.superAdminUserId,
+            reason: row.reason,
+            durationMinutes: row.durationMinutes,
+            approvalExpiresAt: row.approvalExpiresAt.toISOString(),
+          },
+        });
+        return { kind: "created", row } as const;
+      });
+    } catch (error) {
+      if (uniqueViolation(error)) return { kind: "pending" } as const;
+      throw error;
+    }
+  })();
+  if (outcome.kind === "pending")
+    throw new HttpError(
+      409,
+      "SUPPORT_ACCESS_REQUEST_PENDING",
+      "Masih ada permintaan akses yang menunggu jawaban Owner.",
+    );
+  return toRequest(outcome.row, now);
+}
+
+/** Tenant owner view of the read_write requests for their tenant. */
+export async function listSupportAccessRequests(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  query: { limit: number; cursor?: string },
+  now: Date = new Date(),
+): Promise<{
+  data: SupportAccessRequest[];
+  meta: { limit: number; nextCursor: string | null };
+}> {
+  const rows = await withTenant(db, context, async (tx) => {
+    // Same audience as the decision: reasons and Super Admin ids are shown
+    // to the tenant's owners only.
+    const owner = await activeOwnerAssignments(
+      tx,
+      context.tenant.tenantId,
+      actor.userId,
+      now,
+    );
+    if (owner.length === 0)
+      throw new HttpError(
+        403,
+        "OWNER_REQUIRED",
+        "Hanya Owner tenant yang dapat melihat permintaan akses dukungan.",
+      );
+    const filters = [
+      eq(supportAccessRequests.tenantId, context.tenant.tenantId),
+    ];
+    if (query.cursor) {
+      const [requestedAt, id] = decodeCursor(query.cursor);
+      if (typeof requestedAt !== "string" || typeof id !== "string")
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      const at = new Date(requestedAt);
+      if (Number.isNaN(at.getTime()))
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      const cursorFilter = or(
+        lt(supportAccessRequests.requestedAt, at),
+        and(
+          eq(supportAccessRequests.requestedAt, at),
+          lt(supportAccessRequests.id, id),
+        ),
+      );
+      if (cursorFilter) filters.push(cursorFilter);
+    }
+    return tx
+      .select()
+      .from(supportAccessRequests)
+      .where(and(...filters))
+      .orderBy(
+        desc(supportAccessRequests.requestedAt),
+        desc(supportAccessRequests.id),
+      )
+      .limit(query.limit + 1);
+  });
+  const page = rows.slice(0, query.limit);
+  const last = page.at(-1);
+  return {
+    data: page.map((row) => toRequest(row, now)),
+    meta: {
+      limit: query.limit,
+      nextCursor:
+        rows.length > query.limit && last
+          ? encodeCursor([last.requestedAt.toISOString(), last.id])
+          : null,
+    },
+  };
+}
+
+/** The caller's active tenant-scope assignments of the owner template here. */
+async function activeOwnerAssignments(
+  tx: Tx,
+  tenantId: string,
+  userId: string,
+  now: Date,
+): Promise<{ assignedAt: Date; assignedBy: string }[]> {
+  return tx
+    .select({
+      assignedAt: roleAssignments.assignedAt,
+      assignedBy: roleAssignments.assignedBy,
+    })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .where(
+      and(
+        eq(roleAssignments.tenantId, tenantId),
+        eq(roleAssignments.userId, userId),
+        eq(roles.templateKey, "owner"),
+        eq(roleAssignments.scopeType, "tenant"),
+        lte(roleAssignments.validFrom, now),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, now),
+        ),
+      ),
+    );
+}
+
+/**
+ * The owner standing must not come from the requester. A read_write session
+ * can create users and role assignments, so an owner assignment made by the
+ * requesting Super Admin, or made while they held a grant in this tenant
+ * (possibly through impersonation), would let them approve their own later
+ * requests from a second account. At least one of the approver's owner
+ * assignments must predate (or follow) every such grant window.
+ */
+async function hasIndependentOwnerStanding(
+  tx: Tx,
+  tenantId: string,
+  superAdminUserId: string,
+  assignments: { assignedAt: Date; assignedBy: string }[],
+): Promise<boolean> {
+  const windows = await tx
+    .select({
+      startedAt: supportAccessGrants.startedAt,
+      endedAt: supportAccessGrants.endedAt,
+      expiresAt: supportAccessGrants.expiresAt,
+    })
+    .from(supportAccessGrants)
+    .where(
+      and(
+        eq(supportAccessGrants.tenantId, tenantId),
+        eq(supportAccessGrants.superAdminUserId, superAdminUserId),
+      ),
+    );
+  const requester = superAdminUserId.toLowerCase();
+  return assignments.some((assignment) => {
+    if (assignment.assignedBy.toLowerCase() === requester) return false;
+    const at = assignment.assignedAt.getTime();
+    return windows.every((window) => {
+      const end = (window.endedAt ?? window.expiresAt).getTime();
+      return at < window.startedAt.getTime() || at >= end;
+    });
+  });
+}
+
+type Decision = "approve" | "reject";
+
+async function decideSupportAccessRequest(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  requestId: string,
+  decision: Decision,
+  now: Date,
+): Promise<SupportAccessRequest> {
+  const tenantId = context.tenant.tenantId;
+  const outcome = await (async () => {
+    try {
+      return await withTenant(db, context, async (tx) => {
+        // Defence in depth behind the route's owner-only permission: the
+        // decider holds the owner template in THIS tenant right now.
+        const ownerAssignments = await activeOwnerAssignments(
+          tx,
+          tenantId,
+          actor.userId,
+          now,
+        );
+        if (ownerAssignments.length === 0)
+          return { kind: "owner_required" } as const;
+        const [peek] = await tx
+          .select({ superAdminUserId: supportAccessRequests.superAdminUserId })
+          .from(supportAccessRequests)
+          .where(
+            and(
+              eq(supportAccessRequests.id, requestId),
+              eq(supportAccessRequests.tenantId, tenantId),
+            ),
+          )
+          .limit(1);
+        if (!peek) return { kind: "not_found" } as const;
+        // Same lock order as requestSupportAccess/requestSupportWriteAccess
+        // (advisory lock, then rows), so these never deadlock.
+        await lockAdminTenant(tx, tenantId, peek.superAdminUserId);
+        const [current] = await tx
+          .select()
+          .from(supportAccessRequests)
+          .where(
+            and(
+              eq(supportAccessRequests.id, requestId),
+              eq(supportAccessRequests.tenantId, tenantId),
+            ),
+          )
+          .for("update");
+        if (!current) return { kind: "not_found" } as const;
+        if (
+          current.superAdminUserId.toLowerCase() === actor.userId.toLowerCase()
+        )
+          return { kind: "self" } as const;
+        if (
+          !(await hasIndependentOwnerStanding(
+            tx,
+            tenantId,
+            current.superAdminUserId,
+            ownerAssignments,
+          ))
+        )
+          return { kind: "owner_from_support" } as const;
+        if (current.status !== "pending")
+          return { kind: "not_pending" } as const;
+        if (current.approvalExpiresAt.getTime() <= now.getTime()) {
+          // Committed (no throw inside the transaction) so the expiry is
+          // audited even though the decision is refused.
+          await recordRequestExpiry(tx, context, current, now);
+          return { kind: "not_pending" } as const;
+        }
+
+        let grantId: string | null = null;
+        if (decision === "approve") {
+          // A request outlives its author's Super Admin standing: never open a
+          // grant (or notify / audit one) for a revoked platform admin.
+          if (!(await isPlatformAdmin(current.superAdminUserId)))
+            return { kind: "requester_not_admin" } as const;
+          const live = await liveOpenGrants(
+            tx,
+            context,
+            current.superAdminUserId,
+            now,
+          );
+          if (live.length > 0) return { kind: "already_open" } as const;
+          const grant = await insertGrant(tx, context, {
+            superAdminUserId: current.superAdminUserId,
+            actorUserId: actor.userId,
+            reason: current.reason,
+            accessMode: "read_write",
+            durationMinutes: current.durationMinutes as 15 | 30,
+            mfaVerifiedAt: current.mfaVerifiedAt,
+            now,
+            requestId: current.id,
+          });
+          grantId = grant.id;
+        }
+        const status = decision === "approve" ? "approved" : "rejected";
+        const [row] = await tx
+          .update(supportAccessRequests)
+          .set({ status, decidedAt: now, decidedBy: actor.userId, grantId })
+          .where(
+            and(
+              eq(supportAccessRequests.id, current.id),
+              eq(supportAccessRequests.tenantId, tenantId),
+              eq(supportAccessRequests.status, "pending"),
+            ),
+          )
+          .returning();
+        if (!row) throw new Error("support access request decision lost");
+        await audit(tx, context, {
+          actorType: "user",
+          actorId: actor.userId,
+          action:
+            decision === "approve"
+              ? "support_access.approved"
+              : "support_access.rejected",
+          objectType: REQUEST_OBJECT_TYPE,
+          objectId: row.id,
+          reason: row.reason,
+          before: { status: "pending" },
+          after: {
+            status,
+            superAdminUserId: row.superAdminUserId,
+            durationMinutes: row.durationMinutes,
+            grantId,
+          },
+          sensitiveAccess: decision === "approve",
+        });
+        return { kind: "decided", row } as const;
+      });
+    } catch (error) {
+      if (uniqueViolation(error)) return { kind: "already_open" } as const;
+      throw error;
+    }
+  })();
+
+  switch (outcome.kind) {
+    case "decided":
+      return toRequest(outcome.row, now);
+    case "owner_required":
+      throw new HttpError(
+        403,
+        "OWNER_REQUIRED",
+        "Hanya Owner tenant yang dapat menjawab permintaan akses dukungan.",
+      );
+    case "not_found":
+      throw new HttpError(
+        404,
+        "SUPPORT_ACCESS_REQUEST_NOT_FOUND",
+        "Permintaan akses dukungan tidak ditemukan.",
+      );
+    case "self":
+      throw new HttpError(
+        403,
+        "SUPPORT_SELF_APPROVAL",
+        "Super Admin tidak dapat menjawab permintaannya sendiri.",
+      );
+    case "requester_not_admin":
+      throw new HttpError(
+        409,
+        "SUPPORT_REQUESTER_NOT_ADMIN",
+        "Akun yang meminta akses ini sudah bukan Super Admin.",
+      );
+    case "owner_from_support":
+      throw new HttpError(
+        403,
+        "SUPPORT_APPROVER_NOT_INDEPENDENT",
+        "Peran Owner akun ini dibuat oleh atau selama sesi dukungan Super Admin yang meminta, jadi tidak dapat menyetujui permintaannya.",
+      );
+    case "not_pending":
+      throw new HttpError(
+        409,
+        "SUPPORT_ACCESS_REQUEST_NOT_PENDING",
+        "Permintaan ini sudah dijawab atau sudah kedaluwarsa.",
+      );
+    case "already_open":
+      throw new HttpError(
+        409,
+        "SUPPORT_ACCESS_ALREADY_OPEN",
+        "Super Admin ini masih punya sesi dukungan aktif di tenant ini.",
+      );
+  }
+}
+
+/** The tenant owner approves: the read_write grant opens now (Q37/Q38). */
+export function approveSupportAccessRequest(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  requestId: string,
+  now: Date = new Date(),
+): Promise<SupportAccessRequest> {
+  return decideSupportAccessRequest(context, actor, requestId, "approve", now);
+}
+
+/** The tenant owner rejects: no grant ever exists for this request. */
+export function rejectSupportAccessRequest(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  requestId: string,
+  now: Date = new Date(),
+): Promise<SupportAccessRequest> {
+  return decideSupportAccessRequest(context, actor, requestId, "reject", now);
 }
 
 // --------------------------------------------------------------- list
@@ -602,7 +1255,7 @@ export async function endSupportAccess(input: {
       sensitiveAccess: false,
     });
     await appendSupportEvent(tx, context, "support_access.ended", {
-      grantId: row.id,
+      aggregateId: row.id,
       actor: { type: "user", id: input.actorUserId },
       now,
       payload: {
@@ -619,8 +1272,9 @@ export async function endSupportAccess(input: {
 
 /**
  * Worker sweep (relay tick, per active tenant): records every lapsed session
- * of this tenant once (audit + support_access.ended "expired"). Returns how
- * many were recorded. Rows locked by a concurrent request/end are skipped and
+ * of this tenant once (audit + support_access.ended "expired") and every
+ * unanswered read_write request past its approval window (audit
+ * support_access.request_expired). Returns how many were recorded. Rows locked by a concurrent request/end are skipped and
  * picked up on the next tick.
  */
 export async function expireDueSupportAccessGrants(
@@ -647,6 +1301,26 @@ export async function expireDueSupportAccessGrants(
     let recorded = 0;
     for (const row of due)
       if (await recordExpiry(tx, context, row, now)) recorded++;
+    // Read_write requests the owner left unanswered past their window
+    // (legend-c9kbk): status expired + support_access.request_expired audit.
+    const dueRequests = await tx
+      .select()
+      .from(supportAccessRequests)
+      .where(
+        and(
+          eq(supportAccessRequests.tenantId, context.tenant.tenantId),
+          eq(supportAccessRequests.status, "pending"),
+          lte(supportAccessRequests.approvalExpiresAt, now),
+        ),
+      )
+      .orderBy(
+        asc(supportAccessRequests.approvalExpiresAt),
+        asc(supportAccessRequests.id),
+      )
+      .limit(SWEEP_BATCH)
+      .for("update", { skipLocked: true });
+    for (const row of dueRequests)
+      if (await recordRequestExpiry(tx, context, row, now)) recorded++;
     return recorded;
   });
 }
