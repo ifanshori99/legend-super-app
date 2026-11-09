@@ -453,7 +453,7 @@ async function refundRows(orderId: string) {
   const { rows } = await asOwnerTenant((client) =>
     client.query(
       `SELECT amount_idr, items FROM pos_order_refunds
-        WHERE tenant_id = $1 AND order_id = $2 ORDER BY created_at`,
+        WHERE tenant_id = $1 AND order_id = $2 ORDER BY refunded_at, id`,
       [tenant.tenantId, ulidToUuid(orderId as never)],
     ),
   );
@@ -683,6 +683,54 @@ describe("legend-q1e0 partial refund of a promo order (founder examples)", () =>
     expect(refunded.body.data.amountIdr).toBe(40_000);
     expect((await application(sale.orderId)).refundedPaid).toBe(40_000);
     expect(await refundRows(sale.orderId)).toMatchObject([{ amount: 40_000 }]);
+  });
+});
+
+describe("legend-4fzhu refund rows are read in the product order (refunded_at, id), never created_at", () => {
+  it("two refunds whose created_at is reversed by hand still read back in refunded_at order", async () => {
+    const sale = await promoSale();
+    for (const [itemId, amountIdr] of [
+      [sale.itemA, 40_000],
+      [sale.itemB, 40_000],
+    ] as const) {
+      const refund = await pos().refund(
+        sale.orderId,
+        await refundBody(sale.orderId, {
+          amountIdr,
+          items: [{ itemId, quantity: 1 }],
+        }),
+      );
+      expect(refund.status, JSON.stringify(refund.body)).toBe(201);
+    }
+    // refunded_at is the app clock and keeps the order of the calls; created_at
+    // is then set backwards, as a skewed VM clock can do (Colima steps it back
+    // ~120 ms). Only created_at changes, so the shared tenant's recap stays
+    // balanced. The refunded item tells the two rows apart.
+    await asOwnerTenant(async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE pos_order_refunds
+            SET created_at = '2026-01-01T00:00:00Z'::timestamptz
+                             - (refunded_at - '2000-01-01T00:00:00Z'::timestamptz)
+          WHERE tenant_id = $1 AND order_id = $2`,
+        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
+      );
+    });
+    // Precondition: created_at alone now gives the opposite order.
+    const { rows: byCreatedAt } = await asOwnerTenant((client) =>
+      client.query(
+        `SELECT items FROM pos_order_refunds
+          WHERE tenant_id = $1 AND order_id = $2 ORDER BY created_at`,
+        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
+      ),
+    );
+    expect(
+      byCreatedAt.map((row) => (row.items as { itemId: string }[])[0]?.itemId),
+    ).toEqual([sale.itemB, sale.itemA]);
+
+    expect(
+      (await refundRows(sale.orderId)).map((row) => row.items[0]?.itemId),
+    ).toEqual([sale.itemA, sale.itemB]);
   });
 });
 
@@ -1956,7 +2004,7 @@ describe("legend-186 legend-s7rx A settlement refund without items on a locked p
             SET amount_idr = 10000, lines = $3::jsonb
           WHERE id = (SELECT id FROM pos_order_refunds
                        WHERE tenant_id = $1 AND order_id = $2
-                       ORDER BY created_at DESC LIMIT 1)`,
+                       ORDER BY refunded_at DESC, id DESC LIMIT 1)`,
         [
           tenant.tenantId,
           ulidToUuid(sale.orderId as never),
@@ -2255,7 +2303,7 @@ describe("legend-186 legend-8v2yl refund lines carry the tender and payment inte
   async function refundLines(orderId: string) {
     const { rows } = await owner.query<{ lines: unknown }>(
       `SELECT lines FROM pos_order_refunds
-        WHERE tenant_id = $1 AND order_id = $2::uuid ORDER BY created_at`,
+        WHERE tenant_id = $1 AND order_id = $2::uuid ORDER BY refunded_at, id`,
       [tenant.tenantId, ulidToUuid(orderId as never)],
     );
     return rows.map((row) => row.lines);
