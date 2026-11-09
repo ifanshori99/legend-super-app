@@ -13,6 +13,7 @@
 import { allocateIdr, idr, type Idr } from "@starter/shared/core";
 import {
   computeQuote,
+  createGuestPaymentInputSchema,
   GOOGLE_REVIEW_MIN_RATING,
   splitBill,
   tableSessionTokenExpiresAt,
@@ -961,11 +962,29 @@ export function createEngine(
     const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
     usable(session);
+    // Same input rules as the API (VA needs a bank, QRIS takes none).
+    if (!createGuestPaymentInputSchema.safeParse(body).success)
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Data pembayaran tidak valid.",
+      );
     for (const entry of rec.payments.values())
       if (
         (entry.payment as { idemKey?: string }).idemKey === body.idempotencyKey
-      )
+      ) {
+        // A key replays only the request it was first used for.
+        const sameRequest =
+          entry.payment.method === body.method &&
+          entry.payment.bankCode === (body.bankCode ?? null) &&
+          JSON.stringify(entry.payment.target) === JSON.stringify(body.target);
+        if (!sameRequest)
+          conflict(
+            "IDEMPOTENCY_CONFLICT",
+            "Kunci ini sudah dipakai untuk pembayaran lain.",
+          );
         return paymentView(entry);
+      }
     const bank =
       body.method === "va"
         ? MOCK_VA_BANKS.find((item) => item.code === body.bankCode)

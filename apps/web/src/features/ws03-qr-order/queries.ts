@@ -86,9 +86,11 @@ export const paymentQuery = (sessionId: string, paymentId: string) =>
     ...endpointQueryOptions(paymentEndpoint, {
       params: { sessionId, paymentId },
     }),
+    // Keeps asking while no answer arrived yet (a failed first poll too).
     refetchInterval: (query) => {
-      const status = query.state.data?.data.status;
-      return status === "pending" ? 2000 : false;
+      const data = query.state.data;
+      if (data === undefined) return 2000;
+      return data.data.status === "pending" ? 2000 : false;
     },
   });
 

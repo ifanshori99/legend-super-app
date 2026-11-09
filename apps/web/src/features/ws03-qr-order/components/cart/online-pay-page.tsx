@@ -43,8 +43,8 @@ import { PaymentSuccess } from "./payment-success";
 export type OnlinePayMethod = "va";
 
 // One idempotency key per order and bank, kept for the tab (sessionStorage)
-// once the server accepted it, so a repeat tap or a refresh returns the same
-// VA. Another bank, or "Buat VA baru", takes a new key; the server supersedes
+// before the request goes out, so a retry after a lost response, a repeat
+// tap or a refresh returns the same VA; only a 4xx refusal drops it. Another bank, or "Buat VA baru", takes a new key; the server supersedes
 // the older VA. `active`: the VA is on screen, so a refresh reopens it ("Ganti
 // bank" clears it but keeps the key for the same bank).
 type VaChoice = { bankCode: string; key: string; active: boolean };
@@ -84,7 +84,7 @@ function writeChoice(orderId: string, choice: VaChoice | null) {
   }
 }
 
-/** The saved key for the same bank, else a fresh one (saved only on success). */
+/** The saved key for the same bank, else a fresh one. */
 function vaKey(orderId: string, bankCode: string, renew: boolean): string {
   const saved = readChoice(orderId);
   if (!renew && saved?.bankCode === bankCode) return saved.key;
@@ -371,7 +371,6 @@ function BankPicker({
 
 /** The live VA: number, bank, amount, deadline; polls until it settles. */
 function VaDetails({
-  order,
   qrToken,
   payment,
   statusFailed,
@@ -381,10 +380,10 @@ function VaDetails({
   renewError,
   onChangeBank,
 }: {
-  order: QrOrder;
   qrToken: string;
   payment: {
     status: string;
+    amountIdr: number;
     vaNumber: string | null;
     bankName: string | null;
     expiresAt: string;
@@ -399,15 +398,17 @@ function VaDetails({
   const t = useT();
   const countdown = useCountdown(payment.expiresAt);
   const vaNumber = payment.vaNumber ?? "";
-  // At 00:00:00 the VA is over even before the next poll says so.
-  const expired = payment.status === "expired" || countdown?.done === true;
+  // Only the server says a VA expired; the device clock may be off. At
+  // 00:00:00 the page asks again and shows that it is checking.
+  const expired = payment.status === "expired";
   const failed = payment.status === "failed";
+  const checking = countdown?.done === true && payment.status === "pending";
   // A pending VA without a number cannot be paid: offer a new one.
   const missing = !expired && !failed && payment.vaNumber === null;
   useEffect(() => {
-    if (countdown?.done && payment.status === "pending") onRetryStatus();
+    if (checking) onRetryStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countdown?.done]);
+  }, [checking]);
 
   const changeBank = (
     <Button
@@ -480,7 +481,7 @@ function VaDetails({
         <div className="flex items-baseline justify-between gap-3">
           <span>{t("qrGlass.pay.va.amountLabel")}</span>
           <Money
-            amount={order.totalIdr}
+            amount={payment.amountIdr}
             size="xl"
             className="text-2xl font-bold"
           />
@@ -504,22 +505,28 @@ function VaDetails({
         </div>
       </section>
 
-      <ol
-        aria-label={t("qrGlass.pay.va.stepsLabel")}
-        className="grid gap-3 px-1"
-      >
-        {steps.map((step, index) => (
-          <li key={step} className="flex items-start gap-3">
-            <span
-              aria-hidden="true"
-              className="mt-0.5 inline-grid size-7 shrink-0 place-items-center rounded-full bg-qr-selection text-sm font-semibold tabular"
-            >
-              {index + 1}
-            </span>
-            <p className="text-lg leading-7">{t(step)}</p>
-          </li>
-        ))}
-      </ol>
+      {checking ? (
+        <Notice tone="warning" title={t("qrGlass.pay.va.checkingTitle")}>
+          {t("qrGlass.pay.va.checkingHint")}
+        </Notice>
+      ) : (
+        <ol
+          aria-label={t("qrGlass.pay.va.stepsLabel")}
+          className="grid gap-3 px-1"
+        >
+          {steps.map((step, index) => (
+            <li key={step} className="flex items-start gap-3">
+              <span
+                aria-hidden="true"
+                className="mt-0.5 inline-grid size-7 shrink-0 place-items-center rounded-full bg-qr-selection text-sm font-semibold tabular"
+              >
+                {index + 1}
+              </span>
+              <p className="text-lg leading-7">{t(step)}</p>
+            </li>
+          ))}
+        </ol>
+      )}
 
       <QrFooter>
         <p
@@ -584,6 +591,9 @@ function VaFlow({
 
   const create = (bankCode: string, renew = false) => {
     const key = vaKey(order.id, bankCode, renew);
+    const saved = readChoice(order.id);
+    if (saved?.key !== key)
+      writeChoice(order.id, { bankCode, key, active: false });
     start.mutate(
       {
         target: { kind: "order", orderId: order.id },
@@ -593,7 +603,7 @@ function VaFlow({
       },
       {
         onSuccess: (result) => {
-          writeChoice(order.id, { bankCode, key, active: true });
+          setActive(order.id, true);
           setBank(bankCode);
           setPaymentId(result.data.id);
         },
@@ -642,7 +652,6 @@ function VaFlow({
   if (payment)
     return shell(
       <VaDetails
-        order={order}
         qrToken={qrToken}
         payment={payment}
         statusFailed={polled.isError}
@@ -651,7 +660,10 @@ function VaFlow({
         renewing={start.isPending}
         renewError={start.error}
         onChangeBank={() => {
-          setActive(order.id, false);
+          // An ended VA must not be replayed when the same bank is picked again.
+          if (payment.status === "expired" || payment.status === "failed")
+            writeChoice(order.id, null);
+          else setActive(order.id, false);
           start.reset();
           setPaymentId(null);
         }}

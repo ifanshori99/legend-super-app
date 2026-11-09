@@ -86,6 +86,9 @@ export const qrGlassPayMessages = {
     statusFailed:
       "Status pembayaran belum bisa diperiksa. Periksa koneksi Anda, lalu coba lagi.",
     statusRetry: "Periksa lagi",
+    checkingTitle: "Memeriksa status Virtual Account…",
+    checkingHint:
+      "Waktu di layar sudah habis. Kami memastikan dulu ke bank sebelum menawarkan VA baru.",
     changeBank: "Ganti bank",
     changeMethod: "Ganti metode bayar",
     expiredTitle: "Nomor Virtual Account sudah tidak berlaku",
