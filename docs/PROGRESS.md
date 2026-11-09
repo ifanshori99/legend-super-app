@@ -25,9 +25,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## legend-9w46 HPP penjualan POS ke stok (engineer, cabang `ws/hpp-pos`, 2026-11-09)
 
 - Sudah: ws/recipe-bom (legend-db6) digabung ke cabang ini di atas m1 fb46602d; migrasi resep diregenerasi jadi 0103_recipe_bom + 0104_recipe_bom_rls. Penjualan POS lunas (`order.paid`) memotong stok lewat resep → `stock.moved` → jurnal HPP (Dr HPP / Cr persediaan).
-- Sudah: void setelah bayar dan refund penuh membalik potongan stok sekali (gerakan `return/order` pada biaya asli per baris, jurnal HPP terbalik persis). Refund sebagian: tidak menggerakkan stok. Void sebelum pembayaran: tidak ada. Pembalikan yang ditolak aturan stok diparkir (`reversal_failed_at`) dan dicoba ulang saat `day.closed`.
-- Test: `src/test/recipe-pos-hpp.test.ts` 10 kasus (jalur POS asli, replay, biaya asli, refund sebagian/penuh, tutup hari, tombstone, remake tidak ikut, parkir+ulang).
-- Keputusan terbuka: refund penuh membalik stok (instruksi CTO) vs architect menyarankan hanya void (makanan sudah dimakan). Lanjutan: legend-078n, legend-9fhs.
+- Sudah: void final setelah bayar membalik potongan stok sekali (gerakan `return/order` pada biaya asli per baris, jurnal HPP terbalik persis). Refund (penuh maupun sebagian) tidak menggerakkan stok (keputusan CTO 9 Nov 2026: makanan sudah dikonsumsi). Void sebelum pembayaran: tidak ada. Pembalikan yang ditolak aturan stok diparkir (`reversal_failed_at`) dan dicoba ulang saat `day.closed`.
+- Test: `src/test/recipe-pos-hpp.test.ts` 10 kasus (jalur POS asli, replay, biaya asli, refund tidak menggerakkan stok, void final, tutup hari, tombstone, remake tidak ikut, parkir+ulang).
+- Keputusan: hanya void yang membalik stok (CTO, 9 Nov 2026). Lanjutan: legend-078n, legend-9fhs.
 
 ## Sedang
 
