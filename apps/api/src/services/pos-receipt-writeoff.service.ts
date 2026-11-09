@@ -105,7 +105,14 @@ export async function writeOffReceiptNumber(
           "NOT_FOUND",
           "Prefiks nomor struk tidak ditemukan.",
         );
-      if (input.sequenceNumber > sequence.lastNumber)
+      // legend-drzaf: an edge-bound run is numbered by the edge, so its cloud
+      // lastNumber stays 0 (legend-ol6v). Its bound is the high-water the
+      // edge reported (never decreases; every number up to it was committed
+      // on the edge). 0 on unbound runs. Same bound as the 0166 trigger.
+      if (
+        input.sequenceNumber >
+        Math.max(sequence.lastNumber, sequence.edgeReportedNumber)
+      )
         throw new CoreError(
           "CONFLICT",
           "Nomor struk di luar rentang yang sudah terbit.",
