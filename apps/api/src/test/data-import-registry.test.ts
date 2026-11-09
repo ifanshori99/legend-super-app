@@ -112,6 +112,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends org.notification_policy.manage to the stored owner and tenant_admin template role rows of existing tenants (legend-63l6); idempotent, never touches a custom role, FORCE RLS lifted for that one statement and restored",
   "0160_support_access_requests.sql":
     "appends org.support_access.approve to the stored owner template role rows of every tenant, one tenant context at a time (legend-c9kbk); idempotent, never touches a custom role or another template",
+  "0170_edc_pan_backfill_separators.sql":
+    "masks card-number-like digit runs (any whitespace, slash, underscore, dash separators) in the stored edc_transactions.message of existing rows, in batches of 1000 (legend-0lrkl, backfill for legend-deu7r); overwrites message text, idempotent, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.
