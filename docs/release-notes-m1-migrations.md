@@ -34,7 +34,8 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - 0179 `0179_delivery_platform_sync` (when 1794258000000): 5 kolom `platform_sync_*`.
 - b800ae30: sesi impersonate tanpa grant kini dijawab 403 sekali, lalu 401.
 - 2dfe842e (legend-6mla dan lainnya): `parseBankCsvAmount` lebih ketat (spasi ribuan ditolak), mock web ws07 ikut berubah.
-- ws11-gl-parity SH-01 (acceptance test baris 661) merah, menunggu keputusan founder legend-upmn7.
+- 18455b7a (ws/ws11-shared-1, ganti 01aa6ec2 dan a597254c): total HPP pemegang saham (legend-upmn7 Q59), test cakupan outlet (Q60), mock bucket legend-e0fhh. SH-01 kini hijau. Tanpa migrasi.
+- 5680dab0 (ws/delivery-staff-resolve, legend-eyqvo, tingkat K): dua commit di atas 2ab2edea, tanpa migrasi.
 
 ## Gagal lama, bukan regresi
 
