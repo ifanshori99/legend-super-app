@@ -1,6 +1,7 @@
 // Unit tests for the edge's cloud HTTP fetcher (bead legend-2lp.7). fetch is
 // injected; nothing touches the network.
 import { describe, expect, it, vi } from "vitest";
+import type { ReceiptRunRefusalReason } from "@starter/shared/edge";
 import {
   EdgeCloudHttpError,
   cloudHttpBaseUrl,
@@ -9,6 +10,9 @@ import {
 
 const INSTANCE = "0b6f4c1e-8f3a-4f55-9a52-3f1d2c4b5a60";
 const CREDENTIAL = "edg1.tenant.outlet.node.s3cr3t-value";
+// legend-hfq3z: refused run ids (RUN_A sorts before RUN_B).
+const RUN_A = "11111111-1111-4111-8111-111111111111";
+const RUN_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -26,6 +30,16 @@ function fetcherWith(
     credential: CREDENTIAL,
     fetchImpl,
     ...extra,
+  });
+}
+
+/** A fetcher with an edge instance, as the edge runtime builds it. */
+function refusalFetcher(fetchImpl: typeof fetch) {
+  return createDeviceRecordsFetcher({
+    cloudUrl: "wss://cloud.example.com/api/edge-link",
+    credential: CREDENTIAL,
+    fetchImpl,
+    edgeInstanceId: INSTANCE,
   });
 }
 
@@ -238,6 +252,197 @@ describe("createDeviceRecordsFetcher", () => {
     })(null, new AbortController().signal, new Map()).catch((e: unknown) => e);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect((error as EdgeCloudHttpError).code).toBe("HTTP_503");
+  });
+
+  // ---- legend-hfq3z: the receipt run refusal report (`receiptRefused`) -------
+  // Assumption: `receiptRefused` is sent only together with receiptSequences=1
+  // (brief point 2); ids are written lowercase and sorted by the codec.
+
+  it("legend-hfq3z sends receiptRefused (sorted, lowercase) next to receiptSequences, edgeInstance and receiptRuns", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
+    await refusalFetcher(fetchImpl as unknown as typeof fetch)(
+      "v1",
+      new AbortController().signal,
+      new Map([["P1", 0]]),
+      new Map<string, ReceiptRunRefusalReason>([
+        [RUN_B.toUpperCase(), "id_used"],
+        [RUN_A, "prefix_used"],
+      ]),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    expect(url.searchParams.get("receiptRefused")).toBe(
+      `${RUN_A}:prefix_used,${RUN_B}:id_used`,
+    );
+    expect(url.searchParams.get("receiptSequences")).toBe("1");
+    expect(url.searchParams.get("edgeInstance")).toBe(INSTANCE);
+    expect(url.searchParams.get("receiptRuns")).toBe("P1:0");
+    expect(url.searchParams.get("since")).toBe("v1");
+  });
+
+  it("legend-hfq3z sends no receiptRefused without refusals: absent, undefined or an empty report (old behaviour)", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
+    const fetcher = refusalFetcher(fetchImpl as unknown as typeof fetch);
+    const signal = new AbortController().signal;
+    await fetcher(null, signal, new Map([["P1", 2]]));
+    await fetcher(null, signal, new Map([["P1", 2]]), undefined);
+    await fetcher(null, signal, new Map([["P1", 2]]), new Map());
+    await fetcher(null, signal);
+    const urls = fetchImpl.mock.calls.map(
+      (call) => new URL((call as unknown as [string])[0]),
+    );
+    expect(urls).toHaveLength(4);
+    for (const url of urls)
+      expect(url.searchParams.has("receiptRefused")).toBe(false);
+    // The yd0h8 report is unchanged by the empty refusal report.
+    expect(urls[2]!.searchParams.get("receiptRuns")).toBe("P1:2");
+    expect(urls[0]!.toString()).toBe(urls[2]!.toString());
+  });
+
+  it("legend-hfq3z refusals alone (no receiptRuns) are still sent with the sequences", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
+    await refusalFetcher(fetchImpl as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      undefined,
+      new Map<string, ReceiptRunRefusalReason>([[RUN_A, "prefix_used"]]),
+    );
+    const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    expect(url.searchParams.get("receiptRefused")).toBe(`${RUN_A}:prefix_used`);
+    expect(url.searchParams.get("receiptSequences")).toBe("1");
+    expect(url.searchParams.has("receiptRuns")).toBe(false);
+  });
+
+  it("legend-hfq3z HTTP 400 on a request with receiptRefused retries once without it, keeping receiptRuns, edgeInstance and sequences", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const result = await refusalFetcher(fetchImpl as unknown as typeof fetch)(
+      "v1",
+      new AbortController().signal,
+      new Map([["P1", 3]]),
+      new Map<string, ReceiptRunRefusalReason>([[RUN_A, "prefix_used"]]),
+    );
+    expect(result).toEqual({ data: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const first = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
+    const second = new URL((fetchImpl.mock.calls[1] as unknown as [string])[0]);
+    expect(first.searchParams.get("receiptRefused")).toBe(
+      `${RUN_A}:prefix_used`,
+    );
+    expect(second.searchParams.has("receiptRefused")).toBe(false);
+    expect(second.searchParams.get("receiptRuns")).toBe("P1:3");
+    expect(second.searchParams.get("receiptSequences")).toBe("1");
+    expect(second.searchParams.get("edgeInstance")).toBe(INSTANCE);
+    expect(second.searchParams.get("since")).toBe("v1");
+    expect(second.searchParams.get("limit")).toBe("100");
+  });
+
+  it("legend-hfq3z a second 400 continues the old chain: without receiptRuns, then without sequences and edgeInstance", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const result = await refusalFetcher(fetchImpl as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      new Map([["P1", 3]]),
+      new Map<string, ReceiptRunRefusalReason>([[RUN_A, "id_used"]]),
+    );
+    expect(result).toEqual({ data: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    const urls = fetchImpl.mock.calls.map(
+      (call) => new URL((call as unknown as [string])[0]),
+    );
+    expect(urls[1]!.searchParams.has("receiptRefused")).toBe(false);
+    expect(urls[1]!.searchParams.get("receiptRuns")).toBe("P1:3");
+    expect(urls[2]!.searchParams.has("receiptRefused")).toBe(false);
+    expect(urls[2]!.searchParams.has("receiptRuns")).toBe(false);
+    expect(urls[2]!.searchParams.get("receiptSequences")).toBe("1");
+    expect(urls[2]!.searchParams.get("edgeInstance")).toBe(INSTANCE);
+    for (const key of [
+      "receiptRefused",
+      "receiptRuns",
+      "receiptSequences",
+      "edgeInstance",
+    ])
+      expect(urls[3]!.searchParams.has(key), key).toBe(false);
+  });
+
+  it("legend-hfq3z refusals without receiptRuns: after the retry without them, the old chain drops the sequences; a final 400 is thrown", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const refusals = new Map<string, ReceiptRunRefusalReason>([
+      [RUN_A, "prefix_used"],
+    ]);
+    await refusalFetcher(fetchImpl as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      undefined,
+      refusals,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const third = new URL((fetchImpl.mock.calls[2] as unknown as [string])[0]);
+    expect(third.searchParams.has("receiptRefused")).toBe(false);
+    expect(third.searchParams.has("receiptSequences")).toBe(false);
+    expect(third.searchParams.has("edgeInstance")).toBe(false);
+
+    const failing = vi.fn(async () => new Response("{}", { status: 400 }));
+    const error = await refusalFetcher(failing as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      new Map([["P1", 1]]),
+      refusals,
+    ).catch((e: unknown) => e);
+    // refusals, without refusals, without receiptRuns, without sequences.
+    expect(failing).toHaveBeenCalledTimes(4);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
+  });
+
+  it("legend-hfq3z a non-400 failure is not retried, on the first request or on the retry without receiptRefused", async () => {
+    const refusals = new Map<string, ReceiptRunRefusalReason>([
+      [RUN_A, "prefix_used"],
+    ]);
+    const first = vi.fn(async () => new Response("{}", { status: 503 }));
+    const firstError = await refusalFetcher(first as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      new Map(),
+      refusals,
+    ).catch((e: unknown) => e);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect((firstError as EdgeCloudHttpError).code).toBe("HTTP_503");
+
+    const retry = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 400 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    const retryError = await refusalFetcher(retry as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      new Map(),
+      refusals,
+    ).catch((e: unknown) => e);
+    expect(retry).toHaveBeenCalledTimes(2);
+    expect((retryError as EdgeCloudHttpError).code).toBe("HTTP_503");
+  });
+
+  it("legend-hfq3z HTTP 400 without an edgeInstance is not retried, even with refusals", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 400 }));
+    const error = await fetcherWith(fetchImpl as unknown as typeof fetch)(
+      null,
+      new AbortController().signal,
+      new Map(),
+      new Map<string, ReceiptRunRefusalReason>([[RUN_A, "prefix_used"]]),
+    ).catch((e: unknown) => e);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((error as EdgeCloudHttpError).code).toBe("HTTP_400");
   });
 
   it("legend-zsdd HTTP 400 without an edgeInstance is not retried", async () => {

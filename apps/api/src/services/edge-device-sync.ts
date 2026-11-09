@@ -42,11 +42,15 @@ import {
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
   decodeReceiptRunReport,
+  decodeReceiptRunRefusals,
   receiptRunReportQuerySchema,
+  receiptRunRefusalQuerySchema,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceSyncPage,
   type DeviceSyncRecord,
+  type ReceiptRunRefusalReason,
+  type ReceiptRunRefusalReport,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
 import {
@@ -114,6 +118,12 @@ export const deviceSyncQuerySchema = z.strictObject({
    * (`P1:150,P3:7`, `""` = none). Absent = an old edge: no restore check.
    */
   receiptRuns: receiptRunReportQuerySchema.optional(),
+  /**
+   * legend-hfq3z: the pulled runs this edge refused for a prefix or id clash
+   * (`<id>:prefix_used,<id>:id_used`). Only meaningful with
+   * `receiptSequences=1`; absent = an old edge (no self-heal).
+   */
+  receiptRefused: receiptRunRefusalQuerySchema.optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -194,6 +204,7 @@ export async function listDeviceRecordsSince(
     receiptSequences: withSequences,
     edgeInstance,
     receiptRuns,
+    receiptRefused,
   } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
@@ -279,6 +290,12 @@ export async function listDeviceRecordsSince(
           // Network / load balancer delay is not covered: the puller only
           // retries after its 15 s timeout.
           reportedAt: receiptRuns === undefined ? undefined : now,
+          // legend-hfq3z: clash refusals of the previous pull (validated by
+          // the query schema, so it decodes).
+          refusals:
+            receiptRefused === undefined
+              ? undefined
+              : (decodeReceiptRunRefusals(receiptRefused) ?? undefined),
         });
         alert = claim.alert;
         // legend-zsdd: a repeated rotation means two databases pull with one
@@ -304,6 +321,26 @@ export async function listDeviceRecordsSince(
               alert: claim.alert,
             },
             "edge receipt runs regressed (restored or cloned edge database)",
+          );
+        // legend-hfq3z: runs the edge refused for a clash and rotated. Counts
+        // only, no ids.
+        if (claim.refusedRotated > 0)
+          logger.warn(
+            {
+              edgeNodeId: verified.edgeNodeId,
+              refusedRotated: claim.refusedRotated,
+            },
+            "refused receipt runs rotated for an edge pull (legend-hfq3z)",
+          );
+        // legend-hfq3z: the throttle held runs back, a device is left without
+        // a receipt run. Counts only.
+        if (claim.refusedThrottled > 0)
+          logger.error(
+            {
+              edgeNodeId: verified.edgeNodeId,
+              refusedThrottled: claim.refusedThrottled,
+            },
+            "refused receipt runs throttled: device left without a receipt run (legend-hfq3z)",
           );
       }
     }
@@ -532,6 +569,11 @@ export type ReceiptSequenceApplyResult = {
    * `retireUnlistedDeviceReceiptSequences`).
    */
   readonly retired: number;
+  /**
+   * legend-hfq3z: id -> reason of this list's clash refusals (`prefix_used`,
+   * `id_used`; they also count in `refused`). The next pull reports them.
+   */
+  readonly refusals: ReceiptRunRefusalReport;
 };
 
 /**
@@ -580,12 +622,20 @@ export async function applyDeviceReceiptSequences(
     if (sequence.outletId.toLowerCase() !== outletId)
       refuse("Receipt sequence belongs to another outlet.");
   if (parsed.length === 0)
-    return { inserted: 0, kept: 0, replaced: 0, refused: 0, retired: 0 };
+    return {
+      inserted: 0,
+      kept: 0,
+      replaced: 0,
+      refused: 0,
+      retired: 0,
+      refusals: new Map(),
+    };
   const result = await withTenant(db, context, async (tx) => {
     let inserted = 0;
     let kept = 0;
     let replaced = 0;
     let refused = 0;
+    const refusals = new Map<string, ReceiptRunRefusalReason>();
     for (const sequence of parsed) {
       const outcome = await applyCloudDeviceReceiptSequence(
         tx,
@@ -596,7 +646,14 @@ export async function applyDeviceReceiptSequences(
       if (outcome === "inserted") inserted += 1;
       else if (outcome === "kept") kept += 1;
       else if (outcome === "replaced") replaced += 1;
-      else refused += 1;
+      else {
+        refused += 1;
+        // legend-hfq3z: only the two clash refusals are reported to the cloud.
+        if (outcome === "refused_prefix_used")
+          refusals.set(sequence.id.toLowerCase(), "prefix_used");
+        else if (outcome === "refused_id_used")
+          refusals.set(sequence.id.toLowerCase(), "id_used");
+      }
     }
     // legend-sduiq: only entries bound to `own` say what this database may
     // number; a list with none of them (e.g. a node id mismatch) retires
@@ -618,7 +675,7 @@ export async function applyDeviceReceiptSequences(
             own,
           )
         : 0;
-    return { inserted, kept, replaced, refused, retired };
+    return { inserted, kept, replaced, refused, retired, refusals };
   });
   if (result.refused > 0)
     logger.error(
@@ -663,7 +720,14 @@ export type PullDeviceRegistryOptions = {
   readonly fetchPage: (
     since: string | null,
     receiptRuns?: ReceiptRunReport,
+    refusals?: ReceiptRunRefusalReport,
   ) => Promise<unknown>;
+  /**
+   * legend-hfq3z: the clash refusals of the previous pull
+   * (`PullDeviceRegistryResult.receiptRunRefusals`); sent with the first page
+   * so the cloud can rotate those runs. Omitted = none.
+   */
+  readonly refusals?: ReceiptRunRefusalReport;
   /** Safety stop against a misbehaving cloud; default 1000 pages. */
   readonly maxPages?: number;
 };
@@ -684,6 +748,12 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
    * page carried `receiptRunAlert: true`).
    */
   readonly receiptRunAlert: boolean;
+  /**
+   * legend-hfq3z: id -> reason of the clash refusals of the last applied page
+   * (empty when the last page carried no sequences). Pass it as `refusals` to
+   * the next pull.
+   */
+  readonly receiptRunRefusals: ReceiptRunRefusalReport;
   /** Store only after this function returned: every page was applied. */
   readonly watermark: string | null;
 };
@@ -698,7 +768,12 @@ async function applyPageReceiptSequences(
   context: ScopedTenantContext,
   raw: unknown,
   own: DeviceReceiptSequenceBinding,
-): Promise<{ refused: number; replaced: number; retired: number }> {
+): Promise<{
+  refused: number;
+  replaced: number;
+  retired: number;
+  refusals: ReceiptRunRefusalReport;
+}> {
   const count = Array.isArray(raw) ? raw.length : 1;
   try {
     if (!Array.isArray(raw)) refuse("Receipt sequences are not a list.");
@@ -710,13 +785,14 @@ async function applyPageReceiptSequences(
       refused: result.refused,
       replaced: result.replaced,
       retired: result.retired,
+      refusals: result.refusals,
     };
   } catch {
     logger.error(
       { refused: count },
       "Edge receipt sequences of a device page refused",
     );
-    return { refused: count, replaced: 0, retired: 0 };
+    return { refused: count, replaced: 0, retired: 0, refusals: new Map() };
   }
 }
 
@@ -775,6 +851,9 @@ export async function pullDeviceRegistry(
   let receiptSequencesReplaced = 0;
   let receiptSequencesRetired = 0;
   let receiptRunAlert = false;
+  // legend-hfq3z: clash refusals to report with the next request: the previous
+  // pull's first, then those of the page just applied.
+  let pending: ReceiptRunRefusalReport = options.refusals ?? new Map();
   for (;;) {
     if (pages >= maxPages)
       throw new CoreError(
@@ -792,7 +871,13 @@ export async function pullDeviceRegistry(
             return undefined;
           })
         : undefined;
-    const raw = splitPage(await options.fetchPage(since, report));
+    const raw = splitPage(
+      await options.fetchPage(
+        since,
+        report,
+        report !== undefined && pending.size > 0 ? pending : undefined,
+      ),
+    );
     if (raw.alert === true) receiptRunAlert = true;
     const page = deviceSyncPageSchema.parse(raw.page);
     pages += 1;
@@ -816,6 +901,10 @@ export async function pullDeviceRegistry(
       receiptSequencesRefused += counts.refused;
       receiptSequencesReplaced += counts.replaced;
       receiptSequencesRetired += counts.retired;
+      pending = counts.refusals;
+    } else {
+      // A cloud that sends no sequences cannot use the report.
+      pending = new Map();
     }
     // An empty page echoes the rewound cursor: keep the stored one instead.
     if (page.data.length > 0) watermark = page.meta.watermark ?? watermark;
@@ -836,5 +925,6 @@ export async function pullDeviceRegistry(
     receiptSequencesReplaced,
     receiptSequencesRetired,
     receiptRunAlert,
+    receiptRunRefusals: pending,
   };
 }

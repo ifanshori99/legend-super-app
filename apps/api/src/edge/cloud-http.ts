@@ -12,6 +12,8 @@
 
 import {
   encodeReceiptRunReport,
+  encodeReceiptRunRefusals,
+  type ReceiptRunRefusalReport,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
 import { logger } from "../lib/logger.ts";
@@ -122,6 +124,7 @@ export function createDeviceRecordsFetcher(
   since: string | null,
   signal: AbortSignal,
   receiptRuns?: ReceiptRunReport,
+  refusals?: ReceiptRunRefusalReport,
 ) => Promise<unknown> {
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
@@ -131,6 +134,7 @@ export function createDeviceRecordsFetcher(
     since: string | null,
     withSequences: boolean,
     receiptRuns?: ReceiptRunReport,
+    refusals?: ReceiptRunRefusalReport,
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
@@ -145,15 +149,19 @@ export function createDeviceRecordsFetcher(
       // restored or cloned database. Absent = no check (an old edge).
       if (receiptRuns !== undefined)
         query.set("receiptRuns", encodeReceiptRunReport(receiptRuns));
+      // legend-hfq3z: the clash refusals of the previous pull, so the cloud can
+      // rotate a refused run. Only sent when there is something to report.
+      if (refusals !== undefined && refusals.size > 0)
+        query.set("receiptRefused", encodeReceiptRunRefusals(refusals));
     }
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };
 
-  return async (since, signal, receiptRuns) => {
+  return async (since, signal, receiptRuns, refusals) => {
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns),
+        path: pathFor(since, true, receiptRuns, refusals),
         signal,
       });
     } catch (error) {
@@ -171,6 +179,27 @@ export function createDeviceRecordsFetcher(
         error.code !== "HTTP_400"
       )
         throw error;
+      // legend-hfq3z: a request that carried `receiptRefused` first retries
+      // without it but keeps `receiptRuns` (a yd0h8 cloud); only a second 400
+      // continues into the staged chain below.
+      if (refusals !== undefined && refusals.size > 0) {
+        logger.warn(
+          "cloud refused the receipt run refusal report; retrying the page without it",
+        );
+        try {
+          return await cloudGetJson({
+            ...options,
+            path: pathFor(since, true, receiptRuns),
+            signal,
+          });
+        } catch (second) {
+          if (
+            !(second instanceof EdgeCloudHttpError) ||
+            second.code !== "HTTP_400"
+          )
+            throw second;
+        }
+      }
       if (receiptRuns !== undefined) {
         logger.warn(
           "cloud refused the receipt run report; retrying the page without it",
