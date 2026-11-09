@@ -235,7 +235,8 @@ export async function applyStaffPinSet(
     return row ?? null;
   };
   const update = async (id: string) => {
-    // Strictly newer generation only: a tie keeps the cloud pin.
+    // Strictly newer generation and other material only: a tie keeps the
+    // cloud pin, identical material changes nothing.
     const written = await tx
       .update(staffPins)
       .set({ ...values, pinSetAt, pinGenerationAt })
@@ -244,6 +245,11 @@ export async function applyStaffPinSet(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.id, id),
           sql`${staffPins.pinGenerationAt} < ${pinGenerationAt}`,
+          // Same material is the same pin (legend-zclb: the edge re-sends a
+          // set the cloud may already hold, or one the edge mirrored from the
+          // cloud). Writing it would clear a live lock and the attempt count
+          // for nothing, so it is not an adoption.
+          sql`(${staffPins.pinHash}, ${staffPins.pinSalt}, ${staffPins.kdfN}, ${staffPins.kdfR}, ${staffPins.kdfP}, ${staffPins.pepperVersion}) IS DISTINCT FROM (${material.pinHash}, ${material.salt}, ${material.params.N}, ${material.params.r}, ${material.params.p}, ${material.pepperVersion})`,
         ),
       )
       .returning({ id: staffPins.id });
@@ -384,6 +390,10 @@ export async function applyPosOverrideRecorded(
     .limit(1);
   if (existing) return "not_applicable";
 
+  // legend-7iti: an edge shift close carries the blind-count figures (its
+  // `valueIdr` is null); the audit row gets them and valueIdr = |variance|,
+  // like a cloud override's. An old event stays as it was (null).
+  const variance = payload.shiftCloseVariance;
   await recordAudit(
     {
       tenantId,
@@ -401,7 +411,8 @@ export async function applyPosOverrideRecorded(
         method: payload.method,
         requestedBy: payload.requestedBy,
         approvedBy: payload.approvedBy,
-        valueIdr: payload.valueIdr,
+        valueIdr: variance ? Math.abs(variance.varianceIdr) : payload.valueIdr,
+        ...(variance ?? {}),
         reasonCode: payload.reasonCode ?? null,
         objectType: payload.objectType,
         objectId: payload.objectId,

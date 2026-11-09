@@ -12,17 +12,21 @@
 //   query or a header the client chose (TEN-02).
 // - Records are the hash-only `staffPinEdgeRecordSchema`: hash, salt, scrypt
 //   cost, pepper version and lock state. Never the pin, never the pepper.
-// - Keyset paging on (updated_at, id), opaque cursor. `since` is the edge's
-//   stored watermark; the edge follows `meta.nextCursor` while it is non-null,
+// - Keyset paging on (sync_xid, id), opaque cursor (tag `spin2`). `sync_xid` is
+//   the id of the transaction that last wrote the row (column default on
+//   insert, trigger on update; migration 0144). A row is exported only when
+//   its `sync_xid` is below `pg_snapshot_xmin(pg_current_snapshot())`: every
+//   older transaction has finished, so a watermark can never pass a writer
+//   that commits late. No clock and no settle window are involved, the order
+//   is the commit horizon. A long open transaction anywhere in the database
+//   only delays the export, it never loses a row. `since` is the edge's stored
+//   watermark; the edge follows `meta.nextCursor` while it is non-null,
 //   applies each page durably, then stores `meta.watermark` (EDG-02: the
-//   checkpoint advances only after durable, idempotent application).
-// - Settle window: rows updated in the last STAFF_PIN_SYNC_SETTLE_MS are held
-//   back, so a transaction that took its `updated_at` before a concurrent one
-//   but commits after it is not skipped by an already-advanced watermark.
-//   The cutoff is `now() - window` evaluated by the database, never the app
-//   clock, so app/DB clock skew cannot release unsettled rows (legend-wg5t).
-//   Residual risk: a writer whose commit lags its `updated_at` by more than the
-//   window (follow-up: a commit-ordered sync version column).
+//   checkpoint advances only after durable, idempotent application). A
+//   `spin1` cursor (the old (updated_at, id) one) restarts from the beginning:
+//   a full resync is idempotent.
+// - Each record carries `pinGenerationAt`, the exact microsecond order key of
+//   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
 // Pepper provisioning (out of band, never in this payload). The edge verifies
 // offline with `record + pepper`. The pepper is installed on the edge box by
@@ -36,20 +40,26 @@
 // provision only the tenant-derived pepper to an edge box instead of the root
 // secret, so a stolen edge box cannot derive other tenants' peppers.
 //
-// Apply (edge, `applyStaffPinRecords`): idempotent, version monotonic, cloud
-// wins. Runs on the edge's own database, on the outlet-scoped context of the
-// edge node. One transaction for the whole page, so a failure applies nothing
-// and the watermark does not move. On the edge copy `created_at` holds the
-// cloud version (`updatedAt`) of the pin generation currently stored, and
-// `updated_at` the cloud version of the last lock-state write (or a newer
-// local attempt):
-// - unknown (outlet, user)        -> insert;
-// - other hash material (a reset) -> replace when the record is newer than the
-//   stored generation (`created_at`). A newer local failed attempt cannot
-//   block a cloud reset; an older generation replayed late never wins;
-// - same hash material            -> merge lock state (higher counter, later
-//   lock) when the record is newer than `updated_at`; equal or older is a
-//   replay and changes nothing.
+// Apply (edge, `applyStaffPinRecords`): idempotent, cloud wins. Runs on the
+// edge's own database, on the outlet-scoped context of the edge node. One
+// transaction for the whole page, so a failure applies nothing and the
+// watermark does not move. Generations are ordered by the generation key
+// (`pinGenerationAt`) only, never by a clock of this node: the cloud `updatedAt`
+// is a cloud clock and the local `created_at` / `updated_at` may come from an
+// edge clock that ran behind, so comparing them let an older cloud row (e.g. an
+// attempt bump of the old pin) replace a newer pin set on the edge.
+// - unknown (outlet, user)        -> insert; the record key is stored as
+//   `pin_generation_at` and `pin_set_at`;
+// - other hash material (a reset) -> replace when `record key >= local key`
+//   (a tie goes to the cloud, the same rule as the cloud's own set); a newer
+//   local failed attempt cannot block a cloud reset, an older generation
+//   replayed late never wins. The cloud key is stored, so the next edge set,
+//   stamped `GREATEST(edge now, LEAST(key, now + 5 min) + 1 ms)`
+//   (device-pin.service.ts), lands after the generation it replaced even with
+//   a slow clock and the cloud adopts it;
+// - same hash material            -> merge the lock state unconditionally
+//   (higher counter, later lock: it never weakens the edge) and keep the later
+//   key; nothing to change writes nothing.
 // No audit or outbox from apply: it mirrors cloud state, and an event here
 // would echo back to the cloud.
 
@@ -71,7 +81,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
@@ -151,8 +161,6 @@ export async function verifyEdgeCredential(
 
 // ------------------------------------------------------------------- export
 
-/** Rows younger than this are held back (see "Settle window" above). */
-export const STAFF_PIN_SYNC_SETTLE_MS = 5_000;
 export const STAFF_PIN_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
 
 export const staffPinSyncQuerySchema = z.strictObject({
@@ -178,10 +186,12 @@ export const staffPinSyncPageSchema = z.strictObject({
 });
 export type StaffPinSyncPage = z.infer<typeof staffPinSyncPageSchema>;
 
-const CURSOR_TAG = "spin1";
-const VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const CURSOR_TAG = "spin2";
+/** The old (updated_at, id) cursor: restarts from the beginning (see header). */
+const LEGACY_CURSOR_TAG = "spin1";
+const XID_PATTERN = /^\d{1,20}$/;
 
-type Watermark = { readonly version: string; readonly id: string };
+type Watermark = { readonly xid: string; readonly id: string };
 
 function parseWatermark(cursor: string | undefined): Watermark | null {
   if (cursor === undefined) return null;
@@ -191,56 +201,39 @@ function parseWatermark(cursor: string | undefined): Watermark | null {
   } catch {
     throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
   }
-  const [tag, version, id, extra] = keys;
+  const [tag, xid, id, extra] = keys;
+  if (tag === LEGACY_CURSOR_TAG) return null;
   if (
     tag !== CURSOR_TAG ||
-    typeof version !== "string" ||
-    !VERSION_PATTERN.test(version) ||
+    typeof xid !== "string" ||
+    !XID_PATTERN.test(xid) ||
     !uuidSchema.safeParse(id).success ||
     extra !== undefined
   )
     throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
-  return { version, id: String(id) };
+  return { xid, id: String(id) };
 }
 
 function encodeWatermark(mark: Watermark): string {
-  return encodeCursor([CURSOR_TAG, mark.version, mark.id]);
+  return encodeCursor([CURSOR_TAG, mark.xid, mark.id]);
 }
 
-/** Exact (microsecond, UTC) text of `updated_at`: the keyset version. */
-const versionOf = sql<string>`to_char(${staffPins.updatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-
-export type ListStaffPinRecordsOptions = {
-  /**
-   * Explicit clock override for tests only. Production leaves it unset: the
-   * settle cutoff is then computed from the DATABASE clock (legend-wg5t item 5),
-   * the same clock that stamped `updated_at`.
-   */
-  readonly now?: Date;
-  /** Override the settle window (tests); never negative. */
-  readonly settleMs?: number;
-};
+/** Exact (microsecond, UTC) ISO text of a timestamptz column. */
+const microsecondText = (column: typeof staffPins.pinGenerationAt) =>
+  sql<string>`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 /**
  * One page of the edge node's outlet staff pins changed after `since`, in
- * (updated_at, id) order. Tenant and outlet come only from `node`.
+ * commit order ((sync_xid, id)), only rows every older transaction of which
+ * has finished. Tenant and outlet come only from `node`.
  */
 export async function listStaffPinRecordsSince(
   node: VerifiedEdgeNode,
   query: StaffPinSyncQuery,
-  options: ListStaffPinRecordsOptions = {},
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { limit } = staffPinSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
-  const settleMs = Math.max(0, options.settleMs ?? STAFF_PIN_SYNC_SETTLE_MS);
-  // legend-wg5t item 5: `updated_at` comes from the database, so the cutoff
-  // must too. An app clock ahead of the DB would release rows that are still
-  // inside the settle window and let the edge's watermark skip a late commit.
-  const cutoff =
-    options.now === undefined
-      ? sql`now() - (${settleMs}::double precision * interval '1 millisecond')`
-      : new Date(options.now.getTime() - settleMs);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
     brandId: null,
@@ -275,29 +268,34 @@ export async function listStaffPinRecordsSince(
         "Edge node tidak dapat menyinkronkan outlet ini.",
       );
     return tx
-      .select({ row: staffPins, version: versionOf })
+      .select({
+        row: staffPins,
+        xid: sql<string>`${staffPins.syncXid}::text`,
+        generation: microsecondText(staffPins.pinGenerationAt),
+      })
       .from(staffPins)
       .where(
         and(
           eq(staffPins.tenantId, verified.tenantId),
           eq(staffPins.outletId, verified.outletId),
-          lte(staffPins.updatedAt, cutoff),
+          // Every writer older than this snapshot has finished (see header).
+          sql`${staffPins.syncXid} < pg_snapshot_xmin(pg_current_snapshot())`,
           since === null
             ? undefined
-            : sql`(${staffPins.updatedAt}, ${staffPins.id}) > (${since.version}::timestamptz, ${since.id}::uuid)`,
+            : sql`(${staffPins.syncXid}, ${staffPins.id}) > (${since.xid}::xid8, ${since.id}::uuid)`,
         ),
       )
-      .orderBy(asc(staffPins.updatedAt), asc(staffPins.id))
+      .orderBy(asc(staffPins.syncXid), asc(staffPins.id))
       .limit(limit + 1);
   });
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark = last
-    ? encodeWatermark({ version: last.version, id: last.row.id })
+    ? encodeWatermark({ xid: last.xid, id: last.row.id })
     : null;
   return staffPinSyncPageSchema.parse({
-    data: page.map(({ row }) =>
+    data: page.map(({ row, generation }) =>
       staffPinEdgeRecordSchema.parse({
         id: row.id,
         tenantId: row.tenantId,
@@ -311,12 +309,14 @@ export async function listStaffPinRecordsSince(
         failedAttempts: row.failedAttempts,
         lockedUntil: row.lockedUntil?.toISOString() ?? null,
         updatedAt: row.updatedAt.toISOString(),
+        pinGenerationAt: generation,
       }),
     ),
     meta: {
       limit,
       nextCursor: rows.length > limit ? lastMark : null,
-      watermark: lastMark ?? query.since ?? null,
+      // A legacy cursor is not carried over: the edge restarts from the beginning.
+      watermark: lastMark ?? (since === null ? null : encodeWatermark(since)),
     },
   });
 }
@@ -346,8 +346,8 @@ function refuse(message: string): never {
 }
 
 /**
- * Edge side: ingests one page of cloud records (idempotent, version monotonic,
- * cloud wins; see the header). Every record must be of `context`'s tenant and
+ * Edge side: ingests one page of cloud records (idempotent, ordered by the
+ * generation key, cloud wins; see the header). Every record must be of `context`'s tenant and
  * inside its outlet scope; one bad record refuses the whole page.
  */
 export async function applyStaffPinRecords(
@@ -372,21 +372,25 @@ export async function applyStaffPinRecords(
     seen.add(key);
     seen.add(id);
   }
-  const ordered = [...parsed].sort(
-    (a, b) =>
-      Date.parse(a.updatedAt) - Date.parse(b.updatedAt) ||
-      a.id.localeCompare(b.id),
-  );
+  // Same order on every node, so two concurrent pages lock users the same way.
+  const ordered = [...parsed].sort((a, b) => a.id.localeCompare(b.id));
 
   return withTenant(db, context, async (tx) => {
     let applied = 0;
     for (const record of ordered) {
       const version = new Date(record.updatedAt);
+      // Exact microsecond key, compared and stored by the database: a JS Date
+      // would cut it to milliseconds and turn a tie into a false "newer".
+      const key = sql`${record.pinGenerationAt}::timestamptz`;
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${`staff-pin-sync:${tenantId}:${record.outletId}:${record.userId}`.toLowerCase()}, 0))`,
       );
-      const [local] = await tx
-        .select()
+      const [found] = await tx
+        .select({
+          row: staffPins,
+          // 1 = the record key is later, 0 = equal, -1 = earlier.
+          keyOrder: sql<number>`CASE WHEN ${key} > ${staffPins.pinGenerationAt} THEN 1 WHEN ${key} = ${staffPins.pinGenerationAt} THEN 0 ELSE -1 END`,
+        })
         .from(staffPins)
         .where(
           and(
@@ -396,6 +400,7 @@ export async function applyStaffPinRecords(
           ),
         )
         .for("update");
+      const local = found?.row;
       const material = {
         pinHash: record.pinHash,
         pinSalt: record.salt,
@@ -434,6 +439,10 @@ export async function applyStaffPinRecords(
             // The record does not carry who set it; the owner is the closest
             // non-secret, existing user reference.
             setBy: record.userId,
+            // The cloud key orders this generation; the edge's own next set
+            // is stamped after it (see header).
+            pinGenerationAt: key,
+            pinSetAt: key,
             createdAt: version,
             updatedAt: version,
           }),
@@ -442,35 +451,51 @@ export async function applyStaffPinRecords(
         continue;
       }
       if (!sameMaterial(local, record)) {
-        // A pin set or reset on the cloud: newer generation wins.
-        if (version.getTime() <= local.createdAt.getTime()) continue;
+        // A pin set or reset on the cloud: a tie or a later key wins. An
+        // earlier key is an older generation replayed late.
+        if (found!.keyOrder < 0) continue;
         await withoutSecretErrorDetail("Staff pin sync write failed", () =>
           tx
             .update(staffPins)
-            .set({ ...material, createdAt: version, updatedAt: version })
+            .set({
+              ...material,
+              pinGenerationAt: key,
+              pinSetAt: key,
+              updatedAt: version,
+            })
             .where(eq(staffPins.id, local.id)),
         );
         applied += 1;
         continue;
       }
-      // Same pin generation: lock state of a newer version, merged so it
-      // never weakens the edge (legend-kyie review K F2): the cloud adopting
-      // an edge pin writes a cleared counter, and copying that back would
-      // briefly unlock the edge. Nothing on the cloud clears a lock while
+      // Same pin material: merge the lock state whatever the clocks say, so
+      // it never weakens the edge (legend-kyie review K F2): the cloud
+      // adopting an edge pin writes a cleared counter, and copying that back
+      // would briefly unlock the edge. Nothing on the cloud clears a lock while
       // keeping the hash (a reset brings new material, handled above). A
       // correct PIN entered on the cloud does clear the cloud counter with the
       // same hash; the edge keeps its higher counter (accepted: it never
       // weakens the edge, at worst it locks one guess earlier).
-      if (version.getTime() <= local.updatedAt.getTime()) continue;
+      const recordLock = material.lockedUntil;
+      const lockLater =
+        recordLock !== null &&
+        (local.lockedUntil === null ||
+          recordLock.getTime() > local.lockedUntil.getTime());
+      if (
+        found!.keyOrder <= 0 &&
+        record.failedAttempts <= local.failedAttempts &&
+        !lockLater
+      )
+        continue;
       await tx
         .update(staffPins)
         .set({
           failedAttempts: sql`GREATEST(${staffPins.failedAttempts}, ${material.failedAttempts})`,
           lockedUntil:
-            material.lockedUntil === null
+            recordLock === null
               ? sql`${staffPins.lockedUntil}`
-              : sql`GREATEST(${staffPins.lockedUntil}, ${material.lockedUntil.toISOString()}::timestamptz)`,
-          updatedAt: version,
+              : sql`GREATEST(${staffPins.lockedUntil}, ${recordLock.toISOString()}::timestamptz)`,
+          pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
         })
         .where(eq(staffPins.id, local.id));
       applied += 1;

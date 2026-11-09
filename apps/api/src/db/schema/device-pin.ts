@@ -16,6 +16,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -37,6 +38,14 @@ import {
 import { approvalRequests } from "./platform-approval";
 import { outlets, tenants } from "./platform-org";
 import { user } from "./user";
+
+/**
+ * PostgreSQL `xid8`: a 64-bit transaction id. Kept as its decimal text, which
+ * is what the driver returns and what the edge export puts in its cursor.
+ */
+const xid8 = customType<{ data: string; driverData: string }>({
+  dataType: () => "xid8",
+});
 
 export const staffPins = pgTable(
   "staff_pins",
@@ -80,6 +89,17 @@ export const staffPins = pgTable(
     pinGenerationAt: timestamp("pin_generation_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Commit-ordered sync version (legend-t9ii): the id of the transaction
+     * that last wrote the row. The default covers an insert, the
+     * `staff_pins_sync_xid` trigger every update (no application code sets
+     * it). The edge export reads only rows below the oldest transaction still
+     * open, so a late commit is never passed by a watermark and no clock is
+     * involved.
+     */
+    syncXid: xid8("sync_xid")
+      .notNull()
+      .default(sql`pg_current_xact_id()`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -93,6 +113,12 @@ export const staffPins = pgTable(
       table.tenantId,
       table.outletId,
       table.userId,
+    ),
+    index("staff_pins_sync_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.syncXid,
+      table.id,
     ),
     foreignKey({
       name: "staff_pins_outlet_fk",

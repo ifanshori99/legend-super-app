@@ -1296,7 +1296,6 @@ describe("legend-kyie round trip with the cloud -> edge PIN sync", () => {
         edgeNodeId: node.scope.edgeNodeId,
       },
       { limit: STAFF_PIN_SYNC_LIMIT_DEFAULT },
-      { settleMs: 0 },
     );
     const record = page.data.find((r) => r.userId === userId);
     expect(record).toBeDefined();
@@ -1341,6 +1340,7 @@ describe("legend-kyie round trip with the cloud -> edge PIN sync", () => {
         failedAttempts: 0,
         lockedUntil: null,
         updatedAt: stale.setAt,
+        pinGenerationAt: stale.setAt,
       },
     ]);
 
@@ -1490,6 +1490,7 @@ describe("legend-kyie review K round 1", () => {
         failedAttempts: 0,
         lockedUntil: null,
         updatedAt: new Date(Date.now() - MINUTE).toISOString(),
+        pinGenerationAt: material.setAt,
       },
     ]);
 

@@ -59,6 +59,7 @@ import { posOverrides } from "../db/schema/device-pin";
 import { posShiftCounts, posShifts } from "../db/schema/pos-shift";
 import { SHIFT_COUNT_OBJECT_TYPE } from "./pos-shift-support";
 import { withTenant } from "../db/tenant";
+import { getEdgeRuntimeState } from "../edge/runtime";
 import { recordAudit } from "./audit-writer";
 import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
 import {
@@ -202,6 +203,50 @@ async function findReplay(
   return existing;
 }
 
+/**
+ * True on an edge node (same rule as device-pin.service.ts and
+ * pos-receipt.service.ts): the runtime flag, or the static `EDGE_MODE`
+ * setting during the boot window.
+ */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+type ShiftCloseFigures = {
+  readonly expectedIdr: Idr;
+  readonly countedIdr: Idr;
+  readonly varianceIdr: Idr;
+};
+
+/**
+ * The figures of the count a `cash_shift_close` override names (legend-7iti),
+ * for the audit row. Null when the count row is gone: the audit then lacks the
+ * figures but the approval is not stranded (the count is validated when the
+ * override is created, and counts are never deleted).
+ */
+async function shiftCloseFigures(
+  tx: Tx,
+  row: Row,
+): Promise<ShiftCloseFigures | null> {
+  const countId = uuidSchema.safeParse(row.objectId);
+  if (!countId.success) return null;
+  const [count] = await tx
+    .select({
+      expectedIdr: posShiftCounts.expectedIdr,
+      countedIdr: posShiftCounts.countedIdr,
+      varianceIdr: posShiftCounts.varianceIdr,
+    })
+    .from(posShiftCounts)
+    .where(
+      and(
+        eq(posShiftCounts.tenantId, row.tenantId),
+        eq(posShiftCounts.outletId, row.outletId),
+        eq(posShiftCounts.id, countId.data),
+      ),
+    );
+  return count ?? null;
+}
+
 /** AUTH-06 record: audit (requester, approver, reason, value, outlet) + outbox event. */
 async function recordApprovedOverride(
   tx: Tx,
@@ -212,6 +257,8 @@ async function recordApprovedOverride(
 ): Promise<void> {
   if (row.approvedBy === null)
     throw new Error("approved override without approver");
+  const figures =
+    row.action === "cash_shift_close" ? await shiftCloseFigures(tx, row) : null;
   await appendDevicePinEvent(tx, context, posOverrideRecordedEvent, {
     aggregateId: row.id,
     outletId: row.outletId,
@@ -232,6 +279,13 @@ async function recordApprovedOverride(
       // legend-kyie: the cloud writes the audit row of an edge override.
       reasonCode: row.reasonCode,
       reason: row.reason,
+      // legend-7iti: the cloud writes the audit row of an edge override and
+      // cannot read the count, so the figures travel with the event. Edge
+      // process only: the event flows edge -> cloud and never to a device, but
+      // the cloud's own event stays free of them (blind count, legend-o0w6).
+      ...(figures !== null && isEdgeProcess()
+        ? { shiftCloseVariance: figures }
+        : {}),
     },
   });
   await recordAudit(
@@ -256,6 +310,8 @@ async function recordApprovedOverride(
         objectType: row.objectType,
         objectId: row.objectId,
         approvalRequestId: row.approvalRequestId,
+        // Same shape as the cloud audit of an edge override (applyPosOverrideRecorded).
+        ...(figures ?? {}),
       },
       sensitiveAccess: false,
     },
