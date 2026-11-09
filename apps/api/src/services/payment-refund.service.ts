@@ -43,6 +43,7 @@ import {
   paymentRefunds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
+import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -59,6 +60,7 @@ import {
   hasSourceDocument,
   missing,
   posSaleInUseRefused,
+  qrSaleInUseRefused,
   refundableBalance,
   refundAudit,
   refundView,
@@ -400,10 +402,12 @@ async function applyApproval(
   // This refund is itself reserved (pending), so reserved must still fit the
   // cap; the cap excludes money a captured POS tender still holds.
   let posSaleInUse = 0n;
+  let qrSaleInUse = 0n;
   const fits = fund
     ? !fund.resolution
     : await refundableBalance(tx, intent).then(async (balance) => {
         posSaleInUse = balance.posSaleInUse;
+        qrSaleInUse = balance.qrSaleInUse;
         // legend-leqj6: a late-payment refund is filed once per intent for
         // what is left after the approved refunds, so other refunds still
         // pending do not count against it (their own approval fails
@@ -420,8 +424,17 @@ async function applyApproval(
       action: "payment.refund_failed",
       actorId: approvedBy,
       note: null,
-      ...(posSaleInUse > 0n
-        ? { detail: { posSaleInUseIdr: Number(posSaleInUse) } }
+      ...(posSaleInUse > 0n || qrSaleInUse > 0n
+        ? {
+            detail: {
+              ...(posSaleInUse > 0n
+                ? { posSaleInUseIdr: Number(posSaleInUse) }
+                : {}),
+              ...(qrSaleInUse > 0n
+                ? { qrSaleInUseIdr: Number(qrSaleInUse) }
+                : {}),
+            },
+          }
         : {}),
       now: at,
     });
@@ -461,17 +474,21 @@ const LATE_PAYMENT_REFUND_KEY_PREFIXES = [
  * legend-leqj6: whether `refund` is the late-payment refund of its intent: the
  * request recorded its id under the once-per-intent key, so a refund that only
  * shares the requester (`system:pos`, `system:qr`) is not one.
+ * legend-p61pe: the QR request filed after another refund failed has its own
+ * key `<key>:<failedRefundId>` and counts the same.
  */
 async function isLatePaymentRefund(tx: Tx, refund: Refund): Promise<boolean> {
   const result = await tx.execute(sql`
     SELECT 1
       FROM payment_admin_idempotency
      WHERE tenant_id = ${refund.tenantId}
-       AND key IN (${sql.join(
+       AND (${sql.join(
          LATE_PAYMENT_REFUND_KEY_PREFIXES.map(
-           (prefix) => sql`${prefix + refund.paymentIntentId}`,
+           (prefix) =>
+             sql`key = ${prefix + refund.paymentIntentId}
+              OR key LIKE ${`${prefix}${refund.paymentIntentId}:%`}`,
          ),
-         sql`, `,
+         sql` OR `,
        )})
        AND response->>'refundId' = ${refund.id}
      LIMIT 1
@@ -552,7 +569,69 @@ async function failRefund(
       ...input.detail,
     },
   });
+  await refileQrLatePaymentAfterFailure(tx, context, updated, input.now);
   return updated;
+}
+
+/**
+ * legend-p61pe: a QR order voided because a refund already took the payment's
+ * money (`refund_committed`) files its late-payment refund once per intent
+ * (qr-order-late-payment.ts), and that request may have found nothing left.
+ * When the refund that took the money fails, the guest is owed it again: file
+ * a new request under its own key. A failed late-payment refund is not
+ * re-filed (no loop: it stays failed for a person to settle), nor is a fund
+ * refund or an intent that has no QR late-payment request on a voided order.
+ * Lazy import: qr-order-late-payment imports this module (cycle).
+ */
+async function refileQrLatePaymentAfterFailure(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<void> {
+  if (refund.unallocatedFundId !== null) return;
+  const base = `qr-late-payment-refund:${refund.paymentIntentId}`;
+  const keys = await tx.execute(sql`
+    SELECT key, response->>'refundId' AS refund_id
+      FROM payment_admin_idempotency
+     WHERE tenant_id = ${refund.tenantId}
+       AND (key = ${base} OR key LIKE ${`${base}:%`})
+  `);
+  if (keys.rows.length === 0) return;
+  if (keys.rows.some((row) => row.refund_id === refund.id)) return;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, refund.tenantId),
+        eq(paymentIntents.id, refund.paymentIntentId),
+      ),
+    );
+  if (!intent) return;
+  // `orders.id` is a ULID stored in a uuid column: read it through Drizzle.
+  const [order] = await tx
+    .select({ id: orders.id, outletId: orders.outletId })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, refund.tenantId),
+        eq(orders.paymentLinkId, intent.paymentLinkId),
+        eq(orders.channel, "qr"),
+        eq(orders.status, "voided"),
+      ),
+    )
+    .limit(1);
+  if (!order) return;
+  const { requestQrLatePaymentRefund } =
+    await import("./qr-order-late-payment.ts");
+  await requestQrLatePaymentRefund(tx, context, {
+    order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId: refund.paymentIntentId,
+    now,
+    keySuffix: refund.id,
+  });
 }
 
 /**
@@ -1097,14 +1176,16 @@ async function capRefusal(
         ),
       );
     if (!intent) return null;
-    const { cap, reserved, posSaleInUse } = await refundableBalance(
-      tx,
-      intent,
-      { lockDeposit: false },
-    );
+    const { cap, reserved, posSaleInUse, qrSaleInUse } =
+      await refundableBalance(tx, intent, { lockDeposit: false });
     const wanted = reserved + BigInt(refund.amountIdr);
-    return posSaleInUse > 0n && wanted > cap && wanted <= cap + posSaleInUse
-      ? posSaleInUseRefused(cap > reserved ? cap - reserved : 0n)
+    const left = cap > reserved ? cap - reserved : 0n;
+    if (wanted <= cap) return null;
+    if (posSaleInUse > 0n && wanted <= cap + posSaleInUse)
+      return posSaleInUseRefused(left);
+    // legend-xtzpb: a fired QR pay-first sale holds the money.
+    return qrSaleInUse > 0n && wanted <= cap + posSaleInUse + qrSaleInUse
+      ? qrSaleInUseRefused(left)
       : null;
   });
   return refusal ?? conflict(fallback);

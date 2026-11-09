@@ -67,6 +67,11 @@ export async function requestQrLatePaymentRefund(
     paymentLinkId: string;
     intentId: string;
     now: Date;
+    /**
+     * legend-p61pe: a refund filed after another refund of the intent failed
+     * uses its own once-only key (`<key>:<failedRefundId>`).
+     */
+    keySuffix?: string;
   },
 ): Promise<string | null> {
   const tenantId = context.tenant.tenantId;
@@ -91,7 +96,9 @@ export async function requestQrLatePaymentRefund(
     tx,
     context,
     QR_SYSTEM_ACTOR,
-    qrLatePaymentRefundKey(intent.id),
+    input.keySuffix === undefined
+      ? qrLatePaymentRefundKey(intent.id)
+      : `${qrLatePaymentRefundKey(intent.id)}:${input.keySuffix}`,
     "refund.create",
     { paymentIntentId: intent.id, reason: "qr_late_payment" },
     async () => {

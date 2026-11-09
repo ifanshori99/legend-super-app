@@ -46,6 +46,14 @@ export const posSaleInUseRefused = (refundableIdr: bigint) =>
     `Payment still pays a POS sale; refund that sale at the POS first. At most ${refundableIdr} IDR can be refunded now.`,
   );
 
+/** legend-xtzpb: the intent's money is still held by a fired QR pay-first sale. */
+export const qrSaleInUseRefused = (refundableIdr: bigint) =>
+  new HttpError(
+    409,
+    "REFUND_INTENT_IN_QR_SALE",
+    `Payment still pays a fired QR order, so that money cannot be refunded here. At most ${refundableIdr} IDR can be refunded now.`,
+  );
+
 export type Intent = typeof paymentIntents.$inferSelect;
 export type Refund = typeof paymentRefunds.$inferSelect;
 /** A sale's payment is refunded by the module that owns the document (order.refunded). */
@@ -103,9 +111,18 @@ export async function refundableBalance(
     intent.tenantId,
     intent.id,
   );
-  const held = depositInUse + forfeited + posSaleInUse;
+  const qrSaleInUse = await qrSaleInUseOfIntent(tx, intent.tenantId, intent.id);
+  const held = depositInUse + forfeited + posSaleInUse + qrSaleInUse;
   const cap = paid > held ? paid - held : 0n;
-  return { cap, reserved, paid, depositInUse, forfeited, posSaleInUse };
+  return {
+    cap,
+    reserved,
+    paid,
+    depositInUse,
+    forfeited,
+    posSaleInUse,
+    qrSaleInUse,
+  };
 }
 
 /**
@@ -138,6 +155,54 @@ async function posSaleInUseOfIntent(
   const result = await tx.execute(
     netPosTendersOfIntentSql(tenantId, intentId, { kind: "held" }),
   );
+  const held = BigInt(String(result.rows[0]?.amount ?? "0"));
+  return held > 0n ? held : 0n;
+}
+
+/**
+ * legend-xtzpb: money of the intent a QR pay-first sale took. The sale pins
+ * the intent that paid it (orders.payment_intent_id) and carries no tenders;
+ * it exists once the order fired (fired_at, the same transaction as its
+ * order.paid) and takes total - DP. An unpaid or voided order never fired
+ * and holds nothing, so a late payment on it is still refundable. Same
+ * predicate as the payout guard (accounting-auto-journal-guards.ts qrSales)
+ * for the pinned intent.
+ * legend-nslvm: a bill split over several codes pins only the code of the
+ * event that fired it;
+ * every other code of the order's payment link holds the part it put toward
+ * the bill (its evidence less its unallocated funds, at most the amount due).
+ * A code whose money was all booked as a double payment holds nothing.
+ * Read under the intent row lock the writers hold; the QR fire path takes it
+ * too (qr-order-consumers.ts, legend-9vzvs).
+ */
+async function qrSaleInUseOfIntent(
+  tx: Tx,
+  tenantId: Intent["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum(
+      CASE WHEN o.payment_intent_id = ${intentId}::uuid
+        THEN o.total_idr - o.deposit_applied_idr
+        ELSE least(
+          o.total_idr - o.deposit_applied_idr,
+          greatest(
+            (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+              WHERE e.tenant_id = o.tenant_id AND e.payment_intent_id = ${intentId}::uuid)
+            - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
+                WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid),
+            0))
+      END), 0)::text AS amount
+    FROM orders o
+    WHERE o.tenant_id = ${tenantId}
+      AND (o.payment_intent_id = ${intentId}::uuid
+           OR o.payment_link_id = (SELECT pi.payment_link_id FROM payment_intents pi
+                                    WHERE pi.tenant_id = o.tenant_id AND pi.id = ${intentId}::uuid))
+      AND o.channel = 'qr' AND o.payment_mode = 'pay_first'
+      AND o.fired_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM pos_orders sp
+        WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+  `);
   const held = BigInt(String(result.rows[0]?.amount ?? "0"));
   return held > 0n ? held : 0n;
 }
@@ -400,8 +465,15 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const { cap, reserved, paid, depositInUse, forfeited, posSaleInUse } =
-          await refundableBalance(tx, intent);
+        const {
+          cap,
+          reserved,
+          paid,
+          depositInUse,
+          forfeited,
+          posSaleInUse,
+          qrSaleInUse,
+        } = await refundableBalance(tx, intent);
         if (reserved + BigInt(body.amountIdr) > cap) {
           // legend-riqu: a captured POS tender still holds this money.
           if (
@@ -409,6 +481,13 @@ export async function createRefund(
             reserved + BigInt(body.amountIdr) <= cap + posSaleInUse
           )
             throw posSaleInUseRefused(cap > reserved ? cap - reserved : 0n);
+          // legend-xtzpb: a fired QR pay-first sale still holds this money.
+          if (
+            qrSaleInUse > 0n &&
+            reserved + BigInt(body.amountIdr) <=
+              cap + posSaleInUse + qrSaleInUse
+          )
+            throw qrSaleInUseRefused(cap > reserved ? cap - reserved : 0n);
           // legend-fsl5: the reservation DP was forfeited to the outlet.
           if (
             forfeited > 0n &&
