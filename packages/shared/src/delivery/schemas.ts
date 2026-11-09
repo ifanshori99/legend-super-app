@@ -409,6 +409,23 @@ export type UpdateDeliveryOrderStatusInput = z.infer<
   typeof updateDeliveryOrderStatusInputSchema
 >;
 
+/**
+ * Staff resend of the held platform step of a `needs_action` order
+ * (legend-eyqvo): no input, the stored step is the one resent.
+ */
+export const resendDeliveryOrderSyncInputSchema = clientInputSchema({});
+export type ResendDeliveryOrderSyncInput = z.infer<
+  typeof resendDeliveryOrderSyncInputSchema
+>;
+
+/** Staff marks a `needs_action` order as handled in the partner app. */
+export const resolveDeliveryOrderSyncInputSchema = clientInputSchema({
+  reason: note300.optional(),
+});
+export type ResolveDeliveryOrderSyncInput = z.infer<
+  typeof resolveDeliveryOrderSyncInputSchema
+>;
+
 // ---- Commission reconciliation (§3.23 "Rekonsiliasi Komisi") --------------
 
 export const DELIVERY_SETTLEMENT_STATUSES = [

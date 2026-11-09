@@ -9,7 +9,8 @@
 //   target status stored; `retryDeliveryPlatformIntents` (worker sweep) resends
 //   it with backoff until the platform accepts, answers clearly, or
 //   PLATFORM_SYNC_MAX_ATTEMPTS calls were made.
-// - refused (a clear answer): `needs_action`. A refusal is never resent.
+// - refused (a clear answer): `needs_action`. A refusal is never resent by the
+//   sweep; staff resend it once or mark it handled (legend-eyqvo, below).
 //
 // Resend is idempotent: the adapter reference is `<order id>:<status>`, the
 // same as the consumer's, so a platform that already took the step answers the
@@ -21,17 +22,25 @@
 // (a newer staff step or a later claim wins).
 import { and, eq, inArray, lt, lte, ne, sql } from "drizzle-orm";
 import {
+  assertOutletInScope,
   createUlid,
   toIsoDateTime,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
+  type UserId,
 } from "@starter/shared/core";
+import {
+  DeliveryError,
+  type DeliveryChannelOrder,
+  type ResolveDeliveryOrderSyncInput,
+} from "@starter/shared/delivery";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliveryChannelOrders } from "../db/schema/delivery.ts";
 import { recordAudit } from "./core-audit.ts";
 import { deliveryChannelAdapterFor } from "./delivery-ports.ts";
+import { lockDeliveryOrder, toDeliveryChannelOrder } from "./delivery-store.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 /** Platform calls made for one step (the consumer's own call is the first). */
@@ -392,4 +401,218 @@ export async function retryDeliveryPlatformIntents(
     }),
   );
   return claims.length;
+}
+
+// ---- Staff actions on a `needs_action` order (bead legend-eyqvo) -------------
+// Founder Q58: staff may resend the held step once, or mark the order handled
+// (they fixed it in the partner app).
+
+export type DeliverySyncCaller = { readonly userId: UserId };
+
+function syncNotPending(): DeliveryError {
+  return new DeliveryError("DELIVERY_SYNC_NOT_PENDING");
+}
+
+/** The row of this outlet locked FOR UPDATE, in `needs_action` with a held step. */
+async function lockPendingOrder(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  deliveryOrderId: string,
+) {
+  const row = await lockDeliveryOrder(
+    tx,
+    context.tenant.tenantId,
+    deliveryOrderId,
+  );
+  if (!row || row.outletId !== outletId)
+    throw new DeliveryError("DELIVERY_ORDER_NOT_FOUND");
+  if (row.platformSyncState !== "needs_action") throw syncNotPending();
+  return row;
+}
+
+async function auditStaffSync(
+  tx: Tx,
+  context: ScopedTenantContext,
+  caller: DeliverySyncCaller,
+  row: { id: string; outletId: string; platform: string; status: string },
+  action: "delivery_order.platform_resend" | "delivery_order.platform_resolved",
+  outcome: "accepted" | "refused" | "unknown" | "resolved",
+  reason: string | null,
+  now: Date,
+): Promise<void> {
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: row.outletId as OutletId,
+      actorType: "user",
+      actorId: caller.userId,
+      deviceId: null,
+      action,
+      objectType: "delivery_channel_order",
+      objectId: row.id,
+      reason,
+      maskedChanges: {
+        before: {
+          platform: row.platform,
+          status: row.status,
+          outcome: "needs_action",
+        },
+        after: { platform: row.platform, status: row.status, outcome },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    ["platform", "status", "outcome"],
+  );
+}
+
+/**
+ * Staff resend, once: one platform call for the held step, on the sweep's own
+ * idempotent reference (`<order id>:<status>`). The claim moves the row to
+ * `retrying` under a lease (attempts + 1, next_at = now + lease), so the sweep
+ * (which only takes due rows) and a second click (not `needs_action` any more)
+ * both leave it alone while the call runs. Accepted: `ok`. Refused or unknown:
+ * back to `needs_action` with no next_at, so no automatic backoff restarts. A
+ * crash between claim and result leaves a leased `retrying` row; the sweep
+ * then resends it or, at the attempt cap, flags it again.
+ */
+export async function resendDeliveryOrderSync(
+  context: ScopedTenantContext,
+  caller: DeliverySyncCaller,
+  outletId: OutletId,
+  deliveryOrderId: string,
+  now = new Date(),
+): Promise<DeliveryChannelOrder> {
+  assertOutletInScope(context.outletScope, outletId);
+  const claim = await withTenant(db, context, async (tx): Promise<Claim> => {
+    const row = await lockPendingOrder(tx, context, outletId, deliveryOrderId);
+    // The order moved on (webhook): nothing is held for the old step.
+    if (
+      !row.platformSyncAction ||
+      !row.platformSyncStatus ||
+      row.platformSyncStatus !== row.status
+    )
+      throw syncNotPending();
+    const attempt = row.platformSyncAttempts + 1;
+    await tx
+      .update(deliveryChannelOrders)
+      .set({
+        platformSyncState: "retrying",
+        platformSyncAttempts: attempt,
+        platformSyncNextAt: new Date(now.getTime() + PLATFORM_SYNC_LEASE_MS),
+      })
+      .where(
+        and(
+          eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
+          eq(deliveryChannelOrders.id, row.id),
+        ),
+      );
+    return {
+      id: row.id,
+      outletId: row.outletId,
+      platform: row.platform,
+      externalOrderId: row.externalOrderId,
+      closeReason: row.closeReason,
+      action: row.platformSyncAction,
+      status: row.platformSyncStatus,
+      attempt,
+    };
+  });
+  const startedAt = Date.now();
+  const outcome = await callPlatform(context, claim);
+  const settledAt = new Date(now.getTime() + (Date.now() - startedAt));
+  return withTenant(db, context, async (tx) => {
+    const row = await lockDeliveryOrder(tx, context.tenant.tenantId, claim.id);
+    if (!row) throw new DeliveryError("DELIVERY_ORDER_NOT_FOUND");
+    // Only while the row still holds this claim (a newer staff step or the
+    // sweep after a lease expiry may have moved it).
+    if (
+      row.platformSyncState === "retrying" &&
+      row.platformSyncAction === claim.action &&
+      row.platformSyncStatus === claim.status &&
+      row.platformSyncAttempts === claim.attempt
+    ) {
+      if (outcome === "accepted")
+        await markPlatformSynced(tx, context.tenant.tenantId, claim.id);
+      else
+        await tx
+          .update(deliveryChannelOrders)
+          .set({ platformSyncState: "needs_action", platformSyncNextAt: null })
+          .where(
+            and(
+              eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
+              eq(deliveryChannelOrders.id, claim.id),
+            ),
+          );
+      await auditStaffSync(
+        tx,
+        context,
+        caller,
+        { ...claim, status: claim.status },
+        "delivery_order.platform_resend",
+        outcome,
+        null,
+        settledAt,
+      );
+    }
+    const [fresh] = await tx
+      .select()
+      .from(deliveryChannelOrders)
+      .where(
+        and(
+          eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
+          eq(deliveryChannelOrders.id, claim.id),
+        ),
+      );
+    if (!fresh) throw new DeliveryError("DELIVERY_ORDER_NOT_FOUND");
+    return toDeliveryChannelOrder(fresh);
+  });
+}
+
+/**
+ * Staff mark the order handled (fixed in the partner app): the flag clears
+ * (`ok`, held step dropped) and the audit trail names who, when and the
+ * optional reason. Only a `needs_action` order; a `retrying` one (the sweep or
+ * a resend is on it) answers 409 and clears itself or ends in `needs_action`.
+ */
+export async function resolveDeliveryOrderSync(
+  context: ScopedTenantContext,
+  caller: DeliverySyncCaller,
+  outletId: OutletId,
+  deliveryOrderId: string,
+  input: ResolveDeliveryOrderSyncInput,
+  now = new Date(),
+): Promise<DeliveryChannelOrder> {
+  assertOutletInScope(context.outletScope, outletId);
+  return withTenant(db, context, async (tx) => {
+    const row = await lockPendingOrder(tx, context, outletId, deliveryOrderId);
+    await markPlatformSynced(tx, context.tenant.tenantId, row.id);
+    await auditStaffSync(
+      tx,
+      context,
+      caller,
+      row,
+      "delivery_order.platform_resolved",
+      "resolved",
+      input.reason?.trim() || null,
+      now,
+    );
+    const [fresh] = await tx
+      .select()
+      .from(deliveryChannelOrders)
+      .where(
+        and(
+          eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
+          eq(deliveryChannelOrders.id, row.id),
+        ),
+      );
+    if (!fresh) throw new DeliveryError("DELIVERY_ORDER_NOT_FOUND");
+    return toDeliveryChannelOrder(fresh);
+  });
 }
