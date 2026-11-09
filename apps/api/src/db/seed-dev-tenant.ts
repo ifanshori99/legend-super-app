@@ -10,10 +10,14 @@ import { Pool } from "pg";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendTaxFixtures } from "@starter/shared/tax";
+import { guardDataImport } from "../config/data-import";
 import { databaseUrl } from "./connection";
 
+// Data import guard (legend-v4ld): synthetic, development-only source. The
+// explicit checks below are defence in depth (NODE_ENV is not part of the
+// deployment settings the guard reads).
+guardDataImport("seed.dev-tenant");
 if (
-  (process.env.DEPLOYMENT_MODE ?? "development") !== "development" ||
   (process.env.DATA_CLASSIFICATION ?? "synthetic") !== "synthetic" ||
   process.env.NODE_ENV === "production"
 ) {
