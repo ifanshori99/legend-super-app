@@ -1177,6 +1177,13 @@
       "when": 1794249000000,
       "tag": "0170_edc_pan_backfill_separators",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1794265000000,
+      "tag": "0186_stock_ledger_posting_seq",
+      "breakpoints": true
     }
   ]
 }

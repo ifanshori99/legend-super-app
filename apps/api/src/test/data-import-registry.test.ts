@@ -114,6 +114,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends org.support_access.approve to the stored owner template role rows of every tenant, one tenant context at a time (legend-c9kbk); idempotent, never touches a custom role or another template",
   "0170_edc_pan_backfill_separators.sql":
     "masks card-number-like digit runs (any whitespace, slash, underscore, dash separators) in the stored edc_transactions.message of existing rows, in batches of 1000 (legend-0lrkl, backfill for legend-deu7r); overwrites message text, idempotent, never inserts or deletes rows",
+  "0186_stock_ledger_posting_seq.sql":
+    "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.
