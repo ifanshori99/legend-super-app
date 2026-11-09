@@ -190,6 +190,42 @@ test("PRD §6 kitchen_capacity_rules + KDS-05: pacing levels derive from capacit
   );
 });
 
+test("legend-tsp5: the station summary is one open-ticket count per station", () => {
+  const summary = fixtures.stationSummary;
+  kitchen.stationSummarySchema.parse(summary);
+  assert.equal(
+    kitchen.getKitchenStationSummary.path,
+    "/api/outlets/:outletId/kitchen/station-summary",
+  );
+  const stationIds = summary.stations.map((row) => row.stationId);
+  assert.equal(new Set(stationIds).size, stationIds.length, "one row each");
+  // Open means new, in progress or recalled; done and cancelled do not count.
+  for (const row of summary.stations) {
+    const open = fixtures.tickets.filter(
+      (ticket) =>
+        ticket.stationId === row.stationId &&
+        ["new", "in_progress", "recalled"].includes(ticket.status),
+    ).length;
+    assert.equal(row.openTickets, open, "fixture count matches the tickets");
+  }
+  assert.equal(
+    kitchen.stationSummarySchema.safeParse({
+      ...summary,
+      stations: [summary.stations[0], summary.stations[0]],
+    }).success,
+    false,
+    "a station appears once",
+  );
+  assert.equal(
+    kitchen.stationSummarySchema.safeParse({
+      ...summary,
+      stations: [{ ...summary.stations[0], openTickets: -1 }],
+    }).success,
+    false,
+    "a count is never negative",
+  );
+});
+
 test("PRD §3 F12 all-day count and expo board: station queue and runner assignment", () => {
   const board = fixtures.stationBoards[0];
   kitchen.stationBoardSchema.parse(board);
@@ -644,6 +680,7 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   };
   respond(kitchen.listKitchenStations, fixtures.stationConfigs);
   respond(kitchen.getKitchenBoard, fixtures.stationBoards[0]);
+  respond(kitchen.getKitchenStationSummary, fixtures.stationSummary);
   respond(kitchen.startKitchenTicket, detail);
   respond(kitchen.bumpKitchenTicket, detail);
   respond(kitchen.recallKitchenTicket, { ...detail, status: "recalled" });

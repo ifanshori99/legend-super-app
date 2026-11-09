@@ -43,6 +43,7 @@ import {
   stationBoardSchema,
   stationConfigSchema,
   stationIdSchema,
+  stationSummarySchema,
 } from "./schemas.ts";
 
 const outletParams = z.strictObject({ outletId: outletIdSchema });
@@ -73,6 +74,17 @@ export const getKitchenBoard = defineEndpoint({
   path: "/api/outlets/:outletId/kitchen/stations/:stationId/board",
   params: stationParams,
   response: dataResponseSchema(stationBoardSchema),
+});
+
+/**
+ * KDS station switch: open-ticket count per station in one small payload, so
+ * the tablet does not poll every station's board (legend-tsp5).
+ */
+export const getKitchenStationSummary = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/station-summary",
+  params: outletParams,
+  response: dataResponseSchema(stationSummarySchema),
 });
 
 /** "Aksi Tiket": start, bump, recall, void. */

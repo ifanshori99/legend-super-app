@@ -925,6 +925,29 @@ export const stationBoardSchema = z.strictObject({
   pacing: stationPacingSchema,
 });
 
+/**
+ * legend-tsp5: the light poll behind the KDS station switch. One row per
+ * station the caller may see; `openTickets` counts new, in progress and
+ * recalled tickets (done and cancelled do not count).
+ */
+export const stationSummarySchema = z
+  .strictObject({
+    ...outletScope,
+    generatedAt: isoDateTimeSchema,
+    stations: z.array(
+      z.strictObject({
+        stationId: stationIdSchema,
+        openTickets: z.number().int().nonnegative(),
+      }),
+    ),
+  })
+  .refine(
+    (summary) =>
+      new Set(summary.stations.map((row) => row.stationId)).size ===
+      summary.stations.length,
+    { path: ["stations"], message: "A station appears once in the summary" },
+  );
+
 /* ------------------------------------------------------------- fixture set */
 
 /** Whole Cafe Legend kitchen fixture; must parse as one object (test). */
@@ -946,8 +969,10 @@ export const kitchenFixtureSchema = z.strictObject({
   orderIssues: z.array(orderIssueSchema),
   channelPauses: z.array(channelPauseSchema),
   stationBoards: z.array(stationBoardSchema),
+  stationSummary: stationSummarySchema,
 });
 
+export type StationSummary = z.infer<typeof stationSummarySchema>;
 export type StationConfig = z.infer<typeof stationConfigSchema>;
 export type MenuLoad = z.infer<typeof menuLoadSchema>;
 export type CapacitySchedule = z.infer<typeof capacityScheduleSchema>;

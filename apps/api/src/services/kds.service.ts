@@ -56,13 +56,14 @@ import {
   type KitchenItemStatus,
   type KitchenStationFeed,
   type KitchenStationSnapshot,
+  type StationSummary,
   type KitchenTicketAction,
   type KitchenTicketDetail,
   type KitchenTicketItem,
   type KitchenTicketStatus,
 } from "@starter/shared/kitchen";
 import { db } from "../db/index.ts";
-import { menuItems, stations } from "../db/schema/index.ts";
+import { menuItems, outlets, stations } from "../db/schema/index.ts";
 import {
   kitchenStationFeed,
   kitchenTicketItems,
@@ -89,7 +90,11 @@ import {
   type TicketRow,
 } from "./kds-support.ts";
 import type { Tx } from "./menu-internals.ts";
-import { assertStationPermission } from "./station-access.ts";
+import {
+  assertStationPermission,
+  permittedStationIds,
+  stationScopeCondition,
+} from "./station-access.ts";
 
 export type { KdsActor };
 
@@ -1345,6 +1350,79 @@ export async function listStationTickets(
       sequence,
       generatedAt: toIsoDateTime(now),
       tickets: await ticketDetails(tx, context, tickets),
+    };
+  });
+}
+
+/**
+ * legend-tsp5: open-ticket count (new, in progress, recalled) of every active
+ * station of the outlet the caller may process. A station-only caller sees only
+ * their own stations; a station with no open ticket reports 0.
+ */
+export async function getStationSummary(
+  context: ScopedTenantContext,
+  actor: KdsActor,
+  outletRef: string,
+  now: Date,
+): Promise<StationSummary> {
+  const outletId = outletIdSchema.parse(outletRef);
+  return withTenant(db, context, async (tx) => {
+    assertOutletInScope(context.outletScope, outletId);
+    // An outlet of another tenant (or an unknown one) answers 404, not an
+    // empty 200, so the status cannot be used to probe which outlets exist.
+    const [outlet] = await tx
+      .select({ id: outlets.id })
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, context.tenant.tenantId),
+          eq(outlets.id, outletId),
+        ),
+      );
+    if (!outlet) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+    const permitted = await permittedStationIds(
+      tx,
+      context,
+      actor.userId,
+      PROCESS,
+      now,
+    );
+    const rows = await tx
+      .select({ id: stations.id })
+      .from(stations)
+      .where(
+        and(
+          eq(stations.tenantId, context.tenant.tenantId),
+          eq(stations.outletId, outletId),
+          isNull(stations.deletedAt),
+          stationScopeCondition(stations.id, permitted),
+        ),
+      )
+      .orderBy(asc(stations.id));
+    const open = await tx
+      .select({
+        stationId: kitchenTickets.stationId,
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(kitchenTickets)
+      .where(
+        and(
+          eq(kitchenTickets.tenantId, context.tenant.tenantId),
+          eq(kitchenTickets.outletId, outletId),
+          inArray(kitchenTickets.status, ["new", "in_progress", "recalled"]),
+          stationScopeCondition(kitchenTickets.stationId, permitted),
+        ),
+      )
+      .groupBy(kitchenTickets.stationId);
+    const countOf = new Map(open.map((row) => [row.stationId, row.count]));
+    return {
+      tenantId: context.tenant.tenantId,
+      outletId: outletId as StationSummary["outletId"],
+      generatedAt: toIsoDateTime(now),
+      stations: rows.map((row) => ({
+        stationId: row.id as StationSummary["stations"][number]["stationId"],
+        openTickets: countOf.get(row.id) ?? 0,
+      })),
     };
   });
 }

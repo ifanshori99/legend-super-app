@@ -1244,6 +1244,21 @@ export const stationBoards: KitchenFixtureInput["stationBoards"] = [
   },
 ];
 
+const OPEN_TICKET_STATUSES = ["new", "in_progress", "recalled"];
+
+export const stationSummary: KitchenFixtureInput["stationSummary"] = {
+  ...scope,
+  generatedAt: "2026-11-01T04:10:00.000Z",
+  stations: stationConfigs.map((config) => ({
+    stationId: config.stationId,
+    openTickets: tickets.filter(
+      (ticket) =>
+        ticket.stationId === config.stationId &&
+        OPEN_TICKET_STATUSES.includes(ticket.status),
+    ).length,
+  })),
+};
+
 export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   stationConfigs,
   menuLoads,
@@ -1262,4 +1277,5 @@ export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   orderIssues,
   channelPauses,
   stationBoards,
+  stationSummary,
 };

@@ -20,6 +20,7 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   bumpKitchenTicket,
   getKitchenStationFeed,
+  getKitchenStationSummary,
   getKitchenTicket,
   listKitchenStationTickets,
   recallKitchenTicket,
@@ -108,6 +109,21 @@ kdsRouter.get(
     });
   },
 );
+
+// One light read for the station switch: open-ticket count per station. The
+// caller may hold the permission on an outlet or on stations only, so the
+// service narrows to `permittedStationIds`.
+kdsRouter.get("/station-summary", processTicket, async (req, res) => {
+  const { outletId } = getKitchenStationSummary.params.parse(req.params);
+  res.json({
+    data: await kds.getStationSummary(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
 
 // ---- Tickets ---------------------------------------------------------------
 
