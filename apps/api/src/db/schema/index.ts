@@ -105,3 +105,5 @@ export * from "./website";
 export * from "./delivery";
 // WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
 export * from "./recipe";
+// WS-11 metrics_daily pre-aggregates (kartu A, legend-5wzoc).
+export * from "./metrics";
