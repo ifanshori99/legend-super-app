@@ -70,6 +70,15 @@ export type LinkStore = {
     toSeq: number;
     events: readonly QueuedEdgeEvent[];
   }): Promise<void>;
+  /**
+   * Optional (legend-nd3cu): settles both directions' numbering from the
+   * peer's hello cursor before any cursor is used, e.g. the cloud rebasing
+   * onto a rebuilt edge database. When present, this side's own hello waits
+   * for the peer's (the peer sends its hello unconditionally on connect), so
+   * the cursor it announces is already settled. Throw LinkProtocolError to
+   * refuse the link.
+   */
+  onPeerHello?(peerCursor: number): Promise<void>;
 };
 
 export type LinkTransport = {
@@ -246,7 +255,34 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     send({ type: "ack", ack });
   }
 
+  let helloSent = false;
+  async function sendHello() {
+    const cursor = await store.lastReceivedInbound();
+    helloSent = true;
+    send({
+      type: "hello",
+      version: options.version,
+      inboundCursor: String(cursor),
+    });
+  }
+
   async function onHello(cursor: number) {
+    if (!Number.isSafeInteger(cursor) || cursor < 0)
+      throw new LinkProtocolError("Hello cursor is not a sequence");
+    if (store.onPeerHello) {
+      try {
+        await store.onPeerHello(cursor);
+        if (!helloSent) await sendHello();
+      } catch (error) {
+        if (error instanceof LinkProtocolError) throw error;
+        // A transient failure (database blip) before our hello would leave
+        // the peer waiting on an open socket forever: close so it retries.
+        options.onError?.(error);
+        stop();
+        transport.close(LINK_CLOSE.overloaded, "Link not ready; retry");
+        return;
+      }
+    }
     const head = await store.outboundHead();
     if (cursor > head)
       throw new LinkProtocolError(
@@ -338,14 +374,8 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
 
   return {
     start() {
-      enqueue(async () => {
-        const cursor = await store.lastReceivedInbound();
-        send({
-          type: "hello",
-          version: options.version,
-          inboundCursor: String(cursor),
-        });
-      });
+      // With onPeerHello the hello goes out from onHello instead.
+      if (!store.onPeerHello) enqueue(sendHello);
     },
     receive(raw) {
       const frame = decodeFrame(raw);

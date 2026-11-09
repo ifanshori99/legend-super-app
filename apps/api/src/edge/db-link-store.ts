@@ -41,7 +41,11 @@ import {
 import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
-import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
+import {
+  LinkProtocolError,
+  type LinkStore,
+  type QueuedEdgeEvent,
+} from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
   classifyEdgeEvent,
@@ -151,15 +155,104 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
   const run = <T>(work: (tx: EdgeTx) => Promise<T>) =>
     withTenant(database, context, work);
 
+  /** The sending edge database (cloud side); null = unknown (old edge). */
+  const peerInstance = options.edgeInstanceId ?? null;
+
+  /**
+   * legend-nd3cu: the link speaks the peer instance's own numbering, which is
+   * the stored cursor minus `peer_seq_offset` (0 unless a rebuilt edge
+   * database rebased the row). A row already taken over by another instance
+   * refuses this link: it is a stale connection of a superseded database.
+   */
+  async function peerNumbering(tx: EdgeTx, direction: SyncDirection) {
+    const result = await tx.execute(
+      sql`SELECT next_out_seq, acked_out_seq, received_in_seq, peer_instance_id, peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+    );
+    const row = result.rows[0];
+    const instance = (row?.peer_instance_id as string | null) ?? null;
+    // A row bound to an edge instance serves only that instance: another
+    // one is a stale connection of a superseded database, and a link with no
+    // instance (older edge release) would misread the offset.
+    if (instance !== null && instance !== peerInstance)
+      throw new LinkProtocolError(
+        "Link cursor belongs to another edge instance",
+      );
+    return {
+      offset: Number(row?.peer_seq_offset ?? 0),
+      next_out_seq: Number(row?.next_out_seq ?? 0),
+      acked_out_seq: Number(row?.acked_out_seq ?? 0),
+      received_in_seq: Number(row?.received_in_seq ?? 0),
+    };
+  }
+
   async function cursorValue(
     column: "next_out_seq" | "acked_out_seq" | "received_in_seq",
     direction: SyncDirection,
   ) {
     return run(async (tx) => {
-      const result = await tx.execute(
-        sql`SELECT next_out_seq, acked_out_seq, received_in_seq FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
-      );
-      return Number(result.rows[0]?.[column] ?? 0);
+      const row = await peerNumbering(tx, direction);
+      return row[column] - row.offset;
+    });
+  }
+
+  /**
+   * legend-nd3cu: binds both cursor rows of the node to the peer instance on
+   * this link, from the peer's hello cursor (link-peer `onPeerHello`).
+   * - Same instance: nothing. No instance stored yet (fresh node, or an edge
+   *   upgraded in place): adopt it, numbering unchanged.
+   * - Another instance and cursor 0: a rebuilt database that received nothing
+   *   yet. Rebase both directions so its numbering starts at what the cloud
+   *   holds: inbound at the received cursor (our hello acknowledges nothing
+   *   it has not seen applied; resent events are dropped by their event id),
+   *   outbound at the acknowledged cursor (pending events are still sent).
+   * - Another instance with a cursor: a restored or cloned database speaking
+   *   a numbering we no longer hold. Refuse the link, change nothing (fail
+   *   closed; the runbook enrolls it as a new node).
+   */
+  async function bindPeer(peerCursor: number) {
+    if (peerInstance === null) return;
+    const instance = peerInstance;
+    await run(async (tx) => {
+      const directions: SyncDirection[] = ["edge_to_cloud", "cloud_to_edge"];
+      const plans: { direction: SyncDirection; offset: number | null }[] = [];
+      for (const direction of directions) {
+        const cursor = await lockSyncCursor(tx, node, direction);
+        const result = await tx.execute(
+          sql`SELECT peer_instance_id FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+        );
+        const stored =
+          (result.rows[0]?.peer_instance_id as string | null) ?? null;
+        if (stored === instance) continue;
+        if (stored !== null && peerCursor !== 0)
+          throw new LinkProtocolError(
+            "Edge database instance changed with a cursor; refusing to resume",
+          );
+        // Adopting binds the row for good, so never for a link onHello is
+        // about to refuse: a hello cursor beyond our queue (offset 0 here).
+        if (
+          stored === null &&
+          direction === outbound &&
+          peerCursor > cursor.next_out_seq
+        )
+          throw new LinkProtocolError(
+            "Peer cursor is ahead of this side's queue; refusing to resume",
+          );
+        plans.push({
+          direction,
+          offset:
+            stored === null
+              ? null
+              : direction === inbound
+                ? cursor.received_in_seq
+                : cursor.acked_out_seq,
+        });
+      }
+      for (const { direction, offset } of plans)
+        await tx.execute(
+          offset === null
+            ? sql`UPDATE sync_cursors SET peer_instance_id = ${instance}::uuid, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`
+            : sql`UPDATE sync_cursors SET peer_instance_id = ${instance}::uuid, peer_seq_offset = ${offset}, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${direction}`,
+        );
     });
   }
 
@@ -211,26 +304,39 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
       });
   }
 
+  // Only the cloud side of a link that names its edge instance settles
+  // numbering from the peer's hello; without the hook the peer keeps its
+  // original order (old edges, and the edge side, so one side always sends
+  // its hello first).
+  const resume: Pick<LinkStore, "onPeerHello"> =
+    peerInstance === null || outbound !== "cloud_to_edge"
+      ? {}
+      : { onPeerHello: bindPeer };
+
   return {
+    ...resume,
     outboundHead: () => cursorValue("next_out_seq", outbound),
     lastAckedOutbound: () => cursorValue("acked_out_seq", outbound),
     lastReceivedInbound: () => cursorValue("received_in_seq", inbound),
 
     async readOutbound(afterSeq, limit) {
       return run(async (tx) => {
+        const { offset } = await peerNumbering(tx, outbound);
         const result = await tx.execute(
-          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq} ORDER BY link_seq LIMIT ${limit}`,
+          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ORDER BY link_seq LIMIT ${limit}`,
         );
         return result.rows.map((row): QueuedEdgeEvent => ({
-          linkSeq: Number(row.link_seq),
+          linkSeq: Number(row.link_seq) - offset,
           event: eventEnvelopeSchema.parse(row.event),
         }));
       });
     },
 
-    async ackOutbound(uptoSeq) {
+    async ackOutbound(peerUptoSeq) {
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, outbound);
+        const { offset } = await peerNumbering(tx, outbound);
+        const uptoSeq = peerUptoSeq + offset;
         if (uptoSeq > cursor.next_out_seq)
           throw new Error("Acknowledgement beyond the queued sequence");
         if (uptoSeq <= cursor.acked_out_seq) return;
@@ -261,7 +367,8 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
       };
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, inbound);
-        if (cursor.received_in_seq !== fromSeq)
+        const { offset } = await peerNumbering(tx, inbound);
+        if (cursor.received_in_seq !== fromSeq + offset)
           throw new Error("Inbound cursor moved; batch refused");
         let lastEventId: string | null = null;
         for (const { linkSeq, event } of events) {
@@ -363,15 +470,15 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
               sql`INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${eventUuid}::uuid, ${nodeId}::uuid)`,
             );
           await tx.execute(
-            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
+            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
           );
         }
         await tx.execute(
-          sql`UPDATE sync_cursors SET received_in_seq = ${toSeq}, last_event_id = COALESCE(${lastEventId ? ulidToUuid(lastEventId) : null}::uuid, last_event_id), updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
+          sql`UPDATE sync_cursors SET received_in_seq = ${toSeq + offset}, last_event_id = COALESCE(${lastEventId ? ulidToUuid(lastEventId) : null}::uuid, last_event_id), updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
         );
         if (inbound === "edge_to_cloud")
           await tx.execute(
-            sql`UPDATE edge_nodes SET last_sync_cursor = ${String(toSeq)}, updated_at = now() WHERE id = ${nodeId}::uuid`,
+            sql`UPDATE edge_nodes SET last_sync_cursor = ${String(toSeq + offset)}, updated_at = now() WHERE id = ${nodeId}::uuid`,
           );
       });
     },
