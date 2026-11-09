@@ -1,7 +1,18 @@
 -- legend-lg45: scrub the card number tail that the old write path left at the
 -- end of 200-character EDC messages. NOT a migration: the migrator does not
--- run this file. Run it by hand after 0143_edc_pan_scrub_separators.sql is
--- applied, on every database that held EDC traffic before legend-tjwb.
+-- run this file.
+--
+-- FALLBACK ONLY. The tail rule now runs inside 0143_edc_pan_scrub_separators.sql
+-- (checked on the ORIGINAL message length, before the 0143 chain), so every
+-- database and edge node that applies 0143 from this release gets it at boot.
+-- Run this file ONLY on a database that applied 0143 BEFORE legend-lg45 (the
+-- old 0143 had no tail rule): compare the 0143 hash/created_at in
+-- drizzle.__drizzle_migrations with the release and ask the CTO first.
+-- GAP: here "exactly 200" can only be checked on the stored value. A row that
+-- the old 0143 already shortened (e.g. an earlier '4111  1111  1111  1111'
+-- turned into '[disamarkan]') is no longer 200 long, so it cannot be
+-- recognised and its tail stays. The edge node image has no apps/api/scripts,
+-- so run this from an operator machine that has the repo (psql ... -f).
 --
 -- Why: before legend-tjwb the write path masked edc_transactions.message with
 -- the single-separator pattern `[0-9]([ -]?[0-9]){11,}` and THEN cut it to 200
@@ -91,7 +102,7 @@ BEGIN
     CROSS JOIN LATERAL (
       SELECT CASE WHEN w.is_200
         THEN regexp_replace(r2.m,
-          '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a)?)?)?)?)?)?)?)?)?)?$',
+          '(?<![0-9]|[0-9][.,])[0-9](?=(?:[ \t-]*[0-9]){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*[0-9])*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$',
           '[disamarkan]')
         ELSE r2.m END AS m
     ) r3

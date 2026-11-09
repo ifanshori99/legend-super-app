@@ -179,8 +179,9 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
 /** The old write path masked with the single-separator pattern, then cut the
  * message to 200 UTF-16 units. A cut through a card the old pattern missed
  * left part of it at the very end, below the thresholds above (legend-lg45).
- * Only a message exactly 200 units long gets these end-of-text rules, the
- * same as apps/api/scripts/edc-pan-scrub-tail.sql:
+ * Only a stored message exactly 200 units long gets these end-of-text rules,
+ * on read (the current write path masks before it cuts, so it leaves no such
+ * remnant), the same as migration 0143 and apps/api/scripts/edc-pan-scrub-tail.sql:
  * - digits after a whole mask, joined by a separator the old pattern could
  *   not cross (`… [disamarkan] - 111`);
  * - a run of 7+ digits that holds or ends in such a separator, optionally
@@ -189,18 +190,20 @@ const leftoverAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d){4,}/g;
 const oldWriteLimit = 200;
 const tailAfterMask = /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d)*[ \t-]*$/;
 const tailCardRun =
-  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[\d \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a)?)?)?)?)?)?)?)?)?)?$/;
-const maskCardNumbers = (text: string): string => {
-  const masked = text
+  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[\d \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
+const maskCardNumbers = (text: string): string =>
+  text
     .replace(cardNumberLike, "[disamarkan]")
     .replace(leftoverBeforeMask, "[disamarkan]")
     .replace(leftoverAfterMask, "[disamarkan]");
+const maskStoredMessage = (text: string): string => {
+  const masked = maskCardNumbers(text);
   if (text.length !== oldWriteLimit) return masked;
   const tail = masked
     .replace(tailAfterMask, "[disamarkan]")
     .replace(tailCardRun, "[disamarkan]");
   // The mask can be longer than the run it replaces; cut by code points like
-  // the SQL script's left(…, 200), so both give the same text (varchar(200)).
+  // the SQL left(…, 200), so both give the same text (varchar(200)).
   return Array.from(tail).slice(0, oldWriteLimit).join("");
 };
 const safeMessage = z
@@ -426,7 +429,7 @@ export const edcTransactionSchema = z.strictObject({
   message: z
     .string()
     .nullable()
-    .transform((v) => (v === null ? null : maskCardNumbers(v))),
+    .transform((v) => (v === null ? null : maskStoredMessage(v))),
   invoiceNo: z.string().nullable().transform(dropPanLike),
   batchNo: z.string().nullable().transform(dropPanLike),
   /** Set when the terminal approved a second sale for a reference that

@@ -5,7 +5,7 @@
 // messages as the owner, runs the whole file as one query (as `psql -1` would),
 // then checks, per row:
 // - the stored message equals the JS read-path result on the original
-//   (ecrResultDetailsSchema), so SQL and JS stay the same rule;
+//   (edcTransactionSchema.message), so SQL and JS stay the same rule;
 // - the stored message equals the expected output from the rule table;
 // - a second run of the script updates 0 rows and changes nothing.
 // Only the message column may change; no stored message is longer than 200.
@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendFixtures } from "@starter/shared/core";
-import { ecrResultDetailsSchema } from "@starter/shared/edc";
+import { edcTransactionSchema } from "@starter/shared/edc";
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -34,7 +34,7 @@ const scrubSql = readFileSync(
 const MASK = "[disamarkan]";
 /** What the JS read path makes of a stored message. */
 const readPath = (message: string) =>
-  ecrResultDetailsSchema.parse({ message }).message;
+  edcTransactionSchema.shape.message.parse(message);
 const cut200 = (text: string) => Array.from(text).slice(0, 200).join("");
 
 /** `x` padding so the message is `length` UTF-16 units long, ending in `tail`. */
@@ -66,6 +66,12 @@ const specs: Spec[] = [
   tailCase("multi-separator-pan-cut", " 4111  1111  11", ` ${MASK}`),
   tailCase("cut-mask-after-7-digits", " 7777777  [disa", ` ${MASK}`),
   tailCase("cut-mask-bracket-only", " 7777777  [", ` ${MASK}`),
+  tailCase("cut-mask-closing-bracket-cut", " 7777777  [disamarkan", ` ${MASK}`),
+  tailCase(
+    "cut-mask-closing-bracket-cut-tab",
+    " 7777777\t[disamarkan",
+    ` ${MASK}`,
+  ),
   tailCase("digits-after-mask", " [disamarkan] - 111", ` ${MASK}`),
   tailCase("tab-separated-tail", " 4111\t111", ` ${MASK}`),
   tailCase(

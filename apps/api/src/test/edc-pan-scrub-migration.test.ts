@@ -7,6 +7,12 @@
 // fresh database or a dev/staging database that already applied 0135 would,
 // and checks the final state column by column.
 //
+// legend-lg45: 0143 also removes the card number tail the old write path (mask
+// with the single-separator pattern, THEN cut to 200) left in messages that
+// were exactly 200 UTF-16 units long. The length is checked on the original
+// message, before the chain; the stored result must equal the JS read path
+// (edcTransactionSchema.shape.message) on that original.
+//
 // Assumptions (recorded in the report):
 // - "Card-like" = a run of digits with any number of spaces, tabs or dashes
 //   between them: 13+ digits in rrn, invoice_no, batch_no, dispatch_batch_no
@@ -23,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendFixtures } from "@starter/shared/core";
-import { maskedPanSchema } from "@starter/shared/edc";
+import { edcTransactionSchema, maskedPanSchema } from "@starter/shared/edc";
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -121,6 +127,42 @@ const cleanCols: Partial<Cols> = {
   dispatch_batch_no: "000044",
   message: "Transaksi disetujui",
   masked_pan: "411111******1111",
+};
+
+// ---- legend-lg45: 200-char tails left by the old write path
+/** UTF-16 length, as JS `.length` (and the SQL `length + length(non-BMP)`). */
+const cut200 = (text: string) => Array.from(text).slice(0, 200).join("");
+/** `x` padding so the message is `length` UTF-16 units long, ending in `tail`. */
+const padTo = (tail: string, length = 200) =>
+  "x".repeat(length - tail.length) + tail;
+/** Emoji first: UTF-16 length 200, only 199 characters. */
+const padEmoji = (tail: string) => "😀" + "x".repeat(198 - tail.length) + tail;
+/** F1: an earlier card number the chain shortens, then a cut card at the end. */
+const F1_HEAD = "A 4111  1111  1111  1111 B ";
+const F1_TAIL = " 5500  0000  00";
+const f1Original = (length: number) =>
+  F1_HEAD + "x".repeat(length - F1_HEAD.length - F1_TAIL.length) + F1_TAIL;
+const f1Chain = (length: number) =>
+  `A ${SCRUBBED} B ` + "x".repeat(length - F1_HEAD.length - F1_TAIL.length);
+/** Tail remnants the tail rule must leave nowhere in a 200-long original. */
+const TAIL_AFTER_MASK =
+  /\[disamarkan\](?:[ \t-]{2,}|\t)\d(?:[ \t-]*\d)*[ \t-]*$/;
+const TAIL_CARD_RUN =
+  /(?<!\d|\d[.,])\d(?=(?:[ \t-]*\d){6})(?=[0-9 \t-]*?(?:[ \t-]{2,}|\t))(?:[ \t-]*\d)*[ \t-]*(?:\[(?:d(?:i(?:s(?:a(?:m(?:a(?:r(?:k(?:a(?:n)?)?)?)?)?)?)?)?)?)?)?$/;
+/** Spec names whose 200-long original must end without a tail remnant. */
+const tailRemoved: string[] = [];
+
+/** 200-long message ending in `tail`; `after` replaces the tail (cut to 200). */
+const tailSpec = (name: string, tail: string, after?: string): Spec => {
+  const message = padTo(tail);
+  if (after === undefined) return { name: `tail-${name}`, cols: { message } };
+  tailRemoved.push(`tail-${name}`);
+  return {
+    name: `tail-${name}`,
+    status: "declined",
+    cols: { message },
+    expect: { message: cut200(message.slice(0, -tail.length) + after) },
+  };
 };
 
 const specs: Spec[] = [
@@ -489,6 +531,78 @@ const specs: Spec[] = [
     name: "clean-dotted-amount",
     cols: { message: "Total Rp 1.250.000.000.000 lunas" },
   },
+  // ---- legend-lg45: exactly 200 long, cut card number at the end
+  tailSpec("multi-separator", " 4111  1111  11", ` ${SCRUBBED}`),
+  tailSpec("tab-separated", " 4111\t111", ` ${SCRUBBED}`),
+  tailSpec("cut-mask-after-7-digits", " 7777777  [disa", ` ${SCRUBBED}`),
+  tailSpec("cut-mask-bracket-only", " 7777777  [", ` ${SCRUBBED}`),
+  tailSpec(
+    "cut-mask-no-closing-bracket",
+    " 7777777  [disamarkan",
+    ` ${SCRUBBED}`,
+  ),
+  tailSpec(
+    "cut-mask-no-closing-bracket-tab",
+    " 7777777\t[disamarkan",
+    ` ${SCRUBBED}`,
+  ),
+  tailSpec("digits-after-mask", " [disamarkan] - 111", ` ${SCRUBBED}`),
+  // Known, accepted loss: a real short code after a mask at the very end of a
+  // 200-long message cannot be told from the end of a cut card.
+  tailSpec(
+    "response-code-after-mask-accepted",
+    " [disamarkan] - 51",
+    ` ${SCRUBBED}`,
+  ),
+  tailSpec(
+    "amount-then-card",
+    " Rp 50.000  4111  111",
+    ` Rp 50.000  ${SCRUBBED}`,
+  ),
+  (() => {
+    tailRemoved.push("tail-emoji-utf16-200");
+    return {
+      name: "tail-emoji-utf16-200",
+      status: "declined" as const,
+      cols: { message: padEmoji(" 4111\t111") },
+      expect: { message: cut200(`😀${"x".repeat(189)} ${SCRUBBED}`) },
+    };
+  })(),
+  (() => {
+    // F1: the chain shortens this row (the earlier card becomes one mask), so
+    // the 200 check must run on the original or the tail would leak.
+    tailRemoved.push("tail-two-cards-chain-shortens");
+    return {
+      name: "tail-two-cards-chain-shortens",
+      status: "declined" as const,
+      cols: { message: f1Original(200) },
+      expect: { message: `${f1Chain(200)} ${SCRUBBED}` },
+    };
+  })(),
+  // 200 long, left alone
+  tailSpec("four-digits-cut-mask", " 4111  [disa"),
+  tailSpec("rupiah-amount", " Rp 1.500.000"),
+  tailSpec("trx-number", " TRX 12345678"),
+  tailSpec("id-with-dash", " ID P261109-1234"),
+  tailSpec("timestamp", " 2026-11-09 10:00"),
+  tailSpec("single-separator-8-digits", " 4111 1111"),
+  tailSpec("amount-then-6-digits", " Rp 50.000  4111  11"),
+  // not exactly 200 long: the tail rule does not run
+  {
+    name: "tail-multi-separator-199",
+    cols: { message: padTo(" 4111  1111  11", 199) },
+  },
+  {
+    name: "tail-response-code-after-mask-199",
+    cols: { message: padTo(" [disamarkan] - 51", 199) },
+  },
+  {
+    // Same F1 row, 199 long: only the chain applies, the cut card stays.
+    name: "tail-two-cards-chain-shortens-199",
+    status: "declined",
+    cols: { message: f1Original(199) },
+    expect: { message: `${f1Chain(199)}${F1_TAIL}` },
+  },
 ];
 
 type Fixture = {
@@ -846,6 +960,41 @@ describe("EDC-01 legend-5gub + legend-tjwb migrations 0135 + 0143 PAN scrub", ()
       batch_no: spread(12),
       dispatch_batch_no: spread(12),
     });
+  });
+
+  it("a 200-long tail left by the old write path is removed, a 199-long one is not (legend-lg45)", () => {
+    const stored = (name: string) =>
+      afterFirst.get(fixA.ids.get(name)!)!.message as string;
+    for (const name of tailRemoved) {
+      const message = stored(name);
+      expect(message, name).toBeTypeOf("string");
+      expect(TAIL_AFTER_MASK.test(message), name).toBe(false);
+      expect(TAIL_CARD_RUN.test(message), name).toBe(false);
+      expect(Array.from(message).length, name).toBeLessThanOrEqual(200);
+    }
+    // Wrong length: the cut card number stays.
+    expect(stored("tail-multi-separator-199")).toMatch(/ 4111 {2}1111 {2}11$/);
+    expect(stored("tail-two-cards-chain-shortens-199")).toMatch(
+      / 5500 {2}0000 {2}00$/,
+    );
+  });
+
+  it("stored message equals the JS read path on the original, tail rows included (legend-lg45)", () => {
+    let compared = 0;
+    for (const fix of [fixA, fixB]) {
+      for (const spec of fix.specs.filter((s) => s.name.startsWith("tail-"))) {
+        const id = fix.ids.get(spec.name)!;
+        const original = before.get(id)!.message as string;
+        // The old write path masked with 0135's pattern first; 0135 changes
+        // none of these rows, so the JS read path on the original is the oracle.
+        expect(after0135.get(id)!.message, spec.name).toBe(original);
+        expect(afterFirst.get(id)!.message, `${fix.label}/${spec.name}`).toBe(
+          edcTransactionSchema.shape.message.parse(original),
+        );
+        compared += 1;
+      }
+    }
+    expect(compared).toBeGreaterThan(30);
   });
 
   it("a second 0143 run is a no-op: zero rows updated and every row unchanged", () => {
