@@ -57,11 +57,11 @@ const ownerPool = new Pool({
 });
 
 /**
- * 2026-11-02 18:00Z. That is 2026-11-03 01:00 in Jakarta (WIB, +7) and
- * 02:00 in Makassar (WITA, +8): the outlet-local date differs from the UTC
- * date, so a UTC-date bug cannot pass.
+ * 2026-11-02 21:30Z. That is 2026-11-03 04:30 in Jakarta (WIB, +7) and 05:30
+ * in Makassar (WITA, +8): past the default 04:00 business-day cutoff, and the
+ * outlet-local date differs from the UTC date, so a UTC-date bug cannot pass.
  */
-const NOW = new Date("2026-11-02T18:00:00.000Z");
+const NOW = new Date("2026-11-02T21:30:00.000Z");
 const SHIFT_DATE = "2026-11-03";
 const JAKARTA_DUE_0800 = "2026-11-03T01:00:00.000Z";
 const MAKASSAR_DUE_0800 = "2026-11-03T00:00:00.000Z";
@@ -170,7 +170,12 @@ async function seedTemplate(
   },
 ) {
   const id = options.id ?? randomUUID();
-  const items = options.rawItems ?? [
+  const items: {
+    id: string;
+    label: string;
+    instruction: null;
+    requiredEvidence: never[];
+  }[] = [
     {
       id: randomUUID(),
       label: "Kasir dibuka dan dihitung",
@@ -184,6 +189,7 @@ async function seedTemplate(
       requiredEvidence: [],
     },
   ];
+  const storedItems: unknown = options.rawItems ?? items;
   await asOwner(tenant, (client) =>
     client.query(
       `INSERT INTO ops_checklist_templates
@@ -194,7 +200,7 @@ async function seedTemplate(
         tenant,
         outletId,
         options.name,
-        JSON.stringify(items),
+        JSON.stringify(storedItems),
         JSON.stringify({
           shiftTemplateId: options.shiftTemplateId ?? null,
           stationId: null,
@@ -893,21 +899,21 @@ describe("Scheduled checklist runs (legend-5v69)", () => {
       outletId: tenantA.jakarta,
       validFrom: daysBefore(NOW, 1),
     });
-    // Jakarta local time is 01:00 at NOW: 00:30 has passed, 01:00 is "now".
+    // Jakarta local time is 04:30 at NOW: 04:00 has passed, 04:30 is "now".
     await seedTemplate(tenantA.id, tenantA.jakarta, {
       name: "Sudah lewat",
       roleId,
-      dueTime: "00:30",
+      dueTime: "04:00",
     });
     await seedTemplate(tenantA.id, tenantA.jakarta, {
       name: "Tepat sekarang",
       roleId,
-      dueTime: "01:00",
+      dueTime: "04:30",
     });
     const upcoming = await seedTemplate(tenantA.id, tenantA.jakarta, {
       name: "Belum lewat",
       roleId,
-      dueTime: "01:01",
+      dueTime: "04:31",
     });
     const context = tenantScope(tenantA.id);
 
@@ -992,13 +998,13 @@ describe("Scheduled checklist runs (legend-5v69)", () => {
       id: skippedIds[0],
       name: "Lewat 1",
       roleId,
-      dueTime: "00:10", // Jakarta is 01:00 at NOW: already past
+      dueTime: "04:10", // Jakarta is 04:30 at NOW: already past
     });
     await seedTemplate(tenantA.id, tenantA.jakarta, {
       id: skippedIds[1],
       name: "Lewat 2",
       roleId,
-      dueTime: "00:20",
+      dueTime: "04:20",
     });
     await seedTemplate(tenantA.id, tenantA.jakarta, {
       id: skippedIds[2],
@@ -1069,6 +1075,138 @@ describe("Scheduled checklist runs (legend-5v69)", () => {
       expect(runs.map((run) => run.template_id)).toEqual([healthy.id]);
       // One log line per malformed template in this tick, none repeated.
       expect(logged).toHaveBeenCalledTimes(malformedIds.length);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("[legend-5v69][OPS-01] the shift date is the outlet business date: before the cutoff the run belongs to the previous day, whose deadline has passed, so none is born", async () => {
+    const roleId = await seedRole(tenantA.id, "kasir");
+    const holder = await seedUser();
+    await assignRole(tenantA.id, {
+      userId: holder,
+      roleId,
+      outletId: tenantA.jakarta,
+      validFrom: daysBefore(NOW, 3),
+    });
+    const template = await seedTemplate(tenantA.id, tenantA.jakarta, {
+      name: "Buka",
+      roleId,
+      dueTime: "08:00",
+    });
+    const context = tenantScope(tenantA.id);
+
+    // 00:30 Jakarta on 2026-11-03, cutoff 04:00: still business day 11-02,
+    // whose 08:00 deadline is long gone. No run for the new calendar date.
+    const beforeCutoff = new Date("2026-11-02T17:30:00.000Z");
+    const early = await withTenant(db, context, (tx) =>
+      generateScheduledChecklistRuns(tx, context, beforeCutoff),
+    );
+    expect(early).toBe(0);
+    expect(await readRuns(tenantA.id)).toEqual([]);
+
+    // A manual run for business day 11-02 counts for that day (no double).
+    const manualRunId = randomUUID();
+    await asOwner(tenantA.id, (client) =>
+      client.query(
+        `INSERT INTO ops_checklist_runs
+           (id, tenant_id, outlet_id, template_id, template_version, shift_date,
+            assigned_to, due_at, status, scheduled, results, items)
+         VALUES ($1, $2, $3, $4, 1, '2026-11-02', $5, '2026-11-02T20:00:00Z', 'pending', false, '[]', $6)`,
+        [
+          manualRunId,
+          tenantA.id,
+          tenantA.jakarta,
+          template.id,
+          holder,
+          JSON.stringify(template.items),
+        ],
+      ),
+    );
+    expect(
+      await withTenant(db, context, (tx) =>
+        generateScheduledChecklistRuns(tx, context, beforeCutoff),
+      ),
+    ).toBe(0);
+
+    // At 04:30 the same outlet has moved on to 11-03 and gets its run.
+    const afterCutoff = await withTenant(db, context, (tx) =>
+      generateScheduledChecklistRuns(tx, context, NOW),
+    );
+    expect(afterCutoff).toBe(1);
+    const scheduled = (await readRuns(tenantA.id)).filter(
+      (run) => run.scheduled,
+    );
+    expect(scheduled.map((run) => run.shift_date)).toEqual([SHIFT_DATE]);
+
+    // The cutoff is the outlet's own setting: with 05:30, 04:30 is still 11-02.
+    await asOwner(tenantA.id, (client) =>
+      client.query(
+        "UPDATE outlets SET business_day_cutoff = '05:30' WHERE id = $1",
+        [tenantA.jakarta],
+      ),
+    );
+    await asOwner(tenantA.id, (client) =>
+      client.query("DELETE FROM ops_checklist_runs WHERE scheduled"),
+    );
+    try {
+      expect(
+        await withTenant(db, context, (tx) =>
+          generateScheduledChecklistRuns(tx, context, NOW),
+        ),
+      ).toBe(0);
+    } finally {
+      await asOwner(tenantA.id, (client) =>
+        client.query(
+          "UPDATE outlets SET business_day_cutoff = '04:00' WHERE id = $1",
+          [tenantA.jakarta],
+        ),
+      );
+    }
+  });
+
+  it("[legend-5v69][OPS-01] one outlet with an invalid time zone does not abort the tenant tick: the good outlet still gets its run, one log line per tick", async () => {
+    const tenant = await createEngineTenant("badtz", [
+      "Asia/Jakarta",
+      "Nowhere/Bad_Zone",
+    ]);
+    const roleId = await seedRole(tenant.id, "kasir");
+    const holder = await seedUser();
+    await assignRole(tenant.id, {
+      userId: holder,
+      roleId,
+      validFrom: daysBefore(NOW, 1),
+    });
+    // The bad outlet sorts first, so an abort there would starve the good one.
+    await seedTemplate(tenant.id, tenant.makassar!, {
+      id: "00000000-0000-4000-8000-000000000001",
+      name: "Zona rusak 1",
+      roleId,
+      dueTime: "08:00",
+    });
+    await seedTemplate(tenant.id, tenant.makassar!, {
+      id: "00000000-0000-4000-8000-000000000002",
+      name: "Zona rusak 2",
+      roleId,
+      dueTime: "09:00",
+    });
+    const good = await seedTemplate(tenant.id, tenant.jakarta, {
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      name: "Zona baik",
+      roleId,
+      dueTime: "08:00",
+    });
+
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const context = tenantScope(tenant.id);
+      const created = await withTenant(db, context, (tx) =>
+        generateScheduledChecklistRuns(tx, context, NOW),
+      );
+      expect(created).toBe(1);
+      const runs = await readRuns(tenant.id);
+      expect(runs.map((run) => run.template_id)).toEqual([good.id]);
+      expect(logged).toHaveBeenCalledTimes(1);
     } finally {
       logged.mockRestore();
     }

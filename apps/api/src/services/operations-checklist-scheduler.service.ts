@@ -13,7 +13,19 @@
 //     the next day.
 //   - No active holder of the role means no run (nobody to be accountable).
 //   - A run already made by hand for the template and date counts: the
-//     scheduler never doubles it (no second run, no second alert).
+//     scheduler never doubles it (no second run, no second alert). The reverse
+//     is by design not guarded: a manual run made after the scheduled one is
+//     not deduped against it (the supervisor chose to start it).
+//   - The shift date is the outlet BUSINESS date (owner Q39: the local date of
+//     now minus the outlet's `businessDayCutoff`, `businessDateOf`), and
+//     `dueTime` combines with it on the outlet wall clock, like a manual run.
+//     Before the cutoff the business date is still yesterday, whose deadline
+//     has passed, so no run is made until the new business day starts.
+//   - v1 assigns the earliest active role holder (outlet-scoped first)
+//     regardless of the template's `shiftTemplateId`; the shift is only copied
+//     onto the run, it does not pick the holder.
+//   - An outlet with an invalid time zone is skipped (and logged once per
+//     tick) instead of aborting the tenant's whole tick.
 //   - The partial unique index `ops_checklist_runs_scheduled_key`
 //     (tenant, template, shift date WHERE scheduled) plus `ON CONFLICT DO
 //     NOTHING` makes a rerun or an overlapping tick insert nothing twice.
@@ -31,6 +43,7 @@ import {
 } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
+  businessDateOf,
   userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -47,7 +60,7 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { zonedInstant } from "./facility-rules.ts";
 import { minutesOfDay } from "./menu-availability.ts";
 import type { OperationsTx } from "./operations-idempotency.ts";
-import { localDate } from "./reservation-plan.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
 
 /**
  * One relay tick processes at most this many well-formed templates; the next
@@ -75,6 +88,42 @@ export async function generateScheduledChecklistRuns(
   const tenantId = context.tenant.tenantId;
   const nowIso = now.toISOString();
   const templateLimit = options.templateLimit ?? SCHEDULER_TEMPLATE_LIMIT;
+  const outletScopeFilter =
+    context.outletScope.kind === "outlets"
+      ? inArray(opsChecklistTemplates.outletId, [
+          ...context.outletScope.outletIds,
+        ])
+      : undefined;
+  // Outlet business date in SQL, same rule as `businessDateOf`: the local wall
+  // clock of now minus the cutoff, as a date.
+  const businessDateSql = sql`((${nowIso}::timestamptz AT TIME ZONE ${outlets.timezone})
+    - ${outlets.businessDayCutoff}::interval)::date`;
+  const validZoneSql = sql`${outlets.timezone} IN (SELECT name FROM pg_timezone_names)`;
+  // Outlets skipped for a bad time zone, logged once at the end of the tick.
+  const badZoneOutlets = new Set<string>();
+
+  // An invalid zone makes `AT TIME ZONE` raise and aborts the transaction, so
+  // find those outlets first (their templates would pass the role filter) and
+  // keep them out of every date computation below.
+  const badZoneRows = await tx
+    .selectDistinct({ outletId: opsChecklistTemplates.outletId })
+    .from(opsChecklistTemplates)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, opsChecklistTemplates.tenantId),
+        eq(outlets.id, opsChecklistTemplates.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(opsChecklistTemplates.tenantId, tenantId),
+        isNotNull(opsChecklistTemplates.roleId),
+        outletScopeFilter,
+        sql`NOT (${validZoneSql})`,
+      ),
+    );
+  for (const row of badZoneRows) badZoneOutlets.add(row.outletId);
 
   // Templates are read in id order, one keyset page at a time. A template that
   // passes the SQL filter but fails the contract schema is logged once and
@@ -86,6 +135,7 @@ export async function generateScheduledChecklistRuns(
       .select({
         template: opsChecklistTemplates,
         timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
       })
       .from(opsChecklistTemplates)
       .innerJoin(
@@ -102,25 +152,25 @@ export async function generateScheduledChecklistRuns(
           isNotNull(opsChecklistTemplates.roleId),
           // RLS already narrows the rows; the explicit filter keeps an
           // outlet-scoped caller from depending on the policy alone (TEN-03).
-          context.outletScope.kind === "outlets"
-            ? inArray(opsChecklistTemplates.outletId, [
-                ...context.outletScope.outletIds,
-              ])
-            : undefined,
+          outletScopeFilter,
+          sql`${validZoneSql}`,
           // Only templates still due today, with nobody's run yet, and with an
           // active role holder: skipped templates never fill the cap below and
           // starve the rest. Any run (manual or scheduled) for today's
           // outlet-local date counts, so a supervisor's hand-made run is never
           // doubled (and never alerted twice). The loop re-checks each rule.
-          sql`NOT EXISTS (
+          // Outlets with an invalid time zone are filtered out above, but
+          // SQL does not promise AND order, so the date maths below sits in a
+          // CASE that only reaches `AT TIME ZONE` for a valid zone.
+          sql`CASE WHEN ${validZoneSql} THEN NOT EXISTS (
           SELECT 1 FROM ${opsChecklistRuns}
           WHERE ${opsChecklistRuns.tenantId} = ${opsChecklistTemplates.tenantId}
             AND ${opsChecklistRuns.templateId} = ${opsChecklistTemplates.id}
-            AND ${opsChecklistRuns.shiftDate} =
-              (${nowIso}::timestamptz AT TIME ZONE ${outlets.timezone})::date
-        )`,
-          sql`CASE WHEN ${opsChecklistTemplates.schedule}->>'dueTime' ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-          THEN (((${nowIso}::timestamptz AT TIME ZONE ${outlets.timezone})::date
+            AND ${opsChecklistRuns.shiftDate} = ${businessDateSql}
+        ) ELSE false END`,
+          sql`CASE WHEN ${validZoneSql}
+              AND ${opsChecklistTemplates.schedule}->>'dueTime' ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          THEN ((${businessDateSql}
                 + (${opsChecklistTemplates.schedule}->>'dueTime')::time)
                 AT TIME ZONE ${outlets.timezone}) > ${nowIso}::timestamptz
           ELSE false END`,
@@ -147,21 +197,26 @@ export async function generateScheduledChecklistRuns(
     const templates = await selectPage(afterId);
     if (templates.length === 0) break;
     afterId = templates[templates.length - 1].template.id;
-    for (const { template, timezone } of templates) {
+    for (const { template, timezone, businessDayCutoff } of templates) {
       if (wellFormed >= templateLimit) break;
-      const created = await createRunForTemplate(template, timezone);
+      const created = await createRunForTemplate(template, {
+        timezone,
+        businessDayCutoff,
+      });
       if (created === null) continue;
       wellFormed += 1;
       inserted += created;
     }
     if (templates.length < templateLimit) break;
   }
+  if (badZoneOutlets.size > 0)
+    console.error("Checklist outlet skipped by the run scheduler: time zone");
   return inserted;
 
   /** Returns null for a malformed template, else how many rows it inserted. */
   async function createRunForTemplate(
     template: typeof opsChecklistTemplates.$inferSelect,
-    timezone: string,
+    outlet: { timezone: string; businessDayCutoff: string },
   ): Promise<number | null> {
     const roleId = template.roleId;
     if (roleId === null) return null;
@@ -185,12 +240,20 @@ export async function generateScheduledChecklistRuns(
       return null;
     }
 
-    const shiftDate = localDate(now, timezone);
-    const dueAt = zonedInstant(
-      shiftDate,
-      minutesOfDay(template.schedule.dueTime),
-      timezone,
-    );
+    let shiftDate: string;
+    let dueAt: Date;
+    try {
+      shiftDate = businessDateOf(now, outletBusinessDayClock(outlet));
+      dueAt = zonedInstant(
+        shiftDate,
+        minutesOfDay(template.schedule.dueTime),
+        outlet.timezone,
+      );
+    } catch {
+      // A zone Postgres knows but the runtime does not: skip, log once per tick.
+      badZoneOutlets.add(template.outletId);
+      return 0;
+    }
     // Never create a run that is born missed (no spurious alert).
     if (dueAt.getTime() <= now.getTime()) return 0;
 
