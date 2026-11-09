@@ -1961,11 +1961,14 @@ describe("payroll core: loan policy total open cap (legend-hjaot)", () => {
       zero: await setTotal(client, 0),
       negative: await setTotal(client, -1),
       missing: await setTotal(client, null),
-      valid: await setTotal(client, 1),
+      // Seeded per-loan ceiling is 5,000,000: the total may not be below it.
+      belowCeiling: await setTotal(client, 4_999_999),
+      valid: await setTotal(client, 5_000_000),
     }));
     expect(result.zero).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.negative).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.missing).toEqual({ ok: false, code: NOT_NULL_VIOLATION });
+    expect(result.belowCeiling).toEqual({ ok: false, code: CHECK_VIOLATION });
     expect(result.valid).toMatchObject({ ok: true, rowCount: 1 });
   });
 

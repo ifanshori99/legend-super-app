@@ -194,7 +194,11 @@ type PolicyInput = {
 async function setPolicy(input: PolicyInput = {}) {
   const values = [
     tenantB.tenantId,
-    input.maxPrincipalIdr === undefined ? 100_000_000 : input.maxPrincipalIdr,
+    // The per-loan ceiling may not exceed the total cap (table CHECK), so the
+    // lenient default shrinks to a small total.
+    input.maxPrincipalIdr === undefined
+      ? Math.min(100_000_000, input.maxTotalOpenIdr ?? 100_000_000)
+      : input.maxPrincipalIdr,
     input.baseSalaryBp ?? null,
     input.maxInstallments ?? 36,
     5000,
@@ -599,8 +603,17 @@ describe("kasbon limits: total open cap", () => {
   });
 
   it("[loan-total-first-request-over] refuses a single request above the total on its own", async () => {
-    await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
+    // Only the salary multiple (10x of 3,000,000) sits above the total, so the
+    // total is the rule that refuses: the per-loan rupiah ceiling cannot be
+    // lower than it.
+    await setPolicy({
+      maxPrincipalIdr: null,
+      baseSalaryBp: 100_000,
+      maxTotalOpenIdr: 2_000_000,
+      singleOpenLoan: false,
+    });
     const staff = await newStaff();
+    await setComponent(staff.employeeId, baseSalaryComponent, 3_000_000);
     expectRefused(await requestLoan(staff.client, 2_000_001));
     expect((await requestLoan(staff.client, 2_000_000)).status).toBe(201);
   });
@@ -875,6 +888,8 @@ describe("kasbon policy table (database)", () => {
       { maxPrincipalIdr: 0 },
       { total: 0 },
       { total: -1 },
+      // The total cap may not be below the per-loan ceiling.
+      { maxPrincipalIdr: 2_000_000, total: 1_999_999 },
     ];
     for (const values of invalid)
       await expect(
@@ -886,7 +901,14 @@ describe("kasbon policy table (database)", () => {
       code: "23502",
     });
     // Boundaries are valid.
-    await insert({ installments: 36, deduction: 10_000, total: 1 });
+    await insert({
+      maxPrincipalIdr: 1,
+      installments: 36,
+      deduction: 10_000,
+      total: 1,
+    });
+    await clearPolicy();
+    await insert({ maxPrincipalIdr: 2_000_000, total: 2_000_000 });
     await clearPolicy();
     await insert({
       maxPrincipalIdr: null,

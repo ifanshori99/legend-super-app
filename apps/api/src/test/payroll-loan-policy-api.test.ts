@@ -293,13 +293,16 @@ describe("loan policy API: read and replace", () => {
   it("[loan-policy-put-total] a read returns maxTotalOpenIdr and a replacement changes it", async () => {
     const ctx = await newCtx();
     const client = await admin(ctx);
-    const first = body({ maxTotalOpenIdr: 3_000_000 });
+    const first = body({
+      maxPrincipalIdr: 2_000_000,
+      maxTotalOpenIdr: 3_000_000,
+    });
     const created = await putOk(ctx, client, first);
     expect(created.body.data.maxTotalOpenIdr).toBe(3_000_000);
     expect((await getPolicy(ctx, client)).body.data.maxTotalOpenIdr).toBe(
       3_000_000,
     );
-    await putOk(ctx, client, body({ maxTotalOpenIdr: 1 }));
+    await putOk(ctx, client, body({ maxPrincipalIdr: 1, maxTotalOpenIdr: 1 }));
     expect((await getPolicy(ctx, client)).body.data.maxTotalOpenIdr).toBe(1);
     const rows = await auditRows(ctx);
     expect(rows.map((row) => row.maskedChanges.after.maxTotalOpenIdr)).toEqual(
@@ -377,6 +380,10 @@ describe("loan policy API: validation", () => {
     ["maxPrincipalIdr not an integer", { maxPrincipalIdr: 1000.5 }],
     ["maxDeductionOfNetPayBp 10001", { maxDeductionOfNetPayBp: 10001 }],
     ["maxDeductionOfNetPayBp negative", { maxDeductionOfNetPayBp: -1 }],
+    [
+      "maxTotalOpenIdr below maxPrincipalIdr",
+      { maxPrincipalIdr: 2_000_000, maxTotalOpenIdr: 1_999_999 },
+    ],
     ["maxTotalOpenIdr missing", { maxTotalOpenIdr: undefined }],
     ["maxTotalOpenIdr 0", { maxTotalOpenIdr: 0 }],
     ["maxTotalOpenIdr negative", { maxTotalOpenIdr: -1 }],
@@ -403,6 +410,30 @@ describe("loan policy API: validation", () => {
       expect(await auditRows(ctx)).toHaveLength(0);
     },
   );
+
+  it("[loan-policy-put-total-vs-principal] total equal to the per-loan ceiling is accepted; without a rupiah ceiling any total is", async () => {
+    const ctx = await newCtx();
+    const client = await admin(ctx);
+    await putOk(
+      ctx,
+      client,
+      body({ maxPrincipalIdr: 2_000_000, maxTotalOpenIdr: 2_000_000 }),
+    );
+    await putOk(
+      ctx,
+      client,
+      body({
+        maxPrincipalIdr: null,
+        maxPrincipalOfBaseSalaryBp: 10_000,
+        maxTotalOpenIdr: 1,
+      }),
+    );
+    expect((await getPolicy(ctx, client)).body.data).toMatchObject({
+      maxPrincipalIdr: null,
+      maxTotalOpenIdr: 1,
+    });
+    expect(await rowCount(ctx)).toBe(1);
+  });
 
   it("[loan-policy-put-validation] a rejected PUT leaves an existing policy untouched", async () => {
     const ctx = await newCtx();

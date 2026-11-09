@@ -935,6 +935,26 @@ test("kasbon limits and lifecycle fail closed", () => {
   assert.throws(() =>
     payroll.loanPolicySchema.parse({ ...policy, maxTotalOpenIdr: 0 }),
   );
+  // The total may not be below the per-loan ceiling; equal is fine, and
+  // without a rupiah ceiling any total is allowed.
+  assert.throws(() =>
+    payroll.loanPolicySchema.parse({
+      ...policy,
+      maxPrincipalIdr: 5_000_000,
+      maxTotalOpenIdr: 4_999_999,
+    }),
+  );
+  payroll.loanPolicySchema.parse({
+    ...policy,
+    maxPrincipalIdr: 5_000_000,
+    maxTotalOpenIdr: 5_000_000,
+  });
+  payroll.loanPolicySchema.parse({
+    ...policy,
+    maxPrincipalIdr: null,
+    maxTotalOpenIdr: 1,
+  });
+  assert.equal(payroll.REIMBURSEMENT_BACKDATE_DAYS, 30);
   for (const bad of [
     { ...ok, principalIdr: 6_000_000, monthlyBaseSalaryIdr: 9_000_000 },
     { ...ok, principalIdr: 4_500_000 },

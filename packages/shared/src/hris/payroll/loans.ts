@@ -67,8 +67,7 @@ export function transitionEmployeeLoan(
   return next;
 }
 
-/** Kasbon limits (tenant data; PRD "batas maksimal"). */
-export const loanPolicySchema = z.strictObject({
+const loanPolicyShape = {
   /** Absolute ceiling per loan; null = only the salary multiple applies. */
   maxPrincipalIdr: positiveIdr.nullable(),
   /** Ceiling as bp of the monthly base salary (10,000 = 1x); null = none. */
@@ -84,13 +83,35 @@ export const loanPolicySchema = z.strictObject({
   maxDeductionOfNetPayBp: basisPointsSchema,
   /** One open loan at a time (PRD silent: safest default true). */
   singleOpenLoan: z.boolean(),
-});
+};
+
+/**
+ * The total open cap may not be below the per-loan ceiling: a smaller total
+ * would quietly lower the per-loan limit (CTO decision 9 Nov). Without a
+ * rupiah ceiling (only the salary multiple) any total is allowed. The stored
+ * row has the same CHECK.
+ */
+const totalCoversCeiling = (policy: {
+  maxPrincipalIdr: number | null;
+  maxTotalOpenIdr: number;
+}) =>
+  policy.maxPrincipalIdr === null ||
+  policy.maxTotalOpenIdr >= policy.maxPrincipalIdr;
+const totalCoversCeilingIssue = {
+  path: ["maxTotalOpenIdr"],
+  message: "The total open cap may not be below the per-loan ceiling.",
+};
+
+/** Kasbon limits (tenant data; PRD "batas maksimal"). */
+export const loanPolicySchema = z
+  .strictObject(loanPolicyShape)
+  .refine(totalCoversCeiling, totalCoversCeilingIssue);
 export type LoanPolicy = z.infer<typeof loanPolicySchema>;
 
 /** A stored kasbon policy: the limits plus when they last changed. */
-export const loanPolicyRecordSchema = loanPolicySchema.extend({
-  updatedAt: isoDateTimeSchema,
-});
+export const loanPolicyRecordSchema = z
+  .strictObject({ ...loanPolicyShape, updatedAt: isoDateTimeSchema })
+  .refine(totalCoversCeiling, totalCoversCeilingIssue);
 export type LoanPolicyRecord = z.infer<typeof loanPolicyRecordSchema>;
 
 /**
@@ -99,17 +120,19 @@ export type LoanPolicyRecord = z.infer<typeof loanPolicyRecordSchema>;
  * the same rule, so a policy without any ceiling can never exist).
  */
 export const setLoanPolicyInputSchema = clientInputSchema({
-  ...loanPolicySchema.shape,
+  ...loanPolicyShape,
   idempotencyKey: idempotencyKeySchema,
-}).refine(
-  (policy) =>
-    policy.maxPrincipalIdr !== null ||
-    policy.maxPrincipalOfBaseSalaryBp !== null,
-  {
-    path: ["maxPrincipalIdr"],
-    message: "Set at least one ceiling (rupiah or share of base salary).",
-  },
-);
+})
+  .refine(totalCoversCeiling, totalCoversCeilingIssue)
+  .refine(
+    (policy) =>
+      policy.maxPrincipalIdr !== null ||
+      policy.maxPrincipalOfBaseSalaryBp !== null,
+    {
+      path: ["maxPrincipalIdr"],
+      message: "Set at least one ceiling (rupiah or share of base salary).",
+    },
+  );
 export type SetLoanPolicyInput = z.infer<typeof setLoanPolicyInputSchema>;
 
 export const employeeLoanSchema = z

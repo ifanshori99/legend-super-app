@@ -15,6 +15,7 @@ CREATE TABLE "payroll_loan_policies" (
 	CONSTRAINT "payroll_loan_policies_values_check" CHECK (("payroll_loan_policies"."max_principal_idr" IS NULL OR "payroll_loan_policies"."max_principal_idr" > 0)
         AND ("payroll_loan_policies"."max_principal_of_base_salary_bp" IS NULL OR "payroll_loan_policies"."max_principal_of_base_salary_bp" BETWEEN 1 AND 120000)
         AND "payroll_loan_policies"."max_total_open_idr" > 0
+        AND ("payroll_loan_policies"."max_principal_idr" IS NULL OR "payroll_loan_policies"."max_total_open_idr" >= "payroll_loan_policies"."max_principal_idr")
         AND "payroll_loan_policies"."max_installments" BETWEEN 1 AND 36
         AND "payroll_loan_policies"."max_deduction_of_net_pay_bp" BETWEEN 0 AND 10000)
 );

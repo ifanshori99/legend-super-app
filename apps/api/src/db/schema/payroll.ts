@@ -856,6 +856,7 @@ export const payrollLoanPolicies = pgTable(
       sql`(${table.maxPrincipalIdr} IS NULL OR ${table.maxPrincipalIdr} > 0)
         AND (${table.maxPrincipalOfBaseSalaryBp} IS NULL OR ${table.maxPrincipalOfBaseSalaryBp} BETWEEN 1 AND 120000)
         AND ${table.maxTotalOpenIdr} > 0
+        AND (${table.maxPrincipalIdr} IS NULL OR ${table.maxTotalOpenIdr} >= ${table.maxPrincipalIdr})
         AND ${table.maxInstallments} BETWEEN 1 AND 36
         AND ${table.maxDeductionOfNetPayBp} BETWEEN 0 AND 10000`,
     ),

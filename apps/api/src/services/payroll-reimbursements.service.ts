@@ -48,6 +48,7 @@ import {
   listReimbursements as listReimbursementsEndpoint,
   reimbursementCategoryIdSchema,
   reimbursementCategorySchema,
+  REIMBURSEMENT_BACKDATE_DAYS,
   reimbursementIdSchema,
   reimbursementLimitFor,
   reimbursementSchema,
@@ -113,13 +114,6 @@ async function lockKey(tx: Tx, key: string): Promise<void> {
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
   );
 }
-
-/**
- * A claim may be dated at most this many calendar days before the day it is
- * submitted (founder decision 9 Nov). Checked at submission only; approving
- * later never re-checks it.
- */
-export const REIMBURSEMENT_BACKDATE_DAYS = 30;
 
 /** `date` minus `days` calendar days (UTC arithmetic on a business date). */
 function daysBefore(date: BusinessDate, days: number): BusinessDate {
