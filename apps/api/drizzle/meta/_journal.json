@@ -1261,6 +1261,13 @@
       "when": 1794263000000,
       "tag": "0184_kitchen_capacity_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1794265000000,
+      "tag": "0186_stock_ledger_posting_seq",
+      "breakpoints": true
     }
   ]
 }

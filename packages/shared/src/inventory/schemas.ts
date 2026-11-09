@@ -480,16 +480,49 @@ export type DerivedStockBalance = {
 };
 
 /**
- * INV-01 / PRD §16 "saldo diturunkan dari ledger": folds every row, ordered by
- * `occurredAt` then ULID id (deterministic for rows in the same millisecond),
- * into one balance per location/item. The API may use this for rebuilds and
- * tests; the database keeps the materialized `stock_balances` for reads.
+ * A ledger row with its insertion sequence (`stock_ledger.posting_seq`,
+ * legend-bsw9): the order the database accepted the posting, which for one
+ * (location, item) is the order the live moving average was applied.
  */
+export type PostedStockLedgerEntry = StockLedgerEntry & {
+  postingSeq: number;
+};
+
+/**
+ * INV-01 / PRD §16 "saldo diturunkan dari ledger": folds every row into one
+ * balance per location/item.
+ *
+ * - `"posting"` (the API rebuild, legend-bsw9): by insertion sequence, the same
+ *   order live posting applied the moving average in, so a rebuild equals the
+ *   live balance even when a caller posted a past `occurredAt` (EOD sale
+ *   deduction, stock opname, import).
+ * - `"occurred_at"` (default; mock data without a sequence): by `occurredAt`
+ *   then ULID id (deterministic for rows in the same millisecond).
+ *
+ * The API may use this for rebuilds and tests; the database keeps the
+ * materialized `stock_balances` for reads.
+ */
+export function foldStockLedger(
+  entries: readonly PostedStockLedgerEntry[],
+  mode: RoundingMode,
+  order: "posting",
+): DerivedStockBalance[];
 export function foldStockLedger(
   entries: readonly StockLedgerEntry[],
   mode: RoundingMode,
+  order?: "occurred_at",
+): DerivedStockBalance[];
+export function foldStockLedger(
+  entries: readonly (StockLedgerEntry & { postingSeq?: number })[],
+  mode: RoundingMode,
+  order: "posting" | "occurred_at" = "occurred_at",
 ): DerivedStockBalance[] {
   const ordered = [...entries].sort((left, right) => {
+    if (order === "posting") {
+      if (left.postingSeq === undefined || right.postingSeq === undefined)
+        throw new Error("foldStockLedger: posting order needs postingSeq");
+      return left.postingSeq - right.postingSeq;
+    }
     const leftTime = Date.parse(left.occurredAt);
     const rightTime = Date.parse(right.occurredAt);
     if (leftTime !== rightTime) return leftTime - rightTime;

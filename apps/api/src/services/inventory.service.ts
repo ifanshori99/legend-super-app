@@ -1622,10 +1622,16 @@ export async function rebuildStockBalances(
       .select()
       .from(stockLedger)
       .where(eq(stockLedger.outletId, outletId))
-      .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
+      // Posting order, not occurredAt: live posting applies the moving
+      // average in insertion order (legend-bsw9), so the repair must too.
+      .orderBy(asc(stockLedger.postingSeq));
     const derived = foldStockLedger(
-      rows.map((row) => toLedgerEntry(row)),
+      rows.map((row) => ({
+        ...toLedgerEntry(row),
+        postingSeq: row.postingSeq,
+      })),
       ROUNDING_MODE,
+      "posting",
     );
     await tx.delete(stockBalances).where(eq(stockBalances.outletId, outletId));
     if (derived.length > 0)

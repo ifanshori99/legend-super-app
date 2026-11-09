@@ -123,7 +123,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0177_storage_object_owner.sql":
     "links legacy core_storage_objects rows to their source record (source_kind, source_id) and sets owner_user_id (legend-pszrm); rows with a link are not rewritten again, no rows inserted or deleted, FORCE RLS lifted and restored",
   "0178_tenant_claims.sql":
-    "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent"
+    "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
+  "0186_stock_ledger_posting_seq.sql":
+    "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
 };
 
 // Entrypoints that open a database pool but import no data.
