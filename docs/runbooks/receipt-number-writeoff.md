@@ -16,48 +16,54 @@ Jangan dipakai untuk menutupi nomor yang masih mungkin dikirim perangkat. Write-
 3. Pastikan nomor itu memang tidak pernah dipakai untuk transaksi.
 4. Catat alasan. Alasan wajib 10 sampai 500 karakter dan akan ikut tercatat di audit.
 
+## Siapa yang boleh
+
+Hanya owner tenant aktif, yaitu pengguna dengan role template `owner`. Role custom tidak diterima. Kode `pos.receipt.writeoff` saat ini masih bisa dimasukkan ke role custom, tetapi tidak berpengaruh: endpoint hanya menerima role template `owner`.
+
+Endpoint hanya berjalan di cloud, tidak di edge.
+
 ## Cara menjalankan
-
-Hanya owner tenant yang punya izin `pos.receipt.writeoff`. Endpoint hanya berjalan di cloud, tidak di edge.
-
-Penulisan write-off wajib 2FA. Verifikasi 2FA di sesi ini dulu. Jika belum, permintaan ditolak dengan `MFA_REQUIRED`. Membaca daftar (`GET`) tidak memerlukan 2FA.
 
 Ganti `:outletId` dengan ID outlet.
 
-Tulis write-off (`POST`):
+Tulis write-off (`POST`). Penulisan ini wajib verifikasi 2FA yang baru:
+
+- Sesi belum pernah diverifikasi 2FA: ditolak `403` dengan `MFA_REQUIRED`.
+- Verifikasi 2FA terakhir lebih dari 5 menit lalu: ditolak `401` dengan `REAUTH_REQUIRED`. Verifikasi 2FA lagi, lalu ulangi.
 
 ```
 POST /outlets/:outletId/pos/receipt-writeoffs
 { "prefix": "C", "sequenceNumber": 2, "reason": "Struk fisik hilang, perangkat dicabut 3 Nov" }
 ```
 
-Lihat daftar write-off outlet, terbaru di atas (`GET`):
+Lihat daftar write-off outlet, terbaru di atas (`GET`). Membaca daftar tidak memerlukan 2FA, tetapi tetap hanya untuk owner:
 
 ```
 GET /outlets/:outletId/pos/receipt-writeoffs
 ```
 
-Respons berhasil `201` dengan `{ "data": ... }`. Setelah berhasil, jalankan lagi Tutup Hari.
+Respons berhasil `201` dengan `{ "data": ... }` untuk `POST`. Setelah berhasil, jalankan lagi Tutup Hari.
 
 Kemungkinan penolakan:
 
-- `MFA_REQUIRED`, sesi belum terverifikasi 2FA. Verifikasi 2FA, lalu ulangi.
+- `403` `MFA_REQUIRED`, sesi belum pernah diverifikasi 2FA. Verifikasi 2FA, lalu ulangi.
+- `401` `REAUTH_REQUIRED`, verifikasi 2FA sudah lebih dari 5 menit lalu, atau sesi sudah dicabut atau kedaluwarsa. Verifikasi 2FA lagi (atau masuk lagi), lalu ulangi.
 - `409`, nomor di luar rentang yang sudah terbit (lebih besar dari nomor terakhir).
 - `409`, nomor ini sudah punya struk.
 - `409`, nomor ini sudah di-write-off sebelumnya.
 - `404`, prefix tidak dikenal.
-- `403`, pengguna bukan owner.
-- `400`, alasan kurang dari 10 karakter.
+- `403`, pengguna bukan owner (termasuk role custom yang memegang izin).
+- `422`, alasan kurang dari 10 karakter.
 
 ### Outlet dengan edge
 
-Write-off tidak disinkronkan ke edge node. Jika Tutup Hari berjalan di edge, outlet tetap ditolak setelah write-off dibuat di cloud. Sampai ada kartu tindak lanjut, tutup hari lewat cloud.
+`GET` dan `POST` ditolak dengan `409` jika outlet berjalan di edge. Riwayat write-off hanya ada di cloud. Write-off juga tidak disinkronkan ke edge node. Jika Tutup Hari berjalan di edge, outlet tetap ditolak setelah write-off dibuat di cloud. Sampai ada kartu tindak lanjut, tutup hari lewat cloud.
 
 > Keputusan pending untuk CTO: perilaku Tutup Hari di edge setelah write-off, dan kapan kartu tindak lanjut dikerjakan.
 
 ## Jika struk datang terlambat
 
-Jika struk untuk nomor yang sudah di-write-off kemudian masuk (perangkat mengirim data), nomor itu dihitung ada lewat struk tersebut. Nomor keluar dari daftar write-off. Baris audit tetap ada. Cek perangkat yang sudah mengirim struk itu.
+Jika struk untuk nomor yang sudah di-write-off kemudian masuk (perangkat mengirim data), nomor itu dihitung ada lewat struk tersebut. Riwayat `GET` tetap menampilkan write-off itu, dan baris audit tetap ada. Yang berubah hanya daftar `writtenOff` di laporan shift, yang tidak lagi memuat nomor yang sudah punya struk. Cek perangkat yang sudah mengirim struk itu.
 
 ## Yang tercatat
 
@@ -76,11 +82,62 @@ Di laporan shift, nomor tersebut tampil sebagai "di-write-off", bukan sebagai ce
 
 **Urutan rilis.** Migrasi 0155 (payroll) harus ikut atau dirilis sebelum 0156. Migrator melewati `when` yang lebih lama jika sudah ada `when` yang lebih baru yang diterapkan.
 
-**Rollback.** Utamakan perbaikan maju (fix forward). Rollback membuat Tutup Hari kembali diblokir.
+**Jendela kompatibilitas.** Migrasi 0156 menambahkan `pos.receipt.writeoff` ke baris template owner setiap tenant. API lama (sebelum legend-0hzqw) tidak mengenal kode ini. Parsing role di API lama bersifat ketat (`packages/shared/src/access/schemas.ts:39`, memakai katalog kode), sehingga role owner yang sudah memegang kode baru gagal diparsing dan daftar role rusak untuk tenant itu. Karena itu:
+
+- Jalankan migrasi 0156 dan deploy API baru dalam satu langkah rilis, atau
+- Jika migrasi sudah jalan lebih dulu, deploy API baru segera setelahnya. Selama jeda itu, daftar role tenant terdampak bisa gagal.
+- Jangan pernah menyalakan API baru sebelum migrasi 0156 jalan. Tanpa tabel `receipt_number_writeoffs`, Tutup Hari dan laporan shift gagal.
+- Jendela ini hanya berlaku di rilis pertama yang membawa 0156.
+
+**Preflight.** Jalankan sebelum migrasi 0156 dan sebelum rollback. Pakai role dengan `BYPASSRLS` (tabel `roles` memakai FORCE RLS).
+
+```sql
+-- 1. Tenant tanpa baris template owner. Backfill 0156 melewatinya:
+--    tenant ini tidak bisa write-off sampai baris owner ada.
+SELECT t.id AS tenant_id
+FROM public.tenants t
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.roles r
+  WHERE r.tenant_id = t.id AND r.is_template AND r.template_key = 'owner'
+);
+
+-- 2. Role custom yang memegang kode, per tenant (wajib dicek sebelum rollback).
+SELECT tenant_id, count(*) AS role_custom_dengan_kode
+FROM public.roles
+WHERE NOT is_template AND permissions ? 'pos.receipt.writeoff'
+GROUP BY tenant_id
+ORDER BY tenant_id;
+```
+
+Tenant dari query 1 tidak bisa write-off. Laporkan daftarnya ke CTO sebelum rilis; cara perbaikannya (misalnya seed ulang template) perlu keputusan dan diuji terpisah, jangan menambah baris template dengan tangan. Role custom dari query 2 harus dicabut kodenya (lihat rollback (a)) atau dicatat sebagai keputusan.
+
+**Rollback (a): cabut izin dari semua role.** Lakukan sebelum API lama dinyalakan. Kode ini harus dicabut dari template owner dan dari role custom, karena API lama menolak role yang memegang kode yang tidak dikenalnya. UPDATE ini tidak menulis audit atau access event, jadi catat audit manual: siapa, kapan, jumlah role per tenant (simpan hasil query preflight 2). Jangan memutar ulang access event yang memuat kode baru ke API lama; parsingnya juga ketat.
+
+```sql
+-- Per tenant, dari role dengan BYPASSRLS (atau ulangi per tenant dengan set_config).
+DO $$
+DECLARE
+  target uuid;
+  previous_tenant text;
+BEGIN
+  previous_tenant := current_setting('app.tenant_id', true);
+  FOR target IN SELECT id FROM public.tenants LOOP
+    PERFORM set_config('app.tenant_id', target::text, true);
+    UPDATE public.roles
+    SET permissions = permissions - 'pos.receipt.writeoff',
+        updated_at = now()
+    WHERE tenant_id = target
+      AND permissions ? 'pos.receipt.writeoff';
+  END LOOP;
+  PERFORM set_config('app.tenant_id', coalesce(previous_tenant, ''), true);
+END $$;
+```
+
+**Rollback (b): hapus tabel.** Utamakan perbaikan maju (fix forward). Rollback membuat Tutup Hari kembali diblokir.
 
 Urutan wajib:
 
-1. **Rollback API dulu** ke build sebelum legend-0hzqw. Kode saat ini mengakses `receipt_number_writeoffs` pada setiap Tutup Hari dan laporan shift. Jika tabel dihapus sebelum API diturunkan, operasi itu gagal.
+1. **Rollback (a)** di atas, lalu **rollback API** ke build sebelum legend-0hzqw. Kode saat ini mengakses `receipt_number_writeoffs` pada setiap Tutup Hari dan laporan shift. Jika tabel dihapus sebelum API diturunkan, operasi itu gagal.
 2. **Ekspor** isi tabel sebagai bukti audit. Tabel memakai FORCE RLS (policy memanggil `app.require_tenant_id()`), sehingga ekspor biasa tanpa tenant akan kosong. Pakai role dengan `BYPASSRLS`, atau ulangi ekspor per tenant dengan `set_config('app.tenant_id', ...)`.
 3. **Bandingkan** jumlah baris hasil ekspor dengan `count(*)`. Hapus tabel hanya jika keduanya sama.
 4. **Hapus** dalam satu transaksi.
@@ -103,26 +160,6 @@ DROP TRIGGER IF EXISTS receipt_number_writeoffs_append_only_trg ON public.receip
 DROP FUNCTION IF EXISTS app.receipt_number_writeoffs_check_insert();
 DROP FUNCTION IF EXISTS app.receipt_number_writeoffs_append_only();
 DROP TABLE IF EXISTS public.receipt_number_writeoffs;
-
--- Cabut izin pos.receipt.writeoff dari template owner, per tenant.
--- Pola sama dengan loop di apps/api/drizzle/0156_receipt_number_writeoffs.sql.
-DO $$
-DECLARE
-  target uuid;
-  previous_tenant text;
-BEGIN
-  previous_tenant := current_setting('app.tenant_id', true);
-  FOR target IN SELECT id FROM public.tenants LOOP
-    PERFORM set_config('app.tenant_id', target::text, true);
-    UPDATE public.roles
-    SET permissions = permissions - 'pos.receipt.writeoff',
-        updated_at = now()
-    WHERE tenant_id = target
-      AND is_template
-      AND template_key = 'owner';
-  END LOOP;
-  PERFORM set_config('app.tenant_id', coalesce(previous_tenant, ''), true);
-END $$;
 
 -- Hapus catatan migrasi 0156 dari riwayat drizzle (schema drizzle, tabel __drizzle_migrations).
 -- Aman hanya jika 0156 adalah migrasi terbaru yang sudah diterapkan. Jika ada catatan yang

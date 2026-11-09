@@ -48,6 +48,12 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Batas (jujur): bila pengganti ditolak karena prefix atau id bentrok, perangkat itu tetap tidak bisa menjual (fail closed) sampai prosedur manual zsdd dijalankan. Tandanya `receiptSequencesRefused > 0` yang menetap. Kasus pengganti yang sudah maju (L > 0) pulih sendiri lewat rotasi berikutnya; ini hanya dianalisis dan belum diuji.
 - Rilis: hanya edge, tanpa urutan khusus terhadap cloud.
 
+## legend-l56xd + legend-xlvvl pengerasan write-off nomor struk (engineer, cabang `ws/receipt-writeoff-hardening` dari `ws/receipt-number-writeoff` 13ce6220, 2026-11-09)
+
+- Sudah: `POST`/`GET` write-off hanya untuk role template owner (role custom yang memegang kode ditolak 403). `POST` wajib verifikasi 2FA dalam 5 menit terakhir (401 `REAUTH_REQUIRED`; sesi dicabut/kedaluwarsa juga 401). `GET` ditolak di edge (409). `receiptGapsForOutlet` membaca struk + write-off dalam satu statement `UNION ALL`. Komentar di `mergeDeviceReceiptRun`: write-off tidak pernah membuat run maju. Runbook: siapa boleh, preflight, jendela kompatibilitas, rollback mencabut kode dari semua role.
+- Bukti: red-first 4 test gagal di kode dasar, hijau sesudahnya. 10 file test terarah, 264 lolos. tsc bersih. Commit bf232507, e6cb3e1b.
+- Review K: reviewer Opus bersih. Architect: celah lama di `grants.ts` (template owner bisa diberikan tanpa owner lewat role custom berisi semua kode owner) dicatat sebagai legend-7vsby P1, di luar cakupan 214. Brief Codex: `docs/briefs/214b-second-opinion-receipt-writeoff-hardening.md` (folder utama).
+
 ## legend-0hzqw write-off teraudit nomor struk hilang (engineer, cabang `ws/receipt-number-writeoff` dari `ws/day-close-all-gaps` 57e92b6d, 2026-11-09)
 
 - Sudah: tabel `receipt_number_writeoffs` (migrasi 0156, when 1794235000000; FORCE RLS tenant + outlet, append-only, trigger backstop insert), izin `pos.receipt.writeoff` hanya template owner (backfill baris owner tenant lama di 0156), `POST`/`GET /api/outlets/:outletId/pos/receipt-writeoffs` (cloud saja, sesi wajib 2FA terverifikasi, kunci baris sequence, tolak nomor ber-struk / di atas lastNumber / ganda, audit `pos.receipt.written_off`). Cek celah (Tutup Hari, rekap shift) menghitung nomor write-off sebagai ada; rekap shift memuat `writtenOff`. Write-off yang nomornya kemudian punya struk diabaikan (tidak dihitung ganda).
