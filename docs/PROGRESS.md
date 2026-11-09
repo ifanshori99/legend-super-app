@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-8ajy4 grantRoleAssignment: kunci tenant dulu, waktu sesudah kunci (engineer, cabang `ws/grant-role-lock` dari `ws/end-role-assignment-lock` 61eb1ca0, 2026-11-09)
+
+- Sudah: `grantRoleAssignment` mengambil kunci advisory per tenant yang sama dengan `endRoleAssignment` dan jalur platform Owner sebagai perintah pertama transaksi, lalu membaca `now`, lalu memeriksa pemberi (`assertCanGrantRole`, legend-7vsby) dengan data yang dibaca sesudah kunci. Owner atau admin yang penugasannya diakhiri selagi pemberian menunggu tidak bisa memberi role lagi. Opsi `now` dihapus (tidak ada pemanggil). Tanpa migrasi, tanpa perubahan kontrak.
+- Bukti: test baru `access-grant-role-lock.test.ts` (3 kasus: race Owner berakhir vs pemberian template Owner, race vs template finance, sanity). Di basis 61eb1ca0 2 dari 3 gagal; sesudah fix 10 file test terarah 87 lolos. tsc api bersih, eslint dan prettier bersih.
+- Review K: reviewer Opus dan architect tanpa temuan pemblokir; komentar kunci diperbarui. Kartu baru: legend-tegsk P2 (`updateCustomRole` membaca `now` sebelum kunci baris). legend-hzdy5 (jam DB) diberi catatan: berlaku juga untuk jalur grant. Brief Codex: `docs/briefs/224d-second-opinion-grant-role-lock.md` (folder utama).
+
 ## legend-qr1uv endRoleAssignment: waktu sesudah kunci, Owner tersisa harus permanen (engineer, cabang `ws/end-role-assignment-lock` dari `ws/platform-assign-owner` 9b9d719e, 2026-11-09)
 
 - Sudah: `endRoleAssignment` mengambil kunci advisory per tenant dulu, lalu membaca `now`, lalu cek izin `access.role.assign` dan cek Owner dengan waktu itu (parameter `now` dihapus, tidak ada pemanggil yang mengisinya). `assertCanEndOwnerAssignment` hanya menghitung Owner permanen (`valid_until` null) sebagai Owner tersisa; Owner sementara tetap berwenang sebagai pelaku. Sama dengan jalur platform legend-ktc4d.
