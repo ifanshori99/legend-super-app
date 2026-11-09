@@ -17,7 +17,7 @@
 //   are refused for now.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   CoreError,
   idr,
@@ -43,6 +43,8 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { refundableBalance } from "./payment-admin.service.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   cancelPaymentLinkInTx,
   createIntent,
@@ -503,7 +505,8 @@ export async function addPosTender(
  * Voids the order's pending QRIS tenders (event + audit with `reason`), bumps
  * the order, and requests the full late-payment refund for the paid intent.
  * Shared by the webhook branches that cannot capture the money
- * (`bill_below_tender`, `business_day_closed`). Never throws for these cases.
+ * (`bill_below_tender`, `business_day_closed`, `refund_reserved`). Never
+ * throws for these cases.
  */
 async function voidTendersAndRefundPaidQris(
   tx: Tx,
@@ -513,7 +516,7 @@ async function voidTendersAndRefundPaidQris(
     pos: PosRow;
     paymentLinkId: string;
     intentId: string;
-    reason: "bill_below_tender" | "business_day_closed";
+    reason: "bill_below_tender" | "business_day_closed" | "refund_reserved";
     now: Date;
   },
 ): Promise<void> {
@@ -563,6 +566,28 @@ async function voidTendersAndRefundPaidQris(
 }
 
 /**
+ * legend-r5brx: refunds of the intent still `pending`, with the filter of
+ * `refundableBalance().reserved` (no unallocated fund). Read under the intent
+ * row lock, so `reserved - pending` is what approved and completed refunds
+ * already committed.
+ */
+async function pendingRefundIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum(amount_idr), 0)::text AS pending
+      FROM payment_refunds
+     WHERE tenant_id = ${tenantId}
+       AND payment_intent_id = ${intentId}::uuid
+       AND status = 'pending'
+       AND unallocated_fund_id IS NULL
+  `);
+  return BigInt(String(result.rows[0]?.pending ?? "0"));
+}
+
+/**
  * Outbox consumer entry for WS-05 `payment.paid` (wired by legend-x4qy).
  * Captures the POS QRIS tender whose payment link the event names, once the
  * link is fully covered by verified money and a `paid` intent exists on it
@@ -571,6 +596,19 @@ async function voidTendersAndRefundPaidQris(
  * not a POS tender's, changes nothing. A payment that lands on a voided/failed
  * tender or a final order is refunded in full by a system WS-05 refund request
  * (`pos-order-late-payment.ts`, legend-b0au), once per intent.
+ *
+ * legend-r5brx: the capture decides under the paid intent's row lock
+ * (`lockIntentsForFact`), the lock every refund writer takes first
+ * (`lockRefundGraph`). An approved or completed refund already taking money
+ * the tender needs (above `cap`, which already excludes this open order's
+ * tender) voids the tender and refunds the rest instead of capturing, so the
+ * guest is never paid back for a sale that then keeps the same money. A
+ * refund still pending does not block; its approval fails later. Lock order:
+ * orders -> pos_orders -> tender -> link -> intent (the link -> intent order
+ * of the WS-05 confirmation and
+ * `cancelPaymentLinkInTx`) -> day lock (shared; closePosDay locks no intent).
+ * No path locks an intent and then an order, pos_orders, tender or link row
+ * of this order, so the new lock adds no cycle.
  */
 export async function handlePosPaymentPaid(
   context: ScopedTenantContext,
@@ -631,6 +669,9 @@ export async function handlePosPaymentPaid(
       });
       return;
     }
+    // legend-r5brx: the link is locked before the intent (link -> intent,
+    // the WS-05 confirmation order), so a void below that closes the link
+    // never waits on it while holding the intent.
     const [link] = await tx
       .select({
         paidIdr: paymentLinks.paidIdr,
@@ -642,22 +683,44 @@ export async function handlePosPaymentPaid(
           eq(paymentLinks.tenantId, tenantId),
           eq(paymentLinks.id, payload.data.paymentLinkId),
         ),
-      );
+      )
+      .for("update");
     if (!link || link.paidIdr < link.totalIdr) return;
-    const [paid] = await tx
-      .select({
-        id: paymentIntents.id,
-        providerRef: paymentIntents.providerRef,
-      })
+    // A refund that completed before this event moves the intent on to
+    // (partially_)refunded; it is still the money this tender was paid with,
+    // so it is decided below (voided, the rest refunded), never skipped.
+    const [probePaid] = await tx
+      .select({ id: paymentIntents.id })
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, tenantId),
           eq(paymentIntents.paymentLinkId, payload.data.paymentLinkId),
-          inArray(paymentIntents.status, ["paid"]),
+          inArray(paymentIntents.status, [
+            "paid",
+            "partially_refunded",
+            "refunded",
+          ]),
         ),
       )
+      .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id))
       .limit(1);
+    if (!probePaid) return;
+    // legend-r5brx: decide under the intent row lock every refund writer
+    // takes first. The fact time it gives (`at`: now, or just after the latest
+    // refund completion or sale completion already committed on the intent)
+    // stamps the capture or void, so the tender never resolves before a refund
+    // of the same money that committed earlier, whatever the host clock says.
+    const at = await lockIntentsForFact(tx, tenantId, [probePaid.id], now);
+    const [paid] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.id, probePaid.id),
+        ),
+      );
     if (!paid) return;
     // legend-mf0.1 (safety net): the order's business day is closed. Today
     // closePosDay refuses while an order of that date is unfinished, so an
@@ -665,8 +728,9 @@ export async function handlePosPaymentPaid(
     // strand the money on an order that can never complete (complete is
     // refused), so the tender is voided and the intent refunded. This is a
     // decision, never a throw: the consumer would retry forever. Lock order:
-    // orders row -> pos_orders row -> tender row -> day lock (shared);
-    // closePosDay takes no order row locks, so no cycle.
+    // orders row -> pos_orders row -> tender row -> link -> intent -> day
+    // lock (shared); closePosDay takes no order or intent row locks, so no
+    // cycle.
     if (
       await isBusinessDayClosed(tx, context, {
         outletId: order.outletId,
@@ -679,7 +743,7 @@ export async function handlePosPaymentPaid(
         paymentLinkId: payload.data.paymentLinkId,
         intentId: payload.data.intentId,
         reason: "business_day_closed",
-        now,
+        now: at,
       });
       return;
     }
@@ -695,7 +759,28 @@ export async function handlePosPaymentPaid(
         paymentLinkId: payload.data.paymentLinkId,
         intentId: payload.data.intentId,
         reason: "bill_below_tender",
-        now,
+        now: at,
+      });
+      return;
+    }
+    // legend-r5brx: an approved or completed refund already takes money of
+    // the intent this tender needs. `cap` excludes what this open order's
+    // tender holds (posSaleInUse), so committed refunds above `cap` mean
+    // capturing would count money the guest is also being paid back. Void and
+    // refund what is left (cap - reserved after the void) instead. A refund
+    // still `pending` does not block: the sale wins, and its approval (under
+    // this same intent lock) then finds the captured tender held and fails
+    // `cap_exceeded`, so no money is stranded on a voided tender.
+    const balance = await refundableBalance(tx, paid);
+    const pendingIdr = await pendingRefundIdr(tx, tenantId, paid.id);
+    if (balance.reserved - pendingIdr > balance.cap) {
+      await voidTendersAndRefundPaidQris(tx, context, {
+        order,
+        pos,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: paid.id,
+        reason: "refund_reserved",
+        now: at,
       });
       return;
     }
@@ -703,11 +788,11 @@ export async function handlePosPaymentPaid(
       .update(posOrderTenders)
       .set({
         status: "captured",
-        resolvedAt: now,
+        resolvedAt: at,
         paymentIntentId: paid.id,
         reference:
           (paid.providerRef ?? tender.reference)?.slice(0, 100) ?? null,
-        updatedAt: now,
+        updatedAt: at,
       })
       .where(
         and(
@@ -716,7 +801,7 @@ export async function handlePosPaymentPaid(
           eq(posOrderTenders.status, "authorized"),
         ),
       );
-    await bumpPos(tx, context, pos, now);
+    await bumpPos(tx, context, pos, at);
     await appendOrderEvent(tx, context, {
       order,
       type: "order.tender_captured",
@@ -727,7 +812,7 @@ export async function handlePosPaymentPaid(
         paymentIntentId: paid.id,
       },
       caller: null,
-      now,
+      now: at,
     });
     await auditPos(
       tx,
@@ -744,7 +829,7 @@ export async function handlePosPaymentPaid(
           status: "captured",
         },
       },
-      now,
+      at,
     );
   });
 }
