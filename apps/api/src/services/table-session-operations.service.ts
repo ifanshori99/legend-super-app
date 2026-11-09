@@ -52,16 +52,22 @@ import {
   appendSessionEvent,
   audit,
   cancelOpenServiceRequests,
+  emitTableStatusChanged,
   loadSession,
   loadSettlement,
   lockTableLiveState,
   newSessionCredential,
+  readTableStates,
   sessionDto,
   sessionSealAad,
   toTable,
   type SessionRow,
   type Tx,
 } from "./table-session.service";
+import {
+  followMovedSession,
+  releaseLinksOfSession,
+} from "./table-link.service";
 
 type OrderRow = typeof orders.$inferSelect;
 type OrderItemRow = typeof orderItems.$inferSelect;
@@ -369,6 +375,10 @@ export async function moveTableSessionOperation(
           inArray(serviceRequests.status, ["pending", "acknowledged"]),
         ),
       );
+    const statesBefore = await readTableStates(tx, tenantId, [
+      fromTableId,
+      target.id,
+    ]);
     const [fromTable] = await tx
       .update(tables)
       .set({ status: "dirty", updatedAt: now })
@@ -381,6 +391,25 @@ export async function moveTableSessionOperation(
       .returning();
     if (!fromTable || !toTableRow)
       throw new Error("Table update returned no row");
+    for (const [id, to, zoneId] of [
+      [fromTableId, "dirty", fromTable.zoneId],
+      [target.id, "occupied", target.zoneId],
+    ] as const) {
+      const before = statesBefore.get(id);
+      if (!before) continue;
+      await emitTableStatusChanged(tx, context, {
+        tableId: id,
+        outletId: row.outletId,
+        zoneId,
+        from: before.status,
+        to,
+        cause: "session_moved",
+        actor: { type: "user", id: actorUserId },
+        now,
+      });
+    }
+    // A linked session keeps its link: the member follows it to the new table.
+    await followMovedSession(tx, tenantId, row.id, target.id);
 
     await appendSessionEvent(tx, context, "table_session.moved", {
       sessionId: row.id,
@@ -679,10 +708,33 @@ export async function mergeTableSessionsOperation(
     // The source table has no session of its own any more but its guests may
     // still sit there: "dirty" keeps a rescan from opening a second bill on it
     // (ORD-10) until staff mark it available.
+    const sourceTableBefore = (
+      await readTableStates(tx, tenantId, [source.tableId])
+    ).get(source.tableId);
     await tx
       .update(tables)
       .set({ status: "dirty", updatedAt: now })
       .where(and(eq(tables.tenantId, tenantId), eq(tables.id, source.tableId)));
+    if (sourceTableBefore)
+      await emitTableStatusChanged(tx, context, {
+        tableId: source.tableId,
+        outletId: source.outletId,
+        zoneId: sourceTableBefore.zoneId,
+        from: sourceTableBefore.status,
+        to: "dirty",
+        cause: "session_merged",
+        actor: { type: "user", id: actorUserId },
+        now,
+      });
+    // The source session ends here, so it leaves its link group.
+    await releaseLinksOfSession(
+      tx,
+      context,
+      source.id,
+      "session_merged",
+      { type: "user", id: actorUserId },
+      now,
+    );
 
     await appendSessionEvent(tx, context, "table_session.merged", {
       sessionId: target.id,

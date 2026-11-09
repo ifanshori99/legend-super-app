@@ -28,8 +28,11 @@ import {
   sessionParticipantIdSchema,
   tableIdSchema,
   tableSessionClosedReasonSchema,
+  tableLinkGroupIdSchema,
   tableSessionIdSchema,
+  tableStatusSchema,
 } from "./schemas.ts";
+import { TABLE_LINK_LEFT_REASONS } from "./table-link.ts";
 
 export const tableSessionOpenedPayloadSchema = z.strictObject({
   sessionId: tableSessionIdSchema,
@@ -91,6 +94,37 @@ export const tableSessionItemsMovedPayloadSchema = z.strictObject({
   movedTotalIdr: idrSchema.refine((value) => value >= 0),
 });
 
+/** A table's floor status changed (staff action or session lifecycle). */
+export const tableStatusChangedPayloadSchema = z.strictObject({
+  tableId: tableIdSchema,
+  zoneId: floorZoneIdSchema,
+  from: tableStatusSchema,
+  to: tableStatusSchema,
+  cause: z.enum([
+    "staff_action",
+    "session_closed",
+    "session_expired",
+    "session_moved",
+    "session_merged",
+  ]),
+});
+
+/** A session joined a service-only table link group. */
+export const tableSessionLinkedPayloadSchema = z.strictObject({
+  groupId: tableLinkGroupIdSchema,
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  tableIds: z.array(tableIdSchema).min(2),
+});
+
+/** A session left a table link group (or the group dissolved around it). */
+export const tableSessionUnlinkedPayloadSchema = z.strictObject({
+  groupId: tableLinkGroupIdSchema,
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  reason: z.enum(TABLE_LINK_LEFT_REASONS),
+});
+
 export const orderPlacedPayloadSchema = z.strictObject({
   orderId: orderIdSchema,
   sessionId: tableSessionIdSchema,
@@ -144,6 +178,9 @@ export const qrOrderEventNames = [
   "item.failed",
   "service_request.created",
   "service_request.overdue",
+  "table.status_changed",
+  "table_session.linked",
+  "table_session.unlinked",
 ] as const;
 export type QrOrderEventName = (typeof qrOrderEventNames)[number];
 /** Kept for compatibility: identical to qrOrderEventNames. */
@@ -163,6 +200,9 @@ export const qrOrderEventPayloads: Record<
   "item.failed": itemFailedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
+  "table.status_changed": tableStatusChangedPayloadSchema,
+  "table_session.linked": tableSessionLinkedPayloadSchema,
+  "table_session.unlinked": tableSessionUnlinkedPayloadSchema,
 };
 
 /**

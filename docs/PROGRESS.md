@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-1nmh WS-03 mode link meja (engineer, cabang `ws/table-link` dari ws/table-move-merge 6ef7034d, 2026-11-10)
+
+- Link = dua meja atau lebih dikelompokkan untuk layanan saja; tagihan, pesanan, dan sesi tidak disentuh. Anggota = (meja, sesi aktifnya); satu meja paling banyak di satu grup hidup. Grup dengan kurang dari 2 anggota hidup bubar; papan hanya menampilkan `linkGroup` untuk 2+ anggota.
+- Migrasi `0200_table_links` (idx 200, when 1794279000000): `table_link_groups`, `table_link_members`, RLS tenant+outlet, indeks unik parsial anggota hidup per meja dan per sesi.
+- Endpoint `POST /api/table-links` (opsional `groupId` untuk menambah ke grup) dan `POST /api/table-links/:groupId/unlink` (tanpa `tableIds` = bubarkan), izin `floor.table.operate`, filter tenant/outlet, ulang = 200 tanpa tulis ulang.
+- Sesi tutup, kedaluwarsa, atau jadi sumber gabung: anggota keluar (`session_closed` / `session_merged`). Pindah meja: anggota ikut ke meja baru. Event baru: `table_session.linked`, `table_session.unlinked`, `table.status_changed` (aksi staf, tutup, pindah, sumber gabung), audit link/unlink.
+- Bukti: tes gagal-dulu 19 merah dari 29 di `table-link-api.test.ts` (rute belum ada), kini 29/29; regresi 4 file 67/67 + qr-order-api; contract node 51/51; tsc api lulus (heavy); eslint dan prettier bersih. Review S: tanpa temuan nyata; tercatat: `note` diterima tapi tidak disimpan, perluasan grup hanya memberi event `linked` ke sesi baru.
+
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
 - Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).
