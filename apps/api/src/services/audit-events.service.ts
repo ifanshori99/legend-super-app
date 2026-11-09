@@ -9,8 +9,23 @@
 // sensitive field) is masked default-deny before it leaves the server; one that
 // still fails is skipped and logged by id only, so one bad row never fails the
 // whole page.
-import { and, desc, eq, lt, sql, type SQL } from "drizzle-orm";
+//
+// Blind stock counts (legend-j5x): the count's totalVarianceIdr and
+// grossVarianceIdr are replaced by the redaction marker for a reader who
+// entered a quantity in that count or lacks `inventory.adjustment.approve` at
+// its outlet, so the audit trail never leaks what the blind count hides.
 import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  lt,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import {
+  AUDIT_REDACTED,
   auditEventSchema,
   listAuditEventsEndpoint,
   maskAuditChanges,
@@ -26,10 +41,13 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
+import { stockCountLines, stockCounts } from "../db/schema/inventory-count.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
+import { outletTarget } from "./inventory-ops.shared.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 
 export type ListAuditEventsQuery = z.output<
   typeof listAuditEventsEndpoint.query
@@ -82,8 +100,101 @@ function toEvent(raw: unknown): AuditEvent | null {
   }
 }
 
+type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
+
+const BLIND_COUNT_VARIANCE_FIELDS = [
+  "totalVarianceIdr",
+  "grossVarianceIdr",
+] as const;
+
+function isBlindCountEvent(event: AuditEvent): boolean {
+  if (event.objectType !== "stock_count" || event.objectId === null)
+    return false;
+  return [event.maskedChanges.before, event.maskedChanges.after].some(
+    (side) =>
+      side !== null &&
+      typeof side === "object" &&
+      !Array.isArray(side) &&
+      side.blind === true,
+  );
+}
+
+function redactVariance(side: AuditEvent["maskedChanges"]["before"]) {
+  if (side === null || typeof side !== "object" || Array.isArray(side))
+    return side;
+  const copy = { ...side };
+  for (const field of BLIND_COUNT_VARIANCE_FIELDS)
+    if (field in copy) copy[field] = AUDIT_REDACTED;
+  return copy;
+}
+
+/**
+ * Ids of the blind stock counts whose variance the reader may NOT see: the
+ * reader entered a quantity (creator, counter history, line counter), lacks
+ * `inventory.adjustment.approve` at the count's outlet, or the count row is
+ * gone (fail closed).
+ */
+async function hiddenBlindCountIds(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  countIds: readonly string[],
+): Promise<Set<string>> {
+  const hidden = new Set(countIds);
+  if (countIds.length === 0) return hidden;
+  const counts = await tx
+    .select({
+      id: stockCounts.id,
+      outletId: stockCounts.outletId,
+      countedBy: stockCounts.countedBy,
+      counterIds: stockCounts.counterIds,
+    })
+    .from(stockCounts)
+    .where(
+      and(
+        eq(stockCounts.tenantId, context.tenant.tenantId),
+        inArray(stockCounts.id, [...countIds]),
+      ),
+    );
+  const lineCounters = await tx
+    .selectDistinct({
+      stockCountId: stockCountLines.stockCountId,
+      countedBy: stockCountLines.countedBy,
+    })
+    .from(stockCountLines)
+    .where(
+      and(
+        eq(stockCountLines.tenantId, context.tenant.tenantId),
+        inArray(stockCountLines.stockCountId, [...countIds]),
+        isNotNull(stockCountLines.countedBy),
+      ),
+    );
+  const snapshot = await accessSnapshotInTransaction(
+    tx,
+    context,
+    actorUserId,
+    new Date(),
+  );
+  const reader = actorUserId.toLowerCase();
+  for (const count of counts) {
+    const counters = new Set(
+      [count.countedBy, ...count.counterIds].map((id) => id.toLowerCase()),
+    );
+    for (const line of lineCounters)
+      if (line.stockCountId === count.id && line.countedBy !== null)
+        counters.add(line.countedBy.toLowerCase());
+    const canApprove = snapshot.allows(
+      "inventory.adjustment.approve",
+      outletTarget(count.outletId),
+    );
+    if (canApprove && !counters.has(reader)) hidden.delete(count.id);
+  }
+  return hidden;
+}
+
 export async function listAuditEvents(
   context: ScopedTenantContext,
+  actorUserId: string,
   query: ListAuditEventsQuery,
 ): Promise<CursorPage<AuditEventView>> {
   return withTenant(db, context, async (tx) => {
@@ -133,7 +244,7 @@ export async function listAuditEvents(
 
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
-    const data: AuditEventView[] = [];
+    const events: Array<{ row: (typeof page)[number]; event: AuditEvent }> = [];
     for (const row of page) {
       const event = toEvent(row.event);
       if (event === null) {
@@ -141,6 +252,29 @@ export async function listAuditEvents(
         logger.warn({ auditLogId: row.id }, "Skipped an unreadable audit row");
         continue;
       }
+      events.push({ row, event });
+    }
+    const blindIds = new Set(
+      events
+        .map(({ event }) => event)
+        .filter(isBlindCountEvent)
+        .map((event) => String(event.objectId)),
+    );
+    const hidden = await hiddenBlindCountIds(tx, context, actorUserId, [
+      ...blindIds,
+    ]);
+    const data: AuditEventView[] = [];
+    for (const { row, event: stored } of events) {
+      const event =
+        isBlindCountEvent(stored) && hidden.has(String(stored.objectId))
+          ? {
+              ...stored,
+              maskedChanges: {
+                before: redactVariance(stored.maskedChanges.before),
+                after: redactVariance(stored.maskedChanges.after),
+              },
+            }
+          : stored;
       data.push({
         event,
         actorName: row.actorName,
