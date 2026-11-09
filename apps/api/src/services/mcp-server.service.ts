@@ -1,0 +1,308 @@
+// MCP server core (WS-12 part M, bead legend-xkbt; MCP-01..04): bearer auth
+// that re-reads the token row on every request (revocation is immediate, no
+// cache), a per-token rate limit, and the MCP `Server` that exposes the AI tool
+// catalog. Tool listing and calls go through the invoke layer (AIG-01), which
+// does scope, permission, row-cap and audit work.
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { and, eq, sql } from "drizzle-orm";
+import { AiError } from "@starter/shared/ai";
+import { tenantIdSchema } from "@starter/shared/core";
+import { cafeLegendMetricDefinitions } from "@starter/shared/metrics";
+import { db } from "../db/index.ts";
+import { mcpClients, mcpTokens } from "../db/schema/ai.ts";
+import { user } from "../db/schema/user.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import {
+  loadTenantAccess,
+  resolveAccessSnapshot,
+  type AccessSnapshot,
+} from "./permission-resolver.ts";
+import {
+  invokeAiTool,
+  listCallableTools,
+  toToolSpecs,
+} from "./ai-tool-invoke.service.ts";
+import type { AiToolContext } from "./ai-tools/types.ts";
+import { isBanActive } from "./ai-action-executors/access.ts";
+import { loadMcpSettings, sha256Hex, tenantScopeById } from "./mcp-common.ts";
+
+const LAST_USED_REFRESH_MS = 60_000;
+
+export type McpPrincipal = {
+  readonly tokenId: string;
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  readonly access: AccessSnapshot;
+  readonly rateLimitPerMinute: number;
+};
+
+/** Thrown for a missing or unknown bearer: the route adds the OAuth challenge. */
+export class McpUnauthorizedError extends HttpError {
+  constructor(message = "Sign in with an MCP access token.") {
+    super(401, "UNAUTHORIZED", message);
+  }
+}
+
+/**
+ * Resolve a bearer token to the caller. Every call reads the token, client and
+ * tenant settings under RLS, so a revoked token, revoked client, expired token,
+ * disabled MCP, or removed role stops working on the next request (MCP-02).
+ */
+export async function authenticateMcpToken(
+  header: string | undefined,
+): Promise<McpPrincipal> {
+  const match = /^bearer\s+(\S+)$/i.exec(header ?? "");
+  const raw = match?.[1];
+  if (!raw || !/^mcp_[A-Za-z0-9]{20,200}$/.test(raw))
+    throw new McpUnauthorizedError();
+  const hash = sha256Hex(raw);
+  const resolved = await db.execute<{ id: string; tenant_id: string }>(
+    sql`SELECT id, tenant_id FROM app.mcp_resolve_token(${hash})`,
+  );
+  const hit = resolved.rows[0];
+  if (!hit) throw new McpUnauthorizedError();
+  const tenantId = tenantIdSchema.parse(hit.tenant_id);
+  const context = tenantScopeById(tenantId);
+
+  const row = await withTenant(db, context, async (tx) => {
+    const [found] = await tx
+      .select({
+        token: mcpTokens,
+        clientStatus: mcpClients.status,
+        userId: user.id,
+        userBanned: user.banned,
+        userBanExpires: user.banExpires,
+      })
+      .from(mcpTokens)
+      .innerJoin(
+        mcpClients,
+        and(
+          eq(mcpClients.tenantId, mcpTokens.tenantId),
+          eq(mcpClients.id, mcpTokens.mcpClientId),
+        ),
+      )
+      // Left join: a deleted user must read as revoked, not as "no token".
+      .leftJoin(user, eq(user.id, mcpTokens.userId))
+      .where(and(eq(mcpTokens.tenantId, tenantId), eq(mcpTokens.id, hit.id)))
+      .limit(1);
+    if (
+      found &&
+      (!found.token.lastUsedAt ||
+        Date.now() - found.token.lastUsedAt.getTime() > LAST_USED_REFRESH_MS)
+    )
+      await tx
+        .update(mcpTokens)
+        .set({ lastUsedAt: sql`now()` })
+        .where(and(eq(mcpTokens.tenantId, tenantId), eq(mcpTokens.id, hit.id)));
+    return found;
+  });
+  if (!row) throw new McpUnauthorizedError();
+  const { token } = row;
+  if (row.clientStatus !== "approved")
+    throw new AiError("MCP_CLIENT_NOT_APPROVED");
+  if (token.revokedAt) throw new AiError("MCP_TOKEN_REVOKED");
+  // A deleted or banned user keeps no MCP access.
+  if (!row.userId || isBanActive(row.userBanned, row.userBanExpires))
+    throw new AiError("MCP_TOKEN_REVOKED");
+  if (token.expiresAt.getTime() <= Date.now())
+    throw new AiError("MCP_TOKEN_EXPIRED");
+
+  const settings = await loadMcpSettings(tenantId);
+  if (!settings.aiEnabled) throw new AiError("AI_FEATURE_DISABLED");
+  if (!settings.mcpEnabled)
+    throw new AiError(
+      "AI_FEATURE_DISABLED",
+      "MCP sedang dimatikan oleh admin.",
+    );
+
+  // Fresh access every request: a removed role drops the data at once.
+  const data = await loadTenantAccess(context, token.userId);
+  const access = resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId: token.userId,
+    ...data,
+    mfaVerified: false,
+    now: new Date(),
+  });
+  if (!access.permissions.includes("ai.ask"))
+    throw new AiError("AI_TOOL_FORBIDDEN");
+  return {
+    tokenId: token.id,
+    clientId: token.mcpClientId,
+    scopes: token.scopes,
+    access,
+    rateLimitPerMinute: settings.mcpRateLimitPerMinute,
+  };
+}
+
+// ---- Per-token rate limit (sliding window, in memory) ----------------------
+
+const WINDOW_MS = 60_000;
+const hits = new Map<string, number[]>();
+
+/** Throws `MCP_RATE_LIMITED` when the token passed its per-minute budget. */
+export function enforceMcpRateLimit(
+  tokenId: string,
+  limitPerMinute: number,
+  nowMs = Date.now(),
+): void {
+  const recent = (hits.get(tokenId) ?? []).filter((t) => nowMs - t < WINDOW_MS);
+  if (recent.length >= limitPerMinute) {
+    hits.set(tokenId, recent);
+    throw new AiError("MCP_RATE_LIMITED");
+  }
+  recent.push(nowMs);
+  hits.set(tokenId, recent);
+  if (hits.size > 5_000)
+    for (const [key, times] of hits)
+      if (times.every((t) => nowMs - t >= WINDOW_MS)) hits.delete(key);
+}
+
+export function resetMcpRateLimits(): void {
+  hits.clear();
+}
+
+// ---- MCP server ------------------------------------------------------------
+
+const CATALOG_URI = "legend://tools/catalog";
+const GLOSSARY_URI = "legend://metrics/definitions";
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+/** A fresh stateless `Server` bound to one authenticated principal. */
+export function createMcpServer(principal: McpPrincipal): Server {
+  const ctx = (): AiToolContext => ({
+    access: principal.access,
+    channel: "mcp",
+    mcpClientId: principal.clientId,
+    now: new Date(),
+  });
+  const scopes = principal.scopes;
+
+  const server = new Server(
+    { name: "legend-super-app", version: "1.0.0" },
+    { capabilities: { tools: {}, resources: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools = await listCallableTools(ctx(), { scopes });
+    const specs = new Map(toToolSpecs(tools).map((s) => [s.name, s]));
+    return {
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        title: tool.titleId,
+        description: specs.get(tool.name)?.description ?? tool.description,
+        inputSchema: {
+          type: "object" as const,
+          ...(specs.get(tool.name)?.inputSchema ?? {}),
+        },
+        annotations: {
+          readOnlyHint: tool.mcpAnnotations.readOnlyHint,
+          destructiveHint: tool.mcpAnnotations.destructiveHint,
+          idempotentHint: tool.mcpAnnotations.idempotentHint,
+          openWorldHint: tool.mcpAnnotations.openWorldHint,
+        },
+      })),
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const result = await invokeAiTool(
+      ctx(),
+      request.params.name,
+      request.params.arguments ?? {},
+      { scopes },
+    );
+    if (!result.ok)
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: jsonText({
+              errorCode: result.errorCode,
+              message: result.message,
+            }),
+          },
+        ],
+      };
+    const out = result.output;
+    return {
+      content: [{ type: "text" as const, text: jsonText(out) }],
+      ...(out && typeof out === "object" && !Array.isArray(out)
+        ? { structuredContent: out as Record<string, unknown> }
+        : {}),
+    };
+  });
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      {
+        uri: CATALOG_URI,
+        name: "Katalog alat",
+        description: "Alat yang boleh dipakai token ini.",
+        mimeType: "application/json",
+      },
+      {
+        uri: GLOSSARY_URI,
+        name: "Definisi metrik",
+        description: "Kamus metrik baku (kode, nama, satuan, rumus).",
+        mimeType: "application/json",
+      },
+    ],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    if (uri === CATALOG_URI) {
+      const tools = await listCallableTools(ctx(), { scopes });
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: "application/json",
+            text: jsonText(
+              tools.map((t) => ({
+                name: t.name,
+                code: t.code,
+                kind: t.kind,
+                title: t.titleId,
+                description: t.description,
+                scope: t.scope,
+              })),
+            ),
+          },
+        ],
+      };
+    }
+    if (uri === GLOSSARY_URI)
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: "application/json",
+            text: jsonText(
+              cafeLegendMetricDefinitions.map((m) => ({
+                code: m.code,
+                name: m.name,
+                description: m.description,
+                unit: m.unit,
+              })),
+            ),
+          },
+        ],
+      };
+    throw new HttpError(404, "NOT_FOUND", "Resource tidak ditemukan.");
+  });
+
+  return server;
+}

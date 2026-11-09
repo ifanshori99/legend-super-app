@@ -6,8 +6,8 @@
 //
 // `requiredPermissions` is ALL-of and lists what every permitted caller of the
 // tool holds. `ai.ask` (the channel gate) is checked by the API for every
-// tool; it is listed only where it is the tool's sole requirement (TL-08,
-// TL-10), because those tools need no data permission. `minRoles` is the PRD "Role Minimum" column mapped literally; access
+// tool; it is listed only where it is the tool's sole requirement (TL-08),
+// because that tool needs no data permission. `minRoles` is the PRD "Role Minimum" column mapped literally; access
 // says how far the rows reach (own, the caller's outlets, whole tenant, or
 // closed-period aggregates only). The server still intersects every outlet
 // filter with the caller's real scope (AIG-01).
@@ -50,7 +50,10 @@ import type {
   McpScope,
 } from "./ids.ts";
 import { createActionRequestSchema } from "./schemas.ts";
-import type { CreateActionRequest } from "./schemas.ts";
+import type {
+  ActionRequestApprovalActionType,
+  CreateActionRequest,
+} from "./schemas.ts";
 import { AI_TOOL_IO, TOOL_MAX_ROWS } from "./tool-io.ts";
 
 // ---- Definition ------------------------------------------------------------
@@ -275,11 +278,6 @@ const REQUESTER_ROLES: readonly AiToolMinRole[] = ROLE_TEMPLATE_KEYS.filter(
     ),
 ).map((key) => role(key, "own"));
 
-/** TL-10 "Semua staf": every role except super_admin and shareholder. */
-const ALL_STAFF_ROLES: readonly AiToolMinRole[] = ROLE_TEMPLATE_KEYS.filter(
-  (key) => key !== "super_admin" && key !== "shareholder",
-).map((key) => role(key, "tenant"));
-
 const writeTool = (code: AiToolCode): AiToolDefinition => {
   const tool = WRITE_TOOLS.find((entry) => entry.code === code);
   if (!tool) throw new RangeError(`Missing write tool ${code}`);
@@ -427,8 +425,14 @@ const READ_TOOLS = {
       "Search internal SOP and policy documents. Returns short snippets with the source version and a link.",
     featureCodes: ["AI-04", "AI-06"],
     scope: "mcp:sop:read",
-    requiredPermissions: ["ai.ask"],
-    minRoles: ALL_STAFF_ROLES,
+    requiredPermissions: ["self.sop.read"],
+    minRoles: [
+      role("owner", "tenant", ["hr.sop.manage"]),
+      role("general_manager", "tenant", ["hr.sop.manage"]),
+      role("hr", "tenant", ["hr.sop.manage"]),
+      role("kitchen_lead", "assigned_outlets", ["hr.sop.manage"]),
+      role("employee", "own"),
+    ],
     maxRows: 10,
   }),
   "TL-11": read({
@@ -680,6 +684,8 @@ export function toActionRequestDraft(args: {
   source: ActionRequestSource;
   mcpClientId: McpClientId | null;
   approvalRequestId: ApprovalRequestId;
+  /** Default: ai_action for ai, mcp_action for mcp. A module action is allowed. */
+  approvalActionType?: ActionRequestApprovalActionType;
   now: string;
   expiresAt: string;
 }): CreateActionRequest {
@@ -706,7 +712,9 @@ export function toActionRequestDraft(args: {
     mcpClientId: args.mcpClientId,
     payload,
     approvalRequestId: args.approvalRequestId,
-    approvalActionType: args.source === "ai" ? "ai_action" : "mcp_action",
+    approvalActionType:
+      args.approvalActionType ??
+      (args.source === "ai" ? "ai_action" : "mcp_action"),
     expiresAt: args.expiresAt,
   });
 }

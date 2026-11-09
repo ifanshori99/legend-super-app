@@ -603,6 +603,34 @@
       "when": 1794158009204,
       "tag": "0085_payroll_pph21_policy_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1794180920789,
+      "tag": "0086_ai_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1794180943067,
+      "tag": "0087_ai_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1794180944917,
+      "tag": "0088_ai_role_templates_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794180945917,
+      "tag": "0089_ai_approval_policies_data",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import {
   deploymentPolicyCheck,
 } from "@starter/shared/env";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
+import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -178,6 +179,50 @@ const schema = z
       .max(255)
       .regex(/^[\w.+-]+$/)
       .default("dev"),
+    // AI gateway (WS-12). All optional: with no key configured AI is OFF and
+    // every AI call answers AI_PROVIDER_UNAVAILABLE (lib/ai/provider-factory.ts).
+    AI_PROVIDER: z
+      .enum(["anthropic", "openai-compatible", "fake"])
+      .default("anthropic"),
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    AI_MODEL: z.string().min(1).max(200).default("claude-opus-5-5"),
+    AI_EFFORT: z.enum(["low", "medium", "high"]).default("low"),
+    // openai-compatible only; SSRF-checked below (https public host in production).
+    AI_BASE_URL: z.string().min(1).optional(),
+    AI_API_KEY: z.string().min(1).optional(),
+    AI_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .min(1000)
+      .max(300_000)
+      .default(30_000),
+    // Lifetime of an MCP access token (seconds).
+    MCP_TOKEN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(86_400)
+      .default(3600),
+  })
+  .superRefine((values, ctx) => {
+    if (values.AI_BASE_URL !== undefined) {
+      const reason = unsafeAiUrlReason(
+        values.AI_BASE_URL,
+        values.NODE_ENV === "production",
+      );
+      if (reason)
+        ctx.addIssue({
+          code: "custom",
+          path: ["AI_BASE_URL"],
+          message: reason,
+        });
+    }
+    if (values.NODE_ENV === "production" && values.AI_PROVIDER === "fake")
+      ctx.addIssue({
+        code: "custom",
+        path: ["AI_PROVIDER"],
+        message: "The fake AI provider is not allowed in production.",
+      });
   })
   .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed

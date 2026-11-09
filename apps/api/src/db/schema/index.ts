@@ -77,3 +77,5 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// WS-12 Tanya AI, MCP server and AI governance (legend-zfi4, xq8y, zw9r, xkbt).
+export * from "./ai";

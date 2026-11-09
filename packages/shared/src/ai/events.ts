@@ -5,9 +5,9 @@
 // counters only: never question text, tool parameters, token values or PII
 // (PRD §3 Fitur 40 Input Minimum, MCP-03). Tokens appear only as `tokenPrefix`.
 //
-// The catalogued placeholder `tool_request.approved` has no payload here: it
-// predates the action_request aggregate and has no emitter (action_request.approved
-// covers it).
+// The old placeholder `tool_request.approved` was removed from the catalog
+// (legend-tpw4): it predated the action_request aggregate and had no emitter or
+// consumer; action_request.approved covers it.
 
 import {
   idrSchema,

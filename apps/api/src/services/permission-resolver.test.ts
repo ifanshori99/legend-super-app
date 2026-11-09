@@ -255,4 +255,37 @@ describe("TEN-03 permission resolver", () => {
       cashier.contextFor("payroll.run", { type: "outlet", id: bandung }),
     ).toBeNull();
   });
+
+  it("allowsVia checks one template's own assignments (kitchen_lead@A + cashier@B)", () => {
+    const cashierRow = fx.assignments.find(
+      (row) => row.userId === fx.users.cashier.id &&
+        fx.roles.find((role) => role.id === row.roleId)?.templateKey === "cashier",
+    )!;
+    const extra = {
+      ...cashierRow,
+      id: "00000000-0000-4000-8000-00000000a1b2" as typeof cashierRow.id,
+      userId: fx.users.kitchenLead.id,
+      scope: { type: "outlet" as const, id: bandung2 },
+    } as unknown as (typeof fx.assignments)[number];
+    const lead = snapshotFor("kitchenLead", {
+      assignments: [...fx.assignments, extra],
+    });
+    const atB = { type: "outlet", id: bandung2 } as const;
+    // Union of roles: the cashier grant reaches B.
+    expect(lead.allows("menu.item.view", atB)).toBe(true);
+    // As kitchen_lead it does not; at A it does.
+    expect(lead.allowsVia("kitchen_lead", "menu.item.view", atB)).toBe(false);
+    expect(
+      lead.allowsVia("kitchen_lead", "menu.item.view", {
+        type: "outlet",
+        id: bandung,
+      }),
+    ).toBe(true);
+    expect(lead.allowsVia("cashier", "menu.item.view", atB)).toBe(true);
+    expect(lead.allowsVia("owner", "menu.item.view", atB)).toBe(false);
+    expect(lead.permissionsVia("kitchen_lead")).toContain("recipe.manage");
+    expect(lead.permissionsVia("cashier")).not.toContain("recipe.manage");
+    expect(lead.permissionsVia("cashier")).toContain("menu.item.view");
+    expect(lead.permissionsVia("owner")).toEqual([]);
+  });
 });
