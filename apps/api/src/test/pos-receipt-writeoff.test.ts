@@ -1216,6 +1216,29 @@ describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
     expect(await writeoffRows(outletId)).toHaveLength(1);
   });
 
+  it("a revoked session with a fresh second-factor stamp cannot write off (401) and writes nothing", async () => {
+    const { outletId } = await outletWithHole("WS3");
+    const revoked = await member(
+      ids.ownerRole,
+      "Pemilik Dicabut",
+      tenant.tenantId,
+      { mfa: true },
+    );
+    await owner.query(
+      `UPDATE "session" SET mfa_verified_at = now(), revoked_at = now()
+        WHERE revoked_at IS NULL AND user_id = $1`,
+      [revoked.userId],
+    );
+
+    const refused = await writeOff(revoked, outletId, {
+      prefix: "WS3",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(401);
+    expect(await writeoffRows(outletId)).toEqual([]);
+  });
+
   // ---- legend-xlvvl ---------------------------------------------------------------
 
   it("repro xlvvl b: with the edge state on, listing the write-offs is refused (409); in the cloud it works", async () => {
