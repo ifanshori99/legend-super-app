@@ -426,6 +426,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Keputusan: semua bahan diambil dari `sale_location_id` outlet; konfigurasi kurang (tanpa resep, tanpa lokasi, resep nonaktif) dicatat `skipped`, tidak melempar error (supaya outbox tidak macet). Comp = barang gratis yang tidak ada di baris tertagih.
 - Bead lanjutan: `legend-p4z1` (KDS emit order_issue.recorded), `legend-fbms` (order total 0 tidak emit order.paid), `legend-q55i` (repost skipped), `legend-3kdd` (FK menu → recipes), `legend-89zm` (rute lokasi per item).
 - Berikut: review CTO, merge ke `main` (rapikan nomor migration).
+
 ## legend-0ogy refund DOIT lewat PaymentRefundPort (engineer, cabang `ws/doit-refund`, 2026-11-09)
 
 - Dasar: `ws/fix-refund-quarantine-ops` (84a89e35) + merge `milestone/m1` (dab1d592, provider DOIT). Merge bersih, journal migrasi tanpa duplikat, tanpa migrasi baru.

@@ -19,36 +19,77 @@ Tenant, entitas legal, dan outlet yang dibuat lewat panel langsung siap: bagan a
 ## Kontrak antar potongan (signature tetap, jangan diubah sepihak)
 
 ### S1. Katalog UOM standar (shared)
+
 `packages/shared/src/inventory/standard-uoms.ts`, diekspor dari entry `@starter/shared/inventory`:
+
 ```ts
-export const STANDARD_UOM_CATALOG: readonly { code: string; name: string }[]
+export const STANDARD_UOM_CATALOG: readonly { code: string; name: string }[];
 ```
+
 Code ≤10 char, lowercase, unik. Isi minimal kg, g, l, ml, pcs, pack (nama sama dengan fixture) + karton (`ctn`), botol (`btl`), kaleng (`can`), sachet (`sachet`), dus/box (`box`), porsi (`porsi`). Juga:
+
 ```ts
-export const STANDARD_STOCK_LOCATIONS: readonly { type: StockLocationType; name: string }[]
+export const STANDARD_STOCK_LOCATIONS: readonly {
+  type: StockLocationType;
+  name: string;
+}[];
 // warehouse "Gudang Utama", chiller "Chiller", freezer "Freezer", bar "Bar", kitchen "Dapur", pastry "Pastry"
 ```
+
 Test unit kecil boleh di `packages/shared` bila pola test ada.
 
 ### S2. Provisioning inventori (API)
+
 `apps/api/src/services/inventory-provisioning.service.ts`:
+
 ```ts
-export async function provisionStandardUoms(tx: TenantTransaction, context: ScopedTenantContext, actorId: UserId | null): Promise<{ inserted: number }>
-export async function provisionOutletStockLocations(tx: TenantTransaction, context: ScopedTenantContext, outletId: string, actorId: UserId | null): Promise<{ inserted: number }>
-export async function backfillTenantInventoryDefaults(tenantId: string): Promise<{ uomsInserted: number; outlets: number; locationsInserted: number }>
+export async function provisionStandardUoms(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  actorId: UserId | null,
+): Promise<{ inserted: number }>;
+export async function provisionOutletStockLocations(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  outletId: string,
+  actorId: UserId | null,
+): Promise<{ inserted: number }>;
+export async function backfillTenantInventoryDefaults(
+  tenantId: string,
+): Promise<{
+  uomsInserted: number;
+  outlets: number;
+  locationsInserted: number;
+}>;
 ```
+
 - UOM: insert `onConflictDoNothing` pada `(tenant_id, code)`. Baris lama tidak diubah.
 - Lokasi: `pg_advisory_xact_lock` per outlet (mis. `hashtextextended('stock_locations:'||outletId, 0)`), lalu insert hanya tipe yang belum ada untuk outlet itu (cek tipe, bukan nama). Lokasi lama tidak diubah.
 - Audit satu baris per pemanggilan yang benar-benar menyisipkan (inserted > 0): action `inventory.uoms.provisioned` / `inventory.stock_locations.provisioned`, after = daftar code/tipe yang disisipkan. Tidak menyisipkan apa-apa: tidak ada audit.
 - Backfill: `withTenant(db, platformTenantScope(tenantId), ...)`, UOM tenant + lokasi tiap outlet tenant.
 
 ### S3. Provisioning CoA (API, tingkat K)
+
 `apps/api/src/services/accounting-provisioning.service.ts`:
+
 ```ts
-export type ChartProvisionResult = { legalEntityId: string; status: "provisioned" | "already_present"; accounts: number; mappings: number }
-export async function provisionStandardChart(tx: TenantTransaction, context: ScopedTenantContext, legalEntityId: string, actorId: UserId | null): Promise<ChartProvisionResult>
-export async function backfillTenantCharts(tenantId: string): Promise<ChartProvisionResult[]>
+export type ChartProvisionResult = {
+  legalEntityId: string;
+  status: "provisioned" | "already_present";
+  accounts: number;
+  mappings: number;
+};
+export async function provisionStandardChart(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  legalEntityId: string,
+  actorId: UserId | null,
+): Promise<ChartProvisionResult>;
+export async function backfillTenantCharts(
+  tenantId: string,
+): Promise<ChartProvisionResult[]>;
 ```
+
 - Kunci `pg_advisory_xact_lock` per entitas. Lalu: entitas sudah punya akun SATU PUN → `already_present`, tidak menyisipkan apa pun (bagan tenant tidak pernah dicampur dengan template). Bagan kosong → sisipkan semua baris template (parent dulu, `parentId` dari `parentCode`), lalu mapping default dari `roles` tiap baris.
 - Mapping hanya disisipkan bila entitas belum punya mapping sama sekali.
 - Validasi kandidat dengan `chartOfAccountsIssues` + `accountMappingIssues` SEBELUM insert; ada issue → throw (template rusak = bug, jangan diam).
@@ -57,13 +98,16 @@ export async function backfillTenantCharts(tenantId: string): Promise<ChartProvi
 - Backfill: tiap entitas legal tenant dalam `withTenant(db, platformTenantScope(tenantId), ...)`.
 
 ### S4. Wiring + skrip backfill
+
 - `createLegalEntity`: setelah insert sukses (DI LUAR try/catch uniqueViolation NPWP, tapi di tx yang sama) panggil `provisionStandardChart(tx, context, row.id, null)`.
 - `createOutlet`: setelah insert sukses, di tx yang sama, `provisionStandardUoms(tx, context, null)` (tenant lama yang belum punya UOM ikut terisi) lalu `provisionOutletStockLocations(tx, context, row.id, null)`.
 - `createTenant`: di tx yang sama, `provisionStandardUoms(tx, context, null)` (actorId = actorUserId bila tipenya cocok).
 - Skrip: `apps/api/src/db/backfill-tenant-defaults.ts` (pola skrip lain di `apps/api/src/db/`), menelusuri semua tenant, memanggil `backfillTenantCharts` dan `backfillTenantInventoryDefaults`, mencetak ringkasan per tenant (tanpa data pribadi). Tambah script `db:backfill-defaults` di `apps/api/package.json` dan root bila pola `db:*` ada di root. Opsi `--tenant <id>`.
 
 ### S5. Test
+
 `apps/api/src/test/provisioning-defaults.test.ts` (pola dari `apps/api/src/test/accounting-core.test.ts` dan `platform-org-api.test.ts`):
+
 1. POST `/api/org/legal-entities` → GET akun entitas = jumlah baris template, GET mapping = semua role template; satu audit `accounting.chart.provisioned`.
 2. POST `/api/org/outlets` → 6 lokasi (satu per tipe), UOM tenant memuat katalog standar.
 3. Panggil ulang `provisionStandardChart`, `provisionOutletStockLocations`, `provisionStandardUoms`, `backfillTenantCharts`, `backfillTenantInventoryDefaults` → tidak ada baris baru, status `already_present`, tidak ada audit tambahan.
@@ -75,6 +119,7 @@ export async function backfillTenantCharts(tenantId: string): Promise<ChartProvi
 Jalankan: `LEGEND_TEST_FILES="src/test/provisioning-defaults.test.ts" pnpm test` dari root worktree.
 
 ## Aturan
+
 - Hanya file di atas. Butuh file lain: lapor ke engineer, jangan edit.
 - Tidak ada migrasi kecuali benar-benar perlu; bila perlu, lapor dulu.
 - Komentar file baru: rujuk PRD v1.7 §3.19 / §16 Lokasi Stok dan bead id.
