@@ -13,9 +13,16 @@
 // - the amounts given must be exactly the rule's keys (no silent leftovers),
 //   and the result must balance; anything else fails closed.
 //
-// One business fact posts once: sales and refunds post on `order.paid` /
-// `order.refunded` (per payment method), so `payment.paid` and
-// `payment.refunded` post nothing; gateway and EDC fees post on settlement.
+// One business fact posts once, receipt-first for gateway money: every gateway
+// receipt (`payment.paid`: sale, DP, late or double payment) books Dr
+// gateway_clearing / Cr customer_deposit on the day the money arrived, so
+// gateway_clearing equals what the gateway received and settlement reconciles.
+// `order.paid` then moves the intent-backed gateway part and any DP applied
+// out of customer_deposit into the sale. `order.refunded` credits
+// customer_deposit for the gateway part (owed to the guest until payout) and
+// `payment.refunded` pays it out of gateway_clearing. A forfeited DP moves
+// from customer_deposit to deposit_forfeit_income on reservation.cancelled /
+// reservation.no_show. Gateway and EDC fees post on settlement.
 // Gateway switching changes only which clearing amount is filled (PAY-05).
 
 import { z } from "zod";
@@ -128,6 +135,11 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (penjualan, pembayaran per metode); §3.20 Liabilitas Poin; POS-05`,
     [
       ["cash_on_hand", "debit", "paidCashIdr"],
+      // Gateway tender backed by a payment intent: its receipt already sits in
+      // customer_deposit (payment.paid). Tender without an intent: straight to
+      // gateway_clearing. DP applied to the order also leaves customer_deposit.
+      ["customer_deposit", "debit", "paidGatewayIntentIdr"],
+      ["customer_deposit", "debit", "paidDepositIdr"],
       ["gateway_clearing", "debit", "paidGatewayIdr"],
       ["edc_clearing", "debit", "paidEdcIdr"],
       ["loyalty_liability", "debit", "paidPointsIdr"],
@@ -149,11 +161,52 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["tax_payable_pbjt", "debit", "pbjtIdr"],
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
-      ["gateway_clearing", "credit", "refundGatewayIdr"],
+      // Owed to the guest until the gateway pays it out (payment.refunded).
+      ["customer_deposit", "credit", "refundGatewayIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       // Points returned to the member restore the liability the sale used
       // (mirror of the order.paid loyalty_liability debit, §3.20).
       ["loyalty_liability", "credit", "refundPointsIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.paid" },
+    "customer_deposit",
+    "Penerimaan dana payment gateway (uang muka pelanggan)",
+    `${AUTO} (pembayaran per metode); §3.13 Orkestrasi Pembayaran`,
+    [
+      ["gateway_clearing", "debit", "receivedIdr"],
+      ["customer_deposit", "credit", "receivedIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.refunded" },
+    "refund",
+    "Refund dibayarkan kembali lewat payment gateway",
+    `${AUTO}; ORD-09; §3.13 Orkestrasi Pembayaran`,
+    [
+      ["customer_deposit", "debit", "amountIdr"],
+      ["gateway_clearing", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { event: "reservation.cancelled" },
+    "customer_deposit",
+    "Uang muka reservasi hangus (batal)",
+    `${AUTO}; §3.25 Reservasi (uang muka)`,
+    [
+      ["customer_deposit", "debit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedIdr"],
+    ],
+  ),
+  rule(
+    { event: "reservation.no_show" },
+    "customer_deposit",
+    "Uang muka reservasi hangus (tidak datang)",
+    `${AUTO}; §3.25 Reservasi (uang muka)`,
+    [
+      ["customer_deposit", "debit", "forfeitedIdr"],
+      ["deposit_forfeit_income", "credit", "forfeitedIdr"],
     ],
   ),
   rule(

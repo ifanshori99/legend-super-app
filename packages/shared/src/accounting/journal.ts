@@ -46,6 +46,7 @@ import { nextPeriod, periodKeySchema } from "./period-key.ts";
 export const JOURNAL_SOURCE_TYPES = [
   "sale",
   "refund",
+  "customer_deposit",
   "gateway_settlement",
   "edc_settlement",
   "cogs",

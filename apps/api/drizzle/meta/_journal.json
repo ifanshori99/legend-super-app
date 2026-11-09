@@ -792,6 +792,20 @@
       "when": 1794197676507,
       "tag": "0112_ws09_wifi_hardening_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1794204641982,
+      "tag": "0113_auto_journals",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1794204676576,
+      "tag": "0114_auto_journals_backfill_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -337,6 +337,8 @@ const cashSale = post({
     { eventName: "order.paid" },
     {
       paidCashIdr: 137_500,
+      paidGatewayIntentIdr: 0,
+      paidDepositIdr: 0,
       paidGatewayIdr: 0,
       paidEdcIdr: 0,
       paidPointsIdr: 0,
@@ -361,7 +363,21 @@ post({
     bandung,
   ),
 });
-// QRIS sale through the gateway, then its settlement with MDR (illustrative 0.7%).
+// QRIS sale through the gateway: the receipt books first (payment.paid), the
+// sale then moves it out of customer_deposit, and settlement with MDR
+// (illustrative 0.7%) clears gateway_clearing.
+post({
+  entryDate: "2026-11-01",
+  sourceType: "customer_deposit",
+  sourceId: fixedId("9b000000", 1),
+  description: "Penerimaan QRIS BDG-01",
+  outletId: bandung,
+  lines: fromRule(
+    { eventName: "payment.paid" },
+    { receivedIdr: 275_000 },
+    bandung,
+  ),
+});
 post({
   entryDate: "2026-11-01",
   sourceType: "sale",
@@ -372,7 +388,9 @@ post({
     { eventName: "order.paid" },
     {
       paidCashIdr: 0,
-      paidGatewayIdr: 275_000,
+      paidGatewayIntentIdr: 275_000,
+      paidDepositIdr: 0,
+      paidGatewayIdr: 0,
       paidEdcIdr: 0,
       paidPointsIdr: 0,
       discountIdr: 0,

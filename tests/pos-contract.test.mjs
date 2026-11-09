@@ -1558,6 +1558,8 @@ test("POS-04 order.paid and order.refunded payloads post balanced WS-07 journals
     pbjtIdr: 10_920,
     roundingIdr: -20,
     paidCashIdr: 110_100,
+    paidGatewayIntentIdr: 0,
+    paidDepositIdr: 0,
     paidGatewayIdr: 0,
     paidEdcIdr: 0,
     paidPointsIdr: 10_000,
