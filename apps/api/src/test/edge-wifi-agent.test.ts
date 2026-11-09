@@ -83,6 +83,8 @@ type Row = {
   superseded_by: string | null;
   end_reason: string | null;
   revoke_requested_at: Date | null;
+  revoke_retry_at: Date | null;
+  ended_at: Date | null;
   attempt_count: number;
 };
 
@@ -90,7 +92,7 @@ async function rowsOf(tenant: IsolatedTenant, wifiSessionId: string) {
   return asOwner(tenant.tenantId, async (client) => {
     const result = await client.query<Row>(
       `SELECT id, status, speed_tier, bandwidth_kbps, controller_device_id, superseded_by,
-              end_reason, revoke_requested_at, attempt_count
+              end_reason, revoke_requested_at, revoke_retry_at, ended_at, attempt_count
        FROM wifi_device_grants
        WHERE tenant_id = $1 AND wifi_session_id = $2
        ORDER BY requested_at, created_at, id`,
@@ -384,7 +386,9 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     let started!: () => void;
-    const authorizeStarted = new Promise<void>((resolve) => (started = resolve));
+    const authorizeStarted = new Promise<void>(
+      (resolve) => (started = resolve),
+    );
     let hold = false;
     const forget = new Set<string>();
     const f = await fixture({
@@ -440,6 +444,85 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
       ["revoked", "staff_revoked"],
       ["revoked", "staff_revoked"],
     ]);
+  });
+
+  it("a failed revoke of a late grant is kept on the ended row and retried with backoff (legend-nffy)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let started!: () => void;
+    const authorizeStarted = new Promise<void>(
+      (resolve) => (started = resolve),
+    );
+    const forget = new Set<string>();
+    const f = await fixture({
+      providerTimeoutMs: 30_000,
+      provider: (sim) => ({
+        async authorize(context, request) {
+          started();
+          await gate;
+          return sim.authorize(context, request);
+        },
+        async revoke(context, reference) {
+          // A controller that keeps no record of a reference it never saw.
+          if (forget.delete(reference.reference))
+            return { reference: reference.reference, authorized: false };
+          return sim.revoke(context, reference);
+        },
+      }),
+    });
+    const input = f.input();
+    const applying = f.agent.applySession(f.ctx, input);
+    await authorizeStarted;
+    const [pending] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(pending!.status).toBe("pending");
+    forget.add(pending!.id);
+    await f.agent.endSession(f.ctx, {
+      outletId: f.outletId,
+      wifiSessionId: input.wifiSessionId,
+      reason: "staff_revoked",
+    });
+    // The grant lands after its revoke, and the second revoke fails.
+    f.sim.script("revoke", "transport_error");
+    release();
+    expect((await applying).status).toBe("revoked");
+    expect(f.access(input.controllerDeviceId).state).toBe("online");
+    const [ended] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(ended).toMatchObject({
+      status: "revoked",
+      end_reason: "staff_revoked",
+      controller_device_id: null,
+    });
+    expect(ended!.revoke_retry_at!.getTime()).toBe(f.now().getTime() + 30_000);
+    const revokesBefore = f.sim.calls.revoke;
+
+    // Not due yet: no controller call.
+    f.advance(29);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(0);
+    expect(f.sim.calls.revoke).toBe(revokesBefore);
+    expect(f.access(input.controllerDeviceId).state).toBe("online");
+
+    // Due: fails again, the next try moves out with the row's age.
+    f.advance(1);
+    f.sim.script("revoke", "transport_error");
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(0);
+    expect(f.sim.calls.revoke).toBe(revokesBefore + 1);
+    const [again] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(again!.revoke_retry_at!.getTime()).toBe(f.now().getTime() + 30_000);
+
+    // Due again: succeeds, the marker clears, the device is blocked.
+    f.advance(30);
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(1);
+    expect(f.access(input.controllerDeviceId).state).toBe("blocked");
+    expect(f.sim.cuts()).toEqual([]);
+    const [done] = await rowsOf(f.tenant, input.wifiSessionId);
+    expect(done!.revoke_retry_at).toBeNull();
+    // Only revoke_retry_at changed on the ended row.
+    expect({ ...done, revoke_retry_at: null }).toEqual({
+      ...ended,
+      revoke_retry_at: null,
+    });
+    expect((await f.agent.reconcile(f.ctx, f.outletId)).revoked).toBe(0);
+    expect(f.sim.calls.revoke).toBe(revokesBefore + 2);
   });
 
   it("an in-flight grant refuses a different request with 409", async () => {
@@ -592,7 +675,11 @@ describe("edge Wi-Fi agent (legend-hsk)", () => {
     await expect(f.agent.walledGarden(f.ctx)).rejects.toMatchObject({
       reason: "WIFI_WALLED_GARDEN_TOO_LARGE",
     });
-    f.advance(WIFI_BASE_CHUNK_SECONDS + WIFI_FULL_GRACE_SECONDS - WIFI_RENEW_LEAD_SECONDS);
+    f.advance(
+      WIFI_BASE_CHUNK_SECONDS +
+        WIFI_FULL_GRACE_SECONDS -
+        WIFI_RENEW_LEAD_SECONDS,
+    );
     expect((await f.agent.reconcile(f.ctx, f.outletId)).renewed).toBe(1);
     expect(f.sim.requests).toHaveLength(2);
     expect(f.sim.requests[1]!.walledGarden).toEqual(good.hosts);

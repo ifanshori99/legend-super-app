@@ -479,6 +479,11 @@ test("Wi-Fi: bounded input, idempotent authorize, revoke is final for that vouch
   const ref = refOf(fx.wifi);
   assert.equal((await wifi.revoke(context, ref)).authorized, false);
   assert.equal((await wifi.authorize(context, fx.wifi)).authorized, false);
+  // A reference revoked before the controller saw it never authorizes later.
+  const late = { ...fx.wifi, reference: `${fx.wifi.reference}-late` };
+  assert.equal((await wifi.revoke(context, refOf(late))).authorized, false);
+  assert.equal((await wifi.authorize(context, late)).authorized, false);
+  assert.equal((await wifi.authorize(context, late)).authorized, false);
 });
 
 test("lock: validity window, idempotent issue, revoke", async () => {
