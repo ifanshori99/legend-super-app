@@ -108,3 +108,5 @@ export * from "./website";
 export * from "./delivery";
 // WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
 export * from "./recipe";
+// WS-06 goods receipts: partial receiving, QC, photos (legend-o1o4s).
+export * from "./inventory-receiving";
