@@ -348,6 +348,10 @@ export const recipeDeductions = pgTable(
     }).$type<RecipeDeductionReversalReason>(),
     // Void id or refund id that reversed it (UUID or ULID, so text).
     reversalSourceId: text("reversal_source_id"),
+    // Set when a reversal of a posted deduction was refused by a stock rule:
+    // the row stays `posted` with reason/source kept, and `day.closed` retries
+    // it (cleared once the reversal posts).
+    reversalFailedAt: timestamp("reversal_failed_at", { withTimezone: true }),
   },
   (table) => [
     unique("recipe_deductions_tenant_id_id_key").on(table.tenantId, table.id),
@@ -407,7 +411,15 @@ export const recipeDeductions = pgTable(
     ),
     check(
       "recipe_deductions_reversed_check",
-      sql`(${table.status} = 'reversed') = (${table.reversedAt} IS NOT NULL AND ${table.reversalReason} IS NOT NULL AND ${table.reversalSourceId} IS NOT NULL)`,
+      sql`(${table.status} = 'reversed') = (${table.reversedAt} IS NOT NULL)`,
+    ),
+    check(
+      "recipe_deductions_reversal_source_check",
+      sql`(${table.reversedAt} IS NOT NULL OR ${table.reversalFailedAt} IS NOT NULL) = (${table.reversalReason} IS NOT NULL AND ${table.reversalSourceId} IS NOT NULL)`,
+    ),
+    check(
+      "recipe_deductions_reversal_failed_check",
+      sql`${table.reversalFailedAt} IS NULL OR ${table.status} = 'posted'`,
     ),
     check(
       "recipe_deductions_reversal_reason_check",

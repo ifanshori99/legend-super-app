@@ -85,6 +85,7 @@ CREATE TABLE "recipe_deductions" (
 	"reversed_at" timestamp with time zone,
 	"reversal_reason" varchar(20),
 	"reversal_source_id" text,
+	"reversal_failed_at" timestamp with time zone,
 	CONSTRAINT "recipe_deductions_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "recipe_deductions_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "recipe_deductions_tenant_idempotency_key" UNIQUE("tenant_id","idempotency_key"),
@@ -95,7 +96,9 @@ CREATE TABLE "recipe_deductions" (
 	CONSTRAINT "recipe_deductions_skip_reason_check" CHECK ("recipe_deductions"."skip_reason" IS NULL OR "recipe_deductions"."skip_reason" IN ('no_recipe', 'no_sale_location', 'recipe_inactive', 'recipe_error')),
 	CONSTRAINT "recipe_deductions_cost_check" CHECK ("recipe_deductions"."cost_idr" IS NULL OR "recipe_deductions"."cost_idr" >= 0),
 	CONSTRAINT "recipe_deductions_posted_check" CHECK (("recipe_deductions"."status" = 'posted' AND "recipe_deductions"."posted_at" IS NOT NULL) OR ("recipe_deductions"."status" IN ('pending', 'skipped') AND "recipe_deductions"."posted_at" IS NULL) OR "recipe_deductions"."status" = 'reversed'),
-	CONSTRAINT "recipe_deductions_reversed_check" CHECK (("recipe_deductions"."status" = 'reversed') = ("recipe_deductions"."reversed_at" IS NOT NULL AND "recipe_deductions"."reversal_reason" IS NOT NULL AND "recipe_deductions"."reversal_source_id" IS NOT NULL)),
+	CONSTRAINT "recipe_deductions_reversed_check" CHECK (("recipe_deductions"."status" = 'reversed') = ("recipe_deductions"."reversed_at" IS NOT NULL)),
+	CONSTRAINT "recipe_deductions_reversal_source_check" CHECK (("recipe_deductions"."reversed_at" IS NOT NULL OR "recipe_deductions"."reversal_failed_at" IS NOT NULL) = ("recipe_deductions"."reversal_reason" IS NOT NULL AND "recipe_deductions"."reversal_source_id" IS NOT NULL)),
+	CONSTRAINT "recipe_deductions_reversal_failed_check" CHECK ("recipe_deductions"."reversal_failed_at" IS NULL OR "recipe_deductions"."status" = 'posted'),
 	CONSTRAINT "recipe_deductions_reversal_reason_check" CHECK ("recipe_deductions"."reversal_reason" IS NULL OR "recipe_deductions"."reversal_reason" IN ('void', 'refund')),
 	CONSTRAINT "recipe_deductions_skipped_check" CHECK ("recipe_deductions"."status" <> 'skipped' OR "recipe_deductions"."skip_reason" IS NOT NULL)
 );

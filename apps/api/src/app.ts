@@ -37,8 +37,10 @@ import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
 import {
   setPosOrderPromoPort,
+  setPosReceiptPort,
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
+import { createPosReceiptPort } from "./services/pos-receipt.service.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
@@ -53,10 +55,11 @@ setQrOrderDepositCreditLookup(depositCreditForSession);
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt
-// numbering (legend-93a), cashier shift (legend-6c0), EDC (legend-m0k) and
-// points tenders keep their fail-closed defaults (pos-order-ports.ts) until
-// those beads land.
+// numbering (legend-93a) is wired below; cashier shift (legend-6c0), EDC
+// (legend-m0k) and points tenders keep their fail-closed defaults
+// (pos-order-ports.ts) until those beads land.
 setPosOrderPromoPort(orderPromoPort);
+setPosReceiptPort(createPosReceiptPort());
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 // INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
@@ -65,12 +68,29 @@ setInventoryRecipeSource(recipeBomSource);
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 
+// The e-receipt token in the path is a bearer credential too (bead legend-93a).
+const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
+
+function isMalformedPath(path: string) {
+  try {
+    decodeURIComponent(path);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
   const [rawPath, query] = url.split("?", 2);
+  // A malformed percent-encoding makes the router reject the request (400);
+  // the path may carry a credential in a param, so never log any of it.
+  if (rawPath && isMalformedPath(rawPath)) return "[malformed-url]";
   // The purchase order share token is a path segment: bearer credential.
-  const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
+  const path = rawPath
+    ?.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
+    .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())

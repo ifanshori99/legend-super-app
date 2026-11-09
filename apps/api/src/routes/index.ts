@@ -62,6 +62,7 @@ import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
@@ -140,6 +141,9 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+// WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
+// the order router passes unmatched paths through.
+apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 // WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
@@ -156,6 +160,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);
+// Public e-receipt page and PDF by link token, tenant from the host (legend-93a).
+apiRouter.use("/public/receipts", publicReceiptRouter);
 // Supplier-facing PO PDF by share token (legend-9yz): hashed token, rate
 // limited, token redacted from request logs.
 apiRouter.use("/public/purchase-orders", publicPurchaseOrderRouter);
