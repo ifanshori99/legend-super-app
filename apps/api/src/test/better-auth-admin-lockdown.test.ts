@@ -10,15 +10,11 @@
 //     below, is refused with HTTP 403 and body.code = "ADMIN_ENDPOINT_DISABLED".
 //   - Refused means no effect: the victim keeps the password, role, sessions
 //     and the user row.
-//   - Active platform admins keep `requirePermission({ notes: ["read-any"] })`
-//     (server-side has-permission call) on the existing admin notes route.
 //   - impersonate-user from a revoked platform admin stays 403.
 //
 // Assumptions (spec silent):
 //   - Refusal body is the Better Auth APIError shape: { code, message } at the
 //     top level of the JSON body (same as impersonation-grant.test.ts).
-//   - `/api/admin/notes` is the existing route guarded by
-//     requirePermission({ notes: ["read-any"] }) (see admin.test.ts).
 //   - The three actors get the same refusal; a revoked admin is a user whose
 //     `platform_admins.revoked_at` is set while `user.role` is still `admin`.
 //   - Request bodies below use the documented Better Auth admin API shapes;
@@ -26,12 +22,7 @@
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
-import {
-  cafeLegendPlatformFixtures,
-  requestSupportAccessInputSchema,
-} from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { requestSupportAccess } from "../services/platform-support.service.ts";
 import {
   agent,
   originHeader,
@@ -50,7 +41,6 @@ const VICTIM_PASSWORD = "Test-password-123!";
 const ATTACKER_PASSWORD = "Hacked-password-999!";
 
 const platformAdminIds: string[] = [];
-const supportTenantUserIds: string[] = [];
 
 type Client = ReturnType<typeof agent>;
 type Actor = { client: Client; userId: string; email: string };
@@ -222,7 +212,7 @@ const attacks: Attack[] = [
     // has-permission is a server-only call: over HTTP it is closed too.
     name: "POST has-permission",
     send: (actor) =>
-      post(actor, "has-permission", { permissions: { notes: ["read-any"] } }),
+      post(actor, "has-permission", { permissions: { user: ["impersonate"] } }),
   },
 ];
 
@@ -236,10 +226,6 @@ afterAll(async () => {
   await db.query(
     "DELETE FROM support_access_grants WHERE super_admin_user_id = ANY($1::text[])",
     [platformAdminIds],
-  );
-  await db.query(
-    "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
-    [cafeLegendPlatformFixtures.tenant.id, supportTenantUserIds],
   );
   await db.query(
     "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
@@ -271,25 +257,6 @@ describe("legend-imdzn Better Auth admin endpoints are closed over HTTP", () => 
 });
 
 describe("legend-imdzn the endpoints the product needs keep working", () => {
-  it("legend-imdzn an active platform admin still passes requirePermission notes read-any", async () => {
-    const owner = agent(app);
-    await signUp(owner, "Pemilik Catatan");
-    const note = (
-      await owner
-        .post("/api/notes")
-        .set(originHeader)
-        .send({ title: `Catatan ${unique()}` })
-    ).body.data;
-
-    const admin = await newActiveAdmin();
-    const list = await admin.client.get("/api/admin/notes?limit=100");
-
-    expect(list.status).toBe(200);
-    expect(
-      list.body.data.some((item: { id: string }) => item.id === note.id),
-    ).toBe(true);
-  });
-
   it("legend-imdzn a revoked platform admin cannot impersonate and stays signed in as themselves", async () => {
     const admin = await newRevokedAdmin();
     const victim = await newVictim();
@@ -318,190 +285,22 @@ describe("legend-imdzn the endpoints the product needs keep working", () => {
   });
 });
 
-// legend-atwse: /api/admin/notes must follow the platform admin registry, not
-// only user.role. A revoked admin (role kept, revoked_at set) and a role admin
-// without a registry row must get 403 and must not read or delete other
-// tenants' notes. An active platform admin keeps GET 200 and DELETE 204.
-// Assumption: 403 is the refusal status (same as the other admin routes here).
-async function newVictimNote(victim: Victim) {
-  const response = await victim.client
-    .post("/api/notes")
-    .set(originHeader)
-    .send({ title: `Catatan korban ${unique()}` });
-  expect(response.status).toBe(201);
-  return response.body.data as { id: string; title: string };
-}
+// legend-gn17x: the starter Notes example is gone. Its routes were guarded by
+// the Better Auth role only, so a removed route must answer 404, not 403/200,
+// even for an active platform admin with a verified second factor.
+describe("legend-gn17x the starter notes routes are removed", () => {
+  it("legend-gn17x an active platform admin gets 404 on every former notes route", async () => {
+    const admin = await newActiveAdmin();
+    const noteId = "00000000-0000-4000-8000-000000000000";
 
-async function victimStillHasNote(victim: Victim, noteId: string) {
-  return (await victim.client.get(`/api/notes/${noteId}`)).status === 200;
-}
-
-const notesGuardActors: Array<[string, () => Promise<Actor>]> = [
-  ["a revoked platform admin", newRevokedAdmin],
-  ["a Better Auth admin without a registry row", newUnregisteredAdmin],
-];
-
-describe("legend-atwse admin notes routes follow the platform admin registry", () => {
-  for (const [actorName, makeActor] of notesGuardActors) {
-    describe(actorName, () => {
-      it("legend-atwse GET /api/admin/notes is refused with 403 and leaks no notes", async () => {
-        const victim = await newVictim();
-        const note = await newVictimNote(victim);
-        const actor = await makeActor();
-
-        const response = await actor.client.get("/api/admin/notes?limit=100");
-
-        expect(response.status).toBe(403);
-        expect(JSON.stringify(response.body)).not.toContain(note.title);
-        expect(JSON.stringify(response.body)).not.toContain(victim.email);
-      });
-
-      it("legend-atwse DELETE /api/admin/notes/:id is refused with 403 and the note stays", async () => {
-        const victim = await newVictim();
-        const note = await newVictimNote(victim);
-        const actor = await makeActor();
-
-        const response = await actor.client
-          .delete(`/api/admin/notes/${note.id}`)
-          .set(originHeader);
-
-        expect(response.status).toBe(403);
-        expect(await victimStillHasNote(victim, note.id)).toBe(true);
-      });
-    });
-  }
-
-  describe("an active platform admin", () => {
-    it("legend-atwse GET /api/admin/notes returns 200 with the victim's note", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const admin = await newActiveAdmin();
-
-      const response = await admin.client.get("/api/admin/notes?limit=100");
-
-      expect(response.status).toBe(200);
-      expect(
-        response.body.data.some((item: { id: string }) => item.id === note.id),
-      ).toBe(true);
-    });
-
-    it("legend-atwse DELETE /api/admin/notes/:id returns 204 and removes the note", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const admin = await newActiveAdmin();
-
-      const response = await admin.client
-        .delete(`/api/admin/notes/${note.id}`)
-        .set(originHeader);
-
-      expect(response.status).toBe(204);
-      expect(await victimStillHasNote(victim, note.id)).toBe(false);
-    });
-  });
-
-  // Assumption: the spec names no error code for a missing second factor on
-  // /api/admin/*; the router uses requireSessionMfa(), so the refusal is
-  // 403 with error.code MFA_REQUIRED (as on /api/platform).
-  describe("an active platform admin without a verified second factor", () => {
-    async function newActiveAdminWithoutMfa(): Promise<Actor> {
-      const client = agent(app);
-      const email = await signUp(client, "Admin Tanpa MFA");
-      await setRole(email, "admin");
-      const userId = await sessionUserId(client);
-      await db.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
-        userId,
-      ]);
-      platformAdminIds.push(userId);
-      return { client, userId, email };
-    }
-
-    it("legend-atwse GET /api/admin/notes is refused with MFA_REQUIRED and leaks no notes", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const admin = await newActiveAdminWithoutMfa();
-
-      const response = await admin.client.get("/api/admin/notes?limit=100");
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe("MFA_REQUIRED");
-      expect(JSON.stringify(response.body)).not.toContain(note.title);
-      expect(JSON.stringify(response.body)).not.toContain(victim.email);
-    });
-
-    it("legend-atwse DELETE /api/admin/notes/:id is refused with MFA_REQUIRED and the note stays", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const admin = await newActiveAdminWithoutMfa();
-
-      const response = await admin.client
-        .delete(`/api/admin/notes/${note.id}`)
-        .set(originHeader);
-
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe("MFA_REQUIRED");
-      expect(await victimStillHasNote(victim, note.id)).toBe(true);
-    });
-  });
-
-  // An impersonated session is the tenant user, never a platform admin, even
-  // when the impersonating admin is active and has a support grant.
-  describe("an impersonated support session", () => {
-    async function newImpersonatingAdmin(): Promise<Actor> {
-      const tenantId = cafeLegendPlatformFixtures.tenant.id;
-      const target = await newVictim();
-      supportTenantUserIds.push(target.userId);
-      await db.query(
-        `INSERT INTO role_assignments
-           (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
-         SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
-         WHERE tenant_id = $1 AND template_key = 'owner'`,
-        [tenantId, target.userId],
-      );
-      const admin = await newActiveAdmin();
-      const now = new Date();
-      await requestSupportAccess({
-        tenantId,
-        actorUserId: admin.userId,
-        request: requestSupportAccessInputSchema.parse({
-          reason: "Menelusuri keluhan pelanggan atas pengaturan domain tenant.",
-          mfaCode: "123456",
-        }),
-        mfaVerifiedAt: now.toISOString(),
-        now,
-      });
-      const started = await admin.client
-        .post("/api/auth/admin/impersonate-user")
-        .set(originHeader)
-        .send({ userId: target.userId });
-      expect(started.status).toBe(200);
-      // The client now carries the impersonated session of the tenant user.
-      await verifySessionMfa(target.email);
-      return admin;
-    }
-
-    it("legend-atwse GET /api/admin/notes is refused with 403 and leaks no notes", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const support = await newImpersonatingAdmin();
-
-      const response = await support.client.get("/api/admin/notes?limit=100");
-
-      expect(response.status).toBe(403);
-      expect(JSON.stringify(response.body)).not.toContain(note.title);
-      expect(JSON.stringify(response.body)).not.toContain(victim.email);
-    });
-
-    it("legend-atwse DELETE /api/admin/notes/:id is refused with 403 and the note stays", async () => {
-      const victim = await newVictim();
-      const note = await newVictimNote(victim);
-      const support = await newImpersonatingAdmin();
-
-      const response = await support.client
-        .delete(`/api/admin/notes/${note.id}`)
-        .set(originHeader);
-
-      expect(response.status).toBe(403);
-      expect(await victimStillHasNote(victim, note.id)).toBe(true);
-    });
+    expect((await admin.client.get("/api/notes")).status).toBe(404);
+    expect((await admin.client.get("/api/admin/notes")).status).toBe(404);
+    expect(
+      (
+        await admin.client
+          .delete(`/api/admin/notes/${noteId}`)
+          .set(originHeader)
+      ).status,
+    ).toBe(404);
   });
 });

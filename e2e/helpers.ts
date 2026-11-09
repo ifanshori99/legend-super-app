@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { Pool } from "pg";
 import { expect, type APIRequestContext } from "@playwright/test";
 import { API_URL, WEB_URL } from "../playwright.config";
 
@@ -34,62 +33,6 @@ export async function signUp(client: APIRequestContext, name = "Test User") {
   }
   expect(response.status()).toBe(200);
   return data.email;
-}
-
-// Roles are granted out of band, the way pnpm role:set does it.
-export async function setRole(email: string, role: string | null) {
-  const pool = new Pool({
-    connectionString: process.env.STARTER_TEST_DATABASE_URL,
-    max: 1,
-  });
-  try {
-    const { rowCount } = await pool.query(
-      'UPDATE "user" SET role = $1 WHERE email = $2',
-      [role, email],
-    );
-    expect(rowCount).toBe(1);
-  } finally {
-    await pool.end();
-  }
-}
-
-// legend-atwse: /api/admin/* needs an active platform_admins row as well as
-// the Better Auth role.
-export async function setPlatformAdmin(email: string) {
-  const pool = new Pool({
-    connectionString: process.env.STARTER_TEST_DATABASE_URL,
-    max: 1,
-  });
-  try {
-    const { rowCount } = await pool.query(
-      'INSERT INTO platform_admins (user_id) SELECT id FROM "user" WHERE email = $1',
-      [email],
-    );
-    expect(rowCount).toBe(1);
-  } finally {
-    await pool.end();
-  }
-}
-
-// AUTH-05: /api/admin/* (like /api/platform) needs a second factor verified
-// in this session. The real TOTP path is covered by the API tests; mark the
-// session verified with the API clock, as the API test helper does.
-export async function verifySessionMfa(email: string) {
-  const pool = new Pool({
-    connectionString: process.env.STARTER_TEST_DATABASE_URL,
-    max: 1,
-  });
-  try {
-    const { rowCount } = await pool.query(
-      `UPDATE "session" SET mfa_verified_at = $2
-       WHERE revoked_at IS NULL
-         AND user_id = (SELECT id FROM "user" WHERE email = $1)`,
-      [email, new Date()],
-    );
-    expect(rowCount).toBeGreaterThan(0);
-  } finally {
-    await pool.end();
-  }
 }
 
 export async function fitsWidth(page: import("@playwright/test").Page) {

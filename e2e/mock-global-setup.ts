@@ -31,8 +31,6 @@ const WARM_ROUTES: readonly string[] = [
   "/sign-in",
   "/sign-up",
   "/design-system",
-  "/notes", // protected area
-  "/admin",
   "/kelola",
   "/kelola/menu",
   "/kelola/menu/kategori",

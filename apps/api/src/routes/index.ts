@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
-import { adminRouter } from "./admin.routes";
 import { serviceRequestRouter } from "./service-request.routes";
 import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
 import { qrOrderRouter } from "./qr-order.routes";
@@ -19,7 +18,6 @@ import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { meRouter } from "./me.routes";
-import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
 import {
   orgIntegrationsRouter,
@@ -100,8 +98,6 @@ export const apiRouter = Router();
 
 apiRouter.use(noStore);
 apiRouter.use("/health", healthRouter);
-apiRouter.use("/notes", notesRouter);
-apiRouter.use("/admin", adminRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
 apiRouter.use("/platform", platformUsageRouter);
 apiRouter.use("/platform", platformRouter);
