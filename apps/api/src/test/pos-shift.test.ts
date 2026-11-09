@@ -3919,7 +3919,7 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
     expect(JSON.stringify(events)).not.toMatch(/needsApproval|held/i);
   });
 
-  it("D: the supervisor's count trail shows the expected cash without the held amount plus heldCashOutIdr; the cashier's receipt has no held figure and noteRequired follows counted - expected + held", async () => {
+  it("D: the supervisor's count trail shows the expected cash without the held amount plus heldCashOutIdr; the cashier's receipt has no held figure and noteRequired follows counted - expected (a held cash out expires at the close, legend-y9bf)", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
     const held = await move(cashier, shift.id, {
@@ -3949,10 +3949,11 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       ]);
       expect(receipt).not.toHaveProperty("heldCashOutIdr");
     }
-    // Round 2: the book variance is counted - expected + held. The held cash
-    // out is not in the drawer, so a count equal to the expected figure is
-    // short by the held amount and needs a note, like the short one.
-    expect(even.noteRequired).toBe(true);
+    // legend-y9bf: a held cash out is not disbursed; it expires at the close
+    // with its cash still in the drawer. The booked difference is counted -
+    // expected, so a count equal to the expected figure needs no note and the
+    // short one does.
+    expect(even.noteRequired).toBe(false);
     expect(short.noteRequired).toBe(true);
 
     const trail = await listCounts(supervisor, shift.id);
@@ -4126,11 +4127,13 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
     expect(Number(rows[0]?.held)).toBe(HELD_IDR);
   });
 
-  // Round 2 (R1): book variance = counted - expected + heldCashOutIdr.
+  // legend-y9bf (replaces round 2 R1): a held cash out / drop is not
+  // disbursed; it expires at the close with its cash still in the drawer, so
+  // the booked difference is counted - expected and leaves the held cash out.
   // Assumptions: the cash_in is not held; `cashier_shift.closed` carries a
   // signed differenceIdr (number or numeric string, compared through Number).
   it.each([["cash_out"], ["drop"]] as const)(
-    "R1: an honest count after a held %s (counted = expected without the held cash - the cash paid out) needs no note and closes with differenceIdr 0, heldCashOutIdr = the cash and a stored variance of minus the cash",
+    "R1: an honest count after a held %s (counted = expected, the held cash still in the drawer) needs no note and closes with differenceIdr 0, heldCashOutIdr 0 and variance 0; a count without the held cash needs a note",
     async (type) => {
       const cashier = await newCashier();
       const shift = await openShift(cashier);
@@ -4142,14 +4145,22 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       expect(held.status, JSON.stringify(held.body)).toBe(201);
       expect((await movementRows(shift.id))[0]?.needs_approval).toBe(true);
       // The drawer grows by 100.000 afterwards; expected (without the held
-      // cash) is 200.000 and the cashier really paid HELD_IDR out of it.
+      // cash) is 200.000 and the held cash never left it.
       const added = await move(cashier, shift.id, {
         type: "cash_in",
         amountIdr: 100_000,
       });
       expect(added.status, JSON.stringify(added.body)).toBe(201);
 
-      const honestIdr = FLOAT_IDR + 100_000 - HELD_IDR;
+      // Paying the held cash out anyway leaves the drawer short: a note.
+      const paidOut = await countDrawer(
+        cashier,
+        shift.id,
+        FLOAT_IDR + 100_000 - HELD_IDR,
+      );
+      expect(paidOut.noteRequired).toBe(true);
+
+      const honestIdr = FLOAT_IDR + 100_000;
       const receipt = await countDrawer(cashier, shift.id, honestIdr);
       expect(receipt.noteRequired).toBe(false);
       const closed = await closeShift(cashier, shift.id, honestIdr);
@@ -4157,9 +4168,9 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       expect(closed.body.data).toMatchObject({
         status: "closed",
         expectedIdr: FLOAT_IDR + 100_000,
-        varianceIdr: -HELD_IDR,
+        varianceIdr: 0,
       });
-      expect((await shiftRow(shift.id))?.variance).toBe(-HELD_IDR);
+      expect((await shiftRow(shift.id))?.variance).toBe(0);
       const { rows } = await owner.query<{
         payload: {
           differenceIdr: number | string;
@@ -4173,7 +4184,7 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       );
       expect(rows).toHaveLength(1);
       expect(Number(rows[0]?.payload.differenceIdr)).toBe(0);
-      expect(Number(rows[0]?.payload.heldCashOutIdr)).toBe(HELD_IDR);
+      expect(Number(rows[0]?.payload.heldCashOutIdr)).toBe(0);
     },
   );
 

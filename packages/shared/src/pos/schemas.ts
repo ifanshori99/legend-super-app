@@ -1157,6 +1157,12 @@ export const endOfDayDeviceRecapSchema = z.strictObject({
   refundAmountIdr: nonnegativeIdr,
   shiftCount: z.number().int().nonnegative(),
   cashVarianceIdr: idrSchema,
+  /**
+   * Held cash outs / drops of the day's shifts that expired at their shift
+   * close (legend-y9bf): never disbursed, never booked. 0 on recaps frozen
+   * before it.
+   */
+  expiredCashOutIdr: nonnegativeIdr.default(idr(0)),
   closed: z.boolean(),
 });
 export type EndOfDayDeviceRecap = z.infer<typeof endOfDayDeviceRecapSchema>;
@@ -1199,6 +1205,8 @@ export const endOfDayRecapSchema = z
     totalRefundsIdr: nonnegativeIdr,
     totalVoidsIdr: nonnegativeIdr,
     totalVarianceIdr: idrSchema,
+    /** Sum of the device expiredCashOutIdr (legend-y9bf). */
+    totalExpiredCashOutIdr: nonnegativeIdr.default(idr(0)),
     /** F8: "pemotongan stok akhir hari bila dipilih". */
     inventoryDeductionApplied: z.boolean(),
     accountingSync: z.strictObject({
@@ -1262,6 +1270,17 @@ export const endOfDayRecapSchema = z
         code: "custom",
         path: ["totalVarianceIdr"],
         message: "totalVarianceIdr must equal the device variances",
+      });
+    const expired = recap.devices.reduce(
+      (sum, device) => sum + Number(device.expiredCashOutIdr),
+      0,
+    );
+    if (Number(recap.totalExpiredCashOutIdr) !== expired)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalExpiredCashOutIdr"],
+        message:
+          "totalExpiredCashOutIdr must equal the device expired cash outs",
       });
     const net = recap.tenders.reduce((sum, row) => sum + Number(row.netIdr), 0);
     const expectedNet =

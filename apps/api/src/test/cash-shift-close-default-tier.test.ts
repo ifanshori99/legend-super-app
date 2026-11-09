@@ -341,8 +341,8 @@ describe("legend-ccpn the default matrix keeps who could approve a shift close",
       `INSERT INTO pos_shift_counts
          (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
           counted_idr, expected_idr, variance_idr, submitted_by, submitted_at,
-          idempotency_key, request_fingerprint, cash_watermark)
-       VALUES ($1, $2, $3, $4, 1, $8::jsonb, $5, 70000, 100000, -30000, $6, now(), $7, $5, 0)`,
+          idempotency_key, request_fingerprint, cash_watermark, held_correction_idr)
+       VALUES ($1, $2, $3, $4, 1, $8::jsonb, $5, 70000, 100000, -30000, $6, now(), $7, $5, 0, 0)`,
       [
         countId,
         tenant.tenantId,

@@ -1002,6 +1002,13 @@
       "when": 1794215041096,
       "tag": "0142_pos_shift_count_cash_watermark",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1794218467039,
+      "tag": "0143_cash_movement_outcomes",
+      "breakpoints": true
     }
   ]
 }

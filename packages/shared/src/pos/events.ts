@@ -327,11 +327,17 @@ export const cashierShiftClosedPayloadSchema = z
     countedIdr: nonnegativeIdr,
     /**
      * counted − expected + heldCashOutIdr: the signed amount the WS-07 rule
-     * books, as if nothing were held (legend-utqr). Equals the stored shift
-     * variance when nothing is held.
+     * books (stored as pos_shifts.difference_idr). Held cash outs and drops
+     * expire at the close with their cash still in the drawer and are not in
+     * it (legend-y9bf); held refund and void cash is (legend-utqr). Equals
+     * the stored shift variance when no refund or void is held.
      */
     differenceIdr: idrSchema,
-    /** Cash held for supervisor review, left out of expected (0 if absent). */
+    /**
+     * Cash of the held refunds and voids, left out of expected and booked by
+     * their own events (0 if absent). Since legend-y9bf it excludes held cash
+     * outs and drops; events stored before it carried the whole held sum.
+     */
     heldCashOutIdr: nonnegativeIdr.optional(),
     varianceNote: z.string().min(4).max(500).nullable(),
     approvedBy: userIdSchema,

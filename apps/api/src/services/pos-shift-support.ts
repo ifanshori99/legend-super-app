@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -41,6 +41,7 @@ import {
   posOrderVoids,
 } from "../db/schema/pos-order.ts";
 import {
+  cashMovementOutcomes,
   cashMovements,
   posShiftCounts,
   posShifts,
@@ -91,6 +92,8 @@ const AUDIT_SAFE_FIELDS = [
   "countedIdr",
   "varianceIdr",
   "heldCashOutIdr",
+  "differenceIdr",
+  "expiredCashOutIdr",
   "type",
   "amountIdr",
   "shiftId",
@@ -333,7 +336,8 @@ export async function computeShiftAggregates(
 
 /**
  * Sum of the shift's cash held for supervisor review: cash outs and drops
- * (legend-67dt) plus the cash of held refunds and voids (legend-utqr).
+ * (legend-67dt) plus the cash of held refunds and voids (legend-utqr). The
+ * count stores it and the close refuses the count as stale when it moved.
  */
 export async function heldCashOutIdrOf(
   tx: Tx,
@@ -352,6 +356,26 @@ export async function heldCashOutIdrOf(
         eq(cashMovements.needsApproval, true),
       ),
     );
+  return safeHeldTotal(
+    BigInt(movements?.total ?? 0) + (await heldCorrectionCashOf(tx, shift)),
+  );
+}
+
+/**
+ * legend-y9bf: the cash of the shift's held refunds and voids. The cashier
+ * paid it and its own events (order.refunded, order.voided) book it, so the
+ * shift close books counted − (expected − this): differenceIdr. Held cash
+ * outs and drops are not in it: they expire at the close, their cash still
+ * in the drawer.
+ */
+export async function heldCorrectionCashIdrOf(
+  tx: Tx,
+  shift: ShiftRow,
+): Promise<number> {
+  return safeHeldTotal(await heldCorrectionCashOf(tx, shift));
+}
+
+async function heldCorrectionCashOf(tx: Tx, shift: ShiftRow): Promise<bigint> {
   const heldRefunds = await tx
     .select({ lines: posOrderRefunds.lines })
     .from(posOrderRefunds)
@@ -389,18 +413,94 @@ export async function heldCashOutIdrOf(
         eq(posOrderTenders.status, "captured"),
       ),
     );
+  return refundCash + BigInt(voided?.total ?? 0);
+}
+
+function safeHeldTotal(total: bigint): number {
   // Parsed in bigint so a huge sum cannot silently lose precision. The
   // writers bound every outflow (assertShiftOutflowBound), so only legacy
   // data gets here: a conflict, never a 500 (legend-q7jj F3). The cashier
   // can read it, so it never names held cash (legend-utqr).
-  const total =
-    BigInt(movements?.total ?? 0) + refundCash + BigInt(voided?.total ?? 0);
   if (total > BigInt(Number.MAX_SAFE_INTEGER))
     throw new CoreError(
       "CONFLICT",
       "Data kas shift ini tidak dapat dihitung; hubungi admin.",
     );
   return Number(total);
+}
+
+/**
+ * legend-y9bf: the shift close (normal and force) expires every held cash out
+ * / drop of the shift that has no decision yet: an 'expired' outcome row and
+ * a `pos_shift.cash_movement_expired` audit row each. Nothing is booked: the
+ * cash never left the drawer, and the cashier asks again on the next shift.
+ * Call under the shift row lock, before the closing UPDATE (the outcome guard
+ * trigger reads the shift). Returns the expired sum; never in a cashier DTO.
+ */
+export async function expireHeldCashMovements(
+  tx: Tx,
+  context: ScopedTenantContext,
+  shift: ShiftRow,
+  caller: ShiftCaller,
+  now: Date,
+): Promise<number> {
+  const held = await tx
+    .select({
+      id: cashMovements.id,
+      type: cashMovements.type,
+      amountIdr: cashMovements.amountIdr,
+    })
+    .from(cashMovements)
+    .leftJoin(
+      cashMovementOutcomes,
+      and(
+        eq(cashMovementOutcomes.tenantId, cashMovements.tenantId),
+        eq(cashMovementOutcomes.movementId, cashMovements.id),
+      ),
+    )
+    .where(
+      and(
+        eq(cashMovements.tenantId, shift.tenantId),
+        eq(cashMovements.outletId, shift.outletId),
+        eq(cashMovements.shiftId, shift.id),
+        eq(cashMovements.needsApproval, true),
+        isNull(cashMovementOutcomes.id),
+      ),
+    )
+    .orderBy(asc(cashMovements.recordedAt), asc(cashMovements.id));
+  let total = 0n;
+  for (const movement of held) {
+    await tx.insert(cashMovementOutcomes).values({
+      tenantId: shift.tenantId,
+      outletId: shift.outletId,
+      shiftId: shift.id,
+      movementId: movement.id,
+      outcome: "expired",
+      decidedBy: null,
+      decidedAt: now,
+    });
+    await auditShift(
+      tx,
+      context,
+      {
+        action: "pos_shift.cash_movement_expired",
+        outletId: shift.outletId as OutletId,
+        objectType: "cash_movement",
+        objectId: movement.id,
+        caller,
+        before: null,
+        after: {
+          shiftId: shift.id,
+          type: movement.type,
+          amountIdr: Number(movement.amountIdr),
+          status: "expired",
+        },
+      },
+      now,
+    );
+    total += BigInt(movement.amountIdr);
+  }
+  return safeHeldTotal(total);
 }
 
 /**
@@ -729,9 +829,15 @@ export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
     shiftId: row.shiftId,
     sequence: row.sequence,
     countedIdr: Number(row.countedIdr),
-    // As if nothing were held (legend-utqr): an honest count after a held
-    // refund or cash out must not ask for a note a normal one would not.
-    noteRequired: Number(row.varianceIdr) + Number(row.heldCashOutIdr) !== 0,
+    // Exactly when the close books a difference (legend-y9bf): variance +
+    // held refund and void cash. A held cash out expires with its cash still
+    // in the drawer, so an honest count after it needs no note either and
+    // the note never reveals the held status (legend-utqr). Counts made
+    // before held_correction_idr keep their old answer.
+    noteRequired:
+      Number(row.varianceIdr) +
+        Number(row.heldCorrectionIdr ?? row.heldCashOutIdr) !==
+      0,
     submittedAt: toIsoDateTime(row.submittedAt),
   });
 }

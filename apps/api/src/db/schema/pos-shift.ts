@@ -15,7 +15,8 @@
 //   count, expectation, variance and the supervisor approval in one UPDATE
 //   and the row checks force them to agree. An approval is used once
 //   (unique approval_override_id per tenant).
-// - cash_movements and pos_daily_closes are append-only history.
+// - cash_movements, cash_movement_outcomes and pos_daily_closes are
+//   append-only history.
 
 import { idr } from "@starter/shared/core";
 import { sql } from "drizzle-orm";
@@ -84,13 +85,23 @@ export const posShifts = pgTable(
     /**
      * legend-utqr: cash held for supervisor review (over-drawer cash out,
      * refund or void) on the count the close used; set in the close UPDATE,
-     * 0 while open. The variance needs a note only when counted − (expected −
-     * held) ≠ 0, so an honest count after held cash closes without one and
-     * the note rule never reveals the held status. Supervisor side only.
+     * 0 while open. Supervisor side only. The note rule follows the booked
+     * difference (difference_idr; on shifts closed before it, variance +
+     * this), so an honest count after held cash closes without one and the
+     * note rule never reveals the held status.
      */
     heldCashOutIdr: idrColumn("held_cash_out_idr")
       .notNull()
       .default(sql`0`),
+    /**
+     * legend-y9bf: the signed difference the close booked
+     * (cashier_shift.closed differenceIdr): variance + the cash of held
+     * refunds and voids (booked by their own events). Held cash outs and
+     * drops expire at the close and are not in it (their cash stayed in the
+     * drawer). Set in the close UPDATE; null while open and on shifts closed
+     * before it (those booked variance + held_cash_out_idr).
+     */
+    differenceIdr: idrColumn("difference_idr"),
     /** The blind count sheet as submitted: [{denominationIdr, quantity}]. */
     counts:
       jsonb("counts").$type<
@@ -177,7 +188,8 @@ export const posShifts = pgTable(
         AND ${table.approvalOverrideId} IS NULL AND ${table.approvedAt} IS NULL
         AND ${table.closedAt} IS NULL AND ${table.closedBy} IS NULL
         AND ${table.closeKey} IS NULL AND ${table.closeFingerprint} IS NULL
-        AND ${table.countId} IS NULL AND ${table.heldCashOutIdr} = 0)`,
+        AND ${table.countId} IS NULL AND ${table.heldCashOutIdr} = 0
+        AND ${table.differenceIdr} IS NULL)`,
     ),
     check(
       "pos_shifts_closed_check",
@@ -192,10 +204,20 @@ export const posShifts = pgTable(
           - ${table.cashRefundsIdr} + ${table.cashInIdr} - ${table.cashOutIdr}
           - ${table.cashDropIdr}
         AND ${table.varianceIdr} = ${table.countedIdr} - ${table.expectedIdr}
-        AND (${table.varianceIdr} + ${table.heldCashOutIdr} = 0
+        AND (coalesce(${table.differenceIdr},
+            ${table.varianceIdr} + ${table.heldCashOutIdr}) = 0
           OR ${table.varianceNote} IS NOT NULL))`,
     ),
     check("pos_shifts_held_cash_out_check", sql`${table.heldCashOutIdr} >= 0`),
+    // legend-y9bf: the booked difference adds only held refund and void cash,
+    // a part of the held total. Null on shifts closed before it.
+    check(
+      "pos_shifts_difference_check",
+      sql`${table.differenceIdr} IS NULL
+        OR (${table.varianceIdr} IS NOT NULL
+          AND ${table.differenceIdr} - ${table.varianceIdr}
+            BETWEEN 0 AND ${table.heldCashOutIdr})`,
+    ),
     check(
       "pos_shifts_closed_count_check",
       sql`${table.status} <> 'closed' OR ${table.countId} IS NOT NULL`,
@@ -236,6 +258,14 @@ export const posShiftCounts = pgTable(
      * fails as stale when it changes after the count (legend-67dt).
      */
     heldCashOutIdr: idrColumn("held_cash_out_idr").notNull().default(idr(0)),
+    /**
+     * legend-y9bf: the part of held_cash_out_idr that is held refund and void
+     * cash (booked by their own events). The receipt's noteRequired follows
+     * variance + this, the difference the close books, so a replay answers
+     * the same as the first submission. Null on counts made before it (their
+     * receipt keeps variance + held_cash_out_idr). Never in any DTO.
+     */
+    heldCorrectionIdr: idrColumn("held_correction_idr"),
     /**
      * legend-q7jj F1: number of the shift's cash rows (cash movements,
      * refunds, voids; held or not) at count time. The close refuses the count
@@ -292,6 +322,11 @@ export const posShiftCounts = pgTable(
       sql`${table.heldCashOutIdr} >= 0`,
     ),
     check(
+      "pos_shift_counts_held_correction_check",
+      sql`${table.heldCorrectionIdr} IS NULL
+        OR ${table.heldCorrectionIdr} BETWEEN 0 AND ${table.heldCashOutIdr}`,
+    ),
+    check(
       "pos_shift_counts_variance_check",
       sql`${table.varianceIdr} = ${table.countedIdr} - ${table.expectedIdr}`,
     ),
@@ -326,9 +361,10 @@ export const cashMovements = pgTable(
      * figures and shown to supervisors only; the cashier never sees it.
      * Permanent (the guard trigger blocks UPDATE): a later review step belongs
      * in its own append-only table. The flag means "exceeded the drawer when
-     * recorded", nothing more. The shift close books counted − (expected −
-     * held) (cashier_shift.closed differenceIdr), the same as if nothing were
-     * held, so held rows must not be posted again on their own (legend-utqr).
+     * recorded", nothing more. Not disbursed: the cash stays in the drawer
+     * until a supervisor decides (cash_movement_outcomes). Whatever is still
+     * undecided expires at the shift close (legend-y9bf) and is never booked;
+     * the cashier asks again on the next shift.
      */
     needsApproval: boolean("needs_approval").notNull().default(false),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
@@ -418,6 +454,64 @@ export const cashMovementRefusals = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+  ],
+);
+
+/**
+ * `cash_movement_outcomes` (T, E): the decision on a held cash out / drop
+ * (cash_movements.needs_approval, legend-67dt), append-only, one per movement
+ * (legend-y9bf). The shift close writes 'expired' for every held movement still
+ * undecided; 'approved' / 'rejected' land only while the movement's shift is
+ * open, so an approval arriving after the close is refused (the unique key and
+ * the guard trigger in pos-shift.custom.sql).
+ */
+export const cashMovementOutcomes = pgTable(
+  "cash_movement_outcomes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    shiftId: uuid("shift_id").notNull(),
+    movementId: uuid("movement_id").notNull(),
+    outcome: text("outcome")
+      .$type<"expired" | "approved" | "rejected">()
+      .notNull(),
+    /** The supervisor who decided; null on 'expired' (the close decides). */
+    decidedBy: text("decided_by").references(() => user.id),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("cash_movement_outcomes_movement_key").on(
+      table.tenantId,
+      table.movementId,
+    ),
+    foreignKey({
+      name: "cash_movement_outcomes_movement_fk",
+      columns: [table.tenantId, table.movementId],
+      foreignColumns: [cashMovements.tenantId, cashMovements.id],
+    }),
+    foreignKey({
+      name: "cash_movement_outcomes_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
+    foreignKey({
+      name: "cash_movement_outcomes_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("cash_movement_outcomes_shift_idx").on(table.tenantId, table.shiftId),
+    check(
+      "cash_movement_outcomes_outcome_check",
+      sql`${table.outcome} IN ('expired', 'approved', 'rejected')`,
+    ),
+    check(
+      "cash_movement_outcomes_decided_by_check",
+      sql`${table.outcome} = 'expired' OR ${table.decidedBy} IS NOT NULL`,
+    ),
   ],
 );
 

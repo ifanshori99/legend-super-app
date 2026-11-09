@@ -910,6 +910,7 @@ export async function autoJournalFactOf(
           outletId: posShifts.outletId,
           status: posShifts.status,
           varianceIdr: posShifts.varianceIdr,
+          differenceIdr: posShifts.differenceIdr,
         })
         .from(posShifts)
         .where(
@@ -919,13 +920,14 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "Shift of the event not found, open or of another outlet",
         );
-      if (
-        shift.varianceIdr === null ||
-        Number(shift.varianceIdr) !== p.differenceIdr
-      )
+      // legend-y9bf: the close stores the difference it booked. A shift
+      // closed before that (null) keeps the old check against the variance,
+      // so a legacy event that added held cash outs stays parked.
+      const booked = shift.differenceIdr ?? shift.varianceIdr;
+      if (booked === null || Number(booked) !== p.differenceIdr)
         throw new AccountingError(
           "POSTING_AMOUNTS_MISMATCH",
-          "differenceIdr does not match the shift variance",
+          "differenceIdr does not match the shift difference",
         );
       return {
         ruleEvent: "cashier_shift.closed",
