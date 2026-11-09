@@ -349,3 +349,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - legend-nib1: permintaan approval tutup shift lewat HP dibuka tanpa nominal (`amountIdr` null), jadi routing selalu tier tertinggi matriks. Penutupan dicek terhadap tier tertinggi dan `payload.valueIdr` (angka, sama dengan selisih). Chain lama yang punya nominal ditolak; kasir minta ulang. Respons ke kasir (pending, requiredLevels, 403 PIN) tidak lagi bergantung pada selisih.
 - Keputusan bisnis terbuka (untuk founder lewat CTO): setiap tutup shift, termasuk selisih 0, sekarang butuh penyetuju tier tertinggi `cash_shift_close`. Bila tier tertinggi 2 level, PIN tidak pernah cukup dan semua tutup shift lewat HP.
 - Lanjutan: `legend-6om3` (UI inbox membaca `payload.valueIdr`), `legend-o0w6` (event `pos_override.recorded` membawa selisih ke cloud-sync).
+
+## legend-o0w6: selisih tutup shift tidak lagi ikut event pos_override.recorded (engineer, cabang `ws/pos-drawer-guess`, 2026-11-09)
+
+- Bukti jalur: hari ini event ini tidak sampai ke perangkat kasir. Di cloud `cloud-sync` hanya sink lokal; di edge hanya diantre `edge_to_cloud`; cloud→edge hanya `qr_order.placed` (tes routing di `worker-transport.test.ts`).
+- Pertahanan berlapis: untuk `cash_shift_close`, `valueIdr` di payload event null (refine kontrak shared menolak angka). Audit supervisor dan baris override tetap menyimpan nilainya. Aksi lain tidak berubah. Tanpa bump versi: ingest edge→cloud hanya memeriksa envelope generik, jadi event lama tetap tersinkron.
+- Lanjutan: `legend-eadm` (P1, edge→cloud melempar `EdgeEventUnclassifiedError` untuk `pos_override.*`/`staff_pin.*`, terkait `legend-niq9`; event lama masih menyimpan angka di tabel outbox/antrean, hanya akses DB).
