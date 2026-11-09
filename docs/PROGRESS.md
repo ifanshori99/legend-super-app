@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-dq0n + legend-hd1m race backfill provisioning (engineer, cabang `ws/provisioning-race`, 2026-11-09)
+
+- Akar masalah: backfill pajak dan CoA mengunci, tetapi penulis owner tidak, jadi backfill bisa melihat tabel kosong lalu menyisipkan default di samping aturan atau akun owner. Tipe lokasi standar dilewati permanen bila namanya sudah dipakai.
+- Sudah: satu modul kunci `apps/api/src/services/tenant-config-locks.ts`. Urutan kunci: 1 CoA per entitas, 2 lokasi per outlet, 3 pajak per tenant, 4 service charge per tenant. Kunci lama tidak berubah. Penulis owner pajak (create, update, publish aturan; create, publish settings) dan CoA (create, update akun; ganti mapping) mengambil kunci yang sama. Lokasi yang namanya bentrok tetap ditambah sebagai `<nama> 2`, `<nama> 3`, dan seterusnya.
+- Test: `src/test/provisioning-race.test.ts` (dua transaksi, `pg_locks`): gagal di kode lama, lulus dengan fix. Test terarah 17 file, 216 test lulus; kontrak node 139/139; tsc api/shared lulus.
+- Review K: reviewer Opus (tanpa blocker) dan architect (setuju). Second opinion Codex: brief `docs/briefs/173b-second-opinion-provisioning-race.md`.
+- Berikut: legend-de3b (P1, `publishTaxRule` tanpa cek tumpang-tindih; owner masih bisa memicu `TAX_RULE_AMBIGUOUS` tanpa race).
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.

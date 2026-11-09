@@ -92,7 +92,7 @@ import { outletBusinessDayClock } from "./outlet-clock";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
-import { lockServiceChargeConfig } from "./tax-provisioning.service";
+import { lockServiceChargeConfig, lockTaxConfig } from "./tenant-config-locks";
 import { appendOutbox } from "./core-outbox";
 import {
   loadTenantAccessInTransaction,
@@ -485,6 +485,7 @@ export async function createTaxRule(
       CONFIG_PERMISSION,
       targetOf(input.outletId),
     );
+    await lockTaxConfig(tx, context.tenant.tenantId);
     if (input.outletId) await requireOutlet(tx, context, input.outletId);
     const [latest] = await tx
       .select({ version: taxRules.version })
@@ -566,6 +567,7 @@ export async function updateTaxRule(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxRuleIdSchema.parse(taxRuleId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const row = await lockTaxRule(tx, context.tenant.tenantId, id);
     await assertPermission(
       tx,
@@ -615,6 +617,7 @@ export async function publishTaxRule(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxRuleIdSchema.parse(taxRuleId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const row = await lockTaxRule(tx, context.tenant.tenantId, id);
     await assertPermission(
       tx,
@@ -1170,6 +1173,7 @@ export async function createTaxSettings(
       CONFIG_PERMISSION,
       targetOf(input.outletId),
     );
+    await lockTaxConfig(tx, context.tenant.tenantId);
     if (input.outletId) await requireOutlet(tx, context, input.outletId);
     const [latest] = await tx
       .select({ version: taxSettings.version })
@@ -1234,6 +1238,7 @@ export async function publishTaxSettings(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxSettingsIdSchema.parse(taxSettingsId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const [row] = await tx
       .select()
       .from(taxSettings)

@@ -622,12 +622,12 @@ describe("legend-4ryw outlet and tenant inventory provisioning", () => {
     ).toBe(6);
   });
 
-  it("skips a standard location whose name clashes (case-insensitive) with an existing one and leaves that row untouched", async () => {
+  it("adds a standard location whose name clashes (case-insensitive) under a free alternative name and leaves the existing row untouched", async () => {
     const tenant = await seedBareTenant({});
     const outletId = tenant.outletIds[0]!;
     // Legacy outlet: a chiller location the tenant named "freezer". The
-    // standard "Freezer" (type freezer) clashes by name, the standard chiller
-    // is already covered by type, so only the other 4 types are inserted.
+    // standard "Freezer" (type freezer) clashes by name, so the freezer type is
+    // still added as "Freezer 2"; the chiller is already covered by type.
     await owner.query(
       "INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, 'freezer', 'chiller')",
       [tenant.tenantId, outletId],
@@ -641,30 +641,57 @@ describe("legend-4ryw outlet and tenant inventory provisioning", () => {
     const result = await withTenant(db, context, (tx) =>
       provisionOutletStockLocations(tx, context, outletId, null),
     );
-    expect(result.inserted).toBe(STANDARD_STOCK_LOCATIONS.length - 2);
+    expect(result.inserted).toBe(STANDARD_STOCK_LOCATIONS.length - 1);
 
     const rows = await owner.query<{ type: string; name: string }>(
       "SELECT type, name FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2",
       [tenant.tenantId, outletId],
     );
     expect(rows.rows.map((row) => row.type).sort()).toEqual(
-      ["bar", "chiller", "kitchen", "pastry", "warehouse"].sort(),
+      ["bar", "chiller", "freezer", "kitchen", "pastry", "warehouse"].sort(),
     );
-    expect(rows.rows.some((row) => row.type === "freezer")).toBe(false);
+    expect(rows.rows.find((row) => row.type === "freezer")?.name).toBe(
+      "Freezer 2",
+    );
     const after = await owner.query(
       "SELECT * FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2 AND type = 'chiller'",
       [tenant.tenantId, outletId],
     );
     expect(after.rows).toEqual(before.rows);
 
-    // The backfill sees the same clash and adds nothing more.
+    // The backfill finds every type present and adds nothing more.
     await backfillTenantInventoryDefaults(tenant.tenantId);
     expect(
       await countRows(
         "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2",
         [tenant.tenantId, outletId],
       ),
-    ).toBe(5);
+    ).toBe(STANDARD_STOCK_LOCATIONS.length);
+  });
+
+  it("adds kitchen as 'Dapur 2' when a warehouse is named 'Dapur', so production finds exactly one kitchen", async () => {
+    const tenant = await seedBareTenant({});
+    const outletId = tenant.outletIds[0]!;
+    await owner.query(
+      "INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, 'Dapur', 'warehouse')",
+      [tenant.tenantId, outletId],
+    );
+    const context = scopedContext(tenant.tenantId);
+
+    await withTenant(db, context, (tx) =>
+      provisionOutletStockLocations(tx, context, outletId, null),
+    );
+
+    const kitchens = await owner.query<{ name: string }>(
+      "SELECT name FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2 AND type = 'kitchen' AND is_active",
+      [tenant.tenantId, outletId],
+    );
+    expect(kitchens.rows).toEqual([{ name: "Dapur 2" }]);
+    const warehouses = await owner.query<{ name: string }>(
+      "SELECT name FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2 AND type = 'warehouse'",
+      [tenant.tenantId, outletId],
+    );
+    expect(warehouses.rows).toEqual([{ name: "Dapur" }]);
   });
 
   it("audits only calls that insert something (one row per call, system actor)", async () => {

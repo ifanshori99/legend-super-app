@@ -11,14 +11,16 @@
 // Never mixes: an entity that already holds even one account keeps its chart
 // untouched (`already_present`), and mappings are only inserted when the
 // entity has none. Tenants edit the chart afterwards through the existing CoA
-// routes; nothing here locks the result.
+// routes; their writers (`createAccount`, `updateAccount`,
+// `replaceAccountMappingsForEntity`) take the same per-entity advisory lock
+// (`lockChartOfAccounts`), so an owner write and this copy never interleave.
 //
 // Database rules repeated by migration 0027 (`app.assert_account_parent`): a
 // parent must exist in the same entity with the same type before its child is
 // inserted, so rows go in level by level, parents first.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   accountMappingIssues,
   accountMappingSchema,
@@ -42,6 +44,7 @@ import {
   requireLegalEntity,
   type TenantTransaction,
 } from "./accounting-shared";
+import { lockChartOfAccounts } from "./tenant-config-locks";
 
 /**
  * `accounts` and `mappings` count the rows this call inserted (0 for
@@ -146,7 +149,8 @@ function insertionLevels(accounts: readonly Account[]): Account[][] {
 /**
  * Copies the standard F&B chart and default mappings into an entity with an
  * empty chart, inside the caller's transaction. Idempotent: serialised per
- * entity by an advisory lock, and a no-op once the entity has any account.
+ * entity by an advisory lock shared with the owner's chart writers, and a
+ * no-op once the entity has any account.
  */
 export async function provisionStandardChart(
   tx: TenantTransaction,
@@ -155,9 +159,7 @@ export async function provisionStandardChart(
   actorId: UserId | null,
 ): Promise<ChartProvisionResult> {
   const tenantId = context.tenant.tenantId;
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`chart_of_accounts:${tenantId}:${legalEntityId}`}, 0))`,
-  );
+  await lockChartOfAccounts(tx, tenantId, legalEntityId);
   await requireLegalEntity(tx, tenantId, legalEntityId);
   const [existingAccount] = await tx
     .select({ id: chartOfAccounts.id })
