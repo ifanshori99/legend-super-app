@@ -8,6 +8,8 @@ export const qrGlassMenuMessages = {
   tableGuests: "Meja {table} · {count} tamu",
   sitAt: "Anda duduk di",
   pricingNote: "Harga belum termasuk pajak dan service.",
+  pricingNoteMixed: "Pajak dan service dihitung saat checkout.",
+  pricingNoteInclusive: "Harga sudah termasuk pajak dan service.",
   search: {
     open: "Buka pencarian menu",
     close: "Tutup pencarian menu",
@@ -34,6 +36,7 @@ export const qrGlassMenuMessages = {
     stepIncrease: "Tambah satu {name}",
     soldOutLabel: "Habis hari ini",
     soldOutHint: "Belum bisa dipesan.",
+    availableFrom: "Tersedia mulai {time}",
   },
   stale: {
     message: "Menu belum diperbarui. Keranjang tetap tersimpan.",

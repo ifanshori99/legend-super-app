@@ -62,7 +62,7 @@ export const qrGlassPayMessages = {
     errorTitle: "Pesanan belum bisa dimuat",
     errorHint: "Periksa koneksi internet Anda, lalu coba lagi.",
   },
-  // VA / card page opened while the real API serves the table (bookmark,
+  // VA page opened while the real API serves the table (bookmark,
   // shared link): the table contract cannot take these methods yet.
   online: {
     unavailableTitle: "Metode ini belum tersedia untuk pesanan meja",
@@ -106,23 +106,6 @@ export const qrGlassPayMessages = {
       "Pembayaran belum bisa diperiksa. Periksa koneksi Anda, lalu coba lagi.",
     changeMethod: "Ganti metode bayar",
   },
-  card: {
-    title: "Bayar dengan kartu",
-    back: "Kembali ke ringkasan pesanan",
-    pill: "Menunggu pembayaran",
-    heading: "Bayar dengan kartu",
-    saved: "Pesanan tersimpan, belum masuk dapur.",
-    totalLabel: "Total pembayaran",
-    networksLabel: "Kartu yang diterima",
-    networks: "Visa, Mastercard, JCB",
-    secureNote:
-      "Data kartu diisi di halaman aman penyedia pembayaran dan tidak disimpan oleh outlet.",
-    threeDs: "Bisa diminta verifikasi 3D Secure dari bank Anda.",
-    continue: "Lanjut ke halaman kartu",
-    demoUnavailableTitle: "Halaman kartu belum tersedia di mode demo.",
-    demoUnavailableBody: "Pilih metode lain, atau bayar di kasir.",
-    changeMethod: "Ganti metode bayar",
-  },
   success: {
     back: "Kembali ke menu",
     title: "Pembayaran berhasil",
@@ -131,7 +114,6 @@ export const qrGlassPayMessages = {
     methodQris: "QRIS",
     methodVa: "Virtual Account",
     methodEwallet: "E-wallet",
-    methodCard: "Kartu kredit/debit",
     methodCashier: "Kasir",
     orderRow: "Pesanan",
     tableRow: "Meja",

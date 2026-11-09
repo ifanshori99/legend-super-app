@@ -45,7 +45,6 @@ import {
   menuItems,
   modifierGroups,
   modifiers,
-  serviceChargeRules,
   type floorZones,
 } from "../db/schema/index.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -54,6 +53,7 @@ import type { Tx } from "./menu-internals.ts";
 import { readChannelPriceGrid } from "./menu-pricing.service.ts";
 import {
   loadTaxConfig,
+  selectServiceChargeRules,
   type CatalogueGroup,
   type CatalogueItem,
   type CatalogueModifier,
@@ -266,82 +266,15 @@ export async function loadPosCatalogue(
 
 // ---- Tax and service charge ---------------------------------------------------
 
-export type PosTaxConfig = QrTaxConfig & {
-  serviceChargeRules: ServiceChargeRule[];
-};
+/** Published tax rules, settings and service charge rules (shared QR loader). */
+export type PosTaxConfig = QrTaxConfig;
 
-/** Published tax rules/settings (QR loader) plus published service charge rules. */
 export async function loadPosTaxConfig(
   tx: Tx,
   context: ScopedTenantContext,
   outletIdInput: string,
 ): Promise<PosTaxConfig> {
-  const outletId = outletIdSchema.parse(outletIdInput);
-  const base = await loadTaxConfig(tx, context, outletId);
-  const rows = await tx
-    .select()
-    .from(serviceChargeRules)
-    .where(
-      and(
-        eq(serviceChargeRules.tenantId, context.tenant.tenantId),
-        eq(serviceChargeRules.status, "published"),
-        or(
-          isNull(serviceChargeRules.outletId),
-          eq(serviceChargeRules.outletId, outletId),
-        ),
-      ),
-    );
-  return {
-    ...base,
-    serviceChargeRules: rows.map(
-      (row) =>
-        ({
-          id: row.id,
-          tenantId: row.tenantId,
-          outletId: row.outletId,
-          code: row.code,
-          name: row.name,
-          rateBp: row.rateBp,
-          zoneId: row.zoneId,
-          orderTypes: row.orderTypes,
-          itemClasses: row.itemClasses,
-          isActive: row.isActive,
-          version: row.version,
-          effectiveFrom: row.effectiveFrom,
-          status: row.status,
-          publishedAt: row.publishedAt?.toISOString() ?? null,
-          publishedBy: row.publishedBy,
-          createdAt: row.createdAt.toISOString(),
-        }) as unknown as ServiceChargeRule,
-    ),
-  };
-}
-
-function zoneServiceChargeRule(
-  zone: ZoneRow,
-  context: ScopedTenantContext,
-): ServiceChargeRule[] {
-  if (zone.serviceChargeBp <= 0) return [];
-  return [
-    {
-      id: zone.id,
-      tenantId: context.tenant.tenantId,
-      outletId: zone.outletId,
-      code: "ZONE-SC",
-      name: "Service charge zona",
-      rateBp: zone.serviceChargeBp,
-      zoneId: zone.id,
-      orderTypes: [],
-      itemClasses: ["food_beverage"],
-      isActive: true,
-      version: 1,
-      effectiveFrom: "2000-01-01",
-      status: "published",
-      publishedAt: zone.updatedAt.toISOString(),
-      publishedBy: null,
-      createdAt: zone.createdAt.toISOString(),
-    } as unknown as ServiceChargeRule,
-  ];
+  return loadTaxConfig(tx, context, outletIdSchema.parse(outletIdInput));
 }
 
 export type PosBillLine = {
@@ -422,10 +355,11 @@ export function computePosBill(input: {
     } as TaxCalculationInput,
     {
       taxRules: input.taxConfig.taxRules,
-      serviceChargeRules:
-        input.zone !== null && input.zone.serviceChargeBp > 0
-          ? zoneServiceChargeRule(input.zone, input.context)
-          : input.taxConfig.serviceChargeRules,
+      serviceChargeRules: selectServiceChargeRules(
+        input.zone,
+        input.context,
+        input.taxConfig.serviceChargeRules,
+      ),
       settings: input.taxConfig.settings,
     },
   );

@@ -243,7 +243,7 @@ export function createEngine(
     a03Rec.cartVersion = F.cart.version;
     // A guest added "Sup Buntut" before it sold out: checkout removes it (ORD-05).
     const soldOutItem = menuOf(a03).items.find(
-      (item) => item.status === "sold_out",
+      (item) => item.status !== "available",
     );
     if (soldOutItem) {
       const at = "2026-11-01T05:08:00.000Z";
@@ -300,7 +300,7 @@ export function createEngine(
       sessionTokenExpiresAt: tableSessionTokenExpiresAt(session),
       menuUpdatedAt: menu.menuUpdatedAt,
       soldOutItemIds: menu.items
-        .filter((item) => item.status === "sold_out")
+        .filter((item) => item.status !== "available")
         .map((item) => item.id),
       serverTime: iso(clock()),
     };
@@ -332,7 +332,7 @@ export function createEngine(
     variantId: string | null | undefined,
     modifierIds: readonly string[],
   ) {
-    if (item.status === "sold_out")
+    if (item.status !== "available")
       conflict("ITEM_SOLD_OUT", `${item.name} sedang habis.`);
     let unit = item.priceIdr as number;
     if (item.variants.length > 0) {
@@ -514,7 +514,7 @@ export function createEngine(
     const removed: CartLine[] = [];
     for (const line of rec.lines) {
       const item = menu.items.find((entry) => entry.id === line.menuItemId);
-      if (!item || item.status === "sold_out") removed.push(line);
+      if (!item || item.status !== "available") removed.push(line);
       else live.push(line);
     }
     return { live, removed };

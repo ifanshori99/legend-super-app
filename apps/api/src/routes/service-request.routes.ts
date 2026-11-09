@@ -6,6 +6,8 @@
 //   session credential; tenant from the host; no cookie, so no origin check)
 // - GET  /api/outlets/:outletId/service-requests          (staff inbox)
 // - POST /api/service-requests/:serviceRequestId/acknowledge|resolve (staff)
+// - GET|POST|DELETE zone waiter assignments under /api/outlets/:outletId
+//   (outlet manager; service_request.zone.manage)
 //
 // Staff routes: requireAuth + requireTrustedOrigin + tenant + the
 // floor.table.operate permission on the request's own outlet (TEN-03).
@@ -14,8 +16,11 @@
 import { Router } from "express";
 import {
   acknowledgeServiceRequest as acknowledgeEndpoint,
+  assignZoneWaiter as assignZoneWaiterEndpoint,
   createServiceRequest as createEndpoint,
   listServiceRequests as listEndpoint,
+  listZoneWaiters as listZoneWaitersEndpoint,
+  removeZoneWaiter as removeZoneWaiterEndpoint,
   resolveServiceRequest as resolveEndpoint,
 } from "@starter/shared/qr-order";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -26,11 +31,15 @@ import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { HttpError } from "../lib/http-error";
 import {
   acknowledgeServiceRequest,
+  assignZoneWaiter,
   createServiceRequest,
   findServiceRequestOutlet,
   listServiceRequests,
+  listZoneWaiterAssignments,
+  removeZoneWaiterAssignment,
   resolveServiceRequest,
 } from "../services/service-request.service";
+import { guestSessionContext } from "../services/guest-session-scope";
 import { resolveOutletContext } from "./floor-access";
 
 export const serviceRequestRouter = Router();
@@ -56,9 +65,9 @@ serviceRequestRouter.post(
     const { sessionId } = createEndpoint.params.parse(req.params);
     const input = createEndpoint.body.parse(req.body);
     const token = bearer(req.get("authorization"));
-    const context = establishScopedTenantContext(getTenantContext(req), {
-      kind: "tenant",
-    });
+    // TEN-03 (legend-7csf): reach only the outlet of the session the
+    // credential names, as the other guest session routes do.
+    const context = await guestSessionContext(getTenantContext(req), token);
     const { request, created } = await createServiceRequest(
       context,
       sessionId,
@@ -128,5 +137,69 @@ serviceRequestRouter.post(
         input,
       ),
     });
+  },
+);
+
+serviceRequestRouter.get(
+  "/outlets/:outletId/zone-waiters",
+  ...staffGuard,
+  async (req, res) => {
+    const { outletId } = listZoneWaitersEndpoint.params.parse(req.params);
+    const query = listZoneWaitersEndpoint.query.parse(req.query);
+    const context = await resolveOutletContext(
+      req,
+      "service_request.zone.manage",
+      outletId,
+    );
+    res.json({
+      data: await listZoneWaiterAssignments(context, outletId, query.zoneId),
+    });
+  },
+);
+
+serviceRequestRouter.post(
+  "/outlets/:outletId/zones/:zoneId/waiters",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, zoneId } = assignZoneWaiterEndpoint.params.parse(
+      req.params,
+    );
+    const input = assignZoneWaiterEndpoint.body.parse(req.body);
+    const context = await resolveOutletContext(
+      req,
+      "service_request.zone.manage",
+      outletId,
+    );
+    const { assignment, created } = await assignZoneWaiter(
+      context,
+      outletId,
+      zoneId,
+      input,
+      getAuth(req).user.id,
+    );
+    res.status(created ? 201 : 200).json({ data: assignment });
+  },
+);
+
+serviceRequestRouter.delete(
+  "/outlets/:outletId/zone-waiters/:assignmentId",
+  ...staffGuard,
+  async (req, res) => {
+    const { outletId, assignmentId } = removeZoneWaiterEndpoint.params.parse(
+      req.params,
+    );
+    const context = await resolveOutletContext(
+      req,
+      "service_request.zone.manage",
+      outletId,
+    );
+    await removeZoneWaiterAssignment(
+      context,
+      outletId,
+      assignmentId,
+      getAuth(req).user.id,
+    );
+    res.status(204).end();
   },
 );

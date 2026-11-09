@@ -103,10 +103,27 @@ export const qrMenuItemSchema = z
     photoUrl: z.string().min(1).max(500).nullable(),
     variants: z.array(qrMenuVariantSchema).max(8),
     modifierGroups: z.array(qrMenuModifierGroupSchema).max(8),
-    status: z.enum(["available", "sold_out"]),
+    /**
+     * `sold_out`: 86, daily limit reached or outside its schedule on another
+     * day. `unavailable_until`: outside its schedule now but the next window
+     * opens later the same day (`availableFrom`).
+     */
+    status: z.enum(["available", "sold_out", "unavailable_until"]),
+    /** Start of the next sales window; only with `unavailable_until`. */
+    availableFrom: isoDateTimeSchema.optional(),
     sortOrder: z.number().int(),
   })
   .superRefine((item, ctx) => {
+    if (
+      (item.status === "unavailable_until") !==
+      (item.availableFrom !== undefined)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["availableFrom"],
+        message:
+          "availableFrom is required with, and only with, unavailable_until",
+      });
     if (
       item.variants.length > 0 &&
       Math.min(...item.variants.map((v) => v.priceIdr)) !== item.priceIdr
@@ -139,8 +156,13 @@ export const qrMenuSchema = z
     /** False outside the zone's opening hours; the menu stays readable. */
     orderingOpen: z.boolean(),
     pricing: z.strictObject({
-      /** Owner rule: menu prices exclude tax and service charge. */
-      pricesIncludeTaxAndService: z.literal(false),
+      /** Default (owner rule): menu prices exclude tax and service charge.
+       * True when the outlet's tax rule for F&B dine-in is price-inclusive. */
+      pricesIncludeTaxAndService: z.boolean(),
+      /** How the F&B rules treat the price: `pricesIncludeTaxAndService` is
+       * true only for `inclusive`; `mixed` (some items inclusive, some not)
+       * gets a neutral note. Absent = `exclusive`. */
+      taxPriceMode: z.enum(["inclusive", "exclusive", "mixed"]).optional(),
       serviceChargeBp: basisPointsSchema,
       taxes: z.array(z.strictObject({ name, rateBp: basisPointsSchema })),
     }),

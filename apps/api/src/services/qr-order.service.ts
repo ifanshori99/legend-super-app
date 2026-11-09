@@ -119,6 +119,7 @@ import {
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
 import {
+  assertQuotePlaceable,
   buildQuote,
   loadCatalogue,
   loadTaxConfig,
@@ -1604,6 +1605,7 @@ async function checkout(
   });
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
+  assertQuotePlaceable(quote);
 
   const orderId = createUlid(now.getTime());
   const payFirst = plan.kitchenFire === "held_for_payment";

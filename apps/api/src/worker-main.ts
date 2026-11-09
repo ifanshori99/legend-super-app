@@ -25,6 +25,7 @@ import { expireDueApprovalRequests } from "./services/platform-approval.service.
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -281,6 +282,19 @@ const relay = createRelayRuntime({
       await sweepOverdueServiceRequests(new Date(), context);
     } catch {
       console.error("Service request overdue sweep failed");
+    }
+    // legend-1am2 (PRD §8 Ketersediaan): lift every 86 whose soldOutUntil
+    // passed and broadcast item.restored (system actor) even with no staff
+    // board open. Idempotent; same fail-closed rule as the sweeps above.
+    try {
+      await withTenant(db, context, (tx) =>
+        restoreExpiredSoldOut(tx, context, {
+          actorUserId: null,
+          now: new Date(),
+        }),
+      );
+    } catch {
+      console.error("Item 86 deadline sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are required at startup (legend-18qw); a

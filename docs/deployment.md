@@ -201,6 +201,7 @@ Two fixed one-minute windows are charged on every public read: one per client IP
 | `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`    | Requests per client IP per minute                                    |
 | `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`   | Requests per resolved tenant per minute                              |
 | `PUBLIC_RATE_LIMIT_INTERNAL_IPS`      | loopback | Web server address(es) that skip the per-IP bucket (comma-separated) |
+| `PUBLIC_RATE_LIMIT_GUEST_TENANT_PER_MINUTE` | `60000` | QR guest table-session requests per tenant per minute (own bucket; guests also get 10x the per-IP budget for a venue NAT and 600/min per table credential) |
 
 Sizing the defaults — they must not break legitimate traffic:
 

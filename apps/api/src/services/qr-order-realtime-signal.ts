@@ -14,36 +14,24 @@
 //   an order or an unpaid order is voided.
 
 import { sql } from "drizzle-orm";
+import type { ScopedTenantContext } from "@starter/shared/core";
 import {
-  tenantIdSchema,
-  ulidSchema,
-  uuidSchema,
-  z,
-  type ScopedTenantContext,
-} from "@starter/shared/core";
+  qrCartSignalSchema,
+  qrOrderSignalSchema,
+  qrRealtimeSignalSchema,
+  type QrRealtimeSignal,
+} from "@starter/shared/qr-order";
 import type { Tx } from "./menu-internals.ts";
 import { QR_CART_WAKE_CHANNEL } from "./qr-order.service.ts";
 
 export { QR_CART_WAKE_CHANNEL };
 
-export const qrCartSignalSchema = z.strictObject({
-  tenantId: tenantIdSchema,
-  sessionId: uuidSchema,
-  version: z.number().int().nonnegative(),
-});
-
-export const qrOrderSignalSchema = z.strictObject({
-  tenantId: tenantIdSchema,
-  sessionId: uuidSchema,
-  orderId: ulidSchema,
-  status: z.enum(["sent", "voided"]),
-});
-
-export const qrRealtimeSignalSchema = z.union([
+export {
   qrCartSignalSchema,
   qrOrderSignalSchema,
-]);
-export type QrRealtimeSignal = z.infer<typeof qrRealtimeSignalSchema>;
+  qrRealtimeSignalSchema,
+  type QrRealtimeSignal,
+};
 
 /** Queues an order wake-up in the caller's transaction (sent at commit). */
 export async function notifyQrOrderChange(

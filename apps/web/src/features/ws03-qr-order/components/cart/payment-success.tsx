@@ -21,8 +21,7 @@ import {
   qrTextLink,
 } from "../glass/qr-primitives";
 
-export type PaymentSuccessMethod =
-  "qris" | "va" | "ewallet" | "card" | "cashier";
+export type PaymentSuccessMethod = "qris" | "va" | "ewallet" | "cashier";
 
 function Points({
   sessionId,
@@ -126,9 +125,7 @@ export function PaymentSuccess({
         ? t("qrGlass.pay.success.methodVa")
         : method === "ewallet"
           ? t("qrGlass.pay.success.methodEwallet")
-          : method === "card"
-            ? t("qrGlass.pay.success.methodCard")
-            : t("qrGlass.pay.success.methodCashier");
+          : t("qrGlass.pay.success.methodCashier");
 
   return (
     <div className="grid gap-4 lg:mx-auto lg:w-full lg:max-w-xl">

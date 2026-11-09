@@ -330,7 +330,10 @@ describe("service requests (legend-7qg)", () => {
     expect(done.body.data.resolvedAt).not.toBeNull();
     // resolved is terminal.
     expect((await ack(waiterZone1, id)).status).toBe(409);
-    expect((await resolve(waiterZone2, id)).status).toBe(409);
+    // Another staff member resolving it again is idempotent (legend-khiv).
+    const again = await resolve(waiterZone2, id);
+    expect(again.status).toBe(200);
+    expect(again.body.data.resolvedBy).toBe(waiterZone1.userId);
     expect(() => transitionServiceRequest("resolved", "acknowledge")).toThrow();
     const audit = await owner.query(
       "SELECT 1 FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'service_request.resolve' AND event->>'objectId' = $2",

@@ -705,6 +705,13 @@ export const orderQuoteSchema = z
     subtotalIdr: nonnegativeIdr,
     discountLines: z.array(discountLineSchema),
     discountIdr: nonnegativeIdr,
+    /**
+     * Inclusive prices (legend-49pw): the menu prices already contain service
+     * charge and tax. Lines stay gross, `serviceCharge` and `taxLines` are the
+     * included breakdown (parts of the total, not added to it), and
+     * total = subtotal - discount + rounding.
+     */
+    pricesIncludeTaxAndService: z.boolean().default(false),
     serviceCharge: serviceChargeLineSchema,
     taxLines: z.array(taxLineSchema),
     taxIdr: nonnegativeIdr,
@@ -756,15 +763,27 @@ export const orderQuoteSchema = z
         line.lineTotalIdr !== line.lineSubtotalIdr - line.discountIdr,
       );
     const netSubtotal = quote.subtotalIdr - quote.discountIdr;
-    add(
-      ["totalIdr"],
-      "totalIdr must equal subtotal - discount + service + tax + rounding",
-      quote.totalIdr !==
-        netSubtotal +
-          quote.serviceCharge.amountIdr +
-          quote.taxIdr +
-          quote.rounding.adjustmentIdr,
-    );
+    if (quote.pricesIncludeTaxAndService) {
+      add(
+        ["totalIdr"],
+        "inclusive totalIdr must equal subtotal - discount + rounding",
+        quote.totalIdr !== netSubtotal + quote.rounding.adjustmentIdr,
+      );
+      add(
+        ["serviceCharge", "amountIdr"],
+        "included service charge and tax cannot exceed the net subtotal",
+        quote.serviceCharge.amountIdr + quote.taxIdr > netSubtotal,
+      );
+    } else
+      add(
+        ["totalIdr"],
+        "totalIdr must equal subtotal - discount + service + tax + rounding",
+        quote.totalIdr !==
+          netSubtotal +
+            quote.serviceCharge.amountIdr +
+            quote.taxIdr +
+            quote.rounding.adjustmentIdr,
+      );
     add(
       ["minimumSpend", "shortfallIdr"],
       "shortfallIdr must be the missing amount up to the zone minimum spend",
@@ -1255,6 +1274,11 @@ export const serviceRequestSchema = z
     createdAt: isoDateTimeSchema,
     acknowledgedAt: isoDateTimeSchema.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
+    /**
+     * Staff who resolved it; may differ from `assignedTo`. Absent on rows
+     * written before the column existed.
+     */
+    resolvedBy: userIdSchema.nullable().optional(),
   })
   .superRefine((request, ctx) => {
     const add = (

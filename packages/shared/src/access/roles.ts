@@ -140,6 +140,7 @@ const templates: readonly RoleTemplate[] = [
       "floor.table.view",
       "floor.table.operate",
       "floor.table.manage",
+      "service_request.zone.manage",
       "facility.config.manage",
       "wfc.policy.manage",
       "delivery.channel.manage",
@@ -169,6 +170,7 @@ const templates: readonly RoleTemplate[] = [
       "floor.table.view",
       "floor.table.operate",
       "floor.table.manage",
+      "service_request.zone.manage",
       "order.view",
       "order.recovery.handle",
       "order.apology_voucher.issue",
@@ -236,6 +238,7 @@ const templates: readonly RoleTemplate[] = [
       "floor.table.operate",
       // Runs the outlet floor plan (coordinator decision, legend-2l6k).
       "floor.table.manage",
+      "service_request.zone.manage",
       "order.view",
       "order.recovery.handle",
       "order.apology_voucher.issue",

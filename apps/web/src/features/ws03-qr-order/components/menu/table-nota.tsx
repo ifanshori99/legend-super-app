@@ -45,7 +45,7 @@ export function TableNota({
 
   const soldOutIds = new Set(
     (menu?.items ?? [])
-      .filter((item) => item.status === "sold_out")
+      .filter((item) => item.status !== "available")
       .map((item) => item.id),
   );
   const subtotal = lines
@@ -276,7 +276,13 @@ export function TableNota({
             />
           </div>
           <p className="text-sm leading-5 text-qr-on-dark-muted">
-            {t("qrGlass.cart.nota.taxNote")}
+            {t(
+              menu?.pricing.taxPriceMode === "mixed"
+                ? "qrGlass.cart.nota.taxNoteMixed"
+                : menu?.pricing.pricesIncludeTaxAndService
+                  ? "qrGlass.cart.nota.taxNoteInclusive"
+                  : "qrGlass.cart.nota.taxNote",
+            )}
           </p>
           <div className="rounded-qr-cta bg-card p-1">
             <Button asChild size="lg" className="w-full justify-between">

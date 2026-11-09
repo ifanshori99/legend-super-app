@@ -1,16 +1,16 @@
 // Payment method picker of "Keranjang & bayar" (founder Q3, legend-2re1):
 // QRIS and e-wallet go through the gateway, "Bayar di kasir" holds the order
-// until the cashier takes the money. Virtual Account and card have no table
-// payment in the contract yet: they are demo flows in mock mode and shown
+// until the cashier takes the money. Virtual Account has no table
+// payment in the contract yet: it is a demo flow in mock mode and shown
 // disabled with the real API. Radix radio group = real radio inputs.
-import { CreditCard, Landmark, QrCode, Store, Wallet } from "lucide-react";
+import { Landmark, QrCode, Store, Wallet } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
-export type PayMethod = "qris" | "va" | "ewallet" | "card" | "cashier";
+export type PayMethod = "qris" | "va" | "ewallet" | "cashier";
 
 const METHODS = [
   {
@@ -33,13 +33,6 @@ const METHODS = [
     hint: "qrGlass.checkout.method.ewalletHint",
   },
   {
-    value: "card",
-    icon: CreditCard,
-    label: "qrGlass.checkout.method.card",
-    hint: "qrGlass.checkout.method.cardHint",
-    demoOnly: true,
-  },
-  {
     value: "cashier",
     icon: Store,
     label: "qrGlass.checkout.method.cashier",
@@ -55,11 +48,9 @@ export function useCtaLabel() {
       ? t("qrGlass.checkout.cta.qris", { total: formatRupiah(totalIdr) })
       : method === "va"
         ? t("qrGlass.checkout.cta.va")
-        : method === "card"
-          ? t("qrGlass.checkout.cta.card", { total: formatRupiah(totalIdr) })
-          : method === "ewallet"
-            ? t("qrGlass.checkout.cta.ewallet")
-            : t("qrGlass.checkout.cta.cashier");
+        : method === "ewallet"
+          ? t("qrGlass.checkout.cta.ewallet")
+          : t("qrGlass.checkout.cta.cashier");
 }
 
 export function PaymentMethods({
@@ -86,7 +77,7 @@ export function PaymentMethods({
       >
         {METHODS.map((entry) => {
           const { value: method, icon: Icon, label } = entry;
-          // No VA number or card page exists for table payments yet.
+          // No VA number page exists for table payments yet.
           const unavailable = "demoOnly" in entry && !API_MOCK;
           return (
             <RadioGroup.Item

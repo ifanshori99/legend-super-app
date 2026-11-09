@@ -20,6 +20,11 @@ publicSiteRouter.use(requireTenantContext);
 
 // Contract `getPublicMenuPage` (`GET /api/public/site/menu`).
 publicSiteRouter.get("/menu", async (req, res) => {
+  // TEN-03 (legend-7csf): this stays tenant-wide on purpose. The outlet scope
+  // only knows "tenant" or an outlet list, and the outlet shown is chosen by
+  // the service from the brand the host pins, so the route has no outlet id to
+  // pin yet. The service filters by the host's brand; narrowing the context
+  // needs the outlet resolved first (a service change, not a route one).
   const context = establishScopedTenantContext(getTenantContext(req), {
     kind: "tenant",
   });

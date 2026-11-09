@@ -27,7 +27,6 @@ import {
   updateCartLine,
 } from "@starter/shared/qr-order";
 import { CoreError, idempotencyKeySchema } from "@starter/shared/core";
-import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -43,16 +42,19 @@ import {
   removeCartLine as removeCartLineService,
   updateCartLine as updateCartLineService,
 } from "../services/qr-order.service.ts";
+import { guestSessionContext } from "../services/guest-session-scope.ts";
 import {
   createGuestPayment as createGuestPaymentService,
   getGuestPayment as getGuestPaymentService,
 } from "../services/qr-order-payment.ts";
 
-/** The guest acts tenant-wide inside the host's tenant; the session names the outlet. */
-function guestContext(req: Request) {
-  return establishScopedTenantContext(getTenantContext(req), {
-    kind: "tenant",
-  });
+/**
+ * The guest acts inside the host's tenant, reaching only the outlet of the
+ * session its credential names (TEN-03, legend-7csf). The outlet comes from
+ * the verified session row, never from the client.
+ */
+function guestContext(req: Request, credential: string) {
+  return guestSessionContext(getTenantContext(req), credential);
 }
 
 /** `Authorization: Bearer <sessionToken>`; anything else is 401. */
@@ -74,10 +76,11 @@ export const qrOrderRouter = Router();
 
 qrOrderRouter.get("/:sessionId", ...read, async (req, res) => {
   const { sessionId } = getTableSession.params.parse(req.params);
+  const credential = sessionCredential(req);
   res.json({
     data: await getTableSessionView(
-      guestContext(req),
-      sessionCredential(req),
+      await guestContext(req, credential),
+      credential,
       sessionId,
     ),
   });
@@ -90,10 +93,11 @@ qrOrderRouter.post(
   async (req, res) => {
     const { sessionId } = addCartLine.params.parse(req.params);
     const body = addCartLine.body.parse(req.body);
+    const credential = sessionCredential(req);
     res.status(201).json({
       data: await addCartLineService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         body,
       ),
@@ -108,10 +112,11 @@ qrOrderRouter.patch(
   async (req, res) => {
     const { sessionId, lineId } = updateCartLine.params.parse(req.params);
     const body = updateCartLine.body.parse(req.body);
+    const credential = sessionCredential(req);
     res.json({
       data: await updateCartLineService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         lineId,
         body,
@@ -127,10 +132,11 @@ qrOrderRouter.delete(
     const { sessionId, lineId } = removeCartLine.params.parse(req.params);
     const query = removeCartLine.query.parse(req.query);
     const key = req.get("idempotency-key");
+    const credential = sessionCredential(req);
     res.json({
       data: await removeCartLineService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         lineId,
         {
@@ -150,10 +156,11 @@ qrOrderRouter.post(
   async (req, res) => {
     const { sessionId } = quoteTableSession.params.parse(req.params);
     const body = quoteTableSession.body.parse(req.body);
+    const credential = sessionCredential(req);
     res.json({
       data: await quoteTableSessionService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         body,
       ),
@@ -168,10 +175,11 @@ qrOrderRouter.post(
   async (req, res) => {
     const { sessionId } = placeQrOrder.params.parse(req.params);
     const body = placeQrOrder.body.parse(req.body);
+    const credential = sessionCredential(req);
     res.status(201).json({
       data: await placeQrOrderService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         body,
       ),
@@ -181,10 +189,11 @@ qrOrderRouter.post(
 
 qrOrderRouter.get("/:sessionId/bill", ...read, async (req, res) => {
   const { sessionId } = getSessionBill.params.parse(req.params);
+  const credential = sessionCredential(req);
   res.json({
     data: await getSessionBillService(
-      guestContext(req),
-      sessionCredential(req),
+      await guestContext(req, credential),
+      credential,
       sessionId,
     ),
   });
@@ -197,10 +206,11 @@ qrOrderRouter.post(
   async (req, res) => {
     const { sessionId } = createGuestPayment.params.parse(req.params);
     const body = createGuestPayment.body.parse(req.body);
+    const credential = sessionCredential(req);
     res.status(201).json({
       data: await createGuestPaymentService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         body,
       ),
@@ -213,10 +223,11 @@ qrOrderRouter.get(
   ...read,
   async (req, res) => {
     const { sessionId, paymentId } = getGuestPayment.params.parse(req.params);
+    const credential = sessionCredential(req);
     res.json({
       data: await getGuestPaymentService(
-        guestContext(req),
-        sessionCredential(req),
+        await guestContext(req, credential),
+        credential,
         sessionId,
         paymentId,
       ),

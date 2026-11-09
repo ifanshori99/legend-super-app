@@ -49,7 +49,7 @@ export function QrCartBar({
 
   const soldOutIds = new Set(
     (menu?.items ?? [])
-      .filter((item) => item.status === "sold_out")
+      .filter((item) => item.status !== "available")
       .map((item) => item.id),
   );
   const subtotal = lines

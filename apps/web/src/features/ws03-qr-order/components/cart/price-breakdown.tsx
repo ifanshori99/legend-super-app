@@ -1,6 +1,8 @@
 // The server's quote as plain rows (ORD-03): subtotal, discounts, service,
 // tax, rounding. Menu prices exclude tax and service charge (owner rule), so
-// both appear here; the grand total lives in the action footer.
+// both appear here as additions; with inclusive prices (legend-49pw) they are
+// labelled "termasuk" and never read as extra charges. The grand total lives in
+// the action footer.
 import type { OrderQuote } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
@@ -48,18 +50,23 @@ export function PriceBreakdown({ quote }: { quote: OrderQuote }) {
           />
         ))}
         <Row
-          label={t("qrGlass.checkout.service", {
-            rate: quote.serviceCharge.rateBp / 100,
-          })}
+          label={t(
+            quote.pricesIncludeTaxAndService
+              ? "qrGlass.checkout.serviceIncluded"
+              : "qrGlass.checkout.service",
+            { rate: quote.serviceCharge.rateBp / 100 },
+          )}
           amount={quote.serviceCharge.amountIdr}
         />
         {quote.taxLines.map((line) => (
           <Row
             key={line.taxRuleId}
-            label={t("qrGlass.checkout.tax", {
-              name: line.name,
-              rate: line.rateBp / 100,
-            })}
+            label={t(
+              quote.pricesIncludeTaxAndService
+                ? "qrGlass.checkout.taxIncluded"
+                : "qrGlass.checkout.tax",
+              { name: line.name, rate: line.rateBp / 100 },
+            )}
             amount={line.amountIdr}
           />
         ))}

@@ -700,6 +700,7 @@ const serviceRequests: ServiceRequest[] = [
     createdAt: "2026-11-01T05:03:00.000Z",
     acknowledgedAt: "2026-11-01T05:03:20.000Z",
     resolvedAt: "2026-11-01T05:04:00.000Z",
+    resolvedBy: staffUserId,
   },
 ].map((request) => serviceRequestSchema.parse(request));
 

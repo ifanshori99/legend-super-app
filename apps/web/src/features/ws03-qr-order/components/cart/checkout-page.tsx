@@ -221,16 +221,16 @@ export function CheckoutPage() {
     });
 
   // Pay an order that is already placed: gateway for QRIS / e-wallet, the
-  // cashier code screen for "Bayar di kasir", the demo VA / card screen
+  // cashier code screen for "Bayar di kasir", the demo VA screen
   // (mock mode only: the picker disables them with the real API, and that
   // screen itself shows "not available" there, so neither ever reaches
   // useStartPayment, whose contract takes only QRIS / e-wallet).
   const payOrder = (orderId: OrderId, fresh = false) => {
-    if (method === "va" || method === "card") {
+    if (method === "va") {
       void navigate({
         to: "/t/$token/bayar/$orderId",
         params: { token: qrToken, orderId },
-        search: { metode: method === "va" ? "va" : "kartu" },
+        search: { metode: "va" },
       });
       return;
     }
@@ -400,7 +400,7 @@ export function CheckoutPage() {
     (payFirst && payable === null);
   const names = quote.removedLines.map((line) => line.name).join(", ");
   const soldOutIds = new Set(
-    menu.items.filter((item) => item.status === "sold_out").map((i) => i.id),
+    menu.items.filter((item) => item.status !== "available").map((i) => i.id),
   );
   const lineBusy = change.isPending || remove.isPending;
   const lineFailure = change.error ?? remove.error;

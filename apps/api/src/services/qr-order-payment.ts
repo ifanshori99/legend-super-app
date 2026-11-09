@@ -10,13 +10,16 @@
 //   the applied reservation deposit, computed by the server (PAY-01, ORD-03).
 //   Two guests paying the same order serialize on the order row: the second
 //   one receives the same live intent instead of a second one.
-// - `deliverQrOrderPaymentEvent` consumes WS-05 `payment.paid` (appended only
-//   by `confirmPayment` after verified evidence, PAY-02) from the outbox and
-//   fires the order to the kitchen. Nothing else can fire a pay-first order,
-//   so no item reaches the KDS before a verified payment (ORD-02).
+// - WS-05 `payment.paid` (appended only by `confirmPayment` after verified
+//   evidence, PAY-02) is consumed from the outbox by
+//   `deliverOrderPaymentEvent` (order-payment-consumers), which fires the
+//   order through `handleQrOrderPaymentPaid`. `deliverQrOrderPaymentEvent` is
+//   a thin compatibility delegate to the same handler, kept for tests.
+//   Nothing else can fire a pay-first order, so no item reaches the KDS
+//   before a verified payment (ORD-02).
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -31,7 +34,6 @@ import {
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
 import { db } from "../db/index.ts";
-import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
@@ -41,8 +43,8 @@ import {
   createPaymentLink,
   getIntentView,
 } from "./payment.service.ts";
+import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
-  fireQrOrder,
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
   qrOrderIdempotent,
@@ -309,18 +311,15 @@ export async function getGuestPayment(
 
 // ---- Kitchen fire on verified payment (ORD-02) --------------------------------------
 
-const paidPayloadSchema = z.looseObject({
-  paymentLinkId: uuidSchema,
-  intentId: uuidSchema,
-});
-
 /**
- * Outbox consumer for WS-05 `payment.paid`. Runs in the consumption
+ * Entry point for WS-05 `payment.paid` of a QR order. Delegates to
+ * `handleQrOrderPaymentPaid` (qr-order-consumers.ts), the consumer that
+ * `deliverOrderPaymentEvent` routes QR bills to, so there is one decision
+ * path: the fire is re-read from the locked rows (link total equals the quote
+ * amount due, link fully paid, a `paid` intent, IDR) and a replay or a late
+ * payment on a voided order changes nothing here. Runs in the consumption
  * transaction (core-outbox.ts `consumeOutbox`), so the fire commits with the
- * consumed offset. Idempotent: an order already sent or voided is left as it
- * is, and a replayed event changes nothing. The decision is re-read from the
- * locked rows, never from the event alone: the link must be fully covered by
- * verified money and a `paid` intent must exist on it.
+ * consumed offset. Returns true only when this call fired the order.
  */
 export async function deliverQrOrderPaymentEvent(
   context: ScopedTenantContext,
@@ -329,46 +328,5 @@ export async function deliverQrOrderPaymentEvent(
   tx: Tx,
   now = new Date(),
 ): Promise<boolean> {
-  if (event.name !== "payment.paid") return false;
-  const payload = paidPayloadSchema.safeParse(event.payload);
-  if (!payload.success) return false;
-  const tenantId = context.tenant.tenantId;
-  const [order] = await tx
-    .select()
-    .from(orders)
-    .where(
-      and(
-        eq(orders.tenantId, tenantId),
-        eq(orders.paymentLinkId, payload.data.paymentLinkId),
-      ),
-    )
-    .for("update");
-  // Not a QR order's bill, or already fired / voided. A late payment on a
-  // voided order is booked on its bill by WS-05; the payment.paid consumer
-  // files a system refund for it (qr-order-late-payment.ts, legend-dahl).
-  if (!order || order.status !== "awaiting_payment") return false;
-  const [link] = await tx
-    .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
-    .from(paymentLinks)
-    .where(
-      and(
-        eq(paymentLinks.tenantId, tenantId),
-        eq(paymentLinks.id, payload.data.paymentLinkId),
-      ),
-    );
-  if (!link || link.paidIdr < link.totalIdr) return false;
-  const [paid] = await tx
-    .select({ id: paymentIntents.id })
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.paymentLinkId, payload.data.paymentLinkId),
-        inArray(paymentIntents.status, ["paid"]),
-      ),
-    )
-    .limit(1);
-  if (!paid) return false;
-  await fireQrOrder(tx, context, order, { now, reason: "verified_payment" });
-  return true;
+  return (await handleQrOrderPaymentPaid(context, event, tx, now)) === "fired";
 }

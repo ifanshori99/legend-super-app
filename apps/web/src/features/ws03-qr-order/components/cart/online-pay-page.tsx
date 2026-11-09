@@ -1,8 +1,8 @@
-// Virtual Account and card screens of "Keranjang & bayar" (legend-2re1). The
-// table contract has no VA number or card payment, so both are demo flows that
-// the checkout only opens in mock mode: the order is placed and held, the page
-// shows a demo VA number (derived from the order number, never from a gateway)
-// or the card hand-off (card data is typed on the provider's page, never here).
+// Virtual Account screen of "Keranjang & bayar" (legend-2re1). The table
+// contract has no VA number, so it is a demo flow that the checkout only opens
+// in mock mode: the order is placed and held, the page shows a demo VA number
+// (derived from the order number, never from a gateway). Online card payment
+// was removed (legend-vbzu).
 // Success is shown only once the server says the order left awaiting_payment.
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
@@ -12,7 +12,6 @@ import {
   Clock,
   Copy,
   RefreshCw,
-  ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
 import { RadioGroup } from "radix-ui";
@@ -36,7 +35,7 @@ import {
 import { SessionEnded } from "../session-states";
 import { PaymentSuccess } from "./payment-success";
 
-export type OnlinePayMethod = "va" | "kartu";
+export type OnlinePayMethod = "va";
 
 // Demo list only. The prefix makes each bank's sample number look different.
 const BANKS = [
@@ -319,71 +318,6 @@ function VaBody({
   );
 }
 
-function CardBody({ order, qrToken }: { order: QrOrder; qrToken: string }) {
-  const t = useT();
-  const [tapped, setTapped] = useState(false);
-  return (
-    <>
-      <PillHeader
-        pill={t("qrGlass.pay.card.pill")}
-        heading={t("qrGlass.pay.card.heading")}
-        saved={t("qrGlass.pay.card.saved")}
-      />
-
-      <section className="grid gap-4 rounded-qr-media bg-card p-5 shadow-raised">
-        <div className="flex items-baseline justify-between gap-3">
-          <span>{t("qrGlass.pay.card.totalLabel")}</span>
-          <Money
-            amount={order.totalIdr}
-            size="xl"
-            className="text-2xl font-bold"
-          />
-        </div>
-        <hr className="border-t border-dashed border-input" />
-        <div className="flex items-start gap-3">
-          <ShieldCheck
-            className="mt-1 size-5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div className="grid gap-2">
-            <p className="text-lg leading-7">
-              {t("qrGlass.pay.card.secureNote")}
-            </p>
-            <p className="text-lg leading-7 text-muted-foreground">
-              {t("qrGlass.pay.card.threeDs")}
-            </p>
-          </div>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          {t("qrGlass.pay.card.networksLabel")}:{" "}
-          <span className="font-semibold text-foreground">
-            {t("qrGlass.pay.card.networks")}
-          </span>
-        </p>
-      </section>
-
-      {tapped && (
-        <Notice tone="info" title={t("qrGlass.pay.card.demoUnavailableTitle")}>
-          {t("qrGlass.pay.card.demoUnavailableBody")}
-        </Notice>
-      )}
-
-      <QrFooter>
-        <Button type="button" onClick={() => setTapped(true)}>
-          {t("qrGlass.pay.card.continue")}
-        </Button>
-        <Link
-          to="/t/$token/checkout"
-          params={{ token: qrToken }}
-          className={`${qrTextLink} min-h-11 justify-self-center`}
-        >
-          {t("qrGlass.pay.card.changeMethod")}
-        </Link>
-      </QrFooter>
-    </>
-  );
-}
-
 export function OnlinePayPage({
   orderId,
   method,
@@ -396,8 +330,7 @@ export function OnlinePayPage({
     useTableJourney();
   const refresh = useRefreshSession(sessionId);
 
-  const title =
-    method === "va" ? t("qrGlass.pay.va.title") : t("qrGlass.pay.card.title");
+  const title = t("qrGlass.pay.va.title");
   const back = (
     <Link
       to="/t/$token/checkout"
@@ -405,11 +338,7 @@ export function OnlinePayPage({
       className={qrRoundIcon}
     >
       <ChevronLeft aria-hidden="true" />
-      <span className="sr-only">
-        {method === "va"
-          ? t("qrGlass.pay.va.back")
-          : t("qrGlass.pay.card.back")}
-      </span>
+      <span className="sr-only">{t("qrGlass.pay.va.back")}</span>
     </Link>
   );
 
@@ -421,7 +350,7 @@ export function OnlinePayPage({
     </div>
   );
 
-  // The table contract has no VA / card payment: outside mock mode this page
+  // The table contract has no VA payment: outside mock mode this page
   // (bookmark, shared link, stale tab) must never show a demo VA number.
   if (!API_MOCK)
     return shell(
@@ -511,7 +440,7 @@ export function OnlinePayPage({
       <PaymentSuccess
         order={order}
         amountIdr={order.totalIdr}
-        method={method === "va" ? "va" : "card"}
+        method="va"
         returnTo={`/t/${encodeURIComponent(qrToken)}/bayar/${encodeURIComponent(orderId)}?metode=${method}`}
       />
     );
@@ -519,11 +448,7 @@ export function OnlinePayPage({
   return (
     <div className="grid gap-4 lg:mx-auto lg:w-full lg:max-w-xl">
       <QrTopBar title={title} leading={back} />
-      {method === "va" ? (
-        <VaBody order={order} qrToken={qrToken} onCheck={() => refresh()} />
-      ) : (
-        <CardBody order={order} qrToken={qrToken} />
-      )}
+      <VaBody order={order} qrToken={qrToken} onCheck={() => refresh()} />
     </div>
   );
 }

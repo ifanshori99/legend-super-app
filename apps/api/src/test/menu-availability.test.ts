@@ -713,7 +713,12 @@ describe("legend-h2a guest QR availability", () => {
       menu.items.find((item) => item.id === itemId)?.status;
     // 09:00 Tuesday: inside the breakfast window, outside the night window.
     expect(statusOf(ids.scheduledItem)).toBe("available");
-    expect(statusOf(ids.offScheduleItem)).toBe("sold_out");
+    // legend-nx3f: outside its window but the 18:00 window opens later today.
+    const offSchedule = menu.items.find(
+      (item) => item.id === ids.offScheduleItem,
+    );
+    expect(offSchedule?.status).toBe("unavailable_until");
+    expect(offSchedule?.availableFrom).toBe("2026-03-10T11:00:00.000Z"); // 18:00 WIB
     // The 86 deadline passed an hour ago: the item sells again.
     expect(statusOf(ids.expired86Item)).toBe("available");
     // Daily limit 1, one already sold today: nothing left.
