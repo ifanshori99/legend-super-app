@@ -61,6 +61,16 @@ export const promotionStatusSchema = z.enum([
 ]);
 export type PromotionStatus = z.infer<typeof promotionStatusSchema>;
 
+/**
+ * Which outlets a promotion runs at (legend-jh27). `all_except` (default) =
+ * every outlet of the tenant unless an outlet has a `promotion_outlets` row
+ * with `enabled = false` (opt-out). `only` = only outlets with a row that has
+ * `enabled = true` (allowlist); an outlet with no row, or an `enabled = false`
+ * row, does not run it.
+ */
+export const promotionOutletScopeSchema = z.enum(["all_except", "only"]);
+export type PromotionOutletScope = z.infer<typeof promotionOutletScopeSchema>;
+
 // ---- Rule DSL: conditions and benefits ------------------------------------
 
 /**
@@ -156,6 +166,12 @@ export const promotionObjectSchema = z.strictObject({
   /** Promo budget (PRD §3.21); spent is maintained by the service. */
   budgetIdr: nonnegativeIdr.nullable(),
   spentIdr: nonnegativeIdr,
+  /**
+   * Opt-out (`all_except`) or allowlist (`only`) per-outlet reading. Absent =
+   * `all_except`; the API always returns it. Optional so existing fixtures and
+   * evaluator inputs stay valid.
+   */
+  outletScope: promotionOutletScopeSchema.optional(),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
 });

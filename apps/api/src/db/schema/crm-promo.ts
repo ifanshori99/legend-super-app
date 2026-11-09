@@ -43,6 +43,7 @@ import type {
   PromoFreeItem,
   PromoStackingPolicy,
   PromotionBenefit,
+  PromotionOutletScope,
   PromotionCondition,
   PromotionApplicationResult,
   PromotionRuleSnapshot,
@@ -96,6 +97,11 @@ export const promotions = pgTable(
       .notNull()
       .default(sql`0`),
     usesTotal: integer("uses_total").notNull().default(0),
+    /** legend-jh27: `all_except` = opt-out rows, `only` = allowlist rows. */
+    outletScope: varchar("outlet_scope", { length: 12 })
+      .$type<PromotionOutletScope>()
+      .notNull()
+      .default("all_except"),
     createdBy: text("created_by").$type<UserId>(),
     updatedBy: text("updated_by").$type<UserId>(),
     createdAt,
@@ -118,6 +124,10 @@ export const promotions = pgTable(
     check(
       "promotions_validity_check",
       sql`${table.endsAt} IS NULL OR ${table.endsAt} > ${table.startsAt}`,
+    ),
+    check(
+      "promotions_outlet_scope_check",
+      sql`${table.outletScope} IN ('all_except', 'only')`,
     ),
     check(
       "promotions_code_hash_check",
@@ -535,3 +545,34 @@ export const promoSettings = pgTable("promo_settings", {
   updatedBy: text("updated_by").$type<UserId>(),
   updatedAt,
 });
+
+/**
+ * `Idempotency-Key` store for the promo admin commands that create something
+ * (createPromotion, issueVoucher; legend-nloi). One row per (tenant, key): the
+ * operation and a sha256 fingerprint of the request body detect key reuse with
+ * another body (409 IDEMPOTENCY_KEY_REUSED); `response` is replayed. Written
+ * in the same transaction as the command, so both commit together. A voucher's
+ * one-time plain code is stored sealed (lib/secrets), never in the clear.
+ * Tenant RLS in migration 0091.
+ */
+export const promoCommandIdempotency = pgTable(
+  "promo_command_idempotency",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    key: varchar("key", { length: 100 }).notNull(),
+    operation: varchar("operation", { length: 40 }).notNull(),
+    fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+    response: jsonb("response").notNull(),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({
+      name: "promo_command_idempotency_pkey",
+      columns: [table.tenantId, table.key],
+    }),
+    check(
+      "promo_command_idempotency_fingerprint_check",
+      sql`${table.fingerprint} ~ '^[a-f0-9]{64}$'`,
+    ),
+  ],
+);

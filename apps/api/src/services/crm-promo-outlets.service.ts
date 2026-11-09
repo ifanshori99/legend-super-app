@@ -16,6 +16,7 @@ import {
   promotionOutletSchema,
   setPromotionOutletInputSchema,
   type PromotionOutlet,
+  type PromotionOutletScope,
 } from "@starter/shared/crm";
 import {
   createUlid,
@@ -31,6 +32,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendPromoEvent, requirePromoOutlet } from "./crm-promo-engine";
+import { promotionRunsAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -89,9 +91,9 @@ async function requirePromotion(
   tx: Tx,
   context: ScopedTenantContext,
   promotionId: string,
-): Promise<void> {
+): Promise<PromotionOutletScope> {
   const [row] = await tx
-    .select({ id: promotions.id })
+    .select({ outletScope: promotions.outletScope })
     .from(promotions)
     .where(
       and(
@@ -101,6 +103,7 @@ async function requirePromotion(
     )
     .limit(1);
   if (!row) throw new HttpError(404, "NOT_FOUND", "Promo tidak ditemukan.");
+  return row.outletScope;
 }
 
 /** Every outlet of the tenant with the promotion's effective state there. */
@@ -111,7 +114,7 @@ export async function listPromotionOutlets(
 ): Promise<PromotionOutlet[]> {
   return withTenant(db, context, async (tx) => {
     await assertPermission(tx, context, actorUserId, { type: "tenant" });
-    await requirePromotion(tx, context, promotionId);
+    const scope = await requirePromotion(tx, context, promotionId);
     const tenantId = context.tenant.tenantId;
     const rows = await tx
       .select({ outletId: outlets.id, enabled: promotionOutlets.enabled })
@@ -131,8 +134,9 @@ export async function listPromotionOutlets(
         promotionId,
         tenantId,
         outletId: row.outletId,
-        // No row = the promotion runs at this outlet (crm-promo-outlets.ts).
-        enabled: row.enabled ?? true,
+        // Effective state per the promotion's scope (crm-promo-outlets.ts):
+        // all_except: no row = runs; only: no row = does not run.
+        enabled: promotionRunsAtOutlet(scope, row.enabled),
       }),
     );
   });
