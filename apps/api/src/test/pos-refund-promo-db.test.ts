@@ -199,6 +199,7 @@ function pos() {
       )
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
+    send,
     create: () =>
       send("", {
         channel: "pos",
@@ -1480,5 +1481,340 @@ describe("legend-wkl3 Rp0 goods return only when nothing is owed on the bill", (
     expect(await refundRows(sale.orderId)).toHaveLength(1);
     expect(await application(sale.orderId)).toEqual(applicationBefore);
     expect(await spentOf(sale.promotionId)).toBe(spentBefore);
+  });
+});
+
+// ---- Brief sub-172 A (legend-a0i7) and B: Codex 127 #1 and #2 -------------------------
+//
+// A1 (Codex #1): refund of a promo order must not depend on how the return is
+//   split. Promo "buy 2 coffee (Rp30.000), 1 cheapest pastry free". Order: 4
+//   coffee + 2 pastry Rp20.000 + 1 pastry Rp40.000 = Rp200.000, promo Rp40.000,
+//   paid Rp160.000. Returning 1 coffee + 2 cheap pastries at once refunds
+//   Rp56.000 (kept discount 26k, payable 104k); returning 1 coffee, then the 2
+//   cheap pastries, must refund Rp10.000 + Rp46.000 = Rp56.000 as well.
+// B1 (Codex #2): on a promo order a refund that asks for less than is due is
+//   refused 422 REFUND_AMOUNT_BELOW_DUE (nothing written), so the remainder is
+//   never locked behind an exhausted item quantity.
+//
+// Assumptions (spec ambiguity):
+// - "gratis 1 pastry termurah" is modelled as a free_items benefit over both
+//   pastry menu items, one per multiple of 2 coffee; the engine gives the
+//   cheapest ones (sale preconditions below assert the 40k discount).
+// - The error code is read from `body.error.code ?? body.code`, like the
+//   existing REFUND_NOTHING_DUE test; the message must name the due amount
+//   (Rp40.000) in any thousand-separator format.
+// - Each refund request asks for exactly what is due, so the test stays valid
+//   once "asking for less than due" is refused (B1 fix).
+
+const a1 = {
+  coffee: randomUUID(),
+  pastryCheap: randomUUID(),
+  pastryDear: randomUUID(),
+};
+
+async function seedA1Menu() {
+  await asOwnerTenant(async (client) => {
+    for (const [id, name, price] of [
+      [a1.coffee, "Kopi A1", 30_000],
+      [a1.pastryCheap, "Pastry Murah A1", 20_000],
+      [a1.pastryDear, "Pastry Mahal A1", 40_000],
+    ] as const) {
+      await client.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, $5, true, $6)`,
+        [id, tenant.tenantId, tenant.brandId, ids.category, name, randomUUID()],
+      );
+      await client.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), tenant.tenantId, ids.priceList, id, price],
+      );
+    }
+  });
+}
+
+/** Buy 2 coffee, 1 cheapest pastry free (per multiple of 2). */
+async function seedCheapestPastryPromotion() {
+  const id = randomUUID();
+  const code = newCode();
+  await asOwnerTenant((client) =>
+    client.query(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, code_hash, voucher_required, starts_at, ends_at,
+          conditions, benefit, stack_group, stackable, priority, quota_total, quota_per_customer,
+          budget_idr)
+       VALUES ($1, $2, $3, '', 'active', $4, true, now() - interval '1 hour', NULL, $5, $6, $7,
+               true, 0, NULL, NULL, 1000000)`,
+      [
+        id,
+        tenant.tenantId,
+        `Beli 2 kopi gratis pastry termurah ${id.slice(0, 8)}`,
+        sha(code),
+        JSON.stringify([
+          { kind: "item_quantity", menuItemIds: [a1.coffee], minQuantity: 2 },
+        ]),
+        JSON.stringify({
+          kind: "free_items",
+          menuItemIds: [a1.pastryCheap, a1.pastryDear],
+          quantityPerMultiple: 1,
+        }),
+        `g${id.slice(0, 8)}`,
+      ],
+    ),
+  );
+  return { promotionId: id, code };
+}
+
+/** 4 coffee + 2 cheap pastry + 1 dear pastry, promo applied, paid in cash, completed. */
+async function a1Sale() {
+  const { promotionId, code } = await seedCheapestPastryPromotion();
+  const created = await pos().send("", {
+    channel: "pos",
+    serviceType: "takeaway",
+    items: [
+      { menuItemId: a1.coffee, quantity: 4, modifierIds: [] },
+      { menuItemId: a1.pastryCheap, quantity: 2, modifierIds: [] },
+      { menuItemId: a1.pastryDear, quantity: 1, modifierIds: [] },
+    ],
+  });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const orderId = created.body.data.id as string;
+  const items = created.body.data.items as { id: string; menuItemId: string }[];
+  const lineOf = (menuItemId: string) => {
+    const found = items.find((item) => item.menuItemId === menuItemId)?.id;
+    expect(found).toBeTruthy();
+    return found as string;
+  };
+  const discounted = await pos().promo(orderId, code);
+  expect(discounted.status, JSON.stringify(discounted.body)).toBeLessThan(300);
+  const fresh = (await pos().get(orderId)).body.data;
+  expect(fresh.totalIdr).toBe(160_000);
+  let status = fresh.status as string;
+  if (status === "draft") {
+    const submitted = await pos().submit(orderId, status);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    status = submitted.body.data.status as string;
+  }
+  const paid = await pos().cash(orderId, status, 160_000);
+  expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+  const completed = await pos().complete(
+    orderId,
+    paid.body.data.order.status as string,
+  );
+  expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+  expect(await spentOf(promotionId)).toBe(40_000);
+  return { orderId, promotionId, lineOf };
+}
+
+describe("sub-172 A legend-a0i7 refund is independent of how the return is split", () => {
+  beforeAll(seedA1Menu);
+
+  it("A1: 4 coffee + 2 cheap pastry + 1 dear pastry (200k, 40k off, paid 160k): coffee then 2 cheap pastries refunds Rp56.000 in total, same as at once, with the same promo discount and budget", async () => {
+    // Path 1, all at once: kept 3 coffee + dear pastry = 130k, kept discount
+    // min(share 26k, original 40k, recheck 40k) = 26k, payable 104k -> refund 56k.
+    const once = await a1Sale();
+    const atOnce = await pos().refund(
+      once.orderId,
+      await refundBody(once.orderId, {
+        amountIdr: 56_000,
+        items: [
+          { itemId: once.lineOf(a1.coffee), quantity: 1 },
+          { itemId: once.lineOf(a1.pastryCheap), quantity: 2 },
+        ],
+      }),
+    );
+    expect(atOnce.status, JSON.stringify(atOnce.body)).toBe(201);
+    expect(atOnce.body.data.amountIdr).toBe(56_000);
+    const onceApplication = await application(once.orderId);
+    const onceSpent = await spentOf(once.promotionId);
+    const onceRedemptions = await appliedRedemptions(once.orderId);
+    expect(onceApplication).toMatchObject({
+      paid: 160_000,
+      refundedPaid: 56_000,
+      totalDiscount: 26_000,
+    });
+    expect(onceSpent).toBe(26_000);
+
+    // Path 2, stepwise. Step 1: kept 3 coffee + 3 pastry = 170k, recheck 20k
+    // -> payable 150k, refund 10k.
+    const step = await a1Sale();
+    const first = await pos().refund(
+      step.orderId,
+      await refundBody(step.orderId, {
+        amountIdr: 10_000,
+        items: [{ itemId: step.lineOf(a1.coffee), quantity: 1 }],
+      }),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body.data.amountIdr).toBe(10_000);
+    expect(await application(step.orderId)).toMatchObject({
+      totalDiscount: 20_000,
+    });
+    expect(await spentOf(step.promotionId)).toBe(20_000);
+
+    // Step 2: kept 3 coffee + dear pastry = 130k, recheck is 40k again, so the
+    // kept discount must go back UP to 26k -> payable 104k, cumulative 56k,
+    // this step refunds 46k (old code: capped at the lowered 20k -> only 40k).
+    const second = await pos().refund(
+      step.orderId,
+      await refundBody(step.orderId, {
+        amountIdr: 46_000,
+        items: [{ itemId: step.lineOf(a1.pastryCheap), quantity: 2 }],
+      }),
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.data.amountIdr).toBe(46_000);
+
+    const rows = await refundRows(step.orderId);
+    expect(rows.reduce((sum, row) => sum + row.amount, 0)).toBe(56_000);
+    expect(await application(step.orderId)).toMatchObject({
+      paid: 160_000,
+      refundedPaid: onceApplication.refundedPaid,
+      totalDiscount: onceApplication.totalDiscount,
+    });
+    expect(await spentOf(step.promotionId)).toBe(onceSpent);
+    expect(
+      (await appliedRedemptions(step.orderId)).map((row) => row.discount),
+    ).toEqual(onceRedemptions.map((row) => row.discount));
+    await expectRowsMatchApplication(step.orderId);
+  });
+
+  // A2 assumptions (spec ambiguity):
+  // - "the line" is the applied promotion_redemptions row of the order.
+  // - The audit row is read from audit_logs by event->>'action' =
+  //   'promo_application.clamped' for this order; budgetShortIdr is searched
+  //   anywhere in the event JSON (its exact nesting is not specified).
+  it("A2: same staged return, but the budget is used up between step 1 and step 2 (budget = spent): step 2 still pays Rp46.000 (total Rp56.000), spent stays within budget, the line stays at 20.000, and promo_application.clamped records budgetShortIdr 6000", async () => {
+    const sale = await a1Sale();
+    const first = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 10_000,
+        items: [{ itemId: sale.lineOf(a1.coffee), quantity: 1 }],
+      }),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(first.body.data.amountIdr).toBe(10_000);
+    const spentAfterFirst = await spentOf(sale.promotionId);
+    expect(spentAfterFirst).toBe(20_000);
+
+    // Another sale uses the freed room: budget = what is spent now.
+    await asOwnerTenant((client) =>
+      client.query(
+        `UPDATE promotions SET budget_idr = spent_idr
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, sale.promotionId],
+      ),
+    );
+
+    const second = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 46_000,
+        items: [{ itemId: sale.lineOf(a1.pastryCheap), quantity: 2 }],
+      }),
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.data.amountIdr).toBe(46_000);
+    expect(
+      (await refundRows(sale.orderId)).reduce(
+        (sum, row) => sum + row.amount,
+        0,
+      ),
+    ).toBe(56_000);
+
+    // Budget has no room: spent is unchanged and still within the budget.
+    expect(await spentOf(sale.promotionId)).toBe(spentAfterFirst);
+    const { rows: budgetRows } = await asOwnerTenant((client) =>
+      client.query(
+        "SELECT budget_idr, spent_idr FROM promotions WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, sale.promotionId],
+      ),
+    );
+    expect(Number(budgetRows[0]?.spent_idr)).toBeLessThanOrEqual(
+      Number(budgetRows[0]?.budget_idr),
+    );
+
+    // The line could not go back up to 26k: it stays at 20k.
+    expect(
+      (await appliedRedemptions(sale.orderId)).map((row) => row.discount),
+    ).toEqual([20_000]);
+    // Not asserted: application.total_discount_idr (26k observed) vs the rows
+    // (20k); the brief only fixes the line and the budget.
+
+    // Audit row: 26k wanted, 20k fits -> 6k short of budget.
+    const audit = await asOwnerTenant((client) =>
+      client.query<{ event: unknown }>(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'promo_application.clamped'`,
+        [tenant.tenantId],
+      ),
+    );
+    const forOrder = audit.rows.filter((row) =>
+      JSON.stringify(row.event).includes(sale.orderId),
+    );
+    expect(forOrder.length).toBeGreaterThanOrEqual(1);
+    expect(
+      forOrder.some((row) =>
+        /"budgetShortIdr":\s*6000\b/.test(JSON.stringify(row.event)),
+      ),
+      JSON.stringify(forOrder.map((row) => row.event)),
+    ).toBe(true);
+  });
+});
+
+describe("sub-172 B refund below what is due on a promo order", () => {
+  it("B1: 2 x 50k, 20k off, paid 80k: refund A = 40k, then asking only 30k for B is 422 REFUND_AMOUNT_BELOW_DUE and writes nothing; asking 40k passes, total 80k", async () => {
+    const sale = await promoSale();
+    const firstRefund = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 40_000,
+        items: [{ itemId: sale.itemA, quantity: 1 }],
+      }),
+    );
+    expect(firstRefund.status, JSON.stringify(firstRefund.body)).toBe(201);
+    expect(firstRefund.body.data.amountIdr).toBe(40_000);
+
+    const applicationBefore = await application(sale.orderId);
+    const spentBefore = await spentOf(sale.promotionId);
+    const stockBefore = await dailyStock();
+
+    // Less than the Rp40.000 due: refused before anything is written.
+    const refused = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 30_000,
+        items: [{ itemId: sale.itemB, quantity: 1 }],
+      }),
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error?.code ?? refused.body.code).toBe(
+      "REFUND_AMOUNT_BELOW_DUE",
+    );
+    expect(JSON.stringify(refused.body)).toMatch(/40[.,]?000/);
+    expect(await refundRows(sale.orderId)).toHaveLength(1);
+    expect(await application(sale.orderId)).toEqual(applicationBefore);
+    expect(applicationBefore.refundedPaid).toBe(40_000);
+    expect(await spentOf(sale.promotionId)).toBe(spentBefore);
+    expect(await dailyStock()).toEqual(stockBefore);
+
+    // Asking exactly what is due passes; the whole Rp80.000 is refunded.
+    const accepted = await pos().refund(
+      sale.orderId,
+      await refundBody(sale.orderId, {
+        amountIdr: 40_000,
+        items: [{ itemId: sale.itemB, quantity: 1 }],
+      }),
+    );
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+    expect(accepted.body.data.amountIdr).toBe(40_000);
+    expect(
+      (await refundRows(sale.orderId)).reduce(
+        (sum, row) => sum + row.amount,
+        0,
+      ),
+    ).toBe(80_000);
+    expect((await application(sale.orderId)).refundedPaid).toBe(80_000);
   });
 });

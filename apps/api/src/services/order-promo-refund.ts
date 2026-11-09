@@ -11,15 +11,18 @@
 //   the promotion budget and the ROI cost (sum of
 //   `promotion_redemptions.discount_idr`) would still count it.
 //
-// This wrapper lowers each still-applied redemption line to the discount the
+// This wrapper moves each still-applied redemption line to the discount the
 // recompute says it keeps (`keptLineDiscounts`), and the `spent_idr` of its
-// promotion by the same cut (value vouchers have no promotion row: only their
-// line is lowered). So the budget a promotion gets back is what that
-// promotion actually lost, never a share of another promotion's loss. The
-// invariant kept is sum(applied line discount_idr) ==
-// application.total_discount_idr, so a later full void (`releasePromotions`)
-// gives back exactly what is still counted and never drives `spent_idr` below
-// zero.
+// promotion by the same amount (value vouchers have no promotion row: only
+// their line moves). So the budget a promotion gets back is what that
+// promotion actually lost, never a share of another promotion's loss. A line
+// can also go UP (legend-a0i7: a later return makes it earn more than an
+// earlier refund left on it); the raise takes budget again, capped at what the
+// promotion still has. The invariant kept is sum(applied line discount_idr) ==
+// application.total_discount_idr, except when a raise was cut short by the
+// budget (then the lines sum to less; `budgetShortIdr` in the audit); in both
+// cases spent_idr still counts every applied line, so a later full void
+// (`releasePromotions`) never drives `spent_idr` below zero.
 //
 // Lock order is the engine's (crm-promo-engine `redeemPromotions` doc): the
 // caller holds the order row; then the per-order advisory lock and the
@@ -59,6 +62,8 @@ const orderIdSchema = ulidIdSchema<"OrderId">();
 const CLAMP_AUDIT_FIELDS: readonly string[] = [
   ...PROMO_AUDIT_SAFE_FIELDS,
   "clampedDiscountIdr",
+  "raisedDiscountIdr",
+  "budgetShortIdr",
 ];
 
 /** Same key as the engine's per-order lock (crm-promo-engine `lockOrder`). */
@@ -85,17 +90,24 @@ export function clampedDiscountOf(
 }
 
 /**
- * Lowers each still-applied redemption line of one order to the discount it
- * keeps (never raises one), and its promotion's spent_idr by the same cut.
- * Returns the total lowered.
+ * Moves each still-applied redemption line of one order to the discount it
+ * keeps, and its promotion's spent_idr by the same amount (legend-a0i7).
+ * Lowering gives budget back. Raising (a later return made the line earn more
+ * than an earlier refund left on it) takes budget again, at most what the
+ * promotion still has (`promotions_budget_check`: spent <= budget): the line
+ * is raised only by what spent_idr could take, so spent_idr never drops below
+ * the applied lines and a later void never drives it negative. The shortfall
+ * is the kept discount the guest still gets that the budget could not count
+ * again (another sale took the room in between); it is audited, never an
+ * error, so the refund is never locked by another sale.
  */
-async function lowerAppliedDiscount(
+async function reconcileAppliedDiscount(
   tx: Tx,
   tenantId: TenantId,
   orderId: string,
   kept: Extract<PartialRefundResult, { adjusted: true }>["keptLineDiscounts"],
   now: Date,
-): Promise<number> {
+): Promise<{ lowered: number; raised: number; budgetShortIdr: number }> {
   const lines = await tx
     .select({
       id: promotionRedemptions.id,
@@ -118,42 +130,86 @@ async function lowerAppliedDiscount(
   const keptById = new Map(
     kept.map((entry) => [entry.redemptionId, entry.keptDiscountIdr]),
   );
-  // Never lower below zero (CHECK discount_idr >= 0) and never raise a line.
-  const cuts = lines.map((line) => {
+  // Signed change per line: < 0 lowers, > 0 raises. Never below zero (CHECK
+  // discount_idr >= 0).
+  const deltas = lines.map((line) => {
     const keep = keptById.get(line.id);
-    return keep === undefined
-      ? 0
-      : Math.max(0, line.discountIdr - Math.max(0, keep));
+    return keep === undefined ? 0 : Math.max(0, keep) - line.discountIdr;
   });
-  const lowered = cuts.reduce((sum, cut) => sum + cut, 0);
-  if (lowered <= 0) return 0;
+  if (deltas.every((delta) => delta === 0))
+    return { lowered: 0, raised: 0, budgetShortIdr: 0 };
   const promotionIds = [
     ...new Set(
       lines
-        .filter((_, index) => (cuts[index] ?? 0) > 0)
+        .filter((_, index) => (deltas[index] ?? 0) !== 0)
         .map((line) => line.promotionId)
         .filter((id): id is string => id !== null),
     ),
   ].sort();
-  if (promotionIds.length > 0)
-    // Already held by the recompute; re-taken in id order, never out of order.
-    await tx
-      .select({ id: promotions.id })
-      .from(promotions)
-      .where(
-        and(
-          eq(promotions.tenantId, tenantId),
-          inArray(promotions.id, promotionIds),
-        ),
-      )
-      .orderBy(asc(promotions.id))
-      .for("update");
-  for (const [index, line] of lines.entries()) {
-    const share = cuts[index] ?? 0;
-    if (share <= 0) continue;
+  // Already held by the recompute; re-taken in id order, never out of order.
+  const rows =
+    promotionIds.length === 0
+      ? []
+      : await tx
+          .select({
+            id: promotions.id,
+            spentIdr: promotions.spentIdr,
+            budgetIdr: promotions.budgetIdr,
+          })
+          .from(promotions)
+          .where(
+            and(
+              eq(promotions.tenantId, tenantId),
+              inArray(promotions.id, promotionIds),
+            ),
+          )
+          .orderBy(asc(promotions.id))
+          .for("update");
+  // Budget room per promotion after this order's own lowerings (a cut on one
+  // line of a promotion frees room for a raise on another line of it).
+  const room = new Map<string, number>();
+  for (const row of rows) {
+    const freed = lines.reduce(
+      (sum, line, index) =>
+        line.promotionId === row.id
+          ? sum + Math.max(0, -(deltas[index] ?? 0))
+          : sum,
+      0,
+    );
+    const spentAfterCuts = Math.max(0, row.spentIdr - freed);
+    room.set(
+      row.id,
+      row.budgetIdr === null
+        ? Number.MAX_SAFE_INTEGER
+        : Math.max(0, row.budgetIdr - spentAfterCuts),
+    );
+  }
+  let lowered = 0;
+  let raised = 0;
+  let budgetShortIdr = 0;
+  // Cuts first, then raises, each in the locked line order.
+  const indexes = [...lines.keys()];
+  const order = [
+    ...indexes.filter((index) => (deltas[index] ?? 0) < 0),
+    ...indexes.filter((index) => (deltas[index] ?? 0) > 0),
+  ];
+  for (const index of order) {
+    const line = lines[index];
+    const delta = deltas[index] ?? 0;
+    if (!line || delta === 0) continue;
+    let change = delta;
+    if (delta > 0 && line.promotionId !== null) {
+      const available = room.get(line.promotionId) ?? 0;
+      change = Math.min(delta, available);
+      room.set(line.promotionId, available - change);
+      budgetShortIdr += delta - change;
+      if (change === 0) continue;
+    }
+    if (change < 0) lowered += -change;
+    else raised += change;
     await tx
       .update(promotionRedemptions)
-      .set({ discountIdr: idr(line.discountIdr - share) })
+      .set({ discountIdr: idr(line.discountIdr + change) })
       .where(
         and(
           eq(promotionRedemptions.tenantId, tenantId),
@@ -165,7 +221,10 @@ async function lowerAppliedDiscount(
       await tx
         .update(promotions)
         .set({
-          spentIdr: sql`GREATEST(${promotions.spentIdr} - ${share}, 0)`,
+          spentIdr:
+            change < 0
+              ? sql`GREATEST(${promotions.spentIdr} - ${-change}, 0)`
+              : sql`${promotions.spentIdr} + ${change}`,
           updatedAt: now,
         })
         .where(
@@ -175,7 +234,7 @@ async function lowerAppliedDiscount(
           ),
         );
   }
-  return lowered;
+  return { lowered, raised, budgetShortIdr };
 }
 
 /**
@@ -210,14 +269,14 @@ export async function recomputeOrderPromoAfterPartialRefund(
   const result = await recomputeAfterPartialRefund(tx, context, refund);
   if (!result.adjusted || !before) return result;
 
-  const lowered = await lowerAppliedDiscount(
+  const { lowered, raised, budgetShortIdr } = await reconcileAppliedDiscount(
     tx,
     tenantId,
     orderId,
     result.keptLineDiscounts,
     refund.at,
   );
-  if (lowered > 0)
+  if (lowered > 0 || raised > 0 || budgetShortIdr > 0)
     await recordAudit(
       tx,
       context,
@@ -237,6 +296,8 @@ export async function recomputeOrderPromoAfterPartialRefund(
           after: {
             totalDiscountIdr: result.totalDiscountIdr,
             clampedDiscountIdr: lowered,
+            raisedDiscountIdr: raised,
+            budgetShortIdr,
           },
         },
         ipHash: null,

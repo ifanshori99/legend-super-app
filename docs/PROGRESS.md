@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-a0i7 + legend-ioyg refund promo dan void POS non-tunai (engineer, cabang `ws/pos-refund-void`, 2026-11-09)
+
+- legend-a0i7 #1 (Codex 127): diskon yang dipertahankan per baris redemption tidak lagi dibatasi diskon yang tersisa di baris setelah refund sebelumnya (`crm-promo-refund.ts`); `order-promo-refund.ts` kini menaikkan atau menurunkan baris dan `spent_idr` promosi dengan jumlah yang sama, naik dibatasi sisa anggaran (kekurangan dicatat di audit `promo_application.clamped`, `budgetShortIdr`). Contoh Codex: retur bertahap Rp10.000 + Rp46.000 = Rp56.000, sama dengan sekaligus.
+- legend-a0i7 #2: pesanan berpromo, refund yang meminta kurang dari yang jatuh tempo ditolak 422 `REFUND_AMOUNT_BELOW_DUE` sebelum menulis apa pun (sebelumnya sisa Rp10.000 terkunci). Minta lebih tetap dibatasi.
+- legend-ioyg: void penjualan selesai ditolak 409 `CONFLICT` bila ada tender non-tunai `captured`/`authorized` (QRIS, VA, e-wallet, kartu, EDC, poin, metode lain); kasir diarahkan ke refund. Dicek sebelum persetujuan dipakai. Auto-journal tidak diubah.
+- Test: `pos-refund-promo-db.test.ts` (A1, B1), `pos-order-void-noncash.test.ts` (C1-C3), gagal dulu di kode lama.
+- Brief second opinion: `docs/briefs/172b-second-opinion-pos-refund-void.md` (tidak di-commit).
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.

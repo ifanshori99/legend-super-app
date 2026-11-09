@@ -35,9 +35,16 @@
 //   item (buy 2 coffee, get 1 croissant free, croissant sent back) pays Rp0
 //   instead of a pro-rata share. A value voucher re-checks as a nominal on
 //   what is left; a rule that no longer exists (or a re-check refused by a
-//   gate it cannot reproduce) keeps its original discount in that cap. A line
-//   never keeps more than it carries now, and the kept discount is capped at
-//   the kept bill value, so the remaining bill can never go negative.
+//   gate it cannot reproduce) keeps its original discount in that cap. The
+//   kept discount is capped at the kept bill value, so the remaining bill can
+//   never go negative.
+// - legend-a0i7 (Codex 127): the kept discount depends only on the kept goods
+//   and the ORIGINAL sale, never on what an earlier refund left on the line,
+//   so a return split over several refunds pays the same total as one refund
+//   of the same items. A line may therefore keep MORE than it carries now
+//   (an earlier return lowered it, a later one makes another item the
+//   cheapest free one again); `order-promo-refund.ts` raises the line and its
+//   promotion's spent_idr by the same amount.
 // - A same-day minimum-spend facility reward (Q40) is re-checked against the
 //   customer's day total at that outlet with this bill reduced.
 // - The payout is cumulative: what the guest still has paid in
@@ -601,9 +608,10 @@ export async function recomputeAfterPartialRefund(
   // r_i), where o_i is the line's original discount, share_i its pro-rata
   // (by price) part on the kept goods over the ORIGINAL bill, and r_i what it
   // gives when the kept promotions are re-evaluated in stack order on the kept
-  // lines (Q19). A line never keeps more than it carries now. The payout is
-  // cumulative: what the guest still has paid in minus the kept goods at
-  // their payable price.
+  // lines (Q19). No cap by what the line carries now (legend-a0i7: that made
+  // the total depend on how the return was split). The payout is cumulative:
+  // what the guest still has paid in minus the kept goods at their payable
+  // price.
   const stack = [...keptEntries].sort((left, right) => {
     const tier = left.tier - right.tier;
     if (tier !== 0) return tier;
@@ -643,12 +651,7 @@ export async function recomputeAfterPartialRefund(
             keptSubtotal,
             application.subtotalIdr - keptSubtotal,
           ]);
-    keptAmounts.push(
-      Math.max(
-        0,
-        Math.min(share, original, recheckedIdr, entry.line.discountIdr),
-      ),
-    );
+    keptAmounts.push(Math.max(0, Math.min(share, original, recheckedIdr)));
   }
   // Capped at the kept bill value: the excess comes off the last lines in
   // stack order, so the lines still sum to the kept discount.
