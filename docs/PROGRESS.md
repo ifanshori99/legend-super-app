@@ -742,3 +742,4 @@ Langkah berikut CTO baru:
 - Brief siap, menunggu slot (Claude 8/8, akun #2): 256 y2lf+v9fh (ws/pph21-dec-minspend), 257 pxcs+dux2 (migrasi 0174 when 1794253000000), 258 ggpoe (dari ws/pickup-feed-service 6fee08e3; migrasi 0175 when 1794254000000 bila perlu). Berikut bebas 0176 when 1794255000000.
 - Kartu baru legend-v9bfj (P2 K): batas payout payment.refunded menunggu receipt dead-letter, sesudah refund merge.
 - legend-31fi: subagent Plan memecah 105 laporan + 64 angka dasbor jadi kartu paralel WS-11.
+- 23:5x G4zsm selesai legend-hjaot: ws/payroll-loan-policy-api c7f63491 (0169 diubah di tempat, CHECK total >= per pengajuan; DB integ dibuat ulang), menggantikan dd72324c di antrean G81x9; resolved. Brief 256 dimulai di G8gkq (Sonnet, akun #2).
