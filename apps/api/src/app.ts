@@ -38,9 +38,11 @@ import { edgeRouteGuard } from "./edge/mode.ts";
 import {
   setPosEdcTenderPort,
   setPosOrderPromoPort,
+  setPosReceiptPort,
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
 import { edcTenderSettlement } from "./services/pos-edc-tender.ts";
+import { createPosReceiptPort } from "./services/pos-receipt.service.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
@@ -53,9 +55,11 @@ setQrOrderDepositCreditLookup(depositCreditForSession);
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt
-// numbering (legend-93a) and points tenders keep their fail-closed defaults (pos-order-ports.ts) until
-// those beads land.
+// numbering (legend-93a) is wired below; cashier shift (legend-6c0) and EDC
+// (legend-dahk) are wired below too. Points tenders keep their fail-closed
+// default (pos-order-ports.ts) until that bead lands.
 setPosOrderPromoPort(orderPromoPort);
+setPosReceiptPort(createPosReceiptPort());
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 // WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
@@ -65,12 +69,29 @@ setPosEdcTenderPort(edcTenderSettlement);
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 
+// The e-receipt token in the path is a bearer credential too (bead legend-93a).
+const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
+
+function isMalformedPath(path: string) {
+  try {
+    decodeURIComponent(path);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
   const [rawPath, query] = url.split("?", 2);
+  // A malformed percent-encoding makes the router reject the request (400);
+  // the path may carry a credential in a param, so never log any of it.
+  if (rawPath && isMalformedPath(rawPath)) return "[malformed-url]";
   // The purchase order share token is a path segment: bearer credential.
-  const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
+  const path = rawPath
+    ?.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
+    .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())

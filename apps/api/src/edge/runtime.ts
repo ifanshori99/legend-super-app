@@ -12,7 +12,12 @@
 //     migrator as the cloud (`node dist/migrate.js` / `pnpm db:migrate` with
 //     DATABASE_URL pointing at the local database) before the API starts.
 //   - `registerEdgeLink(server)` on the cloud only: accepts edge links on
-//     /api/edge-link. Refuses to run with EDGE_MODE=true.
+//     /api/edge-link. Refuses to run with EDGE_MODE=true. It LISTENs on
+//     EDGE_NODE_REVOKED_CHANNEL so a revocation on another API instance closes
+//     this instance's link at once (legend-x3lv).
+//
+// Both prune acknowledged queue rows every hour (legend-x3lv,
+// `pruneAckedEdgeQueue`).
 //
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
@@ -20,12 +25,14 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Pool } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { parseEdgeHardeningEnv } from "@starter/shared/env";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
 import {
   authenticateEdgeCredential,
+  EDGE_NODE_REVOKED_CHANNEL,
   ensureLocalEdgeNode,
   isEdgeNodeActive,
   onEdgeNodeRevoked,
@@ -40,7 +47,14 @@ import {
   loadDeviceRegistryCheckpoint,
   saveDeviceRegistryCheckpoint,
 } from "../services/edge-device-sync-store.ts";
-import { EDGE_LINK_WAKE_CHANNEL } from "../services/edge-queue.service.ts";
+import {
+  EDGE_LINK_WAKE_CHANNEL,
+  EDGE_QUEUE_PRUNE_INTERVAL_MS,
+  pruneAckedEdgeQueue,
+} from "../services/edge-queue.service.ts";
+import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
+import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
+import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import {
   createDeviceRecordsFetcher,
   EdgeCloudHttpError,
@@ -154,10 +168,14 @@ const wakeSchema = z.strictObject({
   edgeNodeId: z.uuid(),
 });
 
-/** LISTEN for queue wakeups (ids only). Hints: the sweep covers misses. */
-async function listenEdgeLinkWakeups(
+/**
+ * LISTEN on one channel, reconnecting after a connection error. `onPayload`
+ * gets the raw payload; notifications are hints, so callers keep a fallback.
+ */
+async function listenPgChannel(
   source: Pool,
-  onWake: (signal: z.infer<typeof wakeSchema>) => void,
+  channel: string,
+  onPayload: (payload: string) => void,
 ): Promise<() => Promise<void>> {
   let closed = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
@@ -178,14 +196,8 @@ async function listenEdgeLinkWakeups(
     }
     let released = false;
     const onNotification = (message: { channel: string; payload?: string }) => {
-      if (message.channel !== EDGE_LINK_WAKE_CHANNEL || !message.payload)
-        return;
-      try {
-        const signal = wakeSchema.safeParse(JSON.parse(message.payload));
-        if (signal.success) onWake(signal.data);
-      } catch {
-        /* Invalid hint: ignored. */
-      }
+      if (message.channel !== channel || !message.payload) return;
+      onPayload(message.payload);
     };
     const release = (destroy: boolean) => {
       if (released) return;
@@ -199,7 +211,7 @@ async function listenEdgeLinkWakeups(
     });
     client.on("notification", onNotification);
     try {
-      await client.query(`LISTEN ${EDGE_LINK_WAKE_CHANNEL}`);
+      await client.query(`LISTEN ${channel}`);
     } catch (error) {
       release(true);
       throw error;
@@ -207,7 +219,7 @@ async function listenEdgeLinkWakeups(
     cleanup = async () => {
       if (released) return;
       try {
-        await client.query(`UNLISTEN ${EDGE_LINK_WAKE_CHANNEL}`);
+        await client.query(`UNLISTEN ${channel}`);
       } finally {
         release(false);
       }
@@ -219,6 +231,63 @@ async function listenEdgeLinkWakeups(
     if (retry) clearTimeout(retry);
     await cleanup?.();
   };
+}
+
+/** LISTEN for queue wakeups (ids only). Hints: the sweep covers misses. */
+function listenEdgeLinkWakeups(
+  source: Pool,
+  onWake: (signal: z.infer<typeof wakeSchema>) => void,
+): Promise<() => Promise<void>> {
+  return listenPgChannel(source, EDGE_LINK_WAKE_CHANNEL, (payload) => {
+    try {
+      const signal = wakeSchema.safeParse(JSON.parse(payload));
+      if (signal.success) onWake(signal.data);
+    } catch {
+      /* Invalid hint: ignored. */
+    }
+  });
+}
+
+/**
+ * LISTEN for revocations from any API instance (legend-x3lv). The payload is
+ * the node id; the periodic re-check covers a missed notification.
+ */
+function listenEdgeNodeRevocations(
+  source: Pool,
+  onRevoked: (edgeNodeId: string) => void,
+): Promise<() => Promise<void>> {
+  return listenPgChannel(source, EDGE_NODE_REVOKED_CHANNEL, (payload) => {
+    const id = z.uuid().safeParse(payload);
+    if (id.success) onRevoked(id.data);
+  });
+}
+
+/**
+ * Hourly prune of acknowledged queue rows (legend-x3lv). Never overlaps
+ * itself; failures are logged by name only and retried next hour.
+ */
+function startAckedQueuePrune(retentionDays: number): () => void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    pruneAckedEdgeQueue({ retentionDays })
+      .then((result) => {
+        if (result.failedTenants > 0)
+          logger.warn(
+            { failedTenants: result.failedTenants },
+            "Edge queue prune failed for some tenants",
+          );
+      })
+      .catch((error: unknown) =>
+        logger.warn(safeError(error), "Edge queue prune failed"),
+      )
+      .finally(() => {
+        running = false;
+      });
+  }, EDGE_QUEUE_PRUNE_INTERVAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 /** Boot guard: the local database carries the edge schema. */
@@ -254,6 +323,10 @@ export async function startEdgeRuntime(
     return { stop: async () => {} };
   }
   await assertEdgeSchemaReady();
+  // legend-s4r6: cloud -> edge appliers, before the link can deliver.
+  registerQrOrderEdgeApplier();
+  // Section D (legend-khu5): first boot provisions the node from its bundle.
+  await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
   try {
     local = await ensureLocalEdgeNode(config.credential, {
@@ -297,6 +370,9 @@ export async function startEdgeRuntime(
   });
   const sweep = setInterval(() => client.notify(), SWEEP_INTERVAL_MS);
   sweep.unref();
+  const stopPrune = startAckedQueuePrune(
+    parseEdgeHardeningEnv(source).EDGE_QUEUE_ACKED_RETENTION_DAYS,
+  );
   const fetchDeviceRecords = createDeviceRecordsFetcher({
     cloudUrl: config.cloudUrl,
     credential: config.credential,
@@ -363,6 +439,7 @@ export async function startEdgeRuntime(
   return {
     async stop() {
       clearInterval(sweep);
+      stopPrune();
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([puller.stop(), stopWakeups(), client.stop()]);
@@ -388,12 +465,19 @@ export async function registerEdgeLink(
 ): Promise<EdgeLinkHandle> {
   if (env.EDGE_MODE)
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
+  // legend-s4r6: edge -> cloud appliers, before any edge can connect.
+  registerStockMovedEdgeApplier();
   const version = env.EDGE_NODE_VERSION;
+  const hardening = parseEdgeHardeningEnv(process.env);
   const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {
     version,
     clientAddress: options.clientAddress,
-    authenticate: authenticateEdgeCredential,
-    isActive: isEdgeNodeActive,
+    authFailureLimit: {
+      limit: hardening.EDGE_LINK_AUTH_FAILURE_LIMIT,
+      windowMs: hardening.EDGE_LINK_AUTH_FAILURE_WINDOW_SECONDS * 1000,
+    },
+    authenticate: (token) => authenticateEdgeCredential(token),
+    isActive: (identity) => isEdgeNodeActive(identity),
     storeFor: (identity) =>
       createDbLinkStore({
         database: db,
@@ -417,18 +501,25 @@ export async function registerEdgeLink(
   const offRevoked = onEdgeNodeRevoked((edgeNodeId) =>
     linkServer.disconnect(edgeNodeId),
   );
+  const stopRevocations = await listenEdgeNodeRevocations(pool, (edgeNodeId) =>
+    linkServer.disconnect(edgeNodeId),
+  );
   const stopWakeups = await listenEdgeLinkWakeups(pool, (signal) =>
     linkServer.notify(signal.edgeNodeId),
   );
   const sweep = setInterval(() => linkServer.notifyAll(), SWEEP_INTERVAL_MS);
   sweep.unref();
+  const stopPrune = startAckedQueuePrune(
+    hardening.EDGE_QUEUE_ACKED_RETENTION_DAYS,
+  );
   return {
     notify: (edgeNodeId) => linkServer.notify(edgeNodeId),
     isConnected: (edgeNodeId) => linkServer.isConnected(edgeNodeId),
     async close() {
       clearInterval(sweep);
+      stopPrune();
       offRevoked();
-      await stopWakeups();
+      await Promise.all([stopRevocations(), stopWakeups()]);
       await linkServer.close();
     },
   };

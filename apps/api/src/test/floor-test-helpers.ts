@@ -94,13 +94,16 @@ export async function createIsolatedTenant(
   const limits = fixtures.tenant.limits;
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', $4, $5, 'test')`,
+     VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', $4, $5, $6)`,
     [
       tenantId,
       `tenant-${slugSuffix}`,
       `Tenant ${slugSuffix}`,
       JSON.stringify({ modules: ["qr_order"], integrationProviders: [] }),
       JSON.stringify(limits),
+      // A user-id-shaped creator: the platform tenant list parses every row
+      // (tenantSchema.createdBy is a UUID), so 'test' broke /api/platform/tenants.
+      randomUUID(),
     ],
   );
   await owner.query(
