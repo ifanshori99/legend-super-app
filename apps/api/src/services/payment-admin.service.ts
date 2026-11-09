@@ -53,6 +53,8 @@ export const hasSourceDocument = (
 // orders already applied, so a refund never pays back DP a sale used. Writers
 // hold the intent row lock and take the DP lock (`lockDeposit`, default);
 // a read-only listing passes false and gets an unlocked estimate.
+// legend-fsl5: `cap` also excludes the DP a cancelled or no-show reservation
+// forfeited to the outlet, so a refund never pays back kept money.
 export async function refundableBalance(
   tx: Tx,
   intent: Intent,
@@ -66,7 +68,10 @@ export async function refundableBalance(
        WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid)::text AS unallocated,
       (SELECT coalesce(sum(amount_idr), 0) FROM payment_refunds
        WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid
-         AND status <> 'failed' AND unallocated_fund_id IS NULL)::text AS reserved
+         AND status <> 'failed' AND unallocated_fund_id IS NULL)::text AS reserved,
+      (SELECT coalesce(sum(deposit_forfeited_idr), 0) FROM reservations
+       WHERE tenant_id = ${intent.tenantId} AND deposit_payment_id = ${intent.id}::uuid
+         AND status IN ('cancelled', 'no_show'))::text AS forfeited
   `);
   const row = result.rows[0]!;
   const allocated =
@@ -84,8 +89,10 @@ export async function refundableBalance(
     intent.id,
     { lock: lockDeposit },
   );
-  const cap = paid > depositInUse ? paid - depositInUse : 0n;
-  return { cap, reserved, paid, depositInUse };
+  const forfeited = BigInt(String(row.forfeited));
+  const held = depositInUse + forfeited;
+  const cap = paid > held ? paid - held : 0n;
+  return { cap, reserved, paid, depositInUse, forfeited };
 }
 
 async function paymentInfo(tx: Tx, intent: Intent) {
@@ -346,11 +353,19 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const { cap, reserved, paid, depositInUse } = await refundableBalance(
-          tx,
-          intent,
-        );
+        const { cap, reserved, paid, depositInUse, forfeited } =
+          await refundableBalance(tx, intent);
         if (reserved + BigInt(body.amountIdr) > cap) {
+          // legend-fsl5: the reservation DP was forfeited to the outlet.
+          if (
+            forfeited > 0n &&
+            reserved + BigInt(body.amountIdr) <= paid - depositInUse
+          )
+            throw new HttpError(
+              409,
+              "REFUND_DEPOSIT_FORFEITED",
+              `Reservation deposit was forfeited; at most ${cap > reserved ? cap - reserved : 0n} IDR can be refunded.`,
+            );
           // legend-e7zj: the DP is applied to a seated table's bill.
           if (depositInUse > 0n && reserved + BigInt(body.amountIdr) <= paid)
             throw new HttpError(

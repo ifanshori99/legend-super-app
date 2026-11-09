@@ -67,6 +67,7 @@ import {
   type ReservationRow,
   type Tx,
 } from "./reservation-core.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestFingerprint } from "./reservation-plan.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 
@@ -519,6 +520,18 @@ export async function cancelGuestReservation(
       };
     let row = await lockReservation(tx, context, outletId, link.reservationId);
     row = await reconcileDeposit(tx, context, row, now);
+    // legend-em6p: same as the staff close (reservation-lifecycle.ts): lock
+    // the DP intent after the reservation row and reconcileDeposit (which may
+    // only now link a settled DP), then take the close time under it.
+    const closedAt =
+      row.depositPaymentId === null
+        ? now
+        : await lockIntentsForFact(
+            tx,
+            context.tenant.tenantId,
+            [row.depositPaymentId],
+            now,
+          );
     if (row.status === "cancelled") {
       // Already cancelled (by the guest, staff, or an unpaid-DP expiry): report
       // the stored decision and never request a second refund.
@@ -566,7 +579,7 @@ export async function cancelGuestReservation(
       .update(reservations)
       .set({
         status: "cancelled",
-        closedAt: now,
+        closedAt,
         closeReason,
         closedBy: null,
         depositRefundIdr: idr(outcome.refundIdr),

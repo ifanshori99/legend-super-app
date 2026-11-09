@@ -50,6 +50,7 @@ import {
   OPERATIONS_NOTIFICATION_DESTINATION,
 } from "./operations-events.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   authorize,
   conflict,
@@ -420,17 +421,20 @@ async function completeRefund(
   const { intent, fund, refund } = locked;
   const resolvedBy = opts.actorId ?? refund.approvedBy;
   if (resolvedBy === null) throw new Error("approved refund has no approver");
+  // legend-em6p: lock the intent, then take the completion time after every
+  // earlier fact (sale, close, refund) on it.
+  const at = await lockIntentsForFact(tx, refund.tenantId, [intent.id], now);
   const [updated] = await tx
     .update(paymentRefunds)
     .set({
       status: "completed",
       providerRef,
-      completedAt: now,
+      completedAt: at,
       ...(opts.keepLease
         ? {}
         : { payoutClaimedUntil: null, payoutClaimToken: null }),
       lastPayoutError: opts.marker ?? null,
-      updatedAt: now,
+      updatedAt: at,
     })
     .where(
       and(
@@ -448,7 +452,7 @@ async function completeRefund(
       .set({
         resolution: "refund",
         resolvedBy,
-        resolvedAt: now,
+        resolvedAt: at,
         approvalRef: refund.id,
       })
       .where(
@@ -472,7 +476,7 @@ async function completeRefund(
           refunded >= BigInt(intent.amountIdr)
             ? "refunded"
             : "partially_refunded",
-        updatedAt: now,
+        updatedAt: at,
       })
       .where(
         and(
@@ -485,7 +489,7 @@ async function completeRefund(
     actorId: opts.actorId ?? null,
     row: updated,
     action: opts.action ?? "payment.refund_completed",
-    now,
+    now: at,
     reason: opts.reason,
     before: { status: "approved" },
     after: {
@@ -505,7 +509,7 @@ async function completeRefund(
       amountIdr: updated.amountIdr,
       unallocatedFundId: updated.unallocatedFundId,
     },
-    now,
+    now: at,
   });
   return updated;
 }

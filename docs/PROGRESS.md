@@ -562,3 +562,14 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bead baru: `legend-z76q` (P2, dispatcher print cek ulang printer saat cetak), `legend-4qon` (P3, oracle 404 vs 422 station brand lain di `menu.service`).
 - Biaya sesi 8d51c681 (06:43-07:53 UTC, termasuk akhir dak5): total biaya* 9922k (utama Opus 4869k, subagent Opus 2089k, Sonnet 2865k, Haiku 99k), 37 subagent sesi, task ini 6 subagent, maks 2 paralel.
 - Berikut: verifikasi CTO, second opinion Codex rentang 6f3063c7..5864a36c sebelum gerbang rilis, merge train.
+
+## legend-em6p + legend-fsl5: waktu fakta DP terkunci per intent dan batas refund DP hangus (engineer, cabang `ws/dp-intent-lock` dari `milestone/m1` a8c90378, 2026-11-09)
+
+- em6p (U4): penulis tiga fakta uang (selesai refund `completeRefund`, selesai penjualan POS `completePosOrder`, tutup reservasi staf `closeReservation` dan tamu `cancelGuestReservation`) mengunci baris `payment_intents` (`FOR UPDATE`, urut naik), lalu mengambil waktu dari `lockIntentsForFact` (`apps/api/src/services/payment-refund-fact-time.ts`): `now` pemanggil, atau 1 ms setelah fakta terakhir yang sudah commit pada intent itu. Waktu fakta per intent mengikuti urutan commit, tanpa seri, tidak bergantung jam host API.
+- Intent penjualan: alokasi DP sesi meja + intent tender gateway tertangkap. Penutup reservasi mengunci sesudah `reconcileDeposit` (DP yang baru tertaut ikut terkunci).
+- Urutan kunci: orders -> pos_orders -> payment_intents (sama dengan refund terlambat POS); reservations -> payment_intents; refund tetap intent dulu. Advisory e7zj tetap sesudah baris intent. Urutan 94qt tidak berubah.
+- fsl5 (U1): `refundableBalance` mengurangi `deposit_forfeited_idr` reservasi cancelled/no_show; refund atas DP hangus 409 `REFUND_DEPOSIT_FORFEITED`, dicek sebelum `REFUND_DEPOSIT_IN_USE`.
+- Test: `apps/api/src/test/dp-intent-lock-race.test.ts` (9 test; T1-T4 gagal di baseline, lulus sesudah fix; T5 tanpa 40P01).
+- Review K: Opus reviewer + architect. Temuan nyata (High, keduanya sama): penutup mengunci sebelum `reconcileDeposit` → dibetulkan + T2b. Tidak ada deadlock.
+- Brief Codex: `docs/briefs/168b-second-opinion-dp-intent-lock.md` (main checkout, tidak di-commit).
+- Sisa: QR tidak punya `pos_orders.completed_at` (U3, kartu lain). Tanggal bisnis jurnal forfeit memakai `occurredAt` event (`now`), selisih ms dari `closed_at`.
