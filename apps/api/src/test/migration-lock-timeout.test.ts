@@ -5,7 +5,14 @@
 // afterAll.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -164,6 +171,77 @@ describe("legend-jluo migration session settings", () => {
     expect(run.stderr).toContain(
       'MIGRATION_LOCK_TIMEOUT must be 0 or a whole number with ms, s or min, at most 35791min (for example 10s); got "ten seconds".',
     );
+  });
+});
+
+// Bead legend-76azz: a migration that tightens lock_timeout for one statement
+// must put back the value it found (the migrator's MIGRATION_LOCK_TIMEOUT),
+// saved with current_setting('lock_timeout') and restored with
+// set_config('lock_timeout', <saved>, true). "SET LOCAL lock_timeout TO
+// DEFAULT" and "RESET lock_timeout" restore the role/database default instead
+// (0 = wait forever on most servers) for every later file in the batch,
+// because drizzle runs all pending files in one transaction.
+const drizzleFolder = join(apiRoot, "drizzle");
+
+function withoutComments(sql: string): string {
+  return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+}
+
+const lockTimeoutToDefault =
+  /\bSET\s+(?:LOCAL\s+|SESSION\s+)?"?lock_timeout"?\s*(?:TO\b|=)\s*DEFAULT\b/i;
+const lockTimeoutReset = /\bRESET\s+(?:"?lock_timeout"?|ALL)\b/i;
+// set_config with a NULL value also resets to the server default, and a bare
+// current_setting(name, true) is NULL when the saved setting is missing.
+const lockTimeoutNullConfig =
+  /\bset_config\s*\(\s*'lock_timeout'\s*,\s*(?:NULL\b|current_setting\s*\([^()]*,\s*true\s*\)\s*,)/i;
+
+function restoresLockTimeoutToDefault(sql: string): boolean {
+  const code = withoutComments(sql);
+  return (
+    lockTimeoutToDefault.test(code) ||
+    lockTimeoutReset.test(code) ||
+    lockTimeoutNullConfig.test(code)
+  );
+}
+
+describe("legend-76azz migrations restore the migrator's lock_timeout", () => {
+  it("the scanner sees TO DEFAULT, = DEFAULT and RESET, not comments or the saved-value restore", () => {
+    for (const offending of [
+      "SET LOCAL lock_timeout TO DEFAULT;",
+      "set local lock_timeout = default;",
+      "SET lock_timeout=DEFAULT;",
+      'SET SESSION "lock_timeout" TO DEFAULT;',
+      "RESET lock_timeout;",
+      "RESET ALL;",
+      "SELECT set_config('lock_timeout', NULL, true);",
+      "SELECT set_config( 'lock_timeout' , current_setting('legend.saved', true), true);",
+    ])
+      expect(restoresLockTimeoutToDefault(offending), offending).toBe(true);
+    for (const allowed of [
+      "-- SET LOCAL lock_timeout TO DEFAULT (comment)",
+      "/* RESET lock_timeout */",
+      "SET LOCAL lock_timeout = '5s';",
+      "SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0135', true), ''), current_setting('lock_timeout')), true);",
+      "SELECT set_config('lock_timeout', current_setting('legend.lock_timeout_before_0135'), true);",
+      "PERFORM set_config('lock_timeout', prior_lock_timeout, true);",
+      "SET LOCAL statement_timeout TO DEFAULT;",
+    ])
+      expect(restoresLockTimeoutToDefault(allowed), allowed).toBe(false);
+  });
+
+  it("no migration file restores lock_timeout with TO DEFAULT, RESET or a NULL value", () => {
+    const files = readdirSync(drizzleFolder).filter((name) =>
+      name.endsWith(".sql"),
+    );
+    expect(files.length).toBeGreaterThan(100);
+    const offenders = files
+      .filter((name) =>
+        restoresLockTimeoutToDefault(
+          readFileSync(join(drizzleFolder, name), "utf8"),
+        ),
+      )
+      .sort();
+    expect(offenders).toEqual([]);
   });
 });
 

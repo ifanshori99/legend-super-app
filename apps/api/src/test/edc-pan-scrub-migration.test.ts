@@ -790,7 +790,8 @@ const snapshotAll = async () =>
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  // 0135: SET LOCAL lock_timeout, NO FORCE, UPDATE, FORCE, reset lock_timeout.
+  // 0135: save + tighten lock_timeout, NO FORCE, UPDATE, FORCE, restore the
+  // saved lock_timeout.
   expect(statements0135.length).toBe(5);
   isolated = await createIsolatedTenant(`pan-${randomUUID().slice(0, 8)}`);
   // Tenant A: seeded fixture tenant, all specs. Tenant B: isolated tenant,
@@ -1131,6 +1132,47 @@ describe("EDC-01 legend-5gub + legend-tjwb migrations 0135 + 0143 PAN scrub", ()
       expect(await forcedRls()).toBe(false);
     });
     expect(await forcedRls()).toBe(true);
+  });
+
+  // legend-76azz: 0135 puts back the lock_timeout the migrator set
+  // (MIGRATION_LOCK_TIMEOUT), not the role/database default that
+  // "SET LOCAL lock_timeout TO DEFAULT" restored. Rolled back afterwards.
+  it("0135 restores the migrator's lock_timeout, not the server default", async () => {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL lock_timeout = '7s'");
+      const [first, ...rest] = statements0135;
+      await client.query(first as string);
+      expect((await client.query("SHOW lock_timeout")).rows).toEqual([
+        { lock_timeout: "5s" },
+      ]);
+      for (const statement of rest) await client.query(statement);
+      expect((await client.query("SHOW lock_timeout")).rows).toEqual([
+        { lock_timeout: "7s" },
+      ]);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+
+  // Statement by statement in autocommit the saved value is gone (an empty
+  // placeholder) by the restore; it must keep the session value, not fail
+  // with 'invalid value for parameter "lock_timeout": ""'. Touches no table.
+  it("0135's restore keeps the session lock_timeout when run in autocommit", async () => {
+    const client = await owner.connect();
+    try {
+      await client.query("SET lock_timeout = '9s'");
+      await client.query(statements0135[0] as string);
+      await client.query(statements0135[4] as string);
+      expect((await client.query("SHOW lock_timeout")).rows).toEqual([
+        { lock_timeout: "9s" },
+      ]);
+    } finally {
+      await client.query("RESET lock_timeout");
+      client.release();
+    }
   });
 
   // Realistic deploy: the migration role owns the table but is NOT a superuser
