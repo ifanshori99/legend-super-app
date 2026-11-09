@@ -7,7 +7,11 @@ import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
 import { pool } from "./db";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth";
-import { logger as defaultLogger, type Logger } from "./lib/logger";
+import {
+  logger as defaultLogger,
+  serializeError,
+  type Logger,
+} from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
 import {
@@ -150,6 +154,9 @@ export function createApp({
       genReqId: (req) => req.id,
       // The logger's mixin already adds reqId/userId; keep the request object small.
       serializers: {
+        // pino-http replaces the logger's err serializer on req.log/res.log
+        // and the access log: keep database row values out there too.
+        err: serializeError,
         req: (req) => ({
           method: req.method,
           url: safeUrl(req.originalUrl ?? req.url),

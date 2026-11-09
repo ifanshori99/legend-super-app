@@ -3,6 +3,7 @@ import express from "express";
 import { pinoHttp } from "pino-http";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { createApp } from "../app";
 import { db } from "../db";
 import { createLogger } from "../lib/logger";
 import { errorHandler } from "../middleware/error-handler";
@@ -104,6 +105,53 @@ describe("Log redaction of database errors and card fields", () => {
     expect(serialized).toContain("23514"); // SQLSTATE check_violation
     expect(serialized).toContain(CONSTRAINT);
     expect(serialized).toContain("log_redact_probe");
+  });
+
+  it("req.log and res.log of the real app drop row values from a database error but keep code and constraint", async () => {
+    const dbError = await realDatabaseError();
+    const { lines, logger } = capture();
+    const app = createApp({ logger });
+
+    // Test-only handler placed right after the pino-http layer (Express 5
+    // keeps layers in app.router.stack) so req.log / res.log exist without
+    // touching app.ts or the routes.
+    const router = app.router as unknown as {
+      stack: { name?: string; handle: { name?: string } }[];
+      get: (path: string, handler: express.RequestHandler) => void;
+    };
+    router.get("/__log-probe", (req, res) => {
+      req.log.error({ err: dbError }, "req.log probe");
+      res.log.error({ err: dbError }, "res.log probe");
+      res.json({ ok: true });
+    });
+    const probeLayer = router.stack.pop() as (typeof router.stack)[number];
+    // app.ts registers pinoHttp directly after requestContext (pino-http's
+    // own layer is an anonymous "result" function), so anchor on the named one.
+    const contextIndex = router.stack.findIndex(
+      (layer) => layer.handle.name === "requestContext",
+    );
+    expect(contextIndex, "requestContext layer in app.router.stack").toBeGreaterThan(
+      -1,
+    );
+    router.stack.splice(contextIndex + 2, 0, probeLayer);
+
+    const response = await agent(app).get("/__log-probe");
+    expect(response.status).toBe(200);
+
+    const probeLines = lines.filter((line) =>
+      String(line.msg).endsWith(" probe"),
+    );
+    expect(probeLines.map((line) => line.msg).sort()).toEqual([
+      "req.log probe",
+      "res.log probe",
+    ]);
+    expectNoRowValues(JSON.stringify(lines));
+    for (const line of probeLines) {
+      const serialized = JSON.stringify(line);
+      expect(serialized).toContain("23514");
+      expect(serialized).toContain(CONSTRAINT);
+      expect(serialized).toContain("log_redact_probe");
+    }
   });
 
   it("logger.error({ err }) with a database error keeps code and constraint but drops row values", async () => {

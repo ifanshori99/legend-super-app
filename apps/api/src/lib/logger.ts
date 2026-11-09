@@ -29,6 +29,22 @@ const CARD_FIELDS = [
 // match a single level).
 const cardFieldPaths = CARD_FIELDS.flatMap((field) => [field, `*.${field}`]);
 
+/** pino `err` serializer: database errors are rebuilt without row values
+ * first (lib/safe-error.ts). pino-http sets its own `err` serializer on the
+ * request logger, so app.ts passes this one there too. pino-http wraps a
+ * custom err serializer so it receives the standard serializer's output, which
+ * already holds the row values in message and stack: start again from the
+ * original error that output keeps on its non-enumerable `raw`. */
+export const serializeError = (error: unknown) => {
+  const raw =
+    !(error instanceof Error) && typeof error === "object" && error !== null
+      ? (error as { raw?: unknown }).raw
+      : undefined;
+  return pino.stdSerializers.err(
+    toLoggableError(raw instanceof Error ? raw : error) as Error,
+  );
+};
+
 // One structured logger for the whole API.
 // - Production: one JSON object per line on stdout, ready for any collector.
 // - Development: pino-pretty, colorized and single-line.
@@ -53,9 +69,7 @@ export function createLogger({
       },
       // Database errors are rebuilt without row values before they are
       // serialized (lib/safe-error.ts).
-      serializers: {
-        err: (error: unknown) => pino.stdSerializers.err(toLoggableError(error) as Error),
-      },
+      serializers: { err: serializeError },
       redact: {
         paths: [
           "req.headers.cookie",
