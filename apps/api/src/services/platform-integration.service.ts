@@ -36,6 +36,7 @@ import {
   type TenantIntegration,
   type UpsertIntegrationInput,
 } from "@starter/shared/platform";
+import { normalizeWhatsAppNumber } from "@starter/shared/identity";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
@@ -279,6 +280,81 @@ async function lockByKey(
   return row;
 }
 
+/**
+ * True when `error` (or its drizzle `cause` chain) is the unique violation of
+ * one of the WhatsApp number indexes: another tenant already routes that
+ * number (legend-mbd2).
+ */
+function isWhatsAppNumberClaim(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  return (
+    (candidate.code === "23505" &&
+      (candidate.constraint === "tenant_integrations_whatsapp_number_key" ||
+        candidate.constraint === "tenant_integrations_whatsapp_routing_key")) ||
+    isWhatsAppNumberClaim(candidate.cause, depth + 1)
+  );
+}
+
+const WHATSAPP_PHONE_NUMBER_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * Canonical whatsapp config (legend-mbd2): the receiving number as digits and
+ * the phoneNumberId trimmed. The login flow routes on the same JS trim and
+ * normalization, so what is stored must be what the claim indexes see.
+ */
+function canonicalWhatsAppConfig(
+  config: UpsertIntegrationInput["config"],
+): UpsertIntegrationInput["config"] {
+  const next = { ...config };
+  // null or blank means "not set yet" (a draft), same as configText().
+  const unset = (value: unknown) =>
+    value === undefined ||
+    value === null ||
+    (typeof value === "string" && value.trim() === "");
+  const receiving = next.receivingNumber;
+  if (!unset(receiving)) {
+    const digits = normalizeWhatsAppNumber(
+      typeof receiving === "boolean" ? "" : String(receiving),
+    );
+    if (!digits)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Receiving WhatsApp number is not a valid number.",
+      );
+    next.receivingNumber = digits;
+  }
+  const phoneNumberId = next.phoneNumberId;
+  if (!unset(phoneNumberId)) {
+    const trimmed =
+      typeof phoneNumberId === "boolean" ? "" : String(phoneNumberId).trim();
+    if (!WHATSAPP_PHONE_NUMBER_ID.test(trimmed))
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "WhatsApp phone number ID may only use letters, digits, dot, dash and underscore (1 to 64).",
+      );
+    next.phoneNumberId = trimmed;
+  }
+  return next;
+}
+
+/** Runs a write that can set a whatsapp row active; maps a number clash. */
+async function claimingWhatsAppNumber<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (isWhatsAppNumberClaim(error))
+      throw new PlatformError("WHATSAPP_NUMBER_TAKEN");
+    throw error;
+  }
+}
+
 // ------------------------------------------------------------- services
 
 /** GET /api/org/integrations: masked rows of the caller's tenant. */
@@ -322,9 +398,13 @@ export async function listIntegrations(
  */
 export async function upsertIntegration(
   context: ScopedTenantContext,
-  input: UpsertIntegrationInput,
+  rawInput: UpsertIntegrationInput,
   actorUserId: string,
 ): Promise<TenantIntegration> {
+  const input =
+    rawInput.provider === "whatsapp"
+      ? { ...rawInput, config: canonicalWhatsAppConfig(rawInput.config) }
+      : rawInput;
   const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     if (input.outletId !== null) {
@@ -363,7 +443,26 @@ export async function upsertIntegration(
           status: "draft",
           ...credentialColumns(id),
         })
-        .onConflictDoNothing()
+        // Explicit target: a bare DO NOTHING would also swallow a clash on
+        // the WhatsApp number indexes and look like "a concurrent PUT won".
+        .onConflictDoNothing(
+          input.outletId === null
+            ? {
+                target: [
+                  tenantIntegrations.tenantId,
+                  tenantIntegrations.provider,
+                ],
+                where: sql`${tenantIntegrations.outletId} IS NULL`,
+              }
+            : {
+                target: [
+                  tenantIntegrations.tenantId,
+                  tenantIntegrations.outletId,
+                  tenantIntegrations.provider,
+                ],
+                where: sql`${tenantIntegrations.outletId} IS NOT NULL`,
+              },
+        )
         .returning();
       if (inserted) {
         await audit(tx, context, {
@@ -387,19 +486,21 @@ export async function upsertIntegration(
       !sameStoredCredentials(current, input.credentials);
     if (!configChanged && !credentialsChanged) return toIntegration(current);
 
-    const [row] = await tx
-      .update(tenantIntegrations)
-      .set({
-        ...(configChanged ? { config: input.config } : {}),
-        ...(credentialsChanged ? credentialColumns(current.id) : {}),
-      })
-      .where(
-        and(
-          eq(tenantIntegrations.tenantId, tenantId),
-          eq(tenantIntegrations.id, current.id),
-        ),
-      )
-      .returning();
+    const [row] = await claimingWhatsAppNumber(() =>
+      tx
+        .update(tenantIntegrations)
+        .set({
+          ...(configChanged ? { config: input.config } : {}),
+          ...(credentialsChanged ? credentialColumns(current.id) : {}),
+        })
+        .where(
+          and(
+            eq(tenantIntegrations.tenantId, tenantId),
+            eq(tenantIntegrations.id, current.id),
+          ),
+        )
+        .returning(),
+    );
     if (!row) throw new HttpError(404, "NOT_FOUND", "Integration not found.");
     await audit(tx, context, {
       action: credentialsChanged
@@ -454,16 +555,18 @@ export async function setIntegrationStatus(
       throw new PlatformError("INVALID_TRANSITION");
     if (input.status === "active")
       await assertProviderAvailable(tx, tenantId, current.provider);
-    const [row] = await tx
-      .update(tenantIntegrations)
-      .set({ status: input.status })
-      .where(
-        and(
-          eq(tenantIntegrations.tenantId, tenantId),
-          eq(tenantIntegrations.id, integrationId),
-        ),
-      )
-      .returning();
+    const [row] = await claimingWhatsAppNumber(() =>
+      tx
+        .update(tenantIntegrations)
+        .set({ status: input.status })
+        .where(
+          and(
+            eq(tenantIntegrations.tenantId, tenantId),
+            eq(tenantIntegrations.id, integrationId),
+          ),
+        )
+        .returning(),
+    );
     if (!row) throw new HttpError(404, "NOT_FOUND", "Integration not found.");
     await audit(tx, context, {
       action: "integration.status.changed",

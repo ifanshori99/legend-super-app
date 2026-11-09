@@ -85,6 +85,22 @@ export const tenantIntegrations = pgTable(
     uniqueIndex("tenant_integrations_outlet_provider_key")
       .on(table.tenantId, table.outletId, table.provider)
       .where(sql`${table.outletId} IS NOT NULL`),
+    // legend-mbd2 (AUTH-02): WhatsApp login picks the tenant from the active
+    // tenant-wide whatsapp config, so one number may serve only one tenant.
+    // Both keys are normalized by SQL functions (platform-integrations.custom.sql)
+    // that mirror normalizeWhatsAppNumber / resolveWhatsAppChannel, so
+    // "0812-..." and "+62812..." collide. Draft and disabled rows never route
+    // and are left out, so an unused draft cannot block the real owner.
+    uniqueIndex("tenant_integrations_whatsapp_number_key")
+      .on(sql`app.whatsapp_receiving_number(${table.config})`)
+      .where(
+        sql`${table.provider} = 'whatsapp' AND ${table.status} = 'active' AND ${table.outletId} IS NULL`,
+      ),
+    uniqueIndex("tenant_integrations_whatsapp_routing_key")
+      .on(sql`app.whatsapp_routing_key(${table.config})`)
+      .where(
+        sql`${table.provider} = 'whatsapp' AND ${table.status} = 'active' AND ${table.outletId} IS NULL`,
+      ),
     foreignKey({
       name: "tenant_integrations_outlet_fk",
       columns: [table.tenantId, table.outletId],
