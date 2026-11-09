@@ -181,6 +181,19 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Migrasi `0068_refund_approval_payout` (dulu 0063, digenerate ulang setelah merge main 0063–0067).
 - Bead lanjutan: `legend-0ogy` (adapter + webhook DOIT), `legend-kfkt` (UI tolak/ulangi + alasan gagal), `legend-n9kn` (refund pending yang tak pernah diputuskan).
 - Perbaikan review K (8 Nov 2026): main digabung, migration lama 0063 dihapus dan digenerate ulang jadi `0068_refund_approval_payout`. Refund admin atas pembayaran yang terikat dokumen penjualan (`orderId`, `accessTicketId`, `subscriptionInvoiceId`) ditolak 409 `REFUND_SOURCE_DOCUMENT`; refund penjualan lewat modul pemilik (`order.refunded`, yang memposting jurnal). Pengecualian: peminta `system:*` (dana telat/DP yang tidak pernah dijurnal) dan dana tak teralokasi. Refund lama yang terlanjur pending gagal `source_document`. Approve/tolak idempoten per kunci di transaksi langkah pertama (`refund.approved` / `refund.rejected` di `payment_admin_idempotency`). Approver rantai tanpa `payment.reconcile` di outlet → refund `failed` `approver_unauthorized`, tidak dibayar. Sweep payout keluar dari tick relay ke loop sendiri (30 detik, anggaran 20 detik per tenant, berhenti saat shutdown). Jawaban provider `pending` tidak menghabiskan 8 percobaan (`payout_pending_polls`); tandai manual hanya bila pending lebih dari 72 jam. Refund dana memakai evidence milik dana (`payment_unallocated_funds.evidence_id`, baris lama memakai perilaku lama).
+- Perbaikan second-opinion Codex (brief 92, 9 Nov 2026, tingkat K):
+  - Temuan 1 (otorisasi): PRD §3.6 `docs/PRD.md:541` ("refund ... memerlukan PIN supervisor atau approval dari ponsel supervisor") dan D14 (`:260`) mewajibkan supervisor. Kewenangan supervisor = `pos.refund.approve` di outlet refund.
+    - Jalur satu penyetuju (di bawah semua tier matriks) sekarang butuh `payment.reconcile` DAN `pos.refund.approve`. Tanpa keduanya: 403 `PERMISSION_DENIED`, dan refund tetap pending.
+    - Rantai: tiap penyetuju butuh `payment.reconcile` ATAU `pos.refund.approve` di outlet, dan minimal satu `pos.refund.approve`. Bila tidak: `failed` `approver_unauthorized` dengan catatan `supervisor_required`.
+    - Finance sesama finance tidak lagi bisa membayar refund.
+  - Temuan 2 (evidence): payout dana tak teralokasi tidak pernah jatuh ke evidence terbaru atau ke `intent.providerRef`.
+    - Dana ber-`evidence_id` memakai evidence itu saja.
+    - Dana NULL hanya otomatis bila intent punya tepat 1 evidence, tidak dimiliki dana lain, dan tidak ada dana NULL lain di intent itu.
+    - Selain itu payout ditahan: `last_payout_error = EVIDENCE_MAPPING_REQUIRED`, tanpa klaim, tanpa panggilan gateway, percobaan tidak bertambah.
+    - Retry menerima `sourceEvidenceId` untuk memetakan evidence asal sekali, tanpa remap. Retry mengunci intent, menolak evidence intent lain atau evidence milik dana lain dengan 409, dan mencatat audit `payment.refund_fund_evidence_mapped`. Retry tanpa pemetaan menjawab 409 `EVIDENCE_MAPPING_REQUIRED`.
+  - Migration `0069_refund_fund_evidence_unique`: unique index parsial `(tenant_id, evidence_id) WHERE evidence_id IS NOT NULL`. Diregenerasi saat merge.
+  - Test: `payment-refund-codex-fix.test.ts` (11 skenario baru). Test approval dan review-fix disesuaikan: penyetuju finance diberi role supervisor di outlet. Review F diubah ke aturan baru, ditambah kasus negatif outlet lain.
+  - Dampak operasional: refund di bawah tier kini hanya bisa disetujui owner (atau finance yang juga supervisor). Saran kartu: tier matriks refund mulai Rp0 dengan langkah supervisor lewat inbox.
 
 ## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
 

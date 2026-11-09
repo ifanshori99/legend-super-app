@@ -353,6 +353,11 @@ export const paymentUnallocatedFunds = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    // One fund per provider evidence: a refund of a fund pays back exactly the
+    // transaction that brought it in, so two funds can never share one.
+    uniqueIndex("payment_unallocated_funds_evidence_key")
+      .on(table.tenantId, table.evidenceId)
+      .where(sql`${table.evidenceId} IS NOT NULL`),
     index("payment_unallocated_funds_open_idx").on(
       table.tenantId,
       table.outletId,
