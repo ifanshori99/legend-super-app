@@ -113,7 +113,7 @@ export type PublicRateLimitOptions = {
 export { createFixedWindowCounter };
 
 /** The address Express resolved; never a raw client-supplied header. */
-function clientIp(req: Request): string {
+export function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 
@@ -306,7 +306,10 @@ export type PublicWriteRateLimitOptions = {
   now?: () => number;
 };
 
-function rejectRateLimited(res: Parameters<RequestHandler>[1], retry: number) {
+export function rejectRateLimited(
+  res: Parameters<RequestHandler>[1],
+  retry: number,
+) {
   res.setHeader("Retry-After", String(retry));
   res.setHeader("Cache-Control", "no-store");
   throw new HttpError(429, "RATE_LIMITED", PUBLIC_RATE_LIMIT_MESSAGE);

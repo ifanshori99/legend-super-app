@@ -1237,3 +1237,16 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Kontrak: `pickupCallSchema.code`, `expoTicketSchema.pickupCode`, `number` tanpa batas atas, channel `delivery`.
 - UI yang perlu menyusul (bukan scope): `ws04-expo/components/target-label.ts` ("Antrean {number}") dan `pickup-screen.tsx` + `sound.ts` (pengumuman suara) harus memakai `code`, bukan `number`.
 - Perbaikan web (keputusan CTO opsi 2): `channel-badge.tsx` entri `delivery` (ikon Bike, label `channel.delivery`), `pickup-screen.tsx` tampil, suara, dan label tombol memakai `code` (urutan tetap `number`), `target-label.ts` memakai `pickupCode`. `sound.ts` tidak berubah (teks suara dari `pickup-screen`). Tes: 3 tes baru di `tests/kitchen-pickup-display.test.mjs` (gagal-dulu terbukti, 9/9 lulus), tsc `apps/web` bersih.
+
+## legend-wt33, legend-9by4, legend-wq3f jejak audit RBAC dan login staf (engineer, cabang `ws/auth-audit-trail` di atas d8ea5e0b, 2026-11-10)
+
+- RBAC: writer `coreAuditWriter` sudah terpasang di `app.ts`; sisa kerja hanya test. `rbac-audit-writer.test.ts` (10 test): audit ikut commit, ikut rollback bersama tulis domain, fail closed tanpa writer, tenant lain tidak bisa membaca. Writer uji di `platform-access-api.test.ts` dihapus, diganti `coreAuditWriter` plus baca `audit_logs`.
+- Login: `services/identity-wa-audit.ts` (baru) dan panggilan audit di `identity-login.service.ts` / `identity-wa-inbound.service.ts`: `login_challenge.created|completed|rejected|expired|cancelled|rate_limited|claimed|claim_failed`. Tanpa migrasi, tanpa kode OTP/token/nomor penuh (hanya 3 digit akhir nomor (keputusan CTO 10 Nov, minimisasi data), IP digest berkunci).
+- Bukti: gagal-dulu (12 dari 13 test login audit gagal di sumber basis), 5 file / 66 test hijau, tsc api bersih lewat heavy, eslint, prettier. Review K: satu architect, 1 temuan nyata (banjir baris rate_limited) dibetulkan dengan throttle satu baris per tenant+perangkat per 15 menit.
+- Celah yang diketahui: pesan webhook tanpa challenge cocok dan batas per-nomor tidak punya tenant, jadi tidak diaudit (tetap tercatat di `wa_inbound_messages`). Brief Codex: `docs/briefs/265b-second-opinion-auth-audit.md`.
+
+## legend-fc0f2 rate limit HTTP login-challenges (engineer, cabang `ws/auth-audit-trail` di atas 72b17ed2, 2026-11-10)
+
+- `middleware/login-challenge-rate-limit.ts` (baru), dipasang di `app.ts` sebelum `guardImpersonatedAuthRoutes` dan `tenantContext`: kelas issue (30 per IP, 10 per binding per menit) dan poll/cancel (600 dan 120). Counter, galat 429, dan `req.ip` (TRUST_PROXY) sama dengan `publicRateLimit`. Cookie binding harus bertanda tangan valid; cookie palsu hanya dihitung ke IP. Logika AUTH-04 tidak diubah, tanpa migrasi.
+- Bukti: gagal-dulu (mount dilepas: 10 dari 12 test gagal; dua perbaikan architect dikembalikan: test terkait gagal). 6 file / 78 test hijau, tsc api via heavy bersih, eslint, prettier. Banjir 429 tanpa `db.transaction`, `pool.query`, `pool.connect`, termasuk dengan cookie sesi palsu, dan tanpa baris `audit_logs` atau `login_challenges`.
+- Review K: satu architect, 2 temuan nyata dibetulkan (kelas issue gagal-tertutup untuk semua POST selain cancel, huruf besar-kecil; tidak ada IP yang dikecualikan secara default). IPv6 per /64: kartu `legend-6jgd2` (P2). Limiter per proses (memori); beberapa instance masing-masing punya jendela.
