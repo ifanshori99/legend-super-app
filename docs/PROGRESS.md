@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-cg071 sesi support baca-saja (engineer, cabang `ws/support-readonly`, 2026-11-09)
+
+- Sudah (`6618970d`): API menolak semua mutasi sesi impersonasi tanpa grant atau dengan grant read_only (satu guard di `requireAuth` + `guardImpersonatedAuthRoutes` untuk `/api/auth`), kredensial (MCP, device, edge node, PIN) ditolak bahkan dengan read_write. `/api/me/access` membawa `supportSession`.
+- Sudah (ronde UI): tombol submit baca-saja memakai aria-disabled + gembok + aria-describedby + toast saat diklik; banner dan notice digabung menjadi satu bar sticky (role=status, countdown, "Akhiri sesi" ≥44px di layar sentuh, detail lewat disclosure, teks "Sesi segera berakhir" tidak hanya warna); scroll-padding agar bar tidak menutup field yang difokus.
+- Gate: API 46/46 terarah, tsc web, eslint, prettier, e2e mock cg071 4/4 + 335 + mjmm lulus. Screenshot `docs/design/screenshots/legend-cg071/kelola-readonly-{390,1440}-light.png`.
+- Keputusan: MFA tenant tetap tidak bisa dibuka lewat sesi support (opsi a, CTO). Lanjutan: legend-rzirp, legend-6yfhc, legend-1pz5e. Codex second-opinion `docs/briefs/193b-second-opinion-support-readonly.md` (tidak di-commit) belum dijalankan.
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.

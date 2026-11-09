@@ -6,7 +6,9 @@
 //
 // - `useSupportReadOnly()`: true inside a read-only provider, false outside
 //   (safe default, so shared components work anywhere). <Button type="submit">
-//   reads it and renders disabled.
+//   reads it and renders aria-disabled (focusable, click blocked with the
+//   same toast, lock icon, described by a hidden hint the provider renders
+//   once).
 // - The provider also blocks form submits that still get through (Enter key,
 //   a plain <button> in a form). React events bubble through portals along the
 //   React tree, so dialogs opened from inside the provider are covered too.
@@ -20,11 +22,23 @@ import * as React from "react";
 import { useT } from "@/components/i18n";
 import { useToast } from "@/components/ui/toast";
 
-const SupportReadOnlyContext = React.createContext(false);
+/** Id of the visually hidden hint a blocked submit Button points to. */
+export const SUPPORT_READ_ONLY_HINT_ID = "support-readonly-hint";
+
+// null outside a read-only provider; inside, the function that tells the
+// person a save was blocked (one toast wording for every blocked path).
+const SupportReadOnlyContext = React.createContext<(() => void) | null>(null);
 
 export function useSupportReadOnly(): boolean {
-  return React.useContext(SupportReadOnlyContext);
+  return React.useContext(SupportReadOnlyContext) !== null;
 }
+
+/** Shows the "cannot save" toast; a no-op outside a read-only provider. */
+export function useNotifySupportReadOnlyBlocked(): () => void {
+  return React.useContext(SupportReadOnlyContext) ?? noop;
+}
+
+function noop() {}
 
 export function SupportReadOnlyProvider({
   value,
@@ -33,32 +47,38 @@ export function SupportReadOnlyProvider({
   value: boolean;
   children: React.ReactNode;
 }) {
-  return (
-    <SupportReadOnlyContext.Provider value={value}>
-      {value ? <SubmitBlocker>{children}</SubmitBlocker> : children}
-    </SupportReadOnlyContext.Provider>
-  );
+  return value ? <SubmitBlocker>{children}</SubmitBlocker> : children;
 }
 
 function SubmitBlocker({ children }: { children: React.ReactNode }) {
   const t = useT();
   const toast = useToast();
+  const notify = React.useCallback(
+    () =>
+      toast({
+        title: t("supportAccess.readOnlyMode.submitBlocked"),
+        tone: "danger",
+      }),
+    [toast, t],
+  );
   return (
-    // `contents` keeps this wrapper out of the layout.
-    <div
-      className="contents"
-      onSubmitCapture={(event) => {
-        const form = event.target instanceof Element ? event.target : null;
-        if (form?.closest("form[data-support-readonly-allow]")) return;
-        event.preventDefault();
-        event.stopPropagation();
-        toast({
-          title: t("supportAccess.readOnlyMode.submitBlocked"),
-          tone: "danger",
-        });
-      }}
-    >
-      {children}
-    </div>
+    <SupportReadOnlyContext.Provider value={notify}>
+      {/* `contents` keeps this wrapper out of the layout. */}
+      <div
+        className="contents"
+        onSubmitCapture={(event) => {
+          const form = event.target instanceof Element ? event.target : null;
+          if (form?.closest("form[data-support-readonly-allow]")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          notify();
+        }}
+      >
+        {children}
+        <span id={SUPPORT_READ_ONLY_HINT_ID} className="sr-only">
+          {t("supportAccess.readOnlyMode.submitDisabledHint")}
+        </span>
+      </div>
+    </SupportReadOnlyContext.Provider>
   );
 }

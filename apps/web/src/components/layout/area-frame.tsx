@@ -31,8 +31,7 @@ import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
-import { SupportSessionBanner } from "@/features/ws01-support-access/components/session-banner";
-import { SupportReadOnlyNotice } from "@/features/ws01-support-access/components/read-only-notice";
+import { SupportSessionBar } from "@/features/ws01-support-access/components/session-banner";
 import { SupportReadOnlyProvider } from "@/features/ws01-support-access/read-only";
 import { holdsAny } from "@/lib/areas/guard";
 
@@ -125,9 +124,21 @@ function AreaFrameBody({
   // screens are the Super Admin's own and never read-only.
   const supportReadOnly =
     area !== "platform" && access.supportSession?.accessMode === "read_only";
+  // PRD §3 F4 / TEN-04: one compact bar, sticky under the shell header, shows
+  // a running support session (countdown; "Akhiri sesi" for the impersonator).
+  // The customer shell only gets it for an impersonated session, so anonymous
+  // guests never trigger the org grants request.
+  const showSupportBar =
+    area !== "platform" &&
+    (access.supportSession != null || definition.shell !== "customer");
   const body = (
     <SupportReadOnlyProvider value={supportReadOnly}>
-      {supportReadOnly ? <SupportReadOnlyNotice className="mb-4" /> : null}
+      {showSupportBar ? (
+        <SupportSessionBar
+          supportSession={access.supportSession}
+          className="mb-4"
+        />
+      ) : null}
       <OfflineBannerSlot />
       {children}
     </SupportReadOnlyProvider>
@@ -162,9 +173,6 @@ function AreaFrameBody({
         {/* PRD §3 F6: management sessions end after 30 idle minutes; the
             warning rides the management shell so every screen shows it. */}
         <IdleSessionWarning />
-        {/* PRD §3 F4: a Super Admin support session is always visible, with a
-            countdown, across tenant views (legend-335). */}
-        {area === "platform" ? null : <SupportSessionBanner source="org" />}
         {body}
       </ManagementShell>
     );
@@ -179,13 +187,7 @@ function AreaFrameBody({
         mode={definition.forcedMode}
         actions={definition.forcedMode ? undefined : <ThemeToggle />}
       >
-        <div className="h-full overflow-y-auto p-4">
-          {/* PRD §3 F4 / TEN-04: staff at the till and the kitchen also see a
-              running support session (legend-335). Renders nothing without
-              one or when the caller may not read it. */}
-          <SupportSessionBanner source="org" className="mb-4" />
-          {body}
-        </div>
+        <div className="h-full overflow-y-auto p-4">{body}</div>
       </OperationsShell>
     );
   }

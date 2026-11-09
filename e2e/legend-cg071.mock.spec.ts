@@ -3,8 +3,8 @@ import { captureScreenshot } from "./screenshot-width.ts";
 
 // Read-only support session (bead legend-cg071; TEN-04) against the FE mock
 // runtime. The cookie `legend-mock-support=read_only` simulates a Super Admin
-// impersonating a tenant user under a read_only grant: the notice shows and
-// submit buttons are disabled. Screen: /kelola/pengaturan/open-bill (a form
+// impersonating a tenant user under a read_only grant: the session bar shows
+// and submit buttons are aria-disabled (focusable, click blocked). Screen: /kelola/pengaturan/open-bill (a form
 // with a plain submit button).
 // Mock port for this bead: LEGEND_MOCK_PORT=3391 pnpm test:e2e:mock.
 const MOCK_URL = process.env.LEGEND_MOCK_WEB_URL;
@@ -16,7 +16,7 @@ test.skip(
 
 const PATH = "/kelola/pengaturan/open-bill";
 const NAV = { waitUntil: "networkidle" as const };
-const NOTICE = "Sesi dukungan · Hanya baca. Perubahan dinonaktifkan.";
+const BAR = '[data-slot="support-session-bar"]';
 
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -30,26 +30,55 @@ async function setSupportCookie(page: import("@playwright/test").Page) {
     ]);
 }
 
-test("TEN-04 · a normal session has no notice and can submit", async ({
+test("TEN-04 · a normal session is not read-only and can submit", async ({
   page,
 }) => {
   await page.goto(`${MOCK_URL}${PATH}`, NAV);
   const save = page.getByRole("button", { name: "Simpan kebijakan" });
   await expect(save).toBeVisible();
   await expect(save).toBeEnabled();
-  await expect(page.getByText(NOTICE)).toHaveCount(0);
+  await expect(save).not.toHaveAttribute("aria-disabled", "true");
+  // The mock tenant has an active org grant, so the bar may render; it must
+  // not offer to end a support session, and submit must show no read-only state.
+  await expect(
+    page.locator(BAR).getByRole("button", { name: "Akhiri sesi" }),
+  ).toHaveCount(0);
+  await expect(save).not.toHaveAttribute("aria-disabled");
+  await expect(save.locator(".lucide-lock")).toHaveCount(0);
 });
 
-test("TEN-04 · a read-only support session shows the notice and disables submit", async ({
+test("TEN-04 · a read-only support session shows the bar and blocks submit", async ({
   page,
 }) => {
   await setSupportCookie(page);
   await page.goto(`${MOCK_URL}${PATH}`, NAV);
-  await expect(page.getByText(NOTICE)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Akhiri sesi" })).toBeVisible();
+  const bar = page.locator(BAR);
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveAttribute("role", "status");
+  await expect(bar.getByRole("button", { name: "Akhiri sesi" })).toBeVisible();
+
+  const save = page.getByRole("button", { name: "Simpan kebijakan" });
+  await expect(save).toHaveAttribute("aria-disabled", "true");
+  await expect(save).not.toHaveAttribute("disabled");
+  await expect(save).toHaveAccessibleDescription(
+    "Tidak bisa menyimpan di sesi dukungan (hanya baca)",
+  );
+  await save.focus();
+  await expect(save).toBeFocused();
+
+  let submitted = false;
+  page.on("request", (request) => {
+    if (request.method() !== "GET") submitted = true;
+  });
+  // force: Playwright treats aria-disabled as not enabled and would wait;
+  // a real pointer click still reaches the button's handler.
+  await save.click({ force: true });
   await expect(
-    page.getByRole("button", { name: "Simpan kebijakan" }),
-  ).toBeDisabled();
+    page.getByText("Sesi dukungan hanya baca: perubahan tidak disimpan.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(submitted).toBe(false);
 });
 
 for (const [width, height] of [
@@ -66,7 +95,7 @@ for (const [width, height] of [
     );
     await setSupportCookie(page);
     await page.goto(`${MOCK_URL}${PATH}`, NAV);
-    await expect(page.getByText(NOTICE)).toBeVisible();
+    await expect(page.locator(BAR)).toBeVisible();
     await captureScreenshot(
       page,
       `legend-cg071/kelola-readonly-${width}-light.png`,

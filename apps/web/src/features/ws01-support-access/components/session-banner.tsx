@@ -1,27 +1,28 @@
-// Countdown banner for the tenant layout while a support session is running
-// (PRD v1.7 §3 F4 "Support Access"; TEN-04). The LEAD mounts it once at the
-// top of the tenant (kelola/owner/ops...) layout:
+// The support session bar (PRD v1.7 §3 F4 "Support Access"; TEN-04). One
+// compact bar, sticky under the shell header, for both people who can see a
+// running support session:
 //
-//   <SupportSessionBanner />                      // Super Admin: can end it
-//   <SupportSessionBanner source="org" />         // tenant users: notice only
+//   <SupportSessionBar supportSession={access.supportSession} />
 //
-// It renders nothing without an active session, while loading, on error and
-// during SSR, so it is safe to mount everywhere. `tenantId` limits a Super
-// Admin banner to the tenant currently on screen.
+// - Tenant users: the org grants (GET /api/org/support-access); notice only.
+// - The impersonator (Super Admin under a grant): `access.supportSession`
+//   (mode and expiry), plus the org grant for the reason when readable. Only
+//   they get "Akhiri sesi" (stops the impersonation, reloads to `/`).
+//
+// It renders nothing without a session, while loading, on error and during
+// SSR, so it is safe to mount everywhere the shell allows it. The reason and
+// the end time sit behind a disclosure, collapsed by default.
 import * as React from "react";
-import { LifeBuoy, Power } from "lucide-react";
+import { ChevronDown, LifeBuoy, Power, TriangleAlert } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { SupportAccessGrant } from "@starter/shared/platform";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { useToast } from "@/components/ui/toast";
-import { supportErrorMessage } from "../errors.ts";
-import {
-  useEndSupportAccess,
-  useOrgGrants,
-  usePlatformGrants,
-} from "../hooks.ts";
+import { authClient } from "@/lib/auth-client";
+import type { AreaAccess } from "@/lib/areas/access";
+import { useOrgGrants } from "../hooks.ts";
 import {
   findActiveGrant,
   formatCountdown,
@@ -32,76 +33,99 @@ import { supportAccessKeys } from "../queries.ts";
 import { useSecondClock } from "../use-now.ts";
 import { formatInstant } from "./shared.tsx";
 
-export type SupportSessionBannerProps = {
-  /** "platform" (default): the Super Admin's own sessions, with an end
-   * button. "org": the tenant's sessions, read-only notice. */
-  source?: "platform" | "org";
-  tenantId?: string;
+export type SupportSessionBarProps = {
+  /** `access.supportSession`: set only for the impersonator. */
+  supportSession?: AreaAccess["supportSession"];
   className?: string;
 };
 
-function BannerBody({
-  grant,
+type BarState = {
+  expiresAt: string;
+  durationMinutes?: number;
+  readOnly: boolean;
+  reason?: string;
+  canEnd: boolean;
+};
+
+function BarBody({
+  state,
   nowMs,
-  canEnd,
   className,
 }: {
-  grant: SupportAccessGrant;
+  state: BarState;
   nowMs: number;
-  canEnd: boolean;
   className?: string;
 }) {
   const t = useT();
   const toast = useToast();
-  const end = useEndSupportAccess();
-  const left = remainingMs(grant.expiresAt, nowMs, grant.durationMinutes);
-  const soon = isExpiringSoon(grant.expiresAt, nowMs);
+  const [pending, setPending] = React.useState(false);
+  const left = remainingMs(state.expiresAt, nowMs, state.durationMinutes);
+  const soon = isExpiringSoon(state.expiresAt, nowMs);
   const time = formatCountdown(left);
-  const readOnly = grant.accessMode === "read_only";
-  const labelId = React.useId();
+  const rootRef = React.useRef<HTMLDivElement>(null);
+
+  // Publish the bar height so scroll-padding-top (globals.css) clears it.
+  React.useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const publish = () =>
+      root.style.setProperty("--support-bar-h", `${el.offsetHeight}px`);
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--support-bar-h");
+    };
+  }, []);
+
+  async function end() {
+    setPending(true);
+    try {
+      const result = await authClient.admin.stopImpersonating();
+      if (result.error) throw new Error("stop impersonating failed");
+      // Full reload: every cached tenant read belongs to the ended session.
+      window.location.assign("/");
+    } catch {
+      setPending(false);
+      toast({
+        title: t("supportAccess.readOnlyMode.endFailed"),
+        tone: "danger",
+      });
+    }
+  }
 
   // Not dismissible while active (PRD §3 F4: the session is always visible).
   // The countdown is role="timer" (implicit aria-live="off"), so screen
   // readers are not spammed every second; they read it when they reach it.
   return (
-    <section
-      aria-labelledby={labelId}
-      data-slot="support-session-banner"
+    <div
+      ref={rootRef}
+      role="status"
+      data-slot="support-session-bar"
       data-expiring={soon || undefined}
       className={cn(
-        "flex flex-wrap items-center gap-x-4 gap-y-1 border-b-(length:--border-w) px-4 py-2 text-sm",
+        "sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-1 border-b-(length:--border-w) px-4 py-2 text-sm",
         soon
           ? "bg-danger text-danger-foreground"
           : "bg-warning-subtle text-warning",
         className,
       )}
     >
-      <p id={labelId} className="inline-flex items-center gap-2 font-semibold">
+      <p className="inline-flex items-center gap-2 font-semibold">
         <LifeBuoy className="size-4 shrink-0" aria-hidden="true" />
-        {t("supportAccess.banner.label")}
-      </p>
-      <p className="font-semibold">
-        {t("supportAccess.banner.who")}
-        {" · "}
-        {t(
-          readOnly
-            ? "supportAccess.banner.readOnly"
-            : "supportAccess.banner.readWrite",
-        )}
-      </p>
-      <p
-        className="line-clamp-2 min-w-0 basis-full sm:flex-1 sm:basis-auto sm:truncate"
-        title={grant.reason}
-      >
-        {t("supportAccess.banner.reason", { reason: grant.reason })}
+        <span>
+          {t("supportAccess.banner.label")}
+          {" · "}
+          {t(
+            state.readOnly
+              ? "supportAccess.banner.readOnly"
+              : "supportAccess.banner.readWrite",
+          )}
+        </span>
       </p>
       <p className="inline-flex items-center gap-2 font-semibold">
-        <span>
-          {t("supportAccess.banner.until", {
-            time: formatInstant(grant.expiresAt),
-          })}
-        </span>
-        <span aria-hidden="true">·</span>
         <span>{t("supportAccess.banner.remaining")}</span>
         <span
           role="timer"
@@ -110,85 +134,93 @@ function BannerBody({
         >
           {time}
         </span>
+        {soon && (
+          <span className="inline-flex items-center gap-1">
+            <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+            {t("supportAccess.banner.expiringSoon")}
+          </span>
+        )}
       </p>
-      {canEnd && (
+      <details className="group min-w-0 open:basis-full pointer-coarse:py-2">
+        <summary className="inline-flex cursor-pointer list-none items-center gap-1 font-semibold underline-offset-2 hover:underline pointer-coarse:min-h-11 [&::-webkit-details-marker]:hidden">
+          {t("supportAccess.banner.details")}
+          <ChevronDown
+            className="size-4 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+            aria-hidden="true"
+          />
+        </summary>
+        <div className="mt-1 max-h-40 space-y-0.5 overflow-y-auto pb-1">
+          {state.reason !== undefined && (
+            <p className="break-words">
+              {t("supportAccess.banner.reason", { reason: state.reason })}
+            </p>
+          )}
+          <p>
+            {t("supportAccess.banner.until", {
+              time: formatInstant(state.expiresAt),
+            })}
+          </p>
+        </div>
+      </details>
+      {state.canEnd && (
         <Button
           type="button"
           variant="outline"
           size="sm"
-          loading={end.isPending}
-          onClick={() =>
-            end.mutate(grant.id, {
-              onError: (failure) =>
-                toast({
-                  title: supportErrorMessage(failure, t),
-                  tone: "danger",
-                }),
-            })
-          }
+          className="ms-auto pointer-coarse:min-h-11"
+          loading={pending}
+          onClick={() => void end()}
         >
-          <Power aria-hidden="true" />
-          {end.isPending
+          {!pending && <Power aria-hidden="true" />}
+          {pending
             ? t("supportAccess.banner.ending")
             : t("supportAccess.banner.end")}
         </Button>
       )}
-    </section>
+    </div>
   );
 }
 
-function PlatformSource(props: SupportSessionBannerProps) {
-  const grants = usePlatformGrants();
-  return <Resolved {...props} rows={grants.data?.data} canEnd />;
-}
-
-function OrgSource(props: SupportSessionBannerProps) {
-  const grants = useOrgGrants();
-  return <Resolved {...props} rows={grants.data?.data} canEnd={false} />;
-}
-
-function Resolved({
-  rows,
-  tenantId,
-  canEnd,
+export function SupportSessionBar({
+  supportSession,
   className,
-}: SupportSessionBannerProps & {
-  rows: readonly SupportAccessGrant[] | undefined;
-  canEnd: boolean;
-}) {
+}: SupportSessionBarProps) {
+  const grants = useOrgGrants();
   const nowMs = useSecondClock();
   const queryClient = useQueryClient();
-  const scoped =
-    rows && tenantId ? rows.filter((row) => row.tenantId === tenantId) : rows;
-  const active =
-    scoped && nowMs !== null ? findActiveGrant(scoped, nowMs) : null;
-  const activeId = active?.id ?? null;
-  const shownId = React.useRef<string | null>(null);
+  const rows: readonly SupportAccessGrant[] | undefined = grants.data?.data;
+  const grant = rows && nowMs !== null ? findActiveGrant(rows, nowMs) : null;
+  const impersonating = supportSession != null;
+  const shownKey = grant?.id ?? (impersonating ? "session" : null);
+  const shown = React.useRef<string | null>(null);
 
   // When the client clock passes the expiry, ask the server again instead of
   // waiting for the next poll, so a server-ended or clock-skewed
   // session resolves to the server's truth quickly.
   React.useEffect(() => {
-    if (shownId.current !== null && activeId === null)
+    if (shown.current !== null && shownKey === null)
       void queryClient.invalidateQueries({ queryKey: supportAccessKeys.all });
-    shownId.current = activeId;
-  }, [activeId, queryClient]);
+    shown.current = shownKey;
+  }, [shownKey, queryClient]);
 
-  if (!active || nowMs === null) return null;
-  return (
-    <BannerBody
-      grant={active}
-      nowMs={nowMs}
-      canEnd={canEnd}
-      className={className}
-    />
-  );
-}
-
-export function SupportSessionBanner(props: SupportSessionBannerProps) {
-  return props.source === "org" ? (
-    <OrgSource {...props} />
-  ) : (
-    <PlatformSource {...props} />
-  );
+  if (nowMs === null) return null;
+  let state: BarState | null = null;
+  if (supportSession) {
+    state = {
+      expiresAt: supportSession.expiresAt,
+      readOnly: supportSession.accessMode === "read_only",
+      reason: grant?.reason,
+      canEnd: true,
+    };
+  } else if (grant) {
+    state = {
+      expiresAt: grant.expiresAt,
+      durationMinutes: grant.durationMinutes,
+      readOnly: grant.accessMode === "read_only",
+      reason: grant.reason,
+      canEnd: false,
+    };
+  }
+  if (!state) return null;
+  return <BarBody state={state} nowMs={nowMs} className={className} />;
 }

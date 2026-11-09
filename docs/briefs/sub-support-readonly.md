@@ -168,3 +168,65 @@ after stripping query + trailing slash): `/api/auth/get-session`,
   read_only grant; impersonated platform admin target → platform route refused;
   `POST /api/ai/mcp/authorize` under read_write → 403 READ_ONLY. KDS socket if a
   helper exists for it, else skip and say so.
+
+## Round 3 — UI audit fixes (CTO, 9 Nov)
+
+MFA decision: option (a), unchanged. Only the read-only support case changes;
+plain `disabled` buttons keep today's behaviour. Follow
+`~/.agents/team/ui-standard.md` (WCAG 2.2 AA, touch ≥ 44 px on touch screens).
+
+- **U1 (implementer, files: `apps/web/src/components/ui/button.tsx`,
+  `apps/web/src/features/ws01-support-access/read-only.tsx`,
+  `e2e/legend-cg071.mock.spec.ts`)**
+  - A submit Button blocked by read-only mode is NOT `disabled`: it gets
+    `aria-disabled="true"`, stays focusable, its click is blocked in the
+    handler (preventDefault, no submit; still call nothing else), shows a
+    lucide `Lock` icon before the label, and `aria-describedby` points to a
+    fixed text "Tidak bisa menyimpan di sesi dukungan (hanya baca)" (i18n key
+    under `supportAccess.readOnlyMode.*`). Render that text once, visually
+    hidden, inside `SupportReadOnlyProvider` with a stable id the Button reads
+    from context (merge with any existing aria-describedby). Styling: same
+    muted look as disabled (`aria-disabled:` variants), cursor not-allowed.
+  - `allowInReadOnly` opt-out keeps working. `asChild` buttons unchanged.
+  - Update the e2e spec: read-only submit has aria-disabled=true, is
+    focusable, click does not submit; normal session unchanged; notice
+    assertions follow U2 (`data-slot="support-session-bar"`, role=status).
+    Screenshots stay `legend-cg071/kelola-readonly-{390,1440}-light.png`.
+- **U2 (implementer, files: `apps/web/src/features/ws01-support-access/components/session-banner.tsx`,
+  `.../components/read-only-notice.tsx` (delete or fold in),
+  `apps/web/src/components/layout/area-frame.tsx`)**
+  - One compact bar replaces both `SupportSessionBanner` (area-frame ~167 and
+    the operations-shell mount ~178) and `SupportReadOnlyNotice`:
+    `data-slot="support-session-bar"`, `role="status"`, sticky directly under
+    the shell header (must not cover the header; check the header's height /
+    z-index in ManagementShell and OperationsShell and offset with `top-*`
+    accordingly; it must not overlap content when scrolling).
+  - Content in one row (wraps on narrow): label ("Sesi akses dukungan ·
+    Hanya baca" / "· Baca-tulis"), remaining time (existing countdown logic,
+    `role="timer"` stays inside), and "Akhiri sesi" only for the impersonator
+    (read-only support session from `access.supportSession`) calling
+    `authClient.admin.stopImpersonating()` then reload to `/`. Reason and
+    end time behind a disclosure (`<details>/<summary>` or a button with
+    aria-expanded), collapsed by default.
+  - Data: tenant users keep the org grants source (no end button);
+    impersonator uses `access.supportSession` (expiresAt, accessMode) and the
+    org grant if readable (for reason). Render nothing when neither exists.
+  - "Akhiri sesi" ≥ 44 px tall on touch (`pointer-coarse:` / `min-h-11`),
+    compact on fine pointers is fine.
+  - Keep expiring-soon danger styling and existing i18n keys; add keys only
+    if needed.
+
+## Round 4 (UI audit fixes, legend-cg071)
+
+Done by the agent already: button.tsx (hover/press reset via `not-aria-disabled:`, props spread before read-only attrs, blocked click calls `useNotifySupportReadOnlyBlocked()` toast), read-only.tsx (context holds notify fn), globals.css (`.overflow-y-auto:has([data-slot="support-session-bar"])` scroll-padding-top from `--support-bar-h`).
+
+- R4-bar (`apps/web/src/features/ws01-support-access/components/session-banner.tsx` only):
+  1. When `soon`: render visible text `t("supportAccess.banner.expiringSoon")` + `TriangleAlert` icon (aria-hidden) next to the countdown, so it is not color-only.
+  2. Publish bar height: ref on the root div + ResizeObserver setting `--support-bar-h` (px) on `document.documentElement`; remove the property on unmount.
+  3. `<details>`: add `group open:basis-full`; inner content div `max-h-40 overflow-y-auto`.
+  4. `<summary>`: `list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1`, add `ChevronDown` (aria-hidden, `size-4 transition-transform group-open:rotate-180 motion-reduce:transition-none`).
+  5. Hide `<Power>` while `pending` (Button shows its spinner).
+- R4-spec (`e2e/legend-cg071.mock.spec.ts` only):
+  1. Normal session: the mock tenant HAS an active org grant (legend-335 tenant notice), so the bar may render. Replace `toHaveCount(0)` on BAR with: no "Akhiri sesi" button, and `Simpan kebijakan` has no aria-disabled and no lock.
+  2. Read-only: Playwright `toBeDisabled()` counts aria-disabled, so replace `not.toBeDisabled()` with `not.toHaveAttribute("disabled")`. After the click, assert the toast text "Tidak bisa menyimpan" style message from `supportAccess.readOnlyMode.submitBlocked` (read the i18n value in packages/shared/src/i18n/messages/ws01-support-access.ts) is visible.
+- No test runs, no commits. Report changed lines in 3 lines.

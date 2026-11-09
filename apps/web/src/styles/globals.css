@@ -250,7 +250,7 @@
     transform, background-color, color, border-color, box-shadow;
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--easing-standard);
-  &:active:not(:disabled) {
+  &:active:not(:disabled, [aria-disabled="true"]) {
     transform: scale(var(--press-scale));
   }
 }
@@ -358,4 +358,10 @@ body:has([role="dialog"][data-state="open"])
   @media (prefers-contrast: more) {
     border: 2px solid var(--qr-glass-edge-strong);
   }
+}
+
+/* TEN-04 (legend-cg071): the sticky support session bar must not hide the
+   field that keyboard focus scrolls to. The bar publishes its own height. */
+.overflow-y-auto:has([data-slot="support-session-bar"]) {
+  scroll-padding-top: calc(var(--support-bar-h, 3rem) + 0.5rem);
 }
