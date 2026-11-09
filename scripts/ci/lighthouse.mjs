@@ -339,6 +339,7 @@ async function main() {
         output: "json",
         logLevel: "error",
         formFactor: "mobile",
+        skipAudits: config.skippedAudits,
         onlyCategories: Object.keys(
           categoryFloors(config.categories, page.categories),
         ),
@@ -364,6 +365,29 @@ async function main() {
     });
     console.log(`\n${page.name} ${page.path} (median of ${runs} runs)`);
     for (const row of verdict.rows) console.log(`  ${formatRow(row)}`);
+    // Name the audits that cost points (last run) so a failing category is
+    // actionable without opening the saved report.
+    const lastRun = lhrs.at(-1);
+    for (const [categoryId, category] of Object.entries(
+      lastRun.categories ?? {},
+    )) {
+      const lost = category.auditRefs
+        .map((ref) => lastRun.audits[ref.id])
+        .filter(
+          (audit) =>
+            audit &&
+            typeof audit.score === "number" &&
+            audit.score < 1 &&
+            audit.scoreDisplayMode !== "informative",
+        )
+        .map((audit) => audit.id);
+      if (lost.length > 0)
+        console.log(`  ${categoryId} audits below 1: ${lost.join(", ")}`);
+    }
+    writeFileSync(
+      join(outDir, `${page.name}.lhr.json`),
+      JSON.stringify(lastRun),
+    );
   }
   writeFileSync(
     join(outDir, "summary.json"),

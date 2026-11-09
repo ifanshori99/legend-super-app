@@ -277,7 +277,9 @@ The `lighthouse` CI job (after `check`) measures the public menu `/menu` and the
 | Cumulative Layout Shift  | at most 0.1                                                     |
 | Total Blocking Time      | at most 400 ms                                                  |
 
-The numbers are a little looser than Lighthouse's "good" bands because CI runners are small and shared; tighten them in the config file once there is a baseline. Run it locally after a build made for the test API origin (the web bundle inlines `VITE_API_URL`; `pnpm test:e2e` builds the same way):
+`is-on-https`, `redirects-http` and `valid-source-maps` are not scored (the run is plain http on localhost and the build ships no source maps; TLS belongs to the edge proxy). Total blocking time may be at most 600 ms. A failing category prints the audits that lost points, and each page's last full report is saved as `test-results/lighthouse/<page>.lhr.json`.
+
+The numbers are looser than Lighthouse's "good" bands because CI runners are small and shared; tighten them in the config file once there is a baseline. Run it locally after a build made for the test API origin (the web bundle inlines `VITE_API_URL`; `pnpm test:e2e` builds the same way):
 
 ```sh
 NODE_ENV=production VITE_API_URL=http://localhost:4101 heavy pnpm build
