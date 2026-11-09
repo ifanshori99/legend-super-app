@@ -158,11 +158,14 @@ export type Facility = z.infer<typeof facilitySchema>;
 /**
  * A facility row of the config index with the sizes of its children, so the
  * list needs no per-facility reads (bead legend-34fu). Counts cover every
- * area, unit and product of the facility, active or not.
+ * area, unit and product of the facility, active or not. `activeUnitCount`
+ * is the units whose status is not `maintenance` (the same rule as the
+ * admin's unit summary).
  */
 export const facilityListItemSchema = facilitySchema.extend({
   areaCount: z.number().int().min(0),
   unitCount: z.number().int().min(0),
+  activeUnitCount: z.number().int().min(0),
   productCount: z.number().int().min(0),
 });
 export type FacilityListItem = z.infer<typeof facilityListItemSchema>;

@@ -242,6 +242,10 @@ registerMock(listFacilities, ({ query, scenario }) => {
       ...facility,
       areaCount: count(state.areas, facility.id),
       unitCount: count(state.units, facility.id),
+      activeUnitCount: state.units.filter(
+        (unit) =>
+          unit.facilityId === facility.id && unit.status !== "maintenance",
+      ).length,
       productCount: count(state.products, facility.id),
     })),
     query,

@@ -278,7 +278,9 @@ export function summarizeUnits(units: readonly FacilityUnit[]): UnitSummary {
   };
 }
 
-export function facilityStatusKey(summary: UnitSummary): MessageKey {
+export function facilityStatusKey(
+  summary: Pick<UnitSummary, "total" | "active">,
+): MessageKey {
   if (summary.total === 0) return "facilityAdmin.list.statusNoUnits";
   return summary.active > 0
     ? "facilityAdmin.list.statusActive"

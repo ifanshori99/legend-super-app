@@ -1,6 +1,6 @@
 // Facility index child counts (PRD v1.7 §3 F22/F25 "Model Generik"; TEN-03;
 // bead legend-34fu). `GET /api/facility/facilities` rows carry `areaCount`,
-// `unitCount` and `productCount` counted in the same statement as the page.
+// `unitCount`, `activeUnitCount` and `productCount` counted in the same statement as the page.
 // Runs the real Express app, Better Auth, the RBAC resolver and PostgreSQL
 // against the seeded Cafe Legend tenant.
 import { randomUUID } from "node:crypto";
@@ -128,7 +128,13 @@ async function insertChildren(
   client: PoolClient,
   facilityId: string,
   outletId: string,
-  counts: { areas: number; units: number; products: number },
+  counts: {
+    areas: number;
+    units: number;
+    products: number;
+    // The last N units are in maintenance (not active).
+    maintenanceUnits?: number;
+  },
 ) {
   const areaIds: string[] = [];
   for (let index = 0; index < counts.areas; index += 1) {
@@ -143,7 +149,7 @@ async function insertChildren(
   for (let index = 0; index < counts.units; index += 1)
     await client.query(
       `INSERT INTO facility_units (tenant_id, outlet_id, facility_id, area_id, code, status, sort_order)
-       VALUES ($1, $2, $3, $4, $5, 'available', $6)`,
+       VALUES ($1, $2, $3, $4, $5, $7, $6)`,
       [
         tenant.id,
         outletId,
@@ -151,6 +157,9 @@ async function insertChildren(
         areaIds[index % areaIds.length],
         `U${index}`,
         index,
+        index >= counts.units - (counts.maintenanceUnits ?? 0)
+          ? "maintenance"
+          : "available",
       ],
     );
   for (let index = 0; index < counts.products; index += 1)
@@ -182,6 +191,7 @@ beforeAll(async () => {
       areas: 2,
       units: 3,
       products: 2,
+      maintenanceUnits: 1,
     });
     await insertChildren(client, otherOutletFacilityId, outletB.id, {
       areas: 1,
@@ -224,6 +234,7 @@ type Row = {
   id: string;
   areaCount: number;
   unitCount: number;
+  activeUnitCount: number;
   productCount: number;
 };
 
@@ -238,18 +249,21 @@ describe("Facility index child counts (legend-34fu)", () => {
     expect(byId.get(busyFacilityId)).toMatchObject({
       areaCount: 2,
       unitCount: 3,
+      activeUnitCount: 2,
       productCount: 2,
     });
     // A facility without children reports zero, never undefined.
     expect(byId.get(emptyFacilityId)).toMatchObject({
       areaCount: 0,
       unitCount: 0,
+      activeUnitCount: 0,
       productCount: 0,
     });
     // Children of another facility of the tenant never leak into a count.
     expect(byId.get(otherOutletFacilityId)).toMatchObject({
       areaCount: 1,
       unitCount: 1,
+      activeUnitCount: 1,
       productCount: 4,
     });
   });
@@ -272,6 +286,7 @@ describe("Facility index child counts (legend-34fu)", () => {
     expect(second.body.data[0]).toMatchObject({
       areaCount: expected.areaCount,
       unitCount: expected.unitCount,
+      activeUnitCount: expected.activeUnitCount,
       productCount: expected.productCount,
     });
   });
@@ -289,6 +304,7 @@ describe("Facility index child counts (legend-34fu)", () => {
     expect(rows.find((row) => row.id === otherOutletFacilityId)).toMatchObject({
       areaCount: 1,
       unitCount: 1,
+      activeUnitCount: 1,
       productCount: 4,
     });
   });

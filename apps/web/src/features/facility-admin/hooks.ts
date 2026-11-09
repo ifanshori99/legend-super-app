@@ -16,7 +16,6 @@
 import { useRef } from "react";
 import {
   useMutation,
-  useQueries,
   useQuery,
   useQueryClient,
   type QueryClient,
@@ -41,17 +40,6 @@ export function useFacilities(
 
 export function useFacilityConfig(facilityId: string) {
   return useQuery(facilityConfigQuery(facilityId));
-}
-
-/**
- * One config read per facility to derive the list's area/unit counts. The
- * list contract carries only the facility row; a follow-up API bead should
- * return the counts so this N+1 disappears (reported as a follow-up).
- */
-export function useFacilityConfigSummaries(facilityIds: readonly string[]) {
-  return useQueries({
-    queries: facilityIds.map((facilityId) => facilityConfigQuery(facilityId)),
-  });
 }
 
 export function useMenuItemOptions(enabled = true) {

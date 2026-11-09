@@ -101,16 +101,22 @@ export async function listFacilities(
     // subqueries (one round trip for the page, no per-facility reads). Columns
     // are written qualified: drizzle renders a column of a single-table select
     // unqualified, which would bind to the subquery's own table.
-    const childCount = (table: string) => sql<number>`(
+    const childCount = (table: string, extra = sql``) => sql<number>`(
           SELECT count(*)::int FROM ${sql.identifier(table)}
           WHERE ${sql.identifier(table)}.tenant_id = "facilities"."tenant_id"
             AND ${sql.identifier(table)}.facility_id = "facilities"."id"
+            ${extra}
         )`;
     const rows = await tx
       .select({
         facility: facilities,
         areaCount: childCount("facility_areas"),
         unitCount: childCount("facility_units"),
+        // Active = every status except maintenance (the admin unit summary rule).
+        activeUnitCount: childCount(
+          "facility_units",
+          sql`AND ${sql.identifier("facility_units")}.status <> 'maintenance'`,
+        ),
         productCount: childCount("facility_products"),
       })
       .from(facilities)
@@ -133,6 +139,7 @@ export async function listFacilities(
         ...toFacility(row.facility),
         areaCount: row.areaCount,
         unitCount: row.unitCount,
+        activeUnitCount: row.activeUnitCount,
         productCount: row.productCount,
       })),
       meta: {
