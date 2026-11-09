@@ -63,6 +63,8 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
+export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
 // WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
