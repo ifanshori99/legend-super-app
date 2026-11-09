@@ -48,7 +48,12 @@ import { STAFF_PIN_HASH_ALGORITHM } from "@starter/shared/access/override";
 import { MAX_STAFF_PIN_ATTEMPTS } from "@starter/shared/identity";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
+import {
+  applyStaffPinLocked,
+  registerAccessEdgeApplier,
+} from "../edge/access-applier.ts";
+import { setStaffPin } from "../services/device-pin.service.ts";
+import { enqueueEdgeEvent } from "../services/edge-queue.service.ts";
 import {
   registeredEdgeEventClassifier,
   resetEdgeApplierRegistryForTests,
@@ -269,8 +274,8 @@ async function seedPin(
   const material = await pinMaterial(userId, pin, options.setAtMs);
   await owner.query(
     `INSERT INTO staff_pins (id, tenant_id, outlet_id, user_id, pin_hash, pin_salt, kdf_n, kdf_r, kdf_p,
-        pepper_version, failed_attempts, locked_until, set_by, created_at, updated_at, pin_set_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $4, $13, $14, $13)`,
+        pepper_version, failed_attempts, locked_until, set_by, created_at, updated_at, pin_set_at, pin_generation_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $4, $13, $14, $13, $13)`,
     [
       id,
       tenantId,
@@ -718,7 +723,8 @@ describe("legend-kyie staff_pin.set from an edge", () => {
 
   it("clamps a setAt in the future to the cloud clock", async () => {
     const userId = await newUser();
-    const future = await pinMaterial(userId, "482916", Date.now() + 24 * HOUR);
+    // Inside the 5 min skew window (round 3 R1 refuses anything further).
+    const future = await pinMaterial(userId, "482916", Date.now() + 3 * MINUTE);
 
     await deliver([pinSetEvent({ userId, material: future })]);
 
@@ -925,8 +931,8 @@ async function seedPinInOutlet(userId: string, outletId: string) {
   });
   await owner.query(
     `INSERT INTO staff_pins (tenant_id, outlet_id, user_id, pin_hash, pin_salt, kdf_n, kdf_r, kdf_p,
-        pepper_version, set_by, created_at, updated_at, pin_set_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $3, $10, $10, $10)`,
+        pepper_version, set_by, created_at, updated_at, pin_set_at, pin_generation_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $3, $10, $10, $10, $10)`,
     [
       tenantId,
       outletId,
@@ -1490,5 +1496,225 @@ describe("legend-kyie review K round 1", () => {
     const [row] = await pinRows(userId);
     expect(row!.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
     expect(row!.locked_until?.getTime()).toBe(lockedUntilMs);
+  });
+});
+
+describe("legend-kyie Codex 160 round 2", () => {
+  it("C1 an edge clock 5 s ahead: sets A then B in one batch leave B's hash on the cloud", async () => {
+    const userId = await newUser();
+    const staffPinId = randomUUID();
+    const aheadMs = Date.now() + 5_000;
+    const a = await pinMaterial(userId, "482916", aheadMs);
+    const b = await pinMaterial(userId, "246801", aheadMs + 1_000);
+    const setA = pinSetEvent({ userId, material: a, staffPinId });
+    const setB = {
+      ...pinSetEvent({ userId, material: b, staffPinId }),
+      sequence: 2,
+    };
+
+    await deliver([setA, setB]);
+
+    const [row] = await pinRows(userId);
+    expect(row!.pin_hash).toBe(b.pinHash);
+    expect(await pinVerifies(userId, "246801", row!)).toBe(true);
+    // The clamped time stays on pin_set_at; the raw edge time orders.
+    expect(row!.set_in_past).toBe(true);
+    const { rows } = await owner.query<{ generation: Date }>(
+      "SELECT pin_generation_at AS generation FROM staff_pins WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, userId],
+    );
+    expect(rows[0]!.generation.toISOString()).toBe(b.setAt);
+    for (const event of [setA, setB])
+      expect(await conflictsOf(event.id)).toBe(0);
+  });
+
+  it("C1 two future-dated sets in separate batches: the latest wins, an older one never comes back", async () => {
+    const userId = await newUser();
+    const first = await pinMaterial(userId, "482916", Date.now() + 2 * MINUTE);
+    const second = await pinMaterial(userId, "246801", Date.now() + 3 * MINUTE);
+
+    await deliver([pinSetEvent({ userId, material: first })]);
+    await deliver([pinSetEvent({ userId, material: second })]);
+    const [row] = await pinRows(userId);
+    expect(row!.pin_hash).toBe(second.pinHash);
+
+    // A redelivered copy of the first set (new event id) does not revert it.
+    await deliver([pinSetEvent({ userId, material: first })]);
+    const [after] = await pinRows(userId);
+    expect(after!.pin_hash).toBe(second.pinHash);
+  });
+
+  it("C2 a failed edge queue write of a staff_pin.set with material never quotes the hash or salt", async () => {
+    const userId = await newUser();
+    const material = await pinMaterial(userId, "482916", Date.now() - MINUTE);
+    const event = pinSetEvent({ userId, material });
+    const fn = `kyie_c2_guard_${randomBytes(4).toString("hex")}`;
+    // The trigger quotes the whole row (event included) in its error, the
+    // worst case for a driver error's message.
+    await owner.query(
+      `CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF NEW.tenant_id = '${tenantId}'::uuid THEN
+           RAISE EXCEPTION 'c2 sentinel %', NEW.event::text;
+         END IF;
+         RETURN NEW;
+       END $$`,
+    );
+    await owner.query(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON edge_outbound_queue FOR EACH ROW EXECUTE FUNCTION public.${fn}()`,
+    );
+    let thrown: unknown;
+    try {
+      await withTenant(db, node.context, (tx) =>
+        enqueueEdgeEvent(tx, node.context, {
+          edgeNodeId: node.scope.edgeNodeId,
+          direction: "edge_to_cloud",
+          kind: "transaction_event",
+          event,
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      await owner.query(`DROP TRIGGER ${fn} ON edge_outbound_queue`);
+      await owner.query(`DROP FUNCTION public.${fn}()`);
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+    expect(error.message).toBe("Edge queue write failed");
+    expect(error.cause).toBeUndefined();
+    const exposed = [
+      error.message,
+      String(error.stack),
+      JSON.stringify(error),
+      JSON.stringify(
+        Object.getOwnPropertyNames(error).map((key) => [
+          key,
+          (error as unknown as Record<string, unknown>)[key],
+        ]),
+      ),
+    ].join("\n");
+    for (const secret of [material.pinHash, material.salt, "c2 sentinel"])
+      expect(exposed).not.toContain(secret);
+  });
+});
+
+describe("legend-kyie review K round 3", () => {
+  it("R1 a set stamped 1 h ahead is refused as a conflict; a later normal set is applied", async () => {
+    const userId = await newUser();
+    const staffPinId = randomUUID();
+    const ahead = await pinMaterial(userId, "482916", Date.now() + HOUR);
+    const normal = await pinMaterial(userId, "246801", Date.now() - MINUTE);
+    const refused = pinSetEvent({ userId, material: ahead, staffPinId });
+    const next = {
+      ...pinSetEvent({ userId, material: normal, staffPinId }),
+      sequence: 2,
+    };
+
+    await deliver([refused]);
+    expect(await conflictsOf(refused.id)).toBe(1);
+    expect(await pinRows(userId)).toHaveLength(0);
+
+    await deliver([next]);
+    expect(await conflictsOf(next.id)).toBe(0);
+    const [row] = await pinRows(userId);
+    expect(row!.pin_hash).toBe(normal.pinHash);
+  });
+
+  it("R1 a lock between the clamped pin_set_at and the generation (edge clock +5 s) is ignored", async () => {
+    const userId = await newUser();
+    const material = await pinMaterial(userId, "482916", Date.now() + 5_000);
+    await deliver([pinSetEvent({ userId, material })]);
+    const lock = pinLockedEvent({
+      userId,
+      lockedUntilMs: Date.now() + 10 * MINUTE,
+      occurredAtMs: Date.now() + 2_000,
+    });
+
+    await deliver([lock]);
+
+    const [row] = await pinRows(userId);
+    expect(row!.pin_hash).toBe(material.pinHash);
+    expect(row!.failed_attempts).toBe(0);
+    expect(row!.locked_until).toBeNull();
+    expect(await conflictsOf(lock.id)).toBe(0);
+  });
+
+  it("R1 a lock that occurred more than 5 min ahead of the cloud clock is not applicable", async () => {
+    const userId = await newUser();
+    await seedPin(userId, "135790", { setAtMs: Date.now() - HOUR });
+    const lock = pinLockedEvent({
+      userId,
+      lockedUntilMs: Date.now() + 15 * MINUTE,
+      occurredAtMs: Date.now() + 10 * MINUTE,
+    });
+
+    expect(
+      await withTenant(db, node.context, (tx) =>
+        applyStaffPinLocked(tx, lock, meta()),
+      ),
+    ).toBe("not_applicable");
+    await deliver([lock]);
+    expect(await conflictsOf(lock.id)).toBe(0);
+    const [row] = await pinRows(userId);
+    expect(row!.failed_attempts).toBe(0);
+    expect(row!.locked_until).toBeNull();
+  });
+});
+
+describe("legend-kyie review K round 3 re-review", () => {
+  it("R2 an edge key left 1 h ahead recovers once the edge clock is fixed: the next edge set is applied on the cloud", async () => {
+    const userId = await newUser();
+    // This database plays the edge: its row carries a key from a clock that
+    // ran 1 h ahead (the cloud refused that set).
+    const { id } = await seedPin(userId, "135790", {
+      setAtMs: Date.now() - HOUR,
+    });
+    await owner.query(
+      "UPDATE staff_pins SET pin_generation_at = now() + interval '1 hour' WHERE id = $1",
+      [id],
+    );
+
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      await setStaffPin(
+        establishTenantContext({ tenantId, brandId: null, source: "session" }),
+        userId,
+        { outletId: outletA, userId },
+        { pin: "482916" },
+      );
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    const { rows } = await owner.query<{ event: EventEnvelope }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND event->>'name' = 'staff_pin.set'
+          AND event->'payload'->>'userId' = $2
+        ORDER BY created_at DESC LIMIT 1`,
+      [tenantId, userId],
+    );
+    const event = rows[0]!.event;
+    const material = (event.payload as { material: Material }).material;
+    // Compared on the database clock (the one the edge stamps with).
+    const { rows: bound } = await owner.query<{ ok: boolean }>(
+      "SELECT $1::timestamptz <= now() + interval '5 minutes 1 millisecond' AS ok",
+      [material.setAt],
+    );
+    expect(bound[0]!.ok).toBe(true);
+
+    // The cloud still has the older pin of this staff member.
+    await owner.query(
+      "UPDATE staff_pins SET pin_hash = $2, pin_generation_at = now() - interval '1 hour' WHERE id = $1",
+      [id, "0".repeat(64)],
+    );
+    await deliver([event]);
+
+    expect(await conflictsOf(event.id)).toBe(0);
+    const [row] = await pinRows(userId);
+    expect(row!.pin_hash).toBe(material.pinHash);
+    expect(await pinVerifies(userId, "482916", row!)).toBe(true);
   });
 });

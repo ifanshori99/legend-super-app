@@ -77,6 +77,7 @@ import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
 import { outletContext } from "./device-pin-support.ts";
 
 // ------------------------------------------------------- edge credential port
@@ -421,28 +422,34 @@ export async function applyStaffPinRecords(
             "CONFLICT",
             "Staff pin record id is used by another staff pin.",
           );
-        await tx.insert(staffPins).values({
-          id: record.id,
-          tenantId: record.tenantId,
-          outletId: record.outletId,
-          userId: record.userId,
-          ...material,
-          // The record does not carry who set it; the owner is the closest
-          // non-secret, existing user reference.
-          setBy: record.userId,
-          createdAt: version,
-          updatedAt: version,
-        });
+        // A failed write can quote the hash and salt in a driver error
+        // (legend-kyie round 3 R3): rethrown without them.
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx.insert(staffPins).values({
+            id: record.id,
+            tenantId: record.tenantId,
+            outletId: record.outletId,
+            userId: record.userId,
+            ...material,
+            // The record does not carry who set it; the owner is the closest
+            // non-secret, existing user reference.
+            setBy: record.userId,
+            createdAt: version,
+            updatedAt: version,
+          }),
+        );
         applied += 1;
         continue;
       }
       if (!sameMaterial(local, record)) {
         // A pin set or reset on the cloud: newer generation wins.
         if (version.getTime() <= local.createdAt.getTime()) continue;
-        await tx
-          .update(staffPins)
-          .set({ ...material, createdAt: version, updatedAt: version })
-          .where(eq(staffPins.id, local.id));
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx
+            .update(staffPins)
+            .set({ ...material, createdAt: version, updatedAt: version })
+            .where(eq(staffPins.id, local.id)),
+        );
         applied += 1;
         continue;
       }

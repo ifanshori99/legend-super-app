@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## Codex 160 dua P2 di legend-kyie (engineer, cabang `ws/edge-access-apply`, 2026-11-09)
+
+- Sudah: urutan set PIN memakai kolom baru `staff_pins.pin_generation_at` (migrasi `0135_steep_quasimodo`), terpisah dari `pin_set_at` yang dibatasi. Set lebih dari 5 menit di depan jam cloud ditolak; lock begitu diabaikan. Kunci generation di edge dan cloud tidak pernah mundur, dan kunci edge yang tertinggal jauh di depan pulih setelah jam dibetulkan. Galat tulis yang membawa hash atau salt dibungkus galat generik tanpa cause (`withoutSecretErrorDetail`).
+- Gate: tsc, eslint, prettier, 31 file 450 test.
+- Review K: reviewer Opus dan architect, plus re-review; semua temuan nyata dibetulkan. Sisa skew antar node di bawah 5 menit diserahkan ke legend-t9ii; set edge yang ditolak tidak diekspor ulang: legend-kgbw.
+- Berikut: legend-t9ii, legend-zclb. Migrasi 0134 dan 0135 perlu diurutkan ulang di merge train.
+
 ## legend-kyie cloud menerapkan event akses dari edge (engineer, cabang `ws/edge-access-apply`, 2026-11-09)
 
 - Sudah: `staff_pin.set` (hash lewat field opsional `material`, hanya dari proses edge), `staff_pin.locked` dan `pos_override.recorded` (audit saja) diterapkan di cloud. Urutan PIN lewat kolom baru `staff_pins.pin_set_at`; baris parkir lama di-drain lazy dan ditandai `applied_at`/`apply_outcome`. Hash diredaksi dari konflik, baris parkir dan log.

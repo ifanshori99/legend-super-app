@@ -4,8 +4,9 @@
 //
 // - staff_pin.set: an edge node sends the hash material (never the pin;
 //   shared/access/override.ts `staffPinSetMaterialSchema`). The cloud adopts
-//   it only when the edge generation is newer than the cloud's (`setAt` vs
-//   `staff_pins.pin_set_at`; a tie keeps the cloud pin), so an older edge set
+//   it only when the edge generation is newer than the cloud's (raw `setAt`
+//   vs `staff_pins.pin_generation_at`; a tie keeps the cloud pin; the clamped
+//   time goes to `pin_set_at`), so an older edge set
 //   never overwrites a newer cloud reset and a standby takeover / cloud ->
 //   edge sync no longer reverts an edge pin. `updated_at = now()` so the row
 //   re-exports to the edges (staff-pin-sync.ts). Matched by (tenant, outlet,
@@ -90,6 +91,15 @@ export const POS_OVERRIDE_RECORDED_EVENT = "pos_override.recorded";
 /** Parked access rows drained per live access event. */
 export const DRAIN_LIMIT = 25;
 
+/**
+ * How far an edge clock may run ahead of the cloud (round 3 R1; same window
+ * as services/payment-paid-at.ts). A pin set stamped further ahead would
+ * freeze the pin against every later edge set, so it is refused; a lock that
+ * far ahead is ignored.
+ */
+const EDGE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const edgeClockLimit = sql`now() + make_interval(secs => ${EDGE_CLOCK_SKEW_MS / 1000})`;
+
 /** What applying one access event did (thrown refusals are not returned). */
 export type AccessApplyOutcome = "applied" | "not_applicable";
 
@@ -162,7 +172,11 @@ async function assertTenantUser(
 /**
  * Adopts the pin set on the edge when its generation is newer than the
  * cloud's. One upsert on (tenant, outlet, user), so a concurrent cloud set is
- * ordered by the row lock: the newer `pin_set_at` wins.
+ * ordered by the row lock: the newer `pin_generation_at` wins.
+ *
+ * The order key is the raw edge `setAt`, never clamped (Codex 160 C1): with
+ * an edge clock ahead of the cloud, two sets A then B would both clamp to
+ * the cloud clock and B would lose to A. Only `pin_set_at` is clamped.
  */
 export async function applyStaffPinSet(
   tx: EdgeTx,
@@ -181,7 +195,17 @@ export async function applyStaffPinSet(
   if (!material || material.pepperVersion !== STAFF_PIN_PEPPER_VERSION)
     return "not_applicable";
 
+  const { rows: skew } = await tx.execute(
+    sql`SELECT (${material.setAt}::timestamptz > ${edgeClockLimit}) AS ahead`,
+  );
+  if (skew[0]?.ahead === true)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Staff pin set time is too far ahead of the cloud clock",
+    );
+
   const pinSetAt = sql`LEAST(${material.setAt}::timestamptz, now())`;
+  const pinGenerationAt = sql`${material.setAt}::timestamptz`;
   const values = {
     pinHash: material.pinHash,
     pinSalt: material.salt,
@@ -214,12 +238,12 @@ export async function applyStaffPinSet(
     // Strictly newer generation only: a tie keeps the cloud pin.
     const written = await tx
       .update(staffPins)
-      .set({ ...values, pinSetAt })
+      .set({ ...values, pinSetAt, pinGenerationAt })
       .where(
         and(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.id, id),
-          sql`${staffPins.pinSetAt} < ${pinSetAt}`,
+          sql`${staffPins.pinGenerationAt} < ${pinGenerationAt}`,
         ),
       )
       .returning({ id: staffPins.id });
@@ -239,6 +263,7 @@ export async function applyStaffPinSet(
         userId: payload.userId,
         ...values,
         pinSetAt,
+        pinGenerationAt,
         createdAt: sql`now()`,
       })
       .onConflictDoNothing()
@@ -306,7 +331,10 @@ export async function applyStaffPinLocked(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.outletId, outletId),
           eq(staffPins.userId, payload.userId),
-          sql`${staffPins.pinSetAt} < ${event.occurredAt}::timestamptz`,
+          // Same clock as an edge set's order key (both edge time).
+          sql`${staffPins.pinGenerationAt} < ${event.occurredAt}::timestamptz`,
+          // An edge clock far ahead (round 3 R1).
+          sql`${event.occurredAt}::timestamptz <= ${edgeClockLimit}`,
           sql`${payload.lockedUntil}::timestamptz > now()`,
         ),
       )
@@ -531,7 +559,7 @@ function liveHandler(
  * A refused event is never "received", and a standby continues the primary's
  * sequences, so the append-only next-sequence rule would turn every later
  * event into a `sequence_gap` conflict whose stored copy has no pin material
- * (lost, later reverted). The appliers order by `pin_set_at` / `occurredAt`
+ * (lost, later reverted). The appliers order by `pin_generation_at` / `occurredAt`
  * themselves, and the link still drops a redelivered event id.
  */
 const acceptIncomingSequence: EdgeLastSequenceHook = async (_tx, aggregate) =>

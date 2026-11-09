@@ -44,6 +44,7 @@ import {
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { getEdgeRuntimeState } from "../edge/runtime";
+import { withoutSecretErrorDetail } from "../edge/envelope-secrets";
 import { staffPins } from "../db/schema/device-pin";
 import { user } from "../db/schema/user";
 import { withTenant } from "../db/tenant";
@@ -227,6 +228,7 @@ export async function setStaffPin(
         ),
       )
       .for("update");
+    const edge = isEdgeProcess();
     const values = {
       pinHash: hashed.pinHash,
       pinSalt: hashed.salt,
@@ -241,52 +243,83 @@ export async function setStaffPin(
       pinSetAt: staffPinVersionStamp(options.now),
       updatedAt: staffPinVersionStamp(options.now),
     };
-    const written = { id: staffPins.id, pinSetAt: staffPins.pinSetAt };
-    const [row] = previous
-      ? await tx
-          .update(staffPins)
-          .set(values)
-          .where(eq(staffPins.id, previous.id))
-          .returning(written)
-      : await tx
-          .insert(staffPins)
-          .values({
-            tenantId: tenant.tenantId,
-            outletId,
-            userId,
-            createdAt: now,
-            ...values,
-          })
-          .returning(written);
+    // Order key of the generation (Codex 160 C1), never below the current
+    // one (round 3 R2): a clock stepping back still makes a newer key. The
+    // edge stamps its own clock and sends the key as `material.setAt`; the
+    // cloud also orders after an edge set stamped in the future.
+    const generationStamp = edge
+      ? staffPinVersionStamp(options.now)
+      : (options.now ?? sql`clock_timestamp()`);
+    const written = {
+      id: staffPins.id,
+      pinGenerationAt: staffPins.pinGenerationAt,
+    };
+    // A failed write can quote the hash and salt in a driver error's message
+    // and parameters (round 3 R3): rethrown without them.
+    const [row] = await withoutSecretErrorDetail(
+      "Staff pin write failed",
+      async () =>
+        previous
+          ? tx
+              .update(staffPins)
+              .set({
+                ...values,
+                // The edge caps the carried key at its clock + 5 min (the
+                // cloud's skew window): a key left far ahead by a clock that
+                // ran ahead would otherwise keep every later set refused on
+                // the cloud after the clock is fixed.
+                pinGenerationAt: edge
+                  ? sql`GREATEST(${generationStamp}::timestamptz, LEAST(${staffPins.pinGenerationAt}, ${generationStamp}::timestamptz + interval '5 minutes') + interval '1 millisecond')`
+                  : sql`GREATEST(${generationStamp}::timestamptz, ${staffPins.pinGenerationAt} + interval '1 millisecond')`,
+              })
+              .where(eq(staffPins.id, previous.id))
+              .returning(written)
+          : tx
+              .insert(staffPins)
+              .values({
+                tenantId: tenant.tenantId,
+                outletId,
+                userId,
+                createdAt: now,
+                ...values,
+                pinGenerationAt: generationStamp,
+              })
+              .returning(written),
+    );
     if (!row) throw new Error("staff pin write returned no row");
 
     // legend-kyie: only an edge node sends the hash material, so the cloud
     // can adopt a pin set on the edge. The cloud never does (its pins reach
     // the edge through staff-pin-sync.ts, never through an event).
-    const material = isEdgeProcess()
+    const material = edge
       ? {
           algorithm: STAFF_PIN_HASH_ALGORITHM,
           salt: hashed.salt,
           pinHash: hashed.pinHash,
           params: hashed.params,
           pepperVersion: STAFF_PIN_PEPPER_VERSION,
-          setAt: row.pinSetAt.toISOString(),
+          setAt: row.pinGenerationAt.toISOString(),
         }
       : undefined;
-    await appendDevicePinEvent(tx, context, staffPinSetEvent, {
-      aggregateId: row.id,
-      outletId,
-      actor: { type: "user", id: actorId },
-      deviceId: options.deviceId ?? null,
-      now,
-      payload: {
-        staffPinId: row.id,
-        userId,
-        setBy: actorId,
-        self,
-        ...(material ? { material } : {}),
-      },
-    });
+    // A failed outbox write can quote the event (hash, salt) in a driver
+    // error's message and parameters, which reach API logs and job output
+    // (Codex 160 C2): rethrown without the original message or cause.
+    await withoutSecretErrorDetail("Staff pin event write failed", () =>
+      appendDevicePinEvent(tx, context, staffPinSetEvent, {
+        aggregateId: row.id,
+        outletId,
+        actor: { type: "user", id: actorId },
+        deviceId: options.deviceId ?? null,
+        now,
+        payload: {
+          staffPinId: row.id,
+          userId,
+          setBy: actorId,
+          self,
+          ...(material ? { material } : {}),
+        },
+      }),
+    );
     await recordAudit(
       {
         tenantId: tenant.tenantId,
