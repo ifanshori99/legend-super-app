@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (bagian "Paralel dulu", kerja berat, definisi selesai), lalu ikuti.
 
 ## Repo
-`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/doit-pending-poller` dari `milestone/m1` (94995dad; sudah memuat `ws/doit-get-payment` cff27b49). Worktree `.worktrees/doit-pending-poller`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge. Migrasi hanya bila perlu: nomor dipesan `0190`, `when` 1794269000000.
+`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/doit-pending-poller` dari `milestone/m1` (d2080951; sudah memuat `ws/doit-get-payment` cff27b49). Worktree `.worktrees/doit-pending-poller`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge. Migrasi hanya bila perlu: nomor dipesan `0190`, `when` 1794269000000.
 
 ## Tujuan
 `legend-rfiof` (P2, tingkat K uang). `createDoitPaymentReader` (dari legend-6g29) belum punya pemanggil. Kurang:

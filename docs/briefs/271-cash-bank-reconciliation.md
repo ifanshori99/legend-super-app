@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (bagian "Paralel dulu", kerja berat, definisi selesai), lalu ikuti.
 
 ## Repo
-`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/cash-bank-recon` dari `milestone/m1` (94995dad; sudah memuat 2dfe842e dengan kebijakan keuangan cd6fe532 dan parser CSV ketat). Worktree `.worktrees/cash-bank-recon`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge.
+`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/cash-bank-recon` dari `milestone/m1` (d2080951; sudah memuat 2dfe842e dengan kebijakan keuangan cd6fe532 dan parser CSV ketat). Worktree `.worktrees/cash-bank-recon`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge.
 
 Nomor migrasi dipesan: `0182`, `when` 1794261000000, satu migrasi untuk semua tabel.
 

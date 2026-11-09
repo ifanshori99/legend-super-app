@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (bagian "Paralel dulu", kerja berat, definisi selesai), lalu ikuti.
 
 ## Repo
-`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/ai-provider-tenant` dari `milestone/m1` (94995dad). Worktree `.worktrees/ai-provider-tenant`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge.
+`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/ai-provider-tenant` dari `milestone/m1` (d2080951). Worktree `.worktrees/ai-provider-tenant`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge.
 
 Nomor migrasi dipesan: `0188`, `when` 1794267000000, satu migrasi.
 
