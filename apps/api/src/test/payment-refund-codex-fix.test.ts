@@ -53,6 +53,7 @@ import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import {
   handleRefundApprovalResolved,
+  runRefundPayout,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
@@ -759,15 +760,19 @@ async function seedLegacyApprovedRefund(attempts: number) {
 }
 
 describe("PAY-04 legend-tvhq: every payout send re-validates the approval", () => {
-  it("PAY-04 a legacy approved refund without supervisor whose gateway call failed is quarantined by sweep and retry, never sent", async () => {
+  // An earlier attempt may have reached the provider, so sweep and retry only
+  // look it up (lookup-only); `not_found` is never re-sent and stays quarantined.
+  it("PAY-04 a legacy approved refund without supervisor whose gateway call failed is quarantined by sweep and retry, looked up but never sent", async () => {
     const refundId = await seedLegacyApprovedRefund(1);
+    const lookups = () =>
+      fake.statusCalls.filter((c) => c.idempotencyKey === `refund:${refundId}`);
 
     await sweep();
     expect(fake.calls).toHaveLength(0);
-    expect(fake.statusCalls).toHaveLength(0);
+    expect(lookups()).toHaveLength(1);
     expect(await refundRow(refundId)).toMatchObject({
       status: "approved",
-      payout_attempts: 1,
+      payout_attempts: 2,
       last_payout_error: PAYOUT_QUARANTINED,
     });
     expect(await quarantineAudits(refundId)).toEqual([
@@ -780,10 +785,10 @@ describe("PAY-04 legend-tvhq: every payout send re-validates the approval", () =
     expect(retried.status).toBe(409);
     expect(retried.body.error.code).toBe(PAYOUT_QUARANTINED);
     expect(fake.calls).toHaveLength(0);
-    expect(fake.statusCalls).toHaveLength(0);
+    expect(lookups()).toHaveLength(3);
     expect(await refundRow(refundId)).toMatchObject({
       status: "approved",
-      payout_attempts: 1,
+      payout_attempts: 4,
       last_payout_error: PAYOUT_QUARANTINED,
     });
     expect(await quarantineAudits(refundId)).toHaveLength(1);
@@ -833,6 +838,227 @@ describe("PAY-04 legend-tvhq: every payout send re-validates the approval", () =
     expect(await quarantineAudits(refundId)).toEqual([
       { reason: "supervisor_required" },
     ]);
+  });
+});
+
+/** An approved, due Rp30.000 refund decided by `approver` at `now() - decidedAgo`. */
+async function seedApprovedRefund(
+  approver: string,
+  decidedAgo = "0 seconds",
+  attempts = 0,
+) {
+  const intent = await seedPaid(100_000);
+  const refundId = randomUUID();
+  refundIds.push(refundId);
+  await owner.query(
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                  requested_by, approved_by, decided_at, payout_attempts, updated_at)
+     VALUES ($1, $2, $3, $4, 30000, 'Pengembalian uji', 'approved', $5, $6, now() - $7::interval, $8::int,
+             now() - interval '2 hours')`,
+    [
+      refundId,
+      tenantId,
+      outletA,
+      intent.intentId,
+      requesterId,
+      approver,
+      decidedAgo,
+      attempts,
+    ],
+  );
+  return refundId;
+}
+
+async function waitUntil(check: () => boolean, ms = 5_000) {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > ms) throw new Error("waitUntil timed out");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe("PAY-04 legend-tvhq review: quarantine survives a stale worker", () => {
+  it("PAY-04 worker A's lease expires, a sweep quarantines, A's late finish leaves the flag and one quarantine audit", async () => {
+    const refundId = await seedApprovedRefund(financeSupId);
+    let release!: () => void;
+    fake.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.enqueue("throw");
+    const workerA = runRefundPayout(tenantWide, refundId);
+    await waitUntil(() => callsOf(refundId).length === 1);
+
+    // A's lease expires; the approval is found defective (finance-only approver).
+    await owner.query(
+      `UPDATE payment_refunds SET payout_claimed_until = now() - interval '1 second',
+              approved_by = $3, updated_at = now() - interval '2 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId, financeAId],
+    );
+    await runRefundPayout(tenantWide, refundId);
+    expect((await refundRow(refundId)).last_payout_error).toBe(
+      PAYOUT_QUARANTINED,
+    );
+
+    release();
+    await workerA;
+    fake.gate = null;
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "supervisor_required" },
+    ]);
+  });
+});
+
+describe("PAY-04 legend-tvhq review: permissions are read as of the decision", () => {
+  it("PAY-04 an approver whose roles ended after the approval still pays out", async () => {
+    const { userId } = await signedIn("finance", "Codex fix ended", true);
+    await owner.query(
+      `UPDATE role_assignments SET assigned_at = now() - interval '2 hours',
+              valid_until = now() - interval '1 minute'
+       WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, userId],
+    );
+    const refundId = await seedApprovedRefund(userId, "30 minutes");
+
+    await runRefundPayout(tenantWide, refundId);
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    expect(await quarantineAudits(refundId)).toHaveLength(0);
+  });
+
+  it("PAY-04 a grant assigned after the approval, with valid_from backdated before it, does not pass that approval", async () => {
+    // assigned_at = now(), valid_from = now() - 1 hour (see signedIn).
+    const { userId } = await signedIn("finance", "Codex fix backdated", true);
+    const refundId = await seedApprovedRefund(userId, "30 minutes");
+
+    await runRefundPayout(tenantWide, refundId);
+
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "supervisor_required" },
+    ]);
+  });
+});
+
+describe("PAY-04 legend-tvhq review: a maybe-sent quarantined refund keeps its lookup", () => {
+  const providerKey = (refundId: string) => `refund:${refundId}`;
+
+  it("PAY-04 maybe-sent + lookup succeeded completes the refund without a send", async () => {
+    const refundId = await seedLegacyApprovedRefund(1);
+    fake.setStatus(providerKey(refundId), {
+      status: "succeeded",
+      providerRef: `PRV-OK-${refundId}`,
+    });
+
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "completed",
+      provider_ref: `PRV-OK-${refundId}`,
+      last_payout_error: null,
+    });
+    expect(await quarantineAudits(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 maybe-sent + lookup failed fails the refund through retry", async () => {
+    const refundId = await seedLegacyApprovedRefund(1);
+    fake.setStatus(providerKey(refundId), {
+      status: "failed",
+      providerRef: `PRV-NO-${refundId}`,
+      code: "declined",
+    });
+
+    const retried = await retryWith(financeSup, refundId);
+
+    expect(retried.status).toBe(200);
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "provider_declined",
+    });
+  });
+
+  it("PAY-04 maybe-sent + lookup pending keeps polling, stays quarantined, then completes", async () => {
+    const refundId = await seedLegacyApprovedRefund(1);
+    fake.setStatus(providerKey(refundId), {
+      status: "pending",
+      providerRef: `PRV-P-${refundId}`,
+    });
+
+    await sweep();
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      provider_ref: `PRV-P-${refundId}`,
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+
+    fake.setStatus(providerKey(refundId), {
+      status: "succeeded",
+      providerRef: `PRV-P-${refundId}`,
+    });
+    await ageRefund(refundId);
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+  });
+
+  it("PAY-04 maybe-sent + lookup not_found makes zero sends and stays quarantined", async () => {
+    const refundId = await seedLegacyApprovedRefund(1);
+
+    await sweep();
+    await ageRefund(refundId);
+    const retried = await retryWith(financeSup, refundId);
+
+    expect(retried.status).toBe(409);
+    expect(retried.body.error.code).toBe(PAYOUT_QUARANTINED);
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(
+      fake.statusCalls.filter(
+        (c) => c.idempotencyKey === providerKey(refundId),
+      ),
+    ).toHaveLength(2);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+  });
+
+  it("PAY-04 a never-sent quarantined refund is still skipped by the sweep and refused by retry", async () => {
+    const refundId = await seedLegacyApprovedRefund(0);
+    await sweep();
+    expect((await refundRow(refundId)).last_payout_error).toBe(
+      PAYOUT_QUARANTINED,
+    );
+    await ageRefund(refundId);
+
+    await sweep();
+    const retried = await retryWith(financeSup, refundId);
+
+    expect(retried.status).toBe(409);
+    expect(retried.body.error.code).toBe(PAYOUT_QUARANTINED);
+    expect(callsOf(refundId)).toHaveLength(0);
+    expect(
+      fake.statusCalls.filter(
+        (c) => c.idempotencyKey === providerKey(refundId),
+      ),
+    ).toHaveLength(0);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 0,
+    });
   });
 });
 
