@@ -31,6 +31,20 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus (1 Low: memo memakai baris grant lama, grant diakhiri di tengah request tetap dipercaya; dibetulkan, memo kini hanya tenant id) + architect (setuju; Low test dua tenant, Info akhir per tenant, Nit tipe: semua dibetulkan). Follow-up: legend-edjgj (fungsi SECURITY DEFINER, migrasi).
 - Berikut: second-opinion Codex (brief `docs/briefs/206b-second-opinion-impersonate-expiry-cap.md` di folder utama), merge train.
 
+## legend-nd3cu cursor link per instance edge (engineer, cabang `ws/edge-link-instance-resume` dari ws/edge-pin-instance e1100258, 2026-11-09)
+
+- Sudah: cloud menyimpan instance edge pemilik cursor (`sync_cursors.peer_instance_id`) dan titik awal penomorannya (`peer_seq_offset`). Link bicara dengan nomor `tersimpan - offset`.
+- Edge yang mengirim instance: cloud menunda hello-nya sampai hello edge tiba, lalu memutuskan:
+  - Instance sama: tidak berubah.
+  - Belum ada instance tersimpan: di-adopt.
+  - Instance lain dengan cursor 0 (rebuild): kedua arah di-rebase. Edge→cloud mulai dari cursor yang diterima, cloud→edge dari ack terakhir.
+  - Instance lain dengan cursor di atas 0 (restore/clone): ditolak 1008, tanpa perubahan.
+- Cursor tersimpan tetap maju saja. Trigger: offset hanya naik, dan hanya saat instance berganti dari satu instance yang dikenal ke instance lain. Instance tidak bisa dihapus.
+- Baris yang terikat instance hanya melayani instance itu: link basi dan link tanpa instance ditolak dengan 1008.
+- Edge lama pada baris tanpa instance: perilaku sama. Sisi edge: offset 0, dijaga oleh check.
+- Migrasi `0162_sync_cursor_peer_instance` (when 1794241000000; 0158 kosong; 0159-0161 dipesan cabang lain). Rilis: cloud dulu, lalu edge.
+- Batas: DB restore/clone yang masih punya cursor tetap fail-closed (1008). Rebuild bersamaan dengan upgrade pertama ke rilis ini di-adopt tanpa rebase. Kedua kasus tetap memakai runbook daftar node baru. Mesin lama yang hidup lagi dengan cursor 0 bisa mengambil alih node (melanggar aturan satu mesin per node). Ini tidak menyebabkan apply ganda, karena event id di-dedupe. Merge train: 0159-0161 harus masuk sebelum 0162, atau `when` mereka dinaikkan di atas 1794241000000.
+
 ## legend-o839h PIN edge membedakan DB edge yang dibangun ulang lewat instance_id (engineer, cabang `ws/edge-pin-instance` dari integ/m1-batch24 94d769c6, 2026-11-09)
 
 - Sudah: edge mengirim `edge_nodes.instance_id` sebagai header upgrade link `x-edge-instance`; cloud menyimpannya di `staff_pins.generation_edge_instance_id` di samping node dan sequence. Sequence hanya dibandingkan untuk node + instance yang sama; instance lain (DB dibangun ulang) dan baris lama berinstance null dibandingkan dengan kunci, jadi set PIN baru diterima tanpa runbook. Instance tak diketahui (edge lama, drain parkir, replay konflik) memakai aturan node-saja seperti sebelumnya; drain parkir tidak meminjam instance link hidup.

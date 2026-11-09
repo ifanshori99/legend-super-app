@@ -58,7 +58,8 @@ FOR EACH ROW EXECUTE FUNCTION app.reject_edge_node_delete();
 --> statement-breakpoint
 
 -- Link cursors only move forward: a lower sequence would resend (sender) or
--- re-apply (receiver) events that were already settled.
+-- re-apply (receiver) events that were already settled. Columns added by
+-- 0162 (peer instance and offset, legend-nd3cu) follow the same rule.
 CREATE FUNCTION app.guard_sync_cursor_update() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -69,6 +70,20 @@ BEGIN
   IF NEW.next_out_seq < OLD.next_out_seq OR NEW.acked_out_seq < OLD.acked_out_seq
      OR NEW.received_in_seq < OLD.received_in_seq THEN
     RAISE EXCEPTION 'sync cursors never move backwards (EDG-02)' USING ERRCODE = '42501';
+  END IF;
+  -- legend-nd3cu: a known peer instance is never forgotten, and the offset
+  -- (where the instance's link numbering starts) moves only forward and only
+  -- when the peer changes from one known instance to another. Within one
+  -- instance the cursors stay strictly forward-only.
+  IF OLD.peer_instance_id IS NOT NULL AND NEW.peer_instance_id IS NULL THEN
+    RAISE EXCEPTION 'sync cursor peer instance cannot be cleared' USING ERRCODE = '42501';
+  END IF;
+  IF NEW.peer_seq_offset < OLD.peer_seq_offset THEN
+    RAISE EXCEPTION 'sync cursors never move backwards (EDG-02)' USING ERRCODE = '42501';
+  END IF;
+  IF NEW.peer_seq_offset <> OLD.peer_seq_offset AND (OLD.peer_instance_id IS NULL
+     OR NEW.peer_instance_id IS NOT DISTINCT FROM OLD.peer_instance_id) THEN
+    RAISE EXCEPTION 'sync cursor offset changes only with a new peer instance' USING ERRCODE = '42501';
   END IF;
   RETURN NEW;
 END $$;

@@ -164,6 +164,21 @@ export const syncCursors = pgTable(
       .default(0),
     /** PRD §6 J `sync_cursors.last_event_id` (ULID in uuid). */
     lastEventId: ulidInUuid("last_event_id"),
+    /**
+     * Cloud only (legend-nd3cu): the edge database (`edge_nodes.instance_id`
+     * sent on the link) whose link numbering these cursors follow. Null =
+     * unknown (an edge that never sent its instance, and the edge's own rows).
+     */
+    peerInstanceId: uuid("peer_instance_id"),
+    /**
+     * Cloud only (legend-nd3cu): the stored cursor at which the current peer
+     * instance's numbering starts. A rebuilt edge database restarts its link
+     * sequences at 0 while the stored cursors only move forward, so the link
+     * speaks `stored - offset`. Zero until an instance change rebases it.
+     */
+    peerSeqOffset: bigint("peer_seq_offset", { mode: "number" })
+      .notNull()
+      .default(0),
     lastAckedAt: timestamp("last_acked_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
@@ -182,6 +197,10 @@ export const syncCursors = pgTable(
     check(
       "sync_cursors_seq_check",
       sql`${table.ackedOutSeq} >= 0 AND ${table.ackedOutSeq} <= ${table.nextOutSeq} AND ${table.receivedInSeq} >= 0`,
+    ),
+    check(
+      "sync_cursors_peer_offset_check",
+      sql`${table.peerSeqOffset} >= 0 AND ${table.peerSeqOffset} <= GREATEST(${table.ackedOutSeq}, ${table.receivedInSeq}) AND (${table.peerInstanceId} IS NOT NULL OR ${table.peerSeqOffset} = 0)`,
     ),
   ],
 );
