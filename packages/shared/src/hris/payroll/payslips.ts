@@ -178,8 +178,17 @@ export function payslipTotalsIssues(slip: CalculationLike): string[] {
     issues.push("pph21 lines != tax.pph21WithheldIdr");
   if (slip.pph21Idr !== slip.tax.pph21Idr)
     issues.push("pph21Idr != tax.pph21Idr");
-  if (slip.tax.pph21WithheldIdr > Math.max(0, slip.tax.pph21Idr))
-    issues.push("withheld PPh 21 exceeds PPh 21 owed");
+  // Withheld may exceed the period tax when the employer takes back its own
+  // Jan-Nov lebih potong in the same slip (bead legend-u1xq): the split must
+  // still add up to the tax owed.
+  if (
+    slip.tax.pph21WithheldIdr +
+      slip.tax.pph21EmployerBorneIdr -
+      slip.tax.pph21RefundIdr -
+      slip.tax.pph21EmployerRefundIdr !==
+    slip.tax.pph21Idr
+  )
+    issues.push("withheld + borne - refunds != PPh 21 owed");
   const bpjsEmployee = sumIdr(slip.bpjs.map((b) => b.employeeIdr));
   if (bpjsEmployee !== slip.bpjsEmployeeIdr)
     issues.push("bpjsEmployeeIdr != sum of BPJS employee shares");
@@ -334,8 +343,9 @@ export const payrollRunTotalsSchema = z
       issue("netIdr", "net = gross - deductions");
     if (t.netIdr !== t.bankTransferIdr + t.cashIdr)
       issue("bankTransferIdr", "net = bank transfer + cash (PAYR-04)");
-    if (t.pph21WithheldIdr > Math.max(0, t.pph21Idr))
-      issue("pph21WithheldIdr", "withheld PPh 21 exceeds PPh 21 owed");
+    // No withheld <= owed check here: a slip may withhold more than it owes
+    // when the employer gets its own lebih potong back (bead legend-u1xq);
+    // each slip's split is checked by payslipTotalsIssues.
     if (t.serviceChargeIdr + t.reimbursementIdr > t.grossIdr)
       issue("serviceChargeIdr", "service charge + reimbursement exceed gross");
   });
