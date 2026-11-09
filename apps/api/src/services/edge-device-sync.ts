@@ -273,7 +273,10 @@ export async function listDeviceRecordsSince(
               ? undefined
               : (decodeReceiptRunReport(receiptRuns) ?? undefined),
           // legend-yd0h8: cloud arrival time orders reports (not the edge
-          // clock); `now` is taken before any pool or outlet lock wait.
+          // clock). The route passes `now` taken before its credential check,
+          // so pool and outlet lock waits do not make an old report look new.
+          // Network / load balancer delay is not covered: the puller only
+          // retries after its 15 s timeout.
           reportedAt: receiptRuns === undefined ? undefined : now,
         });
         alert = claim.alert;

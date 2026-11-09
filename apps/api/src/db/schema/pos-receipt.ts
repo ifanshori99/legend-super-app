@@ -85,7 +85,7 @@ export const receiptSequences = pgTable(
      */
     edgeReportedNumber: integer("edge_reported_number").notNull().default(0),
     /**
-     * legend-yd0h8: edge time (clamped token) of the report that last raised
+     * legend-yd0h8: cloud arrival time of the report that last raised
      * the high-water; a report not newer than it is stale and skipped. Never
      * goes backwards.
      */
