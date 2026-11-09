@@ -1128,6 +1128,13 @@
       "when": 1794246000000,
       "tag": "0167_payroll_core",
       "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "7",
+      "when": 1794248000000,
+      "tag": "0169_payroll_loan_policy",
+      "breakpoints": true
     }
   ]
 }

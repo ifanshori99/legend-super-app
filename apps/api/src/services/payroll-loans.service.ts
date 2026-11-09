@@ -12,7 +12,19 @@
 // service never changes `outstanding_idr` after the request.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import {
   businessDateOf,
@@ -20,12 +32,14 @@ import {
   createUlid,
   DEFAULT_BUSINESS_DAY_CLOCK,
   encodeCursor,
+  idr,
   type BusinessDate,
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
 import {
   PayrollError,
+  assertLoanWithinPolicy,
   decideEmployeeLoan as decideEmployeeLoanEndpoint,
   employeeLoanIdSchema,
   disburseEmployeeLoan as disburseEmployeeLoanEndpoint,
@@ -33,6 +47,7 @@ import {
   listEmployeeLoans as listEmployeeLoansEndpoint,
   listMyLoans as listMyLoansEndpoint,
   loanInstallmentFor,
+  loanPolicySchema,
   transitionEmployeeLoan,
   type EmployeeLoan,
   type EmployeeLoanAction,
@@ -41,9 +56,15 @@ import {
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { employeeLoans } from "../db/schema/payroll.ts";
+import {
+  employeeLoans,
+  employeePayComponents,
+  payComponents,
+  payrollLoanPolicies,
+} from "../db/schema/payroll.ts";
 import { employees } from "../db/schema/hris.ts";
 import { withTenant } from "../db/tenant.ts";
+import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
@@ -77,6 +98,120 @@ type CreateInput = {
   reason: string;
   idempotencyKey: string;
 };
+
+/** A loan that still counts against "one open loan at a time". */
+const OPEN_LOAN_STATUSES = ["pending", "approved", "disbursed"] as const;
+
+/** Sum of the employee's base-salary components valid on `today` (sealed). */
+async function monthlyBaseSalaryIdr(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: string,
+  today: BusinessDate,
+) {
+  const rows = await tx
+    .select({
+      id: employeePayComponents.id,
+      tenantId: employeePayComponents.tenantId,
+      amountEncrypted: employeePayComponents.amountEncrypted,
+      piiKeyVersion: employeePayComponents.piiKeyVersion,
+    })
+    .from(employeePayComponents)
+    .innerJoin(
+      payComponents,
+      and(
+        eq(payComponents.tenantId, employeePayComponents.tenantId),
+        eq(payComponents.id, employeePayComponents.componentId),
+      ),
+    )
+    .where(
+      and(
+        eq(employeePayComponents.tenantId, context.tenant.tenantId),
+        eq(employeePayComponents.employeeId, employeeId),
+        eq(payComponents.category, "base_salary"),
+        lte(employeePayComponents.effectiveFrom, today),
+        or(
+          isNull(employeePayComponents.effectiveTo),
+          gte(employeePayComponents.effectiveTo, today),
+        ),
+      ),
+    );
+  return idr(
+    rows.reduce(
+      (sum, row) =>
+        sum +
+        openPayrollAmount(
+          row.amountEncrypted,
+          {
+            tenantId: row.tenantId,
+            table: "employee_pay_components",
+            rowId: row.id,
+            field: "amount",
+          },
+          row.piiKeyVersion,
+        ),
+      0,
+    ),
+  );
+}
+
+/**
+ * Kasbon limits (PRD D.31 "batas maksimal"). Runs at request and at approval
+ * under one lock per employee, so two parallel requests cannot both pass the
+ * "one open loan" or ceiling check before either one is stored. No policy row
+ * for the tenant means no kasbon (fail closed). `excludeLoanId` is the loan
+ * being approved: it must not count against itself.
+ */
+async function assertLoanAllowed(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: string,
+  request: { principalIdr: number; installmentCount: number },
+  today: BusinessDate,
+  excludeLoanId?: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`payroll:loan:${tenantId}:${employeeId}`}, 0))`,
+  );
+  const [policyRow] = await tx
+    .select()
+    .from(payrollLoanPolicies)
+    .where(eq(payrollLoanPolicies.tenantId, tenantId))
+    .limit(1);
+  if (!policyRow) throw new PayrollError("PAYROLL_LOAN_LIMIT_EXCEEDED");
+  const policy = loanPolicySchema.parse({
+    maxPrincipalIdr: policyRow.maxPrincipalIdr,
+    maxPrincipalOfBaseSalaryBp: policyRow.maxPrincipalOfBaseSalaryBp,
+    maxInstallments: policyRow.maxInstallments,
+    maxDeductionOfNetPayBp: policyRow.maxDeductionOfNetPayBp,
+    singleOpenLoan: policyRow.singleOpenLoan,
+  });
+  const open = await tx
+    .select({ id: employeeLoans.id })
+    .from(employeeLoans)
+    .where(
+      and(
+        eq(employeeLoans.tenantId, tenantId),
+        eq(employeeLoans.employeeId, employeeId),
+        inArray(employeeLoans.status, [...OPEN_LOAN_STATUSES]),
+        excludeLoanId
+          ? ne(employeeLoans.id, excludeLoanId as LoanRow["id"])
+          : undefined,
+      ),
+    );
+  assertLoanWithinPolicy(policy, {
+    principalIdr: idr(request.principalIdr),
+    installmentCount: request.installmentCount,
+    // Only read when the policy has a salary multiple; none found = 0, so the
+    // ceiling is 0 and the request fails closed.
+    monthlyBaseSalaryIdr:
+      policy.maxPrincipalOfBaseSalaryBp === null
+        ? idr(0)
+        : await monthlyBaseSalaryIdr(tx, context, employeeId, today),
+    openLoanCount: open.length,
+  });
+}
 
 const toLoan = (row: LoanRow): EmployeeLoan =>
   employeeLoanSchema.parse({
@@ -213,9 +348,6 @@ export async function createMyLoan(
       "payroll.loan.create",
       { actor: self.actor, employeeId: self.employeeId, ...request },
       async () => {
-        // TODO legend-fij0l: assertLoanWithinPolicy needs a tenant loan policy
-        // (limits, single open loan, salary multiple). No storage exists yet,
-        // so no limit is enforced here.
         const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
         const [home] = await tx
           .select({
@@ -237,6 +369,7 @@ export async function createMyLoan(
             "VALIDATION_ERROR",
             "Karyawan yang sudah tidak aktif tidak bisa mengajukan kasbon.",
           );
+        await assertLoanAllowed(tx, context, self.employeeId, request, today);
         const [row] = await tx
           .insert(employeeLoans)
           .values({
@@ -407,15 +540,26 @@ export async function decideEmployeeLoan(
       input.idempotencyKey,
       "payroll.loan.decide",
       { actor, loanId, action: input.action },
-      async () =>
-        applyTransition(
-          tx,
-          context,
-          actor,
-          await lockLoanForDecision(tx, context, actor, loanId),
-          input.action,
-          now,
-        ),
+      async () => {
+        const row = await lockLoanForDecision(tx, context, actor, loanId);
+        // Approving re-checks the limits against the policy of today and the
+        // other open loans of the borrower (this loan excluded).
+        // Only a pending loan is checked: any other status is a plain invalid
+        // transition (applyTransition answers it).
+        if (input.action === "approve" && row.status === "pending")
+          await assertLoanAllowed(
+            tx,
+            context,
+            row.employeeId,
+            {
+              principalIdr: row.principalIdr,
+              installmentCount: row.installmentCount,
+            },
+            businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK),
+            row.id,
+          );
+        return applyTransition(tx, context, actor, row, input.action, now);
+      },
     );
   });
 }

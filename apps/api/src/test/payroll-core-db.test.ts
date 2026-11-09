@@ -1,6 +1,6 @@
 // Payroll core tables against PostgreSQL with the restricted app role (bead
 // legend-gfcr; PRD v1.7 §3 D.30-31, §6 H, R20, PAYR-02, PAYR-04, HR-03,
-// TEN-01/02/03): every one of the 14 payroll tables has forced, restrictive
+// TEN-01/02/03): every one of the 15 payroll tables has forced, restrictive
 // tenant RLS; the app role cannot delete payroll history; sealed pay amounts
 // and published statutory versions and locked runs cannot be rewritten; and a
 // composite foreign key can never point into another tenant.
@@ -43,10 +43,16 @@ const TABLES = [
   "service_charge_pools",
   "service_charge_allocations",
   "employee_loans",
+  "payroll_loan_policies",
   "reimbursement_categories",
   "reimbursements",
 ] as const;
 type Table = (typeof TABLES)[number];
+
+/** Tables with a unique key on tenant_id alone (a second row clashes). */
+const ONE_ROW_PER_TENANT: ReadonlySet<Table> = new Set([
+  "payroll_loan_policies",
+]);
 
 /** The app role keeps DELETE only on allocations (recalculation before approval). */
 const DELETABLE: ReadonlySet<Table> = new Set(["service_charge_allocations"]);
@@ -233,6 +239,12 @@ const BUILD: Record<Table, (s: Seed, id: string, v: Variant) => Cols> = {
     outstanding_idr: 1000000,
     first_deduction_period: "2026-02-01",
     reason: "Kasbon DB",
+  }),
+  payroll_loan_policies: (s) => ({
+    tenant_id: s.tenantId,
+    max_principal_idr: 5000000,
+    max_installments: 12,
+    max_deduction_of_net_pay_bp: 3000,
   }),
   reimbursement_categories: (s) => ({
     tenant_id: s.tenantId,
@@ -483,7 +495,7 @@ describe("payroll core: coverage", () => {
       .filter((name): name is string => name !== null)
       .sort();
     expect(exported).toEqual([...TABLES].sort());
-    expect(TABLES).toHaveLength(14);
+    expect(TABLES).toHaveLength(15);
   });
 });
 
@@ -551,7 +563,13 @@ describe.each(TABLES)("payroll core: %s tenant isolation", (table) => {
       const theirs = await attempt(client, foreign.text, foreign.values);
       return { mine, theirs };
     });
-    expect(result.mine).toMatchObject({ ok: true, rowCount: 1 });
+    // A one-row-per-tenant table already holds the seeded row of tenant B: the
+    // control insert is refused by the unique key (23505), not by RLS.
+    expect(result.mine).toMatchObject(
+      ONE_ROW_PER_TENANT.has(table)
+        ? { ok: false, code: "23505" }
+        : { ok: true, rowCount: 1 },
+    );
     // RLS WITH CHECK refuses before any foreign key is looked at. Payslips,
     // bank files and allocations also have a BEFORE INSERT guard that reads
     // the parent under the caller's RLS, so for them it may refuse first

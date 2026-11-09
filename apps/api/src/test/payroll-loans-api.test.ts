@@ -179,6 +179,18 @@ const disburse = (client: Client, id: string, headers = {}) =>
     .send({ idempotencyKey: key() });
 
 beforeAll(async () => {
+  // Kasbon limits (legend-fij0l): a request is refused without a tenant policy.
+  // This suite creates many loans per employee, so it runs under a lenient one;
+  // the limits themselves are tested in payroll-loans-caps.test.ts.
+  await asTenant((db) =>
+    db.query(
+      `INSERT INTO payroll_loan_policies
+         (tenant_id, max_principal_idr, max_principal_of_base_salary_bp, max_installments,
+          max_deduction_of_net_pay_bp, single_open_loan)
+       VALUES ($1, 100000000, NULL, 36, 5000, false)`,
+      [tenant.id],
+    ),
+  );
   const hr = await signedInClient("Loan HR API");
   await grantRole(tenant.id, hr.userId, [
     "hr.loan.approve",
@@ -262,6 +274,9 @@ afterAll(async () => {
     ]);
   });
   await asTenant(async (db) => {
+    await db.query("DELETE FROM payroll_loan_policies WHERE tenant_id = $1", [
+      tenant.id,
+    ]);
     await db.query(
       "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'loan-api-%'",
       [tenant.id],
