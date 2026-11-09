@@ -5,13 +5,15 @@
 //
 // Per tenant: standard F&B chart + default mappings for each legal entity
 // that has no account yet, the standard UOM catalog, and the six stock
-// locations of each outlet that lacks a type. Idempotent and insert-only: an
+// locations of each outlet that lacks a type, and the default PBJT rule and tax
+// settings for a tenant that has none (legend-9obf). Idempotent and insert-only: an
 // existing row is never changed, and a chart a tenant already has is never
 // mixed with the template. Prints counts per tenant id, no personal data.
 import "../load-env";
 import { eq } from "drizzle-orm";
 import { backfillTenantCharts } from "../services/accounting-provisioning.service";
 import { backfillTenantInventoryDefaults } from "../services/inventory-provisioning.service";
+import { backfillTenantTaxDefaults } from "../services/tax-provisioning.service";
 import { databaseError } from "./connection";
 import { db, pool } from "./index";
 import { tenants } from "./schema";
@@ -48,6 +50,26 @@ try {
   for (const { id } of rows) {
     const charts = await backfillTenantCharts(id);
     const inventory = await backfillTenantInventoryDefaults(id);
+    // A tax failure (e.g. the owner publishing a rule at the same moment hits
+    // the unique version key) must not skip the tenants after this one; rerun
+    // the backfill to finish it. The exit code still reports the failure.
+    try {
+      const tax = await backfillTenantTaxDefaults(id);
+      console.log(
+        `tenant ${id}: tax rules inserted ${tax.rulesInserted}, tax settings inserted ${tax.settingsInserted}`,
+      );
+      // Existing tax config is never changed; a tenant that cannot price
+      // orders must be completed by its owner through the tax routes.
+      if (!tax.priceReady)
+        console.warn(
+          `  tenant ${id}: skipped, not price-ready (no published active tenant-wide tax rule or tax settings)`,
+        );
+    } catch (error) {
+      console.error(
+        `tenant ${id}: tax defaults failed: ${databaseError(error)}`,
+      );
+      process.exitCode = 1;
+    }
     const provisioned = charts.filter((c) => c.status === "provisioned");
     console.log(
       `tenant ${id}: legal entities ${charts.length}, charts provisioned ${provisioned.length}, ` +

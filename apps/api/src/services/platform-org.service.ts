@@ -47,6 +47,7 @@ import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
+import { provisionDefaultTaxConfig } from "./tax-provisioning.service.ts";
 
 type TenantRow = typeof tenants.$inferSelect;
 type PackageRow = typeof platformPackages.$inferSelect;
@@ -222,6 +223,13 @@ export async function createTenant(
     // Standard UOM catalog, same transaction (PRD v1.7 §3.19, legend-4ryw).
     const actor = userIdSchema.safeParse(actorUserId);
     await provisionStandardUoms(tx, context, actor.success ? actor.data : null);
+    // Default PBJT rule + exclusive tax settings, same transaction, so the
+    // tenant can price orders at once (legend-9obf, founder decision Q13).
+    await provisionDefaultTaxConfig(
+      tx,
+      context,
+      actor.success ? actor.data : null,
+    );
     const admin = await provisionFirstTenantAdmin(
       tx,
       context,
