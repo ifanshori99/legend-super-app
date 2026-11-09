@@ -457,6 +457,8 @@ describe("receipt gaps at Tutup Hari (legend-ain0, POS-06)", () => {
   it("app.ts installs the real port (the default would report no gaps)", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     expect(source).toContain("setPosReceiptGapsPort(receiptGapsForDevice)");
+    // legend-6b0ld: the outlet-wide port is installed too.
+    expect(source).toContain("setPosOutletReceiptGapsPort(");
   });
 });
 

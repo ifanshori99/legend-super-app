@@ -56,8 +56,12 @@ import { edcTenderSettlement } from "./services/pos-edc-tender.ts";
 import {
   createPosReceiptPort,
   receiptGapsForDevice,
+  receiptGapsForOutletFast,
 } from "./services/pos-receipt.service.ts";
-import { setPosReceiptGapsPort } from "./services/pos-shift-ports.ts";
+import {
+  setPosOutletReceiptGapsPort,
+  setPosReceiptGapsPort,
+} from "./services/pos-shift-ports.ts";
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
@@ -81,6 +85,11 @@ setPosReceiptPort(createPosReceiptPort());
 // RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before
 // this the port kept its "no gaps" default and the contract never fired.
 setPosReceiptGapsPort(receiptGapsForDevice);
+// legend-6b0ld: Tutup Hari also checks every run of the outlet (retired runs,
+// cloud sequence), not only devices with activity that business date.
+setPosOutletReceiptGapsPort((tx, context, { outletId }) =>
+  receiptGapsForOutletFast(tx, context, outletId),
+);
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 // WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
