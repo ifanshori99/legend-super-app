@@ -90,6 +90,12 @@ Follow the Notes example (`docs/backend.md`, `docs/frontend.md`):
 
 Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchronous queries. Never substitute SQLite syntax or disable TLS verification.
 
+## Test terarah
+
+- Verifikasi kecil: `LEGEND_TEST_FILES="src/test/x.test.ts src/test/y.test.ts" pnpm test` dari root worktree (path dipisah spasi). Perintah ini juga menyiapkan DB, dan dianggap ringan oleh hook `heavy`.
+- `pnpm test` penuh dan `pnpm check` hanya untuk gate akhir: sekali, lewat `heavy`, oleh satu `test-runner`.
+- Jangan menjalankan suite penuh paralel dari worktree yang sama.
+
 ## Verify and hand off
 
 Run `pnpm check` (lint, typecheck, API + root tests on disposable PostgreSQL) and `pnpm build` for substantive changes. For auth/routing/session/CORS changes also run `pnpm test:e2e` (production builds + Playwright). For setup or Compose changes run `pnpm test:setup`. Add tests for real behavior and data isolation. Review the UI at narrow and wide widths when changing layout. The starter placeholder page and `e2e/starter.spec.ts` are gone (bead legend-fbu); new screens go in a route area, see `docs/frontend.md` "Where to put a new screen".

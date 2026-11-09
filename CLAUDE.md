@@ -2,6 +2,12 @@ Read @AGENTS.md for the project's conventions, Context7 workflow, and skill map.
 
 Project skills live in `.agents/skills/`. Read the appropriate `SKILL.md` directly before setup, feature-building, or derivative work; they do not need to be installed globally.
 
+## Test terarah
+
+- Verifikasi kecil: `LEGEND_TEST_FILES="src/test/x.test.ts src/test/y.test.ts" pnpm test` dari root worktree (path dipisah spasi). Perintah ini juga menyiapkan DB, dan dianggap ringan oleh hook `heavy`.
+- `pnpm test` penuh dan `pnpm check` hanya untuk gate akhir: sekali, lewat `heavy`, oleh satu `test-runner`.
+- Jangan menjalankan suite penuh paralel dari worktree yang sama.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 
 ## Beads Issue Tracker
