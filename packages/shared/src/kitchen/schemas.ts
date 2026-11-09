@@ -376,20 +376,25 @@ export const capacityRuleSchema = z
   });
 
 /** Everything the rules above accept on the kitchen config screen. */
-export const capacityRuleInputSchema = z.strictObject({
-  windowMinutes: z.number().int().min(5).max(60),
-  capacityPoints: z.number().int().positive().max(10_000),
-  nearCapacityBp: basisPointsSchema.refine((bp) => bp > 0, {
-    message: "The near-capacity level must be above zero",
-  }),
-  schedule: z.array(capacityScheduleSchema).min(1),
-  channelPriority: z
-    .array(channelSchema)
-    .min(1)
-    .refine((channels) => new Set(channels).size === channels.length, {
-      message: "Each channel appears once in the priority list",
+export const capacityRuleInputSchema = z
+  .strictObject({
+    windowMinutes: z.number().int().min(5).max(60),
+    capacityPoints: z.number().int().positive().max(10_000),
+    nearCapacityBp: basisPointsSchema.refine((bp) => bp > 0, {
+      message: "The near-capacity level must be above zero",
     }),
-});
+    schedule: z.array(capacityScheduleSchema).min(1),
+    channelPriority: z
+      .array(channelSchema)
+      .min(1)
+      .refine((channels) => new Set(channels).size === channels.length, {
+        message: "Each channel appears once in the priority list",
+      }),
+  })
+  .refine((rule) => rule.windowMinutes % 5 === 0, {
+    path: ["windowMinutes"],
+    message: "Capacity windows are a whole number of 5-minute slices",
+  });
 
 export const capacityLevelSchema = z.enum([
   "available",

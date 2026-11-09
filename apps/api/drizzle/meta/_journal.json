@@ -1254,6 +1254,13 @@
       "when": 1794260000000,
       "tag": "0181_sales_targets",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1794263000000,
+      "tag": "0184_kitchen_capacity_rules",
+      "breakpoints": true
     }
   ]
 }
