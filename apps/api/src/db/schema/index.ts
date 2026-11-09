@@ -63,6 +63,8 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-04 KDS routing + ticket lifecycle (legend-4d5).
+export * from "./kds";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).

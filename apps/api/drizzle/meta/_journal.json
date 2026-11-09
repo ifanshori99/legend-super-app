@@ -659,6 +659,27 @@
       "when": 1794183195165,
       "tag": "0093_procurement_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794183382167,
+      "tag": "0094_curious_living_tribunal",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794183396373,
+      "tag": "0095_kds_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794183398460,
+      "tag": "0096_menu_station_type_backfill",
+      "breakpoints": true
     }
   ]
 }

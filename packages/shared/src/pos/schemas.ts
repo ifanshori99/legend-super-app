@@ -810,6 +810,12 @@ export const posOrderEventTypeSchema = z.enum([
   "order.paid",
   "order.voided",
   "order.refunded",
+  /**
+   * A ticket or line was voided on the KDS (kitchen-only; the bill is
+   * unchanged until a POS void). Payload: { ticketId, stationId,
+   * orderItemIds, ticketCancelled, reason } (bead legend-4d5).
+   */
+  "order.kitchen_voided",
 ]);
 export type PosOrderEventType = z.infer<typeof posOrderEventTypeSchema>;
 
