@@ -148,8 +148,8 @@ function seedState(clock: () => number): FloorState {
       const inclusiveQuote = computeQuote({
         sessionId: extra.id,
         cartVersion: 1,
-        lines: template.items.map((item, index) => ({
-          cartLineId: `seed-${item.menuItemId}-${index}`,
+        lines: template.items.map((item) => ({
+          cartLineId: crypto.randomUUID(),
           menuItemId: item.menuItemId,
           name: item.name,
           quantity: item.quantity,
@@ -320,8 +320,8 @@ export function createWs03Engine(clock: () => number = Date.now) {
     const quote = computeQuote({
       sessionId: order.tableSessionId,
       cartVersion: 1,
-      lines: items.map((item, index) => ({
-        cartLineId: `move-${item.id}-${index}`,
+      lines: items.map((item) => ({
+        cartLineId: crypto.randomUUID(),
         menuItemId: item.menuItemId,
         name: item.name,
         quantity: item.quantity,
