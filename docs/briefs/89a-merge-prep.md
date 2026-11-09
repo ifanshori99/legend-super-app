@@ -19,3 +19,7 @@ Konteks: merge train ke `milestone/m1` (brief 89). Isi m1 setelah journals digab
 - Migration milik cabang (nama file, custom RLS/FK FORCE RLS ya/tidak).
 - Hasil typecheck + test yang dijalankan (lulus/gagal, nama test gagal).
 - Konflik semantik (dua sisi mengubah perilaku yang sama, enum/permission/route bentrok, dsb).
+
+## Wajib: merge asli, bukan squash (09-11)
+- Gunakan `git merge --no-ff <basis>` sehingga commit merge punya dua parent. Jangan `git merge --squash`, jangan commit satu-parent yang berisi isi m1. Commit squash membuat merge berikutnya ke m1 bentrok ulang (kejadian: prep/fix-edc-codex a043f87a).
+- Cek: `git log --format="%h %p" -1` harus menampilkan dua parent.
