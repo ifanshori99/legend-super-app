@@ -273,3 +273,33 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Keputusan terbuka (CTO/pemilik): (1) `GET /edge/bootstrap/masters` tanpa rate limit (edge-master-sync); (2) `syncEdgeMasters` menulis uoms/stock locations/COA/account mappings tanpa `guardDataImport` (jalur present `edge/bootstrap.ts:243` dan sync periodik `master-sync.ts`); (3) saran hardening `reset-preswitch-refund-payouts.ts`: filter `tenant_id` eksplisit selain RLS.
 - Batch7 `integ/m1-batch7` dirakit: pos-drawer-guess 049501f9 (0114/0115 baru), dp-late-journal b714f7b6 (+ patch 141), m1 9126f624, ai-scope 4538a6e4, refund-tier 7620d1e6, pph21-overwithhold baf5ca9e.
 - Batch4 dirakit: doit-refund 5316426a, fix-edge-codex deb16fa2, provisioning-default d82041ee, edge-master-sync 3c131bda, pos-closed-day 2658750c.
+
+## Serah terima CTO 9 Nov 15:10 (sesi G1aau compact 2x)
+
+Sudah (diverifikasi CTO, diteruskan ke merge train G9syc):
+- ws/data-import-guard 7a4296f7 (v4ld, rhwb) 74/74; ws/ci-isolation b9220d14 (wwsa); ws/pos-drawer-guess 42e94ce7 (67dt, utqr, ifnb, nib1, o0w6) 208/208; ws/doit-sandbox 3fe69082 (d21p, 8cf3, xd2q, 0yd1); ws/edc-pan-scrub d25cf41b (5gub) 165/165; ws/log-redact 26a0afea (8gsj, grm3, di atas edc-pan-scrub); ws/station-scope edab9370 (cot3) 97/97; ws/ai-scope 4538a6e4 (cot3 lanjutan, dak5); ws/dp-late-journal b714f7b6 (9pz9 slice 1-2, o9q9); ws/refund-tier 7620d1e6 (zi9o, migrasi data 0134); ws/pph21-overwithhold baf5ca9e (u1xq); ws/dp-refund-guard 41524fcb (e7zj, blocker rilis) 406 lulus; ws/station-printer b39cb392 (e087, qqvf) 78/78, KDS station lain 403 -> 404.
+- Gagal warisan batch5: `tests/payment-admin-contract.test.mjs:211` (EDC-06 / PAY-04) = legend-npwl P1. Belum ada pemilik bila G9syc belum membetulkan.
+- Keputusan CTO: matriks refund default satu tier Rp0 ke supervisor; gross_first (R50/51/74) diterima; 5zlz ai.ask tetap untuk user level station; h0q4 P3; DOIT_REFUNDS_ENABLED tetap mati sampai DOIT menjawab dan Codex 134 selesai; batas cap_exceeded e7zj diterima (bd comment).
+- Keputusan founder Q28: tutup shift cukup PIN supervisor di kasir -> legend-ccpn (matriks cash_shift_close default: satu tier, satu level, PIN supervisor; seed + backfill idempoten; matriks kustom tidak disentuh). Belum ditugaskan: kirim ke G5xnj setelah laporan 2dnh-nya diverifikasi.
+- Retro 4 tercatat di `~/.agents/team/RETRO.md`; `heavy` sekarang menahan slot 2-5 selama HEAVY_START_GAP 30 detik; TEAM.md item 9: prettier di gate thread, maks 1 `pnpm check` di merge train, simpan 30 baris log gate gagal, Lighthouse `heavy --exclusive`. Aturan merge train belum dikirim ke G9syc: kirim saat G9syc melapor, jangan ganggu saat bekerja.
+
+Sedang (thread):
+- G9syc merge train: batch7 (pos-drawer-guess, dp-late-journal + patch 141, ai-scope, refund-tier, pph21-overwithhold baf5ca9e) plus antrean di atas.
+- G5qo3 legend-mmgd selesai di ws/pph21-overwithhold 6e20273a (saldo pembayar tanpa clamp; payroll 283 lulus menurut thread). CTO sedang verifikasi: test-runner + architect (review final architect thread terhenti). Lulus: kabari G9syc ganti baf5ca9e dengan 6e20273a di batch7, lalu resolve G5qo3. Bead baru legend-y2lf (gross_first beda skala, keputusan kebijakan architect). Pasal 21(1) refund saat T < 0: ikut legend-8463 (konsultan pajak).
+- G5xnj legend-2dnh (refund system chain backfill). Berikutnya legend-ccpn.
+- G54my legend-eadm (ws/edge-event-class): parkir menunggu gate (tsc, eslint, edge-*). Codex brief 158 belum ditulis.
+- G2wg9 auto-journal: akun #1 limit sampai 15:20. Berikutnya slice 4 (settlement + MDR); slice 3 menunggu batch 3/4 (sudah di m1 9126f624, jadi slice 3 juga bisa jalan).
+- Codex second opinion jalan: G2wfb brief 156 (pph21 run 1+2, akun 2), G99sv brief 157 (dp-refund-guard, akun 2), G2iqv brief 154 (refund-tier, akun 3).
+
+Antrean Codex (maks 3 sekaligus, maks 2 per akun, uang/pajak dulu): 142 (run D), 146 (run 1-4), 150, 152 (run 1-3), 159 (station-printer, baru), 158 (setelah ditulis), lalu 117, 119, 121, 122, 124, 126, 127, 130, 133, 134, 138, 144. Hasil ditulis ke `docs/briefs/<no>-...result.md`.
+
+Langkah berikut:
+1. Jadwalkan ulang cron di sesi baru (cron sesi tidak ikut pindah): retro berkala tiap 2 jam (brief `~/.agents/team/retro-brief.md`); 15:23 cek akun #1 lalu kirim G2wg9 slice 4 (dan slice 3 bila m1 sudah memuat batch 3/4).
+2. Setelah batch7 masuk m1: B9 UI pemilih item refund (82xq), dwrr + z83k, legend-6xcy, slice failover, fbms, jm5c, jwn6.
+3. legend-npwl: beri ke thread refund/payment bila G9syc belum membetulkan.
+4. Bead UI untuk gerbang UI: pspy, huz8, 6om3, p7lx. Lainnya: z13t, 3r6r, 51h1, 8463, 6crc (lighthouse setelah batch5).
+5. Founder: B21 (4 pertanyaan tertulis DOIT), B23 (konsultan pajak, legend-8463), B22 on hold (domain VPS webhook).
+
+Catatan rilis: deploy cloud sebelum edge; API dan web bersamaan (DTO auto-journal); reset d21p sebelum DOIT_REFUNDS_ENABLED; backfill dan scrub PAN EDC di luar jam operasional (`docs/runbooks/edc-pan-scrub.md`); approval tutup shift lewat HP yang dibuka sebelum deploy ditolak, kasir minta ulang; batas approval refund 7 hari; tiap tutup shift butuh PIN supervisor.
+
+Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Opus 1046k, Haiku 971k, Sonnet 533k), 58 subagent, compact 3.
