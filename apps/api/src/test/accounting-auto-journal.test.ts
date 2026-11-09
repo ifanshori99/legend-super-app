@@ -4127,3 +4127,839 @@ describe("F19 slice 4 settlement", () => {
     });
   });
 });
+
+// ============================================================================
+// Slice 3: QR sale, revenue split, total-0 order.paid (legend-9pz9,
+// legend-kej3, legend-fbms; design: docs/design/auto-journals.md sections 1, 6,
+// 10). A QR pay-first sale is an `orders` row (channel qr, payment_mode
+// pay_first, fired_at set, payment_intent_id pinned to the intent that paid,
+// null when nothing was left to pay) with no pos_orders row; its order.paid
+// carries the split of the row, paidDepositIdr = deposit_applied_idr and one
+// gateway tender of total - DP (none when that is 0).
+//
+// Assumptions (the contract between the emitter and the consumer):
+// - The sale time of a QR sale is orders.fired_at; a sale at the same instant
+//   as a payout counts as earlier (as for POS).
+// - An order.paid whose order is a QR order that is not pay-first, has no
+//   fired_at, whose pinned intent is not paid on the order's payment link, or
+//   whose payload differs from the split of the row parks non-retryable; the
+//   exact error code is not asserted except for the amounts mismatch of the
+//   F4 ordering tests (POSTING_AMOUNTS_MISMATCH, as for POS).
+// - A QR pay-first order never has a final void row (pos_order_voids has an
+//   FK to pos_orders), so an order.voided of one parks non-retryable
+//   AUTO_JOURNAL_PAYLOAD_INVALID; the QR void is not supported (design).
+
+describe("F19 slice 3 QR sale and total-0 order.paid", () => {
+  const T_EARLY = "2026-10-15T05:00:00.000Z"; // before REFUND_DAY
+  const T_LATE = "2026-10-17T05:00:00.000Z"; // after REFUND_DAY
+  const AMOUNTS_MISMATCH = {
+    status: "parked",
+    code: "POSTING_AMOUNTS_MISMATCH",
+    retryable: false,
+  } as const;
+
+  type QrSale = {
+    subtotalIdr: number;
+    discountIdr?: number;
+    serviceChargeIdr?: number;
+    taxIdr?: number;
+    roundingIdr?: number;
+    pricesIncludeTax?: boolean;
+    depositIdr?: number;
+    tableSessionId?: string;
+    /** orders.fired_at; null = never fired. */
+    firedAt: string | null;
+    /** The intent pinned on the order (null = nothing left to pay). */
+    intentId?: string | null;
+    /** Whose payment link the order carries (default: the pinned intent's). */
+    linkOfIntentId?: string | null;
+    paymentMode?: "pay_first" | "open_bill";
+  };
+
+  function qrTotal(sale: QrSale): number {
+    const base = sale.subtotalIdr - (sale.discountIdr ?? 0);
+    return sale.pricesIncludeTax
+      ? base + (sale.roundingIdr ?? 0)
+      : base +
+          (sale.serviceChargeIdr ?? 0) +
+          (sale.taxIdr ?? 0) +
+          (sale.roundingIdr ?? 0);
+  }
+
+  /** The revenue split of the row, from the spec identities. */
+  function qrSplit(sale: QrSale) {
+    return {
+      grossSalesIdr: sale.pricesIncludeTax
+        ? sale.subtotalIdr - (sale.serviceChargeIdr ?? 0) - (sale.taxIdr ?? 0)
+        : sale.subtotalIdr,
+      discountIdr: sale.discountIdr ?? 0,
+      serviceChargeIdr: sale.serviceChargeIdr ?? 0,
+      pbjtIdr: sale.taxIdr ?? 0,
+      roundingIdr: sale.roundingIdr ?? 0,
+      totalIdr: qrTotal(sale),
+    };
+  }
+
+  async function linkOfIntent(world: World, intentId: string): Promise<string> {
+    return asTenant(world.tenant, async (client) => {
+      const { rows } = await client.query<{ payment_link_id: string }>(
+        "SELECT payment_link_id FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+        [world.tenant.id, intentId],
+      );
+      return rows[0]!.payment_link_id;
+    });
+  }
+
+  async function seedQrOrder(
+    world: World,
+    orderUlid: string,
+    sale: QrSale,
+  ): Promise<void> {
+    const linkId =
+      (sale.linkOfIntentId ?? sale.intentId) == null
+        ? null
+        : await linkOfIntent(world, (sale.linkOfIntentId ?? sale.intentId)!);
+    await asTenant(world.tenant, (client) =>
+      client.query(
+        `INSERT INTO orders
+           (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+            subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+            prices_include_tax, status, business_date, placed_at, fired_at,
+            deposit_applied_idr, table_session_id, payment_link_id, payment_link_token_sealed,
+            payment_intent_id)
+         VALUES ($1, $2, $3, $4, 'qr', 'takeaway', $5, $6, $7, $8, $9, $10, $11, $12,
+                 $13, '2026-10-15', now(), $14, $15, $16, $17, $18, $19)`,
+        [
+          ulidToUuid(orderUlid),
+          world.tenant.id,
+          world.outletId,
+          `QR-${short()}`,
+          sale.paymentMode ?? "pay_first",
+          sale.subtotalIdr,
+          sale.discountIdr ?? 0,
+          sale.serviceChargeIdr ?? 0,
+          sale.taxIdr ?? 0,
+          sale.roundingIdr ?? 0,
+          qrTotal(sale),
+          sale.pricesIncludeTax ?? false,
+          sale.firedAt === null ? "awaiting_payment" : "sent",
+          sale.firedAt,
+          sale.depositIdr ?? 0,
+          sale.tableSessionId ?? null,
+          linkId,
+          linkId === null ? null : "sealed",
+          sale.intentId ?? null,
+        ],
+      ),
+    );
+  }
+
+  /** The order.paid a fired QR order emits (design G1). */
+  function qrOrderPaid(
+    world: World,
+    orderUlid: string,
+    sale: QrSale,
+    override: Record<string, unknown> = {},
+  ): EventEnvelope {
+    const split = qrSplit(sale);
+    const depositIdr = sale.depositIdr ?? 0;
+    const dueIdr = split.totalIdr - depositIdr;
+    const paidAt = sale.firedAt ?? DAY;
+    return envelope(world, {
+      name: "order.paid",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      occurredAt: paidAt,
+      payload: {
+        orderId: orderUlid,
+        outletId: world.outletId,
+        businessDate: "2026-10-15",
+        channel: "qr",
+        serviceType: "takeaway",
+        ...split,
+        paidCashIdr: 0,
+        paidGatewayIdr: dueIdr,
+        paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        paidDepositIdr: depositIdr,
+        tenders: dueIdr > 0 ? [{ method: "qris", amountIdr: dueIdr }] : [],
+        shiftId: null,
+        cashierId: null,
+        deviceId: null,
+        paidAt,
+        ...override,
+      },
+    });
+  }
+
+  /** A paid gateway intent whose receipt is booked. */
+  async function bookedIntent(world: World, amountIdr: number) {
+    const intentId = await seedIntent(world, { amountIdr });
+    await post(world, paymentPaid(world, intentId, amountIdr));
+    return intentId;
+  }
+
+  async function parkedCountOfOutlet(world: World): Promise<number> {
+    return asTenant(world.tenant, async (client) => {
+      const { rows } = await client.query<{ n: string }>(
+        "SELECT count(*)::text AS n FROM auto_journal_parked WHERE tenant_id = $1 AND outlet_id = $2",
+        [world.tenant.id, world.outletId],
+      );
+      return Number(rows[0]!.n);
+    });
+  }
+
+  /** 100k + 10% PBJT, paid by one QRIS/VA intent. */
+  const gatewayQr = (intentId: string, firedAt: string = DAY): QrSale => ({
+    subtotalIdr: 100_000,
+    taxIdr: 10_000,
+    intentId,
+    firedAt,
+  });
+
+  // ---- G1/G2: the QR sale journal -------------------------------------------
+
+  it("AJ-QR-01 a QR sale paid by a gateway intent with a booked receipt debits customer_deposit and nets it to 0", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    const sale = gatewayQr(intentId);
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(110_000);
+    expect(await parkedCountOfOutlet(world)).toBe(0);
+  });
+
+  it("AJ-QR-02 a QR sale at exclusive prices books discount, service charge, PBJT and rounding from the order row", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 105_000);
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      subtotalIdr: 100_000,
+      discountIdr: 10_000,
+      serviceChargeIdr: 5_000,
+      taxIdr: 9_500,
+      roundingIdr: 500,
+      intentId,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 105_000, credit: 0 },
+      { role: "rounding", debit: 0, credit: 500 },
+      { role: "sales_discount", debit: 10_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "service_charge", debit: 0, credit: 5_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 9_500 },
+    ]);
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-QR-03 a QR sale at inclusive prices (harga nett) books gross sales as subtotal less service charge and tax", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      pricesIncludeTax: true,
+      subtotalIdr: 110_000,
+      serviceChargeIdr: 5_000,
+      taxIdr: 10_000,
+      intentId,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 95_000 },
+      { role: "service_charge", debit: 0, credit: 5_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-QR-04 a QR sale whose intent has no receipt (pre-cutover) debits gateway_clearing, not customer_deposit", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const orderUlid = createUlid();
+    const sale = gatewayQr(intentId);
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "gateway_clearing", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-QR-05 a QR sale whose receipt is still in the outbox parks AUTO_JOURNAL_RECEIPT_PENDING; after the receipt the sweep posts it via customer_deposit", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 110_000 });
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 110_000);
+    const orderUlid = createUlid();
+    const sale = gatewayQr(intentId);
+    await seedQrOrder(world, orderUlid, sale);
+
+    expect(await deliver(tenant, qrOrderPaid(world, orderUlid, sale))).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    await markDelivered(world, outboxId);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    const saleId = await journalIdOf(world, `aj:sale:${orderUlid}`);
+    expect(await linesOf(world, saleId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await parkedOf(tenant, `aj:sale:${orderUlid}`)).toHaveLength(0);
+  });
+
+  it("AJ-QR-06 a QR sale fully covered by the reservation DP (no tender, no intent) moves the money out of customer_deposit", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    expect(await balanceOf(world, "customer_deposit")).toBe(-110_000);
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      subtotalIdr: 100_000,
+      taxIdr: 10_000,
+      depositIdr: 110_000,
+      tableSessionId: sessionId,
+      intentId: null,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+    const event = qrOrderPaid(world, orderUlid, sale);
+    expect(event.payload).toMatchObject({
+      tenders: [],
+      paidGatewayIdr: 0,
+      paidDepositIdr: 110_000,
+    });
+
+    const result = await post(world, event);
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-QR-07 a QR sale paid by DP 60k plus a gateway intent 50k debits customer_deposit for both", async () => {
+    const world = await makeWorld();
+    const { sessionId, intentId: dpIntent } = await seedSeatedDeposit(
+      world,
+      60_000,
+    );
+    await post(world, paymentPaid(world, dpIntent, 60_000));
+    const gatewayIntent = await bookedIntent(world, 50_000);
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      subtotalIdr: 100_000,
+      taxIdr: 10_000,
+      depositIdr: 60_000,
+      tableSessionId: sessionId,
+      intentId: gatewayIntent,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 110_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 10_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-QR-08 a QR order.paid whose payload differs from the split of the order row parks non-retryable and posts nothing", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    const sale = gatewayQr(intentId);
+    await seedQrOrder(world, orderUlid, sale);
+
+    // Self-consistent payload, but 1k less gross sales than the row.
+    const result = await deliver(
+      world.tenant,
+      qrOrderPaid(world, orderUlid, sale, {
+        grossSalesIdr: 99_000,
+        totalIdr: 109_000,
+        paidGatewayIdr: 109_000,
+        tenders: [{ method: "qris", amountIdr: 109_000 }],
+      }),
+    );
+    expect(result).toMatchObject({ status: "parked", retryable: false });
+    expect(await journalCount(world)).toBe(1); // the receipt only
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toHaveLength(
+      1,
+    );
+  });
+
+  it("AJ-QR-09 a QR sale whose pinned intent is not paid on the order's payment link parks non-retryable and posts nothing", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const otherIntent = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    // Pinned to one intent, but the order's link belongs to another.
+    const sale: QrSale = {
+      ...gatewayQr(intentId),
+      linkOfIntentId: otherIntent,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await deliver(
+      world.tenant,
+      qrOrderPaid(world, orderUlid, sale),
+    );
+    expect(result).toMatchObject({ status: "parked", retryable: false });
+    expect(await journalCount(world)).toBe(2); // the two receipts only
+  });
+
+  it("AJ-QR-10 a QR sale with money due but no pinned intent parks non-retryable and posts nothing", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      subtotalIdr: 100_000,
+      taxIdr: 10_000,
+      intentId: null,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await deliver(
+      world.tenant,
+      qrOrderPaid(world, orderUlid, sale),
+    );
+    expect(result).toMatchObject({ status: "parked", retryable: false });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  for (const kind of ["never fired", "open bill"] as const) {
+    it(`AJ-QR-11 an order.paid of a QR order that is ${kind} is not a sale: parked non-retryable, nothing posted`, async () => {
+      const world = await makeWorld();
+      const intentId = await bookedIntent(world, 110_000);
+      const orderUlid = createUlid();
+      const sale: QrSale =
+        kind === "never fired"
+          ? { ...gatewayQr(intentId), firedAt: null }
+          : { ...gatewayQr(intentId), paymentMode: "open_bill" };
+      await seedQrOrder(world, orderUlid, sale);
+
+      const result = await deliver(
+        world.tenant,
+        qrOrderPaid(world, orderUlid, sale),
+      );
+      expect(result).toMatchObject({ status: "parked", retryable: false });
+      expect(await journalCount(world)).toBe(1); // the receipt only
+    });
+  }
+
+  // ---- G3: total-0 order.paid ----------------------------------------------
+
+  it("AJ-QR-12 an order.paid with total 0 and every amount 0 (POS) is ignored: no journal, nothing parked", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = { grossSalesIdr: 0, tenders: [] };
+    await seedPosOrder(world, orderUlid, sale);
+
+    expect(
+      await deliver(world.tenant, orderPaid(world, orderUlid, sale)),
+    ).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toHaveLength(
+      0,
+    );
+    expect(await parkedCountOfOutlet(world)).toBe(0);
+  });
+
+  it("AJ-QR-13 an order.paid with total 0 and every amount 0 (QR) is ignored: no journal, nothing parked", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: QrSale = { subtotalIdr: 0, intentId: null, firedAt: DAY };
+    await seedQrOrder(world, orderUlid, sale);
+    const event = qrOrderPaid(world, orderUlid, sale);
+    expect(event.payload).toMatchObject({ totalIdr: 0, tenders: [] });
+
+    expect(await deliver(world.tenant, event)).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+    expect(await parkedCountOfOutlet(world)).toBe(0);
+  });
+
+  it("AJ-QR-14 a full comp (gross 100k, discount 100k, total 0) still posts the discount against sales (POS)", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      discountIdr: 100_000,
+      tenders: [],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "sales_discount", debit: 100_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+    ]);
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-QR-15 a full comp (gross 100k, discount 100k, total 0) still posts the discount against sales (QR)", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: QrSale = {
+      subtotalIdr: 100_000,
+      discountIdr: 100_000,
+      intentId: null,
+      firedAt: DAY,
+    };
+    await seedQrOrder(world, orderUlid, sale);
+
+    const result = await post(world, qrOrderPaid(world, orderUlid, sale));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "sales_discount", debit: 100_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 100_000 },
+    ]);
+  });
+
+  // ---- G4: guards bound by the QR sale time (fired_at) ---------------------
+
+  type Order = "first-first" | "second-first";
+
+  async function deliverBoth(
+    tenant: Tenant,
+    order: Order,
+    first: EventEnvelope,
+    second: EventEnvelope,
+  ) {
+    const results = {} as {
+      first: AutoJournalResult;
+      second: AutoJournalResult;
+    };
+    if (order === "first-first") {
+      results.first = await deliver(tenant, first);
+      results.second = await deliver(tenant, second);
+    } else {
+      results.second = await deliver(tenant, second);
+      results.first = await deliver(tenant, first);
+    }
+    return results;
+  }
+
+  /**
+   * A 110k receipt backs one QR sale (`kind` gateway: the pinned intent paid it;
+   * `dp`: a seated reservation DP covered it) and a refund of the whole 110k
+   * completed at REFUND_DAY. "first" is the sale, "second" the refund.
+   */
+  async function deliverQrPair(
+    kind: "gateway" | "dp",
+    order: Order,
+    firedAt: string,
+  ) {
+    const world = await makeWorld();
+    let sale: QrSale;
+    let intentId: string;
+    if (kind === "gateway") {
+      intentId = await bookedIntent(world, 110_000);
+      sale = gatewayQr(intentId, firedAt);
+    } else {
+      const seated = await seedSeatedDeposit(world, 110_000);
+      intentId = seated.intentId;
+      await post(world, paymentPaid(world, intentId, 110_000));
+      sale = {
+        subtotalIdr: 100_000,
+        taxIdr: 10_000,
+        depositIdr: 110_000,
+        tableSessionId: seated.sessionId,
+        intentId: null,
+        firedAt,
+      };
+    }
+    const orderUlid = createUlid();
+    await seedQrOrder(world, orderUlid, sale);
+    const refundId = await seedRefund(world, intentId, 110_000);
+    const { first, second } = await deliverBoth(
+      world.tenant,
+      order,
+      qrOrderPaid(world, orderUlid, sale),
+      paymentRefunded(world, refundId, intentId, 110_000),
+    );
+    return { world, sale: first, refund: second };
+  }
+
+  for (const kind of ["gateway", "dp"] as const)
+    for (const order of ["first-first", "second-first"] as const) {
+      const label = `${kind}, ${order === "first-first" ? "sale first" : "refund first"}`;
+
+      it(`AJ-QR-16 (${label}) a QR sale fired before the refund posts; only the later refund parks`, async () => {
+        const { world, sale, refund } = await deliverQrPair(
+          kind,
+          order,
+          T_EARLY,
+        );
+        expect(sale).toMatchObject({ status: "posted" });
+        expect(refund).toEqual(AMOUNTS_MISMATCH);
+        // receipt + sale only
+        expect(await journalCount(world)).toBe(2);
+        expect(await balanceOf(world, "customer_deposit")).toBe(0);
+      });
+
+      // A sale fired after a refund of its intent is guarded for the DP kind
+      // here; the gateway kind is covered by AJ-QR-22 (sale-side receipt
+      // guard on a "posted" receipt).
+      if (kind === "dp")
+        it(`AJ-QR-17 (${label}) a QR sale fired after the refund parks; the refund posts`, async () => {
+          const { world, sale, refund } = await deliverQrPair(
+            kind,
+            order,
+            T_LATE,
+          );
+          expect(refund).toMatchObject({ status: "posted" });
+          expect(sale).toEqual(AMOUNTS_MISMATCH);
+          // receipt + refund only
+          expect(await journalCount(world)).toBe(2);
+          expect(await balanceOf(world, "customer_deposit")).toBe(0);
+        });
+
+      it(`AJ-QR-18 (${label}) a QR sale fired at the same instant as the refund counts as earlier: it posts, the refund parks`, async () => {
+        const { world, sale, refund } = await deliverQrPair(
+          kind,
+          order,
+          REFUND_DAY,
+        );
+        expect(sale).toMatchObject({ status: "posted" });
+        expect(refund).toEqual(AMOUNTS_MISMATCH);
+        expect(await journalCount(world)).toBe(2);
+        expect(await balanceOf(world, "customer_deposit")).toBe(0);
+      });
+    }
+
+  it("AJ-QR-19 a QR order that is not a pay-first sale (open bill) does not use up the receipt: the refund of the intent posts", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    await seedQrOrder(world, orderUlid, {
+      ...gatewayQr(intentId, T_EARLY),
+      paymentMode: "open_bill",
+    });
+    const refundId = await seedRefund(world, intentId, 110_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 110_000),
+      ),
+    ).toMatchObject({ status: "posted" });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-QR-20 a QR order that never fired does not use up the receipt: the refund of the intent posts", async () => {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 110_000);
+    const orderUlid = createUlid();
+    await seedQrOrder(world, orderUlid, {
+      ...gatewayQr(intentId),
+      firedAt: null,
+    });
+    const refundId = await seedRefund(world, intentId, 110_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 110_000),
+      ),
+    ).toMatchObject({ status: "posted" });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  // ---- G4: a gateway QR sale never spends more than its receipt left -----
+
+  /**
+   * A 100k gateway intent with a booked receipt, one QR sale pinned to it
+   * (no tax, so total = subtotal = `saleIdr`) and a completed refund of
+   * `refundIdr` at REFUND_DAY. "first" is the sale, "second" the refund.
+   */
+  async function deliverGatewaySaleAndRefund(
+    order: Order,
+    firedAt: string,
+    saleIdr: number,
+    refundIdr: number,
+  ) {
+    const world = await makeWorld();
+    const intentId = await bookedIntent(world, 100_000);
+    const sale: QrSale = { subtotalIdr: saleIdr, intentId, firedAt };
+    const orderUlid = createUlid();
+    await seedQrOrder(world, orderUlid, sale);
+    const refundId = await seedRefund(world, intentId, refundIdr);
+    const { first, second } = await deliverBoth(
+      world.tenant,
+      order,
+      qrOrderPaid(world, orderUlid, sale),
+      paymentRefunded(world, refundId, intentId, refundIdr),
+    );
+    return { world, orderUlid, sale: first, refund: second };
+  }
+
+  for (const order of ["first-first", "second-first"] as const) {
+    const label = order === "first-first" ? "sale first" : "refund first";
+
+    it(`AJ-QR-22 (${label}) a gateway QR sale fired after a full refund of its intent parks POSTING_AMOUNTS_MISMATCH and is not retried; the refund posts and customer_deposit never goes negative`, async () => {
+      const { world, orderUlid, sale, refund } =
+        await deliverGatewaySaleAndRefund(order, T_LATE, 100_000, 100_000);
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toEqual(AMOUNTS_MISMATCH);
+      expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toEqual([
+        expect.objectContaining({
+          error_code: "POSTING_AMOUNTS_MISMATCH",
+          retryable: false,
+        }),
+      ]);
+      // receipt + refund only
+      expect(await journalCount(world)).toBe(2);
+      // customer_deposit is a liability: a positive debit-credit balance
+      // would mean the deposit was spent twice.
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-QR-22 (${label}) a gateway QR sale fired at the same instant as the full refund counts as earlier: the sale posts, the refund parks`, async () => {
+      const { world, sale, refund } = await deliverGatewaySaleAndRefund(
+        order,
+        REFUND_DAY,
+        100_000,
+        100_000,
+      );
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(refund).toEqual(AMOUNTS_MISMATCH);
+      // receipt + sale only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-QR-23 (${label}) after a 40k partial refund of a 100k intent, a 100k gateway QR sale parks POSTING_AMOUNTS_MISMATCH`, async () => {
+      const { world, sale, refund } = await deliverGatewaySaleAndRefund(
+        order,
+        T_LATE,
+        100_000,
+        40_000,
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toEqual(AMOUNTS_MISMATCH);
+      // receipt + refund only: 60k of the deposit is left, none was spent
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(-60_000);
+    });
+
+    // Assumption: a sale below the intent amount can be pinned to that intent
+    // (the order carries the payment link of the intent and its total is
+    // within the intent amount).
+    it(`AJ-QR-23 (${label}) after a 40k partial refund of a 100k intent, a 60k gateway QR sale pinned to it posts and the deposit nets to 0`, async () => {
+      const { world, sale, refund } = await deliverGatewaySaleAndRefund(
+        order,
+        T_LATE,
+        60_000,
+        40_000,
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(await journalCount(world)).toBe(3);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+  }
+
+  it("AJ-QR-24 a QR sale whose pinned intent amount is below total minus the reservation DP parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID and posts nothing", async () => {
+    const world = await makeWorld();
+    // Total 110k, nothing from a DP, but the pinned intent only paid 50k.
+    const intentId = await bookedIntent(world, 50_000);
+    const orderUlid = createUlid();
+    const sale = gatewayQr(intentId);
+    await seedQrOrder(world, orderUlid, sale);
+
+    expect(
+      await deliver(world.tenant, qrOrderPaid(world, orderUlid, sale)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1); // the receipt only
+    expect(await parkedOf(world.tenant, `aj:sale:${orderUlid}`)).toHaveLength(
+      1,
+    );
+  });
+
+  // ---- G4: void ------------------------------------------------------------
+
+  function qrVoided(
+    world: World,
+    orderUlid: string,
+    amountIdr: number,
+  ): EventEnvelope {
+    return envelope(world, {
+      name: "order.voided",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      occurredAt: REFUND_DAY,
+      payload: {
+        orderId: orderUlid,
+        outletId: world.outletId,
+        businessDate: "2026-10-15",
+        amountIdr,
+        reason: "wrong_order",
+        reasonNote: "Pesanan salah",
+        approvedBy: randomUUID(),
+        overrideId: null,
+        approvalRequestId: null,
+        voidedFinalOrder: true,
+        voidId: randomUUID(),
+        receiptNumber: "AJ-0001",
+        voidedAt: REFUND_DAY,
+      },
+    });
+  }
+
+  it("AJ-QR-21 an order.voided (voidedFinalOrder true) of a QR pay-first order whose voidId has no void row parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID and posts nothing", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    // A QR pay-first order never has a pos_order_voids row (no pos_orders row).
+    await seedQrOrder(world, orderUlid, {
+      subtotalIdr: 100_000,
+      taxIdr: 10_000,
+      intentId: null,
+      depositIdr: 0,
+      firedAt: DAY,
+    });
+
+    expect(
+      await deliver(world.tenant, qrVoided(world, orderUlid, 110_000)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+  });
+});

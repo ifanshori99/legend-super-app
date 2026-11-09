@@ -43,6 +43,24 @@ the sale parks retryable `AUTO_JOURNAL_RECEIPT_PENDING` and the sweep posts it l
 gateway_clearing, so the money is booked once). The outbox is read before the journal, so a
 receipt committing between the reads is seen as pending, never as none.
 
+Revenue split (`orderRevenueSplit`, `apps/api/src/services/order-revenue.ts`): POS and QR `order.paid`
+take their amounts from the order row. `pricesIncludeTax` picks the identity. Exclusive:
+subtotal - discount + service charge + tax + rounding = total, gross = subtotal. Inclusive:
+subtotal - discount + rounding = total, gross = subtotal - service charge - tax. If the identity
+fails the split throws `OrderRevenueMismatch` (fail closed). Output: gross sales, discount,
+service charge, PBJT, rounding, total.
+
+QR sale: a QR order paid first has no `pos_orders` row. It is a sale when `orders.channel = 'qr'`,
+`payment_mode = 'pay_first'` and `fired_at` is set. `fireQrOrder` appends `order.paid` (channel `qr`)
+in the same transaction that sets `fired_at`, only for reasons `verified_payment` and `deposit`.
+Tender is `total - DP` on the intent that paid (pinned in `orders.payment_intent_id`); nothing left
+to pay means no tenders and `paidGatewayIdr` 0. Sale time = `fired_at`.
+
+Total-0 orders (fbms, design A): `order.paid` is emitted for total 0 too (tenders may be empty, `totalIdr`
+is non-negative), so recipe deduction runs once per order. The auto-journal consumer ignores an
+`order.paid` whose every amount is 0: no journal, no park. A full comp (gross 100, discount 100)
+still posts the discount/sales pair.
+
 Why one role, not a separate "unapplied receipts" role: the CTO decision authorised exactly one
 liability role. A split can come later by mapping, without rule churn in consumers.
 
@@ -194,6 +212,7 @@ UNIQUE (tenant_id, idempotency_key); INDEX (tenant_id, next_retry_at).
   `AUTO_JOURNAL_SALE_MISSING` (void whose sale journal will never post), `AUTO_JOURNAL_VOID_UNSUPPORTED`
   (void of a sale with gateway, EDC, points or deposit money; finance corrects). Deterministic,
   so retrying the outbox would only block cloud-sync until dead letter.
+- Ignored, not parked: `order.paid` with every amount 0 (consumer returns null, section 1).
 - Non-`AccountingError` (DB, transient): propagate; outbox retry as today.
 - Success after parking deletes the row. Sweep `retryParkedAutoJournals(context, now)`: batch 100,
   rebuilds from the stored payload (no outbox replay needed), recomputes the date (section 5).
@@ -221,13 +240,13 @@ B. Hand-written: RLS for `auto_journal_parked`, then per legal entity:
 
 ## 8. Slice order
 
-| Slice | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Gate                                                                                            |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1     | Roles, rules, source type, late-adjustment, parking, backfill, consumer for order.paid (POS), order.refunded, payment.paid, payment.refunded; wiring patch                                                                                                                                                                                                                                                                                                                                                      | now                                                                                             |
-| 2     | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, no DP leg on order.refunded (verified); forfeit handler; `cashier_shift.closed` handler                                                                                                                                                                                                                                                                                                                   | after 1                                                                                         |
-| 3     | kej3: emit `order.paid` from QR fire path (`qr-order-consumers.ts` ~:341), gateway intent tender, paidAt = intent.paidAt, paidDepositIdr = depositApplied; shared `order-revenue.ts` `orderRevenueSplit()` (exclusive if subtotal - discount + svc + tax + rounding = total, gross = subtotal; inclusive if subtotal - discount + rounding = total, gross = subtotal - svc - tax; else fail closed). fbms design A: schema nonnegative, drop `if (order.totalIdr > 0)` (:1220), consumer skips all-zero amounts | after batch3 + batch4 are in m1 (inclusive QR, recipe deduction, qr-order-consumers +167 lines) |
-| 4     | Settlement + MDR: **done in code** (payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events). Business date = `settledOn`. No backing guard: over-settlement is a reconciliation case, not a park. Emitters pending: legend-3a5m, legend-jlqi, legend-cs7 (settlement import ledger, `payment-admin-reconciliation.service.ts:144`)                                                                                                             | after 1                                                                                         |
-| 5     | Cash deposit: `accounting-cash-deposit.service.ts` posting document `cash_deposit` + emitting `cash_deposit.recorded`; route registration through a second wiring patch                                                                                                                                                                                                                                                                                                                                         | after 1                                                                                         |
+| Slice | Content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Gate                                                                                            |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 1     | Roles, rules, source type, late-adjustment, parking, backfill, consumer for order.paid (POS), order.refunded, payment.paid, payment.refunded; wiring patch                                                                                                                                                                                                                                                                                                                                                                                                           | now                                                                                             |
+| 2     | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, no DP leg on order.refunded (verified); forfeit handler; `cashier_shift.closed` handler                                                                                                                                                                                                                                                                                                                                                                        | after 1                                                                                         |
+| 3     | Done in code (ws/aj-qr-sale). kej3: emit `order.paid` from QR fire path (`fireQrOrder`, `qr-order-paid.ts`), gateway intent tender, paidAt = `orders.fired_at` (same instant), paidDepositIdr = depositApplied; shared `order-revenue.ts` `orderRevenueSplit()` (exclusive if subtotal - discount + svc + tax + rounding = total, gross = subtotal; inclusive if subtotal - discount + rounding = total, gross = subtotal - svc - tax; else fail closed). fbms design A: schema nonnegative, drop `if (order.totalIdr > 0)` (:1220), consumer skips all-zero amounts | after batch3 + batch4 are in m1 (inclusive QR, recipe deduction, qr-order-consumers +167 lines) |
+| 4     | Settlement + MDR: **done in code** (payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events). Business date = `settledOn`. No backing guard: over-settlement is a reconciliation case, not a park. Emitters pending: legend-3a5m, legend-jlqi, legend-cs7 (settlement import ledger, `payment-admin-reconciliation.service.ts:144`)                                                                                                                                                                  | after 1                                                                                         |
+| 5     | Cash deposit: `accounting-cash-deposit.service.ts` posting document `cash_deposit` + emitting `cash_deposit.recorded`; route registration through a second wiring patch                                                                                                                                                                                                                                                                                                                                                                                              | after 1                                                                                         |
 
 Slice 4 emitters must follow the emitter contract in section 4: one emitter per payout, EDC only
 via `edc_transaction.settled`, one event per outlet, id unique per tenant and bank line, emit once
@@ -307,6 +326,16 @@ Rule for every fix: the same historical facts give the same result regardless of
 - Read only rows final at that time: completed refunds, completed orders, closed reservations. Never read current status without a time bound.
 - Bound times are read in SQL from the fact's own row, never through a JS `Date`: `Date` keeps milliseconds, `timestamptz` microseconds, so a round-tripped bound can drop the fact's own row.
 
+### QR sale time (slice 3, closes U3)
+
+- Sale time, read in SQL only (microsecond safe): `saleAt(o)` = `pos_orders.completed_at` when a `pos_orders` row exists, else `o.fired_at` when `o.channel = 'qr'` and `o.payment_mode = 'pay_first'`, else null.
+- Sale bound S = (`saleAt`, `orders.id`). Orders with null `saleAt` (open bills, non `pay_first`) are not sales and are excluded. A null `saleAt` on the sale being checked -> `AUTO_JOURNAL_PAYLOAD_INVALID`.
+- DP applied (sale with DP) reads orders through `saleAt`, so QR sales count.
+- Payout, intent backing: besides POS tenders, add `sum(total - deposit_applied)` over QR sales with `payment_intent_id` = the refunded intent and `saleAt` bound <= B (tie: sale earlier).
+- QR `order.paid` (no `pos_orders` row): `fired_at` must be set and the payload must equal the split of the order row. `paidGatewayIdr` = `total - DP`; when > 0 the pinned intent must be paid on the order's payment link. Receipt state of that intent: posted -> book `paidGatewayIntentIdr`; none -> `paidGatewayIdr` (pre-cutover); pending -> park retryable. DP follows the existing deposit receipt path.
+- Void: no change. The correction void refuses a total-0 sale (`pos-order-corrections.ts`) and its row needs a `pos_orders` row, so neither a total-0 sale nor a QR pay-first sale reaches a final void; such an event parks `AUTO_JOURNAL_PAYLOAD_INVALID` on the void row check.
+- Sale-side balance check (review K slice 3): a QR gateway sale of intent I runs `assertSaleWithinReceipt` at bound S: captured POS tenders, QR sales, forfeits and payouts backed by I up to S (tie: the sale is earlier) may not exceed I's posted receipt credit, else `POSTING_AMOUNTS_MISMATCH`. So a refund of I completed before the fire posts and the sale parks, in any delivery order. The pinned intent's amount must cover `total - DP`. Still open: POS intent tenders have no sale-side check (existing behaviour, follow-up), and a row that commits late with an earlier timestamp (U4).
+
 ### Backing receipt
 
 - Intent backing: `aj:receipt:<intentId>` (outbox `payment.paid`).
@@ -347,7 +376,7 @@ Rule for every fix: the same historical facts give the same result regardless of
 
 - U1: `refundableBalance` subtracts forfeited DP; refund of forfeited DP returns 409 `REFUND_DEPOSIT_FORFEITED`. Removes F3 at source.
 - U2: correction void must refuse, or return gateway, EDC and points tenders. Today it returns only cash.
-- U3: QR orders have no `pos_orders` row, so no completion time. Before slice 3 they need one, else the sale bound S cannot be set and their DP/tenders are not counted by the guards.
+- U3 (closed in slice 3, see "QR sale time" above): QR orders have no `pos_orders` row, so no completion time. Their sale time is now `orders.fired_at`.
 - U4: commit order vs time order. `payment_refunds.completed_at`, `pos_orders.completed_at` and
   `reservations.closed_at` are each the writer's `now` before commit, and refund completion, DP or
   gateway-tender sale completion and forfeit close share no lock. A sale stamped T1 that commits after a

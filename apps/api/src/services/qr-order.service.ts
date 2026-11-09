@@ -136,6 +136,7 @@ import {
   qrOrderPromoPort,
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
+import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import {
   buildQuote,
   loadCatalogue,
@@ -1396,11 +1397,26 @@ export async function fireQrOrder(
   tx: Tx,
   context: ScopedTenantContext,
   order: OrderRow,
-  input: { now: Date; reason: "open_bill" | "verified_payment" | "deposit" },
+  input: {
+    now: Date;
+    reason: "open_bill" | "verified_payment" | "deposit";
+    /**
+     * legend-9pz9: the intent whose payment fired the order. Pinned on the
+     * row, since a superseded payment code may have paid instead of the
+     * current one. Null (or absent) when nothing was left to pay.
+     */
+    paidIntentId?: string | null;
+  },
 ): Promise<OrderRow> {
+  const paidIntentId = input.paidIntentId ?? null;
   const [fired] = await tx
     .update(orders)
-    .set({ status: "sent", firedAt: input.now, updatedAt: input.now })
+    .set({
+      status: "sent",
+      firedAt: input.now,
+      updatedAt: input.now,
+      ...(paidIntentId === null ? {} : { paymentIntentId: paidIntentId }),
+    })
     .where(
       and(
         eq(orders.tenantId, context.tenant.tenantId),
@@ -1439,6 +1455,13 @@ export async function fireQrOrder(
     });
   if (order.tableSessionId === null)
     throw new Error("A QR order always belongs to a table session");
+  // A pay-first sale is made here, with its money verified: WS-07 books it
+  // from order.paid at `fired_at` (legend-9pz9). An open bill is paid later.
+  if (input.reason === "verified_payment" || input.reason === "deposit")
+    await appendQrOrderPaid(tx, context, fired, {
+      now: input.now,
+      paidIntentId,
+    });
   await appendEvent(tx, context, qrOrderEvents["order.placed"], {
     aggregateId: order.id,
     outletId: order.outletId,
@@ -1911,6 +1934,7 @@ async function checkout(
     finalOrder = await fireQrOrder(tx, context, order, {
       now,
       reason: "deposit",
+      paidIntentId: null,
     });
     kitchenFire = "fired";
   }

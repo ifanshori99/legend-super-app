@@ -35,6 +35,12 @@
 // order.voided is only stored and keyed here; the consumer rebuilds its fact
 // in accounting-auto-journal-void.ts.
 //
+// Slice 3 (legend-9pz9, legend-kej3, legend-fbms): a QR pay-first order (no
+// pos_orders row) emits order.paid when it fires. It has no tenders: what
+// is left after the DP (total - DP) was paid by the intent pinned on
+// orders.payment_intent_id, receipt-first like a POS gateway tender. An
+// order.paid with every amount 0 books nothing (null).
+//
 // A payload, row or method that can never post as sent throws
 // AutoJournalPayloadInvalid (or a ZodError): the consumer parks it as
 // non-retryable AUTO_JOURNAL_PAYLOAD_INVALID instead of failing the outbox
@@ -55,6 +61,7 @@ import {
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
+  posOrders,
   posOrderTenders,
   posShifts,
   reservations,
@@ -62,6 +69,7 @@ import {
 import {
   assertForfeitWithinIntent,
   assertPayoutWithinReceipt,
+  assertSaleWithinReceipt,
   backingKeyOf,
   backingStateOf,
   backingStatesOf,
@@ -71,6 +79,7 @@ import {
   sessionDepositAt,
 } from "./accounting-auto-journal-guards.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -514,6 +523,126 @@ async function orderDepositReceiptOf(
   return depositReceiptOf(tx, tenantId, intentIds);
 }
 
+type OrderPaid = z.infer<typeof orderPaidSchema>;
+
+/**
+ * Gateway amount of a QR sale (an order.paid whose order has no pos_orders
+ * row and channel qr), as { gatewayIdr, withReceipt } like the POS tender
+ * loop, or null when the order is not a QR order (the tender path applies):
+ * - the order is a fired QR pay-first order of the event outlet;
+ * - the payload carries exactly the revenue split of the order row, no cash,
+ *   EDC or points, and paidGatewayIdr = total - DP;
+ * - money left after the DP was paid by the pinned intent: one that took
+ *   money through the order's payment link; its receipt state decides (posted:
+ *   out of customer_deposit; none: pre-cutover gateway money; pending: wait).
+ */
+async function qrSaleGatewayOf(
+  tx: Tx,
+  tenantId: TenantId,
+  p: OrderPaid,
+): Promise<{ gatewayIdr: number; withReceipt: number } | null> {
+  const [order] = await tx
+    .select({
+      outletId: orders.outletId,
+      channel: orders.channel,
+      paymentMode: orders.paymentMode,
+      firedAt: orders.firedAt,
+      subtotalIdr: orders.subtotalIdr,
+      discountIdr: orders.discountIdr,
+      serviceChargeIdr: orders.serviceChargeIdr,
+      taxIdr: orders.taxIdr,
+      roundingIdr: orders.roundingIdr,
+      totalIdr: orders.totalIdr,
+      pricesIncludeTax: orders.pricesIncludeTax,
+      depositAppliedIdr: orders.depositAppliedIdr,
+      paymentLinkId: orders.paymentLinkId,
+      paymentIntentId: orders.paymentIntentId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, p.orderId)));
+  if (!order || order.channel !== "qr") return null;
+  if (
+    order.paymentMode !== "pay_first" ||
+    order.firedAt === null ||
+    order.outletId !== p.outletId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "QR sale order is not a fired pay-first order of the outlet",
+    );
+  let split: ReturnType<typeof orderRevenueSplit>;
+  try {
+    split = orderRevenueSplit({
+      subtotalIdr: Number(order.subtotalIdr),
+      discountIdr: Number(order.discountIdr),
+      serviceChargeIdr: Number(order.serviceChargeIdr),
+      taxIdr: Number(order.taxIdr),
+      roundingIdr: Number(order.roundingIdr),
+      totalIdr: Number(order.totalIdr),
+      pricesIncludeTax: order.pricesIncludeTax,
+    });
+  } catch (error) {
+    if (error instanceof OrderRevenueMismatch)
+      throw new AutoJournalPayloadInvalid(error.message);
+    throw error;
+  }
+  const gatewayIdr = split.totalIdr - Number(order.depositAppliedIdr);
+  if (
+    p.grossSalesIdr !== split.grossSalesIdr ||
+    p.discountIdr !== split.discountIdr ||
+    p.serviceChargeIdr !== split.serviceChargeIdr ||
+    p.pbjtIdr !== split.pbjtIdr ||
+    p.roundingIdr !== split.roundingIdr ||
+    p.paidCashIdr !== 0 ||
+    p.paidEdcIdr !== 0 ||
+    p.paidPointsIdr !== 0 ||
+    p.paidGatewayIdr !== gatewayIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "QR sale payload does not match the order row",
+    );
+  if (gatewayIdr === 0) return { gatewayIdr, withReceipt: 0 };
+  const intentId = order.paymentIntentId;
+  if (intentId === null || order.paymentLinkId === null)
+    throw new AutoJournalPayloadInvalid(
+      "QR sale with money to pay has no pinned payment intent",
+    );
+  const [intent] = await tx
+    .select({ id: paymentIntents.id, amountIdr: paymentIntents.amountIdr })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+        eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+        // Took money (a status that never reverts: a later refund keeps it).
+        inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
+      ),
+    );
+  if (!intent)
+    throw new AutoJournalPayloadInvalid(
+      "Pinned payment intent of the QR sale is not paid on its payment link",
+    );
+  if (Number(intent.amountIdr) < gatewayIdr)
+    throw new AutoJournalPayloadInvalid(
+      "Pinned payment intent of the QR sale took less than total - DP",
+    );
+  const state = (await receiptStatesOf(tx, tenantId, [intentId])).get(intentId);
+  if (state === "pending")
+    throw new AutoJournalReceiptPending(
+      "Gateway receipt of the QR sale is not booked yet",
+    );
+  // A refund of the intent final before the sale may have taken it back.
+  if (state === "posted")
+    await assertSaleWithinReceipt(
+      tx,
+      tenantId,
+      intentId,
+      await saleBoundOf(tx, tenantId, p.orderId),
+    );
+  return { gatewayIdr, withReceipt: state === "posted" ? gatewayIdr : 0 };
+}
+
 /** EDC-linked intents post through edc_clearing, never as gateway receipts. */
 async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
   const [intent] = await tx
@@ -538,8 +667,9 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
 /**
  * Rule input of one stored event, or null when the event books nothing
  * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
- * shift difference). Re-reads only rows that are final once
- * the event exists (captured tenders, the intent, the completed refund).
+ * shift difference, order.paid with every amount 0). Re-reads only rows that
+ * are final once the event exists (captured tenders, the intent, the
+ * completed refund, a fired order).
  */
 export async function autoJournalFactOf(
   tx: Tx,
@@ -549,21 +679,53 @@ export async function autoJournalFactOf(
   switch (stored.eventName) {
     case "order.paid": {
       const p = orderPaidSchema.parse(stored.payload);
-      const tenders = await tx
-        .select({
-          method: posOrderTenders.method,
-          amountIdr: posOrderTenders.amountIdr,
-          paymentIntentId: posOrderTenders.paymentIntentId,
-        })
-        .from(posOrderTenders)
+      // legend-fbms: a total-0 order.paid is emitted for recipe deduction; it
+      // books nothing unless it carries a revenue pair (a full comp still
+      // posts gross sales against the discount).
+      if (
+        [
+          p.grossSalesIdr,
+          p.discountIdr,
+          p.serviceChargeIdr,
+          p.pbjtIdr,
+          p.roundingIdr,
+          p.paidCashIdr,
+          p.paidGatewayIdr,
+          p.paidEdcIdr,
+          p.paidPointsIdr,
+          p.paidDepositIdr,
+        ].every((amount) => amount === 0)
+      )
+        return null;
+      const [posOrder] = await tx
+        .select({ orderId: posOrders.orderId })
+        .from(posOrders)
         .where(
           and(
-            eq(posOrderTenders.tenantId, tenantId),
-            eq(posOrderTenders.orderId, p.orderId),
-            eq(posOrderTenders.status, "captured"),
+            eq(posOrders.tenantId, tenantId),
+            eq(posOrders.orderId, p.orderId),
           ),
         );
-      let gatewayIdr = 0;
+      // QR pay-first sale: no pos_orders row, channel qr, no tenders.
+      const qrSale =
+        posOrder === undefined ? await qrSaleGatewayOf(tx, tenantId, p) : null;
+      const tenders = qrSale
+        ? []
+        : await tx
+            .select({
+              method: posOrderTenders.method,
+              amountIdr: posOrderTenders.amountIdr,
+              paymentIntentId: posOrderTenders.paymentIntentId,
+            })
+            .from(posOrderTenders)
+            .where(
+              and(
+                eq(posOrderTenders.tenantId, tenantId),
+                eq(posOrderTenders.orderId, p.orderId),
+                eq(posOrderTenders.status, "captured"),
+              ),
+            );
+      let gatewayIdr = qrSale?.gatewayIdr ?? 0;
       const intentTenders: { intentId: string; amountIdr: number }[] = [];
       for (const tender of tenders) {
         let bucket: ReturnType<typeof tenderBucket>;
@@ -592,7 +754,7 @@ export async function autoJournalFactOf(
         tenantId,
         intentTenders.map((tender) => tender.intentId),
       );
-      let withReceipt = 0;
+      let withReceipt = qrSale?.withReceipt ?? 0;
       for (const tender of intentTenders) {
         const state = states.get(tender.intentId);
         if (state === "pending")

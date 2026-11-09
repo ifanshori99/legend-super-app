@@ -6,6 +6,10 @@
 // (pos-order-corrections.ts), so only an all-cash sale without DP is
 // reversible here; any other sale parks for finance. An open-order void
 // (voidedFinalOrder false) never had a sale journal: ignored.
+// The correction void refuses a total-0 sale (pos-order-corrections.ts) and
+// its row needs a pos_orders row, so a total-0 sale (legend-fbms) or a QR
+// pay-first sale never reaches here with a real void row: such an event
+// parks as invalid on the void row check below.
 //
 // The sale journal is a fact that may not exist yet (delivery order, receipt
 // pending) or never will (never journaled): the void waits retryably in the

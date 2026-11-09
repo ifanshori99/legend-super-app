@@ -597,3 +597,14 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Cek CTO 84218ab4: (1) aggregateType `order.paid` = `order` (catalog `name.split(".")[0]`, `appendPosEvent` pakai `entry.aggregateType`), cocok dengan guard sale; (2) `auditAccountingChange` menerima `actorId: null` (actorType system).
 - Bukti: gate 33 file 489 lulus 1 skip (sebelum perbaikan review); ulang 10 file accounting setelah perbaikan 217 lulus 1 skip (auto-journal 104/104); kontrak node 137 lulus; tsc shared/api/web, eslint, prettier bersih.
 - Emitter tetap milik legend-3a5m, legend-jlqi, legend-cs7.
+
+### Slice 3: penjualan QR, pembagian pendapatan, fbms, U3 (cabang `ws/aj-qr-sale`, 2026-11-09)
+
+- Cabang dari `milestone/m1` a8c90378, gabung `ws/aj-settlement` (7822d66e). Slice 1/2 sudah di m1 (migrasi sudah dinomori ulang di sana), jadi tidak ada migrasi baru. Konflik hanya dari commit prettier m1; sisi `ws/aj-settlement` diambil.
+- kej3: pesanan QR pay-first memancarkan `order.paid` dari `fireQrOrder` (satu-satunya titik yang menandai pesanan QR lunas), lewat `qr-order-paid.ts`; intent yang benar-benar membayar dipin ke `orders.payment_intent_id`; sekali per pesanan (baris pesanan dikunci `FOR UPDATE`, fire hanya dari `awaiting_payment`).
+- `orderRevenueSplit()` bersama (`order-revenue.ts`): identitas eksklusif/inklusif menurut `pricesIncludeTax`, selain itu gagal tertutup; POS dan QR memakainya.
+- fbms desain A: `order.paid` total 0 boleh, tender boleh kosong, guard `totalIdr > 0` dibuang; consumer mengabaikan `order.paid` yang semua jumlahnya 0; potong resep berjalan sekali untuk total 0 dan untuk QR.
+- U3: waktu penjualan dibaca di SQL = `pos_orders.completed_at`, atau `orders.fired_at` untuk QR pay-first; semua guard (bound, DP sesi, payout) menghitung penjualan QR.
+- Review K: reviewer (4 risiko terbuka, semua dicek tidak nyata) dan architect (1 cacat nyata: refund intent sebelum fire lalu penjualan QR mendebit `customer_deposit` dua kali). Dibetulkan: `assertSaleWithinReceipt` di sisi penjualan QR, nominal intent wajib menutup total minus DP. Void tetap: cek baris void dulu (koreksi menolak total 0, baris void butuh `pos_orders`).
+- Sisa: penjualan POS dengan tender intent belum punya cek sisi penjualan yang sama (perilaku lama, usulan kartu); U4 tetap.
+- Bukti: gate 43 file 658 lulus 1 skip; kontrak node 228 lulus; tsc shared/api/web bersih; ulang 23 file (accounting, qr-order, pos-order, recipe-pos-hpp, order-revenue) setelah perbaikan F1 374 lulus 1 skip; eslint dan prettier bersih.

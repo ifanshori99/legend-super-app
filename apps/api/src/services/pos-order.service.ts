@@ -59,7 +59,7 @@ import {
   type PosOrderEvent,
   type PosOrderSummary,
 } from "@starter/shared/pos";
-import { orderNetSubtotalIdr, resolveTaxSettings } from "@starter/shared/tax";
+import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { devices, tableSessions } from "../db/schema/index.ts";
 import {
@@ -127,6 +127,7 @@ import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
+import { orderRevenueSplit } from "./order-revenue.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
 type SubmitInput = z.output<typeof submitEndpoint.body>;
@@ -1195,14 +1196,10 @@ export async function completePosOrder(
         businessDate: order.businessDate,
         channel: order.channel,
         serviceType: order.serviceType,
-        // legend-zmc2: gross sales exclude the service charge and tax an
-        // inclusive order's subtotal already contains.
-        grossSalesIdr: orderNetSubtotalIdr(order),
-        discountIdr: order.discountIdr,
-        serviceChargeIdr: order.serviceChargeIdr,
-        pbjtIdr: order.taxIdr,
-        roundingIdr: order.roundingIdr,
-        totalIdr: order.totalIdr,
+        // legend-kej3: the split checks the row's tax-mode identity (fails
+        // closed); gross sales exclude the service charge and tax an
+        // inclusive order's subtotal already contains (legend-zmc2).
+        ...orderRevenueSplit(order),
         paidCashIdr: bucket("cash"),
         paidGatewayIdr: bucket("gateway"),
         paidEdcIdr: bucket("edc"),
@@ -1218,18 +1215,18 @@ export async function completePosOrder(
         deviceId: pos.deviceId,
         paidAt: now.toISOString(),
       };
-      // A fully discounted sale (staff meal, comp) settles nothing: order.paid
-      // requires a positive total, so only the log records it. Decision
-      // (legend-9pz9): a sale fully covered by the reservation DP (no tender,
-      // totalIdr > 0) still emits order.paid with empty tenders, so the
-      // deposit leaves customer_deposit into the sale.
-      if (order.totalIdr > 0)
-        await appendPosEvent(tx, context, "order.paid", {
-          order,
-          payload: paidPayload,
-          caller,
-          now,
-        });
+      // Every completed sale emits order.paid. A sale fully covered by the
+      // reservation DP (legend-9pz9) carries empty tenders, so the deposit
+      // leaves customer_deposit into the sale. A fully discounted sale (staff
+      // meal, comp; legend-fbms) carries total 0 and empty tenders: recipe
+      // deduction still runs once (`sale:order:<id>`), and WS-07 ignores an
+      // all-zero payload.
+      await appendPosEvent(tx, context, "order.paid", {
+        order,
+        payload: paidPayload,
+        caller,
+        now,
+      });
       await appendOrderEvent(tx, context, {
         order,
         type: "order.paid",
