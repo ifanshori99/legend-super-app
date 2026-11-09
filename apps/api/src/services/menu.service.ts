@@ -652,10 +652,14 @@ export async function updateStation(
     // (first active station of a type, by name): changing them moves tickets
     // between stations, so it is outlet configuration, not this station's
     // own (legend-cot3). A station-scoped grant keeps target time and printer.
-    const reroutes =
-      (input.name !== undefined && input.name !== existing.name) ||
-      (input.type !== undefined && input.type !== existing.type);
-    if (reroutes)
+    // Only a real change is written: a form echoing the stored values (the
+    // web form trims the name) needs no outlet grant, and an echo can never
+    // overwrite a concurrent rename by an outlet manager.
+    const nameChanged =
+      input.name !== undefined && input.name.trim() !== existing.name.trim();
+    const typeChanged =
+      input.type !== undefined && input.type !== existing.type;
+    if (nameChanged || typeChanged)
       await assertOutletPermission(
         tx,
         context,
@@ -667,8 +671,8 @@ export async function updateStation(
     const [row] = await tx
       .update(stations)
       .set({
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.type !== undefined ? { type: input.type } : {}),
+        ...(nameChanged ? { name: input.name } : {}),
+        ...(typeChanged ? { type: input.type } : {}),
         ...(input.printerDeviceId !== undefined
           ? { printerDeviceId: input.printerDeviceId }
           : {}),

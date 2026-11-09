@@ -346,6 +346,20 @@ describe("legend-cot3 station-scoped services", () => {
       }),
     ).resolves.toMatchObject({ id: own });
 
+    // Over HTTP too, with the name padded differently (the web form trims):
+    // still an echo, saved, stored name untouched.
+    const echoed = await ownUser.client
+      .patch(`/api/menu/stations/${own}`)
+      .set(originHeader)
+      .send({
+        targetSeconds: 220,
+        name: ` ${before.name} `,
+        type: before.type,
+      });
+    expect(echoed.status, JSON.stringify(echoed.body)).toBe(200);
+    expect((await stationRow(own)).name).toBe(before.name);
+    expect((await stationRow(own)).target_seconds).toBe(220);
+
     // Taking another station's type or a name that sorts first would steal
     // that station's tickets: refused, row unchanged.
     for (const change of [
@@ -364,6 +378,17 @@ describe("legend-cot3 station-scoped services", () => {
     const after = await stationRow(own);
     expect(after.type).toBe("pastry");
     expect(after.name).toBe(before.name);
+
+    // A stale form after an outlet manager renamed the station: echoing the
+    // old name is now a rename, so it is refused and the new name stays.
+    const renamed = `${before.name} Baru`;
+    await updateStation(tenantContext(), o.userId, own, { name: renamed });
+    const stale = await ownUser.client
+      .patch(`/api/menu/stations/${own}`)
+      .set(originHeader)
+      .send({ targetSeconds: 230, name: before.name, type: before.type });
+    expect(stale.status).toBe(403);
+    expect((await stationRow(own)).name).toBe(renamed);
 
     // Positive control: the outlet user may rename and retype.
     await expect(
