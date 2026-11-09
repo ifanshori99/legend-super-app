@@ -119,6 +119,13 @@ export const staffPinEdgeRecordSchema = z.strictObject({
   failedAttempts: z.number().int().min(0).max(MAX_STAFF_PIN_ATTEMPTS),
   lockedUntil: isoDateTimeSchema.nullable(),
   updatedAt: isoDateTimeSchema,
+  /**
+   * Order key of the pin generation (`staff_pins.pin_generation_at`,
+   * legend-t9ii), exact to the microsecond. The edge orders a cloud reset
+   * against its own generation with this key, never with a node clock, and
+   * stores it so its next set is stamped after it.
+   */
+  pinGenerationAt: isoDateTimeSchema,
 });
 export type StaffPinEdgeRecord = z.infer<typeof staffPinEdgeRecordSchema>;
 
@@ -347,6 +354,11 @@ export const staffPinLockedEvent = defineDomainEvent({
  * ingest checks only the generic envelope, so v1 rows written before this
  * change (with the number) still sync, and still hold the number in the
  * outbox, edge queue and conflict tables (database access only).
+ *
+ * legend-7iti: an override approved on an edge node carries the count's
+ * figures in `shiftCloseVariance`, edge process only, so the cloud audit row
+ * shows them as a cloud override's audit does. The edge event travels edge ->
+ * cloud only (never to a cashier device); `valueIdr` stays null.
  */
 export const posOverrideRecordedEvent = defineDomainEvent({
   name: "pos_override.recorded",
@@ -364,6 +376,19 @@ export const posOverrideRecordedEvent = defineDomainEvent({
       /** legend-kyie: for the cloud audit row; optional on old events. */
       reasonCode: z.string().min(1).max(50).nullable().optional(),
       reason: z.string().trim().min(3).max(500).optional(),
+      /**
+       * legend-7iti: the blind-count figures of a `cash_shift_close` override
+       * approved on an edge node, so the cloud audit row carries them like a
+       * cloud override's audit. Edge process only (it travels edge -> cloud;
+       * the cloud's own event never carries it); absent on old events.
+       */
+      shiftCloseVariance: z
+        .strictObject({
+          expectedIdr: idrSchema,
+          countedIdr: idrSchema,
+          varianceIdr: idrSchema,
+        })
+        .optional(),
     })
     .refine(
       (payload) =>
@@ -371,6 +396,15 @@ export const posOverrideRecordedEvent = defineDomainEvent({
       {
         message: "cash_shift_close must not carry valueIdr (blind count)",
         path: ["valueIdr"],
+      },
+    )
+    .refine(
+      (payload) =>
+        payload.shiftCloseVariance === undefined ||
+        payload.action === "cash_shift_close",
+      {
+        message: "shiftCloseVariance belongs to cash_shift_close only",
+        path: ["shiftCloseVariance"],
       },
     ),
 });

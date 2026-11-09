@@ -4,8 +4,8 @@
 // - Item 8b: GET /api/edge-sync/staff-pin-records is rate limited per client IP
 //   and per presented credential BEFORE the credential check reads the database.
 //   The limiter tests need no database: the verifier is a counting stub.
-// - Item 5: the settle cutoff comes from the DATABASE clock, so an app clock
-//   ahead of the database cannot release rows still inside the window.
+// - Item 5 (replaced by legend-t9ii): the export no longer has a settle window;
+//   its release is commit-ordered, so no clock can release or hold a row.
 import { randomUUID } from "node:crypto";
 import express from "express";
 import { Pool } from "pg";
@@ -20,7 +20,7 @@ import {
   vi,
 } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import type { TenantContext } from "@starter/shared/core";
+import { encodeCursor, type TenantContext } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { mintEdgeCredential } from "../edge/credential.ts";
@@ -183,7 +183,7 @@ describe("legend-wg5t 8b staff pin sync rate limit (before credential check)", (
 
 // ----------------------------------------------- legend-wg5t 5 settle on DB clock
 
-describe("legend-wg5t 5 settle window uses the database clock", () => {
+describe("legend-wg5t 5 / legend-t9ii the export release does not depend on any clock", () => {
   const node: VerifiedEdgeNode = {
     tenantId,
     outletId: bandung,
@@ -219,22 +219,14 @@ describe("legend-wg5t 5 settle window uses the database clock", () => {
     return id;
   }
 
-  const setUpdatedAt = (userId: string, expression: string) =>
-    owner.query(
-      `UPDATE staff_pins SET updated_at = ${expression}
-        WHERE tenant_id = $1 AND user_id = $2`,
-      [tenantId, userId],
-    );
-
-  async function exported(options: { settleMs?: number } = {}) {
+  async function exported() {
     const rows: string[] = [];
     let since: string | undefined;
     for (let page = 0; page < 1000; page++) {
-      const result = await listStaffPinRecordsSince(
-        node,
-        { since, limit: 100 },
-        options,
-      );
+      const result = await listStaffPinRecordsSince(node, {
+        since,
+        limit: 100,
+      });
       rows.push(...result.data.map((row) => row.userId));
       if (result.meta.nextCursor === null) break;
       since = result.meta.nextCursor;
@@ -242,31 +234,44 @@ describe("legend-wg5t 5 settle window uses the database clock", () => {
     return rows;
   }
 
-  it("holds back a row stamped by the database clock moments ago, then releases it once the window passed", async () => {
+  it("releases a row committed a moment ago whatever its updated_at says (no settle window)", async () => {
     const user = await staffWithPin();
-    await setUpdatedAt(user, "now()");
-    expect(await exported({ settleMs: 30_000 })).not.toContain(user);
-
-    await setUpdatedAt(user, "now() - interval '60 seconds'");
-    expect(await exported({ settleMs: 30_000 })).toContain(user);
-  });
-
-  it("an app clock far ahead of the database cannot release an unsettled row", async () => {
-    const user = await staffWithPin();
-    await setUpdatedAt(user, "now()");
-    // App clock one hour ahead, nothing passed in: production path (no
-    // `now` option). An app-clock cutoff would release the row.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + 60 * 60_000);
-    expect(await exported({ settleMs: 30_000 })).not.toContain(user);
-    vi.useRealTimers();
-
-    // Only an explicit override (tests) reads the app clock.
-    const overridden = await listStaffPinRecordsSince(
-      node,
-      { limit: 100 },
-      { now: new Date(Date.now() + 60 * 60_000), settleMs: 30_000 },
+    // A database clock stamp in the future would have held the row back
+    // behind the old settle cutoff; the commit order does not care.
+    await owner.query(
+      `UPDATE staff_pins SET updated_at = now() + interval '1 hour'
+        WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, user],
     );
-    expect(overridden.data.map((row) => row.userId)).toContain(user);
+    let listed: string[] = [];
+    for (let attempt = 0; attempt < 50 && !listed.includes(user); attempt++) {
+      // A transaction of another test file open right now only delays this.
+      listed = await exported();
+      if (!listed.includes(user))
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(listed).toContain(user);
+  });
+});
+
+describe("legend-t9ii a spin2 cursor xid must fit xid8", () => {
+  const node: VerifiedEdgeNode = {
+    tenantId,
+    outletId: bandung,
+    edgeNodeId: randomUUID(),
+  };
+
+  it("a 20-digit xid above the 64-bit maximum is a validation error", async () => {
+    await expect(
+      listStaffPinRecordsSince(node, {
+        since: encodeCursor([
+          "spin2",
+          "1:1:1",
+          "99999999999999999999",
+          randomUUID(),
+        ]),
+        limit: 10,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

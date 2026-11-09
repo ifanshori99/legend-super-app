@@ -1058,6 +1058,13 @@
       "when": 1794222890808,
       "tag": "0150_station_printer_binding_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1794230000000,
+      "tag": "0151_staff_pin_sync_xid",
+      "breakpoints": true
     }
   ]
 }

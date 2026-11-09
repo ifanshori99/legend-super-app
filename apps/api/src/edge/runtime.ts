@@ -61,6 +61,7 @@ import {
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
+import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
   createWifiAgent,
@@ -720,6 +721,16 @@ export async function startEdgeRuntime(
   registryPuller = puller;
   // Not awaited: boot never waits for, or fails on, the cloud.
   puller.start();
+  // legend-zclb: one-shot, not awaited. A failure is logged by class only
+  // (the error can quote hash material) and never stops the runtime.
+  resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)
+    .then(({ resent }) => {
+      if (resent > 0)
+        logger.info({ resent }, "Edge staff pin sets re-sent with material");
+    })
+    .catch((error) =>
+      logger.warn(safeError(error), "Edge staff pin re-send failed"),
+    );
   let wifi: WifiAgentHandle | null = null;
   try {
     wifi = await startWifiAgent({

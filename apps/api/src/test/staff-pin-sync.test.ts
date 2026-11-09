@@ -109,17 +109,16 @@ async function staffWithPin(
 async function pullAll(
   node: VerifiedEdgeNode,
   since: string | undefined,
-  options: { limit?: number; now?: Date; settleMs?: number } = {},
+  options: { limit?: number } = {},
 ) {
   const records: StaffPinEdgeRecord[] = [];
   let cursor = since;
   let watermark: string | null = since ?? null;
   for (let page = 0; page < 1000; page++) {
-    const result = await listStaffPinRecordsSince(
-      node,
-      { since: cursor, limit: options.limit ?? 100 },
-      { now: options.now, settleMs: options.settleMs ?? 0 },
-    );
+    const result = await listStaffPinRecordsSince(node, {
+      since: cursor,
+      limit: options.limit ?? 100,
+    });
     records.push(...result.data);
     watermark = result.meta.watermark;
     if (result.meta.nextCursor === null) break;
@@ -196,7 +195,7 @@ afterAll(async () => {
 // ------------------------------------------------------------------ export
 
 describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
-  it("legend-obh5 EDG-02 watermark paging returns each changed record once in (updatedAt, id) order, then only later changes", async () => {
+  it("legend-obh5 EDG-02 watermark paging returns each changed record once in commit order, then only later changes", async () => {
     const base = Date.now() - 10 * 60_000;
     const users = [
       await staffWithPin(new Date(base + 1_000)),
@@ -234,22 +233,6 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
     expect(changed[0]?.id).toBe(before.id);
   });
 
-  it("legend-obh5 EDG-02 the settle window holds back a row updated moments ago, then releases it", async () => {
-    const now = new Date();
-    const user = await staffWithPin(now);
-    const held = await listStaffPinRecordsSince(
-      bandungNode,
-      { limit: 100 },
-      { now, settleMs: 5_000 },
-    );
-    expect(held.data.some((row) => row.userId === user)).toBe(false);
-    const { records } = await pullAll(bandungNode, undefined, {
-      now: new Date(now.getTime() + 6_000),
-      settleMs: 5_000,
-    });
-    expect(records.some((row) => row.userId === user)).toBe(true);
-  });
-
   it("legend-obh5 §3 F6 records are hash-only: no raw pin, no pepper, exact record keys, and they verify offline with the separately provisioned pepper", async () => {
     const user = await staffWithPin(ago(60_000));
     const page = await pullAll(bandungNode, undefined);
@@ -272,6 +255,7 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
         "outletId",
         "params",
         "pepperVersion",
+        "pinGenerationAt",
         "pinHash",
         "salt",
         "tenantId",
@@ -305,15 +289,13 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
           edgeNodeId: randomUUID(),
         },
         { limit: 10 },
-        { settleMs: 0 },
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
-      listStaffPinRecordsSince(
-        bandungNode,
-        { since: "bm90LWEtY3Vyc29y", limit: 10 },
-        { settleMs: 0 },
-      ),
+      listStaffPinRecordsSince(bandungNode, {
+        since: "bm90LWEtY3Vyc29y",
+        limit: 10,
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });
@@ -414,7 +396,7 @@ describe("legend-obh5 GET /api/edge-sync/staff-pin-records", () => {
 
 // ------------------------------------------------------------------- apply
 
-describe("legend-obh5 staff pin edge apply (cloud wins, version monotonic)", () => {
+describe("legend-obh5 staff pin edge apply (cloud wins, ordered by the generation key)", () => {
   it("legend-obh5 EDG-02 an unknown record is inserted under the cloud id, a replay is a no-op, and the pin verifies on the edge", async () => {
     const user = await staffWithPin(ago(120_000));
     const record = await recordOf(user);
@@ -440,28 +422,28 @@ describe("legend-obh5 staff pin edge apply (cloud wins, version monotonic)", () 
     ).toEqual({ kind: "ok", userId: user });
   });
 
-  it("legend-obh5 §3 F6 lock state is version monotonic: an older record never regresses it, a newer one wins", async () => {
+  it("legend-obh5 §3 F6 lock state never weakens: a lower counter changes nothing, a higher one wins whatever the record's updatedAt says", async () => {
     const user = await staffWithPin(ago(120_000));
     const record = await recordOf(user);
     const at = Date.parse(record.updatedAt);
-    const older = await applyStaffPinRecords(edgeContext, [
+    const higher = await applyStaffPinRecords(edgeContext, [
       {
         ...record,
         failedAttempts: 3,
-        updatedAt: new Date(at - 1_000).toISOString(),
+        updatedAt: new Date(at - 60 * 60_000).toISOString(),
       },
     ]);
-    expect(older).toEqual({ applied: 0, skipped: 1 });
-    expect((await pinRow(user))?.failed_attempts).toBe(0);
-    const newer = await applyStaffPinRecords(edgeContext, [
+    expect(higher).toEqual({ applied: 1, skipped: 0 });
+    expect((await pinRow(user))?.failed_attempts).toBe(3);
+    const lower = await applyStaffPinRecords(edgeContext, [
       {
         ...record,
         failedAttempts: 2,
-        updatedAt: new Date(at + 1_000).toISOString(),
+        updatedAt: new Date(at + 60 * 60_000).toISOString(),
       },
     ]);
-    expect(newer).toEqual({ applied: 1, skipped: 0 });
-    expect((await pinRow(user))?.failed_attempts).toBe(2);
+    expect(lower).toEqual({ applied: 0, skipped: 1 });
+    expect((await pinRow(user))?.failed_attempts).toBe(3);
   });
 
   it("legend-obh5 §5 cloud wins: a reset replaces the stored generation despite a newer local attempt; an older generation replayed late never wins", async () => {
@@ -469,7 +451,7 @@ describe("legend-obh5 staff pin edge apply (cloud wins, version monotonic)", () 
     const generation1 = await recordOf(user);
     await deletePin(user);
     await applyStaffPinRecords(edgeContext, [generation1]);
-    const t1 = Date.parse(generation1.updatedAt);
+    const t1 = Date.parse(generation1.pinGenerationAt);
     // A failed attempt on the edge bumped updated_at past the coming reset.
     await owner.query(
       `UPDATE staff_pins SET failed_attempts = 1, updated_at = $3
@@ -490,6 +472,7 @@ describe("legend-obh5 staff pin edge apply (cloud wins, version monotonic)", () 
       failedAttempts: 0,
       lockedUntil: null,
       updatedAt: new Date(t1 + 10 * 60_000).toISOString(),
+      pinGenerationAt: new Date(t1 + 10 * 60_000).toISOString(),
     };
     expect(await applyStaffPinRecords(edgeContext, [generation2])).toEqual({
       applied: 1,
