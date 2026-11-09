@@ -632,17 +632,19 @@ describe("reportOrderIssue: comp never deducts twice", () => {
 });
 
 describe("reportOrderIssue: concurrent comps and idempotency", () => {
-  it("two concurrent comps of one voided line end in one 201 and one 409", async () => {
+  it("eight concurrent comps of one voided line end in one 201 and seven 409", async () => {
     const order = await seedOrder(kit.menuItem, { quantity: 1, voided: true });
     const results = await Promise.all(
-      [0, 1].map(() =>
+      Array.from({ length: 8 }, () =>
         api(recorder).report(
           order.ulid,
           issueBody(order, { type: "comp", reason: "wrong_order" }),
         ),
       ),
     );
-    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(results.map((r) => r.status).sort()).toEqual([
+      201, 409, 409, 409, 409, 409, 409, 409,
+    ]);
     const { rows } = await owner.query(
       "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2 AND type = 'comp'",
       [tenant.tenantId, order.itemUuid],
