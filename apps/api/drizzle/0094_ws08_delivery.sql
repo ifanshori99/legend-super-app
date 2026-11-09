@@ -1,3 +1,15 @@
+-- legend-wg5t pattern (see 0068): the migrator may be a plain table owner (no
+-- SUPERUSER, no BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant
+-- policies to it, and with no app.tenant_id set they raise 42501 while the
+-- foreign keys below are validated against outlets and orders. Lift FORCE on
+-- those two for this transaction only; it is restored right after the last
+-- foreign key, before commit (drizzle applies pending migrations in one
+-- transaction, so no other session ever sees the lifted state). tenants never
+-- had FORCE.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "delivery_channel_orders" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -95,6 +107,10 @@ ALTER TABLE "delivery_settlement_lines" ADD CONSTRAINT "delivery_settlement_line
 ALTER TABLE "delivery_settlement_lines" ADD CONSTRAINT "delivery_settlement_lines_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "delivery_settlement_lines" ADD CONSTRAINT "delivery_settlement_lines_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "delivery_settlement_lines" ADD CONSTRAINT "delivery_settlement_lines_order_fk" FOREIGN KEY ("tenant_id","delivery_channel_order_id") REFERENCES "public"."delivery_channel_orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.orders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE INDEX "delivery_channel_orders_outlet_idx" ON "delivery_channel_orders" USING btree ("tenant_id","outlet_id","received_at");--> statement-breakpoint
 CREATE INDEX "delivery_channel_orders_order_idx" ON "delivery_channel_orders" USING btree ("tenant_id","order_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "delivery_channels_store_key" ON "delivery_channels" USING btree ("platform","store_external_id") WHERE "delivery_channels"."store_external_id" IS NOT NULL;--> statement-breakpoint

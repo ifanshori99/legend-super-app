@@ -24,7 +24,10 @@ import {
 import { confirmPayment, createIntent } from "../services/payment.service.ts";
 import { createReservation, linkAad } from "../services/reservation-booking.ts";
 import { sealSecret } from "../lib/secrets.ts";
-import { createPaymentReservationDepositPort } from "../services/reservation-deposit-payment.ts";
+import {
+  createPaymentReservationDepositPort,
+  depositReference,
+} from "../services/reservation-deposit-payment.ts";
 import { resendReservationDepositLink } from "../services/reservation-deposit-resend.ts";
 import { cancelReservation } from "../services/reservation-lifecycle.ts";
 import { zonedInstant } from "../services/reservation-plan.ts";
@@ -259,10 +262,21 @@ afterAll(async () => {
   setPaymentGateway(null);
   await asOwner(async (client) => {
     const rsv = `(SELECT id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2))`;
+    // A resend replaces the reservation's link, so the superseded links are no
+    // longer reachable from the reservation: find every link by its
+    // reservation-derived reference, or payment-db.test.ts sees them left over.
+    const reservationIds = (
+      await client.query<{ id: string }>(
+        "SELECT id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2)",
+        [seededTenantId, zoneIds],
+      )
+    ).rows.map((row) => row.id);
     const links = (
       await client.query<{ id: string }>(
-        "SELECT deposit_payment_link_id AS id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2) AND deposit_payment_link_id IS NOT NULL",
-        [seededTenantId, zoneIds],
+        `SELECT deposit_payment_link_id AS id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2) AND deposit_payment_link_id IS NOT NULL
+         UNION
+         SELECT id FROM payment_links WHERE tenant_id = $1 AND reference = ANY($3::text[])`,
+        [seededTenantId, zoneIds, reservationIds.map(depositReference)],
       )
     ).rows.map((row) => row.id);
     for (const table of [

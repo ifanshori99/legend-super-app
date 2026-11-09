@@ -141,9 +141,14 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
 
   it("TEN-03 every outlet-owned tenant table forces the restrictive outlet policy", async () => {
     // public.payment_link_tokens: the guest resolves the token before any
-    // tenant or outlet context exists (TEN-02; see db/rls.test.ts). Adding to
-    // this list needs an Opus/owner review.
-    const allowlist = ["public.payment_link_tokens"];
+    // tenant or outlet context exists (TEN-02; see db/rls.test.ts).
+    // public.brand_websites: brand-level public site content (legend-qgr6).
+    // Its outlet_id names the featured outlet, it is data and not an access
+    // scope; the public read and every staff read/write run with a tenant-wide
+    // outlet scope (assertTenantWide in public-site.service.ts), so only the
+    // tenant policy applies (website.custom.sql). Adding to this list needs an
+    // Opus/owner review.
+    const allowlist = ["public.payment_link_tokens", "public.brand_websites"];
     const result = await ownerPool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_class c
