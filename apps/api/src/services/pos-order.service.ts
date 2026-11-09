@@ -123,6 +123,7 @@ import {
   type OrderRow,
   type PosCaller,
 } from "./pos-order-support.ts";
+import { allocatePickupCall } from "./pickup.service.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
 import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
@@ -814,6 +815,14 @@ export async function createPosOrder(
           },
           now,
         );
+        // Takeaway and own-delivery orders get their daily call number in the
+        // same transaction (legend-ggpoe); dine-in has none. A training device
+        // must not take numbers off the real wall.
+        if (
+          !isTraining &&
+          (input.serviceType === "takeaway" || input.serviceType === "delivery")
+        )
+          await allocatePickupCall(tx, context, orderId);
         return freshDetail(tx, context, outletId, orderId);
       },
     ),

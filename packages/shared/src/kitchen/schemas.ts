@@ -28,6 +28,7 @@ import {
   isoDateTimeSchema,
   timeOfDaySchema,
 } from "../core/index.ts";
+import { PICKUP_CODE_PATTERN } from "./pickup-code.ts";
 import { channelSchema } from "../menu/schemas.ts";
 
 const scope = { tenantId: tenantIdSchema };
@@ -510,7 +511,9 @@ export const expoTicketSchema = z
     channel: channelSchema,
     /** Table label for dine-in; null for pickup and delivery orders. */
     tableLabel: z.string().min(1).max(50).nullable(),
-    pickupNumber: z.number().int().positive().max(999).nullable(),
+    pickupNumber: z.number().int().positive().nullable(),
+    /** The call code of `pickupNumber` (A-001...); null when it has none. */
+    pickupCode: z.string().regex(PICKUP_CODE_PATTERN).nullable(),
     stations: z.array(expoStationTicketSchema).min(1),
     isComplete: z.boolean(),
     readyAt: isoDateTimeSchema.nullable(),
@@ -575,9 +578,13 @@ export type ExpoRunner = z.infer<typeof expoRunnerSchema>;
 
 /* ---------------------------------------------------------- pickup display */
 
-/** F12 "Pickup Display": takeaway and delivery call numbers (§6 `orders.channel`). */
+/**
+ * F12 "Pickup Display": takeaway and delivery call numbers (§6 `orders.channel`).
+ * `delivery` is the outlet's own POS delivery (service type, not a platform).
+ */
 export const pickupChannelSchema = z.enum([
   "takeaway",
+  "delivery",
   "gofood",
   "grabfood",
   "shopeefood",
@@ -594,8 +601,13 @@ export const pickupCallSchema = z
     id: uuidSchema,
     orderId: orderIdSchema,
     channel: pickupChannelSchema,
-    /** Daily per-outlet call number shown on the pickup display and receipt. */
-    number: z.number().int().positive().max(999),
+    /**
+     * Daily per-outlet sequence (1, 2, 3...). No upper bound: orders are never
+     * refused when the numbers run out (legend-ggpoe).
+     */
+    number: z.number().int().positive(),
+    /** Code shown on the pickup display and receipt: A-001..A-999, B-001... */
+    code: z.string().regex(PICKUP_CODE_PATTERN),
     businessDate: businessDateSchema,
     status: pickupCallStatusSchema,
     calledAt: isoDateTimeSchema.nullable(),

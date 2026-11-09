@@ -1205,6 +1205,13 @@
       "when": 1794253000000,
       "tag": "0174_finance_policy_asset_register",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1794254000000,
+      "tag": "0175_pickup_call_letters",
+      "breakpoints": true
     }
   ]
 }

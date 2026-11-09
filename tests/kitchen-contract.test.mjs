@@ -696,3 +696,98 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
     "the period ends on or after it starts",
   );
 });
+
+test("legend-ggpoe pickup code: formatPickupCode runs A-001..A-999, B-001, ..., AA-001", () => {
+  assert.equal(kitchen.PICKUP_CODE_BLOCK, 999);
+  // Block = ceil(n / 999), letters = bijective base 26 (A..Z, AA, AB, ...),
+  // position = ((n - 1) % 999) + 1 padded to 3 digits.
+  const table = [
+    [1, "A-001"],
+    [2, "A-002"],
+    [10, "A-010"],
+    [998, "A-998"],
+    [999, "A-999"],
+    [1000, "B-001"],
+    [1998, "B-999"],
+    [1999, "C-001"],
+    [25974, "Z-999"], // 26 * 999
+    [25975, "AA-001"],
+    [25976, "AA-002"],
+    [26973, "AA-999"], // 27 * 999
+    [26974, "AB-001"],
+    [701298, "ZZ-999"], // 702 * 999
+    [701299, "AAA-001"],
+  ];
+  for (const [n, code] of table)
+    assert.equal(kitchen.formatPickupCode(n), code, `number ${n}`);
+
+  // Every code is unique over the first blocks and matches the shared pattern.
+  const seen = new Set();
+  for (let n = 1; n <= 999 * 30; n += 1) {
+    const code = kitchen.formatPickupCode(n);
+    assert.match(code, /^[A-Z]{1,4}-\d{3}$/);
+    assert.equal(seen.has(code), false, `code ${code} repeats`);
+    seen.add(code);
+  }
+});
+
+test("legend-ggpoe pickup code: a number below 1 or not an integer is refused", () => {
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])
+    assert.throws(() => kitchen.formatPickupCode(bad), `number ${bad}`);
+});
+
+test("legend-ggpoe pickup call: schema carries a letter code and a number with no 999 cap", () => {
+  const base = fixtures.pickupDisplay.calls[0];
+  const parse = (patch) =>
+    kitchen.pickupCallSchema.safeParse({ ...base, ...patch }).success;
+
+  assert.equal(parse({ number: 1, code: "A-001" }), true);
+  assert.equal(parse({ number: 1000, code: "B-001" }), true);
+  assert.equal(parse({ number: 25975, code: "AA-001" }), true);
+  assert.equal(
+    parse({ number: 5_000_000, code: "AAAA-001" }),
+    true,
+    "the number has no upper bound",
+  );
+  // The own-delivery channel is a valid call channel.
+  assert.equal(parse({ channel: "delivery" }), true);
+
+  for (const code of ["", "001", "A001", "a-001", "A-1", "A-0001", "AAAAA-001"])
+    assert.equal(parse({ code }), false, `code "${code}" is refused`);
+  assert.equal(parse({ code: undefined }), false, "a call carries its code");
+  for (const number of [0, -1, 1.5])
+    assert.equal(parse({ number }), false, `number ${number} is refused`);
+});
+
+test("legend-ggpoe pickup call: fixtures carry codes that match their numbers", () => {
+  for (const call of fixtures.pickupDisplay.calls)
+    assert.equal(call.code, kitchen.formatPickupCode(call.number));
+});
+
+test("legend-ggpoe expo ticket: pickupCode and pickupNumber exist together or are both null", () => {
+  const withCall = fixtures.expo.tickets.filter(
+    (ticket) => ticket.pickupNumber !== null,
+  );
+  assert.ok(withCall.length > 0, "the board fixture has a ticket with a call");
+  for (const ticket of withCall)
+    assert.equal(
+      ticket.pickupCode,
+      kitchen.formatPickupCode(ticket.pickupNumber),
+    );
+  for (const ticket of fixtures.expo.tickets)
+    assert.equal(
+      ticket.pickupCode === null,
+      ticket.pickupNumber === null,
+      "code and number exist together",
+    );
+  const ticket = fixtures.expo.tickets[0];
+  assert.equal(
+    kitchen.expoTicketSchema.safeParse({
+      ...ticket,
+      pickupNumber: 1000,
+      pickupCode: "B-001",
+    }).success,
+    true,
+    "a number above 999 is a valid ticket number",
+  );
+});

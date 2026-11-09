@@ -1187,3 +1187,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - 3wyz: `GET /api/accounting/open-items` (item terbuka per dokumen, urut jatuh tempo lalu id, cursor, filter counterparty/outlet). bddb: `GET /api/accounting/legal-entities` di bawah `accounting.journal.view` (`id,name,npwpLast4,isPkp`); guard `org.structure.manage` pada route org tidak diubah.
 - Bukti: tes terarah API 10 berkas / 104 lulus (1 dilewati); tes root kontrak 101/101; tsc shared, api, web bersih; eslint dan prettier berkas berubah; satu architect untuk diff gabungan.
 - Pemakaian sesi (`session-usage.py`, gabungan tugas 1 dan 2): biaya* 6319k (utama sonnet 2718k, subagent sonnet 3163k, opus 402k, haiku 37k), 20 subagent total sesi; tugas 2: 12 subagent, puncak 6 bersamaan.
+
+## legend-ggpoe nomor panggil berhuruf di order takeaway dan delivery (engineer, cabang `ws/pickup-call-letters` di atas 6fee08e3, 2026-11-10)
+
+- Keputusan founder Q51: pesanan tidak pernah ditolak karena nomor habis. Format: A-001..A-999, B-001.., Z-999, lalu AA-001, AB-001 dst (keputusan CTO), reset harian per outlet.
+- `pickup_calls.number` tetap urutan harian 1, 2, 3... (smallint jadi integer, check `>= 1`); kode dihitung dari urutan oleh `formatPickupCode` (`packages/shared/src/kitchen/pickup-code.ts`), tidak disimpan. Data lama (1..999) otomatis jadi A-001..A-999.
+- Migrasi `0175_pickup_call_letters` (`when` 1794254000000): ubah tipe `number`, ganti check nomor, tambah channel `delivery` (POS delivery sendiri) di check channel.
+- `allocatePickupCall`: tanpa batas 999 (`PICKUP_NUMBER_EXHAUSTED` dan `PICKUP_NUMBER_MAX` dihapus), `PickupCall.code`, service type `delivery` memakai channel `delivery`. Dipasang di `createPosOrder` (takeaway dan delivery, satu transaksi dengan order); dine-in dan perangkat training tidak dapat nomor.
+- Kontrak: `pickupCallSchema.code`, `expoTicketSchema.pickupCode`, `number` tanpa batas atas, channel `delivery`.
+- UI yang perlu menyusul (bukan scope): `ws04-expo/components/target-label.ts` ("Antrean {number}") dan `pickup-screen.tsx` + `sound.ts` (pengumuman suara) harus memakai `code`, bukan `number`.
+- Perbaikan web (keputusan CTO opsi 2): `channel-badge.tsx` entri `delivery` (ikon Bike, label `channel.delivery`), `pickup-screen.tsx` tampil, suara, dan label tombol memakai `code` (urutan tetap `number`), `target-label.ts` memakai `pickupCode`. `sound.ts` tidak berubah (teks suara dari `pickup-screen`). Tes: 3 tes baru di `tests/kitchen-pickup-display.test.mjs` (gagal-dulu terbukti, 9/9 lulus), tsc `apps/web` bersih.

@@ -62,7 +62,7 @@ export function PickupScreen() {
     for (const freshCall of fresh) {
       if (announced.current.has(freshCall.id)) continue;
       announced.current.add(freshCall.id);
-      announcePickupNumber(t("pickup.announce", { number: freshCall.number }));
+      announcePickupNumber(t("pickup.announce", { number: freshCall.code }));
     }
   }, [display.data, soundOn, t]);
 
@@ -84,9 +84,7 @@ export function PickupScreen() {
         // This press announced it; the snapshot effect must not repeat it.
         announced.current.add(updated.id);
         if (soundOn)
-          announcePickupNumber(
-            t("pickup.announce", { number: updated.number }),
-          );
+          announcePickupNumber(t("pickup.announce", { number: updated.code }));
       },
       onError: () =>
         toast({
@@ -184,7 +182,7 @@ export function PickupScreen() {
       {header}
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {called.length > 0
-          ? t("pickup.announced", { number: called[called.length - 1].number })
+          ? t("pickup.announced", { number: called[called.length - 1].code })
           : ""}
       </p>
 
@@ -216,7 +214,7 @@ export function PickupScreen() {
                     aside={<ChannelBadge channel={row.channel} />}
                   >
                     <p className="text-5xl leading-none font-bold text-foreground tabular sm:text-6xl">
-                      {row.number}
+                      {row.code}
                     </p>
                   </StatusBand>
                   <div className="flex flex-1 flex-col gap-2 p-4">
@@ -235,7 +233,7 @@ export function PickupScreen() {
                       size="sm"
                       className="mt-auto w-full"
                       aria-label={t("pickup.callAgainFor", {
-                        number: row.number,
+                        number: row.code,
                       })}
                       onClick={() => handleCall(row)}
                       disabled={call.isPending}
@@ -280,7 +278,7 @@ export function PickupScreen() {
                     aside={<ChannelBadge channel={row.channel} />}
                   >
                     <p className="text-4xl leading-none font-bold tabular">
-                      {row.number}
+                      {row.code}
                     </p>
                   </StatusBand>
                   <div className="flex flex-1 flex-col p-4">
@@ -291,7 +289,7 @@ export function PickupScreen() {
                       variant="secondary"
                       size="sm"
                       className="mt-auto w-full"
-                      aria-label={t("pickup.callFor", { number: row.number })}
+                      aria-label={t("pickup.callFor", { number: row.code })}
                       loading={call.isPending && call.variables === row.id}
                       onClick={() => handleCall(row)}
                     >
@@ -320,7 +318,7 @@ export function PickupScreen() {
                 className="inline-flex items-center gap-2 rounded-full border-(length:--border-w) bg-muted px-3 py-1"
               >
                 <span className="text-sm font-semibold tabular">
-                  {row.number}
+                  {row.code}
                 </span>
                 <span className="text-xs text-muted-foreground tabular">
                   {row.pickedUpAt !== null

@@ -20,8 +20,8 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
-  smallint,
   timestamp,
   unique,
   uuid,
@@ -55,8 +55,11 @@ export const pickupCalls = pgTable(
     channel: varchar("channel", { length: 20 })
       .$type<PickupChannel>()
       .notNull(),
-    /** Daily per-outlet number shown on the pickup display and receipt. */
-    number: smallint("number").notNull(),
+    /**
+     * Daily per-outlet sequence 1, 2, 3... The code shown on the display and
+     * receipt (A-001..A-999, B-001...) is derived from it (`formatPickupCode`).
+     */
+    number: integer("number").notNull(),
     businessDate: businessDate("business_date").notNull(),
     status: varchar("status", { length: 20 })
       .$type<PickupCallStatus>()
@@ -91,9 +94,9 @@ export const pickupCalls = pgTable(
     ),
     check(
       "pickup_calls_channel_check",
-      sql`${table.channel} IN ('takeaway', 'gofood', 'grabfood', 'shopeefood')`,
+      sql`${table.channel} IN ('takeaway', 'delivery', 'gofood', 'grabfood', 'shopeefood')`,
     ),
-    check("pickup_calls_number_check", sql`${table.number} BETWEEN 1 AND 999`),
+    check("pickup_calls_number_check", sql`${table.number} >= 1`),
     // Only an assigned number has no calledAt; called and picked_up keep it.
     check(
       "pickup_calls_called_at_check",

@@ -12,7 +12,13 @@ import { Badge } from "@/components/ui/badge";
 import { useT } from "@/components/i18n";
 
 type Channel =
-  "dine_in" | "takeaway" | "gofood" | "grabfood" | "shopeefood" | "reservation";
+  | "dine_in"
+  | "takeaway"
+  | "delivery"
+  | "gofood"
+  | "grabfood"
+  | "shopeefood"
+  | "reservation";
 
 const CHANNELS: Record<
   Channel,
@@ -28,6 +34,8 @@ const CHANNELS: Record<
     icon: ShoppingBag,
     delivery: false,
   },
+  // The outlet's own delivery (POS service type), not a platform.
+  delivery: { labelKey: "channel.delivery", icon: Bike, delivery: true },
   gofood: { labelKey: "channel.gofood", icon: Bike, delivery: true },
   grabfood: { labelKey: "channel.grabfood", icon: Bike, delivery: true },
   shopeefood: { labelKey: "channel.shopeefood", icon: Bike, delivery: true },

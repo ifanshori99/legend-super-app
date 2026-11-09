@@ -621,7 +621,8 @@ describe("pickup_calls checks", () => {
     },
   );
 
-  it.each([0, 1000, -1])("rejects number %i", async (number) => {
+  // legend-ggpoe: the number has no upper bound; only 0 and below are refused.
+  it.each([0, -1])("rejects number %i", async (number) => {
     await expect(
       asTenant(appPool, tenantAId, (c) =>
         insertPickup(c, { orderId: order1, number }),
@@ -629,11 +630,14 @@ describe("pickup_calls checks", () => {
     ).rejects.toMatchObject({ code: "23514" });
   });
 
-  it.each([1, 999])("accepts number %i", async (number) => {
-    await asTenant(appPool, tenantAId, (c) =>
-      insertPickup(c, { orderId: order1, number }),
-    );
-  });
+  it.each([1, 999, 1000, 25975, 5_000_000])(
+    "accepts number %i",
+    async (number) => {
+      await asTenant(appPool, tenantAId, (c) =>
+        insertPickup(c, { orderId: order1, number }),
+      );
+    },
+  );
 
   it("rejects an unknown status", async () => {
     await expect(
