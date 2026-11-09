@@ -684,12 +684,12 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
     }
   });
 
-  it("ORD-03 a price-inclusive tax rule quotes inclusive; placing the order is refused (legend-49pw)", async () => {
+  it("ORD-03 a price-inclusive tax rule quotes inclusive and places an inclusive order (legend-49pw, legend-zmc2)", async () => {
     const guest = await seat((await newTable()).qrToken);
     const version = await fillStandardCart(guest);
     // A published version of the same rule that marks menu prices inclusive:
     // the quote backs service and tax out of the menu price instead of adding
-    // them, but an order cannot be stored that way yet, so checkout fails closed.
+    // them; the order stores the same gross subtotal and backed-out parts.
     const publishRuleVersion = (ruleVersion: number, inclusive: boolean) =>
       asOwnerTenant(tenant.tenantId, (client) =>
         client.query(
@@ -719,15 +719,18 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
         expectedCartVersion: version,
         idempotencyKey: randomUUID(),
       });
-      expect(placed.status).toBe(422);
-      expect(placed.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
-      expect(placed.body.error.message).toMatch(/termasuk pajak/i);
-
-      // The cart still loads and shows the same inclusive quote.
-      const view = await as(guest).view();
-      expect(view.status).toBe(200);
-      expect(view.body.data.cart.lines).toHaveLength(2);
-      expect(view.body.data.quote.pricesIncludeTaxAndService).toBe(true);
+      expect(placed.status).toBe(201);
+      const order = placed.body.data.order;
+      expect(order.pricesIncludeTaxAndService).toBe(true);
+      expect(order.subtotalIdr).toBe(data.subtotalIdr);
+      expect(order.serviceChargeIdr).toBe(data.serviceCharge.amountIdr);
+      expect(order.taxIdr).toBe(data.taxIdr);
+      expect(order.totalIdr).toBe(data.totalIdr);
+      const stored = await owner.query<{ prices_include_tax: boolean }>(
+        "SELECT prices_include_tax FROM orders WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, ulidToUuid(order.id)],
+      );
+      expect(stored.rows[0]?.prices_include_tax).toBe(true);
     } finally {
       // Publish an exclusive version so the rest of the file prices normally.
       await publishRuleVersion(3, false);
@@ -774,7 +777,7 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
     }
   });
 
-  it("ORD-05 an inclusive refusal at checkout writes no order and releases the daily stock (legend-49pw)", async () => {
+  it("ORD-05 a mixed inclusive/exclusive refusal at checkout writes no order and releases the daily stock (legend-49pw)", async () => {
     const guest = await seat((await newTable()).qrToken);
     const added = await as(guest).add({
       menuItemId: ids.terbatas,
@@ -782,7 +785,15 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
       expectedCartVersion: 0,
     });
     expect(added.status).toBe(201);
-    const version = added.body.data.cart.version as number;
+    // A second line whose item-specific inclusive rule beats the exclusive
+    // class rule: the cart mixes both, so checkout is refused (legend-zmc2).
+    const withRoti = await as(guest).add({
+      menuItemId: ids.roti,
+      quantity: 1,
+      expectedCartVersion: added.body.data.cart.version as number,
+    });
+    expect(withRoti.status).toBe(201);
+    const version = withRoti.body.data.cart.version as number;
     const usageBefore = await usageOf(ids.terbatas);
     const orderCount = async () =>
       Number(
@@ -794,20 +805,27 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
         ).rows[0]?.count,
       );
     const ordersBefore = await orderCount();
-    const publishRuleVersion = (ruleVersion: number, inclusive: boolean) =>
-      asOwnerTenant(tenant.tenantId, (client) =>
-        client.query(
-          `INSERT INTO tax_rules
-             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
-              price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
-              published_at, published_by)
-           VALUES ($1, $2, NULL, 'PBJT-QRO', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
-                   '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
-                   $3, true, true, $4, '2026-01-01', 'published', now(), $5)`,
-          [randomUUID(), tenant.tenantId, inclusive, ruleVersion, staff.userId],
-        ),
-      );
-    await publishRuleVersion(4, true);
+    const ruleId = randomUUID();
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+            price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, NULL, 'PBJT-ROTI2', 'PBJT Roti', 'pbjt', 1000, NULL, '[]', $3,
+                 true, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+        [
+          ruleId,
+          tenant.tenantId,
+          JSON.stringify({
+            itemClasses: [],
+            categoryIds: [],
+            itemIds: [ids.roti],
+          }),
+          staff.userId,
+        ],
+      ),
+    );
     try {
       const refused = await as(guest).checkout({
         expectedCartVersion: version,
@@ -821,7 +839,12 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
       expect(await orderCount()).toBe(ordersBefore);
       expect(await usageOf(ids.terbatas)).toBe(usageBefore);
     } finally {
-      await publishRuleVersion(5, false);
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query("DELETE FROM tax_rules WHERE tenant_id = $1 AND id = $2", [
+          tenant.tenantId,
+          ruleId,
+        ]),
+      );
     }
     // The single unit of the day is free again: the same cart checks out.
     const placed = await as(guest).checkout({

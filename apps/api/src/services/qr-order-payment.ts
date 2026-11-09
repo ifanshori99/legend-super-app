@@ -10,6 +10,10 @@
 //   the applied reservation deposit, computed by the server (PAY-01, ORD-03).
 //   Two guests paying the same order serialize on the order row: the second
 //   one receives the same live intent instead of a second one.
+// - Methods are QRIS and VA (legend-3160, CTO decision 9 Nov). A VA names a
+//   bank from the gateway's channel list (`getGuestPaymentOptions`); picking
+//   another method or bank opens a new intent, which supersedes the pending
+//   one on the same WS-05 link (createIntent: one live code per bill).
 // - WS-05 `payment.paid` (appended only by `confirmPayment` after verified
 //   evidence, PAY-02) is consumed from the outbox by
 //   `deliverOrderPaymentEvent` (order-payment-consumers), which fires the
@@ -30,7 +34,10 @@ import type { CustomerPaymentIntent } from "@starter/shared/payment";
 import {
   createGuestPaymentInputSchema,
   guestPaymentSchema,
+  guestPaymentOptionsSchema,
   type GuestPayment,
+  type GuestPaymentMethod,
+  type GuestPaymentOptions,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
 import { db } from "../db/index.ts";
@@ -38,6 +45,8 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { paymentGateway } from "./payment-gateway.ts";
+import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
   createIntent,
   createPaymentLink,
@@ -64,17 +73,22 @@ function guestPaymentDto(
   intent: CustomerPaymentIntent,
   orderId: string,
 ): GuestPayment {
+  const { instructions } = intent;
+  // Only QRIS and VA intents are opened for a QR order.
+  if (instructions.method !== "qris" && instructions.method !== "va")
+    throw new Error("QR order payment has an unsupported method");
+  const va = instructions.method === "va" ? instructions : null;
   return guestPaymentSchema.parse({
     id: intent.id,
     target: { kind: "order", orderId },
-    method: "qris",
+    method: instructions.method,
     amountIdr: intent.amountIdr,
     status: intent.status,
-    qrisPayload:
-      intent.instructions.method === "qris"
-        ? intent.instructions.qrPayload
-        : null,
+    qrisPayload: instructions.method === "qris" ? instructions.qrPayload : null,
     redirectUrl: null,
+    vaNumber: va?.virtualAccountNumber ?? null,
+    bankCode: va?.channelCode ?? null,
+    bankName: va?.channelName ?? null,
     expiresAt: intent.expiresAt,
     paidAt: intent.status === "paid" ? intent.paidAt : null,
   });
@@ -151,7 +165,12 @@ async function ensurePaymentLink(
         reference: order.number,
         tableLabel: tableCode,
         pax: session.pax,
-        subtotalIdr: order.subtotalIdr,
+        // legend-zmc2: an inclusive order's subtotal already contains the
+        // service charge and tax; the link adds them, so it gets the subtotal
+        // without them (same total, payment_links_total_check holds).
+        subtotalIdr: order.pricesIncludeTax
+          ? order.subtotalIdr - order.serviceChargeIdr - order.taxIdr
+          : order.subtotalIdr,
         discountIdr: order.discountIdr + order.depositAppliedIdr,
         serviceChargeIdr: order.serviceChargeIdr,
         taxIdr: order.taxIdr,
@@ -181,11 +200,95 @@ async function ensurePaymentLink(
   });
 }
 
+/** True when the live intent is the method and bank the guest asks for. */
+function sameChoice(
+  intent: CustomerPaymentIntent,
+  method: GuestPaymentMethod,
+  bankCode: string | null,
+): boolean {
+  if (intent.instructions.method !== method) return false;
+  return (
+    intent.instructions.method !== "va" ||
+    intent.instructions.channelCode === bankCode
+  );
+}
+
+/**
+ * A VA bank must be one the gateway lists right now (PRD §3.13 "Metode DOIT":
+ * the list comes from the provider, never from the client).
+ */
+async function assertVaBank(
+  context: ScopedTenantContext,
+  bankCode: string,
+): Promise<void> {
+  const banks = await paymentGateway().channels(context, "va");
+  if (!banks.some((bank) => bank.code === bankCode))
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Bank virtual account ini tidak tersedia; pilih bank lain.",
+    );
+}
+
+/**
+ * GET /api/table-sessions/:sessionId/payment-options (contract guest.ts).
+ * QRIS and VA with the outlet's routing and the gateway's health; VA lists
+ * the banks the gateway offers and is off when it offers none.
+ */
+export async function getGuestPaymentOptions(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  now = new Date(),
+): Promise<GuestPaymentOptions> {
+  const routed = await withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "none",
+    );
+    const rules = [];
+    for (const method of ["qris", "va"] as const) {
+      const rule = await resolveRoutingRule(
+        tx,
+        context,
+        session.outletId,
+        method,
+      );
+      rules.push({ method, enabled: rule.enabled });
+    }
+    return rules;
+  });
+  const gateway = paymentGateway();
+  const gatewayUsable = (await gateway.health(context)).status !== "down";
+  const methods = [];
+  for (const entry of routed) {
+    const banks =
+      entry.method === "va" && entry.enabled && gatewayUsable
+        ? await gateway.channels(context, "va")
+        : [];
+    const configured = entry.method === "qris" || banks.length > 0;
+    const enabled = entry.enabled && gatewayUsable && configured;
+    methods.push({
+      method: entry.method,
+      enabled,
+      unavailableReason: enabled
+        ? null
+        : !entry.enabled || gatewayUsable
+          ? ("routing_disabled" as const)
+          : ("gateway_down" as const),
+      banks,
+    });
+  }
+  return guestPaymentOptionsSchema.parse({ methods });
+}
+
 /**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). Only the
- * pay-first `order` target with QRIS is live: split shares belong to
- * legend-ms3, the open-bill `bill` target to the bill settlement bead, and the
- * WS-05 gateway offers no e-wallet intent yet.
+ * pay-first `order` target is live, with QRIS or VA: split shares belong to
+ * legend-ms3 and the open-bill `bill` target to the bill settlement bead.
  */
 export async function createGuestPayment(
   context: ScopedTenantContext,
@@ -200,11 +303,8 @@ export async function createGuestPayment(
       "VALIDATION_ERROR",
       "Pembayaran bagian atau tagihan open bill belum tersedia di sini.",
     );
-  if (parsed.method !== "qris")
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Metode pembayaran ini belum tersedia; pilih QRIS.",
-    );
+  const bankCode = parsed.method === "va" ? (parsed.bankCode ?? null) : null;
+  if (bankCode !== null) await assertVaBank(context, bankCode);
   const orderId = parsed.target.orderId;
   await ensurePaymentLink(context, credential, sessionId, orderId, now);
   return withTenant(db, context, async (tx) => {
@@ -232,7 +332,9 @@ export async function createGuestPayment(
             "Pesanan ini tidak menunggu pembayaran.",
           );
         const token = linkToken(context, order);
-        // One live code per order: a second payer gets the pending intent.
+        // One live code per order: a second payer asking for the same
+        // method and bank gets the pending intent; another method or bank
+        // opens a new one, which supersedes it (createIntent).
         if (order.paymentIntentId !== null) {
           const current = await getIntentView(
             context,
@@ -240,7 +342,11 @@ export async function createGuestPayment(
             order.paymentIntentId,
             now,
           );
-          if (current.status === "pending" || current.status === "paid")
+          if (
+            current.status === "paid" ||
+            (current.status === "pending" &&
+              sameChoice(current, parsed.method, bankCode))
+          )
             return guestPaymentDto(current, order.id);
         }
         // The WS-05 key is unique per tenant; derive it from the order so a
@@ -249,8 +355,8 @@ export async function createGuestPayment(
           context,
           token,
           {
-            method: "qris",
-            channelCode: null,
+            method: parsed.method,
+            channelCode: bankCode,
             idempotencyKey: `qro-${createHash("sha256")
               .update(`${order.id}:${idempotencyKey}`)
               .digest("hex")

@@ -2,7 +2,7 @@
 // contracts @starter/shared/qr-order endpoints.ts getTableSession,
 // addCartLine, updateCartLine, removeCartLine, quoteTableSession,
 // placeQrOrder, getSessionBill, and guest.ts createGuestPayment /
-// getGuestPayment).
+// getGuestPayment / getGuestPaymentOptions).
 //
 // Mounted on /api/table-sessions next to the staff lifecycle router
 // (table-sessions.routes.ts: confirm, close). Guests are not users (ORD-01):
@@ -19,6 +19,7 @@ import {
   addCartLine,
   createGuestPayment,
   getGuestPayment,
+  getGuestPaymentOptions,
   getMenuSuggestions,
   getSessionBill,
   getTableSession,
@@ -48,6 +49,7 @@ import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-
 import {
   createGuestPayment as createGuestPaymentService,
   getGuestPayment as getGuestPaymentService,
+  getGuestPaymentOptions as getGuestPaymentOptionsService,
 } from "../services/qr-order-payment.ts";
 
 /**
@@ -194,6 +196,18 @@ qrOrderRouter.get("/:sessionId/bill", ...read, async (req, res) => {
   const credential = sessionCredential(req);
   res.json({
     data: await getSessionBillService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+    ),
+  });
+});
+
+qrOrderRouter.get("/:sessionId/payment-options", ...read, async (req, res) => {
+  const { sessionId } = getGuestPaymentOptions.params.parse(req.params);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await getGuestPaymentOptionsService(
       await guestContext(req, credential),
       credential,
       sessionId,
