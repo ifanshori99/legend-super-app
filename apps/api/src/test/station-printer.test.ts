@@ -11,7 +11,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { createApp } from "../app";
-import { agent, signUp } from "./helpers";
+import { agent, originHeader, signUp } from "./helpers";
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -51,7 +51,12 @@ async function asOwnerTenant<T>(
   }
 }
 
+// Every station of this file carries runTag in its name, so afterAll removes
+// them by outlet even when a should-be-refused test created one by mistake.
+const runTag = randomUUID().slice(0, 8);
+const stationName = () => `Uji ${runTag} ${randomUUID().slice(0, 8)}`;
 const createdStationIds: string[] = [];
+const createdUserIds: string[] = [];
 const createdDevices: { tenantId: string; id: string }[] = [];
 let roleId: string;
 let userId: string;
@@ -96,7 +101,7 @@ async function insertStation(printerDeviceId: string | null = null) {
     client.query<{ id: string }>(
       `INSERT INTO stations (tenant_id, outlet_id, name, type, printer_device_id)
        VALUES ($1, $2, $3, 'hot_kitchen', $4) RETURNING id`,
-      [tenantId, outletA, `Uji ${randomUUID().slice(0, 8)}`, printerDeviceId],
+      [tenantId, outletA, stationName(), printerDeviceId],
     ),
   );
   createdStationIds.push(result.rows[0].id);
@@ -132,7 +137,7 @@ beforeAll(async () => {
   await ownerPool.query(
     `INSERT INTO roles
        (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-     VALUES ($1, $2, $3, false, NULL, $4::jsonb, false, '["tenant","outlet"]'::jsonb)`,
+     VALUES ($1, $2, $3, false, NULL, $4::jsonb, false, '["tenant","outlet","station"]'::jsonb)`,
     [
       roleId,
       tenantId,
@@ -154,12 +159,19 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (createdStationIds.length > 0)
-    await asOwnerTenant(tenantId, (client) =>
-      client.query("DELETE FROM stations WHERE id = ANY($1::uuid[])", [
-        createdStationIds,
-      ]),
+  if (createdUserIds.length > 0)
+    await ownerPool.query(
+      "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
+      [createdUserIds],
     );
+  await asOwnerTenant(tenantId, (client) =>
+    client.query(
+      `DELETE FROM stations
+        WHERE id = ANY($1::uuid[])
+           OR (outlet_id = ANY($2::uuid[]) AND name LIKE $3)`,
+      [createdStationIds, [outletA, outletB], `Uji ${runTag} %`],
+    ),
+  );
   for (const device of createdDevices)
     await asOwnerTenant(device.tenantId, (client) =>
       client.query("DELETE FROM devices WHERE id = $1", [device.id]),
@@ -172,12 +184,28 @@ afterAll(async () => {
   await ownerPool.end();
 });
 
+/** Signed-in client holding the role at one station only. */
+async function stationClient(stationId: string) {
+  const client = agent(app);
+  await signUp(client, "Station Printer Cook");
+  const session = await client.get("/api/auth/get-session");
+  const cookId = session.body.user.id as string;
+  createdUserIds.push(cookId);
+  await ownerPool.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'station', $4, now() - interval '1 minute', $2)`,
+    [tenantId, cookId, roleId, stationId],
+  );
+  return client;
+}
+
 describe("legend-e087 station printerDeviceId", () => {
   it("accepts an active printer of the station's outlet on create and update", async () => {
     const printer = await seedDevice(tenantId, outletA, "printer");
     const created = await createStation(tenantContext(), userId, {
       outletId: outletA,
-      name: `Uji ${randomUUID().slice(0, 8)}`,
+      name: stationName(),
       type: "hot_kitchen",
       printerDeviceId: printer,
     });
@@ -212,7 +240,7 @@ describe("legend-e087 station printerDeviceId", () => {
       await expect(
         createStation(tenantContext(), userId, {
           outletId: outletA,
-          name: `Uji ${randomUUID().slice(0, 8)}`,
+          name: stationName(),
           type: "hot_kitchen",
           printerDeviceId,
         }),
@@ -242,5 +270,93 @@ describe("legend-e087 station printerDeviceId", () => {
     });
     expect(updated.printerDeviceId).toBeNull();
     expect(await boundPrinter(stationId)).toBeNull();
+  });
+
+  it("a station-scoped caller binds a printer of its own outlet but not another outlet's", async () => {
+    const own = await seedDevice(tenantId, outletA, "printer");
+    const foreign = await seedDevice(tenantId, outletB, "printer");
+    const stationId = await insertStation();
+    const cook = await stationClient(stationId);
+    const url = `/api/menu/stations/${stationId}`;
+
+    const ok = await cook
+      .patch(url)
+      .set(originHeader)
+      .send({ printerDeviceId: own });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(await boundPrinter(stationId)).toBe(own);
+
+    const refused = await cook
+      .patch(url)
+      .set(originHeader)
+      .send({ printerDeviceId: foreign });
+    expect(refused.status).toBe(INVALID.status);
+    expect(refused.body.error).toMatchObject({
+      code: INVALID.code,
+      message: INVALID.message,
+    });
+    expect(await boundPrinter(stationId)).toBe(own);
+  });
+
+  it("an echo of a revoked stored printer writes nothing over a concurrent change", async () => {
+    const pOld = await seedDevice(tenantId, outletA, "printer");
+    const pNew = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation(pOld);
+    await revoke(pOld);
+
+    // A manager's change to pNew is in flight (row locked, not committed).
+    const manager = await ownerPool.connect();
+    let echo: ReturnType<typeof updateStation>;
+    try {
+      await manager.query("BEGIN");
+      await manager.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await manager.query(
+        "UPDATE stations SET printer_device_id = $2 WHERE id = $1",
+        [stationId, pNew],
+      );
+      // The cook's stale form still shows pOld. The service reads pOld, then
+      // its write waits on the manager's row lock.
+      echo = updateStation(tenantContext(), userId, stationId, {
+        printerDeviceId: pOld,
+        targetSeconds: 123,
+      });
+      echo.catch(() => undefined);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const { rows } = await ownerPool.query(
+          `SELECT 1 FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND query ILIKE 'update "stations"%'`,
+        );
+        waiting = rows.length > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(waiting, "echo write is waiting on the row lock").toBe(true);
+      await manager.query("COMMIT");
+    } catch (error) {
+      await manager.query("ROLLBACK");
+      throw error;
+    } finally {
+      manager.release();
+    }
+
+    const saved = await echo;
+    expect(saved.targetSeconds).toBe(123);
+    expect(saved.printerDeviceId).toBe(pNew);
+    expect(await boundPrinter(stationId)).toBe(pNew);
+  });
+
+  it("differently cased echo of the stored printer is unchanged, not revalidated", async () => {
+    const printer = await seedDevice(tenantId, outletA, "printer");
+    const stationId = await insertStation(printer);
+    await revoke(printer);
+    const updated = await updateStation(tenantContext(), userId, stationId, {
+      printerDeviceId: printer.toUpperCase(),
+      targetSeconds: 77,
+    });
+    expect(updated.targetSeconds).toBe(77);
+    expect(await boundPrinter(stationId)).toBe(printer);
   });
 });

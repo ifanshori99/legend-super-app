@@ -585,7 +585,10 @@ async function assertStationPrinter(
         eq(devices.status, "active"),
         isNull(devices.revokedAt),
       ),
-    );
+    )
+    // Share lock: a concurrent revoke waits for this transaction, so it cannot
+    // slip between the check and the station write.
+    .for("share");
   if (!row)
     throw new HttpError(
       422,
@@ -704,13 +707,15 @@ export async function updateStation(
         existing.outletId,
         now,
       );
-    // legend-e087: only a changed, non-null printer is validated; an echo of
-    // the stored value (e.g. revoked since) must not block saving target time.
-    if (
-      input.printerDeviceId &&
-      input.printerDeviceId.toLowerCase() !==
-        existing.printerDeviceId?.toLowerCase()
-    )
+    // legend-e087: only a changed, non-null printer is validated and written
+    // (null counts as a value). An echo of the stored value (e.g. revoked
+    // since) must not block saving target time, and can never overwrite a
+    // concurrent change of the printer by a manager.
+    const printerChanged =
+      input.printerDeviceId !== undefined &&
+      (input.printerDeviceId?.toLowerCase() ?? null) !==
+        (existing.printerDeviceId?.toLowerCase() ?? null);
+    if (printerChanged && input.printerDeviceId)
       await assertStationPrinter(
         tx,
         context,
@@ -722,9 +727,7 @@ export async function updateStation(
       .set({
         ...(nameChanged ? { name: input.name } : {}),
         ...(typeChanged ? { type: input.type } : {}),
-        ...(input.printerDeviceId !== undefined
-          ? { printerDeviceId: input.printerDeviceId }
-          : {}),
+        ...(printerChanged ? { printerDeviceId: input.printerDeviceId } : {}),
         ...(input.targetSeconds !== undefined
           ? { targetSeconds: input.targetSeconds }
           : {}),
