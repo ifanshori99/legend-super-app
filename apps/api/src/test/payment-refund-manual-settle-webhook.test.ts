@@ -352,7 +352,7 @@ const flatRefund = (
 
 describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled by hand", () => {
   it("PAY-04 refund.succeeded on a manually settled refund is ignored as REJECTED_CONFLICT, audits a conflict and changes nothing", async () => {
-    const { refundId } = await seedCompletedRefund(true);
+    const { refundId, paymentId } = await seedCompletedRefund(true);
     const before = await refundRow(refundId);
     expect(before).toMatchObject({
       status: "completed",
@@ -362,7 +362,9 @@ describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled 
 
     const sent = deliver(
       "refund.succeeded",
-      flatRefund(refundId, `rf_${hex(6)}`, "succeeded"),
+      flatRefund(refundId, `rf_${hex(6)}`, "succeeded", {
+        payment_id: paymentId,
+      }),
     );
     const response = await sent.response;
 
@@ -545,12 +547,15 @@ describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled 
   });
 
   it("PAY-04 refund.succeeded with the key but a different amount than the refund is still a conflict", async () => {
-    const { refundId } = await seedCompletedRefund(true);
+    const { refundId, paymentId } = await seedCompletedRefund(true);
     const before = await refundRow(refundId);
 
     const sent = deliver(
       "refund.succeeded",
-      flatRefund(refundId, `rf_${hex(6)}`, "succeeded", { amount: 25_000 }),
+      flatRefund(refundId, `rf_${hex(6)}`, "succeeded", {
+        amount: 25_000,
+        payment_id: paymentId,
+      }),
     );
     const response = await sent.response;
 
@@ -567,13 +572,14 @@ describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled 
   });
 
   it("PAY-04 refund.failed on a manually settled refund is processed: no conflict audit, the refund is unchanged", async () => {
-    const { refundId } = await seedCompletedRefund(true);
+    const { refundId, paymentId } = await seedCompletedRefund(true);
     const before = await refundRow(refundId);
 
     const sent = deliver(
       "refund.failed",
       flatRefund(refundId, `rf_${hex(6)}`, "failed", {
         failure_code: "insufficient_funds",
+        payment_id: paymentId,
       }),
     );
     const response = await sent.response;
@@ -586,12 +592,14 @@ describe("legend-xd2q PAY-04 DOIT reports a refund that finance already settled 
   });
 
   it("PAY-04 refund.succeeded on a refund the provider itself completed is not a conflict", async () => {
-    const { refundId } = await seedCompletedRefund(false);
+    const { refundId, paymentId } = await seedCompletedRefund(false);
     const before = await refundRow(refundId);
 
     const sent = deliver(
       "refund.succeeded",
-      flatRefund(refundId, before.provider_ref!, "succeeded"),
+      flatRefund(refundId, before.provider_ref!, "succeeded", {
+        payment_id: paymentId,
+      }),
     );
     const response = await sent.response;
 

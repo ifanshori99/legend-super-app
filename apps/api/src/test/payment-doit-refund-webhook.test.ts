@@ -557,6 +557,7 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
     const intent = await seedPaidIntent();
     const refundId = await seedRefund(intent, { attempts: 1 });
     const data = flatRefund(refundId, intent.amountIdr, {
+      payment_id: intent.paymentId,
       status: "succeeded",
     });
     const body = refundEvent("refund.succeeded", data);
@@ -593,6 +594,7 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
     const body = refundEvent(
       "refund.failed",
       flatRefund(refundId, intent.amountIdr, {
+        payment_id: intent.paymentId,
         status: "failed",
         failure_code: "insufficient_funds",
       }),
@@ -620,6 +622,7 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
         amount: intent.amountIdr,
         status: "succeeded",
       },
+      payment_id: intent.paymentId,
     });
 
     const response = await deliver(body);
@@ -645,6 +648,7 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
       object: "refund",
       id: knownRef,
       amount: intent.amountIdr,
+      payment_id: intent.paymentId,
       status: "succeeded",
     });
 
@@ -661,14 +665,17 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
     const refundId = await seedRefund(intent, { attempts: 1 });
     const first = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
     expect((await deliver(first)).body.status).toBe("processed");
     const done = await refundRow(refundId);
 
     const body = refundEvent(
       "refund.failed",
-      flatRefund(refundId, intent.amountIdr, { failure_code: "late_decline" }),
+      flatRefund(refundId, intent.amountIdr, {
+        payment_id: intent.paymentId,
+        failure_code: "late_decline",
+      }),
     );
     const response = await deliver(body);
 
@@ -690,7 +697,10 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
     const refundId = await seedRefund(intent, { attempts: 1 });
     const body = refundEvent(
       "refund.created",
-      flatRefund(refundId, intent.amountIdr, { status: "succeeded" }),
+      flatRefund(refundId, intent.amountIdr, {
+        payment_id: intent.paymentId,
+        status: "succeeded",
+      }),
     );
 
     const response = await deliver(body);
@@ -705,7 +715,7 @@ describe("PAY-04 a signed refund webhook closes the refund", () => {
     const refundId = await seedRefund(intent, { attempts: 1 });
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
 
     const response = await deliver(body, `whsec-wrong-${hex(8)}`);
@@ -726,7 +736,7 @@ describe("TEN-01 the verifying integration must be the one that minted the payme
     const refundId = await seedRefund(intent, { attempts: 1 });
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
 
     const response = await deliver(body, secretB);
@@ -759,7 +769,7 @@ describe("TEN-01 the verifying integration must be the one that minted the payme
     // The minting integration's own, fresh delivery still closes it.
     const good = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
     expect((await deliver(good)).body.status).toBe("processed");
     expect((await refundRow(refundId)).status).toBe("completed");
@@ -776,7 +786,9 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
     const refundId = await seedRefund(intent, { attempts: 1 });
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(randomUUID(), intent.amountIdr),
+      flatRefund(randomUUID(), intent.amountIdr, {
+        payment_id: intent.paymentId,
+      }),
     );
 
     const response = await deliver(body);
@@ -796,7 +808,7 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
     const refundId = randomUUID();
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
     expect((await deliver(body)).status).toBe(500);
 
@@ -813,7 +825,9 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
     const refundId = await seedRefund(intent, { attempts: 1 });
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(randomUUID(), intent.amountIdr),
+      flatRefund(randomUUID(), intent.amountIdr, {
+        payment_id: intent.paymentId,
+      }),
     );
     expect((await deliver(body)).status).toBe(500);
 
@@ -1015,6 +1029,7 @@ describe("PAY-04 refund webhooks with real sandbox identities (Codex 117 Run B)"
     const body = refundEvent(
       "refund.failed",
       flatRefund(refundId, intent.amountIdr, {
+        payment_id: intent.paymentId,
         id: "rf_actual",
         reference: intent.intentId,
         status: "failed",
@@ -1043,6 +1058,7 @@ describe("PAY-04 refund webhooks with real sandbox identities (Codex 117 Run B)"
     const body = refundEvent(
       "refund.failed",
       flatRefund(refundId, intent.amountIdr, {
+        payment_id: intent.paymentId,
         id: "rf_actual",
         reference: randomUUID(),
         status: "failed",
@@ -1111,7 +1127,7 @@ describe("PAY-04 a quarantined refund is closed by the provider, never paid by u
     const refundId = await seedQuarantined(intent);
     const body = refundEvent(
       "refund.succeeded",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
 
     const response = await deliver(body);
@@ -1127,7 +1143,7 @@ describe("PAY-04 a quarantined refund is closed by the provider, never paid by u
     const refundId = await seedQuarantined(intent);
     const body = refundEvent(
       "refund.failed",
-      flatRefund(refundId, intent.amountIdr),
+      flatRefund(refundId, intent.amountIdr, { payment_id: intent.paymentId }),
     );
 
     const response = await deliver(body);

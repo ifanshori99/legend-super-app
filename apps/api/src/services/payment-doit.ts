@@ -344,6 +344,8 @@ export function createDoitGateway(
       idempotencyKey?: string;
       /** Aborts the call together with the internal timeout. */
       signal?: AbortSignal;
+      /** Epoch ms (legend-3usn8): the request must not leave at or after it. */
+      sendBy?: number;
       /** Error statuses to throw as `DoitErrorStatus` (status + DOIT code)
        * instead of the generic mapping. */
       captureErrorStatuses?: readonly number[];
@@ -381,8 +383,16 @@ export function createDoitGateway(
       }
     }
 
+    // legend-3usn8 fence: no await between these checks and the send. A worker
+    // that stalled (credentials, DNS) past the deadline sends nothing; the
+    // outcome stays unknown, never a decline.
+    if (request.sendBy !== undefined && Date.now() >= request.sendBy)
+      throw new DoitRefundUnknownError("DOIT_SEND_DEADLINE_PASSED");
+
     let response: Response;
     try {
+      // Inside the try so an abort maps like any failed send (no reason text).
+      request.signal?.throwIfAborted();
       response = await doFetch(`${resolved.baseUrl}${request.path}`, {
         method: request.method,
         headers,
@@ -620,6 +630,7 @@ export function createDoitGateway(
               reason: input.reason.slice(0, REFUND_REASON_MAX),
             },
             signal: input.signal,
+            sendBy: input.sendBy,
             captureErrorStatuses: [400, 409, 502],
           },
           z.unknown(),

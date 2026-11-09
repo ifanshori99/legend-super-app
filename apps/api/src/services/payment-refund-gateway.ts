@@ -47,6 +47,10 @@ export type GatewayRefundRequest = {
   readonly reason: string;
   /** Aborts at the call deadline; an abort is an unknown outcome. */
   readonly signal: AbortSignal;
+  /** Epoch ms (legend-3usn8): the request must not leave at or after this
+   * instant. The adapter checks it directly before the network send; past it,
+   * nothing is sent and the outcome is unknown. */
+  readonly sendBy?: number;
 };
 
 export type GatewayRefundResult =

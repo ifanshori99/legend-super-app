@@ -31,7 +31,7 @@ import { approvalResolvedEvent, IdentityError } from "@starter/shared/identity";
 import { paymentRefundEscalatedEvent } from "@starter/shared/payment";
 import type * as contract from "@starter/shared/payment/admin";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -1540,39 +1540,40 @@ function providerEvidenceOf(error: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Fencing check right before a send (legend-xd2q): the claim is still ours, the
- * refund still `approved`, and the lease outlives the send deadline. A worker
- * that stalled past its lease (ops may have settled the refund by hand
- * meanwhile) never POSTs; its attempt stays counted, so later runs only look
- * the refund up.
+ * Takes the right to send (legend-xd2q, legend-3usn8) with one atomic
+ * conditional UPDATE: the claim is still ours, the refund still `approved`, and
+ * the lease outlives the send deadline. The UPDATE row-locks, so it serialises
+ * with `settleRefundManually` (which holds the row through `lockRefundGraph`):
+ * if the settlement committed first, the status is no longer `approved` and no
+ * row comes back; if this wins, the settlement refuses (REFUND_PAYOUT_IN_FLIGHT)
+ * because the lease ends after the deadline and it needs the lease plus a
+ * margin to be over. Returns the deadline the check validated (the send budget
+ * is anchored to it, not to when a stalled worker resumes) or null when the
+ * right is gone. A worker that lost it never POSTs; its attempt stays counted,
+ * so later runs only look the refund up.
  */
-async function stillHoldsSendLease(
+async function takeSendRight(
   context: ScopedTenantContext,
   refund: Refund,
   token: string,
-): Promise<boolean> {
-  const [row] = await withTenant(db, context, (tx) =>
+): Promise<number | null> {
+  const deadline = Date.now() + PROVIDER_TIMEOUT_MS;
+  const rows = await withTenant(db, context, (tx) =>
     tx
-      .select({
-        status: paymentRefunds.status,
-        token: paymentRefunds.payoutClaimToken,
-        until: paymentRefunds.payoutClaimedUntil,
-      })
-      .from(paymentRefunds)
+      .update(paymentRefunds)
+      .set({ updatedAt: new Date() })
       .where(
         and(
           eq(paymentRefunds.tenantId, refund.tenantId),
           eq(paymentRefunds.id, refund.id),
+          eq(paymentRefunds.status, "approved"),
+          eq(paymentRefunds.payoutClaimToken, token),
+          gt(paymentRefunds.payoutClaimedUntil, new Date(deadline)),
         ),
-      ),
+      )
+      .returning({ id: paymentRefunds.id }),
   );
-  return (
-    row !== undefined &&
-    row.status === "approved" &&
-    row.token === token &&
-    row.until !== null &&
-    row.until.getTime() - Date.now() > PROVIDER_TIMEOUT_MS
-  );
+  return rows.length > 0 ? deadline : null;
 }
 
 /** False while the fail-closed default port is installed (no adapter). */
@@ -1867,27 +1868,39 @@ export async function runRefundPayout(
     // Tripwire (legend-xd2q): only a first attempt is sent. A refund an earlier
     // attempt may have sent is never POSTed again, even on `not_found`. A
     // quarantined refund is never sent.
-    if (
-      claim.send &&
-      !claim.lookupFirst &&
-      (await stillHoldsSendLease(context, refund, claim.token))
-    ) {
-      const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
-      result = await withDeadline(
-        signal,
-        port.refund({
-          context,
-          refundId: refund.id,
-          idempotencyKey,
-          paymentIntentId: refund.paymentIntentId,
-          paymentProviderRef: claim.paymentProviderRef,
-          integrationId: claim.integrationId,
-          outletId: claim.outletId,
-          amountIdr: refund.amountIdr,
-          reason: refund.reason,
-          signal,
-        }),
-      );
+    if (claim.send && !claim.lookupFirst) {
+      const deadline = await takeSendRight(context, refund, claim.token);
+      // The request provably never left: say so, so ops know a manual
+      // settlement is safe once the provider lookup agrees.
+      if (deadline === null) unknownCode = "PAYOUT_SEND_RIGHT_LOST";
+      else {
+        // legend-3usn8: the send budget ends at the deadline the DB check
+        // validated. A worker that stalled after the check must not get a fresh
+        // 30 s; the adapter's fetch aborts before sending once it has passed.
+        // Clamped: a clock stepping back never lengthens the send budget.
+        const remaining = Math.min(deadline - Date.now(), PROVIDER_TIMEOUT_MS);
+        if (remaining <= 0) {
+          unknownCode = "PAYOUT_SEND_WINDOW_MISSED";
+        } else {
+          const signal = AbortSignal.timeout(remaining);
+          result = await withDeadline(
+            signal,
+            port.refund({
+              context,
+              refundId: refund.id,
+              idempotencyKey,
+              paymentIntentId: refund.paymentIntentId,
+              paymentProviderRef: claim.paymentProviderRef,
+              integrationId: claim.integrationId,
+              outletId: claim.outletId,
+              amountIdr: refund.amountIdr,
+              reason: refund.reason,
+              signal,
+              sendBy: deadline,
+            }),
+          );
+        }
+      }
     }
   } catch (error) {
     result = null;
@@ -2761,7 +2774,7 @@ export async function settleRefundManually(
             "The provider has this refund; its provider lookup settles it.",
           );
         // A claim not yet cleared may belong to a stalled worker: wait out the
-        // lease plus a margin (its send re-checks the lease, stillHoldsSendLease).
+        // lease plus a margin (its send takes the right atomically, takeSendRight).
         if (
           refund.payoutClaimToken !== null &&
           refund.payoutClaimedUntil !== null &&

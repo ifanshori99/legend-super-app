@@ -59,7 +59,14 @@ export type DoitRefundFacts = {
   /** Intent reference carried by a refund object (legend-r7g2): checked
    * against the refund's intent like a payment object's `reference`. */
   reference?: string;
+  /** legend-2ol8g: facts the event carries but we could not read (or, on an
+   * event matched by key or refund id, that it must carry and does not). Sorted, unique. The
+   * caller never settles on such an event. */
+  invalid?: DoitRefundInvalidFact[];
 };
+
+export const DOIT_REFUND_INVALID_FACTS = ["amount", "payment_id"] as const;
+export type DoitRefundInvalidFact = (typeof DOIT_REFUND_INVALID_FACTS)[number];
 
 const textSchema = z.string().min(1).max(100);
 const referenceSchema = z.string().min(1).max(128);
@@ -128,16 +135,65 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
     (isRefundObject ? text(record.id) : undefined) ??
     (paymentShaped ? undefined : text(record.refund_id));
   if (refundId) facts.refundId = refundId;
-  const refundAmount =
-    amount(refund.amount) ??
-    (isRefundObject || !paymentShaped ? amount(record.amount) : undefined);
+  // legend-2ol8g: the one raw field the amount is read from; present but
+  // unreadable (`"3999.0"`, null, -1) is marked invalid, never silently dropped.
+  const rawAmount =
+    refund.amount !== undefined
+      ? refund.amount
+      : isRefundObject || !paymentShaped
+        ? record.amount
+        : undefined;
+  const refundAmount = amount(rawAmount);
   if (refundAmount !== undefined) facts.amountIdr = refundAmount;
   const code =
     failureCode(refund.failure_code) ?? failureCode(record.failure_code);
   if (code) facts.failureCode = code;
   if (payment) facts.payment = payment;
-  const paymentId = paymentShaped ? undefined : text(record.payment_id);
+  // legend-2ol8g: the provider payment id may sit flat (`data.payment_id`) or
+  // in the refund object (`refund.payment_id`). Same rules for both: present
+  // but unreadable is invalid; both present and different is invalid; else it
+  // is the one readable id.
+  const flatPaymentId = paymentShaped ? undefined : text(record.payment_id);
+  const refundPaymentId = text(refund.payment_id);
+  const flatPaymentIdBad =
+    !paymentShaped && "payment_id" in record && !flatPaymentId;
+  const refundPaymentIdBad = "payment_id" in refund && !refundPaymentId;
+  const paymentIdConflict =
+    flatPaymentId !== undefined &&
+    refundPaymentId !== undefined &&
+    flatPaymentId !== refundPaymentId;
+  const paymentId =
+    flatPaymentIdBad || refundPaymentIdBad || paymentIdConflict
+      ? undefined
+      : (flatPaymentId ?? refundPaymentId);
   if (paymentId) facts.paymentId = paymentId;
+  const invalid = new Set<DoitRefundInvalidFact>();
+  if (rawAmount !== undefined && refundAmount === undefined)
+    invalid.add("amount");
+  if (flatPaymentIdBad || refundPaymentIdBad || paymentIdConflict)
+    invalid.add("payment_id");
+  // A payment object (or payment-shaped data) we cannot read is a payment id
+  // we cannot trust.
+  if (!payment && (record.payment !== undefined || paymentShaped))
+    invalid.add("payment_id");
+  // An event that would match by idempotency key or provider refund id (flat
+  // sandbox shape, refund object, keyed) must carry both a refund amount and a
+  // payment id (flat/refund-level, or the payment object's): a missing one is
+  // as bad as an unreadable one. Pure payment-object events (no key, no refund
+  // id) are unchanged.
+  const matchesByKeyOrRefundId = !!facts.idempotencyKey || !!facts.refundId;
+  if (matchesByKeyOrRefundId && refundAmount === undefined)
+    invalid.add("amount");
+  if (matchesByKeyOrRefundId && !paymentId && !payment)
+    invalid.add("payment_id");
+  // A stored event keeps its marker in `data.invalid` (see the schema below).
+  if (Array.isArray(record.invalid))
+    for (const known of DOIT_REFUND_INVALID_FACTS)
+      if (record.invalid.includes(known)) invalid.add(known);
+  if (invalid.size > 0)
+    facts.invalid = DOIT_REFUND_INVALID_FACTS.filter((fact) =>
+      invalid.has(fact),
+    );
   const reference = referenceSchema.safeParse(
     refund.reference ?? (isRefundObject ? record.reference : undefined),
   );
@@ -173,6 +229,7 @@ export const doitRefundWebhookEventSchema =
     if (facts.idempotencyKey) data.idempotency_key = facts.idempotencyKey;
     if (facts.payment) data.payment = facts.payment;
     if (facts.paymentId) data.payment_id = facts.paymentId;
+    if (facts.invalid) data.invalid = facts.invalid;
     return {
       id: event.id,
       type: event.type,
