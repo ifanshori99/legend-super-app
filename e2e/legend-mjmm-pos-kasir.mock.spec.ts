@@ -61,13 +61,32 @@ const BACKSPACE = /^Hapus angka terakhir$/;
 const payUrl = (seed?: string, orderId = DEMO_ORDER_ID) =>
   `/pos/bayar/${orderId}${seed ? `?demo=${seed}` : ""}`;
 
-/** Server HTML paints before React hydrates; a click needs the router up. */
+/**
+ * Server HTML paints before React hydrates. The router being up is not enough
+ * (legend-doykg): a screen can still be un-hydrated. A `fill()` then lands in
+ * the DOM only, React state stays "", and the submit reads an empty value
+ * ("Masukkan nomor kode pelanggan."). Hydration puts `__reactProps$*` on every
+ * host element it adopts, so wait until each control in the main area has it.
+ */
 async function waitForHydration(page: Page): Promise<void> {
   await page.waitForFunction(
     () =>
       Boolean(
         (window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
       ),
+    undefined,
+    { timeout: 60_000 },
+  );
+  await page.waitForFunction(
+    () => {
+      const root = document.querySelector("#main-content") ?? document.body;
+      const controls = root.querySelectorAll(
+        "input, button, textarea, select, a[href]",
+      );
+      return Array.from(controls).every((el) =>
+        Object.keys(el).some((key) => key.startsWith("__reactProps$")),
+      );
+    },
     undefined,
     { timeout: 60_000 },
   );
@@ -593,6 +612,26 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
   await expect(main(page)).toContainText(
     new RegExp(`Sisa yang harus dibayar\\s*${rp("26.600")}`),
   );
+});
+
+// legend-doykg: with the first script held back the screen paints from server
+// HTML for seconds. open() must wait until it is interactive, so the typed code
+// reaches React state and the lookup finds the order (flaky ~1 in 8 before).
+test("legend-doykg CODE-01 a code typed right after open() survives slow hydration", async ({
+  page,
+}) => {
+  let held = false;
+  await page.route(/\.(js|mjs|ts|tsx)(\?|$)/, async (route) => {
+    if (!held) {
+      held = true;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    await route.continue();
+  });
+  await open(page, "/pos/kode");
+  await page.getByLabel(/Kode .Bayar di kasir./).fill("0044");
+  await page.getByRole("button", { name: /^Cari (ulang )?pesanan$/ }).click();
+  await expect(main(page)).toContainText("Pesanan ditemukan");
 });
 
 test("legend-mjmm CODE-02 a wrong code keeps the input, starts no payment and can be corrected", async ({

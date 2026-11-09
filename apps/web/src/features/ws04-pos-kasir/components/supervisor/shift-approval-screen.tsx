@@ -177,11 +177,6 @@ function ResultPanel({ review }: { review: ShiftReview }) {
     >
       <div className="grid gap-5">
         <VarianceBlock review={review} />
-        {review.varianceIdr === null && (
-          <p className="text-base font-semibold">
-            {t("posKasirSupervisor.result.hiddenShort")}
-          </p>
-        )}
         <dl className="grid gap-2.5">
           <BreakdownRow
             label={t("posKasirSupervisor.breakdown.openingFloat")}
