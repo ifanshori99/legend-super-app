@@ -87,6 +87,7 @@ import {
   type PosReceiptOutletSnapshot,
   type ReceiptSequenceRetiredReason,
 } from "../db/schema/pos-receipt.ts";
+import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -1544,13 +1545,22 @@ export async function receiptGapsForOutlet(
     list.push({ sequenceNumber: row.sequenceNumber });
     bySequence.set(row.sequenceId, list);
   }
+  // legend-0hzqw: a written-off number counts as present.
+  const writeoffs = await writeoffOrdinalsBySequence(
+    tx,
+    tenantId,
+    sequences.map((sequence) => sequence.id),
+  );
   return sequences
     .map((sequence) => ({
       sequenceId: sequence.id,
       deviceId: sequence.deviceId,
       prefix: sequence.prefix,
       lastNumber: sequence.lastNumber,
-      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
+      missing: receiptGaps(sequence, [
+        ...(bySequence.get(sequence.id) ?? []),
+        ...asOrdinals(writeoffs.get(sequence.id)),
+      ]),
     }))
     .filter((entry) => entry.missing.length > 0);
 }
@@ -1634,13 +1644,22 @@ export async function receiptGapsForOutletFast(
     list.push({ sequenceNumber: row.sequenceNumber });
     bySequence.set(row.sequenceId, list);
   }
+  // legend-0hzqw: a written-off number counts as present.
+  const writeoffs = await writeoffOrdinalsBySequence(
+    tx,
+    tenantId,
+    suspect.map((row) => row.sequence.id),
+  );
   return suspect
     .map(({ sequence }) => ({
       sequenceId: sequence.id,
       deviceId: sequence.deviceId,
       prefix: sequence.prefix,
       lastNumber: sequence.lastNumber,
-      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
+      missing: receiptGaps(sequence, [
+        ...(bySequence.get(sequence.id) ?? []),
+        ...asOrdinals(writeoffs.get(sequence.id)),
+      ]),
     }))
     .filter((entry) => entry.missing.length > 0);
 }
@@ -1656,7 +1675,9 @@ export async function receiptGapsForOutletFast(
  * with a missing ordinal or a lost range, oldest run first, so P1 missing #3
  * and P2 missing #3 stay distinct. legend-yd0h8: `lost` is set for a run
  * retired as `edge_regressed` whose edge high-water is above the cloud
- * lastNumber.
+ * lastNumber. legend-0hzqw: ordinals written off by the owner count as present
+ * and are listed in `writtenOff`; a run with only write-offs is still emitted
+ * so the report shows them.
  */
 export async function receiptGapsForDevice(
   tx: Tx,
@@ -1675,16 +1696,22 @@ export async function receiptGapsForDevice(
       ),
     )
     .orderBy(asc(receiptSequences.createdAt), asc(receiptSequences.id));
+  const writeoffs = await writeoffOrdinalsBySequence(
+    tx,
+    tenantId,
+    sequences.map((sequence) => sequence.id),
+  );
   const runs: PosReceiptGapRun[] = [];
   for (const sequence of sequences) {
-    const missing = await receiptGapsOfRun(tx, tenantId, sequence);
+    const writtenOff = writeoffs.get(sequence.id) ?? [];
+    const missing = await receiptGapsOfRun(tx, tenantId, sequence, writtenOff);
     const lost =
       sequence.retiredReason === "edge_regressed" &&
       sequence.edgeReportedNumber > sequence.lastNumber
         ? { from: sequence.lastNumber + 1, to: sequence.edgeReportedNumber }
         : null;
-    if (missing.length > 0 || lost !== null)
-      runs.push({ prefix: sequence.prefix, missing, lost });
+    if (missing.length > 0 || lost !== null || writtenOff.length > 0)
+      runs.push({ prefix: sequence.prefix, missing, writtenOff, lost });
   }
   return runs;
 }
@@ -1694,6 +1721,7 @@ async function receiptGapsOfRun(
   tx: Tx,
   tenantId: TenantId,
   sequence: SequenceRow,
+  writtenOff: number[],
 ): Promise<number[]> {
   if (sequence.lastNumber === 0) return [];
   const [counted] = await tx
@@ -1720,5 +1748,40 @@ async function receiptGapsOfRun(
         eq(posReceipts.sequenceId, sequence.id),
       ),
     );
-  return receiptGaps(sequence, issued);
+  return receiptGaps(sequence, [...issued, ...asOrdinals(writtenOff)]);
+}
+
+/** Written-off ordinals (legend-0hzqw) per sequence id, ascending. */
+async function writeoffOrdinalsBySequence(
+  tx: Tx,
+  tenantId: TenantId,
+  sequenceIds: string[],
+): Promise<Map<string, number[]>> {
+  const bySequence = new Map<string, number[]>();
+  if (sequenceIds.length === 0) return bySequence;
+  const rows = await tx
+    .select({
+      sequenceId: receiptNumberWriteoffs.sequenceId,
+      sequenceNumber: receiptNumberWriteoffs.sequenceNumber,
+    })
+    .from(receiptNumberWriteoffs)
+    .where(
+      and(
+        eq(receiptNumberWriteoffs.tenantId, tenantId),
+        inArray(receiptNumberWriteoffs.sequenceId, sequenceIds),
+      ),
+    )
+    .orderBy(asc(receiptNumberWriteoffs.sequenceNumber));
+  for (const row of rows) {
+    const list = bySequence.get(row.sequenceId) ?? [];
+    list.push(row.sequenceNumber);
+    bySequence.set(row.sequenceId, list);
+  }
+  return bySequence;
+}
+
+function asOrdinals(
+  numbers: number[] | undefined,
+): { sequenceNumber: number }[] {
+  return (numbers ?? []).map((sequenceNumber) => ({ sequenceNumber }));
 }

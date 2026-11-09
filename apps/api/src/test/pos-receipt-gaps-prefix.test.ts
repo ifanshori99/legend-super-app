@@ -395,8 +395,8 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
     ]);
 
     expect(await askPort(outletId, device.deviceId)).toEqual([
-      { prefix: "P1", missing: [3], lost: null },
-      { prefix: "P2", missing: [3], lost: null },
+      { prefix: "P1", missing: [3], lost: null, writtenOff: [] },
+      { prefix: "P2", missing: [3], lost: null, writtenOff: [] },
     ]);
 
     // Closed before the shift report opens a shift (an open shift refuses
@@ -410,8 +410,8 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
     expect(
       await shiftReport(outletId, device.deviceId, device.businessDate),
     ).toEqual([
-      { prefix: "P1", missing: ["P1-000003"], lostRange: null },
-      { prefix: "P2", missing: ["P2-000003"], lostRange: null },
+      { prefix: "P1", missing: ["P1-000003"], lostRange: null, writtenOff: [] },
+      { prefix: "P2", missing: ["P2-000003"], lostRange: null, writtenOff: [] },
     ]);
   });
 
@@ -431,7 +431,7 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
     // Only the retired run is reported: nothing is missing, 3..5 is lost, and
     // the clean current run is omitted.
     expect(await askPort(outletId, device.deviceId)).toEqual([
-      { prefix: "RG", missing: [], lost: { from: 3, to: 5 } },
+      { prefix: "RG", missing: [], lost: { from: 3, to: 5 }, writtenOff: [] },
     ]);
 
     // No missing ordinal anywhere: the close goes through
@@ -447,6 +447,7 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
         prefix: "RG",
         missing: [],
         lostRange: { from: "RG-000003", to: "RG-000005" },
+        writtenOff: [],
       },
     ]);
   });
@@ -464,7 +465,7 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       { prefix: "RB", lastNumber: 2, present: [1, 2], ageMinutes: 30 },
     ]);
     expect(await askPort(outletId, device.deviceId)).toEqual([
-      { prefix: "RA", missing: [2], lost: null },
+      { prefix: "RA", missing: [2], lost: null, writtenOff: [] },
     ]);
     const refused = await closeDay(outletId, device.businessDate);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
@@ -485,7 +486,7 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       { prefix: "RN", lastNumber: 0, present: [], ageMinutes: 30 },
     ]);
     expect(await askPort(outletId, device.deviceId)).toEqual([
-      { prefix: "RM", missing: [2], lost: { from: 4, to: 6 } },
+      { prefix: "RM", missing: [2], lost: { from: 4, to: 6 }, writtenOff: [] },
     ]);
     const refused = await closeDay(outletId, device.businessDate);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
@@ -498,6 +499,7 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
         prefix: "RM",
         missing: ["RM-000002"],
         lostRange: { from: "RM-000004", to: "RM-000006" },
+        writtenOff: [],
       },
     ]);
   });
@@ -542,11 +544,13 @@ describe("receipt gaps per prefix (legend-nhmct)", () => {
       { prefix: "S2", lastNumber: 4, present: [1, 2, 4], ageMinutes: 10 },
     ]);
     expect(await askPort(holedOutletId, holed.deviceId)).toEqual([
-      { prefix: "S2", missing: [3], lost: null },
+      { prefix: "S2", missing: [3], lost: null, writtenOff: [] },
     ]);
     expect(
       await shiftReport(holedOutletId, holed.deviceId, holed.businessDate),
-    ).toEqual([{ prefix: "S2", missing: ["S2-000003"], lostRange: null }]);
+    ).toEqual([
+      { prefix: "S2", missing: ["S2-000003"], lostRange: null, writtenOff: [] },
+    ]);
   });
 
   it("a device with no sequence returns []", async () => {

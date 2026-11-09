@@ -1079,6 +1079,13 @@
       "when": 1794233000000,
       "tag": "0154_receipt_sequence_restore_detect",
       "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1794235000000,
+      "tag": "0156_receipt_number_writeoffs",
+      "breakpoints": true
     }
   ]
 }
