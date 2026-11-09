@@ -638,6 +638,20 @@
       "when": 1794180950152,
       "tag": "0090_pos_day_close_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794183034662,
+      "tag": "0091_safe_mathemanic",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794183046536,
+      "tag": "0092_promo_idempotency_rls",
+      "breakpoints": true
     }
   ]
 }

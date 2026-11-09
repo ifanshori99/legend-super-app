@@ -221,6 +221,7 @@ export function toPromotion(row: PromotionRow): Promotion {
     quotaPerCustomer: row.quotaPerCustomer,
     budgetIdr: row.budgetIdr,
     spentIdr: row.spentIdr,
+    outletScope: row.outletScope,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
