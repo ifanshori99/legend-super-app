@@ -8,7 +8,8 @@
 //   for the close and then sees the `pos_daily_closes` row and is refused.
 // - Cash goes into an open drawer of the device it is taken on: a cash
 //   tender locks the caller's open shift on that device FOR SHARE; a cash
-//   refund or void locks it FOR UPDATE and checks the drawer holds enough.
+//   refund or void locks it FOR UPDATE; whether it is more than the drawer
+//   should hold is decided by `cashOutExceedsDrawer`, which never refuses.
 //   `closePosShift` and `recordCashMovement` lock that row FOR UPDATE, so
 //   cash taken while a shift is closing waits for the close and then finds
 //   no open shift.
@@ -20,11 +21,7 @@
 // `isBusinessDayClosed`; it decides instead of throwing.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import {
-  CoreError,
-  type OutletId,
-  type ScopedTenantContext,
-} from "@starter/shared/core";
+import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { PosError } from "@starter/shared/pos";
 import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -84,10 +81,10 @@ export async function assertBusinessDayOpen(
  * another device's till, or a drawer that closed while the request waited).
  * Cash goes into the drawer of the device it was taken on.
  * - `mode "in"` (a cash tender) locks FOR SHARE.
- * - `mode "out"` (a cash refund or void) locks FOR UPDATE and refuses with
- *   CONFLICT when the cash paid out is more than the drawer should hold
- *   (`cashOutIdr`), so the shift can always still close. The message does not
- *   reveal the expected amount.
+ * - `mode "out"` (a cash refund or void) locks FOR UPDATE. It never refuses
+ *   on the drawer: a refusal would let the cashier probe the expected cash
+ *   (legend-utqr). The caller holds a too-large cash out for supervisor review
+ *   (`cashOutExceedsDrawer`, valid only under this lock).
  * `at` is the time the cash is recorded under; it is taken before the locks,
  * so when the shift found was opened after `at` (S1 closed and S2 opened
  * while the request waited) the cash would fall in neither shift's figures
@@ -102,8 +99,6 @@ export async function lockCashierShiftForCash(
     deviceId: string | null;
     mode: "in" | "out";
     at: Date;
-    /** Cash paid out of the drawer; checked against the drawer in `out` mode. */
-    cashOutIdr?: number;
   },
 ): Promise<ShiftRow> {
   if (input.deviceId === null) throw new PosError("SHIFT_NOT_OPEN");
@@ -123,13 +118,19 @@ export async function lockCashierShiftForCash(
   const [shift] =
     input.mode === "out" ? await query.for("update") : await query.for("share");
   if (!shift || input.at < shift.openedAt) throw new PosError("SHIFT_NOT_OPEN");
-  if (input.mode === "out" && (input.cashOutIdr ?? 0) > 0) {
-    const expected = await liveExpectedCashIdr(tx, shift);
-    if (input.cashOutIdr! > expected)
-      throw new CoreError(
-        "CONFLICT",
-        "Tunai di laci tidak cukup untuk transaksi ini. Minta bantuan supervisor.",
-      );
-  }
   return shift;
+}
+
+/**
+ * True when `cashOutIdr` is more than the drawer should hold now. Call it only
+ * under the FOR UPDATE shift lock of `lockCashierShiftForCash` (`out` mode), so
+ * no other cash movement changes the figures between the check and the write.
+ * The answer must never reach the cashier (legend-utqr).
+ */
+export async function cashOutExceedsDrawer(
+  tx: Tx,
+  shift: ShiftRow,
+  cashOutIdr: number,
+): Promise<boolean> {
+  return cashOutIdr > (await liveExpectedCashIdr(tx, shift));
 }

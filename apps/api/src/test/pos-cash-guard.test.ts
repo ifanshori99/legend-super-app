@@ -32,7 +32,11 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import type { EndOfDayRecap, PosReceipt } from "@starter/shared/pos";
+import {
+  posShiftCountSchema,
+  type EndOfDayRecap,
+  type PosReceipt,
+} from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -62,6 +66,7 @@ import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
   owner,
+  seededTenantId,
   type IsolatedTenant,
 } from "./floor-test-helpers.ts";
 
@@ -409,10 +414,14 @@ async function pinApproval(input: {
   return { approvedBy: supervisor.userId, overrideId: override.id };
 }
 
-/** An approved shift-close override row for a zero-variance count (objectType pos_shift_count). */
+/**
+ * An approved shift-close override row (objectType pos_shift_count). Its value
+ * is the stored variance magnitude |counted - expected| (0 for an exact count).
+ */
 async function shiftCloseApproval(
   outletId: string,
   countId: string,
+  valueIdr = 0,
 ): Promise<{ approvedBy: string; approvalRequestId: string }> {
   const id = randomUUID();
   await asOwnerTenant(tenant.tenantId, (client) =>
@@ -421,7 +430,7 @@ async function shiftCloseApproval(
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
           reason, value_idr, object_type, object_id, request_fingerprint, created_at, resolved_at)
        VALUES ($1, $2, $3, 'cash_shift_close', 'supervisor_pin', 'approved', $4, $5,
-               'Hitung kas akhir shift', 0, 'pos_shift_count', $6, $7,
+               'Hitung kas akhir shift', $8, 'pos_shift_count', $6, $7,
                now() - interval '5 seconds', now() - interval '5 seconds')`,
       [
         id,
@@ -431,6 +440,7 @@ async function shiftCloseApproval(
         supervisor.userId,
         countId,
         randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        valueIdr,
       ],
     ),
   );
@@ -1247,82 +1257,704 @@ describe("POS-03 cash goes into the drawer of the till it is taken on (legend-6c
     );
     expect(rows).toEqual([{ shift_id: shiftId }]);
   }, 60_000);
+});
 
-  it("a cash refund or void larger than the drawer holds is refused with 409 without the expected amount, stores nothing, and the shift still counts and closes", async () => {
-    const outlet = await addOutlet();
-    const shiftId = await openShift(outlet);
-    const sale = await completedSale(outlet.outletId, "cash");
-    const caller = {
-      userId: userIdSchema.parse(cashier.userId),
-      deviceId: outlet.deviceId,
-    };
-    const outletId = outletIdSchema.parse(outlet.outletId);
-    // Leave 1.000 in the drawer: float + the sale, minus a cash out.
-    const left = 1_000;
-    await recordCashMovement(scopedContext(), caller, outletId, shiftId, {
-      type: "cash_out",
-      amountIdr: idr(OPENING_FLOAT_IDR + sale.totalIdr - left),
-      reasonNote: "Belanja es batu",
-      idempotencyKey: randomUUID(),
-    } as Parameters<typeof recordCashMovement>[4]);
+// ---- legend-utqr: refund/void cash without leaking the drawer balance ----------------
+//
+// Design (sub-brief): a cash refund or void larger than the expected drawer
+// cash is recorded like any other (201, same body, same events), so the
+// accept/refuse answer is no longer an oracle for the blind count. It is
+// flagged `needs_approval`, left out of the drawer figures, summed into
+// `heldCashOutIdr` on the count (supervisors only) and audited
+// `pos_order.cash_refund_held` / `pos_order.cash_void_held`.
+//
+// Assumptions: "supervisor" = the `supervisor` member (shift.cash.view_all);
+// a held void's cashIdr is the order's captured cash, which for these
+// cash-only sales equals the void row's amount_idr; the audit `orderId` may be
+// the ULID or its UUID form; a replayed approval is refused with a code that
+// contains "APPROVAL" (the existing approval check), status 4xx.
 
-    const refund = await pos(outlet.outletId).refund(sale.orderId, {
-      reason: "quality_complaint",
-      reasonNote: "Minuman tumpah",
-      amountIdr: KOPI_IDR,
-      ...(await pinApproval({
-        outletId: outlet.outletId,
+const LEFT_IDR = 1_000;
+const HELD_MOVEMENT_IDR = 5_000;
+const DRAWER_LEAK = /Tunai di laci/i;
+
+type Outlet = { outletId: string; deviceId: string };
+type Drawer = { outlet: Outlet; shiftId: string; sales: Order[] };
+type Approval = { approvedBy: string; overrideId: string };
+
+const callerOf = (outlet: Outlet) => ({
+  userId: userIdSchema.parse(cashier.userId),
+  deviceId: outlet.deviceId,
+});
+
+/**
+ * A fresh outlet with an open shift and `sales` completed cash sales. `over`
+ * cashes out all but LEFT_IDR, so any refund/void of more than LEFT_IDR is over
+ * the drawer; otherwise the drawer holds the float plus the sales.
+ */
+async function cashDrawer(input: {
+  over: boolean;
+  sales?: number;
+}): Promise<Drawer> {
+  const outlet = await addOutlet();
+  const shiftId = await openShift(outlet);
+  const sales: Order[] = [];
+  for (let n = 0; n < (input.sales ?? 1); n++)
+    sales.push(await completedSale(outlet.outletId, "cash"));
+  if (input.over) {
+    const total = sales.reduce((sum, sale) => sum + sale.totalIdr, 0);
+    await recordCashMovement(
+      scopedContext(),
+      callerOf(outlet),
+      outletIdSchema.parse(outlet.outletId),
+      shiftId,
+      {
+        type: "cash_out",
+        amountIdr: idr(OPENING_FLOAT_IDR + total - LEFT_IDR),
+        reasonNote: "Belanja es batu",
+        idempotencyKey: randomUUID(),
+      } as Parameters<typeof recordCashMovement>[4],
+    );
+  }
+  return { outlet, shiftId, sales };
+}
+
+async function cashRefund(
+  drawer: Drawer,
+  options: { sale?: Order; approval?: Approval } = {},
+) {
+  const sale = options.sale ?? drawer.sales[0]!;
+  return pos(drawer.outlet.outletId).refund(sale.orderId, {
+    reason: "quality_complaint",
+    reasonNote: "Minuman tumpah",
+    amountIdr: KOPI_IDR,
+    ...(options.approval ??
+      (await pinApproval({
+        outletId: drawer.outlet.outletId,
         action: "refund",
         orderId: sale.orderId,
         valueIdr: KOPI_IDR,
-      })),
+      }))),
+  });
+}
+
+async function cashVoid(drawer: Drawer, sale: Order = drawer.sales[0]!) {
+  return pos(drawer.outlet.outletId).correctionVoid(sale.orderId, {
+    reason: "customer_cancelled",
+    reasonNote: "Pelanggan salah pesan",
+    ...(await pinApproval({
+      outletId: drawer.outlet.outletId,
+      action: "void",
+      orderId: sale.orderId,
+      valueIdr: sale.totalIdr,
+    })),
+  });
+}
+
+const correctionTable = {
+  refund: "pos_order_refunds",
+  void: "pos_order_voids",
+} as const;
+type Kind = keyof typeof correctionTable;
+
+const correct = (kind: Kind, drawer: Drawer, sale?: Order) =>
+  kind === "refund"
+    ? cashRefund(drawer, sale ? { sale } : {})
+    : cashVoid(drawer, sale);
+
+async function correctionRows(kind: Kind, orderId: string) {
+  const { rows } = await owner.query<{
+    id: string;
+    needs_approval: boolean;
+    shift_id: string | null;
+    amount: number;
+  }>(
+    `SELECT id::text AS id, needs_approval, shift_id::text AS shift_id,
+            amount_idr::float8 AS amount
+       FROM ${correctionTable[kind]}
+      WHERE tenant_id = $1 AND order_id = $2::uuid`,
+    [tenant.tenantId, ulidToUuid(orderId)],
+  );
+  return rows;
+}
+
+type HeldAudit = {
+  action: string;
+  objectId: string;
+  maskedChanges: { after: Record<string, unknown> };
+};
+
+async function heldCorrectionAudits(
+  kind: Kind,
+  shiftId: string,
+): Promise<HeldAudit[]> {
+  const { rows } = await owner.query<{ event: HeldAudit }>(
+    `SELECT event FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'action' = $2
+        AND event->'maskedChanges'->'after'->>'shiftId' = $3
+      ORDER BY created_at, id`,
+    [tenant.tenantId, `pos_order.cash_${kind}_held`, shiftId],
+  );
+  return rows.map((row) => row.event);
+}
+
+/** Key structure only (arrays keep their elements), never the values. */
+function shape(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(shape);
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, shape((value as Record<string, unknown>)[key])]),
+    );
+  return 0;
+}
+
+async function outboxIds(): Promise<Set<string>> {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id::text AS id FROM domain_event_outbox WHERE tenant_id = $1",
+    [tenant.tenantId],
+  );
+  return new Set(rows.map((row) => row.id));
+}
+
+/** Outbox events written since `before`, as [name, key shape, raw]. */
+async function eventsSince(before: Set<string>) {
+  const { rows } = await owner.query<{
+    id: string;
+    event: { name: string };
+  }>(
+    `SELECT id::text AS id, event FROM domain_event_outbox
+      WHERE tenant_id = $1 ORDER BY created_at, sequence, id`,
+    [tenant.tenantId],
+  );
+  return rows
+    .filter((row) => !before.has(row.id))
+    .map((row) => ({
+      name: row.event.name,
+      shape: JSON.stringify(shape(row.event)),
+      raw: JSON.stringify(row.event),
+    }))
+    .sort(
+      (a, b) => a.name.localeCompare(b.name) || a.shape.localeCompare(b.shape),
+    );
+}
+
+/** The cashier counts the drawer blind with 1.000 notes. */
+function countAs(drawer: Drawer, countedIdr: number) {
+  return submitPosShiftCount(
+    scopedContext(),
+    callerOf(drawer.outlet),
+    outletIdSchema.parse(drawer.outlet.outletId),
+    drawer.shiftId,
+    {
+      counts: [
+        { denominationIdr: 1_000, quantity: Math.round(countedIdr / 1_000) },
+      ],
+      idempotencyKey: randomUUID(),
+    } as Parameters<typeof submitPosShiftCount>[4],
+  );
+}
+
+/** The supervisor's count trail of the shift. */
+async function supervisorTrail(drawer: Drawer) {
+  const response = await supervisor.client
+    .get(
+      `/api/outlets/${encodeURIComponent(drawer.outlet.outletId)}/pos/shifts/${drawer.shiftId}/counts`,
+    )
+    .set(headers)
+    .set(originHeader);
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return (response.body.data as unknown[]).map((row) =>
+    posShiftCountSchema.parse(row),
+  );
+}
+
+/** Closes the drawer's shift with a fresh count and approval (and a note if given). */
+async function closeWith(
+  drawer: Drawer,
+  countId: string,
+  varianceNote?: string,
+  approvalValueIdr = 0,
+) {
+  const approval = await shiftCloseApproval(
+    drawer.outlet.outletId,
+    countId,
+    approvalValueIdr,
+  );
+  return closePosShift(
+    scopedContext(),
+    callerOf(drawer.outlet),
+    outletIdSchema.parse(drawer.outlet.outletId),
+    drawer.shiftId,
+    {
+      countId,
+      approvedBy: userIdSchema.parse(approval.approvedBy),
+      approvalRequestId: approval.approvalRequestId,
+      ...(varianceNote ? { varianceNote } : {}),
+      idempotencyKey: randomUUID(),
+    } as Parameters<typeof closePosShift>[4],
+  );
+}
+
+/** The `cashier_shift.closed` outbox payload of the shift (exactly one). */
+async function closedPayload(shiftId: string) {
+  const { rows } = await owner.query<{
+    payload: {
+      differenceIdr: number | string;
+      heldCashOutIdr?: number | string;
+    };
+  }>(
+    `SELECT event->'payload' AS payload FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = 'cashier_shift.closed'
+        AND event->'payload'->>'shiftId' = $2`,
+    [tenant.tenantId, shiftId],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!.payload;
+}
+
+/** The stored (counted - expected) variance of the shift. */
+async function storedVariance(shiftId: string): Promise<number> {
+  const { rows } = await owner.query<{ variance: number }>(
+    "SELECT variance_idr::float8 AS variance FROM pos_shifts WHERE tenant_id = $1 AND id = $2",
+    [tenant.tenantId, shiftId],
+  );
+  return rows[0]!.variance;
+}
+
+const NOTE = "Selisih kas dicek ulang bersama supervisor";
+
+/** A legend_app (RLS) transaction for `tenantId` seeing `outlets` (JSON or "*"). */
+async function asAppTenant<T>(
+  tenantId: string,
+  outlets: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE legend_app");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', $2, true)",
+      [tenantId, outlets],
+    );
+    return await run(client);
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
+
+describe("legend-utqr cash refund and void do not reveal the drawer balance", () => {
+  it.each(["refund", "void"] as const)(
+    "A: a cash %s that fits and one over the drawer both answer 201 with the same body shape and the same outbox events; nothing mentions the drawer",
+    async (kind) => {
+      const fits = await cashDrawer({ over: false });
+      const over = await cashDrawer({ over: true });
+
+      const run = async (drawer: Drawer) => {
+        const before = await outboxIds();
+        const response = await correct(kind, drawer);
+        return { response, events: await eventsSince(before) };
+      };
+      const a = await run(fits);
+      const b = await run(over);
+
+      for (const { response } of [a, b]) {
+        expect(response.status, JSON.stringify(response.body)).toBe(201);
+        expect(response.body).not.toHaveProperty("error");
+        expect(JSON.stringify(response.body)).not.toMatch(DRAWER_LEAK);
+        expect(JSON.stringify(response.body)).not.toMatch(
+          /needsApproval|held/i,
+        );
+      }
+      expect(Object.keys(b.response.body).sort()).toEqual(
+        Object.keys(a.response.body).sort(),
+      );
+      expect(shape(b.response.body)).toEqual(shape(a.response.body));
+
+      expect(a.events.length).toBeGreaterThan(0);
+      expect(b.events.map((e) => [e.name, e.shape])).toEqual(
+        a.events.map((e) => [e.name, e.shape]),
+      );
+      for (const event of [...a.events, ...b.events])
+        expect(event.raw).not.toMatch(/needsApproval|held|Tunai di laci/i);
+    },
+    90_000,
+  );
+
+  it.each(["refund", "void"] as const)(
+    "B: a cash %s over the drawer is stored needs_approval = true with a held audit that has no expected figure; one that fits is false with no held audit",
+    async (kind) => {
+      const fits = await cashDrawer({ over: false });
+      const over = await cashDrawer({ over: true });
+      expect((await correct(kind, fits)).status).toBe(201);
+      expect((await correct(kind, over)).status).toBe(201);
+
+      const fitsRows = await correctionRows(kind, fits.sales[0]!.orderId);
+      expect(fitsRows).toHaveLength(1);
+      expect(fitsRows[0]).toMatchObject({
+        needs_approval: false,
+        shift_id: fits.shiftId,
+      });
+      expect(await heldCorrectionAudits(kind, fits.shiftId)).toEqual([]);
+
+      const overRows = await correctionRows(kind, over.sales[0]!.orderId);
+      expect(overRows).toHaveLength(1);
+      const row = overRows[0]!;
+      expect(row).toMatchObject({
+        needs_approval: true,
+        shift_id: over.shiftId,
+      });
+      const held = await heldCorrectionAudits(kind, over.shiftId);
+      expect(held).toHaveLength(1);
+      const event = held[0]!;
+      expect(event.objectId).toBe(row.id);
+      const after = event.maskedChanges.after;
+      expect(Object.keys(after).sort()).toEqual([
+        "cashIdr",
+        "id",
+        "orderId",
+        "shiftId",
+      ]);
+      expect(after.id).toBe(row.id);
+      expect(after.shiftId).toBe(over.shiftId);
+      expect([
+        over.sales[0]!.orderId,
+        ulidToUuid(over.sales[0]!.orderId),
+      ]).toContain(after.orderId);
+      expect(after.cashIdr).toBe(kind === "refund" ? KOPI_IDR : row.amount);
+      // Never an expected or variance figure, anywhere in the audit row.
+      expect(JSON.stringify(event)).not.toMatch(/expected|variance|drawer/i);
+    },
+    90_000,
+  );
+
+  it("C: an over-drawer refund with a PIN approval succeeds once; a second refund with the same approval is refused by the approval check, not the drawer, and only one refund row exists", async () => {
+    const drawer = await cashDrawer({ over: true });
+    const sale = drawer.sales[0]!;
+    const approval = await pinApproval({
+      outletId: drawer.outlet.outletId,
+      action: "refund",
+      orderId: sale.orderId,
+      valueIdr: KOPI_IDR,
     });
-    expect(refund.status, JSON.stringify(refund.body)).toBe(409);
-    expect(JSON.stringify(refund.body)).not.toContain(String(left));
 
-    const voided = await pos(outlet.outletId).correctionVoid(sale.orderId, {
-      reason: "customer_cancelled",
-      reasonNote: "Pelanggan salah pesan",
-      ...(await pinApproval({
-        outletId: outlet.outletId,
-        action: "void",
-        orderId: sale.orderId,
-        valueIdr: sale.totalIdr,
-      })),
-    });
-    expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+    const first = await cashRefund(drawer, { approval });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
 
-    const { rows } = await owner.query<{ corrections: number }>(
-      `SELECT (SELECT count(*)::int FROM pos_order_refunds WHERE tenant_id = $1 AND outlet_id = $2)
-            + (SELECT count(*)::int FROM pos_order_voids WHERE tenant_id = $1 AND outlet_id = $2)
-              AS corrections`,
-      [tenant.tenantId, outlet.outletId],
+    const second = await cashRefund(drawer, { approval });
+    expect(second.status, JSON.stringify(second.body)).toBeGreaterThanOrEqual(
+      400,
     );
-    expect(rows[0]).toEqual({ corrections: 0 });
+    expect(second.status).toBeLessThan(500);
+    expect(JSON.stringify(second.body)).not.toMatch(DRAWER_LEAK);
+    expect(errorCode(second.body)).toMatch(/APPROVAL/);
 
-    const count = await submitPosShiftCount(
+    const rows = await correctionRows("refund", sale.orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.needs_approval).toBe(true);
+  }, 90_000);
+
+  it("D: the supervisor's count trail excludes held refund, void and cash out from expectedIdr and sums them in heldCashOutIdr; the cashier's receipt has no held figure", async () => {
+    const drawer = await cashDrawer({ over: true, sales: 2 });
+    const [saleOne, saleTwo] = drawer.sales as [Order, Order];
+    expect((await cashRefund(drawer, { sale: saleOne })).status).toBe(201);
+    expect((await cashVoid(drawer, saleTwo)).status).toBe(201);
+    await recordCashMovement(
       scopedContext(),
-      caller,
-      outletId,
-      shiftId,
+      callerOf(drawer.outlet),
+      outletIdSchema.parse(drawer.outlet.outletId),
+      drawer.shiftId,
       {
-        counts: [{ denominationIdr: left, quantity: 1 }],
+        type: "cash_out",
+        amountIdr: idr(HELD_MOVEMENT_IDR),
+        reasonNote: "Beli gas elpiji",
         idempotencyKey: randomUUID(),
-      } as Parameters<typeof submitPosShiftCount>[4],
+      } as Parameters<typeof recordCashMovement>[4],
     );
-    const approval = await shiftCloseApproval(outlet.outletId, count.id);
-    const closed = await closePosShift(
+    const refundRow = (await correctionRows("refund", saleOne.orderId))[0]!;
+    const voidRow = (await correctionRows("void", saleTwo.orderId))[0]!;
+    expect([refundRow.needs_approval, voidRow.needs_approval]).toEqual([
+      true,
+      true,
+    ]);
+
+    // The drawer holds LEFT_IDR; none of the held cash is in it.
+    const receipt = await countAs(drawer, LEFT_IDR);
+    expect(receipt).not.toHaveProperty("heldCashOutIdr");
+    expect(JSON.stringify(receipt)).not.toMatch(/held/i);
+    // Round 2: the book variance is counted - expected + held, so a count that
+    // equals the (held-free) expected figure still asks for a note while cash
+    // is held (the cash was not paid out of this drawer, or it is missing).
+    expect(receipt.noteRequired).toBe(true);
+
+    const trail = await supervisorTrail(drawer);
+    expect(
+      trail.map((row) => [
+        row.expectedIdr,
+        row.varianceIdr,
+        row.heldCashOutIdr,
+      ]),
+    ).toEqual([
+      [LEFT_IDR, 0, refundRow.amount + voidRow.amount + HELD_MOVEMENT_IDR],
+    ]);
+  }, 120_000);
+
+  it.each(["refund", "void"] as const)(
+    "E: a held %s after the count makes the close SHIFT_COUNT_STALE; a recount with a fresh approval closes with an expected figure that excludes the held cash",
+    async (kind) => {
+      const drawer = await cashDrawer({ over: true });
+      const count = await countAs(drawer, LEFT_IDR);
+
+      const held = await correct(kind, drawer);
+      expect(held.status, JSON.stringify(held.body)).toBe(201);
+      expect(
+        (await correctionRows(kind, drawer.sales[0]!.orderId))[0]
+          ?.needs_approval,
+      ).toBe(true);
+
+      await expect(closeWith(drawer, count.id)).rejects.toMatchObject({
+        code: "SHIFT_COUNT_STALE",
+      });
+      const open = await owner.query<{ status: string }>(
+        "SELECT status FROM pos_shifts WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, drawer.shiftId],
+      );
+      expect(open.rows[0]?.status).toBe("open");
+
+      const recount = await countAs(drawer, LEFT_IDR);
+      // Round 2: counted - expected + held = held, so the close needs a note.
+      await expect(closeWith(drawer, recount.id)).rejects.toMatchObject({
+        code: "SHIFT_VARIANCE_NOTE_REQUIRED",
+      });
+      const closed = await closeWith(drawer, recount.id, NOTE);
+      expect(closed.status).toBe("closed");
+      expect(Number(closed.expectedIdr)).toBe(LEFT_IDR);
+      expect(Number(closed.varianceIdr)).toBe(0);
+    },
+    120_000,
+  );
+
+  it("F: a held refund on outlet A leaves outlet B's shift figures and held sum alone, and its row is invisible to another tenant and to a session scoped to outlet B", async () => {
+    const a = await cashDrawer({ over: true });
+    const b = await cashDrawer({ over: false });
+    const bCounted = OPENING_FLOAT_IDR + b.sales[0]!.totalIdr;
+    const figures = async (drawer: Drawer) =>
+      (await supervisorTrail(drawer)).map((row) => [
+        row.expectedIdr,
+        row.heldCashOutIdr,
+      ]);
+
+    await countAs(b, bCounted);
+    const bBefore = await figures(b);
+    expect(bBefore).toEqual([[bCounted, 0]]);
+
+    const refund = await cashRefund(a);
+    expect(refund.status, JSON.stringify(refund.body)).toBe(201);
+
+    await countAs(b, bCounted);
+    expect(await figures(b)).toEqual([...bBefore, ...bBefore]);
+    const bRows = await owner.query<{ held: number }>(
+      `SELECT count(*)::int AS held FROM pos_order_refunds
+        WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenant.tenantId, b.outlet.outletId],
+    );
+    expect(bRows.rows[0]?.held).toBe(0);
+
+    await countAs(a, LEFT_IDR);
+    expect(await figures(a)).toEqual([[LEFT_IDR, KOPI_IDR]]);
+
+    // RLS: another tenant and an outlet-B-only session see nothing of A's row.
+    const row = (await correctionRows("refund", a.sales[0]!.orderId))[0]!;
+    const visible = (tenantId: string, outlets: string) =>
+      asAppTenant(tenantId, outlets, async (client) => {
+        const { rows } = await client.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pos_order_refunds WHERE id = $1",
+          [row.id],
+        );
+        return rows[0]?.n;
+      });
+    expect(await visible(seededTenantId, "*")).toBe(0);
+    expect(
+      await visible(tenant.tenantId, JSON.stringify([b.outlet.outletId])),
+    ).toBe(0);
+    expect(
+      await visible(tenant.tenantId, JSON.stringify([a.outlet.outletId])),
+    ).toBe(1);
+  }, 120_000);
+
+  it("G: needs_approval = true with shift_id NULL is refused by the database on pos_order_voids and pos_order_refunds; with a shift, or false without one, it is accepted", async () => {
+    const drawer = await cashDrawer({ over: false });
+    const orderUuid = ulidToUuid(drawer.sales[0]!.orderId);
+    const client = await owner.connect();
+    const attempt = async (
+      sqlText: string,
+      values: unknown[],
+    ): Promise<string | null> => {
+      await client.query("SAVEPOINT attempt");
+      try {
+        await client.query(sqlText, values);
+        return null;
+      } catch (error) {
+        return (error as Error).message;
+      } finally {
+        await client.query("ROLLBACK TO SAVEPOINT attempt");
+      }
+    };
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.tenantId],
+      );
+      const voidSql = `INSERT INTO pos_order_voids
+          (tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+           requested_by, approved_by, override_id, voided_at, shift_id, needs_approval)
+        VALUES ($1, $2, $3, 'POS1-000001', 1000, 'customer_cancelled', 'Uji', 'a', 'b', $4, now(), $5, $6)`;
+      const refundSql = `INSERT INTO pos_order_refunds
+          (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note, lines,
+           requested_by, approved_by, override_id, refunded_at, shift_id, needs_approval)
+        VALUES ($1, $2, $3, 1000, 'quality_complaint', 'Uji', '[{"quantity":1}]'::jsonb,
+                'a', 'b', $4, now(), $5, $6)`;
+      const args = (shiftId: string | null, needsApproval: boolean) => [
+        tenant.tenantId,
+        drawer.outlet.outletId,
+        orderUuid,
+        randomUUID(),
+        shiftId,
+        needsApproval,
+      ];
+      for (const [table, text] of [
+        ["pos_order_voids", voidSql],
+        ["pos_order_refunds", refundSql],
+      ] as const) {
+        expect(await attempt(text, args(null, true)), table).toMatch(
+          new RegExp(`${table}_needs_approval_shift_check`),
+        );
+        expect(
+          await attempt(text, args(drawer.shiftId, true)),
+          table,
+        ).toBeNull();
+        expect(await attempt(text, args(null, false)), table).toBeNull();
+      }
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  }, 90_000);
+
+  // ---- Round 2: book variance = counted - expected + heldCashOutIdr ----------
+  // Assumptions: the close payload's differenceIdr is a number or a numeric
+  // string (compared through Number); a close refused for the missing note is
+  // an error with code SHIFT_VARIANCE_NOTE_REQUIRED, like SHIFT_COUNT_STALE;
+  // the stored shift variance stays counted - expected.
+
+  it.each(["refund", "void"] as const)(
+    "R1: an honest count after a held cash %s (counted = expected without the held cash - the cash paid out) needs no note and closes with differenceIdr 0, heldCashOutIdr = the cash and a stored variance of minus the cash",
+    async (kind) => {
+      const drawer = await cashDrawer({ over: true });
+      expect((await correct(kind, drawer)).status).toBe(201);
+      const row = (await correctionRows(kind, drawer.sales[0]!.orderId))[0]!;
+      expect(row.needs_approval).toBe(true);
+      const held = row.amount;
+
+      // The drawer then takes `held` more cash, so expected (without the held
+      // cash) is LEFT + held; the refunded/voided cash really left the drawer.
+      await recordCashMovement(
+        scopedContext(),
+        callerOf(drawer.outlet),
+        outletIdSchema.parse(drawer.outlet.outletId),
+        drawer.shiftId,
+        {
+          type: "cash_in",
+          amountIdr: idr(held),
+          reasonNote: "Tambah uang kembalian",
+          idempotencyKey: randomUUID(),
+        } as Parameters<typeof recordCashMovement>[4],
+      );
+      const receipt = await countAs(drawer, LEFT_IDR);
+      expect(receipt.noteRequired).toBe(false);
+
+      // The supervisor approval carries the stored variance magnitude (= held).
+      const closed = await closeWith(drawer, receipt.id, undefined, held);
+      expect(closed.status).toBe("closed");
+      expect(Number(closed.expectedIdr)).toBe(LEFT_IDR + held);
+      expect(Number(closed.varianceIdr)).toBe(-held);
+      expect(await storedVariance(drawer.shiftId)).toBe(-held);
+      const payload = await closedPayload(drawer.shiftId);
+      expect(Number(payload.differenceIdr)).toBe(0);
+      expect(Number(payload.heldCashOutIdr)).toBe(held);
+    },
+    120_000,
+  );
+
+  it.each(["refund", "void"] as const)(
+    "R2: a count equal to the expected figure after a held cash %s (the cash was not paid out) asks for a note; the close without one is SHIFT_VARIANCE_NOTE_REQUIRED, with a note it closes with differenceIdr = +the cash",
+    async (kind) => {
+      const drawer = await cashDrawer({ over: true });
+      expect((await correct(kind, drawer)).status).toBe(201);
+      const row = (await correctionRows(kind, drawer.sales[0]!.orderId))[0]!;
+      expect(row.needs_approval).toBe(true);
+      const held = row.amount;
+
+      const receipt = await countAs(drawer, LEFT_IDR);
+      expect(receipt.noteRequired).toBe(true);
+      await expect(closeWith(drawer, receipt.id)).rejects.toMatchObject({
+        code: "SHIFT_VARIANCE_NOTE_REQUIRED",
+      });
+      const open = await owner.query<{ status: string }>(
+        "SELECT status FROM pos_shifts WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, drawer.shiftId],
+      );
+      expect(open.rows[0]?.status).toBe("open");
+
+      const closed = await closeWith(drawer, receipt.id, NOTE);
+      expect(closed.status).toBe("closed");
+      expect(Number(closed.varianceIdr)).toBe(0);
+      const payload = await closedPayload(drawer.shiftId);
+      expect(Number(payload.differenceIdr)).toBe(held);
+      expect(Number(payload.heldCashOutIdr)).toBe(held);
+    },
+    120_000,
+  );
+
+  it("R3: the cash out overflow bound ignores held refunds: after a held cash refund, a cash out of MAX_SAFE_INTEGER minus the shift's own cash out + drop total is still accepted (201)", async () => {
+    const drawer = await cashDrawer({ over: true });
+    expect((await cashRefund(drawer)).status).toBe(201);
+    expect(
+      (await correctionRows("refund", drawer.sales[0]!.orderId))[0]
+        ?.needs_approval,
+    ).toBe(true);
+
+    const { rows } = await owner.query<{ own: string }>(
+      `SELECT COALESCE(sum(amount_idr), 0)::text AS own FROM cash_movements
+        WHERE tenant_id = $1 AND shift_id = $2 AND type IN ('cash_out', 'drop')`,
+      [tenant.tenantId, drawer.shiftId],
+    );
+    const own = Number(rows[0]!.own);
+    expect(own).toBeGreaterThan(0);
+
+    // Would be refused (400) if the held KOPI_IDR refund counted toward it.
+    await recordCashMovement(
       scopedContext(),
-      caller,
-      outletId,
-      shiftId,
+      callerOf(drawer.outlet),
+      outletIdSchema.parse(drawer.outlet.outletId),
+      drawer.shiftId,
       {
-        countId: count.id,
-        approvedBy: userIdSchema.parse(approval.approvedBy),
-        approvalRequestId: approval.approvalRequestId,
+        type: "cash_out",
+        amountIdr: idr(Number.MAX_SAFE_INTEGER - own),
+        reasonNote: "Setoran besar ke bank",
         idempotencyKey: randomUUID(),
-      } as Parameters<typeof closePosShift>[4],
+      } as Parameters<typeof recordCashMovement>[4],
     );
-    expect(closed.status).toBe("closed");
-  }, 60_000);
+    const stored = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM cash_movements
+        WHERE tenant_id = $1 AND shift_id = $2 AND type = 'cash_out'
+          AND amount_idr = $3`,
+      [tenant.tenantId, drawer.shiftId, Number.MAX_SAFE_INTEGER - own],
+    );
+    expect(stored.rows[0]?.n).toBe(1);
+  }, 90_000);
 });

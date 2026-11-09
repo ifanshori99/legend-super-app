@@ -237,6 +237,8 @@ export const emptyAggregates: ShiftAggregates = {
  * - Refunds: cash lines of the shift's linked refunds, plus the captured
  *   cash tenders of the shift's paid-sale voids (a correction void pays the
  *   whole sale back; pos-order-corrections writes no per-method lines).
+ * - Refunds and voids held for supervisor review (`needs_approval`) are left
+ *   out (legend-utqr).
  * - In / out / drop: the shift's cash movements, without the rows held for
  *   supervisor review (`needs_approval`): they never reach the drawer figures,
  *   so the expected cash cannot go negative or leak through a refusal
@@ -272,6 +274,7 @@ export async function computeShiftAggregates(
         eq(posOrderRefunds.tenantId, tenantId),
         eq(posOrderRefunds.outletId, outletId),
         eq(posOrderRefunds.shiftId, shift.id),
+        eq(posOrderRefunds.needsApproval, false),
       ),
     );
   let refundCash = 0;
@@ -296,6 +299,7 @@ export async function computeShiftAggregates(
         eq(posOrderVoids.tenantId, tenantId),
         eq(posOrderVoids.outletId, outletId),
         eq(posOrderVoids.shiftId, shift.id),
+        eq(posOrderVoids.needsApproval, false),
         eq(posOrderTenders.method, "cash"),
         eq(posOrderTenders.status, "captured"),
       ),
@@ -327,12 +331,15 @@ export async function computeShiftAggregates(
   };
 }
 
-/** Sum of the shift's cash outs and drops held for supervisor review. */
+/**
+ * Sum of the shift's cash held for supervisor review: cash outs and drops
+ * (legend-67dt) plus the cash of held refunds and voids (legend-utqr).
+ */
 export async function heldCashOutIdrOf(
   tx: Tx,
   shift: ShiftRow,
 ): Promise<number> {
-  const [row] = await tx
+  const [movements] = await tx
     .select({
       total: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
     })
@@ -345,9 +352,46 @@ export async function heldCashOutIdrOf(
         eq(cashMovements.needsApproval, true),
       ),
     );
-  // recordCashMovement bounds every cash out + drop of a shift (held or not)
-  // to a safe integer, so this never trips; parsed in bigint to be sure.
-  const total = BigInt(row?.total ?? 0);
+  const heldRefunds = await tx
+    .select({ lines: posOrderRefunds.lines })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, shift.tenantId),
+        eq(posOrderRefunds.outletId, shift.outletId),
+        eq(posOrderRefunds.shiftId, shift.id),
+        eq(posOrderRefunds.needsApproval, true),
+      ),
+    );
+  let refundCash = 0n;
+  for (const refund of heldRefunds)
+    for (const line of refund.lines)
+      if (line.method === "cash") refundCash += BigInt(line.amountIdr);
+  const [voided] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)`,
+    })
+    .from(posOrderVoids)
+    .innerJoin(
+      posOrderTenders,
+      and(
+        eq(posOrderTenders.tenantId, posOrderVoids.tenantId),
+        eq(posOrderTenders.orderId, posOrderVoids.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, shift.tenantId),
+        eq(posOrderVoids.outletId, shift.outletId),
+        eq(posOrderVoids.shiftId, shift.id),
+        eq(posOrderVoids.needsApproval, true),
+        eq(posOrderTenders.method, "cash"),
+        eq(posOrderTenders.status, "captured"),
+      ),
+    );
+  // Parsed in bigint so a huge sum cannot silently lose precision.
+  const total =
+    BigInt(movements?.total ?? 0) + refundCash + BigInt(voided?.total ?? 0);
   if (total > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error("Held cash out total is not a safe integer");
   return Number(total);
@@ -560,7 +604,9 @@ export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
     shiftId: row.shiftId,
     sequence: row.sequence,
     countedIdr: Number(row.countedIdr),
-    noteRequired: Number(row.varianceIdr) !== 0,
+    // As if nothing were held (legend-utqr): an honest count after a held
+    // refund or cash out must not ask for a note a normal one would not.
+    noteRequired: Number(row.varianceIdr) + Number(row.heldCashOutIdr) !== 0,
     submittedAt: toIsoDateTime(row.submittedAt),
   });
 }

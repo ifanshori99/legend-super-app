@@ -237,6 +237,12 @@ export type CloseShiftInput = {
   readonly counts: readonly BlindCashCount[];
   /** The stored count submission (`pos_shift_counts`) the close uses. */
   readonly countId: string;
+  /**
+   * Cash held for supervisor review at count time (left out of expected).
+   * The note rule judges counted − expected + held, as if nothing were held,
+   * so a held item never shows itself through the note (legend-utqr).
+   */
+  readonly heldCashOutIdr?: number;
   readonly varianceNote: string | null;
   readonly approvedBy: string;
   readonly approvalRequestId: string;
@@ -256,7 +262,10 @@ export function closeShift(shift: PosShift, input: CloseShiftInput): PosShift {
   const countedIdr = blindCountTotalIdr(input.counts);
   const expectedIdr = shiftExpectedCashIdr(shift);
   const varianceIdr = shiftVarianceIdr(countedIdr, expectedIdr);
-  if (varianceIdr !== 0 && (input.varianceNote ?? "").trim().length === 0)
+  if (
+    varianceIdr + (input.heldCashOutIdr ?? 0) !== 0 &&
+    (input.varianceNote ?? "").trim().length === 0
+  )
     throw new PosError("SHIFT_VARIANCE_NOTE_REQUIRED");
   return {
     ...shift,

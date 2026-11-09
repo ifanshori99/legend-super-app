@@ -81,6 +81,16 @@ export const posShifts = pgTable(
     countedIdr: idrColumn("counted_idr"),
     varianceIdr: idrColumn("variance_idr"),
     varianceNote: varchar("variance_note", { length: 500 }),
+    /**
+     * legend-utqr: cash held for supervisor review (over-drawer cash out,
+     * refund or void) on the count the close used; set in the close UPDATE,
+     * 0 while open. The variance needs a note only when counted − (expected −
+     * held) ≠ 0, so an honest count after held cash closes without one and
+     * the note rule never reveals the held status. Supervisor side only.
+     */
+    heldCashOutIdr: idrColumn("held_cash_out_idr")
+      .notNull()
+      .default(sql`0`),
     /** The blind count sheet as submitted: [{denominationIdr, quantity}]. */
     counts:
       jsonb("counts").$type<
@@ -167,7 +177,7 @@ export const posShifts = pgTable(
         AND ${table.approvalOverrideId} IS NULL AND ${table.approvedAt} IS NULL
         AND ${table.closedAt} IS NULL AND ${table.closedBy} IS NULL
         AND ${table.closeKey} IS NULL AND ${table.closeFingerprint} IS NULL
-        AND ${table.countId} IS NULL)`,
+        AND ${table.countId} IS NULL AND ${table.heldCashOutIdr} = 0)`,
     ),
     check(
       "pos_shifts_closed_check",
@@ -182,8 +192,10 @@ export const posShifts = pgTable(
           - ${table.cashRefundsIdr} + ${table.cashInIdr} - ${table.cashOutIdr}
           - ${table.cashDropIdr}
         AND ${table.varianceIdr} = ${table.countedIdr} - ${table.expectedIdr}
-        AND (${table.varianceIdr} = 0 OR ${table.varianceNote} IS NOT NULL))`,
+        AND (${table.varianceIdr} + ${table.heldCashOutIdr} = 0
+          OR ${table.varianceNote} IS NOT NULL))`,
     ),
+    check("pos_shifts_held_cash_out_check", sql`${table.heldCashOutIdr} >= 0`),
     check(
       "pos_shifts_closed_count_check",
       sql`${table.status} <> 'closed' OR ${table.countId} IS NOT NULL`,
@@ -305,9 +317,10 @@ export const cashMovements = pgTable(
      * (legend-67dt). Accepted like any other, but left out of the drawer
      * figures and shown to supervisors only; the cashier never sees it.
      * Permanent (the guard trigger blocks UPDATE): a later review step belongs
-     * in its own append-only table. Accounting must never post these rows:
-     * cash that really left the drawer already reaches the books once, as the
-     * shift variance.
+     * in its own append-only table. The flag means "exceeded the drawer when
+     * recorded", nothing more. The shift close books counted − (expected −
+     * held) (cashier_shift.closed differenceIdr), the same as if nothing were
+     * held, so held rows must not be posted again on their own (legend-utqr).
      */
     needsApproval: boolean("needs_approval").notNull().default(false),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),

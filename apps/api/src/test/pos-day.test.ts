@@ -33,6 +33,7 @@ import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -59,6 +60,7 @@ import { setPosReceiptPort } from "../services/pos-order-ports.ts";
 import type { PosReceiptPort } from "../services/pos-order-ports.ts";
 import { setPosReceiptGapsPort } from "../services/pos-shift-ports.ts";
 import { closePosDay, getEndOfDayRecap } from "../services/pos-day.service.ts";
+import { recordCashMovement } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -97,6 +99,8 @@ let supervisor: Member;
 let manager: Member;
 let viewer: Member;
 let otherManager: Member;
+/** device id -> outlet id for the extra outlets a describe adds (legend-ifnb). */
+const extraDevices = new Map<string, string>();
 
 // Seeded by `seedDay`.
 type Sale = { orderId: string; totalIdr: number };
@@ -209,8 +213,19 @@ function tenantContext(tenantId: string): ScopedTenantContext {
 const errorCode = (body: { error?: { code?: string }; code?: string }) =>
   body.error?.code ?? body.code;
 
-function pos(who: Member = cashier, withDevice = true) {
-  const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`;
+/** A terminal: the outlet it belongs to and its device id. */
+type Till = { outletId: string; deviceId: string };
+const mainTill = (): Till => ({
+  outletId: tenant.outletId,
+  deviceId: ids.device,
+});
+
+function pos(
+  who: Member = cashier,
+  withDevice = true,
+  till: Till = mainTill(),
+) {
+  const base = `/api/outlets/${encodeURIComponent(till.outletId)}/pos/orders`;
   const send = (path: string, body: Record<string, unknown>) => {
     const request = who.client
       .post(`${base}${path}`)
@@ -218,7 +233,7 @@ function pos(who: Member = cashier, withDevice = true) {
       .set(originHeader);
     // The till: cash goes into the drawer of the shift open on this device.
     // An order made without the device header belongs to no terminal.
-    if (withDevice) request.set("X-Device-Token", deviceToken());
+    if (withDevice) request.set("X-Device-Token", deviceToken(till.deviceId));
     return request.send({ idempotencyKey: randomUUID(), ...body });
   };
   return {
@@ -288,6 +303,8 @@ async function pinApproval(input: {
   objectId: string;
   valueIdr: number;
   approver?: string;
+  /** Defaults to the main outlet. */
+  outletId?: string;
 }) {
   const approver = input.approver ?? supervisor.userId;
   const { override } = await createPosOverride(
@@ -298,7 +315,7 @@ async function pinApproval(input: {
     }),
     cashier.userId,
     {
-      outletId: tenant.outletId,
+      outletId: input.outletId ?? tenant.outletId,
       action: input.action,
       valueIdr: input.valueIdr,
       reason: "Persetujuan uji tutup hari",
@@ -320,24 +337,24 @@ async function pinApproval(input: {
   return { approvedBy: approver, approvalRequestId: override.id };
 }
 
-const deviceToken = () =>
+const deviceToken = (deviceId: string = ids.device) =>
   signDeviceToken({
     version: 1,
     issuedAt: Math.floor(Date.now() / 1000),
     tenantId: tenant.tenantId,
     brandId: null,
-    deviceId: ids.device,
+    deviceId,
   });
 
-function shiftApi(who: Member = cashier) {
-  const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/shifts`;
+function shiftApi(who: Member = cashier, till: Till = mainTill()) {
+  const base = `/api/outlets/${encodeURIComponent(till.outletId)}/pos/shifts`;
   return {
     open: (body: Record<string, unknown> = {}) =>
       who.client
         .post(base)
         .set(headers)
         .set(originHeader)
-        .set("X-Device-Token", deviceToken())
+        .set("X-Device-Token", deviceToken(till.deviceId))
         .send({
           openingFloatIdr: OPENING_FLOAT_IDR,
           idempotencyKey: randomUUID(),
@@ -497,7 +514,9 @@ beforeAll(async () => {
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
     tenantId === tenant.tenantId && deviceId === ids.device
       ? tenant.outletId
-      : null,
+      : tenantId === tenant.tenantId
+        ? (extraDevices.get(deviceId) ?? null)
+        : null,
   );
 
   const roles: [string, string, string, string[]][] = [
@@ -1110,6 +1129,274 @@ describe("POS-05 closing the day (legend-6c0)", () => {
     expect(rows).toHaveLength(1);
     expect(Number(rows[0]!.total_sales_idr)).toBe(closedRecap.totalSalesIdr);
   });
+});
+
+// ---- Device cash variance with a held cash refund (legend-ifnb) ----------------------
+//
+// A cash refund over the drawer is recorded like any other but held
+// (`needs_approval`): it stays out of the expected drawer figure and is summed
+// into the count's `heldCashOutIdr`. The shift closes with book variance
+// `differenceIdr` = counted - expected + held (the drawer figure with the held
+// cash paid out). The end-of-day recap must carry that same book variance, not
+// the raw counted - expected, so an honest count shows no variance on the day.
+//
+// Assumptions: the stored day close `total_variance_idr`, the `day.closed`
+// payload `totalVarianceIdr` and the device row `cashVarianceIdr` are all the
+// book variance; the shift's own `cashier_shift.closed` payload carries
+// `differenceIdr` and `heldCashOutIdr` as numbers or numeric strings.
+
+describe("POS-05 the day's device cash variance counts a held cash refund as paid out (legend-ifnb)", () => {
+  const LEFT_IDR = 1_000;
+
+  /**
+   * A fresh outlet (own device, price list and supervisor PIN) with one cash
+   * sale, the drawer cashed out down to LEFT_IDR and a cash refund over the
+   * drawer, which is held. The drawer then takes the refunded cash back in, so
+   * the expected figure (without the held cash) is LEFT_IDR + held and the
+   * refunded cash is the part a count can show as paid out.
+   */
+  async function heldRefundOutlet() {
+    const outletId = randomUUID();
+    const deviceId = randomUUID();
+    const suffix = randomUUID().slice(0, 8);
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $3, $4, address, timezone, opening_hours, status
+       FROM outlets WHERE tenant_id = $2 AND id = $5`,
+      [
+        outletId,
+        tenant.tenantId,
+        `V-${suffix}`.toUpperCase(),
+        `Outlet Selisih ${suffix}`,
+        tenant.outletId,
+      ],
+    );
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      const listId = randomUUID();
+      await client.query(
+        `INSERT INTO price_lists (id, tenant_id, outlet_id, channel, effective_from)
+         VALUES ($1, $2, $3, 'takeaway', '2026-01-01')`,
+        [listId, tenant.tenantId, outletId],
+      );
+      await client.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), tenant.tenantId, listId, ids.kopi, KOPI_IDR],
+      );
+    });
+    await setStaffPin(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      supervisor.userId,
+      { outletId, userId: supervisor.userId },
+      { pin: PIN },
+    );
+    extraDevices.set(deviceId, outletId);
+    const till: Till = { outletId, deviceId };
+
+    const opened = await shiftApi(cashier, till).open();
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    const outletShiftId = opened.body.data.id as string;
+
+    const ring = pos(cashier, true, till);
+    const created = await ring.create();
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const orderId = created.body.data.id as string;
+    let status = created.body.data.status as string;
+    if (status === "draft") {
+      const submitted = await ring.submit(orderId, status);
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      status = submitted.body.data.status as string;
+    }
+    const totalIdr = created.body.data.totalIdr as number;
+    const paid = await ring.cash(orderId, status, totalIdr + 5_000);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const completed = await ring.complete(
+      orderId,
+      paid.body.data.order.status as string,
+    );
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const caller = {
+      userId: userIdSchema.parse(cashier.userId),
+      deviceId,
+    };
+    const movement = (
+      type: "cash_out" | "cash_in",
+      amountIdr: number,
+      reasonNote: string,
+    ) =>
+      recordCashMovement(
+        tenantContext(tenant.tenantId),
+        caller,
+        outletIdSchema.parse(outletId),
+        outletShiftId,
+        {
+          type,
+          amountIdr: idr(amountIdr),
+          reasonNote,
+          idempotencyKey: randomUUID(),
+        } as Parameters<typeof recordCashMovement>[4],
+      );
+    // Cash out all but LEFT_IDR, so a refund of KOPI_IDR is over the drawer.
+    await movement(
+      "cash_out",
+      OPENING_FLOAT_IDR + totalIdr - LEFT_IDR,
+      "Belanja es batu",
+    );
+    const refund = await ring.refund(orderId, {
+      reason: "quality_complaint",
+      reasonNote: "Minuman tumpah",
+      amountIdr: KOPI_IDR,
+      ...(await pinApproval({
+        outletId,
+        action: "refund",
+        objectType: "order",
+        objectId: orderId,
+        valueIdr: KOPI_IDR,
+      })),
+    });
+    expect(refund.status, JSON.stringify(refund.body)).toBe(201);
+    const held = await owner.query<{ needs_approval: boolean }>(
+      `SELECT needs_approval FROM pos_order_refunds
+        WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    expect(held.rows).toHaveLength(1);
+    expect(held.rows[0]!.needs_approval).toBe(true);
+    await movement("cash_in", KOPI_IDR, "Tambah uang kembalian");
+
+    const date = await owner.query<{ business_date: string }>(
+      `SELECT business_date::text AS business_date FROM orders
+        WHERE tenant_id = $1 AND id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    return {
+      till,
+      shiftId: outletShiftId,
+      businessDate: date.rows[0]!.business_date,
+    };
+  }
+
+  /** Counts `countedIdr` in 1.000 notes and closes the shift with a supervisor PIN. */
+  async function closeShift(
+    outlet: Awaited<ReturnType<typeof heldRefundOutlet>>,
+    countedIdr: number,
+    varianceNote?: string,
+  ) {
+    const api = shiftApi(cashier, outlet.till);
+    const counted = await api.count(outlet.shiftId, [
+      { denominationIdr: 1_000, quantity: countedIdr / 1_000 },
+    ]);
+    expect(counted.status, JSON.stringify(counted.body)).toBe(201);
+    const countId = counted.body.data.id as string;
+    const closed = await api.close(outlet.shiftId, {
+      countId,
+      ...(varianceNote ? { varianceNote } : {}),
+      ...(await pinApproval({
+        outletId: outlet.till.outletId,
+        action: "cash_shift_close",
+        objectType: "pos_shift_count",
+        objectId: countId,
+        // Ignored for a shift close: the server stores |variance| of the count.
+        valueIdr: 0,
+      })),
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data.status).toBe("closed");
+    return closed;
+  }
+
+  /** The recap read and the day close, plus what the close stored and emitted. */
+  async function recapAndClose(
+    outlet: Awaited<ReturnType<typeof heldRefundOutlet>>,
+  ) {
+    const { outletId } = outlet.till;
+    const read = await day(manager, outletId).get(outlet.businessDate);
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    const closed = await day(manager, outletId).close({
+      businessDate: outlet.businessDate,
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const stored = await owner.query<{ total_variance_idr: string }>(
+      `SELECT total_variance_idr FROM pos_daily_closes
+        WHERE tenant_id = $1 AND outlet_id = $2 AND business_date = $3`,
+      [tenant.tenantId, outletId, outlet.businessDate],
+    );
+    const events = await owner.query<{ payload: unknown }>(
+      `SELECT event->'payload' AS payload FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'day.closed'
+          AND event->'payload'->>'outletId' = $2
+          AND event->'payload'->>'businessDate' = $3`,
+      [tenant.tenantId, outletId, outlet.businessDate],
+    );
+    return {
+      open: parseRecap(read.body),
+      closed: parseRecap(closed.body),
+      stored,
+      events,
+    };
+  }
+
+  const deviceRow = (recap: EndOfDayRecap, till: Till) =>
+    recap.devices.find((row) => row.deviceId === till.deviceId);
+
+  it("an honest count after a held cash refund (the refunded cash really left the drawer) shows no variance on the device, the recap, the stored day close or day.closed", async () => {
+    const outlet = await heldRefundOutlet();
+    // Expected without the held cash is LEFT + refund; the drawer holds LEFT.
+    await closeShift(outlet, LEFT_IDR);
+
+    const result = await recapAndClose(outlet);
+    for (const recap of [result.open, result.closed]) {
+      expect(deviceRow(recap, outlet.till)).toMatchObject({
+        shiftCount: 1,
+        closed: true,
+        cashVarianceIdr: 0,
+      });
+      expect(recap.totalVarianceIdr).toBe(0);
+    }
+    expect(result.stored.rows).toHaveLength(1);
+    expect(Number(result.stored.rows[0]!.total_variance_idr)).toBe(0);
+    expect(result.events.rows).toHaveLength(1);
+    expect(
+      dayClosedPayloadSchema.parse(result.events.rows[0]!.payload),
+    ).toMatchObject({
+      outletId: outlet.till.outletId,
+      businessDate: outlet.businessDate,
+      totalVarianceIdr: 0,
+    });
+  }, 120_000);
+
+  it("a count equal to the expected figure after a held cash refund (the cash was not paid out) shows the refund as a positive variance on the device, the recap, the stored day close and day.closed", async () => {
+    const outlet = await heldRefundOutlet();
+    // Counted = expected without the held cash: LEFT + refund is still there.
+    await closeShift(
+      outlet,
+      LEFT_IDR + KOPI_IDR,
+      "Selisih kas dicek ulang bersama supervisor",
+    );
+
+    const result = await recapAndClose(outlet);
+    for (const recap of [result.open, result.closed]) {
+      expect(deviceRow(recap, outlet.till)).toMatchObject({
+        shiftCount: 1,
+        closed: true,
+        cashVarianceIdr: KOPI_IDR,
+      });
+      expect(recap.totalVarianceIdr).toBe(KOPI_IDR);
+    }
+    expect(Number(result.stored.rows[0]!.total_variance_idr)).toBe(KOPI_IDR);
+    expect(result.events.rows).toHaveLength(1);
+    expect(
+      dayClosedPayloadSchema.parse(result.events.rows[0]!.payload),
+    ).toMatchObject({
+      outletId: outlet.till.outletId,
+      totalVarianceIdr: KOPI_IDR,
+    });
+  }, 120_000);
 });
 
 // ---- Tenant isolation --------------------------------------------------------------
