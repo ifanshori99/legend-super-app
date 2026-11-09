@@ -17,6 +17,7 @@ import {
   createTaxSettingsInputSchema,
   getPbjtMonthlyRecap as getPbjtMonthlyRecapEndpoint,
   listServiceChargeRules as listServiceChargeRulesEndpoint,
+  listTaxRuleConflicts as listTaxRuleConflictsEndpoint,
   listTaxRules as listTaxRulesEndpoint,
   listTaxSettings as listTaxSettingsEndpoint,
   previewTaxCalculation as previewTaxCalculationEndpoint,
@@ -50,6 +51,18 @@ taxRouter.get("/rules", config, async (req, res) => {
   const query = listTaxRulesEndpoint.query.parse(req.query);
   res.json(
     await tax.listTaxRules(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  );
+});
+
+// Before any `/rules/:taxRuleId` route, so "conflicts" is never read as an id.
+taxRouter.get("/rules/conflicts", config, async (req, res) => {
+  const query = listTaxRuleConflictsEndpoint.query.parse(req.query);
+  res.json(
+    await tax.listTaxRuleConflicts(
       getScopedTenantContext(req),
       getAuth(req).user.id,
       query,

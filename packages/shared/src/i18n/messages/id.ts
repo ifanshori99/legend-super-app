@@ -3235,6 +3235,26 @@ export const id = {
       updatedToast: "Draf aturan pajak diperbarui.",
       publishedToast: "Aturan pajak diterbitkan.",
     },
+    conflicts: {
+      title: "{count} pasang aturan pajak bertabrakan",
+      body: "Dua aturan terbit sama kuat untuk item yang sama, sehingga kasir gagal menghitung pajaknya saat keduanya berlaku.",
+      fix: "Nonaktifkan salah satu: buat versi baru aturan itu, matikan sakelar Aturan aktif, lalu terbitkan.",
+      deactivate: "Buat versi nonaktif {code}",
+      allOutlets: "Semua outlet",
+      outletUnknown: "Outlet tertentu",
+      region: "wilayah {region}",
+      active: "berlaku sekarang",
+      startsOn: "mulai {date}",
+      notLoaded:
+        "Versi aturan {code} yang bertabrakan tidak ada di daftar yang dimuat. Buat aturan baru dengan kode {code} dan sakelar Aturan aktif dimatikan, lalu terbitkan.",
+      draftCreated: "Draf versi nonaktif dibuat. Terbitkan agar berlaku.",
+      presetNote:
+        "Versi ini dibuat nonaktif karena bertabrakan dengan {code}. Terbitkan agar aturan lama berhenti berlaku.",
+      level: {
+        item: "item tertentu",
+        category: "kategori tertentu",
+      },
+    },
     serviceCharge: {
       title: "Service charge",
       listDescription:
