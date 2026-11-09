@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-iwsrp, legend-obwwi, legend-ip4v6, legend-nko71 WS-11 shared putaran 2 (engineer, cabang `ws/ws11-shared-2` dari 18455b7a, brief 272, 2026-11-10)
+
+- Sudah: keluarga F2 F3 F4 F1 F11 digabung `--no-ff` tanpa konflik teks; konflik makna (contoh `pax` di test engine, assert net_sales payments-tax, konstanta mock DASH-02) dibetulkan di 8531d4df. routeTree diregenerasi tanpa beda.
+- Sudah: registry satu reader per kode+dimensi dan `writesTotal`; pecahan net_sales per payment_method dan menu_category; kind `share`, GL `balance` dan `sourceTypes`; sumber pajak, `splitFrom` food_cost_pct, rata-rata tertimbang (`served_ticket_count`, `closed_session_count`); finalitas split GL per outlet; dashboard `managerRole`, `availability`, antrean 200; mock sales_target, day_of_week, SALES_REPORTS, SERVED_REPORTS.
+- Review architect (K): 7 temuan tanpa kritis, semua dibetulkan (af0290e1, 1470d397). tax_payable per outlet sekarang `dimension_not_supported`.
+- Bukti: api 16 file 312/312, root node 225/225, db:generate kosong, typecheck shared/api/web lewat heavy lulus, eslint dan prettier bersih.
+- Berikut: backfill riwayat bobot sebelum rilis (legend-ka1hg); bug pesanan latihan di `menu_sold_qty` (legend-fr62g).
+- Biaya sesi (seluruh sesi ff8f7a53, beberapa brief): 19.4M token-biaya; subagent 49, puncak bersamaan sekitar 6.
+
 ## legend-svrzc, legend-ymtsg, legend-hdfd2 WS-11 shared putaran 1 (engineer, cabang `ws/ws11-shared-1` dari eb4383cb, brief 267, 2026-11-10)
 
 - legend-svrzc: `GET /api/metrics/query` ikut aturan report run. Laporan sumber tiap metrik menentukan izin; tanpa izin penuh, `report.aggregate.view` hanya untuk laporan di daftar putih agregat; jangkauan diiris antar metrik; irisan kosong 403 `REPORT_NOT_PERMITTED`. Logika viewer bersama di `apps/api/src/routes/report-viewer.ts`. Akses juga melebar: `report.operational.view` kini membaca `cogs` dan sejenisnya (dulu butuh `report.financial.view`). Tidak ada pemanggil web.
