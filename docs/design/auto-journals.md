@@ -19,7 +19,8 @@ Gateway money uses a **receipt-first** model with one liability role, `customer_
 | Gateway money received (any intent: sale, DP, late, double) | `payment.paid`                                                           | Dr gateway_clearing / Cr customer_deposit (receivedIdr)                                                                                                                                                                       |
 | Sale paid                                                   | `order.paid`                                                             | Dr cash / customer_deposit (intent-backed gateway + DP applied) / gateway_clearing (gateway without intent) / edc_clearing / loyalty_liability / sales_discount; Cr sales_revenue, service_charge, tax_payable_pbjt, rounding |
 | Sale refunded                                               | `order.refunded`                                                         | mirror; gateway part Cr customer_deposit (owed to guest until payout)                                                                                                                                                         |
-| Gateway money paid back                                     | `payment.refunded`                                                       | Dr customer_deposit / Cr gateway_clearing                                                                                                                                                                                     |
+| Gateway money paid back                                     | `payment.refunded`                                                       | Dr customer_deposit / Cr gateway_clearing. Backed by a posted receipt (fund or intent) and bounded by time, section 10                                                                                                        |
+| Completed sale voided                                       | `order.voided` (voidedFinalOrder true)                                   | reverses the `aj:sale:<orderId>` journal (cash-only sales; section 10). Open-order void: ignored                                                                                                                              |
 | DP forfeited                                                | `reservation.cancelled`, `reservation.no_show` (depositForfeitedIdr > 0) | Dr customer_deposit (gateway_clearing if the DP predates the cutover) / Cr deposit_forfeit_income                                                                                                                             |
 | Cash over/short                                             | `cashier_shift.closed`                                                   | existing rule (differenceIdr)                                                                                                                                                                                                 |
 | Gateway settlement + MDR                                    | `settlement.reconciled`                                                  | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross)                                                                                                                                            |
@@ -122,17 +123,18 @@ Null -> park `OUTLET_LEGAL_ENTITY_MISSING`. Tenants without the accounting modul
 
 Business-fact keys, prefix `aj:`, sha256 fallback above 100 chars (as `idempotencyKeyOf`).
 
-| Event                           | Key                                                                                                   |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| order.paid                      | `aj:sale:<orderId>`                                                                                   |
-| order.refunded                  | `aj:order-refund:<refundId>`                                                                          |
-| payment.paid                    | `aj:receipt:<event.id>` (one event per money arrival; a double payment is a new event) **TBD-verify** |
-| payment.refunded                | `aj:payout:<refundId>`                                                                                |
-| reservation.cancelled / no_show | `aj:dp-forfeit:<reservationId>`                                                                       |
-| cashier_shift.closed            | `aj:shift:<shiftId>`                                                                                  |
-| settlement.reconciled           | `aj:settlement:<settlementId>`                                                                        |
-| edc_transaction.settled         | `aj:edc-settlement:<settlementBatchId>`                                                               |
-| cash_deposit.recorded           | `aj:cash-deposit:<cashDepositId>`                                                                     |
+| Event                                | Key                                                                                                   |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| order.paid                           | `aj:sale:<orderId>`                                                                                   |
+| order.refunded                       | `aj:order-refund:<refundId>`                                                                          |
+| order.voided (voidedFinalOrder true) | `aj:sale-void:<orderId>`                                                                              |
+| payment.paid                         | `aj:receipt:<event.id>` (one event per money arrival; a double payment is a new event) **TBD-verify** |
+| payment.refunded                     | `aj:payout:<refundId>`                                                                                |
+| reservation.cancelled / no_show      | `aj:dp-forfeit:<reservationId>`                                                                       |
+| cashier_shift.closed                 | `aj:shift:<shiftId>`                                                                                  |
+| settlement.reconciled                | `aj:settlement:<settlementId>`                                                                        |
+| edc_transaction.settled              | `aj:edc-settlement:<settlementBatchId>`                                                               |
+| cash_deposit.recorded                | `aj:cash-deposit:<cashDepositId>`                                                                     |
 
 Rule: before computing the date, look the key up in `journal_entries`. Found -> `already_posted`
 (no-op). This avoids `IDEMPOTENCY_KEY_REUSED` when a retry would compute a different
@@ -171,9 +173,13 @@ first_failed_at, last_failed_at timestamptz NOT NULL, next_retry_at timestamptz 
 UNIQUE (tenant_id, idempotency_key); INDEX (tenant_id, next_retry_at).
 
 - Retryable (park, sweep retries every 10 min): `ACCOUNT_MAPPING_MISSING`, `ACCOUNT_INACTIVE`,
-  `ACCOUNT_NOT_POSTABLE`, `ACCOUNT_ENTITY_MISMATCH`, `OUTLET_LEGAL_ENTITY_MISSING`, `PERIOD_CLOSED` (race only).
+  `ACCOUNT_NOT_POSTABLE`, `ACCOUNT_ENTITY_MISMATCH`, `OUTLET_LEGAL_ENTITY_MISSING`, `PERIOD_CLOSED` (race only),
+  `AUTO_JOURNAL_RECEIPT_PENDING` (backing receipt not yet posted), `AUTO_JOURNAL_SALE_PENDING` (void waits for its sale journal).
 - Not retryable (park, `next_retry_at = null`, finance sees it): any other `AccountingError`
-  (`POSTING_AMOUNTS_MISMATCH`, `JOURNAL_UNBALANCED`, `IDEMPOTENCY_KEY_REUSED`). Deterministic,
+  (`POSTING_AMOUNTS_MISMATCH`, `JOURNAL_UNBALANCED`, `IDEMPOTENCY_KEY_REUSED`, `JOURNAL_ALREADY_REVERSED`),
+  `AUTO_JOURNAL_PAYLOAD_INVALID`, `AUTO_JOURNAL_RECEIPT_MISSING` (payout whose receipt will never post),
+  `AUTO_JOURNAL_SALE_MISSING` (void whose sale journal will never post), `AUTO_JOURNAL_VOID_UNSUPPORTED`
+  (void of a sale with gateway, EDC, points or deposit money; finance corrects). Deterministic,
   so retrying the outbox would only block cloud-sync until dead letter.
 - Non-`AccountingError` (DB, transient): propagate; outbox retry as today.
 - Success after parking deletes the row. Sweep `retryParkedAutoJournals(context, now)`: batch 100,
@@ -263,3 +269,76 @@ DOIT adapter + webhook, refund module (`payment-refund.service.ts` read-only via
    (flagged). Acceptable; CTO may ask for a cutover guard.
 6. Adding template rows can change shared fixtures and tests that count accounts.
 7. Journal contract change (source type, column, fingerprint) is tier K: architect + Codex.
+
+## 10. Codex 142 fixes (legend-9pz9 second opinion)
+
+Codex second opinion (`docs/briefs/142-second-opinion-auto-journals.result.md`) found four High issues:
+
+- F1: `payment.refunded` posted Dr customer_deposit without a customer_deposit credit for the payout.
+- F2: completed-sale void (`order.voided`, voidedFinalOrder true) never reversed `aj:sale:<orderId>`. Cash returns via drawer; gateway and EDC voids are also allowed.
+- F3: payout guard ignored forfeited DP. Receipt 100, forfeit 100, then a refund of the same intent 100 debited customer_deposit twice.
+- F4: guards read current state (order status, refunds so far). A later change alters facts that already parked or posted. Order-dependent.
+
+Rule for every fix: the same historical facts give the same result regardless of event delivery order. A posting parks rather than post an unsupported debit.
+
+### Time bounds
+
+- Refund bound B = (`payment_refunds.completed_at`, refundId).
+- Sale bound S = (`pos_orders.completed_at`, orderId) of the sale.
+- Forfeit bound = `reservations.closed_at`.
+- Tie rule: on equal time the sale counts as earlier than a refund or forfeit; the forfeit counts as earlier than a refund.
+- Read only rows final at that time: completed refunds, completed orders, closed reservations. Never read current status without a time bound.
+- Bound times are read in SQL from the fact's own row, never through a JS `Date`: `Date` keeps milliseconds, `timestamptz` microseconds, so a round-tripped bound can drop the fact's own row.
+
+### Backing receipt
+
+- Intent backing: `aj:receipt:<intentId>` (outbox `payment.paid`).
+- Fund backing: `aj:receipt-fund:<fundId>` (outbox `payment.funds_unallocated`), when the refund has `unallocatedFundId` and that fund has that event. Otherwise intent backing (fund counted inside `payment.paid`).
+- Backing state `posted` / `pending` / `none`, same order as section 1: outbox, parked, journal.
+- Sale backing: `aj:sale:<orderId>` (outbox `order.paid`, payload orderId).
+
+### Payout (`payment.refunded`, section 4 key `aj:payout:<refundId>`)
+
+- Refund row must be `completed`, `completed_at` set, amount and intent equal to payload; else `AUTO_JOURNAL_PAYLOAD_INVALID`.
+- Money time = `completed_at` (no `occurredAt` fallback).
+- Backing pending -> `AUTO_JOURNAL_RECEIPT_PENDING`; none -> `AUTO_JOURNAL_RECEIPT_MISSING`; posted -> amount check.
+- Fund backing: completed payouts of the fund with bound <= B must not exceed the fund receipt credit; else `POSTING_AMOUNTS_MISMATCH`.
+- Intent backing: receipt credit must cover captured POS tenders of orders completed with bound <= B (tie: sale earlier), plus forfeits closed <= B, plus completed payouts of the intent with bound <= B (this one included); else `POSTING_AMOUNTS_MISMATCH`.
+- DP intents: DP applied by completed orders with bound <= B must not exceed the DP still held by session intents (amount, minus completed non-fund refunds <= B, minus forfeits closed <= B); else `POSTING_AMOUNTS_MISMATCH`.
+
+### Sale with DP (`order.paid`, F4)
+
+- Applied DP = DP of orders completed with bound <= S.
+- Held DP = intents in `DP_INTENT_STATUSES`, minus completed non-fund refunds with `completed_at` < S, minus forfeits with `closed_at` < S.
+- Sale order must be completed with `completed_at` set; else `AUTO_JOURNAL_PAYLOAD_INVALID`.
+- Replaces the "live" status reads, so a later refund or forfeit no longer changes an earlier sale.
+
+### Forfeit (`reservation.cancelled` / `no_show`, F3)
+
+- Forfeit plus completed refunds of the DP intent with `completed_at` < `closed_at` must not exceed the intent amount; else `POSTING_AMOUNTS_MISMATCH`.
+
+### Void (`order.voided`, key `aj:sale-void:<orderId>`)
+
+- `voidedFinalOrder` false: ignored (open-order void posts nothing).
+- Checks: `pos_order_voids` row (id = voidId, orderId) exists; order `deposit_applied_idr` = 0; amount = `orders.total_idr`; else `AUTO_JOURNAL_PAYLOAD_INVALID`.
+- Any gateway, EDC, points or deposit money on the sale -> `AUTO_JOURNAL_VOID_UNSUPPORTED` (the void returns cash only).
+- Sale backing pending -> `AUTO_JOURNAL_SALE_PENDING`; none -> `AUTO_JOURNAL_SALE_MISSING`; posted -> reverse that entry (`reversal_of` = sale entry). Reason `Void penjualan <voidId>`.
+- Date: section 5 (late-adjust into the first open day if the month is closed).
+- Sale already reversed by finance -> `JOURNAL_ALREADY_REVERSED` (park, not retryable).
+
+### Upstream proposals (not code; owners decide)
+
+- U1: `refundableBalance` subtracts forfeited DP; refund of forfeited DP returns 409 `REFUND_DEPOSIT_FORFEITED`. Removes F3 at source.
+- U2: correction void must refuse, or return gateway, EDC and points tenders. Today it returns only cash.
+- U3: QR orders have no `pos_orders` row, so no completion time. Before slice 3 they need one, else the sale bound S cannot be set and their DP/tenders are not counted by the guards.
+- U4: commit order vs time order. `payment_refunds.completed_at`, `pos_orders.completed_at` and
+  `reservations.closed_at` are each the writer's `now` before commit, and refund completion, DP or
+  gateway-tender sale completion and forfeit close share no lock. A sale stamped T1 that commits after a
+  refund stamped T2 > T1 is consumed is invisible to the refund's check, and the sale's check does not count
+  the later refund: both can post (Dr customer_deposit twice). The window is the open sale transaction
+  versus outbox delivery of the refund (seconds). Fix in the writers: lock the DP or tender intent row
+  (`payment_intents ... FOR UPDATE`) in all three and take the timestamp after the lock. The e7zj advisory
+  lock covers refund creation, not completion.
+- Known over-park: a sale parked for applying refunded DP still counts as applied in later checks of the
+  same session, so later DP sales there park too (finance clears them together).
+- A receipt that finance reversed (ACC-01) backs no payout.

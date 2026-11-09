@@ -51,6 +51,7 @@ import {
   createUlid,
   tenantIdSchema,
   ulidToUuid,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -65,6 +66,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { reverseJournal } from "../services/accounting-journal.service.ts";
 import {
   deliverAutoJournalEvent,
   retryParkedAutoJournals,
@@ -364,6 +366,7 @@ async function seedRefund(
   intentId: string,
   amountIdr: number,
   unallocatedFundId?: string,
+  completedAt: string = REFUND_DAY,
 ): Promise<string> {
   const refundId = randomUUID();
   await owner.query(
@@ -377,14 +380,14 @@ async function seedRefund(
       world.outletId,
       intentId,
       amountIdr,
-      REFUND_DAY,
+      completedAt,
       unallocatedFundId ?? null,
     ],
   );
   return refundId;
 }
 
-type TenderMethod = "cash" | "qris" | "edc_card";
+type TenderMethod = "cash" | "qris" | "edc_card" | "points";
 type Tender = {
   method: TenderMethod;
   amountIdr: number;
@@ -402,6 +405,10 @@ type SaleAmounts = {
   depositIdr?: number;
   /** Table session the DP is credited to. */
   tableSessionId?: string;
+  /** Loyalty points redeemed (order.paid paidPointsIdr); tenders pay the rest. */
+  pointsIdr?: number;
+  /** pos_orders.completed_at (default now()); the row is immutable afterwards. */
+  completedAt?: string;
   tenders: Tender[];
 };
 
@@ -410,7 +417,9 @@ const bucketOf = (method: TenderMethod) =>
     ? "paidCashIdr"
     : method === "qris"
       ? "paidGatewayIdr"
-      : "paidEdcIdr";
+      : method === "points"
+        ? "paidPointsIdr"
+        : "paidEdcIdr";
 
 function totalOf(sale: SaleAmounts): number {
   return (
@@ -454,16 +463,16 @@ async function seedPosOrder(
     );
     await client.query(
       `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at, completed_at)
-       VALUES ($1, $2, $3, 'pos', now(), now())`,
-      [orderId, world.tenant.id, world.outletId],
+       VALUES ($1, $2, $3, 'pos', now(), COALESCE($4::timestamptz, now()))`,
+      [orderId, world.tenant.id, world.outletId, sale.completedAt ?? null],
     );
     for (const tender of sale.tenders) {
       const cash = tender.method === "cash";
       await client.query(
         `INSERT INTO pos_order_tenders
            (tenant_id, outlet_id, order_id, method, provider, payment_intent_id, amount_idr,
-            received_idr, change_idr, status, requested_at, resolved_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'captured', now(), now())`,
+            received_idr, change_idr, points_used, status, requested_at, resolved_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'captured', now(), now())`,
         [
           world.tenant.id,
           world.outletId,
@@ -474,6 +483,7 @@ async function seedPosOrder(
           tender.amountIdr,
           cash ? tender.amountIdr : null,
           cash ? 0 : null,
+          tender.method === "points" ? tender.amountIdr : null,
         ],
       );
     }
@@ -623,7 +633,7 @@ function orderPaid(
       paidCashIdr: sum("paidCashIdr"),
       paidGatewayIdr: sum("paidGatewayIdr"),
       paidEdcIdr: sum("paidEdcIdr"),
-      paidPointsIdr: 0,
+      paidPointsIdr: sale.pointsIdr ?? 0,
       ...(sale.depositIdr === undefined
         ? {}
         : { paidDepositIdr: sale.depositIdr }),
@@ -998,6 +1008,38 @@ async function seedUndeliveredReceipt(
       randomUUID(),
       intentId,
       JSON.stringify(paymentPaid(world, intentId, receivedIdr)),
+    ],
+  );
+  return outboxId;
+}
+
+/**
+ * An event of the outbox (the consumer reads it to tell "not consumed yet" from
+ * "never emitted"). `aggregateUuid` is the aggregate id as a uuid (ULIDs via
+ * ulidToUuid). A "delivered" row stands for an event that was already consumed.
+ */
+async function seedOutboxEvent(
+  world: World,
+  event: EventEnvelope,
+  aggregateUuid: string,
+  status: "pending" | "delivered" = "pending",
+): Promise<string> {
+  const outboxId = randomUUID();
+  await owner.query(
+    `INSERT INTO domain_event_outbox
+       (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination,
+        status, delivered_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 1, $7, 'cloud-sync', $8, $9)`,
+    [
+      world.tenant.id,
+      outboxId,
+      world.outletId,
+      randomUUID(),
+      event.aggregateType,
+      aggregateUuid,
+      JSON.stringify(event),
+      status,
+      status === "delivered" ? DAY : null,
     ],
   );
   return outboxId;
@@ -1610,6 +1652,9 @@ describe("F19 payment.funds_unallocated books money that has no payment.paid", (
     // The guest pays the same bill again: a fund, not a second receipt.
     const fundId = await seedFund(world, intentId, 80_000, "double_payment");
     const receiptEvent = fundsUnallocated(world, fundId, intentId, 80_000);
+    // The fund event travelled through the outbox (it is how the payout finds
+    // its own receipt, see "Codex 142 repro").
+    await seedOutboxEvent(world, receiptEvent, fundId, "delivered");
     const receipt = await post(world, receiptEvent);
     const entry = await entryOf(world, receipt.journalEntryId);
     expect(entry.source_type).toBe("customer_deposit");
@@ -1652,12 +1697,11 @@ describe("F19 payment.funds_unallocated books money that has no payment.paid", (
     });
     const fundId = await seedFund(world, intentId, 65_000, "overpayment");
 
-    const receipt = await post(
-      world,
-      fundsUnallocated(world, fundId, intentId, 65_000, {
-        reason: "intent_expired",
-      }),
-    );
+    const fundEvent = fundsUnallocated(world, fundId, intentId, 65_000, {
+      reason: "intent_expired",
+    });
+    await seedOutboxEvent(world, fundEvent, fundId, "delivered");
+    const receipt = await post(world, fundEvent);
     expect(receipt.entryDate).toBe("2026-10-15");
     expect(await linesOf(world, receipt.journalEntryId)).toEqual([
       { role: "customer_deposit", debit: 0, credit: 65_000 },
@@ -2129,15 +2173,9 @@ describe("F19 the accounting module gate and unhandled events", () => {
     expect(await parkedOf(tenant, parkedKey)).toHaveLength(0);
   });
 
-  it("AJ-IGNORE-01 events outside slice 1 are ignored and write nothing", async () => {
+  // order.voided is no longer ignored (Codex 142 F2): see AJ-142-F2*.
+  it("AJ-IGNORE-01 events outside the consumer's event list are ignored and write nothing", async () => {
     const world = await makeWorld();
-    const voided = envelope(world, {
-      name: "order.voided",
-      aggregateType: "order",
-      aggregateId: createUlid(),
-      occurredAt: DAY,
-      payload: {},
-    });
     const dayClosed = envelope(world, {
       name: "day.closed",
       aggregateType: "day",
@@ -2146,7 +2184,6 @@ describe("F19 the accounting module gate and unhandled events", () => {
       payload: {},
     });
 
-    expect(await deliver(world.tenant, voided)).toEqual({ status: "ignored" });
     expect(await deliver(world.tenant, dayClosed)).toEqual({
       status: "ignored",
     });
@@ -2156,11 +2193,16 @@ describe("F19 the accounting module gate and unhandled events", () => {
 
 describe("F19 slice 2 order.paid applies the reservation DP", () => {
   /** 100k + 10% PBJT = 110k, fully covered by the DP (no tender). */
-  const dpSale = (sessionId: string, depositIdr = 110_000): SaleAmounts => ({
+  const dpSale = (
+    sessionId: string,
+    depositIdr = 110_000,
+    completedAt?: string,
+  ): SaleAmounts => ({
     grossSalesIdr: 100_000,
     pbjtIdr: 10_000,
     depositIdr,
     tableSessionId: sessionId,
+    ...(completedAt === undefined ? {} : { completedAt }),
     tenders:
       depositIdr < 110_000
         ? [{ method: "cash", amountIdr: 110_000 - depositIdr }]
@@ -2341,7 +2383,9 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     const { sessionId, intentId } = await seedSeatedDeposit(world, 160_000);
     await post(world, paymentPaid(world, intentId, 160_000));
     const orderUlid = createUlid();
-    const sale = dpSale(sessionId);
+    // Completed (DAY) before the refunds below (REFUND_DAY): guards are bounded
+    // by time, so the sale only counts against refunds completed after it.
+    const sale = dpSale(sessionId, 110_000, DAY);
     await seedPosOrder(world, orderUlid, sale);
     await post(world, orderPaid(world, orderUlid, sale));
     expect(await balanceOf(world, "customer_deposit")).toBe(-50_000);
@@ -2390,7 +2434,8 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
     await post(world, paymentPaid(world, intentId, 110_000));
     const orderUlid = createUlid();
-    const sale = dpSale(sessionId);
+    // Completed (DAY) before the refund at REFUND_DAY, so the sale counts.
+    const sale = dpSale(sessionId, 110_000, DAY);
     await seedPosOrder(world, orderUlid, sale);
     await post(world, orderPaid(world, orderUlid, sale));
     // A bad DP refund leaves the session over-applied.
@@ -2403,7 +2448,9 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     ).toMatchObject({ status: "parked", code: "POSTING_AMOUNTS_MISMATCH" });
 
     const fundId = await seedFund(world, intentId, 25_000);
-    await post(world, fundsUnallocated(world, fundId, intentId, 25_000));
+    const fundEvent = fundsUnallocated(world, fundId, intentId, 25_000);
+    await seedOutboxEvent(world, fundEvent, fundId, "delivered");
+    await post(world, fundEvent);
     const payoutId = await seedRefund(world, intentId, 25_000, fundId);
     const payout = await post(
       world,
@@ -2643,4 +2690,860 @@ describe("F19 slice 2 cashier_shift.closed books the drawer difference", () => {
     expect(await parkedOf(world.tenant, `aj:shift:${shiftId}`)).toHaveLength(1);
     expect(await journalCount(world)).toBe(0);
   });
+});
+
+// ============================================================================
+// Codex 142 fixes (legend-9pz9, docs/briefs/142-second-opinion-auto-journals.result.md;
+// design: docs/design/auto-journals.md, "Codex 142 fixes").
+// Each test asserts the CORRECT outcome for one finding and its fix.
+//
+// Assumptions:
+// - F1: a payout must be backed by a posted customer_deposit credit. Backing is
+//   the fund receipt `aj:receipt-fund:<fundId>` when a payment.funds_unallocated
+//   event of that fund is in the outbox, else the intent receipt
+//   `aj:receipt:<intentId>`. Backing still in the outbox: retryable
+//   AUTO_JOURNAL_RECEIPT_PENDING. No backing anywhere: non-retryable
+//   AUTO_JOURNAL_RECEIPT_MISSING. Credit exceeded: POSTING_AMOUNTS_MISMATCH.
+//   A refund row that is not completed, or differs from the payload:
+//   AUTO_JOURNAL_PAYLOAD_INVALID.
+// - F2: a completed-sale void reverses `aj:sale:<orderId>` (key
+//   `aj:sale-void:<orderId>`, reversal_of = the sale entry). Sale not yet
+//   consumed: retryable AUTO_JOURNAL_SALE_PENDING; never journaled:
+//   AUTO_JOURNAL_SALE_MISSING; sale with gateway/EDC/points money:
+//   AUTO_JOURNAL_VOID_UNSUPPORTED (the void returns cash only). The retryable
+//   flag of JOURNAL_ALREADY_REVERSED is not asserted.
+// - F3/F4: time order decides, never delivery order. Time of a refund =
+//   payment_refunds.completed_at, of a sale = pos_orders.completed_at, of a
+//   forfeit = reservations.closed_at. On equal time the sale counts as earlier
+//   than a refund. Tests that need distinct refunds use distinct completed_at
+//   (equal times fall back to an id order the test cannot control).
+// - A points sale (cash + points) posts on order.paid like any sale.
+
+describe("Codex 142 fixes", () => {
+  const T_SALE_EARLY = "2026-10-15T05:00:00.000Z"; // before REFUND_DAY
+  const T_SALE_LATE = "2026-10-17T05:00:00.000Z"; // after REFUND_DAY
+  const T_REFUND_BEFORE_FORFEIT = "2026-10-14T05:00:00.000Z"; // before DAY
+  const hoursAfter = (instant: string, hours: number) =>
+    new Date(new Date(instant).getTime() + hours * 3_600_000).toISOString();
+
+  const MISMATCH = {
+    status: "parked",
+    code: "POSTING_AMOUNTS_MISMATCH",
+    retryable: false,
+  } as const;
+
+  const dpSale142 = (sessionId: string, completedAt: string): SaleAmounts => ({
+    grossSalesIdr: 100_000,
+    pbjtIdr: 10_000,
+    depositIdr: 110_000,
+    tableSessionId: sessionId,
+    completedAt,
+    tenders: [],
+  });
+
+  /** Gross 100k, discount 10k, service 5k, PBJT 9.5k, rounding 0.5k = 105k cash. */
+  const cashSale142: SaleAmounts = {
+    grossSalesIdr: 100_000,
+    discountIdr: 10_000,
+    serviceChargeIdr: 5_000,
+    pbjtIdr: 9_500,
+    roundingIdr: 500,
+    tenders: [{ method: "cash", amountIdr: 105_000 }],
+  };
+
+  type Order = "first-first" | "second-first";
+
+  /** Delivers `first` and `second` in the given order; results keep their names. */
+  async function deliverBoth(
+    tenant: Tenant,
+    order: Order,
+    first: EventEnvelope,
+    second: EventEnvelope,
+  ) {
+    const results = {} as {
+      first: AutoJournalResult;
+      second: AutoJournalResult;
+    };
+    if (order === "first-first") {
+      results.first = await deliver(tenant, first);
+      results.second = await deliver(tenant, second);
+    } else {
+      results.second = await deliver(tenant, second);
+      results.first = await deliver(tenant, first);
+    }
+    return results;
+  }
+
+  function orderVoided(
+    world: World,
+    orderUlid: string,
+    amountIdr: number,
+    voidId: string | null,
+    voidedFinalOrder: boolean,
+    voidedAt: string = REFUND_DAY,
+    payload: Record<string, unknown> = {},
+  ): EventEnvelope {
+    return envelope(world, {
+      name: "order.voided",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      occurredAt: voidedAt,
+      payload: {
+        orderId: orderUlid,
+        outletId: world.outletId,
+        businessDate: "2026-10-15",
+        amountIdr,
+        reason: "wrong_order",
+        reasonNote: "Pesanan salah",
+        approvedBy: randomUUID(),
+        overrideId: null,
+        approvalRequestId: null,
+        voidedFinalOrder,
+        voidId,
+        receiptNumber: voidedFinalOrder ? "AJ-0001" : null,
+        voidedAt,
+        ...payload,
+      },
+    });
+  }
+
+  /** The pos_order_voids row of a completed-sale void. */
+  async function seedVoid(
+    world: World,
+    orderUlid: string,
+    amountIdr: number,
+    voidedAt: string = REFUND_DAY,
+  ): Promise<string> {
+    const voidId = randomUUID();
+    await asTenant(world.tenant, (client) =>
+      client.query(
+        `INSERT INTO pos_order_voids
+           (id, tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+            requested_by, approved_by, approval_request_id, voided_at)
+         VALUES ($1, $2, $3, $4, 'AJ-0001', $7, 'wrong_order', 'Pesanan salah',
+                 'requester', 'approver', $6, $5)`,
+        [
+          voidId,
+          world.tenant.id,
+          world.outletId,
+          ulidToUuid(orderUlid),
+          voidedAt,
+          randomUUID(),
+          amountIdr,
+        ],
+      ),
+    );
+    return voidId;
+  }
+
+  /** A completed sale, seeded and journaled; returns its order id and journal. */
+  async function postedSale(world: World, sale: SaleAmounts) {
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, sale);
+    const result = await post(world, orderPaid(world, orderUlid, sale));
+    return { orderUlid, saleEntryId: result.journalEntryId };
+  }
+
+  async function reversalOf(
+    world: World,
+    entryId: string,
+  ): Promise<{ reversal_of: string | null; source_type: string }> {
+    const { rows } = await owner.query<{
+      reversal_of: string | null;
+      source_type: string;
+    }>(
+      "SELECT reversal_of, source_type FROM journal_entries WHERE tenant_id = $1 AND id = $2",
+      [world.tenant.id, entryId],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  }
+
+  // ---- F1: a payout needs a customer_deposit credit behind it ---------------
+
+  it("AJ-142-F1a a refund whose receipt is still in the outbox parks AUTO_JOURNAL_RECEIPT_PENDING (retryable, no debit without a credit); the sweep posts it after the receipt", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 200_000 });
+    const outboxId = await seedUndeliveredReceipt(world, intentId, 200_000);
+    const refundId = await seedRefund(world, intentId, 200_000);
+
+    expect(
+      await deliver(
+        tenant,
+        paymentRefunded(world, refundId, intentId, 200_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    await markDelivered(world, outboxId);
+    await post(world, paymentPaid(world, intentId, 200_000));
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(0);
+  });
+
+  it("AJ-142-F1b a refund of an intent whose receipt never existed (paid before the wiring) parks non-retryable AUTO_JOURNAL_RECEIPT_MISSING; the sweep leaves it and customer_deposit is never debited", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 200_000 });
+    const refundId = await seedRefund(world, intentId, 200_000);
+
+    expect(
+      await deliver(
+        tenant,
+        paymentRefunded(world, refundId, intentId, 200_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_MISSING",
+      retryable: false,
+    });
+    expect(
+      await parkedByCode(
+        tenant,
+        "AUTO_JOURNAL_RECEIPT_MISSING",
+        world.outletId,
+      ),
+    ).toMatchObject([{ retryable: false, event_name: "payment.refunded" }]);
+
+    await sweep(tenant);
+    expect(await journalCount(world)).toBe(0);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-142-F1c a payout of an unallocated fund with no fund receipt and no intent receipt parks non-retryable AUTO_JOURNAL_RECEIPT_MISSING", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 80_000 });
+    const fundId = await seedFund(world, intentId, 25_000);
+    const payoutId = await seedRefund(world, intentId, 25_000, fundId);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, payoutId, intentId, 25_000, fundId),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_MISSING",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-142-F1d a fund payout whose own fund receipt is posted posts; paying out more than the fund received parks POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, {
+      amountIdr: 80_000,
+      status: "expired",
+    });
+    const fundId = await seedFund(world, intentId, 25_000);
+    const fundEvent = fundsUnallocated(world, fundId, intentId, 25_000);
+    await seedOutboxEvent(world, fundEvent, fundId, "delivered");
+    await post(world, fundEvent);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
+
+    const payoutId = await seedRefund(world, intentId, 25_000, fundId);
+    const payout = await post(
+      world,
+      paymentRefunded(world, payoutId, intentId, 25_000, fundId),
+    );
+    expect(await linesOf(world, payout.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 25_000, credit: 0 },
+      { role: "gateway_clearing", debit: 0, credit: 25_000 },
+    ]);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    // The fund is empty: a second payout of it would debit money never received.
+    const extraId = await seedRefund(
+      world,
+      intentId,
+      5_000,
+      fundId,
+      hoursAfter(REFUND_DAY, 1),
+    );
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, extraId, intentId, 5_000, fundId),
+      ),
+    ).toEqual(MISMATCH);
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-142-F1e a fund payout whose fund receipt is still in the outbox parks AUTO_JOURNAL_RECEIPT_PENDING; the sweep posts it after the fund receipt", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, {
+      amountIdr: 80_000,
+      status: "expired",
+    });
+    const fundId = await seedFund(world, intentId, 25_000);
+    const fundEvent = fundsUnallocated(world, fundId, intentId, 25_000);
+    const outboxId = await seedOutboxEvent(world, fundEvent, fundId, "pending");
+    const payoutId = await seedRefund(world, intentId, 25_000, fundId);
+
+    expect(
+      await deliver(
+        tenant,
+        paymentRefunded(world, payoutId, intentId, 25_000, fundId),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    await markDelivered(world, outboxId);
+    await post(world, fundEvent);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-142-F1f an overpayment fund counted inside payment.paid is backed by the intent receipt: its payout and the bill refund post, one rupiah more parks POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 80_000 });
+    // The guest paid 105k on an 80k bill: the receipt holds all of it and no
+    // payment.funds_unallocated event exists for the 25k overpayment.
+    await post(world, paymentPaid(world, intentId, 105_000));
+    const fundId = await seedFund(world, intentId, 25_000, "overpayment");
+    expect(await balanceOf(world, "customer_deposit")).toBe(-105_000);
+
+    const fundPayoutId = await seedRefund(world, intentId, 25_000, fundId);
+    await post(
+      world,
+      paymentRefunded(world, fundPayoutId, intentId, 25_000, fundId),
+    );
+    const billRefundId = await seedRefund(
+      world,
+      intentId,
+      80_000,
+      undefined,
+      hoursAfter(REFUND_DAY, 1),
+    );
+    await post(world, paymentRefunded(world, billRefundId, intentId, 80_000));
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    const extraId = await seedRefund(
+      world,
+      intentId,
+      1,
+      undefined,
+      hoursAfter(REFUND_DAY, 2),
+    );
+    expect(
+      await deliver(world.tenant, paymentRefunded(world, extraId, intentId, 1)),
+    ).toEqual(MISMATCH);
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-142-F1h an intent receipt that finance reversed no longer backs a refund: payment.refunded parks non-retryable POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 200_000 });
+    const receipt = await post(world, paymentPaid(world, intentId, 200_000));
+    expect(await balanceOf(world, "customer_deposit")).toBe(-200_000);
+
+    await reverseJournal(
+      contextOf(world.tenant),
+      receipt.journalEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    const refundId = await seedRefund(world, intentId, 200_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 200_000),
+      ),
+    ).toEqual(MISMATCH);
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-142-F1g a refund event whose refund row is not completed, or whose amount differs from the row, parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 200_000 });
+    await post(world, paymentPaid(world, intentId, 200_000));
+
+    const pendingId = await seedRefund(world, intentId, 50_000);
+    await owner.query(
+      "UPDATE payment_refunds SET status = 'pending', completed_at = NULL WHERE id = $1",
+      [pendingId],
+    );
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, pendingId, intentId, 50_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+
+    const wrongAmountId = await seedRefund(world, intentId, 50_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, wrongAmountId, intentId, 60_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-200_000);
+  });
+
+  // ---- F2: void of a completed sale -----------------------------------------
+
+  it("AJ-142-F2a the void of a completed cash sale posts a reversal of the sale journal (reversal_of = the sale entry, every line mirrored); replay books nothing more", async () => {
+    const world = await makeWorld();
+    const { orderUlid, saleEntryId } = await postedSale(world, cashSale142);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(105_000);
+
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+    const event = orderVoided(world, orderUlid, 105_000, voidId, true);
+    const result = await deliver(world.tenant, event);
+    expect(result.status).toBe("posted");
+    if (result.status !== "posted") throw new Error("not posted");
+
+    expect(await reversalOf(world, result.journalEntryId)).toEqual({
+      reversal_of: saleEntryId,
+      source_type: "reversal",
+    });
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 0, credit: 105_000 },
+      { role: "rounding", debit: 500, credit: 0 },
+      { role: "sales_discount", debit: 0, credit: 10_000 },
+      { role: "sales_revenue", debit: 100_000, credit: 0 },
+      { role: "service_charge", debit: 5_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 9_500, credit: 0 },
+    ]);
+    await expectBalanced(world, result.journalEntryId);
+    for (const role of [
+      "cash_on_hand",
+      "sales_revenue",
+      "sales_discount",
+      "service_charge",
+      "tax_payable_pbjt",
+      "rounding",
+    ] as const)
+      expect(await balanceOf(world, role), role).toBe(0);
+
+    expect(await deliver(world.tenant, event)).toMatchObject({
+      status: "already_posted",
+    });
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-142-F2b the void of an open order (voidedFinalOrder false) books nothing", async () => {
+    const world = await makeWorld();
+
+    expect(
+      await deliver(
+        world.tenant,
+        orderVoided(world, createUlid(), 50_000, null, false),
+      ),
+    ).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-142-F2c a void that arrives before the sale was consumed parks AUTO_JOURNAL_SALE_PENDING (retryable); after order.paid the sweep posts the reversal", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, cashSale142);
+    const saleEvent = orderPaid(world, orderUlid, cashSale142);
+    const outboxId = await seedOutboxEvent(
+      world,
+      saleEvent,
+      ulidToUuid(orderUlid),
+      "pending",
+    );
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+
+    expect(
+      await deliver(
+        tenant,
+        orderVoided(world, orderUlid, 105_000, voidId, true),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await parkedOf(tenant, `aj:sale-void:${orderUlid}`)).toMatchObject([
+      { retryable: true, event_name: "order.voided" },
+    ]);
+
+    await markDelivered(world, outboxId);
+    const sale = await post(world, saleEvent);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    const reversalId = await journalIdOf(world, `aj:sale-void:${orderUlid}`);
+    expect((await reversalOf(world, reversalId)).reversal_of).toBe(
+      sale.journalEntryId,
+    );
+    expect(await balanceOf(world, "cash_on_hand")).toBe(0);
+    expect(await balanceOf(world, "sales_revenue")).toBe(0);
+    expect(await parkedOf(tenant, `aj:sale-void:${orderUlid}`)).toHaveLength(0);
+  });
+
+  it("AJ-142-F2d a void of a sale that was never journaled parks non-retryable AUTO_JOURNAL_SALE_MISSING and posts nothing", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, cashSale142);
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        orderVoided(world, orderUlid, 105_000, voidId, true),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(
+      await parkedOf(world.tenant, `aj:sale-void:${orderUlid}`),
+    ).toMatchObject([{ retryable: false, event_name: "order.voided" }]);
+  });
+
+  for (const kind of ["gateway", "edc", "points"] as const) {
+    it(`AJ-142-F2e the void of a sale with ${kind} money parks non-retryable AUTO_JOURNAL_VOID_UNSUPPORTED (the void returns cash only); the sale journal stays`, async () => {
+      const world = await makeWorld();
+      const sale: SaleAmounts =
+        kind === "points"
+          ? {
+              grossSalesIdr: 100_000,
+              pointsIdr: 20_000,
+              // Points are a captured tender (pos-order.service.ts bucket "points").
+              tenders: [
+                { method: "cash", amountIdr: 80_000 },
+                { method: "points", amountIdr: 20_000 },
+              ],
+            }
+          : {
+              grossSalesIdr: 100_000,
+              tenders: [
+                { method: "cash", amountIdr: 30_000 },
+                {
+                  method: kind === "edc" ? "edc_card" : "qris",
+                  amountIdr: 70_000,
+                },
+              ],
+            };
+      const { orderUlid } = await postedSale(world, sale);
+      const voidId = await seedVoid(world, orderUlid, 100_000);
+
+      expect(
+        await deliver(
+          world.tenant,
+          orderVoided(world, orderUlid, 100_000, voidId, true),
+        ),
+      ).toEqual({
+        status: "parked",
+        code: "AUTO_JOURNAL_VOID_UNSUPPORTED",
+        retryable: false,
+      });
+      expect(await journalCount(world)).toBe(1);
+      expect(
+        await parkedOf(world.tenant, `aj:sale-void:${orderUlid}`),
+      ).toMatchObject([{ retryable: false }]);
+    });
+  }
+
+  it("AJ-142-F2f a sale that finance already reversed parks JOURNAL_ALREADY_REVERSED instead of a second reversal", async () => {
+    const world = await makeWorld();
+    const { orderUlid, saleEntryId } = await postedSale(world, cashSale142);
+    await reverseJournal(
+      contextOf(world.tenant),
+      saleEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    expect(await journalCount(world)).toBe(2);
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        orderVoided(world, orderUlid, 105_000, voidId, true),
+      ),
+    ).toMatchObject({ status: "parked", code: "JOURNAL_ALREADY_REVERSED" });
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(0);
+  });
+
+  it("AJ-142-F2g a void in a closed month posts the reversal on the first open day, flagged with its real date, with an audit row", async () => {
+    const world = await makeWorld();
+    const { orderUlid, saleEntryId } = await postedSale(world, cashSale142);
+    await closePeriods(world, ["2026-10"]);
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+
+    const result = await post(
+      world,
+      orderVoided(world, orderUlid, 105_000, voidId, true),
+    );
+    // Void instant REFUND_DAY = business date 2026-10-16, in the closed month.
+    expect(result.entryDate).toBe("2026-11-01");
+    expect(result.lateAdjustmentFrom).toBe("2026-10-16");
+    const entry = await entryOf(world, result.journalEntryId);
+    expect(entry.entry_date).toBe("2026-11-01");
+    expect(entry.late_adjustment_from).toBe("2026-10-16");
+    expect(entry.description).toContain("2026-10-16");
+    expect((await reversalOf(world, result.journalEntryId)).reversal_of).toBe(
+      saleEntryId,
+    );
+    expect(await lateAuditCount(world.tenant, result.journalEntryId)).toBe(1);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(0);
+  });
+
+  it("AJ-142-F2h a void whose voidId has no pos_order_voids row, or whose amount differs from the order total, parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID", async () => {
+    const world = await makeWorld();
+    const { orderUlid } = await postedSale(world, cashSale142);
+
+    expect(
+      await deliver(
+        world.tenant,
+        orderVoided(world, orderUlid, 105_000, randomUUID(), true),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+
+    const voidId = await seedVoid(world, orderUlid, 105_000);
+    expect(
+      await deliver(
+        world.tenant,
+        orderVoided(world, orderUlid, 100_000, voidId, true),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+  });
+
+  it("AJ-142-F2i an order.voided event with an invalid payload parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID and never throws", async () => {
+    const world = await makeWorld();
+    const bad = orderVoided(world, createUlid(), 1, null, true, REFUND_DAY, {
+      amountIdr: "bukan angka",
+    });
+
+    expect(await deliver(world.tenant, bad)).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  // ---- F3: forfeited DP, then an ordinary refund of the same intent ---------
+
+  for (const order of ["first-first", "second-first"] as const) {
+    const label =
+      order === "first-first" ? "forfeit then refund" : "refund then forfeit";
+
+    it(`AJ-142-F3a (${label}) a DP forfeited in full cannot also be refunded: the refund parks non-retryable POSTING_AMOUNTS_MISMATCH, the forfeit posts, customer_deposit stays 0`, async () => {
+      const world = await makeWorld();
+      const deposit = { paidIdr: 100_000, forfeitedIdr: 100_000 };
+      const { reservationId, intentId } = await seedClosedReservation(world, {
+        kind: "no_show",
+        ...deposit,
+      });
+      await post(world, paymentPaid(world, intentId, 100_000));
+      const refundId = await seedRefund(world, intentId, 100_000);
+
+      const { first: forfeit, second: refund } = await deliverBoth(
+        world.tenant,
+        order,
+        reservationClosed(world, reservationId, "no_show", deposit),
+        paymentRefunded(world, refundId, intentId, 100_000),
+      );
+      expect(forfeit).toMatchObject({ status: "posted" });
+      expect(refund).toEqual(MISMATCH);
+      // receipt + forfeit only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-142-F3b (${label}) forfeit 60k plus refund 40k of a 100k DP both post and customer_deposit ends at 0`, async () => {
+      const world = await makeWorld();
+      const deposit = { paidIdr: 100_000, forfeitedIdr: 60_000 };
+      const { reservationId, intentId } = await seedClosedReservation(world, {
+        kind: "cancelled",
+        ...deposit,
+      });
+      await post(world, paymentPaid(world, intentId, 100_000));
+      const refundId = await seedRefund(world, intentId, 40_000);
+
+      const { first: forfeit, second: refund } = await deliverBoth(
+        world.tenant,
+        order,
+        reservationClosed(world, reservationId, "cancelled", deposit),
+        paymentRefunded(world, refundId, intentId, 40_000),
+      );
+      expect(forfeit).toMatchObject({ status: "posted" });
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(await journalCount(world)).toBe(3);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+      expect(await balanceOf(world, "deposit_forfeit_income")).toBe(-60_000);
+    });
+
+    it(`AJ-142-F3c (${label}) a refund completed before the forfeit leaves less to forfeit: the refund posts, a forfeit above the rest parks non-retryable POSTING_AMOUNTS_MISMATCH`, async () => {
+      const world = await makeWorld();
+      // Forfeit 60k of 100k at closed_at = DAY, but 60k was already refunded
+      // the day before: only 40k was left to forfeit.
+      const deposit = { paidIdr: 100_000, forfeitedIdr: 60_000 };
+      const { reservationId, intentId } = await seedClosedReservation(world, {
+        kind: "cancelled",
+        ...deposit,
+      });
+      await post(world, paymentPaid(world, intentId, 100_000));
+      const refundId = await seedRefund(
+        world,
+        intentId,
+        60_000,
+        undefined,
+        T_REFUND_BEFORE_FORFEIT,
+      );
+
+      const { first: forfeit, second: refund } = await deliverBoth(
+        world.tenant,
+        order,
+        reservationClosed(world, reservationId, "cancelled", deposit),
+        paymentRefunded(world, refundId, intentId, 60_000),
+      );
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(forfeit).toEqual(MISMATCH);
+      // receipt + refund only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+    });
+  }
+
+  // ---- F4: guards bound by time, not by delivery order ----------------------
+
+  /**
+   * Seated 110k DP, receipt booked. Refund of the whole DP completes at
+   * REFUND_DAY; the sale that applied the DP completed at `saleAt`. "first"
+   * is the sale, "second" the refund.
+   */
+  async function deliverDpPair(order: Order, saleAt: string) {
+    const world = await makeWorld();
+    const { sessionId, intentId } = await seedSeatedDeposit(world, 110_000);
+    await post(world, paymentPaid(world, intentId, 110_000));
+    const orderUlid = createUlid();
+    const sale = dpSale142(sessionId, saleAt);
+    await seedPosOrder(world, orderUlid, sale);
+    const refundId = await seedRefund(world, intentId, 110_000);
+
+    const { first, second } = await deliverBoth(
+      world.tenant,
+      order,
+      orderPaid(world, orderUlid, sale, saleAt),
+      paymentRefunded(world, refundId, intentId, 110_000),
+    );
+    return { world, sale: first, refund: second };
+  }
+
+  for (const order of ["first-first", "second-first"] as const) {
+    const label = order === "first-first" ? "sale first" : "refund first";
+
+    it(`AJ-142-F4a (${label}) a refund completed before the DP sale posts; only the later offending sale parks`, async () => {
+      const { world, sale, refund } = await deliverDpPair(order, T_SALE_LATE);
+
+      expect(refund).toMatchObject({ status: "posted" });
+      expect(sale).toEqual(MISMATCH);
+      // receipt + refund only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-142-F4b (${label}) a DP sale completed before the refund posts; only the later offending refund parks`, async () => {
+      const { world, sale, refund } = await deliverDpPair(order, T_SALE_EARLY);
+
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(refund).toEqual(MISMATCH);
+      // receipt + sale only
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-142-F4c (${label}) a sale and a refund completed at the same instant: the sale counts as earlier, so it posts and the refund parks`, async () => {
+      const { world, sale, refund } = await deliverDpPair(order, REFUND_DAY);
+
+      expect(sale).toMatchObject({ status: "posted" });
+      expect(refund).toEqual(MISMATCH);
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+
+    it(`AJ-142-F4d (${label}) a gateway tender of a completed sale uses up the intent receipt: a refund completed after the sale parks non-retryable POSTING_AMOUNTS_MISMATCH`, async () => {
+      const world = await makeWorld();
+      const intentId = await seedIntent(world, { amountIdr: 50_000 });
+      await post(world, paymentPaid(world, intentId, 50_000));
+      const orderUlid = createUlid();
+      const sale: SaleAmounts = {
+        grossSalesIdr: 50_000,
+        completedAt: T_SALE_EARLY,
+        tenders: [{ method: "qris", amountIdr: 50_000, intentId }],
+      };
+      await seedPosOrder(world, orderUlid, sale);
+      const refundId = await seedRefund(world, intentId, 50_000);
+
+      const { first, second } = await deliverBoth(
+        world.tenant,
+        order,
+        orderPaid(world, orderUlid, sale, T_SALE_EARLY),
+        paymentRefunded(world, refundId, intentId, 50_000),
+      );
+      expect(first).toMatchObject({ status: "posted" });
+      expect(second).toEqual(MISMATCH);
+      // receipt + sale: the 50k receipt is consumed once, by the sale
+      expect(await journalCount(world)).toBe(2);
+      expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    });
+  }
 });

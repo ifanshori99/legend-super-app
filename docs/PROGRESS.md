@@ -562,3 +562,16 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bead baru: `legend-z76q` (P2, dispatcher print cek ulang printer saat cetak), `legend-4qon` (P3, oracle 404 vs 422 station brand lain di `menu.service`).
 - Biaya sesi 8d51c681 (06:43-07:53 UTC, termasuk akhir dak5): total biaya* 9922k (utama Opus 4869k, subagent Opus 2089k, Sonnet 2865k, Haiku 99k), 37 subagent sesi, task ini 6 subagent, maks 2 paralel.
 - Berikut: verifikasi CTO, second opinion Codex rentang 6f3063c7..5864a36c sebelum gerbang rilis, merge train.
+
+### Langkah 0: perbaikan temuan Codex 142 (cabang `ws/aj-fix142` dari `ws/dp-late-journal` b714f7b6, 2026-11-09)
+
+- Desain bersama subagent architect: `docs/design/auto-journals.md` §10.
+- F1 payout tanpa penerimaan: payout dicari penopangnya (receipt intent, atau receipt dana tak teralokasi bila dana itu punya event sendiri). Pending parkir `AUTO_JOURNAL_RECEIPT_PENDING` (diulang), tidak ada parkir `AUTO_JOURNAL_RECEIPT_MISSING` (tidak diulang). Receipt yang dibalik finance tidak menopang apa pun.
+- F2 void penjualan selesai: event `order.voided` (voidedFinalOrder) membalik jurnal `aj:sale:<orderId>` lewat ACC-01 (`reverseJournalInTransaction`, kunci `aj:sale-void:<orderId>`). Hanya penjualan tunai murni; ada tender gateway/EDC/poin parkir `AUTO_JOURNAL_VOID_UNSUPPORTED` (void hanya mengembalikan tunai). Jurnal penjualan belum ada: `AUTO_JOURNAL_SALE_PENDING` / `AUTO_JOURNAL_SALE_MISSING`.
+- F3 DP hangus: cek payout menghitung forfeit; cek forfeit menghitung refund sebelumnya.
+- F4 urutan event: semua cek dibatasi waktu dari baris faktanya sendiri (dibaca di SQL, bukan JS Date: presisi mikrodetik). Seri: penjualan lebih dulu dari refund/forfeit, forfeit lebih dulu dari refund.
+- File: `accounting-auto-journal-{amounts,consumer,guards (baru),void (baru)}.ts`, `accounting-journal.service.ts` (ekstrak `reverseJournalInTransaction`), test, desain.
+- Sisa (usulan ke CTO, berkas terlarang/di luar scope): U1 `refundableBalance` kurangi DP hangus; U2 void harus menolak atau mengembalikan tender gateway/EDC/poin; U3 order QR butuh waktu selesai sebelum slice 3; U4 race urutan commit vs cap waktu (penulis refund, penjualan, forfeit perlu kunci baris payment_intents sebelum ambil waktu).
+- Bukti: gate 37 file test API 569 lulus 1 skip; ulang 5 file accounting setelah perubahan terakhir 169 lulus 1 skip (auto-journal 86/86); kontrak node 131 lulus; tsc api/shared/web, eslint, prettier bersih. Commit 84218ab4. Brief Codex `docs/briefs/142b-second-opinion-fix142.md` (main checkout, tidak di-commit, 3 run).
+- Biaya sesi 9d8aab (08:10-08:31 UTC): total biaya* 5316k (utama Opus 2324k, subagent Opus 1133k, Sonnet 1689k, Haiku 170k), 15 subagent.
+- Berikut: tunggu CTO, lalu gabung `ws/aj-fix142` ke `ws/aj-settlement` dan mulai slice 4.
