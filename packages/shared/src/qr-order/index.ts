@@ -9,4 +9,5 @@ export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./table-operations.ts";
 export * from "./guest.ts";
+export * from "./edge-forwarding.ts";
 export * from "./fixtures.ts";

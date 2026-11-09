@@ -87,6 +87,8 @@ const MINUTE = 60_000;
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
+  /** DOIT got our `expires_in`: once a code lapses it answers `expired`. */
+  lapsed = false;
   async health() {
     return { status: "available" as const };
   }
@@ -105,7 +107,7 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      status: this.lapsed ? ("expired" as const) : ("pending" as const),
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -315,20 +317,25 @@ async function usageOf(menuItemId: string): Promise<number> {
 
 /** WS-05 marks the code expired when the guest polls after its expiry. */
 async function expireCode(guest: Guest, intentId: string, at: Date) {
+  fakeGateway.lapsed = true;
   const status = await getGuestPayment(
     contextOf(tenant.tenantId),
     guest.token,
     guest.sessionId,
     intentId,
     at,
-  );
+  ).finally(() => {
+    fakeGateway.lapsed = false;
+  });
   expect(status.status).toBe("expired");
   return onlyEvent("payment.expired", "intentId", intentId);
 }
 
+const fakeGateway = new FakeGateway();
+
 beforeAll(async () => {
   app = createApp();
-  setPaymentGateway(new FakeGateway());
+  setPaymentGateway(fakeGateway);
   setTableSessionSettlementLookup(qrOrderSettlementLookup);
   tenant = await createIsolatedTenant(`opc-${randomUUID().slice(0, 6)}`);
   staff = await staffOfIsolatedTenant(app, tenant);

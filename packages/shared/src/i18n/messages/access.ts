@@ -384,6 +384,7 @@ const accessBaseMessages = {
       refund: { request: "Ajukan refund", approve: "Setujui refund" },
       cash_drawer: { approve: "Setujui buka laci kas" },
       price_correction: { approve: "Setujui koreksi harga" },
+      day: { close: "Tutup hari usaha" },
     },
     shift: {
       cash: {

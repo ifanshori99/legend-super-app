@@ -16,8 +16,9 @@
 //   `ETag: "<version>"`; a write may send `If-Match: "<version>"` and gets
 //   412 PRECONDITION_FAILED when the order moved on. Without the header the
 //   contract's `expectedStatus` is the stale-screen guard.
-// - The device id stays null until WS-02 device registration (legend-165)
-//   supplies a verified one: a client-claimed device is never trusted.
+// - The device id is the signed `X-Device-Token` (device-id.ts), null without
+//   one: a client-claimed device is never trusted. Cash needs it (the drawer
+//   is per device).
 
 import { Router, type Request, type Response } from "express";
 import { CoreError, userIdSchema, type OutletId } from "@starter/shared/core";
@@ -48,6 +49,7 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { deviceIdOf } from "./device-id.ts";
 import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
@@ -85,7 +87,7 @@ function expectedVersion(req: Request): number | null {
 function caller(req: Request): PosCaller {
   return {
     userId: userIdSchema.parse(getAuth(req).user.id),
-    deviceId: null,
+    deviceId: deviceIdOf(req),
     expectedVersion: expectedVersion(req),
   };
 }

@@ -7,7 +7,7 @@ import {
   listPrintJobs,
   reprintPrintJob,
   retryPrintJob,
-  setDeviceTrainingMode,
+  setOutletDeviceTrainingMode,
   type CloudLink,
   type DeviceListQuery,
   type PrintJobListQuery,
@@ -45,7 +45,7 @@ export function setDeviceTrainingModeCall(
   deviceId: string,
   trainingMode: boolean,
 ) {
-  return callEndpoint(setDeviceTrainingMode, {
+  return callEndpoint(setOutletDeviceTrainingMode, {
     params: { deviceId },
     body: { trainingMode },
   });
