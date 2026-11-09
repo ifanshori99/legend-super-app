@@ -328,3 +328,9 @@ Biaya sesi CTO a840828f (04:37-07:57 UTC): 11709k (Opus utama 9158k, subagent Op
 - Codex G2c0z brief 159 (station-printer, akun 3). Jalan: G0lh5 152, G5t1n 158, G2c0z 159.
 - 15:14 Codex 159 (station-printer): 2 Medium (binding dicabut tetap ada; form basi menimpa binding baru), papan To do. Codex 158 (edge-event-class): tanpa temuan, 56 test lulus. Codex G6kgt brief 117 (DOIT refund, akun 3, xhigh). 119 berikut saat slot Codex lepas (hook menghitung 3/3). G0lh5 152 menunggu reset akun #2 15:36 (cron 15:37).
 - 15:15 Kedua akun Codex kena limit 5 jam: #2 sampai 15:36 (G0lh5), #3 sampai 15:40 (G6kgt). Cron 15:37 dan 15:42 melanjutkan; 119 dimulai setelahnya.
+- 15:30 Merge train G9syc selesai: m1 = a8c90378 (batch 3-8 masuk; pph21 masih baf5ca9e). Worktree integ-m1-batch1..8 dihapus CTO (+3 GB, 34 GB kosong). G9syc di-resolve; buka lagi dengan pesan saat batch berikut siap.
+- Keputusan CTO: /masters limiter sendiri per IP + device (legend-uznb); syncEdgeMasters wajib lewat guardDataImport (legend-8izz).
+- G0bgs langkah 0 selesai: ws/aj-fix142 84218ab4 + d309b186 (F1-F4 Codex 142). CTO verifikasi paralel (test-runner + reviewer Opus). G0bgs lanjut slice 4 lalu 3 (U3 di slice 3). Codex 142b masuk antrean paling depan.
+- Kartu baru: legend-fsl5 (U1 batas refund DP hangus), legend-ioyg (U2 void POS non-tunai), legend-em6p (U4 race kunci intent), legend-uznb, legend-8izz, legend-tjwb (Codex 150), legend-q7jj (Codex 146), legend-4xai (Codex 159).
+- G4ncv mulai legend-tjwb (brief 165, ws/edc-pan-fix dari m1 a8c90378).
+- Catatan rilis tambahan: kontrak tiket KDS station lain 403 -> 404; ORD-03 inklusif diterima (kontrak ws03-pay).
