@@ -192,9 +192,12 @@ describe("Panel Platform API", () => {
       [created.body.data.id],
     );
     // legend-4ryw: a new tenant also gets the standard UOM catalog, audited.
+    // legend-9obf: and the default PBJT rule and tax settings.
     expect(audited.rows.map((row) => row.action).sort()).toEqual([
       "inventory.uoms.provisioned",
       "role_assignment.granted",
+      "tax.rules.provisioned",
+      "tax.settings.provisioned",
       "tenant.created",
     ]);
 
