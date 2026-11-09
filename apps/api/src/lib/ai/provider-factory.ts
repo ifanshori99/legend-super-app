@@ -46,6 +46,17 @@ export function setAiProviderForTests(provider: AiProvider | null | undefined) {
   override = provider;
 }
 
+/**
+ * Test hook: stand in for the env-built platform provider without marking it
+ * as an override, so tenant resolution still runs and a test can prove a
+ * tenant with a config row never falls back to it. `undefined` rebuilds from env.
+ */
+export function setPlatformAiProviderForTests(
+  provider: AiProvider | null | undefined,
+) {
+  cached = provider;
+}
+
 /** True while a test has replaced the env provider (including "AI off"). */
 export function isAiProviderOverridden(): boolean {
   return override !== undefined;

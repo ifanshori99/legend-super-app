@@ -38,6 +38,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   setAiProviderForTests,
+  setPlatformAiProviderForTests,
   setAiProviderNetworkForTests,
 } from "../lib/ai/provider-factory.ts";
 import { logger } from "../lib/logger.ts";
@@ -46,6 +47,7 @@ import {
   openSecret,
   sealedVersion,
 } from "../lib/secrets.ts";
+import { costMicroUsd } from "../services/ai-pricing.ts";
 import { rotateAiProviderKeys } from "../services/ai-provider-config.service.ts";
 import { seedTenantRoleTemplates } from "../services/access.service.ts";
 import {
@@ -627,11 +629,19 @@ describe("13.2 tenant isolation", () => {
     expect(calls, "no request leaves with an unreadable key").toHaveLength(0);
 
     // A misconfigured tenant is not silently served by the platform key
-    // (butir 10.2): the call is unavailable, and nothing goes out.
-    const asked = await ask(adminB);
-    expect(asked.status).toBe(503);
-    expect(codeOf(asked)).toBe("AI_PROVIDER_UNAVAILABLE");
-    expect(calls).toHaveLength(0);
+    // (butir 10.2): the call is unavailable, and nothing goes out, even while
+    // a working platform provider exists.
+    const platform = plainAnswer("Jawaban platform.");
+    setPlatformAiProviderForTests(platform);
+    try {
+      const asked = await ask(adminB);
+      expect(asked.status).toBe(503);
+      expect(codeOf(asked)).toBe("AI_PROVIDER_UNAVAILABLE");
+      expect(calls).toHaveLength(0);
+      expect(platform.requests, "platform key never used").toHaveLength(0);
+    } finally {
+      setPlatformAiProviderForTests(undefined);
+    }
   }, 60_000);
 });
 
@@ -717,6 +727,61 @@ describe("13.4 the URL guard protects PUT and the connection test", () => {
     await inTenant(tenantA, (c) =>
       c.query(
         "UPDATE ai_provider_configs SET base_url = 'https://169.254.169.254/v1' WHERE tenant_id = $1",
+        [tenantA],
+      ),
+    );
+    const probed = await testCfg(adminA);
+    expect(probed.body.data).toMatchObject({
+      status: "failed",
+      errorCode: "URL_BLOCKED",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["explicit port 8443", "https://llm.tenant-a.example:8443/v1"],
+    ["port 80", "https://llm.tenant-a.example:80/v1"],
+    ["public IP on port 8443", `https://${PUBLIC_IP}:8443/v1`],
+  ])(
+    "13.4 PUT refuses %s with AI_PROVIDER_URL_BLOCKED",
+    async (_label, baseUrl) => {
+      const res = await putCfg(adminA, { ...configA, baseUrl });
+      expect(res.status, res.text).toBe(422);
+      expect(codeOf(res)).toBe("AI_PROVIDER_URL_BLOCKED");
+      expect(calls).toHaveLength(0);
+      expect(await configOf(adminA)).toBeNull();
+    },
+  );
+
+  it("13.4 PUT accepts an explicit :443", async () => {
+    const res = await putCfg(adminA, {
+      ...configA,
+      baseUrl: "https://llm.tenant-a.example:443/v1",
+    });
+    expect(res.status, res.text).toBe(200);
+  });
+
+  it("13.4 the client message is the same for a private-resolving and an unknown name", async () => {
+    dns["private.example"] = ["10.0.0.9"];
+    dns["unknown.example"] = [];
+    const messages: string[] = [];
+    for (const host of ["private.example", "unknown.example"]) {
+      const res = await putCfg(adminA, {
+        ...configA,
+        baseUrl: `https://${host}/v1`,
+      });
+      expect(codeOf(res)).toBe("AI_PROVIDER_URL_BLOCKED");
+      expect(res.text).not.toMatch(/not found|private|resolve/i);
+      messages.push(String(res.body.error?.message));
+    }
+    expect(messages[0]).toBe(messages[1]);
+  });
+
+  it("13.4 a stored URL with a non-443 port is refused by the test route and never called", async () => {
+    expect((await putCfg(adminA, configA)).status).toBe(200);
+    await inTenant(tenantA, (c) =>
+      c.query(
+        "UPDATE ai_provider_configs SET base_url = 'https://llm.tenant-a.example:8443/v1' WHERE tenant_id = $1",
         [tenantA],
       ),
     );
@@ -977,6 +1042,46 @@ describe("13.7 provider resolution and budget", () => {
       expect(call.body?.model).toBe(MODEL_A);
     }
     expect(await lastUsage(tenantA)).toMatchObject({ model: MODEL_A });
+  }, 60_000);
+
+  it("13.7 cost is priced with the tenant's configured model, not the model the server reports", async () => {
+    await putCfg(adminA, configA);
+    // A cheap model name reported by the tenant's server must not lower the bill.
+    responder = () =>
+      Response.json({
+        id: "chatcmpl-test",
+        object: "chat.completion",
+        model: "claude-haiku-5-5",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Jawaban." },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      });
+    const res = await ask(adminA);
+    expect(res.status, res.text).toBe(200);
+    const row = await inTenant(tenantA, async (c) => {
+      const r = await c.query<{ cost_micro_usd: string }>(
+        `SELECT cost_micro_usd FROM ai_usage_events
+          WHERE tenant_id = $1 AND status = 'ok'
+          ORDER BY created_at DESC LIMIT 1`,
+        [tenantA],
+      );
+      return r.rows[0];
+    });
+    // MODEL_A is unknown to the price list: opus price, 12 in + 4 out tokens.
+    expect(Number(row?.cost_micro_usd)).toBe(
+      costMicroUsd(MODEL_A, {
+        inputTokens: 12,
+        outputTokens: 4,
+      }),
+    );
+    expect(
+      costMicroUsd("claude-haiku-5-5", { inputTokens: 12, outputTokens: 4 }),
+    ).toBeLessThan(Number(row?.cost_micro_usd));
   }, 60_000);
 
   it("13.7 a tenant without config uses the platform fallback provider and env.AI_MODEL", async () => {

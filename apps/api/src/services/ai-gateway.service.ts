@@ -541,14 +541,21 @@ async function recordUsage(
     | { status: "error"; errorCode: string },
   // Provider and model that served (or failed) this call, from the tenant's
   // resolution; `null` when no provider was available.
-  used: { provider: string; model: string } | null,
+  used: {
+    provider: string;
+    model: string;
+    source: "tenant" | "platform";
+  } | null,
 ): Promise<void> {
   const now = new Date();
   const context = gatewayContext(access);
   const ok = outcome.status === "ok";
   const usage = ok ? outcome.result.usage : { inputTokens: 0, outputTokens: 0 };
   const model = ok ? outcome.result.model : (used?.model ?? env.AI_MODEL);
-  const micro = ok ? costMicroUsd(model, usage) : 0;
+  // A tenant's server names its own model in the answer: price the model the
+  // tenant configured, never the name the remote reports.
+  const priced = used?.source === "tenant" ? used.model : model;
+  const micro = ok ? costMicroUsd(priced, usage) : 0;
   const month = usageMonthOf(now);
   await withTenant(db, context, async (tx) => {
     await tx.insert(aiUsageEvents).values({
@@ -647,7 +654,11 @@ export async function aiComplete(
     throw new AiError("AI_PROVIDER_UNAVAILABLE");
   }
   const { provider } = resolved;
-  const used = { provider: provider.name, model: resolved.model };
+  const used = {
+    provider: provider.name,
+    model: resolved.model,
+    source: resolved.source,
+  };
   let result: AiCompletionResult;
   try {
     result = await provider.complete(req, {

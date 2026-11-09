@@ -63,6 +63,21 @@ const aadOf = (tenantId: string, id: string) =>
 
 const normaliseBaseUrl = (value: string) => value.trim().replace(/\/+$/, "");
 
+// One message for every refusal: the client must not learn whether a name
+// resolved to a private address or was not found (internal DNS).
+const URL_BLOCKED_MESSAGE =
+  "Base URL tidak diizinkan. Pakai alamat https publik di port 443.";
+
+/** Tenant URLs use the default https port only (empty or `:443`). */
+function hasTenantPort(value: string): boolean {
+  try {
+    const { port } = new URL(value);
+    return port === "" || port === "443";
+  } catch {
+    return false;
+  }
+}
+
 function assertTenantScope(context: ScopedTenantContext): void {
   assertTrustedScopedContext(context);
   if (context.outletScope.kind !== "tenant")
@@ -176,8 +191,8 @@ export async function saveAiProviderConfig(
     true,
     aiProviderNetwork().resolve,
   );
-  if (blockedReason)
-    throw new AiError("AI_PROVIDER_URL_BLOCKED", blockedReason);
+  if (blockedReason || !hasTenantPort(baseUrl))
+    throw new AiError("AI_PROVIDER_URL_BLOCKED", URL_BLOCKED_MESSAGE);
 
   const tenantId = context.tenant.tenantId;
   const row = await withTenant(db, context, async (tx) => {
@@ -318,6 +333,8 @@ export async function testAiProviderConnection(
     const apiKey = openKey(row);
     if (apiKey === null) {
       outcome = { status: "failed", errorCode: "KEY_UNREADABLE" };
+    } else if (!hasTenantPort(row.baseUrl)) {
+      outcome = { status: "failed", errorCode: "URL_BLOCKED" };
     } else {
       outcome = await probeOpenAiCompatible({
         baseUrl: row.baseUrl,
@@ -397,7 +414,7 @@ export async function resolveTenantAiProvider(
   );
   if (row) {
     const apiKey = openKey(row);
-    if (apiKey === null) return null;
+    if (apiKey === null || !hasTenantPort(row.baseUrl)) return null;
     return {
       provider: buildTenantAiProvider({
         baseUrl: row.baseUrl,

@@ -15,6 +15,23 @@ const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 export const defaultHostResolver: HostResolver = (host) =>
   lookup(host, { all: true, verbatim: true });
 
+/**
+ * Builds the fetch Response. `new Response` throws RangeError for a status
+ * outside 200-599; that is refused here as a plain network-style error.
+ */
+export function toFetchResponse(
+  status: number,
+  headers: Headers,
+  body: Buffer,
+): Response {
+  if (!Number.isInteger(status) || status < 200 || status > 599)
+    throw new Error(`Unsupported response status ${status}`);
+  return new Response(NULL_BODY_STATUSES.has(status) ? null : body, {
+    status,
+    headers,
+  });
+}
+
 function blockedError(host: string): Error {
   return Object.assign(new Error(`Blocked address for ${host}`), {
     code: "EAI_BLOCKED",
@@ -110,36 +127,49 @@ export function createGuardedFetch(
           },
         },
         (res) => {
-          const chunks: Buffer[] = [];
-          let size = 0;
-          res.on("data", (chunk: Buffer) => {
-            size += chunk.length;
-            if (size > MAX_BODY_BYTES) {
-              res.destroy(new Error("Response body too large"));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          res.on("error", reject);
-          res.on("end", () => {
-            const status = res.statusCode ?? 0;
-            const responseHeaders = new Headers();
-            for (const [key, value] of Object.entries(res.headers)) {
-              if (Array.isArray(value))
-                for (const item of value) responseHeaders.append(key, item);
-              else if (value !== undefined) responseHeaders.set(key, value);
-            }
-            if (init?.redirect === "error" && status >= 300 && status < 400) {
-              reject(new TypeError("Redirect refused"));
-              return;
-            }
-            resolveResponse(
-              new Response(
-                NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks),
-                { status, headers: responseHeaders },
-              ),
-            );
-          });
+          try {
+            const chunks: Buffer[] = [];
+            let size = 0;
+            res.on("data", (chunk: Buffer) => {
+              size += chunk.length;
+              if (size > MAX_BODY_BYTES) {
+                res.destroy(new Error("Response body too large"));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            res.on("error", reject);
+            res.on("end", () => {
+              try {
+                const status = res.statusCode ?? 0;
+                const responseHeaders = new Headers();
+                for (const [key, value] of Object.entries(res.headers)) {
+                  if (Array.isArray(value))
+                    for (const item of value) responseHeaders.append(key, item);
+                  else if (value !== undefined) responseHeaders.set(key, value);
+                }
+                if (
+                  init?.redirect === "error" &&
+                  status >= 300 &&
+                  status < 400
+                ) {
+                  reject(new TypeError("Redirect refused"));
+                  return;
+                }
+                resolveResponse(
+                  toFetchResponse(
+                    status,
+                    responseHeaders,
+                    Buffer.concat(chunks),
+                  ),
+                );
+              } catch (error) {
+                reject(error);
+              }
+            });
+          } catch (error) {
+            reject(error);
+          }
         },
       );
       req.on("error", reject);

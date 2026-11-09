@@ -2,7 +2,11 @@
 // guarded fetch, the connection probe, the network seam, and the tenant
 // provider factory. fetch and the host resolver are doubles.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createGuardedFetch } from "../lib/ai/guarded-fetch.ts";
+import {
+  createGuardedFetch,
+  toFetchResponse,
+} from "../lib/ai/guarded-fetch.ts";
+import { isBlockedIp } from "../lib/ai/url-guard.ts";
 import { probeOpenAiCompatible } from "../lib/ai/provider-probe.ts";
 import {
   aiProviderNetwork,
@@ -92,6 +96,39 @@ describe("guarded fetch", () => {
     await expect(
       guarded("https://llm.example.com/v1", { signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("toFetchResponse builds a Response for a normal status", async () => {
+    const response = toFetchResponse(
+      200,
+      new Headers({ "content-type": "text/plain" }),
+      Buffer.from("hi"),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("hi");
+    expect(
+      toFetchResponse(204, new Headers(), Buffer.from("x")).body,
+    ).toBeNull();
+  });
+
+  it("toFetchResponse throws a plain Error for a status outside 200-599", () => {
+    for (const status of [0, 100, 101, 199, 600, 999])
+      expect(() =>
+        toFetchResponse(status, new Headers(), Buffer.alloc(0)),
+      ).toThrow(/status/i);
+  });
+});
+
+describe("isBlockedIp", () => {
+  it("blocks the local NAT64 range 64:ff9b:1::/48 and the well-known one", () => {
+    expect(isBlockedIp("64:ff9b:1::1")).toBe(true);
+    expect(isBlockedIp("64:ff9b:1:ffff:ffff:ffff:ffff:ffff")).toBe(true);
+    expect(isBlockedIp("64:ff9b::808:808")).toBe(true);
+  });
+
+  it("still allows a public IPv4 and IPv6 address", () => {
+    expect(isBlockedIp("93.184.216.34")).toBe(false);
+    expect(isBlockedIp("2606:2800:220:1:248:1893:25c8:1946")).toBe(false);
   });
 });
 
