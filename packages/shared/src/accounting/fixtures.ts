@@ -294,6 +294,8 @@ post({
       netPayIdr: 40_530_000,
       totalBpjsIdr: 3_024_000,
       pph21Idr: 630_000,
+      pph21ReceivableIdr: 0,
+      pph21ReceivableCollectedIdr: 0,
     },
     null,
   ),

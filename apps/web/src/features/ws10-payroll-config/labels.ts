@@ -37,6 +37,7 @@ export const PAY_COMPONENT_CATEGORY_KEYS: Record<
   loan_installment: "payrollConfig.categories.loan_installment",
   bpjs_employee: "payrollConfig.categories.bpjs_employee",
   pph21: "payrollConfig.categories.pph21",
+  pph21_receivable: "payrollConfig.categories.pph21_receivable",
   custom_earning: "payrollConfig.categories.custom_earning",
   custom_deduction: "payrollConfig.categories.custom_deduction",
 };
@@ -78,6 +79,7 @@ export const PAY_COMPONENT_CATEGORIES: readonly PayComponentCategory[] = [
   "loan_installment",
   "bpjs_employee",
   "pph21",
+  "pph21_receivable",
   "custom_earning",
   "custom_deduction",
 ];

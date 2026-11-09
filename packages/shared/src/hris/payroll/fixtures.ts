@@ -34,7 +34,8 @@ import {
   loanPolicySchema,
   planLoanDeductions,
 } from "./loans.ts";
-import { computePayslipTax } from "./payslip-tax.ts";
+import { computePayslipTax, payslipWithholdingCap } from "./payslip-tax.ts";
+import { planPph21ReceivableCollection } from "./pph21-receivable.ts";
 import {
   adjustPayDate,
   payrollPeriodFor,
@@ -574,6 +575,16 @@ const componentTuples: readonly ComponentTuple[] = [
     false,
     100,
   ],
+  [
+    5035,
+    "PPH21_RECEIVABLE",
+    "Penagihan Kekurangan PPh 21",
+    "pph21_receivable",
+    "variable",
+    false,
+    false,
+    125,
+  ],
 ];
 
 const payComponents = componentTuples.map(
@@ -1076,6 +1087,8 @@ type CalculationInput = {
     "id" | "status" | "installmentIdr" | "outstandingIdr" | "disbursedAt"
   > | null;
   lateIdr: number;
+  /** Open PPh 21 receivable from earlier payslips (default 0). */
+  pph21ReceivableOpenIdr?: number;
   paymentMethod: "bank_transfer" | "cash";
 };
 
@@ -1218,6 +1231,11 @@ function calculate(input: CalculationInput) {
     })),
     employerBenefitIdr,
     employeeDeductibleIdr,
+    employeeWithholdingCapIdr: payslipWithholdingCap({
+      cashEarningsIdr: sumIdr(earnings.map((l) => l.amountIdr)),
+      bpjsEmployeeIdr,
+      preNetDeductionsIdr: input.lateIdr,
+    }),
     prior: {
       taxableGrossIdr: 0,
       employeeDeductibleIdr: 0,
@@ -1236,12 +1254,19 @@ function calculate(input: CalculationInput) {
   const netBeforeLoansIdr = idr(
     grossIdr - bpjsEmployeeIdr - tax.pph21WithheldIdr - input.lateIdr,
   );
+  // Order of deductions: BPJS_EMP, PPH21, LATE, PPH21_RECEIVABLE, LOAN. The
+  // receivable raised on this payslip (tax.pph21ReceivableIdr) is collected
+  // from the next one; loans take what the collection leaves.
+  const receivableCollection = planPph21ReceivableCollection({
+    openIdr: input.pph21ReceivableOpenIdr ?? 0,
+    roomIdr: netBeforeLoansIdr,
+  });
   const loanPlan =
     input.loan === null
       ? []
       : planLoanDeductions(
           [input.loan],
-          netBeforeLoansIdr,
+          idr(netBeforeLoansIdr - receivableCollection.collectedIdr),
           loanPolicy.maxDeductionOfNetPayBp,
         );
   const loanDeductedIdr = sumIdr(loanPlan.map((plan) => plan.deductedIdr));
@@ -1251,6 +1276,10 @@ function calculate(input: CalculationInput) {
     line("PPH21", tax.pph21WithheldIdr),
   ];
   if (input.lateIdr > 0) deductions.push(line("LATE", input.lateIdr));
+  if (receivableCollection.collectedIdr > 0)
+    deductions.push(
+      line("PPH21_RECEIVABLE", receivableCollection.collectedIdr),
+    );
   const loanPlanned = loanPlan[0];
   if (loanPlanned !== undefined && loanDeductedIdr > 0)
     deductions.push(
@@ -1286,6 +1315,10 @@ function calculate(input: CalculationInput) {
   });
   return { calculation, loanPlan };
 }
+
+/** The mock payslip builder, exported for the deduction-order unit tests. */
+export const calculateFixturePayslip = calculate;
+export type FixturePayslipInput = CalculationInput;
 
 // ---- October payslips ---------------------------------------------------------
 

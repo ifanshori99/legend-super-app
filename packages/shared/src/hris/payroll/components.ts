@@ -45,6 +45,7 @@ export const PAY_COMPONENT_CATEGORIES = [
   "loan_installment",
   "bpjs_employee",
   "pph21",
+  "pph21_receivable",
   "custom_earning",
   "custom_deduction",
 ] as const;
@@ -56,6 +57,7 @@ const DEDUCTION_CATEGORIES: ReadonlySet<PayComponentCategory> = new Set([
   "loan_installment",
   "bpjs_employee",
   "pph21",
+  "pph21_receivable",
   "custom_deduction",
 ]);
 

@@ -178,6 +178,8 @@ export const POSTING_ACCOUNT_ROLES = {
   gateway_clearing: "asset",
   edc_clearing: "asset",
   accounts_receivable: "asset",
+  /** Employee PPh 21 shortfall owed to the company (founder B8). */
+  employee_receivable: "asset",
   inventory: "asset",
   inventory_semi_finished: "asset",
   ppn_input: "asset",
@@ -304,6 +306,13 @@ const standardRows: Row[] = [
     ["gateway_clearing"],
   ],
   ["1203", "Kliring EDC", "current_asset", "1200", ["edc_clearing"]],
+  [
+    "1204",
+    "Piutang Karyawan",
+    "current_asset",
+    "1200",
+    ["employee_receivable"],
+  ],
   ["1300", "Persediaan", "current_asset", null],
   ["1301", "Persediaan Bahan Baku", "current_asset", "1300", ["inventory"]],
   [
