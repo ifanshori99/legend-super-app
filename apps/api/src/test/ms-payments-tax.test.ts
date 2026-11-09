@@ -23,7 +23,6 @@ import {
   accountIdSchema,
   type JournalLineInput,
 } from "@starter/shared/accounting";
-import { METRIC_LEDGER_ADJUSTMENT } from "@starter/shared/metrics";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
@@ -35,6 +34,7 @@ import {
 } from "../services/metric-sources";
 import {
   allocateByWeight,
+  netSalesByMethodReader,
   PAYMENT_METHOD_UNASSIGNED,
 } from "../services/metric-sources/payments-tax";
 import {
@@ -348,6 +348,26 @@ async function rowsOf(
   return rows;
 }
 
+/** The net-sales-by-method rows of one outlet-day (reader unregistered, see its header). */
+async function computeNetSales(
+  w: World,
+  day: string,
+  outlet: string = w.outlet1,
+): Promise<[string | null, number][]> {
+  const values = await withTenant(db, context(w.tenantId), (tx) =>
+    netSalesByMethodReader.compute({
+      tx,
+      tenantId: w.tenantId,
+      outletId: outlet,
+      businessDate: date(day),
+    }),
+  );
+  return values.map((value) => [
+    value.dimension?.value ?? null,
+    (value.value as { valueIdr: number }).valueIdr,
+  ]);
+}
+
 const shape = (rows: Row[]) =>
   rows.map((r) => [r.metric_code, r.dimension_value, Number(r.value_int)]);
 
@@ -427,9 +447,13 @@ afterAll(async () => {
 });
 
 describe("registry of the payments-tax family", () => {
-  it("stays a valid registry and claims the split and daily readers", () => {
+  it("stays a valid registry and claims the daily readers, no net_sales split", () => {
     expect(() => assertRegistry()).not.toThrow();
-    expect(metricSplitOf("net_sales", "payment_method")).not.toBeNull();
+    // Sales (F1) owns the net_sales split readers; two readers would clash.
+    expect(metricSplitOf("net_sales", "payment_method")).toBeNull();
+    expect(
+      dailyReaders().flatMap(({ reader }) => reader.metricCodes),
+    ).not.toContain("net_sales");
     expect(metricSourceOf("failed_payment_count").kind).toBe("daily");
     expect(metricSourceOf("cash_variance").kind).toBe("daily");
   });
@@ -460,10 +484,60 @@ describe("allocateByWeight", () => {
     expect(allocateByWeight(0, [5, 5])).toEqual([0, 0]);
     expect(allocateByWeight(50, [])).toEqual([]);
   });
+
+  it("hands the largest remainder to the right part at 2.5e15 (double rounding picks another)", () => {
+    expect(
+      allocateByWeight(
+        2_580_504_321_110_331,
+        [6_037_246_936_248, 733_589_185_989, 2_080_086_771_925],
+      ),
+    ).toEqual([
+      1_760_171_452_501_744, 213_879_398_453_810, 606_453_470_154_777,
+    ]);
+  });
+
+  it("stays exact for amounts and weights beyond double precision", () => {
+    const amount = 9_007_199_254_740_991; // Number.MAX_SAFE_INTEGER
+    const weights = [
+      3_000_000_000_001, 7_000_000_000_003, 5, 1_234_567_891_011,
+    ];
+    const parts = allocateByWeight(amount, weights);
+    expect(parts.every(Number.isSafeInteger)).toBe(true);
+    expect(parts.reduce((sum, part) => sum + BigInt(part), 0n)).toBe(
+      BigInt(amount),
+    );
+    // Independent BigInt oracle: floors plus one rupiah to each largest remainder.
+    const total = weights.reduce((sum, weight) => sum + BigInt(weight), 0n);
+    const shares = weights.map((weight) => ({
+      floor: (BigInt(amount) * BigInt(weight)) / total,
+      rest: (BigInt(amount) * BigInt(weight)) % total,
+    }));
+    let left = BigInt(amount) - shares.reduce((sum, x) => sum + x.floor, 0n);
+    const expected = shares.map((share) => share.floor);
+    [...shares.keys()]
+      .sort((x, y) =>
+        shares[x]!.rest === shares[y]!.rest
+          ? x - y
+          : shares[x]!.rest > shares[y]!.rest
+            ? -1
+            : 1,
+      )
+      .forEach((at) => {
+        if (left > 0n) {
+          expected[at]! += 1n;
+          left -= 1n;
+        }
+      });
+    expect(parts.map(BigInt)).toEqual(expected);
+    const negative = allocateByWeight(-amount, weights);
+    expect(negative.reduce((sum, part) => sum + BigInt(part), 0n)).toBe(
+      -BigInt(amount),
+    );
+  });
 });
 
 describe("payments.methods: net sales by payment method", () => {
-  it("splits completed orders by captured tender and paid intent", async () => {
+  it("the unregistered reader splits completed orders by captured tender and paid intent", async () => {
     const day = "2025-08-01";
     await seedOrder(world, {
       day,
@@ -502,89 +576,49 @@ describe("payments.methods: net sales by payment method", () => {
       tenders: [{ method: "cash", amount: 888_000 }],
     });
 
-    const result = await refresh(world, day);
-    expect(result.failedFamilies).toEqual([]);
-    expect(
-      shape(await rowsOf(world.tenantId, world.outlet1, day, "net_sales")),
-    ).toEqual([
-      ["net_sales", null, 272_000],
-      ["net_sales", "cash", 130_000],
-      ["net_sales", "qris", 115_000],
-      ["net_sales", PAYMENT_METHOD_UNASSIGNED, 7_000],
-      ["net_sales", "va", 20_000],
+    expect(await computeNetSales(world, day)).toEqual([
+      [null, 272_000],
+      ["cash", 130_000],
+      ["qris", 115_000],
+      [PAYMENT_METHOD_UNASSIGNED, 7_000],
+      ["va", 20_000],
     ]);
   });
 
   it("writes a zero total and no split rows on a day without sales", async () => {
-    await refresh(world, "2025-08-02");
-    expect(
-      shape(
-        await rowsOf(world.tenantId, world.outlet1, "2025-08-02", "net_sales"),
-      ),
-    ).toEqual([["net_sales", null, 0]]);
+    expect(await computeNetSales(world, "2025-08-02")).toEqual([[null, 0]]);
   });
 
-  it("split rows plus the ledger residual equal the ledger total", async () => {
+  it("payments.methods stays unavailable for the split; the ledger total is intact", async () => {
     const day = "2025-08-03";
     await seedOrder(world, {
       day,
       subtotal: 60_000,
       tenders: [{ method: "cash", amount: 60_000 }],
     });
-    await seedOrder(world, {
-      day,
-      subtotal: 40_000,
-      tenders: [{ method: "qris", amount: 40_000 }],
-    });
-    // The ledger booked 110,000: 10,000 is not in any order row.
-    await postSale(world, day, world.outlet1, 110_000);
+    await postSale(world, day, world.outlet1, 60_000);
     await refresh(world, day);
-
-    const result = await evaluate(world, {
+    const split = await evaluate(world, {
       metricCodes: ["net_sales"],
       start: day,
       end: day,
       groupBy: ["payment_method"],
     });
-    expect(result.availability[0]).toMatchObject({ status: "available" });
-    const parts = figures(result, "net_sales");
-    expect(parts.get("cash")?.value).toBe(60_000);
-    expect(parts.get("qris")?.value).toBe(40_000);
-    expect(parts.get(METRIC_LEDGER_ADJUSTMENT)?.value).toBe(10_000);
-    const total = (
-      await evaluate(world, {
-        metricCodes: ["net_sales"],
-        start: day,
-        end: day,
-      })
-    ).series[0]!.points[0];
-    expect(native(total)).toBe(110_000);
-    const sum = [...parts.values()].reduce(
-      (acc, part) => acc + (part.value ?? 0),
-      0,
-    );
-    expect(sum).toBe(110_000);
-  });
-
-  it("shows no residual row when the orders match the ledger", async () => {
-    const day = "2025-08-04";
-    await seedOrder(world, {
-      day,
-      subtotal: 25_000,
-      tenders: [{ method: "cash", amount: 25_000 }],
+    expect(split.availability[0]).toMatchObject({
+      status: "unavailable",
+      reason: "dimension_not_supported",
     });
-    await postSale(world, day, world.outlet1, 25_000);
-    await refresh(world, day);
-    const parts = figures(
-      await evaluate(world, {
-        metricCodes: ["net_sales"],
-        start: day,
-        end: day,
-        groupBy: ["payment_method"],
-      }),
-      "net_sales",
-    );
-    expect([...parts.keys()]).toEqual(["cash"]);
+    expect(
+      native(
+        (
+          await evaluate(world, {
+            metricCodes: ["net_sales"],
+            start: day,
+            end: day,
+          })
+        ).series[0]!.points[0],
+      ),
+    ).toBe(60_000);
   });
 });
 
@@ -603,6 +637,13 @@ describe("failed payments and cash variance", () => {
       day,
       subtotal: 10_000,
       status: "sent",
+      tenders: [{ method: "qris", amount: 10_000, status: "failed" }],
+    });
+    // A failed tender of a training order is not a real failure.
+    await seedOrder(world, {
+      day,
+      subtotal: 10_000,
+      training: true,
       tenders: [{ method: "qris", amount: 10_000, status: "failed" }],
     });
     await refresh(world, day);
@@ -662,28 +703,28 @@ describe("isolation", () => {
       subtotal: 33_000,
       tenders: [{ method: "edc_card", amount: 33_000 }],
     });
+    expect(await computeNetSales(world, day)).toEqual([
+      [null, 11_000],
+      ["cash", 11_000],
+    ]);
+    expect(await computeNetSales(world, day, world.outlet2)).toEqual([
+      [null, 22_000],
+      ["qris", 22_000],
+    ]);
+    expect(await computeNetSales(other, day, other.outlet1)).toEqual([
+      [null, 33_000],
+      ["edc_card", 33_000],
+    ]);
+    // The job's rows of the family stay per tenant and outlet too.
     await refresh(world, day);
     await refresh(world, day, world.outlet2);
     await refresh(other, day, other.outlet1);
-
     expect(
-      shape(await rowsOf(world.tenantId, world.outlet1, day, "net_sales")),
-    ).toEqual([
-      ["net_sales", null, 11_000],
-      ["net_sales", "cash", 11_000],
-    ]);
+      await rowsOf(world.tenantId, world.outlet1, day, "cash_variance"),
+    ).toHaveLength(1);
     expect(
-      shape(await rowsOf(world.tenantId, world.outlet2, day, "net_sales")),
-    ).toEqual([
-      ["net_sales", null, 22_000],
-      ["net_sales", "qris", 22_000],
-    ]);
-    expect(
-      shape(await rowsOf(other.tenantId, other.outlet1, day, "net_sales")),
-    ).toEqual([
-      ["net_sales", null, 33_000],
-      ["net_sales", "edc_card", 33_000],
-    ]);
+      await rowsOf(other.tenantId, world.outlet1, day, "cash_variance"),
+    ).toEqual([]);
   });
 
   it("a tenant or outlet context cannot compute another outlet-day", async () => {
@@ -754,25 +795,6 @@ describe("a day without data is not final", () => {
     expect(two.get(null)?.value).toBe(1);
     expect(two.get(null)?.final).toBe(false);
   });
-
-  it("net sales split rows are not final without a total row for every day", async () => {
-    const day = "2025-08-12";
-    await seedOrder(world, {
-      day,
-      subtotal: 1_000,
-      tenders: [{ method: "cash", amount: 1_000 }],
-    });
-    await postSale(world, day, world.outlet1, 1_000);
-    await refresh(world, day);
-    const result = await evaluate(world, {
-      metricCodes: ["net_sales"],
-      start: day,
-      end: "2025-08-13", // 13th has no row
-      groupBy: ["payment_method"],
-    });
-    for (const part of figures(result, "net_sales").values())
-      expect(part.final).toBe(false);
-  });
 });
 
 describe("backfill is idempotent", () => {
@@ -784,7 +806,7 @@ describe("backfill is idempotent", () => {
         subtotal: 12_000,
         tenders: [
           { method: "cash", amount: 4_000 },
-          { method: "qris", amount: 8_000 },
+          { method: "qris", amount: 8_000, status: "failed" },
         ],
       });
     const run = () =>
@@ -814,11 +836,17 @@ describe("backfill is idempotent", () => {
       after.map((rows) => rows.map((r) => r.updated_at.getTime())),
     ).toEqual(before.map((rows) => rows.map((r) => r.updated_at.getTime())));
     expect(
-      shape(await rowsOf(world.tenantId, world.outlet1, days[0]!, "net_sales")),
+      shape(
+        await rowsOf(
+          world.tenantId,
+          world.outlet1,
+          days[0]!,
+          "failed_payment_count",
+        ),
+      ),
     ).toEqual([
-      ["net_sales", null, 12_000],
-      ["net_sales", "cash", 4_000],
-      ["net_sales", "qris", 8_000],
+      ["failed_payment_count", null, 1],
+      ["failed_payment_count", "qris", 1],
     ]);
   });
 });

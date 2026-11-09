@@ -2,13 +2,19 @@
 // DECISIONS 2026-11-10 points 1, 2 and 5). Owned by this family's card.
 //
 // Built here:
-// - `net_sales` split by `payment_method` (payments.methods). The ledger keeps
-//   the total; the rows come from completed orders and their captured tenders
-//   (or the paid payment intent of a QR order). The engine adds the residual
-//   row `__ledger_adjustment__`, so the rows add up to the ledger total.
-//   Refunds are booked by the ledger on their own date and are not in the rows,
-//   so they show in the residual, never scaled into a method.
-// - `failed_payment_count`: tenders of status `failed`, by method.
+// - NOT registered: `net_sales` by `payment_method` (payments.methods). A
+//   second `net_sales` reader would clash with the sales card (F1): both would
+//   write the `net_sales` total row with their own definition, and the daily
+//   job deletes the rows of a reader's codes that it did not write, so two
+//   readers would erase each other's splits. `netSalesByMethodReader` and
+//   `allocateByWeight` stay here, exported and unregistered, as material for
+//   the sales card: completed orders on their business date, net = gross sales
+//   minus discount (`orderRevenueSplit`), spread over the captured tenders by
+//   amount (largest remainder, BigInt), a QR order on its paid intent method,
+//   `unassigned` when neither exists, training orders left out. Until sales
+//   owns the `payment_method` dimension of `net_sales`, that split of
+//   payments.methods answers `unavailable`.
+// - `failed_payment_count`: failed tenders of non-training orders, by method.
 // - `cash_variance`: closed shift variance, by cashier id. The ledger books the
 //   shift difference (variance plus held cash) on its own; this metric is the
 //   count-versus-expected variance of the shift, a figure the ledger does not
@@ -41,31 +47,35 @@ const num = (value: unknown): number => Number(value ?? 0);
 
 /**
  * Spreads `amount` over weights with the largest remainder rule so the parts
- * add up to it exactly; ties go to the earlier entry. Pure, deterministic.
+ * add up to it exactly; ties go to the earlier entry. Pure, deterministic,
+ * exact in BigInt, so large amounts and weights lose no rupiah to rounding.
  */
 export function allocateByWeight(
   amount: number,
   weights: readonly number[],
 ): number[] {
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  if (weights.length === 0 || total <= 0) return weights.map(() => 0);
-  const sign = amount < 0 ? -1 : 1;
-  const magnitude = Math.abs(amount);
-  const parts = weights.map((weight) => {
-    const exact = (magnitude * weight) / total;
-    return { floor: Math.floor(exact), rest: exact - Math.floor(exact) };
-  });
-  let left = magnitude - parts.reduce((sum, part) => sum + part.floor, 0);
+  const big = weights.map((weight) => BigInt(weight));
+  const total = big.reduce((sum, weight) => sum + weight, 0n);
+  if (weights.length === 0 || total <= 0n) return weights.map(() => 0);
+  const magnitude = BigInt(Math.abs(amount));
+  const parts = big.map((weight) => ({
+    floor: (magnitude * weight) / total,
+    rest: (magnitude * weight) % total,
+  }));
+  let left = magnitude - parts.reduce((sum, part) => sum + part.floor, 0n);
   const order = parts
     .map((part, at) => ({ at, rest: part.rest }))
-    .sort((a, b) => b.rest - a.rest || a.at - b.at);
+    .sort((a, b) =>
+      a.rest === b.rest ? a.at - b.at : a.rest > b.rest ? -1 : 1,
+    );
   const result = parts.map((part) => part.floor);
   for (const { at } of order) {
-    if (left <= 0) break;
-    result[at]! += 1;
-    left -= 1;
+    if (left <= 0n) break;
+    result[at]! += 1n;
+    left -= 1n;
   }
-  return result.map((part) => sign * part);
+  const sign = amount < 0 ? -1 : 1;
+  return result.map((part) => sign * Number(part));
 }
 
 type Tender = { method: string; amount: number };
@@ -179,6 +189,10 @@ const failedPaymentsReader: DailyMetricReader = {
         JOIN orders o ON o.tenant_id = t.tenant_id AND o.id = t.order_id
        WHERE t.tenant_id = ${tenantId}::uuid AND t.outlet_id = ${outletId}::uuid
          AND t.status = 'failed' AND o.business_date = ${businessDate}::date
+         AND NOT EXISTS (
+           SELECT 1 FROM pos_orders po
+            WHERE po.tenant_id = t.tenant_id AND po.order_id = t.order_id
+              AND po.is_training)
        GROUP BY t.method ORDER BY t.method`);
     const total = rows.reduce((sum, row) => sum + num(row.n), 0);
     return [
@@ -248,11 +262,5 @@ export const paymentsTaxSources: MetricSourceFamilyModule = {
     },
     { kind: "unavailable", code: "tax_payable", reason: "source_not_built" },
   ],
-  splits: [
-    {
-      code: "net_sales",
-      dimension: "payment_method",
-      reader: netSalesByMethodReader,
-    },
-  ],
+  splits: [],
 };
