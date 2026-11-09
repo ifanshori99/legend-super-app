@@ -12,6 +12,7 @@ CREATE TABLE "goods_receipts" (
 	"note" varchar(300),
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "goods_receipts_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "goods_receipts_tenant_outlet_id_key" UNIQUE("tenant_id","outlet_id","id"),
 	CONSTRAINT "goods_receipts_tenant_number_key" UNIQUE("tenant_id","number"),
 	CONSTRAINT "goods_receipts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "goods_receipts_received_by_user_id_fk" FOREIGN KEY ("received_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
@@ -49,7 +50,7 @@ CREATE TABLE "goods_receipt_lines" (
 	CONSTRAINT "goods_receipt_lines_expiry_batch_check" CHECK ("goods_receipt_lines"."expires_on" IS NULL OR "goods_receipt_lines"."batch_code" IS NOT NULL),
 	CONSTRAINT "goods_receipt_lines_line_no_check" CHECK ("goods_receipt_lines"."line_no" > 0),
 	CONSTRAINT "goods_receipt_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "goods_receipt_lines_receipt_fk" FOREIGN KEY ("tenant_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "goods_receipt_lines_receipt_fk" FOREIGN KEY ("tenant_id","outlet_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "goods_receipt_lines_po_line_fk" FOREIGN KEY ("tenant_id","purchase_order_line_id") REFERENCES "public"."purchase_order_lines"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "goods_receipt_lines_item_fk" FOREIGN KEY ("tenant_id","inventory_item_id") REFERENCES "public"."inventory_items"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "goods_receipt_lines_location_fk" FOREIGN KEY ("tenant_id","location_id") REFERENCES "public"."stock_locations"("tenant_id","id") ON DELETE no action ON UPDATE no action,
@@ -68,7 +69,7 @@ CREATE TABLE "goods_receipt_media" (
 	CONSTRAINT "goods_receipt_media_receipt_position_key" UNIQUE("tenant_id","goods_receipt_id","position"),
 	CONSTRAINT "goods_receipt_media_position_check" CHECK ("goods_receipt_media"."position" BETWEEN 0 AND 9),
 	CONSTRAINT "goods_receipt_media_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "goods_receipt_media_receipt_fk" FOREIGN KEY ("tenant_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "goods_receipt_media_receipt_fk" FOREIGN KEY ("tenant_id","outlet_id","goods_receipt_id") REFERENCES "public"."goods_receipts"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "goods_receipt_media_storage_object_fk" FOREIGN KEY ("tenant_id","storage_object_id") REFERENCES "public"."core_storage_objects"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint

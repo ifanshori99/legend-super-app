@@ -36,7 +36,6 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
-import { setAuditWriter } from "../services/audit-writer.ts";
 import { postGoodsReceiptStockInTransaction } from "../services/inventory-receiving.service.ts";
 
 const tenantA = cafeLegendPlatformFixtures.tenant.id;
@@ -256,6 +255,49 @@ async function seedFixture(status = "sent"): Promise<Fixture> {
   };
 }
 
+/** A sent order whose purchase unit (g) is far smaller than the item's base unit (kg): 1 g = 0.001 kg. */
+async function seedTinyUnitFixture(): Promise<{
+  poId: string;
+  line: string;
+  item: string;
+  location: string;
+}> {
+  const item = await insertItem(uomKg, "Saffron GR");
+  await owner.query(
+    `INSERT INTO uom_conversions (tenant_id, inventory_item_id, from_uom_id, to_uom_id, factor)
+     VALUES ($1, $2, $3, $4, 0.001)`,
+    [tenantA, item, uomGram, uomKg],
+  );
+  const location = await insertLocation(outletA);
+  const poId = randomUUID();
+  await owner.query(
+    `INSERT INTO purchase_orders
+       (id, tenant_id, outlet_id, supplier_id, number, status, expected_date,
+        subtotal_idr, tax_idr, total_idr, source, created_by, approved_by,
+        approved_at, sent_at)
+     VALUES ($1, $2, $3, $4, $5, 'sent', '2099-12-20', 500, 0, 500, 'user',
+        $6, $7, now(), now())`,
+    [
+      poId,
+      tenantA,
+      outletA,
+      supplierId,
+      `PO/209912/${randomBytes(4).toString("hex")}`,
+      creatorId,
+      approverId,
+    ],
+  );
+  createdOrderIds.push(poId);
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO purchase_order_lines
+       (tenant_id, outlet_id, purchase_order_id, inventory_item_id, quantity,
+        uom_id, unit_price_idr, line_total_idr, line_no)
+     VALUES ($1, $2, $3, $4, 5.0000, $5, 100.0000, 500, 1) RETURNING id`,
+    [tenantA, outletA, poId, item, uomGram],
+  );
+  return { poId, line: rows[0]!.id, item, location };
+}
+
 type LineInput = Record<string, unknown>;
 
 function rl(
@@ -296,6 +338,16 @@ const receive = (
     .post("/api/inventory/goods-receipts")
     .set(originHeader)
     .send(body as object);
+
+/** Audit actions written for rows mentioning `objectId` (audit_logs, as the other suites read it). */
+async function auditActionsFor(objectId: string): Promise<string[]> {
+  const { rows } = await owner.query<{ action: string }>(
+    `SELECT event->>'action' AS action FROM audit_logs
+      WHERE tenant_id = $1 AND event::text LIKE '%' || $2 || '%'`,
+    [tenantA, objectId],
+  );
+  return rows.map((row) => row.action);
+}
 
 async function poStatus(poId: string): Promise<string> {
   const { rows } = await owner.query<{ status: string }>(
@@ -401,7 +453,6 @@ async function countRows(
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  setAuditWriter({ record: async () => {} });
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
      VALUES ($1, $2, 'Goods Receipt Tenant B', 'lengkap', 'active', 'shared', $3, $4, $5)`,
@@ -960,5 +1011,146 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
       lineCount: 2,
       receivedBy: receiver.userId,
     });
+  });
+  it("[o1o4s-GR-9] accepted quantity that converts to zero base units is refused and records nothing", async () => {
+    const tiny = await seedTinyUnitFixture();
+    const fx = {
+      poId: tiny.poId,
+    } as Fixture;
+    // 0.0001 g x 0.001 kg/g = 0.0000001 kg, below the 4-decimal base precision.
+    const refused = await receive(
+      receiver.client,
+      receiptBody(fx, [
+        rl(tiny.line, tiny.location, "0.0001", "0.0000", {
+          batchCode: "TINY-1",
+        }),
+      ]),
+    );
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await receiptCount(tiny.poId)).toBe(0);
+    expect(await ledgerCountForOrder(tiny.poId)).toBe(0);
+    expect(await balanceOf(tiny.location, tiny.item)).toBeNull();
+    const { rows } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM stock_batches WHERE tenant_id = $1 AND inventory_item_id = $2",
+      [tenantA, tiny.item],
+    );
+    expect(rows[0]!.n).toBe(0);
+    expect(await poStatus(tiny.poId)).toBe("sent");
+
+    // Control: a quantity that does convert (2 g = 0.002 kg) is accepted.
+    const ok = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(tiny.line, tiny.location, "2.0000")]),
+    );
+    expect(ok.status).toBe(201);
+    expect(await balanceOf(tiny.location, tiny.item)).toBe("0.0020");
+  });
+
+  it("[o1o4s-GR-10] photo order is kept as sent (first is the cover) and duplicates are removed", async () => {
+    const fx = await seedFixture();
+    const [p1, p2, p3] = [
+      await insertStorageObject(tenantA, outletA, "receipt"),
+      await insertStorageObject(tenantA, outletA, "receipt"),
+      await insertStorageObject(tenantA, outletA, "receipt"),
+    ] as [string, string, string];
+    const created = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.flourLine, fx.location, "1.0000")], {
+        mediaIds: [p3, p1, p2, p1, p3],
+      }),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.data.receipt.mediaIds).toEqual([p3, p1, p2]);
+    const fetched = await receiver.client.get(
+      `/api/inventory/goods-receipts/${created.body.data.receipt.id}`,
+    );
+    expect(fetched.body.data.receipt.mediaIds).toEqual([p3, p1, p2]);
+    const { rows } = await owner.query<{ storage_object_id: string }>(
+      `SELECT storage_object_id FROM goods_receipt_media
+        WHERE tenant_id = $1 AND goods_receipt_id = $2 ORDER BY position`,
+      [tenantA, created.body.data.receipt.id],
+    );
+    expect(rows.map((row) => row.storage_object_id)).toEqual([p3, p1, p2]);
+  });
+
+  it("[o1o4s-GR-11] a receipt photo already attached to an earlier goods receipt is refused", async () => {
+    const fx = await seedFixture();
+    const used = await insertStorageObject(tenantA, outletA, "receipt");
+    const fresh = await insertStorageObject(tenantA, outletA, "receipt");
+    const first = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.flourLine, fx.location, "1.0000")], {
+        mediaIds: [used],
+      }),
+    );
+    expect(first.status).toBe(201);
+
+    const reuse = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.flourLine, fx.location, "1.0000")], {
+        mediaIds: [fresh, used],
+      }),
+    );
+    expect(reuse.status).toBe(422);
+    expect(reuse.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await receiptCount(fx.poId)).toBe(1);
+    expect(await balanceOf(fx.location, fx.flour)).toBe("1.0000");
+
+    // A photo nobody used yet still works on the next receipt.
+    const next = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.flourLine, fx.location, "1.0000")], {
+        mediaIds: [fresh],
+      }),
+    );
+    expect(next.status).toBe(201);
+  });
+
+  it("[o1o4s-GR-12] a fully rejected receipt leaves a partially_received order untouched: same status, same updated_at, no order_received audit", async () => {
+    const fx = await seedFixture();
+    const partial = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.flourLine, fx.location, "3.0000")]),
+    );
+    expect(partial.status).toBe(201);
+    expect(await poStatus(fx.poId)).toBe("partially_received");
+    // Control: the accepting receipt moved the order and audited it.
+    const ordersAudited = async () =>
+      (await auditActionsFor(fx.poId)).filter((action) =>
+        action.endsWith("purchasing.order_received"),
+      ).length;
+    expect(await ordersAudited()).toBe(1);
+    expect(await auditActionsFor(partial.body.data.receipt.id)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/inventory\.goods_receipt_recorded$/),
+      ]),
+    );
+
+    const stamp = async () =>
+      (
+        await owner.query<{ status: string; updated_at: string }>(
+          "SELECT status, updated_at::text AS updated_at FROM purchase_orders WHERE id = $1",
+          [fx.poId],
+        )
+      ).rows[0]!;
+    const before = await stamp();
+
+    const rejected = await receive(
+      receiver.client,
+      receiptBody(fx, [rl(fx.sugarLine, fx.location, "2.0000", "2.0000")], {
+        qcNotes: "Gula rusak, ditolak semua",
+      }),
+    );
+    expect(rejected.status).toBe(201);
+    expect(await stamp()).toEqual(before);
+    expect(await ledgerOf(rejected.body.data.receipt.id)).toHaveLength(0);
+    expect(await auditActionsFor(rejected.body.data.receipt.id)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/inventory\.goods_receipt_recorded$/),
+      ]),
+    );
+    // Still exactly the one order_received row from the accepting receipt.
+    expect(await ordersAudited()).toBe(1);
   });
 });

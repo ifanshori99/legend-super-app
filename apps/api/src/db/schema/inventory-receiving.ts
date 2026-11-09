@@ -63,6 +63,12 @@ export const goodsReceipts = pgTable(
   },
   (table) => [
     unique("goods_receipts_tenant_id_id_key").on(table.tenantId, table.id),
+    // Parent key for rows that must stay inside one tenant AND outlet.
+    unique("goods_receipts_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
     unique("goods_receipts_tenant_number_key").on(table.tenantId, table.number),
     foreignKey({
       name: "goods_receipts_outlet_fk",
@@ -136,8 +142,12 @@ export const goodsReceiptLines = pgTable(
     ),
     foreignKey({
       name: "goods_receipt_lines_receipt_fk",
-      columns: [table.tenantId, table.goodsReceiptId],
-      foreignColumns: [goodsReceipts.tenantId, goodsReceipts.id],
+      columns: [table.tenantId, table.outletId, table.goodsReceiptId],
+      foreignColumns: [
+        goodsReceipts.tenantId,
+        goodsReceipts.outletId,
+        goodsReceipts.id,
+      ],
     }),
     foreignKey({
       name: "goods_receipt_lines_po_line_fk",
@@ -221,8 +231,12 @@ export const goodsReceiptMedia = pgTable(
     ),
     foreignKey({
       name: "goods_receipt_media_receipt_fk",
-      columns: [table.tenantId, table.goodsReceiptId],
-      foreignColumns: [goodsReceipts.tenantId, goodsReceipts.id],
+      columns: [table.tenantId, table.outletId, table.goodsReceiptId],
+      foreignColumns: [
+        goodsReceipts.tenantId,
+        goodsReceipts.outletId,
+        goodsReceipts.id,
+      ],
     }),
     foreignKey({
       name: "goods_receipt_media_storage_object_fk",

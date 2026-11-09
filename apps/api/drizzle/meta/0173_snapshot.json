@@ -1,5 +1,5 @@
 {
-  "id": "a1d88668-f7b9-417c-9ad9-d28e6bd544fc",
+  "id": "89f21b31-a670-48fe-91bf-49dfa3948468",
   "prevId": "ba41bcc6-aab8-4b8e-8ef3-1b50ba8137aa",
   "version": "7",
   "dialect": "postgresql",
@@ -52351,10 +52351,12 @@
           "tableTo": "goods_receipts",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "goods_receipt_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -52557,10 +52559,12 @@
           "tableTo": "goods_receipts",
           "columnsFrom": [
             "tenant_id",
+            "outlet_id",
             "goods_receipt_id"
           ],
           "columnsTo": [
             "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -52827,6 +52831,15 @@
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
+            "id"
+          ]
+        },
+        "goods_receipts_tenant_outlet_id_key": {
+          "name": "goods_receipts_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
             "id"
           ]
         },

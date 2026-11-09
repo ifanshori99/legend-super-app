@@ -269,9 +269,12 @@ function canonicalInput(input: CreateGoodsReceiptInput, mediaIds: string[]) {
   };
 }
 
-/** Deduplicated, sorted photo ids (ids are compared case-insensitively). */
+/**
+ * Deduplicated photo ids in the order sent (the first is the cover photo);
+ * ids are compared case-insensitively.
+ */
 function uniqueMediaIds(mediaIds: readonly string[] | undefined): string[] {
-  return [...new Set((mediaIds ?? []).map((id) => id.toLowerCase()))].sort();
+  return [...new Set((mediaIds ?? []).map((id) => id.toLowerCase()))];
 }
 
 async function lockOrder(
@@ -333,6 +336,19 @@ async function assertPhotos(
     );
   if (rows.length !== mediaIds.length)
     throw invalid("A photo is not a receipt photo of this outlet.");
+  // One upload documents one receipt: refuse a photo another receipt owns.
+  const attached = await tx
+    .select({ id: goodsReceiptMedia.storageObjectId })
+    .from(goodsReceiptMedia)
+    .where(
+      and(
+        eq(goodsReceiptMedia.tenantId, context.tenant.tenantId),
+        inArray(goodsReceiptMedia.storageObjectId, [...mediaIds]),
+      ),
+    )
+    .limit(1);
+  if (attached.length > 0)
+    throw invalid("A photo is already attached to another goods receipt.");
 }
 
 /** Purchase cost per base unit: PO unit price x accepted / accepted base. */
@@ -481,7 +497,7 @@ export async function createGoodsReceipt(
     fingerprint: requestFingerprint(
       CREATE_OPERATION,
       actorUserId,
-      canonicalInput(input, mediaIds),
+      canonicalInput(input, [...mediaIds].sort()),
     ),
   };
   try {
@@ -659,8 +675,14 @@ export async function createGoodsReceipt(
             ROUNDING_MODE,
           ),
         );
+        // A purchase unit smaller than the base unit can round to zero base
+        // units: the PO would count it as received while no stock moves.
+        if (parseDecimal4(accepted) > 0n && parseDecimal4(acceptedBase) === 0n)
+          throw invalid(
+            "The accepted quantity is too small to record in the base unit.",
+          );
         let batchId: string | null = null;
-        if (line.batchCode && parseDecimal4(accepted) > 0n) {
+        if (line.batchCode && parseDecimal4(acceptedBase) > 0n) {
           const [batch] = await tx
             .insert(stockBatches)
             .values({
@@ -718,10 +740,15 @@ export async function createGoodsReceipt(
         contractReceiptLines([...priorLines, ...newLines]),
       );
       if (nextStatus !== null) {
-        const newStatus = transitionPurchaseOrder(
+        // Throws PURCHASE_ORDER_INVALID_TRANSITION for a move the PO state
+        // machine does not allow; an unchanged status writes nothing.
+        transitionPurchaseOrder(
           order.status,
           nextStatus === "received" ? "receive_full" : "receive_partial",
         );
+      }
+      if (nextStatus !== null && nextStatus !== order.status) {
+        const newStatus = nextStatus;
         // `updated_at` is the PO optimistic-lock token: strictly increasing.
         const moved = await tx
           .update(purchaseOrders)
