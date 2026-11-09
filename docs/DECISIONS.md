@@ -157,6 +157,28 @@ in parallel. Reviewed with an architect consult before implementation.
    `report.sales.view` reads `net_sales` and `discount_amount`. The same
    figures were already readable through a report run (architect review
    2026-11-10).
+   Founder decisions (legend-upmn7, 2026-11-10):
+   - Q59: a shareholder (`report.aggregate.view`) may read the business
+     total of `cogs` through `GET /api/metrics/query`, never a breakdown.
+     `AGGREGATE_TOTAL_METRIC_CODES = ["cogs"]` in
+     `packages/shared/src/dashboard/catalog.ts` lists such total-only
+     metrics. A listed metric gets the aggregate reach only for a request
+     with no `groupBy`, no `outletIds` filter and bucket `total`; any split
+     (outlet, menu item, menu category), an outlet filter or a smaller
+     bucket answers 403 `REPORT_NOT_PERMITTED`. The mark is per metric, so
+     `food_cost_pct` from the same source report stays 403.
+     `inventory.food_cost` is not added to `AGGREGATE_VIEW_REPORT_CODES`: its
+     report run, with per-menu detail, stays closed to the aggregate view.
+     The metric query follows the founder's words literally (whole business,
+     whole period), although the `finance.income_statement` report run,
+     which accepts the aggregate view, already lists `cogs` per outlet to a
+     shareholder and `gross_profit` is `net_sales - cogs`; the per-menu split
+     is the only detail no path shows (architect review 2026-11-10).
+   - Q60: widening `report.operational.view` to `cogs`, `food_cost_pct`,
+     `waste_cost`, `payment_fee` and `stock_value` is approved only within
+     the outlets the role reaches. An outlet-scoped holder reads their own
+     outlet without a filter and gets 403 for another outlet's filter
+     (`apps/api/src/test/metrics-query-access.test.ts`).
 
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 

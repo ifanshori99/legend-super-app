@@ -100,6 +100,20 @@ export const AGGREGATE_VIEW_REPORT_CODES: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * Founder decision Q59 (2026-11-10, DECISIONS.md butir 8): metrics a
+ * `report.aggregate.view` holder (the shareholder) may read as one business
+ * total through `GET /api/metrics/query`, although their source report does
+ * not accept the aggregate view. Only a request with no `groupBy` at all gets
+ * the aggregate reach; any split (outlet, menu, category) stays 403
+ * REPORT_NOT_PERMITTED. The source report itself (`inventory.food_cost` for
+ * `cogs`) is not added to `AGGREGATE_VIEW_REPORT_CODES`: its report run, with
+ * per-menu detail, stays closed to the aggregate view.
+ */
+export const AGGREGATE_TOTAL_METRIC_CODES: readonly string[] = Object.freeze([
+  "cogs",
+]);
+
+/**
  * SH-01: a report accepts `report.aggregate.view` only when it is a
  * shareholder-linked report and shows no person: not flagged personal and no
  * identity split (employee, customer, member) on offer.

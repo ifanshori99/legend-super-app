@@ -29,7 +29,13 @@ import { metricQueryResponseSchema } from "@starter/shared/metrics";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
-import { agent, setRole, signUp, verifySessionMfa } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 import { createIsolatedTenant, owner } from "./floor-test-helpers";
 
 type Client = ReturnType<typeof agent>;
@@ -49,6 +55,7 @@ const accounts = {
   revenue: randomUUID(),
   discount: randomUUID(),
   cogs: randomUUID(),
+  waste: randomUUID(),
 };
 
 let full: Client; // every report permission, tenant
@@ -59,6 +66,7 @@ let disjoint: Client; // sales on outlet1, operational on outlet2
 let nobody: Client; // no report permission
 let operationalTenant: Client; // report.operational.view only, tenant
 let mixed: Client; // operational on outlet1, report.aggregate.view tenant
+let outletHead: Client; // report.operational.view, outlet1 only
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -182,6 +190,21 @@ function idrOf(body: unknown, metricCode: string): number {
   return value!.valueIdr;
 }
 
+/** HPP posted to the general ledger in June, tenant-wide or for one outlet. */
+async function ledgerCogs(outletId?: string): Promise<number> {
+  const { rows } = await owner.query<{ cogs: string }>(
+    `SELECT COALESCE(SUM(l.debit_idr - l.credit_idr), 0)::text AS cogs
+     FROM journal_lines l
+     JOIN journal_entries e ON e.tenant_id = l.tenant_id AND e.id = l.entry_id
+     JOIN chart_of_accounts a ON a.tenant_id = l.tenant_id AND a.id = l.account_id
+     WHERE l.tenant_id = $1 AND e.legal_entity_id = $2 AND a.report_group = 'cogs'
+       AND e.entry_date BETWEEN $3 AND $4
+       AND ($5::uuid IS NULL OR l.outlet_id = $5::uuid)`,
+    [tenantId, entityId, JUNE.startDate, JUNE.endDate, outletId ?? null],
+  );
+  return Number(rows[0]!.cogs);
+}
+
 function expectNotPermitted(response: {
   status: number;
   body: { error?: { code?: string } };
@@ -210,7 +233,8 @@ beforeAll(async () => {
             ($2, $6, $7, '1301', 'Persediaan', 'asset', 'current_asset'),
             ($3, $6, $7, '4101', 'Penjualan', 'revenue', 'revenue'),
             ($4, $6, $7, '4201', 'Diskon penjualan', 'revenue', 'revenue'),
-            ($5, $6, $7, '5101', 'HPP', 'expense', 'cogs')`,
+            ($5, $6, $7, '5101', 'HPP', 'expense', 'cogs'),
+            ($8, $6, $7, '6101', 'Beban waste', 'expense', 'operating_expense')`,
     [
       accounts.cash,
       accounts.inventory,
@@ -219,12 +243,14 @@ beforeAll(async () => {
       accounts.cogs,
       tenantId,
       entityId,
+      accounts.waste,
     ],
   );
   await owner.query(
     `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
      VALUES ($1, $2, 'sales_revenue', $3), ($1, $2, 'sales_discount', $4),
-            ($1, $2, 'cogs', $5), ($1, $2, 'inventory', $6)
+            ($1, $2, 'cogs', $5), ($1, $2, 'inventory', $6),
+            ($1, $2, 'waste_expense', $7)
      ON CONFLICT DO NOTHING`,
     [
       tenantId,
@@ -233,6 +259,7 @@ beforeAll(async () => {
       accounts.discount,
       accounts.cogs,
       accounts.inventory,
+      accounts.waste,
     ],
   );
   await owner.query(
@@ -257,6 +284,14 @@ beforeAll(async () => {
   await cogs("2025-06-10", outlet1, 300_000);
   await sale("2025-06-11", outlet2, 400_000);
   await cogs("2025-06-11", outlet2, 120_000);
+  // Waste (expense, not cogs): outlet 1 50k, outlet 2 20k, tenant 70k.
+  const waste = (date: string, outlet: string, amount: number) =>
+    post(date, outlet, [
+      line(accounts.waste, amount, 0, outlet),
+      line(accounts.inventory, 0, amount, outlet),
+    ]);
+  await waste("2025-06-12", outlet1, 50_000);
+  await waste("2025-06-13", outlet2, 20_000);
   await post("2025-06-20", outlet1, [
     line(accounts.discount, 50_000, 0, outlet1),
     line(accounts.cash, 0, 50_000, outlet1),
@@ -327,6 +362,9 @@ beforeAll(async () => {
     [roles.operational, "outlet", outlet1],
     [roles.aggregate, "tenant", null],
   ]);
+  outletHead = await viewer("Kepala outlet akses metrik", [
+    [roles.operational, "outlet", outlet1],
+  ]);
 });
 
 afterAll(async () => {
@@ -374,8 +412,9 @@ describe("GET /api/metrics/query: aggregate view only for whitelisted source rep
   });
 
   it("refuses a shareholder a metric whose source report is not on the aggregate list", async () => {
-    expectNotPermitted(await query(shareholder, ["cogs"]));
-    expectNotPermitted(await query(shareholder, ["net_sales", "cogs"]));
+    // cogs is the one total-only exception (Q59, below); stock_value is not.
+    expectNotPermitted(await query(shareholder, ["stock_value"]));
+    expectNotPermitted(await query(shareholder, ["net_sales", "stock_value"]));
   });
 });
 
@@ -422,4 +461,100 @@ describe("GET /api/metrics/query: report-run rule edge cases", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.error?.code).toBe("METRIC_NOT_FOUND");
   });
+});
+
+// ---- Founder decisions Q59 and Q60 (bead legend-upmn7) ------------------------
+
+describe("GET /api/metrics/query: Q59 shareholder reads the HPP total only", () => {
+  it("gives a shareholder the tenant cogs total, equal to the general ledger", async () => {
+    const response = await query(shareholder, ["cogs"]);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(idrOf(response.body, "cogs")).toBe(await ledgerCogs());
+    expect(idrOf(response.body, "cogs")).toBe(420_000);
+  });
+
+  it("gives the cogs total alongside an aggregate-view metric", async () => {
+    const response = await query(shareholder, ["net_sales", "cogs"]);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(idrOf(response.body, "net_sales")).toBe(1_350_000);
+    expect(idrOf(response.body, "cogs")).toBe(420_000);
+  });
+
+  it.each(["outlet", "menu_item", "menu_category"])(
+    "refuses a shareholder cogs split per %s",
+    async (groupBy) => {
+      const response = await query(shareholder, ["cogs"], { groupBy });
+      expectNotPermitted(response);
+      expect(JSON.stringify(response.body)).not.toContain("valueIdr");
+    },
+  );
+
+  it("refuses a shareholder cogs for an outlet filter, a breakdown by outlet", async () => {
+    const response = await query(shareholder, ["cogs"], { outletIds: outlet1 });
+    expectNotPermitted(response);
+    expect(JSON.stringify(response.body)).not.toContain("valueIdr");
+  });
+
+  it("refuses a shareholder cogs in day buckets, a breakdown by day", async () => {
+    const response = await query(shareholder, ["cogs"], { bucket: "day" });
+    expectNotPermitted(response);
+    expect(JSON.stringify(response.body)).not.toContain("valueIdr");
+  });
+
+  it("does not open the other metrics of the cogs source report", async () => {
+    // food_cost_pct shares cogs' source report but is not total-only listed.
+    expectNotPermitted(await query(shareholder, ["food_cost_pct"]));
+    expectNotPermitted(await query(shareholder, ["cogs", "food_cost_pct"]));
+  });
+
+  it("keeps the inventory.food_cost report run closed to a shareholder", async () => {
+    const response = await shareholder
+      .post("/api/reports/run")
+      .set(originHeader)
+      .set("Host", host)
+      .send({ reportCode: "inventory.food_cost", period: JUNE });
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toContain("420000");
+  });
+});
+
+describe("GET /api/metrics/query: Q60 report.operational.view reads its own outlet only", () => {
+  it("reads cogs for the outlet head's outlet only, never the tenant total", async () => {
+    const response = await query(outletHead, ["cogs"]);
+    expect(response.status).toBe(200);
+    expect(idrOf(response.body, "cogs")).toBe(await ledgerCogs(outlet1));
+    expect(idrOf(response.body, "cogs")).not.toBe(await ledgerCogs());
+  });
+
+  it("reads waste_cost for the outlet head's outlet only, never the tenant total", async () => {
+    const tenantWide = await query(full, ["waste_cost"]);
+    expect(tenantWide.status).toBe(200);
+    expect(idrOf(tenantWide.body, "waste_cost")).toBe(70_000);
+    const response = await query(outletHead, ["waste_cost"]);
+    expect(response.status).toBe(200);
+    expect(idrOf(response.body, "waste_cost")).toBe(50_000);
+  });
+
+  it.each([
+    "cogs",
+    "food_cost_pct",
+    "waste_cost",
+    "payment_fee",
+    "stock_value",
+  ])(
+    "admits %s on the outlet head's outlet and refuses another outlet",
+    async (metricCode) => {
+      const own = await query(outletHead, [metricCode]);
+      expect(own.status, JSON.stringify(own.body)).toBe(200);
+      expect(
+        metricQueryResponseSchema.parse(own.body).data.outletFilter,
+      ).toEqual({ kind: "outlets", outletIds: [outlet1] });
+      expect(JSON.stringify(own.body)).not.toContain("420000");
+      const other = await query(outletHead, [metricCode], {
+        outletIds: outlet2,
+      });
+      expect(other.status).toBe(403);
+      expect(JSON.stringify(other.body)).not.toContain("valueIdr");
+    },
+  );
 });

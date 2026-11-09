@@ -10,7 +10,8 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Konflik terbuka: `ws11-gl-parity.acceptance.test.ts` "SH-01 can read aggregate money figures equal to the ledger" mengharapkan 200 untuk pemegang saham yang meminta `cogs`; kini 403 karena `inventory.food_cost` tidak di daftar putih agregat. Test tidak diubah, menunggu keputusan CTO (kartu legend-upmn7).
 - Review K architect: tanpa HIGH; 2 MEDIUM (pelebaran akses tak tercatat; baris hari terpotong diam-diam) dan LOW dibetulkan. Kartu baru: legend-e0fhh (mock handler report-runs abaikan bucket), legend-t5ujz (cache akses per request).
 - legend-e0fhh: mock handler `report-runs` kini memakai bucket di kunci run; bucket yang tidak terdaftar dijawab 400 `REPORT_FILTER_NOT_SUPPORTED`, bukan total diam-diam. Review S reviewer sonnet: tanpa temuan nyata.
-- Langkah berikut: keputusan SH-01 (Q59), merge train, second opinion Codex 260b sesudah 15 Nov.
+- Keputusan founder Q59 (legend-upmn7): pemegang saham membaca total `cogs` seluruh usaha lewat metrics query (`AGGREGATE_TOTAL_METRIC_CODES`), hanya tanpa `groupBy`, tanpa `outletIds`, bucket `total`; `inventory.food_cost` tetap di luar daftar putih agregat. SH-01 hijau tanpa ubah test. Q60: pelebaran `report.operational.view` hanya dalam outlet peran, dijaga test. Review K architect: tanpa kebocoran; MEDIUM (cakupan lebih luas dari kata founder) dan LOW (test Q60 lemah) dibetulkan.
+- Langkah berikut: merge train, second opinion Codex 260b sesudah 15 Nov.
 
 ## legend-5wzoc WS-11 fondasi laporan dan metrik, kartu A (engineer, cabang `ws/ws11-foundation` dari milestone/m1 d8ea5e0b, 2026-11-10)
 

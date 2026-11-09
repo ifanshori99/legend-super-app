@@ -94,7 +94,16 @@ async function commonScope(
  * `full`, no aggregate fallback).
  */
 export type ViewerSource =
-  | { kind: "report"; report: ReportDefinition }
+  | {
+      kind: "report";
+      report: ReportDefinition;
+      /**
+       * Q59: the aggregate fallback also applies though the report does not
+       * accept the aggregate view. Set only for a request asking just the
+       * total of `AGGREGATE_TOTAL_METRIC_CODES` metrics (no `groupBy`).
+       */
+      aggregateTotal?: boolean;
+    }
   | { kind: "permission"; anyOf: readonly PermissionCode[] };
 
 /**
@@ -102,7 +111,8 @@ export type ViewerSource =
  * report: the caller's outlets for the permissions it requires (viewer
  * `full`); when the caller lacks them, the `report.aggregate.view` reach, but
  * only for a report that accepts the aggregate view (SH-01,
- * `reportAcceptsAggregateView`). Otherwise 403. The read covers the outlets
+ * `reportAcceptsAggregateView`) or a total-only metric source
+ * (`aggregateTotal`, Q59). Otherwise 403. The read covers the outlets
  * every source allows, and is `aggregate` as soon as one source needed the
  * aggregate permission. An empty intersection is 403, never a tenant-wide
  * read.
@@ -127,7 +137,8 @@ export async function resolveViewer(
       if (typeof full === "object") reach = full;
       else if (
         full === "missing" &&
-        reportAcceptsAggregateView(source.report)
+        (source.aggregateTotal === true ||
+          reportAcceptsAggregateView(source.report))
       ) {
         aggregate ??= await scopeOf(req, "report.aggregate.view");
         reach = aggregate;
