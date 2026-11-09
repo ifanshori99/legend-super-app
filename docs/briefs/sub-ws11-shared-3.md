@@ -118,3 +118,48 @@ Files: `apps/api/src/services/metric-sources/sales.ts`,
   exclude them in every sales reader that can see them, not only
   `menu_sold_qty` (pattern `COALESCE(po.is_training, false) = false`,
   menu-cogs.ts:62). Test: a training order changes no sales metric.
+
+## Architect review fixes (F-A and F-B in parallel, files do not overlap)
+
+### F-A: job hold order, catch-up pass, keepFinal (findings 2, 5 and the job part of 1, 3)
+
+Files: `apps/api/src/services/metric-sources/types.ts`,
+`apps/api/src/services/metrics-daily.service.ts`,
+`apps/api/src/worker/metrics-daily.job.ts`,
+`apps/api/src/test/metrics-daily-job.test.ts`.
+
+- Ask `pendingDay` before `compute` (metrics-daily.service.ts:117-120), so
+  an order that ends after the check never lets a wrong row become final.
+- Catch-up pass: each run also refreshes outlet-dates older than the
+  7-day window (`metrics-daily.job.ts:26`) that still hold `estimate` rows
+  of a reader with `pendingDay`, back at most 90 days. A day held past the
+  window turns final once its hold ends, and its value follows (an order
+  cancelled on day 10 drops out).
+- New optional reader flag `keepFinal?: boolean`: once the reader's rows
+  for an outlet-date are final, the job neither rewrites nor deletes them.
+  An outlet-date with no rows yet is written normally (backfill works).
+- Tests: hold checked before compute; a day held 10 days becomes final
+  after the order ends and drops a cancelled order; keepFinal rows stay
+  unchanged when the reader returns a new value.
+
+### F-B: facility readers (findings 1, 3, 6, 7)
+
+Files: `apps/api/src/services/metric-sources/facility.ts`,
+`apps/api/src/test/ms-facility.test.ts`.
+
+- Available-minute codes (`shower_available_minutes`,
+  `unit_available_minutes`) and their used-minute partners are read from
+  today's `facilities.operating_hours`; set `keepFinal: true` on the reader
+  that writes them (split the reader if it also writes other codes), so a
+  later change of hours never rewrites a closed day. Say in the header
+  that hours have no effective date yet (follow-up card).
+- `facility_incident_response_total_seconds` and
+  `facility_incident_answered_count` get their own reader with
+  `pendingDay`: hold while any incident of the outlet-day has no
+  `responded_at`.
+- A running ticket (no `ended_at`) counts as used up to
+  `min(input.now, day end)`, not its planned `ends_at`.
+- Header note: units under maintenance count as available.
+- F-A adds `keepFinal` and the catch-up pass in the job at the same time;
+  run your DB tests after it lands (the lead tells you), pure checks
+  before.
