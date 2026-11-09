@@ -3,5 +3,6 @@
 export * from "./schemas.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
+export * from "./errors.ts";
 export * from "./realtime.ts";
 export * from "./fixtures.ts";

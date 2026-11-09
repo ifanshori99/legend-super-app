@@ -1001,3 +1001,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Bukti merah dulu: dengan sweep dimatikan, 3 dari 4 test baru gagal (baris tetap parkir). Hijau: `edge-access-applier.test.ts` 38/38, tsc api lewat heavy, eslint, prettier. 4 test: outlet tanpa event baru, batas batch, 12 baris dengan sweep dan drain lazy paralel (tepat 1 audit per override), lintas tenant/outlet plus baris refused tidak menahan yang lain.
 - Review S: 1 reviewer, tanpa temuan nyata. Batas diturunkan dari 50x4 ke 20x2 agar satu tick relay tidak panjang.
 - Risiko: drain yang gagal total (select/update) tetap diam dan mengembalikan 0 (perilaku lama), jadi `failedOutlets` tidak menghitungnya; outlet macet di depan antrean hanya mengganggu bila lebih dari 20 outlet macet sekaligus.
+
+## legend-usw3 kontrak picked-up dan runner-delivered (engineer, cabang `ws/expo-pickup-contract` di atas 42ee5c28, 2026-11-09)
+
+- Kontrak saja (`packages/shared/src/kitchen`): `markPickupPickedUp` (POST `/pickup-calls/:callId/picked-up`), `markExpoOrderDelivered` (POST `/expo/:orderId/delivered`), tanpa body. Tabel `PICKUP_CALL_TRANSITIONS` + `pickupCallBlock`, `expoDeliveryBlock`, `expoTicketSchema.deliveredAt`, `errors.ts` (5 kode 409, pesan Indonesia).
+- Idempoten: pickup di `picked_up` dan diantar di tiket yang sudah diantar menjawab 200 tanpa ubah (stempel pertama dipakai). `assigned -> picked_up` ditolak `PICKUP_CALL_NOT_CALLED`; `call` dari `picked_up` ditolak `PICKUP_CALL_CLOSED`.
+- Bukti: `tests/kitchen-contract.test.mjs` 15/15 (3 test baru), tsc shared/api/web lewat heavy bersih, eslint, prettier. Review S: 1 reviewer, 2 temuan dibetulkan (refine deliveredAt tanpa isComplete, helper kode tolak pickup).
+- Belum: mock web (`ws04-expo/mock.ts`) tanpa handler picked-up/delivered dan kode `PICKUP_CALL_CLOSED` (UI belum memakai); event realtime pickup/delivered tidak ada.

@@ -516,6 +516,8 @@ export const expoTicketSchema = z
     readyAt: isoDateTimeSchema.nullable(),
     runnerId: userIdSchema.nullable(),
     runnerAssignedAt: isoDateTimeSchema.nullable(),
+    /** The runner marked the order delivered (PRD §4 flow D step 4, flow G step 3). */
+    deliveredAt: isoDateTimeSchema.nullable(),
   })
   .refine((ticket) => !ticket.isComplete || ticket.readyAt !== null, {
     path: ["readyAt"],
@@ -528,7 +530,29 @@ export const expoTicketSchema = z
       path: ["runnerAssignedAt"],
       message: "A runner assignment carries its timestamp",
     },
-  );
+  )
+  .refine((ticket) => ticket.deliveredAt === null || ticket.runnerId !== null, {
+    path: ["deliveredAt"],
+    message: "A delivered order has a runner",
+  });
+
+/** Why "diantar" is refused for an expo ticket; null = allowed (or a repeat). */
+export type ExpoDeliveryBlock =
+  "EXPO_ORDER_NOT_COMPLETE" | "EXPO_RUNNER_NOT_ASSIGNED";
+
+/**
+ * Rule for `markExpoOrderDelivered`, shared by FE (enable the button) and BE.
+ * Already delivered is a repeat, not a block: the call is idempotent and
+ * returns the ticket unchanged (the first `deliveredAt` is kept).
+ */
+export function expoDeliveryBlock(
+  ticket: Pick<ExpoTicket, "isComplete" | "runnerId" | "deliveredAt">,
+): ExpoDeliveryBlock | null {
+  if (ticket.deliveredAt !== null) return null;
+  if (!ticket.isComplete) return "EXPO_ORDER_NOT_COMPLETE";
+  if (ticket.runnerId === null) return "EXPO_RUNNER_NOT_ASSIGNED";
+  return null;
+}
 
 export const expoBoardSchema = z.strictObject({
   ...outletScope,
@@ -585,6 +609,62 @@ export const pickupCallSchema = z
     path: ["pickedUpAt"],
     message: "A picked-up number records pickedUpAt",
   });
+
+/** "Panggil" (assigned/called -> called) and "Diambil" (called -> picked_up). */
+export const pickupCallActionSchema = z.enum(["call", "pickup"]);
+export type PickupCallAction = z.infer<typeof pickupCallActionSchema>;
+
+/**
+ * One explicit transition table for FE and BE (bead legend-usw3). A listed
+ * transition to the same status is a repeat: the call succeeds and changes
+ * nothing. `call` on `called` re-announces the number and keeps the first
+ * `calledAt`; `pickup` on `picked_up` keeps the first `pickedUpAt`. Anything
+ * not listed fails: `pickup` from `assigned` (PICKUP_CALL_NOT_CALLED) and
+ * `call` from `picked_up` (PICKUP_CALL_CLOSED), see `pickupCallBlock`;
+ * picked_up is terminal.
+ */
+export const PICKUP_CALL_TRANSITIONS: Record<
+  PickupCallStatus,
+  Partial<Record<PickupCallAction, PickupCallStatus>>
+> = {
+  assigned: { call: "called" },
+  called: { call: "called", pickup: "picked_up" },
+  picked_up: { pickup: "picked_up" },
+};
+
+export function canTransitionPickupCall(
+  status: PickupCallStatus,
+  action: PickupCallAction,
+): boolean {
+  return PICKUP_CALL_TRANSITIONS[status][action] !== undefined;
+}
+
+/** True when the action leaves the status as it is (idempotent repeat). */
+export function isPickupCallRepeat(
+  status: PickupCallStatus,
+  action: PickupCallAction,
+): boolean {
+  return PICKUP_CALL_TRANSITIONS[status][action] === status;
+}
+
+/** Error code an invalid pickup action fails with; null = allowed (or a repeat). */
+export function pickupCallBlock(
+  status: PickupCallStatus,
+  action: PickupCallAction,
+): "PICKUP_CALL_NOT_CALLED" | "PICKUP_CALL_CLOSED" | null {
+  if (canTransitionPickupCall(status, action)) return null;
+  return action === "pickup" ? "PICKUP_CALL_NOT_CALLED" : "PICKUP_CALL_CLOSED";
+}
+
+export function transitionPickupCall(
+  status: PickupCallStatus,
+  action: PickupCallAction,
+): PickupCallStatus {
+  const next = PICKUP_CALL_TRANSITIONS[status][action];
+  if (next === undefined)
+    throw new RangeError(`Pickup call cannot ${action} from ${status}`);
+  return next;
+}
 
 /**
  * F12 "Pickup Display ... dengan promosi": the promotion slide a wall display

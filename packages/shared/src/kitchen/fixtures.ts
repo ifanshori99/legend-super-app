@@ -817,6 +817,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       readyAt: null,
       runnerId: null,
       runnerAssignedAt: null,
+      deliveredAt: null,
     },
     {
       ...scope,
@@ -842,6 +843,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       readyAt: null,
       runnerId: null,
       runnerAssignedAt: null,
+      deliveredAt: null,
     },
     {
       ...scope,
@@ -861,6 +863,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       readyAt: null,
       runnerId: null,
       runnerAssignedAt: null,
+      deliveredAt: null,
     },
     {
       ...scope,
@@ -880,6 +883,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       readyAt: "2026-11-01T03:59:00.000Z",
       runnerId: staffId.runner,
       runnerAssignedAt: "2026-11-01T04:00:00.000Z",
+      deliveredAt: null,
     },
     {
       ...scope,
@@ -899,6 +903,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       readyAt: null,
       runnerId: null,
       runnerAssignedAt: null,
+      deliveredAt: null,
     },
   ],
 };
