@@ -16,6 +16,10 @@ import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
 import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
 import {
+  loginChallengeRateLimit,
+  type LoginChallengeRateLimitOptions,
+} from "./middleware/login-challenge-rate-limit";
+import {
   PUBLIC_RATE_LIMIT_PATHS,
   guestSessionRateLimit,
   publicRateLimit,
@@ -145,6 +149,7 @@ export function createApp({
   logger = defaultLogger,
   whatsappWebhookSecrets,
   publicRateLimit: publicRateLimitOptions,
+  loginChallengeRateLimit: loginChallengeRateLimitOptions,
   edgeMode = env.EDGE_MODE,
 }: {
   logger?: Logger;
@@ -154,6 +159,8 @@ export function createApp({
   whatsappWebhookSecrets?: readonly string[];
   /** Test seam; production reads PUBLIC_RATE_LIMIT_* (see config/env.ts). */
   publicRateLimit?: Partial<PublicRateLimitOptions>;
+  /** Test seam; production uses the LOGIN_* defaults (legend-fc0f2). */
+  loginChallengeRateLimit?: Partial<LoginChallengeRateLimitOptions>;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -266,6 +273,14 @@ export function createApp({
       : null;
   };
 
+  // legend-fc0f2: the endpoints are public and write to the database, so they
+  // get their own per-IP and per-browser limiter. It runs before the
+  // impersonation guard (which looks the session up when a cookie is present)
+  // and the tenant resolver, so a flood is answered 429 without a DB query.
+  app.use(
+    "/api/auth/login-challenges",
+    loginChallengeRateLimit(loginChallengeRateLimitOptions),
+  );
   // An impersonated (support) session may only call the allowlisted
   // /api/auth paths. The guard covers the login-challenge router,
   // identityAuthRouter and Better Auth below, and reads headers only (never

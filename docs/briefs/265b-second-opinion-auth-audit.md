@@ -41,3 +41,27 @@ Test terkait (boleh dijalankan lewat `LEGEND_TEST_FILES` dari root worktree): `i
 8. Audit RBAC: tulis audit ikut commit dan rollback bersama tulis domain; writer null menolak tulis (503), tidak diam-diam melewatkan.
 9. Tidak ada perubahan pada logika pemilihan tenant WhatsApp (milik `legend-mbd2`, cabang `ws/tenant-claims`); tandai bila diff menyentuhnya.
 10. Tidak ada migrasi.
+
+## Tambahan: rate limit HTTP login-challenges (legend-fc0f2)
+
+Diff (commit terpisah di atas commit senderMasked):
+
+```
+git diff 72b17ed2 HEAD -- apps/api/src/app.ts apps/api/src/middleware apps/api/src/test/login-challenge-rate-limit.test.ts
+```
+
+Berkas risiko:
+
+- `apps/api/src/middleware/login-challenge-rate-limit.ts` (baru): dua kelas (issue 30 per IP dan 10 per binding per menit; poll/cancel 600 dan 120), counter `createFixedWindowCounter` yang sama dengan `publicRateLimit`, galat 429 `rejectRateLimited`.
+- `apps/api/src/app.ts`: pemasangan di `/api/auth/login-challenges` sebelum `guardImpersonatedAuthRoutes` dan `tenantContext`.
+- `apps/api/src/middleware/public-rate-limit.ts`: hanya `clientIp` dan `rejectRateLimited` jadi `export`.
+
+Invariant tambahan:
+
+11. Banjir POST melewati batas dijawab 429 tanpa query DB (tanpa `db.transaction`, `pool.query`, `pool.connect`), termasuk dengan cookie sesi palsu, dan tanpa baris `audit_logs` atau `login_challenges` baru.
+12. Kelas issue gagal-tertutup: semua POST selain `/:id/cancel` memakai budget issue, tidak peduli huruf besar-kecil, garis miring akhir, atau rute issue baru (mis. `/email`).
+13. Tidak ada IP yang dikecualikan secara default (loopback ikut dibatasi); tanpa `TRUST_PROXY` semua klien terlihat sebagai satu IP, nilai apakah itu menjadi kunci lockout satu NAT.
+14. Kunci binding hanya dari cookie `login_binding` yang tanda tangannya valid (`readBindingNonce`); cookie palsu hanya dihitung ke IP. Rotasi cookie tidak melewati batas IP.
+15. Batas per proses (memori). Beberapa instance API masing-masing punya jendela sendiri; nilai kecukupannya bersama aturan Cloudflare di `docs/deployment.md`.
+16. Diketahui dan ditunda: IPv6 dikunci per alamat penuh, satu /64 memberi bucket tak terbatas (kartu `legend-6jgd2`). Seorang klien di NAT venue bisa menghabiskan budget poll semua tamu (diterima).
+17. Logika AUTH-04 (5 challenge aktif per cookie/IP per 15 menit) tidak berubah.
