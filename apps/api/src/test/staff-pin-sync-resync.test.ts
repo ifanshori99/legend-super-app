@@ -9,7 +9,10 @@ import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import type { StaffPinEdgeRecord } from "@starter/shared/access/override";
+import {
+  staffPinEdgeRecordSchema,
+  type StaffPinEdgeRecord,
+} from "@starter/shared/access/override";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -81,8 +84,16 @@ async function exportedRecord(userId: string): Promise<StaffPinEdgeRecord> {
   throw new Error("staff pin was not exported");
 }
 
-/** The cloud record of a fresh pin; the cloud row is then removed (edge copy). */
-async function cloudRecord(userId: string): Promise<StaffPinEdgeRecord> {
+/**
+ * The cloud record of a fresh pin; the cloud row is then removed (edge copy).
+ * Without `withRevision` the record is the one of a cloud before legend-r11j7
+ * (no `attemptRevision`: the edge compares the counter by value, the
+ * legend-7vv8h tests below); with it the record carries the cloud revision.
+ */
+async function cloudRecord(
+  userId: string,
+  withRevision = false,
+): Promise<StaffPinEdgeRecord> {
   await setStaffPin(
     tenant,
     userId,
@@ -100,7 +111,8 @@ async function cloudRecord(userId: string): Promise<StaffPinEdgeRecord> {
         "DELETE FROM staff_pins WHERE tenant_id = $1 AND user_id = $2",
         [tenantId, userId],
       );
-      return found;
+      if (withRevision) return found;
+      return { ...found, attemptRevision: undefined };
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -113,8 +125,11 @@ async function pinRow(userId: string) {
     locked_until: Date | null;
     cloud_failed_attempts: number | null;
     cloud_locked_until: Date | null;
+    attempt_revision: string;
+    cloud_attempt_revision: string | null;
   }>(
-    `SELECT failed_attempts, locked_until, cloud_failed_attempts, cloud_locked_until
+    `SELECT failed_attempts, locked_until, cloud_failed_attempts, cloud_locked_until,
+            attempt_revision, cloud_attempt_revision
        FROM staff_pins WHERE tenant_id = $1 AND outlet_id = $2 AND user_id = $3`,
     [tenantId, bandung, userId],
   );
@@ -317,5 +332,113 @@ describe("legend-7vv8h edge apply never restores a cleared counter or lock", () 
     const row = await pinRow(userId);
     expect(row.failed_attempts).toBe(4);
     expect(row.cloud_failed_attempts).toBe(4);
+  });
+});
+
+describe("legend-r11j7 counter ABA between two pulls", () => {
+  it("without attemptRevision, a cloud counter 3 -> 0 -> 3 is indistinguishable from a replay and stays cleared (value fallback)", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId);
+    expect(record.attemptRevision).toBeUndefined();
+    expect(staffPinEdgeRecordSchema.safeParse(record).success).toBe(true);
+    await applyStaffPinRecords(edgeContext, [record]);
+    const three = { ...record, failedAttempts: 3 };
+    await applyStaffPinRecords(edgeContext, [three]);
+    expect((await pinRow(userId)).failed_attempts).toBe(3);
+    await clearOnEdge(userId);
+
+    // The cloud went 3 -> 0 -> 3 between two pulls: the same record arrives.
+    await applyStaffPinRecords(edgeContext, [three]);
+    expect((await pinRow(userId)).failed_attempts).toBe(0);
+  });
+
+  it("with attemptRevision, a cloud counter 3 -> 0 -> 3 between two pulls raises the cleared edge counter again, and a replay of it does not", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId, true);
+    const r = record.attemptRevision!;
+    expect(typeof r).toBe("number");
+    await applyStaffPinRecords(edgeContext, [record]);
+    expect((await pinRow(userId)).cloud_attempt_revision).toBe(String(r));
+
+    // Cloud counter 0 -> 3 (three bumps).
+    const three = { ...record, failedAttempts: 3, attemptRevision: r + 3 };
+    await applyStaffPinRecords(edgeContext, [three]);
+    expect((await pinRow(userId)).failed_attempts).toBe(3);
+    await clearOnEdge(userId);
+
+    // Same record again (cloud restart resync): still a replay.
+    await applyStaffPinRecords(edgeContext, [three]);
+    expect((await pinRow(userId)).failed_attempts).toBe(0);
+
+    // Cloud: 3 -> 0 (correct PIN) -> 3 (three new failures) = 4 bumps. Same
+    // value, new revision: the edge never saw the 0, it raises again.
+    const aba = { ...three, attemptRevision: r + 7 };
+    await applyStaffPinRecords(edgeContext, [aba]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(3);
+    expect(row.cloud_attempt_revision).toBe(String(r + 7));
+    expect(row.cloud_failed_attempts).toBe(3);
+  });
+
+  it("the first pull after the upgrade (null revision baseline) falls back to the value and stores the revision", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId, true);
+    const r = record.attemptRevision!;
+    await applyStaffPinRecords(edgeContext, [record]);
+    await applyStaffPinRecords(edgeContext, [
+      { ...record, failedAttempts: 3, attemptRevision: r + 3 },
+    ]);
+    await clearOnEdge(userId);
+    await owner.query(
+      `UPDATE staff_pins SET cloud_attempt_revision = NULL
+        WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, userId],
+    );
+
+    // Value 3 equals the stored baseline value: replay, nothing restored, but
+    // the revision is stored now.
+    await applyStaffPinRecords(edgeContext, [
+      { ...record, failedAttempts: 3, attemptRevision: r + 3 },
+    ]);
+    const row = await pinRow(userId);
+    expect(row.failed_attempts).toBe(0);
+    expect(row.cloud_attempt_revision).toBe(String(r + 3));
+  });
+
+  it("the trigger bumps attempt_revision on a counter, lock or hash change only, and a writer cannot set it", async () => {
+    const userId = await newStaff();
+    await setStaffPin(
+      tenant,
+      userId,
+      { outletId: bandung, userId },
+      { pin: "582914" },
+      { now: new Date(Date.now() - 10 * MINUTE) },
+    );
+    const start = Number((await pinRow(userId)).attempt_revision);
+    const update = (set: string) =>
+      owner.query(
+        `UPDATE staff_pins SET ${set} WHERE tenant_id = $1 AND user_id = $2`,
+        [tenantId, userId],
+      );
+
+    await update("failed_attempts = 2");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 1);
+    await update("locked_until = now() + interval '5 minutes'");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 2);
+    await update("pin_salt = 'AAAAAAAAAAAAAAAAAAAAAA=='");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 3);
+    await update(`pin_hash = repeat('a', 64)`);
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+
+    // updated_at only, or a write of the same values: no bump.
+    await update("updated_at = now()");
+    await update("failed_attempts = 2");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+
+    // A writer cannot set it, alone or together with a counter change.
+    await update("attempt_revision = 999");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 4);
+    await update("attempt_revision = 999, failed_attempts = 1");
+    expect(Number((await pinRow(userId)).attempt_revision)).toBe(start + 5);
   });
 });

@@ -249,6 +249,7 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
     expect(Object.keys(record).sort()).toEqual(
       [
         "algorithm",
+        "attemptRevision",
         "failedAttempts",
         "id",
         "lockedUntil",

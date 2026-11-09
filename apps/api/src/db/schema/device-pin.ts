@@ -118,6 +118,23 @@ export const staffPins = pgTable(
     cloudFailedAttempts: integer("cloud_failed_attempts"),
     cloudLockedUntil: timestamp("cloud_locked_until", { withTimezone: true }),
     /**
+     * Counter revision (legend-r11j7): bumped by the `staff_pins_attempt_revision`
+     * trigger on every change of `failed_attempts`, `locked_until`, `pin_hash`
+     * or `pin_salt` (no application code sets it). The cloud exports it, so
+     * the edge sees a counter that went 3 -> 0 -> 3 between two pulls as moved
+     * although the value is the same.
+     */
+    attemptRevision: bigint("attempt_revision", { mode: "number" })
+      .notNull()
+      .default(0),
+    /**
+     * Edge copy only (legend-r11j7): `attempt_revision` of the last record
+     * applied, the revision twin of `cloud_failed_attempts`. Null on the cloud,
+     * for a row from before the column and for a record of an older cloud
+     * export without a revision.
+     */
+    cloudAttemptRevision: bigint("cloud_attempt_revision", { mode: "number" }),
+    /**
      * Cloud only (legend-rucdm): the edge node and its outbox aggregate
      * sequence whose `staff_pin.set` gave the current generation. A later set
      * of the same node (higher sequence) is newer whatever its key, so an

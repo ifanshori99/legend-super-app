@@ -363,6 +363,8 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     const higher: StaffPinEdgeRecord = {
       ...record,
       failedAttempts: 3,
+      // A real cloud counter change also moves the revision (legend-r11j7).
+      attemptRevision: (record.attemptRevision ?? 0) + 3,
       updatedAt: new Date(
         Date.parse(record.updatedAt) - 60 * MINUTE,
       ).toISOString(),
