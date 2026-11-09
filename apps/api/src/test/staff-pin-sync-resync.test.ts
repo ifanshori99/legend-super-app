@@ -206,6 +206,40 @@ describe("legend-7vv8h edge apply never restores a cleared counter or lock", () 
     expect(raised.locked_until?.getTime()).toBe(later.getTime());
   });
 
+  it("a cloud lock that differs from the stored baseline applies even when it is earlier than the baseline, and its replay changes nothing", async () => {
+    const userId = await newStaff();
+    const record = await cloudRecord(userId);
+    await applyStaffPinRecords(edgeContext, [record]);
+
+    const first = new Date(Date.now() + 30 * MINUTE);
+    await applyStaffPinRecords(edgeContext, [
+      { ...record, failedAttempts: 3, lockedUntil: first.toISOString() },
+    ]);
+    expect((await pinRow(userId)).cloud_locked_until?.getTime()).toBe(
+      first.getTime(),
+    );
+    await clearOnEdge(userId);
+
+    // The cloud lock was cleared and a newer, shorter one set between two
+    // pulls: it is earlier than the baseline but still in the future.
+    const second = new Date(Date.now() + 10 * MINUTE);
+    const shorter = {
+      ...record,
+      failedAttempts: 3,
+      lockedUntil: second.toISOString(),
+    };
+    await applyStaffPinRecords(edgeContext, [shorter]);
+    const applied = await pinRow(userId);
+    expect(applied.locked_until?.getTime()).toBe(second.getTime());
+    expect(applied.cloud_locked_until?.getTime()).toBe(second.getTime());
+
+    await applyStaffPinRecords(edgeContext, [shorter]);
+    const replayed = await pinRow(userId);
+    expect(replayed.failed_attempts).toBe(applied.failed_attempts);
+    expect(replayed.locked_until?.getTime()).toBe(second.getTime());
+    expect(replayed.cloud_locked_until?.getTime()).toBe(second.getTime());
+  });
+
   it("an edge copy without a stored baseline (before this change) treats the record as new", async () => {
     const userId = await newStaff();
     const record = await cloudRecord(userId);
@@ -238,7 +272,7 @@ describe("legend-7vv8h edge apply never restores a cleared counter or lock", () 
     expect(row.cloud_failed_attempts).toBe(2);
   });
 
-  it("a cloud counter that went down (correct PIN on the cloud) and rose again is not dropped as a replay", async () => {
+  it("a cloud counter that went down (correct PIN on the cloud) and rose again is not dropped as a replay after the edge saw the cloud reset to 0", async () => {
     const userId = await newStaff();
     const record = await cloudRecord(userId);
     await applyStaffPinRecords(edgeContext, [record]);
