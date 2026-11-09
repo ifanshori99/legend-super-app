@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import {
   CoreError,
+  createUlid,
   isoDateTimeSchema,
   tenantIdSchema,
   uuidSchema,
@@ -29,7 +30,17 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { and, asc, eq, gt, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  sql,
+} from "drizzle-orm";
 import { db } from "../db";
 import {
   gatewayWebhookEvents,
@@ -40,6 +51,7 @@ import {
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
+import { recordAudit } from "./core-audit";
 import {
   applyGatewayFailure,
   confirmPayment,
@@ -70,6 +82,8 @@ const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
  * stores its provider ref after the create call): retried this long. */
 export const WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS = 15 * 60_000;
 const SECRET_CACHE_TTL_MS = 60_000;
+/** Audit snapshot keys of a refused cross-integration retry (ids only). */
+const MISMATCH_AUDIT_FIELDS = ["eventId", "integrationId"] as const;
 
 export type WebhookResultStatus =
   "processed" | "duplicate" | "ignored" | "failed";
@@ -669,6 +683,49 @@ async function loadVerifiedRow(
 }
 
 /**
+ * Audit of a delivery that reused the event id of another integration's row.
+ * Ids only: no payload, no secret.
+ */
+async function recordIntegrationMismatch(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  receivedIntegrationId: string,
+  now: Date,
+): Promise<void> {
+  logger.warn(
+    { module: "payment-webhook", tenantId: context.tenant.tenantId },
+    "DOIT webhook event id reused by another integration",
+  );
+  await withTenant(db, context, async (tx) => {
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.webhook.integration_mismatch",
+        objectType: "gateway_webhook_event",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: { eventId: row.eventId, integrationId: row.integrationId },
+          after: { eventId: row.eventId, integrationId: receivedIntegrationId },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      MISMATCH_AUDIT_FIELDS,
+    );
+  });
+}
+
+/**
  * Receives one DOIT webhook. Throws UNAUTHORIZED (one message, no oracle) for
  * every failure before the signature is verified (unknown or inactive tenant,
  * tenant without a DOIT secret, bad signature) and a 500 when a verified
@@ -782,18 +839,42 @@ export async function receiveDoitWebhook(input: {
     createdAt: now,
     updatedAt: now,
   });
+  // The event to process: the new body only for a fresh row (or a stored
+  // MALFORMED one it just filled); a retried row is processed from what it
+  // stored.
+  let toProcess = event;
   if (!row) {
     row = await loadVerifiedRow(context, event.id);
     if (!row) throw new Error("Webhook event conflicted without a winner");
+    // An event id belongs to the integration that stored it first: another
+    // integration of the tenant, even with a valid secret, may not replay,
+    // complete or settle it. A row without an owner cannot prove it is this
+    // integration's either. Nothing is processed and the row is untouched.
+    if (
+      row.integrationId === null ||
+      row.integrationId.toLowerCase() !== verified.integrationId.toLowerCase()
+    ) {
+      await recordIntegrationMismatch(
+        context,
+        row,
+        verified.integrationId,
+        now,
+      );
+      // 200, like REFERENCE_MISMATCH: a deterministic refusal that DOIT must
+      // not resend forever.
+      return { status: "ignored", eventId: event.id };
+    }
     if (row.status === "processed" || row.status === "ignored")
       return { status: "duplicate", eventId: event.id };
     // `received` or `failed`: the earlier delivery never finished, retry it.
+    let useStored = true;
     if (row.payload === null) {
-      // An earlier delivery could not be parsed: keep the parsed event now
-      // so the worker can retry this row too.
+      // An earlier delivery of this integration could not be parsed: keep the
+      // parsed event now so the worker can retry this row too. Only a row
+      // that is still empty and owned by this integration is filled.
       const stored = row;
-      await withTenant(db, context, async (tx) => {
-        await tx
+      const [filled] = await withTenant(db, context, async (tx) =>
+        tx
           .update(gatewayWebhookEvents)
           .set({
             payload: event as unknown as Record<string, unknown>,
@@ -805,15 +886,47 @@ export async function receiveDoitWebhook(input: {
             and(
               eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
               eq(gatewayWebhookEvents.id, stored.id),
+              isNull(gatewayWebhookEvents.payload),
+              eq(gatewayWebhookEvents.integrationId, verified.integrationId),
             ),
-          );
-      });
+          )
+          .returning({ id: gatewayWebhookEvents.id }),
+      );
+      if (filled) useStored = false;
+      else {
+        // A concurrent delivery filled it first: continue with what it stored.
+        const fresh = await loadVerifiedRow(context, event.id);
+        if (!fresh || fresh.payload === null)
+          throw new Error("Webhook event could not be completed");
+        row = fresh;
+        if (row.status === "processed" || row.status === "ignored")
+          return { status: "duplicate", eventId: event.id };
+      }
+    }
+    if (useStored) {
+      // Never the replacement body: the stored payload is what was verified
+      // and stored first (the payload hash may differ, the stored one wins).
+      const storedEvent = doitWebhookEventSchema.safeParse(row.payload);
+      if (!storedEvent.success) {
+        await markRow(
+          context,
+          row.id,
+          { status: "failed", lastErrorCode: "MALFORMED" },
+          now,
+        );
+        throw new HttpError(
+          500,
+          "INTERNAL_ERROR",
+          "Webhook belum dapat diproses. Coba lagi.",
+        );
+      }
+      toProcess = storedEvent.data;
     }
   }
   const outcome = await processStoredEvent(
     context,
     row,
-    event,
+    toProcess,
     now,
     verified.secret,
   );

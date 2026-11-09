@@ -161,6 +161,22 @@ test("POS-06: an offline device continues its own gapless run without duplicates
   assert.equal(new Set([first.number, second.number, "CLB-P1-000001"]).size, 3);
 });
 
+test("POS-06: cloud receipt prefix is fixed and edge refusals have their own codes", () => {
+  assert.equal(pos.CLOUD_RECEIPT_PREFIX, "C");
+  assert.equal(
+    pos.formatReceiptNumber(pos.CLOUD_RECEIPT_PREFIX, 1),
+    "C-000001",
+  );
+  for (const code of [
+    "RECEIPT_DEVICE_REQUIRED",
+    "RECEIPT_SEQUENCE_NOT_PROVISIONED",
+    "RECEIPT_VOID_UNMATCHED",
+  ]) {
+    assert.equal(pos.POS_ERROR_CODES.includes(code), true);
+    assert.equal(new pos.PosError(code).code, code);
+  }
+});
+
 test("POS-04: final orders are immutable and corrections are linked records", () => {
   // The explicit status machine has no path out of completed or voided.
   assert.equal(pos.transitionPosOrder("draft", "submit"), "awaiting_payment");
@@ -972,11 +988,24 @@ test("POS-07: e-receipt and kuitansi carry outlet name, address, items, tax and 
     pos.receiptDocumentSchema.safeParse({
       ...receiptDoc,
       taxLines: [],
-      taxIdr: 0,
-      totalIdr: 109_180,
     }).success,
     false,
-    "the tax line is printed (POS-07)",
+    "a taxed order prints its tax line (POS-07)",
+  );
+  // Founder decision Q4 (legend-93a): a tax-free order prints with no tax row.
+  assert.equal(
+    pos.receiptDocumentSchema.safeParse({
+      ...receiptDoc,
+      taxLines: [],
+      taxIdr: 0,
+      totalIdr: 109_180,
+      tenders: [
+        receiptDoc.tenders[0],
+        { ...receiptDoc.tenders[1], amountIdr: 99_180 },
+      ],
+    }).success,
+    true,
+    "a tax-free order prints without a tax row",
   );
   assert.equal(
     pos.receiptDocumentSchema.safeParse({
