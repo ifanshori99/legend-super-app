@@ -215,6 +215,83 @@ in parallel. Reviewed with an architect consult before implementation.
      carry `availability`; an unbuilt queue answers 200 with no rows and
      `source_not_built` instead of 501.
 
+## 2026-11-10: WS-11: HPP per baris pesanan saat penjualan (legend-u4js6)
+
+Konteks: `order_items.cost_snapshot_idr` (bigint, nullable) sudah ada tapi tidak
+ada insert yang mengisinya. Pembacanya `ai-metrics/sales.ts` dan reader WS-11
+F3 (`metric-sources/menu-cogs.ts`) sudah menganggapnya "HPP seluruh baris saat
+terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
+(tingkat K, uang).
+
+1. **Nilai = HPP total baris** (jumlah x HPP per porsi), rupiah bulat. Resep
+   satu baris diledakkan dengan jumlah sebenarnya (bukan 1 porsi dikali jumlah),
+   lalu jumlah bahan (Decimal4) x `avg_cost_idr` (Decimal4) dijumlah dalam skala
+   penuh dan dibulatkan **sekali per baris**, setengah ke atas, lewat
+   `scaledCostToIdr` (`inventory-ops.shared.ts`). Tanpa pembulatan per bahan.
+2. **Sumber biaya: `stock_balances.avg_cost_idr` di lokasi jual outlet
+   (`outlet_inventory_settings.sale_location_id`) pada saat baris dimasukkan**,
+   di transaksi yang sama. Alasan: kolom ini "HPP teoretis saat terjual"
+   (PRD), ditulis sekali bersama barisnya, tanpa jalur tulis kedua dan tanpa
+   menyentuh konsumen `order.paid` milik `recipe-deduction.service.ts`. Biaya
+   deduksi (`recipe_deductions.cost_idr`) boleh berbeda: real_time memakai
+   rata-rata saat lunas, day_close saat tutup hari, dan deduksi dibulatkan per
+   pesanan, bukan per baris. Selisih itu (pergerakan harga rata-rata, pembulatan,
+   baris NULL) masuk ke baris residual `__ledger_adjustment__` WS-11; itu yang
+   diharapkan, bukan bug. `recipes.theoretical_cost_idr` tidak dipakai (belum
+   pernah diisi, default 0).
+3. **Varian dan modifier ikut**, dengan aturan yang sama dengan deduksi: resep
+   varian, kalau tidak ada resep menu; modifier add-on dan aturan
+   add/replace/remove. Pesanan delivery menyimpan `modifiers: []`, jadi modifier
+   platform tidak dihitung (hanya resep dasar). Batas yang diketahui.
+4. **NULL, bukan 0**, untuk baris yang: menunya tanpa resep; resepnya tidak aktif
+   atau rusak; outletnya tanpa lokasi jual; jumlahnya kurang dari 1; resepnya
+   meledak jadi nol bahan; atau satu saja bahannya tidak punya saldo di lokasi
+   jual atau `avg_cost_idr` = 0. **Tidak ada nilai sebagian**: HPP sebagian
+   terbaca sebagai margin palsu. Bahan yang memang gratis ikut jadi NULL;
+   selisihnya tertampung di residual. Baris lain di pesanan yang sama tetap
+   dihitung sendiri-sendiri.
+5. **Edge `qr-order-applier.ts` menulis NULL, payload tidak diubah.** Pesanan
+   itu dibuat di cloud oleh `qr-order.service.ts`, yang sudah menulis snapshot
+   di barisnya; laporan membaca cloud, jadi tidak perlu pengisian ulang. Payload
+   `qr_order.placed` adalah `z.strictObject`: menambah field membuat edge versi
+   lama menolak event dan menahan semua pesanan QR. Master sync edge tidak
+   membawa resep atau `stock_balances`. POS yang berjalan di edge memakai helper
+   yang sama dan mendapat NULL bila data itu tidak ada. Bila nanti ada applier
+   cloud untuk pesanan dari edge (legend-kai), applier itu memanggil helper ini
+   di cloud saat menerapkan.
+6. **Snapshot tidak pernah ditulis ulang.** Void, refund, koreksi, remake, comp
+   dan fire hanya mengubah `status` atau `fire_status`; pembaca mengecualikan
+   baris `voided`. Remake dan comp punya biaya sendiri di deduksinya. Replay
+   edge memakai `onConflictDoNothing`.
+7. **Kegagalan tidak menggagalkan pesanan.** Helper berjalan di savepoint
+   (`tx.transaction(...)`, pola `openRefundChainSafely` di
+   `payment-refund.service.ts`). Galat SQL tanpa savepoint membatalkan seluruh
+   transaksi Postgres, jadi try/catch saja tidak cukup. Galat tak terduga: semua
+   baris pesanan NULL, `logger.warn` dengan tenant, outlet, order id dan kode
+   galat saja. Alasan NULL yang biasa (tanpa resep dan sebagainya) tidak dicatat
+   ke log.
+8. **Bentuk.** Berkas baru `apps/api/src/services/order-cost-snapshot.service.ts`:
+   `computeLineCostSnapshots(tx, context, outletId, lines) -> Promise<(number |
+   null)[]>` (urutan sama dengan `lines`; baris =
+   `{menuItemId, variantId, modifierIds, quantity}`). Nama tidak bentrok dengan
+   `estimateDeductionCostIdr` (cabang KDS, yang mengembalikan 0, kontrak
+   berbeda), dan tidak mengimpor dari `recipe-deduction.service.ts`. Satu
+   pesanan memakai jumlah query tetap: lokasi jual (berhenti di sini bila
+   kosong), satu ledakan per baris yang memuat data master sekali, satu baca
+   saldo. Untuk itu `recipe-bom.service.ts` mendapat ekspor tambahan
+   `explodeMenuLinesEach` (hasil per baris), dengan pemuatan data master dan
+   konversi UOM diekstrak ke fungsi internal bersama; perilaku
+   `explodeMenuLines` tidak berubah. Dipanggil tepat sebelum
+   `insert(orderItems)` di `pos-order.service.ts`, `qr-order.service.ts` dan
+   `delivery-inject.ts`. Tidak ada migrasi; slot 0183 dilepas.
+9. **Tidak ada backfill dan tidak ada kartu bd untuk itu.** Mengisi baris lama
+   dengan harga hari ini memalsukan "saat terjual". Baris lama tetap NULL dan
+   tampil sebagai residual WS-11.
+
+Tindak lanjut yang dicatat: DTO `pos-order-support.ts` memetakan NULL ke 0
+(`?? 0`), dan `ai-metrics/sales.ts` menjumlah dengan `COALESCE`, sehingga HPP
+yang tidak diketahui terbaca 0 di dua tempat itu. Perbaikannya kartu terpisah.
+
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
 Context: the production worker refused to start without an operator-supplied

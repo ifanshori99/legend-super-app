@@ -132,6 +132,7 @@ import {
 } from "./menu-availability.ts";
 import type { Tx } from "./menu-internals.ts";
 import type { OrderPromoInput, OrderPromoQuote } from "./order-promo-port.ts";
+import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import { isBusinessDayClosed } from "./pos-cash-guard.ts";
 import {
@@ -1871,8 +1872,21 @@ async function checkout(
   const quoteLines = new Map<string, OrderQuote["lines"][number]>(
     quote.lines.map((line) => [line.cartLineId, line]),
   );
+  // legend-u4js6: freeze each line's cost (HPP) at the moment of sale.
+  const costSnapshots = await computeLineCostSnapshots(
+    tx,
+    context,
+    session.outletId,
+    reserved.map((entry) => ({
+      menuItemId: entry.row.menuItemId,
+      variantId: entry.row.variantId,
+      modifierIds: entry.modifiers.map((modifier) => modifier.modifierId),
+      quantity: entry.row.quantity,
+    })),
+  );
   const itemRows = reserved.map((entry, index) => {
     const line = quoteLines.get(entry.row.id);
+    const costSnapshot = costSnapshots[index] ?? null;
     if (!line) throw new Error("Quoted line missing for a reserved cart line");
     return {
       id: createUlid(now.getTime() + index),
@@ -1886,6 +1900,7 @@ async function checkout(
       unitPriceIdr: line.unitPriceIdr,
       modifiersTotalIdr: line.modifiersTotalIdr,
       lineTotalIdr: line.lineSubtotalIdr,
+      costSnapshotIdr: costSnapshot === null ? null : idr(costSnapshot),
       modifiers: entry.modifiers,
       note: entry.row.note,
       course: entry.item.course,

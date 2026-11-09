@@ -307,30 +307,51 @@ export async function toBaseQuantities(
   tx: Tx,
   components: readonly ExplodedComponent[],
 ): Promise<Map<string, Decimal4>> {
-  const result = new Map<string, Decimal4>();
-  if (components.length === 0) return result;
+  if (components.length === 0) return new Map();
+  return sumBaseQuantities(await loadUomContext(tx, components), components);
+}
+
+type UomContext = {
+  baseUom: ReadonlyMap<string, string>;
+  conversions: readonly UomConversion[];
+};
+
+/** One read of base UOMs and conversions for every item in `components`. */
+async function loadUomContext(
+  tx: Tx,
+  components: readonly ExplodedComponent[],
+): Promise<UomContext> {
   const itemIds = [...new Set(components.map((component) => component.itemId))];
+  if (itemIds.length === 0) return { baseUom: new Map(), conversions: [] };
   const items = await tx
     .select({ id: inventoryItems.id, baseUomId: inventoryItems.baseUomId })
     .from(inventoryItems)
     .where(inArray(inventoryItems.id, itemIds));
-  const baseUom = new Map(items.map((item) => [item.id, item.baseUomId]));
   const conversionRows = await tx
     .select()
     .from(uomConversions)
     .where(inArray(uomConversions.inventoryItemId, itemIds));
-  const conversions = conversionRows.map((row) => ({
-    id: row.id,
-    tenantId: row.tenantId,
-    inventoryItemId: row.inventoryItemId,
-    fromUomId: row.fromUomId,
-    toUomId: row.toUomId,
-    factor: row.factor,
-  })) as UomConversion[];
+  return {
+    baseUom: new Map(items.map((item) => [item.id, item.baseUomId])),
+    conversions: conversionRows.map((row) => ({
+      id: row.id,
+      tenantId: row.tenantId,
+      inventoryItemId: row.inventoryItemId,
+      fromUomId: row.fromUomId,
+      toUomId: row.toUomId,
+      factor: row.factor,
+    })) as UomConversion[],
+  };
+}
 
+function sumBaseQuantities(
+  uom: UomContext,
+  components: readonly ExplodedComponent[],
+): Map<string, Decimal4> {
+  const result = new Map<string, Decimal4>();
   const sums = new Map<string, bigint>();
   for (const component of components) {
-    const base = baseUom.get(component.itemId);
+    const base = uom.baseUom.get(component.itemId);
     if (!base)
       throw new InventoryError(
         "RECIPE_COMPONENT_MISSING",
@@ -340,7 +361,7 @@ export async function toBaseQuantities(
       component.quantity,
       component.uomId,
       base,
-      conversions.filter(
+      uom.conversions.filter(
         (conversion) => conversion.inventoryItemId === component.itemId,
       ),
       ROUNDING_MODE,
@@ -443,18 +464,19 @@ export type ExplodeMenuOutcome =
     }
   | { ok: false; reason: ExplosionFailureReason; detail: string };
 
-/**
- * Stock draw of sold menu lines. Recipe of a line = variant recipe, else
- * menu item recipe. Lines with no recipe are left out (and listed in
- * `unmappedMenuItemIds`); the result is `no_recipe` only when no line has
- * one. An inactive or broken recipe fails the whole result so the caller
- * records one skipped deduction instead of a silent partial draw.
- */
-export async function explodeMenuLines(
+type MenuLineData = {
+  itemRecipe: ReadonlyMap<string, string | null>;
+  variantRecipe: ReadonlyMap<string, string | null>;
+  /** Effects of one modifier selection per sold unit, or an error message. */
+  effectsOf: (modifierId: string) => ModifierEffect[] | string;
+};
+
+/** Reads the recipes and modifier rules the menu lines point at. */
+async function loadMenuLineData(
   tx: Tx,
   context: ScopedTenantContext,
   lines: readonly MenuLineInput[],
-): Promise<ExplodeMenuOutcome> {
+): Promise<MenuLineData> {
   const tenantId = context.tenant.tenantId;
   const menuItemIds = [...new Set(lines.map((line) => line.menuItemId))];
   const variantIds = [
@@ -555,6 +577,26 @@ export async function explodeMenuLines(
     }
     return effects;
   };
+  return { itemRecipe, variantRecipe, effectsOf };
+}
+
+/**
+ * Stock draw of sold menu lines. Recipe of a line = variant recipe, else
+ * menu item recipe. Lines with no recipe are left out (and listed in
+ * `unmappedMenuItemIds`); the result is `no_recipe` only when no line has
+ * one. An inactive or broken recipe fails the whole result so the caller
+ * records one skipped deduction instead of a silent partial draw.
+ */
+export async function explodeMenuLines(
+  tx: Tx,
+  context: ScopedTenantContext,
+  lines: readonly MenuLineInput[],
+): Promise<ExplodeMenuOutcome> {
+  const { itemRecipe, variantRecipe, effectsOf } = await loadMenuLineData(
+    tx,
+    context,
+    lines,
+  );
 
   const seeds = new Set<string>();
   const planned: {
@@ -624,6 +666,102 @@ export async function explodeMenuLines(
       return { ok: false, reason: "recipe_error", detail: error.message };
     throw error;
   }
+}
+
+export type ExplodeLineOutcome =
+  | {
+      ok: true;
+      /** Gross base-unit quantity per stock item for this line alone. */
+      items: Map<string, Decimal4>;
+    }
+  | { ok: false; reason: ExplosionFailureReason; detail: string };
+
+/**
+ * Like {@link explodeMenuLines} but one outcome per line, aligned with
+ * `lines`: a line with no recipe, or with an inactive or broken one, fails on
+ * its own and never poisons the other lines. Each line is exploded with its
+ * own quantity; reads are shared across the whole call (no per-line queries).
+ */
+export async function explodeMenuLinesEach(
+  tx: Tx,
+  context: ScopedTenantContext,
+  lines: readonly MenuLineInput[],
+): Promise<ExplodeLineOutcome[]> {
+  const { itemRecipe, variantRecipe, effectsOf } = await loadMenuLineData(
+    tx,
+    context,
+    lines,
+  );
+
+  const seeds = new Set<string>();
+  const planned = new Map<
+    number,
+    { recipeId: string; effects: ModifierEffect[] }
+  >();
+  const outcomes: (ExplodeLineOutcome | null)[] = lines.map(() => null);
+  lines.forEach((line, index) => {
+    const recipeId =
+      (line.variantId ? variantRecipe.get(line.variantId) : null) ??
+      itemRecipe.get(line.menuItemId) ??
+      null;
+    if (!recipeId) {
+      outcomes[index] = {
+        ok: false,
+        reason: "no_recipe",
+        detail: "Line has no recipe.",
+      };
+      return;
+    }
+    const effects: ModifierEffect[] = [];
+    for (const modifierId of line.modifierIds) {
+      const modifierEffects = effectsOf(modifierId);
+      if (typeof modifierEffects === "string") {
+        outcomes[index] = {
+          ok: false,
+          reason: "recipe_error",
+          detail: modifierEffects,
+        };
+        return;
+      }
+      effects.push(...modifierEffects);
+    }
+    seeds.add(recipeId);
+    for (const effect of effects) {
+      if (effect.kind === "recipe") seeds.add(effect.recipeId);
+      if (effect.kind !== "remove" && effect.kind !== "recipe")
+        if (effect.line.componentType === "recipe")
+          seeds.add(effect.line.componentId);
+    }
+    planned.set(index, { recipeId, effects });
+  });
+  if (planned.size === 0) return outcomes as ExplodeLineOutcome[];
+
+  const book = await loadRecipeBook(tx, context, [...seeds]);
+  const exploded = new Map<number, ExplodedComponent[]>();
+  for (const [index, entry] of planned) {
+    const outcome = explodeRecipeTree(
+      book,
+      entry.recipeId,
+      formatDecimal4(BigInt(lines[index]!.quantity) * 10_000n),
+      entry.effects,
+    );
+    if (outcome.ok) exploded.set(index, outcome.components);
+    else outcomes[index] = outcome;
+  }
+  const uom = await loadUomContext(tx, [...exploded.values()].flat());
+  for (const [index, components] of exploded) {
+    try {
+      outcomes[index] = { ok: true, items: sumBaseQuantities(uom, components) };
+    } catch (error) {
+      if (!(error instanceof InventoryError)) throw error;
+      outcomes[index] = {
+        ok: false,
+        reason: "recipe_error",
+        detail: error.message,
+      };
+    }
+  }
+  return outcomes as ExplodeLineOutcome[];
 }
 
 // ------------------------------------------------------ inventory-ops port
