@@ -213,13 +213,17 @@ async function positionsAtDayEnd(
       });
     return positions;
   }
+  // Fold in posting order (posting_seq, legend-5ymew): the order the live
+  // balance applied each movement, so a backdated or same-instant posting
+  // gives the past day the same average cost as the live read, as the stock
+  // rebuild does. occurred_at only bounds which rows belong to the day.
   const result = await tx.execute(sql`
     SELECT location_id::text AS location_id, inventory_item_id::text AS item_id,
            quantity::text AS quantity, unit_cost_idr::text AS unit_cost
       FROM stock_ledger
      WHERE tenant_id = ${input.tenantId}::uuid AND outlet_id = ${input.outletId}::uuid
        AND occurred_at < ${end.toISOString()}::timestamptz
-     ORDER BY occurred_at, id`);
+     ORDER BY posting_seq`);
   for (const row of result.rows) {
     const key = `${row.location_id}:${row.item_id}`;
     const current = positions.get(key) ?? {
