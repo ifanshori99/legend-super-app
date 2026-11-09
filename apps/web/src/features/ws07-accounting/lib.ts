@@ -173,6 +173,7 @@ export const JOURNAL_SOURCE_KEYS = {
   dividend: "accounting.source.dividend",
   cash_deposit: "accounting.source.cash_deposit",
   cashier_shift: "accounting.source.cashier_shift",
+  customer_deposit: "accounting.source.customer_deposit",
   opening_balance: "accounting.source.opening_balance",
   manual: "accounting.source.manual",
   recurring: "accounting.source.recurring",
