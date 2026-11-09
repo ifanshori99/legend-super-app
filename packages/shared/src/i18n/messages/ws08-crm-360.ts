@@ -178,6 +178,7 @@ export const crm360Messages = {
         reward_redemption: "Penukaran reward",
         expiry: "Kedaluwarsa",
         refund: "Refund",
+        void: "Pembatalan",
         adjustment: "Penyesuaian",
       },
       noExpiry: "Tidak berlaku",

@@ -15,6 +15,8 @@
 // router, so neither router's middleware can reach the other's routes.
 
 import { Router, type Request } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../lib/auth.ts";
 import {
   addCartLine,
   createGuestPayment,
@@ -172,6 +174,22 @@ qrOrderRouter.post(
   },
 );
 
+// legend-111j (§5 QR auto-attach): a guest who is also signed in to the
+// member app attaches their profile to the order. The session is optional and
+// never required here; an impersonated (support) session never attaches.
+async function optionalMemberUserId(req: Request): Promise<string | null> {
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+    query: { disableCookieCache: true },
+  });
+  if (!session) return null;
+  const { impersonatedBy } = session.session as {
+    impersonatedBy?: string | null;
+  };
+  if (impersonatedBy) return null;
+  return session.user.id;
+}
+
 qrOrderRouter.post(
   "/:sessionId/orders",
   ...write,
@@ -186,6 +204,8 @@ qrOrderRouter.post(
         credential,
         sessionId,
         body,
+        new Date(),
+        await optionalMemberUserId(req),
       ),
     });
   },

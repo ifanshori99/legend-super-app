@@ -107,6 +107,10 @@ import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
 import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
 import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
+// legend-111j
+import { memberRouter } from "./member.routes.ts";
+import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
+import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -240,6 +244,11 @@ apiRouter.use("/accounting", createAccountingFinancePolicyRouter());
 apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
+// WS-08 member PWA API, loyalty program, POS order customer attach (legend-111j).
+apiRouter.use("/member", memberRouter);
+// The next two keep full paths inside the router and guard each route.
+apiRouter.use(loyaltyProgramRouter);
+apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);

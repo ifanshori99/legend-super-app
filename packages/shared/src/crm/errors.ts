@@ -22,6 +22,11 @@ export const crmErrorHttpStatus = {
   MEMBERSHIP_NOT_ACTIVE: 403,
   CUSTOMER_NOT_FOUND: 404,
   CAMPAIGN_NOT_SCHEDULABLE: 409,
+  // legend-111j
+  /** A consent grant names a policy version that is no longer the active one. */
+  CONSENT_POLICY_OUTDATED: 409,
+  /** A cashier used up the daily phone-number lookups (use the member QR). */
+  PHONE_LOOKUP_CAP_REACHED: 429,
 } as const satisfies Record<string, number>;
 
 export type CrmErrorCode = keyof typeof crmErrorHttpStatus;
@@ -48,4 +53,8 @@ export const crmErrorMessages: Record<CrmErrorCode, string> = {
     "Keanggotaan aktif setelah nomor WhatsApp terverifikasi dan persetujuan program diberikan.",
   CUSTOMER_NOT_FOUND: "Pelanggan tidak ditemukan.",
   CAMPAIGN_NOT_SCHEDULABLE: "Kampanye tidak dapat dijadwalkan pada status ini.",
+  CONSENT_POLICY_OUTDATED:
+    "Versi kebijakan sudah diperbarui. Muat ulang lalu setujui versi terbaru.",
+  PHONE_LOOKUP_CAP_REACHED:
+    "Batas cari nomor hari ini tercapai. Pakai QR member.",
 };

@@ -118,3 +118,7 @@ export * from "./inventory-receiving";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// WS-08 member profiles, consent policy versions, loyalty program, point
+// ledger, earn records, visits, anomalies (legend-111j).
+export * from "./crm-member";
+export * from "./crm-ledger";

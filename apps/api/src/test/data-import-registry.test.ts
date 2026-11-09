@@ -126,6 +126,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives unverified custom tenant_domains rows a DNS verification token (legend-t57t); only rows with no token, idempotent",
   "0186_stock_ledger_posting_seq.sql":
     "numbers the existing stock_ledger rows by (occurred_at, id) into the new posting_seq column (legend-bsw9); the append-only trigger and FORCE RLS are lifted for that one statement and restored in the same transaction, no other column changes, never inserts or deletes rows",
+  // legend-111j
+  "0203_member_loyalty_ledger.sql":
+    "appends crm.loyalty.manage, crm.loyalty.review, crm.loyalty.fulfil, crm.customer.pii.read and crm.feedback.manage to the stored template role rows of existing tenants (legend-111j); idempotent, never touches a custom role, FORCE RLS on roles lifted and restored; the other INSERT/UPDATE text is inside trigger function bodies (ledger balance, point value lock, profile index), no rows written at migration time",
 };
 
 // Entrypoints that open a database pool but import no data.
