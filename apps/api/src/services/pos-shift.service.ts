@@ -58,6 +58,7 @@ import {
   type PosShiftCount,
   type PosShiftCountReceipt,
   type PosShiftReport,
+  formatReceiptNumber,
   posShiftReportSchema,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
@@ -360,7 +361,16 @@ export async function getPosShiftReport(
       movements: movements.map((movement) =>
         movementDto(movement, { withApproval: seesLiveFigures }),
       ),
-      receiptGaps,
+      receiptGaps: receiptGaps.map((run) => ({
+        prefix: run.prefix,
+        missing: run.missing.map((n) => formatReceiptNumber(run.prefix, n)),
+        lostRange: run.lost
+          ? {
+              from: formatReceiptNumber(run.prefix, run.lost.from),
+              to: formatReceiptNumber(run.prefix, run.lost.to),
+            }
+          : null,
+      })),
     });
   });
 }
