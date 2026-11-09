@@ -16,6 +16,7 @@ import {
   assertTrustedScopedContext,
   businessDayRange,
   type BusinessDate,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { reportMetricByCode } from "@starter/shared/dashboard";
@@ -253,7 +254,7 @@ export async function refreshMetricsDaily(
         .where(
           and(
             eq(posDailyCloses.tenantId, tenantId),
-            eq(posDailyCloses.outletId, outletId),
+            eq(posDailyCloses.outletId, outletId as OutletId),
             eq(posDailyCloses.businessDate, businessDate),
           ),
         )
