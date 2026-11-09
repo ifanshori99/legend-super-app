@@ -27,6 +27,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { PERMISSION_CODES, roleTemplate } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import {
@@ -1139,6 +1140,37 @@ describe("inventory API", () => {
     expect(
       (await client.get(`/api/inventory/locations?outletId=${outletB}`)).status,
     ).toBe(403);
-    expect((await client.get("/api/inventory/items")).status).toBe(403);
+  });
+
+  it("legend-1ozj lets an outlet role read the item and UOM catalogs but not write them without inventory.item.manage", async () => {
+    const reader = await signedIn("Supervisor Katalog");
+    await assignRole(reader.userId, "outlet_manager", {
+      type: "outlet",
+      id: outletA,
+    });
+    expect(
+      (await reader.client.get("/api/inventory/items?limit=10")).status,
+    ).toBe(200);
+    expect(
+      (await reader.client.get("/api/inventory/uoms?limit=10")).status,
+    ).toBe(200);
+    // Reading the catalog never widens writes: outlet_manager has no
+    // inventory.item.manage, and the code must exist in the catalog.
+    expect(PERMISSION_CODES).toContain("inventory.item.manage");
+    const denied = await reader.client.post("/api/inventory/items").send({
+      name: "Tidak Boleh",
+      type: "raw",
+      baseUomId: randomUUID(),
+      idempotencyKey: `catalog-${randomUUID()}`,
+    });
+    expect(denied.status).toBe(403);
+
+    // The warehouse role holds the master-data code and may write.
+    expect(roleTemplate("warehouse").permissions).toContain(
+      "inventory.item.manage",
+    );
+    expect(roleTemplate("outlet_manager").permissions).not.toContain(
+      "inventory.item.manage",
+    );
   });
 });

@@ -425,6 +425,7 @@ const accessBaseMessages = {
         receive: "Terima stok masuk",
         transfer: "Transfer stok antar outlet",
       },
+      item: { manage: "Kelola master data bahan dan satuan" },
       opname: { count: "Hitung stok opname" },
       waste: { record: "Catat waste" },
       production: { record: "Catat produksi batch" },

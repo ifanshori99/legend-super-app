@@ -171,6 +171,30 @@ async function assertPermission(
     throw new AccessError("PERMISSION_DENIED");
 }
 
+/**
+ * Catalog read (items, UOMs; legend-1ozj): a tenant-wide `inventory.stock.view`
+ * OR the permission on at least one outlet the caller reaches. The catalog is
+ * tenant master data with no outlet column, so an outlet-scoped role (warehouse,
+ * outlet manager) reads it without widening what it may write or see per outlet.
+ */
+async function assertCatalogRead(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+): Promise<void> {
+  const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+  if (snapshot.allows("inventory.stock.view", { type: "tenant" })) return;
+  const scope = context.outletScope;
+  if (
+    scope.kind === "outlets" &&
+    scope.outletIds.some((id) =>
+      snapshot.allows("inventory.stock.view", outletTarget(id)),
+    )
+  )
+    return;
+  throw new AccessError("PERMISSION_DENIED");
+}
+
 function outletTarget(outletId: string): AccessTarget {
   return { type: "outlet", id: outletId };
 }
@@ -406,9 +430,7 @@ export async function listInventoryItems(
   },
 ): Promise<CursorPage<InventoryItem>> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const filters: SQL[] = [];
     if (query.category)
       filters.push(eq(inventoryItems.category, query.category));
@@ -449,9 +471,7 @@ export async function getInventoryItem(
   itemId: string,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const [row] = await tx
       .select()
       .from(inventoryItems)
@@ -462,24 +482,16 @@ export async function getInventoryItem(
   });
 }
 
-/**
- * Item master write. The permission catalog has no `inventory.item.manage`
- * code yet, so the receive permission (the operation that introduces an item)
- * gates master-data writes; see the bead report for the follow-up.
- */
+/** Item master write: needs the tenant-wide `inventory.item.manage` code. */
 export async function createInventoryItem(
   context: ScopedTenantContext,
   actorUserId: string,
   input: CreateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.receive",
-      { type: "tenant" },
-    );
+    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
+      type: "tenant",
+    });
     const [uom] = await tx
       .select()
       .from(uoms)
@@ -553,13 +565,9 @@ export async function updateInventoryItem(
   input: UpdateInventoryItemInput,
 ): Promise<InventoryItem> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.receive",
-      { type: "tenant" },
-    );
+    await assertPermission(tx, context, actorUserId, "inventory.item.manage", {
+      type: "tenant",
+    });
     const [existing] = await tx
       .select()
       .from(inventoryItems)
@@ -668,9 +676,7 @@ export async function listUoms(
   query: { limit: number; cursor?: string },
 ): Promise<CursorPage<Uom>> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const filters: SQL[] = [];
     const [code, id] = cursorKeys(query.cursor, 2);
     if (code !== undefined && id !== undefined)
@@ -704,9 +710,7 @@ export async function listUomConversions(
   itemId: string,
 ): Promise<UomConversion[]> {
   return withTenant(db, context, async (tx) => {
-    await assertPermission(tx, context, actorUserId, "inventory.stock.view", {
-      type: "tenant",
-    });
+    await assertCatalogRead(tx, context, actorUserId);
     const [item] = await tx
       .select({ id: inventoryItems.id })
       .from(inventoryItems)

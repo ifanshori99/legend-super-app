@@ -138,6 +138,7 @@ const entries = [
   // Inventory, recipes, purchasing (§3.14–3.15, F13–F15)
   ["inventory.stock.view", []],
   ["inventory.stock.receive", []],
+  ["inventory.item.manage", []],
   ["inventory.stock.transfer", []],
   ["inventory.opname.count", []],
   ["inventory.waste.record", []],
