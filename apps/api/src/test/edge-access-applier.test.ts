@@ -1537,14 +1537,21 @@ describe("legend-kyie Codex 160 round 2", () => {
     const userId = await newUser();
     const first = await pinMaterial(userId, "482916", Date.now() + 2 * MINUTE);
     const second = await pinMaterial(userId, "246801", Date.now() + 3 * MINUTE);
+    // One edge pin row is one aggregate stream: its sets carry rising
+    // sequences (appendDevicePinEvent). The cloud refuses a set of the node
+    // that gave the generation at a lower or equal sequence (review K R2), so
+    // separate streams at sequence 1 would no longer model a real edge.
+    const staffPinId = randomUUID();
 
-    await deliver([pinSetEvent({ userId, material: first })]);
-    await deliver([pinSetEvent({ userId, material: second })]);
+    await deliver([pinSetEvent({ userId, material: first, staffPinId })]);
+    await deliver([
+      { ...pinSetEvent({ userId, material: second, staffPinId }), sequence: 2 },
+    ]);
     const [row] = await pinRows(userId);
     expect(row!.pin_hash).toBe(second.pinHash);
 
     // A redelivered copy of the first set (new event id) does not revert it.
-    await deliver([pinSetEvent({ userId, material: first })]);
+    await deliver([pinSetEvent({ userId, material: first, staffPinId })]);
     const [after] = await pinRows(userId);
     expect(after!.pin_hash).toBe(second.pinHash);
   });

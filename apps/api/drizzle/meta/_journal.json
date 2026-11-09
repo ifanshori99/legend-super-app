@@ -1072,6 +1072,13 @@
       "when": 1794231000000,
       "tag": "0152_receipt_sequence_edge_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1794232000000,
+      "tag": "0153_staff_pin_pull",
+      "breakpoints": true
     }
   ]
 }

@@ -242,6 +242,16 @@ export async function setStaffPin(
       // legend-kyie: a new pin generation; attempts never move this.
       pinSetAt: staffPinVersionStamp(options.now),
       updatedAt: staffPinVersionStamp(options.now),
+      // legend-rucdm: a local set is no edge node's set on this database, so
+      // no node's later sequence may replace it by sequence alone (cloud);
+      // the columns stay null on the edge.
+      generationEdgeNodeId: null,
+      generationEdgeSequence: null,
+      // legend-7vv8h: a new pin has no cloud counter/lock history. A stale
+      // baseline from the previous pin would make the edge's same-material
+      // merge drop a cloud failure that equals the old baseline value.
+      cloudFailedAttempts: null,
+      cloudLockedUntil: null,
     };
     // Order key of the generation (Codex 160 C1), never below the current
     // one (round 3 R2): a clock stepping back still makes a newer key. The
@@ -272,6 +282,10 @@ export async function setStaffPin(
                 // (`cloud_generation_at`, legend-t9ii review K F2): an edge
                 // clock more than 5 min behind a recent cloud reset would
                 // otherwise stamp before the cloud key and never be adopted.
+                // Consecutive sets of one node no longer depend on this cap:
+                // the cloud adopts a node's later set by its aggregate
+                // sequence (legend-rucdm). The cap still protects a key that
+                // ran ahead against another origin's sets.
                 pinGenerationAt: edge
                   ? sql`GREATEST(${generationStamp}::timestamptz, LEAST(${staffPins.pinGenerationAt}, GREATEST(${generationStamp}::timestamptz, COALESCE(${staffPins.cloudGenerationAt}, ${generationStamp}::timestamptz)) + interval '5 minutes') + interval '1 millisecond')`
                   : sql`GREATEST(${generationStamp}::timestamptz, ${staffPins.pinGenerationAt} + interval '1 millisecond')`,

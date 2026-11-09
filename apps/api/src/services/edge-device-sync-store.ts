@@ -2,7 +2,9 @@
 // v1.7 §3 F5 Registri Perangkat, EDG-02, EDG-03, TEN-02/TEN-03). The edge
 // pulls `GET /api/edge-sync/device-records` periodically
 // (edge/device-registry-puller.ts); this table row remembers the watermark
-// that `pullDeviceRegistry` returned and when the pull finished.
+// that `pullDeviceRegistry` returned and when the pull finished. The staff pin
+// pull (legend-yvhw8, edge/staff-pin-pull.ts) keeps its own row of the same
+// table under stream `staff_pins`; both share the load/save below.
 //
 // - The watermark cannot be derived from the replica: heartbeats of the
 //   edge's own devices bump `devices.updated_at` locally.
@@ -17,18 +19,21 @@ import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
 
-const DEVICE_REGISTRY_STREAM = "device_registry" as const;
+export type EdgePullStream = "device_registry" | "staff_pins";
 
 export type DeviceRegistryCheckpoint = {
   watermark: string | null;
   lastSuccessAt: Date | null;
 };
 
+export type EdgePullCheckpoint = DeviceRegistryCheckpoint;
+
 /** No row yet (first boot) is `{ watermark: null, lastSuccessAt: null }`. */
-export async function loadDeviceRegistryCheckpoint(
+export async function loadEdgePullCheckpoint(
   context: ScopedTenantContext,
   edgeNodeId: string,
-): Promise<DeviceRegistryCheckpoint> {
+  stream: EdgePullStream,
+): Promise<EdgePullCheckpoint> {
   const [row] = await withTenant(db, context, (tx) =>
     tx
       .select({
@@ -39,7 +44,7 @@ export async function loadDeviceRegistryCheckpoint(
       .where(
         and(
           eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
-          eq(edgePullCheckpoints.stream, DEVICE_REGISTRY_STREAM),
+          eq(edgePullCheckpoints.stream, stream),
         ),
       )
       .limit(1),
@@ -50,9 +55,10 @@ export async function loadDeviceRegistryCheckpoint(
 }
 
 /** Upsert; the node row must exist (the foreign key refuses anything else). */
-export async function saveDeviceRegistryCheckpoint(
+export async function saveEdgePullCheckpoint(
   context: ScopedTenantContext,
   edgeNodeId: string,
+  stream: EdgePullStream,
   input: { watermark: string | null; succeededAt: Date },
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
@@ -68,7 +74,7 @@ export async function saveDeviceRegistryCheckpoint(
         tenantId: node.tenantId,
         outletId: node.outletId,
         edgeNodeId,
-        stream: DEVICE_REGISTRY_STREAM,
+        stream,
         watermark: input.watermark,
         lastSuccessAt: input.succeededAt,
       })
@@ -85,4 +91,34 @@ export async function saveDeviceRegistryCheckpoint(
         },
       });
   });
+}
+
+export function loadDeviceRegistryCheckpoint(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+): Promise<DeviceRegistryCheckpoint> {
+  return loadEdgePullCheckpoint(context, edgeNodeId, "device_registry");
+}
+
+export function saveDeviceRegistryCheckpoint(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  input: { watermark: string | null; succeededAt: Date },
+): Promise<void> {
+  return saveEdgePullCheckpoint(context, edgeNodeId, "device_registry", input);
+}
+
+export function loadStaffPinCheckpoint(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+): Promise<EdgePullCheckpoint> {
+  return loadEdgePullCheckpoint(context, edgeNodeId, "staff_pins");
+}
+
+export function saveStaffPinCheckpoint(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  input: { watermark: string | null; succeededAt: Date },
+): Promise<void> {
+  return saveEdgePullCheckpoint(context, edgeNodeId, "staff_pins", input);
 }

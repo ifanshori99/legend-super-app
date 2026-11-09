@@ -426,7 +426,7 @@ export const edgePullCheckpoints = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     edgeNodeId: uuid("edge_node_id").notNull(),
     stream: varchar("stream", { length: 40 })
-      .$type<"device_registry">()
+      .$type<"device_registry" | "staff_pins">()
       .notNull(),
     watermark: text("watermark"),
     lastSuccessAt: timestamp("last_success_at", {
@@ -445,7 +445,8 @@ export const edgePullCheckpoints = pgTable(
     }),
     check(
       "edge_pull_checkpoints_stream_check",
-      sql`${table.stream} IN ('device_registry')`,
+      // staff_pins: the staff pin down-sync (legend-yvhw8).
+      sql`${table.stream} IN ('device_registry', 'staff_pins')`,
     ),
   ],
 );

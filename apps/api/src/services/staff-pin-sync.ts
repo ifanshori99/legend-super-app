@@ -15,7 +15,7 @@
 // - Keyset paging on (sync_xid, id), opaque cursor
 //   `[spin2, epoch, sync_xid, id]`. `sync_xid` is the id of the transaction
 //   that last wrote the row (column default on insert, trigger on update;
-//   migration 0147). A row is exported only when its `sync_xid` is below
+//   migration 0151). A row is exported only when its `sync_xid` is below
 //   `pg_snapshot_xmin(pg_current_snapshot())`: every older transaction has
 //   finished, so a watermark can never pass a writer that commits late. No
 //   clock and no settle window are involved, the order is the commit horizon.
@@ -39,7 +39,9 @@
 //   guard) + ":" + `pg_postmaster_start_time()` in microseconds (review K
 //   round 2): a restore from a disk or managed snapshot that ends in crash
 //   recovery keeps the identifier and the timeline but always starts a new
-//   postmaster. The cost is one idempotent full resync per outlet after any
+//   postmaster. A promotion starts a new postmaster too, so it changes the
+//   epoch at once, also before the first checkpoint of the new timeline
+//   (an immediate failover). The cost is one idempotent full resync per outlet after any
 //   database restart. All three functions are executable by PUBLIC, so the
 //   restricted app role reads them.
 // - Runbook, dump/restore: restored rows keep their old `sync_xid`, which may
@@ -48,10 +50,15 @@
 //   an UPDATE that touches each one (e.g. `UPDATE staff_pins SET
 //   sync_xid = sync_xid`, run with FORCE RLS lifted as in migration 0141); the
 //   trigger stamps the current xid.
+// - Runbook, durability: the cloud database must run with
+//   `synchronous_commit = on` and `fsync = on`. A commit that was exported and
+//   then lost in a crash would hand its xid out again, and the edge, already
+//   past it, would skip the new write.
 // - Long transactions (infra, review K F3): an open write transaction
 //   anywhere in the cluster holds `pg_snapshot_xmin` back, so it delays the
-//   export (never loses a row) until it ends. Follow-up:
-//   `idle_in_transaction_session_timeout` and an alert on the export horizon.
+//   export (never loses a row) until it ends. Set
+//   `idle_in_transaction_session_timeout` for the app and worker roles and
+//   alert when the export horizon lags (legend-4z2ch, ops).
 // - Each record carries `pinGenerationAt`, the exact microsecond order key of
 //   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
@@ -81,9 +88,11 @@
 //   (a tie goes to the cloud, the same rule as the cloud's own set); a newer
 //   local failed attempt cannot block a cloud reset, an older generation
 //   replayed late never wins;
-// - same hash material            -> merge the lock state unconditionally
-//   (higher counter, later lock: it never weakens the edge) and keep the later
-//   key; nothing to change writes nothing.
+// - same hash material            -> raise the counter / lock to the record's
+//   only when the record is above the last cloud values this edge received
+//   (`cloud_failed_attempts`, `cloud_locked_until`; legend-7vv8h: a full
+//   resync replays old values the edge may have cleared), never lower it, keep
+//   the later key; nothing to change writes nothing.
 // Every insert, replace and merge also raises `cloud_generation_at` to the
 // record key (the highest cloud key this edge has seen). The next edge set is
 // stamped `GREATEST(edge now, LEAST(key, GREATEST(edge now,
@@ -527,6 +536,8 @@ export async function applyStaffPinRecords(
             pinGenerationAt: key,
             pinSetAt: key,
             cloudGenerationAt: key,
+            cloudFailedAttempts: record.failedAttempts,
+            cloudLockedUntil: material.lockedUntil,
             createdAt: version,
             updatedAt: version,
           }),
@@ -546,6 +557,10 @@ export async function applyStaffPinRecords(
               pinGenerationAt: key,
               pinSetAt: key,
               cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
+              // The record's lock state is also the new local one (material),
+              // so it is the baseline of the next same-material merge.
+              cloudFailedAttempts: record.failedAttempts,
+              cloudLockedUntil: material.lockedUntil,
               updatedAt: version,
             })
             .where(eq(staffPins.id, local.id)),
@@ -561,30 +576,52 @@ export async function applyStaffPinRecords(
       // correct PIN entered on the cloud does clear the cloud counter with the
       // same hash; the edge keeps its higher counter (accepted: it never
       // weakens the edge, at worst it locks one guess earlier).
+      // The merge only follows the cloud's own movement (legend-7vv8h): the
+      // cloud epoch changes on every cloud restart and the edge then replays
+      // the full export, so a record whose counter or lock equals the last
+      // one this edge received (`cloud_failed_attempts`,
+      // `cloud_locked_until`) is a replay, not a new failure. Without that,
+      // GREATEST against the raw cloud values restored a counter or lock the
+      // edge had already cleared (a correct PIN, AUTH-06). "Differs", not
+      // "above": the cloud counter can go down too (a correct PIN on the
+      // cloud resets it to 0), so a new cloud failure may sit below the
+      // stored baseline and must still count. The raise is still only taken
+      // when it is above the local value. A null baseline (a row from before
+      // the columns existed, or a new pin) treats the record as new. The
+      // record's values always become the new baseline.
       const recordLock = material.lockedUntil;
-      const lockLater =
+      const counterRaised =
+        record.failedAttempts !== (local.cloudFailedAttempts ?? -1) &&
+        record.failedAttempts > local.failedAttempts;
+      const lockRaised =
         recordLock !== null &&
+        (local.cloudLockedUntil === null ||
+          recordLock.getTime() !== local.cloudLockedUntil.getTime()) &&
         (local.lockedUntil === null ||
           recordLock.getTime() > local.lockedUntil.getTime());
-      if (
-        found!.keyOrder <= 0 &&
-        !found!.cloudKeyLater &&
-        record.failedAttempts <= local.failedAttempts &&
-        !lockLater
-      )
-        continue;
+      const baselineMoved =
+        local.cloudFailedAttempts !== record.failedAttempts ||
+        (local.cloudLockedUntil?.getTime() ?? null) !==
+          (recordLock?.getTime() ?? null);
+      const changed =
+        found!.keyOrder > 0 ||
+        found!.cloudKeyLater ||
+        counterRaised ||
+        lockRaised;
+      if (!changed && !baselineMoved) continue;
       await tx
         .update(staffPins)
         .set({
-          failedAttempts: sql`GREATEST(${staffPins.failedAttempts}, ${material.failedAttempts})`,
-          lockedUntil:
-            recordLock === null
-              ? sql`${staffPins.lockedUntil}`
-              : sql`GREATEST(${staffPins.lockedUntil}, ${recordLock.toISOString()}::timestamptz)`,
+          ...(counterRaised ? { failedAttempts: record.failedAttempts } : {}),
+          ...(lockRaised ? { lockedUntil: recordLock } : {}),
+          cloudFailedAttempts: record.failedAttempts,
+          cloudLockedUntil: recordLock,
           pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
           cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
         })
         .where(eq(staffPins.id, local.id));
+      // A baseline-only write changes nothing the edge acts on: not "applied".
+      if (!changed) continue;
       applied += 1;
     }
     return { applied, skipped: ordered.length - applied };

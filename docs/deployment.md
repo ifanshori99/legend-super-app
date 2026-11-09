@@ -229,6 +229,16 @@ The API limiter is one process's backstop. Put a stricter, shared rule at the ed
 
 On Pro and above, split the paths into separate rules with a longer period and a block action. Keep the API limits at or above the edge limits, so a legitimate client never meets the API's 429 before the edge rule has had its chance to challenge it.
 
+## Staff device PIN down-sync runbook
+
+The cloud sends staff PIN changes to each outlet's edge in commit order, using `staff_pins.sync_xid` (migration `0151_staff_pin_sync_xid`). Follow these rules when you operate the cloud database or release the API.
+
+1. **Durability.** The cloud database must run with `synchronous_commit = on` and `fsync = on`. A commit that was exported but then lost in a crash could have its transaction id reused, and the edge would skip the change. Do not turn either setting off, even for load tests.
+2. **Dump and restore.** After a dump/restore into a new cluster, restamp `sync_xid` on every `staff_pins` row. Run it as the migration owner, the same way as migration `0141_great_firedrake`: lift `FORCE ROW LEVEL SECURITY` for the statement, touch every row, then force it again. Example: `UPDATE "staff_pins" SET "sync_xid" = pg_current_xact_id()`. Point-in-time recovery, promotion, and restart need no action: a new epoch makes each edge do one idempotent full resync per outlet.
+3. **Idle transactions (legend-4z2ch).** Set `idle_in_transaction_session_timeout` (for example `5min`) on the application and worker databases, with `ALTER DATABASE ... SET`. Do not set it only on the roles: `provision-roles.sh` runs `ALTER ROLE ... RESET ALL` on every run, which removes role-level settings (`apps/api/src/db/provision-roles.ts`). A database-level setting survives that reset. Alert when the export horizon (`pg_snapshot_xmin`) stays behind `pg_current_xact_id()` for more than 10 minutes. A long open write transaction delays the PIN export for every tenant. It never loses changes.
+4. **Release order.** Release the cloud (API and database migrations) before the edge.
+5. **One machine per edge node (legend-rucdm).** The cloud adopts a node's later PIN set by that node's event sequence, so two machines must never send under one edge node id. The standby keeps its own credential: never start it from a copy of the primary's credential or disk. A node restored from a backup or snapshot may run only after the old machine can no longer reach the cloud. An edge database rebuilt from empty under the same node id restarts its event sequences: the cloud then refuses that node's PIN sets until a cloud reset of the pin, and the edge takes the cloud PIN back. Enroll a rebuilt edge as a new node instead.
+
 ## Security checklist
 
 Built in: authenticated and origin-checked API routes, ownership filtered in SQL, sign-in/sign-up rate limits, 100 kB request bodies (including Better Auth's), `httpOnly` `SameSite=Lax` session cookies, helmet on the API, and frame/nosniff/referrer headers (plus HSTS in production) on the web app. Before launch, confirm:

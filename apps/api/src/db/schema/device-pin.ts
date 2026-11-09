@@ -15,6 +15,7 @@
 // and the database refuses an approver equal to the requester.
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   customType,
   foreignKey,
@@ -108,6 +109,25 @@ export const staffPins = pgTable(
      * Never written by the cloud's own paths, so null there.
      */
     cloudGenerationAt: timestamp("cloud_generation_at", { withTimezone: true }),
+    /**
+     * Edge copy only (legend-7vv8h): the cloud lock state of the last record
+     * applied. The edge merges a record's counter or lock only where it moved
+     * past these, so a full resync replaying an old cloud counter never brings
+     * back a counter or lock the edge already cleared. Null on the cloud.
+     */
+    cloudFailedAttempts: integer("cloud_failed_attempts"),
+    cloudLockedUntil: timestamp("cloud_locked_until", { withTimezone: true }),
+    /**
+     * Cloud only (legend-rucdm): the edge node and its outbox aggregate
+     * sequence whose `staff_pin.set` gave the current generation. A later set
+     * of the same node (higher sequence) is newer whatever its key, so an
+     * edge clock stepping back while offline cannot make the node's own newer
+     * pin lose. Null after a cloud set, and on the edge.
+     */
+    generationEdgeNodeId: uuid("generation_edge_node_id"),
+    generationEdgeSequence: bigint("generation_edge_sequence", {
+      mode: "number",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
