@@ -2,14 +2,18 @@
 // 2026-11-10 points 1, 4 and 5). Real registry, real reader, real orders and
 // journal lines: the figures below are worked out by hand from the seed.
 //
-// Seed (business date 2025-06-10, outlet 1): Kopi (Minuman) 2 + 1 portions,
-// line costs 12.000 + 6.000, line totals 40.000 + 20.000; Nasi (Makanan) 1
-// portion, cost 12.000, total 30.000; Teh (Makanan) 1 portion without a cost
-// snapshot, total 10.000. Ignored: a voided line (cost 99.999), a voided
-// order, a training order. Outlet 2: Kopi 4 portions, cost 24.000, total
-// 80.000. Another tenant sells a Kopi of its own with huge numbers.
-// Ledger cogs: outlet 1 = 31.000 (1.000 more than the order rows), outlet 2 =
-// 24.000.
+// Seed (business date 2025-06-10, outlet 1): Kopi 2 + 1 portions with line
+// costs 12.000 + 6.000; Nasi 1 portion, cost 12.000; Teh 1 portion without a
+// cost snapshot. Ignored: a voided line (cost 99.999), a voided order, a
+// training order. Outlet 2: Kopi 4 portions, cost 24.000. Another tenant sells
+// a Kopi of its own with huge numbers. Ledger cogs: outlet 1 = 31.000 (1.000
+// more than the order rows), outlet 2 = 24.000.
+//
+// Honest note: production code writes no `order_items.cost_snapshot_idr` yet,
+// so there the split is 100% residual. These tests seed the column by hand to
+// pin the reader, and one test pins the production state (no snapshot: only
+// the residual row, equal to the whole ledger total).
+// `menu_sold_qty` is sales family (F1); `menu_gross_margin` is unavailable.
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -35,11 +39,12 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import {
+  METRIC_SOURCE_MODULES,
   dailyReaders,
   metricSourceOf,
   metricSplitOf,
 } from "../services/metric-sources";
-import { menuSalesReader } from "../services/metric-sources/menu-cogs";
+import { menuCogsReader } from "../services/metric-sources/menu-cogs";
 import {
   recomputeMetricsDaily,
   refreshMetricsDaily,
@@ -70,7 +75,9 @@ type World = {
 const NOW = new Date("2025-09-15T05:00:00Z");
 const D10 = "2025-06-10";
 const D11 = "2025-06-11";
-const READERS = [{ family: "menu-cogs", reader: menuSalesReader }];
+const D12 = "2025-06-12";
+const D13 = "2025-06-13";
+const READERS = [{ family: "menu-cogs", reader: menuCogsReader }];
 let world: World;
 let foreign: World;
 let closerUserId: string;
@@ -436,17 +443,20 @@ afterAll(async () => {
 });
 
 describe("menu-cogs registry", () => {
-  it("claims the family codes and the cogs by menu_item split", () => {
-    expect(metricSourceOf("menu_sold_qty").kind).toBe("daily");
-    expect(metricSourceOf("menu_gross_margin").kind).toBe("daily");
-    expect(metricSourceOf("menu_popularity_pct")).toMatchObject({
-      kind: "unavailable",
-    });
-    expect(metricSourceOf("sold_out_menu_count")).toMatchObject({
-      kind: "unavailable",
-    });
-    expect(metricSplitOf("cogs", "menu_item")?.reader).toBe(menuSalesReader);
+  it("claims the cogs by menu_item split and no code another family owns", () => {
+    expect(metricSplitOf("cogs", "menu_item")?.reader).toBe(menuCogsReader);
     expect(metricSplitOf("cogs", "menu_category")).toBeNull();
+    expect(menuCogsReader.metricCodes).toEqual(["cogs"]);
+    for (const code of [
+      "menu_gross_margin",
+      "menu_popularity_pct",
+      "sold_out_menu_count",
+    ])
+      expect(metricSourceOf(code)).toMatchObject({ kind: "unavailable" });
+    const claimed = METRIC_SOURCE_MODULES.find(
+      (module) => module.family === "menu-cogs",
+    )!.sources.map((source) => source.code);
+    expect(claimed).not.toContain("menu_sold_qty");
     expect(
       dailyReaders().filter((entry) => entry.family === "menu-cogs"),
     ).toHaveLength(1);
@@ -466,9 +476,11 @@ describe("menu-cogs figures", () => {
     // GL 31.000 + 24.000 = 55.000; rows 54.000; residual 1.000
     expect(rows.get(METRIC_LEDGER_ADJUSTMENT)).toBe(1_000);
     const sum = [...rows.values()].reduce<number>((s, v) => s + (v ?? 0), 0);
-    expect(sum).toBe(
-      num(totalOf(await evaluate(world, { metricCodes: ["cogs"] }), "cogs")),
+    const glTotal = totalOf(
+      await evaluate(world, { metricCodes: ["cogs"] }),
+      "cogs",
     );
+    expect(sum).toBe(num(glTotal));
     expect(sum).toBe(55_000);
   });
 
@@ -482,80 +494,40 @@ describe("menu-cogs figures", () => {
     expect([...rows.entries()]).toEqual([[world.kopi, 24_000]]);
   });
 
-  it("menu_sold_qty per item and per category", async () => {
-    const byItem = splitOf(
-      await evaluate(world, {
-        metricCodes: ["menu_sold_qty"],
-        groupBy: ["menu_item"],
-      }),
-      "menu_sold_qty",
-      "menu_item",
+  it("production state: no cost snapshot gives only the residual row, the whole GL total", async () => {
+    await asOwner(world.tenantId, (client) =>
+      seedOrder(client, world, world.outlet1, D12, [
+        { menuItemId: world.kopi, quantity: 2, unitPrice: 20_000, cost: null },
+      ]),
     );
-    expect(byItem.get(world.kopi)).toBe(7); // 3 outlet 1 + 4 outlet 2
-    expect(byItem.get(world.nasi)).toBe(1);
-    expect(byItem.get(world.teh)).toBe(1);
-    const byCategory = splitOf(
-      await evaluate(world, {
-        metricCodes: ["menu_sold_qty"],
-        groupBy: ["menu_category"],
-      }),
-      "menu_sold_qty",
-      "menu_category",
-    );
-    expect(byCategory.get(world.minuman)).toBe(7);
-    expect(byCategory.get(world.makanan)).toBe(2);
-    expect(
-      num(
-        totalOf(
-          await evaluate(world, { metricCodes: ["menu_sold_qty"] }),
-          "menu_sold_qty",
-        ),
-      ),
-    ).toBe(9);
+    await postCogs(world, D12, world.outlet1, 5_000);
+    await refresh(world, world.outlet1, D12);
+    const result = await evaluate(world, {
+      metricCodes: ["cogs"],
+      period: { start: D12, end: D12 },
+      groupBy: ["menu_item"],
+      outletIds: [world.outlet1],
+    });
+    expect([...splitOf(result, "cogs", "menu_item").entries()]).toEqual([
+      [METRIC_LEDGER_ADJUSTMENT, 5_000],
+    ]);
   });
 
-  it("menu_gross_margin counts lines with a known cost only", async () => {
-    const byItem = splitOf(
-      await evaluate(world, {
-        metricCodes: ["menu_gross_margin"],
-        groupBy: ["menu_item"],
-      }),
-      "menu_gross_margin",
-      "menu_item",
-    );
-    // outlet 1: 40.000 - 12.000 + 20.000 - 6.000; outlet 2: 80.000 - 24.000
-    expect(byItem.get(world.kopi)).toBe(42_000 + 56_000);
-    expect(byItem.get(world.nasi)).toBe(18_000);
-    expect(byItem.has(world.teh)).toBe(false);
-    const byCategory = splitOf(
-      await evaluate(world, {
-        metricCodes: ["menu_gross_margin"],
-        groupBy: ["menu_category"],
-      }),
-      "menu_gross_margin",
-      "menu_category",
-    );
-    expect(byCategory.get(world.minuman)).toBe(98_000);
-    expect(byCategory.get(world.makanan)).toBe(18_000);
-  });
-
-  it("the 11 reports: built metrics are available, the rest say so", async () => {
+  it("the 11 reports: cogs is built, the rest say they are unavailable", async () => {
     const status = async (code: string, groupBy: string[]) =>
       (await evaluate(world, { metricCodes: [code], groupBy }))
         .availability[0]!;
-    // menu.* and cogs.per_menu / recipe_cost / recipe by menu item
-    for (const code of ["cogs", "menu_sold_qty", "menu_gross_margin"])
-      expect((await status(code, ["menu_item"])).status, code).toBe(
-        "available",
-      );
-    expect((await status("menu_sold_qty", ["menu_category"])).status).toBe(
-      "available",
-    );
+    // cogs.per_menu, cogs.recipe, menu.recipe_cost: cogs by menu item
+    expect((await status("cogs", ["menu_item"])).status).toBe("available");
     // cogs.trend and cogs.production by outlet (ledger, no split needed)
     for (const code of ["cogs", "food_cost_pct"])
       expect((await status(code, ["outlet"])).status, code).toBe("available");
     // no data source, or no engine support yet
-    for (const code of ["menu_popularity_pct", "sold_out_menu_count"])
+    for (const code of [
+      "menu_gross_margin",
+      "menu_popularity_pct",
+      "sold_out_menu_count",
+    ])
       expect((await status(code, ["menu_item"])).status, code).toBe(
         "unavailable",
       );
@@ -566,26 +538,14 @@ describe("menu-cogs figures", () => {
 });
 
 describe("menu-cogs isolation", () => {
-  it("another tenant's sales never show up, and ours never show up there", async () => {
+  it("another tenant's cogs never show up, and ours never show up there", async () => {
     const mine = splitOf(
-      await evaluate(world, {
-        metricCodes: ["menu_sold_qty"],
-        groupBy: ["menu_item"],
-      }),
-      "menu_sold_qty",
+      await evaluate(world, { metricCodes: ["cogs"], groupBy: ["menu_item"] }),
+      "cogs",
       "menu_item",
     );
     expect(mine.has(foreign.kopi)).toBe(false);
     const theirs = splitOf(
-      await evaluate(foreign, {
-        metricCodes: ["menu_sold_qty"],
-        groupBy: ["menu_item"],
-      }),
-      "menu_sold_qty",
-      "menu_item",
-    );
-    expect([...theirs.entries()]).toEqual([[foreign.kopi, 50]]);
-    const theirCogs = splitOf(
       await evaluate(foreign, {
         metricCodes: ["cogs"],
         groupBy: ["menu_item"],
@@ -593,66 +553,63 @@ describe("menu-cogs isolation", () => {
       "cogs",
       "menu_item",
     );
-    expect([...theirCogs.entries()]).toEqual([[foreign.kopi, 500_000]]);
+    expect([...theirs.entries()]).toEqual([[foreign.kopi, 500_000]]);
   });
 
   it("an outlet-scoped caller sees only its outlet", async () => {
     const rows = splitOf(
       await evaluate(world, {
-        metricCodes: ["menu_sold_qty"],
+        metricCodes: ["cogs"],
         groupBy: ["menu_item"],
         outletIds: [world.outlet1],
       }),
-      "menu_sold_qty",
+      "cogs",
       "menu_item",
     );
-    expect(rows.get(world.kopi)).toBe(3);
+    expect(rows.get(world.kopi)).toBe(18_000);
   });
 
-  it("the reader refuses an outlet of another tenant", async () => {
-    await refresh(world, foreign.outlet1, D10).then(
-      async () => {
-        const { rows } = await owner.query(
-          "SELECT 1 FROM metrics_daily WHERE tenant_id = $1 AND outlet_id = $2 AND metric_code = 'menu_sold_qty' AND metric_date = $3 AND dimension_value = $4",
-          [world.tenantId, foreign.outlet1, D10, foreign.kopi],
-        );
-        expect(rows).toHaveLength(0);
-      },
-      () => undefined,
+  it("a refresh with our context never writes rows for another tenant's outlet", async () => {
+    await refresh(world, foreign.outlet1, D10).catch(() => undefined);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM metrics_daily WHERE tenant_id = $1 AND outlet_id = $2",
+      [world.tenantId, foreign.outlet1],
     );
+    expect(rows).toHaveLength(0);
   });
 });
 
 describe("menu-cogs finality and backfill", () => {
-  it("a day nobody computed is not final; a computed closed day is", async () => {
-    const final = await evaluate(world, {
-      metricCodes: ["menu_sold_qty"],
-      outletIds: [world.outlet1],
-    });
-    expect(totalOf(final, "menu_sold_qty").finality).toBe("final");
-    // outlet 2 had no daily close: refreshed but still an estimate
-    const open = await evaluate(world, {
-      metricCodes: ["menu_sold_qty"],
-      outletIds: [world.outlet2],
-    });
-    expect(totalOf(open, "menu_sold_qty").finality).toBe("estimate");
-    // 2025-06-10..11: the 11th was never computed for outlet 1
-    const gap = await evaluate(world, {
-      metricCodes: ["menu_sold_qty"],
-      period: { start: D10, end: D11 },
-      outletIds: [world.outlet1],
-    });
-    expect(totalOf(gap, "menu_sold_qty").finality).toBe("estimate");
+  const rowFinality = async (outletId: string, date: string) =>
+    (
+      await owner.query<{ finality: string }>(
+        `SELECT finality FROM metrics_daily
+          WHERE tenant_id = $1 AND outlet_id = $2 AND metric_date = $3
+            AND metric_code = 'cogs' AND dimension_key IS NULL`,
+        [world.tenantId, outletId, date],
+      )
+    ).rows.map((row) => row.finality);
+
+  it("a closed day stores final rows, an open day estimate, a day nobody computed none", async () => {
+    expect(await rowFinality(world.outlet1, D10)).toEqual(["final"]);
+    expect(await rowFinality(world.outlet2, D10)).toEqual(["estimate"]);
+    // No total row means the engine keeps the bucket an estimate (pinned in
+    // metrics-engine.test.ts); the reader must not have written one here.
+    expect(await rowFinality(world.outlet1, D13)).toEqual([]);
   });
 
-  it("a quiet day gets zero totals, and a late order appears after recompute", async () => {
+  it("a quiet day gets a zero total row, and a late order appears after recompute", async () => {
     await refresh(world, world.outlet1, D11);
-    const quiet = await evaluate(world, {
-      metricCodes: ["menu_sold_qty"],
-      period: { start: D11, end: D11 },
-      outletIds: [world.outlet1],
-    });
-    expect(num(totalOf(quiet, "menu_sold_qty"))).toBe(0);
+    const total = async () =>
+      (
+        await owner.query<{ v: string }>(
+          `SELECT value_int::text AS v FROM metrics_daily
+            WHERE tenant_id = $1 AND outlet_id = $2 AND metric_date = $3
+              AND metric_code = 'cogs' AND dimension_key IS NULL`,
+          [world.tenantId, world.outlet1, D11],
+        )
+      ).rows.map((row) => row.v);
+    expect(await total()).toEqual(["0"]);
     await asOwner(world.tenantId, (client) =>
       seedOrder(client, world, world.outlet1, D11, [
         {
@@ -670,12 +627,7 @@ describe("menu-cogs finality and backfill", () => {
       businessDateSchema.parse(D11),
       { readers: READERS, now: NOW },
     );
-    const after = await evaluate(world, {
-      metricCodes: ["menu_sold_qty"],
-      period: { start: D11, end: D11 },
-      outletIds: [world.outlet1],
-    });
-    expect(num(totalOf(after, "menu_sold_qty"))).toBe(3);
+    expect(await total()).toEqual(["36000"]);
   });
 
   it("recompute is idempotent: a rerun writes nothing and keeps updated_at", async () => {
