@@ -1,0 +1,4 @@
+ALTER TABLE "pos_order_refunds" ADD COLUMN "needs_approval" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "pos_order_voids" ADD COLUMN "needs_approval" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_needs_approval_shift_check" CHECK (NOT "pos_order_refunds"."needs_approval" OR "pos_order_refunds"."shift_id" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "pos_order_voids" ADD CONSTRAINT "pos_order_voids_needs_approval_shift_check" CHECK (NOT "pos_order_voids"."needs_approval" OR "pos_order_voids"."shift_id" IS NOT NULL);

@@ -422,6 +422,17 @@ export const posOrderVoids = pgTable(
     voidedAt: timestamp("voided_at", { withTimezone: true }).notNull(),
     /** The drawer (shift) a cash void paid out of; null when no cash tender. */
     shiftId: uuid("shift_id"),
+    /**
+     * A cash void larger than the expected drawer cash when recorded
+     * (legend-utqr): "exceeded the drawer when recorded", nothing more. It is
+     * accepted like any other (same response and events) and left out of the
+     * drawer figures; the shift's count carries it as heldCashOutIdr and the
+     * shift close books counted − (expected − held), so the cash the order
+     * event already credits is not booked twice. Permanent (append-only
+     * table); a later review belongs in its own table. The cashier never
+     * sees it.
+     */
+    needsApproval: boolean("needs_approval").notNull().default(false),
     createdAt,
   },
   (table) => [
@@ -454,6 +465,10 @@ export const posOrderVoids = pgTable(
       "pos_order_voids_approver_check",
       sql`lower(${table.requestedBy}) <> lower(${table.approvedBy})`,
     ),
+    check(
+      "pos_order_voids_needs_approval_shift_check",
+      sql`NOT ${table.needsApproval} OR ${table.shiftId} IS NOT NULL`,
+    ),
   ],
 );
 
@@ -478,6 +493,17 @@ export const posOrderRefunds = pgTable(
     refundedAt: timestamp("refunded_at", { withTimezone: true }).notNull(),
     /** The drawer (shift) a cash refund paid out of; null when no cash line. */
     shiftId: uuid("shift_id"),
+    /**
+     * A cash refund larger than the expected drawer cash when recorded
+     * (legend-utqr): "exceeded the drawer when recorded", nothing more. It is
+     * accepted like any other (same response and events) and left out of the
+     * drawer figures; the shift's count carries it as heldCashOutIdr and the
+     * shift close books counted − (expected − held), so the cash the order
+     * event already credits is not booked twice. Permanent (append-only
+     * table); a later review belongs in its own table. The cashier never
+     * sees it.
+     */
+    needsApproval: boolean("needs_approval").notNull().default(false),
     createdAt,
   },
   (table) => [
@@ -512,6 +538,10 @@ export const posOrderRefunds = pgTable(
     check(
       "pos_order_refunds_approver_check",
       sql`lower(${table.requestedBy}) <> lower(${table.approvedBy})`,
+    ),
+    check(
+      "pos_order_refunds_needs_approval_shift_check",
+      sql`NOT ${table.needsApproval} OR ${table.shiftId} IS NOT NULL`,
     ),
   ],
 );

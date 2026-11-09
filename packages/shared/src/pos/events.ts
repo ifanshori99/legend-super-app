@@ -302,8 +302,14 @@ export const cashierShiftClosedPayloadSchema = z
     expectedIdr: nonnegativeIdr,
     /** The blind count the cashier submitted. */
     countedIdr: nonnegativeIdr,
-    /** counted − expected: the signed amount the WS-07 rule books. */
+    /**
+     * counted − expected + heldCashOutIdr: the signed amount the WS-07 rule
+     * books, as if nothing were held (legend-utqr). Equals the stored shift
+     * variance when nothing is held.
+     */
     differenceIdr: idrSchema,
+    /** Cash held for supervisor review, left out of expected (0 if absent). */
+    heldCashOutIdr: nonnegativeIdr.optional(),
     varianceNote: z.string().min(4).max(500).nullable(),
     approvedBy: userIdSchema,
     approvalRequestId: storedApprovalIdSchema,
@@ -312,12 +318,14 @@ export const cashierShiftClosedPayloadSchema = z
   .superRefine((payload, ctx) => {
     if (
       Number(payload.differenceIdr) !==
-      Number(payload.countedIdr) - Number(payload.expectedIdr)
+      Number(payload.countedIdr) -
+        Number(payload.expectedIdr) +
+        Number(payload.heldCashOutIdr ?? 0)
     )
       ctx.addIssue({
         code: "custom",
         path: ["differenceIdr"],
-        message: "differenceIdr must equal counted − expected",
+        message: "differenceIdr must equal counted − expected + held",
       });
     if (Number(payload.differenceIdr) !== 0 && payload.varianceNote === null)
       ctx.addIssue({

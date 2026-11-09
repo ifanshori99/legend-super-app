@@ -582,14 +582,23 @@ export async function recordCashMovement(
     if (input.type !== "cash_in") {
       const live = await computeShiftAggregates(tx, shift);
       // Every cash out + drop of the shift, held or not, stays a safe integer
-      // (held rows are no longer bounded by the drawer). The bound uses the
-      // cashier's own movements only, never the expected cash, so it leaks
-      // nothing about the drawer.
-      const outflow =
-        BigInt(live.cashOutIdr) +
-        BigInt(live.cashDropIdr) +
-        BigInt(await heldCashOutIdrOf(tx, shift)) +
-        BigInt(input.amountIdr);
+      // (held rows are no longer bounded by the drawer). The bound sums the
+      // cash_movements rows only, ignoring the held flag, so it says nothing
+      // about the drawer: never the held sum, which also holds refunds and
+      // voids and would tell a held refund from a normal one (legend-utqr).
+      const [movementOut] = await tx
+        .select({
+          total: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
+        })
+        .from(cashMovements)
+        .where(
+          and(
+            eq(cashMovements.tenantId, tenantId),
+            eq(cashMovements.shiftId, shift.id),
+            sql`${cashMovements.type} <> 'cash_in'`,
+          ),
+        );
+      const outflow = BigInt(movementOut?.total ?? 0) + BigInt(input.amountIdr);
       if (outflow > BigInt(Number.MAX_SAFE_INTEGER))
         throw new CoreError(
           "VALIDATION_ERROR",
@@ -1261,6 +1270,7 @@ export async function closePosShift(
       closed = closeShift(shiftDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
+        heldCashOutIdr: Number(count.heldCashOutIdr),
         varianceNote: input.varianceNote ?? null,
         approvedBy: input.approvedBy,
         approvalRequestId: input.approvalRequestId,
@@ -1350,6 +1360,7 @@ async function writeClose(
         countedIdr: closed.countedIdr,
         varianceIdr: closed.varianceIdr,
         varianceNote: closed.varianceNote,
+        heldCashOutIdr: count.heldCashOutIdr,
         counts: count.counts,
         countId: count.id,
         approvedBy,
@@ -1399,7 +1410,11 @@ async function writeClose(
       cashDropIdr: dto.cashDropIdr,
       expectedIdr: closed.expectedIdr,
       countedIdr: closed.countedIdr,
-      differenceIdr: closed.varianceIdr,
+      // Booked as if nothing were held (legend-utqr): counted − (expected −
+      // held). A held refund is already credited to cash by order.refunded,
+      // so the stored variance (counted − expected) would book it twice.
+      differenceIdr: (closed.varianceIdr ?? 0) + Number(count.heldCashOutIdr),
+      heldCashOutIdr: Number(count.heldCashOutIdr),
       varianceNote: dto.varianceNote,
       approvedBy,
       approvalRequestId,
@@ -1533,6 +1548,7 @@ export async function forceClosePosShift(
       closed = closeShift(shiftDto(shift, aggregates), {
         counts: count.counts,
         countId: count.id,
+        heldCashOutIdr: Number(count.heldCashOutIdr),
         varianceNote: input.note,
         approvedBy: input.approvedBy,
         approvalRequestId: input.approvalRequestId,

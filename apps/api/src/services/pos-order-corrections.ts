@@ -42,6 +42,7 @@ import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
   assertBusinessDayOpen,
+  cashOutExceedsDrawer,
   lockCashierShiftForCash,
 } from "./pos-cash-guard.ts";
 import { posReceiptPort } from "./pos-order-ports.ts";
@@ -244,9 +245,12 @@ export async function voidPosOrderCorrection(
               deviceId: caller.deviceId,
               mode: "out",
               at: now,
-              cashOutIdr: voidCashIdr,
             })
           : null;
+      // Held, not refused: a refusal would let the cashier probe the expected
+      // drawer cash (legend-utqr). Nothing the cashier reads shows the flag.
+      const needsApproval =
+        shift !== null && (await cashOutExceedsDrawer(tx, shift, voidCashIdr));
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -263,6 +267,7 @@ export async function voidPosOrderCorrection(
           overrideId: override.id,
           voidedAt: now,
           shiftId: shift?.id ?? null,
+          needsApproval,
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
@@ -324,6 +329,27 @@ export async function voidPosOrderCorrection(
         },
         now,
       );
+      if (needsApproval)
+        await auditPos(
+          tx,
+          context,
+          {
+            action: "pos_order.cash_void_held",
+            order,
+            caller,
+            objectType: "pos_order_void",
+            objectId: row.id,
+            before: null,
+            after: {
+              id: row.id,
+              orderId: row.orderId,
+              shiftId: row.shiftId,
+              cashIdr: voidCashIdr,
+            },
+            reason: input.reasonNote,
+          },
+          now,
+        );
       return voidDto(row);
     },
   );
@@ -469,9 +495,12 @@ export async function refundPosOrder(
               deviceId: caller.deviceId,
               mode: "out",
               at: now,
-              cashOutIdr: refundCashIdr,
             })
           : null;
+      // Held, not refused: see the void above (legend-utqr).
+      const needsApproval =
+        shift !== null &&
+        (await cashOutExceedsDrawer(tx, shift, refundCashIdr));
       const [row] = await tx
         .insert(posOrderRefunds)
         .values({
@@ -488,6 +517,7 @@ export async function refundPosOrder(
           overrideId: override.id,
           refundedAt: now,
           shiftId: shift?.id ?? null,
+          needsApproval,
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");
@@ -552,6 +582,27 @@ export async function refundPosOrder(
         },
         now,
       );
+      if (needsApproval)
+        await auditPos(
+          tx,
+          context,
+          {
+            action: "pos_order.cash_refund_held",
+            order,
+            caller,
+            objectType: "pos_order_refund",
+            objectId: row.id,
+            before: null,
+            after: {
+              id: row.id,
+              orderId: row.orderId,
+              shiftId: row.shiftId,
+              cashIdr: refundCashIdr,
+            },
+            reason: input.reasonNote,
+          },
+          now,
+        );
       return refundDto(row);
     },
   );

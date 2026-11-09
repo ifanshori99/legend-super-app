@@ -925,12 +925,11 @@ export const posShiftSchema = z
           path: ["varianceIdr"],
           message: "varianceIdr must equal counted − expected",
         });
-      if (Number(shift.varianceIdr) !== 0 && shift.varianceNote === null)
-        ctx.addIssue({
-          code: "custom",
-          path: ["varianceNote"],
-          message: "A cash difference carries a written explanation (U9)",
-        });
+      // The U9 note rule is not checked here (legend-utqr): it applies to
+      // counted − expected + held cash, and held cash is supervisor-only, so
+      // this cashier-readable DTO cannot carry it. closeShift (calculations),
+      // the pos_shifts_closed_check constraint and the cashier_shift.closed
+      // payload refine enforce it.
     }
   });
 export type PosShift = z.infer<typeof posShiftSchema>;

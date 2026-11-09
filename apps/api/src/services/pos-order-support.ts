@@ -112,6 +112,9 @@ const AUDIT_SAFE_FIELDS = [
   "overrideId",
   "receiptNumber",
   "version",
+  "orderId",
+  "shiftId",
+  "cashIdr",
 ] as const;
 
 export function notFound(message = "Pesanan tidak ditemukan."): CoreError {

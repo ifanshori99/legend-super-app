@@ -793,7 +793,11 @@ describe("POS-03 cash in, cash out and drops", () => {
       "cash_movement.recorded",
     ]);
     // The expected cash is never negative: the exact drop leaves an empty drawer.
-    const closed = await closeShift(cashier, shift.id, 0);
+    // Round 2: counted - expected + held is not 0 while cash is held, so the
+    // close needs a note (the stored variance stays 0).
+    const closed = await closeShift(cashier, shift.id, 0, {
+      varianceNote: "Kas keluar menunggu persetujuan supervisor",
+    });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(closed.body.data).toMatchObject({ expectedIdr: 0, varianceIdr: 0 });
   });
@@ -2518,7 +2522,11 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
     expect(await heldAudits(shift.id)).toHaveLength(4);
 
     // Counting and closing are untouched: drawer = float - 10.000 + 10.000.
-    const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
+    // Round 2: four held rows make counted - expected + held non-zero, so the
+    // close needs a note.
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR, {
+      varianceNote: "Kas keluar menunggu persetujuan supervisor",
+    });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(closed.body.data.expectedIdr).toBe(FLOAT_IDR);
   });
@@ -3484,7 +3492,7 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
     expect(JSON.stringify(events)).not.toMatch(/needsApproval|held/i);
   });
 
-  it("D: the supervisor's count trail shows the expected cash without the held amount plus heldCashOutIdr; the cashier's receipt has no held figure and noteRequired follows the variance only", async () => {
+  it("D: the supervisor's count trail shows the expected cash without the held amount plus heldCashOutIdr; the cashier's receipt has no held figure and noteRequired follows counted - expected + held", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
     const held = await move(cashier, shift.id, {
@@ -3514,8 +3522,10 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       ]);
       expect(receipt).not.toHaveProperty("heldCashOutIdr");
     }
-    // Held money must not change noteRequired (that would be an oracle).
-    expect(even.noteRequired).toBe(false);
+    // Round 2: the book variance is counted - expected + held. The held cash
+    // out is not in the drawer, so a count equal to the expected figure is
+    // short by the held amount and needs a note, like the short one.
+    expect(even.noteRequired).toBe(true);
     expect(short.noteRequired).toBe(true);
 
     const trail = await listCounts(supervisor, shift.id);
@@ -3545,6 +3555,10 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       FLOAT_IDR - 5_000,
     );
     expect(plainCount.noteRequired).toBe(short.noteRequired);
+    // With nothing held, an exact count needs no note (the old rule).
+    expect(
+      (await countDrawer(plain, plainShift.id, FLOAT_IDR)).noteRequired,
+    ).toBe(false);
     const plainTrail = await listCounts(supervisor, plainShift.id);
     expect(
       posShiftCountSchema.parse(plainTrail.body.data[0]).heldCashOutIdr,
@@ -3619,7 +3633,13 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
       expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
       expect((await shiftRow(shift.id))?.status).toBe("open");
 
-      const closed = await closeShift(cashier, shift.id, recountIdr);
+      // Round 2: counted - expected + held = held, so a held row needs a note.
+      const closed = await closeShift(
+        cashier,
+        shift.id,
+        recountIdr,
+        heldIdr > 0 ? { varianceNote: "Kas keluar menunggu persetujuan" } : {},
+      );
       expect(closed.status, JSON.stringify(closed.body)).toBe(200);
       expect(closed.body.data).toMatchObject({
         status: "closed",
@@ -3678,6 +3698,57 @@ describe("legend-67dt cash out does not reveal the drawer balance", () => {
     expect(rows).toHaveLength(1);
     expect(Number(rows[0]?.held)).toBe(HELD_IDR);
   });
+
+  // Round 2 (R1): book variance = counted - expected + heldCashOutIdr.
+  // Assumptions: the cash_in is not held; `cashier_shift.closed` carries a
+  // signed differenceIdr (number or numeric string, compared through Number).
+  it.each([["cash_out"], ["drop"]] as const)(
+    "R1: an honest count after a held %s (counted = expected without the held cash - the cash paid out) needs no note and closes with differenceIdr 0, heldCashOutIdr = the cash and a stored variance of minus the cash",
+    async (type) => {
+      const cashier = await newCashier();
+      const shift = await openShift(cashier);
+      const held = await move(cashier, shift.id, {
+        type,
+        amountIdr: HELD_IDR,
+        reasonNote: "Beli gas elpiji",
+      });
+      expect(held.status, JSON.stringify(held.body)).toBe(201);
+      expect((await movementRows(shift.id))[0]?.needs_approval).toBe(true);
+      // The drawer grows by 100.000 afterwards; expected (without the held
+      // cash) is 200.000 and the cashier really paid HELD_IDR out of it.
+      const added = await move(cashier, shift.id, {
+        type: "cash_in",
+        amountIdr: 100_000,
+      });
+      expect(added.status, JSON.stringify(added.body)).toBe(201);
+
+      const honestIdr = FLOAT_IDR + 100_000 - HELD_IDR;
+      const receipt = await countDrawer(cashier, shift.id, honestIdr);
+      expect(receipt.noteRequired).toBe(false);
+      const closed = await closeShift(cashier, shift.id, honestIdr);
+      expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+      expect(closed.body.data).toMatchObject({
+        status: "closed",
+        expectedIdr: FLOAT_IDR + 100_000,
+        varianceIdr: -HELD_IDR,
+      });
+      expect((await shiftRow(shift.id))?.variance).toBe(-HELD_IDR);
+      const { rows } = await owner.query<{
+        payload: {
+          differenceIdr: number | string;
+          heldCashOutIdr?: number | string;
+        };
+      }>(
+        `SELECT event->'payload' AS payload FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->>'name' = 'cashier_shift.closed'
+            AND event->'payload'->>'shiftId' = $2`,
+        [tenant.tenantId, shift.id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]?.payload.differenceIdr)).toBe(0);
+      expect(Number(rows[0]?.payload.heldCashOutIdr)).toBe(HELD_IDR);
+    },
+  );
 
   it("F: the supervisor's movement list and shift report show needsApproval true for the held cash out and false for the others; the cashier's own reads never carry the key", async () => {
     const cashier = await newCashier();

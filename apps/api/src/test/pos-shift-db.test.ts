@@ -481,4 +481,35 @@ describe("POS-03 pos_shift_counts.held_cash_out_idr", () => {
       );
     });
   });
+
+  it("a close must carry the same held cash out as the named count (pos_shifts_guard, 23514)", async () => {
+    await inRolledBackTx(async (client) => {
+      const cashier = await newUser(client);
+      const approver = await newUser(client);
+      const shiftId = await newShift(client, cashier);
+      const countValuesWithHeld = heldValues(shiftId, cashier, 150_000);
+      await client.query(HELD_COUNT_SQL, countValuesWithHeld);
+      const countId = countValuesWithHeld[0] as string;
+
+      // The service close UPDATE plus the shift's own held_cash_out_idr ($10).
+      const base = closeSql(shiftId, countId, FLOAT_IDR);
+      const text = base.text.replace(
+        "WHERE tenant_id",
+        ", held_cash_out_idr = $10::bigint WHERE tenant_id",
+      );
+      const closeWith = (held: number) => [...base.values(approver), held];
+
+      await client.query("SAVEPOINT refused");
+      await expect(
+        client.query(text, closeWith(100_000)),
+      ).rejects.toMatchObject({
+        code: "23514",
+        message: expect.stringMatching(/POS-03/),
+      });
+      await client.query("ROLLBACK TO SAVEPOINT refused");
+
+      const result = await client.query(text, closeWith(150_000));
+      expect(result.rowCount).toBe(1);
+    });
+  });
 });
