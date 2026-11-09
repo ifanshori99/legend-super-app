@@ -3,7 +3,10 @@
 // must never announce the whole day's list when it opens, and must never speak
 // a number twice for one call.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { pickupChannelSchema } from "../packages/shared/src/kitchen/schemas.ts";
+import { expoTargetLabel } from "../apps/web/src/features/ws04-expo/components/target-label.ts";
 import {
   announcePickupNumber,
   newlyCalledCalls,
@@ -79,5 +82,52 @@ test("PRD §3 F12 pickup display: call order wins over number order", () => {
   assert.deepEqual(
     newlyCalledCalls(before, after).map((row) => row.number),
     [15, 12],
+  );
+});
+
+const expoDir = new URL(
+  "../apps/web/src/features/ws04-expo/components/",
+  import.meta.url,
+);
+const read = (name) => readFileSync(new URL(name, expoDir), "utf8");
+
+test("legend-ggpoe: every pickup channel has a badge entry and a label, so the wall cannot crash on a new channel", () => {
+  const badge = read("channel-badge.tsx");
+  const messages = readFileSync(
+    new URL("../packages/shared/src/i18n/messages/id.ts", import.meta.url),
+    "utf8",
+  );
+  for (const channel of pickupChannelSchema.options)
+    assert.match(
+      badge,
+      new RegExp(`^\\s+${channel}: \\{`, "m"),
+      `badge entry for ${channel}`,
+    );
+  assert.match(messages, /delivery: "Delivery"/);
+  assert.match(badge, /delivery: \{ labelKey: "channel\.delivery", icon: Bike/);
+});
+
+test("legend-ggpoe: the pickup wall shows and speaks the letter code, never the raw number", () => {
+  const screen = read("pickup-screen.tsx");
+  assert.doesNotMatch(screen, /\{row\.number\}/);
+  assert.doesNotMatch(screen, /number: (row|updated|freshCall)\.number/);
+  assert.match(screen, /number: freshCall\.code/);
+  assert.match(screen, /\{row\.code\}/);
+  // Order on the wall still follows the numeric sequence (B-001 after A-999).
+  assert.match(screen, /left\.number - right\.number/);
+});
+
+test("legend-ggpoe: an expo card of a numbered order is named by its code", () => {
+  const t = (key, vars) => `${key}:${vars?.number ?? vars?.table ?? ""}`;
+  const base = {
+    tableLabel: null,
+    channel: "takeaway",
+    pickupNumber: 1000,
+    pickupCode: "B-001",
+  };
+  assert.equal(expoTargetLabel(base, t), "expo.pickupLabel:B-001");
+  assert.equal(
+    expoTargetLabel({ ...base, pickupNumber: null, pickupCode: null }, t),
+    "channel.takeaway:",
   );
 });

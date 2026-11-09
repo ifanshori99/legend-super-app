@@ -2020,6 +2020,7 @@ export const id = {
   channel: {
     dineIn: "Dine-in",
     takeaway: "Takeaway",
+    delivery: "Delivery",
     gofood: "GoFood",
     grabfood: "GrabFood",
     shopeefood: "ShopeeFood",
