@@ -141,10 +141,10 @@ export type SetStaffPinOptions = {
 
 /**
  * `updated_at` of a staff pin row: the DATABASE clock (legend-wg5t item 5).
- * The edge down-sync releases rows older than `now() - settle window` by the
- * same database clock (staff-pin-sync.ts), so an app instance whose clock lags
- * the database cannot stamp a late commit below the edge's watermark. An
- * explicit `now` (tests) is used as given.
+ * The edge down-sync no longer pages by this column: it orders by the
+ * writing transaction (`sync_xid`, legend-t9ii, staff-pin-sync.ts). The
+ * database clock still keeps `updated_at` and `pin_set_at` free of app clock
+ * skew. An explicit `now` (tests) is used as given.
  */
 function staffPinVersionStamp(explicit: Date | undefined): Date | SQL {
   return explicit ?? sql`now()`;

@@ -170,8 +170,8 @@ const staffRoleId = randomUUID();
 async function newUser(banned = false): Promise<string> {
   const id = randomUUID();
   await owner.query(
-    `INSERT INTO "user" (id, name, email, email_verified, banned) VALUES ($1, 'Staf Akses', $2, true, $3)`,
-    [id, `akses-${randomBytes(4).toString("hex")}@example.test`, banned],
+    `INSERT INTO "user" (id, name, email, email_verified, banned) VALUES ($1, 'Staf Akses', $2, true, false)`,
+    [id, `akses-${randomBytes(4).toString("hex")}@example.test`],
   );
   createdUsers.push(id);
   await owner.query(
@@ -179,6 +179,10 @@ async function newUser(banned = false): Promise<string> {
      VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
     [tenantId, id, staffRoleId, outletA],
   );
+  // 0144 (legend_role_assignment_grantee_guard) refuses a role for a banned
+  // account, so a banned staff member is one banned after the assignment.
+  if (banned)
+    await owner.query(`UPDATE "user" SET banned = true WHERE id = $1`, [id]);
   return id;
 }
 

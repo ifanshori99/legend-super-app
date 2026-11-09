@@ -91,6 +91,11 @@ function SwitchRow({
   );
 }
 
+/** The later of two ISO business dates. */
+function laterDate(a: string, b: string): string {
+  return b > a ? b : a;
+}
+
 /** Rate in the input: basis points → percent text with an id-ID comma. */
 function rateInput(rule: TaxRule | undefined): string {
   if (!rule) return "";
@@ -102,6 +107,8 @@ export function TaxRuleDialog({
   rule,
   versions,
   today,
+  presetInactive,
+  onSaved,
   onClose,
 }: {
   mode: TaxRuleEditorMode;
@@ -110,6 +117,13 @@ export function TaxRuleDialog({
   versions: readonly RuleVersion[];
   /** Outlet business date (server value), for defaults and hints. */
   today: string;
+  /**
+   * Open with "Aturan aktif" off: the fix for an overlap is an inactive version.
+   * Names the other rule and the date the overlap starts.
+   */
+  presetInactive?: { otherCode: string; effectiveDate: string };
+  /** Called with the saved draft after the dialog's own toast. */
+  onSaved?: (rule: TaxRule) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -146,13 +160,18 @@ export function TaxRuleDialog({
   const [includeServiceInBase, setIncludeServiceInBase] = React.useState(
     rule?.includeServiceInBase ?? true,
   );
-  const [isActive, setIsActive] = React.useState(rule?.isActive ?? true);
+  const [isActive, setIsActive] = React.useState(
+    presetInactive ? false : (rule?.isActive ?? true),
+  );
   const [effectiveFrom, setEffectiveFrom] = React.useState(
     rule === undefined
       ? today
       : mode === "edit"
         ? rule.effectiveFrom
-        : suggestEffectiveFrom(chain, today),
+        : presetInactive
+          ? // A higher version starting the same day wins, so today is valid.
+            laterDate(today, presetInactive.effectiveDate)
+          : suggestEffectiveFrom(chain, today),
   );
   const [errors, setErrors] = React.useState<Errors>({});
 
@@ -206,14 +225,19 @@ export function TaxRuleDialog({
       effectiveFrom,
     };
 
-    const onSuccess = () => {
+    const onSuccess = (saved: { data: TaxRule }) => {
       toast({
         title: t(
-          mode === "edit" ? "tax.rules.updatedToast" : "tax.rules.createdToast",
+          presetInactive
+            ? "tax.conflicts.draftCreated"
+            : mode === "edit"
+              ? "tax.rules.updatedToast"
+              : "tax.rules.createdToast",
         ),
         tone: "success",
       });
       onClose();
+      onSaved?.(saved.data);
     };
     const onError = (error: unknown) =>
       setErrors({ form: errorMessage(error) });
@@ -227,7 +251,8 @@ export function TaxRuleDialog({
     }
     createRule.mutate(
       {
-        outletId: null,
+        // A new version continues its chain, so it keeps the outlet scope.
+        outletId: mode === "new-version" && rule ? rule.outletId : null,
         code: code.trim(),
         ...fields,
       },
@@ -251,6 +276,16 @@ export function TaxRuleDialog({
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={submit} noValidate>
+          {presetInactive && (
+            <p
+              role="note"
+              className="rounded-container border-(length:--border-w) bg-warning-subtle p-card text-sm leading-5"
+            >
+              {t("tax.conflicts.presetNote", {
+                code: presetInactive.otherCode,
+              })}
+            </p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
               label={t("tax.form.code")}

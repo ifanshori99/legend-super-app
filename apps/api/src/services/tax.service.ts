@@ -54,6 +54,8 @@ import {
   calculateTax,
   createServiceChargeRuleInputSchema,
   effectiveRuleVersions,
+  findTaxRuleTies,
+  itemTaxClassLabelId,
   createTaxRuleInputSchema,
   createTaxSettingsInputSchema,
   pbjtMonthlyRecapSchema,
@@ -64,7 +66,9 @@ import {
   serviceChargeRuleSchema,
   taxRuleIdSchema,
   taxRulePublished,
+  taxChannelLabelId,
   taxChannelSchema,
+  taxRuleTieScopeLabelId,
   taxRuleSchema,
   taxSettingsIdSchema,
   taxSettingsPublished,
@@ -75,6 +79,8 @@ import {
   type ServiceChargeRule,
   type TaxCalculationInput,
   type TaxCalculationResult,
+  type TaxRuleConflict,
+  type TaxRuleTie,
   type TaxRule,
   type TaxSettings,
 } from "@starter/shared/tax";
@@ -92,7 +98,7 @@ import { outletBusinessDayClock } from "./outlet-clock";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
-import { lockServiceChargeConfig } from "./tax-provisioning.service";
+import { lockServiceChargeConfig, lockTaxConfig } from "./tenant-config-locks";
 import { appendOutbox } from "./core-outbox";
 import {
   loadTenantAccessInTransaction,
@@ -485,6 +491,7 @@ export async function createTaxRule(
       CONFIG_PERMISSION,
       targetOf(input.outletId),
     );
+    await lockTaxConfig(tx, context.tenant.tenantId);
     if (input.outletId) await requireOutlet(tx, context, input.outletId);
     const [latest] = await tx
       .select({ version: taxRules.version })
@@ -566,6 +573,7 @@ export async function updateTaxRule(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxRuleIdSchema.parse(taxRuleId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const row = await lockTaxRule(tx, context.tenant.tenantId, id);
     await assertPermission(
       tx,
@@ -605,6 +613,129 @@ export async function updateTaxRule(
   });
 }
 
+/**
+ * Refuses to publish a tax-rule version that would tie, in `resolveTaxRule`,
+ * with another rule in force: the engine then throws TAX_RULE_AMBIGUOUS on every
+ * matching line and checkout stops (legend-de3b, mirrors legend-mdh0). Uses the
+ * engine's own resolver through `findTaxRuleTies`. Called inside the publish
+ * transaction, after the row is marked published and under the per-tenant tax
+ * lock. A version with `isActive` false never ties: to replace a rule, publish
+ * an inactive version of the old one first.
+ */
+async function assertNoTaxRuleOverlap(
+  tx: Tx,
+  tenantId: TenantId,
+  published: TaxRuleRow,
+): Promise<void> {
+  if (!published.isActive) return;
+  const rows = await tx
+    .select()
+    .from(taxRules)
+    .where(
+      and(
+        eq(taxRules.tenantId, tenantId),
+        eq(taxRules.status, "published"),
+        published.outletId === null
+          ? isNull(taxRules.outletId)
+          : or(
+              isNull(taxRules.outletId),
+              eq(taxRules.outletId, published.outletId),
+            ),
+      ),
+    )
+    .orderBy(asc(taxRules.version));
+  const [tie] = findTaxRuleTies(rows.map(toTaxRule), {
+    outletIds: [published.outletId as OutletId | null],
+    from: published.effectiveFrom as BusinessDate,
+    onlyRuleId: published.id,
+  });
+  if (!tie) return;
+  const mine = tie.a.id === published.id ? tie.a : tie.b;
+  const peer = tie.a.id === published.id ? tie.b : tie.a;
+  throw new TaxError(
+    "TAX_RULE_AMBIGUOUS",
+    `Aturan pajak ${mine.code} bertabrakan dengan aturan aktif ${peer.code} v${peer.version} mulai ${tie.effectiveDate} untuk pesanan ${taxChannelLabelId(tie.channel)} (${taxRuleTieScopeLabelId(tie.level, tie.key)}): keduanya berlaku sama kuat dan kasir akan gagal menghitung. Matikan aturan lama dulu (terbitkan versi tidak aktif) atau ubah cakupan aturan ini.`,
+  );
+}
+
+function toTaxRuleConflict(tie: TaxRuleTie): TaxRuleConflict {
+  const side = (rule: TaxRule) => ({
+    id: rule.id,
+    code: rule.code,
+    version: rule.version,
+    outletId: rule.outletId,
+  });
+  return {
+    ruleA: side(tie.a),
+    ruleB: side(tie.b),
+    outletId: tie.outletId,
+    channel: tie.channel,
+    regionCode: tie.regionCode,
+    level: tie.level,
+    key: tie.key,
+    effectiveDate: tie.effectiveDate,
+  };
+}
+
+/**
+ * Existing published ties (e.g. created before the publish guard): listed for
+ * the owner to fix, never changed automatically. Views: tenant-wide plus each
+ * outlet that has outlet-scoped rules (or just `query.outletId` and tenant-wide).
+ */
+export async function listTaxRuleConflicts(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  query: { outletId?: OutletId },
+): Promise<{ conflicts: TaxRuleConflict[] }> {
+  return withTenant(db, context, async (tx) => {
+    await assertPermission(tx, context, actorUserId, CONFIG_PERMISSION, {
+      type: "tenant",
+    });
+    const filters: SQL[] = [
+      eq(taxRules.tenantId, context.tenant.tenantId),
+      eq(taxRules.status, "published"),
+    ];
+    if (context.outletScope.kind !== "tenant")
+      filters.push(
+        or(
+          isNull(taxRules.outletId),
+          inArray(taxRules.outletId, [...context.outletScope.outletIds]),
+        ) as SQL,
+      );
+    const rows = await tx
+      .select()
+      .from(taxRules)
+      .where(and(...filters))
+      .orderBy(asc(taxRules.version));
+    const rules = rows.map(toTaxRule);
+    const outletIds: (OutletId | null)[] = query.outletId
+      ? [null, query.outletId]
+      : [
+          null,
+          ...new Set(
+            rules.flatMap((rule) => (rule.outletId ? [rule.outletId] : [])),
+          ),
+        ];
+    // `from` is the business day of each view, the same helper publish uses.
+    const now = new Date();
+    const seen = new Set<string>();
+    const conflicts: TaxRuleConflict[] = [];
+    for (const outletId of outletIds) {
+      const from = await businessToday(tx, context, outletId, now);
+      for (const tie of findTaxRuleTies(rules, {
+        outletIds: [outletId],
+        from,
+      })) {
+        const pair = [tie.a.id, tie.b.id].sort().join("|");
+        if (seen.has(pair)) continue;
+        seen.add(pair);
+        conflicts.push(toTaxRuleConflict(tie));
+      }
+    }
+    return { conflicts };
+  });
+}
+
 export async function publishTaxRule(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -615,6 +746,7 @@ export async function publishTaxRule(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxRuleIdSchema.parse(taxRuleId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const row = await lockTaxRule(tx, context.tenant.tenantId, id);
     await assertPermission(
       tx,
@@ -652,6 +784,8 @@ export async function publishTaxRule(
       )
       .returning();
     if (!updated) throw new HttpError(404, "NOT_FOUND", "Tax rule not found.");
+    // Throws inside the transaction: the publish above rolls back.
+    await assertNoTaxRuleOverlap(tx, context.tenant.tenantId, updated);
     await appendTaxEvent(tx, context, taxRulePublished, {
       aggregateId: updated.id,
       outletId: updated.outletId,
@@ -990,7 +1124,7 @@ async function assertNoServiceChargeOverlap(
                 throw error;
               throw new TaxError(
                 "TAX_RULE_AMBIGUOUS",
-                `Aturan service charge ${mine.code} bertabrakan dengan aturan aktif ${peer.code} untuk pesanan ${channel} (${itemClass}): keduanya berlaku sama kuat dan kasir akan gagal menghitung. Matikan aturan lama dulu (terbitkan versi tidak aktif) atau ubah cakupan aturan ini.`,
+                `Aturan service charge ${mine.code} bertabrakan dengan aturan aktif ${peer.code} untuk pesanan ${taxChannelLabelId(channel)} (${itemTaxClassLabelId(itemClass)}): keduanya berlaku sama kuat dan kasir akan gagal menghitung. Matikan aturan lama dulu (terbitkan versi tidak aktif) atau ubah cakupan aturan ini.`,
               );
             }
           }
@@ -1170,6 +1304,7 @@ export async function createTaxSettings(
       CONFIG_PERMISSION,
       targetOf(input.outletId),
     );
+    await lockTaxConfig(tx, context.tenant.tenantId);
     if (input.outletId) await requireOutlet(tx, context, input.outletId);
     const [latest] = await tx
       .select({ version: taxSettings.version })
@@ -1234,6 +1369,7 @@ export async function publishTaxSettings(
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
     const id = taxSettingsIdSchema.parse(taxSettingsId);
+    await lockTaxConfig(tx, context.tenant.tenantId);
     const [row] = await tx
       .select()
       .from(taxSettings)

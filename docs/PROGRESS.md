@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
+
+- Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
+- Berikut: gate batch11, lalu merge ke `milestone/m1`.
+
+## legend-2dnh refund sistem membuka rantai approval (merge train batch11, cabang `ws/refund-tier` 40800ce2, 2026-11-09)
+
+- Sudah: refund buatan sistem (late payment POS dan QR, deposit reservasi) membuka rantai approval lewat akun sistem terkunci (banned, tanpa role, tanpa akun login). Migrasi `0135_system_approval_requester` diurutkan ulang menjadi `0144_system_approval_requester` (custom, isi apa adanya), terdaftar di `MIGRATION_DATA_STATEMENTS`.
+- Berikut: gate batch11, lalu merge ke `milestone/m1`.
+
 ## Codex 160 dua P2 di legend-kyie (engineer, cabang `ws/edge-access-apply`, 2026-11-09)
 
 - Sudah: urutan set PIN memakai kolom baru `staff_pins.pin_generation_at` (migrasi `0142_high_scrambler`), terpisah dari `pin_set_at` yang dibatasi. Set lebih dari 5 menit di depan jam cloud ditolak; lock begitu diabaikan. Kunci generation di edge dan cloud tidak pernah mundur, dan kunci edge yang tertinggal jauh di depan pulih setelah jam dibetulkan. Galat tulis yang membawa hash atau salt dibungkus galat generik tanpa cause (`withoutSecretErrorDetail`).
@@ -34,6 +44,38 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Berikut: second opinion Codex `docs/briefs/169b-second-opinion-aj-pos-intent.md` (tidak di-commit). Belum ada test untuk penjualan dua intent, intent plus DP, campuran receipt posted dan pending.
 - Biaya sesi engineer (sejak slice 4): total 13792k, 42 subagent, compact 2.
 
+## legend-a0i7 + legend-ioyg refund promo dan void POS non-tunai (engineer, cabang `ws/pos-refund-void`, 2026-11-09)
+
+- legend-a0i7 #1 (Codex 127): diskon yang dipertahankan per baris redemption tidak lagi dibatasi diskon yang tersisa di baris setelah refund sebelumnya (`crm-promo-refund.ts`); `order-promo-refund.ts` kini menaikkan atau menurunkan baris dan `spent_idr` promosi dengan jumlah yang sama, naik dibatasi sisa anggaran (kekurangan dicatat di audit `promo_application.clamped`, `budgetShortIdr`). Contoh Codex: retur bertahap Rp10.000 + Rp46.000 = Rp56.000, sama dengan sekaligus.
+- legend-a0i7 #2: pesanan berpromo, refund yang meminta kurang dari yang jatuh tempo ditolak 422 `REFUND_AMOUNT_BELOW_DUE` sebelum menulis apa pun (sebelumnya sisa Rp10.000 terkunci). Minta lebih tetap dibatasi.
+- legend-ioyg: void penjualan selesai ditolak 409 `CONFLICT` bila ada tender non-tunai `captured`/`authorized` (QRIS, VA, e-wallet, kartu, EDC, poin, metode lain); kasir diarahkan ke refund. Dicek setelah cek hari usaha tutup (hari tutup dilaporkan lebih dulu); penolakan me-rollback transaksi sehingga persetujuan tidak terpakai. Auto-journal tidak diubah.
+- Test: `pos-refund-promo-db.test.ts` (A1, B1), `pos-order-void-noncash.test.ts` (C1-C3), gagal dulu di kode lama.
+- Brief second opinion: `docs/briefs/172b-second-opinion-pos-refund-void.md` (tidak di-commit).
+
+## legend-de3b cek tumpang-tindih aturan pajak (engineer, cabang `ws/tax-rule-overlap` dari `ws/provisioning-race`, 2026-11-09)
+
+- Akar masalah: `publishTaxRule` tidak memeriksa tabrakan. Owner bisa menerbitkan aturan tenant-wide F&B kedua di samping `PBJT-FNB`, lalu semua order gagal `TAX_RULE_AMBIGUOUS` (409).
+- Sudah: `packages/shared/src/tax/overlap.ts` (`taxRuleTie`, `findTaxRuleTies`, memakai `resolveTaxRule` asli, berpasangan, per tanggal berlaku). `publishTaxRule` menolak aturan aktif yang seri dengan 409 yang menyebut kode, versi, dan tanggal aturan lawan, di bawah `lockTaxConfig`. Pesan 409 service charge kini memakai label Indonesia. Owner mengganti aturan dengan menerbitkan versi tidak aktif dulu (pola legend-mdh0). Data lama yang ganda: `GET /api/tax/rules/conflicts`, plus banner di halaman aturan pajak dengan tombol "Buat versi nonaktif". Dialog versi baru kini mempertahankan outlet aturan (dulu jadi tenant-wide).
+- Test: `src/test/tax-rule-overlap.test.ts` (10 kasus; 4 gagal di kode lama), `tests/tax-rule-overlap.test.mjs` (21 unit). Test terarah 16 file, 186 test lulus; node 80/80; tsc shared/api/web lulus.
+- Review K: reviewer Opus 2 putaran dan architect (setuju); ui-auditor (8 cacat, sudah dibetulkan).
+- Batas yang diketahui: cek berpasangan bisa menolak konfigurasi yang aman karena ada aturan ketiga yang lebih spesifik (sama dengan pola service charge). Banner menampilkan "item tertentu" atau "kategori tertentu" tanpa nama.
+
+## legend-dq0n + legend-hd1m race backfill provisioning (engineer, cabang `ws/provisioning-race`, 2026-11-09)
+
+- Akar masalah: backfill pajak dan CoA mengunci, tetapi penulis owner tidak, jadi backfill bisa melihat tabel kosong lalu menyisipkan default di samping aturan atau akun owner. Tipe lokasi standar dilewati permanen bila namanya sudah dipakai.
+- Sudah: satu modul kunci `apps/api/src/services/tenant-config-locks.ts`. Urutan kunci: 1 CoA per entitas, 2 lokasi per outlet, 3 pajak per tenant, 4 service charge per tenant. Kunci lama tidak berubah. Penulis owner pajak (create, update, publish aturan; create, publish settings) dan CoA (create, update akun; ganti mapping) mengambil kunci yang sama. Lokasi yang namanya bentrok tetap ditambah sebagai `<nama> 2`, `<nama> 3`, dan seterusnya.
+- Test: `src/test/provisioning-race.test.ts` (dua transaksi, `pg_locks`): gagal di kode lama, lulus dengan fix. Test terarah 17 file, 216 test lulus; kontrak node 139/139; tsc api/shared lulus.
+- Review K: reviewer Opus (tanpa blocker) dan architect (setuju). Second opinion Codex: brief `docs/briefs/173b-second-opinion-provisioning-race.md`.
+- Berikut: legend-de3b (P1, `publishTaxRule` tanpa cek tumpang-tindih; owner masih bisa memicu `TAX_RULE_AMBIGUOUS` tanpa race).
+
+## legend-r7g2 parser refund DOIT (engineer, cabang `ws/doit-refund-parser`, 2026-11-09)
+
+- Akar masalah: jawaban POST refund DOIT yang menyebut payment lain diterima sebagai sukses (`parseDoitRefundAnswer`). Sekarang objek refund wajib membawa `payment_id` dan `amount` yang cocok; `idempotency_key` dan `reference`, bila ada, juga harus cocok. Selain itu `DOIT_REFUND_IDENTITY_MISMATCH` (hasil tak dikenal, bukan sukses, bukan gagal).
+- Mismatch jadi flag lengket `PAYOUT_IDENTITY_MISMATCH`: tidak dikirim ulang, tidak diganti `MANUAL_RECONCILIATION`, masuk eskalasi, audit `payment.refund_payout_identity_mismatch` + log error berisi id DOIT.
+- Webhook P2 (Codex 117 Run B): objek `refund` dengan `reference` tetap dibaca sebagai refund dan `reference`-nya dicek; jalur `payment_object` tidak menimpa `providerRef` `rf_` yang sudah ada. P2 (c) jadi legend-gqv7; temuan minor jadi legend-fpe6.
+- Bukti: test reproduksi gagal di kode lama; 20 file `*doit*`/`*refund*`/`payment-webhook*` 759 lulus, 10 skip (sandbox tanpa kunci); tsc lewat heavy, eslint, prettier, kontrak node 44/44. Review K: reviewer Opus + architect, re-review architect: tertutup.
+- Commit 36f59dc3, 3b053bb8. Brief Codex `docs/briefs/175b-second-opinion-doit-refund-parser.md` (tidak di-commit).
+
 ## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
 
 - Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.
@@ -41,6 +83,18 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Test: `apps/api/src/test/edge-event-class.test.ts` (R, A, B, C, D). Semua 23 file `edge-*` lulus.
 - Review K: reviewer Opus dan architect, dua kali re-review; temuan nyata dibetulkan.
 - Berikut: legend-kyie (P1, cloud menerapkan event PIN dan override), legend-vw3d (kategori alarm sendiri), legend-tbl4 (index outbox, test tanpa supervisor). Brief second opinion: `docs/briefs/158-second-opinion-edge-event-class.md` (tidak di-commit).
+
+## legend-kn3n bagian 2, legend-xzid, legend-6ajk: kekurangan PPh21 jadi piutang karyawan (engineer, cabang `ws/pph21-overwithhold`, 2026-11-09)
+
+- Keputusan founder B8: potongan PPh21 karyawan di atas gaji tersedia jadi piutang karyawan (`tax.pph21ReceivableIdr`), bukan beban perusahaan; setoran tetap T, tanpa gross-up.
+- Engine `pph21.ts`: W = clamp(De + bE, 0, cap), piutang = sisanya, tidak masuk X; priorTax memuat piutang; jalur settlement dihapus (6ajk hilang). Fuzz diferensial architect 16.000 tahun: 0 beda dengan model.
+- R63: sebelum X = T = B = 5.646.900 (PKP 77.646.000); sesudah X 0, T 4.800.000, piutang 4.800.000 (PKP 72.000.000).
+- xzid: `payslipWithholdingCap` + builder fixtures mengisi `employeeWithholdingCapIdr`.
+- Penagihan: urutan BPJS, PPH21, LATE, PPH21_RECEIVABLE, LOAN, plafon = sisa sebelum pinjaman; refund PPh21 menetting piutang. Totals run punya `pph21ReceivableIdr` / `pph21ReceivableCollectedIdr`.
+- Jurnal: role `employee_receivable`, akun 1204 Piutang Karyawan, baris di `payroll_run.completed`. Tanpa migrasi.
+- Gate: 44 file test payroll/accounting/hris lulus (758 lulus, 15 skip), tsc api/shared/web bersih, eslint, prettier. Review K: reviewer Opus 0 temuan, architect approve.
+- Follow-up: legend-s8a3 (aturan payroll tidak seimbang + backfill mapping 1204), legend-itph (open item party employee), legend-45lm (piutang karyawan keluar / write-off), legend-f2rv (ekspor menghitung piutang), legend-8463 (default proportional menghasilkan piutang besar).
+- Berikut: second-opinion Codex brief 170b, gerbang founder untuk merge.
 
 ## legend-9fhs event edge tidak lagi menghentikan sinkron ke cloud (engineer, cabang `ws/fix-9fhs`, 2026-11-09)
 

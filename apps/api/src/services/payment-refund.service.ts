@@ -35,6 +35,7 @@ import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
+  approvalPolicies,
   approvalRequests,
   paymentEvidence,
   paymentIntents,
@@ -45,6 +46,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { SYSTEM_ACCOUNT_ID } from "../lib/system-account.ts";
 import {
   emitOperationsEvent,
   OPERATIONS_NOTIFICATION_DESTINATION,
@@ -97,6 +99,34 @@ const REFUND_DEADLINE_MINUTES = 1440;
  * REFUND_DEADLINE_MINUTES.
  */
 const REFUND_REQUEST_DEADLINE_MINUTES = 10080;
+/**
+ * Requester of the approval chain of a refund the system created (legend-2dnh).
+ * A reserved, banned user row without account or roles (migration 0144): it
+ * satisfies the requested_by foreign key, can never sign in, and can never
+ * decide (decided_by <> requested_by).
+ */
+export const SYSTEM_APPROVAL_REQUESTER = userIdSchema.parse(SYSTEM_ACCOUNT_ID);
+/** Pre-deploy pending refunds opened per tenant by one sweep round. */
+const OPEN_PENDING_CHAINS_BATCH = 50;
+/**
+ * Lock wait of one backfill candidate: a refund whose intent, fund or refund row
+ * is held elsewhere (a payout, a webhook, a decision) is skipped for this round
+ * instead of holding up the rest of the backfill and the payouts after it.
+ */
+const OPEN_PENDING_CHAINS_LOCK_TIMEOUT_MS = 2_000;
+/**
+ * Rotating cursor of the backfill, per tenant: the (created_at, id) of the last
+ * refund tried. The next round starts after it, so refunds whose chain can never
+ * open do not take every batch and starve newer ones. Process memory only: a
+ * restart starts again from the oldest, which is safe (the backfill is idempotent).
+ */
+const pendingChainCursor = new Map<string, { createdAt: string; id: string }>();
+
+/** Test hook: forget the backfill cursor of one tenant (or all). */
+export function resetPendingRefundChainCursor(tenantId?: string): void {
+  if (tenantId === undefined) pendingChainCursor.clear();
+  else pendingChainCursor.delete(tenantId);
+}
 /** Lease on an in-flight provider call; another worker skips while it holds. */
 const PAYOUT_CLAIM_MS = 120_000;
 /** Deadline of one provider call; a timeout is an unknown outcome. */
@@ -129,6 +159,14 @@ export const SETTLED_OUTSIDE_PROVIDER = "SETTLED_OUTSIDE_PROVIDER";
  * answer clears the flag, and ops close it with settle-manually once paid.
  */
 export const PAYOUT_NOT_FOUND_MAYBE_SENT = "PAYOUT_NOT_FOUND_MAYBE_SENT";
+/**
+ * The provider answered the refund POST, but for another payment, amount or
+ * idempotency key (legend-r7g2). Money may have moved: never re-sent, never
+ * replaced by MANUAL_RECONCILIATION, escalated; ops check the provider
+ * dashboard before any settle-manually (the provider ids are in the error log;
+ * the audit masks them and keeps status and amount).
+ */
+export const PAYOUT_IDENTITY_MISMATCH = "DOIT_REFUND_IDENTITY_MISMATCH";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
@@ -559,9 +597,19 @@ function assertChainBound(rows: readonly ChainRow[], refund: Refund): void {
 }
 
 /** requestReason must be 3..500 characters. */
+/**
+ * The approval request reason: at most 500 and at least 3 characters, counted
+ * as PostgreSQL `char_length` does (code points, not UTF-16 units: "👍👍" is 2).
+ */
 function requestReasonOf(reason: string): string {
-  const trimmed = reason.trim().slice(0, 500);
-  return trimmed.length < 3 ? `Refund ${trimmed}`.trim() : trimmed;
+  // At most 500 code points and 500 UTF-16 units (openApprovalRequest checks
+  // `.length`), never splitting a surrogate pair.
+  let kept = "";
+  for (const char of reason.trim()) {
+    if (kept.length + char.length > 500) break;
+    kept += char;
+  }
+  return Array.from(kept).length >= 3 ? kept : `Refund ${kept}`.trim();
 }
 
 function isUserId(id: string): boolean {
@@ -620,7 +668,8 @@ async function setRefundChain(
  * deciding first (legend-zi9o). Returns the refund with its chain id. A refund
  * below every tier keeps the lazy direct path, and a tenant without refund
  * policy rows is unchanged: decide still fails closed (APPROVAL_POLICY_MISSING).
- * System-requested refunds are not opened here; the first human submits them.
+ * A system-requested refund (legend-2dnh) opens with SYSTEM_APPROVAL_REQUESTER,
+ * so any supervisor can decide it.
  */
 export async function openRefundChainAtRequest(
   tx: Tx,
@@ -628,15 +677,16 @@ export async function openRefundChainAtRequest(
   refund: Refund,
   now: Date,
 ): Promise<Refund> {
-  if (!isUserId(refund.requestedBy) || refund.approvalChainId !== null)
-    return refund;
+  if (refund.approvalChainId !== null) return refund;
   try {
     const opened = await openApprovalRequest(
       tx,
       context,
       refundApprovalInput(
         refund,
-        refund.requestedBy,
+        isUserId(refund.requestedBy)
+          ? refund.requestedBy
+          : SYSTEM_APPROVAL_REQUESTER,
         now,
         REFUND_REQUEST_DEADLINE_MINUTES,
       ),
@@ -652,6 +702,117 @@ export async function openRefundChainAtRequest(
       return refund;
     throw error;
   }
+}
+
+/**
+ * `openRefundChainAtRequest` inside a savepoint: a failure is logged (refund id
+ * and error code only) and the refund is returned unchanged, so a chain problem
+ * never rolls back the caller (a POS payment, a deposit). The decide-time lazy
+ * open and the sweep (`openPendingRefundChains`) pick the refund up later.
+ */
+export async function openRefundChainSafely(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<Refund> {
+  try {
+    return await tx.transaction(async (savepoint) =>
+      openRefundChainAtRequest(savepoint, context, refund, now),
+    );
+  } catch (error) {
+    logger.error(
+      { refundId: refund.id, code: errorCodeOf(error) },
+      "Refund approval chain could not be opened at creation",
+    );
+    return refund;
+  }
+}
+
+/**
+ * Opens the approval chain of `pending` refunds that predate the request-time
+ * open (legend-zi9o, legend-2dnh): no chain yet and an amount at or above the
+ * lowest tier floor of the tenant's refund matrix. Oldest first from a rotating
+ * per-tenant cursor (`pendingChainCursor`), `limit` per call, each in its own
+ * transaction under the refund locks with a short lock wait (a failure or a held
+ * lock is logged and skipped). Stops early on `shouldStop` (worker shutdown) or once
+ * `budgetMs` is spent, so payouts in the same sweep are never starved.
+ * Idempotent: an opened refund no longer matches. Returns the number of chains
+ * opened.
+ */
+export async function openPendingRefundChains(
+  context: ScopedTenantContext,
+  now: Date = new Date(),
+  limit = OPEN_PENDING_CHAINS_BATCH,
+  budgetMs = PAYOUT_SWEEP_BUDGET_MS,
+  shouldStop: () => boolean = () => false,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const cursor = pendingChainCursor.get(tenantId);
+  const candidates = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        id: paymentRefunds.id,
+        createdAt: sql<string>`${paymentRefunds.createdAt}::text`,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.status, "pending"),
+          isNull(paymentRefunds.approvalChainId),
+          sql`${paymentRefunds.amountIdr} >= (SELECT min(coalesce(${approvalPolicies.thresholdIdr}, 0)) FROM ${approvalPolicies} WHERE ${approvalPolicies.tenantId} = ${tenantId} AND ${approvalPolicies.actionType} = ${REFUND_ACTION_TYPE})`,
+          cursor
+            ? sql`(${paymentRefunds.createdAt}, ${paymentRefunds.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`
+            : undefined,
+        ),
+      )
+      .orderBy(asc(paymentRefunds.createdAt), asc(paymentRefunds.id))
+      .limit(limit),
+  );
+  // The cursor moves past each refund tried below. Only a short page that is
+  // worked to its end wraps the next round back to the oldest; a round cut short
+  // (budget, shutdown) resumes after the last refund it tried.
+  // Plain read, then one short transaction per refund: the refund row is locked
+  // only through lockRefundGraph (intent -> fund -> refund), the same order as
+  // settle and payout, so the sweep never deadlocks with them and holds no lock
+  // past one refund. The state is re-checked under that lock.
+  let opened = 0;
+  let stoppedEarly = false;
+  const started = Date.now();
+  for (const candidate of candidates) {
+    if (shouldStop() || Date.now() - started >= budgetMs) {
+      stoppedEarly = true;
+      break;
+    }
+    pendingChainCursor.set(tenantId, {
+      createdAt: candidate.createdAt,
+      id: candidate.id,
+    });
+    try {
+      const done = await withTenant(db, context, async (tx) => {
+        await tx.execute(
+          sql.raw(
+            `SET LOCAL lock_timeout = '${OPEN_PENDING_CHAINS_LOCK_TIMEOUT_MS}ms'`,
+          ),
+        );
+        const { refund } = await lockRefundGraph(tx, tenantId, candidate.id);
+        if (refund.status !== "pending" || refund.approvalChainId !== null)
+          return false;
+        const next = await openRefundChainAtRequest(tx, context, refund, now);
+        return next.approvalChainId !== null;
+      });
+      if (done) opened += 1;
+    } catch (error) {
+      logger.warn(
+        { refundId: candidate.id, code: errorCodeOf(error) },
+        "Pending refund approval chain could not be opened",
+      );
+    }
+  }
+  if (!stoppedEarly && candidates.length < limit)
+    pendingChainCursor.delete(tenantId);
+  return opened;
 }
 
 /**
@@ -860,15 +1021,16 @@ async function decideRefund(
             });
             return { kind: "done" };
           }
-          let justOpened = false;
           if (chainId === null) {
             const opened = await openApprovalRequest(
               tx,
               context,
               refundApprovalInput(
                 refund,
-                // A system requester has no user row: the first human acting submits.
-                systemRequester ? actor : refund.requestedBy,
+                // A system refund's chain belongs to the reserved system user.
+                systemRequester
+                  ? SYSTEM_APPROVAL_REQUESTER
+                  : refund.requestedBy,
                 now,
                 REFUND_DEADLINE_MINUTES,
               ),
@@ -915,17 +1077,14 @@ async function decideRefund(
             }
             await setRefundChain(tx, refund, opened.chainId, now);
             chainId = opened.chainId;
-            justOpened = true;
           }
 
           const rows = await chainRowsOf(tx, refund.tenantId, chainId);
           assertChainBound(rows, refund);
-          // The submitter of a system-requested refund is the chain requester: their
-          // first call only submits, another person decides (never the submitter).
-          if (systemRequester && rows[0]?.requestedBy === actor) {
-            if (justOpened) return { kind: "done" };
+          // Legacy chains of a system refund were opened by the human who first
+          // acted (they are the chain requester): never their own approver.
+          if (systemRequester && rows[0]?.requestedBy === actor)
             throw new AccessError("APPROVER_IS_REQUESTER");
-          }
           const open = rows.find((row) => row.status === "pending");
           return { kind: "decide", requestId: open?.id ?? null };
         },
@@ -1242,10 +1401,24 @@ const keepQuarantine = (next: string | null) =>
 
 /**
  * An unknown outcome never erases a sticky flag already on the row: the
- * quarantine, or a maybe-sent payout the provider did not find.
+ * quarantine, a maybe-sent payout the provider did not find, or a provider
+ * answer for another payment (legend-r7g2).
  */
 const keepSticky = (next: string) =>
-  sql`CASE WHEN ${paymentRefunds.lastPayoutError} IN (${PAYOUT_QUARANTINED}, ${PAYOUT_NOT_FOUND_MAYBE_SENT}) THEN ${paymentRefunds.lastPayoutError} ELSE ${next}::text END`;
+  sql`CASE WHEN ${paymentRefunds.lastPayoutError} IN (${PAYOUT_QUARANTINED}, ${PAYOUT_NOT_FOUND_MAYBE_SENT}, ${PAYOUT_IDENTITY_MISMATCH}) THEN ${paymentRefunds.lastPayoutError} ELSE ${next}::text END`;
+
+/** Ids-only provider facts an unknown-outcome error may carry (legend-r7g2). */
+function providerEvidenceOf(error: unknown): Record<string, unknown> | null {
+  const evidence =
+    typeof error === "object" && error !== null
+      ? (error as { providerEvidence?: unknown }).providerEvidence
+      : undefined;
+  return typeof evidence === "object" &&
+    evidence !== null &&
+    !Array.isArray(evidence)
+    ? (evidence as Record<string, unknown>)
+    : null;
+}
 
 /**
  * Fencing check right before a send (legend-xd2q): the claim is still ours, the
@@ -1553,6 +1726,7 @@ export async function runRefundPayout(
   const port = paymentRefundGateway();
   let result = null as GatewayRefundLookup | null;
   let unknownCode: string | null = null;
+  let unknownEvidence: Record<string, unknown> | null = null;
   try {
     if (claim.lookupFirst) {
       const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
@@ -1599,6 +1773,7 @@ export async function runRefundPayout(
   } catch (error) {
     result = null;
     unknownCode = errorCodeOf(error);
+    unknownEvidence = providerEvidenceOf(error);
   }
 
   const recordedAt = new Date();
@@ -1629,7 +1804,16 @@ export async function runRefundPayout(
     const keepLease = locked.refund.payoutClaimToken !== claim.token;
     if (outcome === null) {
       // Unknown outcome: record its code, but keep a sticky flag.
-      if (keepLease) return locked.refund;
+      if (keepLease) {
+        // A stale worker leaves the row alone, but a foreign answer is never
+        // lost silently (legend-r7g2).
+        if (unknownCode === PAYOUT_IDENTITY_MISMATCH)
+          logger.error(
+            { refundId: refund.id, providerEvidence: unknownEvidence },
+            "Refund payout answer names another payment, amount or key (stale worker; lease taken over). Check the provider dashboard",
+          );
+        return locked.refund;
+      }
       const [updated] = await tx
         .update(paymentRefunds)
         .set({
@@ -1645,7 +1829,31 @@ export async function runRefundPayout(
           ),
         )
         .returning();
-      return updated ?? locked.refund;
+      if (!updated) return locked.refund;
+      if (
+        updated.lastPayoutError === PAYOUT_IDENTITY_MISMATCH &&
+        locked.refund.lastPayoutError !== PAYOUT_IDENTITY_MISMATCH
+      ) {
+        await refundAudit(tx, context, {
+          actorId: null,
+          row: updated,
+          action: "payment.refund_payout_identity_mismatch",
+          now: recordedAt,
+          reason: PAYOUT_IDENTITY_MISMATCH,
+          before: { lastPayoutError: locked.refund.lastPayoutError },
+          after: {
+            amountIdr: updated.amountIdr,
+            status: updated.status,
+            lastPayoutError: updated.lastPayoutError,
+            providerEvidence: unknownEvidence,
+          },
+        });
+        logger.error(
+          { refundId: updated.id, providerEvidence: unknownEvidence },
+          "Refund payout answer names another payment, amount or key; it is never re-sent. Check the provider dashboard before any settle-manually",
+        );
+      }
+      return updated;
     }
     if (outcome.status === "not_found") {
       // The provider has no record of a refund that may have been sent: never
@@ -1753,7 +1961,8 @@ const ESCALATION_PAYOUT_STALLED_HOURS = 24;
  * provider still answering `pending`, aged from `decided_at` (default 72 h).
  * Case `payout_stalled`: `approved` with no provider polls whose payout is
  * stuck (with a gateway: `last_payout_error` is `MANUAL_RECONCILIATION`,
- * `PAYOUT_QUARANTINED` or `EVIDENCE_MAPPING_REQUIRED`; without a gateway: any
+ * `PAYOUT_QUARANTINED`, `EVIDENCE_MAPPING_REQUIRED` or
+ * `DOIT_REFUND_IDENTITY_MISMATCH`; without a gateway: any
  * such refund, since nothing will pay it), aged from `payout_stall_detected_at`
  * (default 24 h). That stall clock is owned here: it is stamped when a stall is
  * first seen and cleared when the refund is no longer stalled. Polls never
@@ -1785,6 +1994,7 @@ export async function escalateStaleRefunds(
               MANUAL_RECONCILIATION,
               PAYOUT_QUARANTINED,
               EVIDENCE_MAPPING_REQUIRED,
+              PAYOUT_IDENTITY_MISMATCH,
             ].map((value) => sql`${value}`),
             sql`, `,
           )})`
@@ -1946,7 +2156,8 @@ export async function escalateStaleRefunds(
  * counter). After `PAYOUT_MAX_ATTEMPTS` unknown outcomes, or a `pending` answer
  * older than 72 hours, the refund stays `approved`, is flagged
  * `MANUAL_RECONCILIATION` and logged for ops. A round stops claiming new
- * refunds once `budgetMs` is spent. First it escalates refunds that wait too
+ * refunds once `budgetMs` is spent. First it opens the chain of pre-deploy
+ * pending refunds (`openPendingRefundChains`), then it escalates refunds that wait too
  * long or whose payout is stalled (`escalateStaleRefunds`, also without a
  * gateway); a failure there is logged and never blocks payouts.
  */
@@ -1959,6 +2170,21 @@ export async function sweepApprovedRefundPayouts(
   shouldStop: () => boolean = () => false,
 ): Promise<{ attempted: number; exhausted: number; escalated: number }> {
   let escalated = 0;
+  try {
+    // At most half the sweep budget: payouts below keep the other half.
+    await openPendingRefundChains(
+      context,
+      now,
+      OPEN_PENDING_CHAINS_BATCH,
+      Math.floor(budgetMs / 2),
+      shouldStop,
+    );
+  } catch (error) {
+    logger.warn(
+      { tenantId: context.tenant.tenantId, code: errorCodeOf(error) },
+      "Pending refund chain sweep failed",
+    );
+  }
   try {
     escalated = await escalateStaleRefunds(context, now);
   } catch {
@@ -2006,6 +2232,7 @@ export async function sweepApprovedRefundPayouts(
           // specific) flag.
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_QUARANTINED}`,
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_NOT_FOUND_MAYBE_SENT}`,
+          sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${PAYOUT_IDENTITY_MISMATCH}`,
         ),
       )
       .returning({ id: paymentRefunds.id });

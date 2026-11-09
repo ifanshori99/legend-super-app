@@ -4,9 +4,11 @@
 // of that endpoint (docs/frontend.md).
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { getFloorBoard } from "@starter/shared/qr-order";
+import { orgEndpoints } from "@starter/shared/platform";
 import {
   getPbjtMonthlyRecap,
   listServiceChargeRules,
+  listTaxRuleConflicts,
   listTaxRules,
   listTaxSettings,
 } from "@starter/shared/tax";
@@ -20,6 +22,14 @@ export const TAX_PAGE_SIZE = 100;
 
 export const taxRulesQuery = (query: Query<typeof listTaxRules>) =>
   endpointQueryOptions(listTaxRules, { query });
+
+export const taxRuleConflictsQuery = (
+  query: Query<typeof listTaxRuleConflicts>,
+) => endpointQueryOptions(listTaxRuleConflicts, { query });
+
+/** Outlet names for the overlap banner; shares the tenant settings cache entry. */
+export const taxOutletsQuery = () =>
+  endpointQueryOptions(orgEndpoints.listOutlets, { query: { limit: 100 } });
 
 export const serviceChargeRulesQuery = (
   query: Query<typeof listServiceChargeRules>,
@@ -37,6 +47,7 @@ const defaultListQuery = { limit: TAX_PAGE_SIZE };
 export const taxRulesDefaultQuery = () => taxRulesQuery(defaultListQuery);
 export const serviceChargeRulesDefaultQuery = () =>
   serviceChargeRulesQuery(defaultListQuery);
+export const taxRuleConflictsDefaultQuery = () => taxRuleConflictsQuery({});
 export const taxSettingsDefaultQuery = () => taxSettingsQuery(defaultListQuery);
 export const defaultRecapQuery = (period: string) =>
   pbjtRecapQuery({ outletId: TAX_OUTLET_ID, period });

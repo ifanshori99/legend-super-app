@@ -75,6 +75,7 @@ export const payrollConfigMessages = {
     loan_installment: "Cicilan kasbon",
     bpjs_employee: "Iuran BPJS karyawan",
     pph21: "PPh 21",
+    pph21_receivable: "Penagihan kekurangan PPh 21",
     custom_earning: "Pendapatan lain",
     custom_deduction: "Potongan lain",
   },

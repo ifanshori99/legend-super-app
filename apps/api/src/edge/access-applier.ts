@@ -216,8 +216,9 @@ export async function applyStaffPinSet(
     failedAttempts: 0,
     lockedUntil: null,
     setBy: payload.setBy,
-    // Commit-time clock, not the batch transaction's start (review K F5):
-    // the edge export pages by updated_at behind a settle window.
+    // Commit-time clock, not the batch transaction's start (review K F5).
+    // The edge export now pages by sync_xid (legend-t9ii); updated_at stays
+    // an informational version.
     updatedAt: sql`clock_timestamp()`,
   };
   const ownRow = async () => {

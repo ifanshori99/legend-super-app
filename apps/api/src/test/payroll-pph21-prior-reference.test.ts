@@ -168,7 +168,7 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       employerSchemeBaseIdr: 94_532_487,
       taxAllowanceIdr: 1_532_487,
       // bead legend-4ndx: always reported, 0 without a cap excess.
-      pph21CapExcessIdr: 0,
+      pph21ReceivableIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -263,7 +263,7 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       employerSchemeBaseIdr: 194_407_053,
       taxAllowanceIdr: 24_407_053,
       // bead legend-4ndx: always reported, 0 without a cap excess.
-      pph21CapExcessIdr: 0,
+      pph21ReceivableIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -338,7 +338,7 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       employerSchemeBaseIdr: 59_400_000,
       taxAllowanceIdr: 0,
       // bead legend-4ndx: always reported, 0 without a cap excess.
-      pph21CapExcessIdr: 0,
+      pph21ReceivableIdr: 0,
     });
 
     for (const allocation of ALLOCATIONS) {
@@ -474,7 +474,7 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       employerSchemeBaseIdr: 19_134_870,
       taxAllowanceIdr: 111_618,
       // bead legend-4ndx: always reported, 0 without a cap excess.
-      pph21CapExcessIdr: 0,
+      pph21ReceivableIdr: 0,
     });
     expect(prior.grossSchemeBaseIdr + prior.employerSchemeBaseIdr).toBe(
       prior.taxableGrossIdr,
@@ -523,7 +523,7 @@ describe("PPh 21 prior-year builder feeding the last period (legend-s5c1)", () =
       employerSchemeBaseIdr: 0,
       taxAllowanceIdr: 0,
       // bead legend-4ndx: always reported, 0 without a cap excess.
-      pph21CapExcessIdr: 0,
+      pph21ReceivableIdr: 0,
     });
   });
 });

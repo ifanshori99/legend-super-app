@@ -1013,8 +1013,29 @@
     {
       "idx": 144,
       "version": "7",
+      "when": 1794217265533,
+      "tag": "0144_system_approval_requester",
+      "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1794218335364,
+      "tag": "0145_cash_shift_close_approval_policies_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1794218337968,
+      "tag": "0146_pos_shift_count_cash_watermark",
+      "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
       "when": 1794230000000,
-      "tag": "0144_staff_pin_sync_xid",
+      "tag": "0147_staff_pin_sync_xid",
       "breakpoints": true
     }
   ]

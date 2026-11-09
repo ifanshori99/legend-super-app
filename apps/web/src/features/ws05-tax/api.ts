@@ -9,6 +9,7 @@ import {
   createTaxSettings as createTaxSettingsEndpoint,
   getPbjtMonthlyRecap as getPbjtMonthlyRecapEndpoint,
   listServiceChargeRules as listServiceChargeRulesEndpoint,
+  listTaxRuleConflicts as listTaxRuleConflictsEndpoint,
   listTaxRules as listTaxRulesEndpoint,
   listTaxSettings as listTaxSettingsEndpoint,
   publishServiceChargeRule as publishServiceChargeRuleEndpoint,
@@ -39,6 +40,10 @@ export type PbjtRecapQuery = Query<typeof getPbjtMonthlyRecapEndpoint>;
 
 export const fetchTaxRules = (query: TaxListQuery) =>
   callEndpoint(listTaxRulesEndpoint, { query });
+
+export const fetchTaxRuleConflicts = (
+  query: Query<typeof listTaxRuleConflictsEndpoint>,
+) => callEndpoint(listTaxRuleConflictsEndpoint, { query });
 
 export const createTaxRule = (body: TaxRuleInput) =>
   callEndpoint(createTaxRuleEndpoint, { body });

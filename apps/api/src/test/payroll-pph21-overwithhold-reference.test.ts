@@ -88,11 +88,13 @@ const run = (
   } as Input);
 
 // The new invariant, checked in every case: the money that leaves the
-// employee and the company, less what is paid back, is exactly T.
+// employee and the company, plus what the employee owes back as a receivable
+// (founder decision B8), less what is paid back, is exactly T.
 const expectAccounting = (r: Result) => {
   expect(
     r.pph21WithheldIdr +
-      r.pph21EmployerBorneIdr -
+      r.pph21EmployerBorneIdr +
+      r.pph21ReceivableIdr -
       r.pph21RefundIdr -
       r.pph21EmployerRefundIdr,
   ).toBe(r.pph21Idr);
@@ -497,6 +499,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       w: number;
       refund: number;
       employerRefund: number;
+      receivable?: number; // employee receivable, default 0 (founder decision B8)
       ce: number;
       cr: number;
       de?: number; // bound on W; default De = 150_000 (bead legend-mmgd)
@@ -524,6 +527,7 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         expect(r.pph21EmployerBorneIdr).toBe(0);
         expect(r.pph21RefundIdr).toBe(c.refund);
         expect(r.pph21EmployerRefundIdr).toBe(c.employerRefund);
+        expect(r.pph21ReceivableIdr).toBe(c.receivable ?? 0);
         expect(r.annual?.annualTaxIdr).toBe(18_300_000);
         expect(r.annual?.priorPph21Idr).toBe(20_000_000);
         expectAccounting(r);
@@ -531,23 +535,24 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
       });
 
     // with base, proportional (updated for bead legend-mmgd: signed balances,
-    //   and bead legend-4ndx: W is capped at the available pay, the excess is
-    //   the company's):
+    //   bead legend-4ndx: W is capped at the available pay, and founder
+    //   decision B8 (bead legend-kn3n): the excess is the employee's receivable):
     //   bR = 9_818_181 - 17_450_000 = -7_631_819, bE = -2_000_000 + 7_631_819 =
     //   5_631_819 (as O5: the employee is short, the company over-paid).
     //   Employee's own amount De + bE = 150_000 + 5_631_819 = 5_781_819, but
     //   the cap is gross lines + gross_up + net lines - deductible =
     //   1_000_000 + 1_000_000 + 0 - 0 = 2_000_000 (the allowance is 0 here), so
-    //   excess = 5_781_819 - 2_000_000 = 3_781_819 and W = 2_000_000 (no
-    //   refund). Company: r = Dr + bR + excess = 150_000 - 7_631_819 +
-    //   3_781_819 = -3_700_000 < 0 => company refund 3_700_000, borne 0 (the
-    //   excess only reduces the refund). Check: 2_000_000 - 3_700_000 =
-    //   -1_700_000 = T. (Without the cap: W 5_781_819, company refund
-    //   7_481_819.)
+    //   W = 2_000_000 and the excess 5_781_819 - 2_000_000 = 3_781_819 is the
+    //   employee's receivable (not netted into the company's refund). Company:
+    //   Dr + bR = 150_000 - 7_631_819 = -7_481_819 < 0 => company refund
+    //   7_481_819, borne 0. Check: 2_000_000 + 3_781_819 - 7_481_819 =
+    //   -1_700_000 = T. (Before B8 the excess lowered the company's refund to
+    //   3_700_000.)
     check("with scheme base", MIXED_BASES, "proportional", {
       w: 2_000_000,
       refund: 0,
-      employerRefund: 3_700_000,
+      employerRefund: 7_481_819,
+      receivable: 3_781_819,
       ce: 0,
       cr: 7_631_819,
       de: 2_000_000, // the available pay (bead legend-4ndx), below De + bE 5_781_819

@@ -7,12 +7,17 @@
 //   or roll back together with the tenant/outlet that asked for them.
 // - Idempotent and additive: existing rows are never updated or removed. UOMs
 //   conflict-skip on (tenant_id, code); locations are added per missing type
-//   (type, not name) under a per-outlet advisory lock, because the table has
-//   no unique per type.
+//   (type, not name) under the per-outlet `lockOutletStockLocations` advisory
+//   lock (shared with the location create/rename routes), because the table
+//   has no unique per type. A missing type whose default name is already
+//   taken (case-insensitive) is still added, under the first free
+//   "<name> 2", "<name> 3", ... so a name clash never leaves a type missing.
+//   A type counts as present even when its row is inactive; such a row is
+//   the owner's choice and is not replaced.
 // - One audit row per call that inserted something; a call that inserted
 //   nothing writes no audit.
 
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   createUlid,
   type ScopedTenantContext,
@@ -25,12 +30,14 @@ import {
 import {
   STANDARD_STOCK_LOCATIONS,
   STANDARD_UOM_CATALOG,
+  type StockLocationType,
 } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
 import { outlets, stockLocations, uoms } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 import { recordAudit } from "./core-audit.ts";
+import { lockOutletStockLocations } from "./tenant-config-locks.ts";
 
 /** Audit field names kept unmasked: counts and catalog codes, no free text. */
 const AUDIT_SAFE_FIELDS = ["count", "uomCodes", "locationTypes"] as const;
@@ -110,12 +117,10 @@ export async function provisionOutletStockLocations(
   actorId: UserId | null,
 ): Promise<{ inserted: number }> {
   const tenantId = context.tenant.tenantId;
-  // Same lock key as `lockOutletLocations` in inventory-setup.service.ts, so
+  // Same key as `lockOutletLocations` in inventory-setup.service.ts, so
   // provisioning and the location create/rename routes serialise per outlet:
   // two writers can never both see a type or a name as free.
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`inventory:setup:locations:${tenantId}:${outletId}`}, 0))`,
-  );
+  await lockOutletStockLocations(tx, tenantId, outletId);
   const existing = await tx
     .select({ type: stockLocations.type, name: stockLocations.name })
     .from(stockLocations)
@@ -127,14 +132,19 @@ export async function provisionOutletStockLocations(
     );
   const present = new Set<string>(existing.map((row) => row.type));
   // Names are unique per outlet, case-insensitively (`assertLocationNameFree`).
-  // A type whose default name the tenant already uses for another location is
-  // skipped rather than renamed or duplicated: existing rows are never touched.
+  // A missing type whose default name is taken gets the first free
+  // "<name> 2", "<name> 3", ...; existing rows are never renamed or touched.
+  // Names picked earlier in this batch count as taken too.
   const takenNames = new Set(existing.map((row) => row.name.toLowerCase()));
-  const missing = STANDARD_STOCK_LOCATIONS.filter(
-    (location) =>
-      !present.has(location.type) &&
-      !takenNames.has(location.name.toLowerCase()),
-  );
+  const missing: { type: StockLocationType; name: string }[] = [];
+  for (const location of STANDARD_STOCK_LOCATIONS) {
+    if (present.has(location.type)) continue;
+    let name: string = location.name;
+    for (let n = 2; takenNames.has(name.toLowerCase()); n += 1)
+      name = `${location.name} ${n}`;
+    takenNames.add(name.toLowerCase());
+    missing.push({ type: location.type, name });
+  }
   if (missing.length === 0) return { inserted: 0 };
   await tx.insert(stockLocations).values(
     missing.map((location) => ({

@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AccessError,
+  DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
   approvalPolicyChangedEvent,
   approvalMatrixSchema,
@@ -75,6 +76,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { SYSTEM_ACCOUNT_ID } from "../lib/system-account";
 import { recordAudit } from "./audit-writer";
 import { appendOutbox } from "./core-outbox";
 import {
@@ -326,6 +328,33 @@ export async function seedTenantRoleTemplates(
     WHERE NOT EXISTS (
       SELECT 1 FROM approval_policies p
       WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'refund'
+    )
+  `);
+  // legend-ccpn: every shift close needs one approval (Q28, PRD §3.10), PIN at
+  // the cashier is enough. Default matrix from Rp0
+  // (DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES; same rows as the data
+  // migration): level 1 for supervisor, outlet manager and general manager,
+  // the templates that hold shift.cash.approve_close. All rows land in one
+  // statement, only when the tenant has no cash_shift_close row; a template
+  // role that does not exist adds no row.
+  const cashShiftCloseValues = sql.join(
+    DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'cash_shift_close', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${cashShiftCloseValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'cash_shift_close'
     )
   `);
 }
@@ -673,12 +702,26 @@ export async function grantRoleAssignment(
       .limit(1);
     if (!roleRow) throw new HttpError(404, "NOT_FOUND", "Role not found.");
     const [grantee] = await tx
-      .select({ id: user.id })
+      .select({ id: user.id, banned: user.banned, banExpires: user.banExpires })
       .from(user)
       .where(eq(user.id, input.userId))
       .limit(1);
     if (!grantee)
       throw new HttpError(422, "VALIDATION_ERROR", "Unknown user account.");
+    // legend-2dnh: the reserved system account (approval requester of refunds the
+    // system creates) and an account under an active ban (no expiry, or one still
+    // ahead) never receive a role. Migration 0144 enforces the same rule in the
+    // database for every other path.
+    const banActive =
+      grantee.banned === true &&
+      (grantee.banExpires === null ||
+        grantee.banExpires.getTime() > Date.now());
+    if (grantee.id === SYSTEM_ACCOUNT_ID || banActive)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "This account cannot be given a role.",
+      );
     const data = await loadTenantAccessInTransaction(
       tx,
       context,

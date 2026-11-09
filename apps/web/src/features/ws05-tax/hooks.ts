@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint } from "@starter/shared/api";
 import {
   listServiceChargeRules,
+  listTaxRuleConflicts,
   listTaxRules,
   listTaxSettings,
 } from "@starter/shared/tax";
@@ -13,6 +14,8 @@ import {
   defaultRecapQuery,
   floorZonesQuery,
   serviceChargeRulesDefaultQuery,
+  taxOutletsQuery,
+  taxRuleConflictsDefaultQuery,
   taxRulesDefaultQuery,
   taxSettingsDefaultQuery,
 } from "./queries";
@@ -44,6 +47,15 @@ export function useTaxRules() {
   return useQuery(taxRulesDefaultQuery());
 }
 
+/** Published rules that tie in the engine; best effort, never blocks the page. */
+export function useTaxRuleConflicts() {
+  return useQuery(taxRuleConflictsDefaultQuery());
+}
+
+export function useTaxOutlets() {
+  return useQuery(taxOutletsQuery());
+}
+
 export function useServiceChargeRules() {
   return useQuery(serviceChargeRulesDefaultQuery());
 }
@@ -65,7 +77,10 @@ export function useFloorZones() {
 // ---- Writes ----------------------------------------------------------------
 
 export function useCreateTaxRule() {
-  return useTaxMutation(api.createTaxRule, [listTaxRules]);
+  return useTaxMutation(api.createTaxRule, [
+    listTaxRules,
+    listTaxRuleConflicts,
+  ]);
 }
 
 export function useUpdateTaxRule() {
@@ -74,7 +89,7 @@ export function useUpdateTaxRule() {
       params: Parameters<typeof api.updateTaxRule>[0];
       body: Parameters<typeof api.updateTaxRule>[1];
     }) => api.updateTaxRule(variables.params, variables.body),
-    [listTaxRules],
+    [listTaxRules, listTaxRuleConflicts],
   );
 }
 
@@ -87,7 +102,7 @@ export function usePublishTaxRule() {
       api.publishTaxRule(variables.params, {
         idempotencyKey: variables.idempotencyKey,
       }),
-    [listTaxRules],
+    [listTaxRules, listTaxRuleConflicts],
   );
 }
 

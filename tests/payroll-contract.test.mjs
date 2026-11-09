@@ -118,6 +118,8 @@ const zeroTotals = {
   pph21Idr: 200_000,
   pph21WithheldIdr: 200_000,
   loanRepaymentIdr: 150_000,
+  pph21ReceivableIdr: 0,
+  pph21ReceivableCollectedIdr: 0,
   otherDeductionsIdr: 50_000,
   serviceChargeIdr: 500_000,
   reimbursementIdr: 0,

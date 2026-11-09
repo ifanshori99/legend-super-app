@@ -55,9 +55,9 @@ try {
   for (const { id } of rows) {
     const charts = await backfillTenantCharts(id);
     const inventory = await backfillTenantInventoryDefaults(id);
-    // A tax failure (e.g. the owner publishing a rule at the same moment hits
-    // the unique version key) must not skip the tenants after this one; rerun
-    // the backfill to finish it. The exit code still reports the failure.
+    // A tax failure must not skip the tenants after this one; rerun the
+    // backfill to finish it. (An owner publishing a tax rule at the same moment
+    // no longer fails it: both take the same tenant tax lock.) The exit code still reports the failure.
     try {
       const tax = await backfillTenantTaxDefaults(id);
       console.log(

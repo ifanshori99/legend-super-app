@@ -265,7 +265,7 @@ const NO_REFUND = {
   pph21RefundIdr: 0,
   pph21EmployerRefundIdr: 0,
   // Pay left covers every TER tax here: nothing borne for the cap (legend-4ndx).
-  pph21CapExcessIdr: 0,
+  pph21ReceivableIdr: 0,
   method: "ter",
 } as const;
 
@@ -641,7 +641,7 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
           pph21RefundIdr: 0,
           pph21EmployerRefundIdr: 0,
           // W 468_000 is within the pay left (8_000_000 - 120_000).
-          pph21CapExcessIdr: 0,
+          pph21ReceivableIdr: 0,
           noTaxIdSurchargeApplied: false,
           grossSchemeBaseIdr: 8_000_000,
           employerSchemeBaseIdr: 0,

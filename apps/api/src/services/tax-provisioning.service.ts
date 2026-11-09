@@ -19,7 +19,9 @@
 // - Idempotent and additive: a tenant that already has any tax rule (or any tax
 //   settings) is left exactly as it is for that table; nothing is updated.
 //   Serialised per tenant by an advisory lock, so two provisioning runs cannot
-//   both see the tenant as empty. Tax routes do not take this lock.
+//   both see the tenant as empty. The owner's tax rule and tax settings
+//   writers in tax.service.ts take the same lock (`lockTaxConfig`), so the
+//   check also cannot race an owner's create or publish.
 // - `effectiveFrom` is a fixed floor (Perda Kota Bandung 1/2024), not the
 //   fixture's date: fixtures are illustrative test data, and a later date would
 //   make older business dates fail closed with TAX_RULE_NOT_FOUND.
@@ -51,6 +53,10 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  lockServiceChargeConfig,
+  lockTaxConfig,
+} from "./tenant-config-locks.ts";
 
 /**
  * `published_by` is NOT NULL for a published row. Provisioning without a human
@@ -141,9 +147,7 @@ export async function provisionDefaultTaxConfig(
   actorId: UserId | null,
 ): Promise<{ rulesInserted: number; settingsInserted: number }> {
   const tenantId = context.tenant.tenantId;
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tax:provisioning:${tenantId}`}, 0))`,
-  );
+  await lockTaxConfig(tx, tenantId);
   const publishedBy = actorId ?? TAX_PROVISIONING_SYSTEM_USER;
   const publishedAt = new Date();
 
@@ -239,20 +243,6 @@ export const DEFAULT_SERVICE_CHARGE_ORDER_TYPES: TaxChannel[] = [
   "dine_in",
   "reservation",
 ];
-
-/**
- * Per-tenant advisory lock for service-charge configuration. The seed, the
- * owner's create and publish (`tax.service.ts`) all take it, so the seed's "any
- * tenant-wide rule?" check and the publish overlap check never race a write.
- */
-export async function lockServiceChargeConfig(
-  tx: TenantTransaction,
-  tenantId: string,
-): Promise<void> {
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`tax:service-provisioning:${tenantId}`}, 0))`,
-  );
-}
 
 /**
  * Seeds the default 5% dine-in service charge as an owner-editable v1 row.

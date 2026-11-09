@@ -326,6 +326,11 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["salaries_payable", "credit", "netPayIdr"],
       ["bpjs_payable", "credit", "totalBpjsIdr"],
       ["pph21_payable", "credit", "pph21Idr"],
+      // Founder B8: an employee's PPh 21 shortfall is a receivable, not a
+      // company cost. New receivable debits; collection from this run's pay
+      // credits (it reduces salaries_payable's net, see netPayIdr).
+      ["employee_receivable", "debit", "pph21ReceivableIdr"],
+      ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
     ],
   ),
   rule(

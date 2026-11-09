@@ -619,76 +619,105 @@ describe("§3.7 Pemberian Role", () => {
 
 describe("§3.7 Matriks Approval", () => {
   it("§3.7 saves tiers and rejects a matrix with a missing level", async () => {
-    const admin = await signedIn("Matrix Admin");
-    await assign(admin.userId, "owner");
-    const supervisor = await roleIdOf("supervisor");
-    const outletManager = await roleIdOf("outlet_manager");
+    // The PUT replaces the seeded tenant's whole matrix (refund and
+    // cash_shift_close defaults included); put it back afterwards so later
+    // files see the seeded matrix (legend-ccpn).
+    const savedPolicies = (
+      await owner.query(
+        "SELECT * FROM approval_policies WHERE tenant_id = $1",
+        [seededTenantId],
+      )
+    ).rows;
+    try {
+      const admin = await signedIn("Matrix Admin");
+      await assign(admin.userId, "owner");
+      const supervisor = await roleIdOf("supervisor");
+      const outletManager = await roleIdOf("outlet_manager");
 
-    const saved = await admin.client
-      .put("/api/access/approval-policies")
-      .set(originHeader)
-      .send({
-        policies: [
-          {
-            actionType: "void",
-            thresholdIdr: null,
-            approverRoleId: supervisor,
-            levels: 1,
-          },
-          {
-            actionType: "refund",
-            thresholdIdr: 500_000,
-            approverRoleId: supervisor,
-            levels: 1,
-          },
-          {
-            actionType: "refund",
-            thresholdIdr: 500_000,
-            approverRoleId: outletManager,
-            levels: 2,
-          },
-        ],
-      });
-    expect(saved.status).toBe(200);
-    expect(saved.body.data).toHaveLength(3);
-    expect(
-      saved.body.data.every(
-        (row: { requiresDistinctActor: boolean }) =>
-          row.requiresDistinctActor === true,
-      ),
-    ).toBe(true);
+      const saved = await admin.client
+        .put("/api/access/approval-policies")
+        .set(originHeader)
+        .send({
+          policies: [
+            {
+              actionType: "void",
+              thresholdIdr: null,
+              approverRoleId: supervisor,
+              levels: 1,
+            },
+            {
+              actionType: "refund",
+              thresholdIdr: 500_000,
+              approverRoleId: supervisor,
+              levels: 1,
+            },
+            {
+              actionType: "refund",
+              thresholdIdr: 500_000,
+              approverRoleId: outletManager,
+              levels: 2,
+            },
+          ],
+        });
+      expect(saved.status).toBe(200);
+      expect(saved.body.data).toHaveLength(3);
+      expect(
+        saved.body.data.every(
+          (row: { requiresDistinctActor: boolean }) =>
+            row.requiresDistinctActor === true,
+        ),
+      ).toBe(true);
 
-    const listed = await admin.client.get("/api/access/approval-policies");
-    expect(listed.status).toBe(200);
-    expect(listed.body.data).toHaveLength(3);
+      const listed = await admin.client.get("/api/access/approval-policies");
+      expect(listed.status).toBe(200);
+      expect(listed.body.data).toHaveLength(3);
 
-    const gap = await admin.client
-      .put("/api/access/approval-policies")
-      .set(originHeader)
-      .send({
-        policies: [
-          {
-            actionType: "refund",
-            thresholdIdr: 500_000,
-            approverRoleId: outletManager,
-            levels: 2,
-          },
-        ],
-      });
-    expect(gap.status).toBe(422);
+      const gap = await admin.client
+        .put("/api/access/approval-policies")
+        .set(originHeader)
+        .send({
+          policies: [
+            {
+              actionType: "refund",
+              thresholdIdr: 500_000,
+              approverRoleId: outletManager,
+              levels: 2,
+            },
+          ],
+        });
+      expect(gap.status).toBe(422);
 
-    expect(
-      audits.some(
-        (entry) =>
-          entry.action === "approval_policy.changed" &&
-          entry.tenantId === seededTenantId,
-      ),
-    ).toBe(true);
-    const events = await owner.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM domain_event_outbox
+      expect(
+        audits.some(
+          (entry) =>
+            entry.action === "approval_policy.changed" &&
+            entry.tenantId === seededTenantId,
+        ),
+      ).toBe(true);
+      const events = await owner.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM domain_event_outbox
        WHERE tenant_id = $1 AND aggregate_type = 'approval_policy'`,
-      [seededTenantId],
-    );
-    expect(events.rows[0]!.count).toBeGreaterThan(0);
+        [seededTenantId],
+      );
+      expect(events.rows[0]!.count).toBeGreaterThan(0);
+    } finally {
+      await owner.query("DELETE FROM approval_policies WHERE tenant_id = $1", [
+        seededTenantId,
+      ]);
+      for (const row of savedPolicies)
+        await owner.query(
+          `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            row.id,
+            row.tenant_id,
+            row.action_type,
+            row.threshold_idr,
+            row.approver_role_id,
+            row.levels,
+            row.requires_distinct_actor,
+          ],
+        );
+    }
   });
 });

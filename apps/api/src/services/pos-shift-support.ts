@@ -389,12 +389,137 @@ export async function heldCashOutIdrOf(
         eq(posOrderTenders.status, "captured"),
       ),
     );
-  // Parsed in bigint so a huge sum cannot silently lose precision.
+  // Parsed in bigint so a huge sum cannot silently lose precision. The
+  // writers bound every outflow (assertShiftOutflowBound), so only legacy
+  // data gets here: a conflict, never a 500 (legend-q7jj F3). The cashier
+  // can read it, so it never names held cash (legend-utqr).
   const total =
     BigInt(movements?.total ?? 0) + refundCash + BigInt(voided?.total ?? 0);
   if (total > BigInt(Number.MAX_SAFE_INTEGER))
-    throw new Error("Held cash out total is not a safe integer");
+    throw new CoreError(
+      "CONFLICT",
+      "Data kas shift ini tidak dapat dihitung; hubungi admin.",
+    );
   return Number(total);
+}
+
+/**
+ * legend-q7jj F1: how many cash rows the shift has, held or not: its cash
+ * movements, refunds and voids (all insert-only). A count stores it; the
+ * close refuses the count as stale when it moved, before any approval is
+ * judged, so the stale answer never depends on the held status (no balance
+ * oracle). Call under the shift row lock. Never in any DTO.
+ */
+export async function cashWatermarkOf(
+  tx: Tx,
+  shift: ShiftRow,
+): Promise<number> {
+  const [movements] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, shift.tenantId),
+        eq(cashMovements.outletId, shift.outletId),
+        eq(cashMovements.shiftId, shift.id),
+      ),
+    );
+  const [refunds] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, shift.tenantId),
+        eq(posOrderRefunds.outletId, shift.outletId),
+        eq(posOrderRefunds.shiftId, shift.id),
+      ),
+    );
+  const [voids] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(posOrderVoids)
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, shift.tenantId),
+        eq(posOrderVoids.outletId, shift.outletId),
+        eq(posOrderVoids.shiftId, shift.id),
+      ),
+    );
+  return (
+    Number(movements?.n ?? 0) + Number(refunds?.n ?? 0) + Number(voids?.n ?? 0)
+  );
+}
+
+/**
+ * legend-q7jj F3: every cash outflow of the shift stays a safe integer, held
+ * or not and whichever writer recorded it: cash outs and drops, the cash
+ * lines of its refunds and the captured cash of its voids, plus `addIdr`
+ * about to be written. The held flag is never read, so the answer says
+ * nothing about the drawer (legend-utqr). Call under the shift row lock,
+ * before the insert.
+ */
+export async function assertShiftOutflowBound(
+  tx: Tx,
+  shift: ShiftRow,
+  addIdr: number,
+): Promise<void> {
+  const [movements] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
+    })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, shift.tenantId),
+        eq(cashMovements.outletId, shift.outletId),
+        eq(cashMovements.shiftId, shift.id),
+        sql`${cashMovements.type} <> 'cash_in'`,
+      ),
+    );
+  const refunds = await tx
+    .select({ lines: posOrderRefunds.lines })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, shift.tenantId),
+        eq(posOrderRefunds.outletId, shift.outletId),
+        eq(posOrderRefunds.shiftId, shift.id),
+      ),
+    );
+  let refundCash = 0n;
+  for (const refund of refunds)
+    for (const line of refund.lines)
+      if (line.method === "cash") refundCash += BigInt(line.amountIdr);
+  const [voided] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)`,
+    })
+    .from(posOrderVoids)
+    .innerJoin(
+      posOrderTenders,
+      and(
+        eq(posOrderTenders.tenantId, posOrderVoids.tenantId),
+        eq(posOrderTenders.orderId, posOrderVoids.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, shift.tenantId),
+        eq(posOrderVoids.outletId, shift.outletId),
+        eq(posOrderVoids.shiftId, shift.id),
+        eq(posOrderTenders.method, "cash"),
+        eq(posOrderTenders.status, "captured"),
+      ),
+    );
+  const outflow =
+    BigInt(movements?.total ?? 0) +
+    refundCash +
+    BigInt(voided?.total ?? 0) +
+    BigInt(addIdr);
+  if (outflow > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Jumlah kas keluar terlalu besar untuk shift ini.",
+    );
 }
 
 export async function movementsOf(

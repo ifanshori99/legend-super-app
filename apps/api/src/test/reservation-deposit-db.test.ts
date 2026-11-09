@@ -710,6 +710,126 @@ describe("RSV-02 a late DP is refunded in full", () => {
     expect(await depositRefundRows(intentId)).toHaveLength(1);
   });
 
+  // legend-2dnh (PAY-04): the reservation system refund opens its approval
+  // chain when it is created, requested by the reserved system user.
+  it("PAY-04 the late-DP refund opens its approval chain at creation", async () => {
+    await setPolicy("required", 100_000);
+    // The tenant needs a refund approval matrix whose lowest floor is at or
+    // below the deposit. Other suites share this tenant and may leave a custom
+    // matrix, so save it, use the supervisor-from-Rp0 default, restore after.
+    const saved = await asOwner((client) =>
+      client.query<{
+        id: string;
+        threshold_idr: string | null;
+        approver_role_id: string;
+        levels: number;
+        requires_distinct_actor: boolean;
+      }>(
+        "SELECT id, threshold_idr, approver_role_id, levels, requires_distinct_actor FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+        [seededTenantId],
+      ),
+    );
+    await asOwner(async (client) => {
+      await client.query(
+        "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+        [seededTenantId],
+      );
+      await client.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+         SELECT $1, 'refund', 0, id, 1, true FROM roles
+         WHERE tenant_id = $1 AND template_key = 'supervisor'`,
+        [seededTenantId],
+      );
+    });
+    let refundId: string | null = null;
+    try {
+      const f = await floor(1);
+      const t0 = dayAt("2027-05-21", "11:00");
+      const created = await createReservation(
+        tenantScope(),
+        outletA,
+        booking(f.zoneId, "2027-05-29", "Rantai Persetujuan"),
+        key(),
+        t0,
+      );
+      const intentId = await openIntent(created);
+      await withTenant(db, tenantScope(), (tx) =>
+        sweepStaleDepositHolds(
+          tx,
+          tenantScope(),
+          new Date(t0.getTime() + 61 * MINUTE),
+          { outletId: outletA },
+        ),
+      );
+      await settle(intentId, 100_000);
+      const event = await paymentPaidEvent(intentId);
+      expect(await handlePaymentPaid(tenantScope(), event)).toBe(
+        "late_refund_requested",
+      );
+
+      const refunds = await depositRefundRows(intentId);
+      expect(refunds).toHaveLength(1);
+      refundId = refunds[0]!.id;
+      const row = await asOwner((client) =>
+        client.query<{ approval_chain_id: string | null }>(
+          "SELECT approval_chain_id FROM payment_refunds WHERE id = $1",
+          [refundId],
+        ),
+      );
+      expect(row.rows[0]!.approval_chain_id).not.toBeNull();
+      const chain = await asOwner((client) =>
+        client.query<{ status: string; requested_by: string }>(
+          `SELECT status, requested_by FROM approval_requests
+           WHERE object_type = 'payment_refund' AND object_id = $1`,
+          [refundId],
+        ),
+      );
+      expect(chain.rows).toEqual([
+        {
+          status: "pending",
+          requested_by: "00000000-0000-4000-8000-000000000002",
+        },
+      ]);
+
+      // A redelivered payment opens no second chain.
+      await handlePaymentPaid(tenantScope(), event);
+      const again = await asOwner((client) =>
+        client.query(
+          "SELECT 1 FROM approval_requests WHERE object_type = 'payment_refund' AND object_id = $1",
+          [refundId],
+        ),
+      );
+      expect(again.rowCount).toBe(1);
+    } finally {
+      if (refundId)
+        await asOwner((client) =>
+          client.query(
+            "DELETE FROM approval_requests WHERE object_type = 'payment_refund' AND object_id = $1",
+            [refundId],
+          ),
+        );
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+          [seededTenantId],
+        );
+        for (const row of saved.rows)
+          await client.query(
+            `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+             VALUES ($1, $2, 'refund', $3, $4, $5, $6)`,
+            [
+              row.id,
+              seededTenantId,
+              row.threshold_idr,
+              row.approver_role_id,
+              row.levels,
+              row.requires_distinct_actor,
+            ],
+          );
+      });
+    }
+  });
+
   it("RSV-02 a DP that settles while the sweep closes the hold is refunded, not lost", async () => {
     await setPolicy("required", 100_000);
     const f = await floor(1);
