@@ -759,8 +759,11 @@ function buildRun(
   const closed = range.endDate < BUSINESS_DATE;
   const accountingClosed = closed && range.endDate < MONTH_START;
   const refs = report.metrics.map(metricRef);
-  // Like the API: a report whose metrics are all unavailable has no rows.
-  const noRows = report.metrics.every((code) => unavailableMetrics.has(code));
+  // Like the API: a grouped run of a report whose metrics are all unavailable
+  // has no rows; an ungrouped run keeps its one row of null cells.
+  const noRows =
+    groupBy !== null &&
+    report.metrics.every((code) => unavailableMetrics.has(code));
   const rows: LooseRow[] = (noRows ? [] : seeds).map((seed) => ({
     bucketStart: range.startDate,
     bucketEnd: range.endDate,

@@ -29,6 +29,7 @@ import {
 import { reportByCode } from "@starter/shared/dashboard";
 import type { MetricDimensionKey } from "@starter/shared/metrics";
 import { metricSourceOf } from "../services/metric-sources";
+import { unavailableMetrics } from "../../../web/src/features/ws11-reports/mock-families/facility.ts";
 import {
   evaluateMetrics,
   withTenantSnapshot,
@@ -499,6 +500,20 @@ describe("facility.incidents", () => {
   });
 });
 
+const FACILITY_REPORTS = [
+  "facility.revenue",
+  "facility.revpash",
+  "facility.occupancy",
+  "facility.subscriptions",
+  "facility.wifi",
+  "facility.fnb_conversion",
+  "facility.overtime",
+  "facility.cleaning_time",
+  "facility.incidents",
+  "facility.product_revenue",
+  "facility.unit_utilization",
+];
+
 describe("unavailable facility metrics", () => {
   const UNAVAILABLE = [
     "shower_occupancy_pct",
@@ -542,21 +557,19 @@ describe("unavailable facility metrics", () => {
     expect(rows).toEqual([]);
   });
 
+  it("matches the web mock's list of unavailable metrics exactly", () => {
+    const codes = new Set(
+      FACILITY_REPORTS.flatMap((report) => reportByCode(report)!.metrics),
+    );
+    const registry = [...codes]
+      .filter((code) => metricSourceOf(code).kind === "unavailable")
+      .sort();
+    expect([...unavailableMetrics].sort()).toEqual(registry);
+  });
+
   it("claims every metric of the 11 facility reports", () => {
     const codes = new Set(
-      [
-        "facility.revenue",
-        "facility.revpash",
-        "facility.occupancy",
-        "facility.subscriptions",
-        "facility.wifi",
-        "facility.fnb_conversion",
-        "facility.overtime",
-        "facility.cleaning_time",
-        "facility.incidents",
-        "facility.product_revenue",
-        "facility.unit_utilization",
-      ].flatMap((report) => reportByCode(report)!.metrics),
+      FACILITY_REPORTS.flatMap((report) => reportByCode(report)!.metrics),
     );
     expect(codes.size).toBe(19);
     for (const code of codes)
