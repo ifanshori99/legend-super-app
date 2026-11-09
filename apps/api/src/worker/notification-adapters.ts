@@ -53,6 +53,10 @@ import {
 } from "@starter/shared/notification";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
+import {
+  paymentRefundEscalatedPayloadSchema,
+  type RefundEscalationReason,
+} from "@starter/shared/payment";
 import type * as schema from "../db/schema/index.ts";
 import { aiDailySummaries } from "../db/schema/ai-insights.ts";
 import {
@@ -650,6 +654,62 @@ async function aiDailySummaryRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+function refundEscalatedBody(reason: RefundEscalationReason): string {
+  switch (reason) {
+    case "pending_unapproved":
+      return "Ada refund yang belum diproses dan sudah melewati batas waktu tunggu. Mohon ditinjau.";
+    case "provider_pending":
+      return "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.";
+    case "payout_stalled":
+      return "Ada refund yang sudah disetujui tetapi pembayarannya tertahan dan perlu ditangani manual. Mohon ditinjau.";
+    default: {
+      const unreachable: never = reason;
+      return unreachable;
+    }
+  }
+}
+
+/** A refund waited past its tenant threshold: outlet managers (their outlet)
+ * and finance (tenant-wide) decide. Body carries no amount or customer data. */
+async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
+  const payload = paymentRefundEscalatedPayloadSchema.parse(
+    input.event.payload,
+  );
+  const audience = await audienceOf(input.tx, input.event);
+  const managers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["outlet_manager"] as never[]),
+    audience,
+  );
+  const finance = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["finance"] as never[]),
+    { kind: "tenant" },
+  );
+  const handlers = [...new Set([...managers, ...finance])].sort();
+  // Nobody to escalate to: the owners (tenant-wide) take the alert instead.
+  const userIds =
+    handlers.length > 0
+      ? handlers
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "approval_request",
+      title: "Refund menunggu terlalu lama",
+      body: refundEscalatedBody(payload.reason),
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -669,6 +729,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return aiAnomalyRule(input);
     case "ai_insight.daily_summary_ready":
       return aiDailySummaryRule(input);
+    case "payment.refund_escalated":
+      return refundEscalatedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }
