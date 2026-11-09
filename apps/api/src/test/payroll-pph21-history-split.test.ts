@@ -171,7 +171,10 @@ describe("history split invariants over random years", () => {
       taxScheme: only ?? (schemes[rand(3)] as Scheme),
     }));
 
-  it("keeps T = withheld + borne, allowance <= withheld, refunds = -T, and pure histories on their payer", () => {
+  // Bead legend-u1xq: with a Jan-Nov lebih potong each payer nets its own
+  // part, so withheld may exceed T beside an employer refund. The split always
+  // adds up to T (the DJP deposit), and a pure history stays on its payer.
+  it("keeps withheld + borne - refunds = T, allowance <= withheld, and pure histories on their payer", () => {
     for (let i = 0; i < 300; i++) {
       const allocation = ALLOCATIONS[rand(2)] ?? "proportional";
       const policy = policyOf(allocation);
@@ -189,20 +192,30 @@ describe("history split invariants over random years", () => {
       );
       const last = rand(10) === 0 ? [] : randomMonth(only);
       const { result: r } = replay(months, last, policy);
-      if (r.pph21Idr >= 0) {
-        expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
-        expect(r.taxAllowanceIdr).toBeLessThanOrEqual(r.pph21WithheldIdr);
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
+      expect(r.taxAllowanceIdr).toBeLessThanOrEqual(r.pph21WithheldIdr);
+      // A payer is either charged or refunded, never both.
+      const w = r.pph21WithheldIdr - r.taxAllowanceIdr;
+      expect(w === 0 || r.pph21RefundIdr === 0).toBe(true);
+      expect(
+        r.taxAllowanceIdr + r.pph21EmployerBorneIdr === 0 ||
+          r.pph21EmployerRefundIdr === 0,
+      ).toBe(true);
+      if (r.pph21Idr >= 0 && pure !== 0)
         expect(r.pph21RefundIdr + r.pph21EmployerRefundIdr).toBe(0);
-        const w = r.pph21WithheldIdr - r.taxAllowanceIdr;
-        if (pure === 1) expect(w).toBe(0);
-        if (pure === 2) {
-          expect(r.taxAllowanceIdr).toBe(0);
-          expect(r.pph21EmployerBorneIdr).toBe(0);
-        }
-      } else {
-        expect(r.pph21RefundIdr + r.pph21EmployerRefundIdr).toBe(-r.pph21Idr);
-        if (pure === 1) expect(r.pph21RefundIdr).toBe(0);
-        if (pure === 2) expect(r.pph21EmployerRefundIdr).toBe(0);
+      if (pure === 1) {
+        expect(w).toBe(0);
+        expect(r.pph21RefundIdr).toBe(0);
+      }
+      if (pure === 2) {
+        expect(r.taxAllowanceIdr).toBe(0);
+        expect(r.pph21EmployerBorneIdr).toBe(0);
+        expect(r.pph21EmployerRefundIdr).toBe(0);
       }
     }
   });

@@ -634,14 +634,26 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R36 December refund with a mixed gross + net payroll: the refund is split by payer history, not by this month's schemes", () => {
+  it("R36 December refund with a mixed gross + net payroll: the Jan-Nov credit goes back by payer history, each payer net of its own December tax (legend-u1xq)", () => {
     // Same annual figures as R26: annual tax 16_500_000 on prior gross 200_000_000.
     // Payer history this year: withheld from the employee 19_500_000, borne by the employer 6_500_000
     //   (total 26_000_000). T = 16_500_000 - 26_000_000 = -9_500_000, refund Rf = 9_500_000.
     // Dec lines: gross 6_000_000 + net 4_000_000 (X = 10_000_000, S = 0, A = B = W = 0).
-    // `proportional` (default): employerRefund = floor(9_500_000 x 6_500_000 / 26_000_000) = 2_375_000;
-    //   employee refund = 9_500_000 - 2_375_000 = 7_125_000.
     // Src: PMK 168/2023 Pasal 21 (kelebihan potong returns what was withheld).
+    //
+    // Updated for bead legend-u1xq (each payer's Jan-Nov credit is reduced by its own share
+    // of this month's extra tax D). Old: employerRefund = floor(9_500_000 x 6_500_000 /
+    // 26_000_000) = 2_375_000, employee refund 7_125_000 (the whole -T split by history).
+    // New, `proportional` (default), no scheme base so the credit follows the payer history:
+    //   annual(prior alone 200_000_000): cost 6_000_000, net 194_000_000, PKP 140_000_000,
+    //   tax 3_000_000 + 15% x 80_000_000 = 15_000_000 => H = 15_000_000 - 26_000_000 =
+    //   -11_000_000, credit C = 11_000_000. pET = borne 6_500_000, priorTax 26_000_000:
+    //   Cr = floor(11_000_000 x 6_500_000 / 26_000_000) = 2_750_000, Ce = 8_250_000.
+    //   D = 16_500_000 - 15_000_000 = 1_500_000 (X = 10_000_000, G* = 6_000_000):
+    //   De = floor(1_500_000 x 6_000_000 / 10_000_000) = 900_000, Dr = 600_000.
+    //   Company: Dr - Cr = 600_000 - 2_750_000 < 0 => S = 0 (X stays 10_000_000), refund
+    //   2_150_000. Employee: De - Ce = 900_000 - 8_250_000 < 0 => W = 0, refund 7_350_000.
+    //   Check: 7_350_000 + 2_150_000 = 9_500_000 = -T.
     const r = run({
       taxableLines: [
         { amountIdr: 6_000_000, taxScheme: "gross" },
@@ -655,8 +667,17 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     expect(r.pph21Idr).toBe(-9_500_000);
     expect(r.pph21WithheldIdr).toBe(0);
     expect(r.pph21EmployerBorneIdr).toBe(0);
-    expect(r.pph21RefundIdr).toBe(7_125_000);
-    expect(r.pph21EmployerRefundIdr).toBe(2_375_000);
+    expect(r.pph21RefundIdr).toBe(7_350_000);
+    expect(r.pph21EmployerRefundIdr).toBe(2_150_000);
+    // New invariant (legend-u1xq): withheld + borne - refunds = T; refunds <= Ce / Cr.
+    expect(
+      r.pph21WithheldIdr +
+        r.pph21EmployerBorneIdr -
+        r.pph21RefundIdr -
+        r.pph21EmployerRefundIdr,
+    ).toBe(r.pph21Idr);
+    expect(r.pph21RefundIdr).toBeLessThanOrEqual(8_250_000);
+    expect(r.pph21EmployerRefundIdr).toBeLessThanOrEqual(2_750_000);
     expect(r.annual).toEqual({
       grossIdr: 210_000_000,
       occupationalCostIdr: 6_000_000,
@@ -670,42 +691,83 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R49 Codex refund case: history entirely withheld from the employee => the whole 9,5 jt refund goes to the employee, even with a net line this month", () => {
+  it("R49 Codex refund case: history entirely withheld from the employee => no employer refund; the employer bears the December net line, the employee gets their credit net of their own December tax (legend-u1xq)", () => {
     // prior gross 200_000_000, prior withheld 26_000_000 (all employee), borne 0.
     // Dec lines: gross 6_000_000 + net 4_000_000 => X = 10_000_000; gross 210_000_000; cost 6_000_000;
     //   net 204_000_000; PKP 150_000_000; annualTax 16_500_000 (as R26). T = -9_500_000.
-    // proportional: employerRefund = floor(9_500_000 x 0 / 26_000_000) = 0 => employee refund 9_500_000.
-    // gross_first: employee refund = min(9_500_000, 26_000_000) = 9_500_000, employer 0.
     // (The old v1 rule split by this month's net share, 3_800_000 to the employer: wrong, the
     //  employer never paid any of this tax.)
+    //
+    // Updated for bead legend-u1xq. Old: the whole 9_500_000 = -T to the employee, X = 10_000_000,
+    // nothing borne. Why it changed: the credit of each payer is reduced by its own share of the
+    // extra tax D, and the NET line of this month is the company's tax, borne and taxable (in X).
+    // annual(prior alone) = 15_000_000 (see R36) => H = 15_000_000 - 26_000_000 = -11_000_000,
+    // C = 11_000_000. pET = 0 => Cr = 0 (both policies, no scheme base), Ce = 11_000_000.
+    // The company has no credit, so the extra tax on the net line is paid by it: S = Dr, a fixed
+    // point (X = 10_000_000 + S, G* = 6_000_000, D(X) = annual(200_000_000 + X) - 15_000_000):
+    //   gross_first: De = min(D, annual(206_000_000) - 15_000_000 = 15_900_000 - 15_000_000 = 900_000)
+    //     S0=0       annual 16_500_000 D 1_500_000 De 900_000 Dr 600_000
+    //     S1=600_000 annual 16_590_000 D 1_590_000 Dr 690_000
+    //     S2=690_000 annual 16_603_500 D 1_603_500 Dr 703_500
+    //     S3=703_500 annual 16_605_450 D 1_605_450 Dr 705_450
+    //     S4=705_450 annual 16_605_750 D 1_605_750 Dr 705_750
+    //     S5=705_750 annual 16_605_750 Dr 705_750 stop.
+    //     X = 10_705_750, T = 16_605_750 - 26_000_000 = -9_394_250; employee: W = 0, refund
+    //     11_000_000 - 900_000 = 10_100_000; borne 705_750; company refund 0.
+    //   proportional: De = floor(D x 6_000_000 / X), iterated the same way:
+    //     0 -> 600_000 -> 690_000 -> 703_500 -> 705_493 -> 705_792 -> 705_817 -> 705_819 -> 705_819 stop
+    //     (D stays 1_605_750 from S = 705_450 on, De = 899_931 at the end, Dr = 705_819).
+    //     X = 10_705_819, T = -9_394_250; refund 11_000_000 - 899_931 = 10_100_069; borne 705_819.
+    // Check: 705_750 - 10_100_000 = -9_394_250 = T (and 705_819 - 10_100_069 likewise).
     const lines = [
       { amountIdr: 6_000_000, taxScheme: "gross" as const },
       { amountIdr: 4_000_000, taxScheme: "net" as const },
     ];
+    const expected = {
+      proportional: { x: 10_705_819, borne: 705_819, refund: 10_100_069 },
+      gross_first: { x: 10_705_750, borne: 705_750, refund: 10_100_000 },
+    } as const;
     for (const mixedSchemeAllocation of [
       "proportional",
       "gross_first",
     ] as const) {
+      const e = expected[mixedSchemeAllocation];
       const r = run(
         { taxableLines: lines, prior: prior(200_000_000, 26_000_000) },
         { mixedSchemeAllocation },
       );
-      expect(r.pph21Idr).toBe(-9_500_000);
-      expect(r.pph21RefundIdr).toBe(9_500_000);
+      expect(r.pph21Idr).toBe(-9_394_250);
+      expect(r.pph21RefundIdr).toBe(e.refund);
       expect(r.pph21EmployerRefundIdr).toBe(0);
       expect(r.pph21WithheldIdr).toBe(0);
-      expect(r.pph21EmployerBorneIdr).toBe(0);
+      expect(r.pph21EmployerBorneIdr).toBe(e.borne);
       expect(r.taxAllowanceIdr).toBe(0);
-      expect(r.taxableGrossIdr).toBe(10_000_000);
+      expect(r.taxableGrossIdr).toBe(e.x);
+      // New invariant (legend-u1xq): withheld + borne - refunds = T; refund <= Ce.
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
+      expect(r.pph21RefundIdr).toBeLessThanOrEqual(11_000_000);
     }
   });
 
-  it("R50 refund with mixed payers, proportional vs gross_first", () => {
+  it("R50 refund with mixed payers and no scheme base: both policies split the credit by payer history (legend-u1xq)", () => {
     // Same annual figures as R49: T = -9_500_000, Rf = 9_500_000.
     // History: withheld hw = 15_600_000, employer-borne hb = 10_400_000 (total 26_000_000).
-    // proportional: employerRefund = floor(9_500_000 x 10_400_000 / 26_000_000) = 3_800_000 (exact);
-    //   employee refund = 9_500_000 - 3_800_000 = 5_700_000.
-    // gross_first: employee refund = min(9_500_000, 15_600_000) = 9_500_000; employer refund 0.
+    // Updated for bead legend-u1xq. Old: proportional employerRefund = floor(9_500_000 x
+    // 10_400_000 / 26_000_000) = 3_800_000, employee 5_700_000; gross_first employee refund
+    // 9_500_000, employer 0 (the whole -T split by history).
+    // New: H = annual(200_000_000) - 26_000_000 = 15_000_000 - 26_000_000 = -11_000_000 (R36),
+    // C = 11_000_000. No scheme base: both policies Cr = floor(11_000_000 x 10_400_000 /
+    // 26_000_000) = 4_400_000 (exact), Ce = 6_600_000. This month (gross 6 jt + net 4 jt):
+    // D = 1_500_000, De = 900_000, Dr = 600_000 (both policies: gross_first De = min(D,
+    // 15_900_000 - 15_000_000) = 900_000). Company: 600_000 - 4_400_000 < 0 => S = 0 (X =
+    // 10_000_000), refund 3_800_000. Employee: 900_000 - 6_600_000 < 0 => W = 0, refund
+    // 5_700_000. -T = 9_500_000 = 5_700_000 + 3_800_000. gross_first no longer returns the
+    // employee's own payments first when no scheme base is known.
     const common = {
       taxableLines: [
         { amountIdr: 6_000_000, taxScheme: "gross" as const },
@@ -722,17 +784,35 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
 
     const grossFirst = run(common, { mixedSchemeAllocation: "gross_first" });
     expect(grossFirst.pph21Idr).toBe(-9_500_000);
-    expect(grossFirst.pph21RefundIdr).toBe(9_500_000);
-    expect(grossFirst.pph21EmployerRefundIdr).toBe(0);
+    expect(grossFirst.pph21RefundIdr).toBe(5_700_000);
+    expect(grossFirst.pph21EmployerRefundIdr).toBe(3_800_000);
     expect(grossFirst.pph21WithheldIdr).toBe(0);
     expect(grossFirst.pph21EmployerBorneIdr).toBe(0);
+    // New invariant (legend-u1xq): withheld + borne - refunds = T; refunds <= Ce / Cr.
+    for (const r of [proportional, grossFirst]) {
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
+      expect(r.pph21RefundIdr).toBeLessThanOrEqual(6_600_000);
+      expect(r.pph21EmployerRefundIdr).toBeLessThanOrEqual(4_400_000);
+    }
   });
 
-  it("R51 gross_first when the refund exceeds what the employee ever paid: employee gets hw, the employer the rest; proportional rounds down for the employer", () => {
+  it("R51 refund larger than what the employee ever paid, no scheme base: both policies split the credit by payer history, the employer rounded down (legend-u1xq)", () => {
     // Same annual figures: Rf = 9_500_000. History: hw = 5_000_000, hb = 21_000_000 (total 26_000_000).
-    // gross_first: employee refund = min(9_500_000, 5_000_000) = 5_000_000; employer = 4_500_000.
-    // proportional: employerRefund = floor(9_500_000 x 21_000_000 / 26_000_000)
-    //   = floor(7_673_076.92...) = 7_673_076; employee refund = 9_500_000 - 7_673_076 = 1_826_924.
+    // Updated for bead legend-u1xq. Old: gross_first employee refund min(9_500_000, 5_000_000) =
+    // 5_000_000, employer 4_500_000; proportional employerRefund floor(9_500_000 x 21_000_000 /
+    // 26_000_000) = 7_673_076, employee 1_826_924 (the whole -T split by history).
+    // New: C = 11_000_000 (H = -11_000_000, see R36). No scheme base: both policies Cr =
+    // floor(11_000_000 x 21_000_000 / 26_000_000) = floor(8_884_615,38) = 8_884_615, Ce =
+    // 11_000_000 - 8_884_615 = 2_115_385. This month D = 1_500_000, De = 900_000, Dr = 600_000
+    // (see R50), S = 0 (600_000 < Cr). Employee: 900_000 - 2_115_385 < 0 => W = 0, refund
+    // 1_215_385. Company: 600_000 - 8_884_615 < 0 => refund 8_284_615.
+    // 1_215_385 + 8_284_615 = 9_500_000 = -T. gross_first no longer caps the employee refund at
+    // what the employee paid (5_000_000) because the credit is split by payer history alone.
     const common = {
       taxableLines: [
         { amountIdr: 6_000_000, taxScheme: "gross" as const },
@@ -742,13 +822,24 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     };
     const grossFirst = run(common, { mixedSchemeAllocation: "gross_first" });
     expect(grossFirst.pph21Idr).toBe(-9_500_000);
-    expect(grossFirst.pph21RefundIdr).toBe(5_000_000);
-    expect(grossFirst.pph21EmployerRefundIdr).toBe(4_500_000);
+    expect(grossFirst.pph21RefundIdr).toBe(1_215_385);
+    expect(grossFirst.pph21EmployerRefundIdr).toBe(8_284_615);
 
     const proportional = run(common, { mixedSchemeAllocation: "proportional" });
     expect(proportional.pph21Idr).toBe(-9_500_000);
-    expect(proportional.pph21RefundIdr).toBe(1_826_924);
-    expect(proportional.pph21EmployerRefundIdr).toBe(7_673_076);
+    expect(proportional.pph21RefundIdr).toBe(1_215_385);
+    expect(proportional.pph21EmployerRefundIdr).toBe(8_284_615);
+    // New invariant (legend-u1xq): withheld + borne - refunds = T; refunds <= Ce / Cr.
+    for (const r of [proportional, grossFirst]) {
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
+      expect(r.pph21RefundIdr).toBeLessThanOrEqual(2_115_385);
+      expect(r.pph21EmployerRefundIdr).toBeLessThanOrEqual(8_884_615);
+    }
   });
 
   it("R52 gross -> net switch: Jan-Jun on gross, Jul-Nov on net, December on gross", () => {
@@ -1448,13 +1539,20 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     });
   }
 
-  it("R74 refund of a year paid 3_000_000 by the employee and 2_000_000 as allowance: proportional splits 3:2, gross_first returns the employee's own part first", () => {
+  it("R74 refund of a year paid 3_000_000 by the employee and 2_000_000 as allowance: both policies split the credit 3:2 without a scheme base (legend-u1xq)", () => {
     // Prior: gross 110_000_000, withheld 5_000_000 (allowance 2_000_000 of it),
     // borne 0. December gross 10_000_000 => T = 3_000_000 - 5_000_000 = -2_000_000.
-    // proportional: employer refund floor(2_000_000 x 2_000_000 / 5_000_000)
-    //   = 800_000, employee 1_200_000.
-    // gross_first: employee-paid prior tax 3_000_000 >= 2_000_000 => employee
-    //   refund 2_000_000, employer 0.
+    // Updated for bead legend-u1xq. Old: proportional employer refund floor(2_000_000 x
+    // 2_000_000 / 5_000_000) = 800_000, employee 1_200_000; gross_first employee refund
+    // 2_000_000, employer 0 (the whole -T split by history).
+    // New: annual(110_000_000): cost 5_500_000, net 104_500_000, PKP 50_500_000, tax 2_525_000
+    // => H = 2_525_000 - 5_000_000 = -2_475_000, C = 2_475_000. pET = allowance 2_000_000,
+    // priorTax 5_000_000; no scheme base so both policies: Cr = floor(2_475_000 x 2_000_000 /
+    // 5_000_000) = 990_000, Ce = 1_485_000. December gross 10_000_000 (G* = X): annual(120_000_000)
+    // = 3_000_000, D = 3_000_000 - 2_525_000 = 475_000, De = 475_000, Dr = 0.
+    // Employee: 475_000 - 1_485_000 < 0 => W = 0, refund 1_010_000. Company: 0 - 990_000 < 0
+    // => refund 990_000. 1_010_000 + 990_000 = 2_000_000 = -T. The December salary's own tax
+    // (475_000) is now paid out of the employee's credit instead of being left to the company.
     const input = {
       taxableLines: [{ amountIdr: 10_000_000, taxScheme: "gross" as const }],
       prior: {
@@ -1464,11 +1562,23 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     };
     const proportional = run(input, { mixedSchemeAllocation: "proportional" });
     expect(proportional.pph21Idr).toBe(-2_000_000);
-    expect(proportional.pph21EmployerRefundIdr).toBe(800_000);
-    expect(proportional.pph21RefundIdr).toBe(1_200_000);
+    expect(proportional.pph21EmployerRefundIdr).toBe(990_000);
+    expect(proportional.pph21RefundIdr).toBe(1_010_000);
     const grossFirst = run(input, { mixedSchemeAllocation: "gross_first" });
-    expect(grossFirst.pph21EmployerRefundIdr).toBe(0);
-    expect(grossFirst.pph21RefundIdr).toBe(2_000_000);
+    expect(grossFirst.pph21Idr).toBe(-2_000_000);
+    expect(grossFirst.pph21EmployerRefundIdr).toBe(990_000);
+    expect(grossFirst.pph21RefundIdr).toBe(1_010_000);
+    // New invariant (legend-u1xq): withheld + borne - refunds = T; refunds <= Ce / Cr.
+    for (const r of [proportional, grossFirst]) {
+      expect(
+        r.pph21WithheldIdr +
+          r.pph21EmployerBorneIdr -
+          r.pph21RefundIdr -
+          r.pph21EmployerRefundIdr,
+      ).toBe(r.pph21Idr);
+      expect(r.pph21RefundIdr).toBeLessThanOrEqual(1_485_000);
+      expect(r.pph21EmployerRefundIdr).toBeLessThanOrEqual(990_000);
+    }
   });
 
   it("R75 gross-up year without a reported prior allowance: rejected (legend-6p71 rule A)", () => {
