@@ -20,6 +20,7 @@ import {
 } from "drizzle-orm";
 import type { RoleTemplateKey } from "@starter/shared/access";
 import {
+  createUlid,
   idr,
   toIsoDateTime,
   ulidToUuid,
@@ -30,6 +31,7 @@ import {
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { notificationPolicySchema } from "@starter/shared/notification";
 import {
+  notificationOutbox,
   notificationPolicies,
   pushSubscriptions,
 } from "../db/schema/notification.ts";
@@ -41,6 +43,7 @@ import { createNotificationConsumer } from "./notification-consumer.ts";
 import type { NotificationRecipient } from "./notification-core.ts";
 
 const EVENT_NAME = "edge_sync_conflict.recorded";
+const PARKED_UNCLASSIFIED_EVENT = "edge_event.parked_unclassified";
 const SUPERVISOR_TEMPLATE_KEYS: RoleTemplateKey[] = [
   "supervisor",
   "outlet_manager",
@@ -121,30 +124,40 @@ async function supervisorIds(
     : holders(eq(roles.templateKey, "owner"), "tenant");
 }
 
+type SupervisorAlert = {
+  tenantId: TenantId;
+  outletId: OutletId;
+  /** ULID; the notification consumer dedupes on it. */
+  id: string;
+  eventName: string;
+  aggregateType: string;
+  aggregateId: string;
+  payload: Record<string, string>;
+  title: string;
+  body: string;
+};
+
 /**
- * Notify the outlet's supervisors that the link recorded a NEW sync conflict.
- * Call it in the transaction that inserted the conflict row (db-link-store);
- * the in-app rows and the realtime `pg_notify` commit together with it. The
- * event id is the conflict's ULID, so a retry never notifies twice.
- *
- * Category `edge_sync_conflict` (shared catalog: staff audience, realtime).
+ * Sends one in-app alert to the outlet's supervisors (category
+ * `edge_sync_conflict`: shared catalog, staff audience, realtime). The rows
+ * and the realtime `pg_notify` commit with the caller's transaction.
  */
-export async function notifyEdgeSyncConflictRecorded(
+async function notifyOutletSupervisors(
   tx: EdgeTx,
   context: ScopedTenantContext,
-  conflict: NewEdgeSyncConflict,
-  now: Date = new Date(),
+  alert: SupervisorAlert,
+  now: Date,
 ): Promise<void> {
-  const userIds = await supervisorIds(tx, conflict.tenantId, conflict.outletId);
+  const userIds = await supervisorIds(tx, alert.tenantId, alert.outletId);
   if (userIds.length === 0) return;
   const [policyRow] = await tx
     .select()
     .from(notificationPolicies)
-    .where(eq(notificationPolicies.tenantId, conflict.tenantId));
+    .where(eq(notificationPolicies.tenantId, alert.tenantId));
   const policy = notificationPolicySchema.parse(
     policyRow
       ? {
-          tenantId: conflict.tenantId,
+          tenantId: alert.tenantId,
           webPushEnabled: policyRow.webPushEnabled,
           emailEnabled: policyRow.emailEnabled,
           whatsapp: policyRow.whatsapp,
@@ -153,7 +166,7 @@ export async function notifyEdgeSyncConflictRecorded(
           updatedAt: toIsoDateTime(policyRow.updatedAt),
         }
       : {
-          tenantId: conflict.tenantId,
+          tenantId: alert.tenantId,
           webPushEnabled: true,
           emailEnabled: false,
           whatsapp: {
@@ -174,7 +187,7 @@ export async function notifyEdgeSyncConflictRecorded(
         .from(pushSubscriptions)
         .where(
           and(
-            eq(pushSubscriptions.tenantId, conflict.tenantId),
+            eq(pushSubscriptions.tenantId, alert.tenantId),
             inArray(pushSubscriptions.userId, userIds),
           ),
         )
@@ -183,8 +196,8 @@ export async function notifyEdgeSyncConflictRecorded(
   const recipients: NotificationRecipient[] = userIds.map((userId) => ({
     userId,
     category: "edge_sync_conflict",
-    title: "Konflik sinkronisasi edge",
-    body: "Ada data dari server lokal yang ditolak cloud. Tinjau dan ulangi atau abaikan di pengaturan perangkat.",
+    title: alert.title,
+    body: alert.body,
     link: null,
     policy,
     preference: null,
@@ -197,29 +210,126 @@ export async function notifyEdgeSyncConflictRecorded(
     defaultTimeZone: "Asia/Jakarta",
   }));
   const event = eventEnvelopeSchema.parse({
-    id: conflict.id,
-    tenantId: conflict.tenantId,
-    outletId: conflict.outletId,
-    name: EVENT_NAME,
+    id: alert.id,
+    tenantId: alert.tenantId,
+    outletId: alert.outletId,
+    name: alert.eventName,
     version: 1,
-    aggregateType: "edge_sync_conflict",
-    aggregateId: conflict.id,
+    aggregateType: alert.aggregateType,
+    aggregateId: alert.aggregateId,
     sequence: 1,
     occurredAt: toIsoDateTime(now),
     actor: { type: "system" },
     deviceId: null,
-    idempotencyKey: `${EVENT_NAME}:${ulidToUuid(conflict.id)}`,
-    payloadSchemaRef: `${EVENT_NAME}.v1`,
-    payload: {
-      conflictId: conflict.id,
-      edgeNodeId: conflict.edgeNodeId,
-      aggregateType: conflict.aggregateType,
-      reason: conflict.reason,
-    },
+    idempotencyKey: `${alert.eventName}:${ulidToUuid(alert.id)}`,
+    payloadSchemaRef: `${alert.eventName}.v1`,
+    payload: alert.payload,
   });
   await createNotificationConsumer(context, async () => recipients)(
     event,
     event.idempotencyKey,
     tx,
+  );
+}
+
+/**
+ * Notify the outlet's supervisors that the link recorded a NEW sync conflict.
+ * Call it in the transaction that inserted the conflict row (db-link-store);
+ * the in-app rows and the realtime `pg_notify` commit together with it. The
+ * event id is the conflict's ULID, so a retry never notifies twice.
+ *
+ * Category `edge_sync_conflict` (shared catalog: staff audience, realtime).
+ */
+export async function notifyEdgeSyncConflictRecorded(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  conflict: NewEdgeSyncConflict,
+  now: Date = new Date(),
+): Promise<void> {
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: conflict.tenantId,
+      outletId: conflict.outletId,
+      id: conflict.id,
+      eventName: EVENT_NAME,
+      aggregateType: "edge_sync_conflict",
+      aggregateId: conflict.id,
+      payload: {
+        conflictId: conflict.id,
+        edgeNodeId: conflict.edgeNodeId,
+        aggregateType: conflict.aggregateType,
+        reason: conflict.reason,
+      },
+      title: "Konflik sinkronisasi edge",
+      body: "Ada data dari server lokal yang ditolak cloud. Tinjau dan ulangi atau abaikan di pengaturan perangkat.",
+    },
+    now,
+  );
+}
+
+export type EdgeEventParkedUnclassified = {
+  tenantId: TenantId;
+  outletId: OutletId;
+  edgeNodeId: string;
+  eventName: string;
+  aggregateType: string;
+};
+
+/**
+ * Notify the outlet's supervisors that the cloud parked a NEW edge event as
+ * `unclassified` (no domain registered it; bead legend-eadm / legend-niq9).
+ * Call it only when the parked row was just inserted, in a savepoint (see
+ * deferred-event-applier.ts). It carries the event name, aggregate type and
+ * edge node only, never the payload. At most one alarm per (outlet,
+ * aggregate type, event name) per 24 hours, counted from the alarms actually
+ * sent (`notification_outbox`): an edge on a newer build can emit an unknown
+ * name on every sale. An alarm that was not sent (no supervisor, or a failed
+ * savepoint) does not silence the next event. The alert has its own ULID: the edge
+ * event's id stays free in the notification tables (unique per source event)
+ * for a later cloud applier that replays the parked event.
+ */
+export async function notifyEdgeEventParkedUnclassified(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  parked: EdgeEventParkedUnclassified,
+  now: Date = new Date(),
+): Promise<void> {
+  const [recent] = await tx
+    .select({ one: sql<number>`1` })
+    .from(notificationOutbox)
+    .where(
+      and(
+        eq(notificationOutbox.tenantId, parked.tenantId),
+        eq(notificationOutbox.outletId, parked.outletId),
+        eq(notificationOutbox.eventType, PARKED_UNCLASSIFIED_EVENT),
+        sql`${notificationOutbox.payload}->>'eventName' = ${parked.eventName}`,
+        sql`${notificationOutbox.payload}->>'aggregateType' = ${parked.aggregateType}`,
+        gt(notificationOutbox.createdAt, sql`now() - interval '24 hours'`),
+      ),
+    )
+    .limit(1);
+  if (recent) return;
+  const alertId = createUlid(now.getTime());
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: parked.tenantId,
+      outletId: parked.outletId,
+      id: alertId,
+      eventName: PARKED_UNCLASSIFIED_EVENT,
+      aggregateType: "edge_event",
+      aggregateId: alertId,
+      payload: {
+        edgeNodeId: parked.edgeNodeId,
+        eventName: parked.eventName,
+        aggregateType: parked.aggregateType,
+      },
+      title: "Event edge belum dikenali cloud",
+      body: "Server lokal mengirim event yang belum diproses cloud. Event disimpan dan tidak menghentikan sinkronisasi; hubungi tim teknis.",
+    },
+    now,
   );
 }

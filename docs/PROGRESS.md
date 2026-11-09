@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-eadm + legend-niq9 klasifikasi event edge ke cloud (engineer, cabang `ws/edge-event-class`, 2026-11-09)
+
+- Reproduksi: di integ/m1-batch5 batch campuran tidak macet; legend-9fhs sudah memarkir event tak dikenal. Klaim stall legend-eadm tidak terbukti di basis ini.
+- Sudah: `pos_override.*` dan `staff_pin.*` diparkir `deferred` (`registerAccessDeferredEdgeApplier`, runtime.ts blok registrasi saja). Event `unclassified` (termasuk `stock.*` selain `stock.moved`, niq9) kini memberi alarm ke supervisor outlet: sekali per nama event per outlet per 24 jam, dihitung dari `notification_outbox`, dalam savepoint (gagal alarm tidak menggagalkan batch).
+- Test: `apps/api/src/test/edge-event-class.test.ts` (R, A, B, C, D). Semua 23 file `edge-*` lulus.
+- Review K: reviewer Opus dan architect, dua kali re-review; temuan nyata dibetulkan.
+- Berikut: legend-kyie (P1, cloud menerapkan event PIN dan override), legend-vw3d (kategori alarm sendiri), legend-tbl4 (index outbox, test tanpa supervisor). Brief second opinion: `docs/briefs/158-second-opinion-edge-event-class.md` (tidak di-commit).
+
 ## legend-9fhs event edge tidak lagi menghentikan sinkron ke cloud (engineer, cabang `ws/fix-9fhs`, 2026-11-09)
 
 - Akar masalah: edge mengirim semua baris outbox `cloud-sync` ke cloud; cloud tidak mengenal aggregate POS (`order`, `cashier_shift`, `day`, `table_session`, `pos_override`, ...) sehingga `applyInbound` melempar `EdgeEventUnclassifiedError`, seluruh batch rollback, kursor tidak maju, `stock.moved` ikut tertahan selamanya. Direproduksi dengan test.

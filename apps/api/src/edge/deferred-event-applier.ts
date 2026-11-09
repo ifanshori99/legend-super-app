@@ -20,6 +20,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { logger } from "../lib/logger.ts";
 import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { notifyEdgeEventParkedUnclassified } from "../services/edge-sync-conflict-alert.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
   registerEdgeAggregateKind,
@@ -47,14 +48,15 @@ export type EdgeParkedReason = "deferred" | "unclassified";
 /**
  * Parks one edge event in the deferred inbox; replays write nothing.
  * `parkedReason`: "deferred" for an explicit WS-04 registration,
- * "unclassified" for the generic fallback.
+ * "unclassified" for the generic fallback. Returns true only when this call
+ * inserted the row (false on a replay).
  */
 export async function applyEdgeDeferredEvent(
   tx: EdgeTx,
   event: EventEnvelope,
   meta: EdgeApplyMeta,
   parkedReason: EdgeParkedReason = "deferred",
-): Promise<void> {
+): Promise<boolean> {
   if (meta.direction !== "edge_to_cloud")
     throw new CoreError(
       "FORBIDDEN",
@@ -83,7 +85,7 @@ export async function applyEdgeDeferredEvent(
       "Event outlet does not match the edge node",
     );
 
-  await tx
+  const inserted = await tx
     .insert(edgeDeferredEvents)
     .values({
       tenantId,
@@ -99,12 +101,15 @@ export async function applyEdgeDeferredEvent(
     })
     .onConflictDoNothing({
       target: [edgeDeferredEvents.tenantId, edgeDeferredEvents.eventId],
-    });
+    })
+    .returning({ eventId: edgeDeferredEvents.eventId });
+  return inserted.length > 0;
 }
 
 // Stable identities: the registry treats a different handler as a wiring bug.
-const applyExplicitDeferred: EdgeEventHandler = (tx, event, meta) =>
-  applyEdgeDeferredEvent(tx, event, meta, "deferred");
+const applyExplicitDeferred: EdgeEventHandler = async (tx, event, meta) => {
+  await applyEdgeDeferredEvent(tx, event, meta, "deferred");
+};
 
 const applyUnclassified: EdgeEventHandler = async (tx, event, meta) => {
   logger.warn(
@@ -115,7 +120,28 @@ const applyUnclassified: EdgeEventHandler = async (tx, event, meta) => {
     },
     "Edge event parked as unclassified",
   );
-  await applyEdgeDeferredEvent(tx, event, meta, "unclassified");
+  const parked = await applyEdgeDeferredEvent(tx, event, meta, "unclassified");
+  // Alarm once, when the row is NEW (a redelivery inserts nothing). Savepoint
+  // and silent catch: a missing alarm must not stop the batch (the parked row
+  // is the durable evidence). Event name, aggregate type and node only.
+  if (!parked) return;
+  const tenantId = meta.context.tenant.tenantId;
+  const outletId = event.outletId!; // applyEdgeDeferredEvent refused a null
+  try {
+    // One alarm per event name per outlet per 24 hours (checked against the
+    // alarms actually sent, in edge-sync-conflict-alert.ts).
+    await tx.transaction((savepoint) =>
+      notifyEdgeEventParkedUnclassified(savepoint, meta.context, {
+        tenantId,
+        outletId,
+        edgeNodeId: meta.edgeNodeId,
+        eventName: event.name,
+        aggregateType: event.aggregateType,
+      }),
+    );
+  } catch {
+    // Intentionally silent: no payload or ids in logs (ports.ts rule).
+  }
 };
 
 /**
@@ -153,12 +179,29 @@ export function registerPosDeferredEdgeApplier(): void {
     registerDeferredEdgeAggregate(aggregateType);
 }
 
+/** Aggregate types of the access events an edge node appends (WS-01). */
+const ACCESS_DEFERRED_AGGREGATES = ["pos_override", "staff_pin"] as const;
+
+/**
+ * Cloud boot (registerEdgeLink): parks `pos_override.*` and `staff_pin.*`
+ * as `deferred` (known events, not `unclassified`). The edge queues them
+ * (cloud-sync) because the device PIN and override rows live on the edge
+ * node. The cloud has no projection for them yet: the override and PIN rows
+ * of an edge node are not rebuilt on the cloud from these events (follow-up
+ * bead). Outlet-scoped like every parked event.
+ */
+export function registerAccessDeferredEdgeApplier(): void {
+  for (const aggregateType of ACCESS_DEFERRED_AGGREGATES)
+    registerDeferredEdgeAggregate(aggregateType);
+}
+
 /**
  * Generic edge -> cloud fallback: any aggregate or event no domain registered
  * is classified as an append-only transaction event and parked with
  * `parked_reason='unclassified'`, so one unknown event never stalls the link.
  * Call after the explicit registrations (explicit handlers and kinds win).
  * Logs the event name, aggregate type and tenant only, never the payload.
+ * Each NEW parked event alarms the outlet supervisors once.
  */
 export function registerEdgeDeferredFallback(): void {
   setEdgeDefaultAggregateKind("edge_to_cloud", "transaction_event");
