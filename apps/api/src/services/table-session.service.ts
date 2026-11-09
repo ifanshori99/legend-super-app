@@ -57,6 +57,7 @@ import {
   type TableSession,
   type TableSessionAction,
   type TableSessionStatus,
+  type TableStatus,
 } from "@starter/shared/qr-order";
 import { qrOrderEvents, type QrOrderEventName } from "@starter/shared/qr-order";
 import { db } from "../db";
@@ -75,11 +76,15 @@ import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
 import { openSecret, sealSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
+import {
+  linkGroupsForTables,
+  releaseLinksOfSession,
+} from "./table-link.service";
 import { appendOutbox } from "./core-outbox";
 import { verifyTableQrToken } from "./qr-token";
 
 type Database = NodePgDatabase<typeof schema>;
-type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 type QrScanInput = z.infer<typeof qrScanInputSchema>;
 type CloseTableSessionInput = z.infer<typeof closeTableSessionInputSchema>;
@@ -102,9 +107,19 @@ const AUDIT_SAFE_FIELDS = [
   "tableCleaned",
   "waiterConfirmedEmpty",
   "action",
+  "fromTableId",
+  "toTableId",
+  "sourceId",
+  "toId",
+  "billTotalIdr",
+  "movedItemCount",
+  "movedTotalIdr",
+  "groupId",
+  "tableIds",
+  "reason",
 ] as const;
 
-type SessionRow = typeof tableSessions.$inferSelect;
+export type SessionRow = typeof tableSessions.$inferSelect;
 type ParticipantRow = typeof sessionParticipants.$inferSelect;
 
 function isActive(status: TableSessionStatus): boolean {
@@ -115,11 +130,11 @@ function credentialHash(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function sessionSealAad(tenantId: string, sessionId: string): string {
+export function sessionSealAad(tenantId: string, sessionId: string): string {
   return `table-session:${tenantId}:${sessionId}`;
 }
 
-function newSessionCredential(): { token: string; hash: string } {
+export function newSessionCredential(): { token: string; hash: string } {
   const token = randomBytes(32).toString("base64url");
   return { token, hash: credentialHash(token) };
 }
@@ -154,7 +169,7 @@ export function setTableSessionSettlementLookup(
   settlementLookup = lookup;
 }
 
-async function loadSettlement(
+export async function loadSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   sessionId: string,
@@ -219,7 +234,7 @@ function toSession(
   });
 }
 
-function toTable(row: typeof tables.$inferSelect): Table {
+export function toTable(row: typeof tables.$inferSelect): Table {
   return tableSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -233,7 +248,7 @@ function toTable(row: typeof tables.$inferSelect): Table {
   });
 }
 
-function toZone(row: typeof floorZones.$inferSelect): FloorZone {
+export function toZone(row: typeof floorZones.$inferSelect): FloorZone {
   return floorZoneSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -277,7 +292,7 @@ export async function sessionDto(
  * `forUpdate` so concurrent confirm/close requests serialize on the row and
  * the status edge is decided from the committed state (Codex pre-review HIGH).
  */
-async function loadSession(
+export async function loadSession(
   tx: Tx,
   tenantId: TenantId,
   sessionId: string,
@@ -316,7 +331,7 @@ export async function lockTableLiveState(
   );
 }
 
-async function activeSessionForTable(
+export async function activeSessionForTable(
   tx: Tx,
   tenantId: TenantId,
   tableId: string,
@@ -380,7 +395,7 @@ async function partySessionForSecondaryTable(
  * or expires) must not absorb the next session's call at the same table (the
  * open-dedupe key is per table and type). Same transaction as the close.
  */
-async function cancelOpenServiceRequests(
+export async function cancelOpenServiceRequests(
   tx: Tx,
   tenantId: TenantId,
   sessionId: string,
@@ -421,7 +436,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued QR-order event inside the caller's transaction. */
-async function appendSessionEvent(
+export async function appendSessionEvent(
   tx: Tx,
   context: ScopedTenantContext,
   name: QrOrderEventName,
@@ -433,12 +448,32 @@ async function appendSessionEvent(
     now: Date;
   },
 ): Promise<void> {
+  const { sessionId, ...rest } = input;
+  await appendAggregateEvent(tx, context, name, {
+    ...rest,
+    aggregateId: sessionId,
+  });
+}
+
+/** Same as `appendSessionEvent` for an aggregate that is not a session (a table). */
+export async function appendAggregateEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  name: QrOrderEventName,
+  input: {
+    aggregateId: string;
+    outletId: string;
+    payload: Record<string, unknown>;
+    actor: EventEnvelope["actor"];
+    now: Date;
+  },
+): Promise<void> {
   const definition = qrOrderEvents[name];
   const sequence = await nextSequence(
     tx,
     context.tenant.tenantId,
     definition.entry.aggregateType,
-    input.sessionId,
+    input.aggregateId,
   );
   const event = definition.envelopeSchema.parse({
     id: createUlid(input.now.getTime()),
@@ -447,12 +482,12 @@ async function appendSessionEvent(
     name,
     version: definition.version,
     aggregateType: definition.entry.aggregateType,
-    aggregateId: input.sessionId,
+    aggregateId: input.aggregateId,
     sequence,
     occurredAt: toIsoDateTime(input.now),
     actor: input.actor,
     deviceId: null,
-    idempotencyKey: `${name}:${input.sessionId}:${sequence}`.slice(0, 100),
+    idempotencyKey: `${name}:${input.aggregateId}:${sequence}`.slice(0, 100),
     payloadSchemaRef: definition.payloadSchemaRef,
     payload: input.payload,
   });
@@ -465,7 +500,63 @@ async function appendSessionEvent(
   });
 }
 
-async function audit(
+export type TableStatusCause =
+  | "staff_action"
+  | "session_closed"
+  | "session_expired"
+  | "session_moved"
+  | "session_merged";
+
+/** Status and zone of the given tables, read before a change to emit `from`. */
+export async function readTableStates(
+  tx: Tx,
+  tenantId: TenantId,
+  tableIds: readonly string[],
+): Promise<Map<string, { status: TableStatus; zoneId: string }>> {
+  if (tableIds.length === 0) return new Map();
+  const rows = await tx
+    .select({ id: tables.id, status: tables.status, zoneId: tables.zoneId })
+    .from(tables)
+    .where(
+      and(eq(tables.tenantId, tenantId), inArray(tables.id, [...tableIds])),
+    );
+  return new Map(
+    rows.map((r) => [r.id, { status: r.status, zoneId: r.zoneId }]),
+  );
+}
+
+/** `table.status_changed` (aggregate: the table). No event when nothing changed. */
+export async function emitTableStatusChanged(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    tableId: string;
+    outletId: string;
+    zoneId: string;
+    from: TableStatus;
+    to: TableStatus;
+    cause: TableStatusCause;
+    actor: EventEnvelope["actor"];
+    now: Date;
+  },
+): Promise<void> {
+  if (input.from === input.to) return;
+  await appendAggregateEvent(tx, context, "table.status_changed", {
+    aggregateId: input.tableId,
+    outletId: input.outletId,
+    payload: {
+      tableId: input.tableId,
+      zoneId: input.zoneId,
+      from: input.from,
+      to: input.to,
+      cause: input.cause,
+    },
+    actor: input.actor,
+    now: input.now,
+  });
+}
+
+export async function audit(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
@@ -639,6 +730,14 @@ async function expireSession(
       ),
     );
   await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
+  await releaseLinksOfSession(
+    tx,
+    context,
+    row.id,
+    "session_closed",
+    { type: "system" },
+    now,
+  );
   await appendSessionEvent(tx, context, "table_session.closed", {
     sessionId: row.id,
     outletId: row.outletId,
@@ -1312,6 +1411,10 @@ export async function closeTableSession(
       .returning();
     if (!updated) throw new Error("Session close returned no row");
     await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
+    const tablesBefore = await readTableStates(tx, row.tenantId, [
+      row.tableId,
+      ...secondaryIds,
+    ]);
     await tx
       .update(tables)
       .set({
@@ -1338,6 +1441,31 @@ export async function closeTableSession(
             eq(tables.status, "occupied"),
           ),
         );
+    const closeTarget = input.tableCleaned ? "available" : "dirty";
+    for (const id of [row.tableId, ...secondaryIds]) {
+      const before = tablesBefore.get(id);
+      // Secondary tables only change when they were occupied (see update above).
+      if (!before || (id !== row.tableId && before.status !== "occupied"))
+        continue;
+      await emitTableStatusChanged(tx, context, {
+        tableId: id,
+        outletId: row.outletId,
+        zoneId: before.zoneId,
+        from: before.status,
+        to: closeTarget,
+        cause: "session_closed",
+        actor: { type: "user", id: actorUserId },
+        now,
+      });
+    }
+    await releaseLinksOfSession(
+      tx,
+      context,
+      row.id,
+      "session_closed",
+      { type: "user", id: actorUserId },
+      now,
+    );
     await appendSessionEvent(tx, context, "table_session.closed", {
       sessionId: row.id,
       outletId: row.outletId,
@@ -1421,6 +1549,20 @@ export async function updateTableStatus(
         ),
       )
       .returning();
+    await emitTableStatusChanged(tx, context, {
+      tableId: row.id,
+      outletId: row.outletId,
+      zoneId: row.zoneId,
+      from: row.status,
+      to: updated.status,
+      cause: "staff_action",
+      actor: { type: "user", id: actorUserId },
+      now,
+    });
+    const linkGroup =
+      (
+        await linkGroupsForTables(tx, context.tenant.tenantId, row.outletId)
+      ).get(row.id) ?? null;
     await audit(
       tx,
       context,
@@ -1451,6 +1593,7 @@ export async function updateTableStatus(
             }),
       openServiceRequestCount: 0,
       outstandingIdr: 0,
+      linkGroup,
     });
   });
 }

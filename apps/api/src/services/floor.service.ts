@@ -45,6 +45,7 @@ import {
 import { env } from "../config/env";
 import { db } from "../db";
 import * as schema from "../db/schema";
+import { linkGroupsForTables } from "./table-link.service";
 import {
   brands,
   floorZones,
@@ -282,6 +283,11 @@ export async function listFloorBoard(
     const sessionByTable = new Map(
       sessionRows.map((row) => [row.tableId, row]),
     );
+    const linkGroups = await linkGroupsForTables(
+      tx,
+      context.tenant.tenantId,
+      outlet,
+    );
     return floorBoardSchema.parse({
       outletId: outlet,
       zones: zoneRows.map(toZone),
@@ -303,6 +309,7 @@ export async function listFloorBoard(
                 }),
           openServiceRequestCount: 0,
           outstandingIdr: 0,
+          linkGroup: linkGroups.get(row.id) ?? null,
         });
       }),
       generatedAt: toIsoDateTime(now),

@@ -121,3 +121,5 @@ export * from "./metrics";
 export * from "./sales-targets";
 // WS-12 per-tenant AI provider config (legend-dwrr).
 export * from "./ai-provider";
+// WS-03 table link groups (legend-1nmh).
+export * from "./table-links";
