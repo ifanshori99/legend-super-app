@@ -510,6 +510,7 @@ const accessBaseMessages = {
       leave: { request: "Ajukan cuti atau izin" },
       payslip: { view: "Lihat slip gaji sendiri" },
       reimbursement: { request: "Ajukan reimbursement" },
+      loan: { request: "Ajukan kasbon" },
       shift_swap: { request: "Ajukan tukar shift" },
       sop: { read: "Baca SOP" },
     },

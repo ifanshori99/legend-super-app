@@ -1488,3 +1488,20 @@ describe("legend-7vsby owner-only codes outside the Owner template", () => {
     ]);
   });
 });
+
+describe("self.loan.request (legend-e3k9)", () => {
+  test("kasbon self-service has its own self-service permission", () => {
+    assert.ok(access.isPermissionCode("self.loan.request"));
+    assert.ok(access.permissionHasTag("self.loan.request", "self"));
+  });
+
+  test("the employee template holds it, management templates do not (self.* is employee-only)", () => {
+    assert.ok(template("employee").permissions.includes("self.loan.request"));
+    assert.ok(!template("owner").permissions.includes("self.loan.request"));
+    assert.ok(
+      !template("tenant_admin").permissions.includes("self.loan.request"),
+    );
+    // Approving a kasbon stays a separate, HR-side permission.
+    assert.ok(!template("employee").permissions.includes("hr.loan.approve"));
+  });
+});

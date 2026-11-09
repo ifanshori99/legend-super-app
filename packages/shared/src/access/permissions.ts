@@ -220,6 +220,7 @@ const entries = [
   ["self.leave.request", ["self"]],
   ["self.payslip.view", ["self"]],
   ["self.reimbursement.request", ["self"]],
+  ["self.loan.request", ["self"]],
   ["self.shift_swap.request", ["self"]],
   ["self.sop.read", ["self"]],
 
