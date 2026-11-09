@@ -278,3 +278,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect; temuan (null integrasi fail-open, UPDATE MALFORMED tanpa guard, celah test) dibetulkan.
 - Beads: legend-srf6 (kunci dedupe tanpa integrasi, risiko diterima), legend-dnkm (callback refund tanpa ikatan integrasi), legend-f03o (secret dipakai bersama antar integrasi).
 - Gate penuh: oleh merge train. Second opinion Codex: antre.
+
+## Codex 68 struk: legend-3yqy, v3vo, 9wbc, ain0 (engineer, cabang `ws/fix-receipt-codex`, 2026-11-09)
+
+- Basis `milestone/m1` dab1d592 (receipt 39296fae sudah di m1). Worktree `.worktrees/fix-receipt`. Sub-brief `docs/briefs/sub-fix-receipt-codex.md`.
+- legend-9wbc: cherry-pick fix PO absolute-form (7c98db8f, legend-qni9; konflik digabung dengan redaksi struk) + test redaksi token struk JSON/PDF absolute-form. Merge train: cabang `ws/fix-codex-procurement` membawa commit yang sama, konflik `app.ts` diselesaikan dengan versi cabang ini.
+- legend-v3vo: job email e-receipt didaftarkan di sweep tenant `worker-main.ts`, hanya di cloud (token link hanya ada di DB edge). Provider null: baris tetap queued.
+- legend-3yqy: cloud memberi urutan `P<n>` saat enroll perangkat pos/kds/waiter_phone, backfill saat pull, edge menerima lewat `?receiptSequences=1`. Edge menolak urutan yang di cloud sudah > 0 (terminal di-enroll ulang). Cloud menolak penjualan perangkat di outlet yang punya edge aktif (`RECEIPT_DEVICE_ON_EDGE`). Standby tidak menerapkan urutan.
+- legend-ain0: port celah nomor (POS-06) disambungkan di `app.ts`: Tutup Hari menolak `RECEIPT_SEQUENCE_GAP`, laporan shift menampilkan nomor hilang. Bagian edge sync merge dipisah ke legend-ol6v (terblokir legend-kai, legend-9fhs).
+- Kartu lanjutan: legend-ol6v (applier run struk), legend-zsdd (urutan terikat satu edge node, release-gate), legend-19gb (e-receipt dari edge).
+- Urutan rilis: cloud dulu, baru edge (edge baru selalu kirim `receiptSequences=1`; cloud lama menolak dengan 400 sehingga pull registri berhenti).
