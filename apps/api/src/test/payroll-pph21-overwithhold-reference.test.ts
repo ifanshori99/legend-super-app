@@ -530,20 +530,27 @@ describe("PPh 21 over-withholding Jan-Nov, mixed months (legend-u1xq round 2)", 
         expectBounds(r, { de: c.de ?? 150_000, ce: c.ce, cr: c.cr });
       });
 
-    // with base, proportional (updated for bead legend-mmgd: signed balances):
+    // with base, proportional (updated for bead legend-mmgd: signed balances,
+    //   and bead legend-4ndx: W is capped at the available pay, the excess is
+    //   the company's):
     //   bR = 9_818_181 - 17_450_000 = -7_631_819, bE = -2_000_000 + 7_631_819 =
     //   5_631_819 (as O5: the employee is short, the company over-paid).
-    //   Employee: e = De + bE = 150_000 + 5_631_819 = 5_781_819 = W (no
-    //   refund). Company: r = Dr + bR = 150_000 - 7_631_819 = -7_481_819 =>
-    //   refund 7_481_819. Check: 5_781_819 - 7_481_819 = -1_700_000 = T.
-    //   (Old clamp: W 150_000, company refund 1_850_000.)
+    //   Employee's own amount De + bE = 150_000 + 5_631_819 = 5_781_819, but
+    //   the cap is gross lines + gross_up + net lines - deductible =
+    //   1_000_000 + 1_000_000 + 0 - 0 = 2_000_000 (the allowance is 0 here), so
+    //   excess = 5_781_819 - 2_000_000 = 3_781_819 and W = 2_000_000 (no
+    //   refund). Company: r = Dr + bR + excess = 150_000 - 7_631_819 +
+    //   3_781_819 = -3_700_000 < 0 => company refund 3_700_000, borne 0 (the
+    //   excess only reduces the refund). Check: 2_000_000 - 3_700_000 =
+    //   -1_700_000 = T. (Without the cap: W 5_781_819, company refund
+    //   7_481_819.)
     check("with scheme base", MIXED_BASES, "proportional", {
-      w: 5_781_819,
+      w: 2_000_000,
       refund: 0,
-      employerRefund: 7_481_819,
+      employerRefund: 3_700_000,
       ce: 0,
       cr: 7_631_819,
-      de: 5_781_819, // De 150_000 + bE 5_631_819
+      de: 2_000_000, // the available pay (bead legend-4ndx), below De + bE 5_781_819
     });
     // with base, gross_first: Ce = 500_000, Cr = 1_500_000. Employee: 150_000
     //   - 500_000 < 0 -> W = 0, refund 350_000. Company: 150_000 - 1_500_000

@@ -47,10 +47,17 @@
 //   borne amount may stand beside an employee refund (beads legend-u1xq,
 //   legend-mmgd). Always withheld + borne - employee refund - employer
 //   refund = T, the deposit.
-// S is the least fixed point of S = max(0, Dr(X(S)) + employer balance),
-// iterated from 0 (monotone, so it rises to the least solution). A = S x U /
-// (U + N), B = the rest. Withheld = W + A, so the employee's take-home is
-// exactly G + U + N - W + employee refund: the allowance cancels out.
+// - W never exceeds the pay left: cap = gross lines + U + N - employee JHT/JP
+//   (lowered by `employeeWithholdingCapIdr` when given). The employee charge
+//   above the cap (excess) moves to the employer: borne when the employer's
+//   net stays >= 0 (so it enters X), else it only lowers the employer refund
+//   (bead legend-4ndx). Excess 0: the result is unchanged.
+// S is the least fixed point of S = max(0, Dr(X(S)) + employer balance +
+// excess(X(S))), iterated from 0 (monotone, so it rises to the least
+// solution). A = (S - excess) x U / (U + N), B = the rest: the excess is
+// always borne, never a tax allowance. Withheld = W + A, so the employee's
+// take-home is exactly G + U + N - W + employee refund: the allowance
+// cancels out.
 
 import { divideRounded, idr } from "../../core/index.ts";
 import type { Idr, RoundingMode } from "../../core/index.ts";
@@ -101,6 +108,13 @@ export type Pph21PeriodInput = {
   contractTaxScheme?: TaxScheme;
   /** Employee JHT + JP of the period (deductible in the annual computation). */
   employeeDeductibleIdr: Idr | number;
+  /**
+   * Optional cap on the employee's PPh 21 (W): cash pay without the tax
+   * allowance, minus every employee BPJS share (JHT, JP, health). It can only
+   * lower the engine's own cap (gross lines + U + N - employeeDeductibleIdr);
+   * the excess is borne by the employer (bead legend-4ndx).
+   */
+  employeeWithholdingCapIdr?: Idr | number;
   /** Earlier periods of the tax year at this employer (last period only). */
   prior: {
     /** Sum of X (taxableGrossIdr) of earlier periods. */
@@ -329,7 +343,7 @@ export function computePph21Period(
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
 
-  const { g, u, n, employeeG, coverU, coverN } = schemeSplit(
+  const { g, grossLines, u, n, employeeG, coverU, coverN } = schemeSplit(
     input.taxableLines,
     input.employerBenefitIdr,
     input.contractTaxScheme,
@@ -485,7 +499,9 @@ export function computePph21Period(
         ((priorTax + history) * priorEmployerScheme) / priorMix -
         priorEmployerTax;
   } else if (history !== 0n && priorTax > 0n)
-    // BigInt division truncates toward 0: the employee keeps the rupiah.
+    // BigInt division truncates toward 0, so the employer's balance is the
+    // smaller in size: the odd rupiah is the employee's, charged on a
+    // shortfall (H > 0), refunded on a credit (H < 0).
     employerBalance = (history * priorEmployerTax) / priorTax;
   else if (history > 0n && lineBase > 0n)
     employerBalance = (history * (lineBase - employeeG)) / lineBase;
@@ -507,8 +523,29 @@ export function computePph21Period(
     return { employeePart, employerPart: added - employeePart };
   };
 
-  // Employer-covered tax S = max(0, Dr(X(S)) + employer balance): least fixed
-  // point from 0. Dr rises with X, so the map is monotone. With the pro rata
+  const cashLeft = grossLines + u + n - deductible;
+  let cap = cashLeft > 0n ? cashLeft : 0n;
+  if (input.employeeWithholdingCapIdr !== undefined) {
+    const callerCap = nonNegativeInt(
+      input.employeeWithholdingCapIdr,
+      "employeeWithholdingCapIdr",
+    );
+    if (callerCap < cap) cap = callerCap;
+  }
+  const netsAt = (at: bigint) => {
+    const { employeePart, employerPart } = addedSplit(at);
+    const own = employeePart + employeeBalance;
+    const excess = own > cap ? own - cap : 0n;
+    return {
+      employeeNet: own - excess,
+      employerNet: employerPart + employerBalance + excess,
+      excess,
+    };
+  };
+  // W is capped at the pay left (bead legend-4ndx); the excess over the cap
+  // is the employer's. Employer-covered tax S = max(0, Dr(X(S)) + employer
+  // balance + excess(X(S))): least fixed point from 0. Dr and the employee
+  // part both rise with X, so the map is monotone (slope < 1). With the pro rata
   // floor it can dip by a rupiah; stop on the first non-increase and let the
   // borne amount absorb the residual (take-home stays exact). Runs for
   // gross-only pay too: the employer's part of a shortfall is borne, hence
@@ -517,8 +554,7 @@ export function computePph21Period(
   for (let i = 0; ; i++) {
     if (i >= MAX_ITERATIONS)
       throw new RangeError("Employer-covered tax did not converge");
-    const { employerPart } = addedSplit(lineBase + covered);
-    const next = employerPart + employerBalance;
+    const next = netsAt(lineBase + covered).employerNet;
     if (next <= covered) break;
     covered = next;
   }
@@ -530,18 +566,18 @@ export function computePph21Period(
   // a negative one refunded to that payer. withheld + borne - both refunds =
   // T, so the deposit is exactly T, and withheld may exceed T beside an
   // employer refund (or borne stand beside an employee refund).
-  const { employeePart, employerPart } = addedSplit(x);
-  const employeeNet = employeePart + employeeBalance;
-  const employerNet = employerPart + employerBalance;
+  const { employeeNet, employerNet, excess } = netsAt(x);
   const w = employeeNet > 0n ? employeeNet : 0n;
   const employeeRefund = employeeNet < 0n ? -employeeNet : 0n;
   let allowance = 0n;
   let borne = 0n;
   let employerRefund = 0n;
   if (employerNet >= 0n) {
+    const ownNet = employerNet - excess;
+    const ownCovered = covered > excess ? covered - excess : 0n;
     allowance =
-      coverU + coverN > 0n ? (covered * coverU) / (coverU + coverN) : 0n;
-    if (allowance > employerNet) allowance = employerNet;
+      coverU + coverN > 0n ? (ownCovered * coverU) / (coverU + coverN) : 0n;
+    if (allowance > ownNet) allowance = ownNet > 0n ? ownNet : 0n;
     borne = employerNet - allowance;
   } else employerRefund = -employerNet;
   const withheld = w + allowance;

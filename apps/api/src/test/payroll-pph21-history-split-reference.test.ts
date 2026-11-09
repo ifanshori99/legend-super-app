@@ -602,8 +602,13 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
   // gross => G* = 3_000_000, employer base 0; gross_up / net => G* = 0,
   // employer base X - 0 = 3_000_000.
   // Benefit 8_000_000 (row 7, 1,5%):
-  //   gross:    X = 8_000_000, T = 8_000_000 x 150 / 10000 = 120_000, all
-  //             withheld by the employee (G* = benefit); bases 8_000_000 / 0.
+  //   gross:    G* = benefit, but the benefit is not cash: the available pay
+  //             is 0 (no lines, bead legend-4ndx), so the employee cannot be
+  //             charged. The whole tax is the company's, borne and taxable:
+  //             S = round_half_up(1,5% x (8_000_000 + S)) = 121_827 (as
+  //             gross_up), X = 8_121_827, T = 121_827 = borne, withheld 0,
+  //             allowance 0; bases follow G*: 8_000_000 / X - 8_000_000 =
+  //             121_827. (Before the cap: X 8_000_000, T = W = 120_000.)
   //   gross_up: G* = 0, S = round_half_up(1,5% x (8_000_000 + S)) = 121_827
   //             (8_121_827 x 150 / 10000 = 121_827,405, stable), X = 8_121_827,
   //             T = 121_827 = allowance, withheld = allowance (the company's
@@ -651,13 +656,13 @@ describe("legend-m9gx benefit-only month follows the contract tax scheme", () =>
       benefit: 8_000_000,
       scheme: "gross" as const,
       rateBp: 150,
-      x: 8_000_000,
-      t: 120_000,
-      withheld: 120_000,
+      x: 8_121_827,
+      t: 121_827,
+      withheld: 0,
       allowance: 0,
-      borne: 0,
+      borne: 121_827,
       gBase: 8_000_000,
-      eBase: 0,
+      eBase: 121_827,
     },
     {
       benefit: 8_000_000,

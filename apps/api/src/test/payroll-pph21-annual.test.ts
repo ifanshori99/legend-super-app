@@ -1336,22 +1336,36 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     expect(r.pph21RefundIdr).toBe(0);
   });
 
-  it("R63 unpaid December: the shortfall is withheld from the employee, never booked as untaxed borne tax", () => {
+  it("R63 unpaid December: the shortfall cannot be withheld from pay that does not exist, so the employer bears it as taxable borne tax", () => {
     // Jan-Nov paid 132 jt in total with nothing withheld; December pays nothing.
-    // gross = 132_000_000 + 0; cost = min(6_600_000, 6_000_000) = 6_000_000.
-    // net = 126_000_000; PKP = 126_000_000 - 54_000_000 = 72_000_000.
-    // annual = 5% x 60 jt + 15% x 12 jt = 3_000_000 + 1_800_000 = 4_800_000.
-    // T = 4_800_000 - 0. X = 0, so no employer benefit can carry it: W = T.
+    // Bead legend-4ndx: W is capped at the available pay (no lines, no benefit,
+    // no deductible: cap 0) and the excess is the company's. The old rule
+    // (W = T = 4_800_000 from a month with no pay) would have made take-home
+    // negative.
+    // With no lines the whole tax is the company's, so it is borne and taxable
+    // (fixed point on X = S; gross = 132_000_000 + S; cost = 6_000_000;
+    // PKP = 72_000_000 + S, rounded down to 1000; tax = 3_000_000 + 15% x
+    // (PKP - 60_000_000); prior tax 0, so T = annual):
+    //   S0=0         PKP 72_000_000 annual 4_800_000 next 4_800_000
+    //   S1=4_800_000 PKP 76_800_000 annual 5_520_000 next 5_520_000
+    //   S2=5_520_000 PKP 77_520_000 annual 5_628_000 next 5_628_000
+    //   S3=5_628_000 PKP 77_628_000 annual 5_644_200 next 5_644_200
+    //   S4=5_644_200 PKP 77_644_000 annual 5_646_600 next 5_646_600
+    //   S5=5_646_600 PKP 77_646_000 annual 5_646_900 next 5_646_900
+    //   S6=5_646_900 PKP 77_646_000 annual 5_646_900 stable.
+    // X = T = B = 5_646_900, W = 0, no refund.
     const r = run({
       taxableLines: [],
       prior: prior(132_000_000, 0),
     });
-    expect(r.taxableGrossIdr).toBe(0);
-    expect(r.pph21Idr).toBe(4_800_000);
-    expect(r.pph21WithheldIdr).toBe(4_800_000);
-    expect(r.pph21EmployerBorneIdr).toBe(0);
+    expect(r.taxableGrossIdr).toBe(5_646_900);
+    expect(r.pph21Idr).toBe(5_646_900);
+    expect(r.pph21WithheldIdr).toBe(0);
+    expect(r.pph21EmployerBorneIdr).toBe(5_646_900);
     expect(r.taxAllowanceIdr).toBe(0);
-    expect(r.annual?.annualTaxIdr).toBe(4_800_000);
+    expect(r.pph21RefundIdr).toBe(0);
+    expect(r.pph21EmployerRefundIdr).toBe(0);
+    expect(r.annual?.annualTaxIdr).toBe(5_646_900);
   });
 
   it("R64 gross_first, pure net December after an all-borne year: nothing is deducted from the employee", () => {
