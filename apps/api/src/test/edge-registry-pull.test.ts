@@ -736,3 +736,64 @@ describe("EDG-03 a cloud device token on the edge", () => {
     expect(outcome(pin)).not.toEqual(outcome(refusedPin));
   });
 });
+
+describe("legend-6xcy the runtime runs the master sync loop", () => {
+  const MASTERS_PATH = "/api/edge-sync/bootstrap/masters";
+  const MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
+
+  it("starts a 5 minute master sync loop, and stop() resolves while its fetch hangs", async () => {
+    let hangingSignal: AbortSignal | null = null;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((async (
+      input: unknown,
+      init?: RequestInit,
+    ) => {
+      const href =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : (input as Request).url;
+      if (!href.includes(MASTERS_PATH)) return cloudAnswer(input);
+      hangingSignal = init?.signal ?? null;
+      // Never answers; only an abort ends it, like a dead link.
+      return new Promise<Response>((_resolve, reject) => {
+        hangingSignal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+    }) as never);
+    const intervalSpy = vi.spyOn(globalThis, "setInterval");
+
+    const handle = await boot();
+
+    const masterTimer = intervalSpy.mock.calls.findIndex(
+      ([, delay]) => delay === MASTER_SYNC_INTERVAL_MS,
+    );
+    expect(masterTimer).toBeGreaterThanOrEqual(0);
+    // Fire the first tick by hand instead of waiting 5 minutes.
+    const tick = intervalSpy.mock.calls[masterTimer]![0] as () => void;
+    tick();
+    await vi.waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(([input]) =>
+          String(
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : (input as Request).url,
+          ).includes(MASTERS_PATH),
+        ),
+      ).toBe(true),
+    );
+    expect(hangingSignal).not.toBeNull();
+    expect(hangingSignal!.aborted).toBe(false);
+
+    const stopped = await Promise.race([
+      handle.stop().then(() => "stopped"),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 5_000)),
+    ]);
+    expect(stopped).toBe("stopped");
+    expect(hangingSignal!.aborted).toBe(true);
+  });
+});
