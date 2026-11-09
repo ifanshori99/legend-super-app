@@ -47,7 +47,7 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
@@ -57,6 +57,7 @@ import {
   settlementReconciledPayloadSchema,
 } from "@starter/shared/payment";
 import {
+  domainEventOutbox,
   orders,
   paymentIntents,
   paymentRefunds,
@@ -83,6 +84,7 @@ import {
   AutoJournalSalePending,
 } from "./accounting-auto-journal-void.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
@@ -117,6 +119,17 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * legend-3r6r: order.paid met a gateway tender whose payment.paid has sat dead-
+ * lettered past DEAD_LETTERED_RECEIPT_BOUND_MS. Parked non-retryable (the sweep
+ * stops, finance sees the distinct code). It is NOT booked through
+ * gateway_clearing: replaying the dead letter would then count the money twice.
+ * Replaying and booking the receipt releases the row (requeueReceiptDependents).
+ */
+export class AutoJournalReceiptDeadLettered extends Error {
+  readonly code = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
 }
 
 /**
@@ -430,7 +443,65 @@ async function receiptStatesOf(
       intentId,
       backingStates.get(backingKeyOf({ kind: "intent", intentId })) ?? "none",
     );
+  const pendingIds = ids.filter(
+    (intentId) => states.get(intentId) === "pending",
+  );
+  if (pendingIds.length > 0)
+    await assertNotDeadLettered(tx, tenantId, pendingIds);
   return states;
+}
+
+/**
+ * legend-3r6r: how long a payment.paid may sit dead-lettered before a sale
+ * waiting on it stops retrying (3 days: covers a weekend before an operator
+ * replays it).
+ */
+export const DEAD_LETTERED_RECEIPT_BOUND_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * Throws AutoJournalReceiptDeadLettered when a pending intent's receipt is
+ * pending only because every undelivered payment.paid of it is dead-lettered
+ * past the bound. A live (ready/queued) row, a young dead letter, or a receipt
+ * parked retryable (no outbox row) keeps the plain pending wait.
+ */
+async function assertNotDeadLettered(
+  tx: Tx,
+  tenantId: TenantId,
+  intentIds: readonly string[],
+): Promise<void> {
+  const rows = await tx
+    .select({
+      intentId: domainEventOutbox.aggregateId,
+      dispatchState: domainEventOutbox.dispatchState,
+      deadLetteredAt: domainEventOutbox.deadLetteredAt,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        ne(domainEventOutbox.status, "delivered"),
+        eq(domainEventOutbox.aggregateType, "payment"),
+        inArray(domainEventOutbox.aggregateId, [...intentIds]),
+        sql`${domainEventOutbox.event}->>'name' = 'payment.paid'`,
+      ),
+    );
+  const cutoff = Date.now() - DEAD_LETTERED_RECEIPT_BOUND_MS;
+  for (const intentId of intentIds) {
+    const own = rows.filter((row) => row.intentId === intentId);
+    if (
+      own.length > 0 &&
+      own.every(
+        (row) =>
+          row.dispatchState === "dead" &&
+          row.deadLetteredAt !== null &&
+          row.deadLetteredAt.getTime() <= cutoff,
+      )
+    )
+      throw new AutoJournalReceiptDeadLettered(
+        "Gateway receipt is dead-lettered; replay it or book the sale by hand",
+      );
+  }
 }
 
 /**

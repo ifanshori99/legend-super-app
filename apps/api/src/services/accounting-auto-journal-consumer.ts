@@ -58,6 +58,7 @@ import { withTenant } from "../db/tenant.ts";
 import {
   AutoJournalDepositCutoverMixed,
   AutoJournalPayloadInvalid,
+  AutoJournalReceiptDeadLettered,
   AutoJournalReceiptMissing,
   AutoJournalReceiptPending,
   autoJournalFactOf,
@@ -134,6 +135,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
   if (error instanceof AutoJournalReceiptMissing) return error.code;
+  if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
   if (error instanceof AutoJournalSalePending) return error.code;
   if (error instanceof AutoJournalSaleMissing) return error.code;
   if (error instanceof AutoJournalVoidUnsupported) return error.code;
@@ -226,6 +228,11 @@ async function park(
     // No row written, so nothing for the sweep to retry.
     return { status: "parked", code, retryable: false };
   }
+  // legend-3r6r: the sale stopped retrying; make the stuck row loud.
+  if (code === "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED")
+    console.error(
+      `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: replay the dead-lettered payment.paid`,
+    );
   const nextRetryAt = retryable
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
     : null;
@@ -333,6 +340,7 @@ async function settleAutoJournal(
   if (existing) {
     await clearParked(tx, tenantId, key);
     await requeueSaleDependents(tx, tenantId, stored, now);
+    await requeueReceiptDependents(tx, tenantId, stored, now);
     return { status: "already_posted", journalEntryId: existing.id };
   }
   let result: AutoJournalResult;
@@ -359,8 +367,10 @@ async function settleAutoJournal(
   }
   // Posted, or nothing to book any more: either way no longer parked.
   await clearParked(tx, tenantId, key);
-  if (result.status === "posted")
+  if (result.status === "posted") {
     await requeueSaleDependents(tx, tenantId, stored, now);
+    await requeueReceiptDependents(tx, tenantId, stored, now);
+  }
   return result;
 }
 
@@ -391,6 +401,33 @@ async function requeueSaleDependents(
           "order.refunded",
         ]),
         sql`${autoJournalParked.payload}->>'orderId' = ${String(stored.payload.orderId)}`,
+      ),
+    );
+}
+
+/**
+ * legend-3r6r: a row parked non-retryable `AUTO_JOURNAL_RECEIPT_DEAD_LETTERED`
+ * waits for its payment.paid, which an operator may replay. Once any
+ * payment.paid of the outlet posts, those rows become retryable and due now;
+ * a row whose receipt is still dead re-parks (the guard decides again), so
+ * the release can neither book twice nor loop. Tenant and outlet scoped.
+ */
+async function requeueReceiptDependents(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+  now: Date,
+): Promise<void> {
+  if (stored.eventName !== "payment.paid") return;
+  await tx
+    .update(autoJournalParked)
+    .set({ retryable: true, nextRetryAt: now })
+    .where(
+      and(
+        eq(autoJournalParked.tenantId, tenantId),
+        eq(autoJournalParked.outletId, stored.outletId),
+        eq(autoJournalParked.errorCode, "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED"),
+        eq(autoJournalParked.retryable, false),
       ),
     );
 }
