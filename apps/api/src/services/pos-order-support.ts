@@ -119,6 +119,9 @@ const AUDIT_SAFE_FIELDS = [
   "quantity",
   "goodsReturnOnly",
   "goodsReturnNote",
+  // legend-s7rx: what a deposit (DP) still owes after a promo refund; a number,
+  // a running balance (read the latest audit row, never sum them).
+  "depositOwedIdr",
   "orderId",
   "shiftId",
   "cashIdr",

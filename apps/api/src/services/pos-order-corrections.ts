@@ -14,7 +14,7 @@
 // is not voided afterwards and a voided sale is not refunded (one correction
 // path per sale keeps the day's totals unambiguous, POS-05).
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   allocateIdr,
   CoreError,
@@ -38,7 +38,11 @@ import {
 } from "@starter/shared/pos";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
+import {
+  posOrderRefunds,
+  posOrderVoids,
+  type PosRefundLineRow,
+} from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -176,7 +180,9 @@ async function correctionsOf(
           eq(posOrderRefunds.tenantId, tenantId),
           eq(posOrderRefunds.orderId, orderId),
         ),
-      ),
+      )
+      // legend-186: the per-tender replay of earlier refunds needs their order.
+      .orderBy(asc(posOrderRefunds.refundedAt), asc(posOrderRefunds.id)),
   ]);
   return { voids, refunds };
 }
@@ -468,6 +474,79 @@ export function stillRefundableByMethod(
   }));
 }
 
+/**
+ * legend-186 (8v2yl): a refund payout split per captured tender, so each line
+ * can be attributed to one payment intent. The per-method totals come from
+ * `refundAllocation` over `stillRefundableByMethod` (unchanged); each method
+ * amount is then spread over that method's captured tenders FIFO (requestedAt,
+ * id), up to what each tender still holds. Earlier refund lines with a
+ * `tenderId` come off that tender; legacy lines (method only) come off the
+ * method's tenders FIFO.
+ */
+export function refundLinesByTender(
+  tenders: readonly PosTender[],
+  refunds: readonly Pick<RefundRow, "lines">[],
+  payoutIdr: number,
+): PosRefundLineRow[] {
+  const captured = tenders.filter(
+    (tender) => tender.status === "captured" && Number(tender.amountIdr) > 0,
+  );
+  const remaining = new Map(
+    captured.map((tender) => [tender.id as string, Number(tender.amountIdr)]),
+  );
+  const takeFifo = (method: string, amount: number): number => {
+    let left = amount;
+    for (const tender of captured) {
+      if (left <= 0) break;
+      if (tender.method !== method) continue;
+      const take = Math.min(left, remaining.get(tender.id) ?? 0);
+      remaining.set(tender.id, (remaining.get(tender.id) ?? 0) - take);
+      left -= take;
+    }
+    return left;
+  };
+  for (const row of refunds)
+    for (const line of row.lines) {
+      let left = Number(line.amountIdr);
+      const own = line.tenderId ? remaining.get(line.tenderId) : undefined;
+      if (line.tenderId && own !== undefined) {
+        const take = Math.min(left, own);
+        remaining.set(line.tenderId, own - take);
+        left -= take;
+      }
+      takeFifo(line.method, left);
+    }
+  const lines: PosRefundLineRow[] = [];
+  for (const part of refundAllocation(
+    stillRefundableByMethod(tenders, refunds),
+    idr(payoutIdr),
+  )) {
+    let left = Number(part.amountIdr);
+    const ofMethod = captured.filter((tender) => tender.method === part.method);
+    for (const tender of ofMethod) {
+      if (left <= 0) break;
+      const take = Math.min(left, remaining.get(tender.id) ?? 0);
+      if (take <= 0) continue;
+      remaining.set(tender.id, (remaining.get(tender.id) ?? 0) - take);
+      lines.push({
+        method: part.method,
+        amountIdr: take,
+        reference: null,
+        tenderId: tender.id,
+        paymentIntentId: tender.paymentIntentId,
+      });
+      left -= take;
+    }
+    // Only an inconsistent earlier row (lines not adding up to what its
+    // tenders held) leaves a rest here; rounding never does. Keep the
+    // per-method total but write the rest without a tender or intent id
+    // (legacy shape), so it is never pinned on one payment intent.
+    if (left > 0)
+      lines.push({ method: part.method, amountIdr: left, reference: null });
+  }
+  return lines;
+}
+
 /** POST .../corrections/refund — linked refund against a paid sale (POS-04). */
 export async function refundPosOrder(
   context: ScopedTenantContext,
@@ -541,18 +620,31 @@ export async function refundPosOrder(
       // still records the return as a Rp0 row: items, reason and audit, no
       // payment line, no event, no gateway, no stock reversal.
       let goodsReturnOnly = false;
+      // legend-186 (s7rx B): the DP case of the Rp0 return, and what the
+      // deposit side still owes the guest (not paid back here).
+      let depositGoodsReturn = false;
+      let depositOwedIdr = 0;
       const promoApplication = await livePromoApplicationOf(
         tx,
         context,
         order.id,
       );
       if (promoApplication) {
-        if (requested.length === 0)
+        // legend-186 (s7rx A): a promo order refunded without items is a
+        // settlement of what the guest is still owed for the goods they kept
+        // (e.g. an order locked by a row that paid out less than due). It
+        // changes no items, so the kept lines are all that remain.
+        const settlement = requested.length === 0;
+        // Only an order that already had a refund can be locked; an untouched
+        // promo order is refunded by its items (a later promo edit must not
+        // make it look owed).
+        if (settlement && refunds.length === 0)
           throw new HttpError(
             422,
             "VALIDATION_ERROR",
             "Pesanan berpromo: pilih item yang direfund.",
           );
+        if (settlement) payout = 0;
         const keptLines = liveItems.flatMap((item) => {
           const keptQty =
             item.quantity -
@@ -578,6 +670,21 @@ export async function refundPosOrder(
             at: now,
             deferPayout: true,
           });
+        // The re-check can depend on more than this order (same-day spend of
+        // the guest's other orders, or the live rule of a pre-0042 promo), so
+        // a withdrawal here can repeat on every attempt: no retry hint, the
+        // settlement goes to an admin correction instead. The transaction
+        // rolls back, so the promo stays as it was.
+        if (
+          settlement &&
+          recomputed.adjusted &&
+          recomputed.withdrawn.length > 0
+        )
+          throw new HttpError(
+            422,
+            "REFUND_SETTLEMENT_NEEDS_ADMIN",
+            "Promo pesanan ini tidak lagi memenuhi syarat untuk item yang tersisa; pelunasan sisa refund perlu koreksi admin.",
+          );
         if (recomputed.adjusted) {
           // Kept goods after the promo (application) and after their pro-rata
           // (by price) share of any manual discount stacked on the sale.
@@ -612,22 +719,39 @@ export async function refundPosOrder(
               : 0;
           const paidIn = paid + Number(order.depositAppliedIdr);
           const dueBill = Math.max(0, paidIn - refunded - keptPayableBill);
-          // Rp0 return only when the guest is owed nothing; owed but no tender
-          // left to pay it from stays refused below.
-          goodsReturnOnly = dueBill === 0;
+          // Rp0 return when the guest is owed nothing, or (s7rx B, below) when
+          // what is owed sits only on the deposit; owed with no tender left and
+          // no deposit stays refused below. A settlement never writes Rp0.
+          goodsReturnOnly = !settlement && dueBill === 0;
           // legend-a0i7 (Codex 127): the returned items are used up by this
           // refund and a promo order cannot be refunded by amount alone, so a
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
           // capped to what is due (unchanged).
           const owedIdr = Math.min(dueBill, Math.max(0, paid - refunded));
-          if (owedIdr > 0 && input.amountIdr < owedIdr)
+          // legend-186 (s7rx B): owed, but only from the deposit (the tenders
+          // are used up): the item still comes back as a Rp0 return and the
+          // rest stays on the deposit side.
+          if (
+            !settlement &&
+            dueBill > 0 &&
+            paid - refunded <= 0 &&
+            Number(order.depositAppliedIdr) > 0
+          ) {
+            goodsReturnOnly = true;
+            depositGoodsReturn = true;
+          }
+          if (!settlement && owedIdr > 0 && input.amountIdr < owedIdr)
             throw new HttpError(
               422,
               "REFUND_AMOUNT_BELOW_DUE",
               `Refund item ini harus ${rupiah(owedIdr)}; isi jumlah tersebut agar sisa pembayaran tamu tidak tertahan.`,
             );
           payout = Math.min(input.amountIdr, owedIdr);
+          // Running balance (the latest audit row holds it; do not sum rows):
+          // what is due beyond what the tenders can still pay.
+          if (Number(order.depositAppliedIdr) > 0)
+            depositOwedIdr = Math.max(0, dueBill - owedIdr);
         }
         if (goodsReturnOnly) payout = 0;
         else if (payout <= 0)
@@ -652,17 +776,9 @@ export async function refundPosOrder(
         minValueIdr: payout,
         now,
       });
-      const allocation = goodsReturnOnly
+      const lines: PosRefundLineRow[] = goodsReturnOnly
         ? []
-        : refundAllocation(
-            stillRefundableByMethod(tenders, refunds),
-            idr(payout),
-          );
-      const lines = allocation.map((line) => ({
-        method: line.method,
-        amountIdr: Number(line.amountIdr),
-        reference: null,
-      }));
+        : refundLinesByTender(tenders, refunds, payout);
       await assertBusinessDayOpen(tx, context, {
         outletId,
         businessDates: [
@@ -738,10 +854,16 @@ export async function refundPosOrder(
         refundGatewayIdr: bucket("gateway"),
         refundEdcIdr: bucket("edc"),
         refundPointsIdr: bucket("points"),
-        lines: lines.map((line) => ({
-          method: line.method,
-          amountIdr: line.amountIdr,
-        })),
+        // One line per method, no tender ids: the event stays as before.
+        lines: [
+          ...lines.reduce((byMethod, line) => {
+            byMethod.set(
+              line.method,
+              (byMethod.get(line.method) ?? 0) + line.amountIdr,
+            );
+            return byMethod;
+          }, new Map<string, number>()),
+        ].map(([method, amountIdr]) => ({ method, amountIdr })),
         refundedAt: now.toISOString(),
       };
       // No money moved on a Rp0 return: order.refunded (journals, loyalty,
@@ -779,10 +901,12 @@ export async function refundPosOrder(
             ...(goodsReturnOnly
               ? {
                   goodsReturnOnly: true,
-                  goodsReturnNote:
-                    "Retur barang tanpa dana: tidak ada yang perlu dikembalikan (item gratis atau tetap tercakup promo).",
+                  goodsReturnNote: depositGoodsReturn
+                    ? "Retur barang tanpa dana tunai: sisa hak tamu berada di deposit dan tidak dikembalikan di sini."
+                    : "Retur barang tanpa dana: tidak ada yang perlu dikembalikan (item gratis atau tetap tercakup promo).",
                 }
               : {}),
+            ...(depositOwedIdr > 0 ? { depositOwedIdr } : {}),
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,

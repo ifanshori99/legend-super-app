@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-15by + legend-wkl3 + legend-s7rx + legend-8v2yl refund POS berpromo dan baris refund per tender (engineer, cabang `ws/pos-refund-promo` dari m1 9a2c1e86, 2026-11-09)
+
+- Sudah: 15by dan wkl3 ternyata sudah ada di m1 (c140459c, bc16e207, e3d5f56e); kini dibuktikan dengan test angka kartu (BOGO 4 kopi + 2 croissant: retur croissant Rp0 tercatat, kopi berikut Rp30.000).
+- s7rx: refund tanpa item pada pesanan berpromo yang sudah pernah direfund menjadi pelunasan sisa (min jumlah diminta, jatuh tempo, sisa tender); pesanan belum pernah direfund tetap wajib pilih item; promo gugur saat pelunasan: 422 `REFUND_SETTLEMENT_NEEDS_ADMIN`. Pesanan DP dengan tender habis: retur item jadi baris Rp0, audit `depositOwedIdr` (saldo berjalan).
+- 8v2yl: baris `pos_order_refunds.lines` mencatat `tenderId` dan `paymentIntentId` (FIFO per tender; total per metode tetap); event `order.refunded` tidak berubah. Tanpa migrasi (jsonb).
+- Lanjutan: legend-9z1vm (atribusi intent membaca id baris, setelah ws/refund-payout-followups masuk m1), legend-pk38k (alur pengembalian DP dan pendapatan untuk retur Rp0 DP).
+
 <<<<<<< HEAD
 
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
