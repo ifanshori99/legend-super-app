@@ -2,6 +2,14 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ul4s pemetaan HTTP galat inventory dan purchasing (engineer, cabang `ws/inventory-error-http` dari milestone/m1 3517283b, 2026-11-10)
+
+- Sudah: satu pemetaan status HTTP + pesan aman per kode `InventoryError` dan `PurchasingError` (`inventoryErrorHttpStatus`, `purchasingErrorHttpStatus`, `*ErrorMessages` di `packages/shared/src/inventory/errors.ts` dan `purchasing/errors.ts`; tipe `Record` atas union kode, kode baru tanpa status gagal typecheck). Tabel kontrak di `docs/plan/contracts.md` (D-CORE-4).
+- Sudah: satu translator `translateDomainError` (`apps/api/src/services/domain-error-http.shared.ts`); `translateInventoryError`, `translateCountError`, `translatePurchasingError` kini hanya mendelegasikan. Jalur kirim PO yang membocorkan pesan mentah (`purchasing-send.service.ts`) ikut pemetaan umum.
+- Status berubah (belum ada jalur API yang memicunya): `PURCHASE_ORDER_LINE_MISMATCH` dan `THREE_WAY_MATCH_INVALID_INPUT` 409 ke 422. `INSUFFICIENT_STOCK` lewat translator umum 422 ke 409 (helper `insufficientStock` sudah 409). Tabel status hitungan stok dan self-approval purchasing (409) tidak berubah.
+- Bukti: gagal-dulu `inventory-purchasing-error-http.test.ts` (modul belum ada); 6 file 175 tes lulus (count, ops, purchasing-flow, purchasing-send, purchasing-supplier + file baru); kontrak root inventory + purchasing 38/38; tsc shared + api exit 0 (heavy); eslint + prettier bersih. Review reviewer sonnet: 2 temuan (jalur kirim PO, pengecualian pesan `countError` di kontrak) dibetulkan.
+- Langkah berikut: merge train.
+
 ## legend-umzos pulihkan tenant diarsip / outlet ditutup dalam 30 hari (engineer, cabang `ws/platform-restore-archived` dari integ/m1-batch31 d7a95d0c, 2026-11-09)
 
 - Keputusan founder Q40. Super Admin memulihkan tenant `archived` ke status sebelumnya (`active`/`suspended`) dan outlet `closed` ke status sebelumnya (`preopening`/`active`) dalam 30 hari sejak transisi (batas inklusif); sesudahnya 409 `RESTORE_WINDOW_EXPIRED`. Peta transisi tetap final (`archived -> []`, `closed -> []`); endpoint status umum tetap 409 `INVALID_TRANSITION`. Pulih hanya lewat aksi khusus.
