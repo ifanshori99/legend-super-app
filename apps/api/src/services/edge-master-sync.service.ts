@@ -13,7 +13,8 @@
 //   (integrity and misrouting only; authenticity comes from TLS).
 // - Full snapshot, deterministic order (id, or code for accounts), parsed
 //   with the shared schema before it is signed.
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, DrizzleQueryError, eq } from "drizzle-orm";
+import { DatabaseError } from "pg";
 import { CoreError } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import {
@@ -28,12 +29,44 @@ import { edgeNodes } from "../db/schema/edge-node.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { signEdgeBootstrapBundle } from "./edge-bootstrap.service.ts";
 import {
   verifiedEdgeNodeSchema,
   type VerifiedEdgeNode,
 } from "./staff-pin-sync.ts";
+
+/**
+ * Codex 124: a failed read (query timeout, lost connection) surfaces as a
+ * DrizzleQueryError whose message carries the SQL and the bound tenant, outlet
+ * and node ids, and the error handler would log it through res.err. Refuse
+ * with a fixed 503 instead: no message text, no `cause`. The log line holds
+ * only the error class and the SQLSTATE, never the query or its parameters.
+ * Only database errors take this path: anything else (an unsafe database role
+ * refused by withTenant, a code bug) keeps the 500 path, whose res.err copy
+ * the error handler already scrubs of row values.
+ */
+function isDatabaseError(error: unknown): boolean {
+  return error instanceof DrizzleQueryError || error instanceof DatabaseError;
+}
+
+function masterReadFailed(error: unknown): CoreError {
+  const source = error instanceof DrizzleQueryError ? error.cause : error;
+  const sqlState = (source as { code?: unknown } | null | undefined)?.code;
+  logger.warn(
+    {
+      errorClass:
+        error instanceof Error ? error.constructor.name : typeof error,
+      sqlState: typeof sqlState === "string" ? sqlState : undefined,
+    },
+    "edge master snapshot: database read failed",
+  );
+  return new CoreError(
+    "SERVICE_UNAVAILABLE",
+    "Data master outlet belum dapat dibaca. Coba lagi sebentar.",
+  );
+}
 
 const denied = () =>
   new CoreError(
@@ -64,7 +97,36 @@ export async function buildEdgeMasterSnapshot(
     outletId,
   );
 
-  const snapshot = await withTenant(db, context, async (tx) => {
+  const snapshot = await readSnapshot(context, verified);
+
+  return {
+    snapshot,
+    signature: signEdgeBootstrapBundle(snapshot, presented.hash),
+  };
+}
+
+type SnapshotScope = Pick<
+  VerifiedEdgeNode,
+  "tenantId" | "outletId" | "edgeNodeId"
+>;
+
+async function readSnapshot(
+  context: ReturnType<typeof outletContext>,
+  scope: SnapshotScope,
+) {
+  try {
+    return await readSnapshotInTenant(context, scope);
+  } catch (error) {
+    if (!isDatabaseError(error)) throw error;
+    throw masterReadFailed(error);
+  }
+}
+
+function readSnapshotInTenant(
+  context: ReturnType<typeof outletContext>,
+  { tenantId, outletId, edgeNodeId }: SnapshotScope,
+) {
+  return withTenant(db, context, async (tx) => {
     const [tenant] = await tx
       .select({ status: tenants.status })
       .from(tenants)
@@ -182,9 +244,4 @@ export async function buildEdgeMasterSnapshot(
       );
     return parsed.data;
   });
-
-  return {
-    snapshot,
-    signature: signEdgeBootstrapBundle(snapshot, presented.hash),
-  };
 }

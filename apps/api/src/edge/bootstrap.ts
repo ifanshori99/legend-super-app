@@ -9,7 +9,9 @@
 //   bootstrapped before the master sync, bead legend-9ppw): then one
 //   best-effort `syncEdgeMasters` (5 s timeout). A failure is logged (code
 //   only; CLOUD_* as warn, anything else as error) and the node still boots
-//   ("present").
+//   ("present"). That sync goes through the same data import guard as the
+//   fresh path (legend-8izz): a refusal is logged as DATA_IMPORT_BLOCKED,
+//   with no cloud call and nothing written.
 // - The signature is checked over the bundle exactly as received (constant
 //   time, key = the credential's own digest), then its shape, then that its
 //   tenant/outlet are the credential's claims. Anything else -> EdgeBootError

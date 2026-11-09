@@ -26,6 +26,12 @@
 //   the cloud (a renamed code would look like a local fork). Stock locations
 //   have no natural key, so a location created locally under another id is not
 //   detected (known gap).
+// - Data import guard (legend-8izz): every master write goes through
+//   `guardDataImport("edge.bootstrap")`, the same deployment policy as the
+//   bootstrap bundle (real data only in production). `syncEdgeMasters` checks
+//   it before the cloud fetch and the apply checks it again before its first
+//   write, so no caller (boot, loop, direct apply) can skip it. A refusal is
+//   EdgeMasterSyncError("DATA_IMPORT_BLOCKED"); nothing is written.
 //
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
@@ -34,6 +40,7 @@ import {
   edgeMasterSnapshotSchema,
   type EdgeMasterSnapshot,
 } from "@starter/shared/edge/master-sync";
+import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
@@ -60,7 +67,8 @@ export type EdgeMasterSyncCounts = {
 
 /**
  * code: EDGE_NODE_CREDENTIAL, CLOUD_<code>, BAD_RESPONSE, BAD_SIGNATURE,
- * BAD_SNAPSHOT, SCOPE_MISMATCH, LOCAL_CONFLICT or LOCAL_WRITE.
+ * BAD_SNAPSHOT, SCOPE_MISMATCH, DATA_IMPORT_BLOCKED, LOCAL_CONFLICT or
+ * LOCAL_WRITE.
  */
 export class EdgeMasterSyncError extends Error {
   readonly code: string;
@@ -69,6 +77,19 @@ export class EdgeMasterSyncError extends Error {
     super(`Edge master sync failed (${code})`);
     this.name = "EdgeMasterSyncError";
     this.code = code;
+  }
+}
+
+/**
+ * The masters are rows of the node's own deployment, like the bootstrap
+ * bundle, so they share its registered import source and policy. The guard's
+ * message is dropped: report a code only.
+ */
+function guardMasterImport(): void {
+  try {
+    guardDataImport("edge.bootstrap");
+  } catch {
+    throw new EdgeMasterSyncError("DATA_IMPORT_BLOCKED");
   }
 }
 
@@ -155,6 +176,7 @@ export async function applyEdgeMasterSnapshotInTransaction(
   claims: Claims,
   snapshot: EdgeMasterSnapshot,
 ): Promise<EdgeMasterSyncCounts> {
+  guardMasterImport();
   assertScope(claims, snapshot);
   const accounts = parentsFirst(snapshot.chartOfAccounts);
   const { tenantId, outletId, legalEntityId } = snapshot;
@@ -326,6 +348,7 @@ export async function syncEdgeMasters(
 ): Promise<EdgeMasterSyncCounts> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+  guardMasterImport();
   const snapshot = await fetchVerifiedMasterSnapshot(config, options);
   return applyEdgeMasterSnapshot(claims, snapshot);
 }

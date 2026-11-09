@@ -41,6 +41,7 @@ import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/i
 import { deliveryWebhookRouter } from "./routes/delivery-webhook.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { createPaymentWebhookRouter } from "./routes/payment-webhook.routes";
+import { createEdgeBootstrapRateLimit } from "./routes/edge-bootstrap.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
@@ -293,6 +294,12 @@ export function createApp({
   app.use("/api/webhooks/delivery", deliveryWebhookRouter);
   // Payment provider webhooks: tenant in the URL, signature per tenant secret.
   app.use("/api/webhooks/payments", createPaymentWebhookRouter());
+
+  // Edge bootstrap limiter (legend-uznb, Codex 119): before tenant resolution
+  // so a flood from one IP is refused before the tenant-domain query. Keys
+  // need no tenant (client IP, credential digest, edge node id parsed from the
+  // bearer). The router skips its own copy for a request counted here.
+  app.use("/api/edge-sync/bootstrap", createEdgeBootstrapRateLimit());
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the

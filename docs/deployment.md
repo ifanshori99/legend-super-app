@@ -212,6 +212,13 @@ Sizing the defaults — they must not break legitimate traffic:
 
 `TRUST_PROXY` decides which address is "the client": the limiter uses `req.ip` as Express resolved it, never a raw `X-Forwarded-For`. Behind Cloudflare in front of Caddy that is **two** hops (`TRUST_PROXY=2`); with a single reverse proxy it is `1`. If the hop count is too low, every client appears as the proxy's address and all of them share one bucket.
 
+### Edge bootstrap limits
+
+The edge bootstrap routes (`/api/edge-sync/bootstrap/*`) have their own in-memory limiter, mounted before tenant resolution so a flood is refused before any database query. `/masters` (the master sync every edge node polls) has its own buckets: 120 requests per minute per IP and 30 per IP and credential (the bearer, hashed). The other bootstrap routes allow 30 per IP and 10 per credential.
+
+- An outlet's edge nodes share the outlet's public IP. A guest device on the same network can use up the per-IP budget and delay that outlet's sync for the rest of the minute. Keep edge nodes on a network segment guests cannot use, or put the outlet behind its own address.
+- `TRUST_PROXY` must match the proxy hops here too: with too few hops every edge node in the fleet appears as the proxy's address and they all share one per-IP bucket.
+
 ### Cloudflare free-plan rule (edge layer)
 
 The API limiter is one process's backstop. Put a stricter, shared rule at the edge where the plan allows it. On the **Free plan** Cloudflare's rate limiting rules allow **one rule**, a **10-second counting period**, **IP-only** counting, a **10-second mitigation timeout**, and expressions limited to **path** (plus verified bot). One rule can still cover the two catalogue-dumping surfaces:
