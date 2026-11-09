@@ -5,7 +5,7 @@ import { siteConfig } from "@/config/site";
 // Pathless layout: /sign-in and /sign-up. Signed-in visitors go to the app.
 export const Route = createFileRoute("/_auth")({
   beforeLoad: ({ context }) => {
-    if (context.session) throw redirect({ to: siteConfig.homePath });
+    if (context.session) throw redirect({ to: siteConfig.appHomePath });
   },
   component: AuthLayout,
 });
