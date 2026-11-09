@@ -48,7 +48,6 @@ import {
   owner,
   type IsolatedTenant,
 } from "../floor-test-helpers.ts";
-import { itUntilBuilt } from "./pending-branch.ts";
 
 const PIN = "582914";
 const CASHIER_PIN = "719364";
@@ -179,7 +178,12 @@ async function newOrder(who: Member = cashier, quantity = 2) {
     expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
     status = submitted.body.data.status as string;
   }
-  return { orderId, status, totalIdr: created.body.data.totalIdr as number };
+  return {
+    orderId,
+    status,
+    number: created.body.data.number as string,
+    totalIdr: created.body.data.totalIdr as number,
+  };
 }
 
 /** Pays the order in cash and completes it. */
@@ -316,6 +320,8 @@ beforeAll(async () => {
         "pos.void.approve",
         "pos.refund.approve",
         "pos.discount.approve",
+        // EDC-04: standalone EDC payment is approved by a supervisor PIN.
+        "pos.edc_standalone.approve",
         "shift.cash.approve_close",
         "shift.cash.view_all",
         // PAY-04 (brief 65): a gateway refund is decided by someone holding both
@@ -1025,83 +1031,66 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     return { edc, scoped, sims, terminals, charge };
   }
 
-  // legend-dahk: setPosEdcTenderPort is not wired outside tests, so the running
-  // app answers 503 for an EDC tender. Awaiting CTO decision; do not stub here.
-  itUntilBuilt(
-    "legend-dahk",
-    "EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code",
-    async () => {
-      const f = await edcFixture();
-      try {
-        const order = await newOrder();
-        const tx = await f.charge(
-          "bca",
-          `BILL-${order.orderId}`,
-          order.totalIdr,
-        );
-        expect(tx.status).toBe("approved");
-        expect(tx.amountIdr).toBe(order.totalIdr);
-        expect(tx.approvalCode).toBeTruthy();
-        const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
-          method: "edc_card",
-          edcTransactionId: tx.id,
-          reference: tx.approvalCode,
-          expectedStatus: order.status,
-        });
-        expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-        expect(paid.body.data.tender).toMatchObject({
-          method: "edc_card",
-          amountIdr: order.totalIdr,
-          status: "captured",
-          reference: tx.approvalCode,
-        });
-        expect(paid.body.data.remainingIdr).toBe(0);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    },
-  );
+  // legend-dahk: the EDC tender port is wired in apps/api/src/app.ts.
+  it("EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code", async () => {
+    const f = await edcFixture();
+    try {
+      const order = await newOrder();
+      const tx = await f.charge("bca", order.number, order.totalIdr);
+      expect(tx.status).toBe("approved");
+      expect(tx.amountIdr).toBe(order.totalIdr);
+      expect(tx.approvalCode).toBeTruthy();
+      const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "edc_card",
+        edcTransactionId: tx.id,
+        reference: tx.approvalCode,
+        expectedStatus: order.status,
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      expect(paid.body.data.tender).toMatchObject({
+        method: "edc_card",
+        amountIdr: order.totalIdr,
+        status: "captured",
+        // The tender keeps the bank's RRN (pos-edc-tender.ts); the approval
+        // code stays on the EDC transaction.
+        reference: tx.rrn,
+      });
+      expect(paid.body.data.remainingIdr).toBe(0);
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
 
-  // legend-dahk: with the port unwired a 503 would satisfy the refusal check.
-  itUntilBuilt(
-    "legend-dahk",
-    "EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai",
-    async () => {
-      const f = await edcFixture();
-      try {
-        const order = await newOrder();
-        f.sims.bca.next(f.terminals.bca, "decline");
-        const tx = await f.charge(
-          "bca",
-          `BILL-${order.orderId}`,
-          order.totalIdr,
-        );
-        expect(tx.status).toBe("declined");
-        const attempt = await post(
-          cashier,
-          `/orders/${order.orderId}/tenders`,
-          {
-            method: "edc_card",
-            edcTransactionId: tx.id,
-            reference: "DECLINED",
-            expectedStatus: order.status,
-          },
-        );
-        expect(attempt.status).toBeGreaterThanOrEqual(400);
-        const unpaid = await get(cashier, `/orders/${order.orderId}`);
-        expect(unpaid.body.data.status).not.toBe("completed");
-        const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
-          method: "cash",
-          receivedIdr: order.totalIdr,
-          expectedStatus: order.status,
-        });
-        expect(cash.status, JSON.stringify(cash.body)).toBe(201);
-        expect(cash.body.data.remainingIdr).toBe(0);
-      } finally {
-        await f.edc.stop(f.scoped);
-      }
-    },
-  );
+  // legend-dahk: an unwired port (503) must not satisfy the refusal check.
+  it("EDC-02 kartu ditolak tidak pernah tercatat lunas; kasir lanjut dengan tunai", async () => {
+    const f = await edcFixture();
+    try {
+      const order = await newOrder();
+      f.sims.bca.next(f.terminals.bca, "decline");
+      const tx = await f.charge("bca", order.number, order.totalIdr);
+      expect(tx.status).toBe("declined");
+      const attempt = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "edc_card",
+        edcTransactionId: tx.id,
+        reference: "DECLINED",
+        expectedStatus: order.status,
+      });
+      // Refused because the bank declined, not for any other reason.
+      expect(attempt.status, JSON.stringify(attempt.body)).toBe(409);
+      expect(attempt.body.error.message).toContain("belum disetujui bank");
+      const unpaid = await get(cashier, `/orders/${order.orderId}`);
+      expect(unpaid.body.data.status).not.toBe("completed");
+      const cash = await post(cashier, `/orders/${order.orderId}/tenders`, {
+        method: "cash",
+        receivedIdr: order.totalIdr,
+        expectedStatus: order.status,
+      });
+      expect(cash.status, JSON.stringify(cash.body)).toBe(201);
+      expect(cash.body.data.remainingIdr).toBe(0);
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
 
   it("EDC-03 koneksi putus setelah kartu tergesek: ulangi bayar tidak menagih dua kali", async () => {
     const f = await edcFixture();
@@ -1122,67 +1111,66 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     }
   });
 
-  // legend-m4fv: no override action for standalone EDC in
-  // POS_OVERRIDE_APPROVE_PERMISSION; `edc_standalone` below is a placeholder.
-  itUntilBuilt(
-    "legend-m4fv",
-    "EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak",
-    async () => {
+  // legend-m4fv: `edc_standalone` override (pos.edc_standalone.approve).
+  it("EDC-04 mode standalone tanpa PIN supervisor dan nomor referensi ditolak", async () => {
+    // The fixture only supplies registered terminals; the agent is not used.
+    const f = await edcFixture();
+    try {
+      const terminalId = f.terminals.bca;
       const order = await newOrder();
-      const noRef = await post(cashier, `/orders/${order.orderId}/tenders`, {
+      const url = `/orders/${order.orderId}/tenders`;
+      const bankRef = `MANUAL-${randomUUID().slice(0, 8)}`;
+      const noRef = await post(cashier, url, {
         method: "edc_card",
         expectedStatus: order.status,
+        standalone: { terminalId },
       });
-      expect(noRef.status).toBeGreaterThanOrEqual(400);
-      const noApprover = await post(
-        cashier,
-        `/orders/${order.orderId}/tenders`,
-        {
-          method: "edc_card",
-          reference: "MANUAL-123456",
-          expectedStatus: order.status,
-        },
-      );
-      expect(noApprover.status).toBeGreaterThanOrEqual(400);
+      expect(noRef.status, JSON.stringify(noRef.body)).toBe(422);
+      const noApprover = await post(cashier, url, {
+        method: "edc_card",
+        expectedStatus: order.status,
+        standalone: { terminalId, bankRef },
+      });
+      expect(noApprover.status, JSON.stringify(noApprover.body)).toBe(422);
       expect(
         (await get(cashier, `/orders/${order.orderId}`)).body.data.status,
       ).not.toBe("completed");
 
       // Positive case: supervisor PIN + reference settle it and flag it for
-      // reconciliation. Assumption: the PRD names no override action for
-      // this, so `edc_standalone` is used; the tender is booked with the
-      // supervisor as approver and an edc_transactions row in standalone
-      // mode with needs_reconciliation set.
-      const reference = `MANUAL-${randomUUID().slice(0, 8)}`;
+      // reconciliation: the tender is booked with the supervisor as approver
+      // and an edc_transactions row in standalone mode with
+      // needs_reconciliation set.
       const approval = await pinApproval({
         action: "edc_standalone",
+        objectType: "pos_order",
         objectId: order.orderId,
         valueIdr: order.totalIdr,
       });
-      const paid = await post(cashier, `/orders/${order.orderId}/tenders`, {
+      const paid = await post(cashier, url, {
         method: "edc_card",
-        reference,
         expectedStatus: order.status,
-        ...approval,
+        standalone: { terminalId, bankRef, overrideId: approval.overrideId },
       });
       expect(paid.status, JSON.stringify(paid.body)).toBe(201);
       expect(paid.body.data.tender).toMatchObject({
         method: "edc_card",
-        reference,
+        amountIdr: order.totalIdr,
         status: "captured",
         approvedBy: supervisor.userId,
       });
       expect(paid.body.data.remainingIdr).toBe(0);
       const flagged = await owner.query(
-        `SELECT mode, needs_reconciliation FROM edc_transactions
+        `SELECT mode, rrn, needs_reconciliation FROM edc_transactions
          WHERE tenant_id = $1 AND reference = $2`,
-        [tenant.tenantId, reference],
+        [tenant.tenantId, order.number],
       );
       expect(flagged.rows).toEqual([
-        { mode: "standalone", needs_reconciliation: true },
+        { mode: "standalone", rrn: bankRef, needs_reconciliation: true },
       ]);
-    },
-  );
+    } finally {
+      await f.edc.stop(f.scoped);
+    }
+  });
 
   it("EDC-07 dua bank aktif bersamaan di satu outlet menerima transaksi masing-masing", async () => {
     const f = await edcFixture();
