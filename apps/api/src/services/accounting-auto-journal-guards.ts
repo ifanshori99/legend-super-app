@@ -94,8 +94,9 @@ const posRefundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'
 /**
  * State of every backing journal (cutover/ordering guard), keyed by
  * `backingKeyOf`:
- * - "posted": the journal exists (a sale, POS refund or void journal: and
- *   finance has not reversed it);
+ * - "posted": the journal exists (a sale or POS refund journal: and finance
+ *   has not reversed it; a void journal is itself a reversal, which ACC-01
+ *   never reverses);
  * - "pending": its event (payment.paid, payment.funds_unallocated, order.paid,
  *   order.refunded, order.voided) is still in the outbox (pending, retrying, dead letter) or the journal is
  *   parked retryable: it can still post;
@@ -103,9 +104,9 @@ const posRefundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'
  *   went live or with accounting off, never emitted, or parked non-retryable;
  *   except a POS refund or void parked AUTO_JOURNAL_SALE_MISSING whose sale
  *   journal finance has not reversed, which is pending).
- * legend-j0ag5: a sale, POS refund or void journal that finance reversed
- * (ACC-01, journal_entries.reversal_of) is "none": it books nothing, so a
- * check never counts on it (fail closed). A receipt keeps "posted": its credit
+ * legend-j0ag5: a sale or POS refund journal that finance reversed (ACC-01,
+ * journal_entries.reversal_of) is "none": it books nothing, so a check never
+ * counts on it (fail closed). The rule also covers void keys, a no-op there. A receipt keeps "posted": its credit
  * is read net of a reversal (postedCreditOf).
  * Read order outbox, parked, journals: each later source is written by the
  * same transaction that clears the earlier one (consumption marks the outbox
@@ -673,8 +674,9 @@ async function intentBackedAt(
   // legend-x1i1h: a sale of the intent voided by the bound no longer uses it
   // once the void journal posted (it reversed the sale, crediting the
   // intent's part back to customer_deposit). A void that can still post makes
-  // the check wait (backingPending); one that never posts (or a void journal
-  // finance reversed, legend-j0ag5) keeps the sale counted (fail closed).
+  // the check wait (backingPending); one that never posts (parked
+  // non-retryable, e.g. AUTO_JOURNAL_VOID_UNSUPPORTED) keeps the sale counted
+  // (fail closed). A void journal is a reversal and is never reversed itself.
   // salesAt is and() of defined parts, never undefined at runtime.
   const madeSales = salesAt(bound)!;
   const voided = (

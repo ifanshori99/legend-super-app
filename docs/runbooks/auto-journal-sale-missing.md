@@ -92,13 +92,91 @@ SELECT idempotency_key, event_name, error_code, attempts, last_failed_at
 and resolve them together with the parked sale (manual journal for the sale
 or the payout). Nothing is posted wrongly while they wait.
 
+## Release step: voids of QRIS sales (legend-x1i1h)
+
+Before legend-x1i1h every void of a sale with a gateway tender (QRIS, VA,
+e-wallet, card) parked `AUTO_JOURNAL_VOID_UNSUPPORTED`, non-retryable. Now a
+gateway tender paid by a payment intent whose receipt journal is posted is
+supported: the void reverses the sale and its gateway part goes back to
+`customer_deposit`. A refund of that intent approved meanwhile (the refund
+guard already freed the voided sale) parked `POSTING_AMOUNTS_MISMATCH`. Run
+these steps once per tenant after the deploy, in order.
+
+1. Find the void rows that can now post (gateway tender with an intent):
+
+```sql
+SELECT p.idempotency_key, p.payload->>'orderId' AS order_id, p.attempts
+  FROM auto_journal_parked p
+  JOIN pos_order_voids v
+    ON v.tenant_id = p.tenant_id AND v.id = (p.payload->>'voidId')::uuid
+ WHERE p.tenant_id = :tenant_id
+   AND p.event_name = 'order.voided'
+   AND p.error_code = 'AUTO_JOURNAL_VOID_UNSUPPORTED'
+   AND EXISTS (
+     SELECT 1 FROM pos_order_tenders t
+      WHERE t.tenant_id = p.tenant_id AND t.order_id = v.order_id
+        AND t.status = 'captured'
+        AND t.method IN ('qris', 'va', 'ewallet', 'card')
+        AND t.payment_intent_id IS NOT NULL)
+ ORDER BY p.first_failed_at;
+```
+
+2. Re-queue them (same filter), then let the next sweep run:
+
+```sql
+UPDATE auto_journal_parked p
+   SET retryable = true, next_retry_at = now()
+  FROM pos_order_voids v
+ WHERE p.tenant_id = :tenant_id
+   AND v.tenant_id = p.tenant_id AND v.id = (p.payload->>'voidId')::uuid
+   AND p.event_name = 'order.voided'
+   AND p.error_code = 'AUTO_JOURNAL_VOID_UNSUPPORTED'
+   AND EXISTS (
+     SELECT 1 FROM pos_order_tenders t
+      WHERE t.tenant_id = p.tenant_id AND t.order_id = v.order_id
+        AND t.status = 'captured'
+        AND t.method IN ('qris', 'va', 'ewallet', 'card')
+        AND t.payment_intent_id IS NOT NULL);
+```
+
+3. Re-queue the payouts of those intents parked `POSTING_AMOUNTS_MISMATCH`.
+   The payout payload carries `paymentIntentId`:
+
+```sql
+UPDATE auto_journal_parked p
+   SET retryable = true, next_retry_at = now()
+ WHERE p.tenant_id = :tenant_id
+   AND p.event_name = 'payment.refunded'
+   AND p.error_code = 'POSTING_AMOUNTS_MISMATCH'
+   AND (p.payload->>'paymentIntentId')::uuid IN (
+     SELECT t.payment_intent_id
+       FROM pos_order_tenders t
+       JOIN pos_order_voids v
+         ON v.tenant_id = t.tenant_id AND v.order_id = t.order_id
+      WHERE t.tenant_id = :tenant_id
+        AND t.status = 'captured'
+        AND t.payment_intent_id IS NOT NULL);
+```
+
+Steps 2 and 3 may run in the same transaction: a payout swept before its void
+sees the void as "can still post" and parks retryable
+`AUTO_JOURNAL_RECEIPT_PENDING`; a later sweep posts it.
+
+Expected re-parks (attempts +1, not an error):
+
+- a void whose sale also holds EDC or points money, or a gateway tender whose
+  intent receipt is not posted, parks `AUTO_JOURNAL_VOID_UNSUPPORTED` again;
+- a payout that still does not fit the receipt (or whose void re-parked) parks
+  `POSTING_AMOUNTS_MISMATCH` again and needs a finance decision.
+
 ## Warnings
 
 - Never run the UPDATE without `tenant_id` and `payload->>'orderId'`. Rows of
   other tenants or other orders must not change.
 - Only rows with `error_code = 'AUTO_JOURNAL_SALE_MISSING'` are safe to
-  re-queue this way. Do not touch `AUTO_JOURNAL_VOID_UNSUPPORTED` rows: they
-  are parked on purpose (the void returns cash only) and retrying changes
-  nothing.
+  re-queue this way. `AUTO_JOURNAL_VOID_UNSUPPORTED` rows are re-queued only
+  by the one-time release step above (legend-x1i1h). Outside it, leave them:
+  a void of a sale with EDC or points money, or gateway money without a posted
+  intent receipt, is parked on purpose and retrying changes nothing.
 - Run it inside a transaction as the application role with the tenant context
   set (row level security applies), and check the row count before commit.

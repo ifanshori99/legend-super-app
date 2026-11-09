@@ -2888,9 +2888,11 @@ describe("F19 slice 2 cashier_shift.closed books the drawer difference", () => {
 // - F2: a completed-sale void reverses `aj:sale:<orderId>` (key
 //   `aj:sale-void:<orderId>`, reversal_of = the sale entry). Sale not yet
 //   consumed: retryable AUTO_JOURNAL_SALE_PENDING; never journaled:
-//   AUTO_JOURNAL_SALE_MISSING; sale with gateway/EDC/points money:
-//   AUTO_JOURNAL_VOID_UNSUPPORTED (the void returns cash only). The retryable
-//   flag of JOURNAL_ALREADY_REVERSED is not asserted.
+//   AUTO_JOURNAL_SALE_MISSING; sale with EDC/points money, or gateway money
+//   outside customer_deposit (no intent, or no posted receipt):
+//   AUTO_JOURNAL_VOID_UNSUPPORTED (legend-x1i1h: gateway money of an intent
+//   whose receipt posted goes back to customer_deposit). The retryable flag
+//   of JOURNAL_ALREADY_REVERSED is not asserted.
 // - F3/F4: time order decides, never delivery order. Time of a refund =
 //   payment_refunds.completed_at, of a sale = pos_orders.completed_at, of a
 //   forfeit = reservations.closed_at. On equal time the sale counts as earlier
@@ -6027,5 +6029,132 @@ describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs a
     // receipt + sale + POS refund + its reversal
     expect(await journalCount(world)).toBe(4);
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  /** Finance reverses the journal (ACC-01). */
+  async function financeReverses(world: World, entryId: string) {
+    await reverseJournal(
+      contextOf(world.tenant),
+      entryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+  }
+
+  it("AJ-X1I1H-05 a QRIS tender whose intent receipt never posts (sale booked to gateway_clearing): the void parks non-retryable AUTO_JOURNAL_VOID_UNSUPPORTED", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: allQris(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    expect(await balanceOf(world, "gateway_clearing")).toBe(100_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        await seedSaleVoid(world, orderUlid, 100_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_VOID_UNSUPPORTED",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(1);
+  });
+
+  it("AJ-X1I1H-06 a QRIS sale finance reversed, then voided: the void parks JOURNAL_ALREADY_REVERSED and a 100k payout of the intent parks POSTING_AMOUNTS_MISMATCH", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: allQris(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    const posted = await post(world, orderPaid(world, orderUlid, sale));
+    await financeReverses(world, posted.journalEntryId);
+
+    expect(
+      await deliver(
+        world.tenant,
+        await seedSaleVoid(world, orderUlid, 100_000),
+      ),
+    ).toMatchObject({ status: "parked", code: "JOURNAL_ALREADY_REVERSED" });
+    const refundId = await seedRefund(world, intentId, 100_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 100_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    // receipt + sale + finance reversal
+    expect(await journalCount(world)).toBe(3);
+  });
+
+  it("AJ-J0AG5-02 a POS refund of a sale finance reversed parks AUTO_JOURNAL_SALE_MISSING and counts as never posting: a 30k payout parks POSTING_AMOUNTS_MISMATCH, not retryable", async () => {
+    const world = await makeWorld();
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: allQris(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    const posted = await post(world, orderPaid(world, orderUlid, sale));
+    await financeReverses(world, posted.journalEntryId);
+    const lines = [{ method: "qris" as const, amountIdr: 30_000 }];
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      lines,
+      T_POS_REFUND,
+    );
+
+    expect(
+      await deliver(
+        world.tenant,
+        orderRefunded(
+          world,
+          orderUlid,
+          posRefundId,
+          { grossSalesIdr: 30_000, pbjtIdr: 0, lines },
+          T_POS_REFUND,
+        ),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    const refundId = await seedRefund(world, intentId, 30_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 30_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    // receipt + sale + finance reversal
+    expect(await journalCount(world)).toBe(3);
   });
 });

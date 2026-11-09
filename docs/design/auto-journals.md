@@ -369,8 +369,10 @@ Rule for every fix: the same historical facts give the same result regardless of
 
 - `voidedFinalOrder` false: ignored (open-order void posts nothing).
 - Checks: `pos_order_voids` row (id = voidId, orderId) exists; order `deposit_applied_idr` = 0; amount = `orders.total_idr`; else `AUTO_JOURNAL_PAYLOAD_INVALID`.
-- Any gateway, EDC, points or deposit money on the sale -> `AUTO_JOURNAL_VOID_UNSUPPORTED` (the void returns cash only).
-- Sale backing pending -> `AUTO_JOURNAL_SALE_PENDING`; none -> `AUTO_JOURNAL_SALE_MISSING`; posted -> reverse that entry (`reversal_of` = sale entry). Reason `Void penjualan <voidId>`.
+- Cash goes back to the guest. Gateway tenders paid by an intent whose receipt (`aj:receipt:<intentId>`) is posted were booked out of `customer_deposit`, so the reversal credits them back there, owed to the guest until the intent's refund pays out (legend-x1i1h; like `refundGatewayIdr` of `order.refunded`). A payout of that intent stops counting the voided sale once the void journal posts, and waits retryable (`AUTO_JOURNAL_RECEIPT_PENDING`) while the void can still post.
+- EDC or points money, gateway money without an intent or without a posted receipt (booked to `gateway_clearing`) -> `AUTO_JOURNAL_VOID_UNSUPPORTED`.
+- Sale backing pending -> `AUTO_JOURNAL_SALE_PENDING`; none and no sale entry -> `AUTO_JOURNAL_SALE_MISSING`; entry exists -> reverse that entry (`reversal_of` = sale entry). Reason `Void penjualan <voidId>`.
+- Backing state (legend-j0ag5): a sale or POS refund journal that finance reversed (ACC-01) counts as not posted (`none`): a POS refund of a reversed sale parks `AUTO_JOURNAL_SALE_MISSING`, a reversed POS refund backs no payout. Receipts keep their state; their credit is read net of a reversal.
 - Date: section 5 (late-adjust into the first open day if the month is closed).
 - Sale already reversed by finance -> `JOURNAL_ALREADY_REVERSED` (park, not retryable).
 
