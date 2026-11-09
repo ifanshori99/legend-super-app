@@ -1509,6 +1509,45 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
     expect([...times].sort((a, b) => a - b)).toEqual(times);
   });
 
+  it("KDS-04 ticket start records one status change per queued line, and an item recall clears readyAt (legend-9x2e, legend-naz1)", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.nasi },
+      { menuItemId: ids.nasi, note: "Pedas" },
+    ]);
+    const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
+    const [first, second] = (await ticketDetail(ticketId)).items;
+    expect(first && second).toBeTruthy();
+
+    expect((await kds().start(ticketId)).status).toBe(200);
+    const startRows = (await changesOf(ticketId)).filter(
+      (row) => row.order_item_id !== null && row.to_status === "in_progress",
+    );
+    expect(startRows.map((row) => row.item_to_status)).toEqual([
+      "in_progress",
+      "in_progress",
+    ]);
+    expect(new Set(startRows.map((row) => row.order_item_id)).size).toBe(2);
+    for (const row of startRows) {
+      expect(row.from_status).toBe("new");
+      expect(row.actor_id).toBe(cook.userId);
+    }
+
+    // Item recall: the line is redone, so its old ready time must not stay.
+    expect((await kds().item(first!.id, "ready")).status).toBe(200);
+    const ready = (await ticketDetail(ticketId)).items.find(
+      (i) => i.id === first!.id,
+    );
+    expect(ready?.readyAt).not.toBeNull();
+    const recalled = await kds().item(first!.id, "recall");
+    expect(recalled.status, JSON.stringify(recalled.body)).toBe(200);
+    const after = (await ticketDetail(ticketId)).items.find(
+      (i) => i.id === first!.id,
+    );
+    expect(after?.status).toBe("in_progress");
+    expect(after?.readyAt).toBeNull();
+    expect(after?.recalledCount).toBe(1);
+  });
+
   it("KDS-04 ticket bump, recall and void each record one status change per affected line, and recall clears readyAt", async () => {
     const placed = await placeOrder([
       { menuItemId: ids.nasi },

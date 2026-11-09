@@ -779,7 +779,7 @@ export async function applyKitchenTicketAction(
     };
     const voidedLines: string[] = [];
     // Line statuses before the change (ticket row is locked, so these cannot
-    // move under us): bump / recall / void write one audit row per moved line.
+    // move under us): every action writes one audit row per moved line.
     const linesBefore = await tx
       .select({
         orderItemId: kitchenTicketItems.orderItemId,
@@ -793,11 +793,14 @@ export async function applyKitchenTicketAction(
       from: KitchenItemStatus;
       to: KitchenItemStatus;
     }[] = [];
-    if (action === "bump" || action === "recall" || action === "void") {
-      for (const line of linesBefore) {
-        const from = line.status as KitchenItemStatus;
-        const to: KitchenItemStatus | null =
-          action === "bump"
+    for (const line of linesBefore) {
+      const from = line.status as KitchenItemStatus;
+      const to: KitchenItemStatus | null =
+        action === "start"
+          ? from === "queued"
+            ? "in_progress"
+            : null
+          : action === "bump"
             ? from === "queued" || from === "in_progress"
               ? "ready"
               : null
@@ -808,8 +811,7 @@ export async function applyKitchenTicketAction(
               : from === "served" || from === "voided"
                 ? null
                 : "voided";
-        if (to) lineMoves.push({ orderItemId: line.orderItemId, from, to });
-      }
+      if (to) lineMoves.push({ orderItemId: line.orderItemId, from, to });
     }
     if (action === "start") {
       patch.startedAt = ticket.startedAt ?? now;
@@ -1093,6 +1095,8 @@ export async function applyKitchenItemAction(
     const patch: Partial<TicketItemRow> = { status: itemNext, updatedAt: now };
     if (action === "start") patch.startedAt = now;
     else if (action === "ready") patch.readyAt = now;
+    // The line is being redone, so its old ready time no longer holds.
+    else if (action === "recall") patch.readyAt = null;
     else if (action === "serve") patch.servedAt = now;
     else if (action === "void") patch.voidedAt = now;
     const [updatedItem] = await tx
