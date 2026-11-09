@@ -195,19 +195,25 @@ export function parseStatementCsv(
     ].join("|");
     const occurrence = (occurrences.get(occurrenceKey) ?? 0) + 1;
     occurrences.set(occurrenceKey, occurrence);
+    const dedupeKey = statementLineDedupeKey({
+      postedOn,
+      amountIdr,
+      description,
+      externalRef,
+      occurrence,
+    });
+    // Upper-casing can lengthen text ("ß" becomes "SS"): the column is 400.
+    if (dedupeKey.length > 400)
+      refuse(
+        `${at}: keterangan atau referensi terlalu panjang setelah dinormalisasi.`,
+      );
     lines.push({
       rowNumber,
       postedOn,
       amountIdr,
       description,
       externalRef,
-      dedupeKey: statementLineDedupeKey({
-        postedOn,
-        amountIdr,
-        description,
-        externalRef,
-        occurrence,
-      }),
+      dedupeKey,
     });
     if (lines.length > MAX_STATEMENT_ROWS)
       refuse(`File berisi lebih dari ${MAX_STATEMENT_ROWS} baris mutasi.`);

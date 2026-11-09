@@ -43,13 +43,15 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
-  advisoryLock,
   assertOutletReach,
   auditApFa,
   idempotentCommand,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
-import { autoMatchBankAccount } from "./accounting-bank-matching.ts";
+import {
+  autoMatchBankAccount,
+  entityLock,
+} from "./accounting-bank-matching.ts";
 import {
   cashDepositDto,
   loadBankAccount,
@@ -184,23 +186,6 @@ export async function createCashDeposit(
       )
       .limit(1);
     if (!outlet) throw notFound("Outlet");
-    const bankAccount = await loadBankAccount(
-      tx,
-      tenantId,
-      input.bankAccountId,
-    );
-    if (outlet.legalEntityId !== bankAccount.legalEntityId)
-      throw new CoreError(
-        "VALIDATION_ERROR",
-        "Outlet dan rekening bank harus milik badan usaha yang sama.",
-      );
-    if (!bankAccount.isActive)
-      throw new CoreError("VALIDATION_ERROR", "Rekening bank ini tidak aktif.");
-
-    await advisoryLock(
-      tx,
-      `acc-cashbank:${tenantId.toLowerCase()}:${bankAccount.legalEntityId.toLowerCase()}`,
-    );
     return idempotentCommand(
       tx,
       context,
@@ -210,6 +195,24 @@ export async function createCashDeposit(
         request: input,
       },
       async () => {
+        // Entity lock and account checks after the replay check, same order
+        // as import and unmatch: a replay never trips on a later change.
+        const bankAccount = await loadBankAccount(
+          tx,
+          tenantId,
+          input.bankAccountId,
+        );
+        if (outlet.legalEntityId !== bankAccount.legalEntityId)
+          throw new CoreError(
+            "VALIDATION_ERROR",
+            "Outlet dan rekening bank harus milik badan usaha yang sama.",
+          );
+        if (!bankAccount.isActive)
+          throw new CoreError(
+            "VALIDATION_ERROR",
+            "Rekening bank ini tidak aktif.",
+          );
+        await entityLock(tx, tenantId, bankAccount.legalEntityId);
         const [created] = await tx
           .insert(cashDeposits)
           .values({
@@ -272,7 +275,7 @@ async function loadCollections(
   const rows = rowsOf(
     await tx.execute(sql`
       SELECT s.outlet_id, s.business_date::text AS business_date,
-             GREATEST(SUM(s.cash_sales_idr - s.cash_refunds_idr - s.cash_out_idr), 0)::text AS cash
+             GREATEST(SUM(s.cash_sales_idr - s.cash_refunds_idr - s.cash_out_idr + s.variance_idr), 0)::text AS cash
       FROM pos_shifts s
       JOIN outlets o ON o.tenant_id = s.tenant_id AND o.id = s.outlet_id
       WHERE s.tenant_id = ${tenantId}

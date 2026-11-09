@@ -793,6 +793,30 @@ describe("legend-fnxl.3 bank statement import", () => {
     expect(await count("bank_statement_line_matches", bank)).toBe(0);
   });
 
+  it("(g) an inactive bank account is refused like a deposit would (400), nothing written; a replay of an earlier import still answers", async () => {
+    const bank = await newBank();
+    const key = `imp-${randomUUID()}`;
+    const rows = [
+      { date: "2026-11-10", description: "Sebelum", amount: 1_000 },
+    ];
+    const first = await post(finance.cookie, bank.id, rows, { key });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    await owner.query(
+      "UPDATE bank_accounts SET is_active = false WHERE id = $1",
+      [bank.id],
+    );
+    const refused = await post(finance.cookie, bank.id, [
+      { date: "2026-11-11", description: "Sesudah", amount: 2_000 },
+    ]);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(refused.body.error.code).toBe("VALIDATION_ERROR");
+    expect(refused.body.error.message).toBe("Rekening bank ini tidak aktif.");
+    expect(await count("bank_statement_lines", bank)).toBe(1);
+    const replay = await post(finance.cookie, bank.id, rows, { key });
+    expect(replay.status).toBe(201);
+    expect(replay.body).toEqual(first.body);
+  });
+
   it("(g) an unterminated quote and an empty file body are refused 422 and write nothing", async () => {
     const bank = await newBank();
     const broken = await post(

@@ -254,13 +254,20 @@ async function seedUser(): Promise<string> {
 }
 
 /**
- * A closed shift whose drawer is counted exactly (variance 0): expected =
- * float + sales - refunds - out (the closed check of pos_shifts).
+ * A closed shift: expected = float + sales - refunds - out (the closed check
+ * of pos_shifts). The drawer is counted exactly (variance 0) unless
+ * `variance` (counted - expected) is given; a non-zero one needs a note.
  */
 async function seedClosedShift(
   outletId: string,
   businessDate: string,
-  amounts: { sales: number; refunds?: number; out?: number; float?: number },
+  amounts: {
+    sales: number;
+    refunds?: number;
+    out?: number;
+    float?: number;
+    variance?: number;
+  },
 ): Promise<void> {
   const cashierId = await seedUser();
   const approverId = await seedUser();
@@ -270,6 +277,8 @@ async function seedClosedShift(
   const out = amounts.out ?? 0;
   const float = amounts.float ?? 0;
   const expected = float + amounts.sales - refunds - out;
+  const variance = amounts.variance ?? 0;
+  const counted = expected + variance;
   const closedAt = `${businessDate}T10:00:00Z`;
   await asTenant(async (client) => {
     await client.query(
@@ -299,21 +308,23 @@ async function seedClosedShift(
          (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
           counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
           idempotency_key, request_fingerprint)
-       VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, $6, $6, 0, $7, now(), false, $8, $5)`,
+       VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, $6, $9, $10, $7, now(), false, $8, $5)`,
       [
         countId,
         tenantId,
         outletId,
         shiftId,
         "b".repeat(64),
-        expected,
+        counted,
         cashierId,
         randomUUID(),
+        expected,
+        variance,
       ],
     );
     await client.query(
-      `UPDATE pos_shifts SET status = 'closed', expected_idr = $3, counted_idr = $3,
-          variance_idr = 0, counts = '[]'::jsonb, count_id = $4,
+      `UPDATE pos_shifts SET status = 'closed', expected_idr = $12, counted_idr = $3,
+          variance_idr = $13, variance_note = $14, counts = '[]'::jsonb, count_id = $4,
           approved_by = $5, approval_request_id = $6, approval_override_id = $7,
           approved_at = $8, closed_at = $8, closed_by = $9, close_key = $10,
           close_fingerprint = $11, version = version + 1
@@ -321,7 +332,7 @@ async function seedClosedShift(
       [
         tenantId,
         shiftId,
-        expected,
+        counted,
         countId,
         approverId,
         randomUUID(),
@@ -330,6 +341,9 @@ async function seedClosedShift(
         cashierId,
         randomUUID(),
         "c".repeat(64),
+        expected,
+        variance,
+        variance === 0 ? null : "Selisih hitung",
       ],
     );
   });
@@ -469,6 +483,27 @@ describe("legend-fnxl.5 cash deposits", () => {
     const reused = await post(finance.cookie, { ...body, amountIdr: 444_000 });
     expect(reused.status).toBe(409);
     expect((await depositRows(bank)).length).toBe(before + 1);
+  });
+
+  it("replays after the bank account is deactivated: the original deposit comes back, not a refusal", async () => {
+    const gl = await newGlAccount(entity);
+    const closing = await newBankAccount(entity, gl);
+    const body = depositBody(outletA, closing, { amountIdr: 271_000 });
+    const first = await post(finance.cookie, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    await owner.query(
+      "UPDATE bank_accounts SET is_active = false WHERE id = $1",
+      [closing],
+    );
+    const replay = await post(finance.cookie, body);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const fresh = await post(
+      finance.cookie,
+      depositBody(outletA, closing, { amountIdr: 272_000 }),
+    );
+    expect(fresh.status).toBe(400);
+    expect((await depositRows(closing)).length).toBe(1);
   });
 
   it("refuses an outlet of another legal entity than the bank account (400) and bad bodies", async () => {
@@ -774,6 +809,50 @@ describe("legend-fnxl.5 undeposited cash alerts (ACC-05)", () => {
       asOf: addDays("2026-02-10", maxDaysUndeposited + 5),
     });
     expect(response.body).toEqual({ data: [] });
+  });
+
+  it("a short shift nets its variance: 50k short is not 50k undeposited forever, and an over shift adds", async () => {
+    const outletShort = await newOutlet(entity, "Setoran Kurang");
+    const outletOver = await newOutlet(entity, "Setoran Lebih");
+    const day = "2026-02-12";
+    // Sales 500k, drawer counted 450k: only 450k can ever be deposited.
+    await seedClosedShift(outletShort, day, {
+      sales: 500_000,
+      variance: -50_000,
+    });
+    // Sales 200k, drawer counted 230k: 230k is in the safe.
+    await seedClosedShift(outletOver, day, {
+      sales: 200_000,
+      variance: 30_000,
+    });
+    const { maxDaysUndeposited } = await loadCashDepositPolicy(scope());
+    const asOf = addDays(day, maxDaysUndeposited + 1);
+    const query = (outletId: string) => ({
+      legalEntityId: entity,
+      outletId,
+      asOf,
+    });
+    const short = await alerts(finance.cookie, query(outletShort));
+    expect(short.body.data).toEqual([
+      expect.objectContaining({ businessDate: day, undepositedIdr: 450_000 }),
+    ]);
+    const over = await alerts(finance.cookie, query(outletOver));
+    expect(over.body.data).toEqual([
+      expect.objectContaining({ businessDate: day, undepositedIdr: 230_000 }),
+    ]);
+    // Depositing what was counted settles the short shift.
+    const deposit = await post(
+      finance.cookie,
+      depositBody(outletShort, bank, {
+        amountIdr: 450_000,
+        coversFrom: day,
+        coversTo: day,
+        depositedAt: `${addDays(day, 1)}T05:00:00.000Z`,
+      }),
+    );
+    expect(deposit.status).toBe(201);
+    const settled = await alerts(finance.cookie, query(outletShort));
+    expect(settled.body).toEqual({ data: [] });
   });
 
   it("an outlet-scoped caller sees its own outlet's alerts only", async () => {

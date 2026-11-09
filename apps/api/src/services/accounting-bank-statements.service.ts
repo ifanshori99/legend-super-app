@@ -23,7 +23,11 @@ import type {
   importBankStatementInputSchema,
 } from "@starter/shared/accounting";
 import { maskAuditChanges } from "@starter/shared/audit";
-import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  CoreError,
+  createUlid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import type { z } from "zod";
 import { db } from "../db";
 import {
@@ -106,6 +110,11 @@ export async function importBankStatement(
       },
       async () => {
         const account = await loadBankAccount(tx, tenantId, bankAccountId);
+        if (!account.isActive)
+          throw new CoreError(
+            "VALIDATION_ERROR",
+            "Rekening bank ini tidak aktif.",
+          );
         await entityLock(tx, tenantId, account.legalEntityId);
         const importId = randomUUID();
         // Header first (FK target), counts filled in below.

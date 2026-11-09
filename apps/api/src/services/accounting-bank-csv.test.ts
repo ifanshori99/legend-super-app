@@ -167,6 +167,18 @@ describe("legend-fnxl bank CSV parser", () => {
       );
   });
 
+  it("a description whose upper-cased key outgrows the 400-char column is refused naming the row", () => {
+    // "ß" upper-cases to "SS": 230 of them pass the 255-char description
+    // limit but make a key of about 470 chars.
+    const description = "ß".repeat(230);
+    const csv = `${HEADER}\n05/11/2026,${description},"1.000,00"`;
+    const error = refusal(() => parseStatementCsv(csv, signed));
+    expect(error.code).toBe("STATEMENT_VALUE_INVALID");
+    expect(error.message).toBe(
+      "Baris 2: keterangan atau referensi terlalu panjang setelah dinormalisasi.",
+    );
+  });
+
   it("identical rows in one file are kept apart, and a re-parse yields the same keys", () => {
     const csv = [
       HEADER,
