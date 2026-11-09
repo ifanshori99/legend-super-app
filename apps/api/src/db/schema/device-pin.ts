@@ -61,6 +61,25 @@ export const staffPins = pgTable(
     setBy: text("set_by")
       .notNull()
       .references(() => user.id),
+    /**
+     * When the current pin generation (hash material) was set (legend-kyie).
+     * `updated_at` moves on every attempt, `created_at` not on a reset, so an
+     * edge `staff_pin.set` is ordered against this column only.
+     */
+    pinSetAt: timestamp("pin_set_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /**
+     * Ordering key of pin generations (legend-kyie, Codex 160 C1). An edge set
+     * stores its raw `setAt` here (edge clock, never clamped) so two edge sets
+     * keep their order even when the edge clock runs ahead; `pin_set_at`
+     * keeps the clamped time. A cloud set takes the later of the database
+     * clock and the current key + 1 ms, so it still wins over an edge set
+     * stamped in the future.
+     */
+    pinGenerationAt: timestamp("pin_generation_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

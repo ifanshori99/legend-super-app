@@ -48,9 +48,9 @@ import {
   resetEdgeApplierRegistryForTests,
 } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
 import {
   registerEdgeDeferredFallback,
-  registerAccessDeferredEdgeApplier,
   registerPosDeferredEdgeApplier,
 } from "../edge/deferred-event-applier.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
@@ -332,7 +332,7 @@ beforeEach(() => {
   resetEdgeApplierRegistryForTests();
   registerStockMovedEdgeApplier();
   registerPosDeferredEdgeApplier();
-  registerAccessDeferredEdgeApplier(); // legend-eadm
+  registerAccessEdgeApplier(); // legend-kyie (was parked deferred, legend-eadm)
   registerEdgeDeferredFallback(); // after the explicit registrations, as runtime.ts does
 });
 

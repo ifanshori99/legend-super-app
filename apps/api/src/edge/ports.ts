@@ -30,6 +30,17 @@ export type EdgeApplyMeta = {
   readonly context: ScopedTenantContext;
 };
 
+/**
+ * The aggregate an inbound event belongs to. `sequence` is the incoming
+ * event's own aggregate sequence (legend-kyie: lets a domain accept events
+ * that it orders itself).
+ */
+export type EdgeAggregateRef = {
+  readonly aggregateType: string;
+  readonly aggregateId: string;
+  readonly sequence?: number;
+};
+
 /** `Tx` is the tenant transaction (withTenant) the receipt commits in. */
 export type EdgeEventApplier<Tx = unknown> = {
   apply(tx: Tx, event: EventEnvelope, meta: EdgeApplyMeta): Promise<void>;
@@ -40,7 +51,7 @@ export type EdgeEventApplier<Tx = unknown> = {
    */
   lastSequence?(
     tx: Tx,
-    aggregate: { aggregateType: string; aggregateId: string },
+    aggregate: EdgeAggregateRef,
     meta: EdgeApplyMeta,
   ): Promise<number | null>;
 };

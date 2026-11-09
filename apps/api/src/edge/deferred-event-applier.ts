@@ -14,7 +14,11 @@
 // outlet throws a CoreError and the link records an `applier_refused`
 // conflict instead of stalling.
 import { and, eq } from "drizzle-orm";
-import { CoreError, isOutletInScope } from "@starter/shared/core";
+import {
+  CoreError,
+  isOutletInScope,
+  type OutletId,
+} from "@starter/shared/core";
 import { eventCatalog } from "@starter/shared/events";
 import type { EventEnvelope } from "@starter/shared/events";
 import { logger } from "../lib/logger.ts";
@@ -29,6 +33,7 @@ import {
   setEdgeUnhandledEventHandler,
 } from "./applier-registry.ts";
 import type { EdgeEventHandler } from "./applier-registry.ts";
+import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
 /** Aggregate type of the POS order events (`order.paid`, ...). */
@@ -46,17 +51,16 @@ export function catalogEventNamesOf(aggregateType: string): string[] {
 export type EdgeParkedReason = "deferred" | "unclassified";
 
 /**
- * Parks one edge event in the deferred inbox; replays write nothing.
- * `parkedReason`: "deferred" for an explicit WS-04 registration,
- * "unclassified" for the generic fallback. Returns true only when this call
- * inserted the row (false on a replay).
+ * Fail-closed scope of one edge -> cloud event (shared by every edge
+ * applier): edge direction, the context's tenant, an outlet inside the node
+ * scope that is the edge node's own outlet. Returns the outlet id. Throws a
+ * CoreError (the link records an `applier_refused` conflict).
  */
-export async function applyEdgeDeferredEvent(
+export async function assertEdgeEventScope(
   tx: EdgeTx,
   event: EventEnvelope,
   meta: EdgeApplyMeta,
-  parkedReason: EdgeParkedReason = "deferred",
-): Promise<boolean> {
+): Promise<OutletId> {
   if (meta.direction !== "edge_to_cloud")
     throw new CoreError(
       "FORBIDDEN",
@@ -84,6 +88,23 @@ export async function applyEdgeDeferredEvent(
       "FORBIDDEN",
       "Event outlet does not match the edge node",
     );
+  return outletId;
+}
+
+/**
+ * Parks one edge event in the deferred inbox; replays write nothing.
+ * `parkedReason`: "deferred" for an explicit WS-04 registration,
+ * "unclassified" for the generic fallback. Returns true only when this call
+ * inserted the row (false on a replay).
+ */
+export async function applyEdgeDeferredEvent(
+  tx: EdgeTx,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+  parkedReason: EdgeParkedReason = "deferred",
+): Promise<boolean> {
+  const outletId = await assertEdgeEventScope(tx, event, meta);
+  const tenantId = meta.context.tenant.tenantId;
 
   const inserted = await tx
     .insert(edgeDeferredEvents)
@@ -96,7 +117,8 @@ export async function applyEdgeDeferredEvent(
       aggregateId: event.aggregateId,
       aggregateSequence: event.sequence,
       eventName: event.name,
-      envelope: event,
+      // legend-kyie: never park pin hash material.
+      envelope: redactEdgeEnvelopeSecrets(event),
       parkedReason,
     })
     .onConflictDoNothing({
@@ -176,22 +198,6 @@ export function posDeferredAggregates(): string[] {
 /** Cloud boot (registerEdgeLink): parks POS events instead of stalling. */
 export function registerPosDeferredEdgeApplier(): void {
   for (const aggregateType of posDeferredAggregates())
-    registerDeferredEdgeAggregate(aggregateType);
-}
-
-/** Aggregate types of the access events an edge node appends (WS-01). */
-const ACCESS_DEFERRED_AGGREGATES = ["pos_override", "staff_pin"] as const;
-
-/**
- * Cloud boot (registerEdgeLink): parks `pos_override.*` and `staff_pin.*`
- * as `deferred` (known events, not `unclassified`). The edge queues them
- * (cloud-sync) because the device PIN and override rows live on the edge
- * node. The cloud has no projection for them yet: the override and PIN rows
- * of an edge node are not rebuilt on the cloud from these events (follow-up
- * bead). Outlet-scoped like every parked event.
- */
-export function registerAccessDeferredEdgeApplier(): void {
-  for (const aggregateType of ACCESS_DEFERRED_AGGREGATES)
     registerDeferredEdgeAggregate(aggregateType);
 }
 

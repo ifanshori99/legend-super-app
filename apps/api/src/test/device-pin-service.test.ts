@@ -340,6 +340,247 @@ describe("legend-dxb §3 F6 staff pin storage", () => {
     expect(JSON.stringify(rows)).not.toContain(PIN);
   });
 
+  it("legend-kyie only an edge node puts the hash material on staff_pin.set; pin_set_at moves on a set, not on an attempt", async () => {
+    const cashier = await staffWithPin("cashier");
+    const first = await pinRow(cashier);
+    const payloads = async () =>
+      (
+        await owner.query<{ event: { payload: Record<string, unknown> } }>(
+          `SELECT event FROM domain_event_outbox
+           WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND aggregate_id = $2
+           ORDER BY sequence`,
+          [tenantId, first?.id],
+        )
+      ).rows.map((row) => row.event.payload);
+    // Cloud process: no material.
+    expect((await payloads())[0]).not.toHaveProperty("material");
+
+    // An attempt moves updated_at, never pin_set_at.
+    await expect(
+      verifyStaffPinOnDevice(deviceTenant, {
+        deviceId: deviceAt(bandung),
+        userId: cashier,
+        pin: WRONG,
+      }),
+    ).rejects.toMatchObject({ code: "PIN_INVALID" });
+    const attempted = await pinRow(cashier);
+    expect(attempted?.failed_attempts).toBe(1);
+    expect(attempted?.pin_set_at).toEqual(first?.pin_set_at);
+
+    // Edge process: a reset carries the material and moves pin_set_at.
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      await setStaffPin(
+        tenant,
+        cashier,
+        { outletId: bandung, userId: cashier },
+        { pin: PIN },
+      );
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    const reset = await pinRow(cashier);
+    expect((reset?.pin_set_at as Date).getTime()).toBeGreaterThan(
+      (first?.pin_set_at as Date).getTime(),
+    );
+    const material = (await payloads())[1]?.material;
+    expect(material).toEqual({
+      algorithm: "scrypt-hmac-sha256-v1",
+      salt: reset?.pin_salt,
+      pinHash: reset?.pin_hash,
+      params: {
+        N: reset?.kdf_n,
+        r: reset?.kdf_r,
+        p: reset?.kdf_p,
+        keyLength: 32,
+      },
+      pepperVersion: reset?.pepper_version,
+      setAt: (reset?.pin_set_at as Date).toISOString(),
+    });
+    expect(JSON.stringify(material)).not.toContain(PIN);
+  });
+
+  it("legend-kyie C1 a cloud set orders after an edge set stamped in the future; R2 the edge key stays monotonic", async () => {
+    const cashier = await staffWithPin("cashier");
+    const first = await pinRow(cashier);
+    expect(first?.pin_generation_at).toBeInstanceOf(Date);
+    // The cloud adopted an edge set whose clock ran an hour ahead.
+    const future = new Date(Date.now() + 60 * 60_000);
+    await owner.query(
+      "UPDATE staff_pins SET pin_generation_at = $2 WHERE id = $1",
+      [first?.id, future],
+    );
+    await setStaffPin(
+      tenant,
+      cashier,
+      { outletId: bandung, userId: cashier },
+      { pin: PIN },
+    );
+    const cloudSet = await pinRow(cashier);
+    expect((cloudSet?.pin_generation_at as Date).getTime()).toBe(
+      future.getTime() + 1,
+    );
+    expect((cloudSet?.pin_set_at as Date).getTime()).toBeLessThan(
+      future.getTime(),
+    );
+
+    // Round 3 R2: the edge clock stepped back 2 min, inside the 5 min skew
+    // window: the key still moves forward and travels as material.setAt.
+    const ahead = new Date(Date.now() + 2 * 60_000);
+    await owner.query(
+      "UPDATE staff_pins SET pin_generation_at = $2 WHERE id = $1",
+      [first?.id, ahead],
+    );
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    try {
+      await setStaffPin(
+        tenant,
+        cashier,
+        { outletId: bandung, userId: cashier },
+        { pin: PIN },
+      );
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+    }
+    const edgeSet = await pinRow(cashier);
+    expect((edgeSet?.pin_generation_at as Date).getTime()).toBe(
+      ahead.getTime() + 1,
+    );
+    const { rows } = await owner.query<{
+      event: { payload: { material?: { setAt: string } } };
+    }>(
+      `SELECT event FROM domain_event_outbox
+       WHERE tenant_id = $1 AND aggregate_type = 'staff_pin' AND aggregate_id = $2
+       ORDER BY sequence DESC LIMIT 1`,
+      [tenantId, first?.id],
+    );
+    expect(rows[0]?.event.payload.material?.setAt).toBe(
+      (edgeSet?.pin_generation_at as Date).toISOString(),
+    );
+  });
+
+  it("legend-kyie R3 a failed staff_pins write never quotes the hash or salt", async () => {
+    const cashier = await createUser("cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    const fn = `kyie_r3_pins_${randomBytes(4).toString("hex")}`;
+    // The trigger quotes the hash and salt in its error, the worst case for a
+    // driver error's message.
+    await owner.query(
+      `CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF NEW.user_id = '${cashier}' THEN
+           RAISE EXCEPTION 'r3 sentinel % %', NEW.pin_hash, NEW.pin_salt;
+         END IF;
+         RETURN NEW;
+       END $$`,
+    );
+    await owner.query(
+      `CREATE TRIGGER ${fn} BEFORE INSERT OR UPDATE ON staff_pins FOR EACH ROW EXECUTE FUNCTION public.${fn}()`,
+    );
+    let thrown: unknown;
+    try {
+      await setStaffPin(
+        tenant,
+        cashier,
+        { outletId: bandung, userId: cashier },
+        { pin: PIN },
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      await owner.query(`DROP TRIGGER ${fn} ON staff_pins`);
+      await owner.query(`DROP FUNCTION public.${fn}()`);
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+    expect(error.message).toBe("Staff pin write failed");
+    expect(error.cause).toBeUndefined();
+    const exposed = [
+      error.message,
+      String(error.stack),
+      JSON.stringify(error),
+      JSON.stringify(
+        Object.getOwnPropertyNames(error).map((key) => [
+          key,
+          (error as unknown as Record<string, unknown>)[key],
+        ]),
+      ),
+    ].join("\n");
+    expect(exposed).not.toContain("r3 sentinel");
+    expect(exposed).not.toContain(PIN);
+    expect(await pinRow(cashier)).toBeUndefined();
+  });
+
+  it("legend-kyie C2 a failed outbox write of a staff_pin.set with material never quotes the hash or salt", async () => {
+    const cashier = await createUser("cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    const fn = `kyie_c2_outbox_${randomBytes(4).toString("hex")}`;
+    // The trigger quotes the whole event (material included) in its error,
+    // the worst case for a driver error's message.
+    await owner.query(
+      `CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+       BEGIN
+         IF NEW.aggregate_type = 'staff_pin' AND NEW.event->'payload'->>'userId' = '${cashier}' THEN
+           RAISE EXCEPTION 'c2 sentinel %', NEW.event::text;
+         END IF;
+         RETURN NEW;
+       END $$`,
+    );
+    await owner.query(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON domain_event_outbox FOR EACH ROW EXECUTE FUNCTION public.${fn}()`,
+    );
+    const previous = process.env.EDGE_MODE;
+    process.env.EDGE_MODE = "true";
+    let thrown: unknown;
+    try {
+      await setStaffPin(
+        tenant,
+        cashier,
+        { outletId: bandung, userId: cashier },
+        { pin: PIN },
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      if (previous === undefined) delete process.env.EDGE_MODE;
+      else process.env.EDGE_MODE = previous;
+      await owner.query(`DROP TRIGGER ${fn} ON domain_event_outbox`);
+      await owner.query(`DROP FUNCTION public.${fn}()`);
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+    expect(error.message).toBe("Staff pin event write failed");
+    expect(error.cause).toBeUndefined();
+    const exposed = [
+      error.message,
+      String(error.stack),
+      JSON.stringify(error),
+      JSON.stringify(
+        Object.getOwnPropertyNames(error).map((key) => [
+          key,
+          (error as unknown as Record<string, unknown>)[key],
+        ]),
+      ),
+    ].join("\n");
+    expect(exposed).not.toContain("c2 sentinel");
+    expect(exposed).not.toContain(PIN);
+    // The trigger's error quoted the whole material; none of it survives.
+    expect(exposed).not.toContain("pinHash");
+    expect(exposed).not.toContain("salt");
+    // Rolled back: no row was written.
+    expect(await pinRow(cashier)).toBeUndefined();
+  });
+
   it("§3 F6 a trivial pin is refused; another user's pin needs device.registry.manage on the outlet", async () => {
     const cashier = await createUser("cashier", {
       type: "outlet",
@@ -659,9 +900,11 @@ describe("legend-dxb AUTH-06 supervisor override with PIN", () => {
       approvedBy: supervisor,
       valueIdr: 45_000,
       method: "supervisor_pin",
+      // legend-kyie: the cloud writes the audit row of an edge override.
+      reason: input.reason,
+      reasonCode: "salah_input",
     });
-    // The free-text reason and the pin stay out of the event.
-    expect(JSON.stringify(events)).not.toContain(input.reason);
+    // The pin stays out of the event.
     expect(JSON.stringify(events)).not.toContain(PIN);
   });
 

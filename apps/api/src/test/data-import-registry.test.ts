@@ -88,6 +88,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills the two new posting roles (customer deposit and forfeited deposit) per legal entity: adds one chart account and one account mapping each, ON CONFLICT DO NOTHING; edits no existing row",
   "0140_refund_approval_policies_data.sql":
     "gives each tenant without a refund approval policy the default refund row (floor 0, level 1, supervisor template role); idempotent, never touches a tenant that configured refunds (legend-zi9o)",
+  "0141_great_firedrake.sql":
+    "sets pin_set_at of existing staff_pins rows to their updated_at (legend-kyie); FORCE RLS lifted for that one statement and restored; edits no other column",
+  "0142_high_scrambler.sql":
+    "sets pin_generation_at of existing staff_pins rows to their pin_set_at (legend-kyie, Codex 160); FORCE RLS lifted for that one statement and restored; edits no other column",
 };
 
 // Entrypoints that open a database pool but import no data.

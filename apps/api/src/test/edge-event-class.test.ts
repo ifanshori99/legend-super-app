@@ -3,6 +3,10 @@
 // reach the cloud and one unclassifiable event must never hold the whole receive
 // batch (cursor stall). Unknown events are parked per event with a supervisor
 // alarm; known-but-not-yet-projected events are parked 'deferred'.
+// legend-kyie: the access events are no longer parked; edge/access-applier.ts
+// applies them (its own tests: edge-access-applier.test.ts). Here they only
+// show that they never stall the link: these fixtures carry no valid payload,
+// so each is refused as one `applier_refused` conflict.
 //
 // Assumptions (the brief does not pin them down):
 // - "Alarm" is observable as rows in `notifications` for the outlet's supervisor
@@ -12,8 +16,6 @@
 // - Unknown aggregate types start with `zz_` (nothing registers them). The
 //   alarm is sent once per event name and outlet per 24 hours, so each test
 //   uses its own unknown name.
-// - Test R (reproduction) accepts either parked_reason for the access events,
-//   because it describes what the base does; test A pins 'deferred'.
 // - Alarm failure (B) is simulated at the database: a trigger that raises on
 //   notification inserts for the test tenant only (dropped afterwards), so the
 //   test does not depend on which module sends the alarm.
@@ -29,8 +31,8 @@ import { inventoryEvents } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
 import {
-  registerAccessDeferredEdgeApplier,
   registerEdgeDeferredFallback,
   registerPosDeferredEdgeApplier,
 } from "../edge/deferred-event-applier.ts";
@@ -281,7 +283,7 @@ beforeEach(() => {
   // Registration order of registerEdgeLink (runtime.ts).
   registerStockMovedEdgeApplier();
   registerPosDeferredEdgeApplier();
-  registerAccessDeferredEdgeApplier(); // legend-eadm; absent on the base
+  registerAccessEdgeApplier(); // legend-kyie (was parked deferred, legend-eadm)
   registerEdgeDeferredFallback();
 });
 
@@ -347,23 +349,24 @@ describe("legend-eadm R reproduction: mixed batch does not stall the link", () =
 
     expect(await link.lastReceivedInbound()).toBe(cursorBefore + 5);
     expect(await ledgerRows(ledgerEntryId)).toBe(1); // later event applied
-    // Each of the four is stored for later; on the base the reason is not
-    // pinned here (test A pins it after the fix).
-    for (const event of [posOverride, pinSet, pinLocked, unknown]) {
-      const rows = await parkedRows(event.id);
-      expect(rows, event.name).toHaveLength(1);
-      expect(["deferred", "unclassified"]).toContain(rows[0]!.parked_reason);
-      expect(rows[0]).toMatchObject({
-        event_name: event.name,
-        aggregate_type: event.aggregateType,
-      });
-    }
-    expect(await conflictCount()).toBe(conflictsBefore); // no refusals either
+    // The unknown event is stored for later; the access events go to their
+    // applier (legend-kyie), which refuses these payload-less fixtures one by
+    // one instead of stalling the batch.
+    expect(await parkedRows(unknown.id)).toEqual([
+      {
+        event_name: unknown.name,
+        aggregate_type: unknown.aggregateType,
+        parked_reason: "unclassified",
+      },
+    ]);
+    for (const event of [posOverride, pinSet, pinLocked])
+      expect(await parkedRows(event.id), event.name).toHaveLength(0);
+    expect(await conflictCount()).toBe(conflictsBefore + 3);
   });
 });
 
 describe("legend-eadm A classification and alarm", () => {
-  it("pos_override.* and staff_pin.* are parked 'deferred', without an alarm", async () => {
+  it("pos_override.* and staff_pin.* are applied, never parked (legend-kyie)", async () => {
     const events = [
       edgeEvent("pos_override.recorded"),
       edgeEvent("staff_pin.set"),
@@ -371,31 +374,22 @@ describe("legend-eadm A classification and alarm", () => {
     ];
     const link = store();
     const cursorBefore = await link.lastReceivedInbound();
-    const notificationsBefore = await notificationCount();
     const conflictsBefore = await conflictCount();
 
     await deliver(events);
 
     expect(await link.lastReceivedInbound()).toBe(cursorBefore + 3);
-    for (const event of events) {
-      const rows = await parkedRows(event.id);
-      expect(rows, event.name).toHaveLength(1);
-      expect(rows[0], event.name).toMatchObject({
-        event_name: event.name,
-        aggregate_type: event.aggregateType,
-        parked_reason: "deferred",
-      });
-    }
-    expect(await notificationCount()).toBe(notificationsBefore); // known events: no alarm
-    expect(await conflictCount()).toBe(conflictsBefore);
+    for (const event of events)
+      expect(await parkedRows(event.id), event.name).toHaveLength(0);
+    // Invalid fixture payloads: refused by the access applier, one conflict
+    // each (never an unclassified park or a stall).
+    expect(await conflictCount()).toBe(conflictsBefore + 3);
   });
 
   it("an unknown aggregate is parked 'unclassified' with exactly one alarm; a redelivery adds nothing", async () => {
-    const posOverride = edgeEvent("pos_override.recorded");
-    const pinSet = edgeEvent("staff_pin.set");
     const unknown = edgeEvent("zz_widget.created");
     const { event: moved, ledgerEntryId } = stockMoved();
-    const batch = [posOverride, pinSet, unknown, moved];
+    const batch = [unknown, moved];
     const link = store();
     const cursorBefore = await link.lastReceivedInbound();
     const notificationsBefore = await notificationCount();
@@ -403,7 +397,7 @@ describe("legend-eadm A classification and alarm", () => {
 
     await deliver(batch);
 
-    expect(await link.lastReceivedInbound()).toBe(cursorBefore + 4);
+    expect(await link.lastReceivedInbound()).toBe(cursorBefore + 2);
     expect(await ledgerRows(ledgerEntryId)).toBe(1);
     expect(await parkedRows(unknown.id)).toEqual([
       {
@@ -412,10 +406,6 @@ describe("legend-eadm A classification and alarm", () => {
         parked_reason: "unclassified",
       },
     ]);
-    expect((await parkedRows(posOverride.id))[0]!.parked_reason).toBe(
-      "deferred",
-    );
-    expect((await parkedRows(pinSet.id))[0]!.parked_reason).toBe("deferred");
 
     // Exactly one alarm, to the outlet's supervisor, without the payload.
     expect(await notificationCount()).toBe(notificationsBefore + 1);

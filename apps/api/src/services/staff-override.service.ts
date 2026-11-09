@@ -229,6 +229,9 @@ async function recordApprovedOverride(
       objectType: row.objectType,
       objectId: row.objectId,
       approvalRequestId: row.approvalRequestId,
+      // legend-kyie: the cloud writes the audit row of an edge override.
+      reasonCode: row.reasonCode,
+      reason: row.reason,
     },
   });
   await recordAudit(

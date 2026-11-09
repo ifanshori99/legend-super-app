@@ -47,8 +47,9 @@
 // - other hash material (a reset) -> replace when the record is newer than the
 //   stored generation (`created_at`). A newer local failed attempt cannot
 //   block a cloud reset; an older generation replayed late never wins;
-// - same hash material            -> copy lock state when the record is newer
-//   than `updated_at`; equal or older is a replay and changes nothing.
+// - same hash material            -> merge lock state (higher counter, later
+//   lock) when the record is newer than `updated_at`; equal or older is a
+//   replay and changes nothing.
 // No audit or outbox from apply: it mirrors cloud state, and an event here
 // would echo back to the cloud.
 
@@ -76,6 +77,7 @@ import { db } from "../db/index.ts";
 import { staffPins } from "../db/schema/device-pin.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { withoutSecretErrorDetail } from "../edge/envelope-secrets.ts";
 import { outletContext } from "./device-pin-support.ts";
 
 // ------------------------------------------------------- edge credential port
@@ -420,38 +422,54 @@ export async function applyStaffPinRecords(
             "CONFLICT",
             "Staff pin record id is used by another staff pin.",
           );
-        await tx.insert(staffPins).values({
-          id: record.id,
-          tenantId: record.tenantId,
-          outletId: record.outletId,
-          userId: record.userId,
-          ...material,
-          // The record does not carry who set it; the owner is the closest
-          // non-secret, existing user reference.
-          setBy: record.userId,
-          createdAt: version,
-          updatedAt: version,
-        });
+        // A failed write can quote the hash and salt in a driver error
+        // (legend-kyie round 3 R3): rethrown without them.
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx.insert(staffPins).values({
+            id: record.id,
+            tenantId: record.tenantId,
+            outletId: record.outletId,
+            userId: record.userId,
+            ...material,
+            // The record does not carry who set it; the owner is the closest
+            // non-secret, existing user reference.
+            setBy: record.userId,
+            createdAt: version,
+            updatedAt: version,
+          }),
+        );
         applied += 1;
         continue;
       }
       if (!sameMaterial(local, record)) {
         // A pin set or reset on the cloud: newer generation wins.
         if (version.getTime() <= local.createdAt.getTime()) continue;
-        await tx
-          .update(staffPins)
-          .set({ ...material, createdAt: version, updatedAt: version })
-          .where(eq(staffPins.id, local.id));
+        await withoutSecretErrorDetail("Staff pin sync write failed", () =>
+          tx
+            .update(staffPins)
+            .set({ ...material, createdAt: version, updatedAt: version })
+            .where(eq(staffPins.id, local.id)),
+        );
         applied += 1;
         continue;
       }
-      // Same pin generation: lock state, newest version wins.
+      // Same pin generation: lock state of a newer version, merged so it
+      // never weakens the edge (legend-kyie review K F2): the cloud adopting
+      // an edge pin writes a cleared counter, and copying that back would
+      // briefly unlock the edge. Nothing on the cloud clears a lock while
+      // keeping the hash (a reset brings new material, handled above). A
+      // correct PIN entered on the cloud does clear the cloud counter with the
+      // same hash; the edge keeps its higher counter (accepted: it never
+      // weakens the edge, at worst it locks one guess earlier).
       if (version.getTime() <= local.updatedAt.getTime()) continue;
       await tx
         .update(staffPins)
         .set({
-          failedAttempts: material.failedAttempts,
-          lockedUntil: material.lockedUntil,
+          failedAttempts: sql`GREATEST(${staffPins.failedAttempts}, ${material.failedAttempts})`,
+          lockedUntil:
+            material.lockedUntil === null
+              ? sql`${staffPins.lockedUntil}`
+              : sql`GREATEST(${staffPins.lockedUntil}, ${material.lockedUntil.toISOString()}::timestamptz)`,
           updatedAt: version,
         })
         .where(eq(staffPins.id, local.id));

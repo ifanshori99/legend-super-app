@@ -30,6 +30,7 @@ import {
   edgeEventApplier,
   setEdgeEventApplier,
   setEdgeEventClassifier,
+  type EdgeAggregateRef,
   type EdgeApplyMeta,
   type EdgeEventApplier,
   type EdgeEventClassifier,
@@ -42,8 +43,17 @@ export type EdgeEventHandler = (
   meta: EdgeApplyMeta,
 ) => Promise<void>;
 
+/** A domain's own "last held sequence" for one aggregate type. */
+export type EdgeLastSequenceHook = (
+  tx: EdgeTx,
+  aggregate: EdgeAggregateRef,
+  meta: EdgeApplyMeta,
+) => Promise<number | null>;
+
 type DirectionEntry = {
   readonly handlers: Map<string, EdgeEventHandler>;
+  /** Per aggregate type; before the fallback's `lastSequence`. */
+  readonly lastSequences: Map<string, EdgeLastSequenceHook>;
   readonly dispatcher: EdgeEventApplier;
   /** Applies event types with no explicit handler; before `fallback`. */
   unhandled: EdgeEventHandler | null;
@@ -59,8 +69,10 @@ function entryFor(direction: SyncDirection): DirectionEntry {
   const existing = directions.get(direction);
   if (existing) return existing;
   const handlers = new Map<string, EdgeEventHandler>();
+  const lastSequences = new Map<string, EdgeLastSequenceHook>();
   const entry: DirectionEntry = {
     handlers,
+    lastSequences,
     unhandled: null,
     fallback: null,
     dispatcher: {
@@ -73,6 +85,8 @@ function entryFor(direction: SyncDirection): DirectionEntry {
         return entry.fallback.apply(tx, event, meta);
       },
       async lastSequence(tx, aggregate, meta) {
+        const hook = lastSequences.get(aggregate.aggregateType);
+        if (hook) return hook(tx as EdgeTx, aggregate, meta);
         return (
           (await entry.fallback?.lastSequence?.(tx, aggregate, meta)) ?? null
         );
@@ -119,6 +133,26 @@ export function registerEdgeEventHandler(
       `A ${direction} handler for ${eventType} is already registered`,
     );
   entry.handlers.set(eventType, handler);
+  installDispatcher(direction);
+}
+
+/**
+ * `aggregateType` arriving on `direction` asks `hook` for its last held
+ * sequence instead of the link's own receipts. Idempotent; a different hook
+ * for a taken aggregate type throws (a wiring bug).
+ */
+export function registerEdgeAggregateLastSequence(
+  direction: SyncDirection,
+  aggregateType: string,
+  hook: EdgeLastSequenceHook,
+): void {
+  const entry = entryFor(direction);
+  const existing = entry.lastSequences.get(aggregateType);
+  if (existing && existing !== hook)
+    throw new Error(
+      `A ${direction} last-sequence hook for ${aggregateType} is already registered`,
+    );
+  entry.lastSequences.set(aggregateType, hook);
   installDispatcher(direction);
 }
 

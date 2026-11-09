@@ -45,6 +45,10 @@ import { tenants } from "../db/schema/platform-org.ts";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
 import { queueOrderViolation } from "../edge/conflict.ts";
+import {
+  hasEdgeEnvelopeSecrets,
+  withoutSecretErrorDetail,
+} from "../edge/envelope-secrets.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 export type EdgeTx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -113,6 +117,13 @@ export async function enqueueEdgeEvent(
   const event = eventEnvelopeSchema.parse(input.event);
   if (event.tenantId !== context.tenant.tenantId)
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
+  // legend-kyie: pin hash material only ever travels edge -> cloud; it is
+  // never queued toward an edge node (and from there a device).
+  if (direction !== "edge_to_cloud" && hasEdgeEnvelopeSecrets(event))
+    throw new CoreError(
+      "FORBIDDEN",
+      "Pin hash material is never queued toward an edge node",
+    );
   const node = await activeNode(tx, input.edgeNodeId);
   // Edge traffic is outlet operational data: a tenant-wide event has no node.
   if (event.outletId !== node.outletId)
@@ -144,9 +155,15 @@ export async function enqueueEdgeEvent(
   });
   if (violation) throw new CoreError("CONFLICT", violation);
   const linkSeq = cursor.next_out_seq + 1;
-  await tx.execute(
-    sql`INSERT INTO edge_outbound_queue (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, event) VALUES (${ids.tenantId}::uuid, ${ids.outletId}::uuid, ${input.edgeNodeId}::uuid, ${direction}, ${linkSeq}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${JSON.stringify(event)}::jsonb)`,
-  );
+  const insert = () =>
+    tx.execute(
+      sql`INSERT INTO edge_outbound_queue (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, event) VALUES (${ids.tenantId}::uuid, ${ids.outletId}::uuid, ${input.edgeNodeId}::uuid, ${direction}, ${linkSeq}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${JSON.stringify(event)}::jsonb)`,
+    );
+  // A failed insert quotes the event (pin hash, salt) in the driver error;
+  // it reaches API logs and job output (Codex 160 C2).
+  if (hasEdgeEnvelopeSecrets(event))
+    await withoutSecretErrorDetail("Edge queue write failed", insert);
+  else await insert();
   await tx.execute(
     sql`UPDATE sync_cursors SET next_out_seq = ${linkSeq}, updated_at = now() WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = ${direction}`,
   );
