@@ -84,6 +84,7 @@ import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
+import { expireDueIntents } from "./services/payment.service.ts";
 import { setPaymentGateway } from "./services/payment-gateway.ts";
 import { setPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createDoitGateway } from "./services/payment-doit.ts";
@@ -318,6 +319,18 @@ const relay = createRelayRuntime({
       await runPaymentGatewayPollJob(context, new Date());
     } catch {
       console.error("Payment gateway poll sweep failed");
+    }
+    // legend-jf4i (PRD §3.13 Siklus Pembayaran): expire pending intents whose
+    // time is up and emit payment.expired, so a code lapses without a guest
+    // request. A code the gateway issued is left to the poller above (money may
+    // land late); it times out there after 24 h. Idempotent and capped per
+    // run; a sweep error never blocks the relay.
+    try {
+      await expireDueIntents(context, new Date(), 200, {
+        leaveGatewayReconciling: true,
+      });
+    } catch {
+      console.error("Payment intent expiry sweep failed");
     }
     // PRD §3.19 (legend-w1vo), cloud only: retry stock sources whose journal
     // was blocked (closed period, missing mapping). Retry only, never another

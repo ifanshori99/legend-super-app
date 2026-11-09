@@ -51,6 +51,7 @@ import {
   isNull,
   lt,
   lte,
+  not,
   or,
   sql,
 } from "drizzle-orm";
@@ -1799,12 +1800,23 @@ export async function requestPayAtCashier(
 /**
  * Expires every pending intent whose time is up (PRD "Siklus Pembayaran").
  * Safe to call repeatedly; each row transitions once and emits one event.
+ *
+ * `leaveGatewayReconciling` (the worker sweep, legend-jf4i) skips a code the
+ * installed gateway issued (provider + provider reference): money may still
+ * land after it lapsed, so the polling fallback keeps asking and expires it as
+ * `timeout` (audited) once `GATEWAY_POLL_WINDOW_MS` has passed. Only codes with
+ * no gateway behind them lapse here.
  */
 export async function expireDueIntents(
   context: ScopedTenantContext,
   now = new Date(),
   limit = 200,
+  options: { leaveGatewayReconciling?: boolean } = {},
 ): Promise<{ expired: number }> {
+  const gatewayOwned = and(
+    isNotNull(paymentIntents.providerRef),
+    eq(paymentIntents.provider, paymentGateway().provider),
+  );
   const due = await withTenant(db, context, async (tx) =>
     tx
       .select()
@@ -1814,6 +1826,7 @@ export async function expireDueIntents(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
           eq(paymentIntents.status, "pending"),
           lte(paymentIntents.expiresAt, now),
+          options.leaveGatewayReconciling ? not(gatewayOwned!) : undefined,
         ),
       )
       .orderBy(asc(paymentIntents.expiresAt))
