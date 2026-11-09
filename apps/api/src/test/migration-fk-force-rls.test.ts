@@ -10,15 +10,31 @@
 //
 // This suite reproduces that failure on a scratch database and pins the
 // sanctioned patterns (docs/plan/contracts.md, "Migrations: foreign keys into
-// FORCE RLS tables"). The full-folder proof that every shipped migration
+// FORCE RLS tables"). The guard that every shipped migration from 0065 on
 // follows them is "applies the full migration folder as the non-superuser
-// owner" in edge-received-events-migration.test.ts and
-// "cannot run the migrations from zero" in migrator-role.test.ts.
+// owner" in edge-received-events-migration.test.ts (0000-0064 still need
+// BYPASSRLS there). migrator-role.test.ts "cannot run the migrations from
+// zero" is the contrast case: a plain owner is expected to fail on 0000-0064.
 // The scratch database lives on the disposable test server and is dropped in
 // afterAll.
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+// Pool.end() resolves before the server has closed the sessions; a forced
+// DROP DATABASE racing them terminates a client that is still closing (57P01)
+// and pg raises it as an uncaught error. Wait them out (same as the sibling
+// migration suites).
+async function waitForNoSessions(admin: Pool, db: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const { rows } = await admin.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
+      [db],
+    );
+    if (rows[0]?.n === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 const adminUrl = process.env.STARTER_TEST_DATABASE_URL;
 const ownerRole = `fkrls_owner_${randomBytes(6).toString("hex")}`;
@@ -86,6 +102,7 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
   afterAll(async () => {
     await owner?.end();
     if (admin) {
+      await waitForNoSessions(admin, database);
       await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
       await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
       await admin.end();

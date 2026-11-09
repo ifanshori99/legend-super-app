@@ -68,7 +68,7 @@ Each outlet sets `businessDayCutoff` (`outlets.business_day_cutoff`, `HH:mm`, `0
 
 ## Migrations: foreign keys into FORCE RLS tables (bead `legend-m007`)
 
-Tenant tables (`employees`, `positions`, `stations`, `outlets`, `chart_of_accounts`, …) use `FORCE ROW LEVEL SECURITY`, so the tenant policy also applies to their owner. The migrator is allowed to be a plain table owner (no SUPERUSER, no BYPASSRLS; production uses a dedicated migrator login with BYPASSRLS per `legend-jtnd`, but CI and fresh installs must not depend on it for migrations 0065 and later). `ALTER TABLE child ADD CONSTRAINT … FOREIGN KEY … REFERENCES forced_parent` validates under the parent's policy; with no `app.tenant_id` it raises `tenant context is required` and aborts the migration transaction. Even an empty new child table fails.
+Tenant tables (`employees`, `positions`, `stations`, `outlets`, `chart_of_accounts`, …) use `FORCE ROW LEVEL SECURITY`, so the tenant policy also applies to their owner. The migrator is allowed to be a plain table owner (no SUPERUSER, no BYPASSRLS). Production uses a dedicated migrator login with BYPASSRLS (`legend-jtnd`), and migrations 0000-0064 still need BYPASSRLS on a fresh database; migrations 0065 and later must not depend on it. `ALTER TABLE child ADD CONSTRAINT … FOREIGN KEY … REFERENCES forced_parent` validates under the parent's policy; with no `app.tenant_id` it raises `tenant context is required` and aborts the migration transaction. Even an empty new child table fails.
 
 A new migration that references a FORCE RLS table must use one of these, in this order of preference:
 
@@ -77,7 +77,7 @@ A new migration that references a FORCE RLS table must use one of these, in this
 
 Do not use `NOT VALID` (the constraint stays unvalidated forever, and a later `VALIDATE CONSTRAINT` hits the same error) and do not rely on BYPASSRLS for migrations 0065 and later.
 
-Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") and `migrator-role.test.ts` apply the real folder as a plain owner, so a new migration that breaks the rule fails there. Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
+Tests: `apps/api/src/test/migration-fk-force-rls.test.ts` reproduces the failure and pins both patterns on a scratch database. `edge-received-events-migration.test.ts` ("applies the full migration folder as the non-superuser owner") applies the real folder from 0065 as a plain owner, so a new migration that breaks the rule fails there; `migrator-role.test.ts` is the contrast case (a plain owner is expected to fail on 0000-0064). Review checklist: any `ADD CONSTRAINT … FOREIGN KEY` in a new migration → check the referenced table for FORCE and the pattern above.
 
 ## Naming
 
