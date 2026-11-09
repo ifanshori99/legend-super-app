@@ -47,6 +47,7 @@
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
 import { and, asc, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
+import { unionAll } from "drizzle-orm/pg-core";
 import {
   CoreError,
   userIdSchema,
@@ -1412,6 +1413,9 @@ export async function mergeDeviceReceiptRun(
 
   // Completeness: the sequence advances only over a run with no hole. A stale
   // batch (device.last <= cloud.last) never moves it and is never refused.
+  // An advancing merge needs a real receipt (cloud or batch) for every number
+  // 1..newLast. Write-offs are deliberately not consulted here: a written-off
+  // number never lets a device run advance (legend-0hzqw, legend-xlvvl).
   const newLast = Math.max(cloudLast, input.sequence.lastNumber);
   if (input.sequence.lastNumber > cloudLast) {
     // Stops after 21 holes: the walk is bounded by the rows present plus 21.
@@ -1527,40 +1531,50 @@ export async function receiptGapsForOutlet(
     )
     .orderBy(asc(receiptSequences.prefix));
   if (sequences.length === 0) return [];
-  const issued = await tx
-    .select({
-      sequenceId: posReceipts.sequenceId,
-      sequenceNumber: posReceipts.sequenceNumber,
-    })
-    .from(posReceipts)
-    .where(
-      and(
-        eq(posReceipts.tenantId, tenantId),
-        eq(posReceipts.outletId, outletId as OutletId),
+  // legend-0hzqw, legend-xlvvl: a written-off number counts as present. Receipts
+  // and write-offs are read in ONE statement (one READ COMMITTED snapshot), so
+  // a late receipt cannot land between two reads and look like a gap. The
+  // union is not deduplicated (UNION ALL); `receiptGaps` treats it as a set.
+  const sequenceIds = sequences.map((sequence) => sequence.id);
+  const present = await unionAll(
+    tx
+      .select({
+        sequenceId: posReceipts.sequenceId,
+        sequenceNumber: posReceipts.sequenceNumber,
+      })
+      .from(posReceipts)
+      .where(
+        and(
+          eq(posReceipts.tenantId, tenantId),
+          inArray(posReceipts.sequenceId, sequenceIds),
+        ),
       ),
-    );
+    tx
+      .select({
+        sequenceId: receiptNumberWriteoffs.sequenceId,
+        sequenceNumber: receiptNumberWriteoffs.sequenceNumber,
+      })
+      .from(receiptNumberWriteoffs)
+      .where(
+        and(
+          eq(receiptNumberWriteoffs.tenantId, tenantId),
+          inArray(receiptNumberWriteoffs.sequenceId, sequenceIds),
+        ),
+      ),
+  );
   const bySequence = new Map<string, { sequenceNumber: number }[]>();
-  for (const row of issued) {
+  for (const row of present) {
     const list = bySequence.get(row.sequenceId) ?? [];
     list.push({ sequenceNumber: row.sequenceNumber });
     bySequence.set(row.sequenceId, list);
   }
-  // legend-0hzqw: a written-off number counts as present.
-  const writeoffs = await writeoffOrdinalsBySequence(
-    tx,
-    tenantId,
-    sequences.map((sequence) => sequence.id),
-  );
   return sequences
     .map((sequence) => ({
       sequenceId: sequence.id,
       deviceId: sequence.deviceId,
       prefix: sequence.prefix,
       lastNumber: sequence.lastNumber,
-      missing: receiptGaps(sequence, [
-        ...(bySequence.get(sequence.id) ?? []),
-        ...asOrdinals(writeoffs.get(sequence.id)),
-      ]),
+      missing: receiptGaps(sequence, bySequence.get(sequence.id) ?? []),
     }))
     .filter((entry) => entry.missing.length > 0);
 }

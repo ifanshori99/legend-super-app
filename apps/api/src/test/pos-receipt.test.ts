@@ -1392,6 +1392,40 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
     expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 2 });
   });
 
+  it("legend-xlvvl d: a written-off number never lets a device run advance; the merge still refuses RECEIPT_SEQUENCE_GAP", async () => {
+    const outletId = await freshOutlet();
+    const device = randomUUID();
+    const [o1, o3] = await deviceOrders(outletId, device, 2);
+    await provision(outletId, device, "OFFW");
+    const sequenceId = (await sequenceRows(outletId))[0]!.id;
+    const base = { outletId, deviceId: device, prefix: "OFFW" };
+    // Assumption: the cloud sequence is brought to last_number 2 by owner SQL
+    // (as the write-off tests seed theirs), and the owner wrote off number 2
+    // (no receipt, within last_number, as the database trigger demands).
+    await rows(
+      `UPDATE receipt_sequences SET last_number = 2
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, sequenceId],
+    );
+    await rows(
+      `INSERT INTO receipt_number_writeoffs
+         (id, tenant_id, outlet_id, sequence_id, prefix, sequence_number, reason, written_off_by)
+       VALUES ($1, $2, $3, $4, 'OFFW', 2, 'Struk hilang bersama printer rusak', $5)`,
+      [randomUUID(), tenant.tenantId, outletId, sequenceId, cashier.userId],
+    );
+
+    // The device advances to 3 with receipts 1 and 3 but not 2; the cloud holds
+    // none. Number 2 is written off, yet the merge counts real receipts only.
+    await expect(
+      mergeRun(outletId, device, "OFFW", 3, [
+        offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+        offlineReceipt({ ...base, orderId: o3!, ordinal: 3 }),
+      ]),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
+    expect(await receiptRows(outletId)).toHaveLength(0);
+    expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 2 });
+  });
+
   it("POS-06 a late replay of an earlier batch after a full run is a no-op without error", async () => {
     const outletId = await freshOutlet();
     const device = randomUUID();

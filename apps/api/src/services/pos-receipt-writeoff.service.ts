@@ -70,6 +70,9 @@ function toWriteoff(row: WriteoffRow): ReceiptNumberWriteoff {
   });
 }
 
+const CLOUD_ONLY =
+  "Write-off nomor struk dan riwayatnya hanya ada di cloud, bukan di edge.";
+
 const ALREADY_WRITTEN_OFF = "Nomor struk ini sudah di-write-off.";
 
 /** Marks one lost number of an outlet run as written off; owner only (route). */
@@ -79,11 +82,7 @@ export async function writeOffReceiptNumber(
   outletId: OutletId,
   input: ReceiptNumberWriteoffInput,
 ): Promise<ReceiptNumberWriteoff> {
-  if (isEdgeProcess())
-    throw new CoreError(
-      "CONFLICT",
-      "Write-off nomor struk hanya bisa dilakukan di cloud, bukan di edge.",
-    );
+  if (isEdgeProcess()) throw new CoreError("CONFLICT", CLOUD_ONLY);
   assertOutletInScope(context.outletScope, outletId);
   const tenantId = context.tenant.tenantId;
   const actorId = userIdSchema.parse(caller.userId);
@@ -200,6 +199,7 @@ export async function listReceiptNumberWriteoffs(
   context: ScopedTenantContext,
   outletId: OutletId,
 ): Promise<ReceiptNumberWriteoff[]> {
+  if (isEdgeProcess()) throw new CoreError("CONFLICT", CLOUD_ONLY);
   assertOutletInScope(context.outletScope, outletId);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
