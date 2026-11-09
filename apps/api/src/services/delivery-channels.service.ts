@@ -71,6 +71,14 @@ import { uniqueViolationOf } from "./pos-shift-support.ts";
 
 type Json = DeliveryRequest["payload"];
 
+// Audit fields kept unmasked: none holds free text or personal data.
+const AUDIT_SAFE_FIELDS = [
+  "platform",
+  "isOpen",
+  "closedUntil",
+  "storeExternalId",
+] as const;
+
 function unknownChannel(): HttpError {
   return new HttpError(
     deliveryErrorHttpStatus.DELIVERY_CHANNEL_UNKNOWN,
@@ -318,6 +326,13 @@ export async function linkDeliveryChannel(
     const existing = await lockDeliveryChannel(tx, context, outletId, platform);
     if (existing?.storeExternalId === input.storeExternalId)
       return toDeliveryChannel(existing);
+    // A new store id would leave the old store open on the platform.
+    if (existing?.isOpen)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Kanal sedang buka. Tutup kanal dulu sebelum mengganti ID toko.",
+      );
     let row: DeliveryChannelRow;
     try {
       // Savepoint: a taken store id must not abort the request transaction.
@@ -354,7 +369,24 @@ export async function linkDeliveryChannel(
               .returning(),
       );
     } catch (error) {
-      if (uniqueViolationOf(error) !== null)
+      const constraint = uniqueViolationOf(error);
+      // A double submit of the first link: the other request created the row.
+      if (constraint === "delivery_channels_outlet_platform_key") {
+        const created = await lockDeliveryChannel(
+          tx,
+          context,
+          outletId,
+          platform,
+        );
+        if (created?.storeExternalId === input.storeExternalId)
+          return toDeliveryChannel(created);
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "Kanal ini baru saja dibuat dengan ID toko lain. Muat ulang lalu coba lagi.",
+        );
+      }
+      if (constraint !== null)
         throw new HttpError(
           409,
           "CONFLICT",
@@ -377,15 +409,25 @@ export async function linkDeliveryChannel(
         objectId: row.id,
         reason: null,
         maskedChanges: {
-          before: existing ? { platform, isOpen: existing.isOpen } : null,
-          after: { platform, isOpen: row.isOpen },
+          before: existing
+            ? {
+                platform,
+                isOpen: existing.isOpen,
+                storeExternalId: existing.storeExternalId,
+              }
+            : null,
+          after: {
+            platform,
+            isOpen: row.isOpen,
+            storeExternalId: row.storeExternalId,
+          },
         },
         ipHash: null,
         sensitiveAccess: false,
         retentionClass: "audit_2y",
         createdAt: now.toISOString(),
       },
-      [],
+      AUDIT_SAFE_FIELDS,
     );
     return toDeliveryChannel(row);
   });
@@ -557,7 +599,9 @@ export async function reopenDueDeliveryChannels(
     let reopened = 0;
     for (const channel of due) {
       try {
-        await deliveryChannelAdapterFor(channel.platform).execute(context, {
+        const result = await deliveryChannelAdapterFor(
+          channel.platform,
+        ).execute(context, {
           tenantId: context.tenant.tenantId,
           outletId: channel.outletId,
           reference: `reopen:${channel.id}:${channel.closedUntil?.getTime() ?? 0}`,
@@ -569,6 +613,8 @@ export async function reopenDueDeliveryChannels(
             closedReason: null,
           },
         });
+        // A refusal leaves the channel closed; the next tick retries.
+        if (!result.accepted) continue;
       } catch {
         continue;
       }
@@ -605,11 +651,13 @@ export async function reopenDueDeliveryChannels(
               platform: channel.platform,
               isOpen: false,
               closedUntil: channel.closedUntil?.toISOString() ?? null,
+              storeExternalId: channel.storeExternalId,
             },
             after: {
               platform: channel.platform,
               isOpen: true,
               closedUntil: null,
+              storeExternalId: channel.storeExternalId,
             },
           },
           ipHash: null,
@@ -617,7 +665,7 @@ export async function reopenDueDeliveryChannels(
           retentionClass: "audit_2y",
           createdAt: now.toISOString(),
         },
-        [],
+        AUDIT_SAFE_FIELDS,
       );
       reopened += 1;
     }

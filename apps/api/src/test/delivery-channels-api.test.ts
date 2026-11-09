@@ -47,9 +47,11 @@ import {
 
 const calls: DeliveryRequest[] = [];
 let failNext = false;
+let refuseNext = false;
 const spy: DeliveryChannel = {
   async execute(_context, input) {
     if (failNext) throw new Error("platform down");
+    if (refuseNext) return { reference: input.reference, accepted: false };
     calls.push(input);
     return { reference: input.reference, accepted: true };
   },
@@ -128,6 +130,16 @@ async function auditCount(action: string): Promise<number> {
     [seededTenantId, action],
   );
   return Number(rows[0]?.count ?? 0);
+}
+
+async function lastAuditEvent(action: string, objectId: string) {
+  const { rows } = await owner.query<{
+    event: { maskedChanges: { before: unknown; after: unknown } };
+  }>(
+    "SELECT event FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = $2 AND event->>'objectId' = $3 ORDER BY event->>'createdAt' DESC LIMIT 1",
+    [seededTenantId, action, objectId],
+  );
+  return rows[0]?.event;
 }
 
 function menuEvent(
@@ -629,6 +641,13 @@ describe("delivery channel link (legend-cbd0)", () => {
         sync_status: "ok",
       });
       expect(await auditCount("delivery_channel.linked")).toBe(before);
+      // An open channel keeps its store id (see the 409 test below).
+      await asOwner((q) =>
+        q(
+          "UPDATE delivery_channels SET is_open = false WHERE tenant_id = $1 AND outlet_id = $2",
+          [seededTenantId, seededOutletB],
+        ),
+      );
       const moved = await manager.client
         .put(`${outletBBase}/shopeefood`)
         .set(originHeader)
@@ -640,6 +659,61 @@ describe("delivery channel link (legend-cbd0)", () => {
         sync_status: "stale",
       });
       expect(await auditCount("delivery_channel.linked")).toBe(before + 1);
+    } finally {
+      await clean();
+    }
+  });
+
+  it("refuses a new store id while the channel is open so the old store is not left open", async () => {
+    try {
+      await manager.client
+        .put(`${outletBBase}/shopeefood`)
+        .set(originHeader)
+        .send({ storeExternalId: "cbd0-open-1" })
+        .expect(200);
+      await asOwner((q) =>
+        q(
+          "UPDATE delivery_channels SET is_open = true WHERE tenant_id = $1 AND outlet_id = $2",
+          [seededTenantId, seededOutletB],
+        ),
+      );
+      const moved = await manager.client
+        .put(`${outletBBase}/shopeefood`)
+        .set(originHeader)
+        .send({ storeExternalId: "cbd0-open-2" });
+      expect(moved.status).toBe(409);
+      expect(moved.body.error.message).toContain("Tutup kanal dulu");
+      expect(await rowOfB("shopeefood")).toMatchObject({
+        store_external_id: "cbd0-open-1",
+        is_open: true,
+      });
+    } finally {
+      await clean();
+    }
+  });
+
+  it("audits the store id of a link and survives a double submit of the first link", async () => {
+    try {
+      const results = await Promise.all(
+        [0, 1].map(() =>
+          manager.client
+            .put(`${outletBBase}/shopeefood`)
+            .set(originHeader)
+            .send({ storeExternalId: "cbd0-double-1" }),
+        ),
+      );
+      expect(results.map((r) => r.status)).toEqual([200, 200]);
+      const row = await rowOfB("shopeefood");
+      expect(row).toMatchObject({ store_external_id: "cbd0-double-1" });
+      const event = await lastAuditEvent(
+        "delivery_channel.linked",
+        row.id as string,
+      );
+      expect(event?.maskedChanges.after).toEqual({
+        platform: "shopeefood",
+        isOpen: false,
+        storeExternalId: "cbd0-double-1",
+      });
     } finally {
       await clean();
     }
@@ -751,6 +825,34 @@ describe("delivery channel auto reopen (legend-cbd0)", () => {
     await syncStaleDeliveryChannels(tenantContext, new Date());
     expect(await rowOfB()).toMatchObject({ is_open: true, closed_until: null });
     expect(reopenCalls()).toHaveLength(1);
+  });
+
+  it("stays closed when the platform answers accepted false and audits the store id on a reopen", async () => {
+    calls.length = 0;
+    await closeB(past().toISOString());
+    refuseNext = true;
+    try {
+      await syncStaleDeliveryChannels(tenantContext, new Date());
+    } finally {
+      refuseNext = false;
+    }
+    const refused = await rowOfB();
+    expect(refused).toMatchObject({ is_open: false });
+    expect(refused.closed_until).not.toBeNull();
+    expect(reopenCalls()).toEqual([]);
+    await syncStaleDeliveryChannels(tenantContext, new Date());
+    const row = await rowOfB();
+    expect(row).toMatchObject({ is_open: true, closed_until: null });
+    const event = await lastAuditEvent(
+      "delivery_channel.auto_reopened",
+      row.id as string,
+    );
+    expect(event?.maskedChanges.after).toEqual({
+      platform: "gofood",
+      isOpen: true,
+      closedUntil: null,
+      storeExternalId: "cbd0-reopen-store",
+    });
   });
 
   it("pushes the stale menu of a channel in the same sweep that reopens it", async () => {
