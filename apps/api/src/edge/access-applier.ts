@@ -231,6 +231,13 @@ export async function applyStaffPinSet(
     generationEdgeInstanceId: meta.edgeInstanceId ?? null,
   };
   const ownOrigin = sameGenerationOrigin(meta);
+  // An event without its instance (parked drain, conflict replay, old edge)
+  // adopted for the same node keeps the stored instance: writing NULL would
+  // make the node's next live events (with that instance) lose the sequence
+  // rule (review K re-review). Another node's adoption clears it.
+  const instanceOnUpdate =
+    meta.edgeInstanceId ??
+    sql`CASE WHEN ${staffPins.generationEdgeNodeId} IS NOT DISTINCT FROM ${meta.edgeNodeId}::uuid THEN ${staffPins.generationEdgeInstanceId} ELSE NULL END`;
   const values = {
     pinHash: material.pinHash,
     pinSalt: material.salt,
@@ -279,6 +286,7 @@ export async function applyStaffPinSet(
       .set({
         ...values,
         ...provenance,
+        generationEdgeInstanceId: instanceOnUpdate,
         pinSetAt,
         pinGenerationAt: sql`GREATEST(${pinGenerationAt}, ${staffPins.pinGenerationAt} + interval '1 millisecond')`,
       })

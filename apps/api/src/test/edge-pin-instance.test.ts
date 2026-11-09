@@ -642,6 +642,35 @@ describe("legend-o839h the edge database instance joins the node in the pin orde
     const locked = await pinRow(t1, userId);
     expect(locked.failed_attempts).toBe(MAX_STAFF_PIN_ATTEMPTS);
     expect(locked.pin_hash).toBe(adopted.pin_hash);
+
+    // A later set of the node replayed without its instance is adopted by
+    // sequence and keeps the stored instance (review K re-review): the node's
+    // next live events, with I1, still order by sequence.
+    const replayed = relabel(s3, s3, {
+      sequence: 13,
+      setAtMs: now - 100 * MINUTE,
+    });
+    expect(await applySet(node, undefined, replayed)).toBe("applied");
+    const afterReplay = await pinRow(t1, userId);
+    expect(afterReplay.pin_hash).toBe(materialOf(s3).pinHash);
+    expect(afterReplay.generation_edge_instance_id).toBe(I1);
+    expect(afterReplay.generation_edge_sequence).toBe("13");
+    const liveLock = lockedEvent(s3, {
+      sequence: 14,
+      occurredAtMs: now - 90 * MINUTE,
+      lockedUntilMs: now + 6 * MINUTE,
+    });
+    await owner.query(
+      `UPDATE staff_pins SET failed_attempts = 0, locked_until = NULL WHERE id = $1`,
+      [afterReplay.id],
+    );
+    expect(await applyLock(node, I1, liveLock)).toBe("applied");
+    const liveSet = relabel(s2, s2, {
+      sequence: 15,
+      setAtMs: now - 80 * MINUTE,
+    });
+    expect(await applySet(node, I1, liveSet)).toBe("applied");
+    expect((await pinRow(t1, userId)).pin_hash).toBe(materialOf(s2).pinHash);
   });
 
   it("5 cross tenant: another tenant's node with the same instance id never changes this tenant's row", async () => {
