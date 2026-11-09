@@ -11,7 +11,8 @@
 // - table_turnover: sessions closed on the day / tables not inactive now
 //   (the table count has no history); split zone.
 // - avg_dwell_minutes: mean minutes between opened_at and closed_at of the
-//   sessions closed on the day; split zone.
+//   sessions closed on the day; split zone. Its weight closed_session_count
+//   (sessions closed on the day) is written with it, same split.
 // - waiter_call_count: `call_waiter` service requests created on the day,
 //   cancelled ones excluded; split zone.
 // - order_queue_count: kitchen tickets fired on the business day and not done
@@ -19,7 +20,8 @@
 //   station. A ticket fired before the day started is not counted, so a
 //   forgotten ticket never inflates the queue of later days.
 // - avg_serving_time: mean seconds fired_at to done_at of the tickets done on
-//   the day; split station and hour.
+//   the day; split station and hour. Its weight served_ticket_count (tickets
+//   done on the day) is written with it, same splits.
 // - remake_count / comp_count: `recipe_deductions` of that kind on the
 //   business date. One row is one issue: the row stores no menu quantity
 //   (the event's quantity is not kept, and `recipe_deduction_lines` hold
@@ -38,12 +40,10 @@
 // `returning_customers` belongs to the loyalty-crm card.
 //
 // Dimension values are ids: zone id, station id, hour "00".."23" in the
-// outlet's time zone. Averages are stored per outlet-day; the engine takes
-// the mean of those outlet-days (not weighted by volume). A day without
-// activity stores 0 for `avg_serving_time` and `avg_dwell_minutes` (the
-// total-row rule), so a multi-day mean over quiet days is pulled down: a
-// weighted average needs stored numerator and denominator, which is a
-// `ws11-shared` change (new bead), not built here.
+// outlet's time zone. Averages are stored per outlet-day with their weight
+// (`weightCode` of the source); across days and outlets the engine weights
+// each stored average by its volume, so a day without activity (average 0,
+// volume 0, total-row rule) is left out instead of pulling the mean down.
 
 import { sql } from "drizzle-orm";
 import {
@@ -165,7 +165,12 @@ function decimal4(numerator: number, denominator: number): Decimal4 {
 }
 
 const floorReader: DailyMetricReader = {
-  metricCodes: ["table_turnover", "avg_dwell_minutes", "waiter_call_count"],
+  metricCodes: [
+    "table_turnover",
+    "avg_dwell_minutes",
+    "closed_session_count",
+    "waiter_call_count",
+  ],
   dimensions: ["zone"],
   requiresDailyClose: true,
   async compute(input) {
@@ -235,6 +240,11 @@ const floorReader: DailyMetricReader = {
         },
       },
       {
+        metricCode: "closed_session_count",
+        dimension: null,
+        value: countValue(closedTotal),
+      },
+      {
         metricCode: "waiter_call_count",
         dimension: null,
         value: countValue(total(calls)),
@@ -252,11 +262,18 @@ const floorReader: DailyMetricReader = {
         },
       });
       if (stat.n > 0)
-        out.push({
-          metricCode: "avg_dwell_minutes",
-          dimension: { key: "zone", value: zone },
-          value: { unit: "decimal", value: decimal4(stat.secs / 60, stat.n) },
-        });
+        out.push(
+          {
+            metricCode: "avg_dwell_minutes",
+            dimension: { key: "zone", value: zone },
+            value: { unit: "decimal", value: decimal4(stat.secs / 60, stat.n) },
+          },
+          {
+            metricCode: "closed_session_count",
+            dimension: { key: "zone", value: zone },
+            value: countValue(stat.n),
+          },
+        );
     }
     return out;
   },
@@ -295,7 +312,7 @@ const queueReader: DailyMetricReader = {
 };
 
 const servingReader: DailyMetricReader = {
-  metricCodes: ["avg_serving_time"],
+  metricCodes: ["avg_serving_time", "served_ticket_count"],
   dimensions: ["station", "hour"],
   requiresDailyClose: false,
   async compute(input) {
@@ -311,28 +328,37 @@ const servingReader: DailyMetricReader = {
       unit: "seconds",
       value: Math.round(value),
     });
-    const avg = sql`avg(extract(epoch FROM done_at - fired_at))`;
-    const overall = await grouped(
-      input,
-      sql`SELECT NULL::text AS dim, ${avg} AS amount ${base}`,
-    );
-    const byStation = await grouped(
-      input,
-      sql`SELECT station_id::text AS dim, ${avg} AS amount ${base} GROUP BY station_id`,
-    );
-    const byHour = await grouped(
-      input,
-      sql`SELECT to_char(done_at AT TIME ZONE ${window.timezone}, 'HH24') AS dim,
-                 ${avg} AS amount ${base} GROUP BY 1`,
-    );
+    const measure = async (
+      metricCode: string,
+      amount: ReturnType<typeof sql>,
+      make: (value: number) => DailyMetricValue["value"],
+    ): Promise<DailyMetricValue[]> => {
+      const overall = await grouped(
+        input,
+        sql`SELECT NULL::text AS dim, ${amount} AS amount ${base}`,
+      );
+      const byStation = await grouped(
+        input,
+        sql`SELECT station_id::text AS dim, ${amount} AS amount ${base} GROUP BY station_id`,
+      );
+      const byHour = await grouped(
+        input,
+        sql`SELECT to_char(done_at AT TIME ZONE ${window.timezone}, 'HH24') AS dim,
+                   ${amount} AS amount ${base} GROUP BY 1`,
+      );
+      return [
+        { metricCode, dimension: null, value: make(overall[0]?.amount ?? 0) },
+        ...rowsOf(metricCode, "station", byStation, make),
+        ...rowsOf(metricCode, "hour", byHour, make),
+      ];
+    };
     return [
-      {
-        metricCode: "avg_serving_time",
-        dimension: null,
-        value: seconds(overall[0]?.amount ?? 0),
-      },
-      ...rowsOf("avg_serving_time", "station", byStation, seconds),
-      ...rowsOf("avg_serving_time", "hour", byHour, seconds),
+      ...(await measure(
+        "avg_serving_time",
+        sql`avg(extract(epoch FROM done_at - fired_at))`,
+        seconds,
+      )),
+      ...(await measure("served_ticket_count", sql`count(*)`, countValue)),
     ];
   },
 };
@@ -370,11 +396,18 @@ const issueReader: DailyMetricReader = {
   },
 };
 
+/** Volume each stored average is weighted by across days and outlets. */
+const WEIGHT_CODES: Readonly<Record<string, string>> = {
+  avg_dwell_minutes: "closed_session_count",
+  avg_serving_time: "served_ticket_count",
+};
+
 function dailySources(reader: DailyMetricReader): MetricSource[] {
   return reader.metricCodes.map((code) => ({
     kind: "daily" as const,
     code,
     reader,
+    ...(WEIGHT_CODES[code] ? { weightCode: WEIGHT_CODES[code] } : {}),
   }));
 }
 

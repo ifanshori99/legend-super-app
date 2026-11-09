@@ -21,6 +21,7 @@ import {
   tenantIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { reportMetricByCode } from "@starter/shared/dashboard";
 import {
   dailyReaders,
   metricSourceOf,
@@ -378,6 +379,12 @@ describe("traffic-operations daily rows", () => {
     expect(value(key("avg_dwell_minutes", "zone", seedA.zone1))).toBe(
       "45.0000",
     );
+    // The weight of the dwell average: sessions closed on the day.
+    expect(value(key("closed_session_count"))).toBe("2");
+    expect(value(key("closed_session_count", "zone", seedA.zone1))).toBe("2");
+    expect(rows.has(key("closed_session_count", "zone", seedA.zone2))).toBe(
+      false,
+    );
 
     // waiter calls: the cancelled call and the bill request are out.
     expect(value(key("waiter_call_count"))).toBe("2");
@@ -399,6 +406,16 @@ describe("traffic-operations daily rows", () => {
     );
     expect(value(key("avg_serving_time", "hour", "12"))).toBe("900");
     expect(value(key("avg_serving_time", "hour", "13"))).toBe("300");
+    // The weight of the serving average: tickets done on the day.
+    expect(value(key("served_ticket_count"))).toBe("3");
+    expect(value(key("served_ticket_count", "station", seedA.stationA))).toBe(
+      "2",
+    );
+    expect(value(key("served_ticket_count", "station", seedA.stationB))).toBe(
+      "1",
+    );
+    expect(value(key("served_ticket_count", "hour", "12"))).toBe("2");
+    expect(value(key("served_ticket_count", "hour", "13"))).toBe("1");
 
     // remake and comp of the business date only; the sale row is not counted.
     expect(value(key("remake_count"))).toBe("2");
@@ -435,10 +452,12 @@ describe("traffic-operations daily rows", () => {
     expect(rows.get(key("remake_count"))?.value).toBe("0");
     expect(rows.get(key("table_turnover"))?.value).toBe("0.0000");
     expect(rows.get(key("order_queue_count"))?.value).toBe("0");
-    // Averages store 0 on a quiet day (total-row rule); the multi-day mean is
-    // not weighted (see the file header of the source).
+    // Averages store 0 on a quiet day (total-row rule) with a volume of 0, so
+    // the weighted multi-day mean leaves the day out.
     expect(rows.get(key("avg_serving_time"))?.value).toBe("0");
     expect(rows.get(key("avg_dwell_minutes"))?.value).toBe("0.0000");
+    expect(rows.get(key("served_ticket_count"))?.value).toBe("0");
+    expect(rows.get(key("closed_session_count"))?.value).toBe("0");
     expect(rows.has(key("avg_serving_time", "station", seedA.stationA))).toBe(
       false,
     );
@@ -517,6 +536,86 @@ describe("traffic-operations reports through the engine", () => {
       [seedA.zone1]: 5,
       [seedA.zone2]: 4,
     });
+  });
+
+  it("averages over days weighted by volume; a day without volume is left out (S8)", async () => {
+    const outletId = b.outlet2;
+    const station = randomUUID();
+    const insert = (
+      day: string,
+      code: string,
+      value: string,
+      dimension: [string, string] | null = null,
+    ) => {
+      const definition = reportMetricByCode.get(code)!;
+      const decimal = definition.unit === "decimal";
+      return owner.query(
+        `INSERT INTO metrics_daily (tenant_id, outlet_id, metric_date, metric_code,
+           definition_id, definition_version, dimension_key, dimension_value,
+           unit, value_int, value_decimal, finality, computed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'final', now())`,
+        [
+          b.tenantId,
+          outletId,
+          day,
+          code,
+          definition.id,
+          definition.version,
+          dimension?.[0] ?? null,
+          dimension?.[1] ?? null,
+          definition.unit,
+          decimal ? null : value,
+          decimal ? value : null,
+        ],
+      );
+    };
+    // 1 Jun: 1 ticket at 100 s, 1 session of 10 min; 2 Jun: 3 tickets at
+    // 400 s, 3 sessions of 40 min; 3 Jun: quiet (average 0, volume 0).
+    for (const [day, serving, tickets, dwell, sessions] of [
+      ["2025-06-01", "100", "1", "10.0000", "1"],
+      ["2025-06-02", "400", "3", "40.0000", "3"],
+      ["2025-06-03", "0", "0", "0.0000", "0"],
+    ] as const) {
+      await insert(day, "avg_serving_time", serving);
+      await insert(day, "served_ticket_count", tickets);
+      await insert(day, "avg_dwell_minutes", dwell);
+      await insert(day, "closed_session_count", sessions);
+      if (tickets !== "0") {
+        await insert(day, "avg_serving_time", serving, ["station", station]);
+        await insert(day, "served_ticket_count", tickets, ["station", station]);
+      }
+    }
+    const ctx = context(b.tenantId, outletId);
+    const run = (codes: string[], groupBy: string[] = []) =>
+      withTenantSnapshot(ctx, (tx) =>
+        evaluateMetrics(
+          tx,
+          ctx,
+          {
+            metricCodes: codes,
+            period: { start: date("2025-06-01"), end: date("2025-06-03") },
+            bucket: "total",
+            outletFilter: outletIdsForQuery(ctx.outletScope),
+            groupBy,
+            filters: [],
+            comparePrevious: false,
+            viewer: "full",
+          },
+          LATE,
+        ),
+      );
+    const valueOf = (result: EvaluatedMetrics, code: string) =>
+      (
+        result.series.find((series) => series.metricCode === code)!.points[0]!
+          .value as { value: unknown }
+      ).value;
+    const total = await run(["avg_serving_time", "avg_dwell_minutes"]);
+    // (100 × 1 + 400 × 3) / 4, not (100 + 400 + 0) / 3.
+    expect(valueOf(total, "avg_serving_time")).toBe(325);
+    // (10 × 1 + 40 × 3) / 4, not (10 + 40 + 0) / 3.
+    expect(valueOf(total, "avg_dwell_minutes")).toBe("32.5000");
+    const byStation = await run(["avg_serving_time"], ["station"]);
+    expect(valueOf(byStation, "avg_serving_time")).toBe(325);
   });
 
   it("marks a split the reader does not build as not supported", async () => {

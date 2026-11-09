@@ -70,6 +70,13 @@ export type MetricSource =
       readonly kind: "daily";
       readonly code: string;
       readonly reader: DailyMetricReader;
+      /**
+       * An `average` code only: the stored count code (same reader, same
+       * dimensions) each day's average is weighted by across days and
+       * outlets, Σ(average × weight) / Σ weight. A day without volume is left
+       * out. Without it the engine takes the plain mean of the stored days.
+       */
+      readonly weightCode?: string;
     }
   | {
       /** Recomputed per bucket from two registry codes; never stored. */

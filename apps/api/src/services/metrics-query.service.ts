@@ -973,7 +973,12 @@ function shapeOf(
 type Plan =
   | { kind: "unavailable"; reason: MetricUnavailableReason }
   | { kind: "gl"; gl: GlMetricSource; split: MetricSplitSource | null }
-  | { kind: "daily"; reader: DailyMetricReader }
+  | {
+      kind: "daily";
+      reader: DailyMetricReader;
+      /** Stored count weighting an average across days (`weightCode`). */
+      weightCode: string | null;
+    }
   | {
       kind: "derived";
       numerator: string;
@@ -1047,7 +1052,18 @@ function planOf(
           )
         )
           return NOT_SUPPORTED;
-        return { kind: "daily", reader: source.reader };
+        const weightCode = source.weightCode ?? null;
+        if (weightCode !== null) {
+          const weightPlan = planOf(
+            weightCode,
+            shape,
+            sources,
+            plans,
+            visiting,
+          );
+          if (weightPlan.kind !== "daily") return weightPlan;
+        }
+        return { kind: "daily", reader: source.reader, weightCode };
       }
       case "share": {
         // Without the split an unsplit value would always read 100 %; a
@@ -1411,9 +1427,29 @@ export async function evaluateMetrics(
     type Acc = {
       sum: bigint;
       count: bigint;
+      /** Weighted average: Σ(value × weight) and Σ weight. */
+      weighted: bigint;
+      weight: bigint;
       final: boolean;
       latest: Map<string, { date: string; native: bigint }>;
     };
+    // The volume of each stored average row: same day, outlet and split.
+    const plan = plans.get(code);
+    const weightCode =
+      definition.aggregation === "average" && plan?.kind === "daily"
+        ? plan.weightCode
+        : null;
+    const rowKey = (row: DailyRow) =>
+      `${row.date}|${row.outletId}|${row.dimensionKey ?? ""}|${row.dimensionValue ?? ""}`;
+    const weights =
+      weightCode === null
+        ? null
+        : new Map(
+            (rowsByCode.get(weightCode) ?? []).map((row) => [
+              rowKey(row),
+              row.native,
+            ]),
+          );
     const byGroup = new Map<
       string,
       {
@@ -1454,18 +1490,25 @@ export async function evaluateMetrics(
       const acc = (group.accs[row.range] ??= {
         sum: 0n,
         count: 0n,
+        weighted: 0n,
+        weight: 0n,
         final: true,
         latest: new Map(),
       });
       acc.sum += row.native;
       acc.count += 1n;
+      const weight = weights?.get(rowKey(row)) ?? 0n;
+      if (weight > 0n) {
+        acc.weighted += row.native * weight;
+        acc.weight += weight;
+      }
       acc.final &&= row.final;
       const latestKey = `${row.outletId}|${row.dimensionValue ?? ""}`;
       const latest = acc.latest.get(latestKey);
       if (!latest || latest.date < row.date)
         acc.latest.set(latestKey, { date: row.date, native: row.native });
     }
-    const aggregate = (acc: Acc): bigint => {
+    const aggregate = (acc: Acc): bigint | null => {
       switch (definition.aggregation) {
         // A balance: the last day of the bucket per outlet and split value.
         case "latest":
@@ -1473,9 +1516,14 @@ export async function evaluateMetrics(
             (sum, entry) => sum + entry.native,
             0n,
           );
-        // Mean of the stored outlet-days.
+        // Mean of the stored outlet-days, weighted by their volume when the
+        // source declares a weight; no volume at all is no data.
         case "average":
-          return divideRounded(acc.sum, acc.count, "half_up");
+          if (weights === null)
+            return divideRounded(acc.sum, acc.count, "half_up");
+          return acc.weight === 0n
+            ? null
+            : divideRounded(acc.weighted, acc.weight, "half_up");
         default:
           return acc.sum;
       }
@@ -1484,15 +1532,18 @@ export async function evaluateMetrics(
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([, group]) => ({
         dims: group.dims,
-        cells: group.accs.map((acc, at) => ({
-          // An absent row is no data (null, never zero); a day without a
-          // stored total row keeps the bucket an estimate.
-          value: acc ? valueOf(definition.unit, aggregate(acc)) : null,
-          final:
-            ruleFinal(at, officiality) &&
-            (acc?.final ?? true) &&
-            covered(code, group.outletKey, at),
-        })),
+        cells: group.accs.map((acc, at) => {
+          const native = acc ? aggregate(acc) : null;
+          return {
+            // An absent row is no data (null, never zero); a day without a
+            // stored total row keeps the bucket an estimate.
+            value: native === null ? null : valueOf(definition.unit, native),
+            final:
+              ruleFinal(at, officiality) &&
+              (acc?.final ?? true) &&
+              covered(code, group.outletKey, at),
+          };
+        }),
       }));
   };
 
