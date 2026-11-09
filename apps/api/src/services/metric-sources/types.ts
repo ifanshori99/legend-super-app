@@ -46,6 +46,14 @@ export type DailyComputeInput = {
   readonly businessDate: BusinessDate;
 };
 
+/**
+ * Computes the stored rows of one outlet-day. Rule: a reader always returns a
+ * total row (dimension null) for every code it lists, for every outlet-day it
+ * computes, with zero when there was no activity. Split readers of a ledger
+ * code do the same. The engine labels a stored value or split `final` only
+ * when every business day of the bucket has such a total row, so a missing
+ * total keeps the bucket an estimate.
+ */
 export type DailyMetricReader = {
   /** Codes this reader writes; the job deletes stale rows of these codes only. */
   readonly metricCodes: readonly string[];

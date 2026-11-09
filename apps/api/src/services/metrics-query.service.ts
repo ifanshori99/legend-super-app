@@ -37,8 +37,10 @@
 //   `availability` entry, "belum tersedia", never a zero). `evaluateMetrics`
 //   is the only path from codes to values (DECISIONS 2026-11-10 point 2).
 // - Finality of stored values (design §2.4): final only when the read-time
-//   rule says final and every stored row behind the value is final. Split and
-//   residual rows take the finality of the ledger total of their bucket.
+//   rule says final, every stored row behind the value is final and every
+//   business day of the bucket has a stored total row of the code (a missing
+//   day keeps it an estimate). Split and residual rows take the finality of
+//   the ledger total of their bucket, under the same day rule.
 
 import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -53,6 +55,7 @@ import {
   type BusinessDate,
   type OutletQueryFilter,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import {
@@ -782,7 +785,7 @@ async function dailyRows(
     .from(metricsDaily)
     .where(
       and(
-        eq(metricsDaily.tenantId, tenantId),
+        eq(metricsDaily.tenantId, tenantId as TenantId),
         inArray(metricsDaily.metricCode, [...codes]),
         gte(metricsDaily.metricDate, range.start),
         lte(metricsDaily.metricDate, range.end),
@@ -1134,6 +1137,8 @@ export async function evaluateMetrics(
     ),
   ];
   const rowsByCode = new Map<string, DailyRow[]>();
+  /** code → outlet key (or every outlet) → per range, days with a total row. */
+  const coverage = new Map<string, Map<string, Set<string>[]>>();
   for (const row of await dailyRows(
     tx,
     tenantId,
@@ -1147,7 +1152,30 @@ export async function evaluateMetrics(
     const list = rowsByCode.get(row.code) ?? [];
     list.push({ ...row, range: at });
     rowsByCode.set(row.code, list);
+    if (row.dimensionKey !== null || at >= currentCount) continue;
+    const byOutlet = coverage.get(row.code) ?? new Map<string, Set<string>[]>();
+    coverage.set(row.code, byOutlet);
+    for (const key of [row.outletId, ALL_OUTLETS]) {
+      const perRange = byOutlet.get(key) ?? ranges.map(() => new Set<string>());
+      byOutlet.set(key, perRange);
+      perRange[at]!.add(row.date);
+    }
   }
+  /**
+   * A stored value or split is final only when every business day of its
+   * bucket has a stored total row (dimension null) of the code, for the
+   * group's outlet or, without an outlet split, for any outlet in the
+   * filter. A missing day may hide activity the sum does not see (the job
+   * refreshes only the last days), so it keeps the value an estimate.
+   * Entity-level ledger lines have no operational rows to wait for.
+   */
+  const covered = (code: string, outletKey: string, at: number) => {
+    if (outletKey === ENTITY_LEVEL) return true;
+    if (at >= currentCount) return false;
+    const bucket = ranges[at]!;
+    const days = (toTime(bucket.end) - toTime(bucket.start)) / DAY_MS + 1;
+    return (coverage.get(code)?.get(outletKey)?.[at]?.size ?? 0) === days;
+  };
 
   // Entity-level lines get their own series only when they are in the query
   // at all: a tenant-wide reader without an outlet filter.
@@ -1198,8 +1226,12 @@ export async function evaluateMetrics(
         groups.push({ dims: head, cells: totals });
         continue;
       }
-      // Split rows carry the finality of the ledger total of their bucket;
-      // the residual row makes them add up to that total.
+      // Split rows carry the finality of the ledger total of their bucket,
+      // and need a stored total row on every day of it; the residual row
+      // makes them add up to that total.
+      const splitFinal = totals.map(
+        (total, at) => total.final && covered(code, outlet.key, at),
+      );
       const sums = new Map<string, (bigint | null)[]>();
       for (const row of splitRows) {
         if (outlet.key !== ALL_OUTLETS && row.outletId !== outlet.key) continue;
@@ -1214,7 +1246,7 @@ export async function evaluateMetrics(
           dims: [...head, { key: splitKey, value }],
           cells: sums.get(value)!.map((sum, at) => ({
             value: sum === null ? null : idrValue(sum),
-            final: totals[at]!.final,
+            final: splitFinal[at]!,
           })),
         });
       const residual = totals.map((total, at) => {
@@ -1235,7 +1267,7 @@ export async function evaluateMetrics(
           dims: [...head, { key: splitKey, value: METRIC_LEDGER_ADJUSTMENT }],
           cells: residual.map((value, at) => ({
             value: value === null ? null : idrValue(value),
-            final: totals[at]!.final,
+            final: splitFinal[at]!,
           })),
         });
     }
@@ -1255,10 +1287,18 @@ export async function evaluateMetrics(
     };
     const byGroup = new Map<
       string,
-      { dims: MetricDimensionValue[]; accs: (Acc | null)[] }
+      {
+        dims: MetricDimensionValue[];
+        outletKey: string;
+        accs: (Acc | null)[];
+      }
     >();
     if (!shape.byOutlet && shape.splitKey === null)
-      byGroup.set("", { dims: [], accs: ranges.map(() => null) });
+      byGroup.set("", {
+        dims: [],
+        outletKey: ALL_OUTLETS,
+        accs: ranges.map(() => null),
+      });
     for (const row of rowsByCode.get(code) ?? []) {
       if (row.dimensionKey !== readKey || row.unit !== definition.unit)
         continue;
@@ -1273,7 +1313,14 @@ export async function evaluateMetrics(
       if (!group) {
         // A split exists only when it has a row in the current period.
         if (row.range >= currentCount) continue;
-        byGroup.set(key, (group = { dims, accs: ranges.map(() => null) }));
+        byGroup.set(
+          key,
+          (group = {
+            dims,
+            outletKey: shape.byOutlet ? row.outletId : ALL_OUTLETS,
+            accs: ranges.map(() => null),
+          }),
+        );
       }
       const acc = (group.accs[row.range] ??= {
         sum: 0n,
@@ -1309,9 +1356,13 @@ export async function evaluateMetrics(
       .map(([, group]) => ({
         dims: group.dims,
         cells: group.accs.map((acc, at) => ({
-          // An absent row is no data; it does not downgrade finality.
+          // An absent row is no data (null, never zero); a day without a
+          // stored total row keeps the bucket an estimate.
           value: acc ? valueOf(definition.unit, aggregate(acc)) : null,
-          final: ruleFinal(at, officiality) && (acc?.final ?? true),
+          final:
+            ruleFinal(at, officiality) &&
+            (acc?.final ?? true) &&
+            covered(code, group.outletKey, at),
         })),
       }));
   };

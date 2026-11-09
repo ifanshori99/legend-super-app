@@ -340,8 +340,39 @@ describe("daily sources read metrics_daily", () => {
     ]);
     const point = totalOf(result, "transaction_count");
     expect(numberOf(point)).toBe(8);
-    // A live metric of a past period whose rows are all final.
-    expect(point.finality).toBe("final");
+    // June has days without a stored total row: the sum may miss them.
+    expect(point.finality).toBe("estimate");
+  });
+
+  it("is final only when every day of the bucket has a stored total row", async () => {
+    // 10 June (outlet 1) and 11 June (outlet 2) both have a total row, all final.
+    const covered = await evaluate({
+      metricCodes: ["transaction_count"],
+      period: { start: "2025-06-10", end: "2025-06-11" },
+    });
+    expect(numberOf(totalOf(covered, "transaction_count"))).toBe(8);
+    expect(totalOf(covered, "transaction_count").finality).toBe("final");
+
+    // Per outlet, each outlet misses one of the two days.
+    const byOutlet = await evaluate({
+      metricCodes: ["transaction_count"],
+      period: { start: "2025-06-10", end: "2025-06-11" },
+      groupBy: ["outlet"],
+    });
+    for (const series of seriesOf(byOutlet, "transaction_count"))
+      expect(series.points[0]!.finality).toBe("estimate");
+
+    // A day bucket without a row is no data and an estimate.
+    const days = await evaluate({
+      metricCodes: ["transaction_count"],
+      period: { start: "2025-06-10", end: "2025-06-12" },
+      bucket: "day",
+    });
+    expect(
+      seriesOf(days, "transaction_count")[0]!.points.map(
+        (point) => point.finality,
+      ),
+    ).toEqual(["final", "final", "estimate"]);
   });
 
   it("splits per outlet and leaves a day without rows null, never zero", async () => {

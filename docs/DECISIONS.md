@@ -91,7 +91,14 @@ in parallel. Reviewed with an architect consult before implementation.
    changed` (late data) and still written. Dates older than the window are
    recomputed only through `recomputeMetricsDaily(context, outletId, from,
    to)`. A family card that bumps a definition version runs it over the
-   history it changes.
+   history it changes. A family card that ships a new reader also runs it
+   over the history its reports cover, before its reports leave the mock.
+   Every reader writes a total row (no dimension) per outlet-day, zero when
+   nothing happened; a stored value is `final` only when every business day
+   of its bucket has that total row, so a day the job never computed (worker
+   down for more than the window, a reader shipped without backfill) keeps
+   the value an `estimate` instead of a closed figure that silently misses
+   days (architect review 2026-11-10).
 6. **"Belum tersedia" is a field, not a zero, an error or an empty row.**
    Report results (`reportResultSchema`) and metric series carry an
    availability per metric: `available`, or `unavailable` with a reason
