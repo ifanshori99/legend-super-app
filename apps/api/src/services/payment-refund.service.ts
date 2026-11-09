@@ -35,6 +35,7 @@ import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
+  approvalPolicies,
   approvalRequests,
   paymentEvidence,
   paymentIntents,
@@ -96,6 +97,17 @@ const REFUND_DEADLINE_MINUTES = 1440;
  * REFUND_DEADLINE_MINUTES.
  */
 const REFUND_REQUEST_DEADLINE_MINUTES = 10080;
+/**
+ * Requester of the approval chain of a refund the system created (legend-2dnh).
+ * A reserved, banned user row without account or roles (migration 0135): it
+ * satisfies the requested_by foreign key, can never sign in, and can never
+ * decide (decided_by <> requested_by).
+ */
+export const SYSTEM_APPROVAL_REQUESTER = userIdSchema.parse(
+  "00000000-0000-4000-8000-000000000002",
+);
+/** Pre-deploy pending refunds opened per tenant by one sweep round. */
+const OPEN_PENDING_CHAINS_BATCH = 50;
 /** Lease on an in-flight provider call; another worker skips while it holds. */
 const PAYOUT_CLAIM_MS = 120_000;
 /** Deadline of one provider call; a timeout is an unknown outcome. */
@@ -616,7 +628,8 @@ async function setRefundChain(
  * deciding first (legend-zi9o). Returns the refund with its chain id. A refund
  * below every tier keeps the lazy direct path, and a tenant without refund
  * policy rows is unchanged: decide still fails closed (APPROVAL_POLICY_MISSING).
- * System-requested refunds are not opened here; the first human submits them.
+ * A system-requested refund (legend-2dnh) opens with SYSTEM_APPROVAL_REQUESTER,
+ * so any supervisor can decide it.
  */
 export async function openRefundChainAtRequest(
   tx: Tx,
@@ -624,15 +637,16 @@ export async function openRefundChainAtRequest(
   refund: Refund,
   now: Date,
 ): Promise<Refund> {
-  if (!isUserId(refund.requestedBy) || refund.approvalChainId !== null)
-    return refund;
+  if (refund.approvalChainId !== null) return refund;
   try {
     const opened = await openApprovalRequest(
       tx,
       context,
       refundApprovalInput(
         refund,
-        refund.requestedBy,
+        isUserId(refund.requestedBy)
+          ? refund.requestedBy
+          : SYSTEM_APPROVAL_REQUESTER,
         now,
         REFUND_REQUEST_DEADLINE_MINUTES,
       ),
@@ -648,6 +662,85 @@ export async function openRefundChainAtRequest(
       return refund;
     throw error;
   }
+}
+
+/**
+ * `openRefundChainAtRequest` inside a savepoint: a failure is logged (refund id
+ * and error code only) and the refund is returned unchanged, so a chain problem
+ * never rolls back the caller (a POS payment, a deposit). The decide-time lazy
+ * open and the sweep (`openPendingRefundChains`) pick the refund up later.
+ */
+export async function openRefundChainSafely(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<Refund> {
+  try {
+    return await tx.transaction(async (savepoint) =>
+      openRefundChainAtRequest(savepoint, context, refund, now),
+    );
+  } catch (error) {
+    logger.warn(
+      { refundId: refund.id, code: errorCodeOf(error) },
+      "Refund approval chain could not be opened at creation",
+    );
+    return refund;
+  }
+}
+
+/**
+ * Opens the approval chain of `pending` refunds that predate the request-time
+ * open (legend-zi9o, legend-2dnh): no chain yet and an amount at or above the
+ * lowest tier floor of the tenant's refund matrix. Oldest first, `limit` per
+ * call, each in its own transaction under the refund locks (a failure is logged
+ * and skipped). Idempotent: an opened refund no longer matches. Returns the
+ * number of chains opened.
+ */
+export async function openPendingRefundChains(
+  context: ScopedTenantContext,
+  now: Date = new Date(),
+  limit = OPEN_PENDING_CHAINS_BATCH,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const candidates = await withTenant(db, context, (tx) =>
+    tx
+      .select({ id: paymentRefunds.id })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.status, "pending"),
+          isNull(paymentRefunds.approvalChainId),
+          sql`${paymentRefunds.amountIdr} >= (SELECT min(coalesce(${approvalPolicies.thresholdIdr}, 0)) FROM ${approvalPolicies} WHERE ${approvalPolicies.tenantId} = ${tenantId} AND ${approvalPolicies.actionType} = ${REFUND_ACTION_TYPE})`,
+        ),
+      )
+      .orderBy(asc(paymentRefunds.createdAt), asc(paymentRefunds.id))
+      .limit(limit),
+  );
+  // Plain read, then one short transaction per refund: the refund row is locked
+  // only through lockRefundGraph (intent -> fund -> refund), the same order as
+  // settle and payout, so the sweep never deadlocks with them and holds no lock
+  // past one refund. The state is re-checked under that lock.
+  let opened = 0;
+  for (const candidate of candidates) {
+    try {
+      const done = await withTenant(db, context, async (tx) => {
+        const { refund } = await lockRefundGraph(tx, tenantId, candidate.id);
+        if (refund.status !== "pending" || refund.approvalChainId !== null)
+          return false;
+        const next = await openRefundChainAtRequest(tx, context, refund, now);
+        return next.approvalChainId !== null;
+      });
+      if (done) opened += 1;
+    } catch (error) {
+      logger.warn(
+        { refundId: candidate.id, code: errorCodeOf(error) },
+        "Pending refund approval chain could not be opened",
+      );
+    }
+  }
+  return opened;
 }
 
 /**
@@ -856,15 +949,16 @@ async function decideRefund(
             });
             return { kind: "done" };
           }
-          let justOpened = false;
           if (chainId === null) {
             const opened = await openApprovalRequest(
               tx,
               context,
               refundApprovalInput(
                 refund,
-                // A system requester has no user row: the first human acting submits.
-                systemRequester ? actor : refund.requestedBy,
+                // A system refund's chain belongs to the reserved system user.
+                systemRequester
+                  ? SYSTEM_APPROVAL_REQUESTER
+                  : refund.requestedBy,
                 now,
                 REFUND_DEADLINE_MINUTES,
               ),
@@ -911,17 +1005,14 @@ async function decideRefund(
             }
             await setRefundChain(tx, refund, opened.chainId, now);
             chainId = opened.chainId;
-            justOpened = true;
           }
 
           const rows = await chainRowsOf(tx, refund.tenantId, chainId);
           assertChainBound(rows, refund);
-          // The submitter of a system-requested refund is the chain requester: their
-          // first call only submits, another person decides (never the submitter).
-          if (systemRequester && rows[0]?.requestedBy === actor) {
-            if (justOpened) return { kind: "done" };
+          // Legacy chains of a system refund were opened by the human who first
+          // acted (they are the chain requester): never their own approver.
+          if (systemRequester && rows[0]?.requestedBy === actor)
             throw new AccessError("APPROVER_IS_REQUESTER");
-          }
           const open = rows.find((row) => row.status === "pending");
           return { kind: "decide", requestId: open?.id ?? null };
         },
@@ -1942,7 +2033,8 @@ export async function escalateStaleRefunds(
  * counter). After `PAYOUT_MAX_ATTEMPTS` unknown outcomes, or a `pending` answer
  * older than 72 hours, the refund stays `approved`, is flagged
  * `MANUAL_RECONCILIATION` and logged for ops. A round stops claiming new
- * refunds once `budgetMs` is spent. First it escalates refunds that wait too
+ * refunds once `budgetMs` is spent. First it opens the chain of pre-deploy
+ * pending refunds (`openPendingRefundChains`), then it escalates refunds that wait too
  * long or whose payout is stalled (`escalateStaleRefunds`, also without a
  * gateway); a failure there is logged and never blocks payouts.
  */
@@ -1955,6 +2047,14 @@ export async function sweepApprovedRefundPayouts(
   shouldStop: () => boolean = () => false,
 ): Promise<{ attempted: number; exhausted: number; escalated: number }> {
   let escalated = 0;
+  try {
+    await openPendingRefundChains(context, now);
+  } catch (error) {
+    logger.warn(
+      { tenantId: context.tenant.tenantId, code: errorCodeOf(error) },
+      "Pending refund chain sweep failed",
+    );
+  }
   try {
     escalated = await escalateStaleRefunds(context, now);
   } catch {
