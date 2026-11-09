@@ -29,6 +29,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { routeFiredItemsToKitchen } from "../services/kds.service.ts";
+import { notifyQrKitchenVoid } from "../services/kds-staff-alerts.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -649,6 +650,7 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
   let otherOutletManager: Staff;
   let otherTenantManager: Staff;
   let kdsRoleId: string;
+  let waiterRoleId: string;
 
   async function newUser(label: string): Promise<Staff> {
     const client = agent(app);
@@ -664,6 +666,16 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
        VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
       [tenant.tenantId, user.userId, kdsRoleId, scopeType, scopeId],
+    );
+  }
+
+  /** Floor access that makes a zone waiter reachable (floor.table.operate). */
+  async function grantFloor(user: Staff, validUntil = "NULL") {
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '2 minutes', ${validUntil}, $2)`,
+      [tenant.tenantId, user.userId, waiterRoleId, tenant.outletId],
     );
   }
 
@@ -685,6 +697,12 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
         tenant.tenantId,
         JSON.stringify(["kds.ticket.process", "kds.station.manage"]),
       ],
+    );
+    waiterRoleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Zone Waiter', false, NULL, $3, false, '["tenant","outlet"]')`,
+      [waiterRoleId, tenant.tenantId, JSON.stringify(["floor.table.operate"])],
     );
     manager = await newUser("KDS Manager");
     await grant(manager, "outlet", tenant.outletId);
@@ -711,10 +729,10 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
 
   async function placeOpenBill(
     fill: (guest: Guest) => Promise<number>,
-    zoneWaiter?: string,
+    ...zoneWaiters: string[]
   ) {
     const { zone, qrToken } = await newTable("open_bill");
-    if (zoneWaiter) await assignWaiter(zone.id, zoneWaiter);
+    for (const waiter of zoneWaiters) await assignWaiter(zone.id, waiter);
     const guest = await seat(qrToken);
     const version = await fill(guest);
     const confirmed = await staff.client
@@ -768,7 +786,9 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
 
   it("a KDS ticket void on a QR order alerts the table's zone waiter once, not another zone's", async () => {
     const waiter = await newUser("Zone Waiter");
+    await grantFloor(waiter);
     const otherZoneWaiter = await newUser("Other Zone Waiter");
+    await grantFloor(otherZoneWaiter);
     await assignWaiter((await newTable()).zone.id, otherZoneWaiter.userId);
     const { orderId } = await placeOpenBill(fillStandardCart, waiter.userId);
     const [kopiTicket] = (await ticketsOf(orderId)).filter(
@@ -820,8 +840,81 @@ describe("KDS staff alerts for QR orders (legend-078b)", () => {
     expect(alerts.map((row) => row.user_id)).toEqual([manager.userId]);
   });
 
+  async function voidKopiTicket(orderId: string) {
+    const [kopiTicket] = (await ticketsOf(orderId)).filter(
+      (ticket) => ticket.station_id === ids.hot,
+    );
+    const voided = await manager.client
+      .post(
+        `/api/outlets/${tenant.outletId}/kitchen/tickets/${uuidToUlid(kopiTicket!.id)}/void`,
+      )
+      .set(headers)
+      .set(originHeader)
+      .send({ reason: "Bahan habis" });
+    expect(voided.status).toBe(200);
+  }
+
+  it("a zone waiter who is banned or whose access expired is skipped at send time; the KDS managers get the void", async () => {
+    const expired = await newUser("Expired Waiter");
+    await grantFloor(expired, "now() - interval '1 minute'");
+    const banned = await newUser("Banned Waiter");
+    await grantFloor(banned);
+    await owner.query(`UPDATE "user" SET banned = true WHERE id = $1`, [
+      banned.userId,
+    ]);
+    const { orderId } = await placeOpenBill(
+      fillStandardCart,
+      expired.userId,
+      banned.userId,
+    );
+    await voidKopiTicket(orderId);
+    const alerts = await alertsOf("order.kitchen_voided", orderId);
+    expect(alerts.map((row) => row.user_id)).toEqual([manager.userId]);
+  });
+
+  it("a ticket void with no lines raises no alert", async () => {
+    const { orderId } = await placeOpenBill(fillStandardCart);
+    const context = contextOf(tenant.tenantId);
+    await withTenant(db, context, (tx) =>
+      notifyQrKitchenVoid(tx, context, {
+        order: { id: orderId, outletId: tenant.outletId },
+        ticketId: uuidToUlid(randomUUID()),
+        stationId: ids.hot,
+        orderItemIds: [],
+        ticketCancelled: true,
+        reason: null,
+        now: new Date(),
+      }),
+    );
+    expect(await alertsOf("order.kitchen_voided", orderId)).toHaveLength(0);
+  });
+
+  it("pay-first: the verified payment routes an unrouted line and the alert row survives the guest checkout context (RLS)", async () => {
+    const guest = await seat((await newTable()).qrToken);
+    const version = await fillUnresolvableCart(guest);
+    const placed = await as(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
+    });
+    expect(placed.status).toBe(201);
+    const orderId = placed.body.data.order.id as string;
+    expect(await alertsOf("kitchen_ticket.unrouted", orderId)).toHaveLength(0);
+    const paid = await as(guest).pay(orderId);
+    expect(paid.status).toBe(201);
+    expect(await payVerified(paid.body.data.id, paid.body.data.amountIdr)).toBe(
+      true,
+    );
+    const alerts = await alertsOf("kitchen_ticket.unrouted", orderId);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      user_id: manager.userId,
+      category: "kitchen_alert",
+    });
+  });
+
   it("a non-QR order raises no staff alert for a kitchen void or an unrouted line", async () => {
     const waiter = await newUser("Zone Waiter Two");
+    await grantFloor(waiter);
     const voidOrder = await placeOpenBill(fillStandardCart, waiter.userId);
     await ownerRows(`UPDATE orders SET channel = 'pos' WHERE id = $1::uuid`, [
       ulidToUuid(voidOrder.orderId),

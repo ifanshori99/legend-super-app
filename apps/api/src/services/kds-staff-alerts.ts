@@ -17,7 +17,9 @@ import { and, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   toIsoDateTime,
   uuidToUlid,
+  type OutletId,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { tables, tableSessions } from "../db/schema/floor.ts";
@@ -28,6 +30,7 @@ import { user } from "../db/schema/user.ts";
 import { logger } from "../lib/logger.ts";
 import { createNotificationConsumer } from "./notification-consumer.ts";
 import type { Tx } from "./menu-internals.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { buildRecipients, zoneWaiterIds } from "./service-request.service.ts";
 
 const MANAGE_STATION_PERMISSION = "kds.station.manage";
@@ -96,6 +99,48 @@ async function kdsManagerIds(
   return rows.map((row) => row.userId).sort();
 }
 
+/**
+ * Zone waiters that can still act on the outlet floor right now: not banned
+ * (an expired ban lifts) and holding `floor.table.operate` through an active
+ * assignment, the test `assignZoneWaiter` applies at assignment time.
+ */
+async function reachableWaiterIds(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  userIds: readonly string[],
+  now: Date,
+): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  const accounts = await tx
+    .select({
+      id: user.id,
+      banned: user.banned,
+      banExpires: user.banExpires,
+    })
+    .from(user)
+    .where(inArray(user.id, [...userIds]));
+  const reachable: string[] = [];
+  for (const account of accounts) {
+    if (account.banned && !(account.banExpires && account.banExpires <= now))
+      continue;
+    const snapshot = await accessSnapshotInTransaction(
+      tx,
+      context,
+      account.id,
+      now,
+    );
+    if (
+      snapshot.allows("floor.table.operate", {
+        type: "outlet",
+        id: outletId as OutletId,
+      })
+    )
+      reachable.push(account.id);
+  }
+  return reachable.sort();
+}
+
 type QrOrder = {
   id: string;
   outletId: string;
@@ -121,8 +166,8 @@ async function qrOrderOf(
     .from(orders)
     .where(
       and(
-        eq(orders.tenantId, tenantId),
-        eq(orders.outletId, outletId),
+        eq(orders.tenantId, tenantId as TenantId),
+        eq(orders.outletId, outletId as OutletId),
         eq(orders.id, orderId),
       ),
     );
@@ -148,7 +193,7 @@ async function zoneOfOrder(
     )
     .where(
       and(
-        eq(tableSessions.tenantId, tenantId),
+        eq(tableSessions.tenantId, tenantId as TenantId),
         eq(tableSessions.id, order.tableSessionId),
       ),
     );
@@ -295,13 +340,22 @@ export async function notifyQrKitchenVoid(
       input.order.id,
     );
     if (!order) return;
+    const lineIds = [...input.orderItemIds].sort();
+    if (lineIds.length === 0) return;
     const zoneId = await zoneOfOrder(sp, tenantId, order);
-    const waiters = zoneId ? await zoneWaiterIds(sp, tenantId, zoneId) : [];
+    const waiters = zoneId
+      ? await reachableWaiterIds(
+          sp,
+          context,
+          order.outletId,
+          await zoneWaiterIds(sp, tenantId, zoneId),
+          input.now,
+        )
+      : [];
     const userIds =
       waiters.length > 0
         ? waiters
         : await kdsManagerIds(sp, tenantId, order.outletId);
-    const lineIds = [...input.orderItemIds].sort();
     const count = lineIds.length;
     await emitAlert(sp, context, {
       key: `order.kitchen_voided:${order.id}:${input.ticketId}:${lineIds.join(",")}`,
