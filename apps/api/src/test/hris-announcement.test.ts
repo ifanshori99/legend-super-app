@@ -178,13 +178,13 @@ const hoursFrom = (date: Date, hours: number) =>
   new Date(date.getTime() + hours * 3_600_000);
 
 // Actors.
-let managerAll: string; // hr.sop.manage, tenant-wide
-let managerA: string; // hr.sop.manage, outlet A
+let managerAll: string; // hr.announcement.manage, tenant-wide
+let managerA: string; // hr.announcement.manage, outlet A
 let staffA1: string; // self.sop.read, outlet A
 let staffA2: string; // self.sop.read, outlet A
 let staffB: string; // self.sop.read, outlet B
 let stranger: string; // no code
-let managerOther: string; // hr.sop.manage in the other tenant
+let managerOther: string; // hr.announcement.manage in the other tenant
 
 // Employees.
 let empA1: string;
@@ -226,8 +226,11 @@ beforeAll(async () => {
     );
   });
 
-  managerAll = await actor(["hr.sop.manage"], { type: "tenant" });
-  managerA = await actor(["hr.sop.manage"], { type: "outlet", id: outletA });
+  managerAll = await actor(["hr.announcement.manage"], { type: "tenant" });
+  managerA = await actor(["hr.announcement.manage"], {
+    type: "outlet",
+    id: outletA,
+  });
   staffA1 = await actor(["self.sop.read"], { type: "outlet", id: outletA });
   staffA2 = await actor(["self.sop.read"], { type: "outlet", id: outletA });
   staffB = await actor(["self.sop.read"], { type: "outlet", id: outletB });
@@ -236,7 +239,7 @@ beforeAll(async () => {
     id: outletA,
   });
   managerOther = await actor(
-    ["hr.sop.manage"],
+    ["hr.announcement.manage"],
     { type: "tenant" },
     otherTenant,
   );
@@ -944,7 +947,12 @@ describe("announcements over HTTP", () => {
 
   beforeAll(async () => {
     manager = (
-      await signedIn("Mgr", ["hr.sop.manage"], { type: "tenant" }, null)
+      await signedIn(
+        "Mgr",
+        ["hr.announcement.manage"],
+        { type: "tenant" },
+        null,
+      )
     ).client;
     staffHttpA = (
       await signedIn(
@@ -970,6 +978,45 @@ describe("announcements over HTTP", () => {
         null,
       )
     ).client;
+  });
+
+  it("[legend-poxk] hr.sop.manage alone cannot publish or read receipts (kitchen_lead keeps SOP, not announcements)", async () => {
+    const sopOnly = (
+      await signedIn(
+        "SopOnly",
+        ["hr.sop.manage"],
+        { type: "outlet", id: outletA },
+        null,
+      )
+    ).client;
+    const published = await manager
+      .post("/api/hris/announcements")
+      .set(originHeader)
+      .send({
+        title: `Receipts ${run}`,
+        body: "Isi.",
+        audience: { kind: "outlets", outletIds: [outletA] },
+        requiresReceipt: true,
+        expiresAt: null,
+      });
+    expect(published.status, JSON.stringify(published.body)).toBe(200);
+    const id = published.body.data.id as string;
+
+    const create = await sopOnly
+      .post("/api/hris/announcements")
+      .set(originHeader)
+      .send({
+        title: `Nope ${run}`,
+        body: "Isi.",
+        audience: { kind: "outlets", outletIds: [outletA] },
+        requiresReceipt: false,
+        expiresAt: null,
+      });
+    expect(create.status).toBe(403);
+    const receipts = await sopOnly.get(
+      `/api/hris/announcements/${id}/receipts`,
+    );
+    expect(receipts.status).toBe(403);
   });
 
   it("[TEN-01] anonymous requests answer 401", async () => {

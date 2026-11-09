@@ -1,6 +1,6 @@
 // Announcement feed surface vs. grant scope (bead legend-dak5, P3). The feed is
 // shared by managers (back office) and staff (employee surface). The surface
-// was picked by the flat union `permissions.includes("hr.sop.manage")`, so a
+// was picked by the flat union `permissions.includes("hr.announcement.manage")`, so a
 // user holding the manage code ONLY at a station (no outlet reach: a station
 // grant contributes no outlet-wide reach) was routed through the back-office
 // gate. The surface now follows the real reach of the manage code.
@@ -194,7 +194,7 @@ beforeAll(async () => {
   stationA = await createStation(outletA);
   publisher = await signedIn(
     "Publisher",
-    [{ permissions: ["hr.sop.manage"], scope: { type: "tenant" } }],
+    [{ permissions: ["hr.announcement.manage"], scope: { type: "tenant" } }],
     null,
   );
   // Staff of outlet A who also hold the manage code ONLY at a station.
@@ -206,7 +206,7 @@ beforeAll(async () => {
         scope: { type: "outlet", id: outletA },
       },
       {
-        permissions: ["hr.sop.manage"],
+        permissions: ["hr.announcement.manage"],
         scope: { type: "station", id: stationA },
       },
     ],
@@ -217,7 +217,7 @@ beforeAll(async () => {
     "OutletManager",
     [
       {
-        permissions: ["hr.sop.manage"],
+        permissions: ["hr.announcement.manage"],
         scope: { type: "outlet", id: outletA },
       },
     ],
@@ -225,7 +225,7 @@ beforeAll(async () => {
   );
   tenantManager = await signedIn(
     "TenantManager",
-    [{ permissions: ["hr.sop.manage"], scope: { type: "tenant" } }],
+    [{ permissions: ["hr.announcement.manage"], scope: { type: "tenant" } }],
     null,
   );
   idAll = await publish({ kind: "all" }, "Semua");
@@ -278,7 +278,7 @@ describe("legend-dak5 announcement feed surface follows the reach of the manage 
         snapshot,
         tenant,
         actor.userId,
-        ["hr.sop.manage"],
+        ["hr.announcement.manage"],
       );
       expect(context).not.toBeNull();
     }
@@ -286,7 +286,7 @@ describe("legend-dak5 announcement feed surface follows the reach of the manage 
       await snapshotOf(outletManager.userId),
       tenant,
       outletManager.userId,
-      ["hr.sop.manage"],
+      ["hr.announcement.manage"],
     );
     expect(outlet?.outletScope).toMatchObject({
       kind: "outlets",
@@ -297,10 +297,10 @@ describe("legend-dak5 announcement feed surface follows the reach of the manage 
   it("legend-dak5 a station-only manage grant is in the flat union but has no manage reach", async () => {
     const snapshot = await snapshotOf(stationOnly.userId);
     // The old surface test: true, although the grant reaches no outlet.
-    expect(snapshot.permissions.includes("hr.sop.manage")).toBe(true);
+    expect(snapshot.permissions.includes("hr.announcement.manage")).toBe(true);
     expect(
       await resolveHrisLearningContext(snapshot, tenant, stationOnly.userId, [
-        "hr.sop.manage",
+        "hr.announcement.manage",
       ]),
     ).toBeNull();
     // Their self reach is intact.
