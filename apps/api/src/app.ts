@@ -28,6 +28,7 @@ import { apiRouter } from "./routes";
 import { mcpOAuthRouter, mcpRouter } from "./routes/mcp.routes";
 import { auditEventsRouter } from "./routes/audit-events.routes";
 import { createMetricsRouter } from "./routes/metrics.routes";
+import { createReportsRouter } from "./routes/reports.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
@@ -377,6 +378,8 @@ export function createApp({
   app.use("/api/audit", auditEventsRouter);
   // Metric query runtime (legend-cdta): GET /api/metrics/query.
   app.use("/api/metrics", createMetricsRouter());
+  // Report catalog, run and builder preview (legend-5wzoc): /api/reports.
+  app.use("/api/reports", createReportsRouter());
   app.use("/api", apiRouter);
 
   app.use(notFound);

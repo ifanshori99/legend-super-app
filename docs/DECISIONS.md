@@ -102,7 +102,14 @@ in parallel. Reviewed with an architect consult before implementation.
    tersedia". The low-level `GET /api/metrics/query` keeps answering 400
    `METRIC_DIMENSION_NOT_SUPPORTED` for a split the metric does not declare
    (unchanged). A split the metric declares but no card has built yet is
-   marked `unavailable`.
+   marked `unavailable` by the engine and by report runs; `GET
+   /api/metrics/query` keeps its m1 answer (400) for that case too, so the
+   existing ledger regression tests stay unchanged. A split of a percent
+   ledger metric is `dimension_not_supported` until a family card builds its
+   numerator and denominator splits. A report run with a bucket other than
+   `total` answers 200 with no rows and every metric `unavailable`
+   (`dimension_not_supported`), because a report row has no bucket column
+   yet; adding one is a `ws11-shared` change.
 7. **File ownership.** Only card A, and after A merges only a serialized
    follow-up bead labelled `ws11-shared`, edits
    `metrics-query.service.ts`, `metrics-gl-sources.ts`,
