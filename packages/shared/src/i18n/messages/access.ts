@@ -343,6 +343,8 @@ const accessBaseMessages = {
       notification_policy: {
         manage: "Kelola kebijakan & template notifikasi",
       },
+
+      support_access: { approve: "Setujui akses dukungan baca-tulis" },
     },
     device: {
       registry: {
