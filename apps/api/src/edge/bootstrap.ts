@@ -4,7 +4,12 @@
 // keys. Before that, `bootstrapEdgeNodeIfNeeded` fetches the signed bundle
 // from GET /api/edge-sync/bootstrap and inserts the rows it names.
 //
-// - Tenant AND outlet already present locally -> no-op (no network call).
+// - Tenant AND outlet already present locally -> no network call, unless the
+//   outlet has no local stock_locations or the tenant has no uoms (a node
+//   bootstrapped before the master sync, bead legend-9ppw): then one
+//   best-effort `syncEdgeMasters` (5 s timeout). A failure is logged (code
+//   only; CLOUD_* as warn, anything else as error) and the node still boots
+//   ("present").
 // - The signature is checked over the bundle exactly as received (constant
 //   time, key = the credential's own digest), then its shape, then that its
 //   tenant/outlet are the credential's claims. Anything else -> EdgeBootError
@@ -15,8 +20,15 @@
 //   (config.ts requires wss:// outside development; cloud-http.ts fetches
 //   over https://). Not a pattern for cloud->edge commands (those need an
 //   Ed25519 cloud key pinned on the edge).
-// - One transaction, FK order tenant -> legal entity -> brand -> outlet,
-//   `onConflictDoNothing` (an existing row is never overwritten).
+// - Fresh node: the bundle AND the master snapshot (master-sync.ts: uoms,
+//   stock locations, chart of accounts, account mappings) are fetched and
+//   verified BEFORE anything is written; the snapshot must name the bundle's
+//   legal entity. Then ONE transaction, FK order tenant -> legal entity ->
+//   brand -> outlet (`onConflictDoNothing`: an existing row is never
+//   overwritten), then the masters. Masters are REQUIRED: without the cloud's
+//   ids the cloud rejects this node's `stock.moved` events. Any failure rolls
+//   everything back, so the next boot is a fresh bootstrap again. A masters
+//   failure is an EdgeBootError "MASTERS <code>".
 //
 // Never log the credential: errors carry a code only.
 import { and, eq } from "drizzle-orm";
@@ -32,6 +44,7 @@ import type {
   TenantLimits,
 } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
+import { stockLocations, uoms } from "../db/schema/inventory.ts";
 import {
   brands,
   legalEntities,
@@ -45,6 +58,12 @@ import { edgeNodeContext } from "../services/edge-node.service.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
 import type { EdgeRuntimeConfig } from "./config.ts";
 import { parseEdgeCredential } from "./credential.ts";
+import {
+  applyEdgeMasterSnapshotInTransaction,
+  EdgeMasterSyncError,
+  fetchVerifiedMasterSnapshot,
+  syncEdgeMasters,
+} from "./master-sync.ts";
 import { EdgeBootError } from "./runtime.ts";
 
 export type EdgeBootstrapConfig = Pick<
@@ -55,11 +74,15 @@ export type EdgeBootstrapConfig = Pick<
 export type EdgeBootstrapOptions = {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type EdgeBootstrapResult = "present" | "bootstrapped";
 
 type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
+type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
+
+const PRESENT_SYNC_TIMEOUT_MS = 5_000;
 
 async function localRowsPresent(claims: Claims): Promise<boolean> {
   return withTenant(db, edgeNodeContext(claims), async (tx) => {
@@ -82,6 +105,32 @@ async function localRowsPresent(claims: Claims): Promise<boolean> {
   });
 }
 
+/** Zero local locations for the outlet, or zero uoms for the tenant. */
+async function mastersMissing(claims: Claims): Promise<boolean> {
+  return withTenant(db, edgeNodeContext(claims), async (tx) => {
+    const [location] = await tx
+      .select({ id: stockLocations.id })
+      .from(stockLocations)
+      .where(
+        and(
+          eq(stockLocations.tenantId, claims.tenantId),
+          eq(stockLocations.outletId, claims.outletId),
+        ),
+      )
+      .limit(1);
+    const [uom] = await tx
+      .select({ id: uoms.id })
+      .from(uoms)
+      .where(eq(uoms.tenantId, claims.tenantId))
+      .limit(1);
+    return location === undefined || uom === undefined;
+  });
+}
+
+function masterSyncCode(error: unknown): string {
+  return error instanceof EdgeMasterSyncError ? error.code : "UNKNOWN";
+}
+
 function bootError(reason: string): EdgeBootError {
   return new EdgeBootError(
     `Data awal edge node tidak dapat dipasang (${reason}). / The edge node bootstrap failed (${reason}).`,
@@ -101,6 +150,7 @@ async function fetchVerifiedBundle(
       path: EDGE_BOOTSTRAP_PATH,
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
+      signal: options.signal,
     });
   } catch (error) {
     throw bootError(
@@ -127,52 +177,50 @@ async function fetchVerifiedBundle(
   return parsed.data;
 }
 
-async function insertBundle(
-  claims: Claims,
+async function insertBundleRows(
+  tx: Tx,
   bundle: EdgeBootstrapBundle,
 ): Promise<void> {
   const { tenant, legalEntity, outlet } = bundle;
-  await withTenant(db, edgeNodeContext(claims), async (tx) => {
-    await tx
-      .insert(tenants)
-      .values({
-        ...tenant,
-        // JSONB copied as the cloud stores it (see the shared contract).
-        featureFlags: tenant.featureFlags as FeatureFlags,
-        limits: tenant.limits as TenantLimits,
-        createdAt: new Date(tenant.createdAt),
-      })
-      .onConflictDoNothing();
-    await tx
-      .insert(legalEntities)
-      .values({
-        ...legalEntity,
-        npwpEncrypted: null,
-        npwpLast4: null,
-        npwpHash: null,
-        createdAt: new Date(legalEntity.createdAt),
-      })
-      .onConflictDoNothing();
-    await tx
-      .insert(brands)
-      .values(
-        bundle.brands.map((brand) => ({
-          ...brand,
-          createdAt: new Date(brand.createdAt),
-        })),
-      )
-      .onConflictDoNothing();
-    await tx
-      .insert(outlets)
-      .values({
-        ...outlet,
-        geofence: outlet.geofence as Geofence | null,
-        openingHours: outlet.openingHours as OpeningHours,
-        regionId: null,
-        createdAt: new Date(outlet.createdAt),
-      })
-      .onConflictDoNothing();
-  });
+  await tx
+    .insert(tenants)
+    .values({
+      ...tenant,
+      // JSONB copied as the cloud stores it (see the shared contract).
+      featureFlags: tenant.featureFlags as FeatureFlags,
+      limits: tenant.limits as TenantLimits,
+      createdAt: new Date(tenant.createdAt),
+    })
+    .onConflictDoNothing();
+  await tx
+    .insert(legalEntities)
+    .values({
+      ...legalEntity,
+      npwpEncrypted: null,
+      npwpLast4: null,
+      npwpHash: null,
+      createdAt: new Date(legalEntity.createdAt),
+    })
+    .onConflictDoNothing();
+  await tx
+    .insert(brands)
+    .values(
+      bundle.brands.map((brand) => ({
+        ...brand,
+        createdAt: new Date(brand.createdAt),
+      })),
+    )
+    .onConflictDoNothing();
+  await tx
+    .insert(outlets)
+    .values({
+      ...outlet,
+      geofence: outlet.geofence as Geofence | null,
+      openingHours: outlet.openingHours as OpeningHours,
+      regionId: null,
+      createdAt: new Date(outlet.createdAt),
+    })
+    .onConflictDoNothing();
 }
 
 /**
@@ -186,13 +234,71 @@ export async function bootstrapEdgeNodeIfNeeded(
 ): Promise<EdgeBootstrapResult> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw bootError("EDGE_NODE_CREDENTIAL");
-  if (await localRowsPresent(claims)) return "present";
+  if (await localRowsPresent(claims)) {
+    // Node bootstrapped before the master sync: fetch the masters once,
+    // best-effort (the node must still boot offline).
+    if (await mastersMissing(claims)) {
+      try {
+        await syncEdgeMasters(config, {
+          ...options,
+          timeoutMs: PRESENT_SYNC_TIMEOUT_MS,
+        });
+      } catch (error) {
+        const code = masterSyncCode(error);
+        if (code.startsWith("CLOUD_"))
+          logger.warn({ code }, "Edge master sync skipped at boot");
+        else logger.error({ code }, "Edge master sync failed at boot");
+      }
+    }
+    return "present";
+  }
 
   const bundle = await fetchVerifiedBundle(config, claims, options);
+  let snapshot: Awaited<ReturnType<typeof fetchVerifiedMasterSnapshot>>;
   try {
-    await insertBundle(claims, bundle);
-  } catch {
-    // Driver errors can carry SQL parameters: report a code only.
+    snapshot = await fetchVerifiedMasterSnapshot(config, options);
+  } catch (error) {
+    throw bootError(`MASTERS ${masterSyncCode(error)}`);
+  }
+  if (
+    snapshot.legalEntityId.toLowerCase() !==
+    bundle.outlet.legalEntityId.toLowerCase()
+  )
+    throw bootError("MASTERS SCOPE_MISMATCH");
+  try {
+    // One transaction: a failure leaves nothing behind, so the next boot is
+    // a fresh bootstrap again.
+    await withTenant(db, edgeNodeContext(claims), async (tx) => {
+      try {
+        await insertBundleRows(tx, bundle);
+      } catch {
+        // Driver errors can carry SQL parameters: report a code only.
+        throw bootError("LOCAL_INSERT");
+      }
+      // An existing conflicting row (e.g. same outlet code, other id) skips
+      // the insert silently: report that, not a masters scope error.
+      const [outlet] = await tx
+        .select({ id: outlets.id })
+        .from(outlets)
+        .where(
+          and(
+            eq(outlets.tenantId, claims.tenantId),
+            eq(outlets.id, claims.outletId),
+          ),
+        )
+        .limit(1);
+      if (outlet === undefined) throw bootError("LOCAL_CONFLICT");
+      try {
+        await applyEdgeMasterSnapshotInTransaction(tx, claims, snapshot);
+      } catch (error) {
+        // Driver errors can carry SQL parameters: report a code only.
+        throw bootError(
+          `MASTERS ${error instanceof EdgeMasterSyncError ? error.code : "LOCAL_WRITE"}`,
+        );
+      }
+    });
+  } catch (error) {
+    if (error instanceof EdgeBootError) throw error;
     throw bootError("LOCAL_INSERT");
   }
   // An existing conflicting row (e.g. same outlet code, other id) skips the

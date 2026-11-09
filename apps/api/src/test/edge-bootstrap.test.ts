@@ -64,6 +64,7 @@ import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
 
 const CLOUD_LINK_URL = "wss://cloud.bootstrap.test/api/edge-link";
 const BOOTSTRAP_PATH = "/api/edge-sync/bootstrap";
+const MASTERS_PATH = "/api/edge-sync/bootstrap/masters";
 const RECORDS_PATH = "/api/edge-sync/device-records";
 
 const owner = new Pool({
@@ -149,6 +150,16 @@ async function createFixture(): Promise<Fixture> {
        VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Uji', '{}', 'active')`,
       [id, fixture.tenantId, brand, fixture.entityId, code, name],
     );
+  // One local uom and one stock location: a node with both is "already
+  // synced", so the present path makes no network call (legend-9ppw).
+  await owner.query(
+    `INSERT INTO uoms (tenant_id, code, name) VALUES ($1, 'gr', 'gram')`,
+    [fixture.tenantId],
+  );
+  await owner.query(
+    `INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, 'Gudang Uji', 'warehouse')`,
+    [fixture.tenantId, fixture.outletId],
+  );
   const registered = await registerEdgeNode(scopeOf(fixture), actor, {
     outletId: fixture.outletId,
     role: "primary",
@@ -161,6 +172,8 @@ async function createFixture(): Promise<Fixture> {
 }
 
 const TABLES = [
+  "stock_locations",
+  "uoms",
   "edge_inbound_events",
   "edge_received_events",
   "edge_sync_conflicts",
@@ -297,12 +310,25 @@ const headerOf = (init: RequestInit | undefined, name: string) => {
   );
 };
 
-/** Answers the bootstrap endpoint with `answer`; the registry pull with an empty page. */
+/**
+ * Answers the bootstrap endpoint with `answer`; the masters endpoint (bead
+ * legend-9ppw) with the node's own captured snapshot, picked by the bearer
+ * credential; the registry pull with an empty page.
+ */
 function spyCloud(answer: () => Promise<Response> | Response): FetchMock {
   return vi
     .spyOn(globalThis, "fetch")
-    .mockImplementation(async (input: unknown) => {
+    .mockImplementation(async (input: unknown, init?: RequestInit) => {
       const { pathname } = urlOf(input);
+      if (pathname.endsWith(MASTERS_PATH)) {
+        const credential = String(headerOf(init, "authorization")).replace(
+          /^Bearer /,
+          "",
+        );
+        const masters = capturedMasters.get(credential);
+        if (!masters) throw new Error("no captured masters for this node");
+        return json(masters);
+      }
       if (pathname.endsWith(BOOTSTRAP_PATH)) return answer();
       if (pathname.endsWith(RECORDS_PATH))
         return json({
@@ -324,6 +350,8 @@ let nodeB: Fixture; // another tenant, purged locally after capture
 let nodeC: Fixture; // stays seeded: the already-bootstrapped edge
 let capturedA: { bundle: Bundle; signature: string };
 let capturedB: { bundle: Bundle; signature: string };
+/** Cloud's signed masters snapshot per node credential. */
+const capturedMasters = new Map<string, unknown>();
 const cloudState = getEdgeRuntimeState();
 
 beforeAll(async () => {
@@ -440,6 +468,15 @@ describe("legend-khu5 edge bootstrapEdgeNodeIfNeeded", () => {
     beforeAll(async () => {
       capturedA = unwrap((await cloudBundle(nodeA)).body);
       capturedB = unwrap((await cloudBundle(nodeB)).body);
+      for (const node of [nodeA, nodeB])
+        capturedMasters.set(
+          node.credential,
+          (
+            await request(app)
+              .get(MASTERS_PATH)
+              .set("Authorization", `Bearer ${node.credential}`)
+          ).body,
+        );
       await purge(nodeA, nodeB);
     });
     afterEach(async () => {

@@ -1,0 +1,1419 @@
+// Edge master sync (bead legend-9ppw): uoms, stock locations, chart of
+// accounts and account mappings travel from the cloud to an edge node with
+// identical ids, so the edge's `stock.moved` events are accepted by the cloud.
+// Written from the brief, not from the implementation.
+//
+// Cloud and edge share one test database. The "cloud" is the real route
+// (GET /api/edge-sync/bootstrap/masters) used to capture signed responses; an
+// "edge that does not have the rows yet" is made by deleting local rows before
+// the edge code runs, which then "fetches" the captured response through a
+// fetch spy (same technique as edge-bootstrap.test.ts). A "master change on
+// the cloud" is a response captured after the change, with the shared database
+// then put back to the stale state the edge still has.
+//
+// Assumptions (brief ambiguities):
+//  - Response: `{ snapshot, signature }` at the top level; the snapshot has
+//    `version` 1, `issuedAt`, `tenantId`, `outletId`, `legalEntityId`, `uoms`,
+//    `stockLocations`, `chartOfAccounts`, `accountMappings` (camelCase rows).
+//  - signature = hex HMAC-SHA256 over the snapshot, key = the node credential's
+//    digest, i.e. signEdgeBootstrapBundle(snapshot, parseEdgeCredential(c).hash).
+//  - A tampered snapshot is refused with an EdgeMasterSyncError whose code is
+//    BAD_SIGNATURE (integrity), or BAD_SNAPSHOT / SCOPE_MISMATCH (a correctly
+//    re-signed but out-of-scope snapshot). Either is accepted in those cases.
+//  - A failed required master sync on a fresh edge surfaces as an EdgeBootError
+//    whose message contains "MASTERS".
+//  - The edge writes nothing when it refuses a snapshot.
+import { randomBytes, randomUUID } from "node:crypto";
+import express from "express";
+import { Pool } from "pg";
+import request from "supertest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from "vitest";
+import {
+  createUlid,
+  outletIdSchema,
+  ulidToUuid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import type { EventEnvelope } from "@starter/shared/events";
+import type { EdgeMasterSnapshot } from "@starter/shared/edge/master-sync";
+import {
+  inventoryEvents,
+  STANDARD_STOCK_LOCATIONS,
+} from "@starter/shared/inventory";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { bootstrapEdgeNodeIfNeeded } from "../edge/bootstrap.ts";
+import { parseEdgeRuntimeConfig } from "../edge/config.ts";
+import { parseEdgeCredential } from "../edge/credential.ts";
+import {
+  startEdgeMasterSyncLoop,
+  syncEdgeMasters,
+} from "../edge/master-sync.ts";
+import { EdgeBootError } from "../edge/runtime.ts";
+import { applyEdgeStockMoved } from "../edge/stock-moved-applier.ts";
+import { errorHandler } from "../middleware/error-handler.ts";
+import { tenantContext } from "../middleware/tenant.ts";
+import { edgeBootstrapRouter } from "../routes/edge-bootstrap.routes.ts";
+import {
+  edgeBootstrapSignatureMatches,
+  signEdgeBootstrapBundle,
+} from "../services/edge-bootstrap.service.ts";
+import { provisionStandardChart } from "../services/accounting-provisioning.service.ts";
+import { setAuditWriter } from "../services/audit-writer.ts";
+import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import {
+  authenticateEdgeCredential,
+  registerEdgeNode,
+  verifyEdgeNodeCredential,
+} from "../services/edge-node.service.ts";
+import {
+  provisionOutletStockLocations,
+  provisionStandardUoms,
+} from "../services/inventory-provisioning.service.ts";
+import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+
+const CLOUD_LINK_URL = "wss://cloud.master.test/api/edge-link";
+const BOOTSTRAP_PATH = "/api/edge-sync/bootstrap";
+const MASTERS_PATH = "/api/edge-sync/bootstrap/masters";
+
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const actor = randomUUID();
+const app = createApp();
+
+type Fixture = {
+  tenantId: string;
+  brandId: string;
+  entityA: string;
+  entityB: string;
+  outletA: string;
+  outletB: string;
+  credential: string;
+  edgeNodeId: string;
+};
+const fixtures: Fixture[] = [];
+
+const tenantScope = (tenantId: string): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+
+const outletScope = (tenantId: string, outletId: string): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "outlets", outletIds: [outletIdSchema.parse(outletId)] },
+  );
+
+/**
+ * A tenant with two outlets of two legal entities (A, B), masters provisioned
+ * for both through the real provisioning services, and an edge node on A.
+ */
+async function createFixture(label: string): Promise<Fixture> {
+  const fixture: Fixture = {
+    tenantId: randomUUID(),
+    brandId: randomUUID(),
+    entityA: randomUUID(),
+    entityB: randomUUID(),
+    outletA: randomUUID(),
+    outletB: randomUUID(),
+    credential: "",
+    edgeNodeId: "",
+  };
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, $5, plan, 'active', deployment_mode, feature_flags, limits, $3
+       FROM tenants WHERE id = $4`,
+    [
+      fixture.tenantId,
+      `edge-masters-${randomBytes(4).toString("hex")}`,
+      actor,
+      cafeLegendPlatformFixtures.tenant.id,
+      `Tenant Master ${label}`,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Brand Master')`,
+    [
+      fixture.brandId,
+      fixture.tenantId,
+      `edge-masters-${randomBytes(3).toString("hex")}`,
+    ],
+  );
+  for (const [id, name] of [
+    [fixture.entityA, "PT Master A"],
+    [fixture.entityB, "PT Master B"],
+  ] as const)
+    await owner.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)`,
+      [id, fixture.tenantId, name],
+    );
+  for (const [id, code, entity] of [
+    [fixture.outletA, "MST-A", fixture.entityA],
+    [fixture.outletB, "MST-B", fixture.entityB],
+  ] as const)
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, $5, 'Jl. Uji', '{}', 'active')`,
+      [id, fixture.tenantId, fixture.brandId, entity, code],
+    );
+  const scope = tenantScope(fixture.tenantId);
+  await withTenant(db, scope, async (tx) => {
+    await provisionStandardUoms(tx, scope, null);
+    for (const outletId of [fixture.outletA, fixture.outletB])
+      await provisionOutletStockLocations(tx, scope, outletId, null);
+    for (const entityId of [fixture.entityA, fixture.entityB])
+      await provisionStandardChart(tx, scope, entityId, null);
+  });
+  const registered = await registerEdgeNode(
+    outletScope(fixture.tenantId, fixture.outletA),
+    actor,
+    { outletId: fixture.outletA, role: "primary", label: `Node ${label}` },
+  );
+  fixture.credential = registered.credential;
+  fixture.edgeNodeId = registered.edgeNode.id;
+  fixtures.push(fixture);
+  return fixture;
+}
+
+const ALL_TABLES = [
+  "domain_event_outbox",
+  "stock_balances",
+  "stock_ledger",
+  "inventory_items",
+  "account_mappings",
+  "chart_of_accounts",
+  "stock_locations",
+  "uoms",
+  "edge_inbound_events",
+  "edge_received_events",
+  "edge_sync_conflicts",
+  "edge_outbound_queue",
+  "sync_cursors",
+  "edge_pull_checkpoints",
+  "edge_nodes",
+  "audit_logs",
+  "outlets",
+  "legal_entities",
+  "brands",
+];
+const MASTER_TABLES = [
+  "account_mappings",
+  "chart_of_accounts",
+  "stock_locations",
+  "uoms",
+];
+
+async function deleteRows(
+  tables: string[],
+  tenantIds: string[],
+  tenantRow = false,
+) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    for (const table of tables)
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = ANY($1)`, [
+        tenantIds,
+      ]);
+    if (tenantRow)
+      await client.query("DELETE FROM tenants WHERE id = ANY($1)", [tenantIds]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** The edge as it was before it ever booted: no rows of this tenant at all. */
+const purgeAll = (f: Fixture) => deleteRows(ALL_TABLES, [f.tenantId], true);
+/** A node bootstrapped before this bead: tenant and outlet, but no masters. */
+const purgeMasters = (f: Fixture) => deleteRows(MASTER_TABLES, [f.tenantId]);
+
+// ---- helpers ---------------------------------------------------------------
+
+const keyOf = (credential: string) => parseEdgeCredential(credential)!.hash;
+const signed = (snapshot: unknown, f: Fixture) => ({
+  snapshot,
+  signature: signEdgeBootstrapBundle(snapshot, keyOf(f.credential)),
+});
+
+type Signed = { snapshot: EdgeMasterSnapshot; signature: string };
+
+const bearer = (f: Fixture) => `Bearer ${f.credential}`;
+async function cloudMasters(f: Fixture) {
+  return request(app).get(MASTERS_PATH).set("Authorization", bearer(f));
+}
+async function captureMasters(f: Fixture): Promise<Signed> {
+  const response = await cloudMasters(f);
+  expect(response.status).toBe(200);
+  return response.body as Signed;
+}
+
+function config(f: Fixture) {
+  const parsed = parseEdgeRuntimeConfig({
+    EDGE_MODE: "true",
+    EDGE_CLOUD_URL: CLOUD_LINK_URL,
+    EDGE_NODE_CREDENTIAL: f.credential,
+    EDGE_NODE_ROLE: "primary",
+  });
+  if (!parsed.ok) throw new Error(parsed.problems.join(", "));
+  return parsed.config as Parameters<typeof syncEdgeMasters>[0];
+}
+
+type FetchMock = MockInstance<typeof fetch>;
+type Answer = () => Promise<Response> | Response;
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const urlOf = (input: unknown) =>
+  new URL(
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : (input as Request).url,
+  );
+const headerOf = (init: RequestInit | undefined, name: string) => {
+  const headers = init?.headers;
+  if (!headers) return null;
+  if (headers instanceof Headers) return headers.get(name);
+  if (Array.isArray(headers))
+    return headers.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
+  return (
+    Object.entries(headers as Record<string, string>).find(
+      ([k]) => k.toLowerCase() === name.toLowerCase(),
+    )?.[1] ?? null
+  );
+};
+
+/** Answers the masters and/or bootstrap endpoint; anything else is an error. */
+function spyCloud(answers: { masters?: Answer; bundle?: Answer }): FetchMock {
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input: unknown) => {
+      const { pathname } = urlOf(input);
+      if (pathname.endsWith(MASTERS_PATH) && answers.masters)
+        return answers.masters();
+      if (pathname.endsWith(BOOTSTRAP_PATH) && answers.bundle)
+        return answers.bundle();
+      throw new Error(`unexpected fetch ${pathname}`);
+    });
+}
+const mastersCalls = (spy: FetchMock) =>
+  spy.mock.calls.filter(([input]) =>
+    urlOf(input).pathname.endsWith(MASTERS_PATH),
+  );
+
+const byKey =
+  <T>(key: (row: T) => string) =>
+  (a: T, b: T) =>
+    key(a).localeCompare(key(b));
+
+/** Comparable projection of the master rows of one tenant's outlet A. */
+type MasterView = {
+  uoms: { id: string; code: string; name: string }[];
+  stockLocations: {
+    id: string;
+    name: string;
+    type: string;
+    isActive: boolean;
+  }[];
+  accounts: {
+    id: string;
+    code: string;
+    name: string;
+    type: string;
+    reportGroup: string;
+    parentId: string | null;
+    isActive: boolean;
+  }[];
+  mappings: { role: string; accountId: string }[];
+};
+
+function viewOf(snapshot: EdgeMasterSnapshot): MasterView {
+  return {
+    uoms: snapshot.uoms
+      .map(({ id, code, name }) => ({ id, code, name }))
+      .sort(byKey((r) => r.id)),
+    stockLocations: snapshot.stockLocations
+      .map(({ id, name, type, isActive }) => ({ id, name, type, isActive }))
+      .sort(byKey((r) => r.id)),
+    accounts: snapshot.chartOfAccounts
+      .map(({ id, code, name, type, reportGroup, parentId, isActive }) => ({
+        id,
+        code,
+        name,
+        type,
+        reportGroup,
+        parentId,
+        isActive,
+      }))
+      .sort(byKey((r) => r.id)),
+    mappings: snapshot.accountMappings
+      .map(({ role, accountId }) => ({ role, accountId }))
+      .sort(byKey((r) => r.role)),
+  };
+}
+
+async function dbView(
+  f: Fixture,
+  outletId = f.outletA,
+  entityId = f.entityA,
+): Promise<MasterView> {
+  const q = async <R extends Record<string, unknown>>(
+    text: string,
+    params: unknown[],
+  ) => (await owner.query<R>(text, params)).rows;
+  const uoms = await q<{ id: string; code: string; name: string }>(
+    "SELECT id, code, name FROM uoms WHERE tenant_id = $1",
+    [f.tenantId],
+  );
+  const locations = await q<{
+    id: string;
+    name: string;
+    type: string;
+    is_active: boolean;
+  }>(
+    "SELECT id, name, type, is_active FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2",
+    [f.tenantId, outletId],
+  );
+  const accounts = await q<{
+    id: string;
+    code: string;
+    name: string;
+    type: string;
+    report_group: string;
+    parent_id: string | null;
+    is_active: boolean;
+  }>(
+    `SELECT id, code, name, type, report_group, parent_id, is_active
+       FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2`,
+    [f.tenantId, entityId],
+  );
+  const mappings = await q<{ role: string; account_id: string }>(
+    "SELECT role, account_id FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+    [f.tenantId, entityId],
+  );
+  return {
+    uoms: uoms.sort(byKey((r) => r.id)),
+    stockLocations: locations
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        isActive: r.is_active,
+      }))
+      .sort(byKey((r) => r.id)),
+    accounts: accounts
+      .map((r) => ({
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        type: r.type,
+        reportGroup: r.report_group,
+        parentId: r.parent_id,
+        isActive: r.is_active,
+      }))
+      .sort(byKey((r) => r.id)),
+    mappings: mappings
+      .map((r) => ({ role: r.role, accountId: r.account_id }))
+      .sort(byKey((r) => r.role)),
+  };
+}
+
+const count = async (text: string, params: unknown[]) =>
+  (await owner.query<{ n: number }>(text, params)).rows[0]!.n;
+
+/** The error code of a rejected promise, or undefined when it resolved. */
+async function failureCode(promise: Promise<unknown>) {
+  try {
+    await promise;
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+}
+
+// ---- fixtures --------------------------------------------------------------
+
+let main: Fixture; // cloud endpoint, change, isolation, stock posting
+let fresh: Fixture; // bootstrap and "present" paths (purged freely)
+let other: Fixture; // another tenant: the source of foreign rows
+let capturedFresh: { bundle: unknown; masters: Signed };
+let capturedOther: Signed;
+
+beforeAll(async () => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+  setAuditWriter(coreAuditWriter);
+  // server.ts installs the edge registry verifier; createApp() does not.
+  setEdgeCredentialVerifier(verifyEdgeNodeCredential);
+  main = await createFixture("Main");
+  fresh = await createFixture("Fresh");
+  other = await createFixture("Other");
+  const bundle = await request(app)
+    .get(BOOTSTRAP_PATH)
+    .set("Authorization", bearer(fresh));
+  expect(bundle.status).toBe(200);
+  capturedFresh = { bundle: bundle.body, masters: await captureMasters(fresh) };
+  capturedOther = await captureMasters(other);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+afterAll(async () => {
+  setAuditWriter(null);
+  setEdgeCredentialVerifier(null);
+  await deleteRows(
+    ALL_TABLES,
+    fixtures.map((f) => f.tenantId),
+    true,
+  );
+  await owner.end();
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 1 cloud masters endpoint", () => {
+  it("answers a node with a private, uncached snapshot of its own uoms, outlet locations and entity chart", async () => {
+    const response = await cloudMasters(main);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toMatch(/private/);
+    expect(response.headers["cache-control"]).toMatch(/no-store/);
+    const { snapshot } = response.body as Signed;
+    expect(snapshot.version).toBe(1);
+    expect(Number.isNaN(Date.parse(snapshot.issuedAt))).toBe(false);
+    expect(snapshot.tenantId).toBe(main.tenantId);
+    expect(snapshot.outletId).toBe(main.outletA);
+    expect(snapshot.legalEntityId).toBe(main.entityA);
+
+    // A's six standard locations, none of B's.
+    expect(snapshot.stockLocations).toHaveLength(
+      STANDARD_STOCK_LOCATIONS.length,
+    );
+    expect(STANDARD_STOCK_LOCATIONS).toHaveLength(6);
+    expect(
+      snapshot.stockLocations.every((l) => l.outletId === main.outletA),
+    ).toBe(true);
+
+    // The snapshot is exactly what the database holds for A, with real ids.
+    expect(viewOf(snapshot)).toEqual(await dbView(main));
+    expect(snapshot.uoms.length).toBeGreaterThan(0);
+    expect(snapshot.chartOfAccounts.length).toBeGreaterThan(0);
+    expect(snapshot.accountMappings.length).toBeGreaterThan(0);
+  });
+
+  it("holds nothing of outlet B, its entity or another tenant, and no secrets", async () => {
+    const response = await cloudMasters(main);
+    const text = JSON.stringify((response.body as Signed).snapshot);
+    const bLocations = await owner.query<{ id: string }>(
+      "SELECT id FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2",
+      [main.tenantId, main.outletB],
+    );
+    const bAccounts = await owner.query<{ id: string }>(
+      "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [main.tenantId, main.entityB],
+    );
+    expect(bLocations.rows.length).toBeGreaterThan(0);
+    expect(bAccounts.rows.length).toBeGreaterThan(0);
+    for (const foreign of [
+      main.outletB,
+      main.entityB,
+      other.tenantId,
+      other.outletA,
+      ...bLocations.rows.map((row) => row.id),
+      ...bAccounts.rows.map((row) => row.id),
+    ])
+      expect(text).not.toContain(foreign);
+    const raw = JSON.stringify(response.body);
+    expect(raw).not.toContain(main.credential);
+    expect(raw).not.toContain(keyOf(main.credential));
+    expect(raw.toLowerCase()).not.toMatch(/credential|secret/);
+  });
+
+  it("signs the snapshot with a key only this node and the cloud can derive", async () => {
+    const { snapshot, signature } = await captureMasters(main);
+    expect(signature).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      edgeBootstrapSignatureMatches(
+        snapshot,
+        signature,
+        keyOf(main.credential),
+      ),
+    ).toBe(true);
+    // Another node's key does not verify it; neither does an altered snapshot.
+    expect(
+      edgeBootstrapSignatureMatches(
+        snapshot,
+        signature,
+        keyOf(other.credential),
+      ),
+    ).toBe(false);
+    const altered = structuredClone(snapshot);
+    altered.stockLocations[0]!.name = "Dibajak";
+    expect(
+      edgeBootstrapSignatureMatches(altered, signature, keyOf(main.credential)),
+    ).toBe(false);
+  });
+
+  it("each node receives its own tenant's masters", async () => {
+    const { snapshot } = capturedOther;
+    expect(snapshot.tenantId).toBe(other.tenantId);
+    expect(snapshot.outletId).toBe(other.outletA);
+    expect(JSON.stringify(snapshot)).not.toContain(main.tenantId);
+  });
+
+  it("refuses callers without a valid edge credential with 401", async () => {
+    expect((await request(app).get(MASTERS_PATH)).status).toBe(401);
+    const wrong = main.credential.slice(0, -2) + "AA";
+    const forged = await request(app)
+      .get(MASTERS_PATH)
+      .set("Authorization", `Bearer ${wrong}`);
+    expect(forged.status).toBe(401);
+    const swapped = await request(app)
+      .get(MASTERS_PATH)
+      .set(
+        "Authorization",
+        `Bearer ${main.credential.replace(main.outletA, main.outletB)}`,
+      );
+    expect(swapped.status).toBe(401);
+    expect(JSON.stringify(forged.body)).not.toContain(main.tenantId);
+  });
+
+  it("refuses a request whose domain belongs to another tenant with 403 TENANT_MISMATCH", async () => {
+    let domainTenant: string | null = null;
+    const domainApp = express();
+    domainApp.use(
+      tenantContext({
+        required: false,
+        resolveDomain: async () =>
+          domainTenant ? { tenantId: domainTenant, brandId: null } : null,
+        verifyCredential: async () => null,
+      }),
+    );
+    domainApp.use("/api/edge-sync/bootstrap", edgeBootstrapRouter);
+    domainApp.use(errorHandler);
+
+    // Same domain tenant as the credential: served.
+    domainTenant = main.tenantId;
+    const same = await request(domainApp)
+      .get(MASTERS_PATH)
+      .set("Authorization", bearer(main));
+    expect(same.status).toBe(200);
+
+    domainTenant = other.tenantId;
+    const mismatch = await request(domainApp)
+      .get(MASTERS_PATH)
+      .set("Authorization", bearer(main));
+    expect(mismatch.status).toBe(403);
+    expect(mismatch.body.error.code).toBe("TENANT_MISMATCH");
+    expect(JSON.stringify(mismatch.body)).not.toContain("stockLocations");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 2 fresh edge bootstrap", () => {
+  const serve = () =>
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json(capturedFresh.masters),
+    });
+
+  it("seeds locations, uoms, accounts and mappings with the cloud's ids, and nothing of outlet B", async () => {
+    await purgeAll(fresh);
+    expect(await dbView(fresh)).toEqual({
+      uoms: [],
+      stockLocations: [],
+      accounts: [],
+      mappings: [],
+    });
+    const spy = serve();
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("bootstrapped");
+
+    const calls = mastersCalls(spy);
+    expect(calls).toHaveLength(1);
+    const url = urlOf(calls[0]![0]);
+    expect(url.host).toBe("cloud.master.test");
+    expect(url.pathname).toBe(MASTERS_PATH);
+    expect(headerOf(calls[0]![1], "authorization")).toBe(bearer(fresh));
+
+    const { snapshot } = capturedFresh.masters;
+    const local = await dbView(fresh);
+    expect(local).toEqual(viewOf(snapshot));
+    expect(local.stockLocations).toHaveLength(STANDARD_STOCK_LOCATIONS.length);
+    expect(local.uoms.length).toBeGreaterThan(0);
+    expect(local.accounts.length).toBeGreaterThan(0);
+    expect(local.mappings.length).toBeGreaterThan(0);
+    // Outlet B's locations and entity B's chart were never in the snapshot.
+    expect(await dbView(fresh, fresh.outletB, fresh.entityB)).toMatchObject({
+      stockLocations: [],
+      accounts: [],
+      mappings: [],
+    });
+  });
+
+  const localRows = async (f: Fixture) =>
+    (await count("SELECT count(*)::int AS n FROM tenants WHERE id = $1", [
+      f.tenantId,
+    ])) +
+    (await count(
+      "SELECT count(*)::int AS n FROM outlets WHERE tenant_id = $1",
+      [f.tenantId],
+    )) +
+    (await count(
+      "SELECT count(*)::int AS n FROM legal_entities WHERE tenant_id = $1",
+      [f.tenantId],
+    )) +
+    (await count("SELECT count(*)::int AS n FROM brands WHERE tenant_id = $1", [
+      f.tenantId,
+    ])) +
+    (await count(
+      "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+      [f.tenantId],
+    )) +
+    (await count("SELECT count(*)::int AS n FROM uoms WHERE tenant_id = $1", [
+      f.tenantId,
+    ]));
+
+  // Masters answered with a scope that does not match the bundle's outlet:
+  // correctly signed, well formed, but another legal entity.
+  const foreignEntityMasters = () =>
+    signed(
+      JSON.parse(
+        JSON.stringify(capturedFresh.masters.snapshot).replaceAll(
+          fresh.entityA,
+          randomUUID(),
+        ),
+      ),
+      fresh,
+    );
+
+  it("stays down with an EdgeBootError naming MASTERS when the masters cannot be fetched or applied, and writes NOTHING", async () => {
+    for (const masters of [
+      () => json({ error: { code: "INTERNAL" } }, 500),
+      () => json({ unexpected: true }),
+      () => json({ ...capturedFresh.masters, signature: "0".repeat(64) }),
+      () => json(foreignEntityMasters()),
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ]) {
+      await purgeAll(fresh);
+      spyCloud({ bundle: () => json(capturedFresh.bundle), masters });
+      const failure = await bootstrapEdgeNodeIfNeeded(config(fresh)).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(EdgeBootError);
+      const message = (failure as Error).message;
+      expect(message).toContain("MASTERS");
+      expect(message).not.toContain(fresh.credential);
+      expect(message).not.toContain(keyOf(fresh.credential));
+      // Atomic: no tenant, outlet, brand, entity or master row was written.
+      expect(await localRows(fresh)).toBe(0);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("names LOCAL_CONFLICT and writes nothing when a local outlet with the same code but another id blocks the insert", async () => {
+    await purgeAll(fresh);
+    // The edge already holds the tenant, brand and entity, and an outlet with
+    // the bundle's outlet code under a different id.
+    const blockingOutlet = randomUUID();
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       SELECT $1, $2, 'Tenant Konflik', plan, 'active', deployment_mode, feature_flags, limits, $3
+         FROM tenants WHERE id = $4`,
+      [
+        fresh.tenantId,
+        `edge-masters-${randomBytes(4).toString("hex")}`,
+        actor,
+        cafeLegendPlatformFixtures.tenant.id,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Brand Master')`,
+      [
+        fresh.brandId,
+        fresh.tenantId,
+        `edge-masters-${randomBytes(3).toString("hex")}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Master A', false)`,
+      [fresh.entityA, fresh.tenantId],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
+       VALUES ($1, $2, $3, $4, 'MST-A', 'Outlet Penghalang', 'Jl. Uji', '{}', 'active')`,
+      [blockingOutlet, fresh.tenantId, fresh.brandId, fresh.entityA],
+    );
+
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json(capturedFresh.masters),
+    });
+    const failure = await bootstrapEdgeNodeIfNeeded(config(fresh)).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(EdgeBootError);
+    const message = (failure as Error).message;
+    expect(message).toContain("LOCAL_CONFLICT");
+    expect(message).not.toContain("MASTERS");
+    expect(message).not.toContain(fresh.credential);
+    // Nothing of the bundle or the masters was written; the blocker is intact.
+    const outletIds = (
+      await owner.query<{ id: string }>(
+        "SELECT id FROM outlets WHERE tenant_id = $1",
+        [fresh.tenantId],
+      )
+    ).rows.map((row) => row.id);
+    expect(outletIds).toEqual([blockingOutlet]);
+    for (const table of MASTER_TABLES)
+      expect(
+        await count(
+          `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id = $1`,
+          [fresh.tenantId],
+        ),
+      ).toBe(0);
+  });
+
+  it("after a failed masters step the next boot is fresh again and succeeds", async () => {
+    await purgeAll(fresh);
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json({ error: { code: "INTERNAL" } }, 500),
+    });
+    await expect(bootstrapEdgeNodeIfNeeded(config(fresh))).rejects.toThrow(
+      EdgeBootError,
+    );
+    expect(await localRows(fresh)).toBe(0);
+    vi.restoreAllMocks();
+
+    const spy = serve();
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("bootstrapped");
+    // Fresh again: the bundle was fetched again, not skipped as "present".
+    expect(
+      spy.mock.calls.filter(([input]) =>
+        urlOf(input).pathname.endsWith(BOOTSTRAP_PATH),
+      ),
+    ).toHaveLength(1);
+    expect(mastersCalls(spy)).toHaveLength(1);
+    expect(await dbView(fresh)).toEqual(viewOf(capturedFresh.masters.snapshot));
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 3 master change on the cloud", () => {
+  it("applies a renamed location, a new location and a remapped role, and a re-run changes nothing", async () => {
+    const before = await dbView(main);
+    const bar = before.stockLocations.find((l) => l.type === "bar")!;
+    const mapping = before.mappings[0]!;
+    const otherAccount = before.accounts.find(
+      (a) => a.id !== mapping.accountId,
+    )!;
+    const bBefore = await dbView(main, main.outletB, main.entityB);
+
+    // Cloud changes ...
+    await owner.query("UPDATE stock_locations SET name = $2 WHERE id = $1", [
+      bar.id,
+      "Bar Utama Baru",
+    ]);
+    const added = await owner.query<{ id: string }>(
+      "INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, 'Gudang Cadangan', 'warehouse') RETURNING id",
+      [main.tenantId, main.outletA],
+    );
+    await owner.query(
+      "UPDATE account_mappings SET account_id = $4 WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+      [main.tenantId, main.entityA, mapping.role, otherAccount.id],
+    );
+    // ... captured as the cloud's answer ...
+    const changed = await captureMasters(main);
+    const after = viewOf(changed.snapshot);
+    expect(changed.snapshot.stockLocations).toHaveLength(
+      STANDARD_STOCK_LOCATIONS.length + 1,
+    );
+    // ... and the shared database put back to the stale state the edge has.
+    await owner.query("UPDATE stock_locations SET name = $2 WHERE id = $1", [
+      bar.id,
+      bar.name,
+    ]);
+    await owner.query("DELETE FROM stock_locations WHERE id = $1", [
+      added.rows[0]!.id,
+    ]);
+    await owner.query(
+      "UPDATE account_mappings SET account_id = $4 WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+      [main.tenantId, main.entityA, mapping.role, mapping.accountId],
+    );
+    expect(await dbView(main)).toEqual(before);
+
+    const spy = spyCloud({ masters: () => json(changed) });
+    const counts = await syncEdgeMasters(config(main));
+    expect(counts).toEqual({
+      uoms: changed.snapshot.uoms.length,
+      stockLocations: STANDARD_STOCK_LOCATIONS.length + 1,
+      accounts: changed.snapshot.chartOfAccounts.length,
+      mappings: changed.snapshot.accountMappings.length,
+    });
+    const synced = await dbView(main);
+    expect(synced).toEqual(after);
+    expect(synced.stockLocations.find((l) => l.id === bar.id)!.name).toBe(
+      "Bar Utama Baru",
+    );
+    expect(synced.stockLocations.map((l) => l.id)).toContain(added.rows[0]!.id);
+    expect(
+      synced.mappings.find((m) => m.role === mapping.role)!.accountId,
+    ).toBe(otherAccount.id);
+    // Outlet B and entity B are untouched.
+    expect(await dbView(main, main.outletB, main.entityB)).toEqual(bBefore);
+
+    // Idempotent: the same snapshot again changes nothing.
+    const rows = await count(
+      "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+      [main.tenantId],
+    );
+    expect(await syncEdgeMasters(config(main))).toEqual(counts);
+    expect(await dbView(main)).toEqual(after);
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+        [main.tenantId],
+      ),
+    ).toBe(rows);
+    expect(mastersCalls(spy)).toHaveLength(2);
+  });
+
+  it("never deletes a local master that the snapshot no longer lists", async () => {
+    const current = await captureMasters(main);
+    const victim = current.snapshot.stockLocations[0]!;
+    const shorter = structuredClone(current.snapshot);
+    shorter.stockLocations = shorter.stockLocations.slice(1);
+    spyCloud({ masters: () => json(signed(shorter, main)) });
+    await syncEdgeMasters(config(main));
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE id = $1",
+        [victim.id],
+      ),
+    ).toBe(1);
+  });
+
+  it("deletes a mapping role the cloud no longer has, and only that one", async () => {
+    const before = await dbView(main);
+    const mapping = before.mappings[0]!;
+    const bBefore = await dbView(main, main.outletB, main.entityB);
+    // Cloud removes the role; the answer is captured; the database goes back
+    // to the stale state the edge has.
+    await owner.query(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+      [main.tenantId, main.entityA, mapping.role],
+    );
+    const changed = await captureMasters(main);
+    await owner.query(
+      "INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id) VALUES ($1, $2, $3, $4)",
+      [main.tenantId, main.entityA, mapping.role, mapping.accountId],
+    );
+    expect(changed.snapshot.accountMappings.map((m) => m.role)).not.toContain(
+      mapping.role,
+    );
+    expect(await dbView(main)).toEqual(before);
+
+    try {
+      spyCloud({ masters: () => json(changed) });
+      await syncEdgeMasters(config(main));
+      const after = await dbView(main);
+      expect(after.mappings.map((m) => m.role)).not.toContain(mapping.role);
+      expect(after.mappings).toHaveLength(before.mappings.length - 1);
+      // The account itself, the rest of the chart and entity B stay.
+      expect(after.accounts).toEqual(before.accounts);
+      expect(await dbView(main, main.outletB, main.entityB)).toEqual(bBefore);
+    } finally {
+      // Put the role back for the tests that follow.
+      vi.restoreAllMocks();
+      await owner.query(
+        `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+        [main.tenantId, main.entityA, mapping.role, mapping.accountId],
+      );
+    }
+    expect(await dbView(main)).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 4 edge stock posting against synced locations", () => {
+  let node: Awaited<ReturnType<typeof authenticateEdgeCredential>>;
+  let itemId: string;
+  let clock = Date.parse("2026-11-09T08:00:00.000Z");
+
+  beforeAll(async () => {
+    node = await authenticateEdgeCredential(main.credential);
+    if (!node) throw new Error("Edge node did not authenticate");
+    const uom = await owner.query<{ id: string }>(
+      "SELECT id FROM uoms WHERE tenant_id = $1 ORDER BY code LIMIT 1",
+      [main.tenantId],
+    );
+    const item = await owner.query<{ id: string }>(
+      `INSERT INTO inventory_items (tenant_id, name, category, type, base_uom_id, is_perishable)
+       VALUES ($1, 'Kopi Master', 'Bahan Baku', 'raw_material', $2, false) RETURNING id`,
+      [main.tenantId, uom.rows[0]!.id],
+    );
+    itemId = item.rows[0]!.id;
+  });
+
+  /** An edge `stock.moved` exactly as inventory.service.ts emits it. */
+  function stockMoved(outletId: string, locationId: string) {
+    clock += 1_000;
+    const ledgerEntryId = createUlid(clock);
+    const occurredAt = new Date(clock).toISOString();
+    const event = inventoryEvents["stock.moved"].envelopeSchema.parse({
+      id: createUlid(clock),
+      tenantId: main.tenantId,
+      outletId,
+      name: "stock.moved",
+      version: 1,
+      aggregateType: "stock",
+      aggregateId: ledgerEntryId,
+      sequence: 1,
+      occurredAt,
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `stock.moved:${ledgerEntryId}`,
+      payloadSchemaRef: "stock.moved.v1",
+      payload: {
+        ledgerEntryId,
+        inventoryItemId: itemId,
+        locationId,
+        movementType: "sale",
+        quantity: "-1.0000",
+        unitCostIdr: "1000.0000",
+        batchId: null,
+        sourceType: "order",
+        sourceId: createUlid(clock),
+        occurredAt,
+      },
+    }) as EventEnvelope;
+    return { event, ledgerEntryId };
+  }
+
+  const post = (event: EventEnvelope) =>
+    withTenant(db, node!.context, (tx) =>
+      applyEdgeStockMoved(tx, event, {
+        edgeNodeId: node!.scope.edgeNodeId,
+        direction: "edge_to_cloud",
+        kind: "transaction_event",
+        context: node!.context,
+      }),
+    );
+
+  const ledgerCount = (ledgerEntryId: string) =>
+    count(
+      "SELECT count(*)::int AS n FROM stock_ledger WHERE tenant_id = $1 AND id = $2::uuid",
+      [main.tenantId, ulidToUuid(ledgerEntryId)],
+    );
+
+  it("accepts a movement on a location the edge got from the sync, and refuses outlet B's or an unknown one", async () => {
+    const current = await captureMasters(main);
+    spyCloud({ masters: () => json(current) });
+    await syncEdgeMasters(config(main));
+    const synced = current.snapshot.stockLocations[0]!;
+
+    const accepted = stockMoved(main.outletA, synced.id);
+    await post(accepted.event);
+    expect(await ledgerCount(accepted.ledgerEntryId)).toBe(1);
+
+    const bLocation = await owner.query<{ id: string }>(
+      "SELECT id FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2 LIMIT 1",
+      [main.tenantId, main.outletB],
+    );
+    for (const locationId of [bLocation.rows[0]!.id, randomUUID()]) {
+      const refused = stockMoved(main.outletA, locationId);
+      await expect(post(refused.event)).rejects.toThrow();
+      expect(await ledgerCount(refused.ledgerEntryId)).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 5 isolation", () => {
+  const SCOPE_CODES = /^(BAD_SNAPSHOT|SCOPE_MISMATCH)$/;
+
+  async function expectRefusedAndUnchanged(
+    body: unknown,
+    expected: RegExp | string,
+  ) {
+    const mainBefore = await dbView(main);
+    const mainBBefore = await dbView(main, main.outletB, main.entityB);
+    const otherBefore = await dbView(other);
+    spyCloud({ masters: () => json(body) });
+    const code = await failureCode(syncEdgeMasters(config(main)));
+    vi.restoreAllMocks();
+    if (typeof expected === "string") expect(code).toBe(expected);
+    else expect(code).toMatch(expected);
+    expect(await dbView(main)).toEqual(mainBefore);
+    expect(await dbView(main, main.outletB, main.entityB)).toEqual(mainBBefore);
+    expect(await dbView(other)).toEqual(otherBefore);
+  }
+
+  it("refuses a correctly signed snapshot that carries a location of outlet B", async () => {
+    const { snapshot } = await captureMasters(main);
+    const row = (
+      await owner.query<{
+        id: string;
+        name: string;
+        type: string;
+        is_active: boolean;
+        created_at: Date;
+      }>(
+        "SELECT id, name, type, is_active, created_at FROM stock_locations WHERE tenant_id = $1 AND outlet_id = $2 LIMIT 1",
+        [main.tenantId, main.outletB],
+      )
+    ).rows[0]!;
+    const tampered = structuredClone(snapshot);
+    // Branded ids: the row is built from plain strings on purpose.
+    tampered.stockLocations.push({
+      id: row.id,
+      tenantId: main.tenantId,
+      outletId: main.outletB,
+      name: row.name,
+      type: row.type,
+      isActive: row.is_active,
+      createdAt: row.created_at.toISOString(),
+    } as never);
+    await expectRefusedAndUnchanged(signed(tampered, main), SCOPE_CODES);
+  });
+
+  it("refuses a correctly signed snapshot that carries a row of another tenant", async () => {
+    const { snapshot } = await captureMasters(main);
+    const foreign = capturedOther.snapshot;
+    const withUom = structuredClone(snapshot);
+    withUom.uoms.push(foreign.uoms[0]!);
+    await expectRefusedAndUnchanged(signed(withUom, main), SCOPE_CODES);
+
+    const withLocation = structuredClone(snapshot);
+    withLocation.stockLocations.push(foreign.stockLocations[0]!);
+    await expectRefusedAndUnchanged(signed(withLocation, main), SCOPE_CODES);
+
+    // The other tenant's whole snapshot, signed with this node's own key.
+    await expectRefusedAndUnchanged(signed(foreign, main), SCOPE_CODES);
+  });
+
+  it("refuses a snapshot of a foreign legal entity, as one row or as the whole chart", async () => {
+    const { snapshot } = await captureMasters(main);
+    const bView = await dbView(main, main.outletB, main.entityB);
+    const bAccounts = (
+      await owner.query<{
+        id: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        "SELECT id, created_at, updated_at FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
+        [main.tenantId, main.entityB],
+      )
+    ).rows;
+    const stamps = new Map(bAccounts.map((r) => [r.id, r]));
+    const bRows = bView.accounts.map((a) => ({
+      ...a,
+      type: a.type as never,
+      reportGroup: a.reportGroup as never,
+      tenantId: main.tenantId,
+      legalEntityId: main.entityB,
+      createdAt: stamps.get(a.id)!.created_at.toISOString(),
+      updatedAt: stamps.get(a.id)!.updated_at.toISOString(),
+    }));
+
+    // One foreign account in A's snapshot.
+    const oneRow = structuredClone(snapshot);
+    oneRow.chartOfAccounts.push(bRows[0]! as never);
+    await expectRefusedAndUnchanged(signed(oneRow, main), SCOPE_CODES);
+
+    // The whole snapshot re-pointed at entity B and B's chart and mappings.
+    const wholeChart: EdgeMasterSnapshot = {
+      ...structuredClone(snapshot),
+      legalEntityId: main.entityB as never,
+      chartOfAccounts: bRows as never,
+      accountMappings: bView.mappings.map((m) => ({
+        tenantId: main.tenantId,
+        legalEntityId: main.entityB,
+        role: m.role,
+        accountId: m.accountId,
+      })) as never,
+    };
+    await expectRefusedAndUnchanged(signed(wholeChart, main), SCOPE_CODES);
+  });
+
+  it("refuses a snapshot that fails its signature check", async () => {
+    const good = await captureMasters(main);
+    const tampered = structuredClone(good);
+    tampered.snapshot.stockLocations[0]!.name = "Dibajak";
+    await expectRefusedAndUnchanged(tampered, "BAD_SIGNATURE");
+    // Another node's key, and a missing signature.
+    await expectRefusedAndUnchanged(
+      {
+        snapshot: good.snapshot,
+        signature: signed(good.snapshot, other).signature,
+      },
+      "BAD_SIGNATURE",
+    );
+    await expectRefusedAndUnchanged(
+      { snapshot: good.snapshot, signature: "" },
+      "BAD_SIGNATURE",
+    );
+  });
+
+  it("refuses a natural-key collision under another id with LOCAL_CONFLICT and writes nothing", async () => {
+    const { snapshot } = await captureMasters(main);
+    const before = await dbView(main);
+    const replaceId = (value: EdgeMasterSnapshot, from: string, to: string) =>
+      JSON.parse(
+        JSON.stringify(value).replaceAll(from, to),
+      ) as EdgeMasterSnapshot;
+    /** Changes that must NOT land when the collision aborts the apply. */
+    const withOtherChanges = (value: EdgeMasterSnapshot) => {
+      value.stockLocations[0]!.name = "Tidak Boleh Masuk";
+      value.stockLocations.push({
+        ...value.stockLocations[1]!,
+        id: randomUUID() as never,
+        name: "Lokasi Baru Tidak Boleh Masuk",
+      });
+      return value;
+    };
+
+    // A uom with the same (tenant, code) but a different id.
+    const uomCollision = withOtherChanges(
+      replaceId(snapshot, snapshot.uoms[0]!.id, randomUUID()),
+    );
+    await expectRefusedAndUnchanged(
+      signed(uomCollision, main),
+      "LOCAL_CONFLICT",
+    );
+
+    // An account (a leaf, referenced by mappings) with the same
+    // (tenant, entity, code) but a different id.
+    const parents = new Set(snapshot.chartOfAccounts.map((a) => a.parentId));
+    const leaf = snapshot.chartOfAccounts.find((a) => !parents.has(a.id))!;
+    const accountCollision = withOtherChanges(
+      replaceId(snapshot, leaf.id, randomUUID()),
+    );
+    await expectRefusedAndUnchanged(
+      signed(accountCollision, main),
+      "LOCAL_CONFLICT",
+    );
+    expect(await dbView(main)).toEqual(before);
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1 AND name LIKE '%Tidak Boleh Masuk%'",
+        [main.tenantId],
+      ),
+    ).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 6 node that was bootstrapped before the master sync", () => {
+  /** Tenant and outlet present locally, but no masters at all. */
+  async function presentWithoutMasters() {
+    await purgeAll(fresh);
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json(capturedFresh.masters),
+    });
+    await bootstrapEdgeNodeIfNeeded(config(fresh));
+    vi.restoreAllMocks();
+    await purgeMasters(fresh);
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+        [fresh.tenantId],
+      ),
+    ).toBe(0);
+    expect(
+      await count("SELECT count(*)::int AS n FROM outlets WHERE id = $1", [
+        fresh.outletA,
+      ]),
+    ).toBe(1);
+  }
+
+  it("with no local locations: boots as present and fetches the masters once", async () => {
+    await presentWithoutMasters();
+    const spy = spyCloud({ masters: () => json(capturedFresh.masters) });
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+    expect(mastersCalls(spy)).toHaveLength(1);
+    expect(spy).toHaveBeenCalledTimes(1); // no bundle fetch
+    expect(await dbView(fresh)).toEqual(viewOf(capturedFresh.masters.snapshot));
+  });
+
+  it("with no local locations and an unreachable or invalid cloud: still boots as present, writes nothing", async () => {
+    await presentWithoutMasters();
+    for (const masters of [
+      () => json({ error: { code: "INTERNAL" } }, 500),
+      () => json({ ...capturedFresh.masters, signature: "0".repeat(64) }),
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ]) {
+      const spy = spyCloud({ masters });
+      expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+      expect(mastersCalls(spy)).toHaveLength(1);
+      vi.restoreAllMocks();
+    }
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+        [fresh.tenantId],
+      ),
+    ).toBe(0);
+  });
+
+  it("with local locations: makes no network call at all", async () => {
+    await presentWithoutMasters();
+    spyCloud({ masters: () => json(capturedFresh.masters) });
+    await bootstrapEdgeNodeIfNeeded(config(fresh)); // restores the locations
+    vi.restoreAllMocks();
+
+    const spy = spyCloud({
+      masters: () => {
+        throw new Error("must not be called");
+      },
+      bundle: () => {
+        throw new Error("must not be called");
+      },
+    });
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 6b present path: masters missing means no uoms OR no locations", () => {
+  async function bootAllThenDeleteUoms() {
+    await purgeAll(fresh);
+    spyCloud({
+      bundle: () => json(capturedFresh.bundle),
+      masters: () => json(capturedFresh.masters),
+    });
+    await bootstrapEdgeNodeIfNeeded(config(fresh));
+    vi.restoreAllMocks();
+    await deleteRows(["uoms"], [fresh.tenantId]);
+    expect(
+      await count(
+        "SELECT count(*)::int AS n FROM stock_locations WHERE tenant_id = $1",
+        [fresh.tenantId],
+      ),
+    ).toBeGreaterThan(0);
+    expect(
+      await count("SELECT count(*)::int AS n FROM uoms WHERE tenant_id = $1", [
+        fresh.tenantId,
+      ]),
+    ).toBe(0);
+  }
+
+  it("locations present but no uoms: boots as present and fetches the masters once", async () => {
+    await bootAllThenDeleteUoms();
+    const spy = spyCloud({ masters: () => json(capturedFresh.masters) });
+    expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+    expect(mastersCalls(spy)).toHaveLength(1);
+    expect(spy).toHaveBeenCalledTimes(1); // no bundle fetch
+    expect(await dbView(fresh)).toEqual(viewOf(capturedFresh.masters.snapshot));
+  });
+
+  it("locations present but no uoms and the cloud failing: still boots as present", async () => {
+    await bootAllThenDeleteUoms();
+    for (const masters of [
+      () => json({ error: { code: "INTERNAL" } }, 500),
+      () => json({ error: { code: "UNAUTHORIZED" } }, 401),
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      () => json({ ...capturedFresh.masters, signature: "0".repeat(64) }),
+    ]) {
+      const spy = spyCloud({ masters });
+      expect(await bootstrapEdgeNodeIfNeeded(config(fresh))).toBe("present");
+      expect(mastersCalls(spy)).toHaveLength(1);
+      vi.restoreAllMocks();
+    }
+    expect(
+      await count("SELECT count(*)::int AS n FROM uoms WHERE tenant_id = $1", [
+        fresh.tenantId,
+      ]),
+    ).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 7 periodic sync loop", () => {
+  const loopConfig = () => config(main);
+
+  it("refuses an interval below 60 seconds or not a finite number with a RangeError", () => {
+    for (const intervalMs of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -1,
+      0,
+      1,
+      59_999,
+    ])
+      expect(() =>
+        startEdgeMasterSyncLoop({ config: loopConfig(), intervalMs }),
+      ).toThrow(RangeError);
+  });
+
+  it("starts at 60 seconds, makes no call before the first tick, and stops cleanly", async () => {
+    const spy = spyCloud({
+      masters: () => {
+        throw new Error("must not be called");
+      },
+    });
+    const loop = startEdgeMasterSyncLoop({
+      config: loopConfig(),
+      intervalMs: 60_000,
+    });
+    await loop.stop();
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("legend-9ppw 8 cloud endpoint over its size cap", () => {
+  it("answers 409 CONFLICT, not 500, when an outlet has more locations than the snapshot allows", async () => {
+    const big = await createFixture("Big");
+    // The snapshot holds at most 200 locations per outlet.
+    await owner.query(
+      `INSERT INTO stock_locations (tenant_id, outlet_id, name, type)
+       SELECT $1, $2, 'Lokasi ' || n, 'warehouse' FROM generate_series(1, 250) AS n`,
+      [big.tenantId, big.outletA],
+    );
+    const response = await cloudMasters(big);
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("CONFLICT");
+    expect(JSON.stringify(response.body)).not.toContain(big.credential);
+    // Other nodes are unaffected.
+    expect((await cloudMasters(main)).status).toBe(200);
+  });
+});
