@@ -49,6 +49,10 @@ import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
+import {
+  lockChartOfAccounts,
+  lockOutletStockLocations,
+} from "../services/tenant-config-locks.ts";
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
 import { parseEdgeCredential } from "./credential.ts";
@@ -183,6 +187,19 @@ export async function applyEdgeMasterSnapshotInTransaction(
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`edge-master-sync:${tenantId}:${outletId}`}, 0))`,
   );
+  // Chart of accounts of the snapshot's legal entity (the only one this apply
+  // writes CoA and mappings for; the outlet check below proves it is the
+  // outlet's own). Shared with the provisioning backfill and the owner's chart
+  // writers (legend-usa4b), taken before the natural-key precheck and every
+  // write so the backfill can never see the chart empty while this import is
+  // about to commit, and mix the template into a cloud chart.
+  // The outlet's stock locations are written here too, so the location lock
+  // is shared with the default-location provisioning the same way.
+  // Lock order: `edge-master-sync` (above) first, then CoA, then stock
+  // locations, as documented in services/tenant-config-locks.ts. No other path
+  // takes `edge-master-sync`, so neither lock is held while waiting for it.
+  await lockChartOfAccounts(tx, tenantId, legalEntityId);
+  await lockOutletStockLocations(tx, tenantId, outletId);
 
   const [outlet] = await tx
     .select({ legalEntityId: outlets.legalEntityId })

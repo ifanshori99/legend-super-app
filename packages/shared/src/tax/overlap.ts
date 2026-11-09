@@ -29,8 +29,15 @@ export type TaxRuleTie = {
 /** Outlet used to ask `effectiveRuleVersions` for the tenant-wide view: no
  * real outlet, so outlet-scoped rules drop out. */
 const TENANT_VIEW_OUTLET = "00000000-0000-4000-8000-000000000000" as OutletId;
-/** Item id that matches no rule, to probe category and class levels. */
-const NO_ITEM = "00000000-0000-4000-8000-00000000ffff";
+/** Item id that matches neither rule, to probe category and class levels.
+ * Rules store itemIds without catalog validation, so no fixed id is safe:
+ * count up from a base until the id is in neither list (legend-7gwap). */
+function probeItemId(taken: ReadonlySet<string>): string {
+  for (let n = 0xffff; ; n += 1) {
+    const id = `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+    if (!taken.has(id)) return id;
+  }
+}
 const ALL_CHANNELS: readonly TaxChannel[] = taxChannelSchema.options;
 
 /** Indonesian labels for server messages, matching the `tax.channels` and
@@ -86,6 +93,9 @@ function probeTie(
       : other.regionCode !== null
         ? [null, other.regionCode]
         : [null];
+  const noItem = probeItemId(
+    new Set([...primary.appliesTo.itemIds, ...other.appliesTo.itemIds]),
+  );
   const lines: {
     level: TaxRuleTieLevel;
     key: string;
@@ -100,7 +110,7 @@ function probeTie(
       level: "category" as const,
       key,
       line: {
-        itemId: NO_ITEM,
+        itemId: noItem,
         categoryId: key,
         itemClass: ITEM_TAX_CLASSES[0],
       },
@@ -108,7 +118,7 @@ function probeTie(
     ...primary.appliesTo.itemClasses.map((key) => ({
       level: "itemClass" as const,
       key,
-      line: { itemId: NO_ITEM, categoryId: null, itemClass: key },
+      line: { itemId: noItem, categoryId: null, itemClass: key },
     })),
   ];
   for (const channel of channels) {

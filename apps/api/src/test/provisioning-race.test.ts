@@ -35,6 +35,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import type { EdgeMasterSnapshot } from "@starter/shared/edge/master-sync";
+import { applyEdgeMasterSnapshot } from "../edge/master-sync.ts";
+import { parseEdgeCredential } from "../edge/credential.ts";
 import { backfillTenantCharts } from "../services/accounting-provisioning.service.ts";
 import { createAccount } from "../services/accounting-accounts.service.ts";
 import { backfillTenantTaxDefaults } from "../services/tax-provisioning.service.ts";
@@ -206,6 +209,8 @@ afterAll(async () => {
       "audit_logs",
       "role_assignments",
       "roles",
+      "outlets",
+      "brands",
       "legal_entities",
     ])
       await client.query(`DELETE FROM ${table} WHERE tenant_id = ANY($1)`, [
@@ -286,6 +291,87 @@ describe("provisioning vs owner writers share one lock", () => {
           },
           userId as UserId,
         ),
+      () => backfillTenantCharts(tenantId),
+    );
+
+    expect.soft(outcome.ownerResult.status).toBe("fulfilled");
+    expect.soft(outcome.backfillResult.status).toBe("fulfilled");
+    const accounts = await owner.query<{ code: string }>(
+      "SELECT code FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY code",
+      [tenantId, entityId],
+    );
+    expect.soft(accounts.rows.map((row) => row.code)).toEqual(["9999"]);
+    const mappings = await owner.query(
+      "SELECT 1 FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantId, entityId],
+    );
+    expect.soft(mappings.rowCount).toBe(0);
+    if (outcome.backfillResult.status === "fulfilled")
+      expect
+        .soft(outcome.backfillResult.value.map((result) => result.status))
+        .toEqual(["already_present"]);
+    expect.soft(outcome.parkedOn).toBe("advisory");
+    expect.soft(outcome.advisoryStates).toContain(false);
+  });
+
+  it("legend-usa4b: edge master import and standard chart backfill never mix in one chart", async () => {
+    const { tenantId, entityId } = await seedTenant();
+    const brandId = randomUUID();
+    const outletId = randomUUID();
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'balapan', 'Brand Balapan')",
+      [brandId, tenantId],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet Balapan', 'Jl. Balapan', 'Asia/Jakarta', '{}', 'active')`,
+      [
+        outletId,
+        tenantId,
+        brandId,
+        entityId,
+        `PB-${randomBytes(3).toString("hex")}`.toUpperCase(),
+      ],
+    );
+    // The cloud's chart is one custom root account and no mapping. The edge
+    // copies it by id; the template must never be added next to it.
+    const now = new Date().toISOString();
+    const snapshot = {
+      version: 1,
+      issuedAt: now,
+      tenantId,
+      outletId,
+      legalEntityId: entityId,
+      uoms: [],
+      stockLocations: [],
+      chartOfAccounts: [
+        {
+          id: randomUUID(),
+          tenantId,
+          legalEntityId: entityId,
+          code: "9999",
+          name: "Akun Cloud",
+          type: "asset",
+          reportGroup: "current_asset",
+          parentId: null,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      accountMappings: [],
+    } as unknown as EdgeMasterSnapshot;
+    const claims = {
+      tenantId,
+      outletId,
+      edgeNodeId: randomUUID(),
+      hash: "unused",
+    } as NonNullable<ReturnType<typeof parseEdgeCredential>>;
+
+    const outcome = await race(
+      "chart_of_accounts",
+      `chart_of_accounts:${tenantId}:${entityId}`,
+      () => applyEdgeMasterSnapshot(claims, snapshot),
       () => backfillTenantCharts(tenantId),
     );
 
