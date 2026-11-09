@@ -609,3 +609,4 @@ Langkah berikut CTO baru:
 4. Retro cron (:13 tiap 2 jam) milik sesi G8flk: buat ulang di sesi baru.
 - 21:22 architect D (200b, legend-dhbt1): bersih, tanpa kartu baru. dhbt1 sudah ada di batch25 (rantai batch27). 3 catatan P3 di `docs/briefs/200b-second-opinion-master-sync-role-tolerance.result-architect.md`; catatan rilis: enum snapshot lain (accountType, reportGroup, stockLocationType, version) hanya boleh ditambah, edge dibangun dulu.
 - 21:23 architect B (196b legend-nhmct, 199b legend-6b0ld): bersih (baca kode, range-diff identik dengan cabang asal). Catatan P3 dijadikan kartu legend-sgh4l (loop lama Tutup Hari menyembunyikan pesan nomor hilang). Pantau biaya `receiptGapsForOutletFast` di outlet besar.
+- 21:25 G9syc: gate batch27 berjalan, 1 gagal pos-refund-promo-db (amount 0 vs 30000; sendiri lulus 32/32) -> legend-4fzhu P2 uang. FF m1 ke batch27 boleh bila hanya itu; gagal lagi di gate berikut = berhenti. batch29 (214) targeted 195/195.
