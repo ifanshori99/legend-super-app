@@ -23,6 +23,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { approveRefund as approveRefundWithPayout } from "./payment-refund.service.ts";
+import { depositInUseOfIntent } from "./reservation-deposit-credit.ts";
 import {
   appendPaymentEvent,
   assertPaymentPermission,
@@ -45,7 +46,15 @@ export const hasSourceDocument = (
   intent.subscriptionInvoiceId !== null;
 // Evidence and fund rows are written under the intent lock by settlement.
 // Compute in PostgreSQL numeric and bigint to avoid rounding aggregate sums.
-export async function refundableBalance(tx: Tx, intent: Intent) {
+// legend-e7zj: `cap` excludes the reservation DP a seated table session's
+// orders already applied, so a refund never pays back DP a sale used. Writers
+// hold the intent row lock and take the DP lock (`lockDeposit`, default);
+// a read-only listing passes false and gets an unlocked estimate.
+export async function refundableBalance(
+  tx: Tx,
+  intent: Intent,
+  { lockDeposit = true }: { lockDeposit?: boolean } = {},
+) {
   const result = await tx.execute(sql`
     SELECT
       (SELECT coalesce(sum(amount_idr), 0) FROM payment_evidence
@@ -59,14 +68,21 @@ export async function refundableBalance(tx: Tx, intent: Intent) {
   const row = result.rows[0]!;
   const allocated =
     BigInt(String(row.received)) - BigInt(String(row.unallocated));
-  const cap =
+  const paid =
     allocated < 0n
       ? 0n
       : allocated > BigInt(intent.amountIdr)
         ? BigInt(intent.amountIdr)
         : allocated;
   const reserved = BigInt(String(row.reserved));
-  return { cap, reserved };
+  const depositInUse = await depositInUseOfIntent(
+    tx,
+    intent.tenantId,
+    intent.id,
+    { lock: lockDeposit },
+  );
+  const cap = paid > depositInUse ? paid - depositInUse : 0n;
+  return { cap, reserved, paid, depositInUse };
 }
 
 async function paymentInfo(tx: Tx, intent: Intent) {
@@ -327,9 +343,20 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const { cap, reserved } = await refundableBalance(tx, intent);
-        if (reserved + BigInt(body.amountIdr) > cap)
+        const { cap, reserved, paid, depositInUse } = await refundableBalance(
+          tx,
+          intent,
+        );
+        if (reserved + BigInt(body.amountIdr) > cap) {
+          // legend-e7zj: the DP is applied to a seated table's bill.
+          if (depositInUse > 0n && reserved + BigInt(body.amountIdr) <= paid)
+            throw new HttpError(
+              409,
+              "REFUND_DEPOSIT_IN_USE",
+              `Reservation deposit is applied to a table bill; at most ${cap > reserved ? cap - reserved : 0n} IDR can be refunded.`,
+            );
           throw conflict("Refund exceeds available paid amount.");
+        }
         const now = new Date();
         const [row] = await tx
           .insert(paymentRefunds)
@@ -396,7 +423,11 @@ export async function listRefundablePayments(
     const payments = [];
     for (const intent of intents) {
       if (!intent.paidAt || hasSourceDocument(intent)) continue;
-      const { cap, reserved } = await refundableBalance(tx, intent);
+      // The DP a table bill uses is shown as not refundable: paid stays
+      // refunded + refundable (contract refine), net of that DP.
+      const { cap, reserved } = await refundableBalance(tx, intent, {
+        lockDeposit: false,
+      });
       if (reserved >= cap) continue;
       const { link, outlet } = await paymentInfo(tx, intent);
       payments.push(

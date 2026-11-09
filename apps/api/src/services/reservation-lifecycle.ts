@@ -68,6 +68,7 @@ import {
   requestFingerprint,
   zonedInstant,
 } from "./reservation-plan.ts";
+import { sessionDepositCredit } from "./reservation-deposit-credit.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 import { openStaffSeatedSession } from "./table-session.service.ts";
 
@@ -604,20 +605,15 @@ export function markReservationNoShow(
   );
 }
 
-/** Convenience for the bill module: the DP credit on a table session (RSV-02). */
+/**
+ * Convenience for the bill module: the DP credit on a table session (RSV-02).
+ * legend-e7zj: what each allocation's DP intent still holds, so a WS-05 refund
+ * filed after seating lowers it (reservation-deposit-credit.ts).
+ */
 export async function depositCreditForSession(
   tx: Tx,
   tenantId: TenantId,
   tableSessionId: string,
 ): Promise<number> {
-  const rows = await tx
-    .select({ amount: reservationDepositAllocations.amountIdr })
-    .from(reservationDepositAllocations)
-    .where(
-      and(
-        eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.tableSessionId, tableSessionId),
-      ),
-    );
-  return rows.reduce((sum, row) => sum + row.amount, 0);
+  return sessionDepositCredit(tx, tenantId, tableSessionId);
 }
