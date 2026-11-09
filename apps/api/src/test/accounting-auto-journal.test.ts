@@ -1582,17 +1582,31 @@ describe("F19 a deterministic bad event parks instead of throwing", () => {
 });
 
 describe("F19 order.refunded mirrors the sale", () => {
+  // legend-ni6o: the refund mirrors a sale journal, so the sale journal
+  // (`aj:sale:<orderId>`) has to be posted first; the tests below deliver it.
+  const refundedSale: SaleAmounts = {
+    grossSalesIdr: 50_000,
+    pbjtIdr: 5_000,
+    tenders: [
+      { method: "cash", amountIdr: 20_000 },
+      { method: "qris", amountIdr: 35_000 },
+    ],
+  };
+  const refundedLines = {
+    grossSalesIdr: 50_000,
+    pbjtIdr: 5_000,
+    lines: [
+      { method: "cash" as const, amountIdr: 20_000 },
+      { method: "qris" as const, amountIdr: 35_000 },
+    ],
+  };
+
   it("AJ-REFUND-01 a refund of cash + gateway: Dr revenue, tax / Cr cash and customer_deposit (owed until payout), balanced; replay no-op", async () => {
     const world = await makeWorld();
     const orderUlid = createUlid();
-    const event = orderRefunded(world, orderUlid, createUlid(), {
-      grossSalesIdr: 50_000,
-      pbjtIdr: 5_000,
-      lines: [
-        { method: "cash", amountIdr: 20_000 },
-        { method: "qris", amountIdr: 35_000 },
-      ],
-    });
+    await seedPosOrder(world, orderUlid, refundedSale);
+    await post(world, orderPaid(world, orderUlid, refundedSale));
+    const event = orderRefunded(world, orderUlid, createUlid(), refundedLines);
 
     const result = await post(world, event);
     expect(await linesOf(world, result.journalEntryId)).toEqual([
@@ -1610,7 +1624,148 @@ describe("F19 order.refunded mirrors the sale", () => {
       status: "already_posted",
       journalEntryId: result.journalEntryId,
     });
+    // sale + refund
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-REFUND-N1 a refund that arrives before its sale was consumed parks AUTO_JOURNAL_SALE_PENDING (retryable, no journal); after order.paid the sweep posts it and the parked row is gone", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderUlid = createUlid();
+    await seedPosOrder(world, orderUlid, refundedSale);
+    const saleEvent = orderPaid(world, orderUlid, refundedSale);
+    const outboxId = await seedOutboxEvent(
+      world,
+      saleEvent,
+      ulidToUuid(orderUlid),
+      "pending",
+    );
+    const refundId = createUlid();
+    const refundKey = `aj:order-refund:${refundId}`;
+
+    expect(
+      await deliver(
+        tenant,
+        orderRefunded(world, orderUlid, refundId, refundedLines),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await parkedOf(tenant, refundKey)).toMatchObject([
+      { retryable: true, event_name: "order.refunded" },
+    ]);
+
+    await markDelivered(world, outboxId);
+    await post(world, saleEvent);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    const refundEntryId = await journalIdOf(world, refundKey);
+    expect(await linesOf(world, refundEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 0, credit: 20_000 },
+      { role: "customer_deposit", debit: 0, credit: 35_000 },
+      { role: "sales_revenue", debit: 50_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 5_000, credit: 0 },
+    ]);
+    expect(await parkedOf(tenant, refundKey)).toHaveLength(0);
+    // sale + refund
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-REFUND-N2 a gateway refund of a sale parked POSTING_AMOUNTS_MISMATCH parks non-retryable AUTO_JOURNAL_SALE_MISSING; no refund journal, customer_deposit unchanged, the sweep leaves it", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 50_000 });
+    await post(world, paymentPaid(world, intentId, 50_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      tenders: [
+        { method: "cash", amountIdr: 50_000 },
+        { method: "qris", amountIdr: 50_000, intentId },
+      ],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    // The event claims 60k cash + 40k gateway; the tender rows hold 50k + 50k.
+    expect(
+      await deliver(
+        tenant,
+        orderPaid(world, orderUlid, {
+          ...sale,
+          tenders: [
+            { method: "cash", amountIdr: 60_000 },
+            { method: "qris", amountIdr: 40_000, intentId },
+          ],
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    // only the receipt is booked
     expect(await journalCount(world)).toBe(1);
+    const depositBefore = await balanceOf(world, "customer_deposit");
+    const refundId = createUlid();
+
+    expect(
+      await deliver(
+        tenant,
+        orderRefunded(world, orderUlid, refundId, {
+          grossSalesIdr: 25_000,
+          pbjtIdr: 0,
+          lines: [{ method: "qris", amountIdr: 25_000 }],
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    expect(await parkedOf(tenant, `aj:order-refund:${refundId}`)).toMatchObject(
+      [{ retryable: false, event_name: "order.refunded" }],
+    );
+    expect(await journalCount(world)).toBe(1);
+    expect(await balanceOf(world, "customer_deposit")).toBe(depositBefore);
+
+    await sweep(tenant);
+    expect(await journalCount(world)).toBe(1);
+    expect(await balanceOf(world, "customer_deposit")).toBe(depositBefore);
+  });
+
+  it("AJ-REFUND-N3 a refund of a posted sale posts as before: Dr revenue / Cr cash, balanced", async () => {
+    const world = await makeWorld();
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      pbjtIdr: 10_000,
+      tenders: [{ method: "cash", amountIdr: 110_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    const saleEntry = await post(world, orderPaid(world, orderUlid, sale));
+
+    const refund = await post(
+      world,
+      orderRefunded(world, orderUlid, createUlid(), {
+        grossSalesIdr: 40_000,
+        pbjtIdr: 4_000,
+        lines: [{ method: "cash", amountIdr: 44_000 }],
+      }),
+    );
+    expect(refund.journalEntryId).not.toBe(saleEntry.journalEntryId);
+    expect(await linesOf(world, refund.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 0, credit: 44_000 },
+      { role: "sales_revenue", debit: 40_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 4_000, credit: 0 },
+    ]);
+    await expectBalanced(world, refund.journalEntryId);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(66_000);
   });
 });
 
