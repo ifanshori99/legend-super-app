@@ -165,9 +165,8 @@ test("PAY-01 EDC records never carry a full card number or free-form IP", () => 
 });
 
 test("PAY-04 payment.funds_unallocated is catalogued for WS-05 with a strict payload", async () => {
-  const { eventCatalogByName } = await import(
-    "../packages/shared/src/events/index.ts"
-  );
+  const { eventCatalogByName } =
+    await import("../packages/shared/src/events/index.ts");
   assert.equal(
     eventCatalogByName.get("payment.funds_unallocated")?.workstream,
     "WS-05",

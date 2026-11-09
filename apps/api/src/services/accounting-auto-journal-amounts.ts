@@ -472,8 +472,7 @@ async function sessionDepositOf(
       ),
     );
   const intentIds = [...new Set(allocations.map((row) => row.paymentIntentId))];
-  if (intentIds.length === 0)
-    return { intentIds, heldIdr: 0n, appliedIdr: 0n };
+  if (intentIds.length === 0) return { intentIds, heldIdr: 0n, appliedIdr: 0n };
   const intents = await tx
     .select({
       id: paymentIntents.id,
@@ -832,10 +831,15 @@ export async function autoJournalFactOf(
       // A payout of an unallocated fund (duplicate or extra payment) never
       // takes DP.
       if (refund.unallocatedFundId === null)
-        await assertRefundLeavesAppliedDeposit(tx, tenantId, p.paymentIntentId, {
-          refundId: p.refundId,
-          completedAt: refund.completedAt,
-        });
+        await assertRefundLeavesAppliedDeposit(
+          tx,
+          tenantId,
+          p.paymentIntentId,
+          {
+            refundId: p.refundId,
+            completedAt: refund.completedAt,
+          },
+        );
       return {
         ruleEvent: "payment.refunded",
         amounts: { amountIdr: p.amountIdr },

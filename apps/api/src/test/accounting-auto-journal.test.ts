@@ -2378,7 +2378,10 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     // Replaying the first refund after the second completed and emptied the
     // intent is still judged as it stood then.
     expect(
-      await deliver(world.tenant, paymentRefunded(world, restId, intentId, 50_000)),
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, restId, intentId, 50_000),
+      ),
     ).toMatchObject({ status: "already_posted" });
   });
 
@@ -2393,7 +2396,10 @@ describe("F19 slice 2 order.paid applies the reservation DP", () => {
     // A bad DP refund leaves the session over-applied.
     const badId = await seedRefund(world, intentId, 110_000);
     expect(
-      await deliver(world.tenant, paymentRefunded(world, badId, intentId, 110_000)),
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, badId, intentId, 110_000),
+      ),
     ).toMatchObject({ status: "parked", code: "POSTING_AMOUNTS_MISMATCH" });
 
     const fundId = await seedFund(world, intentId, 25_000);

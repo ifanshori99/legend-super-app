@@ -1164,7 +1164,10 @@ test("F8 events: POS event names are registered on the WS-04 catalog line", () =
   });
   for (const [label, payload] of [
     // DP is not counted on top of tenders that already cover the total.
-    ["DP on top of full tenders", { ...envelope.payload, paidDepositIdr: 50_000 }],
+    [
+      "DP on top of full tenders",
+      { ...envelope.payload, paidDepositIdr: 50_000 },
+    ],
     ["DP above the total", { ...envelope.payload, paidDepositIdr: 120_101 }],
     ["negative DP", { ...partDp, paidDepositIdr: -1 }],
     [

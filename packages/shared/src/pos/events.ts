@@ -158,10 +158,7 @@ export const orderPaidPayloadSchema = z
         path: ["paidDepositIdr"],
         message: "paidDepositIdr must not exceed totalIdr",
       });
-    else if (
-      paid !==
-      Number(payload.totalIdr) - Number(payload.paidDepositIdr)
-    )
+    else if (paid !== Number(payload.totalIdr) - Number(payload.paidDepositIdr))
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
