@@ -259,9 +259,9 @@ pnpm check
 pnpm build
 ```
 
-The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The isolation harness accepts an adapter for two authenticated tenants; its in-memory tests verify the harness only, not application isolation.
+The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The in-memory isolation harness in `scripts/ci` verifies the harness only. Application isolation is proven by `apps/api/src/test/tenant-isolation-*.test.ts` (POS orders, menu, payments and refunds, inventory, accounting journals, HRIS): tenant A versus a throwaway tenant B through the real services, the HTTP routes and database RLS as the `legend_app` role. They run inside `pnpm check`; run them alone with `LEGEND_TEST_FILES="src/test/tenant-isolation-pos-menu.test.ts src/test/tenant-isolation-payment-inventory.test.ts src/test/tenant-isolation-accounting-hris.test.ts" pnpm test`. A new tenant-aware module needs a case in one of these files.
 
-Real tenant isolation remains an explicit placeholder until the tenant modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
 
 ### Lighthouse
 
