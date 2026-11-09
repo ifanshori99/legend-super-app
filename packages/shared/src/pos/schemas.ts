@@ -771,6 +771,13 @@ export const posRefundLineSchema = z.strictObject({
   amountIdr: positiveIdr,
   /** Gateway/EDC refund reference once the provider answered. */
   reference: z.string().min(1).max(100).nullable(),
+  /**
+   * legend-186 (8v2yl): the captured tender this line was returned through and
+   * its WS-05 payment intent (null for cash/EDC), so a refund can be attributed
+   * to one intent. Absent on rows written before per-tender allocation.
+   */
+  tenderId: posTenderIdSchema.optional(),
+  paymentIntentId: uuidSchema.nullable().optional(),
 });
 export type PosRefundLine = z.infer<typeof posRefundLineSchema>;
 

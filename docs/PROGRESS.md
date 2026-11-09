@@ -9,6 +9,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review K: reviewer Opus + architect + re-review architect; temuan dibetulkan (epoch restore, cap 5 menit, cap setAt resend, rentang xid). Bead lanjutan: legend-yvhw8 (puller edge belum terpasang, P1), legend-rucdm (residu cap), legend-4z2ch (timeout transaksi idle + alert).
 - Berikut: second-opinion Codex brief `docs/briefs/183b-second-opinion-edge-pin-sync.md` (folder utama), merge train.
 
+## legend-15by + legend-wkl3 + legend-s7rx + legend-8v2yl refund POS berpromo dan baris refund per tender (engineer, cabang `ws/pos-refund-promo` dari m1 9a2c1e86, 2026-11-09)
+
+- Sudah: 15by dan wkl3 ternyata sudah ada di m1 (c140459c, bc16e207, e3d5f56e); kini dibuktikan dengan test angka kartu (BOGO 4 kopi + 2 croissant: retur croissant Rp0 tercatat, kopi berikut Rp30.000).
+- s7rx: refund tanpa item pada pesanan berpromo yang sudah pernah direfund menjadi pelunasan sisa (min jumlah diminta, jatuh tempo, sisa tender); pesanan belum pernah direfund tetap wajib pilih item; promo gugur saat pelunasan: 422 `REFUND_SETTLEMENT_NEEDS_ADMIN`. Pesanan DP dengan tender habis: retur item jadi baris Rp0, audit `depositOwedIdr` (saldo berjalan).
+- 8v2yl: baris `pos_order_refunds.lines` mencatat `tenderId` dan `paymentIntentId` (FIFO per tender; total per metode tetap); event `order.refunded` tidak berubah. Tanpa migrasi (jsonb).
+- Lanjutan: legend-9z1vm (atribusi intent membaca id baris, setelah ws/refund-payout-followups masuk m1), legend-pk38k (alur pengembalian DP dan pendapatan untuk retur Rp0 DP).
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.

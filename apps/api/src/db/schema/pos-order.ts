@@ -71,6 +71,9 @@ export type PosRefundLineRow = {
   method: string;
   amountIdr: number;
   reference: string | null;
+  /** legend-186: captured tender + payment intent; absent on legacy rows. */
+  tenderId?: string;
+  paymentIntentId?: string | null;
 };
 
 /** One refunded order item (contract posRefundItemSchema). */
