@@ -697,3 +697,11 @@ Langkah berikut CTO baru:
 - G3pm5 lapor legend-76azz: ws/migration-0135-lock-timeout dac509f3 (dari 94d769c6), 0135 memulihkan lock_timeout migrator; pemindai statis migrasi baru. 94/94 menurut thread. Tidak diverifikasi ulang CTO (mode hemat, menunggu Q48); gate merge train yang membuktikan. G3pm5 di-resolve. Antre merge train baru (K migrasi, ubah 0135 di tempat).
 - Audit biaya 9 Nov (session-usage, biaya* ribuan token setara): merge train G9syc 24.9M (34%, 740 req Opus, compact 4x), CTO 14.4M (20%; 8.8M di antaranya review ganda architect), engineer Opus 1.5-6.4M per thread (main ~50%, reviewer+architect Opus ~27%), thread Sonnet 0.4-0.7M. Konteks awal tiap sesi 50-57k. Usulan perbaikan ke founder: Q47-Q50.
 - G0x8a lapor dahk+m4fv: kode produk sudah ada di m1; hanya fixture e2e dibetulkan dan EDC-01/02/04 di-unskip (ws/edc-tender-verify 0c959539, 71 lulus/3 skip menurut thread). G0x8a di-resolve. Antre merge train baru. Kartu baru EDC edge offline (P2). Slot tidak diisi sementara menunggu keputusan hemat Q47-Q50.
+
+### 9 Nov 22:40 (CTO G6nvg) — keputusan workflow Q47-Q50
+- Q47 semua kartu tetap dikerjakan. Q48 review dipangkas: per cabang test gagal-dulu + satu review kuat (K: satu architect; S: reviewer sonnet); merge train hanya gabung + konflik + gate; CTO tidak menjalankan ulang test; Codex sekali per area sebelum rilis; review ganda Claude berhenti. Q49 engineer dan merge train default Sonnet, Opus bila desain baru uang/akses/migrasi atau Sonnet gagal 1x. Q50 plugin/connector tetap menyala.
+- Aturan tim (`~/.agents/main.md`, TEAM.md, roles) sedang diperbarui subagent doc-writer.
+- m1 = 4c818489 (batch25-32, gate G9syc lulus 6733/1721). G9syc, G6q9e (gn17x 04d2836a), G04ur (8ajy4 82778a8a; rantai ktc4d final `ws/grant-role-lock-b33` 783e3bbf) resolved.
+- Thread baru (Sonnet, akun #2): G81x9 merge train (brief 239: gate b33, batch34 = 04d2836a 4e100246 f3e4108d 3b90a9bd 4fe23687 dac509f3 0c959539 + e2e; batch35 = 783e3bbf), G7b4u xtzpb (240), G7dk0 8vgid (241), G3as6 sgh4l (242), G3k3v fmpgz (243).
+- Antrean Codex sesudah 15 Nov tambah 224d, 224e, 240b, 241b, 243b. Kartu baru legend-tegsk (P2).
+- Menunggu kuota: o1o4s (K migrasi, 0169), uhs3c. Akun #3 7d 95% reset 10 Nov 05:00, #1 97% reset 10 Nov 18:00.
