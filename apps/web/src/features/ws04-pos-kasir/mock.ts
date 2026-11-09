@@ -107,25 +107,32 @@ registerMock(getPosApprovalPolicy, () => wire({ data: approvalPolicyWire }));
 registerMock(openPosShift, ({ body }) => {
   const shift = callPosKasirEngine((engine) => {
     engine.openShift({ openingFloatIdr: body.openingFloatIdr });
-    return engine.rawShift();
+    return { shift: engine.rawShift(), blind: engine.drawerHidden() };
   });
-  return wire({ data: shiftWire(shift!) });
+  return wire({ data: shiftWire(shift.shift!, shift.blind) });
 });
 
 registerMock(listPosShifts, ({ query, scenario }) => {
-  const shift = callPosKasirEngine((engine) => engine.rawShift());
-  const rows = shift ? [shiftWire(shift)] : [];
+  const { shift, blind } = callPosKasirEngine((engine) => ({
+    shift: engine.rawShift(),
+    blind: engine.drawerHidden(),
+  }));
+  const rows = shift ? [shiftWire(shift, blind)] : [];
   return wire(paginateFixture(rows, query, (row) => row.id, scenario));
 });
 
 registerMock(getPosShift, ({ params }) => {
   const result = callPosKasirEngine((engine) => {
     const movements = engine.rawMovements(params.shiftId);
-    return { shift: engine.rawShift(), movements };
+    return {
+      shift: engine.rawShift(),
+      movements,
+      blind: engine.drawerHidden(),
+    };
   });
   return wire({
     data: {
-      shift: shiftWire(result.shift!),
+      shift: shiftWire(result.shift!, result.blind),
       movements: result.movements.map((m) => movementWire(m, params.shiftId)),
       receiptGaps: [],
     },
@@ -174,9 +181,9 @@ registerMock(closePosShift, ({ params, body }) => {
       varianceNote: body.varianceNote,
       approvedBy: body.approvedBy,
     });
-    return engine.rawShift();
+    return { shift: engine.rawShift(), blind: engine.drawerHidden() };
   });
-  return wire({ data: shiftWire(shift!) });
+  return wire({ data: shiftWire(shift.shift!, shift.blind) });
 });
 
 registerMock(recordPosCashMovement, ({ params, body }) => {
