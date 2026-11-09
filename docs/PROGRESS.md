@@ -219,3 +219,4 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `30a31a3c` pos-shift (0088-0090; fix ULID legend-xvyr + nama migration pos-day; 6c0 xvyr ditutup).
 - Keputusan founder (9 Nov pagi): rilis TANPA kartu online. Online: QRIS + VA (DOIT). Kasir: tunai, EDC (debit/kredit), QRIS. Kartu online menyusul via Duitku pascarilis. PRD dirapikan (subagent doc-writer).
 - m1 `baf6d615` fix refund Codex R2 (brief 92; 0091 partial unique index fund evidence; gate API 2301 / root 1427).
+- m1 `b8fed67b` fix-auth06 (AUTH-06 redirect ke appHomePath; tanpa migration; gate prep 6c213190 API 2301 / root 1427; e2e auth/roles hijau di cabang menurut CTO, tidak diulang di m1).
