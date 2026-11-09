@@ -37,6 +37,7 @@ import {
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
 import type { PaymentStatus } from "../payment/index.ts";
+import { orderNetSubtotalIdr } from "../tax/net-subtotal.ts";
 // Reuse the merged kitchen contract (legend-acz) for the order id and the
 // `order_issues` vocabularies instead of redefining them (AGENT_PLAYBOOK §2).
 import {
@@ -788,7 +789,16 @@ export const orderQuoteSchema = z
       ["minimumSpend", "shortfallIdr"],
       "shortfallIdr must be the missing amount up to the zone minimum spend",
       quote.minimumSpend.shortfallIdr !==
-        Math.max(0, quote.minimumSpend.requiredIdr - netSubtotal),
+        Math.max(
+          0,
+          quote.minimumSpend.requiredIdr -
+            orderNetSubtotalIdr({
+              subtotalIdr: netSubtotal,
+              serviceChargeIdr: quote.serviceCharge.amountIdr,
+              taxIdr: quote.taxIdr,
+              pricesIncludeTax: quote.pricesIncludeTaxAndService,
+            }),
+        ),
     );
   });
 export type OrderQuote = z.infer<typeof orderQuoteSchema>;

@@ -238,3 +238,20 @@ describe("failed-item recovery and review (ORD-08)", () => {
     assert.equal(domain.promptsGoogleReview(5), true);
   });
 });
+
+describe("minimum spend basis is before tax (legend-v9fh, owner decision Q53)", () => {
+  test("inclusive: service and tax inside the subtotal do not count toward the minimum", () => {
+    // Gross 100.000 with 4.329 service + 9.091 tax inside: pre-tax 86.580.
+    assert.equal(
+      domain.minimumSpendShortfall(100_000, 100_000, 0, 13_420),
+      13_420,
+    );
+    assert.equal(domain.minimumSpendShortfall(86_580, 100_000, 0, 13_420), 0);
+    assert.equal(domain.minimumSpendShortfall(86_581, 100_000, 0, 13_420), 1);
+  });
+
+  test("exclusive: no included charges, unchanged", () => {
+    assert.equal(domain.minimumSpendShortfall(100_000, 100_000, 0), 0);
+    assert.equal(domain.minimumSpendShortfall(100_000, 100_000, 0, 0), 0);
+  });
+});

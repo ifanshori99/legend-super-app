@@ -43,6 +43,7 @@ import {
   sumIdr,
 } from "../core/index.ts";
 import type { Idr, RoundingMode } from "../core/index.ts";
+import { orderNetSubtotalIdr } from "../tax/net-subtotal.ts";
 import { orderQuoteSchema } from "./schemas.ts";
 import type { BillSplitMethod, OrderQuote } from "./schemas.ts";
 
@@ -361,7 +362,19 @@ export function computeQuote(input: {
     priceChanges: input.priceChanges ?? [],
     minimumSpend: {
       requiredIdr: config.minimumSpendIdr,
-      shortfallIdr: idr(Math.max(0, config.minimumSpendIdr - netSubtotal)),
+      // Q53 (legend-v9fh): before tax and service charge, also when inclusive.
+      shortfallIdr: idr(
+        Math.max(
+          0,
+          config.minimumSpendIdr -
+            orderNetSubtotalIdr({
+              subtotalIdr: netSubtotal,
+              serviceChargeIdr: serviceCharge,
+              taxIdr: taxTotal,
+              pricesIncludeTax: inclusive,
+            }),
+        ),
+      ),
     },
     servingEstimate: input.servingEstimate ?? null,
     computedAt: input.computedAt,
