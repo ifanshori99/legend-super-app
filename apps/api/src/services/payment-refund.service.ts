@@ -16,7 +16,11 @@
 // short lease, then the provider call). Every send first re-validates the
 // approval; one that no longer holds is quarantined, never sent.
 
-import { AccessError, type PermissionCode } from "@starter/shared/access";
+import {
+  AccessError,
+  assertSurfaceAccess,
+  type PermissionCode,
+} from "@starter/shared/access";
 import {
   CoreError,
   userIdSchema,
@@ -319,6 +323,8 @@ async function failRefund(
     code?: string;
     /** Another worker holds the lease: leave its lease fields alone. */
     keepLease?: boolean;
+    /** Extra audit facts merged into `after` (e.g. the quarantine defect). */
+    detail?: Record<string, unknown>;
     now: Date;
   },
 ): Promise<Refund> {
@@ -355,6 +361,7 @@ async function failRefund(
       status: updated.status,
       failureReason: input.reason,
       ...(input.code ? { providerCode: input.code } : {}),
+      ...input.detail,
     },
   });
   return updated;
@@ -1008,7 +1015,7 @@ async function quarantinePayout(
   });
   logger.error(
     { refundId: refund.id, defect },
-    "Refund payout quarantined: approval failed re-validation; reconcile manually",
+    "Refund payout quarantined: approval failed re-validation; reconcile manually (never release or re-open it after paying by hand at the provider)",
   );
   return held;
 }
@@ -1521,7 +1528,7 @@ const quarantined = () =>
   new HttpError(
     409,
     "PAYOUT_QUARANTINED",
-    "Refund approval failed re-validation; it cannot be paid out. Reconcile it manually.",
+    "Refund approval failed re-validation; it cannot be paid out. Reconcile it manually; after paying by hand at the provider, never release or re-open it.",
   );
 
 export async function retryRefundPayout(
@@ -1580,6 +1587,227 @@ export async function retryRefundPayout(
       "Map the fund to its source evidence (sourceEvidenceId) before retrying.",
     );
   return loadView(context, params.refundId, actor);
+}
+
+// ------------------------------------------- quarantine ops (legend-e8z5)
+
+/** An earlier attempt may have reached the provider (lookup-only settles it). */
+function maybeSentOf(refund: Refund): boolean {
+  return (
+    refund.payoutAttempts > 0 ||
+    refund.payoutPendingPolls > 0 ||
+    refund.providerRef !== null
+  );
+}
+
+type QuarantineAction = "release" | "reopen";
+
+/**
+ * Withdraws the refund's own still-pending chain. Only a chain bound to this
+ * refund (chainBound): a chain id pointing at another refund's live chain
+ * (`chain_unbound`) is left alone, or that refund would fail as expired.
+ */
+async function cancelOwnOpenChain(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  actor: string,
+  now: Date,
+): Promise<void> {
+  if (refund.approvalChainId === null) return;
+  const rows = await chainRowsOf(tx, refund.tenantId, refund.approvalChainId);
+  if (
+    !chainBound(rows, refund) ||
+    !rows.some((row) => row.status === "pending")
+  )
+    return;
+  await cancelApprovalRequest(tx, context, {
+    chainId: refund.approvalChainId,
+    sourceModule: REFUND_SOURCE_MODULE,
+    actorUserId: actor,
+    now,
+  });
+}
+
+/**
+ * Ops action on a never-sent quarantined refund, which otherwise reserves its
+ * amount forever. `release` ends it `failed` (`approver_unauthorized`, frees
+ * the amount); `reopen` returns it to `pending` without its approval, so the
+ * normal approve/reject flow (matrix, supervisor, MFA, distinct actor) decides
+ * it again; the old chain stays as history. Both first cancel the refund's
+ * own still-pending level (its approval.resolved then settles nothing: the
+ * refund is failed or no longer points at it). A maybe-sent refund is refused: it
+ * still settles through its provider lookup. Never use either after ops paid
+ * the customer by hand at the provider.
+ *
+ * Under the intent -> fund -> refund locks. The actor checks (payment.reconcile,
+ * pos.refund.approve at the outlet, not the requester, MFA on the dashboard)
+ * run before the idempotent write; the state checks inside it, so a same-key
+ * replay returns the stored result instead of a 409.
+ */
+async function actOnQuarantine(
+  context: ScopedTenantContext,
+  actor: string,
+  refundId: string,
+  action: QuarantineAction,
+  note: string,
+  key: string,
+  opts: DecideOptions,
+) {
+  const now = new Date();
+  await withTenant(db, context, async (tx) => {
+    const locked = await lockRefundGraph(tx, context.tenant.tenantId, refundId);
+    const { refund } = locked;
+    await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
+    if (
+      !(await holdsPermission(
+        tx,
+        context,
+        actor,
+        SUPERVISOR_PERMISSION,
+        refund.outletId,
+        now,
+      ))
+    )
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Your account cannot perform this action.",
+      );
+    if (actor.toLowerCase() === refund.requestedBy.toLowerCase())
+      throw new AccessError("APPROVER_IS_REQUESTER");
+    const access = await loadTenantAccessInTransaction(tx, context, actor);
+    assertSurfaceAccess({
+      principal: {
+        tenantId: context.tenant.tenantId,
+        userId: userIdSchema.parse(actor),
+        assignments: access.assignments,
+      },
+      roles: access.roles,
+      surface: "dashboard",
+      mfaVerified: opts.mfaVerified,
+      now,
+    });
+    return idempotentPaymentAdminWrite(
+      tx,
+      context,
+      actor,
+      key,
+      `refund.quarantine_${action}`,
+      { refundId: refund.id, note },
+      async () => {
+        if (
+          refund.status !== "approved" ||
+          refund.lastPayoutError !== PAYOUT_QUARANTINED
+        )
+          throw new HttpError(
+            409,
+            "REFUND_NOT_QUARANTINED",
+            "Only an approved refund held by the payout quarantine can be released or re-opened.",
+          );
+        if (maybeSentOf(refund))
+          throw new HttpError(
+            409,
+            "REFUND_PAYOUT_MAYBE_SENT",
+            "A payout attempt may have reached the provider; the provider lookup settles this refund.",
+          );
+        const defect = await approvalDefectOf(tx, context, refund, now);
+        // Its own chain still open (never resolved) would block a new one
+        // and leave a level in the inbox.
+        await cancelOwnOpenChain(tx, context, refund, actor, now);
+        if (action === "release") {
+          await failRefund(tx, context, refund, {
+            reason: "approver_unauthorized",
+            action: "payment.refund_quarantine_released",
+            actorId: actor,
+            note,
+            detail: { defect },
+            now,
+          });
+          return { action };
+        }
+        const [reopened] = await tx
+          .update(paymentRefunds)
+          .set({
+            status: "pending",
+            approvedBy: null,
+            decidedAt: null,
+            approvalChainId: null,
+            lastPayoutError: null,
+            payoutClaimedUntil: null,
+            payoutClaimToken: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, refund.tenantId),
+              eq(paymentRefunds.id, refund.id),
+              eq(paymentRefunds.status, "approved"),
+              eq(paymentRefunds.lastPayoutError, PAYOUT_QUARANTINED),
+              eq(paymentRefunds.payoutAttempts, 0),
+              eq(paymentRefunds.payoutPendingPolls, 0),
+              isNull(paymentRefunds.providerRef),
+            ),
+          )
+          .returning();
+        if (!reopened) throw new Error("refund changed under its row lock");
+        await refundAudit(tx, context, {
+          actorId: actor,
+          row: reopened,
+          action: "payment.refund_quarantine_reopened",
+          now,
+          reason: note,
+          before: {
+            status: refund.status,
+            approvalChainId: refund.approvalChainId,
+            approvedBy: refund.approvedBy,
+            decidedAt: refund.decidedAt?.toISOString() ?? null,
+            defect,
+          },
+          after: { amountIdr: reopened.amountIdr, status: reopened.status },
+        });
+        return { action };
+      },
+    );
+  });
+  return loadView(context, refundId, actor);
+}
+
+export async function releaseQuarantinedRefund(
+  context: ScopedTenantContext,
+  actor: string,
+  params: { refundId: string },
+  input: contract.QuarantinedRefundActionInput,
+  key: string,
+  opts: DecideOptions,
+) {
+  return actOnQuarantine(
+    context,
+    actor,
+    params.refundId,
+    "release",
+    input.note.trim(),
+    key,
+    opts,
+  );
+}
+
+export async function reopenQuarantinedRefund(
+  context: ScopedTenantContext,
+  actor: string,
+  params: { refundId: string },
+  input: contract.QuarantinedRefundActionInput,
+  key: string,
+  opts: DecideOptions,
+) {
+  return actOnQuarantine(
+    context,
+    actor,
+    params.refundId,
+    "reopen",
+    input.note.trim(),
+    key,
+    opts,
+  );
 }
 
 function isUniqueViolation(error: unknown, depth = 0): boolean {

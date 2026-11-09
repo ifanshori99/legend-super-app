@@ -265,6 +265,28 @@ paymentAdminRouter.post(
     });
   },
 );
+for (const [endpoint, run] of [
+  [contract.releaseQuarantinedRefund, refunds.releaseQuarantinedRefund],
+  [contract.reopenQuarantinedRefund, refunds.reopenQuarantinedRefund],
+] as const)
+  paymentAdminRouter.post(
+    route(endpoint.path),
+    jsonBody,
+    reconcileRecord,
+    async (req, res) => {
+      const input = endpoint.body.parse(req.body);
+      res.json({
+        data: await run(
+          scope(req),
+          actor(req),
+          endpoint.params.parse(req.params),
+          input,
+          input.idempotencyKey,
+          { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+        ),
+      });
+    },
+  );
 paymentAdminRouter.get(
   route(contract.listUnallocatedFunds.path),
   reconcileQuery,

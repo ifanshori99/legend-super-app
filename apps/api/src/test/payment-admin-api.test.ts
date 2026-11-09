@@ -165,6 +165,10 @@ afterAll(async () => {
     "DELETE FROM payment_evidence WHERE payment_intent_id = $1",
     [raceIntentId],
   );
+  await owner.query(
+    "DELETE FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [otherTenant, otherIntent],
+  );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     [intentId, raceIntentId, otherIntent],
   ]);
@@ -209,6 +213,34 @@ describe("WS-05 payment administration", () => {
         reason: "Cross tenant",
       });
     expect([403, 404]).toContain(response.status);
+  });
+
+  it("TEN-02 cannot release or re-open another tenant's quarantined refund", async () => {
+    const otherRefund = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                    requested_by, approved_by, decided_at, last_payout_error)
+       VALUES ($1, $2, $3, $4, 1000, 'Other tenant refund', 'approved', 'seed', 'seed-approver', now(), 'PAYOUT_QUARANTINED')`,
+      [otherRefund, otherTenant, otherOutlet, otherIntent],
+    );
+    for (const action of ["release", "reopen"]) {
+      const response = await manager
+        .post(`/api/payments/admin/refunds/${otherRefund}/quarantine/${action}`)
+        .set(originHeader)
+        .send({
+          idempotencyKey: `cross-${randomUUID()}`,
+          note: "Cross tenant attempt",
+        });
+      expect([403, 404]).toContain(response.status);
+    }
+    const { rows } = await owner.query(
+      "SELECT status, last_payout_error FROM payment_refunds WHERE id = $1",
+      [otherRefund],
+    );
+    expect(rows[0]).toEqual({
+      status: "approved",
+      last_payout_error: "PAYOUT_QUARANTINED",
+    });
   });
 
   it("TEN-03 denies access to another outlet's payment", async () => {

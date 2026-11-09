@@ -1102,3 +1102,505 @@ describe("PAY-04 legend-wam2: the single-evidence fallback is persisted before t
     expect(await fundEvidenceId(seeded.fundId)).toBe(seeded.evidenceA.id);
   });
 });
+
+// legend-e8z5: a never-sent quarantined refund (approved, PAYOUT_QUARANTINED,
+// no attempt, no poll, no provider ref) reserves its amount forever. Ops can
+// release it (it ends failed, approver_unauthorized) or re-open it (back to
+// pending, a fresh approval decides it). Actor: payment.reconcile plus
+// pos.refund.approve at the outlet, never the requester, MFA when a role
+// requires it. Anything else answers 409.
+describe("PAY-04 legend-e8z5: ops release or re-open a never-sent quarantined refund", () => {
+  let noMfa: Client;
+
+  beforeAll(async () => {
+    // Finance (MFA role) plus supervisor, whose session never verified MFA.
+    noMfa = agent(app);
+    await signUp(noMfa, "Codex fix no MFA");
+    const session = await noMfa.get("/api/auth/get-session");
+    const userId = session.body.user.id as string;
+    userIds.push(userId);
+    for (const [templateKey, scopeType, scopeId] of [
+      ["finance", "tenant", null],
+      ["supervisor", "outlet", outletA],
+    ] as const)
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', $2)`,
+        [tenantId, userId, await roleIdOf(templateKey), scopeType, scopeId],
+      );
+  });
+
+  const act = (
+    client: Client,
+    action: "release" | "reopen",
+    id: string,
+    idempotencyKey = key(action),
+    note = "Persetujuan lama tidak sah, diputuskan ops.",
+  ) =>
+    client
+      .post(`${ADMIN}/refunds/${id}/quarantine/${action}`)
+      .set(originHeader)
+      .send({ idempotencyKey, note });
+
+  /** A quarantined, never-sent Rp30.000 refund on a Rp100.000 intent. */
+  async function seedQuarantined(requestedBy = requesterId) {
+    const refundId = await seedLegacyApprovedRefund(0);
+    if (requestedBy !== requesterId)
+      await owner.query(
+        "UPDATE payment_refunds SET requested_by = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, refundId, requestedBy],
+      );
+    await runRefundPayout(tenantWide, refundId);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      payout_attempts: 0,
+      provider_ref: null,
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    const { rows } = await owner.query<{ payment_intent_id: string }>(
+      "SELECT payment_intent_id FROM payment_refunds WHERE tenant_id = $1 AND id = $2",
+      [tenantId, refundId],
+    );
+    return { refundId, intentId: rows[0]!.payment_intent_id };
+  }
+
+  async function opsAudits(refundId: string, action: string) {
+    const { rows } = await owner.query<{
+      reason: string | null;
+      actor: string | null;
+      after: Record<string, unknown> | null;
+    }>(
+      `SELECT event->>'reason' AS reason, event->>'actorId' AS actor,
+              event->'maskedChanges'->'after' AS after
+       FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'objectId' = $2 AND event->>'action' = $3`,
+      [tenantId, refundId, action],
+    );
+    return rows;
+  }
+
+  const createFull = (intentId: string) =>
+    ownerB
+      .post(`${ADMIN}/refunds`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("full"),
+        paymentIntentId: intentId,
+        amountIdr: 100_000,
+        reason: "Refund penuh setelah rilis karantina",
+      });
+
+  it("PAY-04 release fails the refund (approver_unauthorized), frees the reserved amount, audits once, and a same-key replay is a no-op", async () => {
+    const { refundId, intentId } = await seedQuarantined();
+    const blocked = await createFull(intentId);
+    expect(blocked.status).toBe(409);
+
+    const releaseKey = key("release");
+    const released = await act(ownerB, "release", refundId, releaseKey);
+    expect(released.status).toBe(200);
+    expect(released.body.data.status).toBe("failed");
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "approver_unauthorized",
+    });
+    const audits = await opsAudits(
+      refundId,
+      "payment.refund_quarantine_released",
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      reason: "Persetujuan lama tidak sah, diputuskan ops.",
+      after: { defect: "supervisor_required", status: "failed" },
+    });
+
+    const replay = await act(ownerB, "release", refundId, releaseKey);
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.status).toBe("failed");
+    expect(
+      await opsAudits(refundId, "payment.refund_quarantine_released"),
+    ).toHaveLength(1);
+    const reused = await act(
+      ownerB,
+      "release",
+      refundId,
+      releaseKey,
+      "Catatan lain untuk kunci yang sama.",
+    );
+    expect(reused.status).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+
+    const full = await createFull(intentId);
+    expect(full.status).toBe(201);
+    refundIds.push(full.body.data.id as string);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("PAY-04 re-open returns the refund to pending with no approval, audits once, and a supervisor approval then pays it out", async () => {
+    const { refundId } = await seedQuarantined();
+    const reopenKey = key("reopen");
+    const reopened = await act(ownerB, "reopen", refundId, reopenKey);
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.data.status).toBe("pending");
+    const { rows } = await owner.query(
+      `SELECT status, approved_by, decided_at, approval_chain_id, last_payout_error,
+              payout_claimed_until, payout_claim_token, failure_reason
+       FROM payment_refunds WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId],
+    );
+    expect(rows[0]).toEqual({
+      status: "pending",
+      approved_by: null,
+      decided_at: null,
+      approval_chain_id: null,
+      last_payout_error: null,
+      payout_claimed_until: null,
+      payout_claim_token: null,
+      failure_reason: null,
+    });
+    expect(
+      await opsAudits(refundId, "payment.refund_quarantine_reopened"),
+    ).toHaveLength(1);
+    const replay = await act(ownerB, "reopen", refundId, reopenKey);
+    expect(replay.status).toBe(200);
+    expect(
+      await opsAudits(refundId, "payment.refund_quarantine_reopened"),
+    ).toHaveLength(1);
+
+    // Still reserved while pending; the sweep never pays a pending refund.
+    await sweep();
+    expect(callsOf(refundId)).toHaveLength(0);
+
+    // The normal flow: finance-only is refused, a supervisor approver pays.
+    expect((await approve(financeB, refundId)).status).toBe(403);
+    const paid = await approve(financeSup, refundId);
+    expect(paid.status).toBe(200);
+    expect(paid.body.data.status).toBe("completed");
+    expect(callsOf(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 re-open of a chain-approved refund keeps the old chain as history and a second chain (finance + supervisor) pays it out", async () => {
+    const intent = await seedPaid(2_000_000);
+    const refundId = await insertPendingRefund(
+      intent.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const oldChain = (await refundRow(refundId)).approval_chain_id!;
+    const old1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+    await decide(financeBId, old1.id, "approved");
+    const old2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+    await decide(supervisorId, old2.id, "approved");
+    // Left approved and quarantined before any send (as a legacy row would be).
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
+              last_payout_error = 'PAYOUT_QUARANTINED'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId, supervisorId],
+    );
+
+    const reopened = await act(ownerB, "reopen", refundId);
+    expect(reopened.status).toBe(200);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "pending",
+      approval_chain_id: null,
+    });
+    // A late delivery of the old chain's event settles nothing now.
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(oldChain),
+    );
+    expect((await refundRow(refundId)).status).toBe("pending");
+
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const newChain = (await refundRow(refundId)).approval_chain_id;
+    expect(newChain).not.toBeNull();
+    expect(newChain).not.toBe(oldChain);
+    const fresh = await owner.query<{ id: string; level: number }>(
+      "SELECT id, level FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 ORDER BY level",
+      [tenantId, newChain],
+    );
+    await decide(financeCId, fresh.rows[0]!.id, "approved");
+    const level2 = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
+      [tenantId, newChain],
+    );
+    await decide(supervisorId, level2.rows[0]!.id, "approved");
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(newChain!),
+    );
+    expect((await refundRow(refundId)).status).toBe("approved");
+    await ageRefund(refundId);
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    const oldRows = await owner.query(
+      "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2",
+      [tenantId, oldChain],
+    );
+    expect(oldRows.rows.map((r) => r.status)).toEqual(["approved", "approved"]);
+  });
+
+  const chainStatuses = async (chainId: string) =>
+    (
+      await owner.query<{ status: string }>(
+        "SELECT status FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 ORDER BY level",
+        [tenantId, chainId],
+      )
+    ).rows.map((r) => r.status);
+
+  /** A Rp2.000.000 refund whose chain is opened (level 1 pending), then left approved and quarantined before any send. */
+  async function seedQuarantinedWithPendingChain() {
+    const intent = await seedPaid(2_000_000);
+    const refundId = await insertPendingRefund(
+      intent.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const chainId = (await refundRow(refundId)).approval_chain_id!;
+    expect(await chainStatuses(chainId)).toEqual(["pending"]);
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'approved', approved_by = $3, decided_at = now(),
+              updated_at = now() - interval '2 hours'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, refundId, supervisorId],
+    );
+    await runRefundPayout(tenantWide, refundId);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      last_payout_error: PAYOUT_QUARANTINED,
+    });
+    expect(await quarantineAudits(refundId)).toEqual([
+      { reason: "chain_not_approved" },
+    ]);
+    return { refundId, chainId };
+  }
+
+  it("PAY-04 re-open of a refund whose chain id points at another refund's live chain leaves that chain and refund alone", async () => {
+    // Refund B: its chain is open (level 1 pending).
+    const intentB = await seedPaid(2_000_000);
+    const refundB = await insertPendingRefund(
+      intentB.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    expect((await approve(financeA, refundB)).status).toBe(200);
+    const chainB = (await refundRow(refundB)).approval_chain_id!;
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+
+    // Refund A: approved with B's chain id (unbound), quarantined before any
+    // send. payment_refunds_approval_chain_uq lets one row hold a chain id, so
+    // B's pointer is moved off first; the chain rows stay B's and pending.
+    await owner.query(
+      "UPDATE payment_refunds SET approval_chain_id = NULL WHERE tenant_id = $1 AND id = $2",
+      [tenantId, refundB],
+    );
+    const intentA = await seedPaid(2_000_000);
+    const refundA = randomUUID();
+    refundIds.push(refundA);
+    await owner.query(
+      `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+                                    requested_by, approved_by, decided_at, approval_chain_id, updated_at)
+       VALUES ($1, $2, $3, $4, 2000000, 'Pengembalian uji', 'approved', 'system:reservation', $5,
+               now() - interval '3 hours', $6, now() - interval '2 hours')`,
+      [refundA, tenantId, outletA, intentA.intentId, supervisorId, chainB],
+    );
+    await runRefundPayout(tenantWide, refundA);
+    expect((await refundRow(refundA)).last_payout_error).toBe(
+      PAYOUT_QUARANTINED,
+    );
+    expect(await quarantineAudits(refundA)).toEqual([
+      { reason: "chain_unbound" },
+    ]);
+
+    const reopened = await act(ownerB, "reopen", refundA);
+    expect(reopened.status).toBe(200);
+    expect(await refundRow(refundA)).toMatchObject({
+      status: "pending",
+      approval_chain_id: null,
+    });
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+    expect(await refundRow(refundB)).toMatchObject({
+      status: "pending",
+      failure_reason: null,
+    });
+    expect(await decisions(refundB)).toMatchObject([
+      { level: 1, status: "pending" },
+    ]);
+
+    // A opens its own chain on approve; B's stays open.
+    expect((await approve(financeA, refundA)).status).toBe(200);
+    const chainA = (await refundRow(refundA)).approval_chain_id;
+    expect(chainA).not.toBeNull();
+    expect(chainA).not.toBe(chainB);
+    expect(await decisions(refundA)).toMatchObject([
+      { level: 1, status: "pending" },
+    ]);
+    expect(await chainStatuses(chainB)).toEqual(["pending"]);
+    expect((await refundRow(refundB)).status).toBe("pending");
+    expect(fake.calls.filter((c) => c.refundId === refundA)).toHaveLength(0);
+  });
+
+  it("PAY-04 release of a chain_not_approved refund cancels its pending level, fails it, audits once, and the cancelled event changes nothing", async () => {
+    const { refundId, chainId } = await seedQuarantinedWithPendingChain();
+
+    const released = await act(ownerB, "release", refundId);
+    expect(released.status).toBe(200);
+    expect(released.body.data.status).toBe("failed");
+    expect(await chainStatuses(chainId)).toEqual(["cancelled"]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "approver_unauthorized",
+    });
+    const audits = await opsAudits(
+      refundId,
+      "payment.refund_quarantine_released",
+    );
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after).toMatchObject({ defect: "chain_not_approved" });
+
+    // The approval.resolved(cancelled) delivery finds it already failed.
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(chainId),
+    );
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "failed",
+      failure_reason: "approver_unauthorized",
+    });
+    expect(await opsAudits(refundId, "payment.refund_expired")).toHaveLength(0);
+    expect(callsOf(refundId)).toHaveLength(0);
+  });
+
+  it("PAY-04 re-open with its own still-pending chain cancels the old level, and a second chain opens and pays out", async () => {
+    const { refundId, chainId: oldChain } =
+      await seedQuarantinedWithPendingChain();
+
+    const reopened = await act(ownerB, "reopen", refundId);
+    expect(reopened.status).toBe(200);
+    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "pending",
+      approval_chain_id: null,
+    });
+    // The old chain's cancelled event settles nothing now.
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(oldChain),
+    );
+    expect((await refundRow(refundId)).status).toBe("pending");
+
+    // A second pending row for the same refund (approval_requests_one_pending_key).
+    expect((await approve(financeA, refundId)).status).toBe(200);
+    const newChain = (await refundRow(refundId)).approval_chain_id!;
+    expect(newChain).not.toBeNull();
+    expect(newChain).not.toBe(oldChain);
+    const level1 = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 1",
+      [tenantId, newChain],
+    );
+    await decide(financeBId, level1.rows[0]!.id, "approved");
+    const level2 = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND chain_id = $2 AND level = 2",
+      [tenantId, newChain],
+    );
+    await decide(supervisorId, level2.rows[0]!.id, "approved");
+    await handleRefundApprovalResolved(
+      workerContext,
+      await resolvedEventOfChain(newChain),
+    );
+    expect((await refundRow(refundId)).status).toBe("approved");
+    await ageRefund(refundId);
+    await sweep();
+
+    expect(callsOf(refundId)).toHaveLength(1);
+    expect(await refundRow(refundId)).toMatchObject({ status: "completed" });
+    expect(await chainStatuses(oldChain)).toEqual(["cancelled"]);
+  });
+
+  for (const action of ["release", "reopen"] as const) {
+    describe(`${action} is refused`, () => {
+      async function expectUntouched(refundId: string) {
+        expect(await refundRow(refundId)).toMatchObject({
+          status: "approved",
+          last_payout_error: PAYOUT_QUARANTINED,
+        });
+        expect(
+          await opsAudits(
+            refundId,
+            action === "release"
+              ? "payment.refund_quarantine_released"
+              : "payment.refund_quarantine_reopened",
+          ),
+        ).toHaveLength(0);
+      }
+
+      it(`PAY-04 ${action}: the requester is refused (APPROVER_IS_REQUESTER)`, async () => {
+        const { refundId } = await seedQuarantined(financeSupId);
+        const response = await act(financeSup, action, refundId);
+        expect(response.status).toBe(403);
+        expect(response.body.error.code).toBe("APPROVER_IS_REQUESTER");
+        await expectUntouched(refundId);
+      });
+
+      it(`PAY-04 ${action}: an actor without pos.refund.approve is refused`, async () => {
+        const { refundId } = await seedQuarantined();
+        const response = await act(financeB, action, refundId);
+        expect(response.status).toBe(403);
+        expect(response.body.error.code).toBe("PERMISSION_DENIED");
+        await expectUntouched(refundId);
+      });
+
+      it(`PAY-04 ${action}: an actor whose MFA role was not verified this session is refused`, async () => {
+        const { refundId } = await seedQuarantined();
+        const response = await act(noMfa, action, refundId);
+        expect(response.status).toBe(403);
+        expect(response.body.error.code).toBe("MFA_REQUIRED");
+        await expectUntouched(refundId);
+      });
+
+      it(`PAY-04 ${action}: a note under 3 code points is refused`, async () => {
+        const { refundId } = await seedQuarantined();
+        const response = await act(ownerB, action, refundId, key(), " 😀😀 ");
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(response.status).toBeLessThan(500);
+        await expectUntouched(refundId);
+      });
+
+      it(`PAY-04 ${action}: a refund that is not quarantined answers 409`, async () => {
+        const approvedId = await seedApprovedRefund(financeSupId);
+        const approved = await act(ownerB, action, approvedId);
+        expect(approved.status).toBe(409);
+        expect(approved.body.error.code).toBe("REFUND_NOT_QUARANTINED");
+        const intent = await seedPaid();
+        const pendingId = await insertPendingRefund(
+          intent.intentId,
+          50_000,
+          financeAId,
+        );
+        const pending = await act(ownerB, action, pendingId);
+        expect(pending.status).toBe(409);
+        expect(await refundRow(approvedId)).toMatchObject({
+          status: "approved",
+          last_payout_error: null,
+        });
+        expect((await refundRow(pendingId)).status).toBe("pending");
+      });
+
+      it(`PAY-04 ${action}: a maybe-sent quarantined refund answers 409`, async () => {
+        const refundId = await seedLegacyApprovedRefund(1);
+        await runRefundPayout(tenantWide, refundId);
+        expect((await refundRow(refundId)).last_payout_error).toBe(
+          PAYOUT_QUARANTINED,
+        );
+        const response = await act(ownerB, action, refundId);
+        expect(response.status).toBe(409);
+        expect(response.body.error.code).toBe("REFUND_PAYOUT_MAYBE_SENT");
+        await expectUntouched(refundId);
+      });
+    });
+  }
+});

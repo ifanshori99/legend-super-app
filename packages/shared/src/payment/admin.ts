@@ -315,6 +315,24 @@ export type RetryRefundPayoutInput = z.infer<
   typeof retryRefundPayoutInputSchema
 >;
 
+/** Ops note on a quarantine action: 3 to 500 code points once trimmed. */
+const quarantineNoteSchema = z
+  .string()
+  .trim()
+  .refine((note) => {
+    const length = Array.from(note).length;
+    return length >= 3 && length <= 500;
+  }, "Note must be 3 to 500 characters.");
+
+/** Body of a quarantine release or re-open (legend-e8z5). */
+export const quarantinedRefundActionInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  note: quarantineNoteSchema,
+});
+export type QuarantinedRefundActionInput = z.infer<
+  typeof quarantinedRefundActionInputSchema
+>;
+
 // ---- Unallocated funds (PAY-04) -----------------------------------------
 
 export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
@@ -515,6 +533,34 @@ export const retryRefundPayout = defineEndpoint({
   path: `${ADMIN}/refunds/:refundId/retry`,
   params: refundParams,
   body: retryRefundPayoutInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Ops action on a never-sent quarantined refund (`approved`,
+ * PAYOUT_QUARANTINED, no attempt, no poll, no provider ref): it ends `failed`
+ * (`approver_unauthorized`), which frees the reserved amount. Needs
+ * payment.reconcile plus pos.refund.approve at the outlet, never the
+ * requester, MFA when a role requires it. 409 REFUND_NOT_QUARANTINED, or
+ * REFUND_PAYOUT_MAYBE_SENT when an attempt may have reached the provider.
+ * Never use it after paying the customer by hand at the provider.
+ */
+export const releaseQuarantinedRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/quarantine/release`,
+  params: refundParams,
+  body: quarantinedRefundActionInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/**
+ * Same actor, preconditions and answers as releaseQuarantinedRefund, but the
+ * refund returns to `pending` without its approval (the old chain stays as
+ * history): approveRefund / rejectRefund then decide it again.
+ */
+export const reopenQuarantinedRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/quarantine/reopen`,
+  params: refundParams,
+  body: quarantinedRefundActionInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
 
