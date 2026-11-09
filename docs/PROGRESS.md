@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-mxxev audit buta untuk angka laci shift sendiri (engineer, cabang `ws/day-closed-audit-blind` dari fa472534, 2026-11-09)
+
+- Sudah: `GET /audit-events` (audit.log.view) menyamarkan angka laci ("[REDACTED]") saat dibaca, untuk pembaca tanpa `pos.day.close` di outlet itu. Baris `pos_daily_close` (`totalVarianceIdr`) disamarkan bila pembaca punya shift di outlet+tanggal itu. Baris `pos_shift`, `pos_shift_count`, dan override `cash_shift_close` (expected/variance/difference/kas keluar, plus `valueIdr` = |selisih|) disamarkan bila shift-nya milik pembaca (id hitungan dipetakan ke shift) atau pembaca adalah peminta override. Baris yang tidak bisa dipetakan ditutup (fail closed). Pola sama dengan hitung stok buta legend-zbzr.
+- Event outbox `day.closed` tidak berubah. Satu-satunya konsumen (potong resep) hanya membaca outletId + businessDate. Tidak ada pembaca HTTP outbox. Data audit tersimpan utuh, jadi manager, owner, dan supervisor lain tetap melihat angka penuh. Tanpa migrasi.
+- Review K: reviewer Opus + architect, 3 putaran. Temuan nyata dibetulkan: baris shift/count bocor, `valueIdr` bocor, objectId override adalah id hitungan, test override kosong, pengecualian `pos.day.close` dipindah ke outlet shift. Berikut: second-opinion Codex (brief `docs/briefs/190c-second-opinion-day-closed-audit.md` di folder utama), merge train.
+
 ## legend-awg5p laporan harian buta untuk shift sendiri (engineer, cabang `ws/day-report-blind` dari m1 12c91f6b, 2026-11-09)
 
 - Sudah: `GET /pos/day` memberi recap buta (`endOfDayBlindRecapSchema`, `drawerFiguresHidden: true`) bila pemanggil tidak punya `pos.day.close` di outlet dan punya shift (`pos_shifts.cashier_id`) di tanggal bisnis itu, sebelum maupun sesudah tutup hari (recap live dan beku). Kosong: `cashVarianceIdr` + `expiredCashOutIdr` tiap perangkat tempat ia ber-shift, `totalVarianceIdr`, `totalExpiredCashOutIdr`, dan semua jumlah per metode. Baris metode selalu daftar tetap `POS_TENDER_METHODS` (temuan architect K: metode yang muncul membocorkan net tunai di hari satu perangkat, tunai saja). Outlet manager ke atas dan supervisor tanpa shift: recap penuh seperti sebelumnya. POST close tetap recap penuh.
