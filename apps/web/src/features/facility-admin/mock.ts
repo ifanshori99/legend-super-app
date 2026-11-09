@@ -155,6 +155,7 @@ function assertFresh(current: string | null, expected: string | null) {
 function withoutStamp<T extends { expectedUpdatedAt: string | null }>(
   body: T,
 ): Omit<T, "expectedUpdatedAt"> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- omit field
   const { expectedUpdatedAt: _stamp, ...rest } = body;
   return rest;
 }

@@ -107,13 +107,28 @@ export function GeneralTab({
   // The stamp of the row the form was filled from, not of the latest refetch:
   // a refetch swaps `facility` while the form keeps the old values, so saving
   // with the new stamp would overwrite another admin's edit. Advances only
-  // after our own save.
+  // after our own save, or after a conflict once the refetch brought a newer
+  // row (see the conflict reset below).
   const [stamp, setStamp] = React.useState(facility.updatedAt);
+  const [conflictPending, setConflictPending] = React.useState(false);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [hoursErrors, setHoursErrors] = React.useState<Record<number, string>>(
     {},
   );
   const [formError, setFormError] = React.useState<string>();
+
+  // After a 409/412 the hook refetches the config. Once the refetched row
+  // differs from the one the form was filled from, refill the form and take
+  // its stamp, or every retry would send the old stamp and fail again. Plain
+  // refetches never get here, so unsaved edits survive them. Set during render
+  // (React's "adjust state when a prop changes" pattern), not in an effect.
+  if (conflictPending && facility.updatedAt !== stamp) {
+    setConflictPending(false);
+    setValues(initialValues(facility));
+    setStamp(facility.updatedAt);
+    setErrors({});
+    setHoursErrors({});
+  }
 
   const update = (patch: Partial<GeneralValues>) =>
     setValues((current) => ({ ...current, ...patch }));
@@ -318,6 +333,7 @@ export function GeneralTab({
       return;
     }
 
+    setConflictPending(false);
     updateFacility.mutate(
       { body: parsed.data, expectedUpdatedAt: stamp },
       {
@@ -325,12 +341,18 @@ export function GeneralTab({
           setStamp(saved.updatedAt);
           toast({ title: t("facilityAdmin.general.saved"), tone: "success" });
         },
-        onError: (error) =>
+        onError: (error) => {
+          if (
+            error instanceof ApiError &&
+            (error.status === 409 || error.status === 412)
+          )
+            setConflictPending(true);
           setFormError(
             error instanceof ApiError
               ? error.message
               : t("facilityAdmin.general.saveFailed"),
-          ),
+          );
+        },
       },
     );
   }

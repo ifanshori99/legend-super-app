@@ -1095,6 +1095,7 @@ describe("Facility config: expectedUpdatedAt + idempotency (legend-6jms)", () =>
       .send({ facilityId, name: "Lain", priceIdr: 1000, idempotencyKey });
     expect(otherKind.status).toBe(409);
     // A key is required.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- omit field
     const { idempotencyKey: _omit, ...withoutKey } = body;
     expect(
       (

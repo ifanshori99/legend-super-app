@@ -4,7 +4,6 @@
 // enforced), one seeded facility per test, fixed `now`.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outletIdSchema } from "@starter/shared/core";
 import {

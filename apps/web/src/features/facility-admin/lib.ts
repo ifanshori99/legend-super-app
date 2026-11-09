@@ -232,11 +232,10 @@ function parseFormDraft<S extends z.ZodType>(
 ): FormParseResult<S> {
   const result = schema.safeParse({ ...draft, ...placeholder });
   if (!result.success) return { success: false, error: result.error };
-  const {
-    expectedUpdatedAt: _stamp,
-    idempotencyKey: _key,
-    ...rest
-  } = result.data as Record<string, unknown>;
+  // Drop the placeholders: the hooks fill the real stamp and key.
+  const rest = { ...(result.data as Record<string, unknown>) };
+  delete rest.expectedUpdatedAt;
+  delete rest.idempotencyKey;
   return { success: true, data: rest as FormDraft<z.output<S>> };
 }
 

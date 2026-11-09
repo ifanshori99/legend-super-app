@@ -279,11 +279,15 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
     const outbox = await owner.query(
       `SELECT event, destination FROM domain_event_outbox
         WHERE tenant_id = $1 AND aggregate_type = 'facility_incident'
-          AND aggregate_id = $2`,
+          AND aggregate_id = $2
+        ORDER BY destination`,
       [tenant.id, response.body.data.id],
     );
-    expect(outbox.rows).toHaveLength(1);
-    expect(outbox.rows[0].destination).toBe("cloud-sync");
+    // Both destinations: cloud-sync, and notification for the worker rule.
+    expect(outbox.rows.map((r) => r.destination)).toEqual([
+      "cloud-sync",
+      "notification",
+    ]);
     expect(outbox.rows[0].event).toMatchObject({
       name: "facility_incident.raised",
       outletId: outletA.id,
@@ -348,7 +352,18 @@ describe("Raise and respond to a facility incident (FAC-08)", () => {
           AND aggregate_id = $2`,
       [tenant.id, first.body.data.id],
     );
-    expect(events.rows[0].n).toBe(1);
+    expect(events.rows[0].n).toBe(2);
+    const destinations = await owner.query(
+      `SELECT destination, count(*)::int AS n FROM domain_event_outbox
+        WHERE tenant_id = $1 AND aggregate_type = 'facility_incident'
+          AND aggregate_id = $2
+        GROUP BY destination ORDER BY destination`,
+      [tenant.id, first.body.data.id],
+    );
+    expect(destinations.rows).toEqual([
+      { destination: "cloud-sync", n: 1 },
+      { destination: "notification", n: 1 },
+    ]);
     expect(
       (
         await client

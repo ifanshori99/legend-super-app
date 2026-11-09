@@ -2,17 +2,21 @@
 // Components never call api.ts or useQuery directly.
 //
 // Cache policy: each mutation patches the cached config with the response
-// entity — the same shape the real API returns — and the list row follows the
-// updated facility. In mock mode GET /api/facility/config answers from the same
-// store the writes change (bead legend-wbwl), so a refetch keeps the edits.
+// entity — the same shape the real API returns. A list row follows the updated
+// facility by merging it over the row, so the list-only counts (areaCount,
+// unitCount, activeUnitCount, productCount) survive. In mock mode
+// GET /api/facility/config answers from the same store the writes change (bead
+// legend-wbwl), so a refetch keeps the edits.
 //
 // Writes follow bead legend-6jms: an update sends the `updatedAt` of the row as
 // the editor saw it when it opened (`expectedUpdatedAt`, passed by the caller;
 // never read from the cache at save time, which a refetch may have replaced
 // while the form still shows the old values). The API answers 412 when another
 // admin saved first, and the config is refetched so the form shows the new
-// values, and a create sends one `idempotencyKey` per attempt, reused while the
-// same body is retried so a double submit creates one row.
+// values (the General tab resyncs its form from the refetched row after a
+// conflict, see general-tab.tsx), and a create sends one `idempotencyKey` per
+// attempt, reused while the same body is retried so a double submit creates one
+// row.
 import { useRef } from "react";
 import {
   useMutation,
@@ -21,7 +25,11 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import type { CursorPage } from "@starter/shared/core";
-import type { Facility, FacilityConfig } from "@starter/shared/facility";
+import type {
+  Facility,
+  FacilityConfig,
+  FacilityListItem,
+} from "@starter/shared/facility";
 import { ApiError } from "@/lib/api/errors.ts";
 import * as api from "./api.ts";
 import {
@@ -62,14 +70,14 @@ function patchConfig(
 }
 
 function patchFacilityRow(queryClient: QueryClient, facility: Facility) {
-  queryClient.setQueriesData<CursorPage<Facility>>(
+  queryClient.setQueriesData<CursorPage<FacilityListItem>>(
     { queryKey: facilityAdminKeys.lists() },
     (page) =>
       page
         ? {
             ...page,
             data: page.data.map((row) =>
-              row.id === facility.id ? facility : row,
+              row.id === facility.id ? { ...row, ...facility } : row,
             ),
           }
         : page,

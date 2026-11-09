@@ -48,6 +48,9 @@ import {
 /** Outbox destination of facility events (same as the WS-06 inventory writers). */
 const FACILITY_EVENT_DESTINATION = "cloud-sync";
 
+/** Outbox destination the notification worker reads (same as approvals). */
+const FACILITY_NOTIFICATION_DESTINATION = "notification";
+
 /** `operations_idempotency.result_table` value of a raised incident. */
 export const FACILITY_INCIDENT_RESULT_TABLE = "facility_incidents";
 
@@ -302,13 +305,20 @@ export async function raiseFacilityIncident(
         offline: row.offline,
       },
     });
-    await appendOutbox(tx, context, {
-      id: createUlid(now.getTime()),
-      event,
-      destination: FACILITY_EVENT_DESTINATION,
-      direction: null,
-      peerId: null,
-    });
+    // One row per destination: cloud-sync, and notification so the worker
+    // runs facilityIncidentRaisedRule. Sequence 1 is unique per destination.
+    for (const destination of [
+      FACILITY_EVENT_DESTINATION,
+      FACILITY_NOTIFICATION_DESTINATION,
+    ]) {
+      await appendOutbox(tx, context, {
+        id: createUlid(now.getTime()),
+        event,
+        destination,
+        direction: null,
+        peerId: null,
+      });
+    }
     return { incident: toFacilityIncident(row), replayed: false };
   });
 }

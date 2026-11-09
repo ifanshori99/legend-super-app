@@ -22,6 +22,7 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
   test("a saved Wi-Fi policy survives a config refetch and a stale stamp is a 412", async () => {
     const policy = (await config()).wifiPolicies[0];
     const { id, updatedAt, ...columns } = policy;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- omit scope fields
     const { tenantId, outletId, ...body } = columns;
     const saved = (
       await request("PUT", `/api/wifi/policies/${id}`, {
@@ -89,6 +90,7 @@ describe("facility admin mock (legend-wbwl, legend-6jms)", () => {
 
   test("a dialog opened on an old row cannot overwrite a newer save (412); a new Wi-Fi policy needs a facilityId (400)", async () => {
     const policy = (await config()).wifiPolicies[0];
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- omit scope fields
     const { id, updatedAt, tenantId, outletId, ...body } = policy;
     // Admin B saves; admin A's dialog still holds the stamp from when it opened.
     await request("PUT", `/api/wifi/policies/${id}`, {
