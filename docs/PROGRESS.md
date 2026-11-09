@@ -1333,3 +1333,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## legend-a30j unggah logo tenant (engineer, cabang `ws/brand-logo-upload` dari d2080951, 2026-11-10)
+
+- Dibangun: purpose `brand_logo` (publik, 2 MiB), `outletId` opsional dengan refine (brand_logo tanpa outlet, purpose lain wajib outlet), izin `org.theme.manage` di skala tenant, resolver hanya memberi scope tenant bila body purpose tepat `brand_logo`. Migrasi `0201_brand_logo_storage` (nomor dipesan, idx 201, when 1794280000000): `outlet_id` nullable, CHECK `(outlet_id IS NULL) = (purpose = 'brand_logo')`, kebijakan RLS: baca baris tanpa outlet boleh untuk staf outlet, tulis hanya scope tenant, UPDATE/DELETE tetap ketat (`outlet_isolation_update`, `outlet_isolation_delete`).
+- Review K (architect): HIGH (staf outlet bisa ubah/hapus/ambil alih baris logo lewat FOR ALL longgar) dan MEDIUM (CHECK terlalu longgar) dibetulkan + tes; LOW: `hris-sop.service.ts:320` dan `inventory-waste.service.ts:209` menerima id logo dari staf outlet (publik, dampak rendah, tidak diubah).
+- Bukti: 27 tes baru (10 resolver, 17 DB/RLS/service/skema), mutasi policy/izin tertangkap; 14 file 183 tes hijau termasuk storage lama, rls, outlet-rls, hris-leave, payroll-reimbursements; `db:generate` kedua kosong; tsc api dan shared, eslint, prettier bersih.
+- Sisa: belum ada rute/UI yang memanggil unggah brand_logo atau mengisi `brands.logo_media_id`; merge train merantai ulang 0201.

@@ -499,6 +499,7 @@ async function assertAttachmentUsable(
     !object ||
     object.purpose !== "document" ||
     policy?.visibility !== "private" ||
+    object.outletId === null ||
     lower(object.outletId) !== lower(homeOutletId) ||
     object.ownerUserId !== actorUserId ||
     object.createdAt.getTime() < now.getTime() - ATTACHMENT_MAX_AGE_MS

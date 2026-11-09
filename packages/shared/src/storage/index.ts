@@ -14,6 +14,7 @@ export const storagePurposeSchema = z.enum([
   "selfie",
   "document",
   "receipt",
+  "brand_logo",
 ]);
 export type StoragePurpose = z.infer<typeof storagePurposeSchema>;
 export const storageObjectIdSchema = uuidIdSchema<"StorageObjectId">();
@@ -27,6 +28,8 @@ export const storagePurposePolicy = {
   selfie: { visibility: "private", maxBytes: 5 * 1024 * 1024 },
   document: { visibility: "private", maxBytes: 10 * 1024 * 1024 },
   receipt: { visibility: "private", maxBytes: 10 * 1024 * 1024 },
+  // Tenant-level asset: no outlet, no source kind, public like menu photos.
+  brand_logo: { visibility: "public", maxBytes: 2 * 1024 * 1024 },
 } as const satisfies Record<
   StoragePurpose,
   { visibility: "public" | "private"; maxBytes: number }
@@ -73,11 +76,13 @@ export const storageDefaultSourceKind: Partial<
 /** Multipart metadata fields. The required binary field is named `file`;
  * enforce its byte limit while reading the multipart stream, before buffering.
  * Tenant identity and the owner are always minted from the authenticated
- * server context. */
+ * server context. `outletId` is absent exactly for the tenant-level
+ * `brand_logo` purpose (multipart cannot send null); every other purpose
+ * needs an outlet. */
 export const uploadStorageMetadataSchema = z
   .strictObject({
     purpose: storagePurposeSchema,
-    outletId: outletIdSchema,
+    outletId: outletIdSchema.optional(),
     sourceKind: storageSourceKindSchema.optional(),
   })
   .refine(
@@ -85,6 +90,15 @@ export const uploadStorageMetadataSchema = z
       input.sourceKind === undefined ||
       storageSourceKindPurpose[input.sourceKind] === input.purpose,
     { path: ["sourceKind"], message: "The kind does not match the purpose." },
+  )
+  .refine(
+    (input) =>
+      (input.purpose === "brand_logo") === (input.outletId === undefined),
+    {
+      path: ["outletId"],
+      message:
+        "A brand logo has no outlet; every other purpose needs an outlet.",
+    },
   );
 export type UploadStorageMetadata = z.infer<typeof uploadStorageMetadataSchema>;
 export const storageObjectSchema = z.strictObject({
