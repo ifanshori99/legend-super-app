@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ghgei refund pembayaran terlambat dan bagian gateway refund POS (engineer, cabang `ws/late-payment-refund-refile` dari ws/pos-order-replay-zone-charge c75b0d98, 2026-11-09)
+
+- Temuan "refund staf untuk QR intent ber-orderId gagal source_document" tidak terjadi di production: tidak ada kode yang mengisi `payment_intents.order_id` (insert tunggal `payment.service.ts:744`), jadi `hasSourceDocument` tidak pernah aktif untuk intent QR/POS sungguhan. Refund late payment yang ditolak atau kedaluwarsa menjadi `failed` dan cap bebas lagi, jadi staf sudah bisa mengajukan ulang. Dibuktikan dengan test regresi `late-payment-refund-refile.test.ts` (QR dan POS, rejected dan approval_expired: staf ajukan ulang, orang lain setujui, dibayar sekali, 1 IDR tambahan ditolak). Tidak ada auto-refile: penolakan approver adalah keputusan manusia.
+- Sudah: kunci idempoten berawalan sistem (`pos-late-payment-refund:`, `qr-late-payment-refund:`, `pos-refund-gateway:`, `reservation-refund:`) ditolak 422 `IDEMPOTENCY_KEY_RESERVED` untuk pengguna (`payment-admin-idempotency.ts`). Sebelumnya pengguna bisa merebut kunci itu lebih dulu sehingga filer sistem gagal `IDEMPOTENCY_KEY_REUSED`.
+- Sudah: refund POS kini mengajukan refund WS-05 `system:pos` untuk bagian gateway-nya (`pos-refund-gateway.ts`, dipanggil dari `refundPosOrder` bila bukan retur barang saja). Per intent, intent EDC dilewati, jumlah = min(baris, cap - reserved), kekurangan diaudit `pos_order.refund_gateway_shortfall`, kunci `pos-refund-gateway:<posRefundId>:<intentId>`. Persetujuan dan payout tetap di WS-05.
+- Empat mata: pembuat dan penyetuju refund POS tidak bisa menyetujui payout gateway-nya lewat jalur mana pun (approve langsung, inbox `/approvals/:id/decisions`, settle chain, revalidasi sweep/retry). Ditemukan oleh architect dan re-review Opus, dibetulkan; settle tidak pernah membuat refund macet `pending` (gagal `approver_unauthorized` / `pos_refund_party`).
+- Bukti: test gagal di basis (gateway autofile 5/5 gagal tanpa baris refund; empat mata 2 + 3 gagal sebelum fix). Final: 18 file test API, 606 lulus, 8 dilewati `skipIf` milik escalation; tsc apps/api exit 0 (heavy); eslint + prettier bersih. Tanpa migrasi.
+- Review K: architect (desain + diff), reviewer Opus (diff, 2 re-review delta, terakhir tanpa temuan). Second-opinion Codex: `docs/briefs/230b-second-opinion-late-payment-refund.md` di folder utama.
+- Kartu tindak lanjut: legend-xtzpb (cap tidak mengurangi penjualan QR pay-first yang masih hidup), legend-4itg8 (daftar dan tampilan bagian gateway refund POS yang belum dibayar), legend-hzdv5 (prefiks kunci sistem di tiga tempat).
+
 ## legend-3k8no + legend-k7x4p order POS: replay idempoten lintas deploy, biaya layanan zona (engineer, cabang `ws/pos-order-replay-zone-charge` dari integ/m1-batch31 37ec911e, 2026-11-09)
 
 - Basis: integ/m1-batch31, bukan `milestone/m1` lokal (94d769c6, batch24), karena bug 3k8no ada di legend-63l6 (batch28) yang belum ada di `milestone/m1`.
