@@ -132,14 +132,14 @@ export async function isPlatformAdmin(userId: string): Promise<boolean> {
 }
 
 /** Tenant context for a platform route's path parameter. */
-function platformTenantContext(tenantId: string): ScopedTenantContext {
+export function platformTenantContext(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "session" }),
     { kind: "tenant" },
   );
 }
 
-async function assertTenantExists(tenantId: string): Promise<void> {
+export async function assertTenantExists(tenantId: string): Promise<void> {
   const [row] = await db
     .select({ id: tenants.id })
     .from(tenants)

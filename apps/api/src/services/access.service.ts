@@ -198,7 +198,7 @@ async function nextSequence(
 }
 
 /** Append one catalogued access event inside the caller's transaction. */
-async function appendAccessEvent(
+export async function appendAccessEvent(
   tx: Tx,
   context: ScopedTenantContext,
   definition: {

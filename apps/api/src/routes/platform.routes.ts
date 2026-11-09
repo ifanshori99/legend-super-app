@@ -6,18 +6,22 @@
 // (platform/endpoints.ts).
 //
 // Support access is additionally MFA-gated and restricted to the
-// platform_admins registry inside the service (TEN-04).
+// platform_admins registry inside the service (TEN-04). So is appointing or
+// replacing a tenant Owner (legend-ktc4d, founder decision Q44).
 
 import { Router } from "express";
 import {
+  assignTenantOwnerInputSchema,
   createTenantInputSchema,
   listTenantsQuerySchema,
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
   platformEndpoints,
+  replaceTenantOwnerInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
   supportAccessGrantIdSchema,
+  tenantOwnerAssignmentIdSchema,
 } from "@starter/shared/platform";
 import { tenantIdSchema, z } from "@starter/shared/core";
 import { verifiedMfaAt } from "../lib/mfa";
@@ -40,6 +44,10 @@ import {
   requestSupportAccess,
   requestSupportWriteAccess,
 } from "../services/platform-support.service.ts";
+import {
+  assignTenantOwner,
+  replaceTenantOwner,
+} from "../services/platform-tenant-owner.service.ts";
 
 export const platformRouter = Router();
 
@@ -56,6 +64,10 @@ platformRouter.use(
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
 const grantParams = z.strictObject({ grantId: supportAccessGrantIdSchema });
+const ownerAssignmentParams = z.strictObject({
+  tenantId: tenantIdSchema,
+  assignmentId: tenantOwnerAssignmentIdSchema,
+});
 
 platformRouter.get("/packages", async (_req, res) => {
   res.json(await listPackages());
@@ -156,3 +168,39 @@ platformRouter.post("/support-access/:grantId/end", async (req, res) => {
   });
   res.json({ data: grant });
 });
+
+// legend-ktc4d: a Super Admin appoints (or replaces) a tenant Owner. The
+// service refuses impersonated sessions, re-checks the registry and needs the
+// TOTP code in this request (TEN-04 freshness); every refusal is audited.
+platformRouter.post("/tenants/:tenantId/owners", jsonBody, async (req, res) => {
+  const { tenantId } = tenantParams.parse(req.params);
+  const input = assignTenantOwnerInputSchema.parse(req.body);
+  const auth = getAuth(req);
+  const data = await assignTenantOwner({
+    tenantId,
+    actorUserId: auth.user.id,
+    impersonatedBy: auth.session.impersonatedBy ?? null,
+    mfaVerifiedAt: await verifiedMfaAt(req),
+    input,
+  });
+  res.status(201).json({ data });
+});
+
+platformRouter.post(
+  "/tenants/:tenantId/owners/:assignmentId/replace",
+  jsonBody,
+  async (req, res) => {
+    const { tenantId, assignmentId } = ownerAssignmentParams.parse(req.params);
+    const input = replaceTenantOwnerInputSchema.parse(req.body);
+    const auth = getAuth(req);
+    const data = await replaceTenantOwner({
+      tenantId,
+      actorUserId: auth.user.id,
+      impersonatedBy: auth.session.impersonatedBy ?? null,
+      mfaVerifiedAt: await verifiedMfaAt(req),
+      input,
+      replacedAssignmentId: assignmentId,
+    });
+    res.status(201).json({ data });
+  },
+);
