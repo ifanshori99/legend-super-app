@@ -39,6 +39,7 @@ import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
+import { openBillRouter } from "./open-bill.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -171,6 +172,8 @@ apiRouter.use(
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);
+// Open-bill convert, approvers and outlet policy (legend-8cm4, legend-2zb5).
+apiRouter.use(openBillRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);

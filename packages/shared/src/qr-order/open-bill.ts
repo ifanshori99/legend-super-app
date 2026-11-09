@@ -4,9 +4,10 @@
 // row never means "no limit" (the API service falls back to named defaults).
 //
 // Bill-request SLO: the alert for a bill request nobody handled is the
-// existing `service_request.overdue` sweep (services/service-request.service.ts,
-// 180 s). `billRequestSloSeconds` is stored with the policy but that sweep
-// does not read it yet; do not add a second alert for the same condition.
+// existing `service_request.overdue` sweep (services/service-request.service.ts).
+// For `request_bill` the sweep reads `billRequestSloSeconds` from the outlet
+// policy (180 s when no row exists); other request types keep the sweep's own
+// threshold. Do not add a second alert for the same condition.
 
 import {
   z,
@@ -14,6 +15,7 @@ import {
   isoDateTimeSchema,
   outletIdSchema,
   tenantIdSchema,
+  userIdSchema,
 } from "../core/index.ts";
 import { defineDomainEvent } from "../events/index.ts";
 import { staffPinPattern } from "../identity/schemas.ts";
@@ -47,7 +49,7 @@ export const openBillPolicySchema = z.strictObject({
     .int()
     .min(OPEN_BILL_INACTIVITY_MINUTES_MIN)
     .max(OPEN_BILL_INACTIVITY_MINUTES_MAX),
-  /** Seconds a bill request may wait. Stored; see the file comment. */
+  /** Seconds a bill request may wait before it counts as overdue. */
   billRequestSloSeconds: z
     .number()
     .int()
@@ -69,29 +71,40 @@ export type UpsertOpenBillPolicyInput = z.infer<
 
 /**
  * A supervisor+ turns a running pay-first session into an open bill (founder
- * Q31/Q32). The PIN is the staff PIN (6 digits); the server checks it belongs
- * to a supervisor, outlet manager or owner and records reason and approver.
+ * Q31/Q32, Q33/Q34). Every staff member sees the button; it only works with the
+ * PIN of an approver who holds `floor.session.open_bill` in the outlet. The PIN
+ * is checked per person (like the AUTH-06 override), so the body names the
+ * approver. The approver may be the requester (a logged-in supervisor entering
+ * their own PIN is a step-up); unlike AUTH-06 overrides this is allowed.
  */
 export const convertSessionToOpenBillInputSchema = z.strictObject({
   reason: z.string().trim().min(3).max(300),
+  approverUserId: userIdSchema,
   pin: z.string().regex(staffPinPattern, "Expected a 6-digit pin"),
 });
 export type ConvertSessionToOpenBillInput = z.infer<
   typeof convertSessionToOpenBillInputSchema
 >;
 
+/** Staff who may approve a conversion in an outlet and have an active PIN. */
+export const openBillApproverSchema = z.strictObject({
+  userId: userIdSchema,
+  displayName: z.string().min(1),
+});
+export type OpenBillApprover = z.infer<typeof openBillApproverSchema>;
+
 /** A placed order would push the session over its limit (409). */
 export const QR_ORDER_OPEN_BILL_LIMIT = "QR_ORDER_OPEN_BILL_LIMIT" as const;
 /** Unpaid bill is already at or over the outlet limit: no conversion (409). */
 export const OPEN_BILL_CONVERT_LIMIT = "OPEN_BILL_CONVERT_LIMIT" as const;
-/** Wrong PIN, or the PIN is not a supervisor or above (403). */
-export const OPEN_BILL_PIN_REJECTED = "OPEN_BILL_PIN_REJECTED" as const;
+/** The named approver does not hold the permission in this outlet (403). */
+export const OPEN_BILL_APPROVER_DENIED = "OPEN_BILL_APPROVER_DENIED" as const;
 /** The session is not a running pay-first session (409). */
 export const OPEN_BILL_NOT_ELIGIBLE = "OPEN_BILL_NOT_ELIGIBLE" as const;
 export const openBillErrorHttpStatus = {
   [QR_ORDER_OPEN_BILL_LIMIT]: 409,
   [OPEN_BILL_CONVERT_LIMIT]: 409,
-  [OPEN_BILL_PIN_REJECTED]: 403,
+  [OPEN_BILL_APPROVER_DENIED]: 403,
   [OPEN_BILL_NOT_ELIGIBLE]: 409,
 } as const satisfies Record<string, number>;
 export const openBillErrorMessages = {
@@ -99,8 +112,8 @@ export const openBillErrorMessages = {
     "Batas nilai tagihan open bill untuk meja ini sudah tercapai. Mohon minta waiter atau kasir membantu menyelesaikan tagihan sebelum memesan lagi.",
   [OPEN_BILL_CONVERT_LIMIT]:
     "Tagihan belum dibayar sudah mencapai batas open bill outlet. Minta tamu membayar sebagian dulu.",
-  [OPEN_BILL_PIN_REJECTED]:
-    "PIN salah atau bukan milik supervisor, manajer outlet, atau pemilik.",
+  [OPEN_BILL_APPROVER_DENIED]:
+    "Penyetuju ini tidak berwenang menyetujui open bill di outlet ini.",
   [OPEN_BILL_NOT_ELIGIBLE]:
     "Meja ini bukan sesi bayar dulu yang sedang berjalan.",
 } as const;

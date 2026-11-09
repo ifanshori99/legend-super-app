@@ -13,7 +13,17 @@ export const openBillConvertMessages = {
     idle: "Pengingat tidak aktif",
     idleValue: "{minutes} menit",
   },
-  who: "Butuh PIN supervisor, manajer outlet, atau pemilik. Alasan dan nama penyetuju tercatat di jejak audit.",
+  unpaidStays:
+    "Pesanan yang sedang menunggu bayar tetap harus dibayar dulu. Pesanan berikutnya masuk tagihan terbuka.",
+  who: "Penyetuju memasukkan PIN sendiri. Alasan dan nama penyetuju tercatat di jejak audit.",
+  approver: {
+    label: "Supervisor penyetuju",
+    placeholder: "Pilih supervisor",
+    loadError:
+      "Daftar supervisor belum bisa dimuat. Periksa koneksi lalu coba lagi.",
+    empty:
+      "Belum ada supervisor dengan PIN di outlet ini. Minta manajer mengatur PIN supervisor.",
+  },
   over: {
     title: "Sisa tagihan sudah mencapai batas",
     body: "Sisa tagihan {outstanding} sudah mencapai batas open bill outlet {limit}. Minta tamu membayar sebagian dulu, atau minta manajer menaikkan batas di Kelola › Pengaturan › Open bill.",
@@ -21,7 +31,11 @@ export const openBillConvertMessages = {
   error: {
     limit:
       "Sisa tagihan sudah mencapai batas open bill outlet. Minta tamu membayar sebagian dulu, atau minta manajer menaikkan batas.",
-    pin: "PIN salah atau bukan milik supervisor. Coba lagi, atau minta supervisor yang bertugas.",
+    pin: "PIN salah. Coba lagi, atau pilih supervisor lain.",
+    locked:
+      "PIN supervisor ini terkunci karena terlalu banyak salah. Pilih supervisor lain atau coba lagi nanti.",
+    approverDenied:
+      "Supervisor ini tidak punya izin menyetujui open bill di outlet ini. Pilih supervisor lain.",
     notEligible:
       "Meja ini sudah open bill atau sesinya sudah selesai. Muat ulang papan meja.",
     generic: "Belum bisa menyimpan. Periksa koneksi lalu coba lagi.",

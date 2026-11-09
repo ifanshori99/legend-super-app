@@ -5,6 +5,7 @@ import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
   convertSessionToOpenBill as convertSessionToOpenBillEndpoint,
   getOpenBillPolicy as getOpenBillPolicyEndpoint,
+  listOpenBillApprovers as listOpenBillApproversEndpoint,
   updateOpenBillPolicy as updateOpenBillPolicyEndpoint,
 } from "@starter/shared/qr-order";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -17,6 +18,12 @@ export const getOpenBillPolicy = async (
   params: Params<typeof getOpenBillPolicyEndpoint>,
   options?: CallOptions,
 ) => (await callEndpoint(getOpenBillPolicyEndpoint, { params }, options)).data;
+
+export const listOpenBillApprovers = async (
+  params: Params<typeof listOpenBillApproversEndpoint>,
+  options?: CallOptions,
+) =>
+  (await callEndpoint(listOpenBillApproversEndpoint, { params }, options)).data;
 
 export const updateOpenBillPolicy = async (
   params: Params<typeof updateOpenBillPolicyEndpoint>,

@@ -27,7 +27,7 @@ const OUTLET_SETTINGS_ITEM: HubItem = {
 };
 
 // Open-bill policy (bead legend-2zb5), same arrangement. Its page guard is
-// `floor.table.manage` for now (step 1); keep this in step with the route.
+// `floor.open_bill_policy.manage`; keep this in step with the route.
 const OPEN_BILL_ITEM: HubItem = {
   key: "openBillPolicy",
   scope: "outlet",
@@ -35,7 +35,7 @@ const OPEN_BILL_ITEM: HubItem = {
   icon: HandCoins,
   nameKey: "openBillPolicy.hub.name",
   hintKey: "openBillPolicy.hub.hint",
-  anyPermission: ["floor.table.manage"],
+  anyPermission: ["floor.open_bill_policy.manage"],
 };
 
 const GROUP_KEYS = {

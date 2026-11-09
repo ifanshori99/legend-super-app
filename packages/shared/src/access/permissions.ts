@@ -84,6 +84,11 @@ const entries = [
   // "dikonfirmasi waiter atau kasir", ORD-10): confirm/close a session, move,
   // merge, move items, table status. Layout editing stays floor.table.manage.
   ["floor.table.operate", []],
+  // Founder Q33/Q34: approve turning a running pay-first session into an open
+  // bill (supervisor PIN step-up). Not for tenant_admin (no money authority).
+  ["floor.session.open_bill", ["approve"]],
+  // Change the outlet open-bill policy: bill limit, idle alert, bill-request SLO.
+  ["floor.open_bill_policy.manage", []],
   // Who receives a zone's waiter calls: assign and remove zone waiters (ORD-07).
   ["service_request.zone.manage", []],
   ["order.view", []],

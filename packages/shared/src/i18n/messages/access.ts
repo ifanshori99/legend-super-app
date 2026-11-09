@@ -371,6 +371,8 @@ const accessBaseMessages = {
         manage: "Edit denah & meja",
         operate: "Operasikan meja (gabung, pindah, tutup)",
       },
+      session: { open_bill: "Setujui perubahan sesi jadi open bill" },
+      open_bill_policy: { manage: "Atur kebijakan open bill outlet" },
     },
     order: {
       view: "Lihat pesanan",

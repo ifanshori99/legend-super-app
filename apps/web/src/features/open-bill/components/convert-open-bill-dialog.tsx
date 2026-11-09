@@ -1,8 +1,10 @@
-// "Jadikan open bill" on the POS table panel: a supervisor turns a running
-// pay-first session into an open bill with a reason and PIN (bead legend-8cm4).
-// The outlet limit shows first; at or over it the dialog refuses without a PIN
-// pad. The server decides again on submit (step 2).
-import type { ReactNode } from "react";
+// "Jadikan open bill" on the POS table panel: any staff member opens it, and a
+// supervisor turns a running pay-first session into an open bill by choosing
+// themselves in "Supervisor penyetuju" and entering their own PIN, with a reason
+// (bead legend-8cm4). The outlet limit shows first; at or over it the dialog
+// refuses without a PIN pad. With no approver who has a PIN there is no pad
+// either. The server decides again on submit.
+import { useState, type ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -14,18 +16,31 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
 import type {
   FloorBoard,
+  OpenBillApprover,
   OpenBillPolicy,
   TableLiveStatus,
 } from "@starter/shared/qr-order";
 import { SupervisorPinDialog } from "../../ws04-pos-kasir/components/shared/supervisor-pin-dialog";
-import { useConvertToOpenBill, useOpenBillPolicy } from "../hooks";
+import {
+  useConvertToOpenBill,
+  useOpenBillApprovers,
+  useOpenBillPolicy,
+} from "../hooks";
 import { isOverOpenBillLimit, openBillErrorKey } from "../lib";
 
 type Props = {
@@ -134,6 +149,39 @@ function NoPinDialog({
   );
 }
 
+// "Supervisor penyetuju": the first approver is chosen until the user picks
+// another. The approver types their own PIN, so the requester may be the same
+// person (a supervisor stepping up) or hand the tablet to one.
+function ApproverField({
+  approvers,
+  value,
+  onChange,
+}: {
+  approvers: readonly OpenBillApprover[];
+  value: string;
+  onChange: (userId: string) => void;
+}) {
+  const t = useT();
+  return (
+    <FormField label={t("openBillConvert.approver.label")} required>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger>
+          <SelectValue
+            placeholder={t("openBillConvert.approver.placeholder")}
+          />
+        </SelectTrigger>
+        <SelectContent>
+          {approvers.map((approver) => (
+            <SelectItem key={approver.userId} value={approver.userId}>
+              {approver.displayName}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FormField>
+  );
+}
+
 function AlertBlock({
   title,
   children,
@@ -165,7 +213,9 @@ export function ConvertOpenBillDialog({
   const t = useT();
   const toast = useToast();
   const policyQuery = useOpenBillPolicy(outletId);
+  const approversQuery = useOpenBillApprovers(outletId);
   const convert = useConvertToOpenBill();
+  const [pickedApproverId, setPickedApproverId] = useState<string>();
   const session = row.session;
   if (!session) return null;
   const title = t("openBillConvert.title", { code: row.table.code });
@@ -222,6 +272,59 @@ export function ConvertOpenBillDialog({
     );
   }
 
+  if (!approversQuery.data && approversQuery.isError) {
+    return (
+      <NoPinDialog
+        title={title}
+        open={open}
+        onOpenChange={onOpenChange}
+        footer={
+          <Button
+            type="button"
+            loading={approversQuery.isFetching}
+            onClick={() => void approversQuery.refetch()}
+          >
+            {t("openBillConvert.retry")}
+          </Button>
+        }
+      >
+        <AlertBlock>{t("openBillConvert.approver.loadError")}</AlertBlock>
+      </NoPinDialog>
+    );
+  }
+
+  const approvers = approversQuery.data;
+  if (!approvers) {
+    return (
+      <NoPinDialog title={title} open={open} onOpenChange={onOpenChange}>
+        <div
+          aria-busy="true"
+          className="grid gap-2 rounded-lg border border-border bg-muted/40 p-3"
+        >
+          <span className="sr-only">{t("common.loading")}</span>
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-5 w-full" />
+        </div>
+      </NoPinDialog>
+    );
+  }
+
+  if (approvers.length === 0) {
+    return (
+      <NoPinDialog title={title} open={open} onOpenChange={onOpenChange}>
+        <LimitsBlock policy={policy} outstandingIdr={row.outstandingIdr} />
+        <AlertBlock>{t("openBillConvert.approver.empty")}</AlertBlock>
+      </NoPinDialog>
+    );
+  }
+
+  // The first approver stays selected until another is picked, and a pick that
+  // dropped off a refreshed list falls back to the first.
+  const approverUserId = (
+    approvers.find((approver) => approver.userId === pickedApproverId) ??
+    approvers[0]
+  ).userId;
+
   return (
     <SupervisorPinDialog
       open={open}
@@ -232,6 +335,14 @@ export function ConvertOpenBillDialog({
         <div className="grid gap-3">
           <LimitsBlock policy={policy} outstandingIdr={row.outstandingIdr} />
           <p className="text-sm text-muted-foreground">
+            {t("openBillConvert.unpaidStays")}
+          </p>
+          <ApproverField
+            approvers={approvers}
+            value={approverUserId}
+            onChange={setPickedApproverId}
+          />
+          <p className="text-sm text-muted-foreground">
             {t("openBillConvert.who")}
           </p>
         </div>
@@ -241,7 +352,7 @@ export function ConvertOpenBillDialog({
       error={convert.error ? t(openBillErrorKey(convert.error)) : null}
       onSubmit={({ reason, pin }) =>
         convert.mutate(
-          { sessionId: session.id, reason, pin },
+          { sessionId: session.id, reason, approverUserId, pin },
           {
             onSuccess: () => {
               toast({

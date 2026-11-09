@@ -45,6 +45,7 @@ import {
   assignZoneWaiterInputSchema,
   createServiceRequestInputSchema,
   resolveServiceRequestInputSchema,
+  OPEN_BILL_SLO_SECONDS_MIN,
   serviceRequestListQuerySchema,
   qrOrderEvents,
   serviceRequestSchema,
@@ -56,6 +57,7 @@ import {
 } from "@starter/shared/qr-order";
 import { db } from "../db";
 import { floorZones, tableSessions } from "../db/schema/floor";
+import { outletOpenBillPolicies } from "../db/schema/open-bill";
 import {
   notificationPolicies,
   notificationPreferences,
@@ -685,29 +687,52 @@ export function resolveServiceRequest(
  * `service_request.overdue` outbox event plus a notification to the zone's
  * waiters and the assignee. Run per tenant by the scheduler (a job context
  * with tenant scope); returns the escalated request ids.
+ *
+ * `request_bill` requests use the outlet's open-bill policy
+ * `billRequestSloSeconds` (no policy row: `thresholdSeconds`); every other
+ * type uses `thresholdSeconds`. One query, policy via left join.
  */
 export async function sweepOverdueServiceRequests(
   now: Date,
   context: ScopedTenantContext,
   thresholdSeconds = SERVICE_REQUEST_OVERDUE_SECONDS,
 ): Promise<string[]> {
-  const cutoff = new Date(now.getTime() - thresholdSeconds * 1000);
+  // Sargable pre-filter on created_at: no row can be overdue before the
+  // shortest threshold in play (the caller's, or the policy minimum).
+  const earliestOverdue = new Date(
+    now.getTime() -
+      Math.min(thresholdSeconds, OPEN_BILL_SLO_SECONDS_MIN) * 1000,
+  );
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
-    const due = await tx
-      .select()
+    const effectiveSeconds = sql<number>`CASE WHEN ${serviceRequests.type} = 'request_bill' THEN COALESCE(${outletOpenBillPolicies.billRequestSloSeconds}, ${thresholdSeconds}) ELSE ${thresholdSeconds} END`;
+    const dueRows = await tx
+      .select({ row: serviceRequests, effectiveSeconds })
       .from(serviceRequests)
+      .leftJoin(
+        outletOpenBillPolicies,
+        and(
+          eq(outletOpenBillPolicies.tenantId, serviceRequests.tenantId),
+          eq(outletOpenBillPolicies.outletId, serviceRequests.outletId),
+        ),
+      )
       .where(
         and(
           eq(serviceRequests.tenantId, tenantId),
           inArray(serviceRequests.status, ["pending", "acknowledged"]),
           sql`${serviceRequests.overdueNotifiedAt} IS NULL`,
-          lte(serviceRequests.createdAt, cutoff),
+          lte(serviceRequests.createdAt, earliestOverdue),
+          sql`${serviceRequests.createdAt} + make_interval(secs => ${effectiveSeconds}) <= ${now.toISOString()}::timestamptz`,
         ),
       )
       .orderBy(serviceRequests.createdAt)
       .limit(SWEEP_BATCH)
-      .for("update", { skipLocked: true });
+      // Lock only the request rows: the policy side of the join is nullable.
+      .for("update", { of: serviceRequests, skipLocked: true });
+    const due = dueRows.map((r) => ({
+      ...r.row,
+      thresholdSeconds: Number(r.effectiveSeconds),
+    }));
     const escalated: string[] = [];
     for (const row of due) {
       await tx
@@ -745,7 +770,7 @@ export async function sweepOverdueServiceRequests(
           ageSeconds: Math.floor(
             (now.getTime() - row.createdAt.getTime()) / 1000,
           ),
-          thresholdSeconds,
+          thresholdSeconds: row.thresholdSeconds,
         },
       });
       const audience = new Set(await zoneWaiterIds(tx, tenantId, row.zoneId));
@@ -757,7 +782,7 @@ export async function sweepOverdueServiceRequests(
         [...audience],
         {
           title: `${TYPE_LABEL[row.type]} belum ditangani`,
-          body: `${TYPE_LABEL[row.type]} sudah menunggu lebih dari ${Math.round(thresholdSeconds / 60)} menit.`,
+          body: `${TYPE_LABEL[row.type]} sudah menunggu lebih dari ${Math.round(row.thresholdSeconds / 60)} menit.`,
         },
         now,
       );

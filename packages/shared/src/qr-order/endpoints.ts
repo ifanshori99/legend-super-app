@@ -69,6 +69,7 @@ import {
 } from "./schemas.ts";
 import {
   convertSessionToOpenBillInputSchema,
+  openBillApproverSchema,
   openBillPolicySchema,
   upsertOpenBillPolicyInputSchema,
 } from "./open-bill.ts";
@@ -190,9 +191,10 @@ export const confirmOpenBillSession = defineEndpoint({
 });
 
 /**
- * Founder Q31/Q32: a supervisor+ (PIN + reason) turns a running pay-first
- * session into an open bill, within the outlet's open-bill policy. Draft
- * contract: the API lands in step 2 (bead legend-8cm4).
+ * Founder Q31/Q32/Q33/Q34: a supervisor+ (approver id + PIN + reason) turns a
+ * running pay-first session into an open bill, within the outlet's open-bill
+ * policy. The requester needs `floor.table.operate`; the approver holds
+ * `floor.session.open_bill` (bead legend-8cm4).
  */
 export const convertSessionToOpenBill = defineEndpoint({
   method: "POST",
@@ -202,7 +204,18 @@ export const convertSessionToOpenBill = defineEndpoint({
   response: dataResponseSchema(tableSessionSchema),
 });
 
-/** Per-outlet open-bill limits (draft contract, bead legend-2zb5). */
+/** Approvers for the convert dialog: hold the permission and have a PIN. */
+export const listOpenBillApprovers = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/open-bill/approvers",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(z.array(openBillApproverSchema)),
+});
+
+/**
+ * Per-outlet open-bill limits (bead legend-2zb5). Read: `floor.table.operate`
+ * or `floor.open_bill_policy.manage`; write: `floor.open_bill_policy.manage`.
+ */
 export const getOpenBillPolicy = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/open-bill-policy",

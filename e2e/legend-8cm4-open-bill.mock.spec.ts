@@ -9,7 +9,8 @@
 //
 // Fixtures (brief "Hasil A"): table B01 is pay-first with Rp218.300 unpaid
 // (under the Rp3.000.000 limit), table A02 is pay-first with Rp3.492.700 unpaid
-// (over it). The mock accepts PIN 123456 and rejects any other PIN.
+// (over it). The mock offers two approvers (the first is preselected), accepts
+// PIN 123456 and rejects any other PIN.
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
 
@@ -149,6 +150,11 @@ for (const { label, width, height } of WIDTHS) {
       await expect(dialog.getByText("Batas tagihan")).toBeVisible();
       await expect(dialog.getByText("Sisa tagihan")).toBeVisible();
       await expect(dialog.getByText("45 menit")).toBeVisible();
+      // The first approver is preselected; the other one is in the list.
+      const approver = dialog.getByRole("combobox", {
+        name: /Supervisor penyetuju/,
+      });
+      await expect(approver).toContainText("Dewi Anggraini");
       await expect(dialog.getByLabel("Alasan")).toBeVisible();
       await expect(
         dialog.getByRole("button", { name: "Angka 1" }),
@@ -168,9 +174,7 @@ for (const { label, width, height } of WIDTHS) {
       });
       await approve(dialog, BAD_PIN);
       await expect(
-        dialog.getByText(
-          "PIN salah atau bukan milik supervisor. Coba lagi, atau minta supervisor yang bertugas.",
-        ),
+        dialog.getByText("PIN salah. Coba lagi, atau pilih supervisor lain."),
       ).toBeVisible({ timeout: READY_TIMEOUT_MS });
       // The table is still pay-first: the dialog stays open for another try.
       await expect(
