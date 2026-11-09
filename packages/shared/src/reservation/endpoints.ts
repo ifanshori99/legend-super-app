@@ -25,6 +25,7 @@ import {
   listReservationsQuerySchema,
   markNoShowInputSchema,
   placePreOrderInputSchema,
+  putReservationPolicyInputSchema,
   reservationAvailabilityQuerySchema,
   reservationAvailabilitySchema,
   reservationCloseResultSchema,
@@ -32,6 +33,8 @@ import {
   reservationDetailSchema,
   reservationIdSchema,
   reservationPackageSchema,
+  reservationPolicyOverviewSchema,
+  reservationPolicySchema,
   reservationPreOrderSchema,
   reservationSchema,
   resolveWaitlistEntryInputSchema,
@@ -191,4 +194,23 @@ export const resolveWaitlistEntry = defineEndpoint({
   params: waitlistParams,
   body: resolveWaitlistEntryInputSchema,
   response: dataResponseSchema(resolveWaitlistEntryResultSchema),
+});
+
+// ---- Staff: DP & cancellation policy (§3.22 "DP & Kebijakan") -------------
+
+/** Active policy plus the retired versions of the outlet. */
+export const getReservationPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/reservation-policy",
+  params: outletParams,
+  response: dataResponseSchema(reservationPolicyOverviewSchema),
+});
+
+/** Saves a NEW version and retires the old one; bookings keep their snapshot. */
+export const putReservationPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/reservation-policy",
+  params: outletParams,
+  body: putReservationPolicyInputSchema,
+  response: dataResponseSchema(reservationPolicySchema),
 });
