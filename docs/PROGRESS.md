@@ -2,8 +2,6 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
-<<<<<<< HEAD
-
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
@@ -13,6 +11,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Sudah: refund buatan sistem (late payment POS dan QR, deposit reservasi) membuka rantai approval lewat akun sistem terkunci (banned, tanpa role, tanpa akun login). Migrasi `0135_system_approval_requester` diurutkan ulang menjadi `0144_system_approval_requester` (custom, isi apa adanya), terdaftar di `MIGRATION_DATA_STATEMENTS`.
 - Berikut: gate batch11, lalu merge ke `milestone/m1`.
+
+## legend-8cm4 + legend-2zb5 open bill oleh supervisor + kebijakan outlet (ui-engineer, cabang `ws/open-bill-r1`, 2026-11-09)
+
+- Sudah (langkah 1, `8c39264d`): UI panel meja POS "Jadikan open bill" (dialog PIN supervisor) dan layar `/kelola/pengaturan/open-bill`; founder OK Q33=A, Q34=A.
+- Sudah (langkah 2): permission baru `floor.session.open_bill` (owner, GM, outlet_manager, supervisor) dan `floor.open_bill_policy.manage` (owner, GM, outlet_manager), backfill migrasi `0144_open_bill_roles_permissions`. Route baru `open-bill.routes.ts`: GET/PUT kebijakan, GET penyetuju, POST konversi (`approverUserId` + PIN, cek hak sebelum PIN, kunci meja lalu sesi, tolak bila sisa tagihan >= batas, audit `open_bill.session_converted` tanpa PIN). Sweep permintaan tagihan memakai `billRequestSloSeconds` kebijakan outlet (satu query). Web tersambung ke API.
+- Gate: tsc api/web/shared, eslint, prettier, 8 file 79 test API, 20/20 e2e mock, root 1661/1664 (3 gagal hanya karena butuh DB `pnpm test`), `drizzle-kit generate` tanpa perubahan.
+- Review K: reviewer Opus dan architect; tanpa temuan High/Medium, Low dibetulkan. Codex second-opinion: `docs/briefs/180b-second-opinion-open-bill.md` (tidak di-commit), belum dijalankan.
+- Terbuka untuk CTO: pesanan `awaiting_payment` tetap harus dibayar dulu setelah konversi; exposure ikut menghitung pesanan menunggu bayar yang ditinggal (bisa menolak keliru, aman); sesi support belum dibuat baca-saja.
 
 ## Codex 160 dua P2 di legend-kyie (engineer, cabang `ws/edge-access-apply`, 2026-11-09)
 

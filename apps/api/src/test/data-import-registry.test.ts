@@ -100,6 +100,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
   "0147_accounting_coa_backfill_1204.sql":
     "backfills accounts 1204, 6110 and 6111 and the employee_receivable, reimbursement_expense and pph21_borne_expense mappings for every already provisioned legal entity that lacks them (legend-s8a3); idempotent, never updates or deletes, keeps a custom account with the same code",
+  "0148_open_bill_roles_permissions.sql":
+    "appends floor.session.open_bill and floor.open_bill_policy.manage to the stored template role rows that hold them for existing tenants (legend-8cm4, legend-2zb5); idempotent, never touches a custom role",
 };
 
 // Entrypoints that open a database pool but import no data.

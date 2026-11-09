@@ -265,7 +265,10 @@ async function participantsOf(
     .orderBy(asc(sessionParticipants.joinedAt), asc(sessionParticipants.id));
 }
 
-async function sessionDto(tx: Tx, row: SessionRow): Promise<TableSession> {
+export async function sessionDto(
+  tx: Tx,
+  row: SessionRow,
+): Promise<TableSession> {
   return toSession(row, await participantsOf(tx, row.tenantId, row.id));
 }
 

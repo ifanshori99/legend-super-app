@@ -6,18 +6,19 @@
 // limit".
 //
 // Bill-request SLO: an unhandled bill request is escalated by the existing
-// `service_request.overdue` sweep (service-request.service.ts, 180 s). It is
-// not duplicated here; the policy column `bill_request_slo_seconds` is stored
-// for that sweep to read later.
+// `service_request.overdue` sweep (service-request.service.ts), which reads
+// the policy column `bill_request_slo_seconds` for `request_bill` (180 s when
+// the outlet has no row). It is not duplicated here.
 //
 // Alerts go to the zone's waiters through the same notification path as a
 // waiter call (`zone_waiter_assignments`, `waiter_call` category, pg_notify at
 // commit). They are never service_request rows.
 
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
+  CoreError,
   createUlid,
   idr,
   outletIdSchema,
@@ -28,33 +29,53 @@ import {
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import {
+  convertSessionToOpenBillInputSchema,
+  OPEN_BILL_APPROVER_DENIED,
+  OPEN_BILL_CONVERT_LIMIT,
+  OPEN_BILL_NOT_ELIGIBLE,
+  openBillApproverSchema,
   openBillErrorHttpStatus,
   openBillErrorMessages,
   openBillEvents,
   openBillPolicySchema,
   QR_ORDER_OPEN_BILL_LIMIT,
   upsertOpenBillPolicyInputSchema,
+  type ConvertSessionToOpenBillInput,
+  type OpenBillApprover,
   type OpenBillPolicy,
+  type TableSession,
   type UpsertOpenBillPolicyInput,
 } from "@starter/shared/qr-order";
 import { db } from "../db";
+import { staffPins } from "../db/schema/device-pin";
+import { roleAssignments } from "../db/schema";
 import { tableSessions, tables } from "../db/schema/floor";
 import { outletOpenBillPolicies } from "../db/schema/open-bill";
 import { paymentLinks } from "../db/schema/payment";
 import { posOrderTenders } from "../db/schema/pos-order";
 import { orders } from "../db/schema/qr-order";
 import { zoneWaiterAssignments } from "../db/schema/service-request";
+import { user } from "../db/schema/user";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
+import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
+import { STAFF_PIN_PEPPER_VERSION } from "./device-pin-pepper";
+import { outletContext, outletTarget } from "./device-pin-support";
 import { createNotificationConsumer } from "./notification-consumer";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  toAssignment,
+} from "./permission-resolver";
 import { remainingIdr } from "./pos-order-support";
 import { depositCreditFor } from "./qr-order-ports";
 import {
   buildRecipients,
   SERVICE_REQUEST_OVERDUE_SECONDS,
 } from "./service-request.service";
+import { lockTableLiveState, sessionDto } from "./table-session.service";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -82,6 +103,13 @@ const AUDIT_SAFE_FIELDS = [
   "policyIsDefault",
   "inactivityMinutes",
   "billRequestSloSeconds",
+  "paymentMode",
+  "confirmedBy",
+  "requesterUserId",
+  "approverUserId",
+  "deviceId",
+  "exposureIdr",
+  "limitIdr",
 ] as const;
 
 function defaultPolicy(
@@ -525,6 +553,292 @@ export async function refuseOpenBillBreach(
     QR_ORDER_OPEN_BILL_LIMIT,
     openBillErrorMessages.QR_ORDER_OPEN_BILL_LIMIT,
   );
+}
+
+// ---- Convert a pay-first session to an open bill ---------------------------------
+
+/** Permission that makes a staff member a conversion approver (founder Q33/Q34). */
+const OPEN_BILL_APPROVE_PERMISSION = "floor.session.open_bill" as const;
+
+/** True when `userId` holds the approve permission on the outlet (fail closed). */
+async function holdsOpenBillApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  outletId: string,
+  now: Date,
+): Promise<boolean> {
+  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  return resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  }).allows(OPEN_BILL_APPROVE_PERMISSION, outletTarget(outletId));
+}
+
+/**
+ * Staff the convert dialog may offer as approver: they hold
+ * `floor.session.open_bill` in the outlet and have a staff PIN set (current
+ * pepper). Ordered by name. A locked PIN stays listed; the PIN check answers
+ * `PIN_LOCKED`.
+ */
+export function listOpenBillApprovers(
+  context: ScopedTenantContext,
+  outletId: string,
+  now = new Date(),
+): Promise<OpenBillApprover[]> {
+  assertOutletInScope(context.outletScope, outletId);
+  const outlet = outletIdSchema.parse(outletId);
+  return withTenant(db, context, async (tx) => {
+    const candidates = await tx
+      .select({ userId: user.id, displayName: user.name })
+      .from(staffPins)
+      .innerJoin(user, eq(user.id, staffPins.userId))
+      .where(
+        and(
+          eq(staffPins.tenantId, context.tenant.tenantId),
+          eq(staffPins.outletId, outlet),
+          eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
+          sql`${user.banned} IS NOT TRUE`,
+        ),
+      )
+      .orderBy(asc(user.name), asc(user.id));
+    if (candidates.length === 0) return [];
+    // Tenant access loaded once: roles and org tree are shared, assignments
+    // come in one query for every candidate (the snapshot filters by user).
+    const shared = await loadTenantAccessInTransaction(
+      tx,
+      context,
+      candidates[0]!.userId,
+    );
+    const assignmentRows = await tx
+      .select()
+      .from(roleAssignments)
+      .where(
+        and(
+          eq(roleAssignments.tenantId, context.tenant.tenantId),
+          inArray(
+            roleAssignments.userId,
+            candidates.map((candidate) => candidate.userId),
+          ),
+        ),
+      );
+    const data = { ...shared, assignments: assignmentRows.map(toAssignment) };
+    const approvers: OpenBillApprover[] = [];
+    for (const candidate of candidates) {
+      const allowed = resolveAccessSnapshot({
+        tenant: context.tenant,
+        userId: candidate.userId,
+        ...data,
+        mfaVerified: false,
+        now,
+      }).allows(OPEN_BILL_APPROVE_PERMISSION, outletTarget(outlet));
+      if (!allowed) continue;
+      approvers.push(
+        openBillApproverSchema.parse({
+          userId: candidate.userId,
+          displayName: candidate.displayName,
+        }),
+      );
+    }
+    return approvers;
+  });
+}
+
+/** The outlet a session belongs to, for route-side authorization; 404 when absent. */
+export function openBillSessionOutletId(
+  context: ScopedTenantContext,
+  sessionId: string,
+): Promise<string> {
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select({ outletId: tableSessions.outletId })
+      .from(tableSessions)
+      .where(
+        and(
+          eq(tableSessions.tenantId, context.tenant.tenantId),
+          eq(tableSessions.id, sessionId),
+        ),
+      );
+    if (!row) throw new CoreError("NOT_FOUND", "Sesi meja tidak ditemukan.");
+    return row.outletId;
+  });
+}
+
+/**
+ * Founder Q31-Q34: turn a running pay-first session into an open bill. The
+ * caller already holds `floor.table.operate` on the session's outlet
+ * (`context`). The named approver must hold `floor.session.open_bill` there,
+ * checked before the PIN is touched so a user without the right never has an
+ * attempt counted; then the approver's PIN is checked per person
+ * (`attemptStaffPin`, counted and lockable). The approver may be the
+ * requester: a supervisor logged in on the panel entering their own PIN is a
+ * step-up. This differs from AUTH-06 overrides, where the approver can never
+ * be the requester.
+ */
+export async function convertSessionToOpenBill(
+  context: ScopedTenantContext,
+  sessionId: string,
+  rawInput: ConvertSessionToOpenBillInput,
+  requesterUserId: string,
+  options: { deviceId?: string | null; now?: Date } = {},
+): Promise<TableSession> {
+  const input = convertSessionToOpenBillInputSchema.parse(rawInput);
+  const now = options.now ?? new Date();
+  const deviceId = options.deviceId ?? null;
+  const tenantId = context.tenant.tenantId;
+  const outletId = await openBillSessionOutletId(context, sessionId);
+  assertOutletInScope(context.outletScope, outletId);
+  const approverContext = outletContext(context.tenant, outletId);
+
+  // 1. Permission of the approver, before the PIN is touched.
+  const allowed = await withTenant(db, approverContext, (tx) =>
+    holdsOpenBillApproval(
+      tx,
+      approverContext,
+      input.approverUserId,
+      outletId,
+      now,
+    ),
+  );
+  if (!allowed)
+    throw new HttpError(
+      openBillErrorHttpStatus.OPEN_BILL_APPROVER_DENIED,
+      OPEN_BILL_APPROVER_DENIED,
+      openBillErrorMessages.OPEN_BILL_APPROVER_DENIED,
+    );
+
+  // 2. The approver's PIN: counted and committed on its own transaction.
+  assertPinAttemptOk(
+    await attemptStaffPin(context.tenant, {
+      outletId,
+      userId: input.approverUserId,
+      pin: input.pin,
+      deviceId,
+      now,
+    }),
+  );
+
+  // 3. Convert under the table lock and the session row lock.
+  return withTenant(db, context, async (tx) => {
+    const [located] = await tx
+      .select({ tableId: tableSessions.tableId })
+      .from(tableSessions)
+      .where(
+        and(
+          eq(tableSessions.tenantId, tenantId),
+          eq(tableSessions.id, sessionId),
+        ),
+      );
+    if (!located)
+      throw new CoreError("NOT_FOUND", "Sesi meja tidak ditemukan.");
+    // Same order as confirm/close: table live-state lock, then the row.
+    await lockTableLiveState(tx, tenantId, located.tableId);
+    const [row] = await tx
+      .select()
+      .from(tableSessions)
+      .where(
+        and(
+          eq(tableSessions.tenantId, tenantId),
+          eq(tableSessions.id, sessionId),
+        ),
+      )
+      .for("update");
+    if (!row) throw new CoreError("NOT_FOUND", "Sesi meja tidak ditemukan.");
+    assertOutletInScope(context.outletScope, row.outletId);
+    // Re-check on this transaction's snapshot (as createPosOverride does): a
+    // role ended while the PIN was being checked fails closed.
+    if (
+      !(await holdsOpenBillApproval(
+        tx,
+        context,
+        input.approverUserId,
+        row.outletId,
+        now,
+      ))
+    )
+      throw new HttpError(
+        openBillErrorHttpStatus.OPEN_BILL_APPROVER_DENIED,
+        OPEN_BILL_APPROVER_DENIED,
+        openBillErrorMessages.OPEN_BILL_APPROVER_DENIED,
+      );
+    if (
+      row.paymentMode !== "pay_first" ||
+      (row.status !== "open" && row.status !== "bill_requested")
+    )
+      throw new HttpError(
+        openBillErrorHttpStatus.OPEN_BILL_NOT_ELIGIBLE,
+        OPEN_BILL_NOT_ELIGIBLE,
+        openBillErrorMessages.OPEN_BILL_NOT_ELIGIBLE,
+      );
+    const policy = await policyIn(tx, context, row.outletId);
+    const owed = await unpaidExposureOfSession(tx, context, row.id);
+    const credit = await unusedDepositOfSession(tx, tenantId, row.id);
+    // The unused reservation deposit pays the bill first (as in the limit check).
+    const exposure = idr(Math.max(0, owed - credit));
+    if (exposure >= policy.maxBillValueIdr)
+      throw new HttpError(
+        openBillErrorHttpStatus.OPEN_BILL_CONVERT_LIMIT,
+        OPEN_BILL_CONVERT_LIMIT,
+        openBillErrorMessages.OPEN_BILL_CONVERT_LIMIT,
+      );
+    const [updated] = await tx
+      .update(tableSessions)
+      .set({
+        paymentMode: "open_bill",
+        // An open-bill session must carry its confirmer (schema rule): the
+        // approver confirms the conversion, as confirmOpenBillSession does.
+        confirmedBy: row.confirmedBy ?? input.approverUserId,
+        lastActivityAt: now,
+      })
+      .where(
+        and(eq(tableSessions.tenantId, tenantId), eq(tableSessions.id, row.id)),
+      )
+      .returning();
+    if (!updated) throw new Error("Open-bill conversion returned no row");
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: row.outletId,
+        actorType: "user",
+        actorId: input.approverUserId,
+        deviceId,
+        action: "open_bill.session_converted",
+        objectType: "table_session",
+        objectId: row.id,
+        reason: input.reason,
+        maskedChanges: {
+          before: maskAuditChanges(
+            { paymentMode: row.paymentMode, confirmedBy: row.confirmedBy },
+            AUDIT_SAFE_FIELDS,
+          ),
+          after: maskAuditChanges(
+            {
+              paymentMode: updated.paymentMode,
+              confirmedBy: updated.confirmedBy,
+              requesterUserId,
+              approverUserId: input.approverUserId,
+              deviceId,
+              exposureIdr: exposure,
+              limitIdr: policy.maxBillValueIdr,
+            },
+            AUDIT_SAFE_FIELDS,
+          ),
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(now),
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+    return sessionDto(tx, updated);
+  });
 }
 
 // ---- Inactivity alert -----------------------------------------------------------

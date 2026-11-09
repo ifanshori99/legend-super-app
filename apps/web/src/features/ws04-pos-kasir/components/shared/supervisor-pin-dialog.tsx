@@ -21,21 +21,27 @@ export type SupervisorPinDialogProps = {
   title: string;
   /** What is being approved: a short sentence or a small summary block. */
   summary: ReactNode;
+  /** Extra block under the header (outside the description), e.g. limits. */
+  details?: ReactNode;
   /** Called once a reason and a full PIN are in. The parent verifies. */
   onSubmit: (approval: SupervisorApproval) => void;
   /** The parent is verifying the PIN. */
   pending?: boolean;
   /** Why the last try failed (wrong PIN, no permission), with how to recover. */
   error?: string | null;
+  /** Shortest reason accepted; the default only asks for a non-empty one. */
+  minReasonLength?: number;
 };
 
 function PinDialogBody({
   title,
   summary,
+  details,
   onSubmit,
   onCancel,
   pending,
   error,
+  minReasonLength,
 }: Omit<SupervisorPinDialogProps, "open" | "onOpenChange"> & {
   onCancel: () => void;
 }) {
@@ -61,6 +67,14 @@ function PinDialogBody({
       reasonRef.current?.focus();
       return;
     }
+    if (minReasonLength && trimmed.length < minReasonLength) {
+      setReasonError(
+        t("posKasirCommon.pinDialog.reasonTooShort", { min: minReasonLength }),
+      );
+      setSignal((current) => current + 1);
+      reasonRef.current?.focus();
+      return;
+    }
     onSubmit({ reason: trimmed, pin });
   }
 
@@ -72,6 +86,7 @@ function PinDialogBody({
           <div>{summary}</div>
         </DialogDescription>
       </DialogHeader>
+      {details}
       <FormField
         label={t("posKasirCommon.pinDialog.reasonLabel")}
         id={reasonId}

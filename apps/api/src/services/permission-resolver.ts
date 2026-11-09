@@ -71,7 +71,7 @@ export type TenantAccessData = {
 type AssignmentRow = typeof roleAssignments.$inferSelect;
 type RoleRow = typeof roles.$inferSelect;
 
-function toAssignment(row: AssignmentRow): RoleAssignment {
+export function toAssignment(row: AssignmentRow): RoleAssignment {
   return roleAssignmentSchema.parse({
     id: row.id,
     tenantId: row.tenantId,

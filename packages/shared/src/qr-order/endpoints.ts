@@ -67,6 +67,12 @@ import {
   updateTableInputSchema,
   voucherCodeSchema,
 } from "./schemas.ts";
+import {
+  convertSessionToOpenBillInputSchema,
+  openBillApproverSchema,
+  openBillPolicySchema,
+  upsertOpenBillPolicyInputSchema,
+} from "./open-bill.ts";
 
 const sessionParams = z.strictObject({ sessionId: tableSessionIdSchema });
 
@@ -182,6 +188,47 @@ export const confirmOpenBillSession = defineEndpoint({
   path: "/api/table-sessions/:sessionId/confirm",
   params: sessionParams,
   response: dataResponseSchema(tableSessionSchema),
+});
+
+/**
+ * Founder Q31/Q32/Q33/Q34: a supervisor+ (approver id + PIN + reason) turns a
+ * running pay-first session into an open bill, within the outlet's open-bill
+ * policy. The requester needs `floor.table.operate`; the approver holds
+ * `floor.session.open_bill` (bead legend-8cm4).
+ */
+export const convertSessionToOpenBill = defineEndpoint({
+  method: "POST",
+  path: "/api/table-sessions/:sessionId/open-bill",
+  params: sessionParams,
+  body: convertSessionToOpenBillInputSchema,
+  response: dataResponseSchema(tableSessionSchema),
+});
+
+/** Approvers for the convert dialog: hold the permission and have a PIN. */
+export const listOpenBillApprovers = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/open-bill/approvers",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(z.array(openBillApproverSchema)),
+});
+
+/**
+ * Per-outlet open-bill limits (bead legend-2zb5). Read: `floor.table.operate`
+ * or `floor.open_bill_policy.manage`; write: `floor.open_bill_policy.manage`.
+ */
+export const getOpenBillPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/open-bill-policy",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(openBillPolicySchema),
+});
+
+export const updateOpenBillPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/open-bill-policy",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  body: upsertOpenBillPolicyInputSchema,
+  response: dataResponseSchema(openBillPolicySchema),
 });
 
 /** ORD-10: close only when the bill is settled and the table is clean. */
