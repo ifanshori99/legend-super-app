@@ -268,7 +268,15 @@ async function seedOrder(
           fire_status, status, reserved_business_date)
        VALUES ($1, $2, $3, $4, $5, NULL, 'Latte', $6, 0, 0, 0, '[]'::jsonb,
                'fired', 'served', $7)`,
-      [randomUUID(), tenantA, outletA, uuid, menuItemId, quantity, businessDate],
+      [
+        randomUUID(),
+        tenantA,
+        outletA,
+        uuid,
+        menuItemId,
+        quantity,
+        businessDate,
+      ],
     );
     await client.query(
       `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel)
@@ -507,6 +515,9 @@ type Deduction = {
   reversed_at: string | null;
   reversal_reason: string | null;
   reversal_source_id: string | null;
+  reversal_failed_at: string | null;
+  /** Unix seconds of reversal_failed_at, for ordering checks. */
+  reversal_failed_epoch: number | null;
   lines: {
     inventory_item_id: string;
     quantity: string;
@@ -517,7 +528,9 @@ type Deduction = {
 async function deductionsOf(...sourceIds: string[]): Promise<Deduction[]> {
   const { rows } = await owner.query<Omit<Deduction, "lines">>(
     `SELECT id, kind, status, source_id, cost_idr::text AS cost_idr, posted_at::text AS posted_at,
-            reversed_at::text AS reversed_at, reversal_reason, reversal_source_id
+            reversed_at::text AS reversed_at, reversal_reason, reversal_source_id,
+            reversal_failed_at::text AS reversal_failed_at,
+            extract(epoch FROM reversal_failed_at)::float8 AS reversal_failed_epoch
      FROM recipe_deductions WHERE tenant_id = $1
        AND (source_id = ANY($2::text[]) OR idempotency_key = ANY($3::text[]))
      ORDER BY created_at, id`,
@@ -612,7 +625,10 @@ async function deliverToGl(rows: LedgerRow[]) {
   }
 }
 
-type Journal = { id: string; lines: { role: string; debit: number; credit: number }[] };
+type Journal = {
+  id: string;
+  lines: { role: string; debit: number; credit: number }[];
+};
 
 /** The journals of one order (ULID source id), oldest first, lines by role. */
 async function journalsOf(orderUlid: string): Promise<Journal[]> {
@@ -657,6 +673,13 @@ const hppJournal = (cost: number) => [
   { role: "cogs", debit: cost, credit: 0 },
   { role: "inventory", debit: 0, credit: cost },
 ];
+/** The same lines with debit and credit swapped (the mirror journal). */
+const swapped = (lines: Journal["lines"]) =>
+  lines.map((line) => ({
+    role: line.role,
+    debit: line.credit,
+    credit: line.debit,
+  }));
 const reversalJournal = (cost: number) => [
   { role: "cogs", debit: 0, credit: cost },
   { role: "inventory", debit: cost, credit: 0 },
@@ -764,11 +787,10 @@ beforeAll(async () => {
   app = createApp();
   await createOwnTenant();
   ownerUserId = randomUUID();
-  await owner.query('INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)', [
-    ownerUserId,
-    "HPP POS Owner",
-    `${ownerUserId}@example.com`,
-  ]);
+  await owner.query(
+    'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
+    [ownerUserId, "HPP POS Owner", `${ownerUserId}@example.com`],
+  );
   const uom = async (code: string) =>
     one<string>(
       "INSERT INTO uoms (tenant_id, code, name) VALUES ($1, $2, $2) RETURNING id",
@@ -806,7 +828,10 @@ describe("HPP of a paid order (a, b)", () => {
     const { order } = await sell(kit);
 
     const deduction = await saleDeductionOf(order);
-    expect(deduction).toMatchObject({ status: "posted", cost_idr: String(2 * CUP_COST) });
+    expect(deduction).toMatchObject({
+      status: "posted",
+      cost_idr: String(2 * CUP_COST),
+    });
 
     const ledger = await orderLedger(order);
     expect(ledger).toHaveLength(2);
@@ -897,7 +922,9 @@ describe("HPP through the real POS complete path (a)", () => {
   beforeAll(async () => {
     setPosReceiptPort(receiptPort());
     setDeviceOutletResolver(async (input) =>
-      input.tenantId === tenantA && input.deviceId === deviceId ? outletA : null,
+      input.tenantId === tenantA && input.deviceId === deviceId
+        ? outletA
+        : null,
     );
     await owner.query(
       `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
@@ -972,9 +999,7 @@ describe("HPP through the real POS complete path (a)", () => {
 
   function pos(path: string, body: Record<string, unknown>) {
     return cashier.client
-      .post(
-        `/api/outlets/${encodeURIComponent(outletA)}/pos/orders${path}`,
-      )
+      .post(`/api/outlets/${encodeURIComponent(outletA)}/pos/orders${path}`)
       .set({ Host: hostA })
       .set(originHeader)
       .set(
@@ -1067,7 +1092,9 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
     const returns = byType(afterVoid, "return");
     expect(returns).toHaveLength(2);
     for (const row of returns) expect(row.source_type).toBe("order");
-    const beansBack = returns.find((row) => row.inventory_item_id === kit.beans)!;
+    const beansBack = returns.find(
+      (row) => row.inventory_item_id === kit.beans,
+    )!;
     const milkBack = returns.find((row) => row.inventory_item_id === kit.milk)!;
     expect(Number(beansBack.quantity)).toBe(36);
     expect(Number(milkBack.quantity)).toBe(400);
@@ -1092,6 +1119,16 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
     expect(journals).toHaveLength(2);
     expect(journals[0]).toEqual(hpp);
     expect(journals[1]!.lines).toEqual(reversalJournal(2 * CUP_COST));
+    // Line by line: every HPP line mirrored, so the two journals net to zero
+    // per account.
+    expect(journals[1]!.lines).toEqual(swapped(hpp.lines));
+    for (const role of ["cogs", "inventory"]) {
+      const net = [hpp, journals[1]!]
+        .flatMap((journal) => journal.lines)
+        .filter((line) => line.role === role)
+        .reduce((sum, line) => sum + line.debit - line.credit, 0);
+      expect(net, `net ${role} of HPP + reversal`).toBe(0);
+    }
 
     // Replay of the same void: nothing more.
     await deliver(event);
@@ -1100,11 +1137,11 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
 
     // A second void record and a full refund after the void: nothing more,
     // and the first reversal (reason, source) stays.
-    await deliver(
-      voidedEvent(order.ulid, businessDate, { final: true }).event,
-    );
+    await deliver(voidedEvent(order.ulid, businessDate, { final: true }).event);
     const refundId = await insertRefund(order.uuid, ORDER_TOTAL);
-    await deliver(refundedEvent(order.ulid, businessDate, refundId, ORDER_TOTAL));
+    await deliver(
+      refundedEvent(order.ulid, businessDate, refundId, ORDER_TOTAL),
+    );
     const after = await orderLedger(order);
     expect(after).toHaveLength(4);
     expect(byType(after, "return")).toHaveLength(2);
@@ -1140,7 +1177,11 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
     });
     const returns = byType(await orderLedger(order), "return");
     expect(returns).toHaveLength(2);
-    expect(Number(returns.find((r) => r.inventory_item_id === kit.beans)!.unit_cost_idr)).toBe(100);
+    expect(
+      Number(
+        returns.find((r) => r.inventory_item_id === kit.beans)!.unit_cost_idr,
+      ),
+    ).toBe(100);
     expect(await onHand(kit.location, kit.beans)).toBe("1000.0000");
     expect(await onHand(kit.location, kit.milk)).toBe("10000.0000");
 
@@ -1261,9 +1302,7 @@ describe("HPP reversal edge cases (e, f, g, h)", () => {
     // 2 cups sold + 1 remake + 1 comp = 4 x 18 g beans drawn.
     expect(await onHand(kit.location, kit.beans)).toBe("928.0000");
 
-    await deliver(
-      voidedEvent(order.ulid, businessDate, { final: true }).event,
-    );
+    await deliver(voidedEvent(order.ulid, businessDate, { final: true }).event);
     expect(await saleDeductionOf(order)).toMatchObject({ status: "reversed" });
     expect((await deductionsOf(remakeIssue))[0]).toEqual(remakeBefore);
     expect((await deductionsOf(compIssue))[0]).toEqual(compBefore);
@@ -1271,4 +1310,158 @@ describe("HPP reversal edge cases (e, f, g, h)", () => {
     expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
     expect(await onHand(kit.location, kit.milk)).toBe("9600.0000");
   });
+});
+
+describe("HPP reversal refused and retried at day close (i)", () => {
+  /**
+   * A foreign ledger row that already owns the idempotency key of the beans
+   * return, with another request fingerprint: the stock service refuses the
+   * return ("key used for a different stock posting", HTTP status 409).
+   * Returns its id.
+   */
+  async function blockBeansReturn(
+    kit: Kit,
+    deductionId: string,
+  ): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO stock_ledger (id, tenant_id, outlet_id, location_id, inventory_item_id,
+          movement_type, quantity, unit_cost_idr, source_type, source_id,
+          idempotency_key, request_fingerprint, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, 'receipt', 1, 1, 'goods_receipt', $6, $7, 'not-the-same-request', now())`,
+      [
+        id,
+        tenantA,
+        outletA,
+        kit.location,
+        kit.beans,
+        randomUUID(),
+        `recipe-reversal:${deductionId}:${kit.beans}`,
+      ],
+    );
+    return id;
+  }
+
+  async function unblock(ledgerId: string) {
+    // stock_ledger is append-only (trigger); the test superuser removes the
+    // planted blocker with user triggers off for this transaction only.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "DELETE FROM stock_ledger WHERE tenant_id = $1 AND id = $2",
+        [tenantA, ledgerId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Assumption: a switched-off location or item does not make the stock
+  // service refuse a movement (both tried), and the stored location of a line
+  // cannot be pointed elsewhere (foreign key). The reachable refusal is an
+  // idempotency-key clash (status 409) on the beans return. Whatever refuses
+  // the return, the consumer must not throw (the aggregate must not block):
+  // the reversal is parked on the still-posted deduction, and the next
+  // day.closed of the outlet retries it once the cause is fixed.
+  it("HPP-POS-i a void whose return is refused parks the reversal on the posted deduction; day.closed posts it at the original cost once the cause is fixed", async () => {
+    const kit = await buildKit();
+    const { order, businessDate } = await sell(kit);
+    const saleLedger = await orderLedger(order);
+    await deliverToGl(saleLedger);
+    const hpp = (await journalsOf(order.ulid))[0]!;
+    expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
+
+    // The cause: the beans return key is taken by a different posting.
+    const poison = await blockBeansReturn(
+      kit,
+      (await saleDeductionOf(order))!.id,
+    );
+    const { event, voidId } = voidedEvent(order.ulid, businessDate, {
+      final: true,
+    });
+    await deliver(event); // must not throw
+
+    const parked = await saleDeductionOf(order);
+    expect(parked).toMatchObject({
+      status: "posted",
+      reversal_reason: "void",
+      reversal_source_id: voidId,
+      reversed_at: null,
+    });
+    expect(parked!.reversal_failed_at).not.toBeNull();
+    expect(parked!.posted_at).not.toBeNull();
+    // No return row, stock unchanged.
+    expect(byType(await orderLedger(order), "return")).toHaveLength(0);
+    expect(await orderLedger(order)).toHaveLength(2);
+    expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
+    expect(await onHand(kit.location, kit.milk)).toBe("9600.0000");
+
+    // A day.closed while the cause is still there: the retry fails again and
+    // only bumps reversal_failed_at; reason and source stay the first ones.
+    await deliver(dayClosedEvent(businessDate)); // must not throw
+    const stillParked = await saleDeductionOf(order);
+    expect(stillParked).toMatchObject({
+      status: "posted",
+      reversal_reason: "void",
+      reversal_source_id: voidId,
+      reversed_at: null,
+    });
+    expect(stillParked!.reversal_failed_epoch).not.toBeNull();
+    expect(stillParked!.reversal_failed_epoch!).toBeGreaterThanOrEqual(
+      parked!.reversal_failed_epoch!,
+    );
+    expect(byType(await orderLedger(order), "return")).toHaveLength(0);
+
+    // The cause is fixed; meanwhile the beans average moved (1.000 g at Rp300).
+    await unblock(poison);
+    await receive(kit.location, kit.beans, "1000.0000", "300.0000");
+    await deliver(dayClosedEvent(businessDate));
+
+    const returns = byType(await orderLedger(order), "return");
+    expect(returns).toHaveLength(2);
+    for (const row of returns) expect(row.source_type).toBe("order");
+    const beansBack = returns.find(
+      (row) => row.inventory_item_id === kit.beans,
+    )!;
+    const milkBack = returns.find((row) => row.inventory_item_id === kit.milk)!;
+    expect(Number(beansBack.quantity)).toBe(36);
+    expect(Number(milkBack.quantity)).toBe(400);
+    expect(Number(beansBack.unit_cost_idr)).toBe(100);
+    expect(Number(milkBack.unit_cost_idr)).toBe(20);
+    expect(await onHand(kit.location, kit.beans)).toBe("2000.0000");
+    expect(await onHand(kit.location, kit.milk)).toBe("10000.0000");
+
+    const reversed = await saleDeductionOf(order);
+    expect(reversed).toMatchObject({
+      status: "reversed",
+      reversal_reason: "void",
+      reversal_source_id: voidId,
+      reversal_failed_at: null,
+    });
+    expect(reversed!.reversed_at).not.toBeNull();
+
+    // The GL journal of the late return mirrors the HPP journal exactly.
+    await deliverToGl(returns);
+    const journals = await journalsOf(order.ulid);
+    expect(journals).toHaveLength(2);
+    expect(journals[0]).toEqual(hpp);
+    expect(journals[1]!.lines).toEqual(swapped(hpp.lines));
+    expect(journals[1]!.lines).toEqual(reversalJournal(2 * CUP_COST));
+
+    // Another day.closed and a replay of the void change nothing.
+    await deliver(dayClosedEvent(businessDate));
+    await deliver(event);
+    expect(byType(await orderLedger(order), "return")).toHaveLength(2);
+    expect(await onHand(kit.location, kit.beans)).toBe("2000.0000");
+    expect(await saleDeductionOf(order)).toMatchObject({
+      status: "reversed",
+      reversal_failed_at: null,
+    });
+  }, 30_000);
 });

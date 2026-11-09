@@ -667,6 +667,7 @@ export async function reverseOrderSaleDeduction(
         reversedAt: occurredAt,
         reversalReason: input.reason,
         reversalSourceId: input.reversalSourceId,
+        reversalFailedAt: null,
       })
       .where(
         and(
@@ -711,7 +712,9 @@ async function isOrderFullyRefunded(
 
 /**
  * Reversal inside a savepoint: a stock rule that refuses the return rolls the
- * reversal back alone and is logged; it never fails (and blocks) the consumer.
+ * reversal back alone and never fails (and blocks) the consumer. The posted
+ * sale row is then parked: `reversal_failed_at` set, reason/source kept (the
+ * first ones when already parked), so `day.closed` retries it.
  */
 async function reverseSafely(
   tx: Tx,
@@ -723,12 +726,76 @@ async function reverseSafely(
       await reverseOrderSaleDeduction(savepoint, context, input);
     });
   } catch (error) {
-    if (!(error instanceof HttpError || error instanceof InventoryError))
+    // Business refusals (HTTP, inventory, core rule errors such as a reused
+    // ledger key) park the reversal; anything else (DB down, bug) rethrows so
+    // the delivery retries.
+    if (!(
+      error instanceof HttpError ||
+      error instanceof InventoryError ||
+      error instanceof CoreError
+    ))
       throw error;
     logger.warn(
       { err: error, orderId: input.orderId, outletId: input.outletId },
-      "Recipe deduction reversal not posted; left as is",
+      "Recipe deduction reversal not posted; parked for retry at day close",
     );
+    await tx
+      .update(recipeDeductions)
+      .set({
+        reversalFailedAt: new Date(),
+        reversalReason: sql`coalesce(${recipeDeductions.reversalReason}, ${input.reason})`,
+        reversalSourceId: sql`coalesce(${recipeDeductions.reversalSourceId}, ${input.reversalSourceId})`,
+      })
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, context.tenant.tenantId),
+          eq(recipeDeductions.idempotencyKey, `sale:order:${input.orderId}`),
+          eq(recipeDeductions.status, "posted"),
+        ),
+      );
+  }
+}
+
+/**
+ * Day close: retries the parked reversals of the outlet (posted sale rows with
+ * `reversal_failed_at`), oldest first, each in its own savepoint with the
+ * stored reason/source. The original event time is not stored, so the return
+ * is dated at the failure time. A retry that fails again only bumps
+ * `reversal_failed_at` (see reverseSafely).
+ */
+async function retryParkedReversals(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<void> {
+  const parked = await tx
+    .select({
+      sourceId: recipeDeductions.sourceId,
+      reason: recipeDeductions.reversalReason,
+      reversalSourceId: recipeDeductions.reversalSourceId,
+      failedAt: recipeDeductions.reversalFailedAt,
+    })
+    .from(recipeDeductions)
+    .where(
+      and(
+        eq(recipeDeductions.tenantId, context.tenant.tenantId),
+        eq(recipeDeductions.outletId, outletId),
+        eq(recipeDeductions.kind, "sale"),
+        eq(recipeDeductions.status, "posted"),
+        sql`${recipeDeductions.reversalFailedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(recipeDeductions.reversalFailedAt, recipeDeductions.id)
+    .limit(MAX_POSTED_PER_DAY_CLOSE);
+  for (const row of parked) {
+    if (!row.reason || !row.reversalSourceId || !row.failedAt) continue;
+    await reverseSafely(tx, context, {
+      outletId,
+      orderId: row.sourceId,
+      reason: row.reason as ReverseOrderSaleDeductionInput["reason"],
+      reversalSourceId: row.reversalSourceId,
+      occurredAt: row.failedAt.toISOString(),
+    });
   }
 }
 
@@ -860,6 +927,7 @@ async function consumeInTransaction(
       outletId: parsed.data.outletId,
       businessDate: parsed.data.businessDate,
     });
+    await retryParkedReversals(tx, context, parsed.data.outletId);
   }
 }
 

@@ -22,6 +22,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review: reviewer Opus + architect, semua temuan nyata sudah dibetulkan. Follow-up pra-ada: issue bd backup login `postgres`.
 - Belum: test DB terakhir dan `heavy pnpm check` belum hijau karena forwarding port Colima untuk container baru mati (ECONNREFUSED), bukan karena kode. Jalankan ulang setelah Colima dipulihkan. Second-opinion Codex (tingkat K) masih perlu diantre CTO.
 
+## legend-9w46 HPP penjualan POS ke stok (engineer, cabang `ws/hpp-pos`, 2026-11-09)
+
+- Sudah: ws/recipe-bom (legend-db6) digabung ke cabang ini di atas m1 fb46602d; migrasi resep diregenerasi jadi 0103_recipe_bom + 0104_recipe_bom_rls. Penjualan POS lunas (`order.paid`) memotong stok lewat resep → `stock.moved` → jurnal HPP (Dr HPP / Cr persediaan).
+- Sudah: void setelah bayar dan refund penuh membalik potongan stok sekali (gerakan `return/order` pada biaya asli per baris, jurnal HPP terbalik persis). Refund sebagian: tidak menggerakkan stok. Void sebelum pembayaran: tidak ada. Pembalikan yang ditolak aturan stok diparkir (`reversal_failed_at`) dan dicoba ulang saat `day.closed`.
+- Test: `src/test/recipe-pos-hpp.test.ts` 10 kasus (jalur POS asli, replay, biaya asli, refund sebagian/penuh, tutup hari, tombstone, remake tidak ikut, parkir+ulang).
+- Keputusan terbuka: refund penuh membalik stok (instruksi CTO) vs architect menyarankan hanya void (makanan sudah dimakan). Lanjutan: legend-078n, legend-9fhs.
+
 ## Sedang
 
 - (kosong selain thread di bawah)
@@ -269,6 +276,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+
 ## legend-db6 resep/BOM + potong stok otomatis (engineer, cabang `ws/recipe-bom`)
 
 - Selesai di worktree `.worktrees/recipe-bom`: tabel `recipes`, `recipe_lines`, `modifier_recipe_rules`, `outlet_inventory_settings`, `recipe_deductions`, `recipe_deduction_lines` (migration 0063 + RLS 0064; nomor dirapikan saat merge). Mesin ledakan resep bertingkat (sub-resep tanpa output diledakkan, sub-resep dengan output item diambil dari stok semi-finished), varian, modifier add/replace/remove, konversi satuan, waste gross-up. Mode real-time / tutup hari per outlet (override atas setelan tenant). Consumer `order.paid`, `day.closed`, `order_issue.recorded` (event baru) lewat worker cloud-sync; idempoten per order/issue/kunci. Duty meal via `POST /api/inventory/duty-meals`. CRUD resep memakai kontrak yang sudah ada (`/api/inventory/recipes`, `/versions`).

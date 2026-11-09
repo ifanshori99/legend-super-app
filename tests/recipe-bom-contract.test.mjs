@@ -120,6 +120,8 @@ const deduction = (over = {}) => ({
   shiftId: null,
   createdAt: "2026-11-08T03:00:00.000Z",
   postedAt: "2026-11-08T03:00:00.000Z",
+  reversedAt: null,
+  reversalReason: null,
   lines: [
     {
       inventoryItemId: ids.item,
@@ -147,6 +149,20 @@ test("INV-02 recipe deduction record: kinds, statuses and skip reasons", () => {
         lines: [],
       }),
     ).success,
+  );
+  // legend-9w46: a reversed sale (final void / full refund).
+  assert.ok(
+    schema.safeParse(
+      deduction({
+        status: "reversed",
+        reversedAt: "2026-11-08T04:00:00.000Z",
+        reversalReason: "void",
+      }),
+    ).success,
+  );
+  assert.equal(
+    schema.safeParse(deduction({ reversalReason: "partial" })).success,
+    false,
   );
   assert.equal(schema.safeParse(deduction({ kind: "waste" })).success, false);
   assert.equal(
