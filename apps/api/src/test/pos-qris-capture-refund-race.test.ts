@@ -192,6 +192,69 @@ async function paidBill(amountIdr: number): Promise<Bill> {
   return { orderId, linkId, intentId, amountIdr };
 }
 
+/**
+ * A second paid intent on the bill's link, paid `secondsEarlier` before the
+ * counted one: the link was already covered, so WS-05 flagged it
+ * `double_payment` and moved its whole amount to an unallocated fund.
+ */
+async function doublePaidIntent(
+  bill: Bill,
+  secondsEarlier: number,
+): Promise<string> {
+  const intentId = randomUUID();
+  intentIds.push(intentId);
+  await asOwner(async (client) => {
+    await client.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr,
+          idempotency_key, status, instructions, expires_at, paid_at, provider_ref, flags)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid',
+               '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
+               now() + interval '1 hour', now() - make_interval(secs => $7), $8,
+               ARRAY['double_payment']::text[])`,
+      [
+        intentId,
+        seededTenantId,
+        seededOutletA,
+        bill.linkId,
+        bill.amountIdr,
+        `cr-dbl-${intentId}`,
+        secondsEarlier,
+        `ref-${intentId.slice(0, 8)}`,
+      ],
+    );
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())
+       RETURNING id`,
+      [
+        seededTenantId,
+        seededOutletA,
+        intentId,
+        `evidence-${intentId}`,
+        bill.amountIdr,
+      ],
+    );
+    await client.query(
+      `INSERT INTO payment_unallocated_funds (tenant_id, outlet_id, payment_intent_id, evidence_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, $5, 'double_payment')`,
+      [seededTenantId, seededOutletA, intentId, rows[0]!.id, bill.amountIdr],
+    );
+  });
+  return intentId;
+}
+
+const requestRefund = (intentId: string, amountIdr: number) =>
+  staff.client
+    .post(`${ADMIN}/refunds`)
+    .set(originHeader)
+    .send({
+      idempotencyKey: key("req"),
+      paymentIntentId: intentId,
+      amountIdr,
+      reason: "Pengembalian uji balapan capture",
+    });
+
 /** The bill's authorized QRIS tender (link + paid intent); returns its id. */
 async function addTender(
   bill: Bill,
@@ -471,6 +534,10 @@ afterAll(async () => {
         [intentIds],
       );
       await client.query(
+        "DELETE FROM payment_unallocated_funds WHERE payment_intent_id = ANY($1::uuid[])",
+        [intentIds],
+      );
+      await client.query(
         "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
         [intentIds],
       );
@@ -573,6 +640,24 @@ describe("legend-r5brx the paid webhook never captures money a refund reserves",
     } finally {
       setPaymentRefundGateway(null);
     }
+  });
+
+  it("legend-r5brx C5 a double payment paid earlier on the same link is never captured: the tender takes the counted intent, which then cannot be refunded", async () => {
+    const bill = await paidBill(100_000);
+    const doubleId = await doublePaidIntent(bill, 60);
+    const tenderId = await addTender(bill);
+
+    await deliverPaid(bill);
+
+    expect(await tenderOf(tenderId)).toEqual({
+      status: "captured",
+      payment_intent_id: bill.intentId,
+    });
+    const response = await requestRefund(bill.intentId, 100_000);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(GUARD_CODE);
+    expect(await refundRows(bill.intentId)).toHaveLength(0);
+    expect(await refundRows(doubleId)).toHaveLength(0);
   });
 
   it("legend-r5brx C3 no refund on the intent: the webhook captures the tender as before", async () => {

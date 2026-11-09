@@ -112,6 +112,13 @@ export async function voidPendingQrisTenders(
     caller?: PosCaller | null;
     /** Refuse (409) when the guest already paid a pending QRIS (void order). */
     refuseWhenPaid?: boolean;
+    /**
+     * Wall-clock time the links close at (default `now`). legend-r5brx: a
+     * caller stamping the tenders with a fact time that may run ahead of the
+     * clock still closes the link at the real time, so no new intent can open
+     * on it in between.
+     */
+    linkClosedAt?: Date;
   },
 ): Promise<(typeof posOrderTenders.$inferSelect)[]> {
   const tenantId = context.tenant.tenantId;
@@ -148,7 +155,7 @@ export async function voidPendingQrisTenders(
     if (tender.paymentLinkId)
       await cancelPaymentLinkInTx(tx, context, {
         linkId: tender.paymentLinkId,
-        now: input.now,
+        now: input.linkClosedAt ?? input.now,
         reason: "cancelled",
       });
   return voided;
@@ -518,12 +525,15 @@ async function voidTendersAndRefundPaidQris(
     intentId: string;
     reason: "bill_below_tender" | "business_day_closed" | "refund_reserved";
     now: Date;
+    /** Wall-clock time the link closes at, when `now` is a fact time. */
+    linkClosedAt?: Date;
   },
 ): Promise<void> {
   const { order, pos, now } = input;
   const voided = await voidPendingQrisTenders(tx, context, {
     orderId: order.id,
     now,
+    ...(input.linkClosedAt ? { linkClosedAt: input.linkClosedAt } : {}),
   });
   await bumpPos(tx, context, pos, now);
   for (const row of voided) {
@@ -689,7 +699,7 @@ export async function handlePosPaymentPaid(
     // A refund that completed before this event moves the intent on to
     // (partially_)refunded; it is still the money this tender was paid with,
     // so it is decided below (voided, the rest refunded), never skipped.
-    const [probePaid] = await tx
+    const settled = await tx
       .select({ id: paymentIntents.id })
       .from(paymentIntents)
       .where(
@@ -702,23 +712,47 @@ export async function handlePosPaymentPaid(
             "refunded",
           ]),
         ),
-      )
-      .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id))
-      .limit(1);
-    if (!probePaid) return;
-    // legend-r5brx: decide under the intent row lock every refund writer
-    // takes first. The fact time it gives (`at`: now, or just after the latest
-    // refund completion or sale completion already committed on the intent)
-    // stamps the capture or void, so the tender never resolves before a refund
-    // of the same money that committed earlier, whatever the host clock says.
-    const at = await lockIntentsForFact(tx, tenantId, [probePaid.id], now);
+      );
+    if (settled.length === 0) return;
+    // legend-r5brx: decide under the intent row locks every refund writer
+    // takes first: all settled intents of the link in one call (ascending id).
+    // The fact time it gives (`at`: now, or just after the latest refund
+    // completion or sale completion already committed on them) stamps the
+    // capture or void, so the tender never resolves before a refund of the
+    // same money that committed earlier, whatever the host clock says.
+    const at = await lockIntentsForFact(
+      tx,
+      tenantId,
+      settled.map((row) => row.id),
+      now,
+    );
+    // A second payment of a covered link (`double_payment`) is also `paid`,
+    // but its money sits in unallocated funds and is refunded from there.
+    // The tender takes the intent whose money the link counted (allocated =
+    // evidence - unallocated > 0); ties by payment time, then id.
+    const counted = await tx.execute(sql`
+      SELECT i.id
+        FROM payment_intents i
+       WHERE i.tenant_id = ${tenantId}
+         AND i.payment_link_id = ${payload.data.paymentLinkId}::uuid
+         AND i.status IN ('paid', 'partially_refunded', 'refunded')
+         AND (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
+               WHERE e.tenant_id = i.tenant_id AND e.payment_intent_id = i.id)
+           - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
+               WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id)
+           > 0
+       ORDER BY i.paid_at ASC NULLS LAST, i.id ASC
+       LIMIT 1
+    `);
+    const countedId = counted.rows[0]?.id;
+    if (countedId === undefined || countedId === null) return;
     const [paid] = await tx
       .select()
       .from(paymentIntents)
       .where(
         and(
           eq(paymentIntents.tenantId, tenantId),
-          eq(paymentIntents.id, probePaid.id),
+          eq(paymentIntents.id, String(countedId)),
         ),
       );
     if (!paid) return;
@@ -741,9 +775,10 @@ export async function handlePosPaymentPaid(
         order,
         pos,
         paymentLinkId: payload.data.paymentLinkId,
-        intentId: payload.data.intentId,
+        intentId: paid.id,
         reason: "business_day_closed",
         now: at,
+        linkClosedAt: now,
       });
       return;
     }
@@ -757,9 +792,10 @@ export async function handlePosPaymentPaid(
         order,
         pos,
         paymentLinkId: payload.data.paymentLinkId,
-        intentId: payload.data.intentId,
+        intentId: paid.id,
         reason: "bill_below_tender",
         now: at,
+        linkClosedAt: now,
       });
       return;
     }
@@ -781,6 +817,7 @@ export async function handlePosPaymentPaid(
         intentId: paid.id,
         reason: "refund_reserved",
         now: at,
+        linkClosedAt: now,
       });
       return;
     }
