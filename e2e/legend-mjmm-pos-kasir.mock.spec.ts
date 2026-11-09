@@ -984,3 +984,132 @@ test.describe("390 px", () => {
     });
   }
 });
+
+// ------------------------------------------------- supervisor, blind caller
+//
+// Contract (orchestrator brief): `?demo=laci-buta` is a blind caller
+// (legend-ekaca). The server withholds every drawer figure, so the drawer shows
+// "—" instead of a number, and the variance block says the difference is not
+// shown. Assumptions:
+//  B1 Placeholder is the em dash "—" (U+2014), as stated in the brief; each
+//     figure is asserted as label-then-value in DOM order (like A1).
+//  B2 "Modal awal" is not asserted for the blind caller (the brief does not
+//     list it among the withheld figures).
+//  B3 "Rp 0" / "Rp0" means a standalone zero amount, not the start of e.g.
+//     "Rp0.5" or "Rp 0xx": the regex rejects a following digit or dot.
+const BLIND_DRAWER_FIGURES = [
+  "Penerimaan tunai",
+  "Refund tunai",
+  "Kas masuk",
+  "Kas keluar",
+  "Setoran kas",
+  "Kas sistem",
+] as const;
+
+async function expectBlindDrawer(page: Page): Promise<void> {
+  await open(page, `/pos/supervisor/shift/${DEMO_SHIFT_ID}?demo=laci-buta`);
+  await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
+  const area = main(page);
+
+  // Variance block: explicit "not shown", never a verdict.
+  await expect(area).toContainText("Selisih tidak ditampilkan");
+  await expect(area).not.toContainText(/Kas sesuai|Kas kurang|Kas lebih/);
+
+  // Every withheld figure reads "—", not a number or a fake zero.
+  for (const label of BLIND_DRAWER_FIGURES) {
+    await expect(area, `${label} shows a dash`).toContainText(
+      new RegExp(`${label}\\s*\\u2014`),
+    );
+  }
+
+  // The caller's own count is still visible.
+  await expect(area).toContainText(
+    new RegExp(`Kas dihitung:?\\s*${rp("2.230.000")}`),
+  );
+
+  // No broken or invented numbers anywhere on the page.
+  const text = await page.locator("body").innerText();
+  expect(text).not.toContain("NaN");
+  expect(text).not.toMatch(/Rp\s*0(?![\d.,])/);
+  // The system figure from the non-blind view must not leak.
+  expect(text).not.toMatch(/Rp\s*2\.250\.000/);
+}
+
+test.describe("blind drawer 1440 px", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("legend-mjmm SUP-01 blind drawer shows dashes and no difference verdict", async ({
+    page,
+  }) => {
+    await expectBlindDrawer(page);
+    await shot(page, "supervisor-blind-1440");
+  });
+});
+
+test.describe("blind drawer 390 px", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("legend-mjmm RESP-01 blind drawer fits 390 px without horizontal scroll", async ({
+    page,
+  }) => {
+    await expectBlindDrawer(page);
+    const overflow = await page.evaluate(() => {
+      const root = document.documentElement;
+      const area = document.querySelector("#main-content");
+      return {
+        page: root.scrollWidth - root.clientWidth,
+        main: area ? area.scrollWidth - area.clientWidth : 0,
+      };
+    });
+    expect(overflow.page).toBeLessThanOrEqual(1);
+    expect(overflow.main).toBeLessThanOrEqual(1);
+    await shot(page, "supervisor-blind-390");
+  });
+});
+
+// Regression: without `?demo` the supervisor still sees every figure.
+test("legend-mjmm SUP-01 non-blind drawer (no demo) still shows numbers, not blind placeholders", async ({
+  page,
+}) => {
+  await open(page, `/pos/supervisor/shift/${DEMO_SHIFT_ID}`);
+  await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
+  const area = main(page);
+  await expect(area).toContainText(/Penerimaan tunai\s*\+?\s*Rp\s*1\.850\.000/);
+  await expect(area).toContainText(
+    new RegExp(`Refund tunai\\s*${MINUS}?\\s*Rp\\s*50\\.000`),
+  );
+  await expect(area).toContainText(/Kas masuk\s*\+?\s*Rp\s*100\.000/);
+  await expect(area).toContainText(
+    new RegExp(`Kas keluar\\s*${MINUS}?\\s*Rp\\s*150\\.000`),
+  );
+  await expect(area).toContainText(
+    new RegExp(`Kas sistem\\s*${rp("2.250.000")}`),
+  );
+  await expect(area).not.toContainText("Selisih tidak ditampilkan");
+  await expect(area).toContainText(/Kas kurang\s*[−-]?\s*Rp\s*20\.000/);
+});
+
+// Regression (reviewer): after a blind approval the closed panel must not say
+// "Tidak ada selisih" (the real variance is unknown and not zero).
+test("legend-ekaca blind drawer: closing the shift never claims there is no difference", async ({
+  page,
+}) => {
+  await open(page, `/pos/supervisor/shift/${DEMO_SHIFT_ID}?demo=laci-buta`);
+  await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
+  const approve = page.getByRole("button", { name: /Setujui & tutup shift/ });
+  const enabledApprove = approve.and(page.locator(":enabled"));
+  await page
+    .getByRole("textbox", { name: /Penjelasan selisih|Alasan|Catatan/i })
+    .first()
+    .fill("Hitungan kas diperiksa ulang oleh supervisor.");
+  await enterPin(page, "123456");
+  await expect(enabledApprove).toHaveCount(1);
+  await approve.click();
+  await expect(enabledApprove).toHaveCount(0);
+  const area = main(page);
+  await expect(area).toContainText("Selisih tidak ditampilkan");
+  await expect(area).not.toContainText("Tidak ada selisih");
+  const text = await page.locator("body").innerText();
+  expect(text).not.toContain("NaN");
+  expect(text).not.toMatch(/Kas (sesuai|kurang|lebih)/);
+});

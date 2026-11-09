@@ -4,6 +4,7 @@ import { cn } from "cn";
 import {
   CircleAlert,
   CircleCheck,
+  EyeOff,
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
@@ -67,12 +68,39 @@ const VARIANCE_TONES = {
     text: "text-success",
     icon: CircleCheck,
   },
+  // Blind view (legend-4wrfd): the variance is hidden, so it is neither short,
+  // over nor even. A neutral box, never the green "sesuai".
+  hidden: {
+    box: "border-border bg-muted",
+    text: "text-muted-foreground",
+    icon: EyeOff,
+  },
 } as const;
+
+/** A figure hidden from the caller: a dash, announced as "hidden" to screen readers. */
+function HiddenFigure() {
+  const t = useT();
+  return (
+    <>
+      <span aria-hidden="true">—</span>
+      <span className="sr-only">
+        {t("posKasirSupervisor.result.figureHidden")}
+      </span>
+    </>
+  );
+}
 
 function VarianceBlock({ review }: { review: ShiftReview }) {
   const t = useT();
+  const { varianceIdr } = review;
   const kind =
-    review.varianceIdr < 0 ? "short" : review.varianceIdr > 0 ? "over" : "even";
+    varianceIdr === null
+      ? "hidden"
+      : varianceIdr < 0
+        ? "short"
+        : varianceIdr > 0
+          ? "over"
+          : "even";
   const tone = VARIANCE_TONES[kind];
   const Icon = tone.icon;
   return (
@@ -92,7 +120,13 @@ function VarianceBlock({ review }: { review: ShiftReview }) {
         <Icon className="size-5 shrink-0" aria-hidden="true" />
         {t(`posKasirSupervisor.result.${kind}`)}
       </p>
-      <Money amount={Math.abs(review.varianceIdr)} size="stat" />
+      {varianceIdr === null ? (
+        <p className="tabular text-2xl font-bold">
+          <HiddenFigure />
+        </p>
+      ) : (
+        <Money amount={Math.abs(varianceIdr)} size="stat" />
+      )}
       <p className="tabular text-base text-foreground">
         {t("posKasirSupervisor.result.countedLine", {
           amount: formatRupiah(review.countedIdr),
@@ -108,15 +142,22 @@ function BreakdownRow({
   sign,
 }: {
   label: string;
-  amountIdr: number;
+  /** null: hidden from the caller (blind view), shown as a dash. */
+  amountIdr: number | null;
   sign?: "+" | typeof MINUS;
 }) {
   return (
     <div className="flex items-baseline justify-between gap-3 text-(length:--density-text)">
       <dt>{label}</dt>
       <dd className="font-semibold">
-        {sign && amountIdr > 0 && <span className="tabular">{sign} </span>}
-        <Money amount={amountIdr} className="font-semibold" />
+        {amountIdr === null ? (
+          <HiddenFigure />
+        ) : (
+          <>
+            {sign && amountIdr > 0 && <span className="tabular">{sign} </span>}
+            <Money amount={amountIdr} className="font-semibold" />
+          </>
+        )}
       </dd>
     </div>
   );
@@ -136,6 +177,11 @@ function ResultPanel({ review }: { review: ShiftReview }) {
     >
       <div className="grid gap-5">
         <VarianceBlock review={review} />
+        {review.varianceIdr === null && (
+          <p className="text-base font-semibold">
+            {t("posKasirSupervisor.result.hiddenShort")}
+          </p>
+        )}
         <dl className="grid gap-2.5">
           <BreakdownRow
             label={t("posKasirSupervisor.breakdown.openingFloat")}
@@ -171,12 +217,18 @@ function ResultPanel({ review }: { review: ShiftReview }) {
           <div className="flex items-baseline justify-between gap-3 text-(length:--density-text) font-bold">
             <dt>{t("posKasirSupervisor.breakdown.expected")}</dt>
             <dd>
-              <Money amount={review.expectedIdr} className="font-bold" />
+              {review.expectedIdr === null ? (
+                <HiddenFigure />
+              ) : (
+                <Money amount={review.expectedIdr} className="font-bold" />
+              )}
             </dd>
           </div>
         </dl>
         <p className="border-t-(length:--border-w) border-border pt-4 text-base leading-6 text-muted-foreground">
-          {t("posKasirSupervisor.result.systemOnlyHint")}
+          {review.varianceIdr === null
+            ? t("posKasirSupervisor.result.hiddenHint")
+            : t("posKasirSupervisor.result.systemOnlyHint")}
         </p>
       </div>
     </PosPanel>
@@ -233,7 +285,9 @@ function ReviewForm({
   const [formError, setFormError] = useState<string>();
   const granted = useRef<GrantedOverride | null>(null);
 
-  const hasVariance = review.varianceIdr !== 0;
+  // A hidden (null) variance is unknown: do not claim one, and send 0 as the
+  // override value. The note stays required either way.
+  const hasVariance = review.varianceIdr !== null && review.varianceIdr !== 0;
   const options = supervisors.data ?? [];
   const approverUserId = chosen || options[0]?.userId || "";
   const pending = requestOverride.isPending || approve.isPending;
@@ -264,7 +318,7 @@ function ReviewForm({
       if (overrideId === undefined) {
         const override = await requestOverride.mutateAsync({
           action: "cash_shift_close",
-          valueIdr: Math.abs(review.varianceIdr),
+          valueIdr: Math.abs(review.varianceIdr ?? 0),
           reason: trimmed,
           objectType: "cash_shift",
           objectId: review.shiftId,
@@ -467,16 +521,19 @@ function ClosedPanel({
             approver: review.approvedByName ?? "",
           })}
         </p>
-        <div className="grid gap-1">
-          <p className="text-base font-semibold">
-            {t("posKasirSupervisor.closed.noteLabel")}
-          </p>
-          <p className="text-(length:--density-text) leading-6 text-muted-foreground">
-            {review.varianceNote
-              ? review.varianceNote
-              : t("posKasirSupervisor.closed.noNote")}
-          </p>
-        </div>
+        {/* Blind view: no note, and never "Tidak ada selisih" for an unknown variance. */}
+        {review.varianceIdr !== null && (
+          <div className="grid gap-1">
+            <p className="text-base font-semibold">
+              {t("posKasirSupervisor.closed.noteLabel")}
+            </p>
+            <p className="text-(length:--density-text) leading-6 text-muted-foreground">
+              {review.varianceNote
+                ? review.varianceNote
+                : t("posKasirSupervisor.closed.noNote")}
+            </p>
+          </div>
+        )}
       </div>
     </PosPanel>
   );

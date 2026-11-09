@@ -23,6 +23,7 @@ import {
   DEMO_ORDER_ID,
   DEMO_SHIFT_ID,
   canonicalOrderId,
+  BLIND_DRAWER_SEED,
   dayDemoSeed,
   payDemoSeed,
   readDemoSeed,
@@ -379,9 +380,27 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     const seed = shiftDemoSeed(readSeed());
     if (seed === null || state.applied.shift === seed) return;
     state.applied.shift = seed;
-    state.shift = demoShift("open");
-    state.movements = demoMovements();
+    if (seed === BLIND_DRAWER_SEED) seedAwaitingShift();
+    else {
+      state.shift = demoShift("open");
+      state.movements = demoMovements();
+    }
     state.counters.shift = 0;
+  }
+
+  /** The demo shift the supervisor screen opens on: counted, awaiting approval. */
+  function seedAwaitingShift() {
+    state.shift = demoShift("awaiting_approval");
+    state.shift.count = {
+      ...clone(demoBlindCount),
+      submittedAt: "2026-11-08T08:32:00.000Z",
+    };
+    state.movements = demoMovements();
+  }
+
+  /** `?demo=laci-buta`: the caller is blind to the drawer figures (legend-4wrfd). */
+  function drawerHidden(): boolean {
+    return readSeed() === BLIND_DRAWER_SEED;
   }
 
   function dayOf() {
@@ -672,12 +691,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     seedShifts();
     if (!state.shift && shiftId === DEMO_SHIFT_ID) {
       // The supervisor screen can be opened straight from a link.
-      state.shift = demoShift("awaiting_approval");
-      state.shift.count = {
-        ...clone(demoBlindCount),
-        submittedAt: "2026-11-08T08:32:00.000Z",
-      };
-      state.movements = demoMovements();
+      seedAwaitingShift();
     }
     if (!state.shift || state.shift.id !== shiftId)
       notFound("Shift tidak ditemukan.");
@@ -689,6 +703,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       conflict("COUNT_NOT_SUBMITTED", "Kasir belum mengirim hitungan kas.");
     const expectedIdr = shift.closed?.expectedIdr ?? expectedCashIdr(shift);
     const counted = shift.count.countedIdr;
+    const blind = drawerHidden();
     return {
       shiftId: shift.id,
       shiftNo: shift.shiftNo,
@@ -697,19 +712,20 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       terminalLabel: shift.terminalLabel,
       businessDate: shift.businessDate,
       countedIdr: counted,
-      expectedIdr,
-      varianceIdr: cashVarianceIdr(counted, expectedIdr),
+      expectedIdr: blind ? null : expectedIdr,
+      varianceIdr: blind ? null : cashVarianceIdr(counted, expectedIdr),
       breakdown: {
         openingFloatIdr: shift.openingFloatIdr,
-        cashSalesIdr: shift.cashSalesIdr,
-        cashRefundsIdr: shift.cashRefundsIdr,
-        cashInIdr: shift.cashInIdr,
-        cashOutIdr: shift.cashOutIdr,
-        cashDropIdr: shift.cashDropIdr,
+        cashSalesIdr: blind ? null : shift.cashSalesIdr,
+        cashRefundsIdr: blind ? null : shift.cashRefundsIdr,
+        cashInIdr: blind ? null : shift.cashInIdr,
+        cashOutIdr: blind ? null : shift.cashOutIdr,
+        cashDropIdr: blind ? null : shift.cashDropIdr,
       },
       ...(shift.closed
         ? {
-            varianceNote: shift.closed.varianceNote,
+            // A note would reveal a non-zero variance to a blind caller.
+            ...(blind ? {} : { varianceNote: shift.closed.varianceNote }),
             approvedByName: shift.closed.approvedByName,
             closedAt: shift.closed.closedAt,
           }
@@ -1302,6 +1318,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     rawRemainingIdr(orderId: string): number {
       return remainingOf(orderOf(orderId));
     },
+    /** True for a caller blind to the drawer figures (`?demo=laci-buta`). */
+    drawerHidden,
+
     rawShift(): EngineShift | null {
       seedShifts();
       return state.shift ? clone(state.shift) : null;

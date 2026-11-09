@@ -32,7 +32,13 @@ export const PAY_DEMO_SEEDS = [
 ] as const;
 export type PayDemoSeed = (typeof PAY_DEMO_SEEDS)[number];
 
-export const SHIFT_DEMO_SEEDS = ["shift-aktif"] as const;
+/**
+ * "laci-buta": the caller is blind to the drawer figures (cashier, or a
+ * supervisor on their own shift; legend-4wrfd), so the shift answers carry
+ * null for the seven figures. The shift is the awaiting-approval demo shift.
+ */
+export const BLIND_DRAWER_SEED = "laci-buta";
+export const SHIFT_DEMO_SEEDS = ["shift-aktif", BLIND_DRAWER_SEED] as const;
 export type ShiftDemoSeed = (typeof SHIFT_DEMO_SEEDS)[number];
 
 export const DAY_DEMO_SEEDS = ["hari-ditutup"] as const;

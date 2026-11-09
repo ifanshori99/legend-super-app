@@ -250,16 +250,21 @@ export type ShiftReview = {
   terminalLabel: string;
   businessDate: string;
   countedIdr: number;
-  expectedIdr: number;
-  /** counted - expected: negative is short. */
-  varianceIdr: number;
+  /**
+   * The seven drawer figures below are null in the blind view (legend-4wrfd):
+   * a caller without the variance permission, such as a supervisor reading
+   * their own shift. They are null together; show a dash, never 0.
+   */
+  expectedIdr: number | null;
+  /** counted - expected: negative is short. Null: hidden from the caller. */
+  varianceIdr: number | null;
   breakdown: {
     openingFloatIdr: number;
-    cashSalesIdr: number;
-    cashRefundsIdr: number;
-    cashInIdr: number;
-    cashOutIdr: number;
-    cashDropIdr: number;
+    cashSalesIdr: number | null;
+    cashRefundsIdr: number | null;
+    cashInIdr: number | null;
+    cashOutIdr: number | null;
+    cashDropIdr: number | null;
   };
   /** Set once approved and locked. */
   varianceNote?: string;
@@ -396,6 +401,11 @@ export type EngineOrder = {
   code: string | null;
 };
 
+/**
+ * The mock engine's own record of a shift: server-side truth, so the drawer
+ * figures are always numbers here. The blind view (null figures) is applied at
+ * the output edge: `shiftWire` and `reviewOf` (legend-ekaca).
+ */
 export type EngineShift = {
   id: string;
   shiftNo: string;
