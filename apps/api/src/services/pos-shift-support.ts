@@ -90,6 +90,7 @@ const AUDIT_SAFE_FIELDS = [
   "expectedIdr",
   "countedIdr",
   "varianceIdr",
+  "heldCashOutIdr",
   "type",
   "amountIdr",
   "shiftId",
@@ -236,7 +237,10 @@ export const emptyAggregates: ShiftAggregates = {
  * - Refunds: cash lines of the shift's linked refunds, plus the captured
  *   cash tenders of the shift's paid-sale voids (a correction void pays the
  *   whole sale back; pos-order-corrections writes no per-method lines).
- * - In / out / drop: the shift's cash movements.
+ * - In / out / drop: the shift's cash movements, without the rows held for
+ *   supervisor review (`needs_approval`): they never reach the drawer figures,
+ *   so the expected cash cannot go negative or leak through a refusal
+ *   (legend-67dt).
  */
 export async function computeShiftAggregates(
   tx: Tx,
@@ -308,6 +312,7 @@ export async function computeShiftAggregates(
         eq(cashMovements.tenantId, tenantId),
         eq(cashMovements.outletId, outletId),
         eq(cashMovements.shiftId, shift.id),
+        eq(cashMovements.needsApproval, false),
       ),
     )
     .groupBy(cashMovements.type);
@@ -320,6 +325,32 @@ export async function computeShiftAggregates(
     cashOutIdr: byType.get("cash_out") ?? 0,
     cashDropIdr: byType.get("drop") ?? 0,
   };
+}
+
+/** Sum of the shift's cash outs and drops held for supervisor review. */
+export async function heldCashOutIdrOf(
+  tx: Tx,
+  shift: ShiftRow,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${cashMovements.amountIdr}), 0)`,
+    })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, shift.tenantId),
+        eq(cashMovements.outletId, shift.outletId),
+        eq(cashMovements.shiftId, shift.id),
+        eq(cashMovements.needsApproval, true),
+      ),
+    );
+  // recordCashMovement bounds every cash out + drop of a shift (held or not)
+  // to a safe integer, so this never trips; parsed in bigint to be sure.
+  const total = BigInt(row?.total ?? 0);
+  if (total > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("Held cash out total is not a safe integer");
+  return Number(total);
 }
 
 export async function movementsOf(
@@ -513,6 +544,7 @@ export function countDto(row: ShiftCountRow): PosShiftCount {
     countedIdr: Number(row.countedIdr),
     expectedIdr: Number(row.expectedIdr),
     varianceIdr: Number(row.varianceIdr),
+    heldCashOutIdr: Number(row.heldCashOutIdr),
     submittedBy: row.submittedBy,
     submittedAt: toIsoDateTime(row.submittedAt),
   });
@@ -533,7 +565,14 @@ export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
   });
 }
 
-export function movementDto(row: CashMovementRow): PosCashMovement {
+/**
+ * `withApproval` adds the held flag for callers that see live figures
+ * (supervisor reads); never for the record response or the shift's cashier.
+ */
+export function movementDto(
+  row: CashMovementRow,
+  options: { withApproval?: boolean } = {},
+): PosCashMovement {
   return posCashMovementSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -545,6 +584,7 @@ export function movementDto(row: CashMovementRow): PosCashMovement {
     recordedBy: row.recordedBy,
     recordedAt: toIsoDateTime(row.recordedAt),
     approvedBy: row.approvedBy,
+    ...(options.withApproval ? { needsApproval: row.needsApproval } : {}),
   });
 }
 

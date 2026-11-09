@@ -17,6 +17,7 @@
 //   (unique approval_override_id per tenant).
 // - cash_movements and pos_daily_closes are append-only history.
 
+import { idr } from "@starter/shared/core";
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -217,6 +218,12 @@ export const posShiftCounts = pgTable(
     expectedIdr: idrColumn("expected_idr").notNull(),
     /** Signed: counted - expected. */
     varianceIdr: idrColumn("variance_idr").notNull(),
+    /**
+     * Sum of the shift's cash outs held for supervisor review at count time
+     * (cash_movements.needs_approval). Left out of expected_idr; the close
+     * fails as stale when it changes after the count (legend-67dt).
+     */
+    heldCashOutIdr: idrColumn("held_cash_out_idr").notNull().default(idr(0)),
     submittedBy: text("submitted_by")
       .notNull()
       .references(() => user.id),
@@ -261,6 +268,10 @@ export const posShiftCounts = pgTable(
     check("pos_shift_counts_sequence_check", sql`${table.sequence} >= 1`),
     check("pos_shift_counts_counted_check", sql`${table.countedIdr} >= 0`),
     check(
+      "pos_shift_counts_held_cash_out_check",
+      sql`${table.heldCashOutIdr} >= 0`,
+    ),
+    check(
       "pos_shift_counts_variance_check",
       sql`${table.varianceIdr} = ${table.countedIdr} - ${table.expectedIdr}`,
     ),
@@ -289,6 +300,16 @@ export const cashMovements = pgTable(
       .references(() => user.id),
     recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
     approvedBy: text("approved_by").references(() => user.id),
+    /**
+     * A cash out / drop larger than the expected drawer cash when recorded
+     * (legend-67dt). Accepted like any other, but left out of the drawer
+     * figures and shown to supervisors only; the cashier never sees it.
+     * Permanent (the guard trigger blocks UPDATE): a later review step belongs
+     * in its own append-only table. Accounting must never post these rows:
+     * cash that really left the drawer already reaches the books once, as the
+     * shift variance.
+     */
+    needsApproval: boolean("needs_approval").notNull().default(false),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     requestFingerprint: varchar("request_fingerprint", {
       length: 64,
@@ -324,6 +345,10 @@ export const cashMovements = pgTable(
       sql`${table.type} IN ('cash_in', 'cash_out', 'drop')`,
     ),
     check("cash_movements_amount_check", sql`${table.amountIdr} > 0`),
+    check(
+      "cash_movements_needs_approval_type_check",
+      sql`NOT ${table.needsApproval} OR ${table.type} <> 'cash_in'`,
+    ),
     // The service trims the note first; btrim keeps spaces, tabs and newlines
     // alone out even for a writer that skips it (legend-vor4). char_length
     // counts code points, as the service does. Migration 0099 adds it NOT
