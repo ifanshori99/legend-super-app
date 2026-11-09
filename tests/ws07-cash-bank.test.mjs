@@ -776,6 +776,21 @@ describe("CSV import helpers", () => {
     assert.notEqual(real.current(), a);
   });
 
+  test("open case: a changed request gets its own key; going back reuses the first", () => {
+    let n = 0;
+    const session = cash.createIdempotencyKeySession(() => `key-${(n += 1)}`);
+    const ownerA = session.current(JSON.stringify({ ownerId: "a" }));
+    assert.equal(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
+    // Another PIC after a failed submit: the server would refuse the old key
+    // for a different body, so the new body gets a new key.
+    const ownerB = session.current(JSON.stringify({ ownerId: "b" }));
+    assert.notEqual(ownerB, ownerA);
+    // Back to the first PIC (its request may have reached the server): reuse.
+    assert.equal(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
+    session.reset();
+    assert.notEqual(session.current(JSON.stringify({ ownerId: "a" })), ownerA);
+  });
+
   test("CSV: the contract parsers refuse impossible dates and fractional rupiah", () => {
     assert.equal(parseBankCsvAmount("1.250.000,00", ","), 1_250_000);
     assert.equal(parseBankCsvAmount("Rp 15.000", ","), 15_000);

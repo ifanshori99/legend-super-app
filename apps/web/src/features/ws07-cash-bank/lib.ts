@@ -564,19 +564,29 @@ export function buildImportPreview(
 // ---- Idempotency key per dialog -------------------------------------------
 
 /**
- * One idempotency key for the life of a dialog. A resend after a failed or
- * slow first attempt must carry the same key so the server replays instead of
- * opening a second case; `reset` (success or close) gives the next dialog a
- * new key.
+ * Idempotency keys for the life of a dialog, one per request body. A resend
+ * of the same body after a failed or slow attempt carries the same key, so
+ * the server replays instead of opening a second case. A changed body (for
+ * example another PIC) gets its own key, because the server refuses a key
+ * reused for a different request; going back to an earlier body reuses its
+ * key, since that request may already have reached the server. `reset`
+ * (success) forgets every key; the next dialog starts a new session.
  */
 export function createIdempotencyKeySession(
   newKey: () => string = createUlid,
-): { current: () => string; reset: () => void } {
-  let key: string | null = null;
+): { current: (fingerprint?: string) => string; reset: () => void } {
+  const keys = new Map<string, string>();
   return {
-    current: () => (key ??= newKey()),
+    current: (fingerprint = "") => {
+      let key = keys.get(fingerprint);
+      if (key === undefined) {
+        key = newKey();
+        keys.set(fingerprint, key);
+      }
+      return key;
+    },
     reset: () => {
-      key = null;
+      keys.clear();
     },
   };
 }

@@ -90,7 +90,8 @@ function OpenCaseForm({
   const [ownerId, setOwnerId] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   // OpenCaseForm lives inside DialogContent, so it mounts once per opened
-  // dialog: the key is stable across resends and new for the next dialog.
+  // dialog: keys are stable across resends of one body and new for the next
+  // dialog.
   const [keySession] = React.useState(() => createIdempotencyKeySession());
   const effectiveOwner = ownerId || options[0]?.id || "";
   const unavailable = people.data?.unavailable ?? false;
@@ -98,16 +99,17 @@ function OpenCaseForm({
   const submit = () => {
     setError(null);
     if (effectiveOwner === "" || unavailable) return;
+    const body = {
+      legalEntityId,
+      outletId: null,
+      type,
+      differenceIdr,
+      ownerId: effectiveOwner as UserId,
+      refs: [...refs],
+    };
     openCase.mutate(
-      {
-        legalEntityId,
-        outletId: null,
-        type,
-        differenceIdr,
-        ownerId: effectiveOwner as UserId,
-        refs: [...refs],
-        idempotencyKey: keySession.current(),
-      },
+      // Same body, same key (the server replays); another body, another key.
+      { ...body, idempotencyKey: keySession.current(JSON.stringify(body)) },
       {
         onSuccess: () => {
           keySession.reset();
