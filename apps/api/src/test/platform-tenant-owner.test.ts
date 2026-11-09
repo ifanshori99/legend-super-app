@@ -39,9 +39,11 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import type { AssignTenantOwnerInput } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { totpCode, totpStep } from "../lib/totp";
 import { grantRoleAssignment } from "../services/access.service";
+import { assignTenantOwner } from "../services/platform-tenant-owner.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
 const app = createApp();
@@ -696,13 +698,52 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
     expect(response.status).toBe(403);
     expect(await activeOwners(tenant.tenantId)).toHaveLength(0);
 
+    // The support guard refuses first (SUPPORT_ACCESS_REQUIRED), so the
+    // service never runs: no tenant_owner.denied, but the platform route
+    // writes one platform.access.denied row on the tenant (the impersonator
+    // is a tenant_admin there, so the tie rule lets the row through).
+    expect(
+      await auditRows(tenant.tenantId, "tenant_owner.denied"),
+    ).toHaveLength(0);
+    const denied = await auditRows(tenant.tenantId, "platform.access.denied");
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({
+      // actor = the impersonator; `impersonatedUserId` = the session user.
+      actorId: tenant.firstAdminUserId,
+      maskedChanges: {
+        after: {
+          cause: "impersonated_session",
+          code: "SUPPORT_ACCESS_REQUIRED",
+          impersonatedBy: tenant.firstAdminUserId,
+          impersonatedUserId: admin.userId,
+          method: "POST",
+          route: ownersPath(tenant.tenantId),
+        },
+      },
+    });
+  });
+
+  it("legend-ktc4d refuses a direct service call with impersonatedBy set (403 FORBIDDEN) and audits tenant_owner.denied", async () => {
+    const admin = await platformAdmin();
+    const tenant = await newTenant(admin);
+    // Same body the appoint helper sends (account, reason, mfaCode).
+    const input = (await payload(admin, invite())) as AssignTenantOwnerInput;
+
+    await expect(
+      assignTenantOwner({
+        tenantId: tenant.tenantId,
+        actorUserId: admin.userId,
+        impersonatedBy: tenant.firstAdminUserId,
+        mfaVerifiedAt: new Date().toISOString(),
+        input,
+      }),
+    ).rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+
+    expect(await activeOwners(tenant.tenantId)).toHaveLength(0);
     const denied = await auditRows(tenant.tenantId, "tenant_owner.denied");
     expect(denied).toHaveLength(1);
-    expect(denied[0]).toMatchObject({ actorId: admin.userId });
-    expect(JSON.stringify(denied[0])).toContain("impersonated_session");
-    // The denied audit `after` records who is impersonating (the id set above).
-    // core-audit-writer stores it under maskedChanges.after (safe field).
     expect(denied[0]).toMatchObject({
+      actorId: admin.userId,
       maskedChanges: {
         after: {
           cause: "impersonated_session",

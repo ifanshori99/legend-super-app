@@ -1,5 +1,6 @@
 // Panel Platform routes (PRD v1.7 §3 F4, flow R; TEN-06). Super Admin only:
-// every handler runs after requireAuth, the origin check and the revocable
+// every handler runs after requirePlatformAuth (requireAuth plus the
+// impersonation denial audit), the origin check and the revocable
 // platform_admins registry (legend-4f9 removed the bootstrap global `admin`
 // role's platform/org grants). The target tenant of /tenants/:tenantId is a
 // path parameter chosen by a Super Admin, never the caller's tenant context
@@ -25,9 +26,12 @@ import {
 } from "@starter/shared/platform";
 import { tenantIdSchema, z } from "@starter/shared/core";
 import { verifiedMfaAt } from "../lib/mfa";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { getAuth } from "../middleware/auth";
 import { requireSessionMfa } from "../middleware/identity";
-import { requirePlatformAdmin } from "../middleware/platform-admin";
+import {
+  requirePlatformAdmin,
+  requirePlatformAuth,
+} from "../middleware/platform-admin";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -56,7 +60,7 @@ export const platformRouter = Router();
 // management idle policy (legend-qfvu mounts legend-6xf's gate). The registry
 // check runs first: a non-admin learns nothing about the MFA requirement.
 platformRouter.use(
-  requireAuth,
+  requirePlatformAuth,
   requireTrustedOrigin,
   requirePlatformAdmin,
   requireSessionMfa(),

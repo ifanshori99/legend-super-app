@@ -99,6 +99,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Batas (jujur): bila pengganti ditolak karena prefix atau id bentrok, perangkat itu tetap tidak bisa menjual (fail closed) sampai prosedur manual zsdd dijalankan. Tandanya `receiptSequencesRefused > 0` yang menetap. Kasus pengganti yang sudah maju (L > 0) pulih sendiri lewat rotasi berikutnya; ini hanya dianalisis dan belum diuji.
 - Rilis: hanya edge, tanpa urutan khusus terhadap cloud.
 
+## legend-ktc4d lanjutan: audit `platform.access.denied` untuk sesi impersonate (engineer, cabang `ws/grant-role-lock-b33` dari `hold/ktc4d-qr1uv-b33` + cherry-pick 8ajy4, 2026-11-09)
+
+- Sebab gagal di merge train: sesudah support-readonly 6618970d, sesi impersonate ditolak oleh guard support di dalam `requireAuth` (403 `SUPPORT_ACCESS_REQUIRED`), sebelum `requirePlatformAdmin` dan service ktc4d, jadi `tenant_owner.denied` tidak tertulis.
+- Sudah: `requirePlatformAuth` (membungkus `requireAuth`, dipakai `platformRouter` dan `platformGuard`) dan `requirePlatformAdmin` menulis `platform.access.denied` (aktor = admin yang impersonate; `after`: cause, code, impersonatedBy, impersonatedUserId, method, route) untuk tiap tolakan 403 karena impersonate. Hasil auth tidak berubah. Tenant baris: hanya `/api/platform/tenants/<uuid>` atau tenant yang di-resolve, dan hanya bila salah satu orang punya role atau grant support di tenant itu. Route dinormalisasi, segmen bebas jadi `*`, maks 256 karakter; satu baris per sesi, tenant, kode, metode per 60 detik. `support-session.ts` dan `auth.ts` tidak diubah.
+- Bukti: di basis hold 3 test gagal (termasuk test ktc4d yang ditahan); sesudah fix 12 file test terarah 113 lolos (termasuk `platform-support-access`, `support-session-readonly`). tsc api bersih, eslint dan prettier bersih.
+- Review K: reviewer Opus + architect; temuan tenant pilihan pemanggil, banjir baris, aktor tidak konsisten, `next` di dalam try, teks bebas di route: semua dibetulkan dan diuji.
+
 ## legend-8ajy4 grantRoleAssignment: kunci tenant dulu, waktu sesudah kunci (engineer, cabang `ws/grant-role-lock` dari `ws/end-role-assignment-lock` 61eb1ca0, 2026-11-09)
 
 - Sudah: `grantRoleAssignment` mengambil kunci advisory per tenant yang sama dengan `endRoleAssignment` dan jalur platform Owner sebagai perintah pertama transaksi, lalu membaca `now`, lalu memeriksa pemberi (`assertCanGrantRole`, legend-7vsby) dengan data yang dibaca sesudah kunci. Owner atau admin yang penugasannya diakhiri selagi pemberian menunggu tidak bisa memberi role lagi. Opsi `now` dihapus (tidak ada pemanggil). Tanpa migrasi, tanpa perubahan kontrak.

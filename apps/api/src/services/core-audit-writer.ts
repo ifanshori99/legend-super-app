@@ -92,6 +92,14 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "account",
   ],
   "tenant_owner.denied": ["cause", "impersonatedBy"],
+  "platform.access.denied": [
+    "cause",
+    "code",
+    "impersonatedBy",
+    "impersonatedUserId",
+    "method",
+    "route",
+  ],
   "integration.created": ["provider", "outletId", "status", "configKeys"],
   "integration.config.updated": [
     "provider",
