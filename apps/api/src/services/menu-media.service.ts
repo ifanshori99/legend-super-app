@@ -50,11 +50,7 @@ export type MenuImageUploadInput = {
 };
 
 const outletNotReachable = () =>
-  new HttpError(
-    403,
-    "FORBIDDEN",
-    "Anda tidak memiliki akses ke outlet ini.",
-  );
+  new HttpError(403, "FORBIDDEN", "Anda tidak memiliki akses ke outlet ini.");
 
 /**
  * The outlet a menu photo is stored under: the requested outlet when it is

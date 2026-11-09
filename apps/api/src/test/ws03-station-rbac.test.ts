@@ -216,9 +216,7 @@ describe("legend-ra7s station-aware RBAC context", () => {
       ),
     ).toEqual([outletA.toLowerCase()]);
     // The station id stays separate for KDS routes.
-    expect(lower(snapshot.stationsFor(VIEW))).toEqual([
-      stationA.toLowerCase(),
-    ]);
+    expect(lower(snapshot.stationsFor(VIEW))).toEqual([stationA.toLowerCase()]);
 
     // Other outlet: denied. A sibling station or the whole outlet: denied
     // too, because station scope never becomes outlet-wide reach.

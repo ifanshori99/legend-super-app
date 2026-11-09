@@ -28,11 +28,7 @@ import type { Client, PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app";
-import {
-  idr,
-  outletIdSchema,
-  tenantIdSchema,
-} from "@starter/shared/core";
+import { idr, outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -218,7 +214,12 @@ async function quoteOneLine(world: World) {
 // (a) outlet-scoped guest context probe
 // ---------------------------------------------------------------------------
 
-const PROBED_TABLES = ["tables", "floor_zones", "table_sessions", "price_lists"];
+const PROBED_TABLES = [
+  "tables",
+  "floor_zones",
+  "table_sessions",
+  "price_lists",
+];
 
 async function installOutletProbe() {
   await owner.query(
@@ -300,7 +301,11 @@ async function floor(count: number) {
       token: (await issueQr(floorStaff.client, table.id)).token,
     });
   }
-  return { zoneId: zone.id as string, outletId: zone.outletId as string, tables };
+  return {
+    zoneId: zone.id as string,
+    outletId: zone.outletId as string,
+    tables,
+  };
 }
 
 async function sessionRows(ids: string[]) {

@@ -7,12 +7,7 @@
 // - Signals are the PostgreSQL NOTIFY payloads (server to relay only).
 // - Messages are what the relay pushes to each guest socket.
 
-import {
-  z,
-  tenantIdSchema,
-  ulidSchema,
-  uuidSchema,
-} from "../core/index.ts";
+import { z, tenantIdSchema, ulidSchema, uuidSchema } from "../core/index.ts";
 
 /** Written on every cart write and checkout. */
 export const qrCartSignalSchema = z.strictObject({

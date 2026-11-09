@@ -390,4 +390,3 @@ export const claimSessionPoints = defineEndpoint({
   body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
   response: dataResponseSchema(pointClaimSchema),
 });
-
