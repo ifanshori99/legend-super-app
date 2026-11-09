@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-xx22n QR dine-in service charge default SC-DINE-IN (engineer, cabang `ws/qr-service-charge-default` dari m1 94d769c6, 2026-11-09)
+
+- Hasil: temuan Codex 133 tidak tereproduksi. `selectServiceChargeRules` (qr-order-pricing.ts:560) sudah jatuh ke aturan published outlet/tenant bila zona 0; QR dan POS memakai loader dan selektor yang sama. Tidak ada perubahan kode produksi.
+- Presedensi (tetap): zona `serviceChargeBp > 0` menimpa; 0 = pakai aturan published. Skema zona tidak membedakan "eksplisit 0" dan "tidak diisi" (`NOT NULL DEFAULT 0`), jadi zona tidak bisa menghapus service lewat 0; menghapus service = nonaktifkan aturan published.
+- Bukti: test DB baru `apps/api/src/test/qr-service-charge-default.test.ts` (5 kasus: default tenant, override zona, paritas POS + takeaway 0, lintas tenant, default outlet-scoped). Mutasi reviewer (fallback dimatikan) membuat kasus 1, 3, 4 gagal. 3 file / 23 test lulus, tsc api, eslint, prettier hijau.
+- Review K: reviewer + architect, tanpa temuan pada QR. Sisi lain: legend-k7x4p (POS takeaway di table session, belum terverifikasi). Brief Codex: `docs/briefs/209b-second-opinion-qr-service-charge-default.md` (folder utama).
+
 ## legend-sduiq edge berhenti menomori run yang dipensiunkan cloud (engineer, cabang `ws/edge-restore-retired` dari b6d6c8b4, 2026-11-09)
 
 - Sudah: sesudah sequence satu halaman pull diterapkan, edge mempensiunkan run lokal yang masih berlaku di sini (terikat ke binding sendiri, atau belum terikat) tetapi tidak ada lagi di daftar penuh dari cloud. Alasannya `edge_replaced`, tanpa migrasi. Pilihan A (apply) dipilih, bukan B (alokasi menolak), karena B butuh state baru, satu baca ekstra tiap penjualan, dan salah pada boot pertama. Rincian: `docs/briefs/sub-edge-restore-retired.md`.
