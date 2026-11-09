@@ -35,6 +35,7 @@ export function DeviceDrawer({
   online,
   onOpenChange,
   onRevoke,
+  onReissue,
 }: {
   device: Device | null;
   outletName: string;
@@ -44,6 +45,7 @@ export function DeviceDrawer({
   online: boolean;
   onOpenChange: (open: boolean) => void;
   onRevoke: (device: Device) => void;
+  onReissue: (device: Device) => void;
 }) {
   const t = useT();
   const state = device && nowMs !== null ? heartbeatState(device, nowMs) : null;
@@ -130,6 +132,15 @@ export function DeviceDrawer({
               />
               <TrainingExplanation />
             </section>
+            {device.status === "active" && canManage && (
+              <Button
+                variant="outline"
+                disabled={!online}
+                onClick={() => onReissue(device)}
+              >
+                {t("deviceRegistry.token.reissueAction")}
+              </Button>
+            )}
             {device.status === "active" && (
               <Button
                 variant="destructive"

@@ -104,7 +104,7 @@ export type PettyPurchaseId = z.infer<typeof pettyPurchaseIdSchema>;
 const supplierName = z.string().trim().min(1).max(150);
 const personOrCompanyName = z.string().trim().min(1).max(150);
 const note = z.string().trim().max(300).nullable();
-const emailSchema = z.email();
+const emailSchema = z.email().max(254);
 
 /** PRD §6.E `number VARCHAR(40)`: PO, GR and return document numbers. */
 export const purchaseDocumentNumberSchema = z
@@ -584,6 +584,16 @@ export const purchaseOrderLineSchema = z.strictObject({
 });
 export type PurchaseOrderLine = z.infer<typeof purchaseOrderLineSchema>;
 
+/** Delivery state of a PO email: queued for the job, sent, or failed for good. */
+export const purchaseOrderEmailDeliveryStatusSchema = z.enum([
+  "queued",
+  "sent",
+  "failed",
+]);
+export type PurchaseOrderEmailDeliveryStatus = z.infer<
+  typeof purchaseOrderEmailDeliveryStatusSchema
+>;
+
 export const purchaseOrderSchema = z
   .strictObject({
     id: purchaseOrderIdSchema,
@@ -601,11 +611,15 @@ export const purchaseOrderSchema = z
     source: purchaseOrderSourceSchema,
     createdBy: userIdSchema,
     createdAt: isoDateTimeSchema,
+    /** Optimistic concurrency token; bumped by every write to the PO. */
+    updatedAt: isoDateTimeSchema,
     approvedBy: userIdSchema.nullable(),
     approvedAt: isoDateTimeSchema.nullable(),
     sentAt: isoDateTimeSchema.nullable(),
     /** Email the PO was sent to; null for a share link only. */
     sentTo: emailSchema.nullable(),
+    /** Latest email delivery of this PO by created time; null = never emailed. */
+    emailDeliveryStatus: purchaseOrderEmailDeliveryStatusSchema.nullable(),
     closedAt: isoDateTimeSchema.nullable(),
     note,
   })
@@ -702,6 +716,13 @@ export const purchaseOrderSendResultSchema = z
   });
 export type PurchaseOrderSendResult = z.infer<
   typeof purchaseOrderSendResultSchema
+>;
+
+export const purchaseOrderShareLinksRevokedSchema = z.strictObject({
+  revoked: z.number().int().nonnegative(),
+});
+export type PurchaseOrderShareLinksRevoked = z.infer<
+  typeof purchaseOrderShareLinksRevokedSchema
 >;
 
 /** Whole-rupiah value of one line (quantity x unit price, one rounding). */

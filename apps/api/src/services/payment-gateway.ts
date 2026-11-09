@@ -25,15 +25,38 @@ import type {
 /** Online methods the guest screen offers (PRD §3.13 "Metode DOIT"). */
 export type OnlinePaymentMethod = "qris" | "va" | "bank_transfer";
 
+/**
+ * Every online method a gateway may offer. Founder rule (8 Nov 2026): the
+ * customer web takes QRIS, VA, e-wallet and card (plus pay at the cashier); POS
+ * adds EDC. DOIT serves QRIS, VA and bank transfer at release (e-wallets pay
+ * through QRIS); a gateway that adds direct e-wallet or card implements the
+ * same port and reports them from `methods()`, so no caller contract changes.
+ */
+export type GatewayPaymentMethod = OnlinePaymentMethod | "ewallet" | "card";
+
+/** One method as the provider reports it (PRD: "Daftar metode aktif diambil
+ * dari endpoint DOIT, bukan ditulis tetap di kode"). */
+export type GatewayMethodAvailability = {
+  readonly method: GatewayPaymentMethod;
+  readonly enabled: boolean;
+  readonly channels: readonly PaymentChannel[];
+};
+
 export type GatewayHealth = {
   readonly status: PaymentGatewayStatus;
 };
 
 export type GatewayIntentRequest = {
   readonly context: ScopedTenantContext;
+  /** Outlet of the bill. A tenant-scoped caller (guest QR order) carries no
+   * outlet in its context, so the adapter picks that outlet's own credentials
+   * from here; absent, it falls back to the context's single outlet. */
+  readonly outletId?: string;
   readonly provider: string;
   readonly intentId: string;
-  readonly method: OnlinePaymentMethod;
+  /** A gateway refuses (CoreError VALIDATION_ERROR) a method it does not
+   * report as enabled from `methods()`. */
+  readonly method: GatewayPaymentMethod;
   readonly channelCode: string | null;
   /** Server-priced amount (PAY-01). */
   readonly amountIdr: number;
@@ -46,6 +69,10 @@ export type GatewayIntent = {
   readonly instructions: PaymentInstructions;
   /** The provider may shorten the lifetime (QRIS is about 10 minutes). */
   readonly expiresAt: string;
+  /** Integration row whose credentials created the payment; stored on the
+   * intent so status checks and webhooks use the same account later. Absent
+   * for a gateway without per-tenant integrations. */
+  readonly integrationId?: string | null;
 };
 
 export type GatewayPaymentStatus = {
@@ -53,22 +80,47 @@ export type GatewayPaymentStatus = {
   readonly providerRef: string;
   /** Amount the provider settled, when it reports one. */
   readonly amountIdr: number | null;
+  /** Provider time of the payment (ISO), when it reports one. A poll that
+   * finds the payment after the code lapsed records this time, not the poll
+   * time, so a payment made before expiry is never flagged late. Optional so
+   * test doubles written before it stay valid; absent means "not reported". */
+  readonly paidAt?: string | null;
 };
 
 export interface PaymentGatewayPort {
   /** Provider code of the configured gateway (PRD default: DOIT). */
   readonly provider: string;
-  health(context: ScopedTenantContext): Promise<GatewayHealth>;
+  health(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<GatewayHealth>;
   createIntent(input: GatewayIntentRequest): Promise<GatewayIntent>;
   getStatus(input: {
     context: ScopedTenantContext;
+    /** Outlet of the bill the payment belongs to (see GatewayIntentRequest). */
+    outletId?: string;
+    /** Integration that created the payment (`GatewayIntent.integrationId`).
+     * When given it wins over the outlet resolution, even if that row has
+     * been disabled since (money already in flight). */
+    integrationId?: string | null;
     providerRef: string;
+    /** When given, the adapter refuses (as a gateway error) a provider
+     * payment that was not created for this intent. */
+    intentId?: string;
   }): Promise<GatewayPaymentStatus>;
   /** Banks/channels for `va` and `bank_transfer`; empty for `qris`. */
   channels(
     context: ScopedTenantContext,
     method: OnlinePaymentMethod,
+    outletId?: string,
   ): Promise<PaymentChannel[]>;
+  /** Active methods from the provider's own endpoint. Optional so test
+   * doubles written before it stay valid; a missing method means "use
+   * `channels()` per online method". */
+  methods?(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<readonly GatewayMethodAvailability[]>;
 }
 
 /**

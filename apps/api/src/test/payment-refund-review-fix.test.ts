@@ -128,6 +128,16 @@ async function signedIn(
       outletScoped ? outletA : null,
     ],
   );
+  if (templateKey === "finance") {
+    // Round 2 (F1): finance alone cannot pay out a refund; supervisor authority
+    // (pos.refund.approve at the outlet) is also required. The finance approvers
+    // of these tests therefore hold the supervisor template scoped to the outlet too.
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [tenantId, userId, await roleIdOf("supervisor"), outletA],
+    );
+  }
   return { client, userId };
 }
 
@@ -827,8 +837,8 @@ describe("PAY-04 review E: an unallocated fund is refunded against its own evide
   });
 });
 
-describe("PAY-04 review F: every approver of the chain must be allowed to reconcile payments", () => {
-  it("PAY-04 a chain whose last approver lacks payment.reconcile at the outlet is never paid", async () => {
+describe("PAY-04 review F: every approver of the chain must hold reconcile or supervisor authority", () => {
+  it("PAY-04 a chain whose last approver is a supervisor without payment.reconcile is paid once", async () => {
     const intent = await seedPaid(2_000_000);
     const refundId = await insertPendingRefund(
       intent.intentId,
@@ -853,20 +863,98 @@ describe("PAY-04 review F: every approver of the chain must be allowed to reconc
     ]);
 
     const event = await resolvedEventOfChain(chainId!);
-    // The consumer settles without throwing (no poison event): the refund
-    // ends failed closed, never paid.
+    // Round 2 (F1): finding F's old rule (every approver must hold payment.reconcile)
+    // is replaced. Each approver needs reconcile OR pos.refund.approve, and at least
+    // one needs pos.refund.approve. The supervisor holds approve, so the chain is
+    // authorized and the refund is paid exactly once. The consumer must not throw,
+    // and a replayed event must not pay twice. (The finance-only failure path is
+    // covered in payment-refund-codex-fix.test.ts, scenario 3.)
+    await handleRefundApprovalResolved(workerContext, event);
+    expect((await refundRow(refundId)).status).not.toBe("failed");
+    // A replayed event leaves it as is.
+    await handleRefundApprovalResolved(workerContext, event);
+    expect((await refundRow(refundId)).status).not.toBe("failed");
+    await ageRefund(refundId);
+    await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
+    expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(1);
+    expect((await refundRow(refundId)).status).toBe("completed");
+  });
+
+  it("PAY-04 a chain whose approvers hold the permissions only at another outlet fails closed as approver_unauthorized", async () => {
+    // Assumption: the approval inbox itself refuses deciders outside the request's
+    // outlet (404), so that state cannot be reached through it. The consumer must
+    // still re-check authority at the refund's outlet (defence in depth), so the
+    // two decisions are rewritten in the database to approvers who hold
+    // pos.refund.approve / payment.reconcile only at another outlet.
+    const otherOutlet = cafeLegendAccessFixtures.outletIds.bandung2;
+    const elsewhere = async (label: string, templateKeys: string[]) => {
+      const client = agent(app);
+      const email = await signUp(client, label);
+      const session = await client.get("/api/auth/get-session");
+      const userId = session.body.user.id as string;
+      userIds.push(userId);
+      await verifySessionMfa(email);
+      for (const templateKey of templateKeys)
+        await owner.query(
+          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+           VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+          [tenantId, userId, await roleIdOf(templateKey), otherOutlet],
+        );
+      return userId;
+    };
+    // Level 1 policy role is finance, level 2 supervisor; both hold both templates
+    // (so reconcile and approve), but only at the other outlet.
+    const level1Approver = await elsewhere("Review fix other outlet L1", [
+      "finance",
+      "supervisor",
+    ]);
+    const level2Approver = await elsewhere("Review fix other outlet L2", [
+      "supervisor",
+      "finance",
+    ]);
+
+    const intent = await seedPaid(2_000_000);
+    const refundId = await insertPendingRefund(
+      intent.intentId,
+      2_000_000,
+      "system:reservation",
+    );
+    const submitted = await approve(financeA, refundId);
+    expect(submitted.status).toBe(200);
+    expect(submitted.body.data.status).toBe("pending");
+    const chainId = (await refundRow(refundId)).approval_chain_id;
+    expect(chainId).not.toBeNull();
+
+    const level1 = (await decisions(refundId)).find((d) => d.level === 1)!;
+    await decide(financeBId, level1.id, "approved");
+    const level2 = (await decisions(refundId)).find((d) => d.level === 2)!;
+    await decide(supervisorId, level2.id, "approved");
+    await owner.query(
+      "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
+      [level1.id, level1Approver],
+    );
+    await owner.query(
+      "UPDATE approval_requests SET decided_by = $2 WHERE id = $1",
+      [level2.id, level2Approver],
+    );
+    expect(await decisions(refundId)).toMatchObject([
+      { level: 1, status: "approved", decided_by: level1Approver },
+      { level: 2, status: "approved", decided_by: level2Approver },
+    ]);
+
+    const event = await resolvedEventOfChain(chainId!);
     await handleRefundApprovalResolved(workerContext, event);
     expect(fake.calls).toHaveLength(0);
     expect(await refundRow(refundId)).toMatchObject({
       status: "failed",
       failure_reason: "approver_unauthorized",
     });
-    // A replayed event leaves it as is.
+    // A replayed event leaves it failed.
     await handleRefundApprovalResolved(workerContext, event);
     expect((await refundRow(refundId)).status).toBe("failed");
     await ageRefund(refundId);
     await sweepApprovedRefundPayouts(tenantWide, new Date(), 100);
     expect(fake.calls.filter((c) => c.refundId === refundId)).toHaveLength(0);
-    expect((await refundRow(refundId)).status).not.toBe("completed");
+    expect((await refundRow(refundId)).status).toBe("failed");
   });
 });

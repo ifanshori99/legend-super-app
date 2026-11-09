@@ -157,7 +157,7 @@ export const posOverrides = pgTable(
     ),
     check(
       "pos_overrides_action_check",
-      sql`${table.action} IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction')`,
+      sql`${table.action} IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction', 'cash_shift_close')`,
     ),
     check(
       "pos_overrides_method_check",

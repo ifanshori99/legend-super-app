@@ -50,6 +50,7 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   "/api/qr",
   "/api/public/site",
   "/api/public/outlets",
+  "/api/public/receipts",
   "/api/tenant",
   // Guest reservation self-service by signed link (legend-o5gr). The token
   // travels in a header; this is the per-IP/tenant read budget for every verb.
@@ -63,6 +64,8 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   "/api/facility/entry",
   // Active subscription plans for the Wi-Fi portal, no login (legend-1cj0).
   "/api/facility/subscription-plans",
+  // Supplier PO PDF share links (legend-9yz): token in the path, no session.
+  "/api/public/purchase-orders",
 ];
 
 /**
