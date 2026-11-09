@@ -680,3 +680,4 @@ Langkah berikut CTO baru:
 - Akun Claude: #3 7d 93% (reset 10 Nov 05:00), #1 97%, #2 59%. Thread baru pakai `--account 2`.
 - Thread baru G9vex "Payroll schema and config API" (brief 237, legend-gfcr, Opus high, akun #2, migrasi 0167 `when` 1794246000000).
 - 3b90a9bd (ghgei) lolos verifikasi CTO 19 file 396 lulus/8 skip. Antre merge train baru (basis c75b0d98, sudah di batch31; K uang).
+- 6b2fedbf (atwse) lolos verifikasi CTO 14 file 214/214. Antre merge train baru di atas 814bc779 (satu rantai).
