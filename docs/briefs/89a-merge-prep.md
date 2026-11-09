@@ -23,3 +23,6 @@ Konteks: merge train ke `milestone/m1` (brief 89). Isi m1 setelah journals digab
 ## Wajib: merge asli, bukan squash (09-11)
 - Gunakan `git merge --no-ff <basis>` sehingga commit merge punya dua parent. Jangan `git merge --squash`, jangan commit satu-parent yang berisi isi m1. Commit squash membuat merge berikutnya ke m1 bentrok ulang (kejadian: prep/fix-edc-codex a043f87a).
 - Cek: `git log --format="%h %p" -1` harus menampilkan dua parent.
+
+## Wajib: suite root harus jalan (09-11)
+- Gate dihitung lulus hanya bila log memuat baris vitest DAN baris root `ℹ tests / ℹ pass / ℹ fail`. Bila vitest gagal, suite root tidak jalan: jangan merge berdasarkan "flake" sebelum suite root juga dijalankan (`node --test tests/<file>.test.mjs` untuk yang relevan, atau gate ulang).
