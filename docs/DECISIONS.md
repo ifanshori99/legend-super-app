@@ -113,10 +113,16 @@ in parallel. Reviewed with an architect consult before implementation.
    /api/metrics/query` keeps its m1 answer (400) for that case too, so the
    existing ledger regression tests stay unchanged. A split of a percent
    ledger metric is `dimension_not_supported` until a family card builds its
-   numerator and denominator splits. A report run with a bucket other than
-   `total` answers 200 with no rows and every metric `unavailable`
-   (`dimension_not_supported`), because a report row has no bucket column
-   yet; adding one is a `ws11-shared` change.
+   numerator and denominator splits. Report run rows carry their bucket
+   (`bucket` on the result, `bucketStart`/`bucketEnd` on each row; for
+   `total` both equal the period bounds), so `day`, `week` and `month`
+   reports answer one row per bucket and split; rows order by bucket, then
+   dimensions, `sort` applies inside a bucket and `limit` counts all rows
+   (legend-ymtsg, brief 267). A run splits by `outlet` plus at most
+   `REPORT_RUN_MAX_SPLIT_DIMENSIONS` (1) other dimension: `metrics_daily`
+   stores one dimension per row, so going deeper needs a schema change. A
+   deeper `groupBy` is not refused by the schema; the run answers 200 with
+   `unavailable` / `dimension_not_supported` (legend-hdfd2).
 7. **File ownership.** Only card A, and after A merges only a serialized
    follow-up bead labelled `ws11-shared`, edits
    `metrics-query.service.ts`, `metrics-gl-sources.ts`,
@@ -132,6 +138,19 @@ in parallel. Reviewed with an architect consult before implementation.
    files as follows: sales; traffic and operations; menu and cogs; payments
    and tax; inventory and purchasing; finance; loyalty and crm; reservation
    and delivery; attendance, payroll and performance (`hr`); facility.
+8. **`GET /api/metrics/query` follows the report run access rule**
+   (legend-svrzc, CTO decision 2026-11-10, brief 267). Each metric's source
+   report decides access: its full permission gives the caller's own scope;
+   without it, `report.aggregate.view` gives the tenant aggregate only when
+   the source report is on the aggregate whitelist
+   (`reportAcceptsAggregateView`). Scopes intersect across the asked
+   metrics; an empty intersection or no access answers 403
+   `REPORT_NOT_PERMITTED`, never a tenant-wide figure. A metric code without
+   a known source report keeps its old permission, without aggregate
+   fallback. The shared logic lives in `routes/report-viewer.ts`. Callers
+   that passed through the aggregate before without the source report now
+   get 403: a shareholder asking for `cogs` (source `inventory.food_cost`,
+   not whitelisted) is refused.
 
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 

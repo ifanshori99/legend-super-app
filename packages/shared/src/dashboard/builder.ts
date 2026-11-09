@@ -52,6 +52,15 @@ export const REPORT_BUILDER_MAX_FILTERS = 10;
 export const REPORT_BUILDER_MAX_ROWS = 1000;
 export const REPORT_BUILDER_DEFAULT_ROWS = 100;
 
+/**
+ * Split dimensions a report run answers besides `outlet` (legend-hdfd2).
+ * `metrics_daily` stores one dimension per row, so a second split (channel and
+ * hour together, say) cannot be read back; going deeper needs a schema change.
+ * The schema does not refuse a longer `groupBy`: the run answers 200 with
+ * `unavailable` / `dimension_not_supported`, as it does for any unreadable split.
+ */
+export const REPORT_RUN_MAX_SPLIT_DIMENSIONS = 1;
+
 export const REPORT_SORT_DIRECTIONS = ["asc", "desc"] as const;
 export const reportSortDirectionSchema = z.enum(REPORT_SORT_DIRECTIONS);
 export type ReportSortDirection = z.infer<typeof reportSortDirectionSchema>;
