@@ -142,7 +142,9 @@ test("DASH-04: a report split by person is not mailed; the approval requirement 
   const row = savedRow(page, "Omzet per karyawan");
   await row.getByRole("button", { name: "Jadwalkan" }).click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("Butuh approval")).toBeVisible();
+  await expect(
+    dialog.getByText("Laporan ini tidak bisa dijadwalkan"),
+  ).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Buat jadwal" })).toHaveCount(
     0,
   );

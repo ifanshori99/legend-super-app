@@ -40,7 +40,11 @@ import {
   selectionContainsPersonalData,
 } from "./reports.ts";
 import type { ReportDefinition, ReportExportFormat } from "./reports.ts";
-import { reportByCode } from "./catalog.ts";
+import {
+  builderQueryPermittedFor,
+  reportByCode,
+  reportPermittedFor,
+} from "./catalog.ts";
 import { reportExportIdSchema, savedReportIdSchema } from "./ids.ts";
 import { reportErrorCodeSchema } from "./errors.ts";
 import type { ReportErrorCode } from "./errors.ts";
@@ -393,6 +397,7 @@ export type ReportExportGateInput = {
   readonly report: ReportDefinition | null;
   /** The export's group-by/filters, after schema validation. */
   readonly query: {
+    readonly metricCodes?: readonly string[];
     readonly groupBy: readonly string[];
     readonly filters: readonly { readonly key: string }[];
   };
@@ -417,10 +422,13 @@ export function reportExportGate(
   const containsPersonalData = reportExportContainsPersonalData(input);
   if (
     input.report !== null &&
-    !input.report.requiredPermissions.every((code) =>
-      input.permissions.has(code),
-    )
+    !reportPermittedFor(input.report, input.permissions)
   )
+    return { action: "reject", code: "REPORT_NOT_PERMITTED" };
+  // A saved builder query (`report === null`) has no definition to check, so
+  // its splits and metrics are checked here: an aggregate-only caller never
+  // exports a person split or a metric of a report it cannot open (SH-01).
+  if (!builderQueryPermittedFor(input.query, input.permissions))
     return { action: "reject", code: "REPORT_NOT_PERMITTED" };
   if (
     !input.permissions.has(
@@ -448,15 +456,21 @@ export function reportExportGate(
 
 /**
  * DASH-04 for email schedules: a scheduled delivery is a file leaving the
- * server with no per-run approval, so a saved query that splits or filters by
- * a person cannot be scheduled. PRD is silent on standing approvals; refusing
- * is the fail-closed choice until the owner decides otherwise.
+ * server with no per-run approval, so a report that is personal data cannot be
+ * scheduled: a saved query that splits or filters by an identity (employee,
+ * customer, member), or a catalog report flagged `containsPersonalData`
+ * (pass its definition as `report`; null for a builder query). PRD is silent
+ * on standing approvals; refusing is the fail-closed choice until the owner
+ * decides otherwise.
  */
-export function reportScheduleGate(query: {
-  readonly groupBy: readonly string[];
-  readonly filters: readonly { readonly key: string }[];
-}): ReportExportGateDecision {
-  if (selectionContainsPersonalData(query))
+export function reportScheduleGate(
+  query: {
+    readonly groupBy: readonly string[];
+    readonly filters: readonly { readonly key: string }[];
+  },
+  report: Pick<ReportDefinition, "containsPersonalData"> | null = null,
+): ReportExportGateDecision {
+  if (reportExportContainsPersonalData({ report, query }))
     return { action: "reject", code: "EXPORT_PII_APPROVAL_REQUIRED" };
   return { action: "queue", containsPersonalData: false };
 }

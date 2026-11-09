@@ -19,6 +19,7 @@
 import {
   createReportScheduleEndpoint,
   createSavedReportEndpoint,
+  listReportScheduleRecipientsEndpoint,
   listReportSchedulesEndpoint,
   listSavedReportsEndpoint,
   previewReportBuilderEndpoint,
@@ -28,6 +29,7 @@ import {
   updateReportScheduleEndpoint,
   updateSavedReportEndpoint,
   type ReportSchedule,
+  type ReportScheduleRecipient,
   type SavedReport,
 } from "@starter/shared/dashboard";
 import { ApiError } from "../../lib/api/errors.ts";
@@ -71,6 +73,25 @@ function replay<T>(
   replays.get().set(key, { fingerprint: print, data });
   return data;
 }
+
+/** Tenant users the form offers (name and role only; the server keeps emails). */
+const recipientUsers: ReportScheduleRecipient[] = [
+  {
+    userId: "0d0c4f6a-5a39-4c0a-9f43-2f1d8e5b7a01",
+    name: "Dewi Anggraini",
+    roleName: "Owner",
+  },
+  {
+    userId: "5b7e2c91-6d84-4e1b-8a52-9c3f0d4e6b02",
+    name: "Raka Pratama",
+    roleName: "General Manager",
+  },
+  {
+    userId: "a41f9d37-0b25-4c68-b7e3-1d6a8f2c4e03",
+    name: "Sinta Wulandari",
+    roleName: "Finance Manager",
+  },
+];
 
 /** DASH-04 on the stored query: refuses what would mail personal data. */
 function assertSchedulable(query: SavedReport["query"]): void {
@@ -176,6 +197,10 @@ registerMock(updateSavedReportEndpoint, ({ params, body }) => {
   return { data: next };
 });
 
+registerMock(listReportScheduleRecipientsEndpoint, ({ query, scenario }) =>
+  paginateFixture(recipientUsers, query, (item) => item.userId, scenario),
+);
+
 registerMock(listReportSchedulesEndpoint, ({ query, scenario }) =>
   paginateFixture(
     newestFirst(scheduleStore.get()),
@@ -208,7 +233,7 @@ registerMock(createReportScheduleEndpoint, ({ body, headers }) =>
       dayOfWeek: body.dayOfWeek,
       dayOfMonth: body.dayOfMonth,
       format: body.format,
-      recipients: body.recipients,
+      recipientUserIds: body.recipientUserIds,
       isEnabled: true,
       nextRunAt: nextRunAt(body, now),
       lastRunAt: null,

@@ -5,6 +5,7 @@ import { orgEndpoints, type Outlet } from "@starter/shared/platform";
 import {
   createReportScheduleEndpoint,
   createSavedReportEndpoint,
+  listReportScheduleRecipientsEndpoint,
   listReportSchedulesEndpoint,
   listSavedReportsEndpoint,
   previewReportBuilderEndpoint,
@@ -15,6 +16,7 @@ import {
   type ReportBuilderQuery,
   type ReportResult,
   type ReportSchedule,
+  type ReportScheduleRecipient,
   type SavedReport,
   type UpdateReportScheduleInput,
   type UpdateSavedReportInput,
@@ -82,6 +84,24 @@ export async function fetchReportSchedules(
   do {
     const page = await callEndpoint(
       listReportSchedulesEndpoint,
+      { query: { limit: 100, ...(cursor ? { cursor } : {}) } },
+      { signal },
+    );
+    items.push(...page.data);
+    cursor = page.meta.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return items;
+}
+
+/** Tenant users a schedule can be sent to (the server holds their emails). */
+export async function fetchScheduleRecipients(
+  signal?: AbortSignal,
+): Promise<ReportScheduleRecipient[]> {
+  const items: ReportScheduleRecipient[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await callEndpoint(
+      listReportScheduleRecipientsEndpoint,
       { query: { limit: 100, ...(cursor ? { cursor } : {}) } },
       { signal },
     );

@@ -31,6 +31,7 @@ const TIMESTAMP = "2026-10-20T03:15:00.000Z";
 type MetricSeed = {
   id: string;
   code: string;
+  version?: number;
   name: string;
   description: string;
   ownerModule: MetricOwnerModule;
@@ -49,7 +50,7 @@ function defineMetric(seed: MetricSeed): MetricDefinition {
   return metricDefinitionSchema.parse({
     id: seed.id,
     code: seed.code,
-    version: 1,
+    version: seed.version ?? 1,
     name: seed.name,
     description: seed.description,
     ownerModule: seed.ownerModule,
@@ -107,11 +108,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "379136f4-02ec-475f-9c56-ac1a1be92a8f",
     code: "discount_amount",
+    version: 2,
     name: "Nilai diskon",
-    description: "Total diskon yang diberikan pada pesanan yang sudah dibayar.",
+    description:
+      "Total diskon di buku besar (akun diskon penjualan), dari jurnal yang sudah diposting.",
     ownerModule: "pos",
     formulaRef: "pos.discount_amount",
-    expression: "sum(order.discount_idr)",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'sales_discount' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "promo", "employee", "channel"],
@@ -233,12 +237,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "1b0e3a53-40cb-43d2-ab60-a98dfd80e524",
     code: "cogs",
+    version: 2,
     name: "Harga pokok penjualan",
     description:
-      "Nilai bahan yang terpakai untuk pesanan terjual, dari ledger stok.",
+      "Harga pokok penjualan di buku besar (bagian HPP), dari jurnal yang sudah diposting.",
     ownerModule: "inventory",
     formulaRef: "inventory.cogs",
-    expression: "sum(stock_ledger.cost_idr)",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs'",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "menu_item", "menu_category"],
@@ -905,12 +911,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "7e4ac8f9-5f7f-47d4-88db-7e8b88af0441",
     code: "gross_payroll",
+    version: 2,
     name: "Gaji bruto",
     description:
-      "Total gaji bruto payroll terkunci; resmi setelah periode akuntansi ditutup.",
+      "Beban gaji di buku besar dari payroll yang sudah diposting; resmi setelah periode akuntansi ditutup.",
     ownerModule: "payroll",
     formulaRef: "payroll.gross_payroll",
-    expression: "sum(payroll_run.gross_idr)",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'salary_expense' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "employee"],
@@ -1011,12 +1019,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "0cc234fa-da61-47fb-b085-7d7839bdcfc9",
     code: "payment_fee",
+    version: 2,
     name: "Biaya pembayaran",
     description:
-      "Biaya gateway dan EDC yang dibebankan atas transaksi pada periode.",
+      "Beban biaya gateway di buku besar atas transaksi pada periode, dari jurnal yang sudah diposting.",
     ownerModule: "payments",
     formulaRef: "payments.payment_fee",
-    expression: "sum(payment.fee_idr)",
+    expression:
+      "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'gateway_fee_expense' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "payment_method", "channel"],
