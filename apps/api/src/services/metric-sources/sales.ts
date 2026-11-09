@@ -79,7 +79,7 @@ type OrderFact = {
 type LineFact = {
   orderId: string;
   menuItemId: string;
-  categoryId: string;
+  categoryId: string | null;
   quantity: number;
   lineTotal: number;
 };
@@ -91,7 +91,7 @@ export type SalesDayFacts = {
   promos: { orderId: string; promo: string; amount: number }[];
   voids: { employee: string | null; amount: number }[];
   /** Refund tender lines: order id, method, amount. */
-  refundLines: { orderId: string; method: string; amount: number }[];
+  refundLines: { orderId: string; method: string | null; amount: number }[];
   target: number;
 };
 
@@ -165,7 +165,7 @@ async function loadFacts(
     lines: lines.rows.map((row) => ({
       orderId: String(row.order_id),
       menuItemId: String(row.menu_item_id),
-      categoryId: String(row.category_id),
+      categoryId: row.category_id === null ? null : String(row.category_id),
       quantity: num(row.quantity),
       lineTotal: num(row.line_total),
     })),
@@ -180,7 +180,7 @@ async function loadFacts(
     })),
     refundLines: refundLines.rows.map((row) => ({
       orderId: String(row.order_id),
-      method: String(row.method),
+      method: row.method === null ? null : String(row.method),
       amount: num(row.amount),
     })),
     target: num(target.rows[0]?.target),

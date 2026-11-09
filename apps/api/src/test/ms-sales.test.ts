@@ -176,6 +176,8 @@ async function seedOrder(
     cashier?: string;
     items: { menu: string; quantity: number; unit: number }[];
     refund?: number;
+    /** Method of the refund tender line; `null` stores a line without one. */
+    refundMethod?: string | null;
   },
 ) {
   const id = randomUUID();
@@ -232,7 +234,12 @@ async function seedOrder(
         id,
         order.refund,
         JSON.stringify([
-          { method: "cash", amountIdr: order.refund, reference: null },
+          {
+            method:
+              order.refundMethod === undefined ? "cash" : order.refundMethod,
+            amountIdr: order.refund,
+            reference: null,
+          },
         ]),
         randomUUID(),
         `${D1}T06:00:00.000Z`,
@@ -548,6 +555,31 @@ describe("sales metric source: backfill and registry", () => {
     ] as const)
       expect(metricSplitOf("net_sales", dimension), dimension).not.toBeNull();
     expect(metricSplitOf("discount_amount", "promo")).not.toBeNull();
+  });
+});
+
+describe("sales metric source: null dimension keys", () => {
+  it('a refund line without a method makes no "null" payment_method row', async () => {
+    const lone = await makeWorld();
+    await seedOrder(lone, lone.outlet1, {
+      number: "N1",
+      channel: "pos",
+      subtotal: 40_000,
+      cashier: "cashier-n",
+      refund: 4_000,
+      refundMethod: null,
+      items: [{ menu: lone.menuA, quantity: 1, unit: 40_000 }],
+    });
+    await recomputeMetricsDaily(
+      context(lone.tenantId),
+      lone.outlet1,
+      date(D1),
+      date(D1),
+      { readers: salesReaders(), now: NOW },
+    );
+    const rows = await stored(lone, lone.outlet1);
+    expect(valueOf(rows, "refund_amount")).toBe(4_000);
+    expect(rows.filter((row) => row.dimension_value === "null")).toEqual([]);
   });
 });
 

@@ -7,6 +7,7 @@ import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
+  businessDateOf,
   createUlid,
   idr,
   outletIdSchema,
@@ -17,7 +18,10 @@ import { db } from "../db";
 import { salesTargets } from "../db/schema/sales-targets";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
+import { loadOutletClock } from "./ai-anomaly.service";
 import { recordAudit } from "./core-audit";
+import { recomputeMetricsDaily } from "./metrics-daily.service";
 
 export type SalesTargetDto = {
   id: string;
@@ -71,6 +75,35 @@ export function spreadMonthTarget(
   }));
 }
 
+/**
+ * Refreshes the stored `sales_target` metric for the changed days, up to the
+ * outlet's today (later days are computed by the daily job when they come).
+ * Runs after the write committed; a failure is logged, not thrown, because the
+ * target itself is saved and the daily job reconciles the metric.
+ */
+async function refreshTargetMetrics(
+  context: ScopedTenantContext,
+  outletId: string,
+  from: string,
+  to: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const clock = await withTenant(db, context, (tx) =>
+      loadOutletClock(tx, context, outletId),
+    );
+    const today = businessDateOf(now, clock);
+    const last = to < today ? to : today;
+    if (from > last) return;
+    await recomputeMetricsDaily(context, outletId, from, last, { now });
+  } catch (error) {
+    logger.error(
+      { err: error, outletId, from, to },
+      "sales target metric refresh failed",
+    );
+  }
+}
+
 export async function listSalesTargets(
   context: ScopedTenantContext,
   outletId: string,
@@ -108,7 +141,8 @@ export async function upsertSalesTargets(
   if (days.length === 0)
     throw new HttpError(422, "VALIDATION_ERROR", "No target days given.");
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  const dates = days.map((day) => day.targetDate).sort();
+  const result = await withTenant(db, context, async (tx) => {
     const rows = await tx
       .insert(salesTargets)
       .values(
@@ -135,7 +169,6 @@ export async function upsertSalesTargets(
         },
       })
       .returning();
-    const dates = days.map((day) => day.targetDate).sort();
     await recordAudit(
       tx,
       context,
@@ -174,6 +207,14 @@ export async function upsertSalesTargets(
       .map(toDto)
       .sort((a, b) => a.targetDate.localeCompare(b.targetDate));
   });
+  await refreshTargetMetrics(
+    context,
+    outlet,
+    dates[0]!,
+    dates[dates.length - 1]!,
+    now,
+  );
+  return result;
 }
 
 /** Sets a month's total, spread evenly over its days (see spreadMonthTarget). */
@@ -205,7 +246,7 @@ export async function deleteSalesTarget(
   assertOutletInScope(context.outletScope, outletId);
   const outlet = outletIdSchema.parse(outletId);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  const deleted = await withTenant(db, context, async (tx) => {
     const removed = await tx
       .delete(salesTargets)
       .where(
@@ -254,4 +295,7 @@ export async function deleteSalesTarget(
     );
     return true;
   });
+  if (deleted)
+    await refreshTargetMetrics(context, outlet, targetDate, targetDate, now);
+  return deleted;
 }

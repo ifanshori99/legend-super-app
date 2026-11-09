@@ -228,6 +228,37 @@ describe("sales targets API", () => {
     ).toBeUndefined();
   });
 
+  it("changing or deleting a past day's target refreshes the stored sales_target metric", async () => {
+    const day = new Date(Date.now() - 10 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const stored = async () => {
+      const { rows } = await owner.query<{ value_int: string }>(
+        `SELECT value_int FROM metrics_daily
+          WHERE tenant_id = $1 AND outlet_id = $2 AND metric_date = $3
+            AND metric_code = 'sales_target' AND dimension_key IS NULL`,
+        [seededTenantId, seededOutletA, day],
+      );
+      return rows.map((row) => Number(row.value_int));
+    };
+    const saved = await put(admin, seededOutletA, {
+      targets: [{ targetDate: day, targetIdr: 1_200_000 }],
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(await stored()).toEqual([1_200_000]);
+    const changed = await put(admin, seededOutletA, {
+      targets: [{ targetDate: day, targetIdr: 2_400_000 }],
+    });
+    expect(changed.status).toBe(200);
+    expect(await stored()).toEqual([2_400_000]);
+    const del = await admin.client
+      .delete(`${base(seededOutletA)}/${day}`)
+      .set(originHeader)
+      .set("Host", seededHostname);
+    expect(del.status).toBe(204);
+    expect(await stored()).toEqual([0]);
+  });
+
   it("another tenant cannot read or write this outlet's targets", async () => {
     const read = await get(
       otherStaff,
