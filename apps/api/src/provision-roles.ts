@@ -12,7 +12,8 @@
 // it the database owner, with BYPASSRLS and CREATEROLE, not a superuser.
 //
 // Reads MIGRATION_DATABASE_URL (owner/admin), APP_DATABASE_URL and
-// WORKER_DATABASE_URL. Each may instead be given as NAME_FILE, a path to a
+// WORKER_DATABASE_URL, plus the optional MAINTENANCE_DATABASE_URL (the audit
+// retention login, legend-usyi; skipped when absent). Each may instead be given as NAME_FILE, a path to a
 // file holding the URL (--migrator reads MIGRATION_DATABASE_URL and the two
 // BOOTSTRAP_DATABASE_* settings only). Prints role names only, never a URL or password.
 // Deliberately does not load .env files: the operator supplies the settings.
@@ -38,6 +39,13 @@ function setting(name: string) {
   }
   if (!direct) throw new ProvisionError(`${name} is required.`);
   return direct;
+}
+
+// Optional setting: absent means "not provisioned", not an error.
+function optionalSetting(name: string) {
+  return process.env[name] || process.env[`${name}_FILE`]
+    ? setting(name)
+    : undefined;
 }
 
 // The job runs on the VM next to the database, so hints point there, never
@@ -107,15 +115,17 @@ try {
       adminUrl: setting("MIGRATION_DATABASE_URL"),
       appUrl: setting("APP_DATABASE_URL"),
       workerUrl: setting("WORKER_DATABASE_URL"),
+      maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
     });
     console.log(
-      `Audit passed for ${result.app} and ${result.worker}; nothing was changed.`,
+      `Audit passed for ${[result.app, result.worker, result.maintenance].filter(Boolean).join(", ")}; nothing was changed.`,
     );
   } else {
     const result = await provisionRoles({
       adminUrl: setting("MIGRATION_DATABASE_URL"),
       appUrl: setting("APP_DATABASE_URL"),
       workerUrl: setting("WORKER_DATABASE_URL"),
+      maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
     });
     console.log(
       `Application login ${result.app.user} ${result.app.outcome}: member of legend_app only, no BYPASSRLS, owns nothing, no DDL.`,
@@ -123,6 +133,10 @@ try {
     if (result.worker)
       console.log(
         `Queue login ${result.worker.user} ${result.worker.outcome}: owns only the pgboss schema, reads app.active_tenant_registry only.`,
+      );
+    if (result.maintenance)
+      console.log(
+        `Maintenance login ${result.maintenance.user} ${result.maintenance.outcome}: member of legend_maintenance only, no table rights, runs only the two audit retention functions.`,
       );
     console.log("Restricted database roles are ready.");
   }

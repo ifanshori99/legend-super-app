@@ -135,6 +135,44 @@ export function createProductionWorkerConfig(
   };
 }
 
+/**
+ * The audit retention purge logs in as its own maintenance role (legend-usyi).
+ * Returns its connection string, or null when this worker does not run the
+ * purge: an edge worker, or a non-production environment without the URL.
+ * A production cloud worker without a valid URL is a startup error, so
+ * retention can never silently stop.
+ */
+export function resolveMaintenanceDatabaseUrl(options: {
+  env: Record<string, string | undefined>;
+  cloud: boolean;
+}): string | null {
+  const { env, cloud } = options;
+  if (!cloud) return null;
+  const value = env.MAINTENANCE_DATABASE_URL?.trim();
+  const required = env.NODE_ENV === "production";
+  if (!value) {
+    if (required)
+      throw new Error(
+        "MAINTENANCE_DATABASE_URL is required for the audit retention purge",
+      );
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (
+      !["postgres:", "postgresql:"].includes(url.protocol) ||
+      !url.hostname ||
+      url.pathname.length < 2
+    )
+      throw new Error();
+  } catch {
+    throw new Error(
+      "MAINTENANCE_DATABASE_URL must be a PostgreSQL connection string",
+    );
+  }
+  return value;
+}
+
 const importModule = async (path: string): Promise<unknown> =>
   import(pathToFileURL(resolve(path)).href);
 

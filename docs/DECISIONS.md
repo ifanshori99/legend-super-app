@@ -3,6 +3,48 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Audit retention purge with a dedicated maintenance identity (legend-usyi)
+
+Context: `app.purge_expired_audit_logs(tenant)` (migration 0008) existed but
+nothing scheduled it, and it only ran as the table owner. Audit rows are
+append-only; only the owner may delete, and only rows 2 years or older
+(PRD 2: "audit log ... 2 tahun"). Reviewed with an architect consult.
+
+1. **Dedicated identity.** Group role `legend_maintenance` (NOLOGIN, NOBYPASSRLS,
+   no table or sequence grant) plus login `legend_maint_<16hex>`, member only of
+   that group, never of `legend_app`, owning nothing. Not a superuser, not a
+   user identity. It reaches `audit_logs` only through two SECURITY DEFINER
+   functions: `app.audit_retention_due_tenants()` and
+   `app.purge_audit_retention_batch(tenant, batch)`.
+2. **Passing FORCE RLS and the owner-only guard.** The functions are owned by the
+   `audit_logs` owner, so `current_user` inside them is the owner and the
+   existing guard trigger accepts the DELETE. The guard is unchanged: it still
+   refuses rows younger than 2 years. Each function also sets
+   `app.tenant_id` and filters on `tenant_id`, so it stays correct if the owner
+   ever loses BYPASSRLS. Hardening: `search_path = pg_catalog, pg_temp`,
+   schema-qualified names, no dynamic SQL, `REVOKE ALL FROM PUBLIC`, EXECUTE only
+   to `legend_maintenance`. The old `purge_expired_audit_logs` is dropped.
+3. **Per tenant, bounded batches.** Tenants with expired rows are listed (all
+   statuses, so archived tenants are purged too). Each batch deletes at most
+   1000 rows (`FOR UPDATE SKIP LOCKED`), one transaction per call; about 200
+   batches per tenant and a 20 minute budget per run, the rest waits for the
+   next day. A rerun deletes nothing and writes nothing.
+4. **Trail.** Each batch that deletes rows inserts one `audit.retention_purged`
+   row in the same transaction (actor type `system`; deleted count, cutoff,
+   class). No ids, actors or content of deleted rows. A delete cannot land
+   without its summary. The summary expires after its own 2 years.
+5. **Scheduling and concurrency.** pg-boss queue `audit-retention-purge`, policy
+   `exclusive`, cron `30 2 * * *` Asia/Jakarta, cloud worker only. `SKIP LOCKED`
+   keeps two overlapping runs from double deleting, so no advisory lock.
+6. **Config.** `MAINTENANCE_DATABASE_URL` in `worker.env` only (same host and
+   database as the migration URL, different user from app and worker). Required
+   at production start on the cloud worker; `verifyMaintenanceConnection`
+   refuses a login that is in `legend_app`, has elevated attributes, owns an
+   RLS table or is not in `legend_maintenance`.
+7. **Not done.** Edge databases are not purged (follow-up bead). The only
+   retention class is `audit_2y`; a class-to-days map is not introduced because
+   the CHECK constraint allows one class.
+
 ## 2026-11-08: Worker event transport, acknowledgement and gap replay (legend-18qw)
 
 Context: the production worker refused to start without an operator-supplied

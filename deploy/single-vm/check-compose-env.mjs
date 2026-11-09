@@ -1,7 +1,8 @@
 // Checks the configuration Compose will really apply (legend-zoqc). Reads
 // `docker compose config --format json` on stdin and compares each service's
 // environment with the restricted URLs provision-roles.sh already validated
-// (APP_DATABASE_URL and WORKER_DATABASE_URL in this process's environment).
+// (APP_DATABASE_URL and WORKER_DATABASE_URL in this process's environment,
+// plus MAINTENANCE_DATABASE_URL when worker.env sets it).
 //
 // Compose's env_file parser reads more than the line starts the shell checks
 // look at: text after a closing quote is a new KEY=value, quoted values may
@@ -60,7 +61,19 @@ function checkComposeConfig(config, expected) {
     problems.push("api receives a DATABASE_URL other than APP_DATABASE_URL");
   if (has(api, "WORKER_DATABASE_URL"))
     problems.push("api receives WORKER_DATABASE_URL");
+  // The audit retention login (legend-usyi) belongs to the worker only.
+  for (const name of Object.keys(services).sort())
+    if (name !== "worker" && !JOB_SERVICES.has(name))
+      if (has(env(name), "MAINTENANCE_DATABASE_URL"))
+        problems.push(`${name} receives MAINTENANCE_DATABASE_URL`);
   const worker = env("worker");
+  if (expected.maintenance) {
+    if (worker.MAINTENANCE_DATABASE_URL !== expected.maintenance)
+      problems.push(
+        "worker receives a MAINTENANCE_DATABASE_URL other than the checked one in worker.env",
+      );
+  } else if (has(worker, "MAINTENANCE_DATABASE_URL"))
+    problems.push("worker receives a MAINTENANCE_DATABASE_URL not checked");
   if (worker.WORKER_DATABASE_URL !== expected.worker)
     problems.push(
       "worker receives a WORKER_DATABASE_URL other than the checked one in worker.env",
@@ -79,6 +92,7 @@ async function main() {
   const expected = {
     app: process.env.APP_DATABASE_URL,
     worker: process.env.WORKER_DATABASE_URL,
+    maintenance: process.env.MAINTENANCE_DATABASE_URL || undefined,
   };
   if (!expected.app || !expected.worker)
     refuse(

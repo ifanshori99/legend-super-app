@@ -1,7 +1,10 @@
 import "./load-env";
 import { Pool } from "pg";
 import { assertDeploymentEnv } from "@starter/shared/env";
-import { loadWorkerConfig } from "./worker/production-config.ts";
+import {
+  loadWorkerConfig,
+  resolveMaintenanceDatabaseUrl,
+} from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
@@ -10,7 +13,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
-import { verifyQueueConnection } from "./db/role";
+import { verifyMaintenanceConnection, verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -78,6 +81,11 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import {
+  createMaintenancePool,
+  probeMaintenanceConnection,
+  registerAuditRetentionJob,
+} from "./worker/audit-retention.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
 import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
@@ -114,6 +122,13 @@ const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // escalate them (duplicate alerts, provider calls from the edge); same
 // fail-closed rule.
 const sweepsRefunds = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
+// legend-usyi: the audit retention purge runs on the cloud only, as its own
+// maintenance login. A production cloud worker without the URL fails here at
+// startup; an edge worker skips the job (follow-up: edge retention).
+const maintenanceUrl = resolveMaintenanceDatabaseUrl({
+  env: process.env,
+  cloud: postsInventoryGl,
+});
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
@@ -148,8 +163,12 @@ async function resolveContext(tenantId: string) {
     throw new Error("Worker tenant context mismatch");
   return context;
 }
+const boss = createPgBoss(workerUrl);
+const maintenancePool = maintenanceUrl
+  ? createMaintenancePool(maintenanceUrl, verifyMaintenanceConnection)
+  : null;
 const runtime = createWorkerRuntime({
-  boss: createPgBoss(workerUrl),
+  boss,
   resolveContext,
   authorize: handlers.authorize,
   deliver: async (context, job) => {
@@ -584,6 +603,12 @@ async function stopRefundPayoutSweep() {
 }
 try {
   await runtime.start();
+  if (maintenancePool) {
+    // Fail the start on a wrong maintenance login (pool verify guard runs on
+    // this first connection); the catch below cleans up.
+    await probeMaintenanceConnection(maintenancePool);
+    await registerAuditRetentionJob({ boss, pool: maintenancePool });
+  }
   await relay.start();
   if (sweepsRefunds) {
     scheduleRefundPayoutRound();
@@ -591,6 +616,7 @@ try {
 } catch (error) {
   refundSweepStopped = true;
   await runtime.stop().catch(() => {});
+  await maintenancePool?.end().catch(() => {});
   await registry.end();
   throw error;
 }
@@ -601,6 +627,7 @@ async function stop() {
   await stopRefundPayoutSweep();
   await relay.stop();
   await runtime.stop();
+  await maintenancePool?.end();
   await registry.end();
   await pool.end();
 }

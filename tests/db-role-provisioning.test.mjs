@@ -2123,3 +2123,401 @@ test("legend-zoqc deploy.sh audits roles after migrating and before starting ser
   });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("legend-usyi job provisions the audit retention login: group only, no table rights, two functions", async (t) => {
+  const shared = process.env.STARTER_TEST_DATABASE_URL;
+  assert.ok(
+    shared && process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"),
+    "Run pnpm test to create an isolated database.",
+  );
+  const database = `legend_usyi_${hex(6)}`;
+  const adminUrl = withDatabase(shared, database).toString();
+  const appUrl = login(adminUrl, `legend_runtime_${hex(8)}`);
+  const workerUrl = login(adminUrl, `legend_worker_${hex(8)}`);
+  const maintUrl = login(adminUrl, `legend_maint_${hex(8)}`);
+  remember(shared);
+  const roles = [appUrl, workerUrl, maintUrl].map((url) =>
+    decodeURIComponent(new URL(url).username),
+  );
+  const maintUser = roles[2];
+  const cluster = quietPool({ connectionString: shared, max: 1 });
+  await cluster.query(`CREATE DATABASE ${database}`);
+  const admin = quietPool({ connectionString: adminUrl, max: 1 });
+  const pools = [];
+  t.after(async () => {
+    for (const pool of pools) await pool.end();
+    await admin.end();
+    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const role of roles)
+      await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
+    await cluster.end();
+  });
+  const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: adminUrl,
+      MIGRATION_DATABASE_URL: adminUrl,
+    },
+    encoding: "utf8",
+    shell: process.platform === "win32",
+  });
+  assert.equal(migrated.status, 0, migrated.stderr);
+
+  const env = (overrides = {}) => ({
+    MIGRATION_DATABASE_URL: adminUrl,
+    APP_DATABASE_URL: appUrl,
+    WORKER_DATABASE_URL: workerUrl,
+    MAINTENANCE_DATABASE_URL: maintUrl,
+    ...overrides,
+  });
+  const first = runJob(env());
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, new RegExp(`${maintUser} created`));
+  const second = runJob(env());
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, new RegExp(`${maintUser} updated`));
+
+  await t.test(
+    "the login is a plain member of legend_maintenance and nothing else",
+    async () => {
+      const role = (
+        await admin.query(
+          "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
+          [maintUser],
+        )
+      ).rows[0];
+      assert.deepEqual(role, {
+        rolsuper: false,
+        rolbypassrls: false,
+        rolcreatedb: false,
+        rolcreaterole: false,
+        rolreplication: false,
+        rolcanlogin: true,
+      });
+      const groups = await admin.query(
+        "SELECT g.rolname, m.inherit_option, m.admin_option FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1",
+        [maintUser],
+      );
+      assert.deepEqual(groups.rows, [
+        {
+          rolname: "legend_maintenance",
+          inherit_option: true,
+          admin_option: false,
+        },
+      ]);
+    },
+  );
+
+  await t.test(
+    "the login reads no table but can run the retention functions",
+    async () => {
+      const pool = quietPool({ connectionString: maintUrl, max: 1 });
+      pools.push(pool);
+      for (const table of ["audit_logs", "tenants"])
+        await assert.rejects(pool.query(`SELECT 1 FROM public.${table}`), {
+          code: "42501",
+        });
+      const due = await pool.query(
+        "SELECT * FROM app.audit_retention_due_tenants()",
+      );
+      assert.deepEqual(due.rows, []);
+    },
+  );
+
+  await t.test("audit mode passes with the maintenance login", () => {
+    const audit = runJob(env(), ["--audit"]);
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.match(audit.stdout, new RegExp(`Audit passed.*${maintUser}`));
+  });
+
+  const drift = [
+    [
+      "a table right on audit_logs for the group",
+      ["GRANT SELECT ON public.audit_logs TO legend_maintenance"],
+      ["REVOKE SELECT ON public.audit_logs FROM legend_maintenance"],
+      /table rights it must not have/,
+    ],
+    [
+      "membership in legend_app",
+      [`GRANT legend_app TO "${maintUser}"`],
+      [`REVOKE legend_app FROM "${maintUser}"`],
+      /unexpected roles/,
+    ],
+    [
+      "a retention function open to PUBLIC",
+      ["GRANT EXECUTE ON FUNCTION app.audit_retention_due_tenants() TO PUBLIC"],
+      [
+        "REVOKE EXECUTE ON FUNCTION app.audit_retention_due_tenants() FROM PUBLIC",
+      ],
+      /PUBLIC or legend_app/,
+    ],
+    [
+      "a retention function open to legend_app",
+      [
+        "GRANT EXECUTE ON FUNCTION app.audit_retention_due_tenants() TO legend_app",
+      ],
+      [
+        "REVOKE EXECUTE ON FUNCTION app.audit_retention_due_tenants() FROM legend_app",
+      ],
+      /PUBLIC or legend_app/,
+    ],
+    [
+      "a retention function that is not SECURITY DEFINER",
+      ["ALTER FUNCTION app.audit_retention_due_tenants() SECURITY INVOKER"],
+      ["ALTER FUNCTION app.audit_retention_due_tenants() SECURITY DEFINER"],
+      /not SECURITY DEFINER/,
+    ],
+    [
+      "a retention function without a pinned search_path",
+      ["ALTER FUNCTION app.audit_retention_due_tenants() RESET search_path"],
+      [
+        "ALTER FUNCTION app.audit_retention_due_tenants() SET search_path = pg_catalog, pg_temp",
+      ],
+      /no pinned search_path/,
+    ],
+    [
+      "a retention function owned by someone else",
+      [
+        `CREATE ROLE usyi_other_owner NOLOGIN`,
+        "ALTER FUNCTION app.audit_retention_due_tenants() OWNER TO usyi_other_owner",
+      ],
+      [
+        "ALTER FUNCTION app.audit_retention_due_tenants() OWNER TO CURRENT_USER",
+        "DROP ROLE usyi_other_owner",
+      ],
+      /not owned by the owner of audit_logs/,
+    ],
+    [
+      "an extra function in schema app",
+      [
+        "CREATE FUNCTION app.usyi_extra() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+        "REVOKE ALL ON FUNCTION app.usyi_extra() FROM PUBLIC",
+        "GRANT EXECUTE ON FUNCTION app.usyi_extra() TO legend_maintenance",
+      ],
+      ["DROP FUNCTION app.usyi_extra()"],
+      /functions beyond its two/,
+    ],
+  ];
+  for (const [name, breakIt, fix, message] of drift)
+    await t.test(`provisioning and audit refuse ${name}`, async () => {
+      for (const sql of breakIt) await admin.query(sql);
+      try {
+        for (const args of [[], ["--audit"]]) {
+          const result = runJob(env(), args);
+          assert.equal(result.status, 1, `${name} ${args}`);
+          assert.match(result.stderr, message);
+        }
+      } finally {
+        for (const sql of fix) await admin.query(sql);
+      }
+      const healed = runJob(env(), ["--audit"]);
+      assert.equal(healed.status, 0, healed.stderr);
+    });
+
+  await t.test(
+    "a queue-style login name is refused for the maintenance URL",
+    () => {
+      const bad = login(adminUrl, `legend_worker_${hex(8)}`);
+      const result = runJob(env({ MAINTENANCE_DATABASE_URL: bad }));
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /maintenance login has an invalid name/);
+    },
+  );
+
+  await t.test(
+    "without the maintenance URL nothing about it is provisioned or audited",
+    () => {
+      const result = runJob(env({ MAINTENANCE_DATABASE_URL: "" }), ["--audit"]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, new RegExp(maintUser));
+    },
+  );
+});
+
+test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker only", () => {
+  const app = "postgresql://app:secret-a@postgres:5432/legend";
+  const worker = "postgresql://worker:secret-w@postgres:5432/legend";
+  const maint = "postgresql://maint:secret-m@postgres:5432/legend";
+  const config = (overrides = {}) => ({
+    services: {
+      api: { environment: { APP_DATABASE_URL: app } },
+      web: { environment: {} },
+      worker: {
+        environment: {
+          APP_DATABASE_URL: app,
+          WORKER_DATABASE_URL: worker,
+          MAINTENANCE_DATABASE_URL: maint,
+        },
+      },
+      ...overrides,
+    },
+  });
+  const check = (input, expectedMaintenance = maint) => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(root, "deploy/single-vm/check-compose-env.mjs")],
+      {
+        input: JSON.stringify(input),
+        env: {
+          PATH: process.env.PATH,
+          APP_DATABASE_URL: app,
+          WORKER_DATABASE_URL: worker,
+          ...(expectedMaintenance
+            ? { MAINTENANCE_DATABASE_URL: expectedMaintenance }
+            : {}),
+        },
+        encoding: "utf8",
+      },
+    );
+    for (const secret of ["secret-a", "secret-w", "secret-m"])
+      assert.ok(!result.stderr.includes(secret), "stderr leaks a password");
+    return result;
+  };
+  const ok = check(config());
+  assert.equal(ok.status, 0, ok.stderr);
+  for (const service of ["api", "web"]) {
+    const refused = check(
+      config({
+        [service]: {
+          environment: {
+            APP_DATABASE_URL: app,
+            MAINTENANCE_DATABASE_URL: maint,
+          },
+        },
+      }),
+    );
+    assert.equal(refused.status, 1);
+    assert.match(
+      refused.stderr,
+      new RegExp(`${service} receives MAINTENANCE_DATABASE_URL`),
+    );
+  }
+  const other = check(
+    config({
+      worker: {
+        environment: {
+          APP_DATABASE_URL: app,
+          WORKER_DATABASE_URL: worker,
+          MAINTENANCE_DATABASE_URL: app,
+        },
+      },
+    }),
+  );
+  assert.equal(other.status, 1);
+  assert.match(
+    other.stderr,
+    /worker receives a MAINTENANCE_DATABASE_URL other than the checked one/,
+  );
+  // Checked URL absent (worker.env does not set it), yet the worker gets one.
+  const unchecked = check(config(), "");
+  assert.equal(unchecked.status, 1);
+  assert.match(unchecked.stderr, /MAINTENANCE_DATABASE_URL not checked/);
+});
+
+test("legend-usyi wrapper validates MAINTENANCE_DATABASE_URL and hands it to the job through env only", () => {
+  const dir = mkdtempSync(join(tmpdir(), "legend-usyi-wrapper-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const log = join(dir, "log");
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${MAINTENANCE_DATABASE_URL:-}" >> "$TEST_LOG"\n`,
+      { mode: 0o755 },
+    );
+    const { worker, files, write } = wrapperFixture(dir);
+    const maint = remember(
+      `postgresql://legend_maint_${hex(8)}:${hex(24)}@postgres:5432/legend`,
+    );
+    const run = (args = []) => {
+      writeFileSync(log, "");
+      const result = spawnSync(
+        wrapper,
+        ["--env-file", join(dir, "compose.env"), ...args],
+        {
+          env: { PATH: `${bin}:${process.env.PATH}`, TEST_LOG: log },
+          encoding: "utf8",
+        },
+      );
+      const calls = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const call of calls)
+        assert.deepEqual(
+          leaks(call.split("|")[0]),
+          [],
+          "argv leaks a password",
+        );
+      assertNoSecrets(result);
+      return { ...result, calls };
+    };
+    const workerWith = (url) =>
+      `${files.worker}MAINTENANCE_DATABASE_URL=${url}\n`;
+
+    write({ worker: workerWith(maint) });
+    const real = run();
+    assert.equal(real.status, 0, real.stderr);
+    // The checker and the provisioning job both receive it, by environment.
+    const check = real.calls.find((call) =>
+      /check-compose-env\.mjs/.test(call),
+    );
+    assert.match(
+      check,
+      /-e WORKER_DATABASE_URL -e MAINTENANCE_DATABASE_URL -v /,
+    );
+    assert.equal(check.split("|")[1], maint);
+    assert.equal(real.calls.at(-1).split("|")[1], maint);
+
+    const refusals = [
+      [
+        "api.env carries it",
+        {
+          worker: workerWith(maint),
+          api: `${files.api}MAINTENANCE_DATABASE_URL=${maint}\n`,
+        },
+        /api\.env must not contain MAINTENANCE_DATABASE_URL/,
+      ],
+      [
+        "web.env carries it",
+        {
+          worker: workerWith(maint),
+          web: `${files.web}MAINTENANCE_DATABASE_URL=${maint}\n`,
+        },
+        /web\.env must not contain MAINTENANCE_DATABASE_URL/,
+      ],
+      [
+        "it uses a queue login name",
+        {
+          worker: workerWith(
+            worker.replace(
+              /legend_worker_[a-f0-9]{16}/,
+              `legend_worker_${hex(8)}`,
+            ),
+          ),
+        },
+        /MAINTENANCE_DATABASE_URL must look like/,
+      ],
+      [
+        "it names another database",
+        { worker: workerWith(maint.replace(/\/legend$/, "/other")) },
+        /same host, port and database/,
+      ],
+      [
+        "it is empty",
+        { worker: workerWith("") },
+        /MAINTENANCE_DATABASE_URL in worker\.env is empty/,
+      ],
+    ];
+    for (const [name, overrides, message] of refusals) {
+      write(overrides);
+      const refused = run(["--dry-run"]);
+      assert.equal(refused.status, 1, name);
+      assert.match(refused.stderr, message, name);
+      assert.equal(refused.calls.length, 0, `${name}: docker ran`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -28,6 +28,18 @@ const UNSAFE_QUEUE_ROLE_SQL = `SELECT
         ${PRIVILEGED_OR_RLS_OWNER_SQL}
         AS unsafe`;
 
+// The maintenance login (legend-usyi) may only run the audit retention
+// functions through `legend_maintenance`: it is no application login, holds no
+// elevated attribute and owns no RLS table.
+const UNSAFE_MAINTENANCE_ROLE_SQL = `SELECT
+        session_user::text !~ '^legend_maint_[a-f0-9]{16}$' OR
+        pg_catalog.pg_has_role(current_user, 'legend_app', 'MEMBER') OR
+        pg_catalog.pg_has_role(session_user, 'legend_app', 'MEMBER') OR
+        NOT pg_catalog.pg_has_role(current_user, 'legend_maintenance', 'MEMBER') OR
+        NOT pg_catalog.pg_has_role(session_user, 'legend_maintenance', 'MEMBER') OR
+        ${PRIVILEGED_OR_RLS_OWNER_SQL}
+        AS unsafe`;
+
 /** Run a guard query inside its own transaction; true only when unsafe is false. */
 async function isSafeRole(client: Pick<ClientBase, "query">, sql: string) {
   await client.query("BEGIN");
@@ -98,4 +110,26 @@ export function queueBossOptions(
     createSchema: false,
     verify: verifyQueueConnection,
   };
+}
+
+/**
+ * Refuse an application login, a privileged, bypass-capable or RLS-owning
+ * login, or one that is not a member of `legend_maintenance`, before any
+ * maintenance query runs. Errors never carry the connection string.
+ */
+export async function assertMaintenanceRole(client: Pick<ClientBase, "query">) {
+  if (!(await isSafeRole(client, UNSAFE_MAINTENANCE_ROLE_SQL)))
+    throw new Error("Unsafe database role for maintenance access");
+}
+
+/** pg `verify` callback for the audit retention (maintenance login) pool. */
+export function verifyMaintenanceConnection(
+  client: PoolClient,
+  done: (error?: Error) => void,
+) {
+  assertMaintenanceRole(client).then(
+    () => done(),
+    (error: unknown) =>
+      done(error instanceof Error ? error : new Error(String(error))),
+  );
 }
