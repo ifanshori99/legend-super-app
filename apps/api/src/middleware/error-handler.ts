@@ -25,6 +25,7 @@ import {
 import { TaxError } from "@starter/shared/tax";
 import { HttpError } from "../lib/http-error";
 import { AuditUnavailableError } from "../services/audit-writer";
+import { toLoggableError } from "../lib/safe-error";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -112,6 +113,10 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (parserError?.type === "entity.too.large")
     return send(413, "PAYLOAD_TOO_LARGE", "The request body is too large.");
 
-  res.err = error instanceof Error ? error : new Error(String(error));
+  // pino-http logs res.err with its own serializer: hand it a copy without
+  // database row values (bound parameters, "Failing row contains ...").
+  res.err = toLoggableError(
+    error instanceof Error ? error : new Error(String(error)),
+  ) as Error;
   return send(500, "INTERNAL_ERROR", "Something went wrong. Try again.");
 };
