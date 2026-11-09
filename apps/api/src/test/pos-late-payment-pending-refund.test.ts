@@ -66,7 +66,6 @@ async function asOwner<T>(
 const app = createApp();
 let staff: Staff;
 let approver: ReturnType<typeof agent>; // finance + outlet supervisor, never the requester
-let approver2: ReturnType<typeof agent>; // second human for system requests
 const approverUserIds: string[] = [];
 let savedPolicies: Record<string, unknown>[] = [];
 const intentIds: string[] = [];
@@ -295,7 +294,6 @@ beforeAll(async () => {
         [seededTenantId, templateKey],
       )
     ).rows[0]!.id;
-  // Two finance + supervisor approvers: a system request needs two humans.
   const makeApprover = async (label: string) => {
     const client = agent(app);
     const email = await signUp(client, label);
@@ -316,7 +314,6 @@ beforeAll(async () => {
     return client;
   };
   approver = await makeApprover("Late Refund Finance");
-  approver2 = await makeApprover("Late Refund Finance Two");
   // One tier for every amount: Finance decides in a single level.
   savedPolicies = (
     await owner.query(
@@ -462,15 +459,9 @@ describe("legend-leqj6 the POS late-payment refund ignores refunds still pending
     const fake = new FakeRefundGateway();
     setPaymentRefundGateway(fake);
     try {
-      // A system request needs two humans: the first finance approver
-      // submits, the second decides.
-      const submitted = await approveRefund(late.id);
-      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
-      expect(submitted.body.data.status).toBe("pending");
-      const lateResponse = await approver2
-        .post(`${ADMIN}/refunds/${late.id}/approve`)
-        .set(originHeader)
-        .send({ idempotencyKey: key("apr") });
+      // A system refund opens its approval chain at creation (legend-2dnh):
+      // one supervisor decides.
+      const lateResponse = await approveRefund(late.id);
       expect(lateResponse.status, JSON.stringify(lateResponse.body)).toBe(200);
       expect(["approved", "completed"]).toContain(
         lateResponse.body.data.status,

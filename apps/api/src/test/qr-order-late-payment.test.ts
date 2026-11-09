@@ -597,12 +597,13 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
     intentId: string,
     amountIdr: number,
     status: "pending" | "approved",
+    requestedBy = "leqj6-test",
   ) {
     await owner.query(
       `INSERT INTO payment_refunds (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-       SELECT tenant_id, outlet_id, id, $3, 'Refund uji leqj6', $4, 'leqj6-test'
+       SELECT tenant_id, outlet_id, id, $3, 'Refund uji leqj6', $4, $5
        FROM payment_intents WHERE tenant_id = $1 AND id = $2`,
-      [tenant.tenantId, intentId, amountIdr, status],
+      [tenant.tenantId, intentId, amountIdr, status, requestedBy],
     );
   }
 
@@ -625,64 +626,66 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
   });
 
   it("approving the late refund first succeeds; the old pending refund then fails cap_exceeded", async () => {
+    // The tenant's floor-only role needs the refund permissions and a place in
+    // the default Rp0 refund tier (beside the supervisor template) BEFORE the
+    // late refund is filed: a system refund opens its approval chain at
+    // creation (legend-2dnh) and one approver decides.
+    await owner.query(
+      "UPDATE roles SET permissions = permissions || $2::jsonb WHERE tenant_id = $1 AND id = $3",
+      [
+        tenant.tenantId,
+        JSON.stringify([
+          "payment.reconcile",
+          "pos.refund.approve",
+          "approval.inbox.view",
+          "approval.request.decide",
+        ]),
+        tenant.roleId,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'refund', 0, $2, 1)`,
+      [tenant.tenantId, tenant.roleId],
+    );
+    const second = await staffOfIsolatedTenant(app, tenant);
+    await verifySessionMfa(staff.email);
+    await verifySessionMfa(second.email);
+
     const { intentId, totalIdr, paid } = await lateSettledOrder();
     await filedRefund(intentId, 1000, "approved");
-    await filedRefund(intentId, 2000, "pending");
+    // The older pending refund is requested by `staff`, so `second` decides it.
+    await filedRefund(intentId, 2000, "pending", staff.userId);
     await deliver(paid);
     const rows = await refundsOfIntent(intentId);
     const late = rows.find((row) => row.requested_by === "system:qr")!;
     const older = rows.find(
-      (row) => row.requested_by === "leqj6-test" && row.status === "pending",
+      (row) => row.requested_by === staff.userId && row.status === "pending",
     )!;
     expect(late.amount_idr).toBe(String(totalIdr - 1000));
 
     const fake = new FakeRefundGateway();
     setPaymentRefundGateway(fake);
     try {
-      // The tenant's floor-only role needs the refund permissions and one
-      // approval tier; a system request needs two humans (submit, then decide).
-      await owner.query(
-        "UPDATE roles SET permissions = permissions || $2::jsonb WHERE tenant_id = $1 AND id = $3",
-        [
-          tenant.tenantId,
-          JSON.stringify([
-            "payment.reconcile",
-            "pos.refund.approve",
-            "approval.inbox.view",
-            "approval.request.decide",
-          ]),
-          tenant.roleId,
-        ],
-      );
-      await owner.query(
-        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
-         VALUES ($1, 'refund', NULL, $2, 1)`,
-        [tenant.tenantId, tenant.roleId],
-      );
-      const second = await staffOfIsolatedTenant(app, tenant);
-      await verifySessionMfa(staff.email);
-      await verifySessionMfa(second.email);
       const decide = (who: Staff, refundId: string) =>
         who.client
           .post(`/api/payments/admin/refunds/${refundId}/approve`)
           .set(headers)
           .set(originHeader)
           .send({ idempotencyKey: `leqj6-${randomUUID()}` });
-      const submitted = await decide(staff, late.id);
-      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
-      const lateResponse = await decide(second, late.id);
+      const lateResponse = await decide(staff, late.id);
       expect(lateResponse.status, JSON.stringify(lateResponse.body)).toBe(200);
       expect(["approved", "completed"]).toContain(
         lateResponse.body.data.status,
       );
-      // The older row has a non-user requester too: submit, then decide.
-      await decide(staff, older.id);
       await decide(second, older.id);
     } finally {
       setPaymentRefundGateway(null);
     }
     const after = await refundsOfIntent(intentId);
-    expect(after.filter((row) => row.status === "failed")).toHaveLength(1);
+    expect(after.filter((row) => row.status === "failed")).toEqual([
+      expect.objectContaining({ id: older.id }),
+    ]);
     // Guest total: 1000 approved + the late refund = what was paid.
     const kept = after
       .filter((row) => row.status !== "failed")

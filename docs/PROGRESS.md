@@ -1,6 +1,7 @@
 # PROGRESS — Legend Super App
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
+
 ## Brief 185 refund followups 2: legend-x1i1h, legend-j0ag5, legend-leqj6 (engineer, cabang `ws/refund-followups-2` dari d2f8c072, 2026-11-09)
 
 - Sudah: void penjualan ber-tender QRIS/gateway dengan intent yang penerimaannya terposting kini dijurnal (bagian gateway kembali ke `customer_deposit`); EDC/poin tetap parkir `AUTO_JOURNAL_VOID_UNSUPPORTED`. Guard payout tidak menghitung penjualan yang void-nya terposting; void yang belum terposting membuat payout menunggu (retryable). Jurnal sale, refund POS, dan void yang di-reverse finance (ACC-01) dibaca `none` (fail closed). Refund late payment POS dan QR = cap - (reserved - pending); approval refund late payment tidak menghitung refund lain yang masih `pending`, jadi tamu menerima penuh di urutan approval mana pun.
