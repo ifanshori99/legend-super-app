@@ -1,8 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AuthForm } from "@/components/auth-form";
-import { siteConfig } from "@/config/site";
+import { createTranslator } from "@starter/shared/i18n";
+
+const staticT = createTranslator();
 
 export const Route = createFileRoute("/_auth/sign-up")({
-  head: () => ({ meta: [{ title: `Create account | ${siteConfig.name}` }] }),
+  head: () => ({
+    meta: [{ title: `Create account | ${staticT("app.defaultBrand")}` }],
+  }),
   component: () => <AuthForm mode="sign-up" />,
 });
