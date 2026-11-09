@@ -5336,37 +5336,37 @@ describe("legend-6bq2 POS intent sale check", () => {
   });
 });
 
+/** The pos_order_refunds row of a POS refund (POS-03) of the order; its id. */
+async function seedPosRefund(
+  world: World,
+  orderUlid: string,
+  lines: { method: TenderMethod; amountIdr: number }[],
+  refundedAt: string,
+): Promise<string> {
+  return asTenant(world.tenant, async (client) => {
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
+          lines, requested_by, approved_by, approval_request_id, refunded_at)
+       VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
+               'kasir-uji', 'supervisor-uji', $6, $7)
+       RETURNING id`,
+      [
+        world.tenant.id,
+        world.outletId,
+        ulidToUuid(orderUlid),
+        lines.reduce((total, line) => total + line.amountIdr, 0),
+        JSON.stringify(lines.map((line) => ({ ...line, reference: null }))),
+        randomUUID(),
+        refundedAt,
+      ],
+    );
+    return rows[0]!.id;
+  });
+}
+
 describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => {
   const T_SALE = "2026-10-15T05:00:00.000Z";
   const T_POS_REFUND = "2026-10-15T08:00:00.000Z"; // before REFUND_DAY
-
-  /** The pos_order_refunds row of a POS refund (POS-03) of the order; its id. */
-  async function seedPosRefund(
-    world: World,
-    orderUlid: string,
-    lines: { method: TenderMethod; amountIdr: number }[],
-    refundedAt: string,
-  ): Promise<string> {
-    return asTenant(world.tenant, async (client) => {
-      const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
-            lines, requested_by, approved_by, approval_request_id, refunded_at)
-         VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
-                 'kasir-uji', 'supervisor-uji', $6, $7)
-         RETURNING id`,
-        [
-          world.tenant.id,
-          world.outletId,
-          ulidToUuid(orderUlid),
-          lines.reduce((total, line) => total + line.amountIdr, 0),
-          JSON.stringify(lines.map((line) => ({ ...line, reference: null }))),
-          randomUUID(),
-          refundedAt,
-        ],
-      );
-      return rows[0]!.id;
-    });
-  }
 
   /**
    * A 100k intent with a posted receipt, a posted 100k QRIS POS sale on it and
@@ -5796,5 +5796,236 @@ describe("legend-3bsyh parked SALE_MISSING dependents retry once the sale posts"
         { retryable: false, next_retry_at: null },
       ]);
     }
+  });
+});
+
+describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs an intent payout", () => {
+  const T_SALE = "2026-10-15T05:00:00.000Z";
+  const T_VOID = "2026-10-15T09:00:00.000Z"; // before REFUND_DAY
+  const T_POS_REFUND = "2026-10-15T08:00:00.000Z"; // before REFUND_DAY
+
+  /** A completed-sale void of the order: its pos_order_voids row and event. */
+  async function seedSaleVoid(
+    world: World,
+    orderUlid: string,
+    amountIdr: number,
+    eventAmountIdr: number = amountIdr,
+  ): Promise<EventEnvelope> {
+    const voidId = randomUUID();
+    await asTenant(world.tenant, (client) =>
+      client.query(
+        `INSERT INTO pos_order_voids
+           (id, tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+            requested_by, approved_by, approval_request_id, voided_at)
+         VALUES ($1, $2, $3, $4, 'AJ-0001', $7, 'wrong_order', 'Pesanan salah',
+                 'requester', 'approver', $6, $5)`,
+        [
+          voidId,
+          world.tenant.id,
+          world.outletId,
+          ulidToUuid(orderUlid),
+          T_VOID,
+          randomUUID(),
+          amountIdr,
+        ],
+      ),
+    );
+    return envelope(world, {
+      name: "order.voided",
+      aggregateType: "order",
+      aggregateId: orderUlid,
+      occurredAt: T_VOID,
+      payload: {
+        orderId: orderUlid,
+        outletId: world.outletId,
+        businessDate: "2026-10-15",
+        amountIdr: eventAmountIdr,
+        reason: "wrong_order",
+        reasonNote: "Pesanan salah",
+        approvedBy: randomUUID(),
+        overrideId: null,
+        approvalRequestId: null,
+        voidedFinalOrder: true,
+        voidId,
+        receiptNumber: "AJ-0001",
+        voidedAt: T_VOID,
+      },
+    });
+  }
+
+  /** A 100k intent with a posted receipt and a posted sale paid by `tenders`. */
+  async function soldOnIntent(
+    tenant: Tenant,
+    tenders: (intentId: string) => SaleAmounts["tenders"],
+  ) {
+    const world = await makeWorld(tenant);
+    const intentId = await seedIntent(world, { amountIdr: 100_000 });
+    await post(world, paymentPaid(world, intentId, 100_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 100_000,
+      completedAt: T_SALE,
+      tenders: tenders(intentId),
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    return { world, intentId, orderUlid };
+  }
+
+  const allQris = (intentId: string): SaleAmounts["tenders"] => [
+    { method: "qris", amountIdr: 100_000, intentId },
+  ];
+
+  it("AJ-X1I1H-01 intent 100k, QRIS sale 100k, void: the void reverses the sale (customer_deposit back to 100k), a 100k payout of the intent posts and customer_deposit nets to 0", async () => {
+    const { world, intentId, orderUlid } = await soldOnIntent(shared, allQris);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+
+    const voided = await post(
+      world,
+      await seedSaleVoid(world, orderUlid, 100_000),
+    );
+    await expectBalanced(world, voided.journalEntryId);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-100_000);
+    expect(await balanceOf(world, "sales_revenue")).toBe(0);
+
+    const refundId = await seedRefund(world, intentId, 100_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 100_000),
+      ),
+    ).toMatchObject({ status: "posted" });
+    // receipt + sale + void + payout
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-X1I1H-02 a void of cash 30k + QRIS 70k on the intent returns the cash and puts 70k back in customer_deposit; a 100k payout of the intent posts", async () => {
+    const { world, intentId, orderUlid } = await soldOnIntent(shared, (id) => [
+      { method: "cash", amountIdr: 30_000 },
+      { method: "qris", amountIdr: 70_000, intentId: id },
+    ]);
+    await post(world, await seedSaleVoid(world, orderUlid, 100_000));
+    expect(await balanceOf(world, "cash_on_hand")).toBe(0);
+    // receipt 100k credit - sale 70k debit + void 70k credit
+    expect(await balanceOf(world, "customer_deposit")).toBe(-100_000);
+
+    const refundId = await seedRefund(world, intentId, 100_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 100_000),
+      ),
+    ).toMatchObject({ status: "posted" });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-X1I1H-03 the void journal not delivered yet: a 100k payout parks retryable; once the void posts the sweep posts the payout", async () => {
+    const tenant = await makeTenant();
+    const { world, intentId, orderUlid } = await soldOnIntent(tenant, allQris);
+    const voidEvent = await seedSaleVoid(world, orderUlid, 100_000);
+    const outboxId = await seedOutboxEvent(
+      world,
+      voidEvent,
+      ulidToUuid(orderUlid),
+      "pending",
+    );
+    const refundId = await seedRefund(world, intentId, 100_000);
+    const payoutKey = `aj:payout:${refundId}`;
+
+    expect(
+      await deliver(
+        tenant,
+        paymentRefunded(world, refundId, intentId, 100_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await journalCount(world)).toBe(2);
+
+    await markDelivered(world, outboxId);
+    await post(world, voidEvent);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await parkedOf(tenant, payoutKey)).toHaveLength(0);
+    // receipt + sale + void + payout
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-X1I1H-04 the void journal parked non-retryable (never books its credit): a 100k payout parks POSTING_AMOUNTS_MISMATCH", async () => {
+    const { world, intentId, orderUlid } = await soldOnIntent(shared, allQris);
+    expect(
+      await deliver(
+        world.tenant,
+        await seedSaleVoid(world, orderUlid, 100_000, 99_000),
+      ),
+    ).toMatchObject({ status: "parked", retryable: false });
+    const refundId = await seedRefund(world, intentId, 100_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 100_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(2);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-J0AG5-01 a POS refund journal that finance reversed backs nothing: a 30k payout parks POSTING_AMOUNTS_MISMATCH and customer_deposit never goes above 0", async () => {
+    const { world, intentId, orderUlid } = await soldOnIntent(shared, allQris);
+    const lines = [{ method: "qris" as const, amountIdr: 30_000 }];
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      lines,
+      T_POS_REFUND,
+    );
+    const posRefund = await post(
+      world,
+      orderRefunded(
+        world,
+        orderUlid,
+        posRefundId,
+        { grossSalesIdr: 30_000, pbjtIdr: 0, lines },
+        T_POS_REFUND,
+      ),
+    );
+    await reverseJournal(
+      contextOf(world.tenant),
+      posRefund.journalEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi keuangan",
+        idempotencyKey: `fin-${randomUUID()}`,
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    const refundId = await seedRefund(world, intentId, 30_000);
+
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, intentId, 30_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    // receipt + sale + POS refund + its reversal
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
 });

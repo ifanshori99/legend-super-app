@@ -16,7 +16,7 @@
 // that moment are read (completed refunds, completed orders, closed
 // reservations); nothing here reads a "current" status without a time bound.
 
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, notInArray, sql } from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
 import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
 import {
@@ -28,6 +28,8 @@ import {
   paymentIntents,
   paymentRefunds,
   posOrderRefunds,
+  posOrderTenders,
+  posOrderVoids,
   reservationDepositAllocations,
   reservations,
 } from "../db/schema/index.ts";
@@ -63,7 +65,9 @@ export type Backing =
   | { kind: "fund"; fundId: string; intentId: string }
   | { kind: "sale"; orderId: string }
   /** legend-hxpd5: the order.refunded journal of a POS refund (pos_order_refunds.id). */
-  | { kind: "posRefund"; refundId: string };
+  | { kind: "posRefund"; refundId: string }
+  /** legend-x1i1h: the order.voided journal of a completed-sale void (orders ULID). */
+  | { kind: "void"; orderId: string };
 
 export type BackingState = "posted" | "pending" | "none";
 
@@ -78,6 +82,8 @@ export function backingKeyOf(backing: Backing): string {
       return boundedKey(`aj:sale:${backing.orderId}`);
     case "posRefund":
       return boundedKey(`aj:order-refund:${backing.refundId}`);
+    case "void":
+      return boundedKey(`aj:sale-void:${backing.orderId}`);
   }
 }
 
@@ -88,13 +94,19 @@ const posRefundPayloadId = sql<string>`${domainEventOutbox.event}->'payload'->>'
 /**
  * State of every backing journal (cutover/ordering guard), keyed by
  * `backingKeyOf`:
- * - "posted": the journal exists;
+ * - "posted": the journal exists (a sale, POS refund or void journal: and
+ *   finance has not reversed it);
  * - "pending": its event (payment.paid, payment.funds_unallocated, order.paid,
- *   order.refunded) is still in the outbox (pending, retrying, dead letter) or the journal is
+ *   order.refunded, order.voided) is still in the outbox (pending, retrying, dead letter) or the journal is
  *   parked retryable: it can still post;
  * - "none": it will never post by itself (event consumed before the consumer
  *   went live or with accounting off, never emitted, or parked non-retryable;
- *   except a POS refund parked AUTO_JOURNAL_SALE_MISSING, which is pending).
+ *   except a POS refund or void parked AUTO_JOURNAL_SALE_MISSING whose sale
+ *   journal finance has not reversed, which is pending).
+ * legend-j0ag5: a sale, POS refund or void journal that finance reversed
+ * (ACC-01, journal_entries.reversal_of) is "none": it books nothing, so a
+ * check never counts on it (fail closed). A receipt keeps "posted": its credit
+ * is read net of a reversal (postedCreditOf).
  * Read order outbox, parked, journals: each later source is written by the
  * same transaction that clears the earlier one (consumption marks the outbox
  * row delivered with the journal or its parked row; the sweep inserts the
@@ -114,11 +126,18 @@ export async function backingStatesOf(
   const fundIds = new Set<string>();
   const orderIds = new Set<string>();
   const posRefundIds = new Set<string>();
+  const voidOrderIds = new Set<string>();
+  // legend-j0ag5: keys whose journal no longer counts once finance reversed it.
+  const reversibleKeys = new Set<string>();
   for (const backing of backings) {
     if (backing.kind === "intent") intentIds.add(backing.intentId);
     else if (backing.kind === "fund") fundIds.add(backing.fundId);
-    else if (backing.kind === "sale") orderIds.add(backing.orderId);
-    else posRefundIds.add(backing.refundId);
+    else {
+      reversibleKeys.add(backingKeyOf(backing));
+      if (backing.kind === "sale") orderIds.add(backing.orderId);
+      else if (backing.kind === "posRefund") posRefundIds.add(backing.refundId);
+      else voidOrderIds.add(backing.orderId);
+    }
   }
   const undelivered = and(
     eq(domainEventOutbox.tenantId, tenantId),
@@ -194,23 +213,47 @@ export async function backingStatesOf(
         "pending",
       );
   }
+  if (voidOrderIds.size > 0) {
+    const rows = await tx
+      .select({ orderId: salePayloadId })
+      .from(domainEventOutbox)
+      .where(
+        and(
+          undelivered,
+          eq(domainEventOutbox.aggregateType, "order"),
+          sql`${domainEventOutbox.event}->>'name' = 'order.voided'`,
+          inArray(salePayloadId, [...voidOrderIds]),
+        ),
+      );
+    for (const row of rows)
+      states.set(
+        backingKeyOf({ kind: "void", orderId: row.orderId }),
+        "pending",
+      );
+  }
   const keys = [...states.keys()];
   // 2. Then the parked journals: only a retryable one can still post. A POS
-  // refund (order.refunded) parked non-retryable AUTO_JOURNAL_SALE_MISSING
-  // can too: once its sale posts, the consumer requeues it (legend-3bsyh,
-  // requeueSaleDependents). Read as "none", a payout or sale waiting on it
-  // would park POSTING_AMOUNTS_MISMATCH non-retryable and stay parked after
-  // the refund posts; as "pending" it parks retryable and the sweep ends it.
-  const posRefundKeys = new Set(
-    [...posRefundIds].map((refundId) =>
+  // refund (order.refunded) or a void (order.voided, legend-x1i1h) parked
+  // non-retryable AUTO_JOURNAL_SALE_MISSING can too: once its sale posts, the
+  // consumer requeues it (legend-3bsyh, requeueSaleDependents). Read as
+  // "none", a payout or sale waiting on it would park POSTING_AMOUNTS_MISMATCH
+  // non-retryable and stay parked after it posts; as "pending" it parks
+  // retryable and the sweep ends it. legend-j0ag5: not when finance reversed
+  // that sale journal: it never posts again, so neither does the dependent.
+  const saleDependentKeys = new Set([
+    ...[...posRefundIds].map((refundId) =>
       backingKeyOf({ kind: "posRefund", refundId }),
     ),
-  );
+    ...[...voidOrderIds].map((orderId) =>
+      backingKeyOf({ kind: "void", orderId }),
+    ),
+  ]);
   const parked = await tx
     .select({
       key: autoJournalParked.idempotencyKey,
       retryable: autoJournalParked.retryable,
       errorCode: autoJournalParked.errorCode,
+      orderId: sql<string | null>`${autoJournalParked.payload}->>'orderId'`,
     })
     .from(autoJournalParked)
     .where(
@@ -219,16 +262,30 @@ export async function backingStatesOf(
         inArray(autoJournalParked.idempotencyKey, keys),
       ),
     );
-  for (const row of parked)
+  const saleMissing = parked.filter(
+    (row) =>
+      !row.retryable &&
+      saleDependentKeys.has(row.key) &&
+      row.errorCode === "AUTO_JOURNAL_SALE_MISSING" &&
+      row.orderId !== null,
+  );
+  const reversedSales = await reversedKeysOf(
+    tx,
+    tenantId,
+    saleMissing.map((row) =>
+      backingKeyOf({ kind: "sale", orderId: row.orderId! }),
+    ),
+  );
+  for (const row of parked) if (row.retryable) states.set(row.key, "pending");
+  for (const row of saleMissing)
     if (
-      row.retryable ||
-      (posRefundKeys.has(row.key) &&
-        row.errorCode === "AUTO_JOURNAL_SALE_MISSING")
+      !reversedSales.has(backingKeyOf({ kind: "sale", orderId: row.orderId! }))
     )
       states.set(row.key, "pending");
-  // 3. Last the journals themselves (they win over pending).
+  // 3. Last the journals themselves (they win over pending); a sale, POS
+  // refund or void journal finance reversed is "none" (legend-j0ag5).
   const posted = await tx
-    .select({ key: journalEntries.idempotencyKey })
+    .select({ key: journalEntries.idempotencyKey, reversed: reversedSql })
     .from(journalEntries)
     .where(
       and(
@@ -236,8 +293,40 @@ export async function backingStatesOf(
         inArray(journalEntries.idempotencyKey, keys),
       ),
     );
-  for (const row of posted) states.set(row.key, "posted");
+  for (const row of posted)
+    states.set(
+      row.key,
+      row.reversed && reversibleKeys.has(row.key) ? "none" : "posted",
+    );
   return states;
+}
+
+/**
+ * Whether a reversal (ACC-01) of the selected journal_entries row exists. The
+ * outer columns are spelled out: drizzle renders a column of a single-table
+ * select list unqualified, which the subquery would read as its own.
+ */
+const reversedSql = sql<boolean>`EXISTS (SELECT 1 FROM journal_entries r
+  WHERE r.tenant_id = journal_entries.tenant_id AND r.reversal_of = journal_entries.id)`;
+
+/** legend-j0ag5: the keys among `keys` whose journal finance reversed. */
+async function reversedKeysOf(
+  tx: Tx,
+  tenantId: TenantId,
+  keys: readonly string[],
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await tx
+    .select({ key: journalEntries.idempotencyKey })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        inArray(journalEntries.idempotencyKey, [...keys]),
+        reversedSql,
+      ),
+    );
+  return new Set(rows.map((row) => row.key));
 }
 
 export async function backingStateOf(
@@ -403,6 +492,16 @@ function posRefundsAt(bound: Bound) {
     : sql`${posOrderRefunds.refundedAt} < ${timeOf(bound)}`;
 }
 
+/**
+ * Completed-sale voids (pos_order_voids) that count at `bound` (legend-x1i1h):
+ * like a POS refund, earlier than or at a payout, strictly earlier than a sale.
+ */
+function voidsAt(bound: Bound) {
+  return bound.kind === "refund"
+    ? sql`${posOrderVoids.voidedAt} <= ${timeOf(bound)}`
+    : sql`${posOrderVoids.voidedAt} < ${timeOf(bound)}`;
+}
+
 /** Closed reservations that count at `bound` (forfeit earlier than a refund). */
 function forfeitsAt(bound: Bound) {
   const closed = isNotNull(reservations.closedAt);
@@ -555,7 +654,9 @@ async function sumOf(rows: PromiseLike<{ total: string }[]>): Promise<bigint> {
 
 /**
  * What an intent's receipt backs at `bound`: POS tenders of the intent
- * captured by sales made by the bound, less the part POS refunds by the bound
+ * captured by sales made by the bound and not voided by it (legend-x1i1h: a
+ * void whose journal posted reversed the sale, crediting the intent's part
+ * back to customer_deposit), less the part POS refunds by the bound
  * returned that is attributed to the intent (pos-intent-attribution.ts,
  * legend-hxpd5) + what QR pay-first sales pinned to it
  * took (total - DP) by the bound + forfeits of reservations whose DP it is
@@ -568,14 +669,52 @@ async function intentBackedAt(
   tenantId: TenantId,
   intentId: string,
   bound: Bound,
-): Promise<{ backedIdr: bigint; posRefundPending: boolean }> {
+): Promise<{ backedIdr: bigint; backingPending: boolean }> {
+  // legend-x1i1h: a sale of the intent voided by the bound no longer uses it
+  // once the void journal posted (it reversed the sale, crediting the
+  // intent's part back to customer_deposit). A void that can still post makes
+  // the check wait (backingPending); one that never posts (or a void journal
+  // finance reversed, legend-j0ag5) keeps the sale counted (fail closed).
+  // salesAt is and() of defined parts, never undefined at runtime.
+  const madeSales = salesAt(bound)!;
+  const voided = (
+    await tx
+      .selectDistinct({ orderId: posOrderVoids.orderId })
+      .from(posOrderVoids)
+      .where(
+        and(
+          eq(posOrderVoids.tenantId, tenantId),
+          voidsAt(bound),
+          sql`EXISTS (SELECT 1 FROM ${posOrderTenders}
+            JOIN ${orders} ON ${orders.tenantId} = ${posOrderTenders.tenantId}
+              AND ${orders.id} = ${posOrderTenders.orderId}
+            WHERE ${posOrderTenders.tenantId} = ${tenantId}
+              AND ${posOrderTenders.orderId} = ${posOrderVoids.orderId}
+              AND ${posOrderTenders.status} = 'captured'
+              AND ${posOrderTenders.paymentIntentId} = ${intentId}::uuid
+              AND ${madeSales})`,
+        ),
+      )
+  ).map((row) => row.orderId);
+  const voidStates = await backingStatesOf(
+    tx,
+    tenantId,
+    voided.map((orderId) => ({ kind: "void", orderId })),
+  );
+  const voidStateOf = (orderId: string) =>
+    voidStates.get(backingKeyOf({ kind: "void", orderId })) ?? "none";
+  const voidedPosted = voided.filter((id) => voidStateOf(id) === "posted");
+  const voidPending = voided.some((id) => voidStateOf(id) === "pending");
+  const sales =
+    voidedPosted.length === 0
+      ? madeSales
+      : and(madeSales, notInArray(orders.id, voidedPosted))!;
   // legend-hxpd5: less the gateway part POS refunds of those sales gave back
   // (order.refunded credits it to customer_deposit), attributed to the intent.
   // Only a POS refund whose journal posted counts, like the receipt: one that
-  // can still post makes the check wait (posRefundPending), one that never
-  // posts is not subtracted (fail closed).
-  // salesAt is and() of defined parts, never undefined at runtime.
-  const filters = { sales: salesAt(bound)!, posRefunds: posRefundsAt(bound) };
+  // can still post makes the check wait (backingPending), one that never
+  // posts (or finance reversed, legend-j0ag5) is not subtracted (fail closed).
+  const filters = { sales, posRefunds: posRefundsAt(bound) };
   const candidates = (
     await tx.execute(posRefundsOfIntentSql(tenantId, intentId, filters))
   ).rows.map((row) => String(row.id));
@@ -662,14 +801,14 @@ async function intentBackedAt(
   );
   return {
     backedIdr: tenders + qrSales + forfeits + payouts,
-    posRefundPending,
+    backingPending: posRefundPending || voidPending,
   };
 }
 
 /**
- * The intent backs more than its receipt at `bound`: a POS refund journal that
- * can still post may close the gap (AutoJournalReceiptPending, retryable),
- * else POSTING_AMOUNTS_MISMATCH.
+ * The intent backs more than its receipt at `bound`: a POS refund or void
+ * journal that can still post may close the gap (AutoJournalReceiptPending,
+ * retryable), else POSTING_AMOUNTS_MISMATCH.
  */
 async function assertIntentWithinReceipt(
   tx: Tx,
@@ -679,16 +818,16 @@ async function assertIntentWithinReceipt(
   receiptCredit: bigint,
   message: string,
 ): Promise<void> {
-  const { backedIdr, posRefundPending } = await intentBackedAt(
+  const { backedIdr, backingPending } = await intentBackedAt(
     tx,
     tenantId,
     intentId,
     bound,
   );
   if (backedIdr <= receiptCredit) return;
-  if (posRefundPending)
+  if (backingPending)
     throw new AutoJournalReceiptPending(
-      "POS refund journal of the intent's sale is not posted yet",
+      "POS refund or void journal of the intent's sale is not posted yet",
     );
   throw mismatch(message);
 }
