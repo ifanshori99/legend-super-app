@@ -930,8 +930,15 @@ describe("management managerRole query", () => {
     for (const path of [
       "/api/dashboards/management?managerRole=ceo",
       "/api/dashboards/management/values?managerRole=ceo",
-    ])
-      expect((await get(a.full, path)).status, path).toBe(422);
+    ]) {
+      const res = await get(a.full, path);
+      expect(res.status, path).toBe(422);
+      // The role itself is refused, not an unknown query key.
+      expect(
+        res.body.error.details.map((d: { field: string }) => d.field),
+        path,
+      ).toContain("managerRole");
+    }
   });
 });
 
