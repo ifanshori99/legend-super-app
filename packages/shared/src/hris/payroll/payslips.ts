@@ -78,28 +78,43 @@ export type PayslipBpjsLine = z.infer<typeof payslipBpjsLineSchema>;
 /** ter = monthly TER; annual_recalculation = last tax period (Pasal 17). */
 export const pph21MethodSchema = z.enum(["ter", "annual_recalculation"]);
 
-export const payslipTaxSchema = z.strictObject({
-  ptkpStatus: ptkpStatusSchema,
-  method: pph21MethodSchema,
-  /** TER category/rate; null for the annual recalculation. */
-  terCategory: terCategorySchema.nullable(),
-  terRateBp: basisPointsSchema.nullable(),
-  taxableGrossIdr: nonNegativeIdr,
-  /** Total PPh 21 owed for the period (withheld + borne by the employer). */
-  pph21Idr: idrSchema,
-  /** Part deducted from the employee (gross and gross-up schemes). */
-  pph21WithheldIdr: nonNegativeIdr,
-  /** Gross-up tunjangan pajak paid as an extra earning (also withheld). */
-  taxAllowanceIdr: nonNegativeIdr,
-  /** Borne by the employer (net scheme); a taxable benefit, not withheld. */
-  pph21EmployerBorneIdr: nonNegativeIdr,
-  /** Lebih potong paid back to the employee this period. */
-  pph21RefundIdr: nonNegativeIdr,
-  /** Lebih potong that returns to the employer (tax it bore earlier). */
-  pph21EmployerRefundIdr: nonNegativeIdr,
-  /** Employees without a tax id pay the table surcharge, if any. */
-  noTaxIdSurchargeApplied: z.boolean(),
-});
+export const payslipTaxSchema = z
+  .strictObject({
+    ptkpStatus: ptkpStatusSchema,
+    method: pph21MethodSchema,
+    /** TER category/rate; null for the annual recalculation. */
+    terCategory: terCategorySchema.nullable(),
+    terRateBp: basisPointsSchema.nullable(),
+    taxableGrossIdr: nonNegativeIdr,
+    /** Total PPh 21 owed for the period (withheld + borne by the employer). */
+    pph21Idr: idrSchema,
+    /** Part deducted from the employee (gross and gross-up schemes). */
+    pph21WithheldIdr: nonNegativeIdr,
+    /** Gross-up tunjangan pajak paid as an extra earning (also withheld). */
+    taxAllowanceIdr: nonNegativeIdr,
+    /** Borne by the employer (net scheme); a taxable benefit, not withheld. */
+    pph21EmployerBorneIdr: nonNegativeIdr,
+    /** Lebih potong paid back to the employee this period. */
+    pph21RefundIdr: nonNegativeIdr,
+    /** Lebih potong that returns to the employer (tax it bore earlier). */
+    pph21EmployerRefundIdr: nonNegativeIdr,
+    /** Employees without a tax id pay the table surcharge, if any. */
+    noTaxIdSurchargeApplied: z.boolean(),
+    /**
+     * Scheme mix of taxableGrossIdr (sum = taxableGrossIdr): the employee's
+     * (gross-scheme) part and the employer's (gross-up / net lines, their
+     * benefit share, the covered tax). Read by `buildPph21Prior` so a later
+     * last period splits the year's history by the schemes paid at the time.
+     */
+    grossSchemeBaseIdr: nonNegativeIdr,
+    employerSchemeBaseIdr: nonNegativeIdr,
+  })
+  .refine(
+    (tax) =>
+      tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr ===
+      tax.taxableGrossIdr,
+    { message: "scheme bases must sum to taxableGrossIdr" },
+  );
 export type PayslipTax = z.infer<typeof payslipTaxSchema>;
 
 export const payslipPaymentMethodSchema = z.enum(["bank_transfer", "cash"]);
