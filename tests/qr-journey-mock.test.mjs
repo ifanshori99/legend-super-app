@@ -5,13 +5,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEngine } from "../apps/web/src/features/ws03-qr-order/mock-engine.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 import {
   orderHasPaidShare,
   previewEqualSplit,
   splitScope,
 } from "../apps/web/src/features/ws03-qr-order/domain.ts";
 
-const T = qr.qrTokenFixtures;
+const T = sample.qrTokenFixtures;
 const key = () => `test-${Math.random().toString(36).slice(2)}-abcdef`;
 
 function fresh(token = T.freeTable, pax = 2) {

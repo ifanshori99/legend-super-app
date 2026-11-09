@@ -3,7 +3,7 @@
 // ORD-01, ORD-04, ORD-05. PRD v1.7 §3 F10.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { qrMenuFixtures } from "../packages/shared/src/qr-order/index.ts";
+import { qrMenuFixtures } from "../packages/shared/src/qr-order/sample.ts";
 import {
   EMPTY_FILTER,
   countItems,

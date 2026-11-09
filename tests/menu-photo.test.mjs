@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as menu from "../packages/shared/src/menu/index.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import * as sample from "../packages/shared/src/qr-order/sample.ts";
 import * as site from "../packages/shared/src/website/index.ts";
 import * as guestMenu from "../apps/web/src/features/ws08-website/lib/guest-menu.ts";
 
@@ -122,7 +123,7 @@ test("Q23 legend-qf0i: the QR guest menu drops the item without a photo", () => 
   const table = qr.qrOrderFixtures.tables.find((entry) => entry.code === "A03");
   assert.ok(table);
   const zone = qr.qrOrderFixtures.zones[0];
-  const photoed = qr.buildQrMenu(
+  const photoed = sample.buildQrMenu(
     { table, zone },
     { photoFor: (name) => (name === "Cappuccino" ? null : "/x.jpg") },
   );
@@ -132,7 +133,7 @@ test("Q23 legend-qf0i: the QR guest menu drops the item without a photo", () => 
     photoed.items.find((item) => item.name === "Cappuccino")?.photoUrl,
     null,
   );
-  const filteredAll = qr.hidePhotoLessMenuItems(photoed);
+  const filteredAll = sample.hidePhotoLessMenuItems(photoed);
   assert.equal(
     filteredAll.items.some((item) => item.name === "Cappuccino"),
     false,

@@ -171,7 +171,7 @@ test("F21 SEO metadata respects the snippet budgets", () => {
   );
 });
 
-test("website endpoints are the two public read routes", () => {
+test("website endpoints are the two public read routes plus the staff content pair", () => {
   const endpoints = Object.values(site).filter(
     (value) =>
       value &&
@@ -181,14 +181,22 @@ test("website endpoints are the two public read routes", () => {
       typeof value.path === "string" &&
       value.id === `${value.method} ${value.path}`,
   );
-  assert.deepEqual(endpoints.map((endpoint) => endpoint.path).sort(), [
+  const isPublic = (endpoint) => endpoint.path.startsWith("/api/public/");
+  const publicRoutes = endpoints.filter(isPublic);
+  const staffRoutes = endpoints.filter((endpoint) => !isPublic(endpoint));
+  assert.deepEqual(publicRoutes.map((endpoint) => endpoint.path).sort(), [
     "/api/public/site",
     "/api/public/site/menu",
   ]);
-  for (const endpoint of endpoints) {
+  for (const endpoint of publicRoutes) {
     assert.equal(endpoint.method, "GET");
     // Public routes carry no tenant or outlet parameter (D-CORE-3).
     assert.equal(endpoint.params, undefined);
     assert.equal(endpoint.query, undefined);
   }
+  // Staff content: read and save on one brand-scoped path (org.theme.manage).
+  assert.deepEqual(staffRoutes.map((endpoint) => endpoint.id).sort(), [
+    "GET /api/website/brands/:brandId/content",
+    "PUT /api/website/brands/:brandId/content",
+  ]);
 });
