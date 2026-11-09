@@ -46,7 +46,16 @@
 //   prefix, so numbers may collide until the manual zsdd procedure is done.
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   CoreError,
   userIdSchema,
@@ -1171,6 +1180,56 @@ export async function applyCloudDeviceReceiptSequence(
     edgeInstanceId: own.edgeInstanceId,
   });
   return existing ? "replaced" : "inserted";
+}
+
+/**
+ * Edge (legend-sduiq): after a pull page's sequences are applied, retires this
+ * database's current device runs that the cloud no longer lists. The cloud's
+ * list is complete: every current device run of the outlet bound to exactly
+ * `own` (the claim of the same request binds or rotates all of them first).
+ * A local run usable here (bound to `own`, or unbound 3yqy-era) missing from
+ * it was retired by the cloud, typically rotated by legend-yd0h8 while the
+ * replacement was refused here (prefix or id clash, run already advanced);
+ * without this the device would keep numbering a run the cloud retired. The
+ * device then numbers nothing until a later pull delivers a run it accepts
+ * (RECEIPT_SEQUENCE_NOT_PROVISIONED). Callers pass the ids of a list that
+ * passed its page checks (a refused list never gets here); an empty list is ambiguous (the cloud did not recognise this
+ * database as the primary) and never retires anything. Rows bound to another
+ * binding already cannot number here and are left alone. Returns the count.
+ */
+export async function retireUnlistedDeviceReceiptSequences(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  listedIds: readonly string[],
+  own: DeviceReceiptSequenceBinding,
+): Promise<number> {
+  if (listedIds.length === 0) return 0;
+  const tenantId = context.tenant.tenantId;
+  const outlet = outletId as OutletId;
+  await lockOutletSequences(tx, tenantId, outlet);
+  const rows = await tx
+    .select({ id: receiptSequences.id })
+    .from(receiptSequences)
+    .where(
+      and(
+        eq(receiptSequences.tenantId, tenantId),
+        eq(receiptSequences.outletId, outlet),
+        sql`${receiptSequences.deviceId} <> ${receiptSequences.outletId}`,
+        isNull(receiptSequences.retiredAt),
+        or(
+          isNull(receiptSequences.edgeNodeId),
+          and(
+            eq(receiptSequences.edgeNodeId, own.edgeNodeId),
+            eq(receiptSequences.edgeInstanceId, own.edgeInstanceId),
+          ),
+        ),
+        notInArray(receiptSequences.id, [...listedIds]),
+      ),
+    );
+  for (const row of rows)
+    await retireSequence(tx, tenantId, row.id, "edge_replaced");
+  return rows.length;
 }
 
 /** Void columns of a merged receipt, taken from the cloud void row. */

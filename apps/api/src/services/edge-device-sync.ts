@@ -72,6 +72,7 @@ import { logger } from "../lib/logger.ts";
 import { toDevice } from "./device.service.ts";
 import {
   applyCloudDeviceReceiptSequence,
+  retireUnlistedDeviceReceiptSequences,
   backfillDeviceReceiptSequences,
   claimDeviceReceiptSequencesForEdge,
   listDeviceReceiptSequences,
@@ -525,6 +526,12 @@ export type ReceiptSequenceApplyResult = {
   readonly replaced: number;
   /** Skipped: not our binding, prefix mismatch or advanced cloud run (see below). */
   readonly refused: number;
+  /**
+   * legend-sduiq: local current runs retired because the cloud's full list no
+   * longer has them (the cloud retired them; see
+   * `retireUnlistedDeviceReceiptSequences`).
+   */
+  readonly retired: number;
 };
 
 /**
@@ -539,6 +546,9 @@ export type ReceiptSequenceApplyResult = {
  * legend-zsdd: `own` is this edge's binding (node id, instance id). A sequence
  * bound to another database is refused; a pulled sequence with a new id or
  * prefix for a device replaces the local current run (`replaced`).
+ * legend-sduiq: then every local current run usable here that the (non-empty)
+ * list does not contain is retired (`retired`), so a refused replacement never
+ * leaves the device numbering a run the cloud retired.
  */
 export async function applyDeviceReceiptSequences(
   context: ScopedTenantContext,
@@ -562,7 +572,7 @@ export async function applyDeviceReceiptSequences(
     if (sequence.outletId.toLowerCase() !== outletId)
       refuse("Receipt sequence belongs to another outlet.");
   if (parsed.length === 0)
-    return { inserted: 0, kept: 0, replaced: 0, refused: 0 };
+    return { inserted: 0, kept: 0, replaced: 0, refused: 0, retired: 0 };
   const result = await withTenant(db, context, async (tx) => {
     let inserted = 0;
     let kept = 0;
@@ -580,7 +590,14 @@ export async function applyDeviceReceiptSequences(
       else if (outcome === "replaced") replaced += 1;
       else refused += 1;
     }
-    return { inserted, kept, replaced, refused };
+    const retired = await retireUnlistedDeviceReceiptSequences(
+      tx,
+      context,
+      outletId,
+      parsed.map((sequence) => sequence.id),
+      own,
+    );
+    return { inserted, kept, replaced, refused, retired };
   });
   if (result.refused > 0)
     logger.error(
@@ -591,6 +608,11 @@ export async function applyDeviceReceiptSequences(
     logger.warn(
       { replaced: result.replaced },
       "Edge receipt sequence replaced by a new prefix from the cloud (legend-zsdd)",
+    );
+  if (result.retired > 0)
+    logger.warn(
+      { retired: result.retired },
+      "Edge receipt sequence retired: the cloud no longer lists it (legend-sduiq)",
     );
   return result;
 }
@@ -634,6 +656,8 @@ export type PullDeviceRegistryResult = DeviceApplyResult & {
   readonly receiptSequencesRefused: number;
   /** legend-zsdd: local runs replaced by a new prefix from the cloud. */
   readonly receiptSequencesReplaced: number;
+  /** legend-sduiq: local runs retired because the cloud no longer lists them. */
+  readonly receiptSequencesRetired: number;
   /**
    * legend-yd0h8: the cloud flagged a restored or cloned edge database (some
    * page carried `receiptRunAlert: true`).
@@ -653,18 +677,22 @@ async function applyPageReceiptSequences(
   context: ScopedTenantContext,
   raw: unknown,
   own: DeviceReceiptSequenceBinding,
-): Promise<{ refused: number; replaced: number }> {
+): Promise<{ refused: number; replaced: number; retired: number }> {
   const count = Array.isArray(raw) ? raw.length : 1;
   try {
     if (!Array.isArray(raw)) refuse("Receipt sequences are not a list.");
     const result = await applyDeviceReceiptSequences(context, raw, own);
-    return { refused: result.refused, replaced: result.replaced };
+    return {
+      refused: result.refused,
+      replaced: result.replaced,
+      retired: result.retired,
+    };
   } catch {
     logger.error(
       { refused: count },
       "Edge receipt sequences of a device page refused",
     );
-    return { refused: count, replaced: 0 };
+    return { refused: count, replaced: 0, retired: 0 };
   }
 }
 
@@ -721,6 +749,7 @@ export async function pullDeviceRegistry(
   let pages = 0;
   let receiptSequencesRefused = 0;
   let receiptSequencesReplaced = 0;
+  let receiptSequencesRetired = 0;
   let receiptRunAlert = false;
   for (;;) {
     if (pages >= maxPages)
@@ -762,6 +791,7 @@ export async function pullDeviceRegistry(
       );
       receiptSequencesRefused += counts.refused;
       receiptSequencesReplaced += counts.replaced;
+      receiptSequencesRetired += counts.retired;
     }
     // An empty page echoes the rewound cursor: keep the stored one instead.
     if (page.data.length > 0) watermark = page.meta.watermark ?? watermark;
@@ -780,6 +810,7 @@ export async function pullDeviceRegistry(
     watermark,
     receiptSequencesRefused,
     receiptSequencesReplaced,
+    receiptSequencesRetired,
     receiptRunAlert,
   };
 }

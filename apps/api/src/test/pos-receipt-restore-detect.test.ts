@@ -438,19 +438,32 @@ async function insertNode(outletId: string): Promise<string> {
   return id;
 }
 
+/** Stable edge-side id per (edge outlet, cloud sequence id); see `shipTo`. */
+const shippedIds = new Map<string, string>();
+
 /**
  * What an edge database applies: the cloud page with each sequence moved to
- * the edge's own outlet and given a new id (the cloud rows live in the same
- * database in this test). Device records stay behind (they belong to the cloud
+ * the edge's own outlet and given another id (the cloud rows live in the same
+ * database in this test). The id is stable per edge and cloud row, as a real
+ * edge keeps the cloud's id: legend-sduiq retires a local run whose id is not
+ * in the pulled list. Device records stay behind (they belong to the cloud
  * outlet); the paging meta is kept.
  */
 function shipTo(page: DeviceSyncPage, edgeOutletId: string): unknown {
+  const edgeIdOf = (cloudId: string): string => {
+    const key = `${edgeOutletId}:${cloudId}`;
+    const known = shippedIds.get(key);
+    if (known !== undefined) return known;
+    const id = randomUUID();
+    shippedIds.set(key, id);
+    return id;
+  };
   return {
     ...page,
     data: [],
     receiptSequences: (page.receiptSequences ?? []).map((s) => ({
       ...s,
-      id: randomUUID(),
+      id: edgeIdOf(s.id),
       outletId: edgeOutletId,
     })),
   };
