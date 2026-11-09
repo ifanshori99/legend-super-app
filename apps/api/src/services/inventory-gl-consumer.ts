@@ -11,8 +11,10 @@
 //   average cost, so a later receipt cannot change an old journal.
 // - Rounding follows the emitting module: stock count lines round per row
 //   (equals `stock_count_lines.posted_value_idr`), waste rounds once over the
-//   untracked rows of a business date (equals `waste_logs.value_idr` for a log
-//   inside one business date), sales round per row.
+//   whole log (equals `waste_logs.value_idr`); the rounded total is shared over
+//   the business dates of the log by largest remainder (`allocateRoundedIdr`),
+//   so a log straddling the business-day cutoff never loses a rupiah. Sales
+//   round per row.
 // - Negative amounts are never written as negative journal lines: the posting
 //   rule flips debit and credit for a negative amount.
 // - The untracked rows of a source are grouped by outlet business date and each
@@ -33,7 +35,7 @@
 // advisory lock serializes concurrent consumers and the sweep of one document.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
 import {
   businessDateOf,
@@ -61,7 +63,11 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import { sourceIdFromDb, sourceIdToDb } from "./inventory.service.ts";
-import { scaledCostToIdr, type Tx } from "./inventory-ops.shared.ts";
+import {
+  COST_PRODUCT_SCALE,
+  scaledCostToIdr,
+  type Tx,
+} from "./inventory-ops.shared.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 
 export type InventoryGlResult =
@@ -359,6 +365,45 @@ export async function retryBlockedInventoryGl(
   return { posted, stillBlocked, failed };
 }
 
+/**
+ * Shares the half-up rounded total of `scaledParts` (non-negative or signed,
+ * the absolute value counts) over its parts in whole rupiah by largest
+ * remainder: every part gets floor(|part| / scale), the leftover units go to
+ * the parts with the largest fractional remainder, ties to the lowest index
+ * (the caller passes the oldest business date first). Deterministic, so a
+ * replay or a later posting of a parked part gets the same amount. The result
+ * is non-negative and sums to round_half_up(Σ|part| / scale).
+ */
+export function allocateRoundedIdr(
+  scaledParts: readonly bigint[],
+  scale: bigint,
+): number[] {
+  const abs = scaledParts.map((part) => (part < 0n ? -part : part));
+  const total =
+    (abs.reduce((sum, part) => sum + part, 0n) + scale / 2n) / scale;
+  const floors = abs.map((part) => part / scale);
+  let leftover = Number(total - floors.reduce((sum, part) => sum + part, 0n));
+  const result = floors.map((part) => Number(part));
+  const order = abs
+    .map((part, index) => ({ index, remainder: part % scale }))
+    .sort((a, b) =>
+      a.remainder === b.remainder
+        ? a.index - b.index
+        : a.remainder > b.remainder
+          ? -1
+          : 1,
+    );
+  for (
+    let i = 0;
+    leftover > 0 && order.length > 0;
+    i = (i + 1) % order.length
+  ) {
+    result[order[i]!.index]! += 1;
+    leftover -= 1;
+  }
+  return result;
+}
+
 function idempotencyKeyOf(
   sourceType: string,
   sourceId: string,
@@ -380,13 +425,14 @@ export async function postStockSourceToGl(
   const tenantId = context.tenant.tenantId;
   const target = normalizeSource(source);
   await lockSource(tx, tenantId, target);
-  const rows = await tx
+  let rows = await tx
     .select({
       id: stockLedger.id,
       outletId: stockLedger.outletId,
       quantity: stockLedger.quantity,
       unitCostIdr: stockLedger.unitCostIdr,
       occurredAt: stockLedger.occurredAt,
+      postedLedgerEntryId: inventoryGlPostings.ledgerEntryId,
     })
     .from(stockLedger)
     .leftJoin(
@@ -402,13 +448,16 @@ export async function postStockSourceToGl(
         eq(stockLedger.sourceType, target.sourceType),
         eq(stockLedger.sourceId, target.dbId),
         inArray(stockLedger.movementType, [...mapping.movementTypes]),
-        isNull(inventoryGlPostings.ledgerEntryId),
       ),
     )
     .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
+  // Every ledger row of the source (posted or not) feeds the waste allocation;
+  // only the unposted ones are posted below.
+  const allRows = rows;
+  rows = allRows.filter((row) => row.postedLedgerEntryId === null);
   const first = rows[0];
   if (!first) return { status: "already_posted" };
-  if (rows.some((row) => row.outletId !== first.outletId))
+  if (allRows.some((row) => row.outletId !== first.outletId))
     throw new Error("Stock source spans more than one outlet");
 
   const [outlet] = await tx
@@ -429,6 +478,39 @@ export async function postStockSourceToGl(
     groups.set(date, [...(groups.get(date) ?? []), row]);
   }
 
+  // Waste: exact scaled value of every row of the source per business date,
+  // then the rounded total of the log is shared over the dates (oldest first).
+  const wasteAmounts = new Map<BusinessDate, number>();
+  if (mapping.variant === "waste") {
+    const scaledByDate = new Map<BusinessDate, bigint>();
+    for (const row of allRows) {
+      const date = businessDateOf(row.occurredAt, clock);
+      scaledByDate.set(
+        date,
+        (scaledByDate.get(date) ?? 0n) -
+          parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr),
+      );
+    }
+    const dates = [...scaledByDate.keys()].sort();
+    const scaledParts = dates.map((date) => scaledByDate.get(date)!);
+    const sameSign =
+      scaledParts.every((part) => part >= 0n) ||
+      scaledParts.every((part) => part <= 0n);
+    // Mixed signs (not produced by waste logs): keep the per-date rounding.
+    const allocated = sameSign
+      ? allocateRoundedIdr(scaledParts, COST_PRODUCT_SCALE)
+      : null;
+    const sign = scaledParts.some((part) => part < 0n) ? -1 : 1;
+    dates.forEach((date, index) => {
+      wasteAmounts.set(
+        date,
+        allocated
+          ? sign * allocated[index]!
+          : scaledCostToIdr(scaledParts[index]!),
+      );
+    });
+  }
+
   const journalEntryIds: string[] = [];
   for (const [entryDate, group] of groups) {
     // Signed stock effect of each row in whole rupiah (positive = stock in).
@@ -438,14 +520,9 @@ export async function postStockSourceToGl(
     const rowSum = rowValues.reduce((sum, value) => sum + value, 0);
     let amount: number;
     if (mapping.variant === "waste") {
-      // Waste rounds once over the whole log (equals waste_logs.value_idr).
-      amount = scaledCostToIdr(
-        group.reduce(
-          (sum, row) =>
-            sum - parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr),
-          0n,
-        ),
-      );
+      // Waste rounds once over the whole log (equals waste_logs.value_idr),
+      // shared over its business dates by largest remainder.
+      amount = wasteAmounts.get(entryDate)!;
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {

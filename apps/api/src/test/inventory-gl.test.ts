@@ -694,6 +694,173 @@ describe("§3.19 waste posts to the GL", () => {
   });
 });
 
+/**
+ * A waste log whose two FEFO batch rows straddle the 04:00 business-day
+ * cutoff, on the month border: 2026-10-01 03:59 Jakarta is business date
+ * 2026-09-30 (period 2026-09), 04:00 is 2026-10-01 (period 2026-10).
+ * Two rows of 1 x Rp0,4: each date alone rounds to 0, the log value is 1.
+ * `createWasteLog` stamps every row with one instant, so the straddle is
+ * written the way a replayed/synced log would be: ledger rows + waste_logs row.
+ */
+const LATE_DAY1 = "2026-09-30T20:59:00.000Z";
+const EARLY_DAY2 = "2026-09-30T21:00:00.000Z";
+
+async function straddlingWasteLog(world: World) {
+  const item = await insertItem("Garam");
+  const batchIds: string[] = [];
+  for (const expiresOn of ["2099-01-05", "2099-01-10"]) {
+    const batch = await createStockBatch(context(), {
+      outletId: world.outletId,
+      locationId: world.locationId,
+      inventoryItemId: item,
+      batchCode: `B-${short()}`,
+      expiresOn: businessDateSchema.parse(expiresOn),
+    });
+    batchIds.push(batch.id);
+    await recordStockMovement(context(), {
+      outletId: world.outletId,
+      locationId: world.locationId,
+      inventoryItemId: item,
+      movementType: "receipt",
+      quantity: decimal4("1.0000"),
+      unitCostIdr: decimal4("0.4000"),
+      batchId: batch.id,
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      occurredAt: at("2026-09-01T05:00:00.000Z"),
+      actor: { type: "system" },
+    });
+  }
+  const logId = randomUUID();
+  const rowIds: string[] = [];
+  for (const [index, occurredAt] of [LATE_DAY1, EARLY_DAY2].entries()) {
+    const entry = await recordStockMovement(context(), {
+      outletId: world.outletId,
+      locationId: world.locationId,
+      inventoryItemId: item,
+      movementType: "waste",
+      quantity: decimal4("-1.0000"),
+      batchId: batchIds[index]!,
+      sourceType: "waste_log",
+      sourceId: logId,
+      occurredAt: at(occurredAt),
+      actor: { type: "user", id: wasteUserId },
+    });
+    rowIds.push(entry.id);
+  }
+  // The log value is rounded once over the whole log: 0,4 + 0,4 = 0,8 -> 1.
+  await owner.query(
+    `INSERT INTO waste_logs
+       (id, tenant_id, outlet_id, location_id, target_type, target_id, quantity,
+        reason, value_idr, logged_by, occurred_at)
+     VALUES ($1, $2, $3, $4, 'inventory_item', $5, 2, 'spoiled', 1, $6, $7)`,
+    [
+      logId,
+      tenantId,
+      world.outletId,
+      world.locationId,
+      item,
+      wasteUserId,
+      LATE_DAY1,
+    ],
+  );
+  return { logId, rowIds, valueIdr: 1 };
+}
+
+/** Σ waste_expense debit over every journal of the source, by entry date. */
+async function wasteByDate(world: World, sourceId: string) {
+  const byDate = new Map<string, number>();
+  for (const entry of await journalsOf(world, sourceId)) {
+    const lines = await linesOf(world, entry.id);
+    const expense = lines.find((line) => line.role === "waste_expense")!;
+    byDate.set(
+      entry.entry_date,
+      (byDate.get(entry.entry_date) ?? 0) + expense.debit,
+    );
+  }
+  return byDate;
+}
+
+describe("§3.19 a waste log across two business dates keeps its rupiah (IT-68)", () => {
+  it("INV-GL-WASTE-02 rows of Rp0,4 + Rp0,4 on two business dates journal exactly the log value of Rp1, once, on one date", async () => {
+    const world = await makeWorld();
+    const log = await straddlingWasteLog(world);
+    const { rows: valueRow } = await owner.query<{ value_idr: string }>(
+      "SELECT value_idr::text AS value_idr FROM waste_logs WHERE tenant_id = $1 AND id = $2",
+      [tenantId, log.logId],
+    );
+    expect(Number(valueRow[0]!.value_idr)).toBe(log.valueIdr);
+
+    expect((await deliverRow(log.rowIds[0]!)).status).toBe("posted");
+
+    const byDate = await wasteByDate(world, log.logId);
+    const posted = [...byDate.values()].reduce((sum, v) => sum + v, 0);
+    expect(posted).toBe(log.valueIdr);
+    // Exactly one date carries the rupiah; the tie goes to the oldest date.
+    expect([...byDate.entries()]).toEqual([["2026-09-30", 1]]);
+    const entries = await journalsOf(world, log.logId);
+    expect(entries).toHaveLength(1);
+    expect(await linesOf(world, entries[0]!.id)).toEqual([
+      { role: "inventory", debit: 0, credit: 1 },
+      { role: "waste_expense", debit: 1, credit: 0 },
+    ]);
+    // Both rows are marked done, including the date that got Rp0.
+    expect(await trackingOf(log.logId)).toHaveLength(2);
+
+    // A replay of either row's event posts nothing more.
+    expect(await deliverRow(log.rowIds[1]!)).toEqual({
+      status: "already_posted",
+    });
+    expect(await deliverRow(log.rowIds[0]!)).toEqual({
+      status: "already_posted",
+    });
+    expect(await journalsOf(world, log.logId)).toHaveLength(1);
+  });
+
+  it("INV-GL-WASTE-03 a closed period parks the posting; after reopening and the sweep the journals still add up to the log value", async () => {
+    const world = await makeWorld();
+    const log = await straddlingWasteLog(world);
+    // 2026-09 holds the date that is allocated the rupiah: close it.
+    await owner.query(
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now()
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-09'`,
+      [tenantId, world.entity, randomUUID()],
+    );
+
+    const result = await deliverRow(log.rowIds[0]!);
+    expect(result).toEqual({ status: "blocked", code: "PERIOD_CLOSED" });
+    // Never more than the log value while parked, and the block is recorded.
+    const parked = [...(await wasteByDate(world, log.logId)).values()].reduce(
+      (sum, v) => sum + v,
+      0,
+    );
+    expect(parked).toBeLessThanOrEqual(log.valueIdr);
+    expect(await blockedOf("waste_log", log.logId)).toHaveLength(1);
+
+    await owner.query(
+      `UPDATE fiscal_periods
+          SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-09'`,
+      [tenantId, world.entity],
+    );
+    await sweep(1);
+    await sweep(2);
+
+    const byDate = await wasteByDate(world, log.logId);
+    expect([...byDate.values()].reduce((sum, v) => sum + v, 0)).toBe(
+      log.valueIdr,
+    );
+    // Same amount on the same date as an undisturbed posting would give.
+    expect([...byDate.entries()]).toEqual([["2026-09-30", 1]]);
+    expect(await trackingOf(log.logId)).toHaveLength(2);
+    expect(await blockedOf("waste_log", log.logId)).toHaveLength(0);
+    // Delivering again finds nothing left.
+    expect(await deliverRow(log.rowIds[1]!)).toEqual({
+      status: "already_posted",
+    });
+  });
+});
+
 describe("§3.19 HPP (COGS) of sales posts to the GL", () => {
   it("INV-GL-COGS-01 a sale posts Dr cogs / Cr inventory; a restocked return reverses the sides", async () => {
     const world = await makeWorld();
