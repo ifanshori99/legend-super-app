@@ -28,6 +28,7 @@ import { z } from "zod";
 import { parseEdgeHardeningEnv } from "@starter/shared/env";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
@@ -665,12 +666,14 @@ export async function startEdgeRuntime(
     credential: config.credential,
     edgeInstanceId: local.instanceId,
   });
+  // legend-hfq3z: clash refusals of the previous pull, reported on the next.
+  let receiptRunRefusals: ReceiptRunRefusalReport = new Map();
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
       pullWithCursorRecovery(
-        (from) => {
+        async (from) => {
           let first = true;
-          return pullDeviceRegistry({
+          const result = await pullDeviceRegistry({
             context: local.context,
             // S-K1 (legend-3yqy): a standby never applies receipt sequences.
             role: config.role,
@@ -680,11 +683,17 @@ export async function startEdgeRuntime(
               edgeInstanceId: local.instanceId,
             },
             since: from,
-            fetchPage: async (cursor, receiptRuns) => {
+            refusals: receiptRunRefusals,
+            fetchPage: async (cursor, receiptRuns, refusals) => {
               const isFirst = first;
               first = false;
               try {
-                return await fetchDeviceRecords(cursor, signal, receiptRuns);
+                return await fetchDeviceRecords(
+                  cursor,
+                  signal,
+                  receiptRuns,
+                  refusals,
+                );
               } catch (error) {
                 if (
                   isFirst &&
@@ -696,6 +705,8 @@ export async function startEdgeRuntime(
               }
             },
           });
+          receiptRunRefusals = result.receiptRunRefusals;
+          return result;
         },
         since,
         isRejectedCursor,
