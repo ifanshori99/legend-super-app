@@ -70,13 +70,17 @@ afterAll(() => undefined);
 
 describe("menu import router in createApp", () => {
   it("with a storage runtime the print route reaches the renderer check, not the storage check", async () => {
-    const res = await withStaff.client.get(`/api/menu/print?outletId=${outletA}`);
+    const res = await withStaff.client.get(
+      `/api/menu/print?outletId=${outletA}`,
+    );
     expect(res.status, JSON.stringify(res.body)).toBe(503);
     expect(res.body.error.message).toContain("Pembuat PDF");
   });
 
   it("without a storage runtime the print route answers the storage 503", async () => {
-    const res = await withoutStaff.client.get(`/api/menu/print?outletId=${outletA}`);
+    const res = await withoutStaff.client.get(
+      `/api/menu/print?outletId=${outletA}`,
+    );
     expect(res.status, JSON.stringify(res.body)).toBe(503);
     expect(res.body.error.message).toContain("Penyimpanan");
   });
@@ -87,7 +91,9 @@ describe("menu import router in createApp", () => {
       .send({});
     expect(res.status).not.toBe(404);
     expect(res.status).not.toBe(503);
-    const anon = await (await import("./helpers.ts"))
+    const anon = await (
+      await import("./helpers.ts")
+    )
       .agent(appWithStorage)
       .post("/api/menu/import/validate")
       .send({});
