@@ -48,8 +48,19 @@ async function failedItem() {
   return { ...paid, issueId };
 }
 
-const issueVoucher = (body: Record<string, unknown>, who = w.supervisor) =>
-  w.staffPost(who, "/api/apology-vouchers", body);
+/**
+ * A standalone voucher (no orderIssueId) must carry an Idempotency-Key, so a
+ * unique one is sent for it; a voucher tied to an order issue needs none.
+ */
+const issueVoucher = (body: Record<string, unknown>, who = w.supervisor) => {
+  const request = who.client
+    .post("/api/apology-vouchers")
+    .set("Host", w.tenant.hostname)
+    .set(originHeader);
+  if (body.orderIssueId === undefined)
+    request.set("Idempotency-Key", randomUUID());
+  return request.send(body);
+};
 
 const voucherCount = async (issueId: string) => {
   const { rows } = await owner.query<{ n: string }>(
@@ -532,7 +543,7 @@ describe("legend-4qu voucher maaf menyelesaikan issue dan approval sekali pakai"
     const { guest, issueId } = await failedItem();
     const chosen = await w.as(guest).choose(issueId, {
       choice: "swap",
-      replacementItemId: w.ids.kopi,
+      replacementItemId: w.ids.rotiLain, // same price: no credit voucher
     });
     expect(chosen.status).toBe(200);
     const response = await issueVoucher({
@@ -646,5 +657,254 @@ describe("legend-4qu staf menyelesaikan issue dengan voucher yang ada", () => {
     const response = await resolveWith(issueId, apologyId);
     expect(response.status).toBe(422);
     expect(await statusOf(issueId)).toBe("open");
+  });
+});
+
+describe("legend-4qu voucher maaf: header Idempotency-Key", () => {
+  /** Standalone vouchers: no order issue, so only the key can dedupe them. */
+  const withKey = (
+    key: string,
+    body: Record<string, unknown>,
+    who = w.outletSupervisor,
+  ) =>
+    who.client
+      .post("/api/apology-vouchers")
+      .set("Host", w.tenant.hostname)
+      .set(originHeader)
+      .set("Idempotency-Key", key)
+      .send(body);
+  const rowsWithReason = async (reason: string) =>
+    Number(
+      (
+        await owner.query<{ n: string }>(
+          "SELECT count(*) AS n FROM apology_vouchers WHERE tenant_id = $1 AND reason = $2",
+          [w.tenant.tenantId, reason],
+        )
+      ).rows[0]!.n,
+    );
+
+  it("klik ganda bersamaan dengan key dan isi sama: satu voucher, kode sama", async () => {
+    const reason = `Klik ganda ${randomUUID()}`;
+    const key = randomUUID();
+    const body = { valueIdr: BELOW, reason };
+    const results = await Promise.all([withKey(key, body), withKey(key, body)]);
+    for (const result of results) expect([200, 201]).toContain(result.status);
+    expect(results[1]!.body.data.id).toBe(results[0]!.body.data.id);
+    expect(results[1]!.body.data.code).toBe(results[0]!.body.data.code);
+    expect(await rowsWithReason(reason)).toBe(1);
+
+    // A later retry returns the same voucher too.
+    const retry = await withKey(key, body);
+    expect([200, 201]).toContain(retry.status);
+    expect(retry.body.data.code).toBe(results[0]!.body.data.code);
+    expect(await rowsWithReason(reason)).toBe(1);
+  });
+
+  it("voucher mandiri tanpa header Idempotency-Key 422 VALIDATION_ERROR dan tidak ada voucher", async () => {
+    const reason = `Tanpa key ${randomUUID()}`;
+    const response = await w.staffPost(
+      w.outletSupervisor,
+      "/api/apology-vouchers",
+      { valueIdr: BELOW, reason },
+    );
+    expect(response.status).toBe(422);
+    expect(response.body.error.code).toBe("VALIDATION_ERROR");
+    expect(response.body.error.message).toMatch(/Idempotency-Key/);
+    expect(await rowsWithReason(reason)).toBe(0);
+  });
+
+  it("voucher yang terkait issue tidak butuh header: tanpa header 201", async () => {
+    const { issueId } = await failedItem();
+    const response = await w.staffPost(w.supervisor, "/api/apology-vouchers", {
+      valueIdr: BELOW,
+      reason: REASON,
+      orderIssueId: issueId,
+    });
+    expect(response.status).toBe(201);
+  });
+
+  it("replay setelah izin outlet dicabut 403 dan tidak mengembalikan kode lagi", async () => {
+    const temporary = await w.newOutletSupervisor();
+    const key = randomUUID();
+    const reason = `Izin dicabut ${randomUUID()}`;
+    const body = { valueIdr: BELOW, reason };
+    const first = await withKey(key, body, temporary);
+    expect(first.status).toBe(201);
+    const replay = await withKey(key, body, temporary);
+    expect([200, 201]).toContain(replay.status);
+
+    await w.revokeRoles(temporary.userId);
+    const revoked = await withKey(key, body, temporary);
+    expect(revoked.status).toBe(403);
+    expect(JSON.stringify(revoked.body)).not.toContain(first.body.data.code);
+    expect(await rowsWithReason(reason)).toBe(1);
+  });
+
+  it("replay setelah voucher dibatalkan atau ditebus menampilkan status terkini, bukan issued", async () => {
+    const voucherOf = async (apologyId: string) =>
+      (
+        await owner.query<{ voucher_id: string }>(
+          "SELECT voucher_id FROM apology_vouchers WHERE tenant_id = $1 AND id = $2",
+          [w.tenant.tenantId, apologyId],
+        )
+      ).rows[0]!.voucher_id;
+
+    const cancelledKey = randomUUID();
+    const cancelledBody = {
+      valueIdr: BELOW,
+      reason: `Dibatalkan ${randomUUID()}`,
+    };
+    const cancelled = await withKey(cancelledKey, cancelledBody);
+    expect(cancelled.status).toBe(201);
+    expect(cancelled.body.data.status).toBe("issued");
+    await owner.query(
+      "UPDATE vouchers SET status = 'cancelled', cancelled_reason = 'Salah terbit' WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, await voucherOf(cancelled.body.data.id)],
+    );
+    const replayCancelled = await withKey(cancelledKey, cancelledBody);
+    expect([200, 201]).toContain(replayCancelled.status);
+    expect(replayCancelled.body.data.id).toBe(cancelled.body.data.id);
+    expect(replayCancelled.body.data.status).toBe("void");
+
+    const { order } = await failedItem();
+    const redeemedKey = randomUUID();
+    const redeemedBody = { valueIdr: BELOW, reason: `Ditebus ${randomUUID()}` };
+    const redeemed = await withKey(redeemedKey, redeemedBody);
+    expect(redeemed.status).toBe(201);
+    await owner.query(
+      `UPDATE vouchers SET status = 'redeemed', redeemed_at = now(), redeemed_order_id = $3
+       WHERE tenant_id = $1 AND id = $2`,
+      [
+        w.tenant.tenantId,
+        await voucherOf(redeemed.body.data.id),
+        ulidToUuid(order.id),
+      ],
+    );
+    const replayRedeemed = await withKey(redeemedKey, redeemedBody);
+    expect([200, 201]).toContain(replayRedeemed.status);
+    expect(replayRedeemed.body.data.status).toBe("redeemed");
+    expect(replayRedeemed.body.data.redemptionOrderId).toBe(order.id);
+  });
+
+  it("key sama dengan isi berbeda 409 IDEMPOTENCY_KEY_REUSED dan tidak ada voucher kedua", async () => {
+    const reason = `Isi beda ${randomUUID()}`;
+    const key = randomUUID();
+    const first = await withKey(key, { valueIdr: BELOW, reason });
+    expect(first.status).toBe(201);
+    const changed = await withKey(key, { valueIdr: BELOW + 1_000, reason });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(await rowsWithReason(reason)).toBe(1);
+  });
+
+  it("key yang sama dari staf lain 409 dan tidak menerbitkan voucher", async () => {
+    const { issueId } = await failedItem();
+    const key = randomUUID();
+    const first = await withKey(key, {
+      valueIdr: BELOW,
+      reason: `Milik staf pertama ${randomUUID()}`,
+    });
+    expect(first.status).toBe(201);
+    const other = await withKey(
+      key,
+      { valueIdr: BELOW, reason: REASON, orderIssueId: issueId },
+      w.supervisor,
+    );
+    expect(other.status).toBe(409);
+    expect(await voucherCount(issueId)).toBe(0);
+  });
+
+  it("APPROVAL_REQUIRED tidak disimpan: retry dengan key yang sama setelah approval berhasil", async () => {
+    const reason = `Menunggu approval ${randomUUID()}`;
+    const key = randomUUID();
+    const body = { valueIdr: ABOVE, reason };
+    const blocked = await withKey(key, body);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe("APPROVAL_REQUIRED");
+    // Retrying before approval still asks for approval, not a stale replay.
+    const again = await withKey(key, body);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe("APPROVAL_REQUIRED");
+
+    const found = JSON.stringify(blocked.body.error).match(UUID_PATTERN) ?? [];
+    const { rows } = await owner.query<{ id: string }>(
+      "SELECT id FROM approval_requests WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [w.tenant.tenantId, found],
+    );
+    await w.approveExisting(rows[0]!.id);
+
+    const retry = await withKey(key, {
+      ...body,
+      approvalRequestId: rows[0]!.id,
+    });
+    expect(retry.status).toBe(201);
+    expect(retry.body.data).toMatchObject({
+      valueIdr: ABOVE,
+      approvalRequestId: rows[0]!.id,
+    });
+    expect(await rowsWithReason(reason)).toBe(1);
+  });
+});
+
+describe("legend-4qu kode voucher maaf lewat jalur CRM validate", () => {
+  const validate = (code: string) =>
+    w.staffPost(
+      w.supervisor,
+      `/api/vouchers/validate?outletId=${w.tenant.outletId}`,
+      { code, subtotalIdr: 100_000, channel: "dine_in" },
+    );
+
+  it("kode tampilan berhubung, tanpa hubung, dan huruf kecil sama-sama valid dan menunjuk voucher yang sama", async () => {
+    const { issueId } = await failedItem();
+    const issued = await issueVoucher({
+      valueIdr: BELOW,
+      reason: REASON,
+      orderIssueId: issueId,
+    });
+    const display = issued.body.data.code as string;
+    expect(display).toContain("-");
+    const { rows } = await owner.query<{ voucher_id: string }>(
+      "SELECT voucher_id FROM apology_vouchers WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, issued.body.data.id],
+    );
+    const voucherId = rows[0]!.voucher_id;
+
+    for (const typed of [
+      display,
+      display.replaceAll("-", ""),
+      display.toLowerCase(),
+      ` ${display} `,
+    ]) {
+      const result = await validate(typed);
+      expect(result.status, typed).toBe(200);
+      expect(result.body.data, typed).toMatchObject({
+        valid: true,
+        voucherId,
+        promotionId: null,
+        discountPreviewIdr: BELOW,
+      });
+    }
+
+    const wrong = await validate("LEG-ZZZZ-ZZZZ");
+    expect(wrong.status).toBe(200);
+    expect(wrong.body.data).toEqual({ valid: false, reason: "not_found" });
+  });
+
+  it("voucher maaf yang kedaluwarsa ditolak validate dengan alasan kedaluwarsa", async () => {
+    const { issueId } = await failedItem();
+    const issued = await issueVoucher({
+      valueIdr: BELOW,
+      reason: REASON,
+      orderIssueId: issueId,
+    });
+    await owner.query(
+      `UPDATE vouchers SET valid_from = now() - interval '3 days', valid_until = now() - interval '1 day'
+       WHERE tenant_id = $1 AND id = (SELECT voucher_id FROM apology_vouchers WHERE id = $2)`,
+      [w.tenant.tenantId, issued.body.data.id],
+    );
+    const result = await validate(issued.body.data.code);
+    expect(result.status).toBe(200);
+    expect(result.body.data.valid).toBe(false);
+    expect(result.body.data.reason).toMatch(/expired/);
   });
 });

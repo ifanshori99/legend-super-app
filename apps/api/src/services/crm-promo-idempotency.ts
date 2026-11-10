@@ -45,7 +45,7 @@ function fingerprintOf(
 export interface PromoIdempotencyInput<T> {
   /** Validated `Idempotency-Key` header, or null when the client sent none. */
   key: string | null;
-  operation: "promotion.create" | "voucher.issue";
+  operation: "promotion.create" | "voucher.issue" | "apology_voucher.issue";
   /** The validated request body the key is bound to. */
   request: unknown;
   /** Maps the result to what is stored (e.g. seals a one-time secret). */

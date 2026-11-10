@@ -17,7 +17,11 @@
 //   is never offered to the guest and `manual_refund` is refused (422).
 // - A swap is priced through the QR catalogue at settle time. A cheaper
 //   replacement credits the difference as an apology voucher (one voucher per
-//   issue, kept in `voucher_id`); a dearer one only records the difference.
+//   issue, kept in `voucher_id`). The guest can only pick a replacement that
+//   costs the same or less (dearer: 422). Staff can swap to a dearer item only
+//   with an approved `price_correction` approval for this issue whose amount is
+//   the difference, approved by someone other than the actor and not used by
+//   another issue; the approval is recorded on the issue.
 // - ORD-09: a manual refund needs a fully approved WS-01 approval chain for
 //   this very issue and the line total, a written reason of 10+ characters, and
 //   an approver who is not the actor. This service only records the approval
@@ -791,7 +795,11 @@ export async function listSessionOrderIssues(
               allowed: open,
               items: open
                 ? candidates
-                    .filter((item) => item.menuItemId !== row.menuItemId)
+                    .filter(
+                      (item) =>
+                        item.menuItemId !== row.menuItemId &&
+                        item.unitPriceIdr * row.quantity <= row.lineTotalIdr,
+                    )
                     .map((item) => ({
                       menuItemId: item.menuItemId,
                       name: item.name,
@@ -845,7 +853,12 @@ export async function getOrderIssueOptions(
       swap: {
         allowed: open,
         suggestedMenuItemIds: candidates
-          .filter((item) => item.menuItemId !== found.line.menuItemId)
+          .filter(
+            (item) =>
+              item.menuItemId !== found.line.menuItemId &&
+              item.unitPriceIdr * found.line.quantity <=
+                found.line.lineTotalIdr,
+          )
           .slice(0, SUGGESTED_SWAP_LIMIT)
           .map((item) => item.menuItemId),
       },
@@ -920,6 +933,9 @@ async function settleIssue(
       replacementItemId: settlement.replacementItemId,
       voucherId: settlement.voucherId,
       priceDifferenceIdr: settlement.priceDifferenceIdr,
+      ...(settlement.approvalRequestId === null
+        ? {}
+        : { approvalRequestId: settlement.approvalRequestId }),
     },
     actor,
     now,
@@ -946,12 +962,91 @@ async function settleIssue(
   return toIssue(row);
 }
 
+/** Who settles a swap: the guest never pays more, staff need an approval. */
+type SwapActor =
+  | { type: "guest" }
+  | { type: "staff"; userId: string; approvalRequestId: string | undefined };
+
+/**
+ * ORD-09 style check for a dearer swap: a fully approved `price_correction`
+ * for this issue and exactly the price difference, from another approver and
+ * not yet spent on another issue.
+ */
+async function priceCorrectionApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  found: IssueContext,
+  actorUserId: string,
+  approvalRequestId: string,
+  differenceIdr: number,
+): Promise<{ approvedBy: string }> {
+  const invalid = (message: string) => unprocessable(message);
+  const tenantId = context.tenant.tenantId;
+  const [request] = await tx
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.id, approvalRequestId),
+      ),
+    );
+  if (!request) throw invalid("Permintaan approval tidak ditemukan.");
+  const chain = await tx
+    .select()
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.chainId, request.chainId),
+      ),
+    )
+    .orderBy(asc(approvalRequests.level));
+  const last = chain.at(-1);
+  if (
+    !last ||
+    last.status !== "approved" ||
+    last.level < last.requiredLevels ||
+    last.decidedBy === null
+  )
+    throw invalid("Approval koreksi harga belum disetujui penuh.");
+  if (
+    request.actionType !== "price_correction" ||
+    request.objectType !== "order_issue" ||
+    request.objectId !== found.issue.id
+  )
+    throw invalid("Approval ini bukan koreksi harga untuk item gagal ini.");
+  if (request.amountIdr !== differenceIdr)
+    throw invalid("Nominal approval tidak sama dengan selisih harga.");
+  if (request.outletId !== null && request.outletId !== found.issue.outletId)
+    throw invalid("Approval ini milik outlet lain.");
+  if (chain.some((level) => level.decidedBy === actorUserId))
+    throw invalid("Penyetuju tidak boleh sama dengan pelaksana penukaran.");
+  const [used] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, tenantId),
+        inArray(
+          orderIssues.approvalRequestId,
+          chain.map((level) => level.id),
+        ),
+      ),
+    )
+    .limit(1);
+  if (used)
+    throw new CoreError("CONFLICT", "Approval ini sudah dipakai laporan lain.");
+  return { approvedBy: last.decidedBy };
+}
+
 /** Swap: replacement priced by the QR catalogue, a cheaper one credited. */
 async function swapSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   found: IssueContext,
   replacementItemId: string,
+  actor: SwapActor,
   now: Date,
 ): Promise<Settlement> {
   assertRecoverable(found);
@@ -970,6 +1065,29 @@ async function swapSettlement(
   // Against the whole old line (modifiers included): negative is credited.
   const difference =
     replacement.unitPriceIdr * found.line.quantity - found.line.lineTotalIdr;
+  let approval: { approvedBy: string; approvalRequestId: string } | null = null;
+  if (difference > 0) {
+    if (actor.type === "guest")
+      throw unprocessable(
+        "Menu pengganti lebih mahal dari item yang gagal; pilih menu seharga sama atau lebih murah, atau minta bantuan staf.",
+      );
+    if (actor.approvalRequestId === undefined)
+      throw unprocessable(
+        "Menu pengganti lebih mahal dari item yang gagal; butuh approval koreksi harga yang sudah disetujui (approvalRequestId).",
+      );
+    const approved = await priceCorrectionApproval(
+      tx,
+      context,
+      found,
+      actor.userId,
+      actor.approvalRequestId,
+      difference,
+    );
+    approval = {
+      approvedBy: approved.approvedBy,
+      approvalRequestId: actor.approvalRequestId,
+    };
+  }
   let voucherId: string | null = null;
   if (difference < 0) {
     // One issue, one voucher: the credit rides on the issue's own voucher.
@@ -991,8 +1109,8 @@ async function swapSettlement(
     replacementItemId,
     voucherId,
     priceDifferenceIdr: difference,
-    approvedBy: null,
-    approvalRequestId: null,
+    approvedBy: approval?.approvedBy ?? null,
+    approvalRequestId: approval?.approvalRequestId ?? null,
     reasonNote: null,
   };
 }
@@ -1079,6 +1197,7 @@ export async function chooseOrderIssueResolution(
             guest,
             found,
             input.replacementItemId ?? "",
+            { type: "guest" },
             now,
           )
         : await systemVoucherSettlement(tx, guest, found, now);
@@ -1186,6 +1305,11 @@ export async function resolveOrderIssue(
         context,
         found,
         input.replacementItemId ?? "",
+        {
+          type: "staff",
+          userId: actorUserId,
+          approvalRequestId: input.approvalRequestId,
+        },
         now,
       );
     } else if (input.resolution === "voucher") {

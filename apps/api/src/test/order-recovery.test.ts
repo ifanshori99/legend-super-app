@@ -133,14 +133,23 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
     expect(row.options.swap.allowed).toBe(true);
     const swapIds = row.options.swap.items.map((item) => item.menuItemId);
     // Active and available menu only, not the failed item, not sold out.
-    expect(swapIds).toContain(w.ids.kopi);
+    expect(swapIds).toContain(w.ids.teh);
+    expect(swapIds).toContain(w.ids.rotiLain);
     expect(swapIds).not.toContain(w.ids.roti);
     expect(swapIds).not.toContain(w.ids.habis);
-    const kopi = row.options.swap.items.find(
-      (item) => item.menuItemId === w.ids.kopi,
+    // A dearer menu (kopi 25.000 for a roti of 18.000) is never offered.
+    expect(swapIds).not.toContain(w.ids.kopi);
+    for (const item of row.options.swap.items)
+      expect(item.differenceIdr).toBeLessThanOrEqual(0);
+    const teh = row.options.swap.items.find(
+      (item) => item.menuItemId === w.ids.teh,
     )!;
-    expect(kopi.priceIdr).toBe(PRICES.kopi);
-    expect(kopi.differenceIdr).toBe(PRICES.kopi - PRICES.roti);
+    expect(teh.priceIdr).toBe(PRICES.teh);
+    expect(teh.differenceIdr).toBe(PRICES.teh - PRICES.roti);
+    const same = row.options.swap.items.find(
+      (item) => item.menuItemId === w.ids.rotiLain,
+    )!;
+    expect(same.differenceIdr).toBe(0);
     expect(JSON.stringify(row)).not.toMatch(/refund/i);
 
     const options = await w.as(guest).issueOptions(issueId);
@@ -151,6 +160,9 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
       voucher: { allowed: true, valueIdr: PRICES.roti },
     });
     expect(options.body.data.swap.allowed).toBe(true);
+    const suggested = options.body.data.swap.suggestedMenuItemIds as string[];
+    expect(suggested).toContain(w.ids.teh);
+    expect(suggested).not.toContain(w.ids.kopi);
   });
 
   it("ORD-08 tamu tidak bisa memilih refund: 422", async () => {
@@ -163,7 +175,7 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
     expect((await guestIssue(guest, issueId)).status).toBe("open");
   });
 
-  it("ORD-08 tamu memilih ganti menu: harga katalog, selisih dihitung server, issue resolved", async () => {
+  it("ORD-08 tamu memilih ganti menu lebih murah: harga katalog, selisih dihitung server, kredit voucher, issue resolved", async () => {
     const { guest, roti } = await w.paidOrder();
     const issueId = (await w.report(roti.id)).body.data.id as string;
 
@@ -172,16 +184,16 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
 
     const chosen = await w.as(guest).choose(issueId, {
       choice: "swap",
-      replacementItemId: w.ids.kopi,
+      replacementItemId: w.ids.teh,
     });
     expect(chosen.status).toBe(200);
     expect(chosen.body.data).toMatchObject({
       id: issueId,
       status: "resolved",
       resolution: "swap",
-      replacementItemId: w.ids.kopi,
-      // Kopi 25.000 replaces Roti 18.000 (qty 1): the guest pays 7.000 more.
-      priceDifferenceIdr: PRICES.kopi - PRICES.roti,
+      replacementItemId: w.ids.teh,
+      // Teh 12.000 replaces Roti 18.000 (qty 1): 6.000 is credited.
+      priceDifferenceIdr: PRICES.teh - PRICES.roti,
     });
     expect(chosen.body.data.resolvedAt).toEqual(expect.any(String));
 
@@ -189,10 +201,52 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
     expect(seen).toMatchObject({
       status: "resolved",
       resolution: "swap",
-      replacementItemName: "Kopi Susu",
-      priceDifferenceIdr: PRICES.kopi - PRICES.roti,
+      replacementItemName: "Teh Tarik",
+      priceDifferenceIdr: PRICES.teh - PRICES.roti,
     });
+    expect(seen.voucher?.valueIdr).toBe(PRICES.roti - PRICES.teh);
     expect(await w.outboxRows("order_issue.resolved", issueId)).toHaveLength(1);
+  });
+
+  it("ORD-08 tamu memilih pengganti seharga item: selisih nol tanpa voucher", async () => {
+    const { guest, roti } = await w.paidOrder();
+    const issueId = (await w.report(roti.id)).body.data.id as string;
+    const chosen = await w.as(guest).choose(issueId, {
+      choice: "swap",
+      replacementItemId: w.ids.rotiLain,
+    });
+    expect(chosen.status).toBe(200);
+    expect(chosen.body.data).toMatchObject({
+      status: "resolved",
+      resolution: "swap",
+      replacementItemId: w.ids.rotiLain,
+      priceDifferenceIdr: 0,
+      voucherId: null,
+    });
+    expect((await guestIssue(guest, issueId)).voucher).toBeNull();
+  });
+
+  it("ORD-08 tamu tidak boleh memilih pengganti yang lebih mahal: 422, issue tetap open", async () => {
+    const { guest, roti } = await w.paidOrder();
+    const issueId = (await w.report(roti.id)).body.data.id as string;
+    const dearer = await w.as(guest).choose(issueId, {
+      choice: "swap",
+      replacementItemId: w.ids.kopi,
+    });
+    expect(dearer.status).toBe(422);
+    expect(dearer.body.error.message).toMatch(/lebih mahal/i);
+    const seen = await guestIssue(guest, issueId);
+    expect(seen).toMatchObject({
+      status: "open",
+      resolution: null,
+      replacementItemName: null,
+    });
+    // The guest can still pick a valid choice afterwards.
+    const valid = await w.as(guest).choose(issueId, {
+      choice: "swap",
+      replacementItemId: w.ids.teh,
+    });
+    expect(valid.status).toBe(200);
   });
 
   it("ORD-08 pengganti habis, tak dikenal, atau item itu sendiri ditolak dan issue tetap open", async () => {
@@ -291,7 +345,7 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
 
     const other = await w.as(guest).choose(issueId, {
       choice: "swap",
-      replacementItemId: w.ids.kopi,
+      replacementItemId: w.ids.teh,
     });
     expect(other.status).toBe(409);
 
@@ -311,7 +365,7 @@ describe("legend-4qu ORD-08 laporan item gagal sesudah bayar", () => {
       w.as(guest).choose(issueId, { choice: "voucher" }),
       w.as(guest).choose(issueId, {
         choice: "swap",
-        replacementItemId: w.ids.kopi,
+        replacementItemId: w.ids.teh,
       }),
     ]);
     expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
@@ -476,14 +530,15 @@ describe("legend-4qu staf menyelesaikan issue", () => {
     const resolved = await w.staffPost(
       w.supervisor,
       `/api/order-issues/${issueId}/resolve`,
-      { resolution: "swap", replacementItemId: w.ids.kopi },
+      { resolution: "swap", replacementItemId: w.ids.teh },
     );
     expect(resolved.status).toBe(200);
     expect(resolved.body.data).toMatchObject({
       status: "resolved",
       resolution: "swap",
-      replacementItemId: w.ids.kopi,
-      priceDifferenceIdr: PRICES.kopi - PRICES.roti,
+      replacementItemId: w.ids.teh,
+      priceDifferenceIdr: PRICES.teh - PRICES.roti,
+      approvedBy: null,
     });
     expect((await guestIssue(guest, issueId)).status).toBe("resolved");
     expect(await w.outboxRows("order_issue.resolved", issueId)).toHaveLength(1);
@@ -493,7 +548,7 @@ describe("legend-4qu staf menyelesaikan issue", () => {
     const again = await w.staffPost(
       w.supervisor,
       `/api/order-issues/${issueId}/resolve`,
-      { resolution: "swap", replacementItemId: w.ids.kopi },
+      { resolution: "swap", replacementItemId: w.ids.teh },
     );
     expect(again.status).toBe(200);
     expect(again.body.data.resolvedAt).toBe(resolved.body.data.resolvedAt);
@@ -894,5 +949,163 @@ describe("legend-4qu selisih swap memakai total baris item", () => {
     expect(chosen.body.data.priceDifferenceIdr).toBe(expected);
     const seen = await guestIssue(guest, issueId);
     expect(seen.voucher?.valueIdr).toBe(-expected);
+  });
+});
+
+describe("legend-4qu staf menyelesaikan swap ke menu yang lebih mahal", () => {
+  const DIFFERENCE = PRICES.kopi - PRICES.roti;
+
+  async function failedRoti() {
+    const paid = await w.paidOrder();
+    const issueId = (await w.report(paid.roti.id)).body.data.id as string;
+    return { ...paid, issueId };
+  }
+
+  const dearerSwap = (issueId: string, approvalRequestId?: string) =>
+    w.staffPost(w.supervisor, `/api/order-issues/${issueId}/resolve`, {
+      resolution: "swap",
+      replacementItemId: w.ids.kopi,
+      ...(approvalRequestId === undefined ? {} : { approvalRequestId }),
+    });
+
+  const priceApproval = (
+    issueId: string,
+    patch: Partial<Parameters<World["insertApproval"]>[0]> = {},
+  ) =>
+    w.insertApproval({
+      actionType: "price_correction",
+      objectType: "order_issue",
+      objectId: issueId,
+      amountIdr: DIFFERENCE,
+      status: "approved",
+      requestedBy: w.floorStaff.userId,
+      ...patch,
+    });
+
+  async function stillOpen(issueId: string) {
+    const { rows } = await owner.query<{
+      status: string;
+      replacement_item_id: string | null;
+      approval_request_id: string | null;
+    }>(
+      "SELECT status, replacement_item_id, approval_request_id FROM order_issues WHERE id = $1",
+      [issueId],
+    );
+    expect(rows[0]).toMatchObject({
+      status: "open",
+      replacement_item_id: null,
+    });
+    expect(await w.outboxRows("order_issue.resolved", issueId)).toHaveLength(0);
+  }
+
+  it("tanpa approval 422 dan issue tetap open", async () => {
+    const { issueId } = await failedRoti();
+    const response = await dearerSwap(issueId);
+    expect(response.status).toBe(422);
+    await stillOpen(issueId);
+  });
+
+  it("approval tak dikenal, belum disetujui, objek lain, aksi lain, nominal lain, atau penyetuju sama dengan aktor ditolak 422", async () => {
+    const { issueId } = await failedRoti();
+    const other = await failedRoti();
+
+    const unknown = await dearerSwap(issueId, randomUUID());
+    expect([404, 422]).toContain(unknown.status);
+
+    const rejected: Record<string, string> = {
+      pending: await w.insertApproval({
+        actionType: "price_correction",
+        objectType: "order_issue",
+        objectId: issueId,
+        amountIdr: DIFFERENCE,
+        status: "pending",
+        requestedBy: w.floorStaff.userId,
+      }),
+      otherObject: await priceApproval(other.issueId),
+      otherAction: await priceApproval(issueId, { actionType: "refund" }),
+      otherAmount: await priceApproval(issueId, { amountIdr: 1 }),
+      selfApproved: await priceApproval(issueId, {
+        decidedBy: w.supervisor.userId,
+      }),
+    };
+    for (const [label, approvalId] of Object.entries(rejected)) {
+      const response = await dearerSwap(issueId, approvalId);
+      expect(response.status, label).toBe(422);
+    }
+    await stillOpen(issueId);
+    await stillOpen(other.issueId);
+  });
+
+  it("approval yang sudah dipakai issue lain 409", async () => {
+    const taken = await failedRoti();
+    const target = await failedRoti();
+    const approvalId = await priceApproval(target.issueId);
+    // The approval is already stamped on another issue's record.
+    await owner.query(
+      "UPDATE order_issues SET approval_request_id = $2 WHERE id = $1",
+      [taken.issueId, approvalId],
+    );
+    const response = await dearerSwap(target.issueId, approvalId);
+    expect(response.status).toBe(409);
+    await stillOpen(target.issueId);
+  });
+
+  it("dengan approval yang benar 200: selisih positif, approvedBy pemutus, approval dan event tercatat", async () => {
+    const { issueId, guest } = await failedRoti();
+    const approvalId = await priceApproval(issueId);
+    const response = await dearerSwap(issueId, approvalId);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      id: issueId,
+      status: "resolved",
+      resolution: "swap",
+      replacementItemId: w.ids.kopi,
+      priceDifferenceIdr: DIFFERENCE,
+      approvedBy: w.approverUserId,
+      voucherId: null,
+    });
+
+    const { rows } = await owner.query<{
+      approval_request_id: string;
+      approved_by: string;
+    }>(
+      "SELECT approval_request_id, approved_by FROM order_issues WHERE id = $1",
+      [issueId],
+    );
+    expect(rows[0]).toMatchObject({
+      approval_request_id: approvalId,
+      approved_by: w.approverUserId,
+    });
+    const [resolved, ...extra] = await w.outboxRows(
+      "order_issue.resolved",
+      issueId,
+    );
+    expect(extra).toHaveLength(0);
+    expect(resolved!.event.payload).toMatchObject({
+      replacementItemId: w.ids.kopi,
+      priceDifferenceIdr: DIFFERENCE,
+      approvalRequestId: approvalId,
+    });
+    expect(await guestIssue(guest, issueId)).toMatchObject({
+      status: "resolved",
+      resolution: "swap",
+      priceDifferenceIdr: DIFFERENCE,
+    });
+  });
+
+  it("staf tanpa order.recovery.handle tidak bisa memakai approval itu: 403", async () => {
+    const { issueId } = await failedRoti();
+    const approvalId = await priceApproval(issueId);
+    const response = await w.staffPost(
+      w.floorStaff,
+      `/api/order-issues/${issueId}/resolve`,
+      {
+        resolution: "swap",
+        replacementItemId: w.ids.kopi,
+        approvalRequestId: approvalId,
+      },
+    );
+    expect(response.status).toBe(403);
+    await stillOpen(issueId);
   });
 });

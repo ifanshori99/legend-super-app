@@ -18,7 +18,9 @@
 // - `issueApologyVoucherForStaff` checks `order.apology_voucher.issue` on the
 //   outlet and applies the approval matrix (`apology_voucher`): a value at or
 //   above a tier needs an approved request (409 APPROVAL_REQUIRED, the request
-//   is opened and kept). A tenant without a policy fails closed.
+//   is opened and kept). A tenant without a policy fails closed. An optional
+//   `Idempotency-Key` makes a double click return the same voucher (promo
+//   idempotency table); another request under the same key is a 409.
 
 import { createHash, randomInt } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -43,7 +45,7 @@ import {
   type createApologyVoucherInputSchema,
 } from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
-import { vouchers } from "../db/schema/crm-promo.ts";
+import { promoCommandIdempotency, vouchers } from "../db/schema/crm-promo.ts";
 import { apologyVouchers } from "../db/schema/apology-vouchers.ts";
 import { domainEventOutbox } from "../db/schema/index.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
@@ -54,6 +56,7 @@ import { openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { appendPromoEvent, hashPromoCode } from "./crm-promo-engine.ts";
+import { promoIdempotentCommand } from "./crm-promo-idempotency.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
@@ -603,6 +606,45 @@ type StaffIssueOutcome =
   | { kind: "issued"; voucher: ApologyVoucher }
   | { kind: "approval"; requestId: string };
 
+/** Replay of a stored issue: same outlet permission as a new issue, current voucher status. */
+async function freshReplay(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: string,
+  stored: ApologyVoucher,
+  now: Date,
+): Promise<ApologyVoucher> {
+  const tenantId = context.tenant.tenantId;
+  const outletId = outletIdSchema.parse(stored.outletId);
+  try {
+    assertOutletInScope(context.outletScope, outletId);
+  } catch {
+    throw deniedIssue();
+  }
+  const snapshot = await accessSnapshotInTransaction(tx, context, actor, now);
+  if (!snapshot.allows(ISSUE, { type: "outlet", id: outletId }))
+    throw deniedIssue();
+  const [row] = await tx
+    .select({ apology: apologyVouchers, voucher: vouchers })
+    .from(apologyVouchers)
+    .innerJoin(
+      vouchers,
+      and(
+        eq(vouchers.tenantId, apologyVouchers.tenantId),
+        eq(vouchers.id, apologyVouchers.voucherId),
+      ),
+    )
+    .where(
+      and(
+        eq(apologyVouchers.tenantId, tenantId),
+        eq(apologyVouchers.id, stored.id),
+      ),
+    )
+    .limit(1);
+  if (!row) throw voucherNotFound();
+  return toApologyVoucher(tenantId, row.apology, row.voucher, stored.code, now);
+}
+
 /**
  * Staff issue of an apology voucher: permission on the outlet, then the
  * approval matrix. Returns the voucher; throws 409 APPROVAL_REQUIRED (request
@@ -613,190 +655,242 @@ export async function issueApologyVoucherForStaff(
   actorUserId: string,
   input: CreateApologyVoucherInput,
   now: Date,
+  idempotencyKey: string | null = null,
 ): Promise<ApologyVoucher> {
   const actor = userIdSchema.parse(actorUserId);
   const tenantId = context.tenant.tenantId;
-  const outcome = await withTenant(
-    db,
-    context,
-    async (tx): Promise<StaffIssueOutcome> => {
-      let outletId: OutletId | null;
-      let issue: IssueLock | null = null;
-      if (input.orderIssueId !== undefined) {
-        // Locked so two staff or a guest choice cannot settle the issue twice.
-        const [found] = await tx
-          .select({
-            outletId: orderIssues.outletId,
-            orderId: orderIssues.orderId,
-            orderItemId: orderIssues.orderItemId,
-            status: orderIssues.status,
-          })
-          .from(orderIssues)
-          .where(
-            and(
-              eq(orderIssues.tenantId, tenantId),
-              eq(orderIssues.id, input.orderIssueId),
-            ),
-          )
-          .limit(1)
-          .for("update");
-        if (!found) throw issueNotFound();
-        issue = found;
-        outletId = outletIdSchema.parse(found.outletId);
-        // Out of the caller's scope looks like a missing issue.
-        try {
-          assertOutletInScope(context.outletScope, outletId);
-        } catch {
-          throw issueNotFound();
-        }
-      } else {
-        outletId = soleOutlet(context);
-        if (outletId === null)
-          throw unprocessable(
-            "Outlet voucher maaf tidak jelas. Sertakan laporan item gagal.",
-          );
-      }
-
-      const snapshot = await accessSnapshotInTransaction(
-        tx,
-        context,
-        actor,
-        now,
-      );
-      if (!snapshot.allows(ISSUE, { type: "outlet", id: outletId }))
-        throw deniedIssue();
-
-      const orderIssueId = input.orderIssueId ?? null;
-      const expected: ApprovalCheck =
-        orderIssueId !== null
-          ? {
-              objectType: "order_issue",
-              objectId: orderIssueId,
-              valueIdr: input.valueIdr,
-            }
-          : {
-              objectType: "outlet",
-              objectId: outletId,
-              valueIdr: input.valueIdr,
-            };
-
-      // An issue that already has its voucher replays before any approval work.
-      if (orderIssueId !== null) {
-        const stored = await storedForIssue(tx, tenantId, orderIssueId);
-        if (stored) {
-          const replay = replayOf(tenantId, stored, input.valueIdr);
-          return {
-            kind: "issued",
-            voucher: toApologyVoucher(
-              tenantId,
-              stored.apology,
-              stored.voucher,
-              replay.code,
-              now,
-            ),
-          };
-        }
-      }
-      if (issue !== null && issue.status !== "open")
-        throw new CoreError(
-          "CONFLICT",
-          "Laporan ini sudah diselesaikan atau dibatalkan.",
-        );
-
-      let approvalRequestId: string | null = input.approvalRequestId ?? null;
-      if (approvalRequestId !== null) {
-        await assertApprovedRequest(
-          tx,
-          tenantId,
-          approvalRequestId,
-          expected,
-          orderIssueId,
-        );
-      } else {
-        const digest = createHash("sha256")
-          .update(
-            JSON.stringify([
-              expected.objectType,
-              expected.objectId,
-              expected.valueIdr,
-              input.reason,
-            ]),
-          )
-          .digest("hex")
-          .slice(0, 40);
-        const opened = await openApprovalRequest(tx, context, {
-          sourceModule: APPROVAL_MODULE,
-          actionType: "apology_voucher",
-          objectType: expected.objectType,
-          objectId: expected.objectId,
-          amountIdr: input.valueIdr,
-          outletId,
-          requestedBy: actor,
-          source: "user",
-          requestReason: input.reason,
-          payload: {
-            valueIdr: input.valueIdr,
-            orderIssueId,
-            customerProfileId: input.customerProfileId ?? null,
-          },
-          idempotencyKey: `apology:${digest}`,
-          now,
-        });
-        if (opened.required)
-          return { kind: "approval", requestId: opened.request.id };
-        approvalRequestId = null;
-      }
-
-      const minted = await mintApologyVoucher(tx, context, {
-        outletId,
-        issuedBy: actor,
-        valueIdr: input.valueIdr,
-        reason: input.reason,
-        orderIssueId,
-        customerProfileId: input.customerProfileId ?? null,
-        approvalRequestId,
-        expiresInDays: input.expiresInDays,
-        now,
-      });
-      if (issue !== null && orderIssueId !== null)
-        await settleIssueWithVoucher(tx, context, {
-          orderIssueId,
-          issue,
-          apologyVoucherId: minted.apologyVoucherId,
-          actor,
-          reason: input.reason,
-          now,
-        });
-      const [row] = await tx
-        .select({ apology: apologyVouchers, voucher: vouchers })
-        .from(apologyVouchers)
-        .innerJoin(
-          vouchers,
-          and(
-            eq(vouchers.tenantId, apologyVouchers.tenantId),
-            eq(vouchers.id, apologyVouchers.voucherId),
-          ),
-        )
+  const issueInTransaction = async (tx: Tx): Promise<StaffIssueOutcome> => {
+    let outletId: OutletId | null;
+    let issue: IssueLock | null = null;
+    if (input.orderIssueId !== undefined) {
+      // Locked so two staff or a guest choice cannot settle the issue twice.
+      const [found] = await tx
+        .select({
+          outletId: orderIssues.outletId,
+          orderId: orderIssues.orderId,
+          orderItemId: orderIssues.orderItemId,
+          status: orderIssues.status,
+        })
+        .from(orderIssues)
         .where(
           and(
-            eq(apologyVouchers.tenantId, tenantId),
-            eq(apologyVouchers.id, minted.apologyVoucherId),
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.id, input.orderIssueId),
           ),
         )
-        .limit(1);
-      if (!row) throw new Error("Apology voucher vanished after insert");
+        .limit(1)
+        .for("update");
+      if (!found) throw issueNotFound();
+      issue = found;
+      outletId = outletIdSchema.parse(found.outletId);
+      // Out of the caller's scope looks like a missing issue.
+      try {
+        assertOutletInScope(context.outletScope, outletId);
+      } catch {
+        throw issueNotFound();
+      }
+    } else {
+      outletId = soleOutlet(context);
+      if (outletId === null)
+        throw unprocessable(
+          "Outlet voucher maaf tidak jelas. Sertakan laporan item gagal.",
+        );
+    }
+
+    const snapshot = await accessSnapshotInTransaction(tx, context, actor, now);
+    if (!snapshot.allows(ISSUE, { type: "outlet", id: outletId }))
+      throw deniedIssue();
+
+    const orderIssueId = input.orderIssueId ?? null;
+    const expected: ApprovalCheck =
+      orderIssueId !== null
+        ? {
+            objectType: "order_issue",
+            objectId: orderIssueId,
+            valueIdr: input.valueIdr,
+          }
+        : {
+            objectType: "outlet",
+            objectId: outletId,
+            valueIdr: input.valueIdr,
+          };
+
+    // An issue that already has its voucher replays before any approval work.
+    if (orderIssueId !== null) {
+      const stored = await storedForIssue(tx, tenantId, orderIssueId);
+      if (stored) {
+        const replay = replayOf(tenantId, stored, input.valueIdr);
+        return {
+          kind: "issued",
+          voucher: toApologyVoucher(
+            tenantId,
+            stored.apology,
+            stored.voucher,
+            replay.code,
+            now,
+          ),
+        };
+      }
+    }
+    if (issue !== null && issue.status !== "open")
+      throw new CoreError(
+        "CONFLICT",
+        "Laporan ini sudah diselesaikan atau dibatalkan.",
+      );
+
+    let approvalRequestId: string | null = input.approvalRequestId ?? null;
+    if (approvalRequestId !== null) {
+      await assertApprovedRequest(
+        tx,
+        tenantId,
+        approvalRequestId,
+        expected,
+        orderIssueId,
+      );
+    } else {
+      const digest = createHash("sha256")
+        .update(
+          JSON.stringify([
+            expected.objectType,
+            expected.objectId,
+            expected.valueIdr,
+            input.reason,
+          ]),
+        )
+        .digest("hex")
+        .slice(0, 40);
+      const opened = await openApprovalRequest(tx, context, {
+        sourceModule: APPROVAL_MODULE,
+        actionType: "apology_voucher",
+        objectType: expected.objectType,
+        objectId: expected.objectId,
+        amountIdr: input.valueIdr,
+        outletId,
+        requestedBy: actor,
+        source: "user",
+        requestReason: input.reason,
+        payload: {
+          valueIdr: input.valueIdr,
+          orderIssueId,
+          customerProfileId: input.customerProfileId ?? null,
+        },
+        idempotencyKey: `apology:${digest}`,
+        now,
+      });
+      if (opened.required)
+        return { kind: "approval", requestId: opened.request.id };
+      approvalRequestId = null;
+    }
+
+    const minted = await mintApologyVoucher(tx, context, {
+      outletId,
+      issuedBy: actor,
+      valueIdr: input.valueIdr,
+      reason: input.reason,
+      orderIssueId,
+      customerProfileId: input.customerProfileId ?? null,
+      approvalRequestId,
+      expiresInDays: input.expiresInDays,
+      now,
+    });
+    if (issue !== null && orderIssueId !== null)
+      await settleIssueWithVoucher(tx, context, {
+        orderIssueId,
+        issue,
+        apologyVoucherId: minted.apologyVoucherId,
+        actor,
+        reason: input.reason,
+        now,
+      });
+    const [row] = await tx
+      .select({ apology: apologyVouchers, voucher: vouchers })
+      .from(apologyVouchers)
+      .innerJoin(
+        vouchers,
+        and(
+          eq(vouchers.tenantId, apologyVouchers.tenantId),
+          eq(vouchers.id, apologyVouchers.voucherId),
+        ),
+      )
+      .where(
+        and(
+          eq(apologyVouchers.tenantId, tenantId),
+          eq(apologyVouchers.id, minted.apologyVoucherId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new Error("Apology voucher vanished after insert");
+    return {
+      kind: "issued",
+      voucher: toApologyVoucher(
+        tenantId,
+        row.apology,
+        row.voucher,
+        minted.code,
+        now,
+      ),
+    };
+  };
+  // Same key + same request replays the first voucher; its plain code is kept
+  // sealed in the stored response, never in the clear.
+  const aad = `apology-voucher-idem:${tenantId}:${idempotencyKey}`;
+  const outcome = await withTenant(db, context, async (tx) => {
+    let ran = false;
+    const result = await promoIdempotentCommand<StaffIssueOutcome>(
+      tx,
+      context,
+      {
+        key: idempotencyKey,
+        operation: "apology_voucher.issue",
+        request: { actor, input },
+        encode: (stored) =>
+          stored.kind === "issued"
+            ? {
+                kind: "issued",
+                voucher: {
+                  ...stored.voucher,
+                  code: sealSecret(stored.voucher.code, aad),
+                },
+              }
+            : stored,
+        decode: (stored) => {
+          const value = stored as StaffIssueOutcome;
+          return value.kind === "issued"
+            ? {
+                kind: "issued",
+                voucher: {
+                  ...value.voucher,
+                  code: openSecret(value.voucher.code, aad),
+                },
+              }
+            : value;
+        },
+      },
+      () => {
+        ran = true;
+        return issueInTransaction(tx);
+      },
+    );
+    // A replay skipped the permission check and holds a stale status: check
+    // the outlet again and read the voucher's current state.
+    if (!ran && result.kind === "issued")
       return {
         kind: "issued",
-        voucher: toApologyVoucher(
-          tenantId,
-          row.apology,
-          row.voucher,
-          minted.code,
-          now,
-        ),
-      };
-    },
-  );
+        voucher: await freshReplay(tx, context, actor, result.voucher, now),
+      } satisfies StaffIssueOutcome;
+    // A pending approval is not a final answer: forget the key so the same
+    // request can be sent again once the approval is granted.
+    if (result.kind === "approval" && idempotencyKey !== null)
+      await tx
+        .delete(promoCommandIdempotency)
+        .where(
+          and(
+            eq(promoCommandIdempotency.tenantId, tenantId),
+            eq(promoCommandIdempotency.key, idempotencyKey),
+          ),
+        );
+    return result;
+  });
   if (outcome.kind === "approval")
     throw new HttpError(
       409,

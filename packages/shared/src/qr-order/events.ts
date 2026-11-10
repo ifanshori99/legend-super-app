@@ -155,6 +155,8 @@ export const orderIssueResolvedPayloadSchema = z.strictObject({
   replacementItemId: z.string().uuid().nullable(),
   voucherId: z.string().uuid().nullable(),
   priceDifferenceIdr: idrSchema.nullable(),
+  /** Approval that allowed a dearer swap or a manual refund, when one applied. */
+  approvalRequestId: z.string().uuid().optional(),
 });
 
 /**

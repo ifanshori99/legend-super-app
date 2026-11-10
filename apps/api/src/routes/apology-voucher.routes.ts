@@ -13,15 +13,17 @@
 //   matrix limit (above the cap only with an approved request).
 // - Reading by code is open to either `order.apology_voucher.issue` or
 //   `order.recovery.handle` (the cashier looks the code up to redeem it).
+// - Issuing without an `orderIssueId` requires an `Idempotency-Key` header (422).
 // - Strict contract schemas parse params and body.
 
-import { Router, type RequestHandler } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import { AccessError } from "@starter/shared/access";
-import { userIdSchema } from "@starter/shared/core";
+import { idempotencyKeySchema, userIdSchema } from "@starter/shared/core";
 import {
   getApologyVoucher,
   issueApologyVoucher,
 } from "@starter/shared/qr-order";
+import { HttpError } from "../lib/http-error.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -62,6 +64,12 @@ function anyMenuPermission(
   };
 }
 
+/** Optional `Idempotency-Key` header; a malformed key is a 422. */
+function idempotencyKeyOf(req: Request): string | null {
+  const raw = req.get("Idempotency-Key");
+  return raw === undefined ? null : idempotencyKeySchema.parse(raw);
+}
+
 const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
 
 apologyVoucherRouter.post(
@@ -71,12 +79,21 @@ apologyVoucherRouter.post(
   jsonBody,
   async (req, res) => {
     const body = issueApologyVoucher.body.parse(req.body);
+    const idempotencyKey = idempotencyKeyOf(req);
+    // Without an order issue nothing else stops a double click from issuing twice.
+    if (body.orderIssueId === undefined && idempotencyKey === null)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Header Idempotency-Key wajib diisi untuk voucher maaf tanpa laporan item gagal.",
+      );
     res.status(201).json({
       data: await vouchers.issueApologyVoucherForStaff(
         getScopedTenantContext(req),
         userIdSchema.parse(getAuth(req).user.id),
         body,
         new Date(),
+        idempotencyKey,
       ),
     });
   },

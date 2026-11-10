@@ -767,8 +767,16 @@ test("voucher lifecycle blocks expired, redeemed and mismatched codes (LOY-03)",
 test("voucher codes normalize before hashing and validation", () => {
   assert.equal(crm.voucherCodeInputSchema.parse("  legend25  "), "LEGEND25");
   assert.equal(crm.voucherCodeInputSchema.safeParse("abc").success, false);
+  // legend-4qu: the grouped display form of an apology voucher redeems too.
+  assert.equal(crm.voucherCodeInputSchema.parse("legend-25"), "LEGEND25");
   assert.equal(
-    crm.voucherCodeInputSchema.safeParse("LEGEND-25").success,
+    crm.voucherCodeInputSchema.parse(" leg-ab12-cd34 "),
+    "LEGAB12CD34",
+  );
+  assert.equal(crm.voucherCodeInputSchema.safeParse("a-b-c").success, false);
+  assert.equal(crm.voucherCodeInputSchema.safeParse("------").success, false);
+  assert.equal(
+    crm.voucherCodeInputSchema.safeParse("LEGEND_25").success,
     false,
   );
   assert.equal(

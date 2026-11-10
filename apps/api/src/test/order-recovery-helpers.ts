@@ -41,7 +41,15 @@ import {
   type Staff,
 } from "./floor-test-helpers.ts";
 
-export const PRICES = { kopi: 25_000, roti: 18_000, extraShot: 5_000 } as const;
+export const PRICES = {
+  kopi: 25_000,
+  roti: 18_000,
+  extraShot: 5_000,
+  /** Cheaper than roti: a valid swap for a failed roti (credit 6.000). */
+  teh: 12_000,
+  /** Same price as roti: a valid swap with no difference. */
+  rotiLain: 18_000,
+} as const;
 /** Kopi x2 + extra shot, Roti x1 = 78.000; +5% service; +10% PBJT = 90.090. */
 export const CART_TOTAL = 90_090;
 /** Apology voucher approval matrix used by these tests (see createWorld). */
@@ -51,6 +59,7 @@ const ALL_DAY = [
 ];
 const RECOVERY_PERMISSIONS = [
   "order.view",
+  "order.create",
   "order.recovery.handle",
   "order.apology_voucher.issue",
   "kds.ticket.process",
@@ -179,6 +188,8 @@ export async function createWorld() {
     kopi: randomUUID(),
     roti: randomUUID(),
     habis: randomUUID(),
+    teh: randomUUID(),
+    rotiLain: randomUUID(),
     priceList: randomUUID(),
     group: randomUUID(),
     extraShot: randomUUID(),
@@ -237,6 +248,24 @@ export async function createWorld() {
     "Supervisor Outlet Utama",
   );
 
+  /** A fresh supervisor limited to the main outlet, so a test can revoke it. */
+  const newOutletSupervisor = () =>
+    userWithRole(
+      app,
+      tenant.tenantId,
+      ids.outletRole,
+      { type: "outlet", outletId: tenant.outletId },
+      "Supervisor Outlet Sementara",
+    );
+  /** Ends every role assignment of a user (the permission is revoked). */
+  const revokeRoles = async (userId: string) => {
+    await owner.query(
+      `UPDATE role_assignments SET valid_until = now() - interval '10 seconds'
+       WHERE tenant_id = $1 AND user_id = $2`,
+      [tenant.tenantId, userId],
+    );
+  };
+
   // Approver: a distinct person (approval_requests forbids requester == approver).
   const approverClient = agent(app);
   await signUp(approverClient, "Penyetuju Uji");
@@ -261,6 +290,8 @@ export async function createWorld() {
       [ids.kopi, "Kopi Susu"],
       [ids.roti, "Roti Bakar"],
       [ids.habis, "Kue Habis"],
+      [ids.teh, "Teh Tarik"],
+      [ids.rotiLain, "Roti Panggang"],
     ] as const)
       await client.query(
         `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
@@ -276,6 +307,8 @@ export async function createWorld() {
       [ids.kopi, PRICES.kopi],
       [ids.roti, PRICES.roti],
       [ids.habis, 15_000],
+      [ids.teh, PRICES.teh],
+      [ids.rotiLain, PRICES.rotiLain],
     ] as const)
       await client.query(
         `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
@@ -625,6 +658,8 @@ export async function createWorld() {
     supervisor,
     otherOutletSupervisor,
     outletSupervisor,
+    newOutletSupervisor,
+    revokeRoles,
     approverUserId,
     as,
     anonymousGuestChoose,
