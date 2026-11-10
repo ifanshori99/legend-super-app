@@ -411,6 +411,7 @@ describe("legend-800h1 collect a swap charge in cash at the till", () => {
     const code = await guestPay(opened.guest, opened.charge.id);
     const intentId = code.body.data.id as string;
     expect((await collect(opened.charge.id, cashBody())).status).toBe(200);
+    cashIns += 1;
 
     const context = contextOf(w.tenant.tenantId);
     await confirmPayment(context, intentId, {
@@ -446,6 +447,85 @@ describe("legend-800h1 collect a swap charge in cash at the till", () => {
     const row = await chargeOf(opened.issueId);
     expect(row.payment_intent_id).toBeNull();
     expect(row.status).toBe("paid");
+  });
+
+  it("F1 the guest already paid by QR (intent paid, consumer not run): 409, nothing written, link still active", async () => {
+    const opened = await openCharge();
+    await openShift(await businessDateOf(opened.order.id));
+    const code = await guestPay(opened.guest, opened.charge.id);
+    const intentId = code.body.data.id as string;
+    const linkId = (await chargeOf(opened.issueId)).payment_link_id!;
+
+    const expectRefused = async () => {
+      const res = await collect(opened.charge.id, cashBody());
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(JSON.stringify(res.body)).toContain("QRIS sudah dibayar");
+      const row = await chargeOf(opened.issueId);
+      expect(row.status).toBe("open");
+      expect(row.cash_movement_id).toBeNull();
+      expect(await movementsOf(shiftId)).toHaveLength(cashIns);
+      expect(await linkStatus(linkId)).toBe("active");
+      expect(
+        await w.outboxRows("order_issue.charge_paid", opened.issueId),
+      ).toHaveLength(0);
+    };
+
+    // The webhook committed `paid`; the charge consumer has not run yet.
+    await confirmPayment(contextOf(w.tenant.tenantId), intentId, {
+      source: "verified_webhook",
+      method: "qris",
+      amountIdr: AMOUNT,
+      providerRef: `WEBHOOK-${randomUUID().slice(0, 8)}`,
+      at: new Date().toISOString(),
+    });
+    expect(await intentStatus(intentId)).toBe("paid");
+    await expectRefused();
+  });
+
+  it("F2 the order of the charge is voided: 409, nothing written", async () => {
+    const opened = await openCharge();
+    await openShift(await businessDateOf(opened.order.id));
+    await owner.query(
+      `UPDATE orders SET status = 'voided', voided_at = now()
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, ulidToUuid(opened.order.id)],
+    );
+    const res = await collect(opened.charge.id, cashBody());
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const row = await chargeOf(opened.issueId);
+    expect(row.status).toBe("open");
+    expect(row.cash_movement_id).toBeNull();
+    expect(await movementsOf(shiftId)).toHaveLength(cashIns);
+  });
+
+  it("F3 an idempotency key used by another cash movement of the shift: IDEMPOTENCY_KEY_REUSED (409), not a raw 500", async () => {
+    const opened = await openCharge();
+    await openShift(await businessDateOf(opened.order.id));
+    const key = randomUUID();
+    await owner.query(
+      `INSERT INTO cash_movements
+         (id, tenant_id, outlet_id, shift_id, type, amount_idr, reason_note,
+          recorded_by, recorded_at, needs_approval, idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, 'cash_in', 1000, 'Lain', $5, now(), false, $6, $7)`,
+      [
+        randomUUID(),
+        w.tenant.tenantId,
+        w.tenant.outletId,
+        shiftId,
+        cashier.userId,
+        key,
+        "b".repeat(64),
+      ],
+    );
+    cashIns += 1;
+    const res = await collect(opened.charge.id, {
+      ...cashBody(),
+      idempotencyKey: key,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(JSON.stringify(res.body)).toContain("IDEMPOTENCY_KEY_REUSED");
+    expect((await chargeOf(opened.issueId)).status).toBe("open");
+    expect(await movementsOf(shiftId)).toHaveLength(cashIns);
   });
 
   it("session bill shows the charge paid and the session closes normally", async () => {

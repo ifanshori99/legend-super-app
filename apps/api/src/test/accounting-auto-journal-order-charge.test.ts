@@ -1270,6 +1270,45 @@ describe("legend-800h1 order_issue.charge_paid paid in cash at the POS", () => {
     });
   });
 
+  it("CASH-10 open bill: the cash charge parks SALE_MISSING before the sale posts; once the sale posts the sweep books the cash charge", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderLink = await seedLink(world, 110_000);
+    const orderIntent = await seedIntentOnLink(world, orderLink, 110_000, DAY);
+    const orderUlid = createUlid();
+    await seedOrder(world, orderLink, orderIntent, orderUlid);
+    const cashMovementId = await seedCashMovement(world);
+    const chargeId = await seedCharge(world, {
+      orderUlid,
+      linkId: await seedLink(world, CHARGE.amountIdr),
+      intentId: null,
+      cashMovementId,
+    });
+    expect(
+      await deliver(
+        tenant,
+        chargePaid(world, {
+          orderUlid,
+          chargeId,
+          intentId: null,
+          overrides: { method: "pos_cash", cashMovementId },
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+    await post(world, paymentPaid(world, orderIntent, 110_000, DAY));
+    await post(world, orderPaid(world, orderUlid));
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await journalCount(world, `aj:order-charge:${chargeId}`)).toBe(1);
+  });
+
   it("CASH-9 the stored QR variant keeps working: no method in the payload is qr_link (CHG-1 shape), and a payload mixing the variants is refused by the contract", () => {
     const world = {
       tenant: { id: randomUUID(), brandId: randomUUID() },
