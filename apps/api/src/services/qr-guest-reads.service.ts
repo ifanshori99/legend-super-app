@@ -9,13 +9,14 @@
 // guest read (ORD-04: a closed session is refused). A zone that cannot order
 // right now (inactive or outside its hours) gets an empty list.
 
-import { and, eq, gte, ne, sql } from "drizzle-orm";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { and, eq, gte, ne, notExists, sql } from "drizzle-orm";
+import { idr, type ScopedTenantContext } from "@starter/shared/core";
 import {
   menuSuggestionSchema,
   type MenuSuggestion,
 } from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
 import { cartLines, orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -108,6 +109,19 @@ export async function getMenuSuggestions(
           gte(orderItems.createdAt, since),
           ne(orderItems.status, "voided"),
           ne(orders.status, "voided"),
+          // A free swap replacement line is not a sale (legend-8igcm).
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(orderIssues)
+              .where(
+                and(
+                  eq(orderIssues.tenantId, orderItems.tenantId),
+                  eq(orderIssues.replacementOrderItemId, orderItems.id),
+                  eq(orderItems.lineTotalIdr, idr(0)),
+                ),
+              ),
+          ),
         ),
       )
       .groupBy(orderItems.menuItemId)

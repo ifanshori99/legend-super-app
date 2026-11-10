@@ -36,6 +36,7 @@ import {
 import type { Tx } from "./menu-internals.ts";
 import { computeLineCostSnapshots } from "./order-cost-snapshot.service.ts";
 import { priceMenuItemForOutlet } from "./qr-order.service.ts";
+import { applySwapStockAdjustment } from "./recipe-deduction.service.ts";
 
 const SWAP_VOID_REASON = "item_failed_swap";
 const AUDIT_ACTION = "order_issue.swap_kitchen_applied";
@@ -363,6 +364,31 @@ export async function deliverSwapKitchenEvent(
     .where(
       and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issue.id)),
     );
+
+  // legend-v51rh: stock. Before payment nothing to do here (order.paid draws
+  // the replacement and skips the swapped-away line); after payment the old
+  // line returns to stock and the replacement is drawn.
+  await applySwapStockAdjustment(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    issueId: issue.id,
+    businessDate: order.businessDate,
+    oldLineId: oldLine.id,
+    oldLine: {
+      menuItemId: oldLine.menuItemId,
+      variantId: oldLine.variantId ?? null,
+      modifierIds: (oldLine.modifiers ?? []).map((m) => m.modifierId),
+      quantity: oldLine.quantity,
+    },
+    replacement: {
+      menuItemId: priced.menuItemId,
+      variantId: null,
+      modifierIds: [],
+      quantity: oldLine.quantity,
+    },
+    recordedBy: actorUserId,
+    occurredAt: now.toISOString(),
+  });
 
   await auditSwap(AUDIT_ACTION, {
     id: issue.id,
