@@ -928,3 +928,4 @@ Langkah berikut CTO baru:
 - 15:35 CTO: 0w2wy 80f5c4d1 (router impor/cetak menu, helper acceptsDocuments, architect 2 temuan dibetulkan) G4gfq resolved, batch47. Kartu legend-eirhm (PDF lama). lzvh0 mulai G2crn (334).
 - 15:42 CTO: founder Q85 refund item gagal pro-rata (harga + service + PBJT), dikirim ke G9whx.
 - 15:43 CTO: 5tmye f4a782b7 (login-challenge-rate-limit hapus admin wa.invalid; run penuh exit 0) G8669 resolved, batch47. Mulai ideif (335, keamanan pepper edge) G2a6h.
+- 15:44 CTO: k2l-followup f7bd22da (profil kosong ditutup ke profil terserap, FOR UPDATE, hash WA dibawa; challenge global tanpa RLS sudah lintas tenant) G08n2 resolved, batch47. Mulai dn4 (336).
