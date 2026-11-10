@@ -77,6 +77,21 @@ async function openGate(page: Page) {
   );
 }
 
+/**
+ * List -> the first payslip's page with a mock scenario. The scenario is read
+ * from the current URL, so the query rides on the slip page itself.
+ */
+async function openSlipFromList(page: Page, query: string) {
+  await openEmployee(page, `/karyawan/slip-gaji${query}`);
+  const href = await page
+    .getByRole("link", { name: /^Lihat slip/ })
+    .first()
+    .getAttribute("href", { timeout: COLD });
+  expect(href).toBeTruthy();
+  await page.goto(`${href!.split("?")[0]}${query}`);
+  await waitForHydration(page);
+}
+
 async function submitPin(page: Page, pin: string) {
   await page.getByLabel("PIN slip gaji", { exact: true }).fill(pin);
   await page
@@ -675,7 +690,12 @@ test("F30 HR-01 ilzrj: HR resets a PIN after confirming with a reason of 3-500 c
   await reason.fill("Karyawan lupa PIN, diminta lewat atasan outlet");
   await confirm.click();
   await expect(dialog).toBeHidden({ timeout: COLD });
-  await expect(page.getByText(/PIN direset/)).toBeVisible();
+  await expect(
+    page.getByText(
+      "PIN direset. Karyawan membuat PIN baru saat membuka slip.",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });
 
 test("F30 ilzrj: cancelling the HR reset dialog changes nothing", async ({
