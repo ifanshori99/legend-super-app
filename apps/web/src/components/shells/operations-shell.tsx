@@ -62,6 +62,7 @@ export function OperationsShell({
   online,
   timeZone,
   mode,
+  outletControl,
   actions,
   embedded = false,
   children,
@@ -78,6 +79,11 @@ export function OperationsShell({
   /** Override the outlet IANA zone (previews); default from context. */
   timeZone?: string;
   mode?: ColorMode;
+  /**
+   * Outlet picker. Replaces the outlet name in the subtitle (the picker shows
+   * it) and shares one row with `actions` below `sm`.
+   */
+  outletControl?: ReactNode;
   actions?: ReactNode;
   embedded?: boolean;
   children: ReactNode;
@@ -89,6 +95,9 @@ export function OperationsShell({
   // falls back to the documented default clock until an outlet is known.
   const outletName = outlet ?? tenant.outlet?.name ?? t("area.ops.outletUnset");
   const stationName = station ?? tenant.station?.name;
+  const subtitle = [outletControl ? undefined : outletName, stationName]
+    .filter(Boolean)
+    .join(" · ");
   const zone = timeZone ?? outletClock.timeZone;
   const Main = embedded ? "div" : "main";
   return (
@@ -107,11 +116,18 @@ export function OperationsShell({
       >
         <div className="min-w-0">
           <p className="truncate type-title">{title}</p>
-          <p className="truncate text-sm leading-5 text-muted-foreground">
-            {[outletName, stationName].filter(Boolean).join(" · ")}
-          </p>
+          {subtitle && (
+            <p className="truncate text-sm leading-5 text-muted-foreground">
+              {subtitle}
+            </p>
+          )}
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-3">
+        <div
+          className={cn(
+            "ml-auto flex min-w-0 flex-wrap items-center gap-3",
+            outletControl && "max-sm:w-full",
+          )}
+        >
           <Badge
             tone={online ? "success" : "warning"}
             className="rounded-full px-3 py-1 text-sm whitespace-normal [&_svg]:size-4"
@@ -128,7 +144,16 @@ export function OperationsShell({
             <span className="text-sm font-semibold">{staffName}</span>
           )}
           <LiveClock timeZone={zone} />
-          {actions}
+          {outletControl || actions ? (
+            <div className="flex min-w-0 items-center gap-2 max-sm:w-full">
+              {outletControl ? (
+                <div className="min-w-0 max-sm:flex-1 sm:max-w-72">
+                  {outletControl}
+                </div>
+              ) : null}
+              {actions}
+            </div>
+          ) : null}
         </div>
       </header>
       <Main

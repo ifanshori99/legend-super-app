@@ -1387,6 +1387,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: true,
       mfaVerified: false,
       stations: [],
+      outlets: [],
       supportSession: null,
     });
     assert.deepEqual(view.permissions, [
@@ -1400,6 +1401,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       mfaRequired: false,
       mfaVerified: true,
       stations: [station("bar_kopi")],
+      outlets: [],
       supportSession: null,
     });
     assert.deepEqual(withStation.stations, [station("bar_kopi")]);
@@ -1410,6 +1412,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         mfaRequired: true,
         mfaVerified: true,
         stations: [],
+        outlets: [],
         supportSession: null,
       }).success,
       false,
@@ -1419,7 +1422,55 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
         permissions: [],
         mfaRequired: false,
         stations: [],
+        outlets: [],
         supportSession: null,
+      }).success,
+      false,
+    );
+  });
+
+  test("legend-ebt9f carries the assigned outlets and rejects a malformed list", () => {
+    const [first, second] = core.cafeLegendFixtures.outlets;
+    const outlet = (fixture) => ({
+      id: fixture.id,
+      name: fixture.name,
+      timeZone: fixture.timeZone,
+      businessDayCutoff: fixture.businessDayCutoff,
+    });
+    const base = {
+      permissions: [],
+      mfaRequired: false,
+      mfaVerified: false,
+      stations: [],
+      supportSession: null,
+    };
+    const view = access.myAccessViewSchema.parse({
+      ...base,
+      outlets: [outlet(first), outlet(second)],
+    });
+    assert.deepEqual(
+      view.outlets.map((row) => row.id),
+      [first.id, second.id],
+    );
+    // An empty list is valid (an account with no assignment).
+    assert.equal(
+      access.myAccessViewSchema.safeParse({ ...base, outlets: [] }).success,
+      true,
+    );
+    // The outlet list is required, and an outlet without a name or with an
+    // unknown field is refused.
+    assert.equal(access.myAccessViewSchema.safeParse(base).success, false);
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        ...base,
+        outlets: [{ ...outlet(first), name: "" }],
+      }).success,
+      false,
+    );
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        ...base,
+        outlets: [{ ...outlet(first), status: "active" }],
       }).success,
       false,
     );

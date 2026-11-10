@@ -4,7 +4,6 @@
 // these directly: they use the hooks in ./hooks.ts, which own cache keys and
 // invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
-import { listExampleOutlets } from "@starter/shared/api";
 import {
   closeTableSession as closeTableSessionEndpoint,
   confirmOpenBillSession as confirmOpenBillSessionEndpoint,
@@ -22,17 +21,6 @@ import type { CallOptions } from "@/lib/api/endpoint";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
-type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
-
-/**
- * Outlet context is not part of the web app yet (the API will expose the
- * staff's assigned outlets); until that bead lands the board lists the
- * accessible outlets and opens the first one.
- */
-export const listOutlets = (
-  query: Query<typeof listExampleOutlets>,
-  options?: CallOptions,
-) => callEndpoint(listExampleOutlets, { query }, options);
 
 export const getFloorBoard = async (
   params: Params<typeof getFloorBoardEndpoint>,

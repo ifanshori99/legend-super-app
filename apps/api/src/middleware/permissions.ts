@@ -112,6 +112,14 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
   return snapshot;
 }
 
+/** The assignments, roles and org tree `loadRequestAccess` read for this request. */
+export function getRequestAccessData(req: Request): TenantAccessData {
+  const data = dataByRequest.get(req);
+  if (!data)
+    throw new Error("getRequestAccessData() used without loadRequestAccess");
+  return data;
+}
+
 /** The snapshot loaded by a permission middleware on this request. */
 export function getAccessSnapshot(req: Request): AccessSnapshot {
   const snapshot = snapshots.get(req);

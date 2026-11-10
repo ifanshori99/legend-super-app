@@ -3,11 +3,13 @@
 // ManagementShell. Route layouts render <AreaFrame> around their <Outlet />.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useParams } from "@tanstack/react-router";
+import type { MyOutlet } from "@starter/shared/access";
 import type { BusinessDayCutoff } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
 import { OfflineBannerSlot } from "@/components/layout/offline-banner-slot";
+import { OutletPicker } from "@/components/layout/outlet-picker";
 import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { CustomerShell } from "@/components/shells/customer-shell";
@@ -16,12 +18,24 @@ import { OperationsShell } from "@/components/shells/operations-shell";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/feedback-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { AreaAccess } from "@/lib/areas/access";
 import { AREAS, type AreaKey } from "@/lib/areas/definitions";
 import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
 import {
+  noOutletNext,
+  outletChoice,
+  outletPickPending,
+  readSavedOutletId,
+  resolveSelectedOutlet,
+  saveOutletId,
+} from "@/lib/areas/outlet-selection";
+import { API_MOCK } from "@/lib/api/mock-flag";
+import {
+  resolveMockOutlets,
   resolveMockTenantContext,
   savedOutletCutoff,
 } from "@/lib/mock/tenant-context";
@@ -47,9 +61,11 @@ type AreaFrameProps = {
 
 /**
  * Resolves the tenant/outlet config for this navigation and mounts it around
- * the shell. Mock mode reads the Cafe Legend fixtures; outside mock mode there
- * is no config source yet, so the provider fails closed (catalog brand, no
- * outlet → the shell keeps its neutral copy).
+ * the shell. The outlet comes from the session's assigned outlets
+ * (`access.outlets`, GET /api/me/access, legend-2aqp): the saved pick
+ * (localStorage, validated against that list) or the first one. Mock mode
+ * reads the Cafe Legend fixtures instead; with no outlet the provider fails
+ * closed (catalog brand, no outlet → the shell keeps its neutral copy).
  *
  * legend-5kop: the saved business-day cutoff lives in sessionStorage, which
  * the SSR server does not have. The first render (server HTML and the hydration
@@ -58,14 +74,40 @@ type AreaFrameProps = {
  * identical and no hydration mismatch is possible. The effect also re-reads on
  * navigation and on ORG_OUTLET_STORE_EVENT (a save in this tab), so
  * `useOutletClock()` anywhere follows what the outlet settings screen
- * persisted. `?tenant=none` still resolves to null in both passes.
+ * persisted. `?tenant=none` still resolves to no outlet in both passes.
+ * The saved outlet pick lives in localStorage and follows the same rule: the
+ * first render has not read it (`savedId` undefined) and an effect applies it.
+ * With 2+ outlets the screen itself (`children`) is held behind a skeleton
+ * until then, so no request goes out for the wrong outlet; server HTML and the
+ * hydration pass both render the skeleton, so they match.
  */
 export function AreaFrame(props: AreaFrameProps) {
   const { pathname, searchStr } = useLocation();
-  // Server-safe base: fixture outlet, or null (mock off / ?tenant=none).
-  const baseConfig = resolveMockTenantContext(searchStr);
-  const outletId = baseConfig?.outlet?.id ?? null;
+  const accessOutlets = props.access.outlets;
+  // Server-safe list: the session's outlets, or the fixture outlet in mock
+  // mode (none for ?tenant=none).
+  const outlets = useMemo<readonly MyOutlet[]>(
+    () => (API_MOCK ? resolveMockOutlets(searchStr) : accessOutlets),
+    [searchStr, accessOutlets],
+  );
 
+  // undefined = localStorage not read yet (SSR and the hydration pass).
+  const [savedId, setSavedId] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    const read = () => setSavedId(readSavedOutletId());
+    read();
+    // A navigation re-reads the pick: another area's shell mounts fresh.
+  }, [pathname]);
+  const selected = useMemo(
+    () => resolveSelectedOutlet(outlets, savedId),
+    [outlets, savedId],
+  );
+  const selectOutlet = (outletId: string) => {
+    saveOutletId(outletId);
+    setSavedId(outletId);
+  };
+
+  const outletId = selected?.id ?? null;
   const [savedCutoff, setSavedCutoff] = useState<BusinessDayCutoff | null>(
     null,
   );
@@ -79,13 +121,28 @@ export function AreaFrame(props: AreaFrameProps) {
     // leaving its route, and another area's shell mounts fresh.
   }, [outletId, pathname]);
 
+  const brandName = resolveMockTenantContext(searchStr)?.brandName;
   const config = useMemo(
-    () => resolveMockTenantContext(searchStr, savedCutoff),
-    [searchStr, savedCutoff],
+    () => ({
+      brandName,
+      outlet: selected
+        ? {
+            ...selected,
+            businessDayCutoff: savedCutoff ?? selected.businessDayCutoff,
+          }
+        : null,
+    }),
+    [brandName, selected, savedCutoff],
   );
   return (
     <TenantProvider config={config}>
-      <AreaFrameBody {...props} />
+      <AreaFrameBody
+        {...props}
+        outlets={outlets}
+        pickPending={outletPickPending(outlets, savedId)}
+        selectedOutletId={outletId}
+        onSelectOutlet={selectOutlet}
+      />
     </TenantProvider>
   );
 }
@@ -96,7 +153,16 @@ function AreaFrameBody({
   gate,
   session,
   children,
-}: AreaFrameProps) {
+  outlets,
+  pickPending,
+  selectedOutletId,
+  onSelectOutlet,
+}: AreaFrameProps & {
+  outlets: readonly MyOutlet[];
+  pickPending: boolean;
+  selectedOutletId: string | null;
+  onSelectOutlet: (outletId: string) => void;
+}) {
   const t = useT();
   const definition = AREAS[area];
   // Operations header badge = edge cloud link (legend-b0l9); other shells
@@ -105,6 +171,7 @@ function AreaFrameBody({
     enabled: definition.shell === "operations",
   });
   const { brandName } = useTenantContext();
+  const [announcement, setAnnouncement] = useState("");
   const { href, pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
   const nav = useMemo(
@@ -135,6 +202,44 @@ function AreaFrameBody({
   const showSupportBar =
     area !== "platform" &&
     (access.supportSession != null || definition.shell !== "customer");
+  // A staff account with no assigned outlet cannot work the outlet screens:
+  // say so instead of calling outlet endpoints. Management screens stay open
+  // (a new tenant creates its first outlet there).
+  const noOutlet =
+    definition.shell === "operations" &&
+    access.authenticated &&
+    outletChoice(outlets) === "none";
+  // 2+ outlets: the operations shell offers the picker; one outlet needs no
+  // control. The kelola shell has its own picker (legend-sp41n).
+  const outletPicker =
+    definition.shell === "operations" &&
+    outletChoice(outlets) === "multiple" ? (
+      <OutletPicker
+        outlets={outlets}
+        value={selectedOutletId}
+        onChange={(outletId) => {
+          onSelectOutlet(outletId);
+          const name = outlets.find((row) => row.id === outletId)?.name;
+          if (name) setAnnouncement(t("area.outletChanged", { name }));
+        }}
+        className="max-sm:w-full"
+      />
+    ) : null;
+  // Customer and public screens never depend on the staff outlet pick.
+  const holdScreen = pickPending && definition.shell !== "customer";
+  const noOutletAction =
+    noOutletNext(access) === "kelola" ? (
+      <Button asChild>
+        <Link to="/kelola">{t("area.noOutletKelola")}</Link>
+      </Button>
+    ) : (
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button asChild variant="outline">
+          <Link to="/">{t("gate.backHome")}</Link>
+        </Button>
+        <SignOutButton />
+      </div>
+    );
   const body = (
     <SupportReadOnlyProvider value={supportReadOnly}>
       {showSupportBar ? (
@@ -144,7 +249,26 @@ function AreaFrameBody({
         />
       ) : null}
       <OfflineBannerSlot />
-      {children}
+      {outletPicker ? (
+        <div role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </div>
+      ) : null}
+      {noOutlet ? (
+        <EmptyState
+          title={t("area.noOutletTitle")}
+          description={t("area.noOutletHint")}
+          action={noOutletAction}
+        />
+      ) : holdScreen ? (
+        <div aria-busy="true" className="grid gap-3">
+          <span className="sr-only">{t("common.loading")}</span>
+          <Skeleton className="h-10 w-1/2" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+      ) : (
+        children
+      )}
     </SupportReadOnlyProvider>
   );
   const signOut = session ? <SignOutButton /> : null;
@@ -189,7 +313,8 @@ function AreaFrameBody({
         staffName={session?.user.name}
         online={online}
         mode={definition.forcedMode}
-        actions={definition.forcedMode ? undefined : <ThemeToggle />}
+        outletControl={outletPicker}
+        actions={definition.forcedMode ? null : <ThemeToggle />}
       >
         <div className="h-full overflow-y-auto p-4">{body}</div>
       </OperationsShell>

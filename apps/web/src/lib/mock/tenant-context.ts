@@ -20,6 +20,7 @@ import {
   cafeLegendFixtures,
   type BusinessDayCutoff,
 } from "@starter/shared/core";
+import type { MyOutlet } from "@starter/shared/access";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { readSavedOutlet } from "../../features/ws01-org/outlet-store.ts";
 import type { TenantContextConfig } from "@/lib/tenant-context";
@@ -75,4 +76,22 @@ export function resolveMockTenantContext(
       businessDayCutoff: savedCutoff ?? baseOutlet.businessDayCutoff,
     },
   };
+}
+
+/**
+ * The outlets the mock session may work in: the fixture outlet, or none outside
+ * mock mode and for `?tenant=none` (the fail-closed switch). `?outlets=many`
+ * offers every fixture outlet, so the staff outlet picker can be exercised.
+ * Same shape as `AreaAccess.outlets` from GET /api/me/access.
+ */
+export function resolveMockOutlets(searchStr: string): readonly MyOutlet[] {
+  const base = resolveMockTenantContext(searchStr)?.outlet;
+  if (!base) return [];
+  const many = new URLSearchParams(searchStr).get("outlets") === "many";
+  return (many ? cafeLegendFixtures.outlets : [outlet]).map((row) => ({
+    id: row.id,
+    name: row.name,
+    timeZone: row.timeZone,
+    businessDayCutoff: row.businessDayCutoff,
+  }));
 }

@@ -9,7 +9,7 @@ import {
 } from "@starter/shared/qr-order";
 import * as api from "./api";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
-import { floorBoardQuery, outletsQuery, sessionBillQuery } from "./queries";
+import { floorBoardQuery, sessionBillQuery } from "./queries";
 
 function useInvalidate(endpoints: readonly AnyEndpoint[]) {
   const queryClient = useQueryClient();
@@ -28,11 +28,6 @@ function useBoardMutation<TVariables, TResult>(
 ) {
   const refresh = useInvalidate(BOARD_AND_BILLS);
   return useMutation({ mutationFn, onSuccess: () => refresh() });
-}
-
-/** Accessible outlets until the outlet-context bead supplies the assignment. */
-export function useOutlets() {
-  return useQuery(outletsQuery());
 }
 
 /** Live floor board for one outlet (zones, tables, sessions, open calls). */
