@@ -112,3 +112,37 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
 - TEN-08 white-label e2e (legend-240kd): diperbaiki oleh 789a9a1f di batch ini.
+
+## Tambahan batch46
+
+Migrasi baru (idx 209 sampai 216, rapat, `when` naik). Penomoran akhir berbeda dari nama di cabang asal:
+
+| Akhir | Tag | Nama lama di cabang | Cabang | `when` |
+|---|---|---|---|---|
+| 0209 | `0209_crm_feedback_segments` | sama | ws/ts50-customer360 | 1794288000000 |
+| 0210 | `0210_loyalty_tiers_referrals` | sama | ws/3zd1-tiers-expiry | 1794289000000 |
+| 0211 | `0211_platform_payment_gateways` | sama | ws/gateway-plan-revoke | 1794290000000 |
+| 0212 | `0212_failed_item_recovery` | 0214 | ws/swap-stock | 1794293000000 |
+| 0213 | `0213_facility_entitlement_ledger` | 0215 | ws/facility-entitlements | 1794294000000 |
+| 0214 | `0214_order_pacing` | 0216 | ws/kitchen-load-admin | 1794295000000 |
+| 0215 | `0215_hris_attendance` | 0217 | ws/storage-wire | 1794296000000 |
+| 0216 | `0216_wifi_quota_engine` | 0218 | ws/wifi-edge | 1794297000000 |
+
+- Nomor 0217 dan 0218 kosong. `ws/profit-share` (0219 di cabangnya) dan `ws/ws01-k2l` masuk batch47 dan perlu dinomori ulang ke 0217 dan seterusnya.
+- Rantai: 0208 -> 0209 -> ... -> 0216. `prevId` tiap snapshot disambung ulang dan tiap snapshot berisi skema kumulatif. `pnpm db:generate` kosong.
+- Tanpa migrasi: `ws/hris-loan-perm`, `ws/loyalty-training-lookup`, `ws/az-flow-y` (hanya test e2e), `ws/flaky-ten06` (hanya test).
+- **SQL diubah oleh merge train:** 0210, 0212, 0213, 0214 dan 0216 mengangkat FORCE RLS di sekitar blok `ADD CONSTRAINT ... FOREIGN KEY` ke tabel lama (pola 2 di `docs/plan/contracts.md`) dan memulihkannya sesudahnya. Tanpa ini migrator non-superuser gagal "tenant context is required" (`edge-received-events-migration.test.ts`). Di production migrator punya BYPASSRLS, jadi yang berubah hanya kunci: `NO FORCE` mengambil ACCESS EXCLUSIVE pada `outlets`, `customer_profiles`, `orders`, `order_issues`, `order_items`, `vouchers`, `facilities`, `menu_items`, `item_variants`, `stations`, `wifi_policies` sampai seluruh batch commit. **Jalankan di jendela sepi.** DDL akhir setara.
+- Pembaruan nama: komentar di `apology-vouchers.ts/.custom.sql`, `facility-entitlement.custom.sql`, `facility-entitlement-migration.test.ts`, `kds-pacing.custom.sql` dan baris `docs/PROGRESS.md` ikut dinomori ulang.
+
+Perlu backfill atau konfigurasi:
+- **Gateway Duitku (0211):** butuh kunci sandbox dari founder, belum ada. Tanpa kunci gateway tidak bisa diaktifkan.
+- **Storage PDF:** upload PDF ditolak 503 di production selama scanner masih noop (`ws/storage-wire`).
+- **Jurnal koreksi otomatis:** perilaku jurnal koreksi berjalan otomatis sesudah deploy (tidak ada tombol); periksa jurnal koreksi pertama.
+- Tier loyalti dan job harian tier/kedaluwarsa poin (0210) berjalan di relay worker per tenant per hari.
+
+Perilaku berubah:
+- `ws/swap-stock`: swap mengembalikan stok lini lama dan menarik stok pengganti; lini swap gratis dikeluarkan dari laporan penjualan.
+- Kuota Wi-Fi harian (0216) bergerak mengikuti pembayaran dan refund order member.
+- krvk7 (peran kustom tanpa backfill) tidak termasuk batch ini.
+
+Perbaikan isi di luar konflik: lihat laporan merge train batch46 (FORCE RLS di atas, nama migrasi, test hitungan bila ada).
