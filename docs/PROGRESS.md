@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-i83ls + legend-wumm8 tagih selisih swap, refund ditolak bisa dilaporkan ulang (engineer, cabang `ws/i83ls-swap-charge` dari `ws/94q2l-impl` b78f169c, 2026-11-10)
+
+- Satu migrasi `0229_order_issue_refund_rejected` (idx 229, when 1794308000000, prevId = snapshot 0222; merge train merangkai ulang). Isi: `order_issues.refund_rejected_at` + indeks `order_issues_resolved_item_once_idx` tanpa baris itu + CHECK; tabel `order_issue_charges` (FK inline, RLS tenant+outlet, unik per issue dan per link). `db:generate` kosong.
+- wumm8: penolakan refund (cabang `rejected`) mengisi `refund_rejected_at`; lapor ulang baris itu membuka issue baru (kunci `recovery:<item>:<type>:<n>`). Tanpa penolakan, replay issue lama. Refund ganda tetap tercegah (indeks + sisa refund).
+- i83ls: swap staf dearer (price_correction) membuat satu charge per issue lewat konsumen `order_issue.resolved` sesudah swap dapur. Nominal D + service + PBJT pro-rata tarif efektif (`recoveryChargeSplit`, diskon order tidak memotong selisih). QR: link sendiri `oic:<chargeId>`, endpoint tamu `/api/table-sessions/:sessionId/issue-charges`. Open bill: masuk total dan sisa bill, tutup sesi menunggu. Kasir: `routed_pos` + audit. Staf waive/expire, tutup paksa sesi meng-expire. Jurnal: event baru `order_issue.charge_paid` (`aj:order-charge:<chargeId>`, aturan `order.paid`), guard payout dan cek `split_bill` menyesuaikan. Keputusan: `docs/DECISIONS.md`.
+- Review architect (K): 1 tinggi (PBJT/service kurang bila order berdiskon), 3 sedang (charge terbuka selamanya saat tutup paksa, refund charge belum ada, jurnal macet bila order di-void), 1 rendah (urutan kunci staf). Dibetulkan: diskon, tutup paksa/expire, urutan kunci. Tidak dibetulkan (kartu lanjut): refund charge terbayar, order void sesudah charge dibayar, lapor ulang serentak bisa 500 (sama seperti kunci dasar sebelumnya).
+- Bukti gagal-dulu: wumm8 3 merah; amount 16/17 merah lalu 9/24 setelah diskon; charge dan pembayaran merah (modul belum ada); jurnal charge merah (event diabaikan); open bill 11/15 merah; tutup sesi 3/5 merah. Bukti hijau lihat laporan akhir.
+- Usage (UTC 09:28 sampai 10:14): subagent 16 (Explore 6, architect 2, implementer 8+, test-writer 1, test-runner 2), puncak bersamaan 3; biaya* total 8018k (utama 2338k, subagent 5680k).
+
 ## legend-dwrr WS-12 provider AI OpenAI-compatible per tenant (engineer, cabang `ws/ai-provider-tenant` dari milestone/m1 d2080951, 2026-11-10)
 
 - Satu migrasi `0188_ai_provider_configs` (when 1794267000000, prevId 8948ed96 = id snapshot 0186): tabel `ai_provider_configs` satu baris per tenant, tenant RLS (`ai-provider.custom.sql`). Kunci API disegel `sealSecret` (AAD `ai_provider_config:<tenantId>:<rowId>`), hanya `hasKey` + `keyLast4` yang keluar. Tipe koneksi `api_key`; `chatgpt_oauth` dicadangkan dan ditolak (legend-z83k).

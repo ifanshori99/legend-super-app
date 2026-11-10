@@ -81,6 +81,7 @@ import {
   releaseLinksOfSession,
 } from "./table-link.service";
 import { appendOutbox } from "./core-outbox";
+import { expireOpenChargesOfSession } from "./order-recovery-charge";
 import { verifyTableQrToken } from "./qr-token";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -730,6 +731,9 @@ async function expireSession(
       ),
     );
   await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
+  // A settled bill can still carry an open charge (a deposit credit covers it):
+  // expire it with the session.
+  await expireOpenChargesOfSession(tx, context, row.id, now);
   await releaseLinksOfSession(
     tx,
     context,
@@ -1368,10 +1372,10 @@ export async function closeTableSession(
     });
     assertOutletInScope(context.outletScope, row.outletId);
     const status = nextStatus(row.status, "close");
-    const settlement = await loadSettlement(tx, context, row.id);
+    let settlement = await loadSettlement(tx, context, row.id);
     // null = the orders module cannot prove the bill is settled; only the
     // explicit waiter override may close that session.
-    const billOutstandingIdr = outstandingOf(settlement);
+    let billOutstandingIdr = outstandingOf(settlement);
     const canClose =
       input.waiterConfirmedEmpty ||
       (billOutstandingIdr === 0 && input.tableCleaned);
@@ -1382,6 +1386,16 @@ export async function closeTableSession(
           ? "ORD-10: tagihan meja belum dapat diverifikasi; minta waiter mengonfirmasi meja kosong."
           : "ORD-10: meja belum bisa dikosongkan sebelum tagihan lunas atau dikonfirmasi waiter.",
       );
+    // The forced close ends the session: swap charges nobody can pay any more
+    // expire with it and leave the bill, so a fully paid pay-first session is
+    // not recorded as voided because of them.
+    if (
+      (await expireOpenChargesOfSession(tx, context, row.id, now)) > 0 &&
+      billOutstandingIdr !== null
+    ) {
+      settlement = await loadSettlement(tx, context, row.id);
+      billOutstandingIdr = outstandingOf(settlement);
+    }
     const credential = newSessionCredential();
     // Only a verified-settled bill counts as paid_and_cleaned; an override on
     // an outstanding or unverifiable bill is a voided session.

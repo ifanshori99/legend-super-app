@@ -1,15 +1,16 @@
 // legend-i83ls (S1, pure): `recoveryChargeSplit` and `lineShareSplit`, the
 // amount a guest owes for a dearer swap. Contract: scratchpad design-B.md.
 //
-// Rule: the price difference D weighs like a line of that value:
-// s = D / subtotalIdr, the order's gross sales, service charge and PBJT are each
-// multiplied by s and rounded half up (BigInt). amount = gross + service + pbjt,
-// exactly. No order discount, no deposit, no clamp to the subtotal (CTO default:
-// the order's discount does not cut the difference).
-//
-// Assumptions where the brief is silent:
-// - Inclusive-price orders (pricesIncludeTax) use `orderRevenueSplit` gross
-//   (subtotal - service - tax); D is a price the guest saw, so the amount is D.
+// Rule: service and PBJT of an order are computed on `subtotal - discount`, so
+// the effective rate is `service / base` and `pbjt / base` with
+// `base = subtotal - discount`. The price difference D pays that rate in full
+// (CTO default: the order's discount does not cut D): service = D * service /
+// base, pbjt = D * pbjt / base, half up (BigInt). base <= 0 (full discount):
+// service = pbjt = 0. No deposit, no clamp to the subtotal.
+// - Exclusive prices: gross = D, amount = D + service + pbjt.
+// - Inclusive prices (pricesIncludeTax): D already holds the taxes, so amount =
+//   D and gross = D - service - pbjt; a negative gross (rounding) is taken from
+//   PBJT first, then from service. amount = gross + service + pbjt, exactly.
 // - A non-positive D or subtotal is all zero (differenceIdr clamps to 0).
 
 import { describe, expect, it } from "vitest";
@@ -112,16 +113,64 @@ describe("legend-i83ls recoveryChargeSplit: selisih + service + PBJT pro rata", 
     });
   });
 
-  it("diskon order tidak memotong selisih (default usulan)", () => {
-    const withDiscount = makeOrder({
+  it("diskon 50%: tarif efektif dipakai penuh (service dan pbjt dari subtotal - diskon)", () => {
+    // base 50.000, service 2.500 (5%), PBJT 5.250 (10,5%): same effective rates.
+    const half = makeOrder({
+      subtotal: 100_000,
+      discount: 50_000,
+      service: 2_500,
+      tax: 5_250,
+    });
+    expect(recoveryChargeSplit({ order: half, differenceIdr: 7_000 })).toEqual({
+      differenceIdr: 7_000,
+      grossSalesIdr: 7_000,
+      serviceChargeIdr: 350,
+      pbjtIdr: 735,
+      amountIdr: 8_085,
+    });
+  });
+
+  it("diskon 10%: service dan pbjt dibagi dengan subtotal - diskon, half up", () => {
+    // base 90.000: service 4.500, PBJT 9.450; D 7.000 -> 350 and 735.
+    const order = makeOrder({
       subtotal: 100_000,
       discount: 10_000,
+      service: 4_500,
+      tax: 9_450,
+    });
+    expect(recoveryChargeSplit({ order, differenceIdr: 7_000 })).toEqual({
+      differenceIdr: 7_000,
+      grossSalesIdr: 7_000,
+      serviceChargeIdr: 350,
+      pbjtIdr: 735,
+      amountIdr: 8_085,
+    });
+  });
+
+  it("diskon penuh (base 0): service dan pbjt nol, amount = selisih", () => {
+    const order = makeOrder({
+      subtotal: 100_000,
+      discount: 100_000,
       service: 5_000,
       tax: 10_500,
     });
-    expect(
-      recoveryChargeSplit({ order: withDiscount, differenceIdr: 7_000 }),
-    ).toEqual(recoveryChargeSplit({ order: BASE_ORDER, differenceIdr: 7_000 }));
+    expect(recoveryChargeSplit({ order, differenceIdr: 7_000 })).toEqual({
+      differenceIdr: 7_000,
+      grossSalesIdr: 7_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+      amountIdr: 7_000,
+    });
+  });
+
+  it("diskon penuh tanpa service dan pajak: amount = selisih", () => {
+    const order = makeOrder({ subtotal: 100_000, discount: 100_000 });
+    expect(recoveryChargeSplit({ order, differenceIdr: 7_000 })).toMatchObject({
+      grossSalesIdr: 7_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+      amountIdr: 7_000,
+    });
   });
 
   it("tanpa tarif service dan pajak: amount = selisih", () => {
@@ -149,6 +198,77 @@ describe("legend-i83ls recoveryChargeSplit: selisih + service + PBJT pro rata", 
       serviceChargeIdr: 500,
       pbjtIdr: 1_050,
       amountIdr: 11_150,
+    });
+  });
+
+  it("harga inklusif berdiskon: amount = selisih, pajak dari subtotal - diskon", () => {
+    // Subtotal 111.500, discount 11.500: base 100.000 holds service 5.000 and
+    // PBJT 10.500 (total 100.000).
+    const order = makeOrder({
+      subtotal: 111_500,
+      discount: 11_500,
+      service: 5_000,
+      tax: 10_500,
+      inclusive: true,
+    });
+    expect(recoveryChargeSplit({ order, differenceIdr: 10_000 })).toEqual({
+      differenceIdr: 10_000,
+      grossSalesIdr: 8_450,
+      serviceChargeIdr: 500,
+      pbjtIdr: 1_050,
+      amountIdr: 10_000,
+    });
+  });
+
+  it("harga inklusif: gross tidak negatif, kelebihan diambil dari pbjt dulu lalu service", () => {
+    // base 2 holds service 1 and PBJT 1; D 1 rounds both up to 1 (sum 2 > D).
+    const order = makeOrder({
+      subtotal: 2,
+      service: 1,
+      tax: 1,
+      inclusive: true,
+    });
+    expect(recoveryChargeSplit({ order, differenceIdr: 1 })).toEqual({
+      differenceIdr: 1,
+      grossSalesIdr: 0,
+      serviceChargeIdr: 1,
+      pbjtIdr: 0,
+      amountIdr: 1,
+    });
+  });
+
+  it("harga inklusif diskon penuh: amount = selisih, gross = selisih", () => {
+    const order = makeOrder({
+      subtotal: 111_500,
+      discount: 111_500,
+      service: 5_000,
+      tax: 10_500,
+      inclusive: true,
+    });
+    expect(recoveryChargeSplit({ order, differenceIdr: 5_000 })).toEqual({
+      differenceIdr: 5_000,
+      grossSalesIdr: 5_000,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+      amountIdr: 5_000,
+    });
+  });
+
+  it("selisih di atas subtotal berdiskon: tarif efektif penuh, tanpa clamp", () => {
+    const half = makeOrder({
+      subtotal: 100_000,
+      discount: 50_000,
+      service: 2_500,
+      tax: 5_250,
+    });
+    expect(
+      recoveryChargeSplit({ order: half, differenceIdr: 200_000 }),
+    ).toEqual({
+      differenceIdr: 200_000,
+      grossSalesIdr: 200_000,
+      serviceChargeIdr: 10_000,
+      pbjtIdr: 21_000,
+      amountIdr: 231_000,
     });
   });
 
@@ -228,31 +348,23 @@ describe("legend-i83ls recoveryChargeSplit: nol dan order rusak", () => {
 });
 
 describe("legend-i83ls lineShareSplit", () => {
-  it("clamp: true memotong dasar ke subtotal, clamp: false tidak", () => {
-    const clamped = lineShareSplit(BASE_ORDER, 200_000, { clamp: true });
-    const free = lineShareSplit(BASE_ORDER, 200_000, { clamp: false });
-    expect(clamped).toEqual({
+  it("memotong dasar ke subtotal (satu baris tidak lebih berat dari ordernya)", () => {
+    expect(lineShareSplit(BASE_ORDER, 200_000)).toEqual({
       grossSalesIdr: 100_000,
       discountIdr: 0,
       serviceChargeIdr: 5_000,
       pbjtIdr: 10_500,
     });
-    expect(free).toEqual({
-      grossSalesIdr: 200_000,
-      discountIdr: 0,
-      serviceChargeIdr: 10_000,
-      pbjtIdr: 21_000,
-    });
   });
 
-  it("membawa porsi diskon order (dipakai refund, tidak oleh tagihan)", () => {
+  it("membawa porsi diskon order (dipakai refund)", () => {
     const order = makeOrder({
       subtotal: 100_000,
       discount: 10_000,
       service: 5_000,
       tax: 10_500,
     });
-    expect(lineShareSplit(order, 40_000, { clamp: true })).toEqual({
+    expect(lineShareSplit(order, 40_000)).toEqual({
       grossSalesIdr: 40_000,
       discountIdr: 4_000,
       serviceChargeIdr: 2_000,
@@ -268,10 +380,8 @@ describe("legend-i83ls lineShareSplit", () => {
       pbjtIdr: 0,
     };
     const broken = { ...BASE_ORDER, totalIdr: 1 };
-    expect(lineShareSplit(broken, 0, { clamp: false })).toEqual(zero);
-    expect(
-      lineShareSplit(makeOrder({ subtotal: 0 }), 5_000, { clamp: true }),
-    ).toEqual(zero);
+    expect(lineShareSplit(broken, 0)).toEqual(zero);
+    expect(lineShareSplit(makeOrder({ subtotal: 0 }), 5_000)).toEqual(zero);
   });
 
   it("refund tidak berubah: baris 40.000 dari 100.000 -> wanted 46.200", () => {

@@ -55,15 +55,13 @@ export type LineShareSplit = {
 /**
  * The share of the order's gross, discount, service and PBJT that `baseIdr`
  * weighs: `s = baseIdr / subtotalIdr`, each component rounded half up (BigInt).
- * Shared by the failed-item refund (`clamp: true`: a line never weighs more
- * than its order) and the dearer-swap charge (`clamp: false`: the difference
- * is not a part of the subtotal). All zero for a non-positive subtotal or base,
- * before the order's identity is checked.
+ * Used by the failed-item refund: a line never weighs more than its order, so
+ * the base is cut to the subtotal. All zero for a non-positive subtotal or
+ * base, before the order's identity is checked.
  */
 export function lineShareSplit(
   order: OrderRevenueInput,
   baseIdr: number,
-  options: { clamp: boolean },
 ): LineShareSplit {
   if (order.subtotalIdr <= 0 || baseIdr <= 0)
     return {
@@ -74,9 +72,7 @@ export function lineShareSplit(
     };
   const split = orderRevenueSplit(order);
   const subtotal = BigInt(order.subtotalIdr);
-  const base = BigInt(
-    options.clamp ? Math.min(baseIdr, order.subtotalIdr) : baseIdr,
-  );
+  const base = BigInt(Math.min(baseIdr, order.subtotalIdr));
   const share = (value: number) =>
     Number(mulDivHalfUp(BigInt(value), base, subtotal));
   return {
@@ -95,7 +91,7 @@ export function recoveryRefundSplit(input: {
 }): RecoveryRefundSplit {
   const { order, releasedIdr } = input;
   if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return { ...ZERO };
-  const shares = lineShareSplit(order, input.lineTotalIdr, { clamp: true });
+  const shares = lineShareSplit(order, input.lineTotalIdr);
   let gross = BigInt(shares.grossSalesIdr);
   let discount = BigInt(shares.discountIdr);
   let service = BigInt(shares.serviceChargeIdr);
@@ -144,26 +140,66 @@ export type RecoveryChargeSplit = {
 };
 
 /**
- * legend-i83ls: what the guest owes for a dearer swap. The price difference
- * `differenceIdr` weighs like a line of that value (`lineShareSplit`, no clamp
- * to the subtotal) and brings its share of service charge and PBJT. No order
- * discount and no deposit apply (CTO default, a business decision: the order's
- * discount does not cut the difference), and there is no room to cut to: the
- * guest pays the whole amount. `amount = gross + service + pbjt` holds exactly.
- * A zero result (no subtotal or no difference) is all zero.
+ * legend-i83ls: what the guest owes for a dearer swap. The order's service
+ * charge and PBJT are computed on `base = subtotal - discount`, so their
+ * effective rates are `service / base` and `pbjt / base`. The price difference
+ * `differenceIdr` (D) pays those rates in full: `service = D * service / base`,
+ * `pbjt = D * pbjt / base`, half up (BigInt). A full discount (`base <= 0`)
+ * leaves both at zero. No deposit applies (CTO default, a business decision:
+ * the order's discount does not cut D) and there is no room to cut to.
+ *
+ * Exclusive prices: gross = D, amount = D + service + pbjt. Inclusive prices
+ * (`pricesIncludeTax`): D already holds the taxes, amount = D and
+ * gross = D - service - pbjt; a negative gross (rounding) is taken from PBJT
+ * first, then from the service charge, like `recoveryRefundSplit`.
+ * `amount = gross + service + pbjt` holds exactly. No subtotal or no
+ * difference is all zero (the order's identity is checked only when D > 0).
  */
 export function recoveryChargeSplit(input: {
   order: OrderRevenueInput;
   differenceIdr: number;
 }): RecoveryChargeSplit {
-  const shares = lineShareSplit(input.order, input.differenceIdr, {
-    clamp: false,
-  });
+  const { order } = input;
+  const difference = Math.max(0, input.differenceIdr);
+  const zero = {
+    differenceIdr: difference,
+    grossSalesIdr: 0,
+    serviceChargeIdr: 0,
+    pbjtIdr: 0,
+    amountIdr: 0,
+  };
+  if (order.subtotalIdr <= 0 || difference <= 0) return zero;
+  const split = orderRevenueSplit(order);
+  const base = BigInt(order.subtotalIdr - order.discountIdr);
+  const diff = BigInt(difference);
+  let service = 0n;
+  let pbjt = 0n;
+  if (base > 0n) {
+    service = mulDivHalfUp(BigInt(split.serviceChargeIdr), diff, base);
+    pbjt = mulDivHalfUp(BigInt(split.pbjtIdr), diff, base);
+  }
+  let gross: bigint;
+  let amount: bigint;
+  if (order.pricesIncludeTax) {
+    amount = diff;
+    gross = diff - service - pbjt;
+    if (gross < 0n) {
+      let excess = -gross;
+      const fromPbjt = excess < pbjt ? excess : pbjt;
+      pbjt -= fromPbjt;
+      excess -= fromPbjt;
+      service -= excess;
+      gross = 0n;
+    }
+  } else {
+    gross = diff;
+    amount = diff + service + pbjt;
+  }
   return {
-    differenceIdr: Math.max(0, input.differenceIdr),
-    grossSalesIdr: shares.grossSalesIdr,
-    serviceChargeIdr: shares.serviceChargeIdr,
-    pbjtIdr: shares.pbjtIdr,
-    amountIdr: shares.grossSalesIdr + shares.serviceChargeIdr + shares.pbjtIdr,
+    differenceIdr: difference,
+    grossSalesIdr: Number(gross),
+    serviceChargeIdr: Number(service),
+    pbjtIdr: Number(pbjt),
+    amountIdr: Number(amount),
   };
 }

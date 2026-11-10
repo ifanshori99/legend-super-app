@@ -7,7 +7,7 @@
 //   is the idempotency key, a repeat of the same action returns the row and
 //   writes no second audit row, the other action or a paid/routed charge is a
 //   409. A concurrent payment (handled under the same row lock) wins or loses
-//   cleanly.
+//   cleanly. The row is locked through `lockChargeChain` (issue, order, charge).
 // - The pending payment link is cancelled, so the guest cannot pay a charge the
 //   staff just closed.
 // - No journal: revenue is recognised only when money arrives
@@ -28,6 +28,7 @@ import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { lockChargeChain } from "./order-recovery-charge.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
@@ -114,18 +115,12 @@ export async function closeIssueCharge(
       actorUserId,
       now,
     );
-    const [charge] = await tx
-      .select()
-      .from(orderIssueCharges)
-      .where(
-        and(
-          eq(orderIssueCharges.tenantId, tenantId),
-          eq(orderIssueCharges.id, chargeId),
-        ),
-      )
-      .for("update");
-    if (!charge)
+    // Issue, order, charge row (the module's lock sequence), then link and
+    // intent below.
+    const locked = await lockChargeChain(tx, tenantId, { chargeId });
+    if (!locked)
       throw new CoreError("NOT_FOUND", "Tagihan selisih tidak ditemukan.");
+    const { charge } = locked;
     assertOutletInScope(context.outletScope, charge.outletId);
     if (!snapshot.allows(HANDLE, { type: "outlet", id: charge.outletId }))
       throw new AccessError(

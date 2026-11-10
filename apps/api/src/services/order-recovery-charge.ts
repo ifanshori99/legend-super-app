@@ -42,6 +42,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { qrOrderEvents } from "@starter/shared/qr-order";
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
+import { tableSessions } from "../db/schema/floor.ts";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
@@ -51,12 +52,15 @@ import { appendOutbox } from "./core-outbox.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import { recoveryChargeSplit } from "./order-recovery-refund-amount.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const AUDIT_OPENED = "order_issue.charge_opened";
 const AUDIT_ROUTED_POS = "order_issue.charge_routed_pos";
 const AUDIT_BLOCKED = "order_issue.charge_blocked";
 const AUDIT_PAID = "order_issue.charge_paid";
+const AUDIT_EXPIRED = "order_issue.charge_expired";
+const SESSION_CLOSED_REASON = "session_closed";
 const AUDIT_SAFE_FIELDS = [
   "id",
   "orderId",
@@ -261,6 +265,13 @@ export async function deliverIssueChargeEvent(
       and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, order.id)),
     );
   const route = pos ? "pos" : "qr_link";
+  // The table session ended before the event arrived: nobody can pay the
+  // charge any more, so it is born `expired` instead of `open`.
+  const sessionEnded =
+    !pos &&
+    (order.status === "completed" ||
+      (order.tableSessionId !== null &&
+        (await sessionIsClosed(tx, tenantId, order.tableSessionId))));
   const [inserted] = await tx
     .insert(orderIssueCharges)
     .values({
@@ -270,7 +281,9 @@ export async function deliverIssueChargeEvent(
       orderId: order.id,
       tableSessionId: pos ? null : order.tableSessionId,
       route,
-      status: pos ? "routed_pos" : "open",
+      status: pos ? "routed_pos" : sessionEnded ? "expired" : "open",
+      closedAt: sessionEnded ? at : null,
+      closeReason: sessionEnded ? SESSION_CLOSED_REASON : null,
       differenceIdr: idr(split.differenceIdr),
       grossSalesIdr: idr(split.grossSalesIdr),
       serviceChargeIdr: idr(split.serviceChargeIdr),
@@ -288,14 +301,105 @@ export async function deliverIssueChargeEvent(
   await auditCharge(tx, context, {
     outletId: order.outletId,
     issueId: issue.id,
-    action: pos ? AUDIT_ROUTED_POS : AUDIT_OPENED,
-    actorUserId,
+    action: pos
+      ? AUDIT_ROUTED_POS
+      : sessionEnded
+        ? AUDIT_EXPIRED
+        : AUDIT_OPENED,
+    actorUserId: sessionEnded ? null : actorUserId,
     reason: pos
       ? "Selisih swap pada bill kasir ditagih kasir"
-      : "Selisih swap ditagih lewat link pembayaran",
+      : sessionEnded
+        ? "Sesi meja sudah ditutup, selisih tidak ditagih"
+        : "Selisih swap ditagih lewat link pembayaran",
     after: chargeAudit(inserted),
     at,
   });
+}
+
+async function sessionIsClosed(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  sessionId: string,
+): Promise<boolean> {
+  const [session] = await tx
+    .select({ status: tableSessions.status })
+    .from(tableSessions)
+    .where(
+      and(
+        eq(tableSessions.tenantId, tenantId),
+        eq(tableSessions.id, sessionId),
+      ),
+    );
+  return session?.status === "closed" || session?.status === "voided";
+}
+
+/**
+ * Expires every `open` charge of a table session that is ending (forced close
+ * by a waiter, session expiry), in the closing transaction `tx`: status
+ * `expired`, reason `session_closed`, no closer, the payment link cancelled and
+ * one `order_issue.charge_expired` audit row (actor system) per charge. Each
+ * charge is locked through `lockChargeChain` (issue, order, charge, link,
+ * intent); one that was paid or closed meanwhile is left alone. Returns the
+ * number of charges expired. No journal: revenue is only recognised when money
+ * arrives.
+ */
+export async function expireOpenChargesOfSession(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+  now: Date,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  const open = await tx
+    .select({ id: orderIssueCharges.id })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.tableSessionId, sessionId),
+        eq(orderIssueCharges.status, "open"),
+      ),
+    )
+    .orderBy(orderIssueCharges.id);
+  let expired = 0;
+  for (const { id } of open) {
+    const locked = await lockChargeChain(tx, tenantId, { chargeId: id });
+    if (!locked || locked.charge.status !== "open") continue;
+    const { charge, issue } = locked;
+    await tx
+      .update(orderIssueCharges)
+      .set({
+        status: "expired",
+        closedAt: now,
+        closedBy: null,
+        closeReason: SESSION_CLOSED_REASON,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, tenantId),
+          eq(orderIssueCharges.id, charge.id),
+        ),
+      );
+    if (charge.paymentLinkId !== null)
+      await cancelPaymentLinkInTx(tx, context, {
+        linkId: charge.paymentLinkId,
+        now,
+        reason: "issue_charge_expired",
+      });
+    await auditCharge(tx, context, {
+      outletId: charge.outletId,
+      issueId: issue.id,
+      action: AUDIT_EXPIRED,
+      actorUserId: null,
+      reason: "Sesi meja ditutup sebelum selisih dibayar",
+      after: { ...chargeAudit(charge), status: "expired" },
+      at: now,
+    });
+    expired += 1;
+  }
+  return expired;
 }
 
 /**
