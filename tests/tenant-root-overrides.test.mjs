@@ -1,6 +1,6 @@
 // legend-it6p4: root passes the tenant's public text overrides to Providers.
-// The web server reads `GET /api/tenant/text-overrides` (terms.* only, no
-// session) and never lets a failed read break the page.
+// The overrides (terms.* only, no session) ride on the one brand context call
+// (`GET /api/tenant/context`); a failed read never breaks the page.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -58,17 +58,20 @@ test("legend-it6p4: the web picks the Indonesian map and re-checks the allowlist
   assert.deepEqual(overridesForLocale(null), {});
 });
 
-test("legend-it6p4: the server function treats failures as no overrides", () => {
-  const fn = read("lib/tenant-text-overrides-fn.ts");
-  assert.match(fn, /\/api\/tenant\/text-overrides/);
-  assert.match(fn, /createServerFn\(\{\s*method: "GET",?\s*\}\)/);
-  assert.match(fn, /catch/);
-  assert.match(fn, /API_MOCK/);
+test("legend-it6p4: the brand server function carries the overrides", () => {
+  const fn = read("lib/tenant-brand-fn.ts");
+  assert.match(fn, /overridesForLocale/);
+  assert.match(fn, /overrides: MessageOverrides/);
+  assert.match(fn, /textOverrides/);
+  // One upstream call: the separate text-overrides server function is gone.
+  assert.doesNotMatch(fn, /\/api\/tenant\/text-overrides/);
 });
 
-test("legend-it6p4: root loads overrides and hands them to Providers", () => {
+test("legend-it6p4: root makes one SSR call and hands overrides to Providers", () => {
   const root = read("routes/__root.tsx");
-  assert.match(root, /getTenantTextOverridesFn\(\)/);
+  assert.doesNotMatch(root, /getTenantTextOverridesFn/);
+  assert.doesNotMatch(root, /tenant-text-overrides-fn/);
+  assert.match(root, /getTenantBrandFn\(\)/);
   assert.match(root, /<Providers overrides=\{overrides\}>/);
   assert.match(read("router.tsx"), /textOverrides: \{\}/);
 });

@@ -18,6 +18,7 @@ import { db } from "../db";
 import { brands, tenantThemes, tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { getPublicTextOverrides } from "./text-override.service";
 
 /**
  * Brand of the tenant the request resolved to. When the source pins a brand
@@ -29,7 +30,7 @@ export async function getBrandContext(
   tenant: TenantContext,
 ): Promise<BrandContext> {
   const scoped = establishScopedTenantContext(tenant, { kind: "tenant" });
-  return withTenant(db, scoped, async (tx) => {
+  const context = await withTenant(db, scoped, async (tx) => {
     const [tenantRow] = await tx
       .select({ featureFlags: tenants.featureFlags })
       .from(tenants)
@@ -74,7 +75,7 @@ export async function getBrandContext(
       .orderBy(desc(tenantThemes.version))
       .limit(1);
 
-    return brandContextSchema.parse({
+    return {
       brand: {
         id: brand.id,
         slug: brand.slug,
@@ -90,6 +91,11 @@ export async function getBrandContext(
         : null,
       // Same gate as requireModuleEnabled: anything absent is off (TEN-05).
       enabledModules: MODULE_KEYS.filter((key) => isModuleEnabled(flags, key)),
-    });
+    };
+  });
+  // Public `terms.*` overrides ride along so SSR makes one call, not two.
+  return brandContextSchema.parse({
+    ...context,
+    textOverrides: await getPublicTextOverrides(tenant),
   });
 }

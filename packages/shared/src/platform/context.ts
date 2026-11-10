@@ -9,6 +9,7 @@
 // UI route guard hides exactly what the API refuses.
 
 import { brandIdSchema, uuidSchema, z } from "../core/index.ts";
+import { publicTextOverridesSchema } from "../text/public-overrides.ts";
 import { BRAND_FONTS, CORNER_STYLES } from "../theme/types.ts";
 import { moduleKeySchema } from "./modules.ts";
 import { themeTokensSchema } from "./themes.ts";
@@ -32,5 +33,11 @@ export const brandContextSchema = z.strictObject({
   theme: brandThemeSchema.nullable(),
   /** Modules this tenant may use (TEN-05). Anything absent is off. */
   enabledModules: z.array(moduleKeySchema),
+  /**
+   * Public `terms.*` text overrides of the tenant (same allowlist as
+   * `GET /api/tenant/text-overrides`), so SSR needs one upstream call. Optional
+   * so older answers still parse.
+   */
+  textOverrides: publicTextOverridesSchema.optional(),
 });
 export type BrandContext = z.infer<typeof brandContextSchema>;
