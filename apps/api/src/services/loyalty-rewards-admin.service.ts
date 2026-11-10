@@ -18,7 +18,7 @@ import {
   type Reward,
 } from "@starter/shared/crm";
 import { db } from "../db";
-import { rewards } from "../db/schema/crm-rewards";
+import { rewardRedemptions, rewards } from "../db/schema/crm-rewards";
 import { menuItems } from "../db/schema/menu";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
@@ -33,8 +33,8 @@ type Page<T> = {
 };
 
 /** Audit field names kept unmasked: names, numbers and flags, no personal data. */
+// `name` is left out: the audit schema rejects raw values of name-like keys.
 const AUDIT_SAFE_FIELDS = [
-  "name",
   "type",
   "pointsCost",
   "stock",
@@ -73,7 +73,6 @@ function toReward(row: RewardRow): Reward {
 function auditSummary(reward: Reward | null) {
   if (reward === null) return null;
   return {
-    name: reward.name,
     type: reward.type,
     pointsCost: reward.pointsCost,
     stock: reward.stock,
@@ -251,6 +250,29 @@ export async function updateReward(
     if (!merged.success)
       throw invalid(merged.error.issues[0]?.message ?? "Data tidak valid.");
     const next = merged.data;
+    if (
+      next.type !== existing.type ||
+      next.menuItemId !== existing.menuItemId ||
+      next.voucherValueIdr !== existing.voucherValueIdr
+    ) {
+      const [pending] = await tx
+        .select({ id: rewardRedemptions.id })
+        .from(rewardRedemptions)
+        .where(
+          and(
+            eq(rewardRedemptions.tenantId, tenantId),
+            eq(rewardRedemptions.rewardId, rewardId),
+            eq(rewardRedemptions.status, "pending"),
+          ),
+        )
+        .limit(1);
+      if (pending)
+        throw new HttpError(
+          409,
+          "REWARD_HAS_PENDING_REDEMPTIONS",
+          "Hadiah masih punya penukaran yang belum selesai.",
+        );
+    }
     await assertMenuItem(tx, tenantId, next.menuItemId);
     const [row] = await tx
       .update(rewards)

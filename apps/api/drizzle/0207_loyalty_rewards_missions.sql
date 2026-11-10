@@ -145,6 +145,19 @@ ALTER TABLE public.vouchers NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.customer_profiles NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
+-- Orphan rows would fail the validation scan: a voucher whose profile has no
+-- customer_profiles row in the same tenant loses the link, and an issued one
+-- is cancelled so it cannot be used (vouchers_cancelled_check needs a reason).
+UPDATE public.vouchers v
+  SET customer_profile_id = NULL,
+      status = CASE WHEN v.status = 'issued' THEN 'cancelled' ELSE v.status END,
+      cancelled_reason = CASE WHEN v.status = 'issued'
+        THEN 'profile_missing_0207' ELSE v.cancelled_reason END
+  WHERE v.customer_profile_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM public.customer_profiles p
+      WHERE p.tenant_id = v.tenant_id AND p.id = v.customer_profile_id);
+--> statement-breakpoint
 ALTER TABLE public.vouchers ADD CONSTRAINT vouchers_profile_fk
   FOREIGN KEY (tenant_id, customer_profile_id)
   REFERENCES public.customer_profiles (tenant_id, id);

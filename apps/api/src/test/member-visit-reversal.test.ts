@@ -34,6 +34,7 @@ import {
   orderVoidedEvent,
   owner,
   profileOf,
+  recordOf,
   seedMember,
   seedOrder,
   seedProgram,
@@ -364,5 +365,113 @@ describe("LOY-02 wa4hp: counters never go below 0", () => {
     expect(profile.visits_count).toBe(0);
     expect(profile.lifetime_spend_idr).toBe("0");
     expect(await visitCount(world.tenantId, member.id)).toBe(0);
+  });
+});
+
+describe("LOY-02 wa4hp: a void or refund also lowers counters of a visit that booked no points", () => {
+  it("LOY-02 voiding a capped order (state capped, 0 points) still lowers visits and spend", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId, { dailyCap: 10 });
+    const member = await seedMember(world.tenantId);
+    await pay(world, member, { grossSalesIdr: 100_000 });
+    const capped = await pay(world, member, { grossSalesIdr: 50_000 });
+    expect(await recordOf(world.tenantId, capped)).toMatchObject({
+      state: "capped",
+    });
+    expect(await totals(world, member.id)).toEqual({
+      visits: 2,
+      spend: "150000",
+      visitRows: 2,
+    });
+
+    await deliver(
+      world,
+      orderVoidedEvent(world, {
+        orderUlid: capped,
+        outletId: world.outletA,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      }),
+    );
+
+    expect(await totals(world, member.id)).toEqual({
+      visits: 1,
+      spend: "100000",
+      visitRows: 1,
+    });
+    // No points moved, and the record keeps its state.
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect(await recordOf(world.tenantId, capped)).toMatchObject({
+      state: "capped",
+      refunded_eligible_idr: "50000",
+    });
+  });
+
+  it("LOY-02 voiding a blocked self-serve order still lowers visits and spend", async () => {
+    const { world, member } = await worldWithMember();
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+      grossSalesIdr: 100_000,
+      cashierId: member.userId,
+    });
+    await deliver(
+      world,
+      orderPaidEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        grossSalesIdr: 100_000,
+        cashierId: member.userId,
+      }),
+    );
+    expect(await recordOf(world.tenantId, orderUlid)).toMatchObject({
+      state: "blocked",
+      outcome_reason: "blocked_self_serve",
+    });
+    expect(await totals(world, member.id)).toMatchObject({ visits: 1 });
+
+    await deliver(
+      world,
+      orderVoidedEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      }),
+    );
+
+    expect(await totals(world, member.id)).toEqual({
+      visits: 0,
+      spend: "0",
+      visitRows: 0,
+    });
+    expect(await recordOf(world.tenantId, orderUlid)).toMatchObject({
+      state: "blocked",
+    });
+  });
+
+  it("LOY-02 a refund after an earlier partial refund already reversed all points (state reversed) still lowers spend and the visit", async () => {
+    const { world, member } = await worldWithMember();
+    // 100.000 eligible, 10 points (10.000 IDR per point, rounded up against the
+    // member): a 90.001 refund reaches the 10-point target, so the record turns
+    // "reversed" while 9.999 of the spend is still not refunded.
+    const first = await pay(world, member, { grossSalesIdr: 100_000 });
+    await deliver(world, refund(world, first, { grossSalesIdr: 90_001 }));
+    expect(await recordOf(world.tenantId, first)).toMatchObject({
+      state: "reversed",
+    });
+    expect(await totals(world, member.id)).toEqual({
+      visits: 1,
+      spend: "9999",
+      visitRows: 1,
+    });
+
+    await deliver(world, refund(world, first, { grossSalesIdr: 9_999 }));
+
+    expect(await totals(world, member.id)).toEqual({
+      visits: 0,
+      spend: "0",
+      visitRows: 0,
+    });
   });
 });

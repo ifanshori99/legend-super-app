@@ -1,14 +1,19 @@
 // Reward redemption expiry sweep (legend-m4p5; docs/briefs/sub-290c-slices.md).
-// A pending redemption past `expires_at` is settled by `expireDueRedemptions`:
-// a voucher already used becomes `fulfilled`, any other becomes `expired` with
-// points and stock restored. The sweep runs from the worker tick after 02:00
+// A pending redemption past `expires_at` is settled by `expireRedemption`, one
+// transaction per redemption: a voucher already used becomes `fulfilled`, any
+// other becomes `expired` with points and stock restored. One failure is
+// logged and does not stop the rest. The sweep runs from the worker tick after 02:00
 // Asia/Jakarta, once per tenant per day, in batches. A rerun finds nothing due
 // and posts nothing.
 
 import { businessDateOf, type ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { expireDueRedemptions } from "../services/reward-redemption.service.ts";
+import { logger } from "../lib/logger";
+import {
+  expireRedemption,
+  listDueRedemptionIds,
+} from "../services/reward-redemption.service.ts";
 
 type Database = Parameters<typeof withTenant>[0];
 
@@ -40,15 +45,30 @@ export async function runRedemptionExpiry(
   now: Date,
 ): Promise<RedemptionExpiryResult> {
   const businessDate = businessDateOf(now, DAY_CLOCK);
+  const tenantId = context.tenant.tenantId;
   let expired = 0;
   let fulfilled = 0;
+  const failed: string[] = [];
   for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
-    const result = await withTenant(database, context, (tx) =>
-      expireDueRedemptions(tx, context, now, BATCH_SIZE),
+    const ids = await withTenant(database, context, (tx) =>
+      listDueRedemptionIds(tx, tenantId, now, BATCH_SIZE, failed),
     );
-    expired += result.expired;
-    fulfilled += result.fulfilled;
-    if (result.expired + result.fulfilled < BATCH_SIZE) break;
+    for (const id of ids) {
+      try {
+        const outcome = await withTenant(database, context, (tx) =>
+          expireRedemption(tx, context, id, now),
+        );
+        if (outcome === "expired") expired += 1;
+        else if (outcome === "fulfilled") fulfilled += 1;
+      } catch {
+        failed.push(id);
+        logger.warn(
+          { job: "redemption_expiry", redemptionId: id },
+          "redemption expiry failed for one redemption",
+        );
+      }
+    }
+    if (ids.length < BATCH_SIZE) break;
   }
   return { businessDate, expired, fulfilled };
 }

@@ -7,5 +7,7 @@ import { advanceMissions } from "./missions.service.ts";
 
 /** Runs after the visit row of a paid order is written. */
 export async function afterVisit(context: EarnStepContext): Promise<void> {
+  // Staff's own order: the visit counts, but no mission moves.
+  if (context.record.outcomeReason === "blocked_self_serve") return;
   await advanceMissions(context);
 }

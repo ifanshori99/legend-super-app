@@ -503,7 +503,18 @@ async function reverseForOrder(
     .from(pointEarnRecords)
     .where(recordWhere)
     .limit(1);
-  if (!record || record.state !== "booked") return;
+  if (!record) return;
+  // legend-wa4hp: the counters follow every record whose visit was counted:
+  // booked, capped, a blocked self-serve order and a record an earlier partial
+  // refund reversed. Only a booked record has points to reverse.
+  const visitCounted =
+    record.state === "booked" ||
+    record.state === "capped" ||
+    record.state === "reversed" ||
+    (record.state === "blocked" &&
+      record.outcomeReason === "blocked_self_serve");
+  if (!visitCounted) return;
+  const reversePoints = record.state === "booked";
   // legend-wa4hp: replay guard for a refund or void already applied.
   if (record.appliedReversalIds.includes(input.sourceId)) return;
 
@@ -541,7 +552,7 @@ async function reverseForOrder(
               BigInt(eligible),
           ),
         );
-  const delta = target - record.reversedPoints;
+  const delta = reversePoints ? target - record.reversedPoints : 0;
   const posted = Math.min(Math.max(0, delta), profile.pointsBalance);
 
   if (posted > 0 && record.earnEntryId) {
@@ -566,13 +577,23 @@ async function reverseForOrder(
   }
   const reversed = record.reversedPoints + posted;
   const shortfall = Math.max(0, target - reversed);
-  await settleRecord(tx, scope, record, {
-    refundedEligibleIdr: idr(refunded),
-    reversedPoints: reversed,
-    reversalShortfallPoints: shortfall,
-    state: reversed === booked ? "reversed" : "booked",
-    appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
-  });
+  await settleRecord(
+    tx,
+    scope,
+    record,
+    reversePoints
+      ? {
+          refundedEligibleIdr: idr(refunded),
+          reversedPoints: reversed,
+          reversalShortfallPoints: shortfall,
+          state: reversed === booked ? "reversed" : "booked",
+          appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
+        }
+      : {
+          refundedEligibleIdr: idr(refunded),
+          appliedReversalIds: [...record.appliedReversalIds, input.sourceId],
+        },
+  );
 
   // legend-wa4hp: a void or refund also lowers the visit count and spend.
   const spendDelta = refunded - previousRefunded;

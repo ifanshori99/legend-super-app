@@ -24,8 +24,10 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { withMemberScope } from "../db/member-scope.ts";
 import { hashPromoCode } from "../services/crm-promo-engine.ts";
+import { runRedemptionExpiry } from "../worker/redemption-expiry.job.ts";
+import { updateReward } from "../services/loyalty-rewards-admin.service.ts";
 import {
-  expireDueRedemptions,
+  expireRedemption,
   fulfilRedemption,
   listActiveRewards,
   listMemberRedemptions,
@@ -65,6 +67,7 @@ import {
   redemptionsOf,
   rewardOf,
   scopeOf,
+  seedMenuItem,
   seedReward,
   vouchersOf,
 } from "./member-rewards-helpers.ts";
@@ -488,9 +491,7 @@ describe("LOY-03 cancel a redemption", () => {
 
 describe("LOY-03 expiry of pending redemptions", () => {
   async function sweep(world: World, now: Date) {
-    return withTenant(db, world.context, (tx) =>
-      expireDueRedemptions(tx, world.context, now),
-    );
+    return runRedemptionExpiry(db, world.context, now);
   }
 
   it("LOY-03 a due redemption expires: points back with reason redemption_expired, stock back, voucher cancelled; a re-run posts nothing", async () => {
@@ -512,7 +513,7 @@ describe("LOY-03 expiry of pending redemptions", () => {
     const due = new Date(NOW.getTime() + 8 * DAY_MS);
     const result = await sweep(world, due);
 
-    expect(result).toEqual({ expired: 2, fulfilled: 0 });
+    expect(result).toMatchObject({ expired: 2, fulfilled: 0 });
     expect((await redemptionRow(world.tenantId, item.id)).status).toBe(
       "expired",
     );
@@ -539,7 +540,7 @@ describe("LOY-03 expiry of pending redemptions", () => {
 
     // Re-run: nothing more.
     const rerun = await sweep(world, due);
-    expect(rerun).toEqual({ expired: 0, fulfilled: 0 });
+    expect(rerun).toMatchObject({ expired: 0, fulfilled: 0 });
     expect(
       (await ledgerDetail(world.tenantId, member.id)).filter(
         (row) => row.type === "adjust",
@@ -559,7 +560,7 @@ describe("LOY-03 expiry of pending redemptions", () => {
 
     const result = await sweep(world, new Date(NOW.getTime() + 1 * DAY_MS));
 
-    expect(result).toEqual({ expired: 0, fulfilled: 0 });
+    expect(result).toMatchObject({ expired: 0, fulfilled: 0 });
     expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
       "pending",
     );
@@ -588,7 +589,7 @@ describe("LOY-03 expiry of pending redemptions", () => {
 
     const result = await sweep(world, new Date(NOW.getTime() + 8 * DAY_MS));
 
-    expect(result).toEqual({ expired: 0, fulfilled: 1 });
+    expect(result).toMatchObject({ expired: 0, fulfilled: 1 });
     const row = await redemptionRow(world.tenantId, redemption.id);
     expect(row.status).toBe("fulfilled");
     expect(row.fulfilled_at?.toISOString()).toBe("2026-11-09T05:00:00.000Z");
@@ -1350,5 +1351,179 @@ describe("LOY-03 fulfil a redemption by code", () => {
     expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
       "fulfilled",
     );
+  });
+});
+
+describe("LOY-03 settlement follows the redemption, not the current reward type", () => {
+  /** Raw edit as the migration owner: the PATCH guard blocks this on purpose. */
+  async function retypeReward(
+    tenantId: string,
+    rewardId: string,
+    to: "voucher" | "free_item",
+  ) {
+    const menuItemId = to === "free_item" ? await seedMenuItem(tenantId) : null;
+    await asTenant(tenantId, (client) =>
+      client.query(
+        `UPDATE rewards SET type = $3, menu_item_id = $4, voucher_value_idr = $5
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, rewardId, to, menuItemId, to === "voucher" ? 25_000 : null],
+      ),
+    );
+  }
+
+  function fulfilAs(world: World, code: string) {
+    return withTenant(db, world.context, (tx) =>
+      fulfilRedemption(
+        tx,
+        world.context,
+        randomUUID(),
+        { redemptionCode: code, outletId: world.outletA },
+        NOW,
+      ),
+    );
+  }
+
+  it("LOY-03 fulfil of a voucher redemption still needs the used voucher after the reward became an item reward", async () => {
+    const { world, member, scope } = await setup(200);
+    const rewardId = await seedReward(world.tenantId, {
+      type: "voucher",
+      pointsCost: 100,
+    });
+    const redemption = await redeemAs(scope, rewardId, key());
+    await retypeReward(world.tenantId, rewardId, "free_item");
+
+    expect(await errorCodeOf(fulfilAs(world, redemption.redemptionCode))).toBe(
+      "VOUCHER_INVALID",
+    );
+
+    const [voucher] = await vouchersOf(world.tenantId, member.id);
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+    });
+    await markVoucherRedeemed(
+      world.tenantId,
+      voucher!.id,
+      orderUlid,
+      "2026-11-08T01:00:00Z",
+    );
+    const result = await fulfilAs(world, redemption.redemptionCode);
+    expect(result.status).toBe("fulfilled");
+    expect((await redemptionRow(world.tenantId, redemption.id)).order_id).toBe(
+      ulidToUuid(orderUlid),
+    );
+  });
+
+  it("LOY-03 fulfil of an item redemption works after the reward became a voucher reward", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, { pointsCost: 50 });
+    const redemption = await redeemAs(scope, rewardId, key());
+    await retypeReward(world.tenantId, rewardId, "voucher");
+
+    const result = await fulfilAs(world, redemption.redemptionCode);
+    expect(result.status).toBe("fulfilled");
+  });
+
+  it("LOY-03 expiry cancels the voucher of a voucher redemption after the reward became an item reward", async () => {
+    const { world, member, scope } = await setup(200);
+    const rewardId = await seedReward(world.tenantId, {
+      type: "voucher",
+      pointsCost: 100,
+      redemptionValidDays: 7,
+    });
+    const redemption = await redeemAs(scope, rewardId, key());
+    await retypeReward(world.tenantId, rewardId, "free_item");
+
+    const result = await runRedemptionExpiry(
+      db,
+      world.context,
+      new Date(NOW.getTime() + 8 * DAY_MS),
+    );
+
+    expect(result).toMatchObject({ expired: 1, fulfilled: 0 });
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "expired",
+    );
+    expect((await vouchersOf(world.tenantId, member.id))[0]!.status).toBe(
+      "cancelled",
+    );
+    expect(await balanceOf(world.tenantId, member.id)).toBe(200);
+  });
+});
+
+describe("LOY-03 reward PATCH with pending redemptions", () => {
+  it("LOY-03 changing type, menuItemId or voucherValueIdr is 409 while a redemption is pending", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, { pointsCost: 50 });
+    await redeemAs(scope, rewardId, key());
+    const otherItem = await seedMenuItem(world.tenantId);
+
+    expect(
+      await errorCodeOf(
+        updateReward(world.context, randomUUID(), rewardId, {
+          type: "voucher",
+          menuItemId: null,
+          voucherValueIdr: 10_000,
+        }),
+      ),
+    ).toBe("REWARD_HAS_PENDING_REDEMPTIONS");
+    expect(
+      await errorCodeOf(
+        updateReward(world.context, randomUUID(), rewardId, {
+          menuItemId: otherItem,
+        }),
+      ),
+    ).toBe("REWARD_HAS_PENDING_REDEMPTIONS");
+  });
+
+  it("LOY-03 other fields stay editable while pending, and the type is editable once nothing is pending", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, { pointsCost: 50 });
+    const redemption = await redeemAs(scope, rewardId, key());
+
+    const renamed = await updateReward(world.context, randomUUID(), rewardId, {
+      name: "Nama baru",
+      pointsCost: 60,
+    });
+    expect(renamed.name).toBe("Nama baru");
+
+    await cancelAs(scope, redemption.id);
+    const retyped = await updateReward(world.context, randomUUID(), rewardId, {
+      type: "voucher",
+      menuItemId: null,
+      voucherValueIdr: 10_000,
+    });
+    expect(retyped.type).toBe("voucher");
+  });
+});
+
+describe("LOY-03 expiry settles one redemption per transaction", () => {
+  it("LOY-03 expireRedemption skips a redemption that is not due and settles a due one", async () => {
+    const { world, scope } = await setup(100);
+    const rewardId = await seedReward(world.tenantId, {
+      pointsCost: 50,
+      redemptionValidDays: 7,
+    });
+    const redemption = await redeemAs(scope, rewardId, key());
+
+    const early = await withTenant(db, world.context, (tx) =>
+      expireRedemption(tx, world.context, redemption.id, NOW),
+    );
+    expect(early).toBe("skipped");
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "pending",
+    );
+
+    const late = new Date(NOW.getTime() + 8 * DAY_MS);
+    expect(
+      await withTenant(db, world.context, (tx) =>
+        expireRedemption(tx, world.context, redemption.id, late),
+      ),
+    ).toBe("expired");
+    expect(
+      await withTenant(db, world.context, (tx) =>
+        expireRedemption(tx, world.context, redemption.id, late),
+      ),
+    ).toBe("skipped");
   });
 });

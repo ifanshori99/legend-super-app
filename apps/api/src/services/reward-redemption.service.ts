@@ -7,7 +7,7 @@
 // a member call comes only from `scope.customerProfileId`.
 
 import { randomInt, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
 import {
   outletIdSchema,
   tenantIdSchema,
@@ -584,8 +584,9 @@ export async function fulfilRedemption(
   if (!reward) throw notFound();
 
   let orderId: string | null = input.orderId ?? null;
-  if (reward.type === "voucher") {
-    if (redemption.voucherId === null) throw crmError("VOUCHER_INVALID", 422);
+  // The redemption decides, not the reward's current type (an edited reward
+  // must not change how an open redemption settles).
+  if (redemption.voucherId !== null) {
     const [voucher] = await tx
       .select()
       .from(vouchers)
@@ -631,19 +632,45 @@ export async function fulfilRedemption(
   return toRedemptionDto({ ...row, rewardType: reward.type });
 }
 
-/** Closes pending redemptions past `expires_at`. A voucher already used at
- * the till counts as fulfilled; otherwise points, stock and voucher go back.
- * A re-run finds nothing pending and posts nothing. */
-export async function expireDueRedemptions(
+/** Ids of pending redemptions past `expires_at`, oldest first. `exclude`
+ * holds ids that already failed in this run, so they do not starve the rest. */
+export async function listDueRedemptionIds(
   tx: Tx,
-  context: ScopedTenantContext,
+  tenantId: string,
   now: Date,
   limit: number = EXPIRY_BATCH,
-): Promise<{ expired: number; fulfilled: number }> {
-  const tenantId = context.tenant.tenantId;
+  exclude: readonly string[] = [],
+): Promise<string[]> {
+  const conditions = [
+    eq(rewardRedemptions.tenantId, tenantId),
+    eq(rewardRedemptions.status, "pending"),
+    lte(rewardRedemptions.expiresAt, now),
+  ];
+  if (exclude.length > 0)
+    conditions.push(notInArray(rewardRedemptions.id, [...exclude]));
   const due = await tx
+    .select({ id: rewardRedemptions.id })
+    .from(rewardRedemptions)
+    .where(and(...conditions))
+    .orderBy(asc(rewardRedemptions.expiresAt), asc(rewardRedemptions.id))
+    .limit(limit);
+  return due.map((row) => row.id);
+}
+
+/** Settles one pending redemption past `expires_at`, in the caller's own
+ * transaction. A voucher already used at the till counts as fulfilled;
+ * otherwise points, stock and voucher go back. `skipped` when it was settled
+ * by someone else or is not due. Branches on the redemption's voucher, never
+ * on the reward's current type. */
+export async function expireRedemption(
+  tx: Tx,
+  context: ScopedTenantContext,
+  redemptionId: string,
+  now: Date,
+): Promise<"expired" | "fulfilled" | "skipped"> {
+  const tenantId = context.tenant.tenantId;
+  const [probe] = await tx
     .select({
-      id: rewardRedemptions.id,
       customerProfileId: rewardRedemptions.customerProfileId,
       rewardId: rewardRedemptions.rewardId,
     })
@@ -651,62 +678,58 @@ export async function expireDueRedemptions(
     .where(
       and(
         eq(rewardRedemptions.tenantId, tenantId),
-        eq(rewardRedemptions.status, "pending"),
-        lte(rewardRedemptions.expiresAt, now),
+        eq(rewardRedemptions.id, redemptionId),
       ),
-    )
-    .orderBy(asc(rewardRedemptions.expiresAt), asc(rewardRedemptions.id))
-    .limit(limit);
-  let expired = 0;
-  let fulfilled = 0;
-  for (const item of due) {
-    await withProfileLock(tx, tenantId, item.customerProfileId);
-    const reward = await lockReward(tx, tenantId, item.rewardId);
-    if (!reward) continue;
-    const redemption = await lockRedemption(tx, tenantId, item.id);
-    // Settled by someone else since the scan.
-    if (!redemption || redemption.status !== "pending") continue;
-    if (redemption.voucherId !== null) {
-      const [voucher] = await tx
-        .select()
-        .from(vouchers)
+    );
+  if (!probe) return "skipped";
+  await withProfileLock(tx, tenantId, probe.customerProfileId);
+  const reward = await lockReward(tx, tenantId, probe.rewardId);
+  if (!reward) return "skipped";
+  const redemption = await lockRedemption(tx, tenantId, redemptionId);
+  if (
+    !redemption ||
+    redemption.status !== "pending" ||
+    redemption.expiresAt.getTime() > now.getTime()
+  )
+    return "skipped";
+  if (redemption.voucherId !== null) {
+    const [voucher] = await tx
+      .select()
+      .from(vouchers)
+      .where(
+        and(
+          eq(vouchers.tenantId, tenantId),
+          eq(vouchers.id, redemption.voucherId),
+        ),
+      )
+      .for("update");
+    if (voucher?.status === "redeemed") {
+      await tx
+        .update(rewardRedemptions)
+        .set({
+          status: "fulfilled",
+          fulfilledAt: voucher.redeemedAt ?? now,
+          orderId: voucher.redeemedOrderId,
+          updatedAt: now,
+        })
         .where(
           and(
-            eq(vouchers.tenantId, tenantId),
-            eq(vouchers.id, redemption.voucherId),
+            eq(rewardRedemptions.tenantId, tenantId),
+            eq(rewardRedemptions.id, redemption.id),
           ),
-        )
-        .for("update");
-      if (voucher?.status === "redeemed") {
-        await tx
-          .update(rewardRedemptions)
-          .set({
-            status: "fulfilled",
-            fulfilledAt: voucher.redeemedAt ?? now,
-            orderId: voucher.redeemedOrderId,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(rewardRedemptions.tenantId, tenantId),
-              eq(rewardRedemptions.id, redemption.id),
-            ),
-          );
-        fulfilled += 1;
-        continue;
-      }
+        );
+      return "fulfilled";
     }
-    await cancelVoucher(tx, redemption, "redemption_expired");
-    await restoreRedemption(
-      tx,
-      context,
-      redemption,
-      reward,
-      "expired",
-      null,
-      now,
-    );
-    expired += 1;
   }
-  return { expired, fulfilled };
+  await cancelVoucher(tx, redemption, "redemption_expired");
+  await restoreRedemption(
+    tx,
+    context,
+    redemption,
+    reward,
+    "expired",
+    null,
+    now,
+  );
+  return "expired";
 }

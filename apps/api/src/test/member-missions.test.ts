@@ -686,6 +686,34 @@ describe("F17 mission: only active missions, inside their window, for real membe
     expect(await progressRows(world.tenantId, missionId)).toHaveLength(0);
   });
 
+  it("F17 mission: an order blocked as self-serve (staff's own order) moves no mission", async () => {
+    const world = await worldWithProgram();
+    const member = await seedMember(world.tenantId);
+    const missionId = await seedMission(
+      world.tenantId,
+      visitMission(1, { reward: { kind: "points", points: 100 } }),
+    );
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+      cashierId: member.userId,
+    });
+    await deliver(
+      world,
+      orderPaidEvent(world, {
+        orderUlid,
+        outletId: world.outletA,
+        cashierId: member.userId,
+      }),
+    );
+
+    expect(await progressRows(world.tenantId, missionId)).toHaveLength(0);
+    expect(await bonusRows(world.tenantId, member.id)).toHaveLength(0);
+    // An order of the same member without a staff cashier does move it.
+    await payOn(world, member, "2026-10-15");
+    expect(await progressValue(world.tenantId, missionId, member.id)).toBe(1);
+  });
+
   it("F17 mission: a mission of another tenant never moves", async () => {
     const mine = await worldWithProgram();
     const theirs = await worldWithProgram();
