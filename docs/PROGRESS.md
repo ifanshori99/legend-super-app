@@ -870,3 +870,4 @@ Langkah berikut CTO baru:
 - 10 Nov 07:03 Akun Claude #3 5h 100% (reset 09:59); G5byz berhenti karena limit. Keputusan: thread Opus di #3 menunggu reset (pengingat cron 10:03), merge train G81x9 pindah ke #2 bila berhenti, tanpa thread baru (kuota #2 7d 86%, #1 7d 99%). Sesi CTO kini di #1 (99%): coba pindah ke #2.
 - 07:09 G9lu3 split bill selesai c6916247 (0202), G52kh retur supplier + petty f2bd63f5 (0208, flag mati sampai 29vw): diterima, resolve, antre batch44. Founder minta adapter ganti gateway + Duitku: kartu legend-l9rji, legend-pa21 ditarik ke m1, brief 302 (migrasi 0211). Form Q72-Q75. Thread baru tunggu #3 reset 10:00 (#1 7d 99%, #2 7d 87%).
 - 07:10 Founder: email login member pakai SumoPod SMTP, bukan Brevo. Board B19 diganti, k2l diberi tahu saat G5byz lanjut 10:03.
+- 07:12 Founder jawab Q72-Q75 semua sesuai rekomendasi. Kartu baru legend-ia54l (klaim split bill dari HP 24 jam). Cek modul gateway 119connect sedang jalan (Explore).

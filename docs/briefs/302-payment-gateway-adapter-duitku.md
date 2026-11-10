@@ -32,7 +32,12 @@ Cabang lain yang menyentuh area pembayaran dan belum masuk m1: `ws/split-bill` (
 Mulai dengan `Explore` (paralel: port dan adapter DOIT; routing dan integrasi tenant; webhook dan poller; endpoint yang diharapkan UI `legend-sgg`/`legend-y6s`) dan `web-fetch` untuk dokumentasi Duitku. Desain registry, skema konfigurasi platform, dan aturan perpindahan gateway lewat satu subagent `architect`, catat di `docs/DECISIONS.md`. Sesudah desain: registry dan konfigurasi platform/tenant, adapter Duitku, dan webhook Duitku lewat `implementer` paralel di berkas terpisah.
 
 ## Keputusan founder
-CTO menambahkan jawaban form (Q72–Q74) di sini sebelum atau sesudah kamu mulai. Selama belum ada: pakai rekomendasi CTO: Super Admin menyalakan gateway dan menentukan bawaan, admin tenant memilih dari daftar itu dengan akun merchant sendiri; dua gateway boleh aktif bersamaan per metode dengan cadangan otomatis.
+Dijawab founder 10 Nov:
+- Q72: Super Admin menyalakan gateway yang boleh dipakai dan gateway bawaan; admin brand (tenant) memilih dari daftar itu dan mengisi akun merchant miliknya sendiri (uang langsung ke brand, Legend tidak memegang dana).
+- Q73: dua gateway boleh aktif bersamaan per metode, dengan cadangan otomatis saat gateway utama gangguan.
+- Q74: Duitku dibangun sekarang, sebelum rilis pertama; dinyalakan per brand begitu akun Duitku ada.
+
+Catatan CTO: repo 119connect (`/Users/ifanshori99/Projects/119connect-portal-alumni`) punya modul penyedia pembayaran. CTO sedang memeriksa kecocokannya; hasil dan bagian yang boleh dipindahkan ditambahkan di sini. Bila sudah ada, pindahkan bagian itu (klien HTTP Duitku, rumus signature, test) alih-alih menulis ulang.
 
 ## Kartu
 Awal: `ghostex board associate <kartu>` untuk kartu adapter dan `legend-pa21`, `bd update <id> --status in_progress`. Selesai: `--status review` + `bd comment` bahasa biasa. UI yang perlu berubah: kartu terpisah, jangan kerjakan.
