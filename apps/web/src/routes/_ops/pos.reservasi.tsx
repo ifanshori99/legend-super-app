@@ -64,9 +64,10 @@ function ReservationsRoute() {
       onOpenReservation={(reservationId) =>
         void navigate({ search: (prev) => ({ ...prev, reservationId }) })
       }
-      onCloseReservation={() =>
+      onCloseReservation={(options) =>
         void navigate({
           search: (prev) => ({ ...prev, reservationId: undefined }),
+          replace: options?.replace,
         })
       }
     />

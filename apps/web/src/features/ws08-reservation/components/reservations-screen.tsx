@@ -42,7 +42,9 @@ type ReservationsScreenProps = {
   onDateChange: (date: string | undefined) => void;
   onStatusChange: (status: ReservationStatus | undefined) => void;
   onOpenReservation: (reservationId: string) => void;
-  onCloseReservation: () => void;
+  /** `replace`: drop the id without a history entry (an id that is not this
+   * outlet's), so Back does not return to it. */
+  onCloseReservation: (options?: { replace?: boolean }) => void;
 };
 
 /**
@@ -123,6 +125,7 @@ function ReservationsContent({
       <ReservationDetailDialog
         open={reservationId !== undefined}
         onOpenChange={(open) => !open && onCloseReservation()}
+        onNotFound={() => onCloseReservation({ replace: true })}
         outletId={outlet.id}
         timeZone={outlet.timeZone}
         reservationId={reservationId ?? null}
