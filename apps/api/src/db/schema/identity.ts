@@ -225,6 +225,8 @@ export const loginChallenges = pgTable(
       table.status,
       table.createdAt,
     ),
+    // The daily retention purge (finished rows past 30 days) scans by age.
+    index("login_challenges_created_idx").on(table.createdAt),
   ],
 );
 
@@ -291,5 +293,7 @@ export const waInboundMessages = pgTable(
       table.tenantId,
       table.processedAt,
     ),
+    // The daily retention purge (rows past 90 days) scans by age.
+    index("wa_inbound_messages_created_idx").on(table.createdAt),
   ],
 );

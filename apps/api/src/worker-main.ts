@@ -109,6 +109,7 @@ import {
   probeMaintenanceConnection,
   registerAuditRetentionJob,
 } from "./worker/audit-retention.job.ts";
+import { registerWaInboundRetentionJob } from "./worker/wa-inbound-retention.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { sweepParkedAccessEvents } from "./worker/access-drain.job.ts";
 import { startGatewayProbeSweep } from "./worker/payment-failover-probe.job.ts";
@@ -755,6 +756,9 @@ try {
     await probeMaintenanceConnection(maintenancePool);
     await registerAuditRetentionJob({ boss, pool: maintenancePool });
   }
+  // w8dfz.2: WhatsApp messages (90 days) and finished challenges (30 days);
+  // service-scoped tables, so it runs on the app connection, not the maintenance login.
+  await registerWaInboundRetentionJob({ boss, log: consoleLikeLog(logger) });
   // legend-dzh9q: the selfie purge deletes objects, so it needs the object
   // storage. Without STORAGE_* the worker still starts, with the job off.
   const storageRuntime = createStorageRuntimeFromEnv(

@@ -1604,6 +1604,13 @@
       "when": 1794351323173,
       "tag": "0272_wa_proof_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1794352000000,
+      "tag": "0275_wa_retention_indexes",
+      "breakpoints": true
     }
   ]
 }
