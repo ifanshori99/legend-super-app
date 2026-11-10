@@ -1034,3 +1034,9 @@ Langkah berikut CTO baru:
 - 21:35 G8go1: 4f722ee2 (web typecheck queries.ts:81, lama dari n1mp). Architect: P1 cc4e06f9 belum menutup P1#2 (createGuestPayment bocorkan intent id). Keputusan CTO: opsi 2 di cabang ini + kartu legend-r77pq rahasia per pembayar (migrasi 0255) di ws/claim-payer-secret, thread sama.
 - 21:45 G2b3l h1dyy selesai: 99c11968..3b94e7ad ws/94q2l-impl (dipush CTO). Promo refund lewat port promo (croissant gratis Rp0), poin kembali saat refund ditolak (idempoten), alokasi pembulatan kumulatif. 170/170, typecheck 0, architect xhigh 2 putaran bersih. Keputusan engineer diterima CTO: refund ditolak tetap menarik promo baris itu. 94q2l belum production -> tidak ada risiko rollout. Low sisa -> kartu P3.
 - 21:46 mulai G3hrs merge train batch48a (brief 386): i83ls-fix, r3i8w, 94q2l-impl, aruta, tct8, omp4, ie6m.
+
+### 10 Nov 20:55 (CTO)
+- rgddb SELESAI (G816d resolved): 363b183a + 1b301b15 di ws/duitku-codex-fix, dipush. Re-review architect tertutup. Sisa: Codex ulang area pembayaran (cron 00:41) lalu batch48b.
+- p649r diantre ke G3hrs setelah batch48a.
+- Slot Claude 1 kosong tanpa kartu siap yang bisa jalan: s0qwk tunggu refund masuk m1 (batch48a), knfl6/xa9bc/wqorb tunggu r3i8w di m1. Codex: #2 limit s/d 00:35, #3 7d 99%.
+- Founder tanya Fable 5.2 medium vs Opus 5.5 xhigh. Temuan: harga per token Fable 2x ($8/$40 vs $4/$20); benchmark publik hanya Fable 5.1 (Opus 5.5 xhigh lebih tinggi pada biaya per tugas setara). Akun langganan punya kuota Fable 7d terpisah (0% di ketiga akun). Usulan: pilot Fable 5.2 high untuk review architect 2-3 kartu, menunggu persetujuan founder.
