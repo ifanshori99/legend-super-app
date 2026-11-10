@@ -71,6 +71,7 @@ import {
 import { findOpenShiftId } from "./services/pos-shift.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
+import { installKdsServingEstimate } from "./services/kds-estimate.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -79,6 +80,8 @@ setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
 setQrOrderPromoPort(orderPromoPort);
 setQrOrderDepositCreditLookup(depositCreditForSession);
+// WS-04 order pacing (legend-gyc, KDS-05): queue-aware serving estimate.
+installKdsServingEstimate();
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt

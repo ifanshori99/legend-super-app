@@ -57,6 +57,7 @@ import {
 import type { CartLineModifierSnapshot } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { guestMenuItemCondition, type Tx } from "./menu-internals.ts";
+import { isLinePaused } from "./kds-pacing.service.ts";
 import { readAvailabilityDecisions } from "./menu-availability.ts";
 import { readChannelPriceGrid } from "./menu-pricing.service.ts";
 import type { OrderPromoQuote } from "./order-promo-port.ts";
@@ -316,6 +317,8 @@ export type LineRequest = {
   variantId: string | null;
   quantity: number;
   modifierIds: readonly string[];
+  /** KDS-05 paused lines for the channel; a hit is refused as `sold_out`. */
+  paused?: ReadonlySet<string>;
 };
 
 export type ResolvedLine = {
@@ -341,6 +344,11 @@ export function resolveLine(
   request: LineRequest,
 ): LineResolution {
   if (!item || !item.sellable) return { ok: false, reason: "sold_out" };
+  if (
+    request.paused &&
+    isLinePaused(request.paused, request.menuItemId, request.variantId)
+  )
+    return { ok: false, reason: "sold_out" };
   let unitPrice: number;
   let name = item.name;
   if (item.variants.size > 0) {

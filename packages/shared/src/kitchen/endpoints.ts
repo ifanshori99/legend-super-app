@@ -22,6 +22,10 @@ import {
   allDayCountSchema,
   capacityRuleInputSchema,
   capacityRuleSchema,
+  channelPauseSchema,
+  manualChannelPauseInputSchema,
+  menuLoadInputSchema,
+  menuLoadSchema,
   createOrderIssueInputSchema,
   expoBoardSchema,
   expoRunnerSchema,
@@ -292,6 +296,71 @@ export const updateCapacityRules = defineEndpoint({
     rules: z.array(capacityRuleInputSchema).min(1).max(24),
   }),
   response: dataResponseSchema(z.array(capacityRuleSchema)),
+});
+
+/**
+ * legend-7svpq: menu load admin. `listMenuLoads` reads the load of every menu
+ * line of the outlet; `setMenuLoads` upserts lines (same values = no change,
+ * no audit); `deleteMenuLoad` removes one line and answers `removed: false`
+ * when it was already gone.
+ */
+export const listMenuLoads = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/menu-loads",
+  params: outletParams,
+  response: dataResponseSchema(z.array(menuLoadSchema)),
+});
+
+export const setMenuLoads = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/kitchen/menu-loads",
+  params: outletParams,
+  body: clientInputSchema({
+    loads: z.array(menuLoadInputSchema).min(1).max(100),
+  }),
+  response: dataResponseSchema(z.array(menuLoadSchema)),
+});
+
+export const deleteMenuLoad = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/kitchen/menu-loads/:loadId",
+  params: z.strictObject({ outletId: outletIdSchema, loadId: uuidSchema }),
+  response: dataResponseSchema(
+    z.strictObject({ id: uuidSchema, removed: z.boolean() }),
+  ),
+});
+
+/**
+ * legend-7svpq: live channel pauses of the outlet, automatic and manual (the
+ * `reason` tells them apart). Only a `manual` pause can be set or lifted here.
+ */
+export const listChannelPauses = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses",
+  params: outletParams,
+  response: dataResponseSchema(z.array(channelPauseSchema)),
+});
+
+/**
+ * Pauses a menu line manually. One live manual pause per line: a repeated PUT
+ * replaces its channels and end time.
+ */
+export const setManualChannelPause = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses",
+  params: outletParams,
+  body: clientInputSchema(manualChannelPauseInputSchema.shape),
+  response: dataResponseSchema(channelPauseSchema),
+});
+
+/** Lifts a manual pause. An automatic pause answers 404; a lifted one `released: false`. */
+export const releaseManualChannelPause = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/kitchen/channel-pauses/:pauseId",
+  params: z.strictObject({ outletId: outletIdSchema, pauseId: uuidSchema }),
+  response: dataResponseSchema(
+    z.strictObject({ id: uuidSchema, released: z.boolean() }),
+  ),
 });
 
 /**

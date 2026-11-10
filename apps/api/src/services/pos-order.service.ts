@@ -130,6 +130,11 @@ import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
+import {
+  evaluatePacingIfStale,
+  isLinePaused,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 
@@ -539,6 +544,8 @@ export async function createPosOrder(
       "Captain order dicatat untuk sesi meja yang sedang berjalan.",
     );
 
+  // Refresh stale auto-pause state outside any tx; never throws.
+  await evaluatePacingIfStale(context, outletId, now);
   return withTenant(db, context, (tx) =>
     posIdempotent(
       tx,
@@ -619,8 +626,23 @@ export async function createPosOrder(
           itemIds: input.items.map((line) => line.menuItemId),
           now,
         });
+        // KDS-05: lines the kitchen paused for this channel (station at capacity).
+        const pausedLines = await readPausedMenuLines(
+          tx,
+          context,
+          outletId,
+          channel,
+          now,
+        );
         const orderId = createUlid(now.getTime());
         const resolved = input.items.map((line, index) => {
+          if (
+            isLinePaused(pausedLines, line.menuItemId, line.variantId ?? null)
+          )
+            throw new CoreError(
+              "CONFLICT",
+              `KDS-05: menu baris ${index + 1} sedang dijeda untuk kanal ini.`,
+            );
           const item = catalogue.get(line.menuItemId);
           const resolution = resolveLine(item, {
             menuItemId: line.menuItemId,

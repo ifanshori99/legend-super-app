@@ -109,6 +109,7 @@ import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
+import { servingTimeRouter } from "./serving-time.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
@@ -220,6 +221,8 @@ apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
 // WS-04 pickup display feed and call/picked-up (legend-mzhr0): per-route auth,
 // the prefix is shared with other outlet routers.
 apiRouter.use("/outlets/:outletId", pickupRouter);
+// WS-04 serving-time estimate (legend-gyc): per-route auth, shared prefix.
+apiRouter.use("/outlets/:outletId", servingTimeRouter);
 // WS-04 expo board, runner assignment and delivered (legend-him8j), same prefix.
 apiRouter.use("/outlets/:outletId", expoRouter);
 // WS-04 remake / comp log (legend-4b5): /api/outlets/:outletId/orders/:orderId/issues
