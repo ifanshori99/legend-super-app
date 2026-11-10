@@ -127,6 +127,7 @@ export const attendanceQrMessages = {
     selfie_geo: "Selfie & GPS",
     rotating_qr: "QR outlet",
     manual_correction: "Koreksi manual",
+    outlet_device: "Layar absen outlet",
   },
   validity: {
     valid: "Sah",

@@ -43,6 +43,8 @@ export const attendanceMethodSchema = z.enum([
   "selfie_geo",
   "rotating_qr",
   "manual_correction",
+  /** Clock at the outlet's own device, recorded by the edge node (design hris-edge-replication 6.2). */
+  "outlet_device",
 ]);
 export type AttendanceMethod = z.infer<typeof attendanceMethodSchema>;
 
@@ -377,6 +379,9 @@ export const attendanceStoredFlagReasonSchema = z.enum([
   ...attendanceFlagReasonSchema.options,
   "offline_time_skew",
   "offline_unverified",
+  "edge_roster_stale",
+  "employee_inactive",
+  "selfie_unlinked",
 ]);
 export type AttendanceStoredFlagReason = z.infer<
   typeof attendanceStoredFlagReasonSchema

@@ -143,7 +143,7 @@ Scope is always `tenant_id` and `outlet_id` from the verified credential
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `user`                 | Users holding a `staff_pins` row at O, plus `user_id` of every employee row sent                                                                                                                                                   | `id`, `name`, `banned`, `created_at`, `updated_at`; `email` is replaced by `<id>@edge.invalid`, `email_verified=false`                                                                                       | real email, `image`, every `account` row (password hashes), sessions                                                                                                                                    |
 | `roles`                | Roles referenced by the assignments sent                                                                                                                                                                                           | every column (`id`, `tenant_id`, `name`, `is_template`, `template_key`, `permissions`, `mfa_required`, `allowed_scope_types`, timestamps); none is personal                                                  | —                                                                                                                                                                                                       |
-| `role_assignments`     | Active assignments (`valid_until` null or future) of the users sent that the cloud permission resolver would use for a request at outlet O: scope tenant, the brand of O, or O                                                     | every column, except `assigned_by` is replaced by the assignee's own `user_id` (NOT NULL FK to `user`; the assigning admin is not shipped)                                                                   | assignments scoped to other outlets; scope types the edge cannot resolve (**TBD-verify** the `scope_type` values in the schema; `permission-resolver.ts:81-84` passes any type through)                 |
+| `role_assignments`     | Active assignments (`valid_until` null or future) of the users sent that the cloud permission resolver would use for a request at outlet O: scope tenant, the brand of O, or O                                                     | every column, except `assigned_by` is replaced by the assignee's own `user_id` (NOT NULL FK to `user`; the assigning admin is not shipped)                                                                   | assignments scoped to other outlets; `station` scope (see 3.5: only `tenant`, brand of O and O are sent)                                                                                                |
 | `employees`            | Status `onboarding` or `active`, `user_id` not null (no user, no sign-in, no clock), and (`home_outlet_id = O` or a `published`/`swapped` shift at O between today-1 and today+7)                                                  | `id`, `tenant_id`, `user_id`, `employee_no`, `full_name`, `home_outlet_id` (**rewritten to O**, see below), `employment_type`, `join_date`, `end_date`, `status`                                             | `legal_entity_id`, `position_id`, `org_unit_id`, `manager_id`, `ptkp_status`, every `*_encrypted`/`*_hmac` column, emergency contact. On the edge they stay NULL; `pii_key_version` takes its default 1 |
 | `shift_assignments`    | Outlet O, status `published` or `swapped`, `business_date` today-1 to today+7, **and `employee_id` in the employees sent** (FK `shift_assignments_employee_fk`; a shift of a suspended employee or one without a user is not sent) | `id`, `tenant_id`, `outlet_id`, `employee_id`, `business_date`, `segments`, `break_minutes`, `status`, `source`, `published_at`, `created_by` (an opaque user id, no FK, `db/schema/hris-scheduling.ts:138`) | `shift_template_id` and `station_id` (nullable, sent as NULL so the edge needs no templates or stations)                                                                                                |
 | `attendance_policies`  | Tenant default (`outlet_id` null) and the override for O                                                                                                                                                                           | all columns                                                                                                                                                                                                  | —                                                                                                                                                                                                       |
@@ -202,9 +202,9 @@ Leaving the scope or freeing keys. The edge cannot tell "terminated" from
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `user`                | absent: `banned = true`, delete their sessions on the edge. The email placeholder `<id>@edge.invalid` is unique per id, so users never need freeing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `role_assignments`    | delete (absent or key changed; the upsert re-inserts)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `roles`               | absent and no longer referenced: delete. Key changed (`roles_tenant_name_key`, `roles_tenant_template_key`): set `name = '~detached-' \|\| id`, `template_key = NULL` (**TBD-verify** the CHECK on `is_template`/`template_key` allows it; else set `is_template = false` too); the upsert restores it                                                                                                                                                                                                                                                                                                                                                        |
+| `roles`               | absent and no longer referenced: delete. Key changed (`roles_tenant_name_key`, `roles_tenant_template_key`): set `name = '~detached-' \|\| id`, `template_key = NULL`, `is_template = false` (all three, the CHECK `roles_template_check` requires it, see 3.5); the upsert restores it                                                                                                                                                                                                                                                                                                                                                                       |
 | `employees`           | **detach**: `status = 'suspended'`, `user_id = NULL`, `employee_no = 'X' \|\| upper(left(replace(id::text, '-', ''), 29))`. The placeholder is 30 characters, matches `employees_employee_no_check` (`^[A-Z0-9][A-Z0-9-]{1,29}$`, `varchar(30)`, `db/schema/hris.ts`) and is unique per id (116 bits of the id). Detaching frees `employees_tenant_employee_no_key` and `employees_tenant_user_key` (`db/schema/hris.ts:220-227`), so a re-hire under a new id never collides. The row stays for FK from local `attendance_logs`; the edge retention sweep deletes it once nothing references it. If the same id comes back, the upsert restores every column |
-| `shift_assignments`   | delete when no local `attendance_logs.shift_assignment_id` points at it, else `status = 'cancelled'` (**TBD-verify** its unique keys; a key change follows the same two-pass rule)                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `shift_assignments`   | delete when no local `attendance_logs.shift_assignment_id` points at it, else `status = 'cancelled'` (no key to free, see 3.5)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `attendance_policies` | delete the outlet override; the tenant default always comes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | QR day keys           | replace the whole set for O                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -240,6 +240,38 @@ the FK. This fixes gap 1 for POS too.
 
 A rejected clock (missing selfie) is shown on the screen and never sent,
 as today.
+
+### 3.5 TBD-verify results that touch the schema (C1, 10 Nov 2026)
+
+Checked against `ws/hwn02-hris-edge-schema` (base `ws/cku1m-qr-v2` 462b2cbb).
+
+- **`role_assignments.scope_type`** (`db/schema/platform-access.ts`,
+  `role_assignments_scope_check`): `tenant` (scope_id NULL) or `brand`,
+  `outlet`, `station` (scope_id NOT NULL). `permission-resolver.ts` passes any
+  value through. Decision: the snapshot sends `tenant`, `brand` (the brand of
+  O) and `outlet` (O). `station` assignments are not sent: the edge resolver
+  gets no station rows from this snapshot and `self.attendance.clock` is not
+  station scoped.
+- **`shift_assignments` unique keys** (`db/schema/hris-scheduling.ts`):
+  `(tenant_id, id)`, `(tenant_id, outlet_id, id)`,
+  `(tenant_id, create_idempotency_key)` (column nullable) and the partial
+  unique index `shift_assignments_active_employee_day_template_key` on
+  `(tenant_id, employee_id, business_date, shift_template_id)` where
+  `status <> 'cancelled' AND shift_template_id IS NOT NULL`. The snapshot sends
+  `shift_template_id` and `create_idempotency_key` as NULL, so the partial
+  index and the idempotency key can never clash on the edge, and the only key
+  that can move is the id. The two-pass rule of 3.3 therefore needs no key
+  freeing for shifts: delete or cancel by id.
+- **`roles_template_check`**: `(is_template AND template_key IS NOT NULL AND
+template_key <> 'super_admin') OR (NOT is_template AND template_key IS
+NULL)`. Setting `template_key = NULL` alone violates it, so detaching a role
+  whose key changed sets `name = '~detached-' || id`, `template_key = NULL`
+  **and** `is_template = false` in one UPDATE; the upsert restores all three.
+- **MFA for a staff-PIN session** stays open for `legend-j6cyb`:
+  `middleware/identity.ts` throws `MFA_REQUIRED` for a role with
+  `mfa_required` and no staff-PIN exemption was confirmed. j6cyb checks that
+  the replicated roles of outlet staff are not `mfa_required`, or that the PIN
+  session path is exempt, before the clock path ships.
 
 ## 4. QR secret on the edge (D-04)
 
@@ -486,8 +518,9 @@ mini PC as defense in depth, and a written runbook "edge hilang".
 
 ## 8. Migrations
 
-One migration, owned by card C1, so later cards do not fight over numbers (take
-the next free number at merge, currently after `0217`). RLS through
+One migration, owned by card C1, so later cards do not fight over numbers
+(provisional number `0227`, `when` 1794306000000; the merge train renumbers if
+another branch took it). RLS through
 `app.enforce_tenant_rls` / `app.enforce_outlet_rls`, unique keys include
 `tenant_id`.
 
@@ -496,7 +529,7 @@ the next free number at merge, currently after `0217`). RLS through
 | `edge_people_sync_state`       | edge       | PK `(tenant_id, outlet_id)`; `snapshot_etag` text, `snapshot_generated_at`, `applied_at` (moves on 200), `last_checked_at` (moves on 200 and 304) timestamptz, `selfie_seal_kid` text, `selfie_seal_public_key` text. Tenant + outlet RLS                                                                                                                                                     |
 | `edge_attendance_qr_keys`      | edge       | PK `(tenant_id, outlet_id, day_index)`; `day_index` integer, `key` bytea CHECK `octet_length(key) = 32`, `received_at`. FK outlets. Tenant + outlet RLS                                                                                                                                                                                                                                       |
 | `edge_selfie_uploads`          | edge       | PK `(tenant_id, object_id)`; `outlet_id`, `attendance_log_id` uuid, `file_path` text, `sealed_sha256` bytea, `sealed_bytes` integer, `seal_kid` text, `state` CHECK IN (`pending`,`uploaded`,`rejected`,`expired`), `attempts` integer default 0, `next_attempt_at`, `last_error` text (no personal data), `created_at`, `uploaded_at`. Index `(state, next_attempt_at)`. Tenant + outlet RLS |
-| `edge_received_selfies`        | cloud      | PK `(tenant_id, object_id)`; `outlet_id`, `edge_node_id`, `sealed_sha256` bytea, `state` CHECK IN (`stored`,`discarded`), `received_at`. Append-only trigger like `edge_received_events`. Tenant RLS                                                                                                                                                                                          |
+| `edge_received_selfies`        | cloud      | PK `(tenant_id, object_id)`; `outlet_id`, `edge_node_id`, `sealed_sha256` bytea, `state` CHECK IN (`stored`,`discarded`), `received_at`. Append-only trigger like `edge_received_events`. Tenant + outlet RLS (outlet_id NOT NULL, TEN-03)                                                                                                                                                    |
 | `attendance_logs_method_check` | both       | add `'outlet_device'`                                                                                                                                                                                                                                                                                                                                                                         |
 
 Reason enums (existing `offline_unverified`; new `edge_roster_stale`,
@@ -608,6 +641,19 @@ then C3, C6, C7; then j6cyb; C8 after the founder answers Q1.
 - **Q3** (kunci production) Kunci segel selfie dibuat tim, disimpan di
   penyimpanan rahasia production dan punya cadangan. Founder hanya perlu
   menyetujui tempat penyimpanan dan cadangannya.
+
+Founder answers, 10 Nov 2026 (bead `legend-hwn02`, Q86-Q88). D-01 and D-05 are
+approved as designed.
+
+- **Q1 (Q86), answered.** When the outlet internet line is down, phones still
+  reach the cloud over mobile data. Staff without data clock on the outlet
+  screen with PIN + selfie (method `outlet_device`). Phone-to-edge (phase 2)
+  is not wanted now.
+- **Q2 (Q87), answered.** The outlet screen may be used every day. Every clock
+  from it is flagged for supervisor review (`offline_unverified`, Q81).
+- **Q3 (Q88), answered.** The selfie seal private key lives in the production
+  secret store of the server; the backup copy is in the founder's 1Password.
+  Provisioning and the backup are card C9 (`legend-svy91`).
 
 ## 12. Outside this design (noted, not solved)
 

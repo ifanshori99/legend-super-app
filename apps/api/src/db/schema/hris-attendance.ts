@@ -365,7 +365,7 @@ export const attendanceLogs = pgTable(
     ),
     check(
       "attendance_logs_method_check",
-      sql`${table.method} IN ('selfie_geo', 'rotating_qr', 'manual_correction')`,
+      sql`${table.method} IN ('selfie_geo', 'rotating_qr', 'manual_correction', 'outlet_device')`,
     ),
     check(
       "attendance_logs_validity_check",
