@@ -56,6 +56,7 @@ import { runLoyaltyExpirySweep } from "./worker/loyalty-expiry.job.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { deliverOrderRecoveryRefundEvent } from "./services/order-recovery-refund.ts";
+import { deliverIssueChargeEvent } from "./services/order-recovery-charge.ts";
 import { deliverSwapKitchenEvent } from "./services/order-recovery-swap-kitchen.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
 import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
@@ -70,6 +71,10 @@ import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { setQrOrderDepositCreditLookup } from "./services/qr-order-ports.ts";
+import { qrOrderSettlementLookup } from "./services/qr-order.service.ts";
+import { setTableSessionSettlementLookup } from "./services/table-session.service.ts";
+import { depositCreditForSession } from "./services/reservation-lifecycle.ts";
 import {
   handleRefundApprovalResolved,
   sweepApprovedRefundPayouts,
@@ -157,6 +162,12 @@ const maintenanceUrl = resolveMaintenanceDatabaseUrl({
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// legend-i83ls: the same session money ports as app.ts. Without them the
+// worker reads a zero deposit credit and no table-session settlement, so any
+// session code it runs (open-bill inactivity sweep, unpaid QR sweep) would see
+// wrong numbers.
+setQrOrderDepositCreditLookup(depositCreditForSession);
+setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // INV-02 (legend-db6): recipe source for the stock deduction consumer.
 setInventoryRecipeSource(recipeBomSource);
 // legend-arj.6: the sensitive-write audit port (role-assignment end inside
@@ -246,6 +257,11 @@ const runtime = createWorkerRuntime({
           // line, the old line is voided and the new one routed to its KDS
           // station. Idempotent (issue row lock), no extra charge, not gated.
           await deliverSwapKitchenEvent(context, event, tx);
+          // legend-i83ls: a dearer swap that got its replacement line owes
+          // the price difference (+ service charge and PBJT): one charge row
+          // per issue, paid through its own link or routed to the cashier.
+          // Runs after the swap consumer (needs the replacement line).
+          await deliverIssueChargeEvent(context, event, tx);
           // legend-94q2l: an approved manual refund of a failed item opens its
           // payment refund request (not paid out; WS-05 approves). Idempotent.
           await deliverOrderRecoveryRefundEvent(context, event, tx);

@@ -19,7 +19,7 @@
 //   the refund. Open bill: a plain intent refund, the bill is not a sale yet.
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, gte, ne, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -258,7 +258,9 @@ export async function deliverOrderRecoveryRefundEvent(
   // to one payer. Checked on the pinned intent, any split row of the order,
   // and any other intent of the order or of its payment link (a QR bill split
   // over several codes, legend-nslvm) that took money, the same test as the
-  // payout guard (accounting-auto-journal-guards.ts qrSales).
+  // payout guard (accounting-auto-journal-guards.ts qrSales). The intent of a
+  // swap-difference charge (legend-i83ls) is no payer of the order's bill: it
+  // paid its own payment link, so it is skipped (by intent and by link).
   const orderUuid = ulidToUuid(order.id);
   const splitCheck = await tx.execute(sql`
     SELECT
@@ -271,6 +273,10 @@ export async function deliverOrderRecoveryRefundEvent(
                OR (${order.paymentLinkId}::uuid IS NOT NULL
                    AND other.payment_link_id = ${order.paymentLinkId}::uuid))
           AND other.status IN ('paid', 'partially_refunded', 'refunded')
+          AND NOT EXISTS (SELECT 1 FROM order_issue_charges c
+                WHERE c.tenant_id = other.tenant_id
+                  AND (c.payment_intent_id = other.id
+                       OR c.payment_link_id = other.payment_link_id))
           AND (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
                 WHERE e.tenant_id = other.tenant_id AND e.payment_intent_id = other.id)
             - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
@@ -304,9 +310,9 @@ export async function deliverOrderRecoveryRefundEvent(
   // refund, whatever its status (a failed one may be retried by hand). An
   // issue whose refund was rejected gave nothing back: rejection is final and
   // its journal is reversed, so the sale holds that money again (same rule as
-  // qrSaleInUseOfIntent). Today a second settled issue on the same line is
-  // refused (order_issues_resolved_item_once_idx), so this only matters once a
-  // line can be reported again after a rejection.
+  // qrSaleInUseOfIntent). A line can be reported again after a rejection
+  // (order_issues.refund_rejected_at, legend-wumm8); any other settled issue
+  // of the line still blocks a second one (order_issues_resolved_item_once_idx).
   const releasedResult = await tx.execute(sql`
     SELECT coalesce(sum(m.amt), 0)::text AS released FROM (
       SELECT max(r.amount_idr) AS amt
@@ -695,6 +701,19 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal ditolak, tidak diajukan ulang",
     );
+    // Final: the guest got nothing back, so the line may be reported again as
+    // a new issue (legend-wumm8). Idempotent: only the first call stamps it.
+    await tx
+      .update(orderIssues)
+      .set({ refundRejectedAt: now })
+      .where(
+        and(
+          eq(orderIssues.tenantId, tenantId),
+          eq(orderIssues.id, issueId),
+          eq(orderIssues.resolution, "manual_refund"),
+          isNull(orderIssues.refundRejectedAt),
+        ),
+      );
     await requestRecoveryRefundReversal(
       tx,
       context,

@@ -3,6 +3,17 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: tagih selisih swap lebih mahal; refund ditolak bisa dilaporkan ulang (legend-i83ls, legend-wumm8)
+
+Tingkat K. Rancangan architect, diubah sesudah review architect.
+
+1. **Lapor ulang (wumm8).** Refund ditolak tetap final. `order_issues.refund_rejected_at` diisi saat penolakan; indeks `order_issues_resolved_item_once_idx` tidak menghitung baris itu. Laporan baru untuk baris yang sama membuka issue baru (kunci `recovery:<item>:<type>:<n>`); tanpa penolakan, laporan ulang tetap mengembalikan issue lama. Refund ganda tetap tercegah: issue aktif/terbayar lain memblokir lewat indeks yang sama, dan refund baru dipotong ke sisa yang bisa dikembalikan.
+2. **Tagihan.** Swap staf ke item lebih mahal (`price_difference_idr` D > 0) membuat satu baris `order_issue_charges` per issue (unik per issue) lewat konsumen `order_issue.resolved` sesudah swap dapur berhasil. Nominal = D + service + PBJT pro-rata tarif efektif order, satu fungsi `recoveryChargeSplit`. Diskon order tidak memotong selisih (default CTO, keputusan bisnis terbuka).
+3. **Jalur.** QR: link pembayaran sendiri (`oic:<chargeId>`, token disegel di baris charge), bukan link order yang sudah lunas; endpoint tamu `GET/POST /api/table-sessions/:sessionId/issue-charges`. Open bill: charge masuk total dan sisa bill sesi, tutup sesi menunggu charge. Bill kasir: charge `routed_pos`, audit `order_issue.charge_routed_pos`, kasir menagih.
+4. **Jurnal.** Uang masuk sudah dijurnal oleh jalur `payment.paid`. Pendapatan diakui oleh event baru `order_issue.charge_paid` (`aj:order-charge:<chargeId>`, aturan akun `order.paid`), karena `aj:sale:<orderId>` hanya sekali per order. Satu-satunya jalur jurnal baru; alasan itu.
+5. **Tamu tidak bayar.** Bukan piutang. Staf waive (alasan, aktor, audit) atau expire; tutup paksa/kedaluwarsa sesi meng-expire charge. Swap tetap berjalan. Tanpa jurnal (pendapatan baru diakui saat uang masuk).
+6. **Terbuka.** Refund charge yang sudah dibayar belum ada (charge `paid` menahan uang intent: refund intent itu 0); order di-void sesudah charge dibayar membuat jurnal charge parkir `SALE_MISSING`. Keduanya kartu lanjutan.
+
 ## 2026-11-10: ORD-09 refund item gagal: nominal dan jalur uang (legend-94q2l)
 
 Keputusan founder (Q85) dan CTO, desain architect tingkat K (`docs/briefs/94q2l-design-blocker.md`).

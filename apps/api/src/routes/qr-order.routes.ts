@@ -20,6 +20,7 @@ import { auth } from "../lib/auth.ts";
 import {
   addCartLine,
   createGuestPayment,
+  createIssueChargePayment,
   createSessionSplits,
   getGuestPayment,
   getGuestPaymentOptions,
@@ -27,6 +28,7 @@ import {
   getSessionBill,
   getSplitClaim,
   getTableSession,
+  listSessionIssueCharges,
   placeQrOrder,
   quoteTableSession,
   removeCartLine,
@@ -61,6 +63,10 @@ import {
   getGuestPayment as getGuestPaymentService,
   getGuestPaymentOptions as getGuestPaymentOptionsService,
 } from "../services/qr-order-payment.ts";
+import {
+  createIssueChargePayment as createIssueChargePaymentService,
+  listIssueChargesOfSession as listIssueChargesOfSessionService,
+} from "../services/order-recovery-charge-payment.ts";
 
 /**
  * The guest acts inside the host's tenant, reaching only the outlet of the
@@ -308,6 +314,41 @@ qrOrderRouter.post(
         await guestContext(req, credential),
         credential,
         sessionId,
+        body,
+      ),
+    });
+  },
+);
+
+// legend-i83ls: the dearer-swap difference owed on this session.
+qrOrderRouter.get("/:sessionId/issue-charges", ...read, async (req, res) => {
+  const { sessionId } = listSessionIssueCharges.params.parse(req.params);
+  const credential = sessionCredential(req);
+  res.json({
+    data: await listIssueChargesOfSessionService(
+      await guestContext(req, credential),
+      credential,
+      sessionId,
+    ),
+  });
+});
+
+qrOrderRouter.post(
+  "/:sessionId/issue-charges/:chargeId/payments",
+  ...write,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId, chargeId } = createIssueChargePayment.params.parse(
+      req.params,
+    );
+    const body = createIssueChargePayment.body.parse(req.body);
+    const credential = sessionCredential(req);
+    res.status(201).json({
+      data: await createIssueChargePaymentService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        chargeId,
         body,
       ),
     });

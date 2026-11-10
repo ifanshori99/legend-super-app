@@ -112,7 +112,9 @@ export async function refundableBalance(
     intent.id,
   );
   const qrSaleInUse = await qrSaleInUseOfIntent(tx, intent.tenantId, intent.id);
-  const held = depositInUse + forfeited + posSaleInUse + qrSaleInUse;
+  const chargeInUse = await chargeInUseOfIntent(tx, intent.tenantId, intent.id);
+  const held =
+    depositInUse + forfeited + posSaleInUse + qrSaleInUse + chargeInUse;
   const cap = paid > held ? paid - held : 0n;
   return {
     cap,
@@ -122,7 +124,33 @@ export async function refundableBalance(
     forfeited,
     posSaleInUse,
     qrSaleInUse,
+    chargeInUse,
   };
+}
+
+/**
+ * legend-i83ls: money of the intent a paid swap-difference charge holds. The
+ * charge has its own payment link (never the order's) and is recognised as
+ * revenue when paid (`order_issue.charge_paid`), so the whole amount of the
+ * intent that paid it is in use: a refund would give back earned revenue. An
+ * open, waived, expired or cashier charge holds nothing: a late payment on it
+ * stays refundable. Same predicate as the payout guard (charges,
+ * accounting-auto-journal-guards.ts intentBackedAt). Read under the intent row
+ * lock the writers hold; the charge is paid under it too.
+ */
+async function chargeInUseOfIntent(
+  tx: Tx,
+  tenantId: Intent["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum(c.amount_idr), 0)::text AS amount
+      FROM order_issue_charges c
+     WHERE c.tenant_id = ${tenantId}
+       AND c.payment_intent_id = ${intentId}::uuid
+       AND c.status = 'paid'
+  `);
+  return BigInt(String(result.rows[0]?.amount ?? "0"));
 }
 
 /**

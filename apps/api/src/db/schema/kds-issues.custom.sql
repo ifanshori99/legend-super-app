@@ -6,3 +6,9 @@
 SELECT app.enforce_tenant_rls('public.order_issues'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.order_issues'::regclass);
+--> statement-breakpoint
+-- legend-i83ls: order_issue_charges, tenant + outlet RLS. Append AFTER its
+-- generated CREATE TABLE. Rows are updated (paid, waived, expired); never deleted.
+SELECT app.enforce_tenant_rls('public.order_issue_charges'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.order_issue_charges'::regclass);

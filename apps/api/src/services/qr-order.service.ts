@@ -112,6 +112,7 @@ import {
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   forwardQrOrderToEdge,
@@ -2211,9 +2212,33 @@ async function checkout(
 type Settlement = { billTotalIdr: Idr; paidIdr: Idr };
 
 /**
+ * Swap differences owed on the session (legend-i83ls). A charge is not an
+ * order: no kitchen, no order total. `open` and `paid` ones are on the bill,
+ * `paid` is also paid; `waived`, `expired` and `routed_pos` owe nothing here.
+ */
+async function sessionCharges(tx: Tx, tenantId: TenantId, sessionId: string) {
+  return tx
+    .select()
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.tableSessionId, sessionId),
+      ),
+    )
+    .orderBy(asc(orderIssueCharges.createdAt), asc(orderIssueCharges.id));
+}
+
+type ChargeRow = Awaited<ReturnType<typeof sessionCharges>>[number];
+
+const chargeOwed = (row: ChargeRow) =>
+  row.status === "open" || row.status === "paid" ? row.amountIdr : 0;
+
+/**
  * The session's bill: live (non-voided) orders, the reservation deposit
- * credit (WS-08, floored at 0) and what verified payments allocated to the
- * orders' WS-05 links. Shared by GET /bill and the ORD-10 close port.
+ * credit (WS-08, floored at 0), what verified payments allocated to the
+ * orders' WS-05 links, and the swap charges (open or paid). Shared by GET
+ * /bill and the ORD-10 close port, so closing waits for an open charge.
  */
 async function settlementOf(
   tx: Tx,
@@ -2238,7 +2263,16 @@ async function settlementOf(
     : [];
   const linkPaid = links.reduce((sum, row) => sum + row.paidIdr, 0);
   const deposit = await depositCreditFor(tx, tenantId, sessionId);
-  return { billTotalIdr: idr(billTotal), paidIdr: idr(deposit + linkPaid) };
+  const charges = await sessionCharges(tx, tenantId, sessionId);
+  const chargesOwed = charges.reduce((sum, row) => sum + chargeOwed(row), 0);
+  const chargesPaid = charges.reduce(
+    (sum, row) => sum + (row.status === "paid" ? row.amountIdr : 0),
+    0,
+  );
+  return {
+    billTotalIdr: idr(billTotal + chargesOwed),
+    paidIdr: idr(deposit + linkPaid + chargesPaid),
+  };
 }
 
 /** GET /bill — orders, totals, paid and outstanding (splits: legend-ms3). */
@@ -2266,11 +2300,28 @@ export async function getSessionBill(
       session.id,
       liveOrders,
     );
+    const charges = await sessionCharges(
+      tx,
+      context.tenant.tenantId,
+      session.id,
+    );
     const sum = (pick: (row: OrderRow) => number) =>
       liveOrders.reduce((total, row) => total + pick(row), 0);
     return sessionBillSchema.parse({
       sessionId: session.id,
       orders: await orderDtos(tx, context, liveOrders),
+      charges: charges.map((row) => ({
+        id: row.id,
+        orderIssueId: row.orderIssueId,
+        orderId: row.orderId,
+        status: row.status,
+        differenceIdr: row.differenceIdr,
+        grossSalesIdr: row.grossSalesIdr,
+        serviceChargeIdr: row.serviceChargeIdr,
+        pbjtIdr: row.pbjtIdr,
+        amountIdr: row.amountIdr,
+        paidAt: row.paidAt ? toIsoDateTime(row.paidAt) : null,
+      })),
       totals: {
         subtotalIdr: sum((row) => row.subtotalIdr),
         discountIdr: sum((row) => row.discountIdr),

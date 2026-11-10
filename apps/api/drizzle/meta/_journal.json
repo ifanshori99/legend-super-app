@@ -1506,6 +1506,20 @@
       "when": 1794309000000,
       "tag": "0228_tax_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 229,
+      "version": "7",
+      "when": 1794310000000,
+      "tag": "0229_order_issue_refund_rejected",
+      "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "7",
+      "when": 1794311000000,
+      "tag": "0230_order_issue_charge_cash",
+      "breakpoints": true
     }
   ]
 }

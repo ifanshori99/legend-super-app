@@ -115,6 +115,7 @@ import { pickupRouter } from "./pickup.routes.ts";
 import { servingTimeRouter } from "./serving-time.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
+import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -253,6 +254,8 @@ apiRouter.use("/table-links", tableLinksRouter);
 // /order-items, /order-issues and /table-sessions, per-route guards. Before
 // /table-sessions so the guest order-issues list is not shadowed.
 apiRouter.use(orderRecoveryRouter);
+// legend-i83ls: staff waive / expire of a dearer-swap charge.
+apiRouter.use(orderRecoveryChargeRouter);
 apiRouter.use("/apology-vouchers", apologyVoucherRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);

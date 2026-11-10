@@ -1164,10 +1164,57 @@ export const createSplitsInputSchema = z.discriminatedUnion("method", [
 ]);
 export type CreateSplitsInput = z.infer<typeof createSplitsInputSchema>;
 
+/**
+ * The dearer-swap difference of a failed-item issue, owed on the open bill
+ * (legend-i83ls). `open` and `paid` count in the bill total, `paid` in what is
+ * paid; `waived` and `expired` are shown but owe nothing.
+ */
+export const ORDER_ISSUE_CHARGE_STATUSES = [
+  "open",
+  "paid",
+  "routed_pos",
+  "waived",
+  "expired",
+] as const;
+export const orderIssueChargeStatusSchema = z.enum(ORDER_ISSUE_CHARGE_STATUSES);
+export type OrderIssueChargeStatus = z.infer<
+  typeof orderIssueChargeStatusSchema
+>;
+export const sessionBillChargeSchema = z.strictObject({
+  id: uuidSchema,
+  orderIssueId: uuidSchema,
+  orderId: orderIdSchema,
+  status: orderIssueChargeStatusSchema,
+  differenceIdr: positiveIdr,
+  grossSalesIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  pbjtIdr: nonnegativeIdr,
+  amountIdr: positiveIdr,
+  paidAt: isoDateTimeSchema.nullable(),
+});
+export type SessionBillCharge = z.infer<typeof sessionBillChargeSchema>;
+
+/**
+ * The cashier takes a swap charge in cash at the till (legend-800h1):
+ * `receivedIdr` is what the guest handed over (at least the charge amount; the
+ * change is the answer's `changeIdr`). Cash only; EDC / QRIS at the till is a
+ * later step.
+ */
+export const collectChargeAtPosInputSchema = z.strictObject({
+  idempotencyKey: uuidSchema,
+  method: z.literal("cash"),
+  receivedIdr: positiveIdr,
+});
+export type CollectChargeAtPosInput = z.infer<
+  typeof collectChargeAtPosInputSchema
+>;
+
 export const sessionBillSchema = z
   .strictObject({
     sessionId: tableSessionIdSchema,
     orders: z.array(qrOrderSchema),
+    /** Swap differences owed on this session (legend-i83ls). */
+    charges: z.array(sessionBillChargeSchema).default([]),
     totals: z.strictObject({
       subtotalIdr: nonnegativeIdr,
       discountIdr: nonnegativeIdr,
@@ -1192,6 +1239,14 @@ export const sessionBillSchema = z
       if (invalid) ctx.addIssue({ code: "custom", path, message });
     };
     const totals = bill.totals;
+    const ordersTotal = sum(bill.orders.map((order) => order.totalIdr));
+    const chargesOwed = sum(
+      bill.charges
+        .filter(
+          (charge) => charge.status === "open" || charge.status === "paid",
+        )
+        .map((charge) => charge.amountIdr),
+    );
     add(
       ["totals", "subtotalIdr"],
       "Bill subtotal must equal the sum of order subtotals",
@@ -1220,8 +1275,8 @@ export const sessionBillSchema = z
     );
     add(
       ["totals", "totalIdr"],
-      "Bill total must equal the sum of order totals",
-      totals.totalIdr !== sum(bill.orders.map((order) => order.totalIdr)),
+      "Bill total must equal the sum of order totals and owed charges",
+      totals.totalIdr !== ordersTotal + chargesOwed,
     );
     add(
       ["totals", "outstandingIdr"],
@@ -1244,7 +1299,7 @@ export const sessionBillSchema = z
     for (const [orderId, parts] of groups) {
       const target =
         orderId === null
-          ? totals.totalIdr
+          ? ordersTotal
           : bill.orders.find((order) => order.id === orderId)?.totalIdr;
       add(
         ["splits"],
