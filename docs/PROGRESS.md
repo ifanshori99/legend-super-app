@@ -1119,3 +1119,4 @@ Langkah berikut CTO baru:
 - 00:38 Semua thread sudah commit lokal. Siap restart Mac.
   - G2q9m ps-405: keputusan CTO 00:40: backfill 0239 tandai SEMUA baris lama yang sudah dibayar dengan recipient NULL (hapus syarat login pemegang saham) supaya Owner bisa rekonsiliasi; kirim setelah restart bersama run 4 file test.
   - Kartu baru adapter Kirim outbound produksi (penghalang rilis PIN). G0t1a: run 3 file test + push setelah restart.
+  - Codex setelah restart (#2 sudah reset, #3 ~30%): vfj7z (PIN), WS-03 pindah/gabung meja, profit share gabungan (33im6 fix + 3sy9b + owner self-approve; cek tumpang tindih brief 405 dulu).
