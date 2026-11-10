@@ -618,10 +618,12 @@ async function approvedRun(world: World) {
 async function payAll(who: Person, run: DistributionRun) {
   let last = null;
   for (const line of run.lines) {
+    // A line the carry absorbed to zero was settled on approval.
+    if (line.paymentStatus === "paid") continue;
     last = await payLine(who, run.id, line.id);
     expect(last.status, JSON.stringify(last.body)).toBe(200);
   }
-  return parseRun(last!.body);
+  return parseRun(last ? last.body : (await getRun(who, run.id)).body);
 }
 
 async function paidRun(world: World) {
@@ -1645,6 +1647,20 @@ describe("SH-01 statements and my-profit-share show only the caller's rows", () 
       expect(statement.shareholderId).toBe(s2.id);
   });
 
+  it("my-profit-share leaves out a zero line settled by the carry", async () => {
+    const { run } = await paidRunWithAbsorbedHolders();
+    const zero = run.lines.find((line) => line.shareholderId === s1.id)!;
+    expect(zero.grossIdr).toBe(0);
+    const response = await get(sh1User, "/my-profit-share");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const view = myProfitShareSchema.parse(response.body.data);
+    expect(
+      view.distributionHistory.some(
+        (statement) => statement.distributionLineId === zero.id,
+      ),
+    ).toBe(false);
+  });
+
   it("a shareholder cannot use the manager endpoints", async () => {
     const world = await makeWorld(roundingPolicy, roundingShares());
     const { run } = await approvedRun(world);
@@ -2163,5 +2179,647 @@ describe("review (i) idempotency key reuse", () => {
     const reuse = await createRun(manager, world, second.id, adjKey);
     expect(reuse.status, JSON.stringify(reuse.body)).toBe(409);
     expect(errorCode(reuse)).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+});
+
+// ---- Q83 carry: an unabsorbed claw-back shortfall is cut from the next split ---
+
+type ShortfallRow = {
+  id: string;
+  shareholder_id: string;
+  distribution_run_id: string;
+  amount: number;
+};
+
+async function shortfallsOf(runId: string): Promise<ShortfallRow[]> {
+  const { rows } = await owner.query<{
+    id: string;
+    shareholder_id: string;
+    distribution_run_id: string;
+    amount: string;
+  }>(
+    `SELECT id, shareholder_id, distribution_run_id, amount_idr::text AS amount
+     FROM distribution_run_shortfalls
+     WHERE tenant_id = $1 AND distribution_run_id = $2
+     ORDER BY shareholder_id`,
+    [tenantA, runId],
+  );
+  return rows.map((row) => ({ ...row, amount: Number(row.amount) }));
+}
+
+async function deductionRowsOf(runId: string) {
+  const { rows } = await owner.query<{
+    shortfall_id: string;
+    shareholder_id: string;
+    amount: string;
+  }>(
+    `SELECT shortfall_id, shareholder_id, amount_idr::text AS amount
+     FROM distribution_carry_deductions
+     WHERE tenant_id = $1 AND distribution_run_id = $2
+     ORDER BY shareholder_id`,
+    [tenantA, runId],
+  );
+  return rows.map((row) => ({ ...row, amount: Number(row.amount) }));
+}
+
+async function approveRunFlow(runId: string) {
+  const submitted = await submitRun(manager, runId);
+  expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+  const decided = await decideRun(approver, runId);
+  expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+  return parseRun(decided.body);
+}
+
+/** A paid regular run plus a draft claw-back that leaves 599,999 unabsorbed. */
+async function clawedBack(adjustmentIdr = -1_500_000) {
+  const world = await makeWorld(roundingPolicy, roundingShares());
+  const { run: original, period } = await paidRun(world);
+  const response = await adjust(manager, original.id, {
+    fiscalPeriodId: period.id,
+    adjustmentIdr,
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return { world, original, adjustment: parseRun(response.body) };
+}
+
+const halfUpTax = (gross: number) => Math.floor((gross * 500 + 5_000) / 10_000);
+
+/** Scenario (4): s1 and s2 are fully absorbed (zero lines), s3 is paid for real. */
+async function paidRunWithAbsorbedHolders() {
+  const { world, adjustment } = await clawedBack();
+  await approveRunFlow(adjustment.id);
+  const shortfalls = await shortfallsOf(adjustment.id);
+  await seedVersion(
+    world.profitEntityId,
+    [
+      { holder: s1, bp: 2000 },
+      { holder: s2, bp: 2000 },
+      { holder: s3, bp: 6000 },
+    ],
+    "approved",
+    "2021-02-01",
+    2,
+  );
+  const second = (await draftRun(world)).run;
+  expect(second.lines).toHaveLength(3);
+  const approved = await approveRunFlow(second.id);
+  // The zero lines were settled on approval; the real one waits for payment.
+  expect(approved.status).toBe("approved");
+  expect(
+    approved.lines.map((line) => [line.shareholderId, line.paymentStatus]),
+  ).toEqual(
+    expect.arrayContaining([
+      [s1.id, "paid"],
+      [s2.id, "paid"],
+      [s3.id, "pending"],
+    ]),
+  );
+  const paid = await payAll(manager, approved);
+  return { world, run: paid, shortfalls, second };
+}
+
+describe("Q83 carry: the unabsorbed rest is kept per shareholder and cut from their next split", () => {
+  it("(1) a claw-back with an unabsorbed rest writes one shortfall row per shareholder, summing to unabsorbed_idr", async () => {
+    const { original, adjustment } = await clawedBack();
+    expect(adjustment.unabsorbedIdr).toBe(599_999);
+    const rows = await shortfallsOf(adjustment.id);
+    expect(rows).toHaveLength(3);
+    expect(rows.reduce((sum, row) => sum + row.amount, 0)).toBe(599_999);
+    expect(rows.map((row) => row.shareholder_id).sort()).toEqual(
+      original.lines.map((line) => line.shareholderId).sort(),
+    );
+    // A claw-back that is fully absorbed leaves no shortfall row.
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const paid = await paidRun(world);
+    const small = parseRun(
+      (
+        await adjust(manager, paid.run.id, {
+          fiscalPeriodId: paid.period.id,
+          adjustmentIdr: -300_000,
+        })
+      ).body,
+    );
+    expect(small.unabsorbedIdr).toBe(0);
+    expect(await shortfallsOf(small.id)).toHaveLength(0);
+  });
+
+  it("(2) a draft or pending claw-back is not carried, an approved one is", async () => {
+    const { world, adjustment } = await clawedBack();
+    const period = await closedPeriod(world, NET_PROFIT);
+    const regular = async () => {
+      const response = await createRun(manager, world, period.id);
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      return parseRun(response.body);
+    };
+    const reject = async (runId: string) => {
+      await submitRun(manager, runId);
+      expect((await decideRun(approver, runId, "reject")).status).toBe(200);
+    };
+
+    const whileDraft = await regular();
+    expect(whileDraft.carryDeductedIdr).toBe(0);
+    expect(whileDraft.carryDeductions).toEqual([]);
+    await reject(whileDraft.id);
+
+    expect((await submitRun(manager, adjustment.id)).status).toBe(200);
+    const whilePending = await regular();
+    expect(whilePending.carryDeductedIdr).toBe(0);
+    await reject(whilePending.id);
+
+    expect((await decideRun(approver, adjustment.id)).status).toBe(200);
+    const whileApproved = await regular();
+    expect(whileApproved.carryDeductedIdr).toBe(599_999);
+  });
+
+  it("(3) the next regular run cuts each shareholder's own shortfall before tax, with a trail, and the journal uses the reduced gross", async () => {
+    const { world, original, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const shortfalls = await shortfallsOf(adjustment.id);
+    const next = await draftRun(world);
+    const run = next.run;
+
+    expect(run.carryDeductedIdr).toBe(599_999);
+    expect(run.distributableIdr).toBe(900_001);
+    expect(run.totalGrossIdr).toBe(900_001 - 599_999);
+    expect(run.distributableIdr).toBe(run.totalGrossIdr + run.carryDeductedIdr);
+    expect(run.totalNetIdr).toBe(run.totalGrossIdr - run.totalTaxWithheldIdr);
+    for (const line of run.lines) {
+      const share = original.lines.find(
+        (item) => item.shareholderId === line.shareholderId,
+      )!.grossIdr;
+      const cut = shortfalls.find(
+        (row) => row.shareholder_id === line.shareholderId,
+      )!.amount;
+      expect(line.carryDeductedIdr).toBe(cut);
+      expect(line.grossIdr).toBe(share - cut);
+      expect(line.taxWithheldIdr).toBe(halfUpTax(line.grossIdr));
+      expect(line.netIdr).toBe(line.grossIdr - line.taxWithheldIdr);
+    }
+    // Trail: every deduction names the claw-back run it came from.
+    expect(run.carryDeductions).toHaveLength(3);
+    for (const deduction of run.carryDeductions) {
+      expect(deduction.shortfallRunId).toBe(adjustment.id);
+      expect(deduction.amountIdr).toBe(
+        shortfalls.find(
+          (row) => row.shareholder_id === deduction.shareholderId,
+        )!.amount,
+      );
+    }
+    const stored = await deductionRowsOf(run.id);
+    expect(stored.map((row) => row.shortfall_id).sort()).toEqual(
+      shortfalls.map((row) => row.id).sort(),
+    );
+    // The same data comes back from a read.
+    const read = parseRun((await getRun(manager, run.id)).body);
+    expect(read.carryDeductedIdr).toBe(599_999);
+    expect(read.carryDeductions).toHaveLength(3);
+
+    const approved = await approveRunFlow(run.id);
+    const paid = await payAll(manager, approved);
+    expect(paid.status).toBe("paid");
+    const journalId = await postedJournalId(paid.id);
+    const journal = await journalOf(journalId as string);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings)).toEqual({
+      debit: paid.totalGrossIdr,
+      credit: 0,
+    });
+    expect(journal.byAccount(world.accounts.bank).credit).toBe(
+      paid.totalNetIdr,
+    );
+    const { rows } = await owner.query<{ description: string }>(
+      "SELECT description FROM journal_entries WHERE tenant_id = $1 AND id = $2",
+      [tenantA, journalId],
+    );
+    expect(rows[0]!.description).toContain("dipotong kekurangan koreksi");
+    // The shareholder's statement shows the deduction taken from that share.
+    const paidLine = paid.lines[0]!;
+    const statement = await get(
+      manager,
+      `/distributions/${paid.id}/lines/${paidLine.id}/statement`,
+    );
+    expect(statement.status, JSON.stringify(statement.body)).toBe(200);
+    expect(
+      distributionStatementSchema.parse(statement.body.data).carryDeductedIdr,
+    ).toBe(paidLine.carryDeductedIdr);
+    expect(paidLine.carryDeductedIdr).toBeGreaterThan(0);
+  });
+
+  it("(4) a shortfall above the share cuts the whole share and the remainder goes to the run after", async () => {
+    const { world, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const shortfalls = await shortfallsOf(adjustment.id);
+    // From the second period on s3 holds most of the split: s1 and s2 get less
+    // than their shortfall.
+    await seedVersion(
+      world.profitEntityId,
+      [
+        { holder: s1, bp: 2000 },
+        { holder: s2, bp: 2000 },
+        { holder: s3, bp: 6000 },
+      ],
+      "approved",
+      "2021-02-01",
+      2,
+    );
+    const second = (await draftRun(world)).run;
+    const lowHolders = [s1.id, s2.id];
+    // s1 and s2 keep a zero line: that is how their carry shrinks.
+    expect(second.lines).toHaveLength(3);
+    for (const id of lowHolders) {
+      const zero = second.lines.find((line) => line.shareholderId === id)!;
+      expect(zero.grossIdr).toBe(0);
+      expect(zero.taxWithheldIdr).toBe(0);
+      expect(zero.netIdr).toBe(0);
+      expect(zero.carryDeductedIdr).toBeGreaterThan(0);
+    }
+    expect(
+      second.lines.find((line) => line.shareholderId === s3.id)!.grossIdr,
+    ).toBeGreaterThan(0);
+    for (const id of lowHolders) {
+      const cut = second.carryDeductions.find(
+        (row) => row.shareholderId === id,
+      );
+      const shortfall = shortfalls.find((row) => row.shareholder_id === id)!;
+      expect(cut, id).toBeDefined();
+      expect(cut!.amountIdr).toBeLessThan(shortfall.amount);
+    }
+    const third = (await draftRun(world)).run;
+    for (const id of lowHolders) {
+      const shortfall = shortfalls.find((row) => row.shareholder_id === id)!;
+      const first = second.carryDeductions.find(
+        (row) => row.shareholderId === id,
+      )!;
+      const rest = third.carryDeductions.find(
+        (row) => row.shareholderId === id,
+      )!;
+      expect(first.amountIdr + rest.amountIdr).toBe(shortfall.amount);
+      expect(
+        third.lines.find((line) => line.shareholderId === id)?.carryDeductedIdr,
+      ).toBe(rest.amountIdr);
+    }
+    // s3 was fully settled by the second run: nothing more on the third.
+    expect(
+      third.carryDeductions.find((row) => row.shareholderId === s3.id),
+    ).toBeUndefined();
+  });
+
+  it("(5) a rejected regular run releases its deduction", async () => {
+    const { world, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const period = await closedPeriod(world, NET_PROFIT);
+    const first = parseRun((await createRun(manager, world, period.id)).body);
+    expect(first.carryDeductedIdr).toBe(599_999);
+    await submitRun(manager, first.id);
+    expect((await decideRun(approver, first.id, "reject")).status).toBe(200);
+    const again = await createRun(manager, world, period.id);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    expect(parseRun(again.body).carryDeductedIdr).toBe(599_999);
+  });
+
+  /** Distributable 270,001: every share is under the shortfall of its holder. */
+  async function allAbsorbedRun() {
+    const { world, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const shortfalls = await shortfallsOf(adjustment.id);
+    const period = await closedPeriod(world, 300_001);
+    const response = await createRun(manager, world, period.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    return { world, shortfalls, run: parseRun(response.body) };
+  }
+
+  it("(6) shares that are all absorbed give a zero line each and the carry shrinks", async () => {
+    const { world, shortfalls, run } = await allAbsorbedRun();
+    expect(run.distributableIdr).toBe(270_001);
+    expect(run.carryDeductedIdr).toBe(270_001);
+    expect(run.totalGrossIdr).toBe(0);
+    expect(run.totalTaxWithheldIdr).toBe(0);
+    expect(run.totalNetIdr).toBe(0);
+    expect(run.lines).toHaveLength(3);
+    for (const line of run.lines) {
+      expect(line.grossIdr).toBe(0);
+      expect(line.taxWithheldIdr).toBe(0);
+      expect(line.netIdr).toBe(0);
+      expect(line.carryDeductedIdr).toBeGreaterThan(0);
+      expect(line.paymentStatus).toBe("pending");
+    }
+    expect(await deductionRowsOf(run.id)).toHaveLength(3);
+    // The next run only meets what is still open: 599,999 - 270,001.
+    const next = (await draftRun(world)).run;
+    expect(next.carryDeductedIdr).toBe(599_999 - 270_001);
+    for (const line of next.lines) {
+      const before = run.lines.find(
+        (item) => item.shareholderId === line.shareholderId,
+      )!;
+      const open =
+        shortfalls.find((row) => row.shareholder_id === line.shareholderId)!
+          .amount - before.carryDeductedIdr;
+      expect(line.carryDeductedIdr).toBe(open);
+    }
+  });
+
+  it("(6b) approving a run with only zero lines pays it at once: paid by the approver, POTONG-KEKURANGAN, no statement, no journal", async () => {
+    const { run } = await allAbsorbedRun();
+    expect((await submitRun(manager, run.id)).status).toBe(200);
+    const k = key("zero-decide");
+    const decided = await decideRun(approver, run.id, "approve", k);
+    expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+    const paid = parseRun(decided.body);
+    expect(paid.status).toBe("paid");
+    expect(paid.paidAt).toBe(paid.approvedAt);
+    for (const line of paid.lines) {
+      expect(line.paymentStatus).toBe("paid");
+      expect(line.paymentRef).toBe("POTONG-KEKURANGAN");
+      expect(line.paidAt).toBe(paid.approvedAt);
+      expect(line.statementFileKey).toBeNull();
+    }
+    const stored = await owner.query<{
+      status: string;
+      journal_entry_id: string | null;
+      reversal_journal_entry_id: string | null;
+      paid_by: string[];
+    }>(
+      `SELECT r.status, r.journal_entry_id, r.reversal_journal_entry_id,
+              array(SELECT l.paid_by FROM distribution_lines l
+                    WHERE l.tenant_id = r.tenant_id AND l.distribution_run_id = r.id) AS paid_by
+       FROM distribution_runs r WHERE r.tenant_id = $1 AND r.id = $2`,
+      [tenantA, run.id],
+    );
+    expect(stored.rows[0]!.status).toBe("paid");
+    expect(stored.rows[0]!.journal_entry_id).toBeNull();
+    expect(stored.rows[0]!.reversal_journal_entry_id).toBeNull();
+    expect(stored.rows[0]!.paid_by).toEqual([
+      approver.userId,
+      approver.userId,
+      approver.userId,
+    ]);
+    const journals = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND source_id = $2",
+      [tenantA, run.id],
+    );
+    expect(journals.rowCount).toBe(0);
+    // Replaying the decision returns the same paid run and changes nothing.
+    const again = await decideRun(approver, run.id, "approve", k);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(parseRun(again.body).status).toBe("paid");
+    expect(parseRun(again.body).paidAt).toBe(paid.paidAt);
+    // A paid run takes no payment on its settled lines.
+    const pay = await payLine(manager, run.id, paid.lines[0]!.id);
+    expect(pay.status).toBe(409);
+  });
+
+  it("(6c) a rejected all-zero run releases its carry", async () => {
+    const { world, run } = await allAbsorbedRun();
+    expect((await submitRun(manager, run.id)).status).toBe(200);
+    expect((await decideRun(approver, run.id, "reject")).status).toBe(200);
+    const again = (await draftRun(world, 300_001)).run;
+    expect(again.carryDeductedIdr).toBe(270_001);
+    expect(again.totalGrossIdr).toBe(0);
+  });
+
+  it("(7) shareholders without a shortfall are not touched", async () => {
+    const { world, original, adjustment } = await clawedBack(-900_002);
+    expect(adjustment.unabsorbedIdr).toBe(1);
+    await approveRunFlow(adjustment.id);
+    const shortfalls = await shortfallsOf(adjustment.id);
+    expect(shortfalls).toHaveLength(1);
+    const run = (await draftRun(world)).run;
+    expect(run.carryDeductedIdr).toBe(1);
+    for (const line of run.lines) {
+      const share = original.lines.find(
+        (item) => item.shareholderId === line.shareholderId,
+      )!.grossIdr;
+      if (line.shareholderId === shortfalls[0]!.shareholder_id) {
+        expect(line.carryDeductedIdr).toBe(1);
+        expect(line.grossIdr).toBe(share - 1);
+      } else {
+        expect(line.carryDeductedIdr).toBe(0);
+        expect(line.grossIdr).toBe(share);
+      }
+    }
+  });
+
+  it("(8) the audit row and the approval and completion events carry carryDeductedIdr", async () => {
+    const { world, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const run = (await draftRun(world)).run;
+    const audit = await owner.query<{ cut: string | null }>(
+      `SELECT event->'maskedChanges'->'after'->>'carryDeductedIdr' AS cut
+       FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'profit_share.distribution_calculated'
+         AND event->>'objectId' = $2`,
+      [tenantA, run.id],
+    );
+    expect(audit.rows.map((row) => row.cut)).toEqual(["599999"]);
+
+    const approved = await approveRunFlow(run.id);
+    await payAll(manager, approved);
+    const events = await owner.query<{ name: string; cut: string | null }>(
+      `SELECT event->>'name' AS name, event->'payload'->>'carryDeductedIdr' AS cut
+       FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'aggregateId' = $2
+         AND event->>'name' IN ('distribution.approved', 'distribution.completed')`,
+      [tenantA, run.id],
+    );
+    expect(events.rows.map((row) => row.name).sort()).toEqual([
+      "distribution.approved",
+      "distribution.completed",
+    ]);
+    for (const row of events.rows) expect(row.cut).toBe("599999");
+  });
+
+  it("(9) replaying a create returns the same run and writes no second deduction", async () => {
+    const { world, adjustment } = await clawedBack();
+    await approveRunFlow(adjustment.id);
+    const period = await closedPeriod(world, NET_PROFIT);
+    const k = key("carry-replay");
+    const first = await createRun(manager, world, period.id, k);
+    const again = await createRun(manager, world, period.id, k);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    const run = parseRun(again.body);
+    expect(run.id).toBe(parseRun(first.body).id);
+    expect(run.carryDeductedIdr).toBe(599_999);
+    expect(run.carryDeductions).toHaveLength(3);
+    expect(await deductionRowsOf(run.id)).toHaveLength(3);
+  });
+
+  it("(6d) a mixed run completes on its last real payment, the journal uses the reduced gross", async () => {
+    const { world, run } = await paidRunWithAbsorbedHolders();
+    expect(run.status).toBe("paid");
+    expect(run.totalGrossIdr).toBeGreaterThan(0);
+    expect(run.distributableIdr).toBe(run.totalGrossIdr + run.carryDeductedIdr);
+    const real = run.lines.find((line) => line.shareholderId === s3.id)!;
+    const latest = Math.max(
+      ...run.lines.map((line) => Date.parse(line.paidAt as string)),
+    );
+    expect(Date.parse(run.paidAt as string)).toBe(latest);
+    expect(real.paymentRef).not.toBe("POTONG-KEKURANGAN");
+    const journal = await journalOf((await postedJournalId(run.id)) as string);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings)).toEqual({
+      debit: run.totalGrossIdr,
+      credit: 0,
+    });
+    expect(journal.byAccount(world.accounts.bank).credit).toBe(run.totalNetIdr);
+  });
+
+  it("(10) a claw-back of a run with a fully absorbed shareholder still leaves a new shortfall for that shareholder", async () => {
+    const { world, run } = await paidRunWithAbsorbedHolders();
+    const period = await closedPeriod(world, NET_PROFIT);
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -1_000,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const clawBack = parseRun(response.body);
+    // The absorbed holders hold 0 of this run: no line, only s3 gives back.
+    expect(clawBack.lines.map((line) => line.shareholderId)).toEqual([s3.id]);
+    expect(clawBack.lines[0].grossIdr).toBeLessThan(0);
+    expect(clawBack.unabsorbedIdr).toBeGreaterThan(0);
+    const shortfalls = await shortfallsOf(clawBack.id);
+    expect(shortfalls.reduce((sum, row) => sum + row.amount, 0)).toBe(
+      clawBack.unabsorbedIdr,
+    );
+    expect(shortfalls.map((row) => row.shareholder_id).sort()).toEqual(
+      expect.arrayContaining([s1.id, s2.id]),
+    );
+  });
+
+  it("(11) a top-up of a run with an absorbed shareholder is allowed: their open carry goes first, the rest is paid", async () => {
+    const { world, run, shortfalls, second } =
+      await paidRunWithAbsorbedHolders();
+    const period = await closedPeriod(world, NET_PROFIT);
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 1_000_000,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const topUp = parseRun(response.body);
+    expect(topUp.lines).toHaveLength(3);
+    let deducted = 0;
+    for (const id of [s1.id, s2.id]) {
+      const line = topUp.lines.find((item) => item.shareholderId === id)!;
+      const open =
+        shortfalls.find((row) => row.shareholder_id === id)!.amount -
+        second.lines.find((item) => item.shareholderId === id)!
+          .carryDeductedIdr;
+      expect(open).toBeGreaterThan(0);
+      expect(line.carryDeductedIdr).toBe(open);
+      // 20% of 1,000,000 is more than what is open: the rest is paid, taxed.
+      expect(line.grossIdr).toBe(200_000 - open);
+      expect(line.taxWithheldIdr).toBe(halfUpTax(line.grossIdr));
+      deducted += open;
+    }
+    // s3 settled its carry on the second run: nothing to take from it.
+    expect(
+      topUp.lines.find((item) => item.shareholderId === s3.id)!
+        .carryDeductedIdr,
+    ).toBe(0);
+    expect(topUp.carryDeductedIdr).toBe(deducted);
+    expect(topUp.distributableIdr).toBe(1_000_000);
+    expect(topUp.distributableIdr).toBe(
+      topUp.totalGrossIdr + topUp.carryDeductedIdr,
+    );
+    expect(
+      topUp.carryDeductions.map((row) => row.shareholderId).sort(),
+    ).toEqual([s1.id, s2.id].sort());
+    expect(await deductionRowsOf(topUp.id)).toHaveLength(2);
+    // It completes like any run, with the journal on the reduced gross.
+    const paid = await payAll(manager, await approveRunFlow(topUp.id));
+    expect(paid.status).toBe("paid");
+    const journal = await journalOf((await postedJournalId(paid.id)) as string);
+    expect(journal.byAccount(world.accounts.retainedEarnings).debit).toBe(
+      topUp.totalGrossIdr,
+    );
+  });
+
+  it("(11b) a top-up the carry absorbs completely gives zero lines, settled on approval", async () => {
+    const { world, run } = await paidRunWithAbsorbedHolders();
+    const period = await closedPeriod(world, NET_PROFIT);
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 100,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const topUp = parseRun(response.body);
+    // 20% of 100 = 20 each for s1 and s2, fully under their open carry.
+    for (const id of [s1.id, s2.id]) {
+      const line = topUp.lines.find((item) => item.shareholderId === id)!;
+      expect(line.grossIdr).toBe(0);
+      expect(line.carryDeductedIdr).toBe(20);
+    }
+    expect(topUp.carryDeductedIdr).toBe(40);
+    const approved = await approveRunFlow(topUp.id);
+    expect(approved.status).toBe("approved");
+    expect(
+      approved.lines
+        .filter((line) => line.grossIdr === 0)
+        .every((line) => line.paymentRef === "POTONG-KEKURANGAN"),
+    ).toBe(true);
+  });
+
+  /** Round 2 F1: a run whose every line is zero has nothing to claw back. */
+  it("(12) a claw-back of a run whose lines are all zero is refused with a clear message", async () => {
+    const { run } = await allAbsorbedRun();
+    const paid = await approveRunFlow(run.id);
+    expect(paid.status).toBe("paid");
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: run.fiscalPeriodId,
+      adjustmentIdr: -1_000,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("ADJUSTMENT_TARGET_INVALID");
+    expect(JSON.stringify(response.body)).toContain(
+      "Run ini seluruhnya terserap kekurangan koreksi; tidak ada yang bisa ditarik kembali",
+    );
+  });
+
+  /** Round 2 F2: a zero line is a settlement, not a payout: no statement. */
+  it("(13) a zero line has no statement for the manager or its own shareholder", async () => {
+    const { run } = await paidRunWithAbsorbedHolders();
+    const zero = run.lines.find((line) => line.shareholderId === s1.id)!;
+    const real = run.lines.find((line) => line.shareholderId === s3.id)!;
+    expect(zero.grossIdr).toBe(0);
+    expect(zero.paymentStatus).toBe("paid");
+    const path = (line: { id: string }) =>
+      `/distributions/${run.id}/lines/${line.id}/statement`;
+    const byManager = await get(manager, path(zero));
+    expect(byManager.status, JSON.stringify(byManager.body)).toBe(404);
+    expect(errorCode(byManager)).toBe("NOT_FOUND");
+    const own = await get(sh1User, path(zero));
+    expect(own.status, JSON.stringify(own.body)).toBe(404);
+    // Control: a real line of the same run still has its statement.
+    const control = await get(manager, path(real));
+    expect(control.status, JSON.stringify(control.body)).toBe(200);
+  });
+
+  /** Round 2 F3: a run paid on approval still tells the outbox it completed. */
+  it("(14) a run paid on approval appends distribution.completed with a null journal", async () => {
+    const { run } = await allAbsorbedRun();
+    const paid = await approveRunFlow(run.id);
+    expect(paid.status).toBe("paid");
+    const events = await owner.query<{
+      name: string;
+      journal: string | null;
+      cut: string | null;
+    }>(
+      `SELECT event->>'name' AS name,
+              event->'payload'->>'journalEntryId' AS journal,
+              event->'payload'->>'carryDeductedIdr' AS cut
+       FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'aggregateId' = $2
+         AND event->>'name' IN ('distribution.approved', 'distribution.completed')`,
+      [tenantA, run.id],
+    );
+    expect(events.rows.map((row) => row.name).sort()).toEqual([
+      "distribution.approved",
+      "distribution.completed",
+    ]);
+    const completed = events.rows.find(
+      (row) => row.name === "distribution.completed",
+    )!;
+    expect(completed.journal).toBeNull();
+    expect(completed.cut).toBe("270001");
   });
 });

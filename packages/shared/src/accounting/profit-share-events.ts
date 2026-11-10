@@ -5,7 +5,12 @@
 // `paidNetIdr` is credited to the bank and `taxWithheldIdr` to
 // `dividend_tax_payable` (Utang PPh Dividen) until it is remitted.
 import { z } from "zod";
-import { idrSchema, isoDateTimeSchema, userIdSchema } from "../core/index.ts";
+import {
+  idr,
+  idrSchema,
+  isoDateTimeSchema,
+  userIdSchema,
+} from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import {
   distributionLineIdSchema,
@@ -19,6 +24,10 @@ import { periodKeySchema } from "./period-key.ts";
 import { distributionRunTypeSchema } from "./profit-share.ts";
 
 const countSchema = z.number().int().min(1).max(200);
+/** Carry (earlier correction shortfall) cut from a regular run's shares (Q83). */
+const carryDeductedSchema = idrSchema
+  .refine((value) => value >= 0, "Must be >= 0")
+  .default(idr(0));
 
 /** Emitted when the owner/directors approve a run: amounts are frozen (SH-04). */
 export const distributionApprovedEvent = defineDomainEvent({
@@ -33,6 +42,7 @@ export const distributionApprovedEvent = defineDomainEvent({
     totalGrossIdr: idrSchema,
     totalTaxWithheldIdr: idrSchema,
     totalNetIdr: idrSchema,
+    carryDeductedIdr: carryDeductedSchema,
     shareholderCount: countSchema,
     approvedBy: userIdSchema,
     approvedAt: isoDateTimeSchema,
@@ -69,6 +79,7 @@ export const distributionCompletedEvent = defineDomainEvent({
       distributedIdr: idrSchema,
       taxWithheldIdr: idrSchema,
       paidNetIdr: idrSchema,
+      carryDeductedIdr: carryDeductedSchema,
       shareholderCount: countSchema,
       journalEntryId: journalEntryIdSchema.nullable(),
       completedAt: isoDateTimeSchema,

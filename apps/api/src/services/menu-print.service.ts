@@ -44,7 +44,10 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { consumeOutbox } from "./core-outbox.ts";
-import { NoopMalwareScanner, type MalwareScanner } from "./core-image.ts";
+import {
+  assertScannerAcceptsDocuments,
+  type MalwareScanner,
+} from "./core-image.ts";
 import { signedStorageUrl, uploadStorage } from "./core-storage.ts";
 import {
   MENU_VIEW_PERMISSION,
@@ -64,7 +67,8 @@ export interface MenuPdfRenderer {
 export type MenuPrintDeps = {
   storage: ObjectStorage;
   renderer: MenuPdfRenderer | null;
-  scanner?: MalwareScanner;
+  /** Required: no default, so a missing scanner can never skip the document check. */
+  scanner: MalwareScanner;
 };
 
 export const PRINT_DEBOUNCE_SECONDS = 30;
@@ -395,6 +399,9 @@ export async function regenerateMenuPrint(
       "SERVICE_UNAVAILABLE",
       "Pembuat PDF menu belum tersedia.",
     );
+  // Before the claim and the render: a scanner that cannot vet PDFs would make
+  // the upload below refuse anyway (legend-0w2wy).
+  assertScannerAcceptsDocuments(deps.scanner);
   const tenantId = context.tenant.tenantId;
   // Claim: clear the dirty flag first. An event arriving while we render sets
   // it again and triggers one more run; nothing is lost.
@@ -452,7 +459,7 @@ export async function regenerateMenuPrint(
       pdf,
       {
         storage: deps.storage,
-        scanner: deps.scanner ?? new NoopMalwareScanner(),
+        scanner: deps.scanner,
         authorize: async () => true, // callers authorised the outlet already
         // System render (also run by the scheduled sweep): no user owns it.
         actorUserId: null,

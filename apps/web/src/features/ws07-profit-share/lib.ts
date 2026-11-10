@@ -11,6 +11,7 @@ import {
   effectiveShareAllocationVersion,
   shareAllocationTotalBp,
   type DistributionFrequency,
+  type DistributionLine,
   type DistributionLinePaymentStatus,
   type DistributionPolicy,
   type DistributionRun,
@@ -466,6 +467,16 @@ export function isDistributionLocked(status: DistributionRunStatus): boolean {
 /** Payment recording is the one write an approved run allows. */
 export function canRecordPayments(status: DistributionRunStatus): boolean {
   return status === "approved";
+}
+
+/**
+ * A line whose whole share was taken by carry: Rp0 net, settled on approval,
+ * with nothing to pay and no statement.
+ */
+export function isCarryAbsorbedLine(
+  line: Pick<DistributionLine, "grossIdr" | "carryDeductedIdr">,
+): boolean {
+  return line.grossIdr === 0 && line.carryDeductedIdr > 0;
 }
 
 export type DistributionProgress = {

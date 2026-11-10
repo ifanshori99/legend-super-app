@@ -1436,6 +1436,13 @@
       "when": 1794299000000,
       "tag": "0218_profit_share_unabsorbed",
       "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1794300000000,
+      "tag": "0219_profit_share_carry",
+      "breakpoints": true
     }
   ]
 }

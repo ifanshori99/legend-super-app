@@ -9,6 +9,7 @@ import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
+import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
 
 /**
@@ -40,13 +41,32 @@ export function createStorageApiRouter(options: {
 
   // Menu back office (legend-7nv1): the photo upload needs the storage and the
   // scanner. The menu router runs the auth guards on every /menu/* request,
-  // as it did in apiRouter; the menu import router stays there, after this.
+  // as it did in apiRouter; the menu import router follows below.
   router.use(
     "/menu",
     createMenuRouter({
       storage: runtime?.storage ?? null,
       scanner: runtime?.scanner,
     }),
+  );
+
+  // Menu import + printable menu (legend-0w2wy): the print PDF is stored, so
+  // it needs the storage and the scanner (a scanner that refuses documents
+  // makes print answer 503 before any render or write). No PDF renderer is
+  // deployed yet: print answers 503 until one is injected here. Only its own
+  // paths enter the router, which runs the session and tenant guards on every
+  // request it sees.
+  const menuImport = createMenuImportRouter({
+    storage: runtime?.storage ?? null,
+    renderer: null,
+    scanner: runtime?.scanner,
+  });
+  router.use("/menu", (req, res, next) =>
+    req.path.startsWith("/import/") ||
+    req.path === "/print" ||
+    req.path.startsWith("/print/")
+      ? menuImport(req, res, next)
+      : next(),
   );
 
   // Only attendance paths enter these routers: each runs the session and

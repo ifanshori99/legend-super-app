@@ -459,6 +459,25 @@ describe("pure helpers", () => {
 // ---- Mock behaviour -------------------------------------------------------
 
 describe("mock handlers", () => {
+  test("a mock regular run carries the (empty) carry fields of the contract", async () => {
+    const period = fixtures.fiscalPeriods.find(
+      (row) => row.period === "2026-10",
+    );
+    assert.ok(period);
+    const created = await post(runsPath(outletEntity), {
+      fiscalPeriodId: period.id,
+      idempotencyKey: key(12),
+    });
+    assert.equal(created.data.carryDeductedIdr, 0);
+    assert.deepEqual(created.data.carryDeductions, []);
+    for (const line of created.data.lines)
+      assert.equal(line.carryDeductedIdr, 0);
+    assert.equal(
+      created.data.distributableIdr,
+      created.data.totalGrossIdr + created.data.carryDeductedIdr,
+    );
+  });
+
   test("the mock refuses a distribution from an open period (SH-02)", async () => {
     const openPeriod = fixtures.fiscalPeriods.find(
       (row) => row.period === "2026-11",

@@ -119,6 +119,7 @@ async function load(
       shareholderId: row.line.shareholderId,
       shareBp: row.line.shareBp,
       grossIdr: row.line.grossIdr,
+      carryDeductedIdr: row.line.carryDeductedIdr,
       taxWithheldIdr: row.line.taxWithheldIdr,
       netIdr: row.line.netIdr,
       paymentStatus: row.line.paymentStatus,
