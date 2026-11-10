@@ -133,6 +133,7 @@ class FakeGateway implements PaymentGatewayPort {
   async getStatus(input: {
     providerRef: string;
   }): Promise<GatewayPaymentStatus> {
+    statusOrder.push(input.providerRef);
     this.statusReads.set(
       input.providerRef,
       (this.statusReads.get(input.providerRef) ?? 0) + 1,
@@ -157,6 +158,8 @@ class FakeGateway implements PaymentGatewayPort {
 
 let doit: FakeGateway;
 let duitku: FakeGateway;
+/** providerRef of every getStatus call, across gateways, in call order. */
+let statusOrder: string[] = [];
 const createdLinkIds: string[] = [];
 
 async function setQrisRule(provider: string, fallback: string | null) {
@@ -218,6 +221,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   platform.enabled = new Set(["doit", "duitku"]);
+  statusOrder = [];
   doit = new FakeGateway("doit");
   duitku = new FakeGateway("duitku");
   resetPaymentGateways();
@@ -500,6 +504,29 @@ describe("poller across providers (D5)", () => {
     );
 
     expect(doit.statusReads.get(doitIntent.provider_ref)).toBe(1);
+  });
+
+  it("polls both providers in one least-recently-polled order, not grouped by provider", async () => {
+    // DOIT registers first, so a per-provider grouping would ask it first.
+    await setQrisRule("doit", null);
+    const recent = [await newQrisIntent(), await newQrisIntent()];
+    await setQrisRule("duitku", null);
+    const never = [await newQrisIntent(), await newQrisIntent()];
+    // DOIT rows were polled a moment ago; Duitku rows never were.
+    await owner.query(
+      "UPDATE payment_intents SET gateway_polled_at = now() WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, recent.map((intent) => intent.id)],
+    );
+
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(Date.now() + 120_000),
+    );
+
+    expect(statusOrder).toEqual([
+      ...never.map((intent) => intent.provider_ref),
+      ...recent.map((intent) => intent.provider_ref),
+    ]);
   });
 
   it("returns at once when no gateway is registered", async () => {

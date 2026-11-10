@@ -2277,9 +2277,16 @@ export async function pollPendingGatewayIntents(
         ),
       )
       .returning();
-    const byId = new Map(claimed.map((row) => [row.id, row]));
-    // `returning` has no order: keep the least-recently-polled-first order.
-    return candidates.flatMap((row) => byId.get(row.id) ?? []);
+    // `returning` has no order, and the per-provider windows come back grouped
+    // by provider. Process in one global least-recently-polled-first order
+    // (never polled first, then oldest) so a slow provider that uses up the
+    // time budget cannot keep another provider's rows behind its own forever.
+    return claimed.sort((a, b) => {
+      const ap = a.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const bp = b.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (ap !== bp) return ap < bp ? -1 : 1;
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
   });
   let checked = 0;
   let settled = 0;
