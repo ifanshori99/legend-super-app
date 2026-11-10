@@ -10,6 +10,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { createApp } from "../app";
+import { NoopMalwareScanner } from "../services/core-image";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import {
@@ -62,7 +63,11 @@ const testStartedAt = new Date();
 let staff: Staff;
 const isolatedTenants: IsolatedTenant[] = [];
 const renderer = new CountingRenderer();
-const deps = { storage: new FakeObjectStorage(), renderer };
+const deps = {
+  storage: new FakeObjectStorage(),
+  renderer,
+  scanner: new NoopMalwareScanner(),
+};
 
 beforeAll(async () => {
   staff = await staffWithRole(app, { template: "owner", tenantId });
@@ -250,7 +255,11 @@ describe("printable menu", () => {
   });
 
   it("fails closed without a PDF renderer: 503 on first read, sweep does not throw", async () => {
-    const noRenderer = { storage: deps.storage, renderer: null };
+    const noRenderer = {
+      storage: deps.storage,
+      renderer: null,
+      scanner: deps.scanner,
+    };
     await expect(
       getLatestMenuPrint(
         ctx(),
