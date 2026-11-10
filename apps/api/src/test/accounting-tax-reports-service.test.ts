@@ -843,7 +843,345 @@ describe("legend-5nhkp export and download", () => {
   });
 });
 
+// ---- Follow-up (brief 2): no-change guard and finalize idempotency -----------------
+//
+// Assumptions:
+// - NO_CHANGE compares fiscal_period_version, amount and the lines as stored
+//   (JSON, key order irrelevant). Lines produced with the same content but a
+//   different key order therefore count as equal.
+// - NO_CHANGE is checked before the correction-reason check, so a no-change
+//   draft finalized WITHOUT a reason answers TAX_REPORT_NO_CHANGE, not 400.
+// - A second `generate` after a draft was filed creates a new draft on the same
+//   closed period (same period version): the only way to get a same-version draft.
+// - A replay (same key, same report) returns an equal body; HTTP 200 itself is
+//   a route concern and not asserted here.
+// - IDEMPOTENCY_KEY_REUSED is the core error code (409) and is thrown by the
+//   tax service with that `code`.
+
+const keyOfReport = async (id: string) =>
+  (
+    await owner.query<{ k: string | null }>(
+      "SELECT finalize_idempotency_key AS k FROM tax_reports WHERE id = $1",
+      [id],
+    )
+  ).rows[0]!.k;
+
+const finalizeWithKey = (
+  report: { id: string },
+  idempotencyKey: string,
+  correctionReason?: string,
+) =>
+  finalizeTaxReport(
+    scopedContext(),
+    actor(),
+    report.id as never,
+    {
+      idempotencyKey,
+      ...(correctionReason === undefined ? {} : { correctionReason }),
+    } as never,
+  );
+
+/** The same line with its keys in reverse order (equal as JSON content). */
+const reorderKeys = (rows: TaxReportLine[]): TaxReportLine[] =>
+  rows.map(
+    (row) =>
+      Object.fromEntries(
+        Object.entries(row as unknown as Record<string, unknown>).reverse(),
+      ) as unknown as TaxReportLine,
+  );
+
+describe("legend-5nhkp finalize: no-change guard", () => {
+  it("rejects a draft identical to the current report (same period version, lines, amount) with 409 TAX_REPORT_NO_CHANGE", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const same = lines(100);
+    const rev0 = await finalize(await generate(fx, same));
+    const draft = await generate(fx, same); // same closed period version
+    expect(draft.id).not.toBe(rev0.id);
+    expect(draft.fiscalPeriodVersion).toBe(rev0.fiscalPeriodVersion);
+
+    const before = await dbRow(draft.id);
+    const oldBefore = await dbRow(rev0.id);
+    await expectCode(
+      finalize(draft, "Tidak ada perubahan"),
+      "TAX_REPORT_NO_CHANGE",
+      409,
+    );
+
+    // Nothing written: the draft stays a draft, the current report is untouched.
+    const after = await dbRow(draft.id);
+    expect(after.status).toBe("draft");
+    expect(after.revision_no).toBeNull();
+    expect(after.version).toBe(before.version);
+    expect(await keyOfReport(draft.id)).toBeNull();
+    const oldAfter = await dbRow(rev0.id);
+    expect(oldAfter.superseded_at).toBeNull();
+    expect(oldAfter.version).toBe(oldBefore.version);
+    expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev0.id]);
+  });
+
+  it("answers NO_CHANGE before it asks for a correction reason", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const same = lines(100);
+    await finalize(await generate(fx, same));
+    const draft = await generate(fx, same);
+    await expectCode(finalize(draft), "TAX_REPORT_NO_CHANGE", 409);
+    expect((await dbRow(draft.id)).status).toBe("draft");
+  });
+
+  it("also guards a current report that was already exported", async () => {
+    const fx = await fresh();
+    const { runtime } = makeRuntime();
+    await close(fx.p);
+    const same = lines(100);
+    const rev0 = await finalize(await generate(fx, same));
+    await exportReport(rev0, runtime);
+    const draft = await generate(fx, same);
+    await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
+    expect((await dbRow(rev0.id)).status).toBe("exported");
+  });
+
+  it("treats lines with the same content in another key order as unchanged", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const same = lines(100);
+    await finalize(await generate(fx, same));
+    const draft = await generate(fx, reorderKeys(same));
+    await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
+  });
+
+  it("allows a correction with the same period version when the amount changed", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, lines(100)));
+    const draft = await generate(fx, lines(150));
+    expect(draft.fiscalPeriodVersion).toBe(rev0.fiscalPeriodVersion);
+    const rev1 = await finalize(draft, "Koreksi payroll");
+    expect(rev1.revisionNo).toBe(1);
+    expect(rev1.supersedesId).toBe(rev0.id);
+    expect(rev1.amountIdr).toBe(150);
+    expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev1.id]);
+  });
+
+  it("allows a correction with the same period version and amount when only the lines changed", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, lines(100, "Outlet A")));
+    // Same total (100), different subject: lines differ, amount and version equal.
+    const draft = await generate(fx, lines(100, "Outlet B"));
+    expect(draft.amountIdr).toBe(rev0.amountIdr);
+    const rev1 = await finalize(draft, "Outlet salah");
+    expect(rev1.revisionNo).toBe(1);
+    expect(rev1.supersedesId).toBe(rev0.id);
+  });
+
+  it("a changed correction still needs its reason (400), and the draft stays a draft", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    await finalize(await generate(fx, lines(100)));
+    const draft = await generate(fx, lines(150));
+    await expectCode(
+      finalize(draft),
+      "TAX_REPORT_CORRECTION_REASON_REQUIRED",
+      400,
+    );
+    expect((await dbRow(draft.id)).status).toBe("draft");
+  });
+
+  it("allows a correction after reopen and re-close even with identical lines and amount", async () => {
+    const fx = await fresh();
+    const same = lines(100);
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, same));
+    await reopenAndReclose(fx.p); // period version 2 -> 4
+    const draft = await generate(fx, same);
+    expect(draft.fiscalPeriodVersion).toBe(4);
+    expect(rev0.fiscalPeriodVersion).toBe(2);
+
+    const rev1 = await finalize(draft, "Periode dibuka dan ditutup ulang");
+    expect(rev1.revisionNo).toBe(1);
+    expect(rev1.supersedesId).toBe(rev0.id);
+    expect(rev1.amountIdr).toBe(rev0.amountIdr);
+    expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev1.id]);
+  });
+
+  it("compares against the current report only: a draft equal to an older, superseded revision is a change", async () => {
+    const fx = await fresh();
+    const original = lines(100);
+    await close(fx.p);
+    await finalize(await generate(fx, original));
+    await reopenAndReclose(fx.p);
+    const rev1 = await finalize(await generate(fx, lines(150)), "Naik");
+    // Back to the first lines on the same period version as rev1: differs from
+    // the CURRENT report (150), so it is a valid correction.
+    const draft = await generate(fx, original);
+    expect(draft.fiscalPeriodVersion).toBe(rev1.fiscalPeriodVersion);
+    const rev2 = await finalize(draft, "Kembali ke angka awal");
+    expect(rev2.revisionNo).toBe(2);
+    expect(rev2.supersedesId).toBe(rev1.id);
+  });
+
+  it("the very first filing is never a no-change case", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, lines(100)));
+    expect(rev0.revisionNo).toBe(0);
+  });
+});
+
+describe("legend-5nhkp finalize: idempotency key", () => {
+  it("stores the key on the report when the draft becomes final, never on a draft", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const draft = await generate(fx);
+    expect(await keyOfReport(draft.id)).toBeNull();
+    const key = `fin-${randomUUID()}`;
+    await finalizeWithKey(draft, key);
+    expect(await keyOfReport(draft.id)).toBe(key);
+  });
+
+  it("replaying the same key on the same report returns the same finalized report", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const draft = await generate(fx);
+    const key = `fin-${randomUUID()}`;
+    const first = await finalizeWithKey(draft, key);
+    const rowBefore = await dbRow(draft.id);
+
+    const replay = await finalizeWithKey(draft, key);
+    expect(replay).toEqual(first);
+    expect(replay.status).toBe("final");
+    expect(replay.revisionNo).toBe(0);
+
+    // The replay wrote nothing.
+    const rowAfter = await dbRow(draft.id);
+    expect(rowAfter.version).toBe(rowBefore.version);
+    expect(await currentRows(fx)).toHaveLength(1);
+  });
+
+  it("a replay of a correction returns that correction, not NO_CHANGE or INVALID_TRANSITION", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const rev0 = await finalize(await generate(fx, lines(100)));
+    const draft = await generate(fx, lines(150));
+    const key = `fin-${randomUUID()}`;
+    const rev1 = await finalizeWithKey(draft, key, "Koreksi");
+    const oldBefore = await dbRow(rev0.id);
+
+    const replay = await finalizeWithKey(draft, key, "Koreksi");
+    expect(replay).toEqual(rev1);
+    expect(replay.revisionNo).toBe(1);
+    expect(replay.supersedesId).toBe(rev0.id);
+    expect((await currentRows(fx)).map((r) => r.id)).toEqual([rev1.id]);
+    expect((await dbRow(rev0.id)).version).toBe(oldBefore.version);
+  });
+
+  it("a replay still works after the report was exported", async () => {
+    const fx = await fresh();
+    const { runtime } = makeRuntime();
+    await close(fx.p);
+    const draft = await generate(fx);
+    const key = `fin-${randomUUID()}`;
+    const first = await finalizeWithKey(draft, key);
+    await exportReport(first, runtime);
+    const replay = await finalizeWithKey(draft, key);
+    expect(replay.id).toBe(first.id);
+    expect((await dbRow(first.id)).status).toBe("exported");
+  });
+
+  it("two concurrent finalizes with the same key on one report both succeed with the same report", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const draft = await generate(fx);
+    const key = `fin-${randomUUID()}`;
+    const [a, b] = await Promise.all([
+      finalizeWithKey(draft, key),
+      finalizeWithKey(draft, key),
+    ]);
+    expect(a.id).toBe(draft.id);
+    expect(b).toEqual(a);
+    expect(await currentRows(fx)).toHaveLength(1);
+  });
+
+  it("the same key for a different report is 409 IDEMPOTENCY_KEY_REUSED and writes nothing", async () => {
+    const first = await fresh();
+    await close(first.p);
+    const key = `fin-${randomUUID()}`;
+    await finalizeWithKey(await generate(first), key);
+
+    const second = await fresh();
+    await close(second.p);
+    const other = await generate(second);
+    const before = await dbRow(other.id);
+    await expectCode(
+      finalizeWithKey(other, key),
+      "IDEMPOTENCY_KEY_REUSED",
+      409,
+    );
+    const after = await dbRow(other.id);
+    expect(after.status).toBe("draft");
+    expect(after.version).toBe(before.version);
+    expect(await keyOfReport(other.id)).toBeNull();
+    expect(await currentRows(second)).toHaveLength(0);
+
+    // With a fresh key the same draft finalizes normally.
+    expect((await finalize(other)).status).toBe("final");
+  });
+
+  it("a different key on an already final report is still INVALID_TRANSITION", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const draft = await generate(fx);
+    const key = `fin-${randomUUID()}`;
+    await finalizeWithKey(draft, key);
+    await expectCode(
+      finalizeWithKey(draft, `fin-${randomUUID()}`),
+      "INVALID_TRANSITION",
+      409,
+    );
+    expect(await keyOfReport(draft.id)).toBe(key);
+  });
+
+  it("a different key on an exported report is still INVALID_TRANSITION", async () => {
+    const fx = await fresh();
+    const { runtime } = makeRuntime();
+    const rev0 = await normalFiling(fx);
+    await exportReport(rev0, runtime);
+    await expectCode(
+      finalizeWithKey(rev0, `fin-${randomUUID()}`),
+      "INVALID_TRANSITION",
+      409,
+    );
+  });
+
+  it("a failed finalize (no change) does not consume its key", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const same = lines(100);
+    await finalize(await generate(fx, same));
+    const draft = await generate(fx, same);
+    const key = `fin-${randomUUID()}`;
+    await expectCode(
+      finalizeWithKey(draft, key, "Cek"),
+      "TAX_REPORT_NO_CHANGE",
+      409,
+    );
+    expect(await keyOfReport(draft.id)).toBeNull();
+
+    // The same key is free for a real change on another report.
+    const fx2 = await fresh();
+    await close(fx2.p);
+    const ok = await finalizeWithKey(await generate(fx2), key);
+    expect(ok.status).toBe("final");
+  });
+});
+
 describe("legend-5nhkp contract", () => {
+  it("maps TAX_REPORT_NO_CHANGE to 409", () => {
+    expect(accountingErrorHttpStatus.TAX_REPORT_NO_CHANGE).toBe(409);
+  });
+
   it("maps the new error codes to the agreed HTTP statuses", () => {
     expect(accountingErrorHttpStatus.TAX_REPORT_SUPERSEDED).toBe(409);
     expect(accountingErrorHttpStatus.TAX_REPORT_STALE).toBe(409);

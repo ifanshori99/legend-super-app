@@ -70,6 +70,8 @@ export const accountingErrorHttpStatus = {
   /** The stored amount differs from the sum of the report lines. */
   TAX_REPORT_AMOUNT_MISMATCH: 422,
   TAX_REPORT_NOT_FOUND: 404,
+  /** The draft equals the current report (same period version, amount and lines). */
+  TAX_REPORT_NO_CHANGE: 409,
   ASSET_ALREADY_DISPOSED: 409,
   /** A share version must sum to exactly 10,000 bp before it can be submitted or approved (SH-03). */
   SHARE_ALLOCATION_NOT_EXACT_100: 422,
@@ -142,6 +144,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   TAX_REPORT_AMOUNT_MISMATCH:
     "Jumlah laporan tidak sama dengan total pajak per baris.",
   TAX_REPORT_NOT_FOUND: "Laporan pajak tidak ditemukan.",
+  TAX_REPORT_NO_CHANGE:
+    "Tidak ada perubahan dari laporan pajak yang berlaku. Tidak perlu dibuat revisi.",
   ASSET_ALREADY_DISPOSED: "Aset sudah dilepas.",
   SHARE_ALLOCATION_NOT_EXACT_100:
     "Total porsi pemegang saham harus tepat 10.000 bp (100%).",

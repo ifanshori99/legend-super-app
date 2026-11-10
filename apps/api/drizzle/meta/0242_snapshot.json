@@ -36162,6 +36162,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "finalize_idempotency_key": {
+          "name": "finalize_idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -36289,6 +36295,28 @@
           ],
           "isUnique": true,
           "where": "\"tax_reports\".\"status\" <> 'draft' AND \"tax_reports\".\"superseded_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tax_reports_finalize_idempotency_key": {
+          "name": "tax_reports_finalize_idempotency_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "finalize_idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tax_reports\".\"finalize_idempotency_key\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

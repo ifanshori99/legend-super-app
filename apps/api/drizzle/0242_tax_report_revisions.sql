@@ -22,6 +22,7 @@ ALTER TABLE "tax_reports" ADD COLUMN "superseded_by_id" uuid;--> statement-break
 ALTER TABLE "tax_reports" ADD COLUMN "superseded_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "tax_reports" ADD COLUMN "correction_reason" text;--> statement-breakpoint
 ALTER TABLE "tax_reports" ADD COLUMN "fiscal_period_version" integer NOT NULL;--> statement-breakpoint
+ALTER TABLE "tax_reports" ADD COLUMN "finalize_idempotency_key" varchar(100);--> statement-breakpoint
 ALTER TABLE "tax_reports" ADD CONSTRAINT "tax_reports_fiscal_period_version_check" CHECK ("tax_reports"."fiscal_period_version" >= 1);--> statement-breakpoint
 ALTER TABLE "tax_reports" ADD CONSTRAINT "tax_reports_revision_draft_check" CHECK (("tax_reports"."status" = 'draft') = ("tax_reports"."revision_no" IS NULL));--> statement-breakpoint
 ALTER TABLE "tax_reports" ADD CONSTRAINT "tax_reports_revision_range_check" CHECK ("tax_reports"."revision_no" IS NULL OR "tax_reports"."revision_no" >= 0);--> statement-breakpoint
@@ -34,6 +35,7 @@ ALTER TABLE "tax_reports" ADD CONSTRAINT "tax_reports_supersedes_fk" FOREIGN KEY
 ALTER TABLE "tax_reports" ADD CONSTRAINT "tax_reports_superseded_by_fk" FOREIGN KEY ("tenant_id","superseded_by_id") REFERENCES "public"."tax_reports"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "tax_reports_revision_key" ON "tax_reports" USING btree ("tenant_id","legal_entity_id","type","period","revision_no") WHERE "tax_reports"."status" <> 'draft';--> statement-breakpoint
 CREATE UNIQUE INDEX "tax_reports_current_key" ON "tax_reports" USING btree ("tenant_id","legal_entity_id","type","period") WHERE "tax_reports"."status" <> 'draft' AND "tax_reports"."superseded_at" IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "tax_reports_finalize_idempotency_key" ON "tax_reports" USING btree ("tenant_id","finalize_idempotency_key") WHERE "tax_reports"."finalize_idempotency_key" IS NOT NULL;--> statement-breakpoint
 -- Filed reports are locked (tier K review, bead legend-gmww; revision chain,
 -- bead legend-r3i8w). Once a report leaves draft its numbers, lines, subject,
 -- filing stamps and revision identity never change and it is never deleted.
@@ -42,6 +44,8 @@ CREATE UNIQUE INDEX "tax_reports_current_key" ON "tax_reports" USING btree ("ten
 -- A correction is a new draft after a period reopen; finalizing it supersedes
 -- the previous current report (superseded_at + superseded_by_id are set
 -- together, once). A superseded report accepts no change at all.
+-- The finalize idempotency key is filled by the UPDATE that turns the draft
+-- final and is locked from then on.
 -- (This replaces the 0235 comment, which said an export may repeat with a new
 -- file: it does not.)
 CREATE OR REPLACE FUNCTION app.guard_tax_report_filed() RETURNS trigger
@@ -72,7 +76,8 @@ BEGIN
     OR NEW.revision_no IS DISTINCT FROM OLD.revision_no
     OR NEW.supersedes_id IS DISTINCT FROM OLD.supersedes_id
     OR NEW.correction_reason IS DISTINCT FROM OLD.correction_reason
-    OR NEW.fiscal_period_version IS DISTINCT FROM OLD.fiscal_period_version THEN
+    OR NEW.fiscal_period_version IS DISTINCT FROM OLD.fiscal_period_version
+    OR NEW.finalize_idempotency_key IS DISTINCT FROM OLD.finalize_idempotency_key THEN
     RAISE EXCEPTION 'a final or exported tax report is locked; reopen the period and generate a new draft'
       USING ERRCODE = '42501';
   END IF;

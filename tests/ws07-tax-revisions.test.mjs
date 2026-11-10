@@ -221,6 +221,7 @@ describe("tax report error codes", () => {
       TAX_REPORT_SOURCE_UNAVAILABLE: 422,
       TAX_REPORT_AMOUNT_MISMATCH: 422,
       TAX_REPORT_NOT_FOUND: 404,
+      TAX_REPORT_NO_CHANGE: 409,
     };
     for (const [code, status] of Object.entries(expected)) {
       const error = new acc.AccountingError(code);

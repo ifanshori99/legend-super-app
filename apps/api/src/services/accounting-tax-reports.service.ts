@@ -8,7 +8,9 @@
 //     draft FOR UPDATE → fiscal_periods FOR SHARE (closed, and the period
 //     version equals the version the draft was built from)
 //     → current report of the key FOR UPDATE → revision = old + 1 (or 0)
-//     → old row superseded → draft becomes final.
+//     → no-change guard → old row superseded → draft becomes final.
+//     The finalize idempotency key is stored on the report; the same key on the
+//     same report replays it, on another report it is IDEMPOTENCY_KEY_REUSED.
 //   The partial unique indexes stay the safety net for a racing finalize (409);
 //   the deferred chain trigger checks the pair at commit.
 //   export: row FOR UPDATE; a superseded row answers 409 TAX_REPORT_SUPERSEDED;
@@ -32,6 +34,7 @@ import {
 } from "@starter/shared/accounting";
 import {
   assertTrustedScopedContext,
+  CoreError,
   idr,
   type ScopedTenantContext,
   type UserId,
@@ -102,7 +105,36 @@ const conflict = () =>
 
 /** A unique-index hit means a racing writer won: a retryable 409. */
 function raceToConflict(error: unknown): unknown {
+  if (finalizeKeyViolation(error)) return idempotencyKeyReused();
   return uniqueViolation(error) ? conflict() : error;
+}
+
+const idempotencyKeyReused = () =>
+  new CoreError(
+    "IDEMPOTENCY_KEY_REUSED",
+    "This idempotency key was used to finalize a different tax report.",
+  );
+
+/** True when a unique violation hit the finalize idempotency index. */
+function finalizeKeyViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { constraint?: unknown; cause?: unknown };
+  return (
+    candidate.constraint === "tax_reports_finalize_idempotency_key" ||
+    finalizeKeyViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Canonical JSON: object keys sorted, so key order never matters. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
 }
 
 async function lockReport(
@@ -265,13 +297,31 @@ export async function finalizeTaxReport(
   context: ScopedTenantContext,
   actorId: UserId,
   taxReportId: string,
-  body: { correctionReason?: string | undefined },
+  body: {
+    idempotencyKey: string;
+    correctionReason?: string | undefined;
+  },
 ): Promise<TaxReport> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     // 1. the draft
     const draft = await lockReport(tx, tenantId, taxReportId);
+    // Replay: the same key already filed this very report (a concurrent twin
+    // waited on the lock above and lands here too). Nothing is written.
+    if (draft.finalizeIdempotencyKey === body.idempotencyKey)
+      return toTaxReport(draft);
+    const [keyOwner] = await tx
+      .select({ id: taxReports.id })
+      .from(taxReports)
+      .where(
+        and(
+          eq(taxReports.tenantId, tenantId),
+          eq(taxReports.finalizeIdempotencyKey, body.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (keyOwner && keyOwner.id !== draft.id) throw idempotencyKeyReused();
     if (draft.status !== "draft")
       throw new AccountingError("INVALID_TRANSITION");
 
@@ -311,7 +361,16 @@ export async function finalizeTaxReport(
       .limit(1)
       .for("update");
 
-    // 4. revision number and reason
+    // 4. nothing to correct: same period version, amount and lines
+    if (
+      current &&
+      current.fiscalPeriodVersion === draft.fiscalPeriodVersion &&
+      current.amountIdr === draft.amountIdr &&
+      canonicalJson(current.lines) === canonicalJson(draft.lines)
+    )
+      throw new AccountingError("TAX_REPORT_NO_CHANGE");
+
+    // 5. revision number and reason
     if (current && current.revisionNo === null)
       throw new Error("A non-draft tax report has no revision number.");
     const revisionNo = current ? (current.revisionNo ?? 0) + 1 : 0;
@@ -323,7 +382,7 @@ export async function finalizeTaxReport(
     if (lineTax !== draft.amountIdr)
       throw new AccountingError("TAX_REPORT_AMOUNT_MISMATCH");
 
-    // 5. old row first (frees the "one in force" index), then the draft
+    // 6. old row first (frees the "one in force" index), then the draft
     const now = new Date();
     if (current)
       await tx
@@ -344,6 +403,7 @@ export async function finalizeTaxReport(
         revisionNo,
         supersedesId: current?.id ?? null,
         correctionReason: revisionNo >= 1 ? reason : null,
+        finalizeIdempotencyKey: body.idempotencyKey,
         finalizedBy: actorId,
         finalizedAt: now,
         version: sql`${taxReports.version} + 1`,

@@ -82,6 +82,10 @@ export const taxReports = pgTable(
     correctionReason: text("correction_reason"),
     /** `fiscal_periods.version` the draft was generated from. */
     fiscalPeriodVersion: integer("fiscal_period_version").notNull(),
+    /** Idempotency key of the finalize call; NULL for drafts, locked once set. */
+    finalizeIdempotencyKey: varchar("finalize_idempotency_key", {
+      length: 100,
+    }),
     /** +1 on every regenerate, finalize and export (optimistic concurrency). */
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -117,6 +121,9 @@ export const taxReports = pgTable(
     uniqueIndex("tax_reports_current_key")
       .on(t.tenantId, t.legalEntityId, t.type, t.period)
       .where(sql`${t.status} <> 'draft' AND ${t.supersededAt} IS NULL`),
+    uniqueIndex("tax_reports_finalize_idempotency_key")
+      .on(t.tenantId, t.finalizeIdempotencyKey)
+      .where(sql`${t.finalizeIdempotencyKey} IS NOT NULL`),
     index("tax_reports_period_idx").on(
       t.tenantId,
       t.legalEntityId,

@@ -729,6 +729,159 @@ describe("legend-r3i8w guard trigger on revision data", () => {
   });
 });
 
+// ---- finalize_idempotency_key (added inside migration 0242) --------------------
+//
+// Assumptions: the key is filled by the same UPDATE that turns the draft final
+// (like revision_no). Once non-NULL it can be neither changed nor cleared (guard
+// trigger, 42501). Uniqueness is per tenant, over non-NULL keys only (23505).
+// The column is varchar(100): 101 characters is refused with 22001.
+
+describe("legend-r3i8w finalize_idempotency_key", () => {
+  const unique = () => randomBytes(4).toString("hex");
+  const FINALIZE =
+    "status = 'final', revision_no = 0, finalized_by = 'user-2', " +
+    `finalized_at = '${NOW}', version = version + 1`;
+
+  /** A draft filed with `key`, as the finalize service does it. */
+  async function filedWith(key: string | null, period = nextPeriod()) {
+    const id = await insertRow(owner, { period });
+    await update(
+      id,
+      key === null
+        ? FINALIZE
+        : `${FINALIZE}, finalize_idempotency_key = '${key}'`,
+    );
+    return id;
+  }
+
+  const keyOf = async (id: string) =>
+    (
+      await owner.query<{ k: string | null }>(
+        "SELECT finalize_idempotency_key AS k FROM tax_reports WHERE id = $1",
+        [id],
+      )
+    ).rows[0]!.k;
+
+  it("is NULL on a draft and is filled when the draft becomes final", async () => {
+    const period = nextPeriod();
+    const draft = await insertRow(owner, { period });
+    expect(await keyOf(draft)).toBeNull();
+    await update(
+      draft,
+      `${FINALIZE}, finalize_idempotency_key = 'fin-${unique()}'`,
+    );
+    expect(await keyOf(draft)).toMatch(/^fin-/);
+  });
+
+  it("lets a draft change its key freely while still a draft", async () => {
+    const draft = await insertRow(owner, { period: nextPeriod() });
+    await update(draft, "finalize_idempotency_key = 'draft-a'");
+    await update(draft, "finalize_idempotency_key = 'draft-b'");
+    await update(draft, "finalize_idempotency_key = NULL");
+  });
+
+  it("rejects changing the key once the report is final", async () => {
+    const id = await filedWith(`lock-${unique()}`);
+    const before = await keyOf(id);
+    await expect(
+      codeOf(update(id, "finalize_idempotency_key = 'other'")),
+    ).resolves.toBe("42501");
+    expect(await keyOf(id)).toBe(before);
+  });
+
+  it("rejects clearing the key once the report is final", async () => {
+    const id = await filedWith(`clear-${unique()}`);
+    const before = await keyOf(id);
+    await expect(
+      codeOf(update(id, "finalize_idempotency_key = NULL")),
+    ).resolves.toBe("42501");
+    expect(await keyOf(id)).toBe(before);
+  });
+
+  it("keeps the key locked through export, and a version bump that leaves it alone is fine", async () => {
+    const id = await filedWith(`exp-${unique()}`);
+    const before = await keyOf(id);
+    await update(
+      id,
+      `status = 'exported', export_format = 'coretax_xml', file_key = 'k.xml', exported_at = '${NOW}', version = version + 1`,
+    );
+    expect(await keyOf(id)).toBe(before);
+    await expect(
+      codeOf(update(id, "finalize_idempotency_key = 'swap'")),
+    ).resolves.toBe("42501");
+  });
+
+  it("rejects the same key on two reports of one tenant (partial unique index)", async () => {
+    const key = `dup-${unique()}`;
+    await filedWith(key);
+    const second = await insertRow(owner, { period: nextPeriod() });
+    await expect(
+      codeOf(
+        update(second, `${FINALIZE}, finalize_idempotency_key = '${key}'`),
+      ),
+    ).resolves.toBe("23505");
+    // Still a draft: the failed statement changed nothing.
+    const { rows } = await owner.query(
+      "SELECT status FROM tax_reports WHERE id = $1",
+      [second],
+    );
+    expect(rows[0].status).toBe("draft");
+  });
+
+  it("rejects the same key even for another type or legal entity of the tenant", async () => {
+    const key = `scope-${unique()}`;
+    await filedWith(key);
+    const other = await insertRow(owner, {
+      period: nextPeriod(),
+      type: "ppn",
+    });
+    await expect(
+      codeOf(update(other, `${FINALIZE}, finalize_idempotency_key = '${key}'`)),
+    ).resolves.toBe("23505");
+  });
+
+  it("allows many rows without a key (NULL is not a duplicate)", async () => {
+    await filedWith(null);
+    await filedWith(null);
+    await insertRow(owner, { period: nextPeriod() });
+    await insertRow(owner, { period: nextPeriod() });
+  });
+
+  it("allows the same key in different tenants", async () => {
+    const key = `tenant-${unique()}`;
+    await filedWith(key);
+    const otherTenant = await seedEntity();
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO tax_reports
+         (id, tenant_id, legal_entity_id, type, period, amount_idr, lines, status,
+          generated_by, generated_at, finalized_by, finalized_at, revision_no,
+          fiscal_period_version, finalize_idempotency_key)
+       VALUES ($1, $2, $3, 'pbjt', $4, 100, $5::jsonb, 'final',
+               'user-1', $6, 'user-2', $6, 0, 1, $7)`,
+      [
+        id,
+        otherTenant.tenant,
+        otherTenant.entity,
+        nextPeriod(),
+        JSON.stringify([LINE]),
+        NOW,
+        key,
+      ],
+    );
+    expect(await keyOf(id)).toBe(key);
+  });
+
+  it("is a varchar(100): 100 characters fit, 101 do not", async () => {
+    const ok = await filedWith("a".repeat(100));
+    expect((await keyOf(ok))!.length).toBe(100);
+    const draft = await insertRow(owner, { period: nextPeriod() });
+    await expect(
+      codeOf(update(draft, `finalize_idempotency_key = '${"b".repeat(101)}'`)),
+    ).resolves.toBe("22001");
+  });
+});
+
 // ---- Migration 0242 on a database that already holds a report ----------------
 
 const lastBeforeRevisions = 235;
@@ -844,6 +997,7 @@ describe("legend-r3i8w migration 0242 on a database migrated only to 0235", () =
       "superseded_at",
       "correction_reason",
       "fiscal_period_version",
+      "finalize_idempotency_key",
     ])
       expect(await hasColumn(column), column).toBe(true);
     const { rows } = await scratch.query(
