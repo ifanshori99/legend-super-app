@@ -20,6 +20,12 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/**
+ * A line reference starting with this is an auditor warning for the screen
+ * (legend-powk0: no warnings field on a line yet). It is never exported.
+ */
+export const TAX_LINE_WARNING_PREFIX = "Peringatan:";
+
 const element = (name: string, value: string | number, indent: string) =>
   `${indent}<${name}>${escapeXml(String(value))}</${name}>`;
 
@@ -50,7 +56,9 @@ export function buildCoretaxXml(report: CoretaxXmlReport): string {
       element("BaseIdr", line.baseIdr, "      "),
       element("TaxIdr", line.taxIdr, "      "),
       "      <References>",
-      ...line.references.map((ref) => element("Reference", ref, "        ")),
+      ...line.references
+        .filter((ref) => !ref.startsWith(TAX_LINE_WARNING_PREFIX))
+        .map((ref) => element("Reference", ref, "        ")),
       "      </References>",
       "    </Line>",
     ].join("\n"),

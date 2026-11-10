@@ -31,6 +31,7 @@ import {
   outlets,
   taxSnapshots,
 } from "../db/schema";
+import { TAX_LINE_WARNING_PREFIX } from "./accounting-coretax-xml";
 import type { TenantTransaction } from "./accounting-shared";
 
 export type TaxLineSourceArgs = {
@@ -427,7 +428,9 @@ async function pbjtLines(
         // `references` (the only free text), kept within its 60 characters.
         references:
           sale.otherTax !== 0n
-            ? [`Peringatan: pajak non-PBJT Rp${sale.otherTax} tidak ikut`]
+            ? [
+                `${TAX_LINE_WARNING_PREFIX} pajak non-PBJT Rp${sale.otherTax} tidak ikut`,
+              ]
             : [],
       }),
     );
