@@ -18,6 +18,7 @@ import {
   gt,
   gte,
   ilike,
+  isNotNull,
   isNull,
   lt,
   or,
@@ -38,6 +39,7 @@ import {
   type Customer360,
   type CustomerProfileDto,
 } from "@starter/shared/crm";
+import { maskWhatsAppNumber } from "@starter/shared/identity";
 import type { Idr } from "@starter/shared/core";
 import { db } from "../db";
 import { consents, userIdentities } from "../db/schema";
@@ -187,15 +189,18 @@ export async function listCustomers(
 }
 
 /**
- * The sealed number of the profile's account. Stored by the identity module
- * under `user_identity:whatsapp:<digest>`. Null when there is no identity or
+ * The sealed number the profile was registered with. Stored by the identity
+ * module under `user_identity:whatsapp:<digest>`. Only the verified identity
+ * whose hash equals the profile's `whatsappHash` counts: an account may hold
+ * several WhatsApp identities, and the profile must show its own number, not
+ * another one of the account. Null when the profile has no hash or identity, or
  * the envelope does not open.
  */
 async function openWhatsappNumber(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  userId: string | null,
+  profile: { userId: string | null; whatsappHash: string | null },
 ): Promise<string | null> {
-  if (userId === null) return null;
+  if (profile.userId === null || profile.whatsappHash === null) return null;
   const [identity] = await tx
     .select({
       valueHash: userIdentities.valueHash,
@@ -204,13 +209,11 @@ async function openWhatsappNumber(
     .from(userIdentities)
     .where(
       and(
-        eq(userIdentities.userId, userId),
+        eq(userIdentities.userId, profile.userId),
         eq(userIdentities.type, "whatsapp"),
+        eq(userIdentities.valueHash, profile.whatsappHash),
+        isNotNull(userIdentities.verifiedAt),
       ),
-    )
-    .orderBy(
-      desc(userIdentities.isPrimary),
-      sql`${userIdentities.verifiedAt} DESC NULLS LAST`,
     )
     .limit(1);
   if (!identity?.valueEncrypted) return null;
@@ -222,13 +225,6 @@ async function openWhatsappNumber(
   } catch {
     return null;
   }
-}
-
-/** `+62••••••7890`: country code and the last four digits only. */
-export function maskWhatsappNumber(number: string): string {
-  const digits = number.replace(/\D/g, "");
-  if (digits.length <= 6) return "•".repeat(digits.length);
-  return `+${digits.slice(0, 2)}${"•".repeat(digits.length - 6)}${digits.slice(-4)}`;
 }
 
 function fullWhatsappNumber(number: string): string {
@@ -370,7 +366,7 @@ export async function getCustomer360(
       .limit(ACTIVE_VOUCHERS);
     const favoriteItems = await memberFavorites(tx, profile.id);
 
-    const number = await openWhatsappNumber(tx, profile.userId);
+    const number = await openWhatsappNumber(tx, profile);
     if (revealPii) {
       // Every opening is its own audit row; it names who and what, never the number.
       await recordAudit(
@@ -448,7 +444,7 @@ export async function getCustomer360(
             ? null
             : revealPii
               ? fullWhatsappNumber(number)
-              : maskWhatsappNumber(number),
+              : maskWhatsAppNumber(number),
         masked: !revealPii,
       },
     };

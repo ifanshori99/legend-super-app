@@ -29,6 +29,7 @@ import { createApp } from "../app";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import request from "supertest";
+import { sealSecret } from "../lib/secrets.ts";
 import {
   newMemberUser,
   owner,
@@ -40,6 +41,7 @@ import {
   auditRowsMentioning,
   bodyHasDigits,
   createCrmWorld,
+  identityAad,
   newNumber,
   realUserId,
   seedItem,
@@ -184,9 +186,13 @@ describe("CRM-C360 detail and personal data", () => {
     expect(response.status).toBe(200);
     expect(response.body.data.profile.id).toBe(a.id);
     expect(response.body.data.profile.name).toBe(a.name);
-    // Full number nowhere; the last four digits are still shown.
+    // Full number nowhere; the shared mask (maskWhatsAppNumber) keeps the
+    // first four digits and the last three.
     expect(bodyHasDigits(response.body, a.number.tail)).toBe(false);
-    expect(bodyHasDigits(response.body, a.number.last4)).toBe(true);
+    expect(response.body.data.whatsapp.number).toBe(
+      `${a.number.digits.slice(0, 4)}${"•".repeat(a.number.digits.length - 7)}${a.number.digits.slice(-3)}`,
+    );
+    expect(response.body.data.whatsapp.masked).toBe(true);
     expect(JSON.stringify(response.body)).not.toContain(a.number.hash);
   });
 
@@ -210,6 +216,73 @@ describe("CRM-C360 detail and personal data", () => {
     const response = await get(withPii, world, `/api/customers/${b.id}`);
     expect(response.status).toBe(200);
     expect(response.body.data.profile.id).toBe(b.id);
+  });
+
+  it("CRM-C360-16 the number shown is the verified identity that matches the profile's hash, not another WhatsApp identity of the account", async () => {
+    const userId = await realUserId(app);
+    const mine = newNumber();
+    const other = newNumber();
+    const sibling = newNumber();
+    const unverified = newNumber();
+    // The profile's own number is a secondary identity; a primary verified
+    // identity with another number and an unverified one sit beside it.
+    await seedWhatsappIdentity(userId, mine);
+    for (const [number, primary, verified] of [
+      [other, true, true],
+      [sibling, false, false],
+    ] as const) {
+      await owner.query(
+        `INSERT INTO user_identities (id, user_id, type, value_hash, value_encrypted, verified_at, is_primary)
+         VALUES ($1, $2, 'whatsapp', $3, $4, $5, $6)`,
+        [
+          randomUUID(),
+          userId,
+          number.hash,
+          sealSecret(`+${number.digits}`, identityAad(number.hash)),
+          verified ? new Date() : null,
+          primary,
+        ],
+      );
+    }
+    const matching = await seedProfile(world.tenantId, {
+      userId,
+      name: `Ganda ${randomUUID().slice(0, 6)}`,
+      whatsappHash: mine.hash,
+    });
+    await seedConsent(world.tenantId, matching.id);
+    const response = await get(withPii, world, `/api/customers/${matching.id}`);
+    expect(response.status).toBe(200);
+    expect(bodyHasDigits(response.body, mine.digits)).toBe(true);
+    expect(bodyHasDigits(response.body, other.tail)).toBe(false);
+    expect(bodyHasDigits(response.body, sibling.tail)).toBe(false);
+
+    // A profile whose hash points at the unverified identity shows no number.
+    // (One profile per user and tenant, so this one gets its own account.)
+    const otherUserId = await realUserId(app);
+    await seedWhatsappIdentity(otherUserId, newNumber());
+    await owner.query(
+      `INSERT INTO user_identities (id, user_id, type, value_hash, value_encrypted, verified_at, is_primary)
+       VALUES ($1, $2, 'whatsapp', $3, $4, NULL, false)`,
+      [
+        randomUUID(),
+        otherUserId,
+        unverified.hash,
+        sealSecret(`+${unverified.digits}`, identityAad(unverified.hash)),
+      ],
+    );
+    const pointsAtUnverified = await seedProfile(world.tenantId, {
+      userId: otherUserId,
+      name: `Belum ${randomUUID().slice(0, 6)}`,
+      whatsappHash: unverified.hash,
+    });
+    await seedConsent(world.tenantId, pointsAtUnverified.id);
+    const none = await get(
+      withPii,
+      world,
+      `/api/customers/${pointsAtUnverified.id}`,
+    );
+    expect(none.status).toBe(200);
+    expect(none.body.data.whatsapp.number).toBeNull();
   });
 
   it("CRM-C360-08 staff without crm.customer.pii.read never receive the number, even by searching for it", async () => {

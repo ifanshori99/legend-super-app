@@ -501,7 +501,7 @@ export const customer360Schema = z.strictObject({
   recentFeedback: z.array(feedbackSchema),
   activeVouchers: z.array(voucherDtoSchema),
   /**
-   * WhatsApp number (legend-ts50). Masked to the last 4 digits unless the caller
+   * WhatsApp number (legend-ts50). Masked (maskWhatsAppNumber: first 4 and last 3 digits) unless the caller
    * holds crm.customer.pii.read; every full reveal is audited. Optional so
    * older fixtures stay valid.
    */

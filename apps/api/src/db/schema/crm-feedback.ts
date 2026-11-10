@@ -8,6 +8,9 @@
 //   `app.customer_profile_id` unset, so the policy is inert for them.
 // - No DELETE or TRUNCATE for legend_app: status moves through the service.
 // - One feedback per (order, member, kind) via `feedback_order_profile_kind_key`.
+// - One order-less feedback per (table session, member, kind) via the partial
+//   unique index `feedback_session_profile_kind_key` (the key above skips NULL
+//   orders, so parallel session-only posts would otherwise both land).
 
 import { sql } from "drizzle-orm";
 import {
@@ -20,6 +23,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -74,6 +78,16 @@ export const feedback = pgTable(
       table.customerProfileId,
       table.kind,
     ),
+    uniqueIndex("feedback_session_profile_kind_key")
+      .on(
+        table.tenantId,
+        table.tableSessionId,
+        table.customerProfileId,
+        table.kind,
+      )
+      .where(
+        sql`${table.orderId} IS NULL AND ${table.tableSessionId} IS NOT NULL`,
+      ),
     foreignKey({
       name: "feedback_profile_fk",
       columns: [table.tenantId, table.customerProfileId],

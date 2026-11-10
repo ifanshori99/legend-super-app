@@ -168,7 +168,11 @@ export async function submitFeedback(
   }
 }
 
-/** The unique key skips NULL orders, so a session-only duplicate is checked here. */
+/**
+ * The order unique key skips NULL orders, so a session-only duplicate is
+ * checked here; the partial index `feedback_session_profile_kind_key` is the
+ * backstop for parallel posts (23505, mapped in the caller).
+ */
 async function assertNoSessionDuplicate(
   tx: Tx,
   scope: MemberScope,

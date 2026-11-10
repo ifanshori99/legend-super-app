@@ -66119,6 +66119,40 @@
         }
       },
       "indexes": {
+        "feedback_session_profile_kind_key": {
+          "name": "feedback_session_profile_kind_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "table_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "customer_profile_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"feedback\".\"order_id\" IS NULL AND \"feedback\".\"table_session_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "feedback_queue_idx": {
           "name": "feedback_queue_idx",
           "columns": [

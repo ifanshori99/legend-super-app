@@ -270,6 +270,28 @@ describe("legend-ts50 member feedback is refused", () => {
     expect(await feedbackOfOrder(orderUlid)).toHaveLength(1);
   });
 
+  it("legend-ts50 two simultaneous session-only submissions of the same kind end as one 201, one 409, one row", async () => {
+    const member = await activeMember();
+    const sessionId = await seedTableSession([member.userId], seededOutletB);
+    const body = {
+      kind: "rating",
+      rating: 4,
+      comment: null,
+      tableSessionId: sessionId,
+      orderId: null,
+    };
+
+    const [one, two] = await Promise.all([
+      submit(member, body),
+      submit(member, { ...body, rating: 2 }),
+    ]);
+
+    expect([one.status, two.status].sort()).toEqual([201, 409]);
+    const loser = one.status === 409 ? one : two;
+    expect(loser.body.error.code).toBe("FEEDBACK_DUPLICATE");
+    expect(await feedbackOfSession(sessionId)).toHaveLength(1);
+  });
+
   // B16: only `active` may send; a `closed` profile is invisible (404), the
   // same as no profile (requireMember, middleware/member.ts).
   it.each([

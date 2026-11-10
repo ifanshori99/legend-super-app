@@ -25,6 +25,9 @@ export type SegmentMaterializeResult = {
   businessDate: string;
   segments: number;
   refreshed: number;
+  /** Segments with no usable definition (or deleted mid-sweep): nothing to retry. */
+  skipped: number;
+  /** Segments whose refresh threw: the sweep retries on the next tick. */
   failed: number;
 };
 
@@ -47,14 +50,17 @@ export async function runSegmentMaterialize(
       .orderBy(asc(segments.createdAt), asc(segments.id)),
   );
   let refreshed = 0;
+  let skipped = 0;
   let failed = 0;
   for (const { id } of ids) {
     try {
       const row = await withTenant(database, context, (tx) =>
         refreshSegmentMembers(tx, tenantId, id, now),
       );
+      // The service answers null for a broken definition or a vanished row.
+      // That is permanent, so it must not keep the day open for a rerun.
       if (row) refreshed += 1;
-      else failed += 1;
+      else skipped += 1;
     } catch {
       failed += 1;
     }
@@ -63,6 +69,7 @@ export async function runSegmentMaterialize(
     businessDate: businessDateOf(now, DAY_CLOCK),
     segments: ids.length,
     refreshed,
+    skipped,
     failed,
   };
 }
@@ -71,7 +78,8 @@ const lastDayByTenant = new Map<string, string>();
 
 /**
  * Worker sweep: runs `runSegmentMaterialize` once per tenant per Asia/Jakarta
- * day, after 02:00. A run with a failed segment is retried on the next tick.
+ * day, after 02:00. A run with a failed (threw) segment is retried on the next
+ * tick; a skipped segment (broken definition) does not hold the day open.
  */
 export async function runSegmentMaterializeSweep(
   context: ScopedTenantContext,

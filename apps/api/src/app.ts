@@ -105,6 +105,11 @@ setPosEdcTenderPort(edcTenderSettlement);
 setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+// A search value with a run of 6+ digits (spaces, "+" and "-" ignored) is
+// likely a phone number, e.g. GET /api/customers?q=081234567890: personal data.
+const PHONE_LIKE_VALUE = /\d{6,}/;
+// ISO dates/timestamps (from=2026-11-10) are filters, not numbers: keep them in the log.
+const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?$/;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
 
@@ -138,8 +143,13 @@ function safeUrl(url: string) {
     .replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
-  for (const key of params.keys())
-    if (SENSITIVE_QUERY.test(key)) params.set(key, "[redacted]");
+  for (const [key, value] of [...params.entries()])
+    if (
+      SENSITIVE_QUERY.test(key) ||
+      (!ISO_DATE_VALUE.test(value) &&
+        PHONE_LIKE_VALUE.test(value.replace(/[\s+-]/g, "")))
+    )
+      params.set(key, "[redacted]");
   return `${path}?${params.toString()}`;
 }
 

@@ -53,6 +53,8 @@ CREATE TABLE "segment_members" (
 	CONSTRAINT "segment_members_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX "feedback_session_profile_kind_key" ON "feedback" USING btree ("tenant_id","table_session_id","customer_profile_id","kind") WHERE "feedback"."order_id" IS NULL AND "feedback"."table_session_id" IS NOT NULL;
+--> statement-breakpoint
 CREATE INDEX "feedback_queue_idx" ON "feedback" USING btree ("tenant_id","outlet_id","status","created_at");
 --> statement-breakpoint
 CREATE INDEX "feedback_profile_idx" ON "feedback" USING btree ("tenant_id","customer_profile_id","created_at");
