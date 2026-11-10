@@ -98,6 +98,7 @@ CREATE TABLE "rewards" (
                ELSE "rewards"."menu_item_id" IS NOT NULL AND "rewards"."voucher_value_idr" IS NULL END)
 );
 --> statement-breakpoint
+ALTER TABLE "loyalty_programs" ALTER COLUMN "daily_point_cap_per_customer" SET DEFAULT 500;--> statement-breakpoint
 ALTER TABLE "vouchers" DROP CONSTRAINT "vouchers_source_check";--> statement-breakpoint
 ALTER TABLE "point_earn_records" ADD COLUMN "applied_reversal_ids" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
 ALTER TABLE "mission_progress" ADD CONSTRAINT "mission_progress_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

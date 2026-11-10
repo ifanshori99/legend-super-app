@@ -57756,7 +57756,7 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false,
-          "default": 1000
+          "default": 500
         },
         "phone_lookup_daily_cap_per_cashier": {
           "name": "phone_lookup_daily_cap_per_cashier",
