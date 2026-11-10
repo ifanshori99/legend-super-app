@@ -936,3 +936,4 @@ Langkah berikut CTO baru:
 - 16:03 CTO: 94q2l-impl 086ba7f8 (konsumen refund, pro-rata Q85, four-eyes, 0222 sementara; 0214 diubah di tempat untuk FORCE RLS FK -> perhatian batch47 bentrok dengan perbaikan merge train). Lanjutan G9whx: rejected = balik jurnal otomatis. Kartu laporan penjualan refund recovery.
 - 16:11 CTO: nzbi8 b594aab3 (parkir swap return di recipe_deductions, retry day.closed, 0228 sementara; reviewer 1 temuan dibetulkan) G90tg resolved, batch47. Mulai u37u3 UI (340). #3 5h 46%.
 - 16:17 CTO: lzvh0 80fbe9be (distribution_run_shortfalls, carry_deductions, 0224 sementara; architect HIGH dibetulkan). Lanjutan G2crn: zero distribution baris net 0, top-up kurangi carry dulu.
+- 16:20 CTO: hwn02 berhenti di batas typecheck; pilih lanjut (a) + temuan 1-4. Kartu pola FK inline vs NO FORCE/FORCE untuk batch47.
