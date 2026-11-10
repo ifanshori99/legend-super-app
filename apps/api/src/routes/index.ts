@@ -11,6 +11,8 @@ import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
 import { createPurchasingSupplierRouter } from "./purchasing-supplier.routes.ts";
 import { createPurchasingOrderRouter } from "./purchasing-order.routes.ts";
 import { createInventoryReceivingRouter } from "./inventory-receiving.routes.ts";
+import { createPurchaseReturnRouter } from "./purchase-return.routes.ts";
+import { createPettyPurchaseRouter } from "./petty-purchase.routes.ts";
 import {
   createPurchasingSendRouter,
   publicPurchaseOrderRouter,
@@ -178,6 +180,9 @@ apiRouter.use("/inventory", createPurchasingSupplierRouter());
 apiRouter.use("/inventory", createPurchasingOrderRouter());
 // Goods receipt: partial receiving, QC, photos (PRD §3.18 INV-05, legend-o1o4s).
 apiRouter.use("/inventory", createInventoryReceivingRouter());
+// Supplier returns and simple petty purchases (legend-65mgw).
+apiRouter.use("/inventory", createPurchaseReturnRouter());
+apiRouter.use("/inventory", createPettyPurchaseRouter());
 // Send PO by email or share link (PRD §3.18 "Kirim PO", legend-9yz).
 apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).

@@ -1359,6 +1359,13 @@
       "when": 1794286000000,
       "tag": "0207_loyalty_rewards_missions",
       "breakpoints": true
+    },
+    {
+      "idx": 208,
+      "version": "7",
+      "when": 1794287000000,
+      "tag": "0208_supplier_return_petty",
+      "breakpoints": true
     }
   ]
 }

@@ -50,6 +50,7 @@ export const storageSourceKindSchema = z.enum([
   "employment_contract",
   "leave_request",
   "menu_item",
+  "petty_purchase",
 ]);
 export type StorageSourceKind = z.infer<typeof storageSourceKindSchema>;
 
@@ -65,6 +66,7 @@ export const storageSourceKindPurpose = {
   employment_contract: "document",
   leave_request: "document",
   menu_item: "menu_photo",
+  petty_purchase: "receipt",
 } as const satisfies Record<StorageSourceKind, StoragePurpose>;
 
 /** Kind used when an upload names none: only purposes with one obvious kind.

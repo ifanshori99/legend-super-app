@@ -114,6 +114,69 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     ).toEqual([]);
   });
 
+  it("legend-65mgw return and petty tables force tenant RLS, outlet RLS only where outlet is required, and keep history append-only", async () => {
+    const tables = [
+      { name: "purchase_returns", outlet: true, update: false, del: false },
+      {
+        name: "purchase_return_lines",
+        outlet: true,
+        update: false,
+        del: false,
+      },
+      { name: "petty_purchases", outlet: true, update: false, del: false },
+      // Policy: outlet_id is nullable (null = tenant default), tenant RLS only.
+      {
+        name: "petty_purchase_policies",
+        outlet: false,
+        update: true,
+        del: false,
+      },
+    ];
+    for (const table of tables) {
+      const rls = await pool.query<{
+        relrowsecurity: boolean;
+        relforcerowsecurity: boolean;
+        policies: string[];
+      }>(
+        `SELECT c.relrowsecurity, c.relforcerowsecurity,
+                COALESCE((SELECT array_agg(p.polname::text ORDER BY p.polname)
+                          FROM pg_policy p
+                          WHERE p.polrelid = c.oid AND NOT p.polpermissive), '{}'::text[]) AS policies
+         FROM pg_class c
+         WHERE c.oid = ('public.' || $1)::regclass`,
+        [table.name],
+      );
+      expect(rls.rows[0], table.name).toEqual({
+        relrowsecurity: true,
+        relforcerowsecurity: true,
+        policies: table.outlet
+          ? ["outlet_isolation", "tenant_isolation"]
+          : ["tenant_isolation"],
+      });
+      const grants = await pool.query<{
+        sel: boolean;
+        ins: boolean;
+        upd: boolean;
+        del: boolean;
+        trunc: boolean;
+      }>(
+        `SELECT has_table_privilege('legend_app', $1, 'SELECT') AS sel,
+                has_table_privilege('legend_app', $1, 'INSERT') AS ins,
+                has_table_privilege('legend_app', $1, 'UPDATE') AS upd,
+                has_table_privilege('legend_app', $1, 'DELETE') AS del,
+                has_table_privilege('legend_app', $1, 'TRUNCATE') AS trunc`,
+        [`public.${table.name}`],
+      );
+      expect(grants.rows[0], table.name).toEqual({
+        sel: true,
+        ins: true,
+        upd: table.update,
+        del: table.del,
+        trunc: false,
+      });
+    }
+  });
+
   it("sets scoped locals for a non-bypass login and clears them after commit", async () => {
     const database = drizzle(appPool, { schema });
     const context = establishScopedTenantContext(

@@ -85,6 +85,10 @@ export const storageSourcePermissionMap = {
     upload: ["menu.item.manage"],
     read: ["menu.item.view"],
   },
+  petty_purchase: {
+    upload: ["purchasing.petty.record"],
+    read: ["accounting.reconcile", "purchasing.petty_policy.manage"],
+  },
 } as const satisfies Record<
   StorageSourceKind,
   Record<StorageAction, readonly PermissionCode[]>
