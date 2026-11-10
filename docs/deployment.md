@@ -300,6 +300,37 @@ Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SEL
 
 Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
 
+## Rotasi kunci HRIS dan payroll
+
+Versi kunci 1 adalah `DATA_ENCRYPTION_KEY`. Versi 2 dan seterusnya diambil dari `HRIS_PII_KEYS`. Data HRIS yang disegel (karyawan dan kontrak) serta dua kolom payroll (`employee_pay_components.amount_encrypted` dan `payslips.calculation_encrypted`) memakai ring kunci yang sama. Kolom `pii_key_version` mencatat versi yang dipakai tiap baris. Job reseal ikut memindahkan kedua tabel payroll.
+
+Rotasi ke versi `N` (angka baru, lebih besar dari versi aktif):
+
+1. Buat kunci 32 byte dalam base64, misalnya `openssl rand -base64 32`. Jangan cetak atau tempel nilainya di chat, log, atau berkas repo.
+2. Tambahkan `N:<base64>` ke `HRIS_PII_KEYS`. Pisahkan dengan koma jika sudah ada entri. Simpan kunci lama.
+3. Set `HRIS_PII_ACTIVE_KEY_VERSION=N`.
+4. Restart API dan worker. Keduanya harus membaca env yang sama, karena data baru disegel dengan versi aktif.
+5. Antrikan job `hris-pii-reseal` dengan `{"targetKeyVersion": N}`. Job tanpa nilai itu, atau dengan versi lain, ditolak.
+6. Tunggu log selesai. Pastikan `failed` dan `incomplete` bernilai 0 di semua tenant, termasuk tenant yang suspended. Job bekerja per batch, idempotent, dan bisa dilanjutkan: jika terputus, jalankan ulang job yang sama. Baris yang sudah versi `N` dilewati.
+7. Cek di database sebagai superuser atau role dengan BYPASSRLS (tabel-tabel ini memakai row-level security; tanpa konteks tenant, role aplikasi gagal dengan 42501). Setiap query harus mengembalikan 0:
+
+```sql
+SELECT count(*) FROM employees WHERE pii_key_version <> N;
+SELECT count(*) FROM employment_contracts WHERE pii_key_version <> N;
+SELECT count(*) FROM employee_pay_components WHERE pii_key_version <> N;
+SELECT count(*) FROM payslips WHERE pii_key_version <> N;
+```
+
+Versi lama boleh dipensiunkan dari `HRIS_PII_KEYS` hanya jika kedua syarat ini terpenuhi: cek di atas bernilai 0 di setiap tenant, dan backup yang dibuat sebelum rotasi tidak lagi dibutuhkan untuk restore. Jika backup lama masih perlu di-restore, simpan kunci lama itu, atau jalankan ulang job reseal setelah restore.
+
+Versi 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan dengan rotasi ini. Kunci itu masih dipakai oleh:
+
+- Rahasia tersegel lain lewat `sealSecret` dan `openSecret` di `apps/api/src/lib/secrets.ts`, misalnya token QR, struk POS, token deposit reservasi, PIN payslip, recovery code MFA, kredensial integrasi platform, dan NPWP. Daftar pemanggilnya: `grep -rl "sealSecret(" apps/api/src`.
+- Blind index HMAC (`blindIndex` di `lib/secrets.ts`), termasuk `hrisBlindIndex` untuk kolom `*_hmac`. Blind index tidak dirotasi, karena harus tetap sama agar pencarian dan unique index tetap valid.
+- Fallback `DATA_ENCRYPTION_KEY ?? BETTER_AUTH_SECRET` untuk HMAC token (misalnya `services/qr-token.ts`, `pos-receipt-delivery.service.ts`, `purchasing-send.service.ts`).
+
+Jadi `DATA_ENCRYPTION_KEY` harus tetap di env production. Mengganti nilainya akan membuat rahasia tersegel di atas tidak bisa dibuka dan blind index berubah. Rotasi ini hanya memindahkan data HRIS dan payroll yang disegel ke versi baru.
+
 ## Edge host (outlet) (legend-svy91)
 
 Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.md`, dan respons jika edge hilang atau dicuri ada di `docs/runbooks/edge-hilang-dicuri.md`.

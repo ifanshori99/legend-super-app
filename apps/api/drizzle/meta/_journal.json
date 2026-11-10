@@ -1555,6 +1555,13 @@
       "when": 1794430000000,
       "tag": "0257_payslip_pins",
       "breakpoints": true
+    },
+    {
+      "idx": 272,
+      "version": "7",
+      "when": 1794461000000,
+      "tag": "0272_payroll_reseal_keys",
+      "breakpoints": true
     }
   ]
 }

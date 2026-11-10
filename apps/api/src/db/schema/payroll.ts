@@ -366,7 +366,7 @@ export const employeePayComponents = pgTable(
     amountEncrypted: bytea("amount_encrypted").notNull(),
     piiKeyVersion: smallint("pii_key_version").notNull(),
     effectiveFrom: businessDate("effective_from").notNull(),
-    /** Inclusive last day; null = open-ended. The only updatable column. */
+    /** Inclusive last day; null = open-ended. The only column a user action updates (the reseal job also moves the sealed amount + key version, 0272). */
     effectiveTo: businessDate("effective_to"),
     createdBy: actor("created_by").notNull(),
     createdAt: createdAt(),
@@ -535,7 +535,7 @@ export const payslips = pgTable(
     piiKeyVersion: smallint("pii_key_version").notNull(),
     /** Storage key of the rendered PDF; null until rendered. */
     pdfObjectKey: varchar("pdf_object_key", { length: 500 }),
-    /** The only other updatable column (employee opened it with the PIN). */
+    /** The only other column a user action updates (employee opened it with the PIN); the reseal job also moves the sealed calculation + key version (0272). */
     viewedAt: timestamp("viewed_at", { withTimezone: true }),
     createdAt: createdAt(),
   },

@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-snhxw rotasi kunci nilai payroll tersegel (engineer, cabang `ws/snhxw-payroll-keys` dari `ws/hris-pii-pin` 8305fdc3, 2026-11-10)
+
+- Sudah: `lib/payroll-sealed.ts` memakai ring kunci HRIS (v1 = `DATA_ENCRYPTION_KEY`, v2+ = `HRIS_PII_KEYS`, aktif = `HRIS_PII_ACTIVE_KEY_VERSION`); job `hris-pii-reseal` kini juga memindahkan `employee_pay_components` dan `payslips` (idempoten, bisa dilanjutkan, semua tenant). Migrasi 0272 (`when` 1794461000000): grant kolom + trigger guard hanya mengizinkan ubah nilai tersegel bersama versi kunci di dalam transaksi job (flag `app.payroll_reseal`). Docs: `docs/deployment.md` bagian "Rotasi kunci HRIS dan payroll".
+- Keputusan: kunci v1 TIDAK bisa dibuang dari env: `DATA_ENCRYPTION_KEY` masih dipakai blind index HMAC dan pemakai `sealSecret` lain. Yang bisa dipensiunkan hanya kunci versi lama dari `HRIS_PII_KEYS` (v2+) setelah cek 0. Dua test lama di `payroll-core-db.test.ts` kini mengharapkan 23514 (bukan 42501) untuk ubah nilai tersegel.
+- Risiko diterima: flag `app.payroll_reseal` bukan batas database (role aplikasi bisa mengaturnya); trigger hanya mengunci kolom lain dan wajib ubah nilai + versi bersamaan.
+- Review: satu architect (tingkat K): 1 temuan tinggi (test lama) dan 3 kecil, semua dibetulkan atau dicatat.
+
 ## legend-2ect + legend-33mj + legend-2ap3 HRIS signer, rotasi kunci PII, PIN slip gaji (engineer Opus, cabang `ws/hris-pii-pin` dari milestone/m1, 2026-11-10)
 
 - Sudah: 2ect: `hrisRouter` dan `hrisLeaveRouter` dipasang di `storage-api.routes.ts` dengan signer khusus purpose `document` (URL 300 detik), gerbang segmen `/hris` tanpa beda huruf besar-kecil, test daftar segmen; 3 titik tanda tangan memakai `tx`. 33mj: ring kunci `HRIS_PII_KEYS` + `HRIS_PII_ACTIVE_KEY_VERSION` (v1 = `DATA_ENCRYPTION_KEY`), job pg-boss `hris-pii-reseal` (wajib `targetKeyVersion`, semua tenant termasuk suspended, batch SKIP LOCKED, hitung sisa tanpa skip lalu gagal bila ada sisa). 2ap3: list + view slip gaji ber-PIN, set/ubah PIN, reset HR, reset OTP lewat port `PayslipPinOtpSender` (belum ada adapter: 503), batas 3 kode per jam (429), lockout 5x/15 menit, sidik idempotensi memakai HMAC pepper PIN, hanya kegagalan yang di-replay; migrasi `0257_payslip_pins` (when 1794430000000, RLS tenant paksa).

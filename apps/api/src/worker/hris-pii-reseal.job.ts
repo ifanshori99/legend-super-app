@@ -1,10 +1,13 @@
 // HRIS PII re-seal after a key rotation (bead legend-33mj). An operator adds a
 // key to HRIS_PII_KEYS, raises HRIS_PII_ACTIVE_KEY_VERSION, restarts, and
 // queues this job (on demand: no cron, a rotation is rare). It moves every
-// `employees` and `employment_contracts` row whose `pii_key_version` differs
-// from the active version: each sealed column is opened under the row's old
-// version and sealed under the active one, then `pii_key_version` is set.
-// Payroll sealed values keep version 1 (lib/payroll-sealed.ts, out of scope).
+// `employees`, `employment_contracts`, `employee_pay_components` and `payslips`
+// row whose `pii_key_version` differs from the active version: each sealed
+// column is opened under the row's old version and sealed under the active one,
+// then `pii_key_version` is set. Payroll sealed values ride the same key ring
+// (lib/payroll-sealed.ts). Their tables only accept a re-seal inside a
+// transaction that sets `app.payroll_reseal` (migration 0272), so every payroll
+// batch sets that flag first; it is transaction-local and changes nothing else.
 //
 // Safe to repeat and to kill. Work is cut into batches ordered by id; each
 // batch is one tenant transaction that selects its rows `FOR UPDATE SKIP
@@ -43,6 +46,7 @@ import {
 import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
 import { employees, employmentContracts } from "../db/schema/hris.ts";
+import { employeePayComponents, payslips } from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   HRIS_PII_KEY_VERSION,
@@ -51,6 +55,12 @@ import {
   type HrisEmployeePiiField,
   type HrisPiiBinding,
 } from "../lib/hris-pii.ts";
+import {
+  openPayrollAmount,
+  openPayrollValue,
+  sealPayrollAmount,
+  sealPayrollValue,
+} from "../lib/payroll-sealed.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -59,12 +69,15 @@ export const HRIS_PII_RESEAL_BATCH = 200;
 /** One run may be long on a big tenant; pg-boss must not expire it early. */
 const HRIS_PII_RESEAL_EXPIRE_SECONDS = 60 * 60;
 
-type ResealTable = "employees" | "employment_contracts";
+type ResealTable =
+  "employees" | "employment_contracts" | "employee_pay_components" | "payslips";
 
 export type HrisPiiResealResult = {
   tenants: number;
   employees: number;
   contracts: number;
+  payComponents: number;
+  payslips: number;
   failedTenants: number;
   /** Tenants that still hold stale rows after the run (locked by others). */
   incompleteTenants: number;
@@ -142,7 +155,30 @@ async function countStale(
           ne(employmentContracts.piiKeyVersion, active),
         ),
       );
-    return Number(staleEmployees?.n ?? 0) + Number(staleContracts?.n ?? 0);
+    const [stalePayComponents] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(employeePayComponents)
+      .where(
+        and(
+          eq(employeePayComponents.tenantId, tenantId),
+          ne(employeePayComponents.piiKeyVersion, active),
+        ),
+      );
+    const [stalePayslips] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payslips)
+      .where(
+        and(
+          eq(payslips.tenantId, tenantId),
+          ne(payslips.piiKeyVersion, active),
+        ),
+      );
+    return (
+      Number(staleEmployees?.n ?? 0) +
+      Number(staleContracts?.n ?? 0) +
+      Number(stalePayComponents?.n ?? 0) +
+      Number(stalePayslips?.n ?? 0)
+    );
   });
 }
 
@@ -265,6 +301,105 @@ async function resealContractBatch(
   });
 }
 
+/** One batch of employee pay components; returns the number of rows moved. */
+async function resealPayComponentBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    // The payroll tables reject a key change unless this flag is on (0272).
+    await tx.execute(sql`SELECT set_config('app.payroll_reseal', 'on', true)`);
+    const rows = await tx
+      .select()
+      .from(employeePayComponents)
+      .where(
+        and(
+          eq(employeePayComponents.tenantId, tenantId),
+          ne(employeePayComponents.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(employeePayComponents.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "employee_pay_components",
+        rowId: row.id,
+        field: "amount",
+      } as const;
+      const amountEncrypted = sealPayrollAmount(
+        openPayrollAmount(row.amountEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(employeePayComponents)
+        .set({ amountEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(employeePayComponents.tenantId, tenantId),
+            eq(employeePayComponents.id, row.id),
+            ne(employeePayComponents.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
+/** One batch of payslips; returns the number of rows moved. */
+async function resealPayslipBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(sql`SELECT set_config('app.payroll_reseal', 'on', true)`);
+    const rows = await tx
+      .select()
+      .from(payslips)
+      .where(
+        and(
+          eq(payslips.tenantId, tenantId),
+          ne(payslips.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payslips.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payslips",
+        rowId: row.id,
+        field: "calculation",
+      } as const;
+      const calculationEncrypted = sealPayrollValue(
+        openPayrollValue(row.calculationEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payslips)
+        .set({ calculationEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payslips.tenantId, tenantId),
+            eq(payslips.id, row.id),
+            ne(payslips.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Re-seal every stale row of every tenant. */
 export async function runHrisPiiReseal(
   options: HrisPiiResealOptions = {},
@@ -285,6 +420,8 @@ export async function runHrisPiiReseal(
     tenants: tenantIds.length,
     employees: 0,
     contracts: 0,
+    payComponents: 0,
+    payslips: 0,
     failedTenants: 0,
     incompleteTenants: 0,
     aborted: false,
@@ -293,6 +430,8 @@ export async function runHrisPiiReseal(
   const steps: [ResealTable, typeof resealEmployeeBatch][] = [
     ["employees", resealEmployeeBatch],
     ["employment_contracts", resealContractBatch],
+    ["employee_pay_components", resealPayComponentBatch],
+    ["payslips", resealPayslipBatch],
   ];
   for (const tenantId of tenantIds) {
     if (options.signal?.aborted) {
@@ -311,7 +450,10 @@ export async function runHrisPiiReseal(
           const count = await runBatch(database, context, batchSize, active);
           if (count === 0) break;
           if (table === "employees") result.employees += count;
-          else result.contracts += count;
+          else if (table === "employment_contracts") result.contracts += count;
+          else if (table === "employee_pay_components")
+            result.payComponents += count;
+          else result.payslips += count;
           await options.afterBatch?.({ tenantId, table, count });
         }
         if (result.aborted) break;
