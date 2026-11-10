@@ -553,6 +553,9 @@ export const id = {
     emptyHint: "Data akan muncul di sini setelah ada yang tercatat.",
     errorTitle: "Data tidak dapat dimuat",
     errorHint: "Periksa koneksi, lalu coba lagi.",
+    forbiddenTitle: "Layar ini belum tersedia untuk akun Anda",
+    forbiddenHint:
+      "Akun Anda ditugaskan ke stasiun tertentu dan belum punya akses baca ke data outlet ini. Minta pemilik atau manajer memeriksa penugasan Anda.",
     noResults: "Tidak ada hasil untuk “{query}”",
     noResultsHint: "Coba kata lain atau hapus filter.",
     clearSearch: "Hapus pencarian",
@@ -1742,6 +1745,9 @@ export const id = {
     noOutletTitle: "Belum ada outlet",
     noOutletHint: "Minta pemilik atau manajer menugaskan akun Anda ke outlet.",
     noOutletKelola: "Buka Kelola",
+    noOutletAddHint:
+      "Layar ini bekerja per outlet. Tambahkan outlet pertama di Pengaturan, lalu kembali ke sini.",
+    noOutletAdd: "Tambah outlet",
     public: {
       name: "Beranda",
       emptyTitle: "Beranda brand belum diisi",

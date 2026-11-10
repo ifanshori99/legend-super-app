@@ -24,6 +24,8 @@ type Props = {
   search?: { value: string; onChange: (value: string) => void; label?: string };
   actions?: React.ReactNode;
   onRetry?: () => void;
+  /** The query's error; a 403 shows an explaining empty state, not a failure. */
+  error?: unknown;
   empty?: { title?: string; description?: string; action?: React.ReactNode };
   /** Shown instead of `children` when `ready` but a search matched nothing. */
   noResults?: boolean;
@@ -42,6 +44,7 @@ function DataTableShell({
   search,
   actions,
   onRetry,
+  error,
   empty,
   noResults = false,
   page,
@@ -112,7 +115,7 @@ function DataTableShell({
               ))}
             </div>
           )}
-          {state === "error" && <ErrorState onRetry={onRetry} />}
+          {state === "error" && <ErrorState onRetry={onRetry} error={error} />}
           {state === "empty" && <EmptyState {...empty} />}
           {state === "ready" &&
             (noResults ? (

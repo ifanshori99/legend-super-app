@@ -6,6 +6,7 @@ import { cn } from "cn";
 import { Inbox, RotateCw, TriangleAlert, type LucideIcon } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api/errors";
 
 type StateProps = {
   title?: string;
@@ -72,15 +73,35 @@ function EmptyState({ title, description, icon = Inbox, ...rest }: StateProps) {
   );
 }
 
+/** True for a refused request (HTTP 403): the account lacks access, retrying will not help. */
+function isForbiddenError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
+/**
+ * Pass the query's `error` and a 403 shows an explaining empty state (no
+ * retry, no alert) instead of a failure: an account with only station
+ * assignments is refused outlet-level reads by design (legend-lfb8m).
+ */
 function ErrorState({
   title,
   description,
   icon = TriangleAlert,
   onRetry,
   action,
+  error,
   ...rest
-}: StateProps & { onRetry?: () => void }) {
+}: StateProps & { onRetry?: () => void; error?: unknown }) {
   const t = useT();
+  if (isForbiddenError(error)) {
+    return (
+      <EmptyState
+        title={t("state.forbiddenTitle")}
+        description={t("state.forbiddenHint")}
+        className={rest.className}
+      />
+    );
+  }
   return (
     <StateLayout
       data-slot="error-state"
@@ -103,4 +124,4 @@ function ErrorState({
   );
 }
 
-export { EmptyState, ErrorState };
+export { EmptyState, ErrorState, isForbiddenError };
