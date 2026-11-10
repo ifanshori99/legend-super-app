@@ -41,8 +41,22 @@ function migrationStatements(): string[] {
     .filter((part) => part.length > 0);
 }
 
+// One transaction, as drizzle applies a pending migration: a failing INSERT
+// rolls back the NO FORCE statements too, so FORCE RLS is never left lifted.
 async function applyMigration(): Promise<void> {
-  for (const statement of migrationStatements()) await owner.query(statement);
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    for (const statement of migrationStatements())
+      await client.query(statement);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function createTenant(): Promise<string> {
@@ -162,8 +176,10 @@ describe("legend-tm6pp shareholder_version default approval policy", () => {
     const entry = journal.entries.find((row) => row.tag === MIGRATION);
     expect(entry?.idx).toBe(259);
     expect(entry?.when).toBe(1794405000000);
-    const others = journal.entries.filter((row) => row.tag !== MIGRATION);
-    expect(Math.max(...others.map((row) => row.when))).toBeLessThan(
+    // Only the entries numbered below 0259: later migrations (0258 on another
+    // branch) are renumbered by the merge train and may carry a later `when`.
+    const earlier = journal.entries.filter((row) => row.idx < 259);
+    expect(Math.max(...earlier.map((row) => row.when))).toBeLessThan(
       entry!.when,
     );
   });
