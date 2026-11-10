@@ -340,3 +340,82 @@ describe("FE-AREA-08 gate texts exist in the catalog", () => {
   ])
     test(key, () => assert.notEqual(t(key), key));
 });
+
+// legend-oldg: the real (non-mock) access comes from GET /api/me/access.
+describe("FE-AREA-09 resolveAreaAccess reads the access view, fails closed", () => {
+  const session = { user: { id: "u1" } };
+  const view = (extra = {}) => ({
+    permissions: ["org.structure.manage", "kds.ticket.process"],
+    mfaRequired: false,
+    mfaVerified: false,
+    stations: ["11111111-1111-4111-8111-111111111111"],
+    supportSession: null,
+    ...extra,
+  });
+  const ok = (v) => async () => v;
+  const boom = (error) => async () => {
+    throw error;
+  };
+
+  test("no session → anonymous, API never called", async () => {
+    let called = 0;
+    const access = await accessLib.resolveAreaAccess(null, async () => {
+      called += 1;
+      return view();
+    });
+    assert.equal(access.authenticated, false);
+    assert.equal(called, 0);
+  });
+
+  test("allowed: permissions, stations and mfa flags come from the view", async () => {
+    const access = await accessLib.resolveAreaAccess(session, ok(view()));
+    assert.equal(access.authenticated, true);
+    assert.deepEqual(access.permissions, [
+      "org.structure.manage",
+      "kds.ticket.process",
+    ]);
+    assert.deepEqual(access.stations, ["11111111-1111-4111-8111-111111111111"]);
+    assert.equal(access.mfaRequired, false);
+    assert.equal(access.supportSession, null);
+  });
+
+  test("mfa_required and not verified keeps the MFA gate closed", async () => {
+    const access = await accessLib.resolveAreaAccess(
+      session,
+      ok(view({ mfaRequired: true, mfaVerified: false })),
+    );
+    assert.equal(access.mfaRequired, true);
+    assert.equal(access.mfaVerified, false);
+    assert.equal(
+      open("owner", { ...access, permissions: rbac.PERMISSION_CODES }),
+      "mfa_required",
+    );
+  });
+
+  test("support session is carried through", async () => {
+    const support = {
+      accessMode: "read_only",
+      expiresAt: "2026-11-10T10:00:00Z",
+    };
+    const access = await accessLib.resolveAreaAccess(
+      session,
+      ok(view({ supportSession: support })),
+    );
+    assert.deepEqual(access.supportSession, support);
+  });
+
+  test("403 / 401 / network / malformed → fail closed, no permissions", async () => {
+    for (const fetchView of [
+      boom(Object.assign(new Error("forbidden"), { status: 403 })),
+      boom(Object.assign(new Error("unauthorized"), { status: 401 })),
+      boom(new Error("network down")),
+      ok({ nonsense: true }),
+      ok(null),
+    ]) {
+      const access = await accessLib.resolveAreaAccess(session, fetchView);
+      assert.deepEqual(access, accessLib.accessFromSession(session));
+      assert.equal(access.permissions.length, 0);
+      assert.equal(access.mfaRequired, true);
+    }
+  });
+});
