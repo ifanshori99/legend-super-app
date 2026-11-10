@@ -9,15 +9,24 @@
 //   `custom.<slug>` so the two cannot collide.
 // - approval_policies: the approver is a role *key*, never a role id, so the
 //   section imports into a tenant whose role ids differ.
+//
+// Item shape (legend-5cwrq): the codecs speak the `kind`-discriminated shape
+// of `configSectionItemSchemas` (platform/config.ts), the one
+// tenant-config-export writes: roles are kind "template" | "custom",
+// approval_policies are kind "approval" | "pos_discount". toTemplate emits it.
+// fromTemplate and `itemSchema` also still READ the old kind-less shape (items
+// stored by legend-tct8 exports) so old files import; `kind` present means the
+// new shape and is validated strictly, `kind` absent means the old shape.
 
 import { z } from "zod";
-import { idrSchema } from "../core/index.ts";
+import { basisPointsSchema, idrSchema } from "../core/index.ts";
 import {
   APPROVAL_MAX_LEVELS,
   approvalActionTypeSchema,
   type ApprovalPolicy,
 } from "./approval.ts";
 import { tenantPermissionCodeSchema } from "./permissions.ts";
+import { ROLE_TEMPLATE_KEYS } from "./roles.ts";
 import { roleTemplateKeySchema, type Role } from "./schemas.ts";
 import { scopeTypeSchema } from "./scope.ts";
 
@@ -26,8 +35,35 @@ const ITEM_KEY_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,99}$/;
 const ITEM_KEY_MAX = 100;
 const CUSTOM_ROLE_PREFIX = "custom.";
 const CUSTOM_SLUG_MAX = 40;
+const TEMPLATE_ROLE_KEYS: ReadonlySet<string> = new Set(ROLE_TEMPLATE_KEYS);
 
 const itemKeySchema = z.string().regex(ITEM_KEY_PATTERN);
+
+/**
+ * Item schema that reads the `kind` shape when the item carries a `kind` and
+ * the legacy kind-less shape otherwise. Issues come from the one schema that
+ * applies, so a bad item reports its real problem (not "invalid union") and a
+ * kind item never passes as a legacy one or the reverse.
+ */
+function kindOrLegacy<K extends z.ZodType, L extends z.ZodType>(
+  kindSchema: K,
+  legacySchema: L,
+) {
+  return z.unknown().transform((value, ctx): z.infer<K> | z.infer<L> => {
+    const hasKind =
+      typeof value === "object" && value !== null && "kind" in value;
+    const result = (hasKind ? kindSchema : legacySchema).safeParse(value);
+    if (result.success) return result.data;
+    for (const issue of result.error.issues)
+      ctx.issues.push({
+        code: "custom",
+        message: issue.message,
+        path: issue.path,
+        input: value,
+      });
+    return z.NEVER;
+  });
+}
 
 export type ConfigDecodeResult<Draft> =
   { ok: true; drafts: Draft[] } | { ok: false; issues: string[] };
@@ -91,16 +127,29 @@ export function roleConfigKeys(
 
 // --- roles ------------------------------------------------------------------
 
-const roleConfigItemSchema = z.strictObject({
+const roleConfigFields = {
   key: itemKeySchema,
   name: z.string().trim().min(1).max(100),
   templateKey: roleTemplateKeySchema.nullable(),
   permissions: z.array(tenantPermissionCodeSchema),
   allowedScopeTypes: z.array(scopeTypeSchema).min(1),
   mfaRequired: z.boolean(),
+};
+const roleKindItemSchema = z.strictObject({
+  ...roleConfigFields,
+  kind: z.enum(["template", "custom"]),
 });
-export type RoleConfigItem = z.infer<typeof roleConfigItemSchema>;
-export type RoleConfigDraft = RoleConfigItem & { isTemplate: boolean };
+/** Old (legend-tct8) role item: no `kind`, key tied to the template key. */
+const roleLegacyItemSchema = z.strictObject(roleConfigFields);
+const roleConfigItemSchema = kindOrLegacy(
+  roleKindItemSchema,
+  roleLegacyItemSchema,
+);
+export type RoleConfigItem = z.infer<typeof roleKindItemSchema>;
+export type LegacyRoleConfigItem = z.infer<typeof roleLegacyItemSchema>;
+export type RoleConfigDraft = z.infer<typeof roleLegacyItemSchema> & {
+  isTemplate: boolean;
+};
 
 export const rolesConfigCodec = {
   section: "roles" as const,
@@ -120,6 +169,8 @@ export const rolesConfigCodec = {
   ): RoleConfigItem[] {
     return assignRoleKeys(rows).map(({ row, key }) => ({
       key,
+      kind:
+        row.templateKey === null ? ("custom" as const) : ("template" as const),
       name: row.name,
       templateKey: row.templateKey,
       permissions: [...row.permissions],
@@ -129,11 +180,13 @@ export const rolesConfigCodec = {
   },
 
   fromTemplate(
-    items: readonly RoleConfigItem[],
+    items: readonly (RoleConfigItem | LegacyRoleConfigItem)[],
   ): ConfigDecodeResult<RoleConfigDraft> {
     const issues: string[] = [];
     const drafts: RoleConfigDraft[] = [];
     const names = new Map<string, string>();
+    const keys = new Set<string>();
+    const templates = new Map<string, string>();
     for (const raw of items) {
       const parsed = roleConfigItemSchema.safeParse(raw);
       if (!parsed.success) {
@@ -146,19 +199,50 @@ export const rolesConfigCodec = {
         continue;
       }
       const item = parsed.data;
-      const isCustomKey = item.key.startsWith(CUSTOM_ROLE_PREFIX);
-      if (isCustomKey && item.templateKey !== null)
-        issues.push(
-          `roles item ${item.key}: custom key cannot carry a templateKey`,
-        );
-      else if (!isCustomKey && item.templateKey !== item.key)
-        issues.push(
-          `roles item ${item.key}: templateKey must equal the item key for a template role`,
-        );
-      else if (item.templateKey === "super_admin")
+      if (keys.has(item.key))
+        issues.push(`roles item ${item.key}: duplicate key`);
+      keys.add(item.key);
+      if ("kind" in item) {
+        // New shape: the exporter chooses keys, `kind` says what the role is.
+        if (item.kind === "custom" && item.templateKey !== null)
+          issues.push(
+            `roles item ${item.key}: custom role cannot carry a templateKey`,
+          );
+        else if (
+          item.kind === "custom" &&
+          TEMPLATE_ROLE_KEYS.has(item.key)
+        )
+          issues.push(
+            `roles item ${item.key}: custom role key cannot equal a template role key`,
+          );
+        else if (item.kind === "template" && item.templateKey === null)
+          issues.push(
+            `roles item ${item.key}: template role needs a templateKey`,
+          );
+      } else {
+        const isCustomKey = item.key.startsWith(CUSTOM_ROLE_PREFIX);
+        if (isCustomKey && item.templateKey !== null)
+          issues.push(
+            `roles item ${item.key}: custom key cannot carry a templateKey`,
+          );
+        else if (!isCustomKey && item.templateKey !== item.key)
+          issues.push(
+            `roles item ${item.key}: templateKey must equal the item key for a template role`,
+          );
+      }
+      if (item.templateKey === "super_admin")
         issues.push(
           `roles item ${item.key}: super_admin templateKey is platform level and cannot be imported`,
         );
+
+      if (item.templateKey !== null) {
+        const firstTemplate = templates.get(item.templateKey);
+        if (firstTemplate !== undefined)
+          issues.push(
+            `roles item ${item.key}: duplicate templateKey ${item.templateKey} (also used by ${firstTemplate})`,
+          );
+        else templates.set(item.templateKey, item.key);
+      }
 
       const nameKey = item.name.trim().toLowerCase();
       const firstKey = names.get(nameKey);
@@ -184,7 +268,7 @@ export const rolesConfigCodec = {
 
 // --- approval_policies ------------------------------------------------------
 
-const approvalPolicyConfigItemSchema = z.strictObject({
+const approvalConfigFields = {
   key: itemKeySchema,
   actionType: approvalActionTypeSchema,
   thresholdIdr: idrSchema
@@ -193,14 +277,36 @@ const approvalPolicyConfigItemSchema = z.strictObject({
   levels: z.number().int().min(1).max(APPROVAL_MAX_LEVELS),
   approverRoleKey: itemKeySchema,
   requiresDistinctActor: z.literal(true),
+};
+const approvalRuleItemSchema = z.strictObject({
+  ...approvalConfigFields,
+  kind: z.literal("approval"),
 });
-export type ApprovalPolicyConfigItem = z.infer<
-  typeof approvalPolicyConfigItemSchema
+const posDiscountItemSchema = z.strictObject({
+  key: itemKeySchema,
+  kind: z.literal("pos_discount"),
+  /** Lower-cased outlet code; null = the tenant-wide threshold. */
+  outletKey: itemKeySchema.nullable(),
+  discountThresholdBp: basisPointsSchema,
+});
+const approvalKindItemSchema = z.discriminatedUnion("kind", [
+  approvalRuleItemSchema,
+  posDiscountItemSchema,
+]);
+/** Old (legend-tct8) approval item: no `kind`, always an approval rule. */
+const approvalLegacyItemSchema = z.strictObject(approvalConfigFields);
+const approvalPolicyConfigItemSchema = kindOrLegacy(
+  approvalKindItemSchema,
+  approvalLegacyItemSchema,
+);
+export type ApprovalRuleConfigItem = z.infer<typeof approvalRuleItemSchema>;
+export type PosDiscountConfigItem = z.infer<typeof posDiscountItemSchema>;
+export type ApprovalPolicyConfigItem = z.infer<typeof approvalKindItemSchema>;
+export type LegacyApprovalPolicyConfigItem = z.infer<
+  typeof approvalLegacyItemSchema
 >;
-export type ApprovalPolicyConfigDraft = Omit<
-  ApprovalPolicyConfigItem,
-  "key"
-> & { key: string };
+/** A legacy item decodes as kind "approval", so drafts are always kind-shaped. */
+export type ApprovalPolicyConfigDraft = ApprovalPolicyConfigItem;
 
 export const approvalPoliciesConfigCodec = {
   section: "approval_policies" as const,
@@ -217,7 +323,7 @@ export const approvalPoliciesConfigCodec = {
       | "requiresDistinctActor"
     >[],
     ctx: { roleKeyById: ReadonlyMap<string, string> },
-  ): ApprovalPolicyConfigItem[] {
+  ): ApprovalRuleConfigItem[] {
     const used = new Set<string>();
     const resolved = rows.map((row) => {
       const approverRoleKey = ctx.roleKeyById.get(row.approverRoleId);
@@ -238,6 +344,7 @@ export const approvalPoliciesConfigCodec = {
       const base = `${row.actionType}.${row.thresholdIdr ?? "any"}.l${row.levels}.${approverRoleKey}`;
       return {
         key: uniqueKey(base, used),
+        kind: "approval" as const,
         actionType: row.actionType,
         thresholdIdr: row.thresholdIdr,
         levels: row.levels,
@@ -248,12 +355,17 @@ export const approvalPoliciesConfigCodec = {
   },
 
   fromTemplate(
-    items: readonly ApprovalPolicyConfigItem[],
+    items: readonly (
+      | ApprovalPolicyConfigItem
+      | LegacyApprovalPolicyConfigItem
+    )[],
     ctx: { roleKeys: ReadonlySet<string> },
   ): ConfigDecodeResult<ApprovalPolicyConfigDraft> {
     const issues: string[] = [];
     const drafts: ApprovalPolicyConfigDraft[] = [];
     const seen = new Map<string, string>();
+    const keys = new Set<string>();
+    const posSeen = new Map<string, string>();
     const tiers = new Map<string, { label: string; levels: Set<number> }>();
     for (const raw of items) {
       const parsed = approvalPolicyConfigItemSchema.safeParse(raw);
@@ -267,6 +379,21 @@ export const approvalPoliciesConfigCodec = {
         continue;
       }
       const item = parsed.data;
+      if (keys.has(item.key))
+        issues.push(`approval_policies item ${item.key}: duplicate key`);
+      keys.add(item.key);
+      if ("kind" in item && item.kind === "pos_discount") {
+        // One threshold per outlet (null = tenant-wide); needs no role.
+        const slot = `pos_discount|${item.outletKey ?? ""}`;
+        const firstKey = posSeen.get(slot);
+        if (firstKey !== undefined)
+          issues.push(
+            `approval_policies item ${item.key}: duplicate of ${firstKey} (same pos_discount outlet)`,
+          );
+        else posSeen.set(slot, item.key);
+        drafts.push({ ...item });
+        continue;
+      }
       if (!ctx.roleKeys.has(item.approverRoleKey))
         issues.push(
           `approval_policies item ${item.key}: approverRoleKey ${item.approverRoleKey} is not a known role`,
@@ -289,7 +416,7 @@ export const approvalPoliciesConfigCodec = {
       tier.levels.add(item.levels);
       tiers.set(tierId, tier);
 
-      drafts.push({ ...item });
+      drafts.push({ ...item, kind: "approval" });
     }
     for (const { label, levels } of tiers.values()) {
       const max = Math.max(...levels);
