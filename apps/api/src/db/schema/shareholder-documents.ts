@@ -5,8 +5,9 @@
 // `shareholderDocumentFileSchema`). Both tables are (T): tenant_id NOT NULL
 // with app.enforce_tenant_rls (drizzle/0069_shareholder_documents_rls.sql).
 //
-// `profit_entity_id` has NO foreign key yet: the profit_entities table lands
-// with legend-2ljb, which adds the (tenant_id, profit_entity_id) FK.
+// `profit_entity_id` has a composite (tenant_id, profit_entity_id) foreign key
+// to profit_entities(tenant_id, id) on both tables; legend-2ljb added it in
+// drizzle/0219_profit_share.sql.
 //
 // A document's (tenant, entity, file key) must match an uploaded file row, so
 // a document can only point at a file uploaded for the same entity.
@@ -30,6 +31,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
+import { profitEntities } from "./accounting-profit-share.ts";
 import { tenants } from "./platform-org.ts";
 
 /** `shareholder_document_files` (T): an uploaded PDF awaiting attachment. */
@@ -51,6 +53,11 @@ export const shareholderDocumentFiles = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    foreignKey({
+      name: "shareholder_document_files_profit_entity_fk",
+      columns: [table.tenantId, table.profitEntityId],
+      foreignColumns: [profitEntities.tenantId, profitEntities.id],
+    }),
     unique("shareholder_document_files_tenant_file_key").on(
       table.tenantId,
       table.fileKey,
@@ -94,6 +101,11 @@ export const shareholderDocuments = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    foreignKey({
+      name: "shareholder_documents_profit_entity_fk",
+      columns: [table.tenantId, table.profitEntityId],
+      foreignColumns: [profitEntities.tenantId, profitEntities.id],
+    }),
     unique("shareholder_documents_tenant_file_key").on(
       table.tenantId,
       table.fileKey,

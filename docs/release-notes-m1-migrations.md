@@ -99,6 +99,7 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Registry impor: 0205 dan 0208 didaftarkan di `data-import-registry.test.ts`.
 - Tanpa migrasi: ws/tax-snapshot-facility 09a124b2.
 - Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
+- 0219 `0219_profit_share` (ws/profit-share, legend-2ljb, tingkat K, idx 219, when 1794298000000): tabel bagi hasil dan FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents`. GAGAL dengan pesan `0219: ...` bila salah satu tabel dokumen sudah berisi baris, karena `profit_entities` baru dan kosong. Cek dulu: `SELECT (SELECT count(*) FROM shareholder_document_files) AS files, (SELECT count(*) FROM shareholder_documents) AS documents;` Keduanya harus 0, kalau tidak hapus atau pindahkan barisnya dulu.
 
 ## Gagal lama, bukan regresi
 

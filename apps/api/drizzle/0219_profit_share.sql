@@ -167,6 +167,14 @@ CREATE TABLE "shareholders" (
 	CONSTRAINT "shareholders_payout_check" CHECK ((("shareholders"."payout_bank" IS NULL AND "shareholders"."payout_account_sealed" IS NULL AND "shareholders"."payout_account_last4" IS NULL AND "shareholders"."payout_account_holder" IS NULL) OR ("shareholders"."payout_bank" IS NOT NULL AND "shareholders"."payout_account_sealed" IS NOT NULL AND "shareholders"."payout_account_last4" ~ '^[0-9]{4}$' AND "shareholders"."payout_account_holder" IS NOT NULL)))
 );
 --> statement-breakpoint
+-- Lift FORCE RLS on the existing tables the FK validation scans (parent and
+-- child), as docs/plan/contracts.md pattern 2; restored after the last FK.
+ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.fiscal_periods NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.shareholder_document_files NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.shareholder_documents NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_run_fk" FOREIGN KEY ("tenant_id","distribution_run_id") REFERENCES "public"."distribution_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "distribution_lines" ADD CONSTRAINT "distribution_lines_shareholder_fk" FOREIGN KEY ("tenant_id","shareholder_id") REFERENCES "public"."shareholders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -194,7 +202,28 @@ CREATE UNIQUE INDEX "profit_entities_tenant_legal_entity_key" ON "profit_entitie
 CREATE UNIQUE INDEX "profit_entities_tenant_outlet_key" ON "profit_entities" USING btree ("tenant_id","outlet_id") WHERE "profit_entities"."type" = 'outlet';--> statement-breakpoint
 CREATE UNIQUE INDEX "share_allocation_versions_approved_effective_key" ON "share_allocation_versions" USING btree ("tenant_id","profit_entity_id","effective_from") WHERE "share_allocation_versions"."status" = 'approved';--> statement-breakpoint
 CREATE INDEX "share_allocations_shareholder_idx" ON "share_allocations" USING btree ("tenant_id","shareholder_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "shareholders_tenant_user_key" ON "shareholders" USING btree ("tenant_id","user_id") WHERE "shareholders"."user_id" IS NOT NULL;
+CREATE UNIQUE INDEX "shareholders_tenant_user_key" ON "shareholders" USING btree ("tenant_id","user_id") WHERE "shareholders"."user_id" IS NOT NULL;--> statement-breakpoint
+-- profit_entities is new and empty, so any existing row would orphan.
+DO $$
+DECLARE
+  files_n bigint;
+  docs_n bigint;
+BEGIN
+  SELECT count(*) INTO files_n FROM public.shareholder_document_files;
+  SELECT count(*) INTO docs_n FROM public.shareholder_documents;
+  IF files_n > 0 OR docs_n > 0 THEN
+    RAISE EXCEPTION '0219: shareholder_document_files has % rows and shareholder_documents has % rows; both must be empty before the profit_entity_id foreign keys can be added (profit_entities starts empty). Remove or migrate them first.', files_n, docs_n;
+  END IF;
+END $$;--> statement-breakpoint
+ALTER TABLE "shareholder_document_files" ADD CONSTRAINT "shareholder_document_files_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "shareholder_documents" ADD CONSTRAINT "shareholder_documents_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.fiscal_periods FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.journal_entries FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.shareholder_document_files FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.shareholder_documents FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 -- Custom SQL migration file, put your code below! ---
 -- Profit share & dividends (WS-07, bead legend-2ljb; PRD v1.7 §3.37, §4 P,

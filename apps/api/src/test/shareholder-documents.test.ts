@@ -290,7 +290,35 @@ const listIds = async (who: Person, query = "") => {
   return (response.body.data as { id: string }[]).map((row) => row.id);
 };
 
-const entity = () => randomUUID();
+/** Marks the entities this file creates so afterAll can remove them again. */
+const ENTITY_PREFIX = "SHDOC-TEST";
+
+/** A real profit entity (and its legal entity) owned by `tenantId`. */
+async function entity(tenantId: string = tenantA): Promise<string> {
+  const legalEntityId = randomUUID();
+  const id = randomUUID();
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)",
+    [
+      legalEntityId,
+      tenantId,
+      `${ENTITY_PREFIX} PT ${legalEntityId.slice(0, 8)}`,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO profit_entities
+       (tenant_id, id, name, type, legal_entity_id, reserve_bp, frequency, tax_withholding_bp, created_by)
+     VALUES ($1, $2, $3, 'legal_entity', $4, 0, 'quarterly', 0, $5)`,
+    [
+      tenantId,
+      id,
+      `${ENTITY_PREFIX} entity ${id.slice(0, 6)}`,
+      legalEntityId,
+      randomUUID(),
+    ],
+  );
+  return id;
+}
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -323,7 +351,41 @@ afterAll(async () => {
   // hidden behind the rest.
   const failures: unknown[] = [];
   for (const [sql, params] of [
+    // Tenant A is shared: remove this file's entities where nothing published
+    // still points at them (a published document can never be deleted).
+    [
+      `DELETE FROM shareholder_documents d USING profit_entities e
+        WHERE d.tenant_id = e.tenant_id AND d.profit_entity_id = e.id
+          AND e.name LIKE $1 AND d.published_at IS NULL`,
+      [`${ENTITY_PREFIX} entity %`],
+    ],
+    [
+      `DELETE FROM shareholder_document_files f USING profit_entities e
+        WHERE f.tenant_id = e.tenant_id AND f.profit_entity_id = e.id
+          AND e.name LIKE $1
+          AND NOT EXISTS (SELECT 1 FROM shareholder_documents d
+            WHERE d.tenant_id = f.tenant_id AND d.file_key = f.file_key)`,
+      [`${ENTITY_PREFIX} entity %`],
+    ],
+    [
+      `DELETE FROM profit_entities e
+        WHERE e.name LIKE $1
+          AND NOT EXISTS (SELECT 1 FROM shareholder_document_files f
+            WHERE f.tenant_id = e.tenant_id AND f.profit_entity_id = e.id)
+          AND NOT EXISTS (SELECT 1 FROM shareholder_documents d
+            WHERE d.tenant_id = e.tenant_id AND d.profit_entity_id = e.id)`,
+      [`${ENTITY_PREFIX} entity %`],
+    ],
+    [
+      `DELETE FROM legal_entities l
+        WHERE l.name LIKE $1
+          AND NOT EXISTS (SELECT 1 FROM profit_entities e
+            WHERE e.tenant_id = l.tenant_id AND e.legal_entity_id = l.id)`,
+      [`${ENTITY_PREFIX} PT %`],
+    ],
     ["DELETE FROM shareholder_document_files WHERE tenant_id = $1", [tenantB]],
+    ["DELETE FROM profit_entities WHERE tenant_id = $1", [tenantB]],
+    ["DELETE FROM legal_entities WHERE tenant_id = $1", [tenantB]],
     ["DELETE FROM role_assignments WHERE tenant_id = $1", [tenantB]],
     ["DELETE FROM roles WHERE tenant_id = $1", [tenantB]],
     ["DELETE FROM tenants WHERE id = $1", [tenantB]],
@@ -341,7 +403,7 @@ afterAll(async () => {
 describe("legend-69yq shareholder documents", () => {
   it("1. manager uploads a PDF, creates a draft, publishes once and republish is idempotent", async () => {
     const mgr = await manager();
-    const entityId = entity();
+    const entityId = await entity();
 
     const uploaded = await upload(mgr, entityId, pdf());
     expect(uploaded.status).toBe(201);
@@ -405,7 +467,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("2. rejects non-PDF, empty and oversized uploads and callers without permission", async () => {
     const mgr = await manager();
-    const entityId = entity();
+    const entityId = await entity();
     const putsBefore = storage.puts;
 
     // Magic bytes decide, not the declared type or file name.
@@ -452,7 +514,7 @@ describe("legend-69yq shareholder documents", () => {
   });
 
   it("2b. an infected PDF is rejected and not stored; without a scanner upload is 503", async () => {
-    const entityId = entity();
+    const entityId = await entity();
     const putsBefore = storage.puts;
 
     const infectedMgr = await manager(appInfection);
@@ -478,8 +540,8 @@ describe("legend-69yq shareholder documents", () => {
 
   it("3. create rejects a file not uploaded, from another profit entity or already used (422)", async () => {
     const mgr = await manager();
-    const entityA = entity();
-    const entityB = entity();
+    const entityA = await entity();
+    const entityB = await entity();
     const body = (fileKey: string, profitEntityId = entityA) => ({
       profitEntityId,
       kind: "other",
@@ -508,7 +570,7 @@ describe("legend-69yq shareholder documents", () => {
 
     // A file uploaded by another tenant's manager is unknown here.
     const mgrB = await manager(appB, tenantB);
-    const foreign = await uploadOk(mgrB, entityB);
+    const foreign = await uploadOk(mgrB, await entity(tenantB));
     const crossTenant = await createDoc(mgr, body(foreign.fileKey, entityB));
     expect(crossTenant.status).toBe(422);
 
@@ -524,8 +586,8 @@ describe("legend-69yq shareholder documents", () => {
 
   it("4. shareholder lists only published, shareholder-visible documents of own entity", async () => {
     const mgr = await manager();
-    const entityA = entity();
-    const entityB = entity();
+    const entityA = await entity();
+    const entityB = await entity();
     const visible = await newDoc(mgr, entityA, { publish: true });
     const second = await newDoc(mgr, entityA, {
       publish: true,
@@ -586,8 +648,8 @@ describe("legend-69yq shareholder documents", () => {
 
   it("5. signed URL: shareholder gets own published doc; draft, management and other entity are 404", async () => {
     const mgr = await manager();
-    const entityA = entity();
-    const entityB = entity();
+    const entityA = await entity();
+    const entityB = await entity();
     const own = await newDoc(mgr, entityA, { publish: true });
     const draft = await newDoc(mgr, entityA);
     const management = await newDoc(mgr, entityA, {
@@ -653,7 +715,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("6. tenant B cannot see or publish tenant A documents; RLS is forced and restrictive", async () => {
     const mgrA = await manager();
-    const entityId = entity();
+    const entityId = await entity();
     const draft = await newDoc(mgrA, entityId);
     const published = await newDoc(mgrA, entityId, { publish: true });
 
@@ -718,7 +780,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("7. a published row is immutable at database level", async () => {
     const mgr = await manager();
-    const entityId = entity();
+    const entityId = await entity();
     const doc = await newDoc(mgr, entityId, { publish: true });
     const update = (set: string, ...params: unknown[]) =>
       owner.query(
@@ -764,7 +826,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("8. default membership is fail-closed: a shareholder sees nothing", async () => {
     const mgr = await manager();
-    const entityId = entity();
+    const entityId = await entity();
     const doc = await newDoc(mgr, entityId, { publish: true });
 
     const failClosed = agent(appFailClosed);
@@ -790,7 +852,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("9. without storage, upload is 503 for a manager but permission (403) wins for a user without a role", async () => {
     const mgr = await manager(appNoStorage);
-    const entityId = entity();
+    const entityId = await entity();
     expect((await upload(mgr, entityId, pdf())).status).toBe(503);
 
     const stranger = await signedIn(appNoStorage, "Docs Nobody No Storage");
@@ -830,7 +892,7 @@ describe("legend-69yq shareholder documents", () => {
 
   it("11. composite FK shareholder_documents_file_fk rejects a mismatched entity or unknown file (23503)", async () => {
     const mgr = await manager();
-    const entityA = entity();
+    const entityA = await entity();
     const file = await uploadOk(mgr, entityA);
     const insert = (profitEntityId: string, fileKey: string) =>
       owner.query(
@@ -840,7 +902,7 @@ describe("legend-69yq shareholder documents", () => {
         [tenantA, randomUUID(), profitEntityId, fileKey, mgr.userId],
       );
 
-    await expect(insert(entity(), file.fileKey)).rejects.toMatchObject({
+    await expect(insert(await entity(), file.fileKey)).rejects.toMatchObject({
       code: "23503",
       constraint: "shareholder_documents_file_fk",
     });
@@ -854,5 +916,88 @@ describe("legend-69yq shareholder documents", () => {
     await expect(insert(entityA, file.fileKey)).resolves.toMatchObject({
       rowCount: 1,
     });
+  });
+
+  it("12. profit entity FK: a file for an unknown or another tenant's profit entity is refused (23503)", async () => {
+    const mgr = await manager();
+    const fileRow = (tenantId: string, profitEntityId: string) =>
+      owner.query(
+        `INSERT INTO shareholder_document_files
+           (tenant_id, id, profit_entity_id, file_key, content_type, size_bytes, uploaded_by)
+         VALUES ($1, $2, $3, $4, 'application/pdf', 1, $5)`,
+        [
+          tenantId,
+          randomUUID(),
+          profitEntityId,
+          `shareholder-documents/${randomUUID()}.pdf`,
+          mgr.userId,
+        ],
+      );
+    const docRow = (tenantId: string, profitEntityId: string) =>
+      owner.query(
+        `INSERT INTO shareholder_documents
+           (tenant_id, id, profit_entity_id, kind, title, file_key, visibility, created_by)
+         VALUES ($1, $2, $3, 'other', 'Uji FK', $4, 'shareholders', $5)`,
+        [
+          tenantId,
+          randomUUID(),
+          profitEntityId,
+          `shareholder-documents/${randomUUID()}.pdf`,
+          mgr.userId,
+        ],
+      );
+
+    const entityA = await entity();
+    const entityOfB = await entity(tenantB);
+    await expect(fileRow(tenantA, entityA)).resolves.toMatchObject({
+      rowCount: 1,
+    });
+    for (const profitEntityId of [randomUUID(), entityOfB]) {
+      await expect(fileRow(tenantA, profitEntityId)).rejects.toMatchObject({
+        code: "23503",
+        constraint: "shareholder_document_files_profit_entity_fk",
+      });
+      await expect(docRow(tenantA, profitEntityId)).rejects.toMatchObject({
+        code: "23503",
+      });
+    }
+    // A profit entity that still has an uploaded file cannot be deleted.
+    await expect(
+      owner.query(
+        "DELETE FROM profit_entities WHERE tenant_id = $1 AND id = $2",
+        [tenantA, entityA],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("13. upload and create for an unknown or another tenant's profit entity are 422 PROFIT_ENTITY_NOT_FOUND and store nothing", async () => {
+    const mgr = await manager();
+    for (const profitEntityId of [randomUUID(), await entity(tenantB)]) {
+      const putsBefore = storage.puts;
+      const response = await upload(mgr, profitEntityId, pdf("fk-refused"));
+      expect(response.status).toBe(422);
+      expect(response.body.error?.code).toBe("PROFIT_ENTITY_NOT_FOUND");
+      expect(storage.puts).toBe(putsBefore);
+      const rows = await owner.query(
+        "SELECT 1 FROM shareholder_document_files WHERE tenant_id = $1 AND profit_entity_id = $2",
+        [tenantA, profitEntityId],
+      );
+      expect(rows.rowCount).toBe(0);
+
+      const created = await createDoc(mgr, {
+        profitEntityId,
+        kind: "other",
+        title: "Dokumen",
+        fileKey: `shareholder-documents/${randomUUID()}.pdf`,
+        visibility: "shareholders",
+      });
+      expect(created.status).toBe(422);
+      expect(created.body.error?.code).toBe("PROFIT_ENTITY_NOT_FOUND");
+      const docs = await owner.query(
+        "SELECT 1 FROM shareholder_documents WHERE tenant_id = $1 AND profit_entity_id = $2",
+        [tenantA, profitEntityId],
+      );
+      expect(docs.rowCount).toBe(0);
+    }
   });
 });

@@ -1,5 +1,5 @@
 {
-  "id": "752bbfd2-2c86-48cb-bb0e-da1e8f0c7a3c",
+  "id": "67ba19c3-89ca-4be8-88fb-7345364ec0a8",
   "prevId": "711b7929-e5bc-413d-90b7-a62b8a2d2e07",
   "version": "7",
   "dialect": "postgresql",
@@ -54047,6 +54047,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "shareholder_document_files_profit_entity_fk": {
+          "name": "shareholder_document_files_profit_entity_fk",
+          "tableFrom": "shareholder_document_files",
+          "tableTo": "profit_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "profit_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -54207,6 +54222,21 @@
             "tenant_id"
           ],
           "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "shareholder_documents_profit_entity_fk": {
+          "name": "shareholder_documents_profit_entity_fk",
+          "tableFrom": "shareholder_documents",
+          "tableTo": "profit_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "profit_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
             "id"
           ],
           "onDelete": "no action",
