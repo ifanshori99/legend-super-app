@@ -2,6 +2,12 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
+
+- Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).
+- Migrasi sementara `0256_share_version_approval` (idx 256, when 1794319778545 > 0252): kolom `id uuid` + unik `(tenant_id, id)`, fungsi guard: `id` tidak bisa berubah, `pending_approval -> cancelled` diizinkan. Sama persis di `accounting-profit-share.custom.sql`.
+- Keputusan: pola sama dengan distribusi (54b76963), bukan pola recipient (`APPROVAL_REQUIRED`), karena versi tanpa nominal selalu butuh approval bila kebijakan ada.
+- Rilis: tenant tanpa kebijakan `shareholder_version` tidak bisa submit versi porsi saham setelah deploy. Owner perlu mengatur matriks itu dulu (atau seed kebijakan).
 ## legend-k2l WS-01 login email, Google, dan graf identitas member (engineer, cabang `ws/ws01-k2l` dari `docs/arch-member-loyalty` b07b1032, brief 290b, 2026-11-10)
 
 - Sudah: migrasi `0220_k2l_member_signin_identity` (sebelumnya 0204; digeser ke ujung, when 1794297863874, snapshot 0220 mengikuti 0208; lihat putaran 3). Isi: `session.auth_method` + `auth_cross_device` (backfill `password` untuk sesi management, sisanya `legacy`), `login_challenges.email_encrypted`, indeks unik satu WhatsApp per user (berhenti bila ada duplikat), tabel append-only `identity_merges`, fungsi SECURITY DEFINER `app.user_has_role_assignment` (hanya role yang masih berlaku).
@@ -90,6 +96,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Putaran 2 (keputusan CTO 10 Nov): pemegang yang habis terserap kini punya baris net 0 yang mencatat potongan (carry berkurang; `lines.min(1)` tetap); baris nol otomatis paid saat approve (ref `POTONG-KEKURANGAN`, tanpa statement), run semua-nol langsung paid tanpa jurnal dengan event approved + completed (journal null); top-up atas run dengan pemegang terserap diizinkan dan mengurangi carry pemegang itu dulu; klaw-bek atas pemegang terserap tetap membuat shortfall baru; tanpa jurnal terpisah; mock seed tidak ditambah. Migrasi 0224 diubah di tempat (nomor sementara): check baris, check carry adjustment positif, guard paid tanpa jurnal bila gross 0, trigger total 10000 bp + carry baris = carry run. Review architect putaran 2: tanpa kritis/tinggi; 1 sedang (klaw-bek atas run semua-nol ditolak, kini `ADJUSTMENT_TARGET_INVALID` dengan pesan jelas, keterbatasan diterima), 2 rendah dibetulkan (baris nol tidak jadi statement, event completed untuk run semua-nol).
 - Keterbatasan tersisa: klaw-bek atas run yang semua barisnya nol ditolak (carry yang diampuni tidak dipulihkan); regular run yang dibuat sebelum koreksi di-approve tidak melihat carry itu (run berikutnya melihat); mock tidak melacak carry.
 - Bukti: 10 file API 165 test hijau; root `accounting-contract` + `ws07-profit-share` + `ws07-profit-share-carry` 117 hijau; tsc shared/api/web exit 0; eslint dan prettier bersih; `db:generate` kosong. Test gagal-dulu: shared 13 test merah (`unabsorbedByShareholder is not iterable`), migrasi 8/8 merah, test API 1-9 dan 10-11 merah sebelum kode. Subagent: 3 Explore, 4 implementer berurutan/paralel, 1 architect; puncak 2 bersamaan.
+
+## legend-33im6 perbaikan temuan Codex bagi hasil (engineer Opus, cabang `ws/8s992-profit-rules`, 2026-11-10)
+
+- Cabang sudah digabung dengan milestone/m1 (1b1e96eb, merge 6ddd5d74). Migrasi bagi hasil kini 0217/0218/0219; perbaikan migrasi diedit di `0217_profit_share.sql` (m1 belum rilis): DB dev/test perlu reset.
+- P1 approval: submit membuka chain matriks `dividend_distribution` (source module `profit_share`); status approved hanya setelah chain selesai (approver = pemutus level terakhir); di bawah semua ambang tetap jalur langsung; tanpa chain saat decide, matriks dicek ulang dan chain dibuka (409). Consumer `approval.resolved` di worker-main.
+- P2 klaw-bek: pajak dikembalikan kumulatif (target pajak sisa minus pajak dipegang), tidak pernah melebihi potongan, tidak pernah positif.
+- P1 penerima: ganti login pemegang saham = versi baru `shareholder_recipient_versions` lewat chain `shareholder_version` (tanpa kebijakan: ditolak). Baris distribusi menyimpan `recipient_user_id` (dibuat, lalu diperbarui saat dibayar); statement, email, dan my-profit-share memakai identitas itu. Migrasi 0252 (tabel baru, backfill, guard baris).
+- P1 migrasi: 0217 tidak lagi menolak dokumen lama; backfill `profit_entities` per id lama (cocok outlet/badan hukum, sisanya nonaktif di badan hukum kosong), RLS dilonggarkan sementara untuk migrator non-superuser.
+- P2 statement: `installProfitShareStatementPorts` dipasang di server.ts, storage dari `OBJECT_STORAGE_*` (opsional, semua-atau-tidak), email dari setelan Brevo.
+- Review architect xhigh 2 putaran; temuan nyata dibetulkan. Sisa kecil dicatat di laporan.
 
 ## legend-8s992 aturan founder bagi hasil + sisa test (engineer Sonnet, cabang `ws/8s992-profit-rules` dari `ws/profit-share` 9e3d3928, 2026-11-10)
 

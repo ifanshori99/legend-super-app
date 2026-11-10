@@ -345,6 +345,59 @@ const schema = z
       .min(60)
       .max(86_400)
       .default(3600),
+    // S3-compatible object storage for generated documents, today the profit
+    // share statement PDFs (legend-33im6). All optional: with none set the
+    // statement issuer stays unconfigured (503, key stays null) and the API
+    // logs one warning at startup. Setting any of them requires the others
+    // (the endpoint stays optional, for AWS itself). Never logged.
+    OBJECT_STORAGE_REGION: z.string().trim().min(1).optional(),
+    OBJECT_STORAGE_ENDPOINT: z.url().optional(),
+    OBJECT_STORAGE_ACCESS_KEY_ID: z.string().trim().min(1).optional(),
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().trim().min(1).optional(),
+    OBJECT_STORAGE_PRIVATE_BUCKET: z.string().trim().min(1).optional(),
+    OBJECT_STORAGE_PUBLIC_BUCKET: z.string().trim().min(1).optional(),
+    OBJECT_STORAGE_PUBLIC_BASE_URL: z.url().optional(),
+  })
+  .superRefine((values, ctx) => {
+    const required = [
+      "OBJECT_STORAGE_REGION",
+      "OBJECT_STORAGE_ACCESS_KEY_ID",
+      "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+      "OBJECT_STORAGE_PRIVATE_BUCKET",
+      "OBJECT_STORAGE_PUBLIC_BUCKET",
+      "OBJECT_STORAGE_PUBLIC_BASE_URL",
+    ] as const;
+    const anySet =
+      required.some((key) => values[key] !== undefined) ||
+      values.OBJECT_STORAGE_ENDPOINT !== undefined;
+    if (!anySet) return;
+    for (const key of required)
+      if (values[key] === undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: "Required once any OBJECT_STORAGE_* setting is set.",
+        });
+    // S3ObjectStorage refuses these too; failing here names the key at boot.
+    if (
+      values.OBJECT_STORAGE_PRIVATE_BUCKET !== undefined &&
+      values.OBJECT_STORAGE_PRIVATE_BUCKET ===
+        values.OBJECT_STORAGE_PUBLIC_BUCKET
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["OBJECT_STORAGE_PUBLIC_BUCKET"],
+        message: "The public and private buckets must differ.",
+      });
+    if (
+      values.OBJECT_STORAGE_PUBLIC_BASE_URL !== undefined &&
+      !values.OBJECT_STORAGE_PUBLIC_BASE_URL.startsWith("https://")
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["OBJECT_STORAGE_PUBLIC_BASE_URL"],
+        message: "Use an https:// URL.",
+      });
   })
   .superRefine((values, ctx) => {
     if (values.AI_BASE_URL !== undefined) {

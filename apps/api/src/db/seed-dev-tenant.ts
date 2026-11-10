@@ -9,6 +9,7 @@
 import { Pool } from "pg";
 import {
   DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
+  DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
   ROLE_TEMPLATES,
 } from "@starter/shared/access";
@@ -292,6 +293,31 @@ try {
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.thresholdIdr),
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.level),
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+        (row) => row.roleTemplateKey,
+      ),
+    ],
+  );
+
+  // Shareholder version approval default (legend-tm6pp, Q2): one Owner level-1
+  // row from Rp0, same no-shareholder_version-row rule as
+  // seedTenantRoleTemplates and migration 0241.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1::uuid, 'shareholder_version', d.threshold_idr, r.id, d.level, true
+     FROM unnest($2::bigint[], $3::int[], $4::text[]) AS d(threshold_idr, level, template_key)
+     JOIN roles r
+       ON r.tenant_id = $1::uuid AND r.is_template AND r.template_key = d.template_key
+     WHERE NOT EXISTS (
+       SELECT 1 FROM approval_policies p
+       WHERE p.tenant_id = $1::uuid AND p.action_type = 'shareholder_version'
+     )`,
+    [
+      tenant.id,
+      DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES.map(
+        (row) => row.thresholdIdr,
+      ),
+      DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES.map((row) => row.level),
+      DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES.map(
         (row) => row.roleTemplateKey,
       ),
     ],

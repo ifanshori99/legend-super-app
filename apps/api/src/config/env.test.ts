@@ -101,6 +101,40 @@ test("production requires its own staff pin pepper secret (legend-dxb)", () => {
   assert.equal(run({}).status, 0);
 });
 
+test("object storage settings are all-or-none (legend-33im6)", () => {
+  const storage = {
+    OBJECT_STORAGE_REGION: "ap-southeast-3",
+    OBJECT_STORAGE_ACCESS_KEY_ID: "access",
+    OBJECT_STORAGE_SECRET_ACCESS_KEY: "secret",
+    OBJECT_STORAGE_PRIVATE_BUCKET: "legend-private",
+    OBJECT_STORAGE_PUBLIC_BUCKET: "legend-public",
+    OBJECT_STORAGE_PUBLIC_BASE_URL: "https://files.example.test",
+  };
+  // Not configured: valid, the statement issuer simply stays off.
+  assert.equal(run({}).status, 0);
+  assert.equal(run(storage).status, 0);
+  assert.equal(
+    run({ ...storage, OBJECT_STORAGE_ENDPOINT: "https://s3.example.test" })
+      .status,
+    0,
+  );
+  // Partial, same buckets, or a non-https public URL: refused at boot.
+  const partial: Record<string, string> = Object.fromEntries(
+    Object.entries(storage).filter(
+      ([key]) => key !== "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+    ),
+  );
+  for (const settings of [
+    partial,
+    { OBJECT_STORAGE_PRIVATE_BUCKET: "only-this" },
+    { ...storage, OBJECT_STORAGE_PUBLIC_BUCKET: "legend-private" },
+    { ...storage, OBJECT_STORAGE_PUBLIC_BASE_URL: "http://files.example.test" },
+  ])
+    assert.equal(run(settings).status, 1);
+  // The failure names keys, never values.
+  assert.doesNotMatch(run(partial).stderr, /access|legend-private/);
+});
+
 // legend-ideif: an edge node never holds the root staff pin pepper.
 const edgeNode = {
   DEPLOYMENT_MODE: "production",

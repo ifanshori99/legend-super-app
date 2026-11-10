@@ -197,21 +197,85 @@ CREATE INDEX "share_allocations_shareholder_idx" ON "share_allocations" USING bt
 CREATE UNIQUE INDEX "shareholders_tenant_user_key" ON "shareholders" USING btree ("tenant_id","user_id") WHERE "shareholders"."user_id" IS NOT NULL;--> statement-breakpoint
 ALTER TABLE public.shareholder_document_files NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.shareholder_documents NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
--- profit_entities is new and empty, so any existing row would orphan.
+-- The legacy-document backfill below reads outlets and legal entities across
+-- tenants; a non-superuser table owner (0068) needs their forced RLS lifted too.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+-- Before 0217 shareholder_documents / shareholder_document_files.profit_entity_id
+-- (0072) was an opaque uuid with no table behind it, and profit_entities starts
+-- empty, so the FKs below would orphan every existing document. Backfill one
+-- profit_entities row per legacy id, keeping the id so no document is rewritten
+-- or deleted. RLS on profit_entities is not enabled yet, and the parents are
+-- lifted from FORCE above.
+-- Mapping: a legacy id equal to an outlet id of the tenant becomes that
+-- outlet's entity, one equal to a legal entity id becomes that legal entity's
+-- entity (both active). Any other id is attached, inactive, to the tenant's
+-- earliest legal entity that has no profit entity yet: the partial unique keys
+-- allow only one entity per legal entity / outlet, so several unmapped ids
+-- spread over successive legal entities. Direct matches are placed first so an
+-- unmapped id can never take the legal entity a later direct match needs.
+-- Fails only when a tenant has no legal entity (or no free one left).
 DO $$
 DECLARE
-  files_n bigint;
-  docs_n bigint;
+  legacy record;
+  target_legal_entity uuid;
 BEGIN
-  SELECT count(*) INTO files_n FROM public.shareholder_document_files;
-  SELECT count(*) INTO docs_n FROM public.shareholder_documents;
-  IF files_n > 0 OR docs_n > 0 THEN
-    RAISE EXCEPTION '0217: shareholder_document_files has % rows and shareholder_documents has % rows; both must be empty before the profit_entity_id foreign keys can be added (profit_entities starts empty). Remove or migrate them first.', files_n, docs_n;
-  END IF;
+  FOR legacy IN
+    SELECT d.tenant_id,
+           d.profit_entity_id AS id,
+           (array_agg(d.created_by ORDER BY d.created_at, d.created_by))[1] AS created_by,
+           EXISTS (SELECT 1 FROM public.outlets o WHERE o.tenant_id = d.tenant_id AND o.id = d.profit_entity_id) AS is_outlet,
+           EXISTS (SELECT 1 FROM public.legal_entities le WHERE le.tenant_id = d.tenant_id AND le.id = d.profit_entity_id) AS is_legal_entity
+      FROM (
+        SELECT tenant_id, profit_entity_id, created_by, created_at FROM public.shareholder_documents
+        UNION ALL
+        SELECT tenant_id, profit_entity_id, uploaded_by, created_at FROM public.shareholder_document_files
+      ) d
+     WHERE NOT EXISTS (
+       SELECT 1 FROM public.profit_entities pe
+        WHERE pe.tenant_id = d.tenant_id AND pe.id = d.profit_entity_id
+     )
+     GROUP BY d.tenant_id, d.profit_entity_id
+     ORDER BY (EXISTS (SELECT 1 FROM public.outlets o WHERE o.tenant_id = d.tenant_id AND o.id = d.profit_entity_id)
+            OR EXISTS (SELECT 1 FROM public.legal_entities le WHERE le.tenant_id = d.tenant_id AND le.id = d.profit_entity_id)) DESC,
+              min(d.created_at), d.profit_entity_id
+  LOOP
+    IF legacy.is_outlet THEN
+      INSERT INTO public.profit_entities (tenant_id, id, name, type, outlet_id, reserve_bp, frequency, tax_withholding_bp, is_active, created_by)
+      SELECT o.tenant_id, o.id, o.name, 'outlet', o.id, 0, 'monthly', 0, true, legacy.created_by
+        FROM public.outlets o
+       WHERE o.tenant_id = legacy.tenant_id AND o.id = legacy.id;
+    ELSIF legacy.is_legal_entity THEN
+      INSERT INTO public.profit_entities (tenant_id, id, name, type, legal_entity_id, reserve_bp, frequency, tax_withholding_bp, is_active, created_by)
+      SELECT le.tenant_id, le.id, le.name, 'legal_entity', le.id, 0, 'monthly', 0, true, legacy.created_by
+        FROM public.legal_entities le
+       WHERE le.tenant_id = legacy.tenant_id AND le.id = legacy.id;
+    ELSE
+      SELECT le.id INTO target_legal_entity
+        FROM public.legal_entities le
+       WHERE le.tenant_id = legacy.tenant_id
+         AND NOT EXISTS (
+           SELECT 1 FROM public.profit_entities pe
+            WHERE pe.tenant_id = le.tenant_id AND pe.type = 'legal_entity' AND pe.legal_entity_id = le.id
+         )
+       ORDER BY le.created_at, le.id
+       LIMIT 1;
+      IF target_legal_entity IS NULL THEN
+        IF EXISTS (SELECT 1 FROM public.legal_entities le WHERE le.tenant_id = legacy.tenant_id) THEN
+          RAISE EXCEPTION '0217: tenant % has shareholder documents for legacy profit_entity_id % but every legal entity already has a profit entity; add a legal entity or remove the documents first.', legacy.tenant_id, legacy.id;
+        END IF;
+        RAISE EXCEPTION '0217: tenant % has shareholder documents for legacy profit_entity_id % but no legal entity to attach them to; create a legal entity for the tenant first.', legacy.tenant_id, legacy.id;
+      END IF;
+      INSERT INTO public.profit_entities (tenant_id, id, name, type, legal_entity_id, reserve_bp, frequency, tax_withholding_bp, is_active, created_by)
+      VALUES (legacy.tenant_id, legacy.id, 'Entitas lama ' || left(legacy.id::text, 8), 'legal_entity', target_legal_entity, 0, 'monthly', 0, false, legacy.created_by);
+    END IF;
+  END LOOP;
 END $$;--> statement-breakpoint
 ALTER TABLE "shareholder_document_files" ADD CONSTRAINT "shareholder_document_files_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shareholder_documents" ADD CONSTRAINT "shareholder_documents_profit_entity_fk" FOREIGN KEY ("tenant_id","profit_entity_id") REFERENCES "public"."profit_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.shareholder_document_files FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.shareholder_documents FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint

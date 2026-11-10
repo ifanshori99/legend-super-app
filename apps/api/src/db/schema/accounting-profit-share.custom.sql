@@ -62,8 +62,8 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  IF (NEW.tenant_id, NEW.profit_entity_id, NEW.version, NEW.requested_by, NEW.idempotency_key)
-     IS DISTINCT FROM (OLD.tenant_id, OLD.profit_entity_id, OLD.version, OLD.requested_by, OLD.idempotency_key) THEN
+  IF (NEW.tenant_id, NEW.id, NEW.profit_entity_id, NEW.version, NEW.requested_by, NEW.idempotency_key)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.id, OLD.profit_entity_id, OLD.version, OLD.requested_by, OLD.idempotency_key) THEN
     RAISE EXCEPTION 'SH-03: share version identity cannot change'
       USING ERRCODE = '23514';
   END IF;
@@ -77,7 +77,7 @@ BEGIN
   END IF;
   IF NOT (
     (OLD.status = 'draft' AND NEW.status IN ('pending_approval', 'cancelled'))
-    OR (OLD.status = 'pending_approval' AND NEW.status IN ('approved', 'rejected'))
+    OR (OLD.status = 'pending_approval' AND NEW.status IN ('approved', 'rejected', 'cancelled'))
     OR (OLD.status = 'rejected' AND NEW.status = 'cancelled')
   ) THEN
     RAISE EXCEPTION 'SH-03: share version cannot move from % to %', OLD.status, NEW.status
@@ -313,7 +313,8 @@ CREATE OR REPLACE FUNCTION app.distribution_lines_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
   run_status text;
-  payment_cols text[] := ARRAY['payment_status', 'payment_ref', 'paid_at', 'paid_by'];
+  payment_cols text[] := ARRAY['payment_status', 'payment_ref', 'paid_at', 'paid_by',
+    'recipient_user_id'];
 BEGIN
   SELECT r.status INTO run_status FROM public.distribution_runs r
   WHERE r.tenant_id = coalesce(NEW.tenant_id, OLD.tenant_id)

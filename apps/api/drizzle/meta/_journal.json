@@ -1576,6 +1576,27 @@
       "when": 1794319000000,
       "tag": "0238_claim_payer_secret",
       "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1794320000000,
+      "tag": "0239_profit_share_recipient_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1794321000000,
+      "tag": "0240_share_version_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1794322000000,
+      "tag": "0241_shareholder_version_approval_policy",
+      "breakpoints": true
     }
   ]
 }

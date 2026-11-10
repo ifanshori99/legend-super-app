@@ -930,6 +930,28 @@ function buildClampedCalculationLines(
         taxWithheldIdr = idr(-(holding?.taxWithheldIdr ?? 0));
       }
       if (grossIdr === 0) return;
+      if (taxWithheldIdr === null && holding !== undefined) {
+        // Partial claw-back: give back the tax the shareholder no longer needs
+        // to hold on what is left (target after this line minus tax held now),
+        // not a per-line rounding. Rounding each step alone could return more
+        // tax than was withheld over repeated claw-backs.
+        const target = applyBasisPoints(
+          idr(holding.grossIdr + grossIdr),
+          taxWithholdingBp,
+          DISTRIBUTION_ROUNDING.tax,
+        );
+        // Never positive, never more than held, never more than the gross.
+        taxWithheldIdr = idr(
+          Math.min(
+            0,
+            Math.max(
+              target - holding.taxWithheldIdr,
+              -holding.taxWithheldIdr,
+              grossIdr,
+            ),
+          ),
+        );
+      }
     }
     taxWithheldIdr ??= applyBasisPoints(
       grossIdr,

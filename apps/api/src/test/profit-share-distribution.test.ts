@@ -54,6 +54,7 @@ import {
   type DistributionRun,
 } from "@starter/shared/accounting";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { FakeEmailProvider, FakeObjectStorage } from "@starter/shared/adapters";
 import { auth } from "../lib/auth";
 import { requestContext } from "../lib/request-context";
 import { limitAuthBody } from "../middleware/body";
@@ -62,6 +63,11 @@ import { tenantContext } from "../middleware/tenant";
 import { createProfitShareDistributionRouter } from "../routes/profit-share-distribution.routes";
 import { createProfitShareRegistryRouter } from "../routes/profit-share-registry.routes";
 import { resolveHostname } from "../services/org-resolve.service";
+import { installProfitShareStatementPorts } from "../services/profit-share-statement-ports";
+import {
+  configureProfitShareStatementDeps,
+  statementFileKey,
+} from "../services/profit-share-statement.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
@@ -426,6 +432,27 @@ beforeAll(async () => {
       randomUUID(),
     ],
   );
+  // Submit opens a `dividend_distribution` approval request (the matrix, not
+  // the permission alone, decides). These tests approve through the decide
+  // route, so the policy applies only from an amount far above any test run:
+  // `required: false` keeps the direct approve. The chain itself is covered by
+  // profit-share-approval-chain.test.ts.
+  const saved = await owner.query(
+    `SELECT threshold_idr, approver_role_id, levels FROM approval_policies
+      WHERE tenant_id = $1 AND action_type = 'dividend_distribution'`,
+    [tenantA],
+  );
+  savedDividendPolicies = saved.rows;
+  await owner.query(
+    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'dividend_distribution'`,
+    [tenantA],
+  );
+  await owner.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+     SELECT $1, 'dividend_distribution', 1000000000000000, id, 1 FROM roles
+      WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [tenantA],
+  );
   manager = await withPermissions(appA, tenantA, "Dist Manager", [MANAGE]);
   approver = await withPermissions(appA, tenantA, "Dist Approver", [APPROVE]);
   dual = await withPermissions(appA, tenantA, "Dist Dual", [MANAGE, APPROVE]);
@@ -447,7 +474,23 @@ beforeAll(async () => {
   s5 = await newShareholder(`Eko Lima ${tag}`, null);
 }, 120_000);
 
+let savedDividendPolicies: {
+  threshold_idr: string | null;
+  approver_role_id: string;
+  levels: number;
+}[] = [];
+
 afterAll(async () => {
+  await owner.query(
+    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'dividend_distribution'`,
+    [tenantA],
+  );
+  for (const row of savedDividendPolicies)
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'dividend_distribution', $2, $3, $4)`,
+      [tenantA, row.threshold_idr, row.approver_role_id, row.levels],
+    );
   await owner.end();
 });
 
@@ -2179,6 +2222,42 @@ describe("review (i) idempotency key reuse", () => {
     const reuse = await createRun(manager, world, second.id, adjKey);
     expect(reuse.status, JSON.stringify(reuse.body)).toBe(409);
     expect(errorCode(reuse)).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+});
+
+describe("review (S5) the production statement issuer is wired at startup", () => {
+  it("a payment through the default router stores the PDF and sets the line key", async () => {
+    // The router in buildApp uses the default dependencies, exactly like
+    // server.ts: only the installer decides which storage and email they hold.
+    const storage = new FakeObjectStorage();
+    const email = new FakeEmailProvider();
+    installProfitShareStatementPorts({}, { storage, email });
+    try {
+      const world = await makeWorld(roundingPolicy, roundingShares());
+      const { run } = await paidRun(world);
+      for (const line of run.lines) {
+        const row = await owner.query<{ statement_file_key: string | null }>(
+          "select statement_file_key from distribution_lines where id = $1",
+          [line.id],
+        );
+        expect(row.rows[0]?.statement_file_key).toBe(statementFileKey(line.id));
+        const stored = await storage.get(scopedContext(), {
+          tenantId: tenantA,
+          outletId: null,
+          reference: `s5-read:${line.id}`,
+          key: statementFileKey(line.id),
+          visibility: "private",
+        });
+        expect(stored.contentType).toBe("application/pdf");
+        expect(
+          Buffer.from(stored.content as Uint8Array)
+            .subarray(0, 5)
+            .toString(),
+        ).toBe("%PDF-");
+      }
+    } finally {
+      configureProfitShareStatementDeps({});
+    }
   });
 });
 

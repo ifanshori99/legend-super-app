@@ -133,6 +133,13 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "sets session.auth_method on the existing session rows (management sessions become password, every other row legacy) so the sign-in method gate keeps today's staff sessions working (legend-k2l); no other column changes, never inserts or deletes rows",
   "0234_uom_is_system.sql":
     "marks the twelve standard unit rows (kg, g, l, ml, pcs, pack, ctn, btl, can, sachet, box, porsi) of existing tenants as is_system by exact, case-sensitive code (legend-ie6m); only the new is_system column changes, never inserts or deletes rows, FORCE RLS on uoms lifted and restored",
+  // legend-33im6 / legend-tm6pp (batch48b)
+  "0217_profit_share.sql":
+    "creates one profit_entities row per legacy profit_entity_id found on existing shareholder_documents and shareholder_document_files (ids kept, so no document is rewritten or deleted) before the foreign keys are added; only a tenant with no free legal entity makes it fail; FORCE RLS lifted on the parents and restored in the same migration",
+  "0239_profit_share_recipient_versions.sql":
+    "sets distribution_lines.recipient_user_id from the shareholder's current login for lines created before the migration (legend-33im6); only rows with no recipient yet, idempotent, the lines guard trigger is paused for that one statement only, FORCE RLS lifted and restored in the same migration",
+  "0241_shareholder_version_approval_policy.sql":
+    "gives every existing tenant that has an Owner template role and no shareholder_version approval policy the default row (floor 0, level 1, Owner, distinct actor) (legend-tm6pp); idempotent, never touches a tenant that already has such a policy, FORCE RLS lifted and restored in the same migration",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j

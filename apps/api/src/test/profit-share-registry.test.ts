@@ -21,6 +21,14 @@
 // - The requester in the four-eyes test holds both registry.manage and
 //   distribution.approve, so APPROVER_IS_REQUESTER (not PERMISSION_DENIED) is
 //   the reason for the refusal.
+// - SH-03 approval matrix (legend-3sy9b): submitting a version opens a
+//   `shareholder_version` chain, so the decide route answers 409
+//   APPROVAL_PENDING while it is open. Approvals here go through the inbox
+//   (`decideApprovalRequest`) and the `approval.resolved` consumer; the
+//   decider is the inbox approver. A version the chain approves but the
+//   effective-date order refuses is settled as `rejected` with a note naming
+//   the code (no HTTP error, since the consumer has no caller). A decide call
+//   that finds the chain already approved settles it and answers 200.
 // - Profit tables allow no DELETE, so tenant B and the rows stay in the
 //   disposable database; every test uses fresh legal entities and shareholders.
 import { randomUUID } from "node:crypto";
@@ -44,6 +52,11 @@ import {
   updateProfitEntity,
   updateShareholder,
 } from "@starter/shared/accounting";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { auth } from "../lib/auth";
 import { requestContext } from "../lib/request-context";
 import { limitAuthBody } from "../middleware/body";
@@ -52,6 +65,10 @@ import { tenantContext } from "../middleware/tenant";
 import { createProfitShareRegistryRouter } from "../routes/profit-share-registry.routes";
 import { resolveHostname } from "../services/org-resolve.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
+import { setAuditWriter } from "../services/audit-writer";
+import { coreAuditWriter } from "../services/core-audit-writer";
+import { decideApprovalRequest } from "../services/platform-approval.service";
+import { handleProfitShareApprovalResolved } from "../services/profit-share-approval-consumers";
 import { agent, originHeader, signUp } from "./helpers";
 import {
   asTenant,
@@ -106,7 +123,7 @@ const appA = buildApp(() => tenantA);
 const appB = buildApp(() => tenantB.tenantId);
 
 type Client = ReturnType<typeof agent>;
-type Person = { client: Client; userId: string };
+type Person = { client: Client; userId: string; roleId?: string };
 
 async function signedIn(app: express.Express, name: string): Promise<Person> {
   const client = agent(app);
@@ -115,7 +132,11 @@ async function signedIn(app: express.Express, name: string): Promise<Person> {
   return { client, userId: session.body.user.id as string };
 }
 
-async function grant(tenantId: string, userId: string, permissions: string[]) {
+async function grant(
+  tenantId: string,
+  userId: string,
+  permissions: string[],
+): Promise<string> {
   const roleId = randomUUID();
   await owner.query(
     `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
@@ -134,11 +155,13 @@ async function grant(tenantId: string, userId: string, permissions: string[]) {
      VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
     [tenantId, userId, roleId],
   );
+  return roleId;
 }
 
 const MANAGE = "profit_share.registry.manage";
 const APPROVE = "profit_share.distribution.approve";
 const SHARE_CHANGE = "profit_share.share_allocation.change";
+const DECIDE = "approval.request.decide";
 
 async function person(
   app: express.Express,
@@ -147,7 +170,8 @@ async function person(
   permissions: string[],
 ): Promise<Person> {
   const who = await signedIn(app, name);
-  if (permissions.length > 0) await grant(tenantId, who.userId, permissions);
+  if (permissions.length > 0)
+    who.roleId = await grant(tenantId, who.userId, permissions);
   return who;
 }
 
@@ -308,6 +332,97 @@ const reject = (
     idempotencyKey: key(),
   });
 
+// ---- approval matrix helpers (SH-03 versions go through the inbox) --------
+
+const tenantContextOf = (tenantId: string) =>
+  establishTenantContext({ tenantId, brandId: null, source: "session" });
+/** What the worker hands a consumer: tenant-wide scope minted from the job. */
+const workerContextOf = (tenantId: string) =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "job" }),
+    { kind: "tenant" },
+  );
+
+/** The inbox user and a reader of the tenant the version belongs to. */
+const seatsOf = (tenantId: string) =>
+  tenantId === tenantA
+    ? { inbox: approver, reader: manager }
+    : { inbox: approverB, reader: managerB };
+
+async function chainOfVersion(
+  tenantId: string,
+  entityId: string,
+  version: number,
+): Promise<string> {
+  const { rows } = await owner.query<{ chain_id: string }>(
+    `SELECT r.chain_id
+       FROM approval_requests r
+       JOIN share_allocation_versions v
+         ON v.tenant_id = r.tenant_id AND v.id::text = r.object_id
+      WHERE r.tenant_id = $1 AND r.source_module = 'profit_share'
+        AND r.object_type = 'share_allocation_version' AND r.level = 1
+        AND v.profit_entity_id = $2 AND v.version = $3
+      ORDER BY r.created_at DESC LIMIT 1`,
+    [tenantId, entityId, version],
+  );
+  expect(rows, "the submit opened an approval chain").toHaveLength(1);
+  return rows[0]!.chain_id;
+}
+
+/** The inbox decision of the open level of `chainId`. */
+async function inboxDecide(
+  tenantId: string,
+  chainId: string,
+  decision: "approved" | "rejected",
+) {
+  const open = await owner.query<{ id: string }>(
+    `SELECT id FROM approval_requests
+      WHERE tenant_id = $1 AND chain_id = $2 AND status = 'pending'
+      ORDER BY level LIMIT 1`,
+    [tenantId, chainId],
+  );
+  await decideApprovalRequest(
+    tenantContextOf(tenantId),
+    seatsOf(tenantId).inbox.userId,
+    open.rows[0]!.id,
+    { decision, reason: "Porsi saham sudah diverifikasi." },
+    { mfaVerified: true, idempotencyKey: null },
+  );
+}
+
+/** The consumer applies the `approval.resolved` event of the chain. */
+async function settleChain(tenantId: string, chainId: string) {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND destination = 'cloud-sync'
+        AND event->>'name' = 'approval.resolved'
+        AND event->'payload'->>'chainId' = $2`,
+    [tenantId, chainId],
+  );
+  expect(rows).toHaveLength(1);
+  await handleProfitShareApprovalResolved(
+    workerContextOf(tenantId),
+    eventEnvelopeSchema.parse(rows[0]!.event),
+  );
+}
+
+/** Approves a submitted version the way a user does: inbox, then consumer. */
+async function approveViaInbox(
+  entityId: string,
+  version: number,
+  tenantId: string = tenantA,
+) {
+  const chainId = await chainOfVersion(tenantId, entityId, version);
+  await inboxDecide(tenantId, chainId, "approved");
+  await settleChain(tenantId, chainId);
+  const read = await get(
+    seatsOf(tenantId).reader,
+    versionPath(entityId, version),
+  );
+  expect(read.status, JSON.stringify(read.body)).toBe(200);
+  return shareAllocationVersionSchema.parse(read.body.data);
+}
+
 /** Two shareholders at 60/40 (a valid 100% list). */
 async function split6040(who: Person) {
   const a = await newShareholder(who);
@@ -330,6 +445,7 @@ let managerOnly: Person;
 let changerOnly: Person;
 let managerB: Person;
 let approverB: Person;
+let savedPolicies: Record<string, unknown>[] = [];
 
 beforeAll(async () => {
   requireDisposableDatabase();
@@ -347,7 +463,7 @@ beforeAll(async () => {
   ] = await Promise.all([
     person(appA, tenantA, "PS Manager", [MANAGE, SHARE_CHANGE]),
     person(appA, tenantA, "PS Manager 2", [MANAGE, SHARE_CHANGE]),
-    person(appA, tenantA, "PS Approver", [APPROVE]),
+    person(appA, tenantA, "PS Approver", [APPROVE, DECIDE]),
     person(appA, tenantA, "PS Lead", [MANAGE, SHARE_CHANGE, APPROVE]),
     person(appA, tenantA, "PS Nobody", []),
     person(appA, tenantA, "PS Manager Only", [MANAGE]),
@@ -357,11 +473,42 @@ beforeAll(async () => {
       SHARE_CHANGE,
       APPROVE,
     ]),
-    person(appB, tenantB.tenantId, "PS Approver B", [APPROVE]),
+    person(appB, tenantB.tenantId, "PS Approver B", [APPROVE, DECIDE]),
   ]);
+  // The approval matrix for `shareholder_version`: one level, the approver's
+  // role. Tenant A's own rows are saved and restored.
+  setAuditWriter(coreAuditWriter);
+  const saved = await owner.query(
+    `SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = 'shareholder_version'`,
+    [tenantA],
+  );
+  savedPolicies = saved.rows;
+  await owner.query(
+    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'shareholder_version'`,
+    [tenantA],
+  );
+  for (const [tenantId, who] of [
+    [tenantA, approver],
+    [tenantB.tenantId, approverB],
+  ] as const)
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'shareholder_version', NULL, $2, 1)`,
+      [tenantId, who.roleId],
+    );
 }, 60_000);
 
 afterAll(async () => {
+  await owner.query(
+    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'shareholder_version'`,
+    [tenantA],
+  );
+  for (const row of savedPolicies)
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'shareholder_version', $2, $3, $4)`,
+      [tenantA, row.threshold_idr, row.approver_role_id, row.levels],
+    );
   await Promise.all([owner.end(), appPool.end()]);
 });
 
@@ -869,9 +1016,12 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
       (await get(lead, versionPath(entity.id, draft.version))).body.data.status,
     ).toBe("pending_approval");
 
-    const decided = await approve(approver, entity.id, draft.version);
-    expect(decided.status).toBe(200);
-    const approved = shareAllocationVersionSchema.parse(decided.body.data);
+    // A direct approve by a non-requester is held back by the open chain.
+    const direct = await approve(approver, entity.id, draft.version);
+    expect(direct.status).toBe(409);
+    expect(direct.body.error.code).toBe("APPROVAL_PENDING");
+
+    const approved = await approveViaInbox(entity.id, draft.version);
     expect(approved).toMatchObject({
       status: "approved",
       requestedBy: lead.userId,
@@ -961,8 +1111,8 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
     expectRefused(pending, [409, 422]);
     expect(pending.status).not.toBe(200);
 
-    expect((await approve(approver, entity.id, draft.version)).status).toBe(
-      200,
+    expect((await approveViaInbox(entity.id, draft.version)).status).toBe(
+      "approved",
     );
     const approved = await patch(manager, path, edit);
     expectRefused(approved, [409, 422]);
@@ -986,7 +1136,9 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
       "2025-03-01",
     );
     expect((await submit(manager, entity.id, v1.version)).status).toBe(200);
-    expect((await approve(approver, entity.id, v1.version)).status).toBe(200);
+    expect((await approveViaInbox(entity.id, v1.version)).status).toBe(
+      "approved",
+    );
 
     for (const date of ["2025-03-01", "2025-02-28", "2024-01-01"]) {
       const refused = await createVersion(
@@ -1023,7 +1175,9 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
       "2025-01-01",
     );
     expect((await submit(manager, entity.id, v1.version)).status).toBe(200);
-    expect((await approve(approver, entity.id, v1.version)).status).toBe(200);
+    expect((await approveViaInbox(entity.id, v1.version)).status).toBe(
+      "approved",
+    );
     // Both are valid against the approved v1 when created ...
     const later = await draftVersion(
       manager,
@@ -1043,17 +1197,24 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
     expect((await submit(manager, entity.id, earlier.version)).status).toBe(
       200,
     );
-    expect((await approve(approver, entity.id, later.version)).status).toBe(
-      200,
+    expect((await approveViaInbox(entity.id, later.version)).status).toBe(
+      "approved",
     );
-    // ... but once v2 (June) is approved, v3 (March) no longer advances.
-    const refused = await approve(approver, entity.id, earlier.version);
-    expect(refused.status).toBe(422);
-    expect(refused.body.error.code).toBe("SHARE_VERSION_EFFECTIVE_DATE_ORDER");
+    // ... but once v2 (June) is approved, v3 (March) no longer advances: the
+    // chain approved it, the settle refuses it and records why.
+    const refused = await approveViaInbox(entity.id, earlier.version);
+    expect(refused.status).toBe("rejected");
+    expect(refused.decidedBy).toBe(approver.userId);
+    expect(refused.decisionNote).toContain(
+      "SHARE_VERSION_EFFECTIVE_DATE_ORDER",
+    );
+    // v2 stays the effective list (the list is newest version first).
+    const listed = await get(manager, versionsPath(entity.id));
     expect(
-      (await get(manager, versionPath(entity.id, earlier.version))).body.data
-        .status,
-    ).toBe("pending_approval");
+      listed.body.data
+        .filter((row: { status: string }) => row.status === "approved")
+        .map((row: { version: number }) => row.version),
+    ).toEqual([2, 1]);
   });
 
   it("keeps using v1 until a pending v2 is approved", async () => {
@@ -1062,7 +1223,9 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
     const v2Alloc = await split6040(manager);
     const v1 = await draftVersion(manager, entity.id, v1Alloc, "2025-01-01");
     expect((await submit(manager, entity.id, v1.version)).status).toBe(200);
-    expect((await approve(approver, entity.id, v1.version)).status).toBe(200);
+    expect((await approveViaInbox(entity.id, v1.version)).status).toBe(
+      "approved",
+    );
     const v2 = await draftVersion(manager, entity.id, v2Alloc, "2025-04-01");
     expect((await submit(manager, entity.id, v2.version)).status).toBe(200);
 
@@ -1092,7 +1255,9 @@ describe("SH-03 versioned shares: sum, approval and effective dates", () => {
       pendingOnly.body.data.map((row: { version: number }) => row.version),
     ).toEqual([2]);
 
-    expect((await approve(approver, entity.id, v2.version)).status).toBe(200);
+    expect((await approveViaInbox(entity.id, v2.version)).status).toBe(
+      "approved",
+    );
     expect(await resolve("2025-03-31")).toBe(1);
     expect(await resolve("2025-06-30")).toBe(2);
   });
@@ -1159,6 +1324,12 @@ describe("SH-03 idempotency", () => {
     expect(replay.status).toBe(200);
     expect(replay.body.data.status).toBe("pending_approval");
 
+    // The chain approves in the inbox; the decide route then settles it.
+    await inboxDecide(
+      tenantA,
+      await chainOfVersion(tenantA, entity.id, draft.version),
+      "approved",
+    );
     const decideKey = key("decide");
     const decided = await approve(
       approver,
@@ -1267,9 +1438,10 @@ describe("legend-2ljb registry: tenant isolation (TEN-01)", () => {
       { shareholderId: b, shareBp: 3000 },
     ]);
     expect((await submit(managerB, entity.id, draft.version)).status).toBe(200);
-    expect((await approve(approverB, entity.id, draft.version)).status).toBe(
-      200,
-    );
+    expect(
+      (await approveViaInbox(entity.id, draft.version, tenantB.tenantId))
+        .status,
+    ).toBe("approved");
     // Tenant A cannot see it either.
     expect((await get(manager, versionsPath(entity.id))).status).toBe(404);
   });
@@ -1359,7 +1531,9 @@ async function approvedVersion(allocations?: Alloc[]) {
   const list = allocations ?? (await split6040(manager));
   const draft = await draftVersion(manager, entity.id, list);
   expect((await submit(manager, entity.id, draft.version)).status).toBe(200);
-  expect((await approve(approver, entity.id, draft.version)).status).toBe(200);
+  expect((await approveViaInbox(entity.id, draft.version)).status).toBe(
+    "approved",
+  );
   return { entityId: entity.id, version: draft.version, allocations: list };
 }
 
@@ -1572,8 +1746,10 @@ describe("share percentage changes need profit_share.share_allocation.change", (
     expect((await approve(changerOnly, entity.id, draft.version)).status).toBe(
       403,
     );
-    expect((await approve(approver, entity.id, draft.version)).status).toBe(
-      200,
-    );
+    // The approver passes the permission check; only the open chain holds the
+    // approval back.
+    const held = await approve(approver, entity.id, draft.version);
+    expect(held.status, JSON.stringify(held.body)).toBe(409);
+    expect(held.body.error.code).toBe("APPROVAL_PENDING");
   });
 });

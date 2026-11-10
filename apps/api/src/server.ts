@@ -10,6 +10,7 @@ import { createDuitkuGateway } from "./services/payment-duitku.ts";
 import { registerPaymentGateway } from "./services/payment-gateway.ts";
 import { registerPaymentRefundGateway } from "./services/payment-refund-gateway.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
+import { installProfitShareStatementPorts } from "./services/profit-share-statement-ports.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import {
   attachNotificationRealtime,
@@ -64,6 +65,11 @@ setDeviceOutletResolver(createDeviceOutletResolver());
 // Staff PIN down-sync (legend-obh5): edge credentials are verified against the
 // cloud edge_nodes registry (legend-2pi); anything else is denied.
 setEdgeCredentialVerifier(verifyEdgeNodeCredential);
+// Profit share statements (legend-33im6): object storage from OBJECT_STORAGE_*
+// and email from the Brevo settings; without storage issuing stays off and one
+// warning is logged. Read from process.env: the notification keys are not part
+// of the validated `env`.
+installProfitShareStatementPorts(process.env);
 
 const server = app.listen(env.PORT, env.HOST, async (error) => {
   if (error) {

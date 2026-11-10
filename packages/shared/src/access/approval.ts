@@ -171,6 +171,25 @@ export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
   { thresholdIdr: 0, level: 1, roleTemplateKey: "general_manager" },
 ];
 
+/**
+ * Default shareholder version approval matrix (legend-tm6pp), the single source
+ * for new tenants (seedTenantRoleTemplates), the dev tenant and migration 0241.
+ * Founder decision Q2 (2026-11-10): once a tenant uses profit share, a share
+ * allocation version and a statement-recipient change (both matrix action
+ * `shareholder_version`) need one approval from the Owner. Without a policy
+ * the approval service fails closed (APPROVAL_POLICY_MISSING), so the default
+ * makes the flow usable; the Owner can change the matrix afterwards. One tier,
+ * one level, from Rp0 (floor 0 rather than null, as for refunds). Applied only
+ * to a tenant with no shareholder_version row and an Owner template role; a
+ * tenant that configured its own matrix is never touched. The row requires a
+ * distinct actor, so the Owner who submits a version cannot approve it.
+ */
+export const DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "owner";
+}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "owner" }];
+
 export type ApprovalStep = {
   readonly level: number;
   /** Any of these roles may decide this level. */

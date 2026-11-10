@@ -156,11 +156,14 @@ async function load(
       .where(eq(tenants.id, tenantId))
       .limit(1);
     let recipientEmail: string | null = null;
-    if (row.shareholder.userId) {
+    // The login the line was issued to (set when it was paid), not the
+    // shareholder's login today: a later recipient change never redirects an
+    // earlier statement.
+    if (row.line.recipientUserId) {
       const [account] = await tx
         .select({ email: user.email })
         .from(user)
-        .where(eq(user.id, row.shareholder.userId))
+        .where(eq(user.id, row.line.recipientUserId))
         .limit(1);
       recipientEmail = account?.email ?? null;
     }
