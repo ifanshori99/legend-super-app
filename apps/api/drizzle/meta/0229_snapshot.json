@@ -10815,28 +10815,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "payment_links_issue_charge_reference_key": {
-          "name": "payment_links_issue_charge_reference_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"payment_links\".\"reference\" LIKE 'oic:%'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {

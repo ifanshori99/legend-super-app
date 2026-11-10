@@ -99,11 +99,6 @@ export const paymentLinks = pgTable(
       table.outletId,
       table.createdAt.desc(),
     ),
-    // One link per order issue charge: `oic:<chargeId>` is the idempotency key
-    // of order recovery. Partial so other references may repeat.
-    uniqueIndex("payment_links_issue_charge_reference_key")
-      .on(table.tenantId, table.reference)
-      .where(sql`${table.reference} LIKE 'oic:%'`),
     // The bill total the guest pays must add up from the server-priced parts.
     check(
       "payment_links_total_check",

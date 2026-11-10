@@ -1,20 +1,18 @@
 // legend-i83ls (gap 3): uniqueness under concurrency.
 // - payment_links has no unique (tenant_id, reference); a charge link uses
-//   reference `oic:<chargeId>`, opened lazily under the charge row lock.
+//   reference `oic:<chargeId>`, opened lazily under the charge row lock. An
+//   orphan link left by a crash is cancelled by the next attempt
+//   (order-issue-charge-orphan-link.test.ts).
 // - order_issues keeps unique (tenant_id, idempotency_key).
 //
 // Cases:
 // - IU-1 two concurrent pay calls (different idempotency keys) for one charge:
 //   one payment_links row `oic:<chargeId>`, one live intent, same code to both.
-// - IU-2 the database itself refuses a second payment_links row with the same
-//   reference in the same tenant (direct INSERT).
 // - IU-3 two concurrent reports of the same item: one issue, no 500.
 // - IU-4 same after a rejected refund (key `:n`): exactly one new issue.
 //
 // Assumptions:
 // - IU-1 expects both calls to answer 200 or 201 (code not fixed).
-// - IU-2 clones the first link row with a fresh id and token_hash; any
-//   unique-violation (23505) counts as "refused".
 // - IU-3/IU-4 expect both answers 200 or 201 and the same issue id (replay).
 //   If an implementation answered one with 409, the test would flag it: the
 //   brief says "one issue, not 500", and a replay is the documented behaviour.
@@ -144,25 +142,6 @@ describe("legend-i83ls payment_links.reference is unique per tenant", () => {
     );
     expect(live.rows, "live intents").toHaveLength(1);
     expect(a.body.data.id).toBe(b.body.data.id);
-  });
-
-  it("IU-2 the database refuses a second payment_links row with the same reference and tenant", async () => {
-    const { guest, chargeId } = await openCharge();
-    expect(ok((await pay(guest, chargeId)).status)).toBe(true);
-
-    const clone = owner.query(
-      `INSERT INTO payment_links
-         (id, tenant_id, outlet_id, token_hash, reference, table_label, pax,
-          subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr,
-          total_idr, created_by)
-       SELECT gen_random_uuid(), tenant_id, outlet_id, md5(random()::text) || md5(random()::text),
-              reference, table_label, pax, subtotal_idr, discount_idr,
-              service_charge_idr, tax_idr, rounding_idr, total_idr, created_by
-       FROM payment_links WHERE tenant_id = $1 AND reference = $2`,
-      [w.tenant.tenantId, `oic:${chargeId}`],
-    );
-
-    await expect(clone).rejects.toMatchObject({ code: "23505" });
   });
 });
 

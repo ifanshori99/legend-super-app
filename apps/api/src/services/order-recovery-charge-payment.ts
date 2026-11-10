@@ -23,7 +23,7 @@
 //   WS-05. The charge's order only names the refund in the audit trail.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -40,6 +40,7 @@ import {
 } from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
+import { paymentLinks } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -51,6 +52,7 @@ import {
   type IssueChargePaidOutcome,
 } from "./order-recovery-charge.ts";
 import {
+  cancelPaymentLinkInTx,
   createIntent,
   createPaymentLink,
   getIntentView,
@@ -186,6 +188,28 @@ async function ensureChargeLink(
       return session.outletId;
     assertTakesMoney(charge);
     const { tableCode } = await loadQrZoneOfSession(tx, context, session);
+    // `createPaymentLink` commits on its own: a crash before the charge got
+    // its `payment_link_id` leaves an orphan `oic:<chargeId>` link. Its token
+    // was never handed out, so no intent can exist on it and it cannot be
+    // reused (only the sealed token on the charge could be). Cancel it so one
+    // active link per charge remains.
+    const orphans = await tx
+      .select({ id: paymentLinks.id })
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, context.tenant.tenantId),
+          eq(paymentLinks.reference, linkReference(charge.id)),
+          or(isNull(paymentLinks.expiresAt), gt(paymentLinks.expiresAt, now)),
+        ),
+      )
+      .orderBy(asc(paymentLinks.id));
+    for (const orphan of orphans)
+      await cancelPaymentLinkInTx(tx, context, {
+        linkId: orphan.id,
+        now,
+        reason: "issue_charge_orphan_link",
+      });
     const opened = await createPaymentLink(
       context,
       {

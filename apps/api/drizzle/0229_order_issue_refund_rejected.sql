@@ -46,8 +46,7 @@ CREATE TABLE "order_issue_charges" (
 --> statement-breakpoint
 CREATE UNIQUE INDEX "order_issue_charges_issue_once_idx" ON "order_issue_charges" USING btree ("tenant_id","order_issue_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "order_issue_charges_link_once_idx" ON "order_issue_charges" USING btree ("tenant_id","payment_link_id") WHERE "order_issue_charges"."payment_link_id" IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "order_issue_charges_session_open_idx" ON "order_issue_charges" USING btree ("tenant_id","table_session_id") WHERE "order_issue_charges"."status" = 'open';--> statement-breakpoint
-CREATE UNIQUE INDEX "payment_links_issue_charge_reference_key" ON "payment_links" USING btree ("tenant_id","reference") WHERE "payment_links"."reference" LIKE 'oic:%';
+CREATE INDEX "order_issue_charges_session_open_idx" ON "order_issue_charges" USING btree ("tenant_id","table_session_id") WHERE "order_issue_charges"."status" = 'open';
 --> statement-breakpoint
 -- legend-i83ls: order_issue_charges, tenant + outlet RLS. Append AFTER its
 -- generated CREATE TABLE. Rows are updated (paid, waived, expired); never deleted.
