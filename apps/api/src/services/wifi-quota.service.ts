@@ -33,6 +33,7 @@ import {
   wifiSpeedTier,
   type WifiPolicy,
 } from "@starter/shared/facility";
+import { forwardWifiQuotaToEdge } from "../edge/wifi-quota-forwarding.ts";
 import { wifiEnforcement } from "../edge/wifi/port.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
@@ -338,6 +339,7 @@ async function appendQuotaUpdated(
   session: WifiSessionRow,
   reason: QuotaReason | "quota_spent",
   now: Date,
+  edge: { fullSpeedKbps: number; baseSpeedKbps: number; sessionEndsAt: Date },
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const sequence = await nextSequence(tx, tenantId, session.id);
@@ -362,6 +364,9 @@ async function appendQuotaUpdated(
       quotaMinutes: session.quotaMinutes,
       usedMinutes: session.usedMinutes,
       speedTier: session.speedTier,
+      fullSpeedKbps: edge.fullSpeedKbps,
+      baseSpeedKbps: edge.baseSpeedKbps,
+      sessionEndsAt: edge.sessionEndsAt.toISOString(),
       reason,
     },
   });
@@ -372,6 +377,9 @@ async function appendQuotaUpdated(
     direction: null,
     peerId: null,
   });
+  // legend-xk7az: the same envelope goes down to the outlet's edge node, which
+  // pushes it to the controller (edge/wifi-quota-applier.ts).
+  await forwardWifiQuotaToEdge(tx, context, event);
 }
 
 /**
@@ -491,6 +499,7 @@ export async function recomputeOpenSessions(
       .returning();
     if (!updated || !changed) continue;
 
+    const sessionEndsAt = businessDayRange(updated.businessDate, clock).end;
     await appendQuotaUpdated(
       tx,
       context,
@@ -499,13 +508,18 @@ export async function recomputeOpenSessions(
         ? "quota_spent"
         : input.reason,
       input.now,
+      {
+        fullSpeedKbps: policy.fullSpeedKbps,
+        baseSpeedKbps: policy.baseSpeedKbps,
+        sessionEndsAt,
+      },
     );
     await applyWifiQuotaToEdge(
       context,
       updated,
       policy,
       await liveControllerDeviceId(tx, tenantId, updated.id),
-      businessDayRange(updated.businessDate, clock).end,
+      sessionEndsAt,
     );
   }
 }
