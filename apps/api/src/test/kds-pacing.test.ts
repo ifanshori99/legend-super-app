@@ -581,7 +581,7 @@ async function member(
   app: Express,
   tenantId: string,
   roleId: string,
-  scope: { type: "tenant" | "outlet"; id: string | null },
+  scope: { type: "tenant" | "outlet" | "station"; id: string | null },
   label: string,
 ): Promise<Member> {
   const client = agent(app);
@@ -3470,5 +3470,293 @@ describe("tenant and outlet isolation of the pacing tables", () => {
         ).rejects.toThrow(/row-level security/);
       },
     );
+  });
+});
+
+// ---- D2: auto-pause only for lines with an explicit menu load row ------------------
+
+describe("D2 auto-pause only pauses lines with an explicit kitchen_menu_loads row (KDS-05)", () => {
+  // Decision D2: a menu line WITHOUT a kitchen_menu_loads row (exact variant or
+  // item level) is never auto-paused, whatever the station's default prep time
+  // is (station target or the 600 s fallback). Only a recorded prepSeconds
+  // >= LONG_PREP_SECONDS pauses. Load points (1) and the ETA default stay.
+  let w: World;
+  let dapur: string; // station target 900 s: a default prep above the threshold
+  let kedai: string; // no target: the 600 s fallback equals the threshold
+  let withRow: string; // item row, 1200 s
+  let noRow: string; // no row at all, on the 900 s station
+  let noRowVariantItem: string; // no item row ...
+  let noRowVariant: string; // ... and no variant row
+  let inheritedVariant: string; // no own row, item row 1200 s: inherits it
+  let inheritingItem: string;
+  let kedaiNoRow: string; // no row on the no-target station
+  let kedaiWithRow: string;
+
+  beforeAll(async () => {
+    w = await makeWorld("d2");
+    const fill = (stationId: string) =>
+      station(w, {
+        targetSeconds: stationId === "dapur" ? 900 : null,
+        rules: [
+          rule({
+            windowMinutes: 10,
+            capacityPoints: 10,
+            channelPriority: ["dine_in", "gofood"],
+          }),
+        ],
+      });
+    dapur = await fill("dapur");
+    kedai = await fill("kedai");
+    withRow = await item(w, {
+      stationId: dapur,
+      load: { points: 1, prep: 1200 },
+    });
+    noRow = await item(w, { stationId: dapur });
+    noRowVariantItem = await item(w, { stationId: dapur });
+    noRowVariant = await variant(w, noRowVariantItem);
+    inheritingItem = await item(w, {
+      stationId: dapur,
+      load: { points: 1, prep: 1200 },
+    });
+    inheritedVariant = await variant(w, inheritingItem);
+    kedaiNoRow = await item(w, { stationId: kedai });
+    kedaiWithRow = await item(w, {
+      stationId: kedai,
+      load: { points: 1, prep: LONG_PREP_SECONDS },
+    });
+    // Both stations exactly at capacity (10 of 10) with default one-point lines.
+    await ticket(w, {
+      stationId: dapur,
+      lines: [
+        { itemId: withRow },
+        { itemId: noRow },
+        { itemId: noRowVariantItem, variantId: noRowVariant },
+        { itemId: inheritingItem, variantId: inheritedVariant },
+        ...lines(noRow, 6),
+      ],
+    });
+    await ticket(w, {
+      stationId: kedai,
+      lines: [
+        { itemId: kedaiWithRow },
+        { itemId: kedaiNoRow },
+        ...lines(kedaiNoRow, 8),
+      ],
+    });
+  });
+
+  const pausedFor = (channel: string, now: Date) =>
+    inTx(w, (tx) => readPausedMenuLines(tx, w.ctx, w.outlet, channel, now));
+
+  it("KDS-05 both stations are at capacity, lines without a row still count one point", async () => {
+    const snapshot = await pacing(w, NOW);
+    expect(stationOf(snapshot, dapur)).toMatchObject({
+      usedPoints: 10,
+      status: "at_capacity",
+    });
+    expect(stationOf(snapshot, kedai)).toMatchObject({
+      usedPoints: 10,
+      status: "at_capacity",
+    });
+  });
+
+  it("KDS-05 a line with no menu load row is never auto-paused, even when the station default prep is long", async () => {
+    await pacing(w, NOW);
+    const live = liveAuto(await pauseRows(w)).map((r) =>
+      lineKey(r.menu_item_id, r.variant_id),
+    );
+    expect(live).not.toContain(lineKey(noRow));
+    expect(live).not.toContain(lineKey(noRowVariantItem));
+    expect(live).not.toContain(lineKey(noRowVariantItem, noRowVariant));
+    expect(live).not.toContain(lineKey(kedaiNoRow));
+    const paused = await pausedFor("gofood", NOW);
+    expect(isLinePaused(paused, noRow, null)).toBe(false);
+    expect(isLinePaused(paused, noRowVariantItem, null)).toBe(false);
+    expect(isLinePaused(paused, noRowVariantItem, noRowVariant)).toBe(false);
+    expect(isLinePaused(paused, kedaiNoRow, null)).toBe(false);
+  });
+
+  it("KDS-05 only lines with a recorded prep of at least the threshold are paused", async () => {
+    await pacing(w, NOW);
+    const live = liveAuto(await pauseRows(w)).map((r) =>
+      lineKey(r.menu_item_id, r.variant_id),
+    );
+    // The item row, the variant that inherits the item row, and the item row
+    // at exactly the threshold on the other station. Nothing else.
+    expect(new Set(live)).toEqual(
+      new Set([
+        lineKey(withRow),
+        lineKey(inheritingItem, inheritedVariant),
+        lineKey(kedaiWithRow),
+      ]),
+    );
+    const paused = await pausedFor("gofood", NOW);
+    expect(isLinePaused(paused, withRow, null)).toBe(true);
+    expect(isLinePaused(paused, inheritingItem, inheritedVariant)).toBe(true);
+    expect(isLinePaused(paused, kedaiWithRow, null)).toBe(true);
+    // The first channel is never paused.
+    expect((await pausedFor("dine_in", NOW)).size).toBe(0);
+  });
+});
+
+// ---- D4: GET /kitchen/pacing for station-scoped cooks -------------------------------
+
+describe("D4 GET /kitchen/pacing is readable by station-scoped cooks, their stations only (KDS-05)", () => {
+  // Decision D4: the route needs `kds.ticket.process` like /station-summary.
+  // A station-scoped cook sees only their permitted stations, an outlet-wide
+  // holder sees all, a cook whose station has nothing to show gets 200 with
+  // `stations: []` (not 403). /serving-time-estimate stays `order.view`.
+  // Assumption: "no permitted station" is set up as a cook scoped to a station
+  // that has no capacity rule (the snapshot has no row for it), since a cook
+  // scoped to a station of another outlet cannot reach this outlet at all.
+  let w: World;
+  let headers: { Host: string };
+  let grill: string;
+  let bar: string;
+  let pastry: string;
+  let grillCook: Member;
+  let barCook: Member;
+  let pastryCook: Member;
+  let wideCook: Member;
+  let outletCook: Member;
+  let noAccess: Member;
+
+  beforeAll(async () => {
+    w = await makeWorld("d4");
+    headers = { Host: w.tenant.hostname };
+    const cookRole = await insertRole(
+      w.tenant.tenantId,
+      "Koki Stasiun D4",
+      ["kds.ticket.process"],
+      ["tenant", "outlet", "station"],
+    );
+    const noRole = await insertRole(
+      w.tenant.tenantId,
+      "Tanpa KDS D4",
+      ["floor.table.view"],
+      ["tenant"],
+    );
+    grill = await station(w, {
+      name: "Grill D4",
+      rules: [
+        rule({
+          windowMinutes: 10,
+          capacityPoints: 10,
+          schedule: scheduleAroundNow(),
+        }),
+      ],
+    });
+    // A distinctive capacity (77) to prove another station's numbers never leak.
+    bar = await station(w, {
+      name: "Bar D4",
+      type: "beverage_bar",
+      rules: [
+        rule({
+          windowMinutes: 20,
+          capacityPoints: 77,
+          schedule: scheduleAroundNow(),
+        }),
+      ],
+    });
+    pastry = await station(w, { name: "Pastry D4", type: "pastry", rules: [] });
+    const nasi = await item(w, { stationId: grill });
+    const teh = await item(w, { stationId: bar });
+    await ticket(w, { stationId: grill, lines: lines(nasi, 6) });
+    await ticket(w, { stationId: bar, lines: lines(teh, 3) });
+    const at = (label: string, scope: Parameters<typeof member>[3]) =>
+      member(app, w.tenant.tenantId, cookRole, scope, label);
+    grillCook = await at("D4 Koki Grill", { type: "station", id: grill });
+    barCook = await at("D4 Koki Bar", { type: "station", id: bar });
+    pastryCook = await at("D4 Koki Pastry", { type: "station", id: pastry });
+    wideCook = await at("D4 Koki Tenant", { type: "tenant", id: null });
+    outletCook = await at("D4 Koki Outlet", {
+      type: "outlet",
+      id: w.outletId,
+    });
+    noAccess = await member(
+      app,
+      w.tenant.tenantId,
+      noRole,
+      { type: "tenant", id: null },
+      "D4 Tanpa KDS",
+    );
+  });
+
+  const read = (who: Member | null) =>
+    (who?.client ?? agent(app))
+      .get(`/api/outlets/${w.outletId}/kitchen/pacing`)
+      .set(headers)
+      .set(originHeader);
+
+  const stationIds = (body: unknown) =>
+    getPacing.response
+      .parse(body)
+      .data.stations.map((s) => s.stationId)
+      .sort();
+
+  it("KDS-05 a cook scoped to one station reads that station's pacing only", async () => {
+    const res = await read(grillCook);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(stationIds(res.body)).toEqual([grill]);
+    const [row] = getPacing.response.parse(res.body).data.stations;
+    expect(row).toMatchObject({
+      stationId: grill,
+      windowMinutes: 10,
+      capacityPoints: 10,
+      usedPoints: 6,
+    });
+  });
+
+  it("KDS-05 the other station's id and numbers never appear in a station cook's response", async () => {
+    const res = await read(grillCook);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const text = JSON.stringify(res.body);
+    expect(text).not.toContain(bar);
+    expect(text).not.toContain(pastry);
+    expect(text).not.toContain('"capacityPoints":77');
+    expect(text).not.toContain('"windowMinutes":20');
+  });
+
+  it("KDS-05 a cook of the other station sees that one instead", async () => {
+    const res = await read(barCook);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(stationIds(res.body)).toEqual([bar]);
+    expect(getPacing.response.parse(res.body).data.stations[0]).toMatchObject({
+      capacityPoints: 77,
+      usedPoints: 3,
+    });
+    expect(JSON.stringify(res.body)).not.toContain(grill);
+  });
+
+  it("KDS-05 a tenant-wide and an outlet-wide cook read every station of the outlet", async () => {
+    for (const who of [wideCook, outletCook]) {
+      const res = await read(who);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(stationIds(res.body)).toEqual([bar, grill].sort());
+    }
+  });
+
+  it("KDS-05 a station cook with nothing to show gets 200 and no stations, not 403", async () => {
+    const res = await read(pastryCook);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(getPacing.response.parse(res.body).data).toMatchObject({
+      tenantId: w.tenant.tenantId,
+      outletId: w.outletId,
+      stations: [],
+    });
+  });
+
+  it("KDS-05 a role without kds.ticket.process still gets 403 and an anonymous caller 401", async () => {
+    expect((await read(noAccess)).status).toBe(403);
+    expect((await read(null)).status).toBe(401);
+  });
+
+  it("KDS-06 /serving-time-estimate stays closed to a cook without order.view", async () => {
+    const res = await grillCook.client
+      .get(`/api/outlets/${w.outletId}/serving-time-estimate`)
+      .query({ channel: "dine_in" })
+      .set(headers)
+      .set(originHeader);
+    expect(res.status).toBe(403);
   });
 });

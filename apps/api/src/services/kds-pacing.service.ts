@@ -29,6 +29,7 @@ import {
   sql,
 } from "drizzle-orm";
 import {
+  assertOutletInScope,
   CoreError,
   toIsoDateTime,
   type OutletId,
@@ -61,6 +62,7 @@ import {
 } from "../db/schema/kds-pacing.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { permittedStationIds } from "./station-access.ts";
 import { notifyKitchenPacing } from "./kds-staff-alerts.ts";
 import {
   FALLBACK_SERVICE_SECONDS,
@@ -93,6 +95,8 @@ const lineKey = (menuItemId: string, variantId: string | null) =>
 
 /** Serializes writers of one outlet's pacing state (released with the tx). */
 async function lockOutletPacing(tx: Tx, outletId: string): Promise<void> {
+  // A stuck holder must not hold the caller: past this the lock fails.
+  await tx.execute(sql.raw(`SET LOCAL lock_timeout = '2000ms'`));
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-pacing:${outletId}`}, 0))`,
   );
@@ -922,11 +926,29 @@ export async function getPacingSnapshot(
   context: ScopedTenantContext,
   outletId: OutletId,
   now: Date,
+  actor: { userId: string },
 ): Promise<PacingSnapshot> {
+  assertOutletInScope(context.outletScope, outletId);
   await evaluatePacingIfStale(context, outletId, now);
   return withTenant(db, context, async (tx) => {
+    // Only the stations the caller may process: an outlet-wide holder sees all,
+    // a station-scoped cook only theirs, and no reach answers an empty list.
+    const permitted = new Set(
+      await permittedStationIds(
+        tx,
+        context,
+        actor.userId,
+        "kds.ticket.process",
+        now,
+      ),
+    );
     const { evaluations } = await computePacing(tx, context, outletId, now);
-    return buildSnapshot(context, outletId, now, evaluations);
+    return buildSnapshot(
+      context,
+      outletId,
+      now,
+      evaluations.filter((entry) => permitted.has(entry.station.id)),
+    );
   });
 }
 

@@ -68,6 +68,11 @@ import {
 import type { Tx } from "./menu-internals.ts";
 import { loadPosCatalogue } from "./pos-order-pricing.ts";
 import { businessDateFor, loadOutlet } from "./pos-order-support.ts";
+import {
+  evaluatePacingIfStale,
+  isLinePaused,
+  readPausedMenuLines,
+} from "./kds-pacing.service.ts";
 import type { CatalogueItem } from "./qr-order-pricing.ts";
 
 export const DELIVERY_INGEST_RESULTS = [
@@ -722,6 +727,8 @@ export async function ingestDeliveryWebhook(
   );
   const payloadHash = hashDeliveryPayload(raw);
 
+  // KDS-05: refresh the pause rows before the transaction, never inside it.
+  await evaluatePacingIfStale(context, outletId, now);
   const stored = await withTenant(db, context, async (tx): Promise<Stored> => {
     // A stuck writer of the same order must not hold the platform's request:
     // past this the webhook fails and the platform retries.
@@ -856,6 +863,13 @@ export async function ingestDeliveryWebhook(
         .flatMap((parsed) => (parsed.success ? [parsed.data] : [])),
       now,
     });
+    const paused = await readPausedMenuLines(
+      tx,
+      context,
+      outletId,
+      platform,
+      now,
+    );
     const lines = mapDeliveryLines(payload.items, catalogue);
 
     // Closed or paused: the order is refused through the machine and recorded.
@@ -922,6 +936,41 @@ export async function ingestDeliveryWebhook(
         accept: null,
         rejected: null,
       };
+    // KDS-05: a paused line never refuses a paid order; the pause is only
+    // recorded, the order is injected and accepted like any other.
+    const pausedLines = lines.flatMap((line) =>
+      line.menuItemId !== null &&
+      isLinePaused(paused, line.menuItemId, line.variantId)
+        ? [{ menuItemId: line.menuItemId, variantId: line.variantId }]
+        : [],
+    );
+    if (pausedLines.length > 0)
+      await recordAudit(
+        tx,
+        context,
+        {
+          id: createUlid(now.getTime()),
+          tenantId,
+          outletId: injected.row.outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: "delivery_order.paused_line_accepted",
+          objectType: "delivery_channel_order",
+          objectId: injected.row.id,
+          reason:
+            "Item dijeda dapur, pesanan platform yang sudah dibayar tetap diterima.",
+          maskedChanges: {
+            before: null,
+            after: { platform: injected.row.platform, pausedLines },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: toIsoDateTime(now),
+        },
+        ["platform", "pausedLines", "menuItemId", "variantId"],
+      );
     return {
       result: outcome("injected", injected.row),
       accept: injected.row,

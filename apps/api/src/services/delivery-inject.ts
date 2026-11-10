@@ -89,7 +89,7 @@ export type InjectDeliveryOrderInput = {
   /** The webhook signature's instant (platform); null or absent for manual. */
   signedAt?: Date | null;
   customerNote: string | null;
-  /** Every line must be matched, price_mismatch or sold_out (injectable). */
+  /** Every line must be matched or price_mismatch (injectable); sold_out is not. */
   lines: readonly DeliveryOrderLine[];
   /**
    * `accepted` records the order as already accepted (manual mode: the cashier

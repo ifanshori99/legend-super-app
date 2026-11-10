@@ -170,22 +170,19 @@ kdsRouter.get(
 
 // KDS-05: capacity per station for the current window. Evaluating on read
 // keeps the level (and the auto-pause behind it) fresh without a scheduler.
-kdsRouter.get(
-  "/pacing",
-  requireOutletPermission("kds.ticket.process", (req) =>
-    String(req.params.outletId),
-  ),
-  async (req, res) => {
-    const { outletId } = getPacing.params.parse(req.params);
-    res.json({
-      data: await pacing.getPacingSnapshot(
-        getScopedTenantContext(req),
-        outletId,
-        new Date(),
-      ),
-    });
-  },
-);
+// A station-scoped cook reads it too; the service keeps only the stations the
+// caller may process.
+kdsRouter.get("/pacing", processTicket, async (req, res) => {
+  const { outletId } = getPacing.params.parse(req.params);
+  res.json({
+    data: await pacing.getPacingSnapshot(
+      ticketContext(req),
+      outletId,
+      new Date(),
+      actor(req),
+    ),
+  });
+});
 
 // ---- Tickets ---------------------------------------------------------------
 
