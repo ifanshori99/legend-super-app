@@ -1012,3 +1012,4 @@ Langkah berikut CTO baru:
 - Brief 381 ptn11 (base ws/aruta-pos-pin).
 - 20:03 Codex 380 split bill: 2 P1 (bayar paralel batalkan bagian lain; token klaim tanpa cek kepemilikan bagian) + 1 P2 (expiry dari waktu bayar, bukan tutup meja). Ditambahkan ke brief 366 (ec6fa). Codex 382 PIN proof + pepper jalan (#2).
 - 20:05 akun #3 reset: mulai 6 thread — G8go1 ec6fa (366 sonnet), G816d rgddb (376 opus), G0y2x 44g8n (369 sonnet), G1fjl powk0 (370 sonnet), G2b3l h1dyy (375 opus), G58ff 5u03q (373 opus). Antre: 33im6 (378), ptn11 (381).
+- 20:10 Codex 382 PIN proof+pepper: 1 P2 (kegagalan yang mengunci tidak dihitung di batas device). Kartu legend-sp9vq (Sonnet, ws/jmsdx-pepper), antre slot. Codex 383 ledger loyalty jalan (#2).
