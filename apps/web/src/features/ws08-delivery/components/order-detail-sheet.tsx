@@ -3,7 +3,7 @@
 // platform reported, the internal order it was injected into, and every
 // fulfilment step the contract machine allows from the current status.
 import * as React from "react";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,11 +36,17 @@ import {
   orderCanEnterKitchen,
   orderHasPriceMismatch,
   orderHasUnmatchedLine,
+  orderIsFinal,
   orderNetIdr,
   platformKey,
   type DeliveryOrderAction,
 } from "../lib";
-import { MappingBadge, OrderStatusPill, SourceBadge } from "./delivery-badges";
+import {
+  MappingBadge,
+  OrderStatusPill,
+  PlatformSyncBadge,
+  SourceBadge,
+} from "./delivery-badges";
 
 function Fact({
   label,
@@ -116,6 +122,60 @@ function LineList({ order }: { order: DeliveryChannelOrder }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Staff guidance for a platform sync that is not `ok` (legend-u37u3). */
+function PlatformSyncNote({ order }: { order: DeliveryChannelOrder }) {
+  const t = useT();
+  if (order.platformSync === "ok") return null;
+  const platform = t(platformKey(order.platform));
+  if (order.platformSync === "retrying")
+    return (
+      <div
+        role="note"
+        className="flex items-start gap-2 rounded-container bg-surface-2 p-card text-sm"
+      >
+        <RefreshCw
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <p>{t("deliveryOps.platformSync.retryingHint", { platform })}</p>
+      </div>
+    );
+  const final = orderIsFinal(order.status);
+  return (
+    <div
+      role="note"
+      className="grid gap-2 rounded-container bg-warning-subtle p-card text-sm"
+    >
+      <h3 className="flex items-start gap-2 text-sm font-semibold text-warning">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {t("deliveryOps.platformSync.needsActionTitle", { platform })}
+      </h3>
+      <p>{t("deliveryOps.platformSync.needsActionIntro")}</p>
+      <ol
+        aria-label={t("deliveryOps.platformSync.needsActionStepsLabel")}
+        className="grid list-decimal gap-1 pl-5"
+      >
+        <li>
+          {t("deliveryOps.platformSync.needsActionStep1", { platform })}{" "}
+          <span translate="no" className="font-mono whitespace-nowrap">
+            {order.externalOrderId}
+          </span>
+          .
+        </li>
+        <li>{t("deliveryOps.platformSync.needsActionStep2")}</li>
+        {!final && (
+          <li>
+            {t("deliveryOps.platformSync.needsActionStep3", { platform })}
+          </li>
+        )}
+      </ol>
+      {final && (
+        <p>{t("deliveryOps.platformSync.needsActionFinal", { platform })}</p>
+      )}
+    </div>
   );
 }
 
@@ -230,6 +290,7 @@ function OrderDetailBody({
           <OrderStatusPill status={order.status} />
           <SourceBadge source={order.source} />
           <Badge tone="neutral">{t(platformKey(order.platform))}</Badge>
+          <PlatformSyncBadge sync={order.platformSync} />
         </SheetDescription>
       </SheetHeader>
 
@@ -269,6 +330,8 @@ function OrderDetailBody({
             </Fact>
           )}
         </dl>
+
+        <PlatformSyncNote order={order} />
 
         {order.customerNote && (
           <div className="grid gap-1 rounded-container bg-surface-2 p-card">

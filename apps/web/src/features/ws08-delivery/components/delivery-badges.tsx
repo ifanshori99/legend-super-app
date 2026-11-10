@@ -13,6 +13,7 @@ import {
   PackageCheck,
   PackageX,
   PenLine,
+  RefreshCw,
   TriangleAlert,
   Unplug,
   type LucideIcon,
@@ -23,12 +24,14 @@ import type {
   DeliveryMappingStatus,
   DeliveryOrderSource,
   DeliveryOrderStatus,
+  DeliveryPlatformSync,
   DeliverySettlementStatus,
   DeliverySyncStatus,
 } from "@starter/shared/delivery";
 import {
   mappingStatusKey,
   orderStatusKey,
+  platformSyncKey,
   settlementStatusKey,
   sourceKey,
   syncStatusKey,
@@ -141,6 +144,29 @@ export function ManualModeBadge() {
     <Badge tone="warning">
       <PenLine aria-hidden="true" />
       {t("deliveryOps.kanal.manualLabel")}
+    </Badge>
+  );
+}
+
+/**
+ * Platform sync of an order's latest status step (legend-u37u3). `ok` renders
+ * nothing; `retrying` is a neutral note (the system resends alone); `needs_action`
+ * is a warning with the state in words, never color alone.
+ */
+export function PlatformSyncBadge({ sync }: { sync: DeliveryPlatformSync }) {
+  const t = useT();
+  if (sync === "ok") return null;
+  const needsAction = sync === "needs_action";
+  const Icon = needsAction ? TriangleAlert : RefreshCw;
+  return (
+    <Badge
+      tone={needsAction ? "warning" : "neutral"}
+      className="max-w-full rounded-xl text-left leading-4 whitespace-normal"
+      data-slot="platform-sync-badge"
+      data-sync={sync}
+    >
+      <Icon aria-hidden="true" />
+      {t(platformSyncKey(sync))}
     </Badge>
   );
 }

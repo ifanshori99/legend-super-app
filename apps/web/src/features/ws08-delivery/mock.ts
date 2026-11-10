@@ -36,6 +36,7 @@ import type {
   DeliveryChannelOrder,
   DeliveryErrorCode,
   DeliveryPlatform,
+  DeliveryPlatformSync,
 } from "@starter/shared/delivery";
 import { cafeLegendFixtures, createUlidFactory } from "@starter/shared/core";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
@@ -80,7 +81,21 @@ function requireOutlet(requested: string): void {
 // ---- Stores ---------------------------------------------------------------
 
 const channels = createMockStore(() => structuredClone(fixtures.channels));
-const orders = createMockStore(() => structuredClone(fixtures.orders));
+// Demo platform sync (legend-u37u3): the shared fixtures stay `ok`; the mock
+// seeds one order per non-ok state so the staff screen shows all three.
+const DEMO_PLATFORM_SYNC: Record<string, DeliveryPlatformSync> = {
+  [fixtures.orders[0].id]: "needs_action",
+  [fixtures.orders[1].id]: "retrying",
+  // A closed order whose closing step the platform refused: no later step can
+  // clear the mark.
+  [fixtures.orders[3].id]: "needs_action",
+};
+const orders = createMockStore(() =>
+  structuredClone(fixtures.orders).map((order) => ({
+    ...order,
+    platformSync: DEMO_PLATFORM_SYNC[order.id] ?? order.platformSync,
+  })),
+);
 
 function findChannel(platform: DeliveryPlatform): DeliveryChannel {
   const found = channels.get().find((row) => row.platform === platform);
@@ -327,6 +342,8 @@ registerMock(updateDeliveryOrderStatus, ({ params, body }) => {
     deliveredAt: body.status === "delivered" ? at : current.deliveredAt,
     closedAt: closing ? at : current.closedAt,
     closeReason: closing ? (body.reason ?? null) : null,
+    // The platform accepted the next step, so an earlier sync mark clears.
+    platformSync: "ok",
   });
   return { data: next };
 });
