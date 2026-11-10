@@ -28,6 +28,7 @@ import {
   assertTrustedScopedContext,
   businessDateOf,
   CoreError,
+  createUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { ObjectStorage } from "@starter/shared/adapters";
@@ -38,6 +39,7 @@ import {
   menuCategories,
   menuItems,
 } from "../db/schema/menu.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { printableMenuRenders } from "../db/schema/menu-import.ts";
 import { brands } from "../db/schema/platform-org.ts";
 import { db } from "../db/index.ts";
@@ -48,6 +50,7 @@ import {
   assertScannerAcceptsDocuments,
   type MalwareScanner,
 } from "./core-image.ts";
+import { recordAudit } from "./core-audit.ts";
 import { signedStorageUrl, uploadStorage } from "./core-storage.ts";
 import {
   MENU_VIEW_PERMISSION,
@@ -384,6 +387,86 @@ export function createMenuPrintDirtyConsumer(
 
 // ----------------------------------------------------------------- render
 
+/**
+ * Delete the PDF a newer render replaced (legend-eirhm). Runs only after the
+ * new object is stored and recorded, so a failed render keeps the old PDF.
+ * Never throws: a failed delete must not fail the render. The storage object
+ * goes first; the row is kept when that fails, and an audit entry
+ * (`menu.print.old_pdf_delete_failed`) names the object so it can be cleaned up.
+ */
+async function deleteReplacedMenuPrint(
+  context: ScopedTenantContext,
+  outletId: string,
+  oldObjectId: string,
+  newObjectId: string,
+  deps: Pick<MenuPrintDeps, "storage">,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  try {
+    await withTenant(db, context, async (tx) => {
+      const [object] = await tx
+        .select()
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, oldObjectId),
+            eq(coreStorageObjects.purpose, "document"),
+            eq(coreStorageObjects.outletId, outletId),
+          ),
+        )
+        .limit(1);
+      if (!object) return; // already gone
+      const lookup = {
+        tenantId,
+        outletId: outletId as OutletId,
+        reference: object.id,
+        visibility: "private" as const,
+      };
+      await deps.storage.delete(context, { ...lookup, key: object.objectKey });
+      if (object.thumbnailKey)
+        await deps.storage.delete(context, {
+          ...lookup,
+          key: object.thumbnailKey,
+        });
+      await tx
+        .delete(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, object.id),
+          ),
+        );
+    });
+  } catch {
+    // Generic marker only: never provider detail.
+    try {
+      await withTenant(db, context, (tx) =>
+        recordAudit(tx, context, {
+          id: createUlid(now.getTime()),
+          tenantId,
+          outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: "menu.print.old_pdf_delete_failed",
+          objectType: "storage_object",
+          objectId: oldObjectId,
+          reason: null,
+          maskedChanges: { before: null, after: { replacedBy: newObjectId } },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: now.toISOString(),
+        }),
+      );
+    } catch {
+      // Nothing left to record with; the render itself already succeeded.
+    }
+  }
+}
+
 /** Render + store one outlet now. Returns the render row id. */
 export async function regenerateMenuPrint(
   context: ScopedTenantContext,
@@ -465,8 +548,21 @@ export async function regenerateMenuPrint(
         actorUserId: null,
       },
     );
-    await withTenant(db, context, (tx) =>
-      tx
+    // Lock the row and read the object it holds NOW (not the claim-time
+    // snapshot): a concurrent render may have replaced it since, and that is
+    // the one to delete, or it would be orphaned.
+    const replacedObjectId = await withTenant(db, context, async (tx) => {
+      const [current] = await tx
+        .select({ objectId: printableMenuRenders.objectId })
+        .from(printableMenuRenders)
+        .where(
+          and(
+            eq(printableMenuRenders.tenantId, tenantId),
+            eq(printableMenuRenders.id, previous.id),
+          ),
+        )
+        .for("update");
+      await tx
         .update(printableMenuRenders)
         .set({
           objectId: object.id,
@@ -482,8 +578,19 @@ export async function regenerateMenuPrint(
             eq(printableMenuRenders.tenantId, tenantId),
             eq(printableMenuRenders.id, previous.id),
           ),
-        ),
-    );
+        );
+      return current?.objectId ?? null;
+    });
+    // After the commit: a failed render keeps the old PDF.
+    if (replacedObjectId && replacedObjectId !== object.id)
+      await deleteReplacedMenuPrint(
+        context,
+        outletId,
+        replacedObjectId,
+        object.id,
+        deps,
+        now,
+      );
     return { objectId: object.id, itemCount, reused: false };
   } catch (error) {
     // Re-arm with a backoff; keep only a generic marker.

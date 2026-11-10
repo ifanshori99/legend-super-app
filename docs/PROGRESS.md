@@ -1494,6 +1494,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum: retur aktif sesudah jurnal penerimaan barang (`legend-29vw`) menyalakan flag; UI; kas kecil `legend-4961`. Brief Codex: `docs/briefs/301c-second-opinion-supplier-return-petty.md` (belum dijalankan).
 
 ## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
+
 - Sudah: 6 tabel `attendance_*` (migrasi 0217, RLS tenant + outlet), clock selfie/geofence/QR 30 detik/ikat perangkat, terlambat/pulang cepat/lembur dari shift, idempoten, koreksi lewat approval `hris_attendance`, antrean review sampling + config kebijakan, duty meal (catat saja), applier edge `attendance.logged`, job purge selfie 90 hari sesudah payroll tutup (per badan hukum).
 - Bukti: tes terarah 153 lulus di 8 berkas; typecheck api dan shared, eslint, prettier bersih; `db:generate` kedua kosong; review K (architect xhigh) 8 temuan (1 kritis: method manual_correction di clock) dibetulkan dengan tes gagal-dulu.
 - Belum: provider object storage prod belum ada (legend-7nv1), jadi job purge belum didaftarkan di `worker-main.ts` dan upload selfie belum bisa; pemotongan stok duty meal (konsumen event) dan event duty meal belum ada; FE legend-0z5k; second-opinion Codex per area.
@@ -1503,3 +1504,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Sudah: `createMenuImportRouter` dipasang di `createStorageApiRouter` dengan `runtime.storage` dan scanner (dicopot dari `routes/index.ts`); helper tunggal `assertScannerAcceptsDocuments` (core-image.ts) dipakai core-storage, cetak menu (sebelum render) dan dokumen pemegang saham (sebelum scan, put, dan sebelum multer). Scanner cetak menu jadi wajib. Merge `ws/storage-wire`: entri jurnal 0217 disisipkan sebelum 0219, tabel attendance dibawa ke snapshot 0219/0221 (merge train menomori ulang).
 - Bukti: merah dulu 3 tes gagal (wiring, urutan render, shareholder 503); 44 tes terarah lulus di 6 berkas; tsc api, eslint, prettier bersih; `db:generate` kosong; review K (architect) 1 sedang (scanner opsional melewati cek) dan 1 rendah (multer) dibetulkan.
 - Belum: renderer PDF produksi belum ada (cetak menu 503 sampai ada); scanner nyata menggantikan noop; render ulang tidak menghapus PDF lama (sudah ada sebelumnya).
+
+## 2026-11-10 16:30: cetak menu hapus PDF lama (legend-eirhm)
+
+- Sudah: render ulang yang sukses menghapus PDF lama (objek storage dan baris `core_storage_objects`) sesudah render baru tersimpan dan tercatat di `printable_menu_renders`; objek lama dibaca dengan kunci baris saat mencatat (bukan snapshot klaim), jadi render serentak tidak meninggalkan yatim. Render gagal: PDF lama tetap. Hapus gagal tidak menggagalkan render: baris objek dibiarkan dan audit `menu.print.old_pdf_delete_failed` mencatat id objek untuk dibersihkan. Tanpa migrasi.
+- Bukti: merah dulu 2 dari 4 tes baru gagal (hapus sukses, audit hapus gagal); sesudah fix 18 tes terarah lulus di 3 berkas, termasuk tes render serentak; review sonnet 1 temuan nyata (snapshot basi, serentak) dibetulkan.
+- Belum: pembaca yang menandatangani URL tepat saat objek diganti bisa kena NOT_FOUND sekali (jendela sempit, belum ditangani).
