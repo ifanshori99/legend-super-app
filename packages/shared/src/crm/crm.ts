@@ -380,7 +380,10 @@ export const feedbackSchema = z
     rating: z.number().int().min(1).max(5).nullable(),
     comment: z.string().max(2000).nullable(),
     status: feedbackStatusSchema,
-    handledBy: uuidSchema.nullable(),
+    /** Better Auth user id (text, not a uuid); aligned with the user table (legend-ts50). */
+    handledBy: z.string().min(1).max(64).nullable(),
+    /** Staff note on how the item was handled (legend-ts50). */
+    handledNote: z.string().max(2000).nullable().default(null),
     createdAt: isoDateTimeSchema,
     resolvedAt: isoDateTimeSchema.nullable(),
   })
