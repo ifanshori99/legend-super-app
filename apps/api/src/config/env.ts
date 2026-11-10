@@ -255,15 +255,19 @@ const schema = z
     // lib/auth.ts); one without the other refuses to boot (below).
     GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
-    // Email channel (legend-k2l, member email magic link; the worker reads the
-    // same names, worker/notification-adapters.ts). "disabled" keeps the email
-    // sign-in answering EMAIL_NOT_CONFIGURED in production.
-    NOTIFICATION_EMAIL_PROVIDER: z
-      .enum(["disabled", "brevo"])
-      .default("disabled"),
-    BREVO_API_KEY: z.string().min(1).optional(),
-    NOTIFICATION_EMAIL_FROM: z.email().optional(),
-    NOTIFICATION_EMAIL_FROM_NAME: z.string().min(1).max(200).optional(),
+    // Member email sign-in over SMTP (legend-k2l, e.g. SumoPod: port 465,
+    // implicit TLS). HOST, USER, PASS and EMAIL_FROM all set or all unset; with
+    // none set email sign-in is OFF and answers EMAIL_NOT_CONFIGURED in
+    // production (the worker's NOTIFICATION_* settings are separate).
+    SMTP_HOST: z.string().min(1).optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(465),
+    SMTP_SECURE: z
+      .enum(["true", "false", "1", "0"])
+      .default("true")
+      .transform((value) => value === "true" || value === "1"),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASS: z.string().min(1).optional(),
+    EMAIL_FROM: z.email().optional(),
     // Lifetime of an MCP access token (seconds).
     MCP_TOKEN_TTL_SECONDS: z.coerce
       .number()
@@ -292,7 +296,7 @@ const schema = z
         message: "The fake AI provider is not allowed in production.",
       });
   })
-  // legend-k2l: Google needs both halves; Brevo needs its key and sender.
+  // legend-k2l: Google needs both halves; SMTP needs all four settings or none.
   .superRefine((values, ctx) => {
     const hasId = values.GOOGLE_CLIENT_ID !== undefined;
     const hasSecret = values.GOOGLE_CLIENT_SECRET !== undefined;
@@ -303,22 +307,20 @@ const schema = z
         message:
           "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET together, or neither.",
       });
-    if (values.NOTIFICATION_EMAIL_PROVIDER === "brevo") {
-      if (values.BREVO_API_KEY === undefined)
+    const smtpKeys = [
+      "SMTP_HOST",
+      "SMTP_USER",
+      "SMTP_PASS",
+      "EMAIL_FROM",
+    ] as const;
+    const missing = smtpKeys.filter((key) => values[key] === undefined);
+    if (missing.length > 0 && missing.length < smtpKeys.length)
+      for (const key of missing)
         ctx.addIssue({
           code: "custom",
-          path: ["BREVO_API_KEY"],
-          message:
-            "BREVO_API_KEY is required when the email provider is brevo.",
+          path: [key],
+          message: `${key} is required: set SMTP_HOST, SMTP_USER, SMTP_PASS and EMAIL_FROM together, or none.`,
         });
-      if (values.NOTIFICATION_EMAIL_FROM === undefined)
-        ctx.addIssue({
-          code: "custom",
-          path: ["NOTIFICATION_EMAIL_FROM"],
-          message:
-            "NOTIFICATION_EMAIL_FROM is required when the email provider is brevo.",
-        });
-    }
   })
   .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed
@@ -398,6 +400,13 @@ export const env = {
   googleEnabled:
     values.GOOGLE_CLIENT_ID !== undefined &&
     values.GOOGLE_CLIENT_SECRET !== undefined,
+  // legend-k2l: member email sign-in is on only with the full SMTP set (the
+  // schema refuses a partial one).
+  smtpEnabled:
+    values.SMTP_HOST !== undefined &&
+    values.SMTP_USER !== undefined &&
+    values.SMTP_PASS !== undefined &&
+    values.EMAIL_FROM !== undefined,
   // Hostnames tenants may not claim as custom domains: the platform domain and
   // the cookie parent domain (without its leading dot), whichever are set.
   reservedDomains: [

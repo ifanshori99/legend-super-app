@@ -57,7 +57,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { auth } from "../lib/auth";
-import { getEmailSender } from "../lib/email-sender";
+import { getEmailSender, resolveTenantEmailFrom } from "../lib/email-sender";
 import { HttpError } from "../lib/http-error";
 import {
   emailDigest,
@@ -153,7 +153,9 @@ export async function requestEmailMagicLink(
   if (email === null || isReservedAddress(email))
     throw new HttpError(422, "VALIDATION_ERROR", "Check the supplied fields.");
   const sender = getEmailSender();
-  if (sender === null) throw new IdentityError("EMAIL_NOT_CONFIGURED");
+  const from = await resolveTenantEmailFrom(tenant.tenantId);
+  if (sender === null || from === null)
+    throw new IdentityError("EMAIL_NOT_CONFIGURED");
 
   const context = establishScopedTenantContext(tenant, { kind: "tenant" });
   const now = deps.now ?? new Date();
@@ -182,17 +184,20 @@ export async function requestEmailMagicLink(
   const link = `${request.linkOrigin}/masuk/email#token=${token}`;
   try {
     await sender.send({
+      from,
       to: email,
       subject: `Tautan masuk ${siteConfig.name}`,
       ...mailBody(link),
     });
   } catch (error) {
     // The token was never delivered: close the challenge so it cannot linger.
-    // Only the error class is logged, never the address, link or provider body.
+    // The sender's error message carries only the SMTP error code (EAUTH,
+    // ETIMEDOUT, ...), never the address, link, password or server reply
+    // (lib/email-sender.ts), so it is safe to log and names the cause.
     emailLoginLog.error(
       {
         challengeId: id,
-        error: error instanceof Error ? error.name : "unknown",
+        error: error instanceof Error ? error.message : "unknown",
       },
       "magic link email could not be sent",
     );

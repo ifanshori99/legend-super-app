@@ -7,28 +7,28 @@
 // (503) before it writes anything.
 //
 // Default wiring:
-// - NOTIFICATION_EMAIL_PROVIDER=brevo with BREVO_API_KEY and
-//   NOTIFICATION_EMAIL_FROM set -> Brevo's HTTP API. It is the same provider
-//   the notification worker uses (worker/notification-adapters.ts), but the
-//   worker's adapter is outbox-shaped (idempotency key, retry classes); a
-//   sign-in mail is sent inline once, so this is a thin fetch with a 10 s cap.
+// - SMTP_HOST, SMTP_USER, SMTP_PASS (and EMAIL_FROM) set -> an SMTP sender
+//   built once with nodemailer (SumoPod: smtp.sumopod.com, port 465, implicit
+//   TLS). Port 465 uses `secure`; a non-secure port requires STARTTLS.
 // - otherwise, production -> null (not configured);
 // - otherwise (development, test) -> a logging sender that records the masked
 //   recipient and NEVER the link or the token: a log line is not a mailbox.
 //
-// The error text of a failed send carries the HTTP status only, never the
-// provider body or the recipient.
+// The error text of a failed send carries the nodemailer error code only
+// (e.g. EAUTH), never the recipient, the password or the server's reply.
 
 import { maskEmail } from "@starter/shared/identity";
+import nodemailer from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import { env } from "../config/env";
 import { logger } from "./logger";
 
 const emailLog = logger.child({ module: "email-sender" });
 
-const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
-const BREVO_TIMEOUT_MS = 10_000;
+const SMTP_TIMEOUT_MS = 10_000;
 
 export type EmailMessage = {
+  from: string;
   to: string;
   subject: string;
   text: string;
@@ -39,36 +39,76 @@ export interface EmailSender {
   send(message: EmailMessage): Promise<void>;
 }
 
-function createBrevoSender(config: {
-  apiKey: string;
-  from: string;
-  fromName?: string;
-}): EmailSender {
+export type SmtpConfig = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+};
+
+/** The SMTP settings, or null unless host, user and password are all set. */
+export function smtpConfigFromEnv(values: {
+  SMTP_HOST?: string;
+  SMTP_PORT?: number;
+  SMTP_SECURE?: boolean;
+  SMTP_USER?: string;
+  SMTP_PASS?: string;
+}): SmtpConfig | null {
+  if (!values.SMTP_HOST || !values.SMTP_USER || !values.SMTP_PASS) return null;
+  return {
+    host: values.SMTP_HOST,
+    port: values.SMTP_PORT ?? 465,
+    secure: values.SMTP_SECURE ?? true,
+    user: values.SMTP_USER,
+    pass: values.SMTP_PASS,
+  };
+}
+
+type SmtpTransport = {
+  sendMail(mail: {
+    from: string;
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+  }): Promise<unknown>;
+};
+
+export function createSmtpSender(
+  config: SmtpConfig,
+  deps: {
+    createTransport?: (options: SMTPTransport.Options) => SmtpTransport;
+  } = {},
+): EmailSender {
+  const createTransport = deps.createTransport ?? nodemailer.createTransport;
+  const transport = createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    auth: { user: config.user, pass: config.pass },
+    requireTLS: !config.secure,
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
+  });
   return {
     async send(message) {
-      const response = await fetch(BREVO_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "api-key": config.apiKey,
-          accept: "application/json",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          sender: {
-            email: config.from,
-            ...(config.fromName ? { name: config.fromName } : {}),
-          },
-          to: [{ email: message.to }],
+      try {
+        await transport.sendMail({
+          from: message.from,
+          to: message.to,
           subject: message.subject,
-          textContent: message.text,
-          htmlContent: message.html,
-        }),
-        signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
-      });
-      if (!response.ok)
+          text: message.text,
+          html: message.html,
+        });
+      } catch (err) {
+        const code = (err as { code?: unknown } | null)?.code;
         throw new Error(
-          `Brevo email request failed with status ${response.status}`,
+          "SMTP send failed" +
+            (typeof code === "string" && code ? ` (${code})` : ""),
         );
+      }
     },
   };
 }
@@ -85,20 +125,16 @@ const loggingSender: EmailSender = {
 
 /** `undefined` = the environment default; `null` = forced "not configured". */
 let override: EmailSender | null | undefined;
+let smtpSender: EmailSender | undefined;
 
 /** The configured sender, or null when this deployment cannot send email. */
 export function getEmailSender(): EmailSender | null {
   if (override !== undefined) return override;
-  if (
-    env.NOTIFICATION_EMAIL_PROVIDER === "brevo" &&
-    env.BREVO_API_KEY &&
-    env.NOTIFICATION_EMAIL_FROM
-  )
-    return createBrevoSender({
-      apiKey: env.BREVO_API_KEY,
-      from: env.NOTIFICATION_EMAIL_FROM,
-      fromName: env.NOTIFICATION_EMAIL_FROM_NAME,
-    });
+  const smtp = smtpConfigFromEnv(env);
+  if (smtp !== null) {
+    smtpSender ??= createSmtpSender(smtp);
+    return smtpSender;
+  }
   return env.isProduction ? null : loggingSender;
 }
 
@@ -107,4 +143,29 @@ export function setEmailSenderForTests(
   sender: EmailSender | null | undefined,
 ): void {
   override = sender;
+}
+
+type EmailFromResolver = (tenantId: string) => Promise<string | null>;
+
+let fromResolverOverride: EmailFromResolver | undefined;
+
+/**
+ * The sender address for a tenant's mail; null = no address, so email sign-in
+ * is not configured. For now one platform-wide address. The per-brand domain
+ * set by Super Admin (legend-m0mch) replaces this body; keep the signature.
+ */
+export async function resolveTenantEmailFrom(
+  tenantId: string,
+): Promise<string | null> {
+  if (fromResolverOverride) return fromResolverOverride(tenantId);
+  return (
+    env.EMAIL_FROM ?? (env.isProduction ? null : "noreply@legend.localhost")
+  );
+}
+
+/** Test seam for the resolver; undefined resets it. */
+export function setEmailFromResolverForTests(
+  fn: EmailFromResolver | undefined,
+): void {
+  fromResolverOverride = fn;
 }

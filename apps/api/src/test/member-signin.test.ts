@@ -43,7 +43,11 @@ import { signKirimWebhook } from "@starter/shared/adapters";
 import { createApp } from "../app";
 import { auth } from "../lib/auth";
 import { whatsAppDigest } from "../lib/identity-digest.ts";
-import { setEmailSenderForTests, type EmailMessage } from "../lib/email-sender";
+import {
+  setEmailFromResolverForTests,
+  setEmailSenderForTests,
+  type EmailMessage,
+} from "../lib/email-sender";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
 const SECRET = "test-kirim-webhook-secret";
@@ -66,6 +70,9 @@ const app = createApp({
 });
 const trackedUserIds: string[] = [];
 const outbox: EmailMessage[] = [];
+// Fixed sender address returned by the resolver seam, so the test does not
+// depend on EMAIL_FROM in the environment.
+const RESOLVED_FROM = "masuk@brand.example.test";
 
 type Client = ReturnType<typeof agent>;
 
@@ -234,6 +241,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   outbox.length = 0;
+  setEmailFromResolverForTests(async () => RESOLVED_FROM);
   setEmailSenderForTests({
     async send(message) {
       outbox.push(message);
@@ -244,6 +252,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   setEmailSenderForTests(undefined);
+  setEmailFromResolverForTests(undefined);
 });
 
 afterAll(async () => {
@@ -281,6 +290,8 @@ describe("AUTH-01 email magic link: request", () => {
 
     expect(outbox).toHaveLength(1);
     expect(outbox[0]!.to).toBe(email);
+    // The sender address comes from the per-tenant resolver.
+    expect(outbox[0]!.from).toBe(RESOLVED_FROM);
     const token = tokenOf(outbox[0]!);
     expect(outbox[0]!.html).toContain(token);
     // The token rides in the fragment so it stays out of server logs.
@@ -331,6 +342,21 @@ describe("AUTH-01 email magic link: request", () => {
 
     expect(response.status).toBe(503);
     expect(response.body.error.code).toBe("EMAIL_NOT_CONFIGURED");
+    // Refused before any write: no challenge row is left behind.
+    const rows = await owner.query(
+      "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link'",
+    );
+    expect(rows.rows[0].count).toBe(0);
+  });
+
+  it("answers 503 EMAIL_NOT_CONFIGURED when the tenant has no sender address", async () => {
+    // Sender is configured but the resolver finds no "from" for the tenant.
+    setEmailFromResolverForTests(async () => null);
+    const response = await requestLink(browser(), freshEmail());
+
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe("EMAIL_NOT_CONFIGURED");
+    expect(outbox).toHaveLength(0);
     // Refused before any write: no challenge row is left behind.
     const rows = await owner.query(
       "SELECT count(*)::int AS count FROM login_challenges WHERE channel = 'email_magic_link'",
