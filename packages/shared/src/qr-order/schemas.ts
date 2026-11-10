@@ -1194,6 +1194,21 @@ export const sessionBillChargeSchema = z.strictObject({
 });
 export type SessionBillCharge = z.infer<typeof sessionBillChargeSchema>;
 
+/**
+ * The cashier takes a swap charge in cash at the till (legend-800h1):
+ * `receivedIdr` is what the guest handed over (at least the charge amount; the
+ * change is the answer's `changeIdr`). Cash only; EDC / QRIS at the till is a
+ * later step.
+ */
+export const collectChargeAtPosInputSchema = z.strictObject({
+  idempotencyKey: uuidSchema,
+  method: z.literal("cash"),
+  receivedIdr: positiveIdr,
+});
+export type CollectChargeAtPosInput = z.infer<
+  typeof collectChargeAtPosInputSchema
+>;
+
 export const sessionBillSchema = z
   .strictObject({
     sessionId: tableSessionIdSchema,

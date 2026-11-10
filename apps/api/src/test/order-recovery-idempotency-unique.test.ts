@@ -18,7 +18,11 @@
 //   brief says "one issue, not 500", and a replay is the documented behaviour.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { tenantIdSchema, ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  tenantIdSchema,
+  ulidToUuid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -171,10 +175,16 @@ async function rejectedRefund() {
   const resolved = await w.staffPost(
     w.supervisor,
     `/api/order-issues/${issueId}/resolve`,
-    { resolution: "manual_refund", approvalRequestId: approvalId, reason: "Pelanggan menolak ganti menu" },
+    {
+      resolution: "manual_refund",
+      approvalRequestId: approvalId,
+      reason: "Pelanggan menolak ganti menu",
+    },
   );
   expect(resolved.status).toBe(200);
-  const event = (await w.outboxRows("order_issue.manual_refund_approved", issueId))[0]!.event;
+  const event = (
+    await w.outboxRows("order_issue.manual_refund_approved", issueId)
+  )[0]!.event;
   const context = contextOf(w.tenant.tenantId);
   await withTenant(db, context, (tx) =>
     deliverOrderRecoveryRefundEvent(context, event, tx),
@@ -191,7 +201,10 @@ async function rejectedRefund() {
       WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2`,
     [w.tenant.tenantId, refundId, w.approverUserId],
   );
-  const settled = await settleRefundFromChain(contextOf(w.tenant.tenantId), refundId);
+  const settled = await settleRefundFromChain(
+    contextOf(w.tenant.tenantId),
+    refundId,
+  );
   expect(settled.status).toBe("failed");
   return { ...paid, issueId };
 }
@@ -202,7 +215,10 @@ describe("legend-i83ls order_issues.idempotency_key under concurrency", () => {
 
     const [a, b] = await Promise.all([w.report(roti.id), w.report(roti.id)]);
 
-    expect([a.status, b.status]).toEqual([expect.toSatisfy(ok), expect.toSatisfy(ok)]);
+    expect([a.status, b.status]).toEqual([
+      expect.toSatisfy(ok),
+      expect.toSatisfy(ok),
+    ]);
     expect(a.body.data.id).toBe(b.body.data.id);
     expect(await issuesOfItem(roti.id)).toHaveLength(1);
   });
@@ -212,7 +228,10 @@ describe("legend-i83ls order_issues.idempotency_key under concurrency", () => {
 
     const [a, b] = await Promise.all([w.report(roti.id), w.report(roti.id)]);
 
-    expect([a.status, b.status]).toEqual([expect.toSatisfy(ok), expect.toSatisfy(ok)]);
+    expect([a.status, b.status]).toEqual([
+      expect.toSatisfy(ok),
+      expect.toSatisfy(ok),
+    ]);
     expect(a.body.data.id).toBe(b.body.data.id);
     expect(a.body.data.id).not.toBe(issueId);
     expect(await issuesOfItem(roti.id)).toHaveLength(2);

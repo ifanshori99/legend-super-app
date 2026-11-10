@@ -58,7 +58,7 @@ import type { Tx } from "./permission-resolver.ts";
 const AUDIT_OPENED = "order_issue.charge_opened";
 const AUDIT_ROUTED_POS = "order_issue.charge_routed_pos";
 const AUDIT_BLOCKED = "order_issue.charge_blocked";
-const AUDIT_PAID = "order_issue.charge_paid";
+export const AUDIT_PAID = "order_issue.charge_paid";
 const AUDIT_EXPIRED = "order_issue.charge_expired";
 const SESSION_CLOSED_REASON = "session_closed";
 const AUDIT_SAFE_FIELDS = [
@@ -97,7 +97,7 @@ type IssueRow = typeof orderIssues.$inferSelect;
 type OrderRow = typeof orders.$inferSelect;
 
 /** One audit row on the issue (`objectType` order_issue, like the refund). */
-function auditCharge(
+export function auditCharge(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
@@ -134,7 +134,7 @@ function auditCharge(
   );
 }
 
-const chargeAudit = (charge: ChargeRow) => ({
+export const chargeAudit = (charge: ChargeRow) => ({
   id: charge.orderIssueId,
   orderId: charge.orderId,
   chargeId: charge.id,
@@ -519,6 +519,10 @@ export async function handleIssueChargePaid(
   if (!locked) return "ignored";
   const { charge, issue } = locked;
 
+  // Paid in cash at the till: the guest's code was cancelled then, so money on
+  // it now is a late payment on a closed charge (refunded in full).
+  if (charge.status === "paid" && charge.cashMovementId !== null)
+    return "late_payment_on_closed_charge";
   if (charge.status === "paid")
     return charge.paymentIntentId === intentId ? "unchanged" : "double_payment";
   if (charge.status !== "open") return "late_payment_on_closed_charge";
@@ -654,10 +658,17 @@ export async function handleIssueChargeClosed(
 }
 
 /** Appends `order_issue.charge_paid` on the issue's stream, in `tx`. */
-async function appendChargePaidEvent(
+export async function appendChargePaidEvent(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { charge: ChargeRow; intentId: string; paidAt: Date; at: Date },
+  input: {
+    charge: ChargeRow;
+    /** Null when the cashier took the charge in cash (`cashMovementId`). */
+    intentId: string | null;
+    cashMovementId?: string;
+    paidAt: Date;
+    at: Date;
+  },
 ): Promise<void> {
   const { charge, at } = input;
   const tenantId = context.tenant.tenantId;
@@ -696,6 +707,9 @@ async function appendChargePaidEvent(
       orderIssueId: charge.orderIssueId,
       chargeId: charge.id,
       paymentIntentId: input.intentId,
+      ...(input.cashMovementId === undefined
+        ? {}
+        : { method: "pos_cash", cashMovementId: input.cashMovementId }),
       differenceIdr: charge.differenceIdr,
       grossSalesIdr: charge.grossSalesIdr,
       serviceChargeIdr: charge.serviceChargeIdr,

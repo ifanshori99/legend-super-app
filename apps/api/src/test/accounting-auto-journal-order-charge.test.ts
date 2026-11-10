@@ -76,6 +76,7 @@ const CHARGE = {
 } as const;
 
 type Role =
+  | "cash_on_hand"
   | "gateway_clearing"
   | "tax_payable_pbjt"
   | "customer_deposit"
@@ -83,6 +84,7 @@ type Role =
   | "service_charge";
 
 const CHART: [Role, string, string, string, string][] = [
+  ["cash_on_hand", "1101", "Kas Outlet", "asset", "current_asset"],
   [
     "gateway_clearing",
     "1201",
@@ -318,12 +320,16 @@ async function seedCharge(
     intentId: string | null;
     status?: "paid" | "open";
     amountIdr?: number;
+    /** legend-800h1: paid in cash at the POS by this cash_in movement. */
+    cashMovementId?: string;
   },
 ): Promise<string> {
   const chargeId = randomUUID();
   const issueId = randomUUID();
   issueOfCharge.set(chargeId, issueId);
   const status = input.status ?? "paid";
+  // Only the cash variant writes the legend-800h1 columns.
+  const cash = input.cashMovementId !== undefined;
   await asTenant(
     world.tenant,
     (client) =>
@@ -331,8 +337,8 @@ async function seedCharge(
         `INSERT INTO order_issue_charges
            (id, tenant_id, outlet_id, order_issue_id, order_id, route, status, difference_idr,
             gross_sales_idr, service_charge_idr, pbjt_idr, amount_idr, payment_link_id,
-            payment_link_token_sealed, payment_intent_id, paid_at)
-         VALUES ($1, $2, $3, $4, $5, 'qr_link', $6, $7, $8, $9, $10, $11, $12, 'sealed', $13, $14)`,
+            payment_link_token_sealed, payment_intent_id, paid_at${cash ? ", cash_movement_id, paid_by" : ""})
+         VALUES ($1, $2, $3, $4, $5, 'qr_link', $6, $7, $8, $9, $10, $11, $12, 'sealed', $13, $14${cash ? ", $15, 'seed-cashier'" : ""})`,
         [
           chargeId,
           world.tenant.id,
@@ -348,11 +354,46 @@ async function seedCharge(
           input.linkId,
           status === "paid" ? input.intentId : null,
           status === "paid" ? CHARGE_DAY : null,
+          ...(cash ? [input.cashMovementId] : []),
         ],
       ),
     { replica: true },
   );
   return chargeId;
+}
+
+/**
+ * A cash_in movement of the outlet (legend-800h1). The shift foreign key is
+ * skipped: the consumer reads the movement, never the shift.
+ */
+async function seedCashMovement(
+  world: World,
+  input: { type?: string; amountIdr?: number; outletId?: string } = {},
+): Promise<string> {
+  const id = randomUUID();
+  await asTenant(
+    world.tenant,
+    (client) =>
+      client.query(
+        `INSERT INTO cash_movements
+           (id, tenant_id, outlet_id, shift_id, type, amount_idr, reason_note, recorded_by,
+            recorded_at, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Selisih swap pesanan', 'seed-cashier', $7, $8, $9)`,
+        [
+          id,
+          world.tenant.id,
+          input.outletId ?? world.outletId,
+          randomUUID(),
+          input.type ?? "cash_in",
+          input.amountIdr ?? CHARGE.amountIdr,
+          CHARGE_DAY,
+          `oc-cash-${id}`,
+          randomBytes(32).toString("hex"),
+        ],
+      ),
+    { replica: true },
+  );
+  return id;
 }
 
 /** A completed gateway payout of an intent at REFUND_DAY. */
@@ -482,7 +523,7 @@ function chargePaid(
   input: {
     orderUlid: string;
     chargeId: string;
-    intentId: string;
+    intentId: string | null;
     overrides?: Record<string, unknown>;
   },
 ): EventEnvelope {
@@ -986,5 +1027,272 @@ describe("legend-i83ls payout guards of a paid charge intent", () => {
       return refundableBalance(tx, intent!);
     });
     expect(balance.cap).toBe(24_200n);
+  });
+});
+
+// ============================================================================
+
+describe("legend-800h1 order_issue.charge_paid paid in cash at the POS", () => {
+  /** The order with its sale posted, and a charge paid in cash by a cash_in. */
+  async function cashChargeWorld() {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderLink = await seedLink(world, 110_000);
+    const orderIntent = await seedIntentOnLink(world, orderLink, 110_000, DAY);
+    const orderUlid = createUlid();
+    await seedOrder(world, orderLink, orderIntent, orderUlid);
+    await post(world, paymentPaid(world, orderIntent, 110_000, DAY));
+    await post(world, orderPaid(world, orderUlid));
+    const chargeLink = await seedLink(world, CHARGE.amountIdr);
+    const cashMovementId = await seedCashMovement(world);
+    const chargeId = await seedCharge(world, {
+      orderUlid,
+      linkId: chargeLink,
+      intentId: null,
+      cashMovementId,
+    });
+    const event = (overrides: Record<string, unknown> = {}) =>
+      chargePaid(world, {
+        orderUlid,
+        chargeId,
+        intentId: null,
+        overrides: {
+          method: "pos_cash",
+          cashMovementId,
+          ...overrides,
+        },
+      });
+    return { tenant, world, orderUlid, chargeId, cashMovementId, event };
+  }
+
+  it("CASH-1 pos_cash: Dr cash_on_hand = amount, Cr revenue/service/PBJT exactly under aj:order-charge; replay posts nothing", async () => {
+    const c = await cashChargeWorld();
+    const event = c.event();
+
+    const result = await post(c.world, event);
+    expect(await linesOf(c.world, result.journalEntryId)).toEqual([
+      { role: "cash_on_hand", debit: 24_200, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 20_000 },
+      { role: "service_charge", debit: 0, credit: 2_000 },
+      { role: "tax_payable_pbjt", debit: 0, credit: 2_200 },
+    ]);
+    expect(await balanceOf(c.world, "cash_on_hand")).toBe(24_200);
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      1,
+    );
+
+    expect(await deliver(c.tenant, event)).toEqual({
+      status: "already_posted",
+      journalEntryId: result.journalEntryId,
+    });
+    // A second event for the same charge (re-emit) is the same journal.
+    expect(await deliver(c.tenant, c.event())).toEqual({
+      status: "already_posted",
+      journalEntryId: result.journalEntryId,
+    });
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      1,
+    );
+  });
+
+  it("CASH-2 the cash variant needs no gateway receipt: nothing is booked on gateway_clearing or customer_deposit for it", async () => {
+    const c = await cashChargeWorld();
+    const before = {
+      clearing: await balanceOf(c.world, "gateway_clearing"),
+      deposit: await balanceOf(c.world, "customer_deposit"),
+    };
+    await post(c.world, c.event());
+    expect(await balanceOf(c.world, "gateway_clearing")).toBe(before.clearing);
+    expect(await balanceOf(c.world, "customer_deposit")).toBe(before.deposit);
+  });
+
+  it("CASH-3 cashMovementId that is not the charge's: parks PAYLOAD_INVALID (not retryable), nothing journaled", async () => {
+    const c = await cashChargeWorld();
+    const other = await seedCashMovement(c.world);
+
+    expect(await deliver(c.tenant, c.event({ cashMovementId: other }))).toEqual(
+      {
+        status: "parked",
+        code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+        retryable: false,
+      },
+    );
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      0,
+    );
+  });
+
+  it("CASH-4 the movement is missing, not a cash_in, or of another amount: parks PAYLOAD_INVALID, nothing journaled", async () => {
+    // Missing: the charge row names a movement id that does not exist.
+    const missing = await cashChargeWorld();
+    await asTenant(
+      missing.world.tenant,
+      (client) =>
+        client.query(
+          "DELETE FROM cash_movements WHERE tenant_id = $1 AND id = $2",
+          [missing.world.tenant.id, missing.cashMovementId],
+        ),
+      { replica: true },
+    );
+    expect(await deliver(missing.tenant, missing.event())).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(
+      await journalCount(missing.world, `aj:order-charge:${missing.chargeId}`),
+    ).toBe(0);
+
+    for (const patch of [
+      { type: "cash_out" },
+      { amountIdr: CHARGE.amountIdr - 1_000 },
+    ]) {
+      const c = await cashChargeWorld();
+      await asTenant(
+        c.world.tenant,
+        (client) =>
+          client.query(
+            "UPDATE cash_movements SET type = coalesce($3, type), amount_idr = coalesce($4, amount_idr) WHERE tenant_id = $1 AND id = $2",
+            [
+              c.world.tenant.id,
+              c.cashMovementId,
+              (patch as { type?: string }).type ?? null,
+              (patch as { amountIdr?: number }).amountIdr ?? null,
+            ],
+          ),
+        { replica: true },
+      );
+      expect(await deliver(c.tenant, c.event())).toEqual({
+        status: "parked",
+        code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+        retryable: false,
+      });
+      expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+        0,
+      );
+    }
+  });
+
+  it("CASH-5 the movement belongs to another outlet: parks PAYLOAD_INVALID, nothing journaled", async () => {
+    const c = await cashChargeWorld();
+    await asTenant(
+      c.world.tenant,
+      (client) =>
+        client.query(
+          "UPDATE cash_movements SET outlet_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [c.world.tenant.id, c.cashMovementId, randomUUID()],
+        ),
+      { replica: true },
+    );
+    expect(await deliver(c.tenant, c.event())).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      0,
+    );
+  });
+
+  it("CASH-6 charge not paid (open) fails closed: PAYLOAD_INVALID, nothing journaled", async () => {
+    const c = await cashChargeWorld();
+    await asTenant(
+      c.world.tenant,
+      (client) =>
+        client.query(
+          "UPDATE order_issue_charges SET status = 'open', paid_at = NULL, cash_movement_id = NULL, paid_by = NULL WHERE tenant_id = $1 AND id = $2",
+          [c.world.tenant.id, c.chargeId],
+        ),
+      { replica: true },
+    );
+    expect(await deliver(c.tenant, c.event())).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      0,
+    );
+  });
+
+  it("CASH-7 payload amounts that differ from the charge row: POSTING_AMOUNTS_MISMATCH, nothing journaled", async () => {
+    const c = await cashChargeWorld();
+    expect(
+      await deliver(
+        c.tenant,
+        c.event({ grossSalesIdr: 21_000, amountIdr: 25_200 }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(c.world, `aj:order-charge:${c.chargeId}`)).toBe(
+      0,
+    );
+  });
+
+  it("CASH-8 sale journal of the order will never post: parks SALE_MISSING (not retryable) even for cash", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const orderLink = await seedLink(world, 110_000);
+    const orderIntent = await seedIntentOnLink(world, orderLink, 110_000, DAY);
+    const orderUlid = createUlid();
+    await seedOrder(world, orderLink, orderIntent, orderUlid);
+    const saleEvent = orderPaid(world, orderUlid);
+    const saleOutboxId = await seedOutboxEvent(
+      world,
+      saleEvent,
+      ulidToUuid(orderUlid),
+    );
+    await markDelivered(world, saleOutboxId);
+    const cashMovementId = await seedCashMovement(world);
+    const chargeId = await seedCharge(world, {
+      orderUlid,
+      linkId: await seedLink(world, CHARGE.amountIdr),
+      intentId: null,
+      cashMovementId,
+    });
+    expect(
+      await deliver(
+        tenant,
+        chargePaid(world, {
+          orderUlid,
+          chargeId,
+          intentId: null,
+          overrides: { method: "pos_cash", cashMovementId },
+        }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_SALE_MISSING",
+      retryable: false,
+    });
+  });
+
+  it("CASH-9 the stored QR variant keeps working: no method in the payload is qr_link (CHG-1 shape), and a payload mixing the variants is refused by the contract", () => {
+    const world = {
+      tenant: { id: randomUUID(), brandId: randomUUID() },
+      outletId: randomUUID(),
+    } as World;
+    const base = {
+      orderUlid: createUlid(),
+      chargeId: randomUUID(),
+    };
+    expect(() =>
+      chargePaid(world, {
+        ...base,
+        intentId: null,
+        overrides: { method: "qr_link" },
+      }),
+    ).toThrow();
+    expect(() =>
+      chargePaid(world, {
+        ...base,
+        intentId: randomUUID(),
+        overrides: { method: "pos_cash", cashMovementId: randomUUID() },
+      }),
+    ).toThrow();
+    expect(() => chargePaid(world, { ...base, intentId: null })).toThrow();
   });
 });

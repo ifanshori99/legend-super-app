@@ -74,7 +74,7 @@ export type IssueChargeView = {
   closeReason: string | null;
 };
 
-function toView(row: ChargeRow): IssueChargeView {
+export function toView(row: ChargeRow): IssueChargeView {
   return {
     id: row.id,
     orderIssueId: row.orderIssueId,

@@ -59,6 +59,7 @@ import {
   settlementReconciledPayloadSchema,
 } from "@starter/shared/payment";
 import {
+  cashMovements,
   domainEventOutbox,
   orderIssueCharges,
   orders,
@@ -237,7 +238,11 @@ export const orderIssueChargePaidStoredSchema = z.object({
   orderId: id,
   orderIssueId: z.string().uuid(),
   chargeId: z.string().uuid(),
-  paymentIntentId: z.string().uuid(),
+  /** Null exactly when the charge was paid in cash at the POS (legend-800h1). */
+  paymentIntentId: z.string().uuid().nullable(),
+  /** Absent on events stored before the cash variant: qr_link. */
+  method: z.enum(["qr_link", "pos_cash"]).optional(),
+  cashMovementId: z.string().uuid().nullable().optional(),
   grossSalesIdr: idr.nonnegative(),
   serviceChargeIdr: idr.nonnegative(),
   pbjtIdr: idr.nonnegative(),
@@ -920,6 +925,10 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
  *   customer_deposit, within what the receipt still holds at the charge bound),
  *   none (pre-cutover gateway money, gateway_clearing), pending (wait). An
  *   EDC-linked intent fails closed (receiptStatesOf).
+ * legend-800h1: a charge paid in cash at the POS (method pos_cash) has no
+ * intent. Its money is the charge's own cash_in movement (same tenant and
+ * outlet, amount = charge amount), booked straight to cash_on_hand; there is
+ * no receipt to wait for or to bound, the sale journal rule is unchanged.
  */
 async function chargePaidFactOf(
   tx: Tx,
@@ -934,6 +943,7 @@ async function chargePaidFactOf(
       orderIssueId: orderIssueCharges.orderIssueId,
       status: orderIssueCharges.status,
       paymentIntentId: orderIssueCharges.paymentIntentId,
+      cashMovementId: orderIssueCharges.cashMovementId,
       grossSalesIdr: orderIssueCharges.grossSalesIdr,
       serviceChargeIdr: orderIssueCharges.serviceChargeIdr,
       pbjtIdr: orderIssueCharges.pbjtIdr,
@@ -948,9 +958,18 @@ async function chargePaidFactOf(
     );
   if (!charge)
     throw new AutoJournalPayloadInvalid("Charge of the event not found");
+  const cash = p.method === "pos_cash";
+  if (
+    cash !== (p.cashMovementId != null) ||
+    cash !== (p.paymentIntentId === null)
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge event mixes the cash and the payment link variants",
+    );
   if (
     charge.status !== "paid" ||
     charge.paymentIntentId !== p.paymentIntentId ||
+    (charge.cashMovementId ?? null) !== (p.cashMovementId ?? null) ||
     charge.outletId !== stored.outletId ||
     charge.orderId !== p.orderId ||
     charge.orderIssueId !== p.orderIssueId
@@ -977,8 +996,53 @@ async function chargePaidFactOf(
     throw new AutoJournalSalePending("Sale journal is not posted yet");
   if (saleState === "none")
     throw new AutoJournalSaleMissing("Sale journal will never post");
-  const states = await receiptStatesOf(tx, tenantId, [p.paymentIntentId]);
-  const state = states.get(p.paymentIntentId);
+  if (cash) {
+    const [movement] = await tx
+      .select({
+        type: cashMovements.type,
+        outletId: cashMovements.outletId,
+        amountIdr: cashMovements.amountIdr,
+      })
+      .from(cashMovements)
+      .where(
+        and(
+          eq(cashMovements.tenantId, tenantId),
+          eq(cashMovements.id, p.cashMovementId!),
+        ),
+      );
+    if (
+      !movement ||
+      movement.type !== "cash_in" ||
+      movement.outletId !== stored.outletId ||
+      Number(movement.amountIdr) !== p.amountIdr
+    )
+      throw new AutoJournalPayloadInvalid(
+        "Cash movement of the charge is not its cash_in",
+      );
+    return {
+      ruleEvent: "order.paid",
+      amounts: {
+        paidCashIdr: p.amountIdr,
+        paidGatewayIntentIdr: 0,
+        paidDepositIdr: 0,
+        paidGatewayIdr: 0,
+        paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        discountIdr: 0,
+        grossSalesIdr: p.grossSalesIdr,
+        serviceChargeIdr: p.serviceChargeIdr,
+        pbjtIdr: p.pbjtIdr,
+        roundingIdr: 0,
+      },
+      sourceId: p.chargeId,
+      outletId: stored.outletId,
+      moneyTime: new Date(p.paidAt),
+    };
+  }
+  // qr_link: paymentIntentId is set (checked above).
+  const intentId = p.paymentIntentId!;
+  const states = await receiptStatesOf(tx, tenantId, [intentId]);
+  const state = states.get(intentId);
   if (state === "pending")
     throw new AutoJournalReceiptPending(
       "Gateway receipt of the charge is not booked yet",
@@ -988,7 +1052,7 @@ async function chargePaidFactOf(
     await assertChargeWithinReceipt(
       tx,
       tenantId,
-      p.paymentIntentId,
+      intentId,
       await chargeBoundOf(tx, tenantId, p.chargeId),
     );
     withReceipt = p.amountIdr;

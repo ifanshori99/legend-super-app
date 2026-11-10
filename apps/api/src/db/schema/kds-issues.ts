@@ -38,6 +38,7 @@ import { outlets, tenants } from "./platform-org";
 import { paymentIntents, paymentLinks } from "./payment";
 import { orderItems, orders } from "./qr-order";
 import { tableSessions } from "./floor";
+import { cashMovements } from "./pos-shift";
 import { user } from "./user";
 
 /** `order_issues` (T, O): one remake, comp, complaint or unfulfillable line. */
@@ -230,6 +231,10 @@ export const orderIssueCharges = pgTable(
     paymentLinkTokenSealed: text("payment_link_token_sealed"),
     paymentIntentId: uuid("payment_intent_id"),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    /** Paid in cash at the till (legend-800h1): the shift's cash_in movement. */
+    cashMovementId: uuid("cash_movement_id"),
+    /** The cashier who collected it at the till. */
+    paidBy: text("paid_by").references(() => user.id),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     closedBy: text("closed_by").references(() => user.id),
     closeReason: varchar("close_reason", { length: 500 }),
@@ -250,6 +255,9 @@ export const orderIssueCharges = pgTable(
     uniqueIndex("order_issue_charges_link_once_idx")
       .on(table.tenantId, table.paymentLinkId)
       .where(sql`${table.paymentLinkId} IS NOT NULL`),
+    uniqueIndex("order_issue_charges_cash_movement_once_idx")
+      .on(table.tenantId, table.cashMovementId)
+      .where(sql`${table.cashMovementId} IS NOT NULL`),
     index("order_issue_charges_session_open_idx")
       .on(table.tenantId, table.tableSessionId)
       .where(sql`${table.status} = 'open'`),
@@ -283,6 +291,15 @@ export const orderIssueCharges = pgTable(
       columns: [table.tenantId, table.paymentIntentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
+    foreignKey({
+      name: "order_issue_charges_cash_movement_fk",
+      columns: [table.tenantId, table.cashMovementId],
+      foreignColumns: [cashMovements.tenantId, cashMovements.id],
+    }),
+    check(
+      "order_issue_charges_cash_paid_check",
+      sql`${table.cashMovementId} IS NULL OR (${table.status} = 'paid' AND ${table.paymentIntentId} IS NULL)`,
+    ),
     check(
       "order_issue_charges_link_token_check",
       sql`(${table.paymentLinkId} IS NULL) = (${table.paymentLinkTokenSealed} IS NULL)`,
@@ -305,7 +322,7 @@ export const orderIssueCharges = pgTable(
     ),
     check(
       "order_issue_charges_route_status_check",
-      sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('waived', 'expired')`,
+      sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('paid', 'waived', 'expired')`,
     ),
   ],
 );

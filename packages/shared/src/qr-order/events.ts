@@ -192,6 +192,9 @@ export const orderIssueRefundReversalRequestedPayloadSchema = z.strictObject({
  * (`order_issue_charges`). The journal recognises its revenue from this event
  * with the account rules of `order.paid`: the money arrived through the
  * gateway intent `paymentIntentId`. gross + service + pbjt = amount.
+ * At the till the cashier takes the charge in cash (`method` pos_cash): no
+ * intent, the `cash_movements` row `cashMovementId` holds the money. Absent
+ * `method` is qr_link (events stored before the cash variant).
  */
 export const orderIssueChargePaidPayloadSchema = z
   .strictObject({
@@ -199,7 +202,11 @@ export const orderIssueChargePaidPayloadSchema = z
     orderIssueId: orderIssueIdSchema,
     /** The `order_issue_charges` row. */
     chargeId: z.string().uuid(),
-    paymentIntentId: z.string().uuid(),
+    /** Null exactly when the charge was paid in cash at the POS. */
+    paymentIntentId: z.string().uuid().nullable(),
+    method: z.enum(["qr_link", "pos_cash"]).optional(),
+    /** The cash_in movement of a pos_cash payment; null or absent otherwise. */
+    cashMovementId: z.string().uuid().nullable().optional(),
     /** Price difference of the swap line, before service charge and PBJT. */
     differenceIdr: idrSchema.refine((value) => value > 0),
     grossSalesIdr: idrSchema.refine((value) => value >= 0),
@@ -219,6 +226,17 @@ export const orderIssueChargePaidPayloadSchema = z
         code: "custom",
         path: ["amountIdr"],
         message: "amountIdr must equal gross + service + pbjt",
+      });
+    const cash = payload.method === "pos_cash";
+    if (
+      cash !== (payload.cashMovementId != null) ||
+      cash !== (payload.paymentIntentId === null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["method"],
+        message:
+          "pos_cash needs cashMovementId and no paymentIntentId; qr_link the opposite",
       });
   });
 
