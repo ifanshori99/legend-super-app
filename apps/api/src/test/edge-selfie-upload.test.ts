@@ -37,10 +37,20 @@ const owner = new Pool({
   max: 1,
 });
 const db = drizzle(pool, { schema });
-const context = (tenantId: string) =>
+const context = (
+  tenantId: string,
+  scope:
+    | { kind: "tenant" }
+    | {
+        kind: "outlets";
+        outletIds: ReturnType<typeof outletIdSchema.parse>[];
+      } = {
+    kind: "tenant",
+  },
+) =>
   establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "session" }),
-    { kind: "tenant" },
+    scope,
   );
 
 /** Owner-seeded tenant with one outlet; the storage FK needs a real outlet. */
@@ -160,11 +170,22 @@ const upload = (
     maxBytes?: number;
     authorize?: () => Promise<boolean>;
     actorUserId?: string;
+    scopeOutletIds?: string[];
   },
 ) =>
   uploadEdgeSelfie(
     db,
-    context(target.tenantId),
+    context(
+      target.tenantId,
+      options.scopeOutletIds
+        ? {
+            kind: "outlets",
+            outletIds: options.scopeOutletIds.map((id) =>
+              outletIdSchema.parse(id),
+            ),
+          }
+        : { kind: "tenant" },
+    ),
     {
       purpose: options.purpose ?? "selfie",
       outletId: outletIdSchema.parse(target.outletId),
@@ -367,4 +388,116 @@ it("T5 edge selfie upload refuses an unauthorized caller before writing", async 
   expect(authorize).toHaveBeenCalled();
   expect(filesIn(dir)).toEqual([]);
   expect((await objectRows(sealed.tenantId)).length).toBe(before);
+});
+
+/** Owner-seeded outlet with a sync state row holding the given key. */
+async function seedKeyed(publicKeyPem: string) {
+  const target = await seedOutlet();
+  await owner.query(
+    `INSERT INTO edge_people_sync_state (tenant_id, outlet_id, selfie_seal_kid, selfie_seal_public_key)
+     VALUES ($1, $2, $3, $4)`,
+    [target.tenantId, target.outletId, KID, publicKeyPem],
+  );
+  return target;
+}
+
+/** Owner-seeded upload row; `createdAtSql` is a SQL expression. */
+async function seedUploadRow(
+  target: { tenantId: string; outletId: string },
+  columns: { state: string; createdAtSql: string; sealedBytes: number },
+) {
+  await owner.query(
+    `INSERT INTO edge_selfie_uploads
+       (tenant_id, outlet_id, object_id, state, sealed_bytes, sealed_sha256, file_path, seal_kid, created_at)
+     VALUES ($1, $2, $6, $3, $4, $5, 'seeded/none.lss', 'seed-kid', ${columns.createdAtSql})`,
+    [
+      target.tenantId,
+      target.outletId,
+      columns.state,
+      columns.sealedBytes,
+      createHash("sha256").update(randomUUID()).digest(),
+      randomUUID(),
+    ],
+  );
+}
+
+// Assumption: "garbage" means not-a-PEM text, an EC key, and a 2048-bit RSA
+// key (below the 3072-bit minimum); all give the same 503, and the key is
+// checked before the budget, so maxBytes 1 does not turn it into a 507.
+it("T5 edge selfie upload answers 503 SELFIE_SEAL_KEY_MISSING for an unusable key even when over budget", async () => {
+  const ec = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  }).publicKey;
+  const rsa2048 = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  }).publicKey;
+  const image = await jpegWithExif();
+  for (const badKey of ["garbage, not a pem", ec, rsa2048]) {
+    const target = await seedKeyed(badKey);
+    const dir = newDir();
+    await expect(
+      upload(target, image, { dir, maxBytes: 1 }),
+    ).rejects.toMatchObject({ status: 503, code: "SELFIE_SEAL_KEY_MISSING" });
+    expect(filesIn(dir)).toEqual([]);
+    expect(await objectRows(target.tenantId)).toEqual([]);
+  }
+});
+
+// Assumption: "huge" = 2e9 bytes, above the default 1 GiB test budget. Only
+// pending rows and rejected rows from the last 7 days count toward the budget.
+it("T5 edge selfie upload budget ignores rejected rows older than 7 days but counts pending and recent rejected rows", async () => {
+  const image = await jpegWithExif();
+  const HUGE = 2_000_000_000;
+
+  const oldRejected = await seedKeyed(publicKey);
+  await seedUploadRow(oldRejected, {
+    state: "rejected",
+    createdAtSql: "now() - interval '8 days'",
+    sealedBytes: HUGE,
+  });
+  const ok = await upload(oldRejected, image, { dir: newDir() });
+  expect(ok.purpose).toBe("selfie");
+
+  for (const [state, createdAtSql] of [
+    ["pending", "now() - interval '8 days'"],
+    ["rejected", "now()"],
+  ] as const) {
+    const target = await seedKeyed(publicKey);
+    await seedUploadRow(target, { state, createdAtSql, sealedBytes: HUGE });
+    const dir = newDir();
+    await expect(upload(target, image, { dir })).rejects.toMatchObject({
+      status: 507,
+      code: "EDGE_SELFIE_STORAGE_FULL",
+    });
+    expect(filesIn(dir)).toEqual([]);
+    expect(await objectRows(target.tenantId)).toEqual([]);
+  }
+});
+
+it("T5 edge selfie upload budget is tenant-wide, not limited to the caller's outlet scope", async () => {
+  const outletA = await seedKeyed(publicKey);
+  const outletB = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     SELECT $1, o.tenant_id, o.brand_id, o.legal_entity_id, 'U-02', 'Outlet Uji B', 'Jl. Uji B', '{}'
+       FROM outlets o WHERE o.id = $2`,
+    [outletB, outletA.outletId],
+  );
+  await seedUploadRow(
+    { tenantId: outletA.tenantId, outletId: outletB },
+    { state: "pending", createdAtSql: "now()", sealedBytes: 2_000_000_000 },
+  );
+
+  const dir = newDir();
+  await expect(
+    upload(outletA, await jpegWithExif(), {
+      dir,
+      scopeOutletIds: [outletA.outletId],
+    }),
+  ).rejects.toMatchObject({ status: 507, code: "EDGE_SELFIE_STORAGE_FULL" });
+  expect(filesIn(dir)).toEqual([]);
 });

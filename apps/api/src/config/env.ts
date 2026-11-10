@@ -8,6 +8,7 @@ import {
 import { normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
+import { sealKeyConfigProblems } from "../lib/selfie-seal.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -47,6 +48,14 @@ const postgresUrl = z.url().refine((value) => {
     !url.hash
   );
 }, "Use a PostgreSQL connection string.");
+
+/** An empty variable (`NAME=`) counts as unset. */
+const blankToUndefined = <T extends z.ZodType>(inner: T) =>
+  z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    inner,
+  );
 
 const schema = z
   .object({
@@ -249,6 +258,18 @@ const schema = z
       .int()
       .positive()
       .default(2_147_483_648),
+    // Attendance selfie seal (design hris-edge-replication 5): the cloud's
+    // private keys (JSON {kid: PKCS#8 PEM}, RSA >= 3072 bit) and the kid
+    // edges seal to. Production secrets: never logged, never committed. Keep
+    // an old kid 90 days after a switch. Checked at boot below.
+    ATTENDANCE_SELFIE_SEAL_KEYS: blankToUndefined(z.string().min(1).optional()),
+    ATTENDANCE_SELFIE_SEAL_ACTIVE_KID: blankToUndefined(
+      z.string().min(1).optional(),
+    ),
+    // QR day keys the cloud sends each edge ahead of today (0..14, default 3).
+    EDGE_QR_KEY_DAYS_AHEAD: blankToUndefined(
+      z.coerce.number().int().min(0).max(14).optional(),
+    ),
     // AI gateway (WS-12). All optional: with no key configured AI is OFF and
     // every AI call answers AI_PROVIDER_UNAVAILABLE (lib/ai/provider-factory.ts).
     AI_PROVIDER: z
@@ -292,6 +313,17 @@ const schema = z
         code: "custom",
         path: ["AI_PROVIDER"],
         message: "The fake AI provider is not allowed in production.",
+      });
+  })
+  .superRefine((values, ctx) => {
+    for (const problem of sealKeyConfigProblems(
+      values.ATTENDANCE_SELFIE_SEAL_KEYS,
+      values.ATTENDANCE_SELFIE_SEAL_ACTIVE_KID,
+    ))
+      ctx.addIssue({
+        code: "custom",
+        path: [problem.path],
+        message: problem.message,
       });
   })
   .superRefine((values, ctx) => {

@@ -15,6 +15,7 @@ import {
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { EDGE_SELFIE_ERROR_CODES } from "@starter/shared/edge";
 import {
   storageDefaultSourceKind,
@@ -28,7 +29,11 @@ import { edgePeopleSyncState } from "../db/schema/edge-hris";
 import { withTenant } from "../db/tenant";
 import { edgeSealedFilePath, edgeSealedObjectKey } from "../edge/selfie-paths";
 import { HttpError } from "../lib/http-error";
-import { SelfieSealError, sealSelfie } from "../lib/selfie-seal";
+import {
+  SelfieSealError,
+  importSealPublicKey,
+  sealSelfie,
+} from "../lib/selfie-seal";
 import { processImageFull, type MalwareScanner } from "./core-image";
 import type { StorageAuthorization } from "./core-storage";
 
@@ -46,20 +51,25 @@ export interface EdgeSelfieDeps {
 }
 
 /**
- * Bytes of sealed files on this disk that have not left yet: pending and
- * rejected uploads, plus sealed objects whose clock is not made (no upload
- * row). `uploaded` and `expired` files are already deleted. One edge serves
- * one tenant, so the tenant-scoped sum is the disk sum.
+ * Bytes of sealed files on this disk that have not left yet: pending uploads,
+ * rejected ones still inside their 7 day keep window (counted from creation,
+ * a slight undercount; the file is deleted after 7 days but the row stays, so
+ * counting every rejected row would grow the sum for good), plus sealed
+ * objects whose clock is not made (no upload row). `uploaded` and `expired`
+ * files are already deleted. The sum covers the whole tenant, not the
+ * caller's outlet scope: the disk is shared by every outlet of the tenant.
  */
 async function pendingSealedBytes(
   database: Database,
   context: ScopedTenantContext,
 ): Promise<number> {
-  return withTenant(database, context, async (tx) => {
+  const wide = establishScopedTenantContext(context.tenant, { kind: "tenant" });
+  return withTenant(database, wide, async (tx) => {
     const result = await tx.execute<{ total: string }>(sql`
       SELECT COALESCE(SUM(size), 0)::text AS total FROM (
         SELECT sealed_bytes::bigint AS size FROM edge_selfie_uploads
-          WHERE state IN ('pending', 'rejected')
+          WHERE state = 'pending'
+             OR (state = 'rejected' AND created_at > now() - interval '7 days')
         UNION ALL
         SELECT o.size_bytes::bigint FROM core_storage_objects o
           WHERE o.purpose = 'selfie' AND o.object_key LIKE 'edge-sealed:%'
@@ -91,13 +101,28 @@ async function sealKeyFor(
       )
       .limit(1),
   );
-  if (!row?.kid || !row.publicKey)
-    throw new HttpError(
+  const missing = () =>
+    new HttpError(
       503,
       EDGE_SELFIE_ERROR_CODES.SELFIE_SEAL_KEY_MISSING,
-      "Kunci segel selfie belum diterima dari cloud.",
+      "Kunci segel selfie belum diterima atau tidak valid.",
     );
+  if (!row?.kid || !row.publicKey) throw missing();
+  // An unusable key answers 503 here, before any budget or image work.
+  try {
+    importSealPublicKey(row.publicKey);
+  } catch {
+    throw missing();
+  }
   return { kid: row.kid, publicKeyPem: row.publicKey };
+}
+
+function fullDisk() {
+  return new HttpError(
+    507,
+    EDGE_SELFIE_ERROR_CODES.EDGE_SELFIE_STORAGE_FULL,
+    "Penyimpanan selfie edge penuh.",
+  );
 }
 
 /** temp file, fsync, rename, mode 0600; the directory is 0700. */
@@ -118,6 +143,27 @@ async function writeSealedFile(filePath: string, bytes: Buffer): Promise<void> {
     await rename(temp, filePath);
   } catch (error) {
     await unlink(temp).catch(() => undefined);
+    throw error;
+  }
+  // Make the rename durable: after a power cut the file must still be there
+  // when the row that names it is.
+  const dirHandle = await open(path.dirname(filePath), "r");
+  try {
+    await dirHandle.sync();
+  } finally {
+    await dirHandle.close();
+  }
+}
+
+/** A real full disk is the same answer as a spent budget. */
+async function writeSealedFileOr507(
+  filePath: string,
+  bytes: Buffer,
+): Promise<void> {
+  try {
+    await writeSealedFile(filePath, bytes);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOSPC") throw fullDisk();
     throw error;
   }
 }
@@ -156,12 +202,7 @@ export async function uploadEdgeSelfie(
   const used = await pendingSealedBytes(database, context);
   // Full already: refuse before any image work. The exact size check follows
   // the seal, when the file length is known.
-  if (used >= deps.maxBytes)
-    throw new HttpError(
-      507,
-      EDGE_SELFIE_ERROR_CODES.EDGE_SELFIE_STORAGE_FULL,
-      "Penyimpanan selfie edge penuh.",
-    );
+  if (used >= deps.maxBytes) throw fullDisk();
 
   const { full } = await processImageFull(bytes, policy.maxBytes, deps.scanner);
   const id = randomUUID();
@@ -193,15 +234,10 @@ export async function uploadEdgeSelfie(
       );
     throw error;
   }
-  if (used + sealed.length > deps.maxBytes)
-    throw new HttpError(
-      507,
-      EDGE_SELFIE_ERROR_CODES.EDGE_SELFIE_STORAGE_FULL,
-      "Penyimpanan selfie edge penuh.",
-    );
+  if (used + sealed.length > deps.maxBytes) throw fullDisk();
 
   const filePath = edgeSealedFilePath(deps.dir, tenantId, id);
-  await writeSealedFile(filePath, sealed);
+  await writeSealedFileOr507(filePath, sealed);
   try {
     await withTenant(database, context, (tx) =>
       tx.insert(coreStorageObjects).values({

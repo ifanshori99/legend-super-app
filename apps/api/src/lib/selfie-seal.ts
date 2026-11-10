@@ -100,6 +100,78 @@ function importSealPrivateKey(pem: string): KeyObject {
   return key;
 }
 
+/**
+ * Boot check of the cloud's seal keys (`ATTENDANCE_SELFIE_SEAL_KEYS`, JSON
+ * `{kid: PKCS#8 PEM}`, and `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID`). Both unset is
+ * fine (the cloud then tells edges there is no key). Messages never carry key
+ * text or a parser error.
+ */
+export function sealKeyConfigProblems(
+  rawKeys: string | undefined,
+  activeKid: string | undefined,
+): Array<{ path: string; message: string }> {
+  const keysPath = "ATTENDANCE_SELFIE_SEAL_KEYS";
+  const kidPath = "ATTENDANCE_SELFIE_SEAL_ACTIVE_KID";
+  if (rawKeys === undefined && activeKid === undefined) return [];
+  if (rawKeys === undefined)
+    return [
+      {
+        path: keysPath,
+        message: `Set ${keysPath} when ${kidPath} is set.`,
+      },
+    ];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawKeys);
+  } catch {
+    return [{ path: keysPath, message: "Must be valid JSON." }];
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length === 0
+  )
+    return [
+      {
+        path: keysPath,
+        message:
+          "Must be a JSON object of kid to PKCS#8 PEM, with one key at least.",
+      },
+    ];
+  const problems: Array<{ path: string; message: string }> = [];
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  for (const [kid, pem] of entries) {
+    if (kid.length < 1 || kid.length > 64) {
+      problems.push({
+        path: keysPath,
+        message: "Every kid must be 1 to 64 characters.",
+      });
+      continue;
+    }
+    try {
+      if (typeof pem !== "string") throw new Error("not a string");
+      importSealPrivateKey(pem);
+    } catch {
+      problems.push({
+        path: keysPath,
+        message: `The key of kid "${kid.slice(0, 64)}" must be an RSA private key (PKCS#8 PEM) of at least ${SELFIE_SEAL_MIN_RSA_BITS} bits.`,
+      });
+    }
+  }
+  if (activeKid === undefined)
+    problems.push({
+      path: kidPath,
+      message: `Set ${kidPath} when ${keysPath} is set.`,
+    });
+  else if (!Object.hasOwn(parsed as object, activeKid))
+    problems.push({
+      path: kidPath,
+      message: `Must name a kid in ${keysPath}.`,
+    });
+  return problems;
+}
+
 function aad(headerBytes: Buffer): Buffer {
   return Buffer.concat([MAGIC, u32(headerBytes.length), headerBytes]);
 }
