@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global window, document */
+/* global window, document -- used only inside page.evaluate callbacks */
 // UI check for the payslip PIN screens (bead legend-ilzrj, Wave 3).
 //
 // For every screen/state below, at 390x844 and 1280x800: open the page in mock
@@ -74,7 +74,12 @@ const SCREENS = [
     name: "riwayat-memuat",
     role: "employee",
     path: "/karyawan/slip-gaji?mock=slow",
-    prepare: (p) => expectText(p, /Sedang memuat daftar slip/),
+    // The list loads as a skeleton; its only text is a screen-reader status.
+    prepare: (p) =>
+      p
+        .locator('[aria-busy="true"]')
+        .first()
+        .waitFor({ state: "visible", timeout: COLD_TIMEOUT }),
   },
   // Employee: gate (buka-slip, pin-salah, terkunci, slip terbuka).
   {
@@ -168,7 +173,7 @@ const SCREENS = [
       await expectText(p, "Ubah PIN", { heading: true });
       // current (wrong), new, repeat. Distinct, non-sequential new PIN.
       await submitPin(p, [WRONG_PIN, "482916", "482916"]);
-      await expectText(p, /4 percobaan tersisa/);
+      await expectText(p, /Sisa 4 percobaan/);
     },
   },
   // HR: reset PIN on the employee profile.
