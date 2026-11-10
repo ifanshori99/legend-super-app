@@ -463,6 +463,7 @@ const accessBaseMessages = {
     profit_share: {
       own: { view: "Lihat bagi hasil milik sendiri" },
       registry: { manage: "Kelola daftar pemegang saham" },
+      share_allocation: { change: "Ubah porsi saham pemegang saham" },
       distribution: { approve: "Setujui distribusi bagi hasil" },
     },
     loyalty: { program: { manage: "Kelola program loyalitas" } },

@@ -53,6 +53,7 @@ import {
   basisPointsSchema,
   businessDateSchema,
   idempotencyKeySchema,
+  idr,
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
@@ -658,10 +659,19 @@ export const adjustmentCalculationSchema = z
     ...calculationBaseShape,
     adjustsRunId: distributionRunIdSchema,
     reason: z.string().trim().min(1).max(500),
+    /** The amount actually allocated: the request, less any unabsorbed rest. */
     adjustmentIdr: nonZeroIdr,
+    /** Founder rule Q83: claw-back that no shareholder's paid gross can absorb. */
+    unabsorbedIdr: nonNegativeIdr,
   })
   .superRefine((row, ctx) => {
     checkCalculationTotals(row, ctx);
+    if (row.unabsorbedIdr > 0 && row.adjustmentIdr > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["unabsorbedIdr"],
+        message: "Only a claw-back can leave an unabsorbed rest",
+      });
     if (row.adjustmentIdr !== row.totalGrossIdr)
       ctx.addIssue({
         code: "custom",
@@ -687,11 +697,32 @@ function assertClosedPeriod(periodStatus: "open" | "closed"): void {
   if (periodStatus !== "closed") throw new AccountingError("PERIOD_NOT_CLOSED");
 }
 
+/** What a shareholder still holds of a corrected run (gross and tax withheld). */
+export type HeldPaid = { grossIdr: number; taxWithheldIdr: number };
+
 function buildCalculationLines(
   amountIdr: Idr,
   allocations: readonly AllocationWeight[],
   taxWithholdingBp: number,
 ): DistributionCalculationLine[] {
+  return buildClampedCalculationLines(amountIdr, allocations, taxWithholdingBp)
+    .lines;
+}
+
+/**
+ * Splits `amountIdr` over the allocations (largest remainder, ties to the
+ * lowest shareholder id). For a negative amount, `availableGrossIdr` (what each
+ * shareholder still holds of the corrected run's paid gross) caps that
+ * shareholder's share of the claw-back: the part that does not fit is
+ * `unabsorbedIdr` and is never moved to another shareholder (founder rule
+ * Q83). A shareholder with nothing left gets no line.
+ */
+function buildClampedCalculationLines(
+  amountIdr: Idr,
+  allocations: readonly AllocationWeight[],
+  taxWithholdingBp: number,
+  held?: ReadonlyMap<string, HeldPaid>,
+): { lines: DistributionCalculationLine[]; unabsorbedIdr: Idr } {
   assertUniqueShareholders(allocations);
   assertShareAllocationsSum(allocations);
   // Canonical order: the remainder tie-break must not depend on row order.
@@ -709,21 +740,39 @@ function buildCalculationLines(
       "NOTHING_TO_DISTRIBUTE",
       "Jumlah terlalu kecil: setiap pemegang saham harus menerima minimal Rp1.",
     );
-  return ordered.map((row, index) => {
-    const grossIdr = grossParts[index];
-    const taxWithheldIdr = applyBasisPoints(
+  let unabsorbed = 0;
+  const lines: DistributionCalculationLine[] = [];
+  ordered.forEach((row, index) => {
+    let grossIdr = grossParts[index];
+    let taxWithheldIdr: Idr | null = null;
+    if (amountIdr < 0 && held !== undefined) {
+      const holding = held.get(row.shareholderId);
+      const available = Math.max(holding?.grossIdr ?? 0, 0);
+      if (-grossIdr >= available) {
+        unabsorbed += -grossIdr - available;
+        grossIdr = idr(-available);
+        // Giving back everything also gives back all the tax still held, so
+        // rounding on each step never leaves a tax residue behind.
+        taxWithheldIdr = idr(-(holding?.taxWithheldIdr ?? 0));
+      }
+      if (grossIdr === 0) return;
+    }
+    taxWithheldIdr ??= applyBasisPoints(
       grossIdr,
       taxWithholdingBp,
       DISTRIBUTION_ROUNDING.tax,
     );
-    return distributionCalculationLineSchema.parse({
-      shareholderId: row.shareholderId,
-      shareBp: row.shareBp,
-      grossIdr,
-      taxWithheldIdr,
-      netIdr: subtractIdr(grossIdr, taxWithheldIdr),
-    });
+    lines.push(
+      distributionCalculationLineSchema.parse({
+        shareholderId: row.shareholderId,
+        shareBp: row.shareBp,
+        grossIdr,
+        taxWithheldIdr,
+        netIdr: subtractIdr(grossIdr, taxWithheldIdr),
+      }),
+    );
   });
+  return { lines, unabsorbedIdr: idr(unabsorbed) };
 }
 
 function totalsOf(lines: readonly DistributionCalculationLine[]) {
@@ -794,17 +843,24 @@ export function calculateAdjustmentDistribution(input: {
   adjustmentIdr: Idr;
   taxWithholdingBp: number;
   allocations: readonly AllocationWeight[];
+  /**
+   * Claw-back only: the paid gross and tax each shareholder still holds (the
+   * corrected run plus its live adjustments). Omitted: no cap.
+   */
+  held?: ReadonlyMap<string, HeldPaid>;
 }): AdjustmentCalculation {
   assertClosedPeriod(input.periodStatus);
   if (input.reason.trim() === "")
     throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
   if (input.adjustmentIdr === 0)
     throw new AccountingError("NOTHING_TO_DISTRIBUTE");
-  const lines = buildCalculationLines(
+  const { lines, unabsorbedIdr } = buildClampedCalculationLines(
     input.adjustmentIdr,
     input.allocations,
     input.taxWithholdingBp,
+    input.held,
   );
+  if (lines.length === 0) throw new AccountingError("ADJUSTMENT_EXCEEDS_PAID");
   return adjustmentCalculationSchema.parse({
     basis: "approved_run_adjustment",
     profitEntityId: input.profitEntityId,
@@ -812,7 +868,8 @@ export function calculateAdjustmentDistribution(input: {
     period: input.period,
     adjustsRunId: input.adjustsRunId,
     reason: input.reason.trim(),
-    adjustmentIdr: input.adjustmentIdr,
+    adjustmentIdr: sumIdr(lines.map((line) => line.grossIdr)),
+    unabsorbedIdr,
     lines,
     ...totalsOf(lines),
   });
@@ -918,6 +975,11 @@ export const distributionRunSchema = z
     adjustmentReason: z.string().trim().min(1).max(500).nullable(),
     /** Reversing journal posted with an adjustment (SH-04). */
     reversalJournalEntryId: journalEntryIdSchema.nullable(),
+    /**
+     * Claw-back rest that no shareholder's paid gross could absorb (founder
+     * rule Q83): recorded open, never charged to another shareholder.
+     */
+    unabsorbedIdr: nonNegativeIdr,
   })
   .superRefine((run, ctx) => {
     const lineIds = new Set<string>();
@@ -968,6 +1030,16 @@ export const distributionRunSchema = z
         code: "custom",
         path: ["distributableIdr"],
         message: "distributableIdr must equal the allocated gross total",
+      });
+
+    if (
+      run.unabsorbedIdr > 0 &&
+      (run.type !== "adjustment" || run.distributableIdr > 0)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["unabsorbedIdr"],
+        message: "Only a claw-back can leave an unabsorbed rest",
       });
 
     const regular = run.type === "regular";
@@ -1126,6 +1198,10 @@ export function assertAdjustmentTarget(
   if (original === null) throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
   if (original.status !== "approved" && original.status !== "paid")
     throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
+  // One correction tree per regular run: the claw-back room of a shareholder is
+  // counted against the regular run, never against another adjustment.
+  if (original.type !== "regular")
+    throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
 }
 
 /**
@@ -1145,6 +1221,14 @@ export function assertAdjustmentMatchesTarget(
     shareVersion: number;
     lines: readonly Pick<DistributionLine, "shareholderId" | "shareBp">[];
   },
+  options: {
+    /**
+     * A claw-back may leave out a shareholder with nothing left to give back
+     * (founder rule Q83): every adjustment line must still match a line of the
+     * corrected run, but not every run line needs an adjustment line.
+     */
+    allowSubset?: boolean;
+  } = {},
 ): void {
   const key = (
     lines: readonly Pick<DistributionLine, "shareholderId" | "shareBp">[],
@@ -1153,15 +1237,24 @@ export function assertAdjustmentMatchesTarget(
       .map((line) => `${line.shareholderId}:${line.shareBp}`)
       .sort()
       .join(",");
+  const originalKeys = new Set(original.lines.map(key1));
+  const matches = options.allowSubset
+    ? adjustment.lines.length > 0 &&
+      adjustment.lines.every((line) => originalKeys.has(key1(line)))
+    : key(original.lines) === key(adjustment.lines);
   if (
     original.profitEntityId !== adjustment.profitEntityId ||
     original.shareVersion !== adjustment.shareVersion ||
-    key(original.lines) !== key(adjustment.lines)
+    !matches
   )
     throw new AccountingError(
       "ADJUSTMENT_TARGET_INVALID",
       "Penyesuaian harus memakai entitas dan porsi distribusi yang dikoreksi.",
     );
+}
+
+function key1(line: Pick<DistributionLine, "shareholderId" | "shareBp">) {
+  return `${line.shareholderId}:${line.shareBp}`;
 }
 
 export function assertNoDuplicateRegularRun(

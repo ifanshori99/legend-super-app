@@ -48,11 +48,15 @@ export function VersionFocusCard({
   version,
   shareholders,
   canWrite,
+  canApprove,
   onEdit,
 }: {
   version: ShareAllocationVersion;
   shareholders: readonly Shareholder[];
+  /** Create/edit/submit: `profit_share.share_allocation.change`. */
   canWrite: boolean;
+  /** Approve/reject: `profit_share.distribution.approve`. */
+  canApprove: boolean;
   onEdit: () => void;
 }) {
   const t = useT();
@@ -211,7 +215,7 @@ export function VersionFocusCard({
                       bp: formatShareBpInteger(totalBp),
                     })}
               </p>
-              {canWrite && (
+              {canApprove && (
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"

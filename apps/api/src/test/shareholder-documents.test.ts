@@ -63,11 +63,28 @@ const membership = {
 /** Counts writes so a rejected upload can be proven to have stored nothing. */
 class CountingStorage extends FakeObjectStorage {
   puts = 0;
+  deletes = 0;
+  /** Runs once right after the blob is stored, to force a race with the DB insert. */
+  afterPut: (() => Promise<void>) | null = null;
   override async put(
     ...args: Parameters<FakeObjectStorage["put"]>
   ): ReturnType<FakeObjectStorage["put"]> {
     this.puts += 1;
-    return super.put(...args);
+    const result = await super.put(...args);
+    const hook = this.afterPut;
+    this.afterPut = null;
+    if (hook) await hook();
+    return result;
+  }
+  override async delete(
+    ...args: Parameters<FakeObjectStorage["delete"]>
+  ): ReturnType<FakeObjectStorage["delete"]> {
+    this.deletes += 1;
+    return super.delete(...args);
+  }
+  /** Number of blobs currently held (the fake keeps them in a private map). */
+  get objectCount(): number {
+    return (this as unknown as { objects: Map<string, unknown> }).objects.size;
   }
 }
 const storage = new CountingStorage();
@@ -999,5 +1016,31 @@ describe("legend-69yq shareholder documents", () => {
       );
       expect(docs.rowCount).toBe(0);
     }
+  });
+
+  it("14. profit entity deleted between pre-check and insert: 422 PROFIT_ENTITY_NOT_FOUND and the stored blob is deleted", async () => {
+    const mgr = await manager();
+    const profitEntityId = await entity();
+    // Pre-check passes, put stores the blob, then the entity vanishes before the insert (FK 23503).
+    storage.afterPut = async () => {
+      await owner.query(
+        "DELETE FROM profit_entities WHERE tenant_id = $1 AND id = $2",
+        [tenantA, profitEntityId],
+      );
+    };
+    const putsBefore = storage.puts;
+    const deletesBefore = storage.deletes;
+    const objectsBefore = storage.objectCount;
+    const response = await upload(mgr, profitEntityId, pdf("fk-race"));
+    expect(response.status).toBe(422);
+    expect(response.body.error?.code).toBe("PROFIT_ENTITY_NOT_FOUND");
+    expect(storage.puts).toBe(putsBefore + 1);
+    expect(storage.deletes).toBe(deletesBefore + 1);
+    expect(storage.objectCount).toBe(objectsBefore);
+    const rows = await owner.query(
+      "SELECT 1 FROM shareholder_document_files WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, profitEntityId],
+    );
+    expect(rows.rowCount).toBe(0);
   });
 });

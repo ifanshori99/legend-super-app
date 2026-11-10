@@ -64,6 +64,7 @@ import {
   type createDistributionRunInputSchema,
   type distributionDecisionInputSchema,
   type DistributionRun,
+  type HeldPaid,
   type DistributionRunSummary,
   type DistributionStatement,
   type MyProfitShare,
@@ -202,6 +203,7 @@ function toRun(row: RunRow, lineRows: readonly LineRow[]): DistributionRun {
     adjustsRunId: row.adjustsRunId,
     adjustmentReason: row.adjustmentReason,
     reversalJournalEntryId: row.reversalJournalEntryId,
+    unabsorbedIdr: row.unabsorbedIdr,
   });
 }
 
@@ -459,6 +461,8 @@ type CalculatedRun = {
   taxWithholdingBp: number;
   adjustsRunId: string | null;
   adjustmentReason: string | null;
+  /** Claw-back rest no shareholder could absorb (founder rule Q83). */
+  unabsorbedIdr?: number;
   lines: readonly {
     shareholderId: string;
     shareBp: number;
@@ -501,6 +505,7 @@ async function insertRun(
       requestedBy: actorId,
       adjustsRunId: calc.adjustsRunId,
       adjustmentReason: calc.adjustmentReason,
+      unabsorbedIdr: idr(calc.unabsorbedIdr ?? 0),
       idempotencyKey,
     })
     .returning();
@@ -772,7 +777,9 @@ export async function createAdjustmentDistributionService(
           replay.type !== "adjustment" ||
           replay.adjustsRunId !== targetRunId ||
           replay.fiscalPeriodId !== input.fiscalPeriodId ||
-          replay.distributableIdr !== input.adjustmentIdr ||
+          // What was asked: the amount absorbed plus the open rest (Q83).
+          replay.distributableIdr - replay.unabsorbedIdr !==
+            input.adjustmentIdr ||
           replay.adjustmentReason !== input.reason.trim() ||
           replay.requestedBy !== actorUserId
         )
@@ -789,6 +796,10 @@ export async function createAdjustmentDistributionService(
         input.fiscalPeriodId,
         true,
       );
+      const held =
+        input.adjustmentIdr < 0
+          ? await paidStillHeld(tx, tenantId, target)
+          : undefined;
       const calculation = calculateAdjustmentDistribution({
         profitEntityId: target.profitEntityId,
         fiscalPeriodId: input.fiscalPeriodId as never,
@@ -803,14 +814,17 @@ export async function createAdjustmentDistributionService(
           shareholderId: line.shareholderId,
           shareBp: line.shareBp,
         })),
+        held,
       });
-      assertAdjustmentMatchesTarget(target, {
-        profitEntityId: target.profitEntityId,
-        shareVersion: target.shareVersion,
-        lines: calculation.lines,
-      });
-      if (input.adjustmentIdr < 0)
-        await assertClawBackWithinPaid(tx, tenantId, target, calculation.lines);
+      assertAdjustmentMatchesTarget(
+        target,
+        {
+          profitEntityId: target.profitEntityId,
+          shareVersion: target.shareVersion,
+          lines: calculation.lines,
+        },
+        { allowSubset: input.adjustmentIdr < 0 },
+      );
       const run = await insertRun(
         tx,
         tenantId,
@@ -826,6 +840,7 @@ export async function createAdjustmentDistributionService(
           periodNetProfitIdr: null,
           reserveIdr: 0,
           distributableIdr: calculation.adjustmentIdr,
+          unabsorbedIdr: calculation.unabsorbedIdr,
           totalGrossIdr: calculation.totalGrossIdr,
           totalTaxWithheldIdr: calculation.totalTaxWithheldIdr,
           totalNetIdr: calculation.totalNetIdr,
@@ -852,20 +867,20 @@ export async function createAdjustmentDistributionService(
 }
 
 /**
- * A claw-back may not take any shareholder's cumulative gross below zero: the
- * corrected run's line plus every live (not cancelled) adjustment of it, the
- * pending ones included, plus this new line.
+ * What each shareholder still holds of the corrected run's paid gross: the run's
+ * line plus every live (not cancelled) adjustment of it, the pending ones
+ * included. A claw-back is capped by this per shareholder (founder rule Q83).
  */
-async function assertClawBackWithinPaid(
+async function paidStillHeld(
   tx: Tx,
   tenantId: string,
   target: DistributionRun,
-  newLines: readonly { shareholderId: string; grossIdr: number }[],
-): Promise<void> {
+): Promise<Map<string, HeldPaid>> {
   const rows = await tx
     .select({
       shareholderId: distributionLines.shareholderId,
       total: sql<string>`sum(${distributionLines.grossIdr})::text`,
+      tax: sql<string>`sum(${distributionLines.taxWithheldIdr})::text`,
     })
     .from(distributionLines)
     .innerJoin(
@@ -880,23 +895,30 @@ async function assertClawBackWithinPaid(
         eq(distributionRuns.tenantId, tenantId),
         eq(distributionRuns.adjustsRunId, target.id),
         sql`${distributionRuns.status} <> 'cancelled'`,
+        // A top-up that is not approved yet may still be rejected: it is not
+        // room for a claw-back. Pending claw-backs always count.
+        sql`(${distributionRuns.distributableIdr} < 0 OR ${distributionRuns.status} IN ('approved', 'paid'))`,
       ),
     )
     .groupBy(distributionLines.shareholderId);
   const adjusted = new Map(
-    rows.map((row) => [row.shareholderId, Number(row.total)]),
+    rows.map((row) => [
+      row.shareholderId,
+      { grossIdr: Number(row.total), taxWithheldIdr: Number(row.tax) },
+    ]),
   );
-  for (const line of newLines) {
-    const base =
-      target.lines.find((item) => item.shareholderId === line.shareholderId)
-        ?.grossIdr ?? 0;
-    if (base + (adjusted.get(line.shareholderId) ?? 0) + line.grossIdr < 0)
-      throw new HttpError(
-        422,
-        "ADJUSTMENT_EXCEEDS_PAID",
-        "Pengembalian melebihi jumlah yang sudah dibayarkan kepada pemegang saham.",
-      );
-  }
+  return new Map(
+    target.lines.map((line) => [
+      line.shareholderId,
+      {
+        grossIdr:
+          line.grossIdr + (adjusted.get(line.shareholderId)?.grossIdr ?? 0),
+        taxWithheldIdr:
+          line.taxWithheldIdr +
+          (adjusted.get(line.shareholderId)?.taxWithheldIdr ?? 0),
+      },
+    ]),
+  );
 }
 
 // -------------------------------------------------------------------- reads

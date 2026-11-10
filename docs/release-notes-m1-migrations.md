@@ -109,6 +109,12 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Perbaikan isi di luar konflik: `provisioning-race.test.ts` (legend-usa4b) menunggu 64 akun bagan standar; kini 65 sesudah akun 4105.
 - Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet, kartu legend-23tbw) gagal di run penuh 3 dan 4, lulus sendiri dan lulus di run penuh 5.
 
+## Tambahan legend-8s992 (aturan bagi hasil founder, migrasi 0221)
+
+- 0221 `0221_profit_share_unabsorbed` (nomor sementara, merge train merangkai ulang idx dan `prevId`): kolom `distribution_runs.unabsorbed_idr`, trigger totals run koreksi (boleh kurang dari 10000 bp), trigger run koreksi hanya menargetkan run reguler, dan backfill izin `profit_share.share_allocation.change`.
+- Backfill izin hanya ke template `owner` dan `finance` di semua tenant. Role kustom yang memegang `profit_share.registry.manage` TIDAK di-backfill (sama dengan keputusan krvk7): pemilik tenant harus menambahkan izin "Ubah porsi saham pemegang saham" ke role kustom itu, kalau tidak mereka kena 403 saat membuat, mengubah, atau mengajukan versi porsi.
+- Perubahan perilaku: klaw-bek yang melebihi yang sudah dibayarkan tidak lagi ditolak seluruhnya; dibatasi per pemegang saham dan sisanya dicatat di `unabsorbed_idr`. Ditolak 422 `ADJUSTMENT_EXCEEDS_PAID` hanya bila tidak ada yang bisa diserap.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

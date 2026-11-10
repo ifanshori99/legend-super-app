@@ -227,7 +227,7 @@ ALTER TABLE public.shareholder_documents FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 -- Custom SQL migration file, put your code below! ---
 -- Profit share & dividends (WS-07, bead legend-2ljb; PRD v1.7 §3.37, §4 P,
--- §6 I; SH-03, SH-04). Appended to drizzle/0219_profit_share.sql.
+-- §6 I; SH-03, SH-04). Appended to drizzle/0217_profit_share.sql.
 --
 -- 1. Tenant RLS on every table (TEN-01/02). None is outlet-owned (an outlet
 --    profit entity is still tenant data managed by finance), so tenant RLS only.

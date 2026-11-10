@@ -28,6 +28,30 @@ import {
 } from "@starter/shared/accounting";
 import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
+import type { PermissionCode } from "@starter/shared/access";
+
+/**
+ * Founder rule Q84: changing share percentages (create, edit, submit a version)
+ * is its own permission, apart from posting journals and from approving. Fails
+ * closed without access. The API re-checks it.
+ */
+export function canChangeShareAllocation(
+  access: { readonly permissions: readonly PermissionCode[] } | undefined,
+): boolean {
+  return (
+    access?.permissions.includes("profit_share.share_allocation.change") ??
+    false
+  );
+}
+
+/** Approving or rejecting a share version: `profit_share.distribution.approve`. */
+export function canApproveShareAllocation(
+  access: { readonly permissions: readonly PermissionCode[] } | undefined,
+): boolean {
+  return (
+    access?.permissions.includes("profit_share.distribution.approve") ?? false
+  );
+}
 
 /** SH-03: 10,000 bp = 100%; the API sends basis points, never a percentage. */
 export const SHARE_TOTAL_BP = 10_000;

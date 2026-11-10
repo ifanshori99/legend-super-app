@@ -1328,6 +1328,7 @@ function draftDistributionRun(input: {
     adjustsRunId: input.adjustsRunId ?? null,
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: null,
+    unabsorbedIdr: 0,
   });
 }
 

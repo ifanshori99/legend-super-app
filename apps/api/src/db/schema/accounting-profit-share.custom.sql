@@ -209,10 +209,13 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
     IF NEW.type = 'adjustment' THEN
-      SELECT r.status, r.profit_entity_id, r.share_version INTO target
+      SELECT r.status, r.type, r.profit_entity_id, r.share_version INTO target
       FROM public.distribution_runs r
       WHERE r.tenant_id = NEW.tenant_id AND r.id = NEW.adjusts_run_id;
+      -- One correction tree per regular run: the claw-back room is counted
+      -- against the regular run, never against another adjustment.
       IF target.status IS NULL OR target.status NOT IN ('approved', 'paid')
+         OR target.type <> 'regular'
          OR target.profit_entity_id <> NEW.profit_entity_id
          OR target.share_version <> NEW.share_version THEN
         RAISE EXCEPTION 'SH-04: an adjustment corrects an approved run with its split'
@@ -375,7 +378,7 @@ BEGIN
     run_tenant := NEW.tenant_id;
     run_id := NEW.distribution_run_id;
   END IF;
-  SELECT r.total_gross_idr, r.total_tax_withheld_idr, r.total_net_idr INTO run_row
+  SELECT r.type, r.total_gross_idr, r.total_tax_withheld_idr, r.total_net_idr INTO run_row
   FROM public.distribution_runs r
   WHERE r.tenant_id = run_tenant AND r.id = run_id;
   IF NOT FOUND THEN
@@ -390,7 +393,11 @@ BEGIN
   WHERE l.tenant_id = run_tenant AND l.distribution_run_id = run_id;
   IF sums.n = 0 OR sums.gross <> run_row.total_gross_idr
      OR sums.tax <> run_row.total_tax_withheld_idr
-     OR sums.net <> run_row.total_net_idr OR sums.bp <> 10000 THEN
+     OR sums.net <> run_row.total_net_idr
+     -- A regular run carries every share (10000 bp). A claw-back (founder rule
+     -- Q83) leaves out a shareholder with nothing left to give back.
+     OR (run_row.type = 'regular' AND sums.bp <> 10000)
+     OR (run_row.type = 'adjustment' AND (sums.bp < 1 OR sums.bp > 10000)) THEN
     RAISE EXCEPTION 'SH-04: lines of distribution run % do not match its totals', run_id
       USING ERRCODE = '23514';
   END IF;

@@ -556,6 +556,7 @@ function runOfCalculation(input: {
     adjustsRunId: input.adjustsRunId ?? null,
     adjustmentReason: input.adjustmentReason ?? null,
     reversalJournalEntryId: input.reversalJournalEntryId ?? null,
+    unabsorbedIdr: adjustment ? correction.unabsorbedIdr : 0,
   });
 }
 
