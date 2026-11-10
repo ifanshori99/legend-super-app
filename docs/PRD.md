@@ -548,7 +548,7 @@ Workstream WS-00 s.d. WS-05.
 | ID | Kriteria wajib |
 |----|----------------|
 | AUTH-01 | Kode login WhatsApp memiliki entropi ≥ 40 bit, berlaku 5 menit, sekali pakai, dan terikat ke browser peminta |
-| AUTH-02 | Webhook WhatsApp diverifikasi tanda tangannya (`X-Hub-Signature-256`) dan diproses idempoten per message ID; pesan palsu atau duplikat tidak pernah membuat sesi |
+| AUTH-02 | Webhook WhatsApp diverifikasi tanda tangannya (`X-Kirim-Signature`: `t=`,`v1=`, HMAC-SHA256 atas `t.rawbody`, jendela 300 detik, mendukung rotasi secret) dan diproses idempoten per `X-Kirim-Event-Id` (message ID); pesan palsu, kedaluwarsa, atau duplikat tidak pernah membuat sesi |
 | AUTH-03 | Alur login tidak mengirim pesan WhatsApp apa pun secara default; bila balasan diaktifkan, sistem menghitung pemakaian kuota gratis bulanan dan berhenti membalas saat plafon tercapai |
 | AUTH-04 | Rate limit: maksimal 5 challenge aktif per perangkat atau IP per 15 menit dan 10 pesan login per nomor per jam |
 | AUTH-05 | Role yang mewajibkan MFA tidak dapat membuka back office atau dashboard tanpa faktor kedua |
