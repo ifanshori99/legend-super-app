@@ -8,7 +8,9 @@
 // `psql -f` would) and asserts exactly the flagged issue ids. The promo
 // ledger is not checked (a final failure leaves it untouched, a re-report
 // replays the failed refund).
-// It also checks that the script wrote nothing (a read-only transaction).
+// It also checks that the script wrote nothing (a read-only transaction) and
+// that it fails loudly for a role that is neither superuser nor BYPASSRLS
+// (FORCE RLS would otherwise hide every row and the result would be empty).
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -321,5 +323,45 @@ describe("recovery refund final failure check (legend-pti5r)", () => {
     const second = await runCheck();
     expect(ours(second)).toEqual(ours(first));
     expect(await count()).toBe(before);
+  });
+
+  it("runs as a superuser or BYPASSRLS role (the owner connection of the test)", async () => {
+    const { rows } = await owner.query<{ ok: boolean }>(
+      `SELECT (rolsuper OR rolbypassrls) AS ok FROM pg_roles WHERE rolname = current_user`,
+    );
+    expect(rows[0]!.ok).toBe(true);
+    expect(ours(await runCheck()).length).toBeGreaterThan(0);
+  });
+
+  it("fails with a clear error for a role without BYPASSRLS", async () => {
+    const role = `uji_cek_nobypass_${randomUUID().slice(0, 8)}`;
+    await owner.query(
+      `CREATE ROLE "${role}" NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`,
+    );
+    const client = await owner.connect();
+    try {
+      await client.query(`SET ROLE "${role}"`);
+      let message = "";
+      try {
+        await client.query(checkSql);
+      } catch (error) {
+        message = (error as Error).message;
+        // the file's BEGIN is still open after the error
+        await client.query("ROLLBACK");
+      }
+      expect(message).toContain("superuser or BYPASSRLS");
+      expect(message).toContain(role);
+      // the read-only transaction was left behind: nothing is open or written
+      await client.query("RESET ROLE");
+      const { rows } = await client.query<{ n: string }>(
+        "SELECT count(*) AS n FROM order_issues WHERE tenant_id = ANY($1)",
+        [tenants.map((tenant) => tenant.id)],
+      );
+      expect(Number(rows[0]!.n)).toBeGreaterThan(0);
+    } finally {
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+      await owner.query(`DROP ROLE IF EXISTS "${role}"`);
+    }
   });
 });

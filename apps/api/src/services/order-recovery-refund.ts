@@ -386,27 +386,69 @@ export async function deliverOrderRecoveryRefundEvent(
     // Order amounts that fail their tax-mode identity are refused before the
     // promo port changes anything.
     orderRevenueSplit(order);
+    // legend-pti5r: the same item reported again after a final failure of its
+    // refund (not `rejected`) replays that refund's amount and split, for every
+    // order (promo or not, pay-first or open bill): a new split could differ by
+    // a rounding step. The promo ledger still holds its payout, so a replay
+    // recomputes and records nothing.
+    const issues = await tx
+      .select({
+        id: orderIssues.id,
+        orderItemId: orderIssues.orderItemId,
+        replacementOrderItemId: orderIssues.replacementOrderItemId,
+        status: orderIssues.status,
+        resolution: orderIssues.resolution,
+        refundRejectedAt: orderIssues.refundRejectedAt,
+      })
+      .from(orderIssues)
+      .where(
+        and(
+          eq(orderIssues.tenantId, tenantId),
+          eq(orderIssues.orderId, order.id),
+        ),
+      );
+    // The promo was priced on the checkout lines: a swap (legend-zm1e6)
+    // voids the original line and adds a replacement at the swap price, so
+    // the original stands for both and the replacement is left out. A
+    // failed replacement maps back to its original.
+    const originalOf = new Map<string, string>();
+    for (const row of issues)
+      if (row.replacementOrderItemId !== null)
+        originalOf.set(row.replacementOrderItemId, row.orderItemId);
+    const toOriginal = (itemId: string) => {
+      let id = itemId;
+      for (let hop = 0; hop <= issues.length; hop++) {
+        const original = originalOf.get(id);
+        if (original === undefined) break;
+        id = original;
+      }
+      return id;
+    };
+    const swappedOriginals = new Set(originalOf.values());
+    const found = await findRecoveryRefundReplay(
+      tx,
+      tenantId,
+      order.id,
+      issue,
+      issues,
+      toOriginal,
+      payFirst,
+    );
+    if (found !== REPLAY_REJECTED) replay = found;
     // A live promo: the port re-prices the order without the failed lines
     // (founder Q41/Q19). It records no payout here (`deferPayout`): the
     // refund records what it files below.
-    if (await livePromoApplicationOf(tx, context, order.id)) {
-      const issues = await tx
-        .select({
-          id: orderIssues.id,
-          orderItemId: orderIssues.orderItemId,
-          replacementOrderItemId: orderIssues.replacementOrderItemId,
-          status: orderIssues.status,
-          resolution: orderIssues.resolution,
-          createdAt: orderIssues.createdAt,
-          refundRejectedAt: orderIssues.refundRejectedAt,
-        })
-        .from(orderIssues)
-        .where(
-          and(
-            eq(orderIssues.tenantId, tenantId),
-            eq(orderIssues.orderId, order.id),
-          ),
-        );
+    const hasLivePromo = Boolean(
+      await livePromoApplicationOf(tx, context, order.id),
+    );
+    // legend-h1dyy: the earlier refund of this item was `rejected`: the money
+    // is not owed, so a re-report gives nothing back. A promo order reaches
+    // the same end below: the rejected item stays out of the kept lines.
+    if (found === REPLAY_REJECTED && !hasLivePromo) {
+      await blocked("nothing_left");
+      return;
+    }
+    if (hasLivePromo) {
       const items = await tx
         .select({
           id: orderItems.id,
@@ -424,36 +466,6 @@ export async function deliverOrderRecoveryRefundEvent(
           ),
         )
         .orderBy(orderItems.id);
-      // The promo was priced on the checkout lines: a swap (legend-zm1e6)
-      // voids the original line and adds a replacement at the swap price, so
-      // the original stands for both and the replacement is left out. A
-      // failed replacement maps back to its original.
-      const originalOf = new Map<string, string>();
-      for (const row of issues)
-        if (row.replacementOrderItemId !== null)
-          originalOf.set(row.replacementOrderItemId, row.orderItemId);
-      const toOriginal = (itemId: string) => {
-        let id = itemId;
-        for (let hop = 0; hop <= issues.length; hop++) {
-          const original = originalOf.get(id);
-          if (original === undefined) break;
-          id = original;
-        }
-        return id;
-      };
-      const swappedOriginals = new Set(originalOf.values());
-      // legend-pti5r: the same item reported again after a final failure of
-      // its refund (not `rejected`) replays that refund: the promo ledger
-      // still holds its payout, so there is nothing to recompute or record.
-      replay = await findRecoveryRefundReplay(
-        tx,
-        tenantId,
-        order.id,
-        issue,
-        issues,
-        toOriginal,
-        payFirst,
-      );
       if (replay === null) {
         // A failed item was never delivered, whatever happened to its refund
         // (nothing_left, rejected, ...): the item of every other manual_refund
@@ -722,16 +734,24 @@ type RecoveryRefundReplaySource = {
   pbjtIdr: number;
 };
 
+/** The earlier refund of the item was `rejected`: no replay, nothing owed. */
+const REPLAY_REJECTED = "rejected" as const;
+
 /**
- * legend-pti5r: the replay source of `issue`, or null for the normal path.
- * The most recent EARLIER issue of the same order whose item maps to the same
- * original item (swaps) and that has a refund row decides. It is a source only
+ * legend-pti5r: the replay source of `issue`, `REPLAY_REJECTED`, or null for
+ * the normal path. Among the OTHER issues of the same order whose item maps to
+ * the same original item (swaps), resolved `manual_refund`, and that already
+ * have a refund row (they were processed), the one filed most recently decides:
+ * by the time of its first refund row (a later issue opened earlier may be
+ * processed first), the newest wins, the id breaks a tie. It is a source only
  * when its refund ended in a final failure that is not `rejected`
  * (`refund_rejected_at` set, latest refund `failed`) and its `order.refunded`
  * (`payload.refundId` = its id) holds a split that adds up to the failed
- * refund's amount. A rejected, live or paid refund, or (pay-first) no split:
- * null. An open bill files no split nor `order.refunded`: its replay is the
- * failed amount as gross sales, with no discount, service charge or tax.
+ * refund's amount. A `rejected` final failure answers `REPLAY_REJECTED`: the
+ * caller gives nothing back (legend-h1dyy). A live or paid refund, or
+ * (pay-first) no split: null. An open bill files no split nor `order.refunded`:
+ * its replay is the failed amount as gross sales, with no discount, service
+ * charge or tax.
  * A chain (A -> B replayed and cut by room -> B final-fails -> C) follows the
  * `replayOfIssueId` of each filing's idempotency response back to the root
  * issue (at most 10 hops) and takes the root's amount and split, so a cut is
@@ -743,42 +763,34 @@ async function findRecoveryRefundReplay(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
   orderId: string,
-  issue: { id: string; orderItemId: string; createdAt: Date },
+  issue: { id: string; orderItemId: string },
   issues: {
     id: string;
     orderItemId: string;
     status: string;
     resolution: string | null;
-    createdAt: Date;
     refundRejectedAt: Date | null;
   }[],
   toOriginal: (itemId: string) => string,
   payFirst: boolean,
-): Promise<RecoveryRefundReplaySource | null> {
+): Promise<RecoveryRefundReplaySource | typeof REPLAY_REJECTED | null> {
   const original = toOriginal(issue.orderItemId);
-  const earlier = issues
-    .filter(
-      (row) =>
-        row.id !== issue.id &&
-        row.status === "resolved" &&
-        row.resolution === "manual_refund" &&
-        toOriginal(row.orderItemId) === original &&
-        (row.createdAt.getTime() < issue.createdAt.getTime() ||
-          (row.createdAt.getTime() === issue.createdAt.getTime() &&
-            row.id < issue.id)),
-    )
-    .sort(
-      (a, b) =>
-        b.createdAt.getTime() - a.createdAt.getTime() ||
-        (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
-    );
-  if (earlier.length === 0) return null;
+  const others = issues.filter(
+    (row) =>
+      row.id !== issue.id &&
+      row.status === "resolved" &&
+      row.resolution === "manual_refund" &&
+      toOriginal(row.orderItemId) === original,
+  );
+  if (others.length === 0) return null;
   const refunds = await tx
     .select({
+      id: paymentRefunds.id,
       orderIssueId: paymentRefunds.orderIssueId,
       status: paymentRefunds.status,
       failureReason: paymentRefunds.failureReason,
       amountIdr: paymentRefunds.amountIdr,
+      createdAt: paymentRefunds.createdAt,
     })
     .from(paymentRefunds)
     .where(
@@ -786,26 +798,37 @@ async function findRecoveryRefundReplay(
         eq(paymentRefunds.tenantId, tenantId),
         inArray(
           paymentRefunds.orderIssueId,
-          earlier.map((row) => row.id),
+          others.map((row) => row.id),
         ),
       ),
     )
     .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id));
-  // Latest refund per issue (rows come newest first).
+  // Per issue: its latest refund (rows come newest first) and the time of its
+  // first refund row (its filing order).
   const latest = new Map<string, (typeof refunds)[number]>();
-  for (const row of refunds)
-    if (row.orderIssueId !== null && !latest.has(row.orderIssueId))
-      latest.set(row.orderIssueId, row);
-  const previous = earlier.find((row) => latest.has(row.id));
+  const firstFiledAt = new Map<string, number>();
+  for (const row of refunds) {
+    if (row.orderIssueId === null) continue;
+    if (!latest.has(row.orderIssueId)) latest.set(row.orderIssueId, row);
+    firstFiledAt.set(row.orderIssueId, row.createdAt.getTime());
+  }
+  const previous = others
+    .filter((row) => latest.has(row.id))
+    .sort(
+      (a, b) =>
+        (firstFiledAt.get(b.id) ?? 0) - (firstFiledAt.get(a.id) ?? 0) ||
+        (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+    )[0];
   if (previous === undefined) return null;
   const failedRefund = latest.get(previous.id);
   if (
     failedRefund === undefined ||
     previous.refundRejectedAt === null ||
-    failedRefund.status !== "failed" ||
-    (failedRefund.failureReason ?? "unknown") === "rejected"
+    failedRefund.status !== "failed"
   )
     return null;
+  if ((failedRefund.failureReason ?? "unknown") === "rejected")
+    return REPLAY_REJECTED;
   // Follow the replay chain to the root issue.
   let rootId = previous.id;
   for (let hop = 0; hop < 10; hop++) {
@@ -1106,6 +1129,9 @@ async function requestRecoveryRefundReversal(
  * resolver and approver are copied from the first filing's idempotency row,
  * which four-eyes reads. Without that row nothing is filed: the parties
  * would be unknown (`order_issue.refund_refile_blocked`).
+ * A repeated call for the same failed refund changes nothing: its audit rows
+ * (`refund_rejected`, `refund_refile_blocked`) are written once per refund id,
+ * the `refund_rejected_at` stamp and the reversal event are set once.
  * The caller holds the refund graph locks (intent row first).
  */
 export async function refileRecoveryRefundAfterFailure(
@@ -1122,7 +1148,7 @@ export async function refileRecoveryRefundAfterFailure(
   )
     return;
   const tenantId = failedRefund.tenantId;
-  const auditIssue = (
+  const auditIssueRow = (
     action: string,
     after: Record<string, string | number>,
     reason: string,
@@ -1149,6 +1175,32 @@ export async function refileRecoveryRefundAfterFailure(
       },
       AUDIT_SAFE_FIELDS,
     );
+  // The hook can run again for the same failed refund (a backfill helper, a
+  // retried failure): its audit row is written once per refund id.
+  const auditIssue = async (
+    action: string,
+    after: Record<string, string | number>,
+    reason: string,
+  ): Promise<void> => {
+    const [existing] = await tx
+      .select({ id: auditLogs.id })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, tenantId),
+          // Written after the refund existed: bounds the scan.
+          gte(
+            auditLogs.createdAt,
+            new Date(failedRefund.createdAt.getTime() - 24 * 60 * 60 * 1000),
+          ),
+          sql`${auditLogs.event}->>'objectId' = ${issueId}`,
+          sql`${auditLogs.event}->>'action' = ${action}`,
+          sql`${auditLogs.event}->'maskedChanges'->'after'->>'refundId' = ${failedRefund.id}`,
+        ),
+      )
+      .limit(1);
+    if (!existing) await auditIssueRow(action, after, reason);
+  };
   // A final failure (`rejected`, a person-needed failure, `refile_limit`,
   // `no_first_filing`) gives the sale its money back (legend-iu91r): the line
   // may be reported again (legend-wumm8, same idempotent stamp as `rejected`)

@@ -56,13 +56,18 @@ refund terakhir, alasan gagal terakhir, `failed_count`, `missing_stamp`,
 
 ## Cara menjalankan
 
-1. Ambil koneksi admin (peran yang melihat semua tenant: BYPASSRLS atau pemilik
-   tabel) dari secret store. Jangan ditempel di chat, jangan dicetak ke log.
-   Tanpa peran itu RLS menyembunyikan baris dan hasilnya kosong, yang
-   menyesatkan.
+1. Ambil koneksi admin dari secret store. Jangan ditempel di chat, jangan
+   dicetak ke log. Peran WAJIB superuser atau punya BYPASSRLS. Pemilik tabel
+   TIDAK cukup: tabel memakai FORCE ROW LEVEL SECURITY, yang berlaku juga untuk
+   pemilik, jadi koneksi pemilik tanpa BYPASSRLS akan melihat nol baris. Untuk
+   mencegah hasil kosong yang menyesatkan itu, skrip gagal eksplisit di
+   pernyataan pertama (error `recovery refund check needs a superuser or
+BYPASSRLS role`, SQLSTATE 42501) bila peran bukan superuser dan tidak
+   BYPASSRLS. Error itu berarti ganti koneksi, bukan berarti datanya bersih.
 2. Dari mesin operator yang punya repo:
-   `psql "$ADMIN_DATABASE_URL" -f apps/api/scripts/recovery-refund-final-failure-check.sql > /tmp/cek-refund.txt`
+   `psql -v ON_ERROR_STOP=1 "$ADMIN_DATABASE_URL" -f apps/api/scripts/recovery-refund-final-failure-check.sql > /tmp/cek-refund.txt`
    (simpan hasil di luar repo, hasilnya memuat id tenant dan jumlah uang).
+   `ON_ERROR_STOP=1` menghentikan skrip begitu pengaman gagal.
 3. Simpan jumlah baris per tenant untuk perbandingan nanti.
 
 ## Rencana backfill per kategori
@@ -80,6 +85,12 @@ Untuk tiap baris (urut `tenant_id`, `issue_id`), dalam satu transaksi tenant
 2. Panggil `refileRecoveryRefundAfterFailure(tx, context, failedRefund, now)`
    (`apps/api/src/services/order-recovery-refund.ts`). Satu panggilan
    menyelesaikan semua kategori di bawah.
+
+`refileRecoveryRefundAfterFailure` aman dipanggil berulang untuk refund gagal
+yang sama: panggilan kedua dan seterusnya tidak menambah audit (audit ditulis
+sekali per id refund atau issue, pola `auditOnce`), tidak menambah event, dan
+tidak mengubah cap `refund_rejected_at`. Jadi backfill yang terputus atau
+diulang tidak menggandakan catatan.
 
 | Kategori                     | Yang dilakukan panggilan itu                                                                                     |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |

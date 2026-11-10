@@ -4,9 +4,13 @@
 -- migrator does not run this file. It writes nothing (BEGIN READ ONLY ...
 -- ROLLBACK). Runbook: docs/runbooks/recovery-refund-final-failure-backfill.md.
 --
--- Run with an admin connection that sees every tenant (BYPASSRLS or owner
--- role), e.g. psql "$ADMIN_DATABASE_URL" -f this-file. Without that role RLS
--- hides the rows and all queries return nothing.
+-- Run with an admin connection that sees every tenant: a superuser or a role
+-- with BYPASSRLS, e.g. psql -v ON_ERROR_STOP=1 "$ADMIN_DATABASE_URL" -f
+-- this-file. Being the table owner is NOT enough: the tables use FORCE ROW
+-- LEVEL SECURITY, which applies to the owner too, so an owner connection
+-- without BYPASSRLS would silently get an empty result. The first statement
+-- therefore fails the script (RAISE EXCEPTION, SQLSTATE 42501) when
+-- current_user is neither superuser nor BYPASSRLS.
 --
 -- A recovery refund issue is in a FINAL failure state when the issue is a
 -- resolved manual_refund, it has a failed recovery refund, no refund that is
@@ -31,6 +35,21 @@
 -- purpose (the payout stays reserved for the line) and a re-report of the same
 -- item replays the failed refund (legend-pti5r), so nothing to backfill there.
 BEGIN READ ONLY;
+
+-- Guard: fail loudly instead of returning an empty (misleading) result.
+DO $guard$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = current_user AND (rolsuper OR rolbypassrls)
+  ) THEN
+    RAISE EXCEPTION
+      'recovery refund check needs a superuser or BYPASSRLS role: % cannot see rows of every tenant (FORCE RLS also applies to table owners)',
+      current_user
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END
+$guard$;
 
 -- Query 1: final failure without stamp or journal reversal request.
 WITH failed AS (
