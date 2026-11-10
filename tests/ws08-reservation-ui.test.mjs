@@ -472,6 +472,43 @@ describe("Schedule derivations", () => {
   });
 });
 
+describe("Second outlet (?outlets=many)", () => {
+  const second = cafeLegendFixtures.outlets[1];
+
+  test("the second outlet serves its own desk, not the first outlet's and not a 404", async () => {
+    const day = await get(`/api/outlets/${second.id}/reservations`, {
+      date: "2026-11-07",
+      limit: 100,
+    });
+    assert.equal(day.data.length, 2);
+    for (const row of day.data) assert.equal(row.outletId, second.id);
+    const first = await get(`/api/outlets/${outlet.id}/reservations`, {
+      date: "2026-11-07",
+      limit: 100,
+    });
+    const firstIds = new Set(first.data.map((row) => row.id));
+    for (const row of day.data) assert.ok(!firstIds.has(row.id));
+
+    const waitlist = await get(`/api/outlets/${second.id}/waitlist`, {
+      limit: 100,
+    });
+    assert.equal(waitlist.data.length, 1);
+    assert.equal(waitlist.data[0].outletId, second.id);
+    const packages = await get(
+      `/api/outlets/${second.id}/reservation-packages`,
+    );
+    assert.ok(packages.data.length > 0);
+    for (const row of packages.data) assert.equal(row.outletId, second.id);
+  });
+
+  test("a first-outlet reservation is not reachable through the second outlet", async () => {
+    const error = await failure(
+      get(`/api/outlets/${second.id}/reservations/${ids.pendingReservationId}`),
+    );
+    assert.equal(error.code, "RESERVATION_NOT_FOUND");
+  });
+});
+
 describe("Policy wording", () => {
   test("refund percentages are not doubled (percentLabel already adds %)", () => {
     const { policyLateCancel, policyNoShow } = reservationMessages.detail;

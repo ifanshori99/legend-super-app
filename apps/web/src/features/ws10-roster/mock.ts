@@ -20,12 +20,13 @@ import {
   type ShiftAssignment,
 } from "@starter/shared/hris";
 import { ApiError } from "@/lib/api/errors";
+import { MOCK_SHIFT_ASSIGNMENTS } from "@/lib/mock/handlers/hris-directory";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import { readDrafts, readPublication } from "./draft-store.ts";
 import { ROSTER_COMPLIANCE_POLICY } from "./fixtures.ts";
 
-const fixtureAssignments = cafeLegendHrisFixtures.shiftAssignments;
+const fixtureAssignments = MOCK_SHIFT_ASSIGNMENTS;
 
 type PublishReplay = {
   /** outletId|weekStart: a reused key with another body is refused. */

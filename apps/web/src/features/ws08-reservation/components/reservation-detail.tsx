@@ -468,19 +468,42 @@ function DetailBody({
 export function ReservationDetailDialog({
   open,
   onOpenChange,
+  onNotFound,
   outletId,
   timeZone,
   reservationId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The id is not this outlet's: drop it from the URL without history. */
+  onNotFound: () => void;
   outletId: string;
   timeZone: string;
   /** Deep-linkable: the dialog fetches the detail itself. */
   reservationId: string | null;
 }) {
   const t = useT();
+  const toast = useToast();
   const detail = useReservationDetail(outletId, reservationId ?? undefined);
+
+  // The id lives in the URL, which outlives an outlet switch (browser back, a
+  // shared link): an id that is not this outlet's reads as not found. Drop it
+  // from the URL and say so, rather than leave an error dialog open on a
+  // reservation of another outlet (legend-wpgfu).
+  const notFound =
+    reservationId !== null &&
+    (detail.error as { code?: unknown } | null)?.code ===
+      "RESERVATION_NOT_FOUND";
+  React.useEffect(() => {
+    if (!notFound) return;
+    onNotFound();
+    toast({
+      title: t("reservation.errors.RESERVATION_NOT_FOUND"),
+      tone: "danger",
+    });
+    // Once per id: a toast or dialog callback identity change must not repeat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notFound, reservationId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

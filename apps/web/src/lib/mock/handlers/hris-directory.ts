@@ -29,6 +29,8 @@ import {
   listPositions,
   listShiftAssignments,
   hrisPiiVisibility,
+  shiftAssignmentSchema,
+  type ShiftAssignment,
   type Announcement,
   type AttendanceCorrection,
   type AttendanceLog,
@@ -54,6 +56,54 @@ import { createMockStore } from "../store.ts";
 
 const { tenant, outlets, employees, employeePii } = cafeLegendHrisFixtures;
 export const MOCK_OUTLET = outlets[0];
+
+/**
+ * The second fixture outlet (`?outlets=many`) has staff and a shift template
+ * in the HRIS fixtures but no assignments, so its roster would open empty.
+ * Mock-only rows (cloned from a first-outlet assignment, never edited in
+ * `@starter/shared`): the outlet's active staff on its "Pagi Preopening"
+ * template (8005) for the same three days the first outlet's roster covers.
+ */
+const secondOutlet = outlets[1];
+const secondOutletShiftTemplate = cafeLegendHrisFixtures.shiftTemplates.find(
+  (template) => template.outletId === secondOutlet.id && template.isActive,
+);
+const secondOutletShifts: ShiftAssignment[] = (() => {
+  const base = cafeLegendHrisFixtures.shiftAssignments.find(
+    (assignment) => assignment.status === "published",
+  );
+  if (!base || !secondOutletShiftTemplate) return [];
+  const staff = employees.filter(
+    (employee) =>
+      employee.homeOutletId === secondOutlet.id && employee.status === "active",
+  );
+  const days = ["2026-10-26", "2026-10-27", "2026-10-28"];
+  return staff.flatMap((employee, row) =>
+    days.map((businessDate, day) =>
+      shiftAssignmentSchema.parse({
+        ...structuredClone(base),
+        id: `00000000-0000-4000-8000-${String(7400 + row * days.length + day).padStart(12, "0")}`,
+        outletId: secondOutlet.id,
+        employeeId: employee.id,
+        shiftTemplateId: secondOutletShiftTemplate.id,
+        stationId: null,
+        businessDate,
+        segments: secondOutletShiftTemplate.segments.map((segment) => ({
+          startsAt: `${businessDate}T${segment.startTime}:00+07:00`,
+          endsAt: `${businessDate}T${segment.endTime}:00+07:00`,
+        })),
+        breakMinutes: secondOutletShiftTemplate.breakMinutes,
+        status: "published",
+      }),
+    ),
+  );
+})();
+
+/** Every shift row the roster read model serves: both outlets. */
+export const MOCK_SHIFT_ASSIGNMENTS: readonly ShiftAssignment[] = [
+  ...cafeLegendHrisFixtures.shiftAssignments,
+  ...secondOutletShifts,
+];
 
 /**
  * The mock's signed-in employee (HR-01): CL-1003, the fixture row that has
@@ -455,13 +505,12 @@ registerMock(listShiftAssignments, ({ query, scenario }) => {
   // employee's rows. The outlet-wide read (no employeeId) is the roster screen,
   // which the API guards with `hr.schedule.manage`.
   const requestedShiftEmployee = query.employeeId;
-  const rows = cafeLegendHrisFixtures.shiftAssignments
-    .filter(
-      (assignment) =>
-        requestedShiftEmployee === undefined ||
-        (requestedShiftEmployee === MOCK_ME.id &&
-          assignment.employeeId === MOCK_ME.id),
-    )
+  const rows = MOCK_SHIFT_ASSIGNMENTS.filter(
+    (assignment) =>
+      requestedShiftEmployee === undefined ||
+      (requestedShiftEmployee === MOCK_ME.id &&
+        assignment.employeeId === MOCK_ME.id),
+  )
     .filter(
       (assignment) =>
         query.outletId === undefined || assignment.outletId === query.outletId,

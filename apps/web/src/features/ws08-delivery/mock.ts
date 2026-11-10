@@ -51,8 +51,8 @@ import { channelIsManual, orderIsFinal } from "./lib.ts";
 
 const fixtures = cafeLegendDeliveryFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
-const outletId = outlet.id;
 const tenantId = outlet.tenantId;
+const secondOutlet = cafeLegendFixtures.outlets[1];
 
 /**
  * Demo commission of a manual row: 20% of gross, the same ratio the GoFood
@@ -75,14 +75,59 @@ function fail(code: DeliveryErrorCode): never {
   );
 }
 
-function requireOutlet(requested: string): void {
-  if (requested !== outletId)
-    throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+/**
+ * The outlet an endpoint addresses: the first fixture outlet, or the second
+ * (`?outlets=many`), which has its own stores below. Any other id is 404.
+ */
+function requireOutlet(requested: string) {
+  const found = [outlet, secondOutlet].find((row) => row.id === requested);
+  if (!found) throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+  return found;
 }
+
+// ---- Second outlet (`?outlets=many`) --------------------------------------
+
+/**
+ * The second fixture outlet runs its own channels and queue, cloned from the
+ * first outlet's fixtures inside this store (never edited in
+ * `@starter/shared`): the same three platforms, with GoFood live and one
+ * fresh GoFood order waiting for the cashier. It has no platform statement
+ * yet, so its reconciliation honestly reads zero.
+ */
+const secondScope = { tenantId, outletId: secondOutlet.id };
+const secondOutletChannels: DeliveryChannel[] = fixtures.channels.map((row) =>
+  deliveryChannelSchema.parse({
+    ...structuredClone(row),
+    ...secondScope,
+    // Only GoFood is integrated here; GrabFood joins later.
+    ...(row.platform === "grabfood"
+      ? {
+          isOpen: false,
+          closedReason: "Integrasi GrabFood outlet ini belum aktif.",
+          syncStatus: "error",
+          syncError: "Integrasi GrabFood belum aktif.",
+          lastSyncedAt: null,
+          menuItemCount: 0,
+          soldOutItemCount: 0,
+        }
+      : {}),
+  }),
+);
+const secondOutletOrders: DeliveryChannelOrder[] = [
+  deliveryChannelOrderSchema.parse({
+    ...structuredClone(fixtures.orders[0]),
+    ...secondScope,
+    id: "00000000-0000-4000-8000-000000007501",
+    externalOrderId: "GF-2026-1101-5102",
+  }),
+];
 
 // ---- Stores ---------------------------------------------------------------
 
-const channels = createMockStore(() => structuredClone(fixtures.channels));
+const channels = createMockStore(() => [
+  ...structuredClone(fixtures.channels),
+  ...structuredClone(secondOutletChannels),
+]);
 // Demo platform sync (legend-u37u3): the shared fixtures stay `ok`; the mock
 // seeds one order per non-ok state so the staff screen shows all three.
 const DEMO_PLATFORM_SYNC: Record<string, DeliveryPlatformSync> = {
@@ -92,15 +137,21 @@ const DEMO_PLATFORM_SYNC: Record<string, DeliveryPlatformSync> = {
   // clear the mark.
   [fixtures.orders[3].id]: "needs_action",
 };
-const orders = createMockStore(() =>
-  structuredClone(fixtures.orders).map((order) => ({
+const orders = createMockStore(() => [
+  ...structuredClone(fixtures.orders).map((order) => ({
     ...order,
     platformSync: DEMO_PLATFORM_SYNC[order.id] ?? order.platformSync,
   })),
-);
+  ...structuredClone(secondOutletOrders),
+]);
 
-function findChannel(platform: DeliveryPlatform): DeliveryChannel {
-  const found = channels.get().find((row) => row.platform === platform);
+function findChannel(
+  outlet: string,
+  platform: DeliveryPlatform,
+): DeliveryChannel {
+  const found = channels
+    .get()
+    .find((row) => row.platform === platform && row.outletId === outlet);
   if (!found) fail("DELIVERY_CHANNEL_UNKNOWN");
   return found;
 }
@@ -110,13 +161,19 @@ function saveChannel(next: DeliveryChannel): DeliveryChannel {
   channels.set(
     channels
       .get()
-      .map((row) => (row.platform === parsed.platform ? parsed : row)),
+      .map((row) =>
+        row.platform === parsed.platform && row.outletId === parsed.outletId
+          ? parsed
+          : row,
+      ),
   );
   return parsed;
 }
 
-function findOrder(id: string): DeliveryChannelOrder {
-  const found = orders.get().find((row) => row.id === id);
+function findOrder(outlet: string, id: string): DeliveryChannelOrder {
+  const found = orders
+    .get()
+    .find((row) => row.id === id && row.outletId === outlet);
   if (!found) fail("DELIVERY_ORDER_NOT_FOUND");
   return found;
 }
@@ -185,12 +242,14 @@ async function payloadDigest(value: unknown): Promise<string> {
 registerMock(listDeliveryChannels, ({ params, scenario }) => {
   requireOutlet(params.outletId);
   if (scenario === "empty") return { data: [] };
-  return { data: channels.get() };
+  return {
+    data: channels.get().filter((row) => row.outletId === params.outletId),
+  };
 });
 
 registerMock(setDeliveryChannelState, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findChannel(params.platform);
+  const current = findChannel(params.outletId, params.platform);
   // Reopening clears the closing window; closing keeps an optional promise to
   // reopen (the contract forbids both at once).
   const next = saveChannel({
@@ -205,7 +264,7 @@ registerMock(setDeliveryChannelState, ({ params, body }) => {
 
 registerMock(syncDeliveryChannelMenu, ({ params }) => {
   requireOutlet(params.outletId);
-  const current = findChannel(params.platform);
+  const current = findChannel(params.outletId, params.platform);
   // D12: a platform whose integration never activated cannot take a push.
   if (channelIsManual(current)) fail("DELIVERY_CHANNEL_UNKNOWN");
   const pushedItemCount = cafeLegendMenuFixtures.items.length;
@@ -230,6 +289,7 @@ registerMock(listDeliveryOrders, ({ params, query, scenario }) => {
     .get()
     .filter(
       (row) =>
+        row.outletId === params.outletId &&
         (query.platform === undefined || row.platform === query.platform) &&
         (query.status === undefined || row.status === query.status),
     )
@@ -242,7 +302,7 @@ registerMock(listDeliveryOrders, ({ params, query, scenario }) => {
 
 registerMock(getDeliveryOrder, ({ params }) => {
   requireOutlet(params.outletId);
-  return { data: findOrder(params.deliveryOrderId) };
+  return { data: findOrder(params.outletId, params.deliveryOrderId) };
 });
 
 registerMock(createManualDeliveryOrder, async ({ params, body }) => {
@@ -251,6 +311,7 @@ registerMock(createManualDeliveryOrder, async ({ params, body }) => {
     .get()
     .some(
       (row) =>
+        row.outletId === params.outletId &&
         row.platform === body.platform &&
         row.externalOrderId === body.externalOrderId,
     );
@@ -281,7 +342,7 @@ registerMock(createManualDeliveryOrder, async ({ params, body }) => {
   const order = deliveryChannelOrderSchema.parse({
     id: mintId(),
     tenantId,
-    outletId,
+    outletId: params.outletId,
     platform: body.platform,
     externalOrderId: body.externalOrderId,
     orderId: null,
@@ -309,14 +370,18 @@ registerMock(createManualDeliveryOrder, async ({ params, body }) => {
 
 registerMock(updateDeliveryOrderStatus, ({ params, body }) => {
   requireOutlet(params.outletId);
-  const current = findOrder(params.deliveryOrderId);
+  const current = findOrder(params.outletId, params.deliveryOrderId);
   // The store must be open on that platform before a platform order is
   // accepted. A manual row (D12) never goes through the adapter, so it may
   // still be worked while the platform store is closed.
   if (body.status === "accepted" && current.source === "platform") {
     const channel = channels
       .get()
-      .find((row) => row.platform === current.platform);
+      .find(
+        (row) =>
+          row.platform === current.platform &&
+          row.outletId === current.outletId,
+      );
     if (channel && !channel.isOpen) fail("DELIVERY_CHANNEL_CLOSED");
   }
   if (!canTransitionDeliveryOrder(current.status, body.status))
@@ -387,6 +452,7 @@ registerMock(getDeliveryReconciliation, ({ params, query, scenario }) => {
       ? []
       : fixtures.settlementLines.filter(
           (line) =>
+            line.outletId === params.outletId &&
             line.platform === query.platform &&
             line.settledOn >= query.periodStart &&
             line.settledOn <= query.periodEnd,
@@ -394,7 +460,7 @@ registerMock(getDeliveryReconciliation, ({ params, query, scenario }) => {
   return {
     data: deliveryReconciliationSchema.parse({
       tenantId,
-      outletId,
+      outletId: params.outletId,
       platform: query.platform,
       periodStart: query.periodStart,
       periodEnd: query.periodEnd,
