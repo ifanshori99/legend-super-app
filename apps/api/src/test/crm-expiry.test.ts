@@ -580,6 +580,107 @@ describe("LOY-07 point expiry", () => {
   });
 });
 
+// A redeem / negative adjust consumes only grants posted before it (ledger replay by
+// posting order), not grants that arrive later, even when a later grant expires sooner.
+describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
+  it("LOY-07 a grant posted after a redeem is not charged for it: the early-expiring later grant expires whole", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D2); // A
+    await redeem(world, member.id, 100); // uses A
+    const b = await earn(world, member.id, 100, D1); // B expires before A
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      points: "-100",
+      reverses_entry_id: b.entry.id,
+    });
+
+    expect(await runExpiry(world, member.id, T2)).toBe(0);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  it("LOY-07 a partial redeem uses up only the earlier grant: the later grant expires whole", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D2); // A
+    await redeem(world, member.id, 60); // A has 40 left
+    await earn(world, member.id, 100, D1); // B
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(40);
+    expect(await runExpiry(world, member.id, T2)).toBe(40);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  it("LOY-07 a restored redeem gives the points back to the grant it consumed, with that grant's expiry", async () => {
+    const { world, member } = await expiryWorld();
+    const a = await earn(world, member.id, 100, D2); // A
+    const used = await redeem(world, member.id, 100);
+    await earn(world, member.id, 100, D1); // B
+    await restore(world, member.id, used.entry.id, 100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(200);
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100); // B
+    expect(await balanceOf(world.tenantId, member.id)).toBe(100);
+
+    expect(await runExpiry(world, member.id, T2)).toBe(100); // A
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]!.reverses_entry_id).toBe(a.entry.id);
+  });
+
+  it("LOY-07 a partial restore gives back only that many points to the consumed grant", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D2); // A
+    const used = await redeem(world, member.id, 100);
+    await earn(world, member.id, 100, D1); // B
+    await restore(world, member.id, used.entry.id, 40);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(140);
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(40);
+    expect(await runExpiry(world, member.id, T2)).toBe(40);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  it("LOY-07 two grants with the same expiry: the redeem used the earlier-posted one, the later one expires", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D1); // A
+    await redeem(world, member.id, 100);
+    const b = await earn(world, member.id, 100, D1); // B, same expiry
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    const rows = await expireRows(world.tenantId, member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.reverses_entry_id).toBe(b.entry.id);
+  });
+
+  it("LOY-07 a negative manual adjust before a later grant does not eat that grant", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, D2); // A
+    await negativeAdjust(world, member.id, 100);
+    await earn(world, member.id, 100, D1); // B
+
+    expect(await runExpiry(world, member.id, T1)).toBe(100);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+  });
+
+  it("LOY-07 expiringSoon follows posting order too: the later early-expiring grant is the one reported", async () => {
+    const { world, member } = await expiryWorld();
+    await earn(world, member.id, 100, inDays(20)); // A
+    await redeem(world, member.id, 100); // uses A
+    await earn(world, member.id, 100, inDays(10)); // B
+
+    const result = await soon(world, member.id, 15); // window covers B only
+    expect(result.points).toBe(100);
+    expect(Date.parse(result.earliestExpiresAt!)).toBe(inDays(10).getTime());
+  });
+});
+
 // ---- birthday bonus ---------------------------------------------------------------
 
 type BirthdayOptions = {
