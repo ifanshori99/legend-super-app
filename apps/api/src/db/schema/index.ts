@@ -102,6 +102,8 @@ export * from "./hris-training";
 export * from "./hris-announcement";
 // WS-07 shareholder documents (legend-69yq).
 export * from "./shareholder-documents";
+// WS-07 profit share (legend-2ljb).
+export * from "./accounting-profit-share";
 // WS-06 stock count / stok opname (legend-j5x).
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).

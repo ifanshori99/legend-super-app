@@ -1,0 +1,2063 @@
+// Profit-share distribution cycle (PRD v1.7 §3.37 "Siklus Distribusi", §4 P,
+// §6 I; SH-01, SH-02, SH-03, SH-04; bead legend-2ljb slice E). Written from the
+// contract in `@starter/shared/accounting` (profit-share*.ts), not from the
+// services: HTTP tests run the real Better Auth, tenant resolver, RBAC, RLS and
+// PostgreSQL; the two profit-share routers are mounted on a test express app
+// with the same auth + tenant middleware as app.ts (the real app factory is not
+// needed to prove the contract). Fixtures that are not part of the unit under
+// test (legal entity, chart of accounts, account mappings, posted revenue and
+// expense, a CLOSED fiscal period) are written as the migration owner and
+// through the journal / period-close services, like accounting-period-close.
+//
+// Assumptions (the contract does not pin these down):
+// - Error bodies are `{ error: { code } }` (like every other API test) and the
+//   statuses follow `accountingErrorHttpStatus` / `accessErrorHttpStatus`;
+//   body validation answers 422 VALIDATION_ERROR.
+// - Share versions are seeded in SQL through the contract state machine (the
+//   version endpoints are the registry suite's concern).
+// - A user holding the approve permission but not the registry permission may
+//   only decide; the "dual" user holds both so it can be requester AND decider.
+// - Raw-SQL guard tests run as the migration owner: the guards are triggers
+//   and apply to every role. They assert "the statement is refused and the row
+//   is unchanged", not a specific SQLSTATE. UPDATEs are chosen so every CHECK
+//   constraint still holds, so only the freeze guard can refuse them.
+// - paidAt is sent as "now": the current Asia/Jakarta month gets an open
+//   fiscal period in every fixture entity, so the completion journal can post.
+// - The distribution router is built with its default dependencies (the real
+//   statement issuer); a failing statement issue must not break a payment
+//   (brief), which these tests rely on implicitly.
+// - A negative adjustment stores only `reversalJournalEntryId` (and leaves
+//   `journalEntryId` null); a positive one stores only `journalEntryId`.
+// - Tenant B is left in the disposable database: profit-share rows cannot be
+//   deleted (SH-04), so no cleanup of tenant B is attempted.
+import { randomBytes, randomUUID } from "node:crypto";
+import express from "express";
+import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
+import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  businessDateSchema,
+  idr,
+  userIdSchema,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  accountIdSchema,
+  distributionRunSchema,
+  distributionStatementSchema,
+  listDistributionRuns,
+  myProfitShareSchema,
+  type DistributionRun,
+} from "@starter/shared/accounting";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { auth } from "../lib/auth";
+import { requestContext } from "../lib/request-context";
+import { limitAuthBody } from "../middleware/body";
+import { errorHandler, notFound } from "../middleware/error-handler";
+import { tenantContext } from "../middleware/tenant";
+import { createProfitShareDistributionRouter } from "../routes/profit-share-distribution.routes";
+import { createProfitShareRegistryRouter } from "../routes/profit-share-registry.routes";
+import { resolveHostname } from "../services/org-resolve.service";
+import { deviceTenantCredential } from "../services/platform-tenant.service";
+import { db } from "../db";
+import { withTenant } from "../db/tenant";
+import { postJournalInTransaction } from "../services/accounting-journal.service";
+import {
+  approvePeriodReopen,
+  closeFiscalPeriod,
+  requestPeriodReopen,
+} from "../services/accounting-period-close.service";
+import { agent, originHeader, signUp } from "./helpers";
+
+const tenantA = cafeLegendPlatformFixtures.tenant.id;
+const tenantB = randomUUID();
+const API = "/api/accounting";
+
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const unique = () => randomBytes(4).toString("hex");
+const key = (label: string) => `${label}-${randomUUID()}`;
+
+// ---- Test app ---------------------------------------------------------------
+
+function buildApp(tenantId: string): express.Express {
+  const app = express();
+  app.use(requestContext);
+  app.all("/api/auth/*splat", limitAuthBody, toNodeHandler(auth));
+  app.use(
+    "/api",
+    tenantContext({
+      required: false,
+      resolveDomain: async (hostname) => {
+        const resolution = await resolveHostname(hostname);
+        return resolution.ok
+          ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
+          : null;
+      },
+      verifyCredential: deviceTenantCredential,
+      // Test stand-in for the development tenant fallback: the signed-in
+      // caller's tenant is the one this app instance was built for.
+      fallback: async (req) => {
+        const session = await auth.api.getSession({
+          headers: fromNodeHeaders(req.headers),
+          query: { disableCookieCache: true },
+        });
+        return session ? { tenantId, brandId: null, source: "session" } : null;
+      },
+    }),
+  );
+  const router = express.Router();
+  router.use(createProfitShareRegistryRouter());
+  router.use(createProfitShareDistributionRouter({} as never));
+  app.use(API, router);
+  app.use(notFound);
+  app.use(errorHandler);
+  return app;
+}
+
+const appA = buildApp(tenantA);
+const appB = buildApp(tenantB);
+
+type Person = { client: ReturnType<typeof agent>; userId: string };
+
+async function signedIn(app: express.Express, name: string): Promise<Person> {
+  const client = agent(app);
+  await signUp(client, name);
+  const session = await client.get("/api/auth/get-session");
+  return { client, userId: session.body.user.id as string };
+}
+
+async function customRole(
+  tenantId: string,
+  userId: string,
+  permissions: string[],
+) {
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, $3, false, $4, $5)`,
+    [
+      roleId,
+      tenantId,
+      `Distribution test ${roleId.slice(0, 8)}`,
+      JSON.stringify(permissions),
+      JSON.stringify(["tenant"]),
+    ],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+    [tenantId, userId, roleId],
+  );
+}
+
+const MANAGE = "profit_share.registry.manage";
+const APPROVE = "profit_share.distribution.approve";
+
+async function withPermissions(
+  app: express.Express,
+  tenantId: string,
+  name: string,
+  permissions: string[],
+) {
+  const person = await signedIn(app, name);
+  await customRole(tenantId, person.userId, permissions);
+  return person;
+}
+
+/** The seeded `shareholder` template holds `profit_share.own.view`. */
+async function shareholderUser(name: string) {
+  const person = await signedIn(appA, name);
+  const assigned = await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
+     WHERE tenant_id = $1 AND template_key = 'shareholder'`,
+    [tenantA, person.userId],
+  );
+  expect(assigned.rowCount).toBe(1);
+  return person;
+}
+
+const post = (who: Person, path: string, body: unknown) =>
+  who.client
+    .post(`${API}${path}`)
+    .set(originHeader)
+    .send(body as object);
+const get = (who: Person, path: string) => who.client.get(`${API}${path}`);
+
+// ---- Fixtures ---------------------------------------------------------------
+
+function scopedContext(tenant: string = tenantA): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenant,
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+}
+
+/** Today's business date in Asia/Jakarta, and its YYYY-MM period. */
+const jakartaDate = (at: Date) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(at);
+
+type Accounts = {
+  cash: string;
+  revenue: string;
+  expense: string;
+  bank: string;
+  retainedEarnings: string;
+  dividendTaxPayable: string;
+};
+
+type World = {
+  legalEntityId: string;
+  accounts: Accounts;
+  profitEntityId: string;
+  /** Next free past period index for `closedPeriod`. */
+  nextPeriod: number;
+};
+
+/** Legal entity + chart of accounts + the three posting-role mappings. */
+async function makeLegalEntity(): Promise<{
+  legalEntityId: string;
+  accounts: Accounts;
+}> {
+  const legalEntityId = randomUUID();
+  const accounts: Accounts = {
+    cash: randomUUID(),
+    revenue: randomUUID(),
+    expense: randomUUID(),
+    bank: randomUUID(),
+    retainedEarnings: randomUUID(),
+    dividendTaxPayable: randomUUID(),
+  };
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name) VALUES ($1, $2, $3)",
+    [legalEntityId, tenantA, `Bagi hasil ${unique()}`],
+  );
+  await owner.query(
+    `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+     VALUES ($1, $7, $8, '1101', 'Kas', 'asset', 'cash_and_equivalents'),
+            ($2, $7, $8, '4101', 'Penjualan', 'revenue', 'revenue'),
+            ($3, $7, $8, '6101', 'Beban operasional', 'expense', 'operating_expense'),
+            ($4, $7, $8, '1102', 'Bank', 'asset', 'cash_and_equivalents'),
+            ($5, $7, $8, '3102', 'Laba ditahan', 'equity', 'equity'),
+            ($6, $7, $8, '2301', 'Utang pajak dividen', 'liability', 'current_liability')`,
+    [
+      accounts.cash,
+      accounts.revenue,
+      accounts.expense,
+      accounts.bank,
+      accounts.retainedEarnings,
+      accounts.dividendTaxPayable,
+      tenantA,
+      legalEntityId,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+     VALUES ($1, $2, 'bank', $3),
+            ($1, $2, 'retained_earnings', $4),
+            ($1, $2, 'dividend_tax_payable', $5)`,
+    [
+      tenantA,
+      legalEntityId,
+      accounts.bank,
+      accounts.retainedEarnings,
+      accounts.dividendTaxPayable,
+    ],
+  );
+  // The completion journal is dated at payment time: keep that month open.
+  await owner.query(
+    `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+     VALUES ($1, $2, $3)`,
+    [tenantA, legalEntityId, jakartaDate(new Date()).slice(0, 7)],
+  );
+  return { legalEntityId, accounts };
+}
+
+function periodKey(index: number): string {
+  // 2021-01, 2021-02, ... all long past, so "the period has ended" holds.
+  const year = 2021 + Math.floor(index / 12);
+  const month = (index % 12) + 1;
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function journalLine(accountId: string, debit: number, credit: number) {
+  return {
+    accountId: accountIdSchema.parse(accountId),
+    debitIdr: idr(debit),
+    creditIdr: idr(credit),
+    outletId: null,
+    costCenter: null,
+  };
+}
+
+async function postEntry(
+  legalEntityId: string,
+  date: string,
+  lines: ReturnType<typeof journalLine>[],
+) {
+  const context = scopedContext();
+  await withTenant(db, context, (tx) =>
+    postJournalInTransaction(tx, context, {
+      legalEntityId,
+      outletId: null,
+      entryDate: businessDateSchema.parse(date),
+      sourceType: "sale" as const,
+      sourceId: randomUUID(),
+      description: "Penjualan dan beban (uji bagi hasil)",
+      lines,
+      postedBy: null,
+      idempotencyKey: `post-${randomUUID()}`,
+    }),
+  );
+}
+
+/** An OPEN fiscal period row with posted revenue/expense, net profit known. */
+async function openPeriod(
+  world: Pick<World, "legalEntityId" | "accounts">,
+  period: string,
+  netProfit: number,
+): Promise<{ id: string; period: string }> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+     VALUES ($1, $2, $3) RETURNING id`,
+    [tenantA, world.legalEntityId, period],
+  );
+  const revenue = netProfit > 0 ? netProfit + 1_000_000 : 1_000_000;
+  const expense = revenue - netProfit;
+  const date = `${period}-15`;
+  await postEntry(world.legalEntityId, date, [
+    journalLine(world.accounts.cash, revenue, 0),
+    journalLine(world.accounts.revenue, 0, revenue),
+  ]);
+  await postEntry(world.legalEntityId, date, [
+    journalLine(world.accounts.expense, expense, 0),
+    journalLine(world.accounts.cash, 0, expense),
+  ]);
+  return { id: rows[0]!.id, period };
+}
+
+const closer = randomUUID();
+
+/** A CLOSED fiscal period whose P&L net profit is exactly `netProfit`. */
+async function closedPeriod(world: World, netProfit: number) {
+  const period = await openPeriod(
+    world,
+    periodKey(world.nextPeriod++),
+    netProfit,
+  );
+  await closeFiscalPeriod(
+    scopedContext(),
+    period.id,
+    { expectedVersion: 1, idempotencyKey: `close-${randomUUID()}` },
+    userIdSchema.parse(closer),
+  );
+  return period;
+}
+
+// ---- People and shareholders (created once) ----------------------------------
+
+let manager: Person; // registry.manage: requester
+let approver: Person; // distribution.approve: decides
+let dual: Person; // both: can be requester AND (wrongly) decider
+let sh1User: Person; // login of shareholder S1
+let sh2User: Person; // login of shareholder S2
+let managerB: Person;
+let approverB: Person;
+
+type Holder = { id: string; name: string };
+let s1: Holder;
+let s2: Holder;
+let s3: Holder;
+let s4: Holder;
+let s5: Holder;
+
+async function newShareholder(
+  name: string,
+  userId: string | null,
+): Promise<Holder> {
+  const response = await post(manager, "/shareholders", {
+    name,
+    type: "person",
+    userId,
+    npwp: null,
+    payoutAccount: null,
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return { id: response.body.data.id as string, name };
+}
+
+beforeAll(async () => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1, $2, 'Distribution tenant B', 'lengkap', 'active', 'shared', $3, $4, $5)`,
+    [
+      tenantB,
+      `dist-${randomUUID().slice(0, 8)}`,
+      JSON.stringify({ modules: [], integrationProviders: [] }),
+      JSON.stringify({
+        maxOutlets: 1,
+        maxActiveEmployees: 1,
+        maxDevices: 1,
+        aiRequestsPerMonth: 0,
+        whatsappCostCapIdr: 0,
+        aiCostCapIdr: 0,
+        emailCostCapIdr: 0,
+      }),
+      randomUUID(),
+    ],
+  );
+  manager = await withPermissions(appA, tenantA, "Dist Manager", [MANAGE]);
+  approver = await withPermissions(appA, tenantA, "Dist Approver", [APPROVE]);
+  dual = await withPermissions(appA, tenantA, "Dist Dual", [MANAGE, APPROVE]);
+  sh1User = await shareholderUser("Dist Shareholder 1");
+  sh2User = await shareholderUser("Dist Shareholder 2");
+  // Tenant B holds BOTH permissions: a 404 below can only come from tenancy.
+  managerB = await withPermissions(appB, tenantB, "Dist Manager B", [
+    MANAGE,
+    APPROVE,
+  ]);
+  approverB = await withPermissions(appB, tenantB, "Dist Approver B", [
+    APPROVE,
+  ]);
+  const tag = unique();
+  s1 = await newShareholder(`Andi Satu ${tag}`, sh1User.userId);
+  s2 = await newShareholder(`Budi Dua ${tag}`, sh2User.userId);
+  s3 = await newShareholder(`Citra Tiga ${tag}`, null);
+  s4 = await newShareholder(`Dewi Empat ${tag}`, null);
+  s5 = await newShareholder(`Eko Lima ${tag}`, null);
+}, 120_000);
+
+afterAll(async () => {
+  await owner.end();
+});
+
+// ---- Register helpers --------------------------------------------------------
+
+type Policy = { reserveBp: number; taxWithholdingBp: number };
+type Share = { holder: Holder; bp: number };
+
+async function createProfitEntity(legalEntityId: string, policy: Policy) {
+  const response = await post(manager, "/profit-entities", {
+    name: `Entitas ${unique()}`,
+    type: "legal_entity",
+    legalEntityId,
+    outletId: null,
+    policy: {
+      basis: "closed_period_net_profit",
+      frequency: "monthly",
+      ...policy,
+    },
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return response.body.data.id as string;
+}
+
+/**
+ * Seeds a share version as the migration owner, walking the contract state
+ * machine draft -> pending_approval -> approved (requester != approver). The
+ * version HTTP endpoints belong to the registry suite; this suite only needs a
+ * version in force, and must not depend on them.
+ */
+async function seedVersion(
+  profitEntityId: string,
+  shares: Share[],
+  status: "pending_approval" | "approved",
+  effectiveFrom = "2020-01-01",
+  version = 1,
+) {
+  const requestedBy = manager.userId;
+  await owner.query(
+    `INSERT INTO share_allocation_versions
+       (tenant_id, profit_entity_id, version, effective_from, status, requested_by, idempotency_key)
+     VALUES ($1, $2, $6, $3, 'draft', $4, $5)`,
+    [
+      tenantA,
+      profitEntityId,
+      effectiveFrom,
+      requestedBy,
+      key("seed-ver"),
+      version,
+    ],
+  );
+  for (const [position, share] of shares.entries())
+    await owner.query(
+      `INSERT INTO share_allocations
+         (tenant_id, profit_entity_id, version, shareholder_id, share_bp, position)
+       VALUES ($1, $2, $6, $3, $4, $5)`,
+      [tenantA, profitEntityId, share.holder.id, share.bp, position, version],
+    );
+  await owner.query(
+    `UPDATE share_allocation_versions SET status = 'pending_approval'
+     WHERE tenant_id = $1 AND profit_entity_id = $2 AND version = $3`,
+    [tenantA, profitEntityId, version],
+  );
+  if (status === "approved")
+    await owner.query(
+      `UPDATE share_allocation_versions
+       SET status = 'approved', decided_by = $3, decided_at = now()
+       WHERE tenant_id = $1 AND profit_entity_id = $2 AND version = $4`,
+      [tenantA, profitEntityId, approver.userId, version],
+    );
+  return version;
+}
+
+async function makeWorld(
+  policy: Policy,
+  shares: Share[] | null,
+): Promise<World> {
+  const { legalEntityId, accounts } = await makeLegalEntity();
+  const profitEntityId = await createProfitEntity(legalEntityId, policy);
+  if (shares) await seedVersion(profitEntityId, shares, "approved");
+  return { legalEntityId, accounts, profitEntityId, nextPeriod: 0 };
+}
+
+/** The rounding world: reserve 10%, tax 5%, shares 33.33/33.33/33.34%. */
+const roundingPolicy: Policy = { reserveBp: 1000, taxWithholdingBp: 500 };
+const roundingShares = (): Share[] => [
+  { holder: s1, bp: 3333 },
+  { holder: s2, bp: 3333 },
+  { holder: s3, bp: 3334 },
+];
+const NET_PROFIT = 1_000_001;
+
+// ---- Distribution helpers ----------------------------------------------------
+
+const createRun = (
+  who: Person,
+  world: World,
+  fiscalPeriodId: string,
+  k = key("run"),
+) =>
+  post(who, `/profit-entities/${world.profitEntityId}/distributions`, {
+    fiscalPeriodId,
+    idempotencyKey: k,
+  });
+const submitRun = (who: Person, runId: string, k = key("submit")) =>
+  post(who, `/distributions/${runId}/submit`, { idempotencyKey: k });
+const decideRun = (
+  who: Person,
+  runId: string,
+  decision: "approve" | "reject" = "approve",
+  k = key("decide"),
+) =>
+  post(who, `/distributions/${runId}/decision`, {
+    decision,
+    note: decision === "reject" ? "Angka belum final" : null,
+    idempotencyKey: k,
+  });
+const payLine = (
+  who: Person,
+  runId: string,
+  lineId: string,
+  k = key("pay"),
+  ref = `TRF-${unique()}`,
+  paidAt = new Date().toISOString(),
+) =>
+  post(who, `/distributions/${runId}/lines/${lineId}/payment`, {
+    paymentRef: ref,
+    paidAt,
+    idempotencyKey: k,
+  });
+const getRun = (who: Person, runId: string) =>
+  get(who, `/distributions/${runId}`);
+const adjust = (
+  who: Person,
+  runId: string,
+  body: { fiscalPeriodId: string; adjustmentIdr: number; reason?: string },
+) =>
+  post(who, `/distributions/${runId}/adjustment`, {
+    reason: "Koreksi angka",
+    idempotencyKey: key("adj"),
+    ...body,
+  });
+
+const parseRun = (body: { data: unknown }): DistributionRun =>
+  distributionRunSchema.parse(body.data);
+
+async function draftRun(world: World, netProfit = NET_PROFIT) {
+  const period = await closedPeriod(world, netProfit);
+  const response = await createRun(manager, world, period.id);
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return { period, run: parseRun(response.body) };
+}
+
+async function pendingRun(world: World) {
+  const drafted = await draftRun(world);
+  const submitted = await submitRun(manager, drafted.run.id);
+  expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+  return { ...drafted, run: parseRun(submitted.body) };
+}
+
+async function approvedRun(world: World) {
+  const pending = await pendingRun(world);
+  const decided = await decideRun(approver, pending.run.id);
+  expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+  return { ...pending, run: parseRun(decided.body) };
+}
+
+async function payAll(who: Person, run: DistributionRun) {
+  let last = null;
+  for (const line of run.lines) {
+    last = await payLine(who, run.id, line.id);
+    expect(last.status, JSON.stringify(last.body)).toBe(200);
+  }
+  return parseRun(last!.body);
+}
+
+async function paidRun(world: World) {
+  const approved = await approvedRun(world);
+  return { ...approved, run: await payAll(manager, approved.run) };
+}
+
+async function journalOf(entryId: string) {
+  const entry = await owner.query<{
+    source_type: string;
+    source_id: string;
+    entry_date: string;
+    legal_entity_id: string;
+  }>(
+    `SELECT source_type, source_id, entry_date::text AS entry_date, legal_entity_id
+     FROM journal_entries WHERE tenant_id = $1 AND id = $2`,
+    [tenantA, entryId],
+  );
+  expect(entry.rowCount).toBe(1);
+  const lines = await owner.query<{
+    account_id: string;
+    debit_idr: string;
+    credit_idr: string;
+  }>(
+    `SELECT account_id, debit_idr::text, credit_idr::text
+     FROM journal_lines WHERE tenant_id = $1 AND entry_id = $2`,
+    [tenantA, entryId],
+  );
+  const byAccount = (accountId: string) => {
+    const rows = lines.rows.filter((row) => row.account_id === accountId);
+    return {
+      debit: rows.reduce((sum, row) => sum + Number(row.debit_idr), 0),
+      credit: rows.reduce((sum, row) => sum + Number(row.credit_idr), 0),
+    };
+  };
+  return {
+    entry: entry.rows[0]!,
+    totalDebit: lines.rows.reduce((sum, row) => sum + Number(row.debit_idr), 0),
+    totalCredit: lines.rows.reduce(
+      (sum, row) => sum + Number(row.credit_idr),
+      0,
+    ),
+    byAccount,
+  };
+}
+
+/** The run contract exposes only the reversal id; read the posted-journal id from the row. */
+async function postedJournalId(runId: string): Promise<string | null> {
+  const { rows } = await owner.query<{ journal_entry_id: string | null }>(
+    "SELECT journal_entry_id FROM distribution_runs WHERE tenant_id = $1 AND id = $2",
+    [tenantA, runId],
+  );
+  return rows[0]!.journal_entry_id;
+}
+
+const errorCode = (response: { body: { error?: { code?: string } } }) =>
+  response.body.error?.code;
+
+// ---- SH-02 / SH-03: creating the draft ---------------------------------------
+
+describe("SH-02 a run needs a closed period and an approved share version", () => {
+  it("refuses a run on an OPEN period with PERIOD_NOT_CLOSED", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const open = await openPeriod(
+      world,
+      periodKey(world.nextPeriod++),
+      NET_PROFIT,
+    );
+    const response = await createRun(manager, world, open.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(errorCode(response)).toBe("PERIOD_NOT_CLOSED");
+    // Nothing was stored for the entity.
+    const list = await get(
+      manager,
+      `/profit-entities/${world.profitEntityId}/distributions`,
+    );
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(listDistributionRuns.response.parse(list.body).data).toEqual([]);
+  });
+
+  it("refuses a closed period with zero or negative profit (NOTHING_TO_DISTRIBUTE)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const loss = await closedPeriod(world, -500_000);
+    const response = await createRun(manager, world, loss.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("NOTHING_TO_DISTRIBUTE");
+  });
+
+  it("refuses a run when no approved share version is in force (SH-03)", async () => {
+    const world = await makeWorld(roundingPolicy, null);
+    const period = await closedPeriod(world, NET_PROFIT);
+    const none = await createRun(manager, world, period.id);
+    expect(none.status, JSON.stringify(none.body)).toBe(422);
+    expect(errorCode(none)).toBe("SHARE_VERSION_NOT_EFFECTIVE");
+
+    // A version that is only submitted (pending) is not usable either.
+    await seedVersion(
+      world.profitEntityId,
+      roundingShares(),
+      "pending_approval",
+    );
+    const pending = await createRun(manager, world, period.id);
+    expect(pending.status, JSON.stringify(pending.body)).toBe(422);
+    expect(errorCode(pending)).toBe("SHARE_VERSION_NOT_EFFECTIVE");
+  });
+
+  it("creates a draft with one line per shareholder from a closed period", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await draftRun(world);
+    expect(run).toMatchObject({
+      type: "regular",
+      basis: "closed_period_net_profit",
+      status: "draft",
+      period: period.period,
+      fiscalPeriodId: period.id,
+      shareVersion: 1,
+      periodNetProfitIdr: NET_PROFIT,
+      requestedBy: manager.userId,
+      approvedBy: null,
+      paidAt: null,
+      adjustsRunId: null,
+    });
+    expect(run.lines).toHaveLength(3);
+    expect(run.lines.map((line) => line.shareholderId).sort()).toEqual(
+      [s1.id, s2.id, s3.id].sort(),
+    );
+    for (const line of run.lines) {
+      expect(line.paymentStatus).toBe("pending");
+      expect(line.paymentRef).toBeNull();
+      expect(line.paidAt).toBeNull();
+      expect(line.statementFileKey).toBeNull();
+    }
+    // The draft is readable again and appears in the entity's run list.
+    const again = await getRun(manager, run.id);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(parseRun(again.body)).toEqual(run);
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(list.data).toEqual([
+      expect.objectContaining({
+        id: run.id,
+        status: "draft",
+        lineCount: 3,
+        paidLineCount: 0,
+        distributableIdr: run.distributableIdr,
+      }),
+    ]);
+  });
+});
+
+// ---- Rounding ----------------------------------------------------------------
+
+describe("SH-02 rounding is exact and documented", () => {
+  it("net profit Rp1.000.001, reserve 10%, shares 3333/3333/3334, tax 5%", async () => {
+    // Hand-computed from DISTRIBUTION_ROUNDING (reserve half-up, split by
+    // largest remainder, tax half-up per line):
+    //   reserve        = round(1,000,001 x 10%)          = 100,000
+    //   distributable  = 1,000,001 - 100,000             = 900,001
+    //   floors         = 299,970 / 299,970 / 300,060 (sum 900,000), remainder 1
+    //   the .3334 remainder (the 3334 bp holder) gets the extra rupiah
+    //   gross          = 299,970 / 299,970 / 300,061
+    //   tax (5% half-up) = 14,999 / 14,999 / 15,003 ; net = 284,971 / 284,971 / 285,058
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await draftRun(world);
+    expect(run.periodNetProfitIdr).toBe(1_000_001);
+    expect(run.reserveIdr).toBe(100_000);
+    expect(run.distributableIdr).toBe(900_001);
+    expect(run.totalGrossIdr).toBe(900_001);
+
+    const sum = (pick: (line: DistributionRun["lines"][number]) => number) =>
+      run.lines.reduce((total, line) => total + pick(line), 0);
+    expect(sum((line) => line.grossIdr)).toBe(run.distributableIdr);
+    expect(
+      sum((line) => line.netIdr) + sum((line) => line.taxWithheldIdr),
+    ).toBe(sum((line) => line.grossIdr));
+    expect(run.totalTaxWithheldIdr).toBe(sum((line) => line.taxWithheldIdr));
+    expect(run.totalNetIdr).toBe(sum((line) => line.netIdr));
+    for (const line of run.lines)
+      expect(line.grossIdr - line.taxWithheldIdr).toBe(line.netIdr);
+
+    const bp = (shareBp: number) =>
+      run.lines.filter((line) => line.shareBp === shareBp);
+    expect(bp(3333)).toHaveLength(2);
+    expect(bp(3334)).toHaveLength(1);
+    for (const line of bp(3333)) {
+      expect(line.grossIdr).toBe(299_970);
+      expect(line.taxWithheldIdr).toBe(14_999);
+      expect(line.netIdr).toBe(284_971);
+    }
+    expect(bp(3334)[0]).toMatchObject({
+      shareholderId: s3.id,
+      grossIdr: 300_061,
+      taxWithheldIdr: 15_003,
+      netIdr: 285_058,
+    });
+    expect(run.totalTaxWithheldIdr).toBe(45_001);
+    expect(run.totalNetIdr).toBe(855_000);
+  });
+
+  it("a tie on the largest remainder goes to the lowest shareholderId", async () => {
+    // reserve 0, tax 0, shares 50/50: 1,000,001 splits 500,000.5 / 500,000.5,
+    // so the single leftover rupiah goes to the lower shareholderId.
+    const world = await makeWorld({ reserveBp: 0, taxWithholdingBp: 0 }, [
+      { holder: s4, bp: 5000 },
+      { holder: s5, bp: 5000 },
+    ]);
+    const { run } = await draftRun(world);
+    expect(run.distributableIdr).toBe(1_000_001);
+    const [lowest, highest] = [...run.lines].sort((a, b) =>
+      a.shareholderId < b.shareholderId ? -1 : 1,
+    );
+    expect(lowest!.grossIdr).toBe(500_001);
+    expect(highest!.grossIdr).toBe(500_000);
+    expect(lowest!.taxWithheldIdr).toBe(0);
+    expect(lowest!.netIdr).toBe(500_001);
+  });
+});
+
+// ---- Duplicate and idempotency ----------------------------------------------
+
+describe("SH-04 one regular run per entity and closed period", () => {
+  it("refuses a second regular run with DISTRIBUTION_ALREADY_EXISTS", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { period, run } = await draftRun(world);
+    const second = await createRun(manager, world, period.id);
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(errorCode(second)).toBe("DISTRIBUTION_ALREADY_EXISTS");
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(list.data.map((row) => row.id)).toEqual([run.id]);
+  });
+
+  it("replays a create with the same key and body, refuses the same key with another body", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const first = await closedPeriod(world, NET_PROFIT);
+    const second = await closedPeriod(world, NET_PROFIT);
+    const k = key("run-replay");
+    const created = await createRun(manager, world, first.id, k);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const replay = await createRun(manager, world, first.id, k);
+    expect([200, 201]).toContain(replay.status);
+    expect(parseRun(replay.body).id).toBe(parseRun(created.body).id);
+    const clash = await createRun(manager, world, second.id, k);
+    expect(clash.status, JSON.stringify(clash.body)).toBe(409);
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(list.data).toHaveLength(1);
+  });
+
+  it("replays submit, decision and payment commands without a second transition", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await draftRun(world);
+    const submitKey = key("submit");
+    const first = await submitRun(manager, run.id, submitKey);
+    const replay = await submitRun(manager, run.id, submitKey);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(parseRun(replay.body).status).toBe("pending_approval");
+
+    const decideKey = key("decide");
+    const approved = await decideRun(approver, run.id, "approve", decideKey);
+    const approvedAgain = await decideRun(
+      approver,
+      run.id,
+      "approve",
+      decideKey,
+    );
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approvedAgain.status, JSON.stringify(approvedAgain.body)).toBe(200);
+    expect(parseRun(approvedAgain.body).approvedAt).toBe(
+      parseRun(approved.body).approvedAt,
+    );
+
+    const line = parseRun(approved.body).lines[0]!;
+    const payKey = key("pay");
+    // A retry resends the identical body, including the same paidAt.
+    const paidAt = new Date().toISOString();
+    const paid = await payLine(
+      manager,
+      run.id,
+      line.id,
+      payKey,
+      "REF-REPLAY-1",
+      paidAt,
+    );
+    const paidAgain = await payLine(
+      manager,
+      run.id,
+      line.id,
+      payKey,
+      "REF-REPLAY-1",
+      paidAt,
+    );
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    expect(paidAgain.status, JSON.stringify(paidAgain.body)).toBe(200);
+    const after = parseRun(paidAgain.body);
+    expect(after.lines.find((row) => row.id === line.id)?.paymentRef).toBe(
+      "REF-REPLAY-1",
+    );
+    // A different key on the already paid line is a real second payment.
+    const second = await payLine(manager, run.id, line.id, key("pay"), "REF-2");
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(errorCode(second)).toBe("DISTRIBUTION_LINE_ALREADY_PAID");
+  });
+});
+
+// ---- Submit / decide / four-eyes --------------------------------------------
+
+describe("SH-04 approval cycle (four-eyes)", () => {
+  it("draft -> pending_approval -> approved, approver differs from requester", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await draftRun(world);
+
+    const submitted = parseRun((await submitRun(manager, run.id)).body);
+    expect(submitted.status).toBe("pending_approval");
+
+    // The requester cannot approve even when allowed to (AUTH-06).
+    const own = await draftRun(world);
+    const ownSubmitted = await submitRun(dual, own.run.id);
+    // `dual` did not create this run, so it cannot submit it (INVALID_TRANSITION).
+    expect(ownSubmitted.status, JSON.stringify(ownSubmitted.body)).toBe(409);
+    expect(errorCode(ownSubmitted)).toBe("INVALID_TRANSITION");
+
+    const approved = await decideRun(approver, run.id);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(parseRun(approved.body)).toMatchObject({
+      status: "approved",
+      approvedBy: approver.userId,
+      requestedBy: manager.userId,
+    });
+    expect(parseRun(approved.body).approvedAt).not.toBeNull();
+  });
+
+  it("refuses the requester deciding their own run (APPROVER_IS_REQUESTER)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const period = await closedPeriod(world, NET_PROFIT);
+    const created = await createRun(dual, world, period.id);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const run = parseRun(created.body);
+    expect((await submitRun(dual, run.id)).status).toBe(200);
+    const self = await decideRun(dual, run.id);
+    expect(self.status, JSON.stringify(self.body)).toBe(403);
+    expect(errorCode(self)).toBe("APPROVER_IS_REQUESTER");
+    expect(parseRun((await getRun(dual, run.id)).body).status).toBe(
+      "pending_approval",
+    );
+  });
+
+  it("refuses a decision from a user without the approve permission", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await pendingRun(world);
+    const denied = await decideRun(manager, run.id);
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(parseRun((await getRun(manager, run.id)).body).status).toBe(
+      "pending_approval",
+    );
+  });
+
+  it("a rejected run is cancelled and a new regular run may be calculated", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await pendingRun(world);
+    const rejected = await decideRun(approver, run.id, "reject");
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+    expect(parseRun(rejected.body).status).toBe("cancelled");
+    // The cancelled run does not block a fresh calculation for the period.
+    const fresh = await createRun(manager, world, period.id);
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(201);
+    expect(parseRun(fresh.body).id).not.toBe(run.id);
+    expect(parseRun(fresh.body).status).toBe("draft");
+    // A cancelled run cannot be approved or paid afterwards.
+    const late = await decideRun(approver, run.id);
+    expect(late.status, JSON.stringify(late.body)).toBe(409);
+    expect(errorCode(late)).toBe("INVALID_TRANSITION");
+  });
+
+  it("a rejection without a note is a validation error", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await pendingRun(world);
+    const response = await post(approver, `/distributions/${run.id}/decision`, {
+      decision: "reject",
+      note: null,
+      idempotencyKey: key("decide"),
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(errorCode(response)).toBe("VALIDATION_ERROR");
+  });
+
+  it("refuses to record a payment before approval", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await pendingRun(world);
+    const early = await payLine(manager, run.id, run.lines[0]!.id);
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect(errorCode(early)).toBe("INVALID_TRANSITION");
+  });
+});
+
+// ---- Payment, completion journal ---------------------------------------------
+
+describe("§4 P step 4 payment and the completion journal", () => {
+  it("pays each line; the last payment posts a balanced journal and the run is paid", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const approved = await approvedRun(world);
+    const { run } = approved;
+    expect(run.status).toBe("approved");
+
+    // Pay all but the last line: the run stays approved, no journal yet.
+    const [first, second, last] = run.lines;
+    const afterFirst = parseRun(
+      (await payLine(manager, run.id, first!.id, key("pay"), "TRF-001")).body,
+    );
+    expect(afterFirst.status).toBe("approved");
+    expect(afterFirst.lines.find((l) => l.id === first!.id)).toMatchObject({
+      paymentStatus: "paid",
+      paymentRef: "TRF-001",
+    });
+    expect(
+      afterFirst.lines.find((l) => l.id === second!.id)?.paymentStatus,
+    ).toBe("pending");
+    const mid = await payLine(
+      manager,
+      run.id,
+      second!.id,
+      key("pay"),
+      "TRF-002",
+    );
+    expect(parseRun(mid.body).status).toBe("approved");
+    expect(parseRun(mid.body).paidAt).toBeNull();
+    const summaryMid = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(summaryMid.data[0]).toMatchObject({
+      status: "approved",
+      lineCount: 3,
+      paidLineCount: 2,
+    });
+    const noJournalYet = await owner.query(
+      "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND source_type = 'dividend' AND source_id = $2",
+      [tenantA, run.id],
+    );
+    expect(noJournalYet.rowCount).toBe(0);
+
+    const paidAt = new Date();
+    const final = await post(
+      manager,
+      `/distributions/${run.id}/lines/${last!.id}/payment`,
+      {
+        paymentRef: "TRF-003",
+        paidAt: paidAt.toISOString(),
+        idempotencyKey: key("pay"),
+      },
+    );
+    expect(final.status, JSON.stringify(final.body)).toBe(200);
+    const paid = parseRun(final.body);
+    expect(paid.status).toBe("paid");
+    expect(paid.paidAt).not.toBeNull();
+    expect(new Date(paid.paidAt!).getTime()).toBe(paidAt.getTime());
+    expect(paid.lines.every((line) => line.paymentStatus === "paid")).toBe(
+      true,
+    );
+    const journalId = await postedJournalId(run.id);
+    expect(journalId).not.toBeNull();
+    expect(paid.reversalJournalEntryId).toBeNull();
+
+    // The journal: Dr retained earnings gross, Cr bank net, Cr tax payable tax.
+    const journal = await journalOf(journalId as string);
+    expect(journal.entry).toMatchObject({
+      source_type: "dividend",
+      source_id: run.id,
+      legal_entity_id: world.legalEntityId,
+      entry_date: jakartaDate(paidAt),
+    });
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings)).toEqual({
+      debit: 900_001,
+      credit: 0,
+    });
+    expect(journal.byAccount(world.accounts.bank)).toEqual({
+      debit: 0,
+      credit: 855_000,
+    });
+    expect(journal.byAccount(world.accounts.dividendTaxPayable)).toEqual({
+      debit: 0,
+      credit: 45_001,
+    });
+
+    // The list now reports it as paid with every line paid.
+    const summary = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(summary.data[0]).toMatchObject({
+      status: "paid",
+      lineCount: 3,
+      paidLineCount: 3,
+    });
+    const paidList = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions?status=approved`,
+        )
+      ).body,
+    );
+    expect(paidList.data).toEqual([]);
+  });
+
+  it("refuses a payment without a reference and a payment from a non-manager", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const line = run.lines[0]!;
+    const blank = await post(
+      manager,
+      `/distributions/${run.id}/lines/${line.id}/payment`,
+      {
+        paymentRef: "  ",
+        paidAt: new Date().toISOString(),
+        idempotencyKey: key("pay"),
+      },
+    );
+    expect(blank.status, JSON.stringify(blank.body)).toBe(422);
+    const denied = await payLine(approver, run.id, line.id);
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    const unchanged = parseRun((await getRun(manager, run.id)).body);
+    expect(unchanged.lines.every((l) => l.paymentStatus === "pending")).toBe(
+      true,
+    );
+  });
+});
+
+// ---- Immutability (SH-04) ----------------------------------------------------
+
+describe("SH-04 an approved run is immutable in the database", () => {
+  it("refuses raw UPDATE and DELETE of the run and its lines", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const line = run.lines[0]!;
+    const runRow = () =>
+      owner.query(
+        `SELECT total_gross_idr::text AS gross, tax_withholding_bp, requested_by, status
+         FROM distribution_runs WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, run.id],
+      );
+    const lineRow = () =>
+      owner.query(
+        `SELECT gross_idr::text AS gross, net_idr::text AS net, share_bp
+         FROM distribution_lines WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, line.id],
+      );
+    const runBefore = (await runRow()).rows[0];
+    const lineBefore = (await lineRow()).rows[0];
+
+    // Each statement keeps every CHECK constraint true, so only the freeze
+    // guard can refuse it.
+    await expect(
+      owner.query(
+        "UPDATE distribution_runs SET tax_withholding_bp = tax_withholding_bp + 1 WHERE tenant_id = $1 AND id = $2",
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "UPDATE distribution_runs SET requested_by = 'someone-else' WHERE tenant_id = $1 AND id = $2",
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "UPDATE distribution_runs SET total_gross_idr = total_gross_idr + 1 WHERE tenant_id = $1 AND id = $2",
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "UPDATE distribution_lines SET gross_idr = gross_idr + 1, net_idr = net_idr + 1 WHERE tenant_id = $1 AND id = $2",
+        [tenantA, line.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "UPDATE distribution_lines SET share_bp = share_bp - 1 WHERE tenant_id = $1 AND id = $2",
+        [tenantA, line.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "DELETE FROM distribution_lines WHERE tenant_id = $1 AND id = $2",
+        [tenantA, line.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        "DELETE FROM distribution_runs WHERE tenant_id = $1 AND id = $2",
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        `INSERT INTO distribution_lines (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr, tax_withheld_idr, net_idr, position)
+         VALUES ($1, $2, $3, 100, 10, 0, 10, 9)`,
+        [tenantA, run.id, s4.id],
+      ),
+    ).rejects.toThrow();
+
+    expect((await runRow()).rows[0]).toEqual(runBefore);
+    expect((await lineRow()).rows[0]).toEqual(lineBefore);
+    // The run is still intact through the API.
+    expect(parseRun((await getRun(manager, run.id)).body)).toEqual(run);
+  });
+
+  it("refuses to INSERT a run for an OPEN fiscal period (control: a closed one works)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    // Periods close in order, so the closed one comes first.
+    const closed = await closedPeriod(world, NET_PROFIT);
+    const open = await openPeriod(
+      world,
+      periodKey(world.nextPeriod++),
+      NET_PROFIT,
+    );
+    // A run and its lines are written in one transaction: the totals trigger
+    // (deferred to commit) refuses a run whose lines do not match its totals.
+    const insert = async (fiscalPeriodId: string, period: string) => {
+      const { rows: periodRows } = await owner.query<{ version: number }>(
+        "SELECT version FROM fiscal_periods WHERE tenant_id = $1 AND id = $2",
+        [tenantA, fiscalPeriodId],
+      );
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO distribution_runs
+           (tenant_id, profit_entity_id, fiscal_period_id, fiscal_period_version, period, type, basis, status,
+            share_version, period_net_profit_idr, reserve_idr, distributable_idr,
+            total_gross_idr, total_tax_withheld_idr, total_net_idr, tax_withholding_bp,
+            requested_by, idempotency_key)
+         VALUES ($1, $2, $3, $7, $4, 'regular', 'closed_period_net_profit', 'draft',
+                 1, 1000, 100, 900, 900, 0, 900, 0, $5, $6)
+         RETURNING id`,
+          [
+            tenantA,
+            world.profitEntityId,
+            fiscalPeriodId,
+            period,
+            manager.userId,
+            key("raw-run"),
+            periodRows[0]!.version,
+          ],
+        );
+        await client.query(
+          `INSERT INTO distribution_lines
+             (tenant_id, distribution_run_id, shareholder_id, share_bp,
+              gross_idr, tax_withheld_idr, net_idr, position)
+           VALUES ($1, $2, $3, 10000, 900, 0, 900, 0)`,
+          [tenantA, result.rows[0]!.id, s1.id],
+        );
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+    await expect(insert(open.id, open.period)).rejects.toThrow();
+    await expect(insert(closed.id, closed.period)).resolves.toBeDefined();
+    const rows = await owner.query(
+      "SELECT fiscal_period_id FROM distribution_runs WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, world.profitEntityId],
+    );
+    expect(rows.rows.map((row) => row.fiscal_period_id)).toEqual([closed.id]);
+  });
+
+  it("the API refuses to edit or re-submit an approved run", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const again = await submitRun(manager, run.id);
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    const decideAgain = await decideRun(approver, run.id, "reject");
+    expect(decideAgain.status, JSON.stringify(decideAgain.body)).toBe(409);
+    expect(parseRun((await getRun(manager, run.id)).body)).toEqual(run);
+  });
+});
+
+// ---- Adjustments (SH-04) -----------------------------------------------------
+
+describe("SH-04 adjustment runs correct an approved or paid run", () => {
+  it("a positive adjustment is a NEW run with new lines; the original is untouched", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const before = parseRun((await getRun(manager, original.id)).body);
+
+    const response = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 100_000,
+      reason: "Beban akhir tahun terlambat dicatat",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const adjustment = parseRun(response.body);
+    expect(adjustment.id).not.toBe(original.id);
+    expect(adjustment).toMatchObject({
+      type: "adjustment",
+      basis: "approved_run_adjustment",
+      status: "draft",
+      adjustsRunId: original.id,
+      adjustmentReason: "Beban akhir tahun terlambat dicatat",
+      periodNetProfitIdr: null,
+      reserveIdr: 0,
+      distributableIdr: 100_000,
+      shareVersion: original.shareVersion,
+    });
+    expect(adjustment.lines).toHaveLength(3);
+    // New lines, same split as the corrected run.
+    const originalIds = new Set(original.lines.map((line) => line.id));
+    for (const line of adjustment.lines)
+      expect(originalIds.has(line.id)).toBe(false);
+    const split = (lines: DistributionRun["lines"]) =>
+      lines.map((line) => `${line.shareholderId}:${line.shareBp}`).sort();
+    expect(split(adjustment.lines)).toEqual(split(original.lines));
+    expect(adjustment.lines.reduce((sum, line) => sum + line.grossIdr, 0)).toBe(
+      100_000,
+    );
+    expect(adjustment.totalNetIdr + adjustment.totalTaxWithheldIdr).toBe(
+      100_000,
+    );
+    // Frozen tax rate of the corrected run (5%): 100,000 -> 33,330/33,330/33,340.
+    expect(adjustment.lines.map((line) => line.grossIdr).sort()).toEqual([
+      33_330, 33_330, 33_340,
+    ]);
+
+    // The corrected run never changes.
+    expect(parseRun((await getRun(manager, original.id)).body)).toEqual(before);
+
+    // The adjustment runs the same cycle and posts its own journal.
+    const submitted = parseRun((await submitRun(manager, adjustment.id)).body);
+    expect(submitted.status).toBe("pending_approval");
+    const approved = parseRun((await decideRun(approver, adjustment.id)).body);
+    const paid = await payAll(manager, approved);
+    expect(paid.status).toBe("paid");
+    const journalId = await postedJournalId(adjustment.id);
+    expect(journalId).not.toBeNull();
+    expect(paid.reversalJournalEntryId).toBeNull();
+    const journal = await journalOf(journalId as string);
+    expect(journal.entry.source_id).toBe(adjustment.id);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings).debit).toBe(
+      100_000,
+    );
+    expect(journal.byAccount(world.accounts.bank).credit).toBe(
+      paid.totalNetIdr,
+    );
+    expect(journal.byAccount(world.accounts.dividendTaxPayable).credit).toBe(
+      paid.totalTaxWithheldIdr,
+    );
+    expect(parseRun((await getRun(manager, original.id)).body)).toEqual(before);
+  });
+
+  it("a negative adjustment claws back and posts a mirrored (reversal) journal", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    const before = parseRun((await getRun(manager, original.id)).body);
+
+    const response = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -100_000,
+      reason: "Pembayaran berlebih dikoreksi",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const adjustment = parseRun(response.body);
+    expect(adjustment).toMatchObject({
+      type: "adjustment",
+      adjustsRunId: original.id,
+      distributableIdr: -100_000,
+      totalGrossIdr: -100_000,
+    });
+    for (const line of adjustment.lines) {
+      expect(line.grossIdr).toBeLessThan(0);
+      expect(line.grossIdr - line.taxWithheldIdr).toBe(line.netIdr);
+    }
+    expect(adjustment.lines.reduce((sum, line) => sum + line.grossIdr, 0)).toBe(
+      -100_000,
+    );
+
+    await submitRun(manager, adjustment.id);
+    const approved = parseRun((await decideRun(approver, adjustment.id)).body);
+    expect(approved.status).toBe("approved");
+    const paid = await payAll(manager, approved);
+    expect(paid.status).toBe("paid");
+    expect(paid.reversalJournalEntryId).not.toBeNull();
+    expect(await postedJournalId(adjustment.id)).toBeNull();
+
+    // Mirrored entry: Dr bank |net|, Dr tax payable |tax|, Cr retained |gross|.
+    const journal = await journalOf(paid.reversalJournalEntryId as string);
+    expect(journal.entry).toMatchObject({
+      source_type: "dividend",
+      source_id: adjustment.id,
+    });
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings)).toEqual({
+      debit: 0,
+      credit: 100_000,
+    });
+    expect(journal.byAccount(world.accounts.bank)).toEqual({
+      debit: Math.abs(paid.totalNetIdr),
+      credit: 0,
+    });
+    expect(journal.byAccount(world.accounts.dividendTaxPayable)).toEqual({
+      debit: Math.abs(paid.totalTaxWithheldIdr),
+      credit: 0,
+    });
+
+    // The original run and its journal are unchanged.
+    expect(parseRun((await getRun(manager, original.id)).body)).toEqual(before);
+  });
+
+  it("an adjustment may also correct an approved (not yet paid) run", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await approvedRun(world);
+    const response = await adjust(manager, run.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 30_000,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(parseRun(response.body).adjustsRunId).toBe(run.id);
+    expect(parseRun((await getRun(manager, run.id)).body)).toEqual(run);
+  });
+
+  it("refuses an adjustment on a draft or pending run (ADJUSTMENT_TARGET_INVALID)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: draft, period } = await draftRun(world);
+    const onDraft = await adjust(manager, draft.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 50_000,
+    });
+    expect(onDraft.status, JSON.stringify(onDraft.body)).toBe(422);
+    expect(errorCode(onDraft)).toBe("ADJUSTMENT_TARGET_INVALID");
+
+    const submitted = await submitRun(manager, draft.id);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    const onPending = await adjust(manager, draft.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: 50_000,
+    });
+    expect(onPending.status, JSON.stringify(onPending.body)).toBe(422);
+    expect(errorCode(onPending)).toBe("ADJUSTMENT_TARGET_INVALID");
+
+    // No adjustment row was created for the entity.
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(list.data.map((row) => row.type)).toEqual(["regular"]);
+  });
+
+  it("refuses an adjustment on an open period, a zero amount and an unknown run", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const open = await openPeriod(world, periodKey(world.nextPeriod++), 1_000);
+    const onOpen = await adjust(manager, run.id, {
+      fiscalPeriodId: open.id,
+      adjustmentIdr: 10_000,
+    });
+    expect(onOpen.status, JSON.stringify(onOpen.body)).toBe(409);
+    expect(errorCode(onOpen)).toBe("PERIOD_NOT_CLOSED");
+    const zero = await adjust(manager, run.id, {
+      fiscalPeriodId: run.fiscalPeriodId,
+      adjustmentIdr: 0,
+    });
+    expect(zero.status, JSON.stringify(zero.body)).toBe(422);
+    expect(errorCode(zero)).toBe("VALIDATION_ERROR");
+    const unknown = await adjust(manager, randomUUID(), {
+      fiscalPeriodId: run.fiscalPeriodId,
+      adjustmentIdr: 10_000,
+    });
+    expect([404, 422]).toContain(unknown.status);
+  });
+});
+
+// ---- Statements and the shareholder self view (SH-01) ------------------------
+
+describe("SH-01 statements and my-profit-share show only the caller's rows", () => {
+  it("statement: manager and the line's own shareholder read it, any other gets 404", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await paidRun(world);
+    const line1 = run.lines.find((line) => line.shareholderId === s1.id)!;
+    const path = `/distributions/${run.id}/lines/${line1.id}/statement`;
+
+    const byManager = await get(manager, path);
+    expect(byManager.status, JSON.stringify(byManager.body)).toBe(200);
+    const statement = distributionStatementSchema.parse(byManager.body.data);
+    expect(statement).toMatchObject({
+      distributionRunId: run.id,
+      distributionLineId: line1.id,
+      shareholderId: s1.id,
+      shareholderName: s1.name,
+      basis: "closed_period",
+      period: run.period,
+      runType: "regular",
+      adjustsRunId: null,
+      shareBp: line1.shareBp,
+      grossIdr: line1.grossIdr,
+      taxWithheldIdr: line1.taxWithheldIdr,
+      netIdr: line1.netIdr,
+      paymentStatus: "paid",
+      paymentRef: line1.paymentRef,
+    });
+    // Nobody else's name is in the document.
+    expect(JSON.stringify(byManager.body)).not.toContain(s2.name);
+    expect(JSON.stringify(byManager.body)).not.toContain(s3.name);
+
+    const own = await get(sh1User, path);
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(distributionStatementSchema.parse(own.body.data)).toMatchObject({
+      shareholderId: s1.id,
+      netIdr: line1.netIdr,
+    });
+
+    // Another shareholder never learns the line exists.
+    const other = await get(sh2User, path);
+    expect(other.status, JSON.stringify(other.body)).toBe(404);
+    expect(errorCode(other)).toBe("NOT_FOUND");
+    // An unknown line looks exactly the same.
+    const unknown = await get(
+      sh2User,
+      `/distributions/${run.id}/lines/${randomUUID()}/statement`,
+    );
+    expect(unknown.status, JSON.stringify(unknown.body)).toBe(404);
+    expect(errorCode(unknown)).toBe("NOT_FOUND");
+  });
+
+  it("my-profit-share returns holdings, share history and statements of the caller only", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await paidRun(world);
+    const line1 = run.lines.find((line) => line.shareholderId === s1.id)!;
+
+    const mine = await get(sh1User, "/my-profit-share");
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    const view = myProfitShareSchema.parse(mine.body.data);
+    expect(view.shareholderId).toBe(s1.id);
+    expect(view.shareholderName).toBe(s1.name);
+    expect(view.holdings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          profitEntityId: world.profitEntityId,
+          version: 1,
+          shareBp: 3333,
+        }),
+      ]),
+    );
+    expect(view.shareHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          profitEntityId: world.profitEntityId,
+          version: 1,
+          shareBp: 3333,
+        }),
+      ]),
+    );
+    expect(view.distributionHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          distributionRunId: run.id,
+          distributionLineId: line1.id,
+          grossIdr: line1.grossIdr,
+          netIdr: line1.netIdr,
+        }),
+      ]),
+    );
+    for (const statement of view.distributionHistory)
+      expect(statement.shareholderId).toBe(s1.id);
+    // None of the other shareholders' identity or lines leaks.
+    const text = JSON.stringify(mine.body);
+    for (const other of [s2, s3]) expect(text).not.toContain(other.name);
+    for (const other of run.lines.filter((l) => l.shareholderId !== s1.id))
+      expect(text).not.toContain(other.id);
+    expect(
+      view.estimates.every((estimate) => estimate.label === "estimate"),
+    ).toBe(true);
+
+    // Shareholder 2 sees their own line, not shareholder 1's.
+    const theirs = myProfitShareSchema.parse(
+      (await get(sh2User, "/my-profit-share")).body.data,
+    );
+    expect(theirs.shareholderId).toBe(s2.id);
+    expect(
+      theirs.distributionHistory.some(
+        (statement) => statement.distributionLineId === line1.id,
+      ),
+    ).toBe(false);
+    for (const statement of theirs.distributionHistory)
+      expect(statement.shareholderId).toBe(s2.id);
+  });
+
+  it("a shareholder cannot use the manager endpoints", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    expect((await getRun(sh1User, run.id)).status).toBe(403);
+    expect((await payLine(sh1User, run.id, run.lines[0]!.id)).status).toBe(403);
+    const list = await get(
+      sh1User,
+      `/profit-entities/${world.profitEntityId}/distributions`,
+    );
+    expect(list.status, JSON.stringify(list.body)).toBe(403);
+  });
+});
+
+// ---- Tenant isolation (TEN-01) -----------------------------------------------
+
+describe("TEN-01 another tenant cannot see or change a distribution run", () => {
+  it("tenant B gets 404 on get, decide, payment and statement of tenant A's run", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const line = run.lines[0]!;
+
+    const got = await getRun(managerB, run.id);
+    expect(got.status, JSON.stringify(got.body)).toBe(404);
+    expect(errorCode(got)).toBe("NOT_FOUND");
+    const decided = await decideRun(approverB, run.id, "reject");
+    expect(decided.status, JSON.stringify(decided.body)).toBe(404);
+    const paid = await payLine(managerB, run.id, line.id);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(404);
+    const statement = await get(
+      managerB,
+      `/distributions/${run.id}/lines/${line.id}/statement`,
+    );
+    expect(statement.status, JSON.stringify(statement.body)).toBe(404);
+    const submitted = await submitRun(managerB, run.id);
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(404);
+    const adjusted = await adjust(managerB, run.id, {
+      fiscalPeriodId: run.fiscalPeriodId,
+      adjustmentIdr: 10_000,
+    });
+    expect([404, 422]).toContain(adjusted.status);
+
+    // Tenant A's run is untouched, and the same calls work for tenant A.
+    expect(parseRun((await getRun(manager, run.id)).body)).toEqual(run);
+    const ok = await payLine(manager, run.id, line.id);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it("tenant B cannot run a distribution for tenant A's entity or period", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const period = await closedPeriod(world, NET_PROFIT);
+    const response = await createRun(managerB, world, period.id);
+    expect([404, 422]).toContain(response.status);
+    const list = await get(
+      managerB,
+      `/profit-entities/${world.profitEntityId}/distributions`,
+    );
+    expect(
+      list.status === 404 ||
+        (list.status === 200 && list.body.data.length === 0),
+    ).toBe(true);
+    // Nothing was created for tenant A's entity.
+    const rows = await owner.query(
+      "SELECT 1 FROM distribution_runs WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, world.profitEntityId],
+    );
+    expect(rows.rowCount).toBe(0);
+  });
+});
+
+// ---- Architect review gaps (fail-first) ---------------------------------------
+//
+// Assumptions for this block:
+// - paidAt must lie in [approvedAt, now]; anything else is 422.
+// - A last payment whose paidAt falls in a closed month still completes the run;
+//   its journal is posted into the first open period and marked as a late
+//   adjustment (`late_adjustment_from` set). Only that is asserted, not the
+//   exact entry date.
+// - Approvals are backdated in SQL (pending -> approved) so a payment date can
+//   lie in an old, closed month while still being after approvedAt.
+// - Errors: PERIOD_CHANGED 409, ADJUSTMENT_EXCEEDS_PAID 422,
+//   IDEMPOTENCY_KEY_REUSED 409.
+
+const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
+
+const payLineAt = (who: Person, runId: string, lineId: string, paidAt: Date) =>
+  post(who, `/distributions/${runId}/lines/${lineId}/payment`, {
+    paymentRef: `TRF-${unique()}`,
+    paidAt: paidAt.toISOString(),
+    idempotencyKey: key("pay"),
+  });
+
+/** A submitted run approved by `approver` with approved_at moved back (requested_at is frozen once pending). */
+async function backdatedApprovedRun(world: World, approvedAt: Date) {
+  const pending = await pendingRun(world);
+  await owner.query(
+    `UPDATE distribution_runs SET status = 'approved', approved_by = $3, approved_at = $4
+     WHERE tenant_id = $1 AND id = $2`,
+    [tenantA, pending.run.id, approver.userId, approvedAt],
+  );
+  const fresh = await getRun(manager, pending.run.id);
+  expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+  return { ...pending, run: parseRun(fresh.body) };
+}
+
+describe("review (a)-(c) payment dates", () => {
+  it("(a) a last payment dated in a CLOSED month still completes the run with a late-adjustment journal", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await backdatedApprovedRun(
+      world,
+      new Date("2021-01-20T03:00:00Z"),
+    );
+    expect(period.period).toBe("2021-01");
+    const closedMonthPayment = new Date("2021-01-25T03:00:00Z");
+    let last = null;
+    for (const line of run.lines) {
+      last = await payLineAt(manager, run.id, line.id, closedMonthPayment);
+      expect(last.status, JSON.stringify(last.body)).toBe(200);
+    }
+    const paid = parseRun(last!.body);
+    expect(paid.status).toBe("paid");
+    const journalId = await postedJournalId(run.id);
+    expect(journalId).not.toBeNull();
+    const journal = await journalOf(journalId as string);
+    expect(journal.totalDebit).toBe(journal.totalCredit);
+    expect(journal.byAccount(world.accounts.retainedEarnings).debit).toBe(
+      paid.totalGrossIdr,
+    );
+    // The entry sits in an OPEN period and is flagged as a late adjustment.
+    const placed = await owner.query<{
+      status: string;
+      late_adjustment_from: string | null;
+    }>(
+      `SELECT fp.status, je.late_adjustment_from::text AS late_adjustment_from
+       FROM journal_entries je
+       JOIN fiscal_periods fp ON fp.tenant_id = je.tenant_id AND fp.id = je.fiscal_period_id
+       WHERE je.tenant_id = $1 AND je.id = $2`,
+      [tenantA, journalId],
+    );
+    expect(placed.rows[0]!.status).toBe("open");
+    expect(placed.rows[0]!.late_adjustment_from).not.toBeNull();
+  });
+
+  it("(b) paidAt before approvedAt or in the future is refused with 422", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    const line = run.lines[0]!;
+    const before = new Date(new Date(run.approvedAt!).getTime() - 86_400_000);
+    const early = await payLineAt(manager, run.id, line.id, before);
+    expect(early.status, JSON.stringify(early.body)).toBe(422);
+    const future = await payLineAt(
+      manager,
+      run.id,
+      line.id,
+      new Date(Date.now() + 86_400_000),
+    );
+    expect(future.status, JSON.stringify(future.body)).toBe(422);
+    const unchanged = parseRun((await getRun(manager, run.id)).body);
+    expect(unchanged.lines.every((l) => l.paymentStatus === "pending")).toBe(
+      true,
+    );
+    // Control: a date between approval and now is accepted.
+    const ok = await payLineAt(manager, run.id, line.id, new Date());
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it("(c) run.paidAt is the LATEST line paidAt, not the last one recorded", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await backdatedApprovedRun(world, hoursAgo(48));
+    const latest = hoursAgo(1);
+    const [a, b, c] = run.lines;
+    expect((await payLineAt(manager, run.id, a!.id, latest)).status).toBe(200);
+    expect((await payLineAt(manager, run.id, b!.id, hoursAgo(3))).status).toBe(
+      200,
+    );
+    const final = await payLineAt(manager, run.id, c!.id, hoursAgo(2));
+    expect(final.status, JSON.stringify(final.body)).toBe(200);
+    const paid = parseRun(final.body);
+    expect(paid.status).toBe("paid");
+    expect(new Date(paid.paidAt!).getTime()).toBe(latest.getTime());
+  });
+});
+
+describe("review (d) the fiscal period changed after the run was calculated", () => {
+  it("(d) approving after a reopen (and after a re-close) is refused with PERIOD_CHANGED", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run, period } = await pendingRun(world);
+    const scope = scopedContext();
+    const requester = userIdSchema.parse(randomUUID());
+    const reopenApprover = userIdSchema.parse(randomUUID());
+    const request = await requestPeriodReopen(
+      scope,
+      period.id,
+      { reason: "Koreksi biaya sewa" },
+      requester,
+    );
+    await approvePeriodReopen(
+      scope,
+      request.id,
+      { note: null },
+      reopenApprover,
+    );
+
+    const afterReopen = await decideRun(approver, run.id);
+    expect(afterReopen.status, JSON.stringify(afterReopen.body)).toBe(409);
+    expect(errorCode(afterReopen)).toBe("PERIOD_CHANGED");
+    expect(parseRun((await getRun(manager, run.id)).body).status).toBe(
+      "pending_approval",
+    );
+
+    // Closed again: the version moved on, so the run is still stale.
+    await closeFiscalPeriod(
+      scope,
+      period.id,
+      { expectedVersion: 3, idempotencyKey: `close-${randomUUID()}` },
+      userIdSchema.parse(closer),
+    );
+    const afterReclose = await decideRun(approver, run.id);
+    expect(afterReclose.status, JSON.stringify(afterReclose.body)).toBe(409);
+    expect(errorCode(afterReclose)).toBe("PERIOD_CHANGED");
+    expect(parseRun((await getRun(manager, run.id)).body).status).toBe(
+      "pending_approval",
+    );
+  });
+});
+
+describe("review (e)-(g) database guards", () => {
+  it("(e) refuses raw UPDATE of a draft run's fiscal_period_id, period and share_version", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await draftRun(world);
+    const other = await closedPeriod(world, NET_PROFIT);
+    // A second approved version, so the share_version FK would accept it.
+    await seedVersion(
+      world.profitEntityId,
+      roundingShares(),
+      "approved",
+      "2020-06-01",
+      2,
+    );
+    const row = () =>
+      owner.query(
+        `SELECT fiscal_period_id, period, share_version
+         FROM distribution_runs WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, run.id],
+      );
+    const before = (await row()).rows[0];
+    for (const [set, params] of [
+      ["fiscal_period_id = $3", [other.id]],
+      ["period = $3", ["2099-12"]],
+      ["share_version = $3", [2]],
+    ] as const)
+      await expect(
+        owner.query(
+          `UPDATE distribution_runs SET ${set} WHERE tenant_id = $1 AND id = $2`,
+          [tenantA, run.id, ...params],
+        ),
+        set,
+      ).rejects.toThrow();
+    expect((await row()).rows[0]).toEqual(before);
+  });
+
+  it("(f) refuses raw SQL setting a run to paid without a journal id", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await approvedRun(world);
+    // Paying the lines in SQL is allowed on an approved run: isolates the journal rule.
+    await owner.query(
+      `UPDATE distribution_lines
+       SET payment_status = 'paid', payment_ref = 'RAW-1', paid_at = now(), paid_by = $3
+       WHERE tenant_id = $1 AND distribution_run_id = $2`,
+      [tenantA, run.id, manager.userId],
+    );
+    await expect(
+      owner.query(
+        `UPDATE distribution_runs SET status = 'paid', paid_at = now()
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, run.id],
+      ),
+    ).rejects.toThrow();
+    const row = await owner.query(
+      "SELECT status, journal_entry_id FROM distribution_runs WHERE tenant_id = $1 AND id = $2",
+      [tenantA, run.id],
+    );
+    expect(row.rows[0]).toEqual({ status: "approved", journal_entry_id: null });
+  });
+
+  it("(g) refuses a line with gross 100 and tax -5 or tax 150 (control: tax 10 is accepted)", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run } = await draftRun(world);
+    // The bad rows fail at the line CHECK right away, so a plain INSERT suffices.
+    const badLine = (tax: number) =>
+      owner.query(
+        `INSERT INTO distribution_lines
+           (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr, tax_withheld_idr, net_idr, position)
+         VALUES ($1, $2, $3, 100, 100, $4, $5, 9)`,
+        [tenantA, run.id, s5.id, tax, 100 - tax],
+      );
+    await expect(badLine(-5)).rejects.toThrow();
+    await expect(badLine(150)).rejects.toThrow();
+
+    // Control: a raw draft run (gross 100 / tax 10 / net 90) with its line, written
+    // in one transaction because the totals check is deferred to commit.
+    const other = await closedPeriod(world, NET_PROFIT);
+    const { rows: periodRows } = await owner.query<{ version: number }>(
+      "SELECT version FROM fiscal_periods WHERE tenant_id = $1 AND id = $2",
+      [tenantA, other.id],
+    );
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO distribution_runs
+           (tenant_id, profit_entity_id, fiscal_period_id, fiscal_period_version, period, type, basis, status,
+            share_version, period_net_profit_idr, reserve_idr, distributable_idr,
+            total_gross_idr, total_tax_withheld_idr, total_net_idr, tax_withholding_bp,
+            requested_by, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, 'regular', 'closed_period_net_profit', 'draft',
+                 1, 200, 100, 100, 100, 10, 90, 1000, $6, $7)
+         RETURNING id`,
+        [
+          tenantA,
+          world.profitEntityId,
+          other.id,
+          periodRows[0]!.version,
+          other.period,
+          manager.userId,
+          key("raw-run"),
+        ],
+      );
+      await client.query(
+        `INSERT INTO distribution_lines
+           (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr, tax_withheld_idr, net_idr, position)
+         VALUES ($1, $2, $3, 10000, 100, 10, 90, 0)`,
+        [tenantA, inserted.rows[0]!.id, s4.id],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe("review (h) a claw-back cannot exceed what was paid", () => {
+  it("(h) refuses a negative adjustment above the cumulative paid gross with ADJUSTMENT_EXCEEDS_PAID", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const { run: original, period } = await paidRun(world);
+    // Paid gross is 900,001 in total: far above any line's share of -2,000,000.
+    const tooMuch = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -2_000_000,
+    });
+    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
+    expect(errorCode(tooMuch)).toBe("ADJUSTMENT_EXCEEDS_PAID");
+
+    // An approved earlier claw-back counts: -500,000 fits, a second -500,000 does not.
+    const first = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -500_000,
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const firstRun = parseRun(first.body);
+    expect((await submitRun(manager, firstRun.id)).status).toBe(200);
+    expect((await decideRun(approver, firstRun.id)).status).toBe(200);
+    const second = await adjust(manager, original.id, {
+      fiscalPeriodId: period.id,
+      adjustmentIdr: -500_000,
+    });
+    expect(second.status, JSON.stringify(second.body)).toBe(422);
+    expect(errorCode(second)).toBe("ADJUSTMENT_EXCEEDS_PAID");
+
+    const list = listDistributionRuns.response.parse(
+      (
+        await get(
+          manager,
+          `/profit-entities/${world.profitEntityId}/distributions`,
+        )
+      ).body,
+    );
+    expect(list.data.filter((row) => row.type === "adjustment")).toHaveLength(
+      1,
+    );
+  });
+});
+
+describe("review (i) idempotency key reuse", () => {
+  it("(i) a key of an existing run on a different create is IDEMPOTENCY_KEY_REUSED", async () => {
+    const world = await makeWorld(roundingPolicy, roundingShares());
+    const first = await closedPeriod(world, NET_PROFIT);
+    const second = await closedPeriod(world, NET_PROFIT);
+    const k = key("run-reuse");
+    expect((await createRun(manager, world, first.id, k)).status).toBe(201);
+    // Same key, other period: not DISTRIBUTION_ALREADY_EXISTS.
+    const other = await createRun(manager, world, second.id, k);
+    expect(other.status, JSON.stringify(other.body)).toBe(409);
+    expect(errorCode(other)).toBe("IDEMPOTENCY_KEY_REUSED");
+
+    // The same key on an adjustment create is a different request as well.
+    const approved = await approvedRun(world);
+    const adjKey = key("adj-reuse");
+    const asAdjustment = await post(
+      manager,
+      `/distributions/${approved.run.id}/adjustment`,
+      {
+        fiscalPeriodId: approved.period.id,
+        adjustmentIdr: 10_000,
+        reason: "Koreksi",
+        idempotencyKey: adjKey,
+      },
+    );
+    expect(asAdjustment.status).toBe(201);
+    const reuse = await createRun(manager, world, second.id, adjKey);
+    expect(reuse.status, JSON.stringify(reuse.body)).toBe(409);
+    expect(errorCode(reuse)).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+});

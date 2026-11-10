@@ -1,0 +1,97 @@
+// Net profit of one closed fiscal period for a profit entity (PRD v1.7 §3.37
+// Siklus Distribusi, SH-02; bead legend-2ljb).
+//
+// The figure is the contract's `buildProfitAndLoss` over the posted journal
+// lines of the legal entity that fall inside the period, so a distribution uses
+// exactly the profit the P&L statement shows. An outlet profit entity passes its
+// outlet and only lines tagged with that outlet count (ACC-03). Journals are
+// append-only, so every stored line is a posted line.
+
+import { and, eq, gte, lte } from "drizzle-orm";
+import {
+  accountSchema,
+  buildProfitAndLoss,
+  periodBounds,
+  type LedgerLine,
+} from "@starter/shared/accounting";
+import type { Idr, OutletId } from "@starter/shared/core";
+import { chartOfAccounts, journalEntries, journalLines } from "../db/schema";
+import type { TenantTransaction } from "./accounting-shared";
+
+export type ClosedPeriodNetProfitInput = {
+  readonly legalEntityId: string;
+  /** Set for an outlet profit entity; null for a whole legal entity. */
+  readonly outletId: string | null;
+  /** The fiscal period key, "YYYY-MM". The caller checked that it is closed. */
+  readonly period: string;
+};
+
+/** Net profit (Rp, may be zero or negative) of the period's posted ledger. */
+export async function loadClosedPeriodNetProfit(
+  tx: TenantTransaction,
+  tenantId: string,
+  input: ClosedPeriodNetProfitInput,
+): Promise<Idr> {
+  const bounds = periodBounds(input.period);
+  const accountRows = await tx
+    .select()
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, input.legalEntityId),
+      ),
+    );
+  const accounts = accountRows.map((row) =>
+    accountSchema.parse({
+      id: row.id,
+      tenantId: row.tenantId,
+      legalEntityId: row.legalEntityId,
+      code: row.code,
+      name: row.name,
+      type: row.type,
+      reportGroup: row.reportGroup,
+      parentId: row.parentId,
+      isActive: row.isActive,
+    }),
+  );
+  const lineRows = await tx
+    .select({
+      accountId: journalLines.accountId,
+      debitIdr: journalLines.debitIdr,
+      creditIdr: journalLines.creditIdr,
+      outletId: journalLines.outletId,
+      entryDate: journalEntries.entryDate,
+    })
+    .from(journalLines)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, journalLines.tenantId),
+        eq(journalEntries.id, journalLines.entryId),
+      ),
+    )
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalEntries.legalEntityId, input.legalEntityId),
+        gte(journalEntries.entryDate, bounds.start),
+        lte(journalEntries.entryDate, bounds.end),
+      ),
+    );
+  const lines: LedgerLine[] = lineRows.map((row) => ({
+    accountId: row.accountId,
+    debitIdr: row.debitIdr,
+    creditIdr: row.creditIdr,
+    outletId: row.outletId as OutletId | null,
+    entryDate: row.entryDate,
+  }));
+  const statement = buildProfitAndLoss(accounts, lines, {
+    legalEntityId: input.legalEntityId,
+    from: bounds.start,
+    to: bounds.end,
+    outletId: input.outletId as OutletId | null,
+    periods: [{ period: input.period, status: "closed" }],
+  });
+  return statement.netProfitIdr;
+}

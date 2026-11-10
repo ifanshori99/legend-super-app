@@ -1,0 +1,1695 @@
+// Profit-share distribution cycle (PRD v1.7 §3.37 Siklus Distribusi, §4 P, §6 I
+// `distribution_runs` / `distribution_lines`; SH-02, SH-04; bead legend-2ljb).
+//
+// - A regular run is calculated from the closed fiscal period's net profit
+//   (`profit-share-net-profit.ts`) and the approved share version in force on
+//   the period's last day. The money maths and the state machine are the
+//   contract's (`calculateDistribution`, `transitionDistributionRun`); this
+//   module only loads rows, applies the result and writes it in one tenant
+//   transaction. The database repeats the hard rules (closed period, approved
+//   version, frozen approved runs, no deletes).
+// - One live regular run per profit entity and period; a correction is a new
+//   adjustment run (SH-04) that keeps the split of the run it corrects.
+// - Recording the LAST payment posts the automatic journal in the same
+//   transaction as the status change (§4 P step 4): a regular or positive
+//   adjustment run posts `distribution.completed`; a negative adjustment posts
+//   the same rule with negative amounts, which mirrors the entry (claw-back).
+//   Its id goes to `journal_entry_id` / `reversal_journal_entry_id` in the same
+//   UPDATE that sets the run `paid`.
+// - Create commands carry an idempotency key stored on the row (same key and
+//   body replays the row, other body is IDEMPOTENCY_KEY_REUSED). Submit, decide
+//   and payment claim their key in `profit_share_commands` inside the command's
+//   transaction: the same key and request replays the current state (200), any
+//   other request with that key is IDEMPOTENCY_KEY_REUSED.
+// - Events `distribution.approved|paid|completed` go through the domain outbox
+//   in the same transaction. The statement PDF is issued after commit; a failure
+//   is logged and leaves `statement_file_key` null (issuing again is allowed).
+// - Shareholders read only their own paid lines (SH-01); everything else is a
+//   404 so a row's existence does not leak.
+
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  lt,
+  max,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import {
+  AccountingError,
+  assertAdjustmentMatchesTarget,
+  assertAdjustmentTarget,
+  assertNoDuplicateRegularRun,
+  assertShareVersionUsable,
+  buildDistributionStatement,
+  buildMyProfitShare,
+  calculateAdjustmentDistribution,
+  calculateDistribution,
+  distributionApprovedEvent,
+  distributionCompletedEvent,
+  distributionPaidEvent,
+  distributionRunSchema,
+  distributionRunSummarySchema,
+  effectiveShareAllocationVersion,
+  listDistributionRuns,
+  periodBounds,
+  profitEntitySchema,
+  resolveAutoJournalDate,
+  transitionDistributionRun,
+  type createAdjustmentDistributionInputSchema,
+  type createDistributionRunInputSchema,
+  type distributionDecisionInputSchema,
+  type DistributionRun,
+  type DistributionRunSummary,
+  type DistributionStatement,
+  type MyProfitShare,
+  type ProfitEntity,
+  type recordDistributionPaymentInputSchema,
+  type ShareAllocationVersion,
+} from "@starter/shared/accounting";
+import {
+  assertTrustedScopedContext,
+  businessDateOf,
+  CoreError,
+  createUlid,
+  decodeCursor,
+  encodeCursor,
+  idr,
+  isoDateTimeSchema,
+  userIdSchema,
+  type BusinessDate,
+  type BusinessDayClock,
+  type CursorPage,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import type { z } from "zod";
+import { db } from "../db";
+import {
+  distributionLines,
+  distributionRuns,
+  fiscalPeriods,
+  outlets,
+  profitEntities,
+  shareAllocationVersions,
+  shareAllocations,
+  shareholders,
+} from "../db/schema";
+import { withTenant } from "../db/tenant";
+import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
+import {
+  auditAccountingChange,
+  type TenantTransaction,
+} from "./accounting-shared";
+import { postJournalFromRuleInTransaction } from "./accounting-journal.service";
+import { appendOutbox } from "./core-outbox";
+import { claimProfitShareCommand } from "./profit-share-idempotency";
+import { loadClosedPeriodNetProfit } from "./profit-share-net-profit";
+import { issueDistributionStatement } from "./profit-share-statement.service";
+
+type Tx = TenantTransaction;
+type RunRow = typeof distributionRuns.$inferSelect;
+type LineRow = typeof distributionLines.$inferSelect;
+type EntityRow = typeof profitEntities.$inferSelect;
+
+export type CreateDistributionRunInput = z.infer<
+  typeof createDistributionRunInputSchema
+>;
+export type CreateAdjustmentInput = z.infer<
+  typeof createAdjustmentDistributionInputSchema
+>;
+export type DistributionDecisionInput = z.infer<
+  typeof distributionDecisionInputSchema
+>;
+export type RecordPaymentInput = z.infer<
+  typeof recordDistributionPaymentInputSchema
+>;
+export type ListRunsQuery = ReturnType<typeof listDistributionRuns.query.parse>;
+
+/** Who reads a statement: a manager, or a shareholder (own paid line only). */
+export type StatementViewer =
+  { kind: "manager" } | { kind: "shareholder"; userId: string };
+
+export type DistributionDeps = {
+  /** Issues the statement PDF of one paid line; injected for tests. */
+  issueStatement: (
+    context: ScopedTenantContext,
+    input: { distributionRunId: string; distributionLineId: string },
+  ) => Promise<void>;
+};
+
+export const defaultDistributionDeps: DistributionDeps = {
+  issueStatement: (context, input) =>
+    issueDistributionStatement(context, input),
+};
+
+const EVENT_DESTINATION = "cloud-sync";
+/** Journal dates follow the Jakarta calendar day of the payment (D-CORE-6). */
+const JOURNAL_CLOCK: BusinessDayClock = {
+  timeZone: "Asia/Jakarta",
+  cutoff: "00:00",
+};
+
+const iso = (value: Date | string) => new Date(value).toISOString();
+const notFound = () =>
+  new HttpError(404, "NOT_FOUND", "Distribusi tidak ditemukan.");
+
+// ------------------------------------------------------------- row mapping
+
+function toRun(row: RunRow, lineRows: readonly LineRow[]): DistributionRun {
+  const lines = [...lineRows]
+    .sort((a, b) => a.position - b.position)
+    .map((line) => ({
+      id: line.id,
+      tenantId: line.tenantId,
+      distributionRunId: line.distributionRunId,
+      shareholderId: line.shareholderId,
+      shareBp: line.shareBp,
+      grossIdr: line.grossIdr,
+      taxWithheldIdr: line.taxWithheldIdr,
+      netIdr: line.netIdr,
+      paymentStatus: line.paymentStatus,
+      paymentRef: line.paymentRef,
+      paidAt: line.paidAt ? iso(line.paidAt) : null,
+      statementFileKey: line.statementFileKey,
+    }));
+  return distributionRunSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    profitEntityId: row.profitEntityId,
+    fiscalPeriodId: row.fiscalPeriodId,
+    period: row.period,
+    type: row.type,
+    basis: row.basis,
+    status: row.status,
+    shareVersion: row.shareVersion,
+    periodNetProfitIdr: row.periodNetProfitIdr,
+    reserveIdr: row.reserveIdr,
+    distributableIdr: row.distributableIdr,
+    lines,
+    totalGrossIdr: row.totalGrossIdr,
+    totalTaxWithheldIdr: row.totalTaxWithheldIdr,
+    totalNetIdr: row.totalNetIdr,
+    requestedBy: row.requestedBy,
+    requestedAt: iso(row.requestedAt),
+    approvedBy: row.approvedBy,
+    approvedAt: row.approvedAt ? iso(row.approvedAt) : null,
+    paidAt: row.paidAt ? iso(row.paidAt) : null,
+    adjustsRunId: row.adjustsRunId,
+    adjustmentReason: row.adjustmentReason,
+    reversalJournalEntryId: row.reversalJournalEntryId,
+  });
+}
+
+function toEntity(row: EntityRow): ProfitEntity {
+  return profitEntitySchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    name: row.name,
+    type: row.type,
+    legalEntityId: row.legalEntityId,
+    outletId: row.outletId,
+    policy: {
+      basis: row.basis,
+      reserveBp: row.reserveBp,
+      frequency: row.frequency,
+      taxWithholdingBp: row.taxWithholdingBp,
+    },
+    isActive: row.isActive,
+  });
+}
+
+// ------------------------------------------------------------------- loads
+
+async function loadEntityRow(
+  tx: Tx,
+  tenantId: string,
+  profitEntityId: string,
+  lock = false,
+): Promise<EntityRow> {
+  const query = tx
+    .select()
+    .from(profitEntities)
+    .where(
+      and(
+        eq(profitEntities.tenantId, tenantId),
+        eq(profitEntities.id, profitEntityId),
+      ),
+    )
+    .limit(1);
+  const [row] = await (lock ? query.for("update") : query);
+  if (!row)
+    throw new HttpError(
+      404,
+      "NOT_FOUND",
+      "Entitas bagi hasil tidak ditemukan.",
+    );
+  return row;
+}
+
+/** The legal entity whose ledger the entity's profit comes from. */
+async function legalEntityOf(
+  tx: Tx,
+  tenantId: string,
+  entity: EntityRow,
+): Promise<string> {
+  if (entity.type === "legal_entity" && entity.legalEntityId)
+    return entity.legalEntityId;
+  if (!entity.outletId) throw notFound();
+  const [outlet] = await tx
+    .select({ legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, entity.outletId)))
+    .limit(1);
+  if (!outlet) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+  return outlet.legalEntityId;
+}
+
+/** A fiscal period that belongs to the entity's legal entity, else 404. */
+async function loadPeriod(
+  tx: Tx,
+  tenantId: string,
+  legalEntityId: string,
+  fiscalPeriodId: string,
+  lock = false,
+) {
+  const query = tx
+    .select()
+    .from(fiscalPeriods)
+    .where(
+      and(
+        eq(fiscalPeriods.tenantId, tenantId),
+        eq(fiscalPeriods.id, fiscalPeriodId),
+        eq(fiscalPeriods.legalEntityId, legalEntityId),
+      ),
+    )
+    .limit(1);
+  // FOR SHARE: a close or reopen of the period waits for this transaction.
+  const [period] = await (lock ? query.for("share") : query);
+  if (!period)
+    throw new HttpError(404, "NOT_FOUND", "Periode buku tidak ditemukan.");
+  return period;
+}
+
+async function loadRunRow(
+  tx: Tx,
+  tenantId: string,
+  runId: string,
+  lock = false,
+): Promise<RunRow> {
+  const query = tx
+    .select()
+    .from(distributionRuns)
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.id, runId),
+      ),
+    )
+    .limit(1);
+  const [row] = await (lock ? query.for("update") : query);
+  if (!row) throw notFound();
+  return row;
+}
+
+async function loadLineRows(
+  tx: Tx,
+  tenantId: string,
+  runIds: readonly string[],
+): Promise<LineRow[]> {
+  if (runIds.length === 0) return [];
+  return tx
+    .select()
+    .from(distributionLines)
+    .where(
+      and(
+        eq(distributionLines.tenantId, tenantId),
+        inArray(distributionLines.distributionRunId, [...runIds]),
+      ),
+    )
+    .orderBy(asc(distributionLines.position));
+}
+
+async function loadRun(
+  tx: Tx,
+  tenantId: string,
+  runId: string,
+  lock = false,
+): Promise<{ row: RunRow; run: DistributionRun }> {
+  const row = await loadRunRow(tx, tenantId, runId, lock);
+  const lines = await loadLineRows(tx, tenantId, [runId]);
+  return { row, run: toRun(row, lines) };
+}
+
+// ---------------------------------------------------------- audit & events
+
+async function auditRun(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorId: string,
+  action: string,
+  run: Pick<DistributionRun, "id" | "type" | "lines">,
+  outletId: string | null,
+  reason: string | null = null,
+): Promise<void> {
+  await auditAccountingChange(tx, context, {
+    actorId: userIdSchema.parse(actorId),
+    action,
+    objectType: "distribution_run",
+    objectId: run.id,
+    outletId,
+    reason,
+    before: null,
+    after: { type: run.type, count: run.lines.length },
+  });
+}
+
+async function nextSequence(
+  tx: Tx,
+  tenantId: string,
+  aggregateType: string,
+  aggregateId: string,
+): Promise<number> {
+  const [row] = await tx
+    .execute<{ last: string | number }>(
+      sql`
+    SELECT coalesce(max(sequence), 0) AS last
+    FROM domain_event_outbox
+    WHERE tenant_id = ${tenantId}
+      AND destination = ${EVENT_DESTINATION}
+      AND aggregate_type = ${aggregateType}
+      AND aggregate_id = ${aggregateId}
+  `,
+    )
+    .then((result) => result.rows);
+  return Number(row?.last ?? 0) + 1;
+}
+
+type DistributionEvent =
+  | typeof distributionApprovedEvent
+  | typeof distributionPaidEvent
+  | typeof distributionCompletedEvent;
+
+async function appendDistributionEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  definition: DistributionEvent,
+  input: {
+    run: Pick<DistributionRun, "id">;
+    outletId: string | null;
+    actorId: string;
+    now: Date;
+    payload: Record<string, unknown>;
+  },
+): Promise<void> {
+  const sequence = await nextSequence(
+    tx,
+    context.tenant.tenantId,
+    definition.entry.aggregateType,
+    input.run.id,
+  );
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(input.now.getTime()),
+    tenantId: context.tenant.tenantId,
+    outletId: input.outletId,
+    name: definition.name,
+    version: definition.version,
+    aggregateType: definition.entry.aggregateType,
+    aggregateId: input.run.id,
+    sequence,
+    occurredAt: input.now.toISOString(),
+    actor: { type: "user", id: input.actorId },
+    deviceId: null,
+    idempotencyKey: `${definition.name}:${input.run.id}:${sequence}`.slice(
+      0,
+      100,
+    ),
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload: input.payload,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(input.now.getTime()),
+    event,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+}
+
+// ------------------------------------------------------------------ insert
+
+type CalculatedRun = {
+  type: "regular" | "adjustment";
+  profitEntityId: string;
+  fiscalPeriodId: string;
+  /** `fiscal_periods.version` read under FOR SHARE when the run was calculated. */
+  fiscalPeriodVersion: number;
+  period: string;
+  shareVersion: number;
+  periodNetProfitIdr: number | null;
+  reserveIdr: number;
+  distributableIdr: number;
+  totalGrossIdr: number;
+  totalTaxWithheldIdr: number;
+  totalNetIdr: number;
+  taxWithholdingBp: number;
+  adjustsRunId: string | null;
+  adjustmentReason: string | null;
+  lines: readonly {
+    shareholderId: string;
+    shareBp: number;
+    grossIdr: number;
+    taxWithheldIdr: number;
+    netIdr: number;
+  }[];
+};
+
+async function insertRun(
+  tx: Tx,
+  tenantId: string,
+  actorId: string,
+  idempotencyKey: string,
+  calc: CalculatedRun,
+): Promise<DistributionRun> {
+  const [row] = await tx
+    .insert(distributionRuns)
+    .values({
+      tenantId,
+      profitEntityId: calc.profitEntityId,
+      fiscalPeriodId: calc.fiscalPeriodId,
+      period: calc.period,
+      type: calc.type,
+      basis:
+        calc.type === "regular"
+          ? "closed_period_net_profit"
+          : "approved_run_adjustment",
+      status: "draft",
+      fiscalPeriodVersion: calc.fiscalPeriodVersion,
+      shareVersion: calc.shareVersion,
+      periodNetProfitIdr:
+        calc.periodNetProfitIdr === null ? null : idr(calc.periodNetProfitIdr),
+      reserveIdr: idr(calc.reserveIdr),
+      distributableIdr: idr(calc.distributableIdr),
+      totalGrossIdr: idr(calc.totalGrossIdr),
+      totalTaxWithheldIdr: idr(calc.totalTaxWithheldIdr),
+      totalNetIdr: idr(calc.totalNetIdr),
+      taxWithholdingBp: calc.taxWithholdingBp,
+      requestedBy: actorId,
+      adjustsRunId: calc.adjustsRunId,
+      adjustmentReason: calc.adjustmentReason,
+      idempotencyKey,
+    })
+    .returning();
+  const lineRows = await tx
+    .insert(distributionLines)
+    .values(
+      calc.lines.map((line, position) => ({
+        tenantId,
+        distributionRunId: row!.id,
+        shareholderId: line.shareholderId,
+        shareBp: line.shareBp,
+        grossIdr: idr(line.grossIdr),
+        taxWithheldIdr: idr(line.taxWithheldIdr),
+        netIdr: idr(line.netIdr),
+        position,
+      })),
+    )
+    .returning();
+  return toRun(row!, lineRows);
+}
+
+/** A unique violation after the entity lock can only be the regular-run index. */
+function constraintOf(error: unknown, depth = 0): string | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  if (candidate.code === "23505" && typeof candidate.constraint === "string")
+    return candidate.constraint;
+  return constraintOf(candidate.cause, depth + 1);
+}
+
+/** Unique violations are mapped by constraint name, anything else is rethrown. */
+function translateRunError(error: unknown): unknown {
+  switch (constraintOf(error)) {
+    case "distribution_runs_regular_period_key":
+      return new AccountingError("DISTRIBUTION_ALREADY_EXISTS");
+    case "distribution_runs_tenant_idempotency_key":
+      // A concurrent create with the same key won the race.
+      return reusedKey();
+    default:
+      return error;
+  }
+}
+
+async function findByIdempotency(
+  tx: Tx,
+  tenantId: string,
+  key: string,
+): Promise<RunRow | null> {
+  const [row] = await tx
+    .select()
+    .from(distributionRuns)
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.idempotencyKey, key),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+function reusedKey(): CoreError {
+  return new CoreError(
+    "IDEMPOTENCY_KEY_REUSED",
+    "That idempotency key was used for a different request.",
+  );
+}
+
+// ----------------------------------------------------------- create (regular)
+
+/** POST distributions: calculate and simulate, saved as a draft run. */
+export async function createDistributionRunService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  profitEntityId: string,
+  input: CreateDistributionRunInput,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  try {
+    return await withTenant(db, context, async (tx) => {
+      // The entity row lock serialises runs of one entity (idempotency, duplicates).
+      const entityRow = await loadEntityRow(tx, tenantId, profitEntityId, true);
+      const replay = await findByIdempotency(
+        tx,
+        tenantId,
+        input.idempotencyKey,
+      );
+      if (replay) {
+        if (
+          replay.type !== "regular" ||
+          replay.profitEntityId !== profitEntityId ||
+          replay.fiscalPeriodId !== input.fiscalPeriodId ||
+          replay.requestedBy !== actorUserId
+        )
+          throw reusedKey();
+        return (await loadRun(tx, tenantId, replay.id)).run;
+      }
+      if (!entityRow.isActive)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "Entitas bagi hasil tidak aktif.",
+        );
+      const entity = toEntity(entityRow);
+      const legalEntityId = await legalEntityOf(tx, tenantId, entityRow);
+      const period = await loadPeriod(
+        tx,
+        tenantId,
+        legalEntityId,
+        input.fiscalPeriodId,
+        true,
+      );
+      // SH-02: refuse an open period before any other work.
+      if (period.status !== "closed")
+        throw new AccountingError("PERIOD_NOT_CLOSED");
+
+      const existing = await tx
+        .select({
+          id: distributionRuns.id,
+          profitEntityId: distributionRuns.profitEntityId,
+          fiscalPeriodId: distributionRuns.fiscalPeriodId,
+          type: distributionRuns.type,
+          status: distributionRuns.status,
+        })
+        .from(distributionRuns)
+        .where(
+          and(
+            eq(distributionRuns.tenantId, tenantId),
+            eq(distributionRuns.profitEntityId, profitEntityId),
+            eq(distributionRuns.fiscalPeriodId, input.fiscalPeriodId),
+          ),
+        );
+      assertNoDuplicateRegularRun(existing as never, {
+        profitEntityId,
+        fiscalPeriodId: input.fiscalPeriodId,
+      });
+
+      // SH-03: the approved version in force on the period's last day.
+      const versionRows = await tx
+        .select()
+        .from(shareAllocationVersions)
+        .where(
+          and(
+            eq(shareAllocationVersions.tenantId, tenantId),
+            eq(shareAllocationVersions.profitEntityId, profitEntityId),
+            eq(shareAllocationVersions.status, "approved"),
+          ),
+        );
+      const effective = effectiveShareAllocationVersion(
+        versionRows.map((row) => ({
+          profitEntityId: row.profitEntityId as never,
+          version: row.version,
+          effectiveFrom: row.effectiveFrom,
+          status: row.status,
+        })),
+        profitEntityId,
+        periodBounds(period.period).end,
+      );
+      const allocationRows = effective
+        ? await tx
+            .select({
+              shareholderId: shareAllocations.shareholderId,
+              shareBp: shareAllocations.shareBp,
+            })
+            .from(shareAllocations)
+            .where(
+              and(
+                eq(shareAllocations.tenantId, tenantId),
+                eq(shareAllocations.profitEntityId, profitEntityId),
+                eq(shareAllocations.version, effective.version),
+              ),
+            )
+        : [];
+      assertShareVersionUsable(
+        effective
+          ? {
+              status: effective.status,
+              allocations:
+                allocationRows as unknown as ShareAllocationVersion["allocations"],
+            }
+          : null,
+      );
+
+      const netProfit = await loadClosedPeriodNetProfit(tx, tenantId, {
+        legalEntityId,
+        outletId: entityRow.type === "outlet" ? entityRow.outletId : null,
+        period: period.period,
+      });
+      const calculation = calculateDistribution({
+        profitEntityId: entity.id,
+        fiscalPeriodId: input.fiscalPeriodId as never,
+        period: period.period,
+        periodStatus: "closed",
+        periodNetProfitIdr: netProfit,
+        policy: entity.policy,
+        allocations: allocationRows as never,
+      });
+      const run = await insertRun(
+        tx,
+        tenantId,
+        actorUserId,
+        input.idempotencyKey,
+        {
+          type: "regular",
+          profitEntityId,
+          fiscalPeriodId: input.fiscalPeriodId,
+          fiscalPeriodVersion: period.version,
+          period: period.period,
+          shareVersion: effective!.version,
+          periodNetProfitIdr: calculation.periodNetProfitIdr,
+          reserveIdr: calculation.reserveIdr,
+          distributableIdr: calculation.distributableIdr,
+          totalGrossIdr: calculation.totalGrossIdr,
+          totalTaxWithheldIdr: calculation.totalTaxWithheldIdr,
+          totalNetIdr: calculation.totalNetIdr,
+          taxWithholdingBp: entity.policy.taxWithholdingBp,
+          adjustsRunId: null,
+          adjustmentReason: null,
+          lines: calculation.lines,
+        },
+      );
+      await auditRun(
+        tx,
+        context,
+        actorUserId,
+        "profit_share.distribution_calculated",
+        run,
+        entityRow.outletId,
+      );
+      return run;
+    });
+  } catch (error) {
+    throw translateRunError(error);
+  }
+}
+
+// ------------------------------------------------------- create (adjustment)
+
+/** POST adjustment (SH-04): a NEW run that corrects an approved or paid one. */
+export async function createAdjustmentDistributionService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  targetRunId: string,
+  input: CreateAdjustmentInput,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  try {
+    return await withTenant(db, context, async (tx) => {
+      const targetRow = await loadRunRow(tx, tenantId, targetRunId);
+      const entityRow = await loadEntityRow(
+        tx,
+        tenantId,
+        targetRow.profitEntityId,
+        true,
+      );
+      const replay = await findByIdempotency(
+        tx,
+        tenantId,
+        input.idempotencyKey,
+      );
+      if (replay) {
+        if (
+          replay.type !== "adjustment" ||
+          replay.adjustsRunId !== targetRunId ||
+          replay.fiscalPeriodId !== input.fiscalPeriodId ||
+          replay.distributableIdr !== input.adjustmentIdr ||
+          replay.adjustmentReason !== input.reason.trim() ||
+          replay.requestedBy !== actorUserId
+        )
+          throw reusedKey();
+        return (await loadRun(tx, tenantId, replay.id)).run;
+      }
+      const target = (await loadRun(tx, tenantId, targetRunId)).run;
+      assertAdjustmentTarget(target);
+      const legalEntityId = await legalEntityOf(tx, tenantId, entityRow);
+      const period = await loadPeriod(
+        tx,
+        tenantId,
+        legalEntityId,
+        input.fiscalPeriodId,
+        true,
+      );
+      const calculation = calculateAdjustmentDistribution({
+        profitEntityId: target.profitEntityId,
+        fiscalPeriodId: input.fiscalPeriodId as never,
+        period: period.period,
+        periodStatus: period.status,
+        adjustsRunId: target.id,
+        reason: input.reason,
+        adjustmentIdr: input.adjustmentIdr,
+        // The rate frozen with the corrected run, not today's policy.
+        taxWithholdingBp: targetRow.taxWithholdingBp,
+        allocations: target.lines.map((line) => ({
+          shareholderId: line.shareholderId,
+          shareBp: line.shareBp,
+        })),
+      });
+      assertAdjustmentMatchesTarget(target, {
+        profitEntityId: target.profitEntityId,
+        shareVersion: target.shareVersion,
+        lines: calculation.lines,
+      });
+      if (input.adjustmentIdr < 0)
+        await assertClawBackWithinPaid(tx, tenantId, target, calculation.lines);
+      const run = await insertRun(
+        tx,
+        tenantId,
+        actorUserId,
+        input.idempotencyKey,
+        {
+          type: "adjustment",
+          profitEntityId: target.profitEntityId,
+          fiscalPeriodId: input.fiscalPeriodId,
+          fiscalPeriodVersion: period.version,
+          period: period.period,
+          shareVersion: target.shareVersion,
+          periodNetProfitIdr: null,
+          reserveIdr: 0,
+          distributableIdr: calculation.adjustmentIdr,
+          totalGrossIdr: calculation.totalGrossIdr,
+          totalTaxWithheldIdr: calculation.totalTaxWithheldIdr,
+          totalNetIdr: calculation.totalNetIdr,
+          taxWithholdingBp: targetRow.taxWithholdingBp,
+          adjustsRunId: target.id,
+          adjustmentReason: calculation.reason,
+          lines: calculation.lines,
+        },
+      );
+      await auditRun(
+        tx,
+        context,
+        actorUserId,
+        "profit_share.adjustment_created",
+        run,
+        entityRow.outletId,
+        calculation.reason,
+      );
+      return run;
+    });
+  } catch (error) {
+    throw translateRunError(error);
+  }
+}
+
+/**
+ * A claw-back may not take any shareholder's cumulative gross below zero: the
+ * corrected run's line plus every live (not cancelled) adjustment of it, the
+ * pending ones included, plus this new line.
+ */
+async function assertClawBackWithinPaid(
+  tx: Tx,
+  tenantId: string,
+  target: DistributionRun,
+  newLines: readonly { shareholderId: string; grossIdr: number }[],
+): Promise<void> {
+  const rows = await tx
+    .select({
+      shareholderId: distributionLines.shareholderId,
+      total: sql<string>`sum(${distributionLines.grossIdr})::text`,
+    })
+    .from(distributionLines)
+    .innerJoin(
+      distributionRuns,
+      and(
+        eq(distributionRuns.tenantId, distributionLines.tenantId),
+        eq(distributionRuns.id, distributionLines.distributionRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.adjustsRunId, target.id),
+        sql`${distributionRuns.status} <> 'cancelled'`,
+      ),
+    )
+    .groupBy(distributionLines.shareholderId);
+  const adjusted = new Map(
+    rows.map((row) => [row.shareholderId, Number(row.total)]),
+  );
+  for (const line of newLines) {
+    const base =
+      target.lines.find((item) => item.shareholderId === line.shareholderId)
+        ?.grossIdr ?? 0;
+    if (base + (adjusted.get(line.shareholderId) ?? 0) + line.grossIdr < 0)
+      throw new HttpError(
+        422,
+        "ADJUSTMENT_EXCEEDS_PAID",
+        "Pengembalian melebihi jumlah yang sudah dibayarkan kepada pemegang saham.",
+      );
+  }
+}
+
+// -------------------------------------------------------------------- reads
+
+/** created_at keeps microseconds; a JS Date does not, so the cursor carries text. */
+const CURSOR_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const CURSOR_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function cursorKeys(cursor: string): [string, string] {
+  let keys: ReturnType<typeof decodeCursor>;
+  try {
+    keys = decodeCursor(cursor);
+  } catch {
+    throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+  }
+  const [at, id] = keys;
+  if (
+    keys.length !== 2 ||
+    typeof at !== "string" ||
+    typeof id !== "string" ||
+    !CURSOR_INSTANT.test(at) ||
+    !CURSOR_UUID.test(id)
+  )
+    throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+  return [at, id];
+}
+
+/** GET distributions of one entity, newest first (cursor page of summaries). */
+export async function listDistributionRunsService(
+  context: ScopedTenantContext,
+  profitEntityId: string,
+  query: ListRunsQuery,
+): Promise<CursorPage<DistributionRunSummary>> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await loadEntityRow(tx, tenantId, profitEntityId);
+    const filters: SQL[] = [
+      eq(distributionRuns.tenantId, tenantId),
+      eq(distributionRuns.profitEntityId, profitEntityId),
+    ];
+    if (query.status) filters.push(eq(distributionRuns.status, query.status));
+    if (query.cursor) {
+      const [at, id] = cursorKeys(query.cursor);
+      const keyset = or(
+        sql`${distributionRuns.requestedAt} < ${at}::timestamptz`,
+        and(
+          sql`${distributionRuns.requestedAt} = ${at}::timestamptz`,
+          lt(distributionRuns.id, id),
+        ),
+      );
+      if (keyset) filters.push(keyset);
+    }
+    const rows = await tx
+      .select({
+        row: distributionRuns,
+        key: sql<string>`to_char(${distributionRuns.requestedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      })
+      .from(distributionRuns)
+      .where(and(...filters))
+      .orderBy(desc(distributionRuns.requestedAt), desc(distributionRuns.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const counts = new Map<string, { total: number; paid: number }>();
+    if (page.length > 0) {
+      const countRows = await tx
+        .select({
+          runId: distributionLines.distributionRunId,
+          total: sql<number>`count(*)::int`,
+          paid: sql<number>`(count(*) FILTER (WHERE ${distributionLines.paymentStatus} = 'paid'))::int`,
+        })
+        .from(distributionLines)
+        .where(
+          and(
+            eq(distributionLines.tenantId, tenantId),
+            inArray(
+              distributionLines.distributionRunId,
+              page.map(({ row }) => row.id),
+            ),
+          ),
+        )
+        .groupBy(distributionLines.distributionRunId);
+      for (const row of countRows)
+        counts.set(row.runId, { total: row.total, paid: row.paid });
+    }
+    const data = page.map(({ row }) => {
+      const count = counts.get(row.id) ?? { total: 0, paid: 0 };
+      return distributionRunSummarySchema.parse({
+        id: row.id,
+        profitEntityId: row.profitEntityId,
+        fiscalPeriodId: row.fiscalPeriodId,
+        period: row.period,
+        type: row.type,
+        status: row.status,
+        shareVersion: row.shareVersion,
+        distributableIdr: row.distributableIdr,
+        totalTaxWithheldIdr: row.totalTaxWithheldIdr,
+        totalNetIdr: row.totalNetIdr,
+        lineCount: count.total,
+        paidLineCount: count.paid,
+        requestedBy: row.requestedBy,
+        requestedAt: iso(row.requestedAt),
+        approvedBy: row.approvedBy,
+        approvedAt: row.approvedAt ? iso(row.approvedAt) : null,
+        paidAt: row.paidAt ? iso(row.paidAt) : null,
+      });
+    });
+    const last = page.at(-1);
+    return {
+      data,
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.key, last.row.id])
+            : null,
+      },
+    };
+  });
+}
+
+/** GET one run with its lines. */
+export async function getDistributionRunService(
+  context: ScopedTenantContext,
+  runId: string,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  return withTenant(
+    db,
+    context,
+    async (tx) => (await loadRun(tx, context.tenant.tenantId, runId)).run,
+  );
+}
+
+// ------------------------------------------------------------ state changes
+
+/** POST submit: draft to pending_approval, requester only. */
+export async function submitDistributionRunService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  runId: string,
+  input: { idempotencyKey: string },
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const { row, run } = await loadRun(tx, tenantId, runId, true);
+    // Same key and request: replay the current state, no second transition.
+    const claim = await claimProfitShareCommand(tx, {
+      tenantId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "distribution.submit",
+      targetId: runId,
+      actorId,
+      request: {},
+    });
+    if (claim === "replay") return run;
+    const next = transitionDistributionRun(run, { type: "submit", actorId });
+    await tx
+      .update(distributionRuns)
+      .set({ status: next.status, updatedAt: new Date() })
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.id, runId),
+          eq(distributionRuns.status, "draft"),
+        ),
+      );
+    const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
+    await auditRun(
+      tx,
+      context,
+      actorUserId,
+      "profit_share.distribution_submitted",
+      run,
+      entityRow.outletId,
+    );
+    return next;
+  });
+}
+
+/** POST decision: approve (freezes the run) or reject (cancels it). */
+export async function decideDistributionRunService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  runId: string,
+  input: DistributionDecisionInput,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const { row, run } = await loadRun(tx, tenantId, runId, true);
+    const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
+    const now = new Date();
+    const claim = await claimProfitShareCommand(tx, {
+      tenantId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "distribution.decide",
+      targetId: runId,
+      actorId,
+      request: { decision: input.decision, note: input.note },
+    });
+    if (claim === "replay") return run;
+    if (input.decision === "approve") {
+      const next = transitionDistributionRun(run, {
+        type: "approve",
+        actorId,
+        now: isoDateTimeSchema.parse(now.toISOString()),
+      });
+      // The numbers were calculated from this closed period at this version;
+      // a reopen (or close again) since then makes them stale.
+      const period = await loadPeriod(
+        tx,
+        tenantId,
+        await legalEntityOf(tx, tenantId, entityRow),
+        run.fiscalPeriodId,
+        true,
+      );
+      if (
+        period.status !== "closed" ||
+        period.version !== row.fiscalPeriodVersion
+      )
+        throw new AccountingError("PERIOD_CHANGED");
+      await tx
+        .update(distributionRuns)
+        .set({
+          status: "approved",
+          approvedBy: actorId,
+          approvedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(distributionRuns.tenantId, tenantId),
+            eq(distributionRuns.id, runId),
+            eq(distributionRuns.status, "pending_approval"),
+          ),
+        );
+      await appendDistributionEvent(tx, context, distributionApprovedEvent, {
+        run,
+        outletId: entityRow.outletId,
+        actorId,
+        now,
+        payload: {
+          distributionRunId: run.id,
+          profitEntityId: run.profitEntityId,
+          fiscalPeriodId: run.fiscalPeriodId,
+          period: run.period,
+          type: run.type,
+          shareVersion: run.shareVersion,
+          totalGrossIdr: run.totalGrossIdr,
+          totalTaxWithheldIdr: run.totalTaxWithheldIdr,
+          totalNetIdr: run.totalNetIdr,
+          shareholderCount: run.lines.length,
+          approvedBy: actorId,
+          approvedAt: now.toISOString(),
+        },
+      });
+      await auditRun(
+        tx,
+        context,
+        actorUserId,
+        "profit_share.distribution_approved",
+        run,
+        entityRow.outletId,
+        input.note,
+      );
+      return next;
+    }
+    const note = input.note ?? "";
+    const next = transitionDistributionRun(run, {
+      type: "reject",
+      actorId,
+      reason: note,
+    });
+    await tx
+      .update(distributionRuns)
+      .set({
+        status: "cancelled",
+        cancelledBy: actorId,
+        cancelledAt: now,
+        cancelReason: note.trim(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(distributionRuns.tenantId, tenantId),
+          eq(distributionRuns.id, runId),
+          eq(distributionRuns.status, "pending_approval"),
+        ),
+      );
+    await auditRun(
+      tx,
+      context,
+      actorUserId,
+      "profit_share.distribution_rejected",
+      run,
+      entityRow.outletId,
+      note.trim(),
+    );
+    return next;
+  });
+}
+
+/** The automatic journal of a completed run (§4 P step 4). */
+async function postCompletionJournal(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    run: DistributionRun;
+    entity: EntityRow;
+    actorId: string;
+    paidAt: Date;
+    now: Date;
+  },
+): Promise<string> {
+  const tenantId = context.tenant.tenantId;
+  const legalEntityId = await legalEntityOf(tx, tenantId, input.entity);
+  const negative = input.run.distributableIdr < 0;
+  // A closed month does not block completion: the entry moves to the first
+  // day after the latest closed period and keeps the natural date (F19).
+  const [latest] = await tx
+    .select({ period: max(fiscalPeriods.period) })
+    .from(fiscalPeriods)
+    .where(
+      and(
+        eq(fiscalPeriods.tenantId, tenantId),
+        eq(fiscalPeriods.legalEntityId, legalEntityId),
+        eq(fiscalPeriods.status, "closed"),
+      ),
+    );
+  const { entryDate, lateAdjustmentFrom } = resolveAutoJournalDate(
+    businessDateOf(input.paidAt, JOURNAL_CLOCK),
+    latest?.period ?? null,
+  );
+  // A claw-back posts the same rule with negative amounts: every side flips,
+  // giving Dr bank, Dr dividend_tax_payable, Cr retained_earnings.
+  const entry = await postJournalFromRuleInTransaction(
+    tx,
+    context,
+    {
+      eventName: "distribution.completed",
+      amounts: {
+        distributedIdr: input.run.totalGrossIdr,
+        paidNetIdr: input.run.totalNetIdr,
+        taxWithheldIdr: input.run.totalTaxWithheldIdr,
+      },
+      legalEntityId,
+      outletId: input.entity.type === "outlet" ? input.entity.outletId : null,
+      entryDate: entryDate as BusinessDate,
+      lateAdjustmentFrom,
+      sourceId: input.run.id,
+      description: negative
+        ? "Koreksi distribusi bagi hasil (pengembalian)"
+        : input.run.type === "adjustment"
+          ? "Koreksi distribusi bagi hasil"
+          : undefined,
+      postedBy: userIdSchema.parse(input.actorId),
+      idempotencyKey: `distribution:${input.run.id}:completed`,
+    },
+    input.now,
+  );
+  return entry.id;
+}
+
+/** POST payment: pays one line; the last line completes the run and journals. */
+export async function recordDistributionPaymentService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  runId: string,
+  lineId: string,
+  input: RecordPaymentInput,
+  deps: DistributionDeps = defaultDistributionDeps,
+): Promise<DistributionRun> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const actorId = userIdSchema.parse(actorUserId);
+  const outcome = await withTenant(db, context, async (tx) => {
+    const { row, run } = await loadRun(tx, tenantId, runId, true);
+    const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
+    const target = run.lines.find((line) => line.id === lineId);
+    if (!target) throw notFound();
+    // Same key and request: replay the current state, no second transition.
+    const claim = await claimProfitShareCommand(tx, {
+      tenantId,
+      idempotencyKey: input.idempotencyKey,
+      operation: "distribution.pay",
+      targetId: lineId,
+      actorId,
+      request: { paymentRef: input.paymentRef, paidAt: input.paidAt },
+    });
+    if (claim === "replay") return { run, paid: false };
+    const paidAt = new Date(input.paidAt);
+    const next = transitionDistributionRun(run, {
+      type: "record_payment",
+      actorId,
+      lineId: target.id,
+      paymentRef: input.paymentRef,
+      paidAt: isoDateTimeSchema.parse(paidAt.toISOString()),
+    });
+    const now = new Date();
+    // The payment cannot predate the approval or lie in the future.
+    if (
+      Number.isNaN(paidAt.getTime()) ||
+      paidAt.getTime() > now.getTime() ||
+      (run.approvedAt !== null &&
+        paidAt.getTime() < new Date(run.approvedAt).getTime())
+    )
+      throw new HttpError(
+        422,
+        "INVALID_PAID_AT",
+        "Tanggal pembayaran harus setelah persetujuan dan tidak boleh di masa depan.",
+      );
+    await tx
+      .update(distributionLines)
+      .set({
+        paymentStatus: "paid",
+        paymentRef: input.paymentRef.trim(),
+        paidAt,
+        paidBy: actorId,
+      })
+      .where(
+        and(
+          eq(distributionLines.tenantId, tenantId),
+          eq(distributionLines.id, lineId),
+          eq(distributionLines.distributionRunId, runId),
+          eq(distributionLines.paymentStatus, "pending"),
+        ),
+      );
+    await appendDistributionEvent(tx, context, distributionPaidEvent, {
+      run,
+      outletId: entityRow.outletId,
+      actorId,
+      now,
+      payload: {
+        distributionRunId: run.id,
+        distributionLineId: target.id,
+        profitEntityId: run.profitEntityId,
+        shareholderId: target.shareholderId,
+        grossIdr: target.grossIdr,
+        taxWithheldIdr: target.taxWithheldIdr,
+        netIdr: target.netIdr,
+        paymentRef: input.paymentRef.trim(),
+        paidAt: paidAt.toISOString(),
+      },
+    });
+    if (next.status === "paid") {
+      // The run is paid when its latest line was paid, not when the last
+      // request arrived (payments may be entered out of order).
+      const completedAt = new Date(
+        Math.max(
+          ...next.lines.map((line) => new Date(line.paidAt ?? 0).getTime()),
+        ),
+      );
+      const journalId = await postCompletionJournal(tx, context, {
+        run: next,
+        entity: entityRow,
+        actorId,
+        paidAt: completedAt,
+        now,
+      });
+      const negative = next.distributableIdr < 0;
+      // Status, paid_at and the journal id change together (DB guard).
+      await tx
+        .update(distributionRuns)
+        .set({
+          status: "paid",
+          paidAt: completedAt,
+          ...(negative
+            ? { reversalJournalEntryId: journalId }
+            : { journalEntryId: journalId }),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(distributionRuns.tenantId, tenantId),
+            eq(distributionRuns.id, runId),
+            eq(distributionRuns.status, "approved"),
+          ),
+        );
+      await appendDistributionEvent(tx, context, distributionCompletedEvent, {
+        run,
+        outletId: entityRow.outletId,
+        actorId,
+        now,
+        payload: {
+          distributionRunId: run.id,
+          profitEntityId: run.profitEntityId,
+          fiscalPeriodId: run.fiscalPeriodId,
+          period: run.period,
+          type: run.type,
+          distributedIdr: run.totalGrossIdr,
+          taxWithheldIdr: run.totalTaxWithheldIdr,
+          paidNetIdr: run.totalNetIdr,
+          shareholderCount: run.lines.length,
+          journalEntryId: journalId,
+          completedAt: completedAt.toISOString(),
+        },
+      });
+    }
+    await auditRun(
+      tx,
+      context,
+      actorUserId,
+      "profit_share.distribution_line_paid",
+      run,
+      entityRow.outletId,
+    );
+    return { run: (await loadRun(tx, tenantId, runId)).run, paid: true };
+  });
+  if (!outcome.paid) return outcome.run;
+  // After commit: a failed statement must not undo the payment.
+  try {
+    await deps.issueStatement(context, {
+      distributionRunId: runId,
+      distributionLineId: lineId,
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error, distributionRunId: runId, distributionLineId: lineId },
+      "profit-share statement could not be issued; the payment stands",
+    );
+    return outcome.run;
+  }
+  return withTenant(
+    db,
+    context,
+    async (tx) => (await loadRun(tx, tenantId, runId)).run,
+  );
+}
+
+// --------------------------------------------------------------- statements
+
+/** Read side of a line for statements: shareholder row + entity name. */
+async function loadStatementParts(
+  tx: Tx,
+  tenantId: string,
+  run: DistributionRun,
+  shareholderId: string,
+) {
+  const [shareholder] = await tx
+    .select({
+      id: shareholders.id,
+      name: shareholders.name,
+      userId: shareholders.userId,
+    })
+    .from(shareholders)
+    .where(
+      and(
+        eq(shareholders.tenantId, tenantId),
+        eq(shareholders.id, shareholderId),
+      ),
+    )
+    .limit(1);
+  if (!shareholder) throw notFound();
+  const entityRow = await loadEntityRow(tx, tenantId, run.profitEntityId);
+  return { shareholder, entityRow };
+}
+
+/** GET statement: a manager, or the line's own shareholder once it is paid. */
+export async function getDistributionStatementService(
+  context: ScopedTenantContext,
+  viewer: StatementViewer,
+  runId: string,
+  lineId: string,
+): Promise<DistributionStatement> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const { run } = await loadRun(tx, tenantId, runId);
+    const line = run.lines.find((candidate) => candidate.id === lineId);
+    if (!line) throw notFound();
+    const { shareholder, entityRow } = await loadStatementParts(
+      tx,
+      tenantId,
+      run,
+      line.shareholderId,
+    );
+    if (viewer.kind === "shareholder") {
+      // SH-01: own line only, and only once it is paid; else it does not exist.
+      if (shareholder.userId !== viewer.userId || line.paymentStatus !== "paid")
+        throw notFound();
+    }
+    return buildDistributionStatement({
+      run,
+      line,
+      shareholder: { id: line.shareholderId, name: shareholder.name },
+      profitEntity: { id: run.profitEntityId, name: entityRow.name },
+    });
+  });
+}
+
+/**
+ * GET my-profit-share (F35): the caller's own holdings, share history and paid
+ * statements. Running estimates are not computed yet: `estimates` is `[]`.
+ */
+export async function getMyProfitShareService(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  now = new Date(),
+): Promise<MyProfitShare> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [me] = await tx
+      .select({ id: shareholders.id, name: shareholders.name })
+      .from(shareholders)
+      .where(
+        and(
+          eq(shareholders.tenantId, tenantId),
+          eq(shareholders.userId, actorUserId),
+        ),
+      )
+      .limit(1);
+    if (!me)
+      throw new HttpError(
+        404,
+        "NOT_FOUND",
+        "Data pemegang saham tidak ditemukan.",
+      );
+
+    // Own allocation rows in approved versions only: drafts are never shown.
+    const mine = await tx
+      .select({
+        allocationId: shareAllocations.id,
+        profitEntityId: shareAllocations.profitEntityId,
+        version: shareAllocations.version,
+        shareBp: shareAllocations.shareBp,
+      })
+      .from(shareAllocations)
+      .innerJoin(
+        shareAllocationVersions,
+        and(
+          eq(shareAllocationVersions.tenantId, shareAllocations.tenantId),
+          eq(
+            shareAllocationVersions.profitEntityId,
+            shareAllocations.profitEntityId,
+          ),
+          eq(shareAllocationVersions.version, shareAllocations.version),
+        ),
+      )
+      .where(
+        and(
+          eq(shareAllocations.tenantId, tenantId),
+          eq(shareAllocations.shareholderId, me.id),
+          eq(shareAllocationVersions.status, "approved"),
+        ),
+      );
+    const entityIds = [...new Set(mine.map((row) => row.profitEntityId))];
+    const entityRows =
+      entityIds.length === 0
+        ? []
+        : await tx
+            .select()
+            .from(profitEntities)
+            .where(
+              and(
+                eq(profitEntities.tenantId, tenantId),
+                inArray(profitEntities.id, entityIds),
+              ),
+            );
+    // Every approved version header decides which version is in force; only
+    // this shareholder's own allocation row is attached to it.
+    const versionRows =
+      entityIds.length === 0
+        ? []
+        : await tx
+            .select()
+            .from(shareAllocationVersions)
+            .where(
+              and(
+                eq(shareAllocationVersions.tenantId, tenantId),
+                inArray(shareAllocationVersions.profitEntityId, entityIds),
+                eq(shareAllocationVersions.status, "approved"),
+              ),
+            );
+    const versions = versionRows.map((row) => {
+      const own = mine.find(
+        (item) =>
+          item.profitEntityId === row.profitEntityId &&
+          item.version === row.version,
+      );
+      return {
+        tenantId: row.tenantId,
+        profitEntityId: row.profitEntityId,
+        version: row.version,
+        effectiveFrom: row.effectiveFrom,
+        status: row.status,
+        allocations: own
+          ? [
+              {
+                id: own.allocationId,
+                shareholderId: me.id,
+                shareBp: own.shareBp,
+              },
+            ]
+          : [],
+        requestedBy: row.requestedBy,
+        requestedAt: iso(row.requestedAt),
+        decidedBy: row.decidedBy,
+        decidedAt: row.decidedAt ? iso(row.decidedAt) : null,
+        decisionNote: row.decisionNote,
+      };
+    }) as unknown as ShareAllocationVersion[];
+
+    // Paid lines of this shareholder only; the run is loaded whole because the
+    // contract builder validates it, but only this line's statement leaves.
+    const ownLines = await tx
+      .select()
+      .from(distributionLines)
+      .where(
+        and(
+          eq(distributionLines.tenantId, tenantId),
+          eq(distributionLines.shareholderId, me.id),
+          eq(distributionLines.paymentStatus, "paid"),
+        ),
+      )
+      .orderBy(desc(distributionLines.paidAt), desc(distributionLines.id));
+    const runIds = [...new Set(ownLines.map((line) => line.distributionRunId))];
+    const runRows =
+      runIds.length === 0
+        ? []
+        : await tx
+            .select()
+            .from(distributionRuns)
+            .where(
+              and(
+                eq(distributionRuns.tenantId, tenantId),
+                inArray(distributionRuns.id, runIds),
+              ),
+            );
+    const allLines = await loadLineRows(tx, tenantId, runIds);
+    const entityNames = new Map<string, string>();
+    for (const entity of entityRows) entityNames.set(entity.id, entity.name);
+    const missingEntityIds = [
+      ...new Set(
+        runRows
+          .map((row) => row.profitEntityId)
+          .filter((id) => !entityNames.has(id)),
+      ),
+    ];
+    if (missingEntityIds.length > 0) {
+      const extra = await tx
+        .select({ id: profitEntities.id, name: profitEntities.name })
+        .from(profitEntities)
+        .where(
+          and(
+            eq(profitEntities.tenantId, tenantId),
+            inArray(profitEntities.id, missingEntityIds),
+          ),
+        );
+      for (const entity of extra) entityNames.set(entity.id, entity.name);
+    }
+    const runsById = new Map<string, DistributionRun>();
+    for (const row of runRows)
+      runsById.set(
+        row.id,
+        toRun(
+          row,
+          allLines.filter((line) => line.distributionRunId === row.id),
+        ),
+      );
+    const statements: DistributionStatement[] = [];
+    for (const ownLine of ownLines) {
+      const run = runsById.get(ownLine.distributionRunId);
+      // A cancelled run never has paid lines; skip anything unexpected.
+      if (!run || (run.status !== "approved" && run.status !== "paid"))
+        continue;
+      const line = run.lines.find((candidate) => candidate.id === ownLine.id);
+      if (!line) continue;
+      statements.push(
+        buildDistributionStatement({
+          run,
+          line,
+          shareholder: { id: me.id as never, name: me.name },
+          profitEntity: {
+            id: run.profitEntityId,
+            name: entityNames.get(run.profitEntityId) ?? "Entitas",
+          },
+        }),
+      );
+    }
+
+    return buildMyProfitShare({
+      shareholder: { id: me.id, name: me.name } as never,
+      entities: entityRows.map(toEntity),
+      versions,
+      statements,
+      estimates: [],
+      asOf: businessDateOf(now, JOURNAL_CLOCK),
+    });
+  });
+}

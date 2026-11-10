@@ -35,7 +35,11 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
-import { shareholderDocumentFiles, shareholderDocuments } from "../db/schema";
+import {
+  profitEntities,
+  shareholderDocumentFiles,
+  shareholderDocuments,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import {
@@ -46,6 +50,47 @@ import {
 import type { MalwareScanner } from "./core-image";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
+
+const profitEntityNotFound = () =>
+  new HttpError(
+    422,
+    "PROFIT_ENTITY_NOT_FOUND",
+    "The profit entity does not exist.",
+  );
+
+/** 23503 on a profit entity FK (0217): a race past the existence check. */
+function profitEntityFkViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    cause?: unknown;
+  };
+  return (
+    (candidate.code === "23503" &&
+      typeof candidate.constraint === "string" &&
+      candidate.constraint.endsWith("_profit_entity_fk")) ||
+    profitEntityFkViolation(candidate.cause, depth + 1)
+  );
+}
+
+async function assertProfitEntityExists(
+  tx: TenantTransaction,
+  tenantId: string,
+  profitEntityId: string,
+): Promise<void> {
+  const [found] = await tx
+    .select({ id: profitEntities.id })
+    .from(profitEntities)
+    .where(
+      and(
+        eq(profitEntities.tenantId, tenantId),
+        eq(profitEntities.id, profitEntityId),
+      ),
+    )
+    .limit(1);
+  if (!found) throw profitEntityNotFound();
+}
 const SIGNED_URL_SECONDS = 300;
 
 /** Which profit entities a user holds shares in (legend-2ljb owns the data). */
@@ -131,6 +176,10 @@ export async function uploadShareholderDocumentFileService(
       "UNSUPPORTED_MEDIA_TYPE",
       "Only PDF files are accepted.",
     );
+  // Before any blob is stored: an unknown (or foreign tenant) entity is 422.
+  await withTenant(db, context, (tx) =>
+    assertProfitEntityExists(tx, context.tenant.tenantId, profitEntityId),
+  );
   // Rejects on detection or scanner failure: nothing is stored either way.
   await deps.scanner.scan(bytes);
   const id = randomUUID();
@@ -161,6 +210,7 @@ export async function uploadShareholderDocumentFileService(
     );
   } catch (error) {
     await Promise.allSettled([deps.storage.delete(context, lookup)]);
+    if (profitEntityFkViolation(error)) throw profitEntityNotFound();
     throw error;
   }
   return shareholderDocumentFileSchema.parse({
@@ -188,6 +238,7 @@ export async function createShareholderDocumentService(
   try {
     return await withTenant(db, context, async (tx) => {
       const tenantId = context.tenant.tenantId;
+      await assertProfitEntityExists(tx, tenantId, body.profitEntityId);
       const [file] = await tx
         .select({ id: shareholderDocumentFiles.id })
         .from(shareholderDocumentFiles)
@@ -240,6 +291,7 @@ export async function createShareholderDocumentService(
   } catch (error) {
     // Two concurrent creates for one file: the unique key picks one.
     if (uniqueViolation(error)) throw unusable();
+    if (profitEntityFkViolation(error)) throw profitEntityNotFound();
     throw error;
   }
 }
