@@ -77,6 +77,16 @@ import {
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
 import { createStaffPinPull } from "./staff-pin-pull.ts";
+import {
+  activateEdgePepperRegistry,
+  edgeStaffPinPepperContiguous,
+  installEdgeStaffPinPeppers,
+} from "./staff-pin-pepper-registry.ts";
+import {
+  deriveEdgePepperSealKey,
+  loadEdgePeppers,
+  saveEdgePeppers,
+} from "./staff-pin-pepper-store.ts";
 import { startEdgeMasterSyncLoop } from "./master-sync.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
@@ -614,6 +624,13 @@ export async function startEdgeRuntime(
     registryPuller = null;
     return { stop: async () => {} };
   }
+  // legend-ideif: the root pepper must never be on an edge box (a stolen box
+  // would derive every tenant's pepper). config/env.ts refuses it too; this
+  // guard covers a `source` that is not process.env. Names only, no value.
+  if (source.STAFF_PIN_PEPPER !== undefined && source.STAFF_PIN_PEPPER !== "")
+    throw new EdgeBootError(
+      "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
+    );
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
@@ -634,6 +651,26 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
+  // legend-ideif: from here on pin hashing uses only the tenant peppers the
+  // cloud sent (none yet = fail closed). Restore the sealed ones from the
+  // database so a restart verifies pins offline; rows sealed under a rotated
+  // credential do not open and are fetched again on the next sync.
+  const pepperSealKey = deriveEdgePepperSealKey(
+    config.credential.split(".")[4] ?? "",
+  );
+  activateEdgePepperRegistry(local.scope.tenantId);
+  installEdgeStaffPinPeppers(
+    local.scope.tenantId,
+    [
+      ...(
+        await loadEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+        )
+      ).entries(),
+    ].map(([version, pepper]) => ({ version, pepper })),
+  );
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -767,7 +804,27 @@ export async function startEdgeRuntime(
       fetchPage: createStaffPinRecordsFetcher({
         cloudUrl: config.cloudUrl,
         credential: config.credential,
+        pepperHave: edgeStaffPinPepperContiguous,
       }),
+      onPeppers: async (peppers) => {
+        const decoded = peppers.map(({ version, pepper }) => ({
+          version,
+          pepper: Buffer.from(pepper, "base64"),
+        }));
+        // Sealed in the database first, then live: a crash in between only
+        // costs one more delivery.
+        await saveEdgePeppers(
+          local.context,
+          local.scope.edgeNodeId,
+          pepperSealKey,
+          decoded,
+        );
+        installEdgeStaffPinPeppers(local.scope.tenantId, decoded);
+        logger.info(
+          { versions: decoded.map((entry) => entry.version) },
+          "Edge staff pin peppers updated",
+        );
+      },
       onRestart: () =>
         logger.warn("Edge staff pin cursor refused; pulling from the start"),
     }),

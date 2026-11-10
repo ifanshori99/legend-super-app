@@ -261,45 +261,72 @@ export function createDeviceRecordsFetcher(
  * parsed by the pull, never read into an error (it carries hash material).
  */
 export function createStaffPinRecordsFetcher(
-  options: DeviceRecordsFetcherOptions,
+  options: DeviceRecordsFetcherOptions & {
+    /**
+     * legend-ideif: the highest staff pin pepper version this edge holds. When
+     * set, the page request asks the cloud for the tenant's derived peppers
+     * above it (`peppers=`). Sent only over https: a pepper never travels in
+     * clear text.
+     */
+    pepperHave?: () => number;
+  },
 ): (since: string | null, signal: AbortSignal) => Promise<unknown> {
-  cloudHttpBaseUrl(options.cloudUrl);
+  const baseUrl = cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
 
-  const pathFor = (since: string | null, withRevision: boolean) => {
+  const pathFor = (
+    since: string | null,
+    withRevision: boolean,
+    pepperHave: number | null,
+  ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     // legend-r11j7: `revision=1` opts in to the cloud attempt revision per
     // record (an older edge's strict parse would refuse it, so the cloud only
     // sends it on request).
     if (withRevision) query.set("revision", "1");
+    if (pepperHave !== null) query.set("peppers", String(pepperHave));
     if (since !== null) query.set("since", since);
     return `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`;
   };
 
   return async (since, signal) => {
-    try {
-      return await cloudGetJson({
-        ...options,
-        path: pathFor(since, true),
-        signal,
-      });
-    } catch (error) {
-      // legend-n758r: an older cloud's strict query refuses `revision` with
-      // 400, so the cloud no longer has to be released first. Retry the same
-      // page once without it: the records then carry no attemptRevision and
-      // the edge compares the counter by value. A second failure is thrown as
-      // is, so the pull's HTTP_400 cursor recovery still sees it. Any other
-      // error is not retried.
-      if (!(error instanceof EdgeCloudHttpError) || error.code !== "HTTP_400")
-        throw error;
-      logger.warn(
-        "cloud refused the attempt revision query; retrying the page without it",
-      );
-      return cloudGetJson({
-        ...options,
-        path: pathFor(since, false),
-        signal,
-      });
+    const pepperHave =
+      options.pepperHave !== undefined && baseUrl.startsWith("https://")
+        ? options.pepperHave()
+        : null;
+    // legend-n758r: an older cloud's strict query refuses `revision` with
+    // 400 (legend-ideif: and `peppers`), so the cloud no longer has to be
+    // released first. Retry the same page with fewer opt-ins, newest first:
+    // revision + peppers, revision only, none. A cloud that knows `peppers`
+    // knows `revision`. Without revision the records carry no attemptRevision
+    // and the edge compares the counter by value. A failure of the last
+    // variant is thrown as is, so the pull's HTTP_400 cursor recovery still
+    // sees it. Any other error is not retried.
+    const variants: Array<{ revision: boolean; peppers: number | null }> = [
+      { revision: true, peppers: pepperHave },
+      ...(pepperHave !== null ? [{ revision: true, peppers: null }] : []),
+      { revision: false, peppers: null },
+    ];
+    for (const [index, variant] of variants.entries()) {
+      try {
+        return await cloudGetJson({
+          ...options,
+          path: pathFor(since, variant.revision, variant.peppers),
+          signal,
+        });
+      } catch (error) {
+        const last = index === variants.length - 1;
+        if (
+          last ||
+          !(error instanceof EdgeCloudHttpError) ||
+          error.code !== "HTTP_400"
+        )
+          throw error;
+        logger.warn(
+          "cloud refused an optional staff pin sync query; retrying the page without it",
+        );
+      }
     }
+    throw new Error("unreachable");
   };
 }

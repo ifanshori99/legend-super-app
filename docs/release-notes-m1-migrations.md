@@ -108,6 +108,12 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Perbaikan isi di luar konflik: `provisioning-race.test.ts` (legend-usa4b) menunggu 64 akun bagan standar; kini 65 sesudah akun 4105.
 - Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet, kartu legend-23tbw) gagal di run penuh 3 dan 4, lulus sendiri dan lulus di run penuh 5.
 
+## Tambahan legend-ideif (pepper PIN staf di edge)
+
+- Migrasi `0225_edge_staff_pin_peppers`: tabel `edge_staff_pin_peppers` (RLS tenant dan outlet). Nomor sementara, merge train menyusun ulang bila bentrok. `pnpm db:generate` kosong.
+- Urutan: cloud dulu (query `peppers`), lalu edge. Env cloud baru: `STAFF_PIN_PEPPER_CURRENT_VERSION` (default 1).
+- Edge terpasang: hapus `STAFF_PIN_PEPPER` dari env edge SEBELUM restart (edge menolak jalan bila masih ada), outlet online agar sinkron pertama mengirim pepper tenant. Sebelum sinkron itu PIN di edge ditolak tanpa menaikkan hitungan gagal. Langkah lengkap dan rotasi: `docs/deployment.md` "Staff PIN pepper on edge nodes".
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

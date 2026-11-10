@@ -250,6 +250,21 @@ The cloud sends staff PIN changes to each outlet's edge in commit order, using `
    - Enroll a new node, or rebuild the edge from empty so it gets a new instance.
    - Reconcile by hand any events that exist only on the restored database, from its outbound queue.
 
+## Staff PIN pepper on edge nodes (legend-ideif)
+
+The root `STAFF_PIN_PEPPER` lives only on the cloud. An edge node never holds it: the API refuses to start with `EDGE_MODE=true` and `STAFF_PIN_PEPPER` set (the log names the key, never the value). The cloud derives one pepper per tenant and pepper version (HKDF) and sends an edge only its own tenant's peppers, inside the staff PIN sync (`GET /api/edge-sync/staff-pin-records?peppers=<highest version held>`, TLS, `Cache-Control: private, no-store`). The edge seals them (AES-256-GCM, key derived from the node credential) in its table `edge_staff_pin_peppers` (migration `0225`). A stolen edge box therefore weakens one tenant, never the others.
+
+1. **Release order.** Cloud first (it must know the `peppers` query), then the edges. An edge on this release against an older cloud gets HTTP 400 for `peppers`, falls back to the older query, and never receives a pepper, so it cannot verify PINs. Check the cloud version before you touch an edge.
+2. **Upgrade an installed edge.** Do this with the outlet online:
+   - Deploy the cloud, then run migration `0225` on the edge database.
+   - Remove `STAFF_PIN_PEPPER` from the edge environment (secret store, compose file, systemd unit) and restart the edge. With the variable still set, the edge refuses to start.
+   - Within one sync interval the edge logs `Edge staff pin peppers updated`. Until then PIN checks on the edge fail closed (the PIN is refused, no attempt is counted against the staff member). Do not take the outlet offline in that window.
+3. **Rotate the pepper.** Set `STAFF_PIN_PEPPER_CURRENT_VERSION` on the cloud to the next number (for example `2`) and restart the cloud. Never lower it: an edge that already holds the higher version keeps hashing new PINs under it, and the cloud drops those PINs. Do NOT change `STAFF_PIN_PEPPER` for a routine rotation. Each edge fetches the new tenant pepper on its next sync; until then it still hashes new PINs under the old version, which stay valid. PINs hashed under an older version keep verifying, on the cloud and on every edge, until the owner sets a new PIN; a new PIN is hashed under the current version.
+   - **Suspected edge theft.** First revoke that node's credential (an edge with a valid credential fetches every new pepper on its next sync). Then rotate the version, and have that outlet's staff set new PINs.
+   - **Leak of the root.** Replace `STAFF_PIN_PEPPER` AND raise `STAFF_PIN_PEPPER_CURRENT_VERSION` in the same release. Every PIN then needs a reset. An edge keeps the peppers it already holds (derived from the old root) for the old versions, so a root replacement without a version bump leaves edges on stale peppers.
+4. **Credential rotation.** The seal key comes from the node credential. After you issue a new credential, the edge cannot open its stored peppers, treats them as missing, and fetches them again on the next sync (online).
+5. **Never** copy the root pepper to an edge to "fix" a verification problem, and never log or paste the `peppers` of a sync response.
+
 ## Support read_write owner approval release (legend-c9kbk)
 
 From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:

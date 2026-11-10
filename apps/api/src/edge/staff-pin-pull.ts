@@ -43,6 +43,17 @@ export type PullStaffPinsOptions = {
   /** One page from the cloud for `cursor`; the raw JSON body. */
   readonly fetchPage: (cursor: string | null) => Promise<unknown>;
   readonly maxPages?: number;
+  /**
+   * legend-ideif: the tenant's derived peppers the page carried. Must store
+   * them durably (and install them) BEFORE the page is applied, so a record of
+   * a new pepper version never lands without the pepper that verifies it.
+   */
+  readonly onPeppers?: (
+    peppers: ReadonlyArray<{
+      readonly version: number;
+      readonly pepper: string;
+    }>,
+  ) => Promise<void>;
 };
 
 export type PullStaffPinsResult = {
@@ -75,6 +86,8 @@ export async function pullStaffPins(
     if (!parsed.success) throw new Error("Staff pin page has an unknown shape");
     const page = parsed.data;
     pages += 1;
+    if (page.meta.peppers !== undefined && page.meta.peppers.length > 0)
+      await options.onPeppers?.(page.meta.peppers);
     const result = await applyStaffPinRecords(options.context, page.data);
     applied += result.applied;
     skipped += result.skipped;
@@ -104,6 +117,8 @@ export type StaffPinPullDeps = {
     signal: AbortSignal,
   ) => Promise<unknown>;
   readonly onRestart?: () => void;
+  /** See `PullStaffPinsOptions.onPeppers`. */
+  readonly onPeppers?: PullStaffPinsOptions["onPeppers"];
 };
 
 /**
@@ -126,6 +141,7 @@ export function createStaffPinPull(deps: StaffPinPullDeps): (
         return pullStaffPins({
           context: deps.context,
           since: from,
+          onPeppers: deps.onPeppers,
           fetchPage: async (cursor) => {
             const isFirst = first;
             first = false;
