@@ -1128,3 +1128,4 @@ Langkah berikut CTO baru:
 - 04:57 Codex 422 refund: 3 P1 + 2 P2 -> legend-pbwzq brief 423 (kirim ke G2i7n saat slot). pti5r ditahan dari batch48d sampai 423 selesai.
 - 04:58 G2q9m ps-405 selesai: 83/83, gagal-dulu terbukti, push 9457f79e -> kandidat batch48d. Mulai fjwxo (421). 423 dikirim ke G2i7n.
 - 04:59 G05um duitku-406 selesai: 97/97, gagal-dulu 13 gagal di 008cbd93, push ac046b6e -> kandidat batch48d (setelah reviewer cek paidAt). Mulai whiwv (416).
+- 05:03 Founder: WhatsApp via Kirimdev; verifikasi masuk (pelanggan kirim kode ke nomor kita, web popup sukses), bukan OTP keluar. Riset docs Kirimdev + repo 119connect antre (RAM merah).
