@@ -742,6 +742,8 @@ export const listFeedback = defineEndpoint({
 
 export const updateFeedbackInputSchema = clientInputSchema({
   action: feedbackActionSchema,
+  // legend-ts50: catatan penanganan staf, opsional.
+  handledNote: z.string().trim().min(1).max(2000).optional(),
 });
 
 export const updateFeedback = defineEndpoint({

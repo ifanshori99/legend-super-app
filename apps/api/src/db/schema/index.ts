@@ -137,3 +137,6 @@ export * from "./crm-member";
 export * from "./crm-ledger";
 // WS-08 rewards, redemptions, missions (legend-m4p5).
 export * from "./crm-rewards";
+// WS-08 feedback, customer segments (legend-ts50).
+export * from "./crm-feedback";
+export * from "./crm-segments";
