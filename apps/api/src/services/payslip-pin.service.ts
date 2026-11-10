@@ -63,7 +63,7 @@ import {
 } from "./device-pin-hash.ts";
 import {
   currentStaffPinPepperVersion,
-  staffPinPepper,
+  payslipPinPepper,
 } from "./device-pin-pepper.ts";
 import { hrisAuditEntry, loadHrisAccess, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
@@ -231,7 +231,7 @@ export async function lockPayslipPin(
 }
 
 function pepperFor(tenantId: string, version: number): Buffer {
-  return staffPinPepper(tenantId, version);
+  return payslipPinPepper(tenantId, version);
 }
 
 async function auditPin(

@@ -113,6 +113,40 @@ export function staffPinPepper(
 }
 
 /**
+ * Cloud only: the pepper for payslip PINs (hris-pii-pin). A payslip PIN belongs
+ * to an employee, not to an outlet, so it is derived per tenant, under its own
+ * HKDF label (never the staff-pin label), from the same root secret and the same
+ * version range as the staff pins. Merge batch48c: the payslip PIN service was
+ * written against the old tenant-level `staffPinPepper(tenant, version)`.
+ * Payroll never runs on an edge, so an edge process refuses.
+ */
+export function payslipPinPepper(
+  tenantId: string,
+  version: number = currentStaffPinPepperVersion(),
+): Buffer {
+  const tenant = tenantIdSchema.parse(tenantId);
+  if (isEdgePepperProcess())
+    throw new Error("Payslip PIN peppers are not available on an edge.");
+  if (!isStaffPinPepperVersionUsable(version))
+    throw new RangeError("Unknown staff pin pepper version");
+  const key = `payslip:${version}:${tenant}`;
+  let pepper = cache.get(key);
+  if (!pepper) {
+    pepper = Buffer.from(
+      hkdfSync(
+        "sha256",
+        rootSecret(),
+        SALT,
+        `legend:payslip-pin-pepper:v${version}:${tenant}`,
+        32,
+      ),
+    );
+    cache.set(key, pepper);
+  }
+  return pepper;
+}
+
+/**
  * Like `staffPinPepper`, but null when this process has no such pepper (an edge
  * before its first sync, a version it was never sent, another outlet, version
  * 1). For verification, where "cannot verify" must fail closed without throwing.
