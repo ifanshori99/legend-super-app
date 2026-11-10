@@ -69,6 +69,20 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Tanpa konflik. Rantai migrasi tetap berujung di 0186.
 - ws/audit-retention-purge (0187) masuk batch43 sesudah tes migrasi 0187.
 
+## Tambahan batch43
+
+- 0187 `0187_audit_retention_maintenance` (ws/audit-retention-purge cdb624b9, when 1794266000000): peran `legend_maintenance` NOLOGIN dan dua fungsi SECURITY DEFINER untuk purge retensi audit. `MAINTENANCE_DATABASE_URL` wajib di worker cloud produksi (rahasia, diatur founder).
+- 0188 `0188_ai_provider_configs` (ws/ai-provider-tenant 97d02ab6, when 1794267000000): konfigurasi provider AI per tenant.
+- 0190 `0190_poll_lease` (ws/doit-pending-poller 895e4312, when 1794269000000): lease untuk poller pembayaran DOIT yang masih pending.
+- 0191 `0191_cash_bank_recon` (ws/cash-bank-recon afd6cab3, when 1794270000000): rekening bank, impor mutasi, kasus rekonsiliasi, setoran kas.
+- 0198 `0198_equipment_service_reminder` (ws/equipment-maintenance f9afff77, when 1794277000000).
+- 0200 `0200_table_links` (ws/table-link 1ead4c4d, memuat 685n 6ef7034d, when 1794279000000): `table_link_groups` dan `table_link_members`. SQL diubah oleh merge train: semua FK dipindah ke dalam `CREATE TABLE` (sebelumnya `ALTER TABLE ... ADD CONSTRAINT`). Tanpa itu migrasi gagal 42501 (tenant context is required) untuk migrator non-superuser, karena validasi FK membaca `outlets` yang FORCE RLS. Pemilik cabang perlu mengonfirmasi. Snapshot tidak berubah dan `db:generate` kosong.
+- Tanpa migrasi: ws/ws11-f5-posting-seq 6353e2f8, ws/training-orders-followup ffe54e37, ws/notification-outbox-events 56b8c157, docs/arch-member-loyalty b07b1032 (dokumen saja).
+- Rantai: 0186 -> 0187 -> 0188 -> 0190 -> 0191 -> 0198 -> 0200. `prevId` disusun ulang untuk 0188 sampai 0200. Nomor 0189, 0192 sampai 0197 dan 0199 belum dikirim.
+- Registry impor: 0187 dan `worker/audit-retention.job.ts` didaftarkan di `data-import-registry.test.ts`.
+- Test `accounting-bank-accounts`: cleanup `afterAll` kini hanya menghapus rekening bank miliknya. Tenant fixture dipakai bersama lima file test bank/kas yang jalan paralel, dan `cash_deposits` merujuk rekening itu.
+- Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet) muncul sekali di run penuh pertama, lulus sendiri dan lulus di run penuh berikutnya. Kartu terpisah sudah ada.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
