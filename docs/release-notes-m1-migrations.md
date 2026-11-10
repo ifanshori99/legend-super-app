@@ -100,6 +100,14 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Tanpa migrasi: ws/tax-snapshot-facility 09a124b2.
 - Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
 
+## Tambahan batch45
+
+- Tanpa migrasi baru. `pnpm db:generate` kosong. Urutan merge: `ws/ia54l-claim-after-close` e4efc823 (legend-ia54l), `ws/worker-audit-writer` 5391163c (berisi `ws/arj6-auto-clearance`; legend-arj.6, legend-j88cz), `ws/msqvi-points-journal` babb3174 (legend-msqvi). Tanpa konflik, `docs/PROGRESS.md` tergabung otomatis.
+- Worker audit writer: sebelum deploy, jalankan query 3 di `docs/runbooks/worker-audit-writer-m1-window.md` (persetujuan lewat tenggat). Deploy di jendela sepi bersama 0203: sapuan pertama mengedarkan semua persetujuan kedaluwarsa sekaligus.
+- Jurnal poin: tenant lama perlu `pnpm db:backfill-defaults` (akun 4105). Jurnal poin tetap tidak dinyalakan sampai `legend-kbbma` selesai dan akuntan founder konfirmasi (`docs/DECISIONS.md` "WS-08: loyalty points journal, PSAK 72").
+- Perbaikan isi di luar konflik: `provisioning-race.test.ts` (legend-usa4b) menunggu 64 akun bagan standar; kini 65 sesudah akun 4105.
+- Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet, kartu legend-23tbw) gagal di run penuh 3 dan 4, lulus sendiri dan lulus di run penuh 5.
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).
