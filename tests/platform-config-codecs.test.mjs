@@ -661,10 +661,9 @@ test("legend-5cwrq: kind role items keep the template/custom rules", () => {
     },
   ]);
   assert.equal(superAdmin.ok, false);
-  // The exporter chooses keys: key need not equal the template key.
-  const odd = rolesCodec.fromTemplate([
-    { ...template, key: "role.pilihan-saya" },
-  ]);
+  // The exporter chooses keys: a custom role key need not look like a
+  // template key (a template role key must, see the 5cwrq key-shape test).
+  const odd = rolesCodec.fromTemplate([{ ...custom, key: "role.pilihan-saya" }]);
   assert.equal(odd.ok, true, JSON.stringify(odd.issues));
 });
 
@@ -1084,4 +1083,75 @@ test("legend-5cwrq: direct fromTemplate refuses duplicate item keys", () => {
   ]);
   assert.equal(clash.ok, false);
   assert.match(clash.issues.join("\n"), /duplicate key/i);
+});
+
+// legend-5cwrq: a kind "template" role item's key is not free text. The
+// exporter's uniqueKey (config-codec.ts) emits the template key itself, or
+// `<templateKey>-<n>` (n >= 2) when two roles share it. Import must refuse
+// any other key, so a template role can never be filed under another role's
+// name (e.g. key "owner" carrying templateKey "cashier").
+// Assumption: any `-<digits>` suffix is accepted, not only n >= 2.
+test("legend-5cwrq: a template role key must be its templateKey or <templateKey>-<n>", () => {
+  const [base] = kindRoleItems().filter(
+    (i) => i.kind === "template" && i.templateKey === "cashier",
+  );
+  assert.ok(base, "fixtures have a cashier template role");
+  const template = (key, templateKey) => ({
+    ...base,
+    key,
+    kind: "template",
+    templateKey,
+  });
+
+  // Refused: key unrelated to the template key.
+  for (const [key, templateKey] of [
+    ["owner", "cashier"],
+    ["tpl.owner", "cashier"],
+    ["role.pilihan-saya", "cashier"],
+    ["cashier-x", "cashier"],
+    ["cashier-", "cashier"],
+    ["cashier-2x", "cashier"],
+    ["xcashier-2", "cashier"],
+  ]) {
+    const refused = rolesCodec.fromTemplate([template(key, templateKey)]);
+    assert.equal(refused.ok, false, `${key} / ${templateKey} is refused`);
+    assert.match(
+      refused.issues.join("\n"),
+      new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+    assert.match(refused.issues.join("\n"), /templateKey|key/);
+  }
+
+  // Accepted: the template key itself, or the exporter's `-<n>` suffix.
+  for (const [key, templateKey] of [
+    ["owner", "owner"],
+    ["cashier", "cashier"],
+    ["cashier-2", "cashier"],
+    ["cashier-12", "cashier"],
+    ["tpl.cashier", "cashier"],
+    ["tpl.cashier-2", "cashier"],
+    ["tpl.owner", "owner"],
+  ]) {
+    const ok = rolesCodec.fromTemplate([template(key, templateKey)]);
+    assert.equal(ok.ok, true, `${key} / ${templateKey}: ${JSON.stringify(ok.issues)}`);
+    assert.equal(ok.drafts[0].key, key);
+    assert.equal(ok.drafts[0].templateKey, templateKey);
+  }
+
+  // kind "custom" is unchanged: any non-template key is fine.
+  const [custom] = kindRoleItems().filter((i) => i.kind === "custom");
+  const customOk = rolesCodec.fromTemplate([{ ...custom, key: "custom.apa-saja" }]);
+  assert.equal(customOk.ok, true, JSON.stringify(customOk.issues));
+
+  // Legacy items (no `kind`) are unchanged: key must equal templateKey.
+  const { kind: _kind, ...legacyBase } = base;
+  const legacyOk = rolesCodec.fromTemplate([
+    { ...legacyBase, key: "cashier", templateKey: "cashier" },
+  ]);
+  assert.equal(legacyOk.ok, true, JSON.stringify(legacyOk.issues));
+  const legacyBad = rolesCodec.fromTemplate([
+    { ...legacyBase, key: "owner", templateKey: "cashier" },
+  ]);
+  assert.equal(legacyBad.ok, false);
+  assert.match(legacyBad.issues.join(), /templateKey/);
 });

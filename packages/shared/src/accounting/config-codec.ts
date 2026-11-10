@@ -21,8 +21,10 @@
 //   name the account. It checks the report group against the type, that the
 //   parent exists in the set and has the same type, that the tree has no
 //   cycle, and that every mapping names an account of the section (and each
-//   role is mapped once, to a postable leaf of a type the role allows, as
-//   coa.ts accountMappingIssues requires).
+//   role is mapped once, to an account whose type the role allows, per
+//   allowedAccountTypesForRole). It does not require the mapped account to be
+//   a postable leaf: a mapping to a header account is accepted, because the
+//   server importer accepts it today.
 // - fromTemplate returns the accounts as `drafts` (parents first, parent by
 //   code) and the mapping items as `mappings` (account by code). Posting
 //   roles that no mapping item covers are re-derived by the importer from the

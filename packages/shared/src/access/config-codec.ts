@@ -219,6 +219,20 @@ export const rolesConfigCodec = {
           issues.push(
             `roles item ${item.key}: template role needs a templateKey`,
           );
+        else if (
+          item.kind === "template" &&
+          item.templateKey !== null &&
+          !new RegExp(
+            `^(tpl\\.)?${item.templateKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(-\\d+)?$`,
+          ).test(item.key)
+        )
+          // The server exporter emits `tpl.<templateKey>`; this codec's own
+          // exporter emits the bare templateKey and appends `-<n>` on a
+          // collision. A server export never carries the suffix (template
+          // keys are unique per tenant).
+          issues.push(
+            `roles item ${item.key}: template role key must be its templateKey (${item.templateKey}), optionally prefixed tpl. and suffixed -<n>`,
+          );
       } else {
         const isCustomKey = item.key.startsWith(CUSTOM_ROLE_PREFIX);
         if (isCustomKey && item.templateKey !== null)
