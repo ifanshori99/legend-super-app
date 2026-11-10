@@ -848,6 +848,8 @@ async function intentBackedAt(
   const qrRefundPending = issueCandidates.some(
     (id) => issueStateOf(id) === "pending",
   );
+  // Like qrSaleInUseOfIntent, the release frees only the pinned code's part of
+  // the sale (orders.payment_intent_id = intentId); other codes keep theirs whole.
   const releasedOf =
     issuesPosted.length === 0
       ? sql`0`
@@ -875,7 +877,8 @@ async function intentBackedAt(
                     AND ${evidenceOf(sql`other.id`)} > 0)
             THEN ${due}
             ELSE least(${due}, greatest(${evidenceOf(sql`${intentId}::uuid`)}, 0))
-          END - ${releasedOf}, 0)), 0)::text`,
+          END - CASE WHEN ${orders.paymentIntentId} = ${intentId}::uuid
+            THEN ${releasedOf} ELSE 0 END, 0)), 0)::text`,
       })
       .from(orders)
       .where(qrSaleScope),
