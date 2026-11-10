@@ -14,7 +14,7 @@ Yang sudah ada di m1 (petakan dulu dengan `Explore`, jangan tulis ulang):
 - UI admin routing (`legend-sgg`) dan panel platform "gateway tersedia" (`legend-y6s`) sudah ada: cek endpoint apa yang mereka harapkan.
 
 ## Repo
-`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/gateway-adapter-duitku` dari `milestone/m1` ujung terbaru. Syarat: m1 sudah berisi batch43 (`git log --oneline -30 milestone/m1` memuat merge `ws/doit-pending-poller`). Belum: lapor ke CTO dan berhenti. Worktree `.worktrees/gateway-adapter-duitku`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge. Disk Mac sempit: jangan buat worktree tambahan.
+`/Users/ifanshori99/Projects/legend super app/legend`. Cabang baru `ws/gateway-adapter-duitku` dari `milestone/m1` 7d388b02 (batch43 + batch44, termasuk split bill). Syarat: m1 sudah berisi batch43 (`git log --oneline -30 milestone/m1` memuat merge `ws/doit-pending-poller`). Belum: lapor ke CTO dan berhenti. Worktree `.worktrees/gateway-adapter-duitku`, `worktree:setup`. Jangan checkout di folder utama. Jangan push, jangan merge. Disk Mac sempit: jangan buat worktree tambahan.
 
 Migrasi bila perlu: `0211`, `when` 1794290000000, satu migrasi.
 
