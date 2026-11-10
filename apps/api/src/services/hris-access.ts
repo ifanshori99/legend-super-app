@@ -243,9 +243,16 @@ export const HRIS_AUDIT_SAFE_FIELDS = [
   "viewerKind",
 ] as const;
 
+/** Who acts: a user, or the system (scheduled job; same shape as hris-leave). */
+export type HrisActor =
+  { readonly type: "user"; readonly id: string } | { readonly type: "system" };
+
+/** Nil UUID stored in uuid/text "who" columns for a system run (shown as "Sistem"). */
+export const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
+
 export function hrisAuditEntry(
   context: ScopedTenantContext,
-  actor: string,
+  actor: string | HrisActor,
   now: Date,
   entry: {
     readonly outletId: string;
@@ -256,12 +263,14 @@ export function hrisAuditEntry(
     readonly sensitiveReason?: string;
   },
 ) {
+  const resolved: HrisActor =
+    typeof actor === "string" ? { type: "user", id: actor } : actor;
   return {
     id: createUlid(now.getTime()),
     tenantId: context.tenant.tenantId,
     outletId: auditOutletFor(context, entry.outletId),
-    actorType: "user" as const,
-    actorId: actor,
+    actorType: resolved.type,
+    actorId: resolved.type === "user" ? resolved.id : null,
     deviceId: null,
     action: entry.action,
     objectType: entry.objectType,

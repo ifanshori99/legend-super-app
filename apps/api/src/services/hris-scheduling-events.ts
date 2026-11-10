@@ -14,7 +14,7 @@ import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import type { shiftAssignments } from "../db/schema/hris-scheduling.ts";
 import { appendOutbox } from "./core-outbox.ts";
-import type { Tx } from "./hris-access.ts";
+import { SYSTEM_ACTOR_ID, type HrisActor, type Tx } from "./hris-access.ts";
 
 export type ShiftEventRow = typeof shiftAssignments.$inferSelect;
 
@@ -107,10 +107,17 @@ export async function appendShiftCancelled(
   row: ShiftEventRow,
   previousEmployeeId: string,
   reason: "cancelled" | "swapped_away",
-  cancelledByUserId: string,
+  cancelledByUserId: string | HrisActor,
   now: Date,
 ): Promise<void> {
-  const cancelledBy = userIdSchema.parse(cancelledByUserId);
+  const actor: HrisActor =
+    typeof cancelledByUserId === "string"
+      ? { type: "user", id: cancelledByUserId }
+      : cancelledByUserId;
+  // A system run records the nil UUID in the payload's "who" field.
+  const cancelledBy = userIdSchema.parse(
+    actor.type === "user" ? actor.id : SYSTEM_ACTOR_ID,
+  );
   for (const destination of SHIFT_EVENT_DESTINATIONS) {
     const sequence = await nextShiftEventSequence(
       tx,
@@ -128,7 +135,7 @@ export async function appendShiftCancelled(
       aggregateId: row.id,
       sequence,
       occurredAt: now.toISOString(),
-      actor: { type: "user", id: cancelledBy },
+      actor: actor.type === "user" ? { type: "user", id: cancelledBy } : actor,
       deviceId: null,
       idempotencyKey: `${shiftCancelled.name}:${row.id}:${sequence}`,
       payloadSchemaRef: shiftCancelled.payloadSchemaRef,

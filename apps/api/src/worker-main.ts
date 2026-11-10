@@ -57,6 +57,8 @@ import {
 } from "./services/delivery-sync-consumer.ts";
 import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
 import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { setAuditWriter } from "./services/audit-writer";
+import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
@@ -67,6 +69,7 @@ import {
 import { handleAiActionApprovalResolved } from "./services/ai-action-request.service.ts";
 import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
@@ -141,6 +144,10 @@ const maintenanceUrl = resolveMaintenanceDatabaseUrl({
 setReservationDepositPort(createPaymentReservationDepositPort());
 // INV-02 (legend-db6): recipe source for the stock deduction consumer.
 setInventoryRecipeSource(recipeBomSource);
+// legend-arj.6: the sensitive-write audit port (role-assignment end inside
+// exit clearance) fails closed with a 503 until a writer is installed, as in
+// app.ts. The worker never had one.
+setAuditWriter(coreAuditWriter);
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
 // pending intents whose webhook never arrived. The refund payout sweep
 // (sweepApprovedRefundPayouts) sends approved refunds and polls pending ones
@@ -305,6 +312,14 @@ const relay = createRelayRuntime({
       await runScheduledLeaveJobs(context);
     } catch {
       console.error("Scheduled leave jobs failed");
+    }
+    // legend-arj.6: exit clearance for offboardings past their last working
+    // day, as the system actor. Same fail-closed rule: a failed employee leaves
+    // no day marker, so the next tick retries; never blocks the relay.
+    try {
+      await runScheduledExitClearance(context);
+    } catch {
+      console.error("Scheduled exit clearance failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
