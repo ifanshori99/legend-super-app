@@ -40,7 +40,8 @@ import {
   updateKitchenTicketItem,
   voidKitchenTicket,
 } from "@starter/shared/kitchen";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -59,7 +60,12 @@ import type { KdsActor } from "../services/kds.service.ts";
 
 export const kdsRouter = Router({ mergeParams: true });
 
-kdsRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+kdsRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 const stationOf = (req: Request) => {
   const id = req.params.stationId;
@@ -80,7 +86,7 @@ const processTicket = requireStationScopePermission("kds.ticket.process");
 const ticketContext = (req: Request) => getStationScope(req).context;
 
 function actor(req: Request): KdsActor {
-  return { userId: userIdSchema.parse(getAuth(req).user.id), deviceId: null };
+  return { userId: userIdSchema.parse(actorOf(req)), deviceId: null };
 }
 
 // ---- Station reads ---------------------------------------------------------
@@ -362,6 +368,7 @@ kdsRouter.put(
         outletId,
         stationId,
         body.rules,
+        actor(req),
         new Date(),
       ),
     });

@@ -14,6 +14,8 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
+  toIsoDateTime,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -26,6 +28,8 @@ import { db } from "../db/index.ts";
 import { stations } from "../db/schema/index.ts";
 import { kitchenCapacityRules } from "../db/schema/kds-capacity.ts";
 import { withTenant } from "../db/tenant.ts";
+import { recordAudit } from "./core-audit.ts";
+import type { KdsActor } from "./kds-support.ts";
 import type { Tx } from "./menu-internals.ts";
 
 type RuleRow = typeof kitchenCapacityRules.$inferSelect;
@@ -97,11 +101,12 @@ export async function replaceCapacityRules(
   outletId: OutletId,
   stationId: string,
   rules: CapacityRuleInput[],
+  actor: KdsActor,
   now: Date,
 ): Promise<CapacityRule[]> {
   return withTenant(db, context, async (tx) => {
     await lockStationInOutlet(tx, context, outletId, stationId);
-    await tx
+    const removed = await tx
       .delete(kitchenCapacityRules)
       .where(
         and(
@@ -109,7 +114,8 @@ export async function replaceCapacityRules(
           eq(kitchenCapacityRules.outletId, outletId),
           eq(kitchenCapacityRules.stationId, stationId),
         ),
-      );
+      )
+      .returning({ id: kitchenCapacityRules.id });
     const rows = await tx
       .insert(kitchenCapacityRules)
       .values(
@@ -127,6 +133,33 @@ export async function replaceCapacityRules(
         })),
       )
       .returning();
+    // Who changed a station's capacity rules (same tx; the actor is the acting
+    // cashier when the request carries a live X-Acting-Staff token).
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId,
+        actorType: "user",
+        actorId: actor.userId,
+        deviceId: actor.deviceId,
+        action: "kitchen_capacity_rules.replaced",
+        objectType: "kitchen_station",
+        objectId: stationId,
+        reason: null,
+        maskedChanges: {
+          before: { stationId, ruleCount: removed.length },
+          after: { stationId, ruleCount: rows.length },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(now),
+      },
+      ["stationId", "ruleCount"],
+    );
     return rows
       .sort(
         (a, b) => a.windowMinutes - b.windowMinutes || (a.id < b.id ? -1 : 1),

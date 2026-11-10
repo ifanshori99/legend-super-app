@@ -11,7 +11,8 @@
 
 import { Router } from "express";
 import type { Request } from "express";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { requireTenantContext } from "../middleware/tenant";
@@ -45,11 +46,16 @@ const zoneParams = z.strictObject({ zoneId: floorZoneIdSchema });
 const tableParams = z.strictObject({ tableId: tableIdSchema });
 
 function actorUserId(req: Request): string {
-  return getAuth(req).user.id;
+  return actorOf(req);
 }
 
 export const floorRouter = Router();
-floorRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+floorRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 /** Zones, tables and live sessions of the caller's outlet (editor read model). */
 floorRouter.get("/", async (req, res) => {
@@ -126,7 +132,12 @@ floorRouter.put("/layout", jsonBody, async (req, res) => {
 // ---- Tables: signed QR and live status ------------------------------------
 
 export const tablesRouter = Router();
-tablesRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+tablesRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+);
 
 /** The table's current signed QR; never rotates (contract issueTableQr). */
 tablesRouter.post("/:tableId/qr", async (req, res) => {
