@@ -11,7 +11,7 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | Gateway Duitku | 83074382^..e77bf057 | payment-duitku-webhook.service.ts, payment-duitku.ts, platform-payment-gateway.service.ts, payment-gateway-select.ts, payment-routing.service.ts | selesai 374 (4 temuan, rgddb); ulang 406 (3 P1 + 2 P2, legend-s0u8c) |
 | WS-03 split bill/table move | c6916247^..c6916247, dcd99cbc, 1ead4c4d, e4efc823 | bill-split.service.ts, table-session-operations.service.ts | split selesai 380 (3 temuan -> brief 366 ec6fa); pindah/gabung meja antre |
 | Identity/member WS-08 | b428e1bc^..e15950fe, c129293e..6fb77d06 | loyalty-earn-consumer.ts, point-ledger.service.ts, consent.service.ts, pos-order-customer.service.ts, crm-ledger.ts, loyalty-program.service.ts | A selesai 383 (1 P1 expiry FIFO, w5by9); B selesai 411 (2 P1 + 1 P2 -> brief 413) (Codex #3) |
-| HRIS attendance cloud | 17fd0206^..704ecc3d | hris-attendance*.service.ts, hris-attendance.ts, attendance-selfie-purge.job.ts, hris-attendance.routes.ts | jalan 414 |
+| HRIS attendance cloud | 17fd0206^..704ecc3d | hris-attendance*.service.ts, hris-attendance.ts, attendance-selfie-purge.job.ts, hris-attendance.routes.ts | selesai 414 (2 P1 + 4 P2 -> brief 416) |
 | HRIS edge + PIN proof | 62ef1e11..092643e6 + j6cyb + u7g9w | edge-hris.ts, hris-attendance-qr.ts, selfie-seal.ts | selesai 382 (1 P2, sp9vq) |
 | Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | selesai 382 |
 | Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | jalan 415 |
