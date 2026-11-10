@@ -984,3 +984,4 @@ Langkah berikut CTO baru:
 - 18:55 pc51h 8b0b8d58 G4yoi resolved (opsi A swapReplacementIdr; architect: guard splitOrder 409; 155/155 api). Kartu arp35-dll UI split panel; kxoyf POS detail swap mulai (364).
 - 18:56 aruta: bug nyata (pelaku POS = pemilik sesi; test merah 0ae90e96). CTO setujui token kasir aktif per perangkat (0243), architect subagent dulu, tabel terpisah dari u7g9w.
 - 18:58 n1mp d3dc89d2 G3bg8 resolved (F8 poin sebelum pajak+service, F9 latihan, architect tanpa salah hitung), batch48. Kartu legend-udu47 mulai (365).
+- 19:04 bod irisan 1 f46b2cd4 (panic_alerts 0238, architect 2 tinggi+3 sedang dibetulkan). Lanjut m47qh allowlist edge di G62w7 (merge j6cyb dulu). Kartu sisa kmjax, kpzmi (gate-ui).
