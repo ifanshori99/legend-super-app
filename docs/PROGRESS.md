@@ -1898,3 +1898,10 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Setelah restart Mac: 8 file test terarah lulus 123/123 di HEAD 023d161b.
 - Bukti gagal-dulu (file test pti5r, 22 test, service ditukar lalu dipulihkan): base 00caa599 gagal 15 (T2, T8-T11: replay belum ada), versi putaran 2 327e0135 gagal 19 (termasuk regresi T1, T3, T5-T7 dari give-back). Yang lulus di base (T1, T3-T7) adalah penjaga regresi.
 - Kartu ke `review`. Langkah berikut: second-opinion Codex area refund (wajib sebelum gerbang rilis), lalu merge train.
+
+### legend-pbwzq (11 Nov 2026) — perbaikan temuan Codex 422 di ws/pti5r-promo-refund
+- Sudah: replay jumlah + split refund gagal final untuk SEMUA order (bukan hanya promo); laporan ulang setelah `rejected` -> nothing_left di semua order; pendahulu dipilih menurut urutan filing (min created_at refund per issue), bukan created_at issue; skrip cek SQL gagal eksplisit tanpa superuser/BYPASSRLS; audit hook kegagalan sekali per refund. Runbook diperbarui (wajib BYPASSRLS, `ON_ERROR_STOP`, hook aman diulang).
+- Architect xhigh: 1 temuan nyata (tanpa promo, swap ke menu lebih murah me-replay jumlah baris lama). Dibetulkan b36d5d3c: tanpa promo pendahulu harus baris yang sama; dengan promo tetap lewat swap.
+- Bukti: test baru `order-recovery-refund-codex422.test.ts` 15 test. Gagal-dulu: di 095b4099 14/17 gagal (codex422 + cek SQL), T6 gagal 2/2 di 2b42c788. 9 file terarah 140/140 lulus. tsc, eslint, prettier bersih, db:generate kosong.
+- Untuk CTO: order promo yang item-nya di-swap ke menu lebih murah setelah gagal final masih me-replay jumlah item asal (ditambah voucher selisih). Sudah ada sejak desain Round 3, perlu keputusan.
+- Langkah berikut: kartu legend-pbwzq review; second-opinion Codex ulang area refund bila CTO mau.
