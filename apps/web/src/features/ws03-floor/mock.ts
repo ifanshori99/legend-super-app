@@ -7,6 +7,7 @@
 // contract guards run (ORD-10, merge/move rules), bills are recomputed from
 // orders with the same pricing engine, and refusals use the error codes the
 // screen maps to catalog text.
+import { cafeLegendFixtures } from "@starter/shared/core";
 import { registerMock } from "@/lib/mock/registry";
 import { ws03Store } from "@/lib/mock/ws03/store";
 import {
@@ -23,8 +24,56 @@ import {
 
 const engine = () => ws03Store.get();
 
+const secondOutlet = cafeLegendFixtures.outlets[1];
+const secondOutletTables = [
+  ["b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a21", "B01", 2],
+  ["b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a22", "B02", 4],
+  ["b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a23", "B03", 6],
+] as const;
+
+/**
+ * The second fixture outlet ("Cafe Legend Bandung 2 (contoh)", picked with
+ * `?outlets=many`) has its own small, idle floor: one zone, three free tables.
+ * It is a read-only view; the shared engine only runs the first outlet.
+ */
+function secondOutletBoard(): FloorBoard {
+  const template = engine().board();
+  const zone = template.zones[0];
+  const zoneId = "b1f0c3a2-7d41-4e58-9a06-3c5d7e9f1a20" as typeof zone.id;
+  const scope = { tenantId: zone.tenantId, outletId: secondOutlet.id };
+  return {
+    outletId: secondOutlet.id,
+    zones: [{ ...zone, ...scope, id: zoneId, name: "Lantai 1" }],
+    tables: secondOutletTables.map(([id, code, capacity], index) => ({
+      table: {
+        id: id as FloorBoard["tables"][number]["table"]["id"],
+        ...scope,
+        zoneId,
+        code,
+        capacity,
+        type: "regular",
+        layout: {
+          x: 40 + index * 140,
+          y: 40,
+          width: 100,
+          height: 100,
+          rotation: 0,
+          shape: "rect",
+        },
+        status: "available",
+      },
+      session: null,
+      linkGroup: null,
+      openServiceRequestCount: 0,
+      outstandingIdr: 0 as FloorBoard["tables"][number]["outstandingIdr"],
+    })),
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 registerMock(getFloorBoard, ({ params, scenario }) => {
   const current = engine();
+  if (params.outletId === secondOutlet.id) return { data: secondOutletBoard() };
   current.assertOutlet(params.outletId);
   // "empty" is the state of an outlet whose floor plan is not set up yet.
   if (scenario === "empty")

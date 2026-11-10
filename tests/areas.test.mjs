@@ -463,6 +463,49 @@ describe("FE-AREA-10 outlet selection from the session outlets", () => {
     assert.equal(outletSel.resolveSelectedOutlet([a, b], undefined), a);
   });
 
+  test("2+ outlets: screen is held until the saved pick is read", () => {
+    assert.equal(outletSel.outletPickPending([a, b], undefined), true);
+    assert.equal(outletSel.outletPickPending([a, b], null), false);
+    assert.equal(outletSel.outletPickPending([a, b], b.id), false);
+    assert.equal(outletSel.outletPickPending([a], undefined), false);
+    assert.equal(outletSel.outletPickPending([], undefined), false);
+  });
+
+  test("0 outlets: Kelola for a manager, home for the rest", () => {
+    assert.equal(outletSel.noOutletNext(roleAccess("all")), "kelola");
+    // A pending second factor still leads to the Kelola gate screen.
+    assert.equal(
+      outletSel.noOutletNext(
+        roleAccess("all", { mfaRequired: true, mfaVerified: false }),
+      ),
+      "kelola",
+    );
+    assert.equal(
+      outletSel.noOutletNext(roleAccess("all", { permissions: [] })),
+      "home",
+    );
+    assert.equal(
+      outletSel.noOutletNext(
+        roleAccess("all", { permissions: ["kds.ticket.process"] }),
+      ),
+      "home",
+    );
+    assert.equal(outletSel.noOutletNext(accessLib.ANONYMOUS_ACCESS), "home");
+  });
+
+  test("outlet UI copy: picker label, announcement, 0-outlet hint", () => {
+    assert.equal(t("area.outletPicker"), "Pilih outlet");
+    assert.equal(
+      t("area.outletChanged", { name: "Cafe Legend Bandung" }),
+      "Outlet diganti ke Cafe Legend Bandung",
+    );
+    assert.equal(
+      t("area.noOutletHint"),
+      "Minta pemilik atau manajer menugaskan akun Anda ke outlet.",
+    );
+    assert.equal(t("area.noOutletKelola"), "Buka Kelola");
+  });
+
   test("saved pick round-trips; blocked storage never throws", () => {
     const storage = fakeStorage();
     assert.equal(outletSel.readSavedOutletId(storage), null);

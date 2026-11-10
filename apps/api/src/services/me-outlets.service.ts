@@ -14,12 +14,14 @@
 import {
   isAssignmentActive,
   outletReachOf,
+  myOutletSchema,
   type MyOutlet,
 } from "@starter/shared/access";
 import { userIdSchema, type TenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db";
+import { logger } from "../lib/logger";
 import { outlets } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import type { TenantAccessData } from "./permission-resolver";
@@ -97,10 +99,23 @@ export async function listMyOutlets(input: {
       )
       .orderBy(asc(outlets.name), asc(outlets.id)),
   );
-  return rows.map((row) => ({
-    id: row.id as MyOutlet["id"],
-    name: row.name,
-    timeZone: row.timezone,
-    businessDayCutoff: row.businessDayCutoff,
-  }));
+  // One outlet row with bad data (for example a broken time zone) must not
+  // fail the whole access view: the caller would lose every permission. Drop
+  // the row and log it.
+  const valid: MyOutlet[] = [];
+  for (const row of rows) {
+    const parsed = myOutletSchema.safeParse({
+      id: row.id,
+      name: row.name,
+      timeZone: row.timezone,
+      businessDayCutoff: row.businessDayCutoff,
+    });
+    if (parsed.success) valid.push(parsed.data);
+    else
+      logger.warn(
+        { outletId: row.id, issues: parsed.error.issues.map((i) => i.path) },
+        "me/access: outlet skipped, invalid stored data",
+      );
+  }
+  return valid;
 }

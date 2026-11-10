@@ -19,13 +19,16 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/feedback-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { AreaAccess } from "@/lib/areas/access";
 import { AREAS, type AreaKey } from "@/lib/areas/definitions";
 import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
 import {
+  noOutletNext,
   outletChoice,
+  outletPickPending,
   readSavedOutletId,
   resolveSelectedOutlet,
   saveOutletId,
@@ -73,7 +76,10 @@ type AreaFrameProps = {
  * `useOutletClock()` anywhere follows what the outlet settings screen
  * persisted. `?tenant=none` still resolves to no outlet in both passes.
  * The saved outlet pick lives in localStorage and follows the same rule: the
- * first render uses the first outlet, an effect applies the saved pick.
+ * first render has not read it (`savedId` undefined) and an effect applies it.
+ * With 2+ outlets the screen itself (`children`) is held behind a skeleton
+ * until then, so no request goes out for the wrong outlet; server HTML and the
+ * hydration pass both render the skeleton, so they match.
  */
 export function AreaFrame(props: AreaFrameProps) {
   const { pathname, searchStr } = useLocation();
@@ -85,7 +91,8 @@ export function AreaFrame(props: AreaFrameProps) {
     [searchStr, accessOutlets],
   );
 
-  const [savedId, setSavedId] = useState<string | null>(null);
+  // undefined = localStorage not read yet (SSR and the hydration pass).
+  const [savedId, setSavedId] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     const read = () => setSavedId(readSavedOutletId());
     read();
@@ -132,6 +139,7 @@ export function AreaFrame(props: AreaFrameProps) {
       <AreaFrameBody
         {...props}
         outlets={outlets}
+        pickPending={outletPickPending(outlets, savedId)}
         selectedOutletId={outletId}
         onSelectOutlet={selectOutlet}
       />
@@ -146,16 +154,19 @@ function AreaFrameBody({
   session,
   children,
   outlets,
+  pickPending,
   selectedOutletId,
   onSelectOutlet,
 }: AreaFrameProps & {
   outlets: readonly MyOutlet[];
+  pickPending: boolean;
   selectedOutletId: string | null;
   onSelectOutlet: (outletId: string) => void;
 }) {
   const t = useT();
   const online = useOnline();
   const { brandName } = useTenantContext();
+  const [announcement, setAnnouncement] = useState("");
   const { href, pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
   const definition = AREAS[area];
@@ -194,15 +205,37 @@ function AreaFrameBody({
     definition.shell === "operations" &&
     access.authenticated &&
     outletChoice(outlets) === "none";
-  // 2+ outlets: the shell offers the picker; one outlet needs no control.
+  // 2+ outlets: the operations shell offers the picker; one outlet needs no
+  // control. The kelola shell has its own picker (legend-sp41n).
   const outletPicker =
+    definition.shell === "operations" &&
     outletChoice(outlets) === "multiple" ? (
       <OutletPicker
         outlets={outlets}
         value={selectedOutletId}
-        onChange={onSelectOutlet}
+        onChange={(outletId) => {
+          onSelectOutlet(outletId);
+          const name = outlets.find((row) => row.id === outletId)?.name;
+          if (name) setAnnouncement(t("area.outletChanged", { name }));
+        }}
+        className="max-sm:w-full"
       />
     ) : null;
+  // Customer and public screens never depend on the staff outlet pick.
+  const holdScreen = pickPending && definition.shell !== "customer";
+  const noOutletAction =
+    noOutletNext(access) === "kelola" ? (
+      <Button asChild>
+        <Link to="/kelola">{t("area.noOutletKelola")}</Link>
+      </Button>
+    ) : (
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button asChild variant="outline">
+          <Link to="/">{t("gate.backHome")}</Link>
+        </Button>
+        <SignOutButton />
+      </div>
+    );
   const body = (
     <SupportReadOnlyProvider value={supportReadOnly}>
       {showSupportBar ? (
@@ -212,11 +245,23 @@ function AreaFrameBody({
         />
       ) : null}
       <OfflineBannerSlot />
+      {outletPicker ? (
+        <div role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </div>
+      ) : null}
       {noOutlet ? (
         <EmptyState
           title={t("area.noOutletTitle")}
           description={t("area.noOutletHint")}
+          action={noOutletAction}
         />
+      ) : holdScreen ? (
+        <div aria-busy="true" className="grid gap-3">
+          <span className="sr-only">{t("common.loading")}</span>
+          <Skeleton className="h-10 w-1/2" />
+          <Skeleton className="h-48 w-full" />
+        </div>
       ) : (
         children
       )}
@@ -239,7 +284,6 @@ function AreaFrameBody({
         }
         actions={
           <>
-            {outletPicker}
             <ApprovalInboxBadge
               enabled={
                 area === "kelola" && holdsAny(access, ["approval.inbox.view"])
@@ -265,12 +309,8 @@ function AreaFrameBody({
         staffName={session?.user.name}
         online={online}
         mode={definition.forcedMode}
-        actions={
-          <>
-            {outletPicker}
-            {definition.forcedMode ? null : <ThemeToggle />}
-          </>
-        }
+        outletControl={outletPicker}
+        actions={definition.forcedMode ? null : <ThemeToggle />}
       >
         <div className="h-full overflow-y-auto p-4">{body}</div>
       </OperationsShell>

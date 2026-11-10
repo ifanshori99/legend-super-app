@@ -20,6 +20,7 @@ import { createApp } from "../app";
 import { setAuditWriter } from "../services/audit-writer";
 import { coreAuditWriter } from "../services/core-audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
+import { createIsolatedTenant } from "./floor-test-helpers";
 import {
   agent,
   originHeader,
@@ -38,6 +39,11 @@ const owner = new Pool({
 const createdUserIds: string[] = [];
 const createdRoleIds: string[] = [];
 const createdStationIds: string[] = [];
+// Throwaway org rows of the seeded tenant made by the legend-ebt9f outlet
+// tests; removed in afterAll so no seed outlet is ever mutated.
+const createdOutletIds: string[] = [];
+const createdDomainIds: string[] = [];
+const createdBrandIds: string[] = [];
 const bandung2 = cafeLegendAccessFixtures.outletIds.bandung2;
 // Seed outlets of the cafe-legend tenant (legend-ebt9f). Sorted by name, the
 // first one comes before "... Bandung 2 (contoh)".
@@ -163,6 +169,55 @@ async function assign(
 
 const unique = () => randomBytes(4).toString("hex");
 
+/** A throwaway brand in the seeded tenant (owner pool). */
+async function createBrand(): Promise<string> {
+  const id = randomUUID();
+  const suffix = id.slice(0, 8);
+  await owner.query(
+    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, $4)",
+    [id, seededTenantId, `uji-${suffix}`, `Merek Uji ${suffix}`],
+  );
+  createdBrandIds.push(id);
+  return id;
+}
+
+/**
+ * A throwaway outlet in the seeded tenant. Legal entity and opening hours are
+ * copied from the seeded Bandung outlet, so only the fields under test differ.
+ */
+async function createOutlet(options: {
+  brandId?: string;
+  status?: "preopening" | "active" | "closed";
+  timeZone?: string;
+  name?: string;
+}): Promise<{ id: string; name: string }> {
+  const id = randomUUID();
+  const suffix = id.slice(0, 8);
+  // "Zz" keeps these after the seeded "Cafe Legend ..." outlets by name.
+  const name = options.name ?? `Zz Outlet Uji ${suffix}`;
+  await owner.query(
+    `INSERT INTO outlets
+       (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     SELECT $1, $2, $3, legal_entity_id, $4, $5, 'Jl. Uji 1', $6, opening_hours, $7
+       FROM outlets WHERE id = $8`,
+    [
+      id,
+      seededTenantId,
+      options.brandId ?? cafeLegendFixtures.brand.id,
+      `UJI-${suffix}`.toUpperCase(),
+      name,
+      options.timeZone ?? "Asia/Jakarta",
+      options.status ?? "active",
+      bandung,
+    ],
+  );
+  createdOutletIds.push(id);
+  return { id, name };
+}
+
+const outletIdsOf = (res: { body: { data: { outlets: { id: string }[] } } }) =>
+  res.body.data.outlets.map((row) => row.id);
+
 beforeAll(() => {
   setAuditWriter(coreAuditWriter);
 });
@@ -179,6 +234,19 @@ afterAll(async () => {
       "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
       [seededTenantId, createdRoleIds],
     );
+  // Order matters: outlets reference brands, domains reference brands.
+  if (createdOutletIds.length > 0)
+    await owner.query("DELETE FROM outlets WHERE id = ANY($1::uuid[])", [
+      createdOutletIds,
+    ]);
+  if (createdDomainIds.length > 0)
+    await owner.query("DELETE FROM tenant_domains WHERE id = ANY($1::uuid[])", [
+      createdDomainIds,
+    ]);
+  if (createdBrandIds.length > 0)
+    await owner.query("DELETE FROM brands WHERE id = ANY($1::uuid[])", [
+      createdBrandIds,
+    ]);
   if (createdStationIds.length > 0) {
     const client = await owner.connect();
     try {
@@ -307,6 +375,121 @@ describe("legend-t4y7 GET /api/me/access", () => {
     const res = await staff.client.get("/api/me/access");
     expect(res.status).toBe(200);
     expect(res.body.data.outlets).toEqual([]);
+  });
+
+  it("legend-ebt9f a closed outlet is not listed", async () => {
+    const closed = await createOutlet({ status: "closed" });
+    const open = await createOutlet({ status: "active" });
+    const ownerUser = await signedIn("Pemilik outlet tutup", { mfa: false });
+    await assign(ownerUser.userId, "owner");
+    const res = await ownerUser.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    const ids = outletIdsOf(res);
+    // Control: the sibling that is not closed is listed, so the closed one is
+    // absent because of its status and not because of the insert.
+    expect(ids).toContain(open.id);
+    expect(ids).not.toContain(closed.id);
+  });
+
+  it("legend-ebt9f a brand-scoped assignment lists only that brand's outlets", async () => {
+    const otherBrand = await createBrand();
+    const other = await createOutlet({ brandId: otherBrand });
+    const staff = await signedIn("GM satu merek", { mfa: false });
+    await assign(staff.userId, "general_manager", {
+      type: "brand",
+      id: otherBrand,
+    });
+    const onlyOther = await staff.client.get("/api/me/access");
+    expect(onlyOther.status).toBe(200);
+    expect(onlyOther.body.data.outlets).toEqual([outletView(other)]);
+
+    const seededBrandStaff = await signedIn("GM merek seed", { mfa: false });
+    await assign(seededBrandStaff.userId, "general_manager", {
+      type: "brand",
+      id: cafeLegendFixtures.brand.id,
+    });
+    const seeded = await seededBrandStaff.client.get("/api/me/access");
+    expect(seeded.status).toBe(200);
+    const ids = outletIdsOf(seeded);
+    expect(ids).toContain(bandung);
+    expect(ids).toContain(bandung2);
+    expect(ids).not.toContain(other.id);
+  });
+
+  it("legend-ebt9f a tenant pinned to a brand hides another brand's outlet even from a tenant-wide owner", async () => {
+    const otherBrand = await createBrand();
+    const other = await createOutlet({ brandId: otherBrand });
+    const pinnedHost = `pin-${unique()}.legend.test`;
+    const domainId = randomUUID();
+    await owner.query(
+      `INSERT INTO tenant_domains (id, tenant_id, brand_id, hostname, kind, tls_status, verified_at)
+       VALUES ($1, $2, $3, $4, 'platform_subdomain', 'active', now())`,
+      [domainId, seededTenantId, cafeLegendFixtures.brand.id, pinnedHost],
+    );
+    createdDomainIds.push(domainId);
+
+    const ownerUser = await signedIn("Pemilik domain merek", { mfa: false });
+    await assign(ownerUser.userId, "owner");
+
+    // Control: without a pinned domain the tenant-wide owner sees both brands.
+    const unpinned = await ownerUser.client.get("/api/me/access");
+    expect(unpinned.status).toBe(200);
+    expect(outletIdsOf(unpinned)).toContain(other.id);
+
+    const pinned = await ownerUser.client
+      .get("/api/me/access")
+      .set("Host", pinnedHost);
+    expect(pinned.status).toBe(200);
+    const ids = outletIdsOf(pinned);
+    expect(ids).toContain(bandung);
+    expect(ids).toContain(bandung2);
+    expect(ids).not.toContain(other.id);
+  });
+
+  it("legend-ebt9f another tenant's outlets never appear", async () => {
+    const tenantB = await createIsolatedTenant(`me${unique()}`);
+    const staff = await signedIn("Pemilik hanya tenant A", { mfa: false });
+    await assign(staff.userId, "owner");
+    const res = await staff.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    expect(outletIdsOf(res)).not.toContain(tenantB.outletId);
+
+    // Same user also assigned in tenant B: each host shows only its tenant.
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+      [tenantB.tenantId, staff.userId, tenantB.roleId],
+    );
+    try {
+      const viaA = await staff.client.get("/api/me/access");
+      expect(outletIdsOf(viaA)).not.toContain(tenantB.outletId);
+      expect(outletIdsOf(viaA)).toContain(bandung);
+      const viaB = await staff.client
+        .get("/api/me/access")
+        .set("Host", tenantB.hostname);
+      expect(viaB.status).toBe(200);
+      expect(outletIdsOf(viaB)).toEqual([tenantB.outletId]);
+    } finally {
+      await owner.query(
+        "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+        [tenantB.tenantId, staff.userId],
+      );
+    }
+  });
+
+  it("legend-ebt9f an outlet with an invalid stored timezone is skipped and the rest of the response is intact", async () => {
+    const broken = await createOutlet({ timeZone: "Not/AZone" });
+    const good = await createOutlet({});
+    const ownerUser = await signedIn("Pemilik zona rusak", { mfa: false });
+    await assign(ownerUser.userId, "owner");
+    const res = await ownerUser.client.get("/api/me/access");
+    expect(res.status).toBe(200);
+    const ids = outletIdsOf(res);
+    expect(ids).not.toContain(broken.id);
+    expect(ids).toContain(good.id);
+    expect(ids).toContain(bandung);
+    expect(res.body.data.permissions).toContain("org.structure.manage");
   });
 });
 

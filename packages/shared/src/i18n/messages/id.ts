@@ -1737,10 +1737,11 @@ export const id = {
   },
   area: {
     reachable: "Area kerja Anda",
-    outletPicker: "Outlet",
+    outletPicker: "Pilih outlet",
+    outletChanged: "Outlet diganti ke {name}",
     noOutletTitle: "Belum ada outlet",
-    noOutletHint:
-      "Akun Anda belum ditugaskan ke outlet. Hubungi pemilik/manajer.",
+    noOutletHint: "Minta pemilik atau manajer menugaskan akun Anda ke outlet.",
+    noOutletKelola: "Buka Kelola",
     public: {
       name: "Beranda",
       emptyTitle: "Beranda brand belum diisi",

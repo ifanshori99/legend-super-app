@@ -3,6 +3,9 @@
 // account); the person's pick is remembered in localStorage. Pure logic here so
 // it is unit-tested; the shell wires it to React and the browser.
 import type { MyOutlet } from "@starter/shared/access";
+import type { AreaAccess } from "./access.ts";
+import { AREAS } from "./definitions.ts";
+import { evaluateArea } from "./guard.ts";
 
 /** localStorage key of the last outlet the person picked. */
 export const SELECTED_OUTLET_STORAGE_KEY = "legend-selected-outlet";
@@ -27,6 +30,29 @@ export function resolveSelectedOutlet(
 ): MyOutlet | null {
   if (outlets.length === 0) return null;
   return outlets.find((outlet) => outlet.id === savedId) ?? outlets[0];
+}
+
+/**
+ * True while the saved pick has not been read yet (`undefined`) and there is a
+ * real choice between outlets. The first render has no localStorage, so it
+ * would work in the first outlet; the shell holds the screen until the pick is
+ * read. One outlet or none: nothing to wait for.
+ */
+export function outletPickPending(
+  outlets: readonly MyOutlet[],
+  savedId: string | null | undefined,
+): boolean {
+  return outlets.length > 1 && savedId === undefined;
+}
+
+/**
+ * Where an account without an outlet goes next: Kelola when it can open that
+ * area (it holds a management permission; a pending second factor counts, the
+ * gate screen then asks for it), otherwise back to the home page.
+ */
+export function noOutletNext(access: AreaAccess): "kelola" | "home" {
+  const { status } = evaluateArea(AREAS.kelola, access);
+  return status === "allowed" || status === "mfa_required" ? "kelola" : "home";
 }
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
