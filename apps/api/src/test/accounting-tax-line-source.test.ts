@@ -64,6 +64,7 @@ type World = {
   discount: string;
   tax: string;
   ruleId: string;
+  ppnRuleId: string;
   oct: string;
   nov: string;
 };
@@ -133,10 +134,22 @@ async function makeWorld(): Promise<World> {
              false, true, true, 1, '2026-01-01', 'published', now(), $4)`,
     [ruleId, tenantId, `PBJT-LS-${unique()}`.toUpperCase(), publisher],
   );
+  const ppnRuleId = randomUUID();
+  await owner.query(
+    `INSERT INTO tax_rules
+       (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+        price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+        published_at, published_by)
+     VALUES ($1, $2, NULL, $3, 'PPN uji', 'ppn', 200, NULL, '[]',
+             '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+             false, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+    [ppnRuleId, tenantId, `PPN-LS-${unique()}`.toUpperCase(), publisher],
+  );
   return {
     entity,
     ...accounts,
     ruleId,
+    ppnRuleId,
     oct: periodId("2026-10"),
     nov: periodId("2026-11"),
   };
@@ -202,23 +215,30 @@ async function seedSnapshot(
   orderId: string,
   amounts: { gross: number; base: number; tax: number },
   businessDate = "2026-11-05",
+  {
+    taxType = "pbjt",
+    rateBp = 1000,
+  }: { taxType?: "pbjt" | "ppn"; rateBp?: number } = {},
 ) {
   await owner.query(
     `INSERT INTO tax_snapshots
        (id, tenant_id, outlet_id, source_type, source_id, business_date, tax_rule_id, tax_rule_code,
         tax_rule_version, tax_type, rate_bp, price_includes_tax, gross_idr, tax_base_idr,
         service_charge_idr, tax_idr)
-     VALUES ($1, $2, $3, 'order', $4, $5, $6, 'PBJT-LS', 1, 'pbjt', 1000, false, $7, $8, 0, $9)`,
+     VALUES ($1, $2, $3, 'order', $4, $5, $6, $10, 1, $11, $12, false, $7, $8, 0, $9)`,
     [
       randomUUID(),
       tenantId,
       outletId,
       ulidToUuid(orderId),
       businessDate,
-      world.ruleId,
+      taxType === "ppn" ? world.ppnRuleId : world.ruleId,
       amounts.gross,
       amounts.base,
       amounts.tax,
+      `${taxType.toUpperCase()}-LS`,
+      taxType,
+      rateBp,
     ],
   );
 }
@@ -500,5 +520,92 @@ describe("legend-powk0 PBJT tax line source", () => {
     );
     // the sale has a snapshot, so no "missing sale" hint
     expect(message).not.toContain("Penjualan tanpa snapshot");
+  });
+
+  it("legend-powk0 reports only PBJT in the line and warns about other tax on the sale", async () => {
+    const world = await makeWorld();
+    const orderId = createUlid();
+    await seedSnapshot(world, orderId, {
+      gross: 100_000,
+      base: 100_000,
+      tax: 10_000,
+    });
+    await seedSnapshot(
+      world,
+      orderId,
+      { gross: 100_000, base: 100_000, tax: 2_000 },
+      "2026-11-05",
+      { taxType: "ppn", rateBp: 200 },
+    );
+    await postEntry(world, {
+      period: world.nov,
+      entryDate: "2026-11-05",
+      sourceType: "sale",
+      sourceId: orderId,
+      lines: [
+        [world.cash, 112_000, 0],
+        [world.revenue, 0, 100_000],
+        [world.tax, 0, 12_000],
+      ],
+    });
+
+    const lines = await novLines(world);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ taxIdr: 10_000, baseIdr: 100_000 });
+    expect(lines[0]!.references).toHaveLength(1);
+    expect(lines[0]!.references[0]).toMatch(/non-PBJT Rp2000/);
+  });
+
+  it("legend-powk0 adds no warning when the sales carry PBJT only", async () => {
+    const world = await makeWorld();
+    await postSale(world, createUlid(), 100_000, 10_000);
+
+    const lines = await novLines(world);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.references).toEqual([]);
+  });
+
+  it("legend-powk0 ignores zero-rate sales when grossing up a refund base", async () => {
+    const world = await makeWorld();
+    await postSale(world, createUlid(), 100_000, 10_000);
+    // Sale B: a 0% PBJT snapshot (base 100_000, tax 0) and no tax credit line.
+    const zeroOrder = createUlid();
+    await seedSnapshot(
+      world,
+      zeroOrder,
+      { gross: 100_000, base: 100_000, tax: 0 },
+      "2026-11-05",
+      { rateBp: 0 },
+    );
+    await postEntry(world, {
+      period: world.nov,
+      entryDate: "2026-11-05",
+      sourceType: "sale",
+      sourceId: zeroOrder,
+      lines: [
+        [world.cash, 100_000, 0],
+        [world.revenue, 0, 100_000],
+      ],
+    });
+    await postEntry(world, {
+      period: world.nov,
+      entryDate: "2026-11-07",
+      sourceType: "refund",
+      sourceId: createUlid(),
+      lines: [
+        [world.tax, 2_500, 0],
+        [world.revenue, 25_000, 0],
+        [world.cash, 0, 27_500],
+      ],
+    });
+
+    const lines = await novLines(world);
+
+    // Base 100_000 + 100_000 from the sales, minus the refund's 25_000
+    // (2_500 tax at the 10% ratio): 175_000.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ taxIdr: 7_500, baseIdr: 175_000 });
   });
 });

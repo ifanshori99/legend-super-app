@@ -157,8 +157,20 @@ function snapshotSourceId(sourceId: string): string | null {
  * outlet. The sale journals carry the order id as ULID text (or a UUID); the
  * snapshots store it as a uuid. A reversal (void) of a sale counts negative.
  */
+/** Snapshot totals of an outlet's sales, signed by sale (+) and void (-). */
+type OutletSnapshots = {
+  /** PBJT base and tax: the figures of the report. */
+  base: bigint;
+  tax: bigint;
+  /** PBJT rows with a rate above 0%, for the refund gross-up ratio. */
+  ratedBase: bigint;
+  ratedTax: bigint;
+  /** Tax of the other tax types (PPN, other): booked to PBJT by the journal. */
+  otherTax: bigint;
+};
+
 type SaleSnapshots = {
-  byOutlet: Map<string, { base: bigint; tax: bigint }>;
+  byOutlet: Map<string, OutletSnapshots>;
   /** Source ids (journal form) of sales in the period without any snapshot. */
   missing: string[];
 };
@@ -210,7 +222,7 @@ async function saleSnapshotsByOutlet(
     weight.set(id, (weight.get(id) ?? 0n) + BigInt(entry.net));
     journalForm.set(id, entry.sourceId);
   }
-  const byOutlet = new Map<string, { base: bigint; tax: bigint }>();
+  const byOutlet = new Map<string, OutletSnapshots>();
   if (weight.size === 0) return { byOutlet, missing: [] };
 
   // Batched: one bind parameter per id, and Postgres allows 65,535 per query.
@@ -218,6 +230,8 @@ async function saleSnapshotsByOutlet(
   const snapshots: {
     outletId: string;
     sourceId: string;
+    taxType: string;
+    rateBp: number;
     base: number;
     tax: number;
   }[] = [];
@@ -227,6 +241,8 @@ async function saleSnapshotsByOutlet(
         .select({
           outletId: taxSnapshots.outletId,
           sourceId: taxSnapshots.sourceId,
+          taxType: taxSnapshots.taxType,
+          rateBp: taxSnapshots.rateBp,
           base: taxSnapshots.taxBaseIdr,
           tax: taxSnapshots.taxIdr,
         })
@@ -234,7 +250,8 @@ async function saleSnapshotsByOutlet(
         .where(
           and(
             sql`${taxSnapshots.tenantId} = ${args.tenantId}`,
-            eq(taxSnapshots.taxType, "pbjt"),
+            // Every tax type: the sale journal books all of an order's tax to
+            // the PBJT account, so the ledger can only be checked against all.
             inArray(taxSnapshots.sourceId, ids.slice(from, from + 5000)),
           ),
         )),
@@ -245,11 +262,23 @@ async function saleSnapshotsByOutlet(
     const key = row.sourceId.toLowerCase();
     seen.add(key);
     const w = weight.get(key) ?? 0n;
-    const current = byOutlet.get(row.outletId) ?? { base: 0n, tax: 0n };
-    byOutlet.set(row.outletId, {
-      base: current.base + w * BigInt(row.base),
-      tax: current.tax + w * BigInt(row.tax),
-    });
+    const current = byOutlet.get(row.outletId) ?? {
+      base: 0n,
+      tax: 0n,
+      ratedBase: 0n,
+      ratedTax: 0n,
+      otherTax: 0n,
+    };
+    if (row.taxType !== "pbjt") current.otherTax += w * BigInt(row.tax);
+    else {
+      current.base += w * BigInt(row.base);
+      current.tax += w * BigInt(row.tax);
+      if (row.rateBp > 0) {
+        current.ratedBase += w * BigInt(row.base);
+        current.ratedTax += w * BigInt(row.tax);
+      }
+    }
+    byOutlet.set(row.outletId, current);
   }
   const missing = [...weight.entries()]
     .filter(([id, w]) => w > 0n && !seen.has(id))
@@ -340,7 +369,8 @@ async function pbjtLines(
   for (const outletId of outletIds) {
     const ledgerSaleTax =
       (tax.get(outletId) ?? 0n) - (refundTax.get(outletId) ?? 0n);
-    const snapshotTax = sales.get(outletId)?.tax ?? 0n;
+    const found = sales.get(outletId);
+    const snapshotTax = (found?.tax ?? 0n) + (found?.otherTax ?? 0n);
     if (snapshotTax !== ledgerSaleTax)
       mismatches.push(
         `${nameOf.get(outletId) ?? outletId}: buku besar Rp${ledgerSaleTax}, snapshot Rp${snapshotTax}, selisih Rp${ledgerSaleTax - snapshotTax}`,
@@ -360,14 +390,20 @@ async function pbjtLines(
 
   const lines: TaxReportLine[] = [];
   for (const outletId of outletIds) {
-    const sale = sales.get(outletId) ?? { base: 0n, tax: 0n };
-    // Refund base: tax grossed up by the effective rate of the period's sales
-    // (snapshot base over snapshot tax), else by the latest snapshot rate.
+    const sale = sales.get(outletId) ?? {
+      base: 0n,
+      tax: 0n,
+      ratedBase: 0n,
+      ratedTax: 0n,
+      otherTax: 0n,
+    };
+    // Refund base: tax grossed up by the effective rate of the period's taxed
+    // sales (0% snapshots left out), else by the latest snapshot rate.
     const refund = refundTax.get(outletId) ?? 0n;
     let refundBase = 0n;
     if (refund !== 0n) {
-      if (sale.tax > 0n && sale.base > 0n)
-        refundBase = divRound(refund * sale.base, sale.tax);
+      if (sale.ratedTax > 0n && sale.ratedBase > 0n)
+        refundBase = divRound(refund * sale.ratedBase, sale.ratedTax);
       else {
         const rateBp = await latestRateBp(tx, args, outletId);
         if (rateBp !== null)
@@ -375,6 +411,9 @@ async function pbjtLines(
       }
     }
     const base = sale.base + refundBase;
+    // The report carries PBJT only: the ledger tax less the other tax types.
+    const pbjtTax = sale.tax + refund;
+    if (pbjtTax <= 0n) continue;
     lines.push(
       taxReportLineSchema.parse({
         subjectType: "outlet",
@@ -383,8 +422,13 @@ async function pbjtLines(
         taxIdMasked: null,
         outletId,
         baseIdr: toIdr(base > 0n ? base : 0n),
-        taxIdr: toIdr(tax.get(outletId) ?? 0n),
-        references: [],
+        taxIdr: toIdr(pbjtTax),
+        // No warnings field on a line or report yet: the auditor note rides in
+        // `references` (the only free text), kept within its 60 characters.
+        references:
+          sale.otherTax !== 0n
+            ? [`Peringatan: pajak non-PBJT Rp${sale.otherTax} tidak ikut`]
+            : [],
       }),
     );
   }
