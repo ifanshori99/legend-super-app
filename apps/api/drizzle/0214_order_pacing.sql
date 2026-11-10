@@ -48,6 +48,12 @@ CREATE TABLE "kitchen_pacing_state" (
 	CONSTRAINT "kitchen_pacing_state_points_check" CHECK ("kitchen_pacing_state"."used_points" >= 0)
 );
 --> statement-breakpoint
+-- Lift FORCE RLS on the existing tables the FK validation scans (as the
+-- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
+ALTER TABLE public.menu_items NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.item_variants NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.stations NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "kitchen_channel_pauses" ADD CONSTRAINT "kitchen_channel_pauses_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_channel_pauses" ADD CONSTRAINT "kitchen_channel_pauses_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_channel_pauses" ADD CONSTRAINT "kitchen_channel_pauses_menu_item_fk" FOREIGN KEY ("tenant_id","menu_item_id") REFERENCES "public"."menu_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -63,6 +69,10 @@ ALTER TABLE "kitchen_pacing_state" ADD CONSTRAINT "kitchen_pacing_state_tenant_i
 ALTER TABLE "kitchen_pacing_state" ADD CONSTRAINT "kitchen_pacing_state_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_pacing_state" ADD CONSTRAINT "kitchen_pacing_state_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_pacing_state" ADD CONSTRAINT "kitchen_pacing_state_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.stations FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.item_variants FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.menu_items FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "kitchen_channel_pauses_auto_live_key" ON "kitchen_channel_pauses" USING btree ("tenant_id","outlet_id","station_id","menu_item_id",COALESCE("variant_id", '00000000-0000-0000-0000-000000000000'::uuid)) WHERE "kitchen_channel_pauses"."reason" = 'station_capacity' AND "kitchen_channel_pauses"."released_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "kitchen_channel_pauses_live_idx" ON "kitchen_channel_pauses" USING btree ("tenant_id","outlet_id","released_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "kitchen_menu_loads_line_key" ON "kitchen_menu_loads" USING btree ("tenant_id","outlet_id","menu_item_id",COALESCE("variant_id", '00000000-0000-0000-0000-000000000000'::uuid));

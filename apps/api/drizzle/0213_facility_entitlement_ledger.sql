@@ -26,10 +26,16 @@ CREATE TABLE "entitlement_ledger" (
         OR ("entitlement_ledger"."type" IN ('cancel', 'expire') AND "entitlement_ledger"."grant_entry_id" IS NOT NULL AND "entitlement_ledger"."access_ticket_id" IS NULL AND "entitlement_ledger"."expires_at" IS NULL))
 );
 --> statement-breakpoint
+-- Lift FORCE RLS on the existing tables the FK validation scans (as the
+-- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.facilities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "entitlement_ledger" ADD CONSTRAINT "entitlement_ledger_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "entitlement_ledger" ADD CONSTRAINT "entitlement_ledger_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "entitlement_ledger" ADD CONSTRAINT "entitlement_ledger_facility_fk" FOREIGN KEY ("tenant_id","outlet_id","facility_id") REFERENCES "public"."facilities"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "entitlement_ledger" ADD CONSTRAINT "entitlement_ledger_grant_fk" FOREIGN KEY ("tenant_id","grant_entry_id") REFERENCES "public"."entitlement_ledger"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.facilities FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "entitlement_ledger_grant_dedupe" ON "entitlement_ledger" USING btree ("tenant_id","facility_id","customer_profile_id","source_type","source_ref",COALESCE("rule_id", '00000000-0000-0000-0000-000000000000'::uuid)) WHERE "entitlement_ledger"."type" = 'grant';--> statement-breakpoint
 CREATE UNIQUE INDEX "entitlement_ledger_terminal_key" ON "entitlement_ledger" USING btree ("tenant_id","grant_entry_id") WHERE "entitlement_ledger"."type" IN ('cancel', 'expire');--> statement-breakpoint
 CREATE UNIQUE INDEX "entitlement_ledger_ticket_key" ON "entitlement_ledger" USING btree ("tenant_id","access_ticket_id") WHERE "entitlement_ledger"."access_ticket_id" IS NOT NULL;--> statement-breakpoint

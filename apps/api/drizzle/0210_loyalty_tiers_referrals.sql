@@ -56,6 +56,10 @@ CREATE TABLE "referrals" (
 --> statement-breakpoint
 ALTER TABLE "customer_profiles" ADD COLUMN "tier_id" uuid;--> statement-breakpoint
 ALTER TABLE "customer_profiles" ADD COLUMN "tier_evaluated_at" timestamp with time zone;--> statement-breakpoint
+-- Lift FORCE RLS on the existing tables the FK validation scans (as the
+-- migrator), restored after the last FK (docs/plan/contracts.md pattern 2).
+ALTER TABLE public.customer_profiles NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_profile_fk" FOREIGN KEY ("tenant_id","customer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_tier_history" ADD CONSTRAINT "customer_tier_history_from_tier_fk" FOREIGN KEY ("tenant_id","from_tier_id") REFERENCES "public"."loyalty_tiers"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -65,6 +69,8 @@ ALTER TABLE "referrals" ADD CONSTRAINT "referrals_tenant_id_tenants_id_fk" FOREI
 ALTER TABLE "referrals" ADD CONSTRAINT "referrals_referrer_fk" FOREIGN KEY ("tenant_id","referrer_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "referrals" ADD CONSTRAINT "referrals_referee_fk" FOREIGN KEY ("tenant_id","referee_profile_id") REFERENCES "public"."customer_profiles"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "referrals" ADD CONSTRAINT "referrals_first_order_fk" FOREIGN KEY ("tenant_id","first_order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.orders FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.customer_profiles FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "customer_tier_history_profile_idx" ON "customer_tier_history" USING btree ("tenant_id","customer_profile_id","created_at");--> statement-breakpoint
 CREATE INDEX "referrals_referrer_status_idx" ON "referrals" USING btree ("tenant_id","referrer_profile_id","status");
 --> statement-breakpoint
