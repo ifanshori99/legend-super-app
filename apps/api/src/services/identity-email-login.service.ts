@@ -43,6 +43,7 @@ import {
 import {
   CoreError,
   userIdSchema,
+  type ScopedTenantContext,
   type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -71,6 +72,12 @@ import {
 import { logger } from "../lib/logger";
 import { bindingDigestOf } from "../lib/login-binding";
 import { openSecret, sealSecret } from "../lib/secrets";
+import { takeEmailLinkSlot } from "../lib/email-link-throttle";
+import {
+  recordLoginAudit,
+  type LoginAuditAction,
+  type LoginAuditDetails,
+} from "./identity-wa-audit.ts";
 
 const emailLoginLog = logger.child({ module: "identity-email-login" });
 
@@ -108,6 +115,33 @@ async function assertTenantActive(
       "SERVICE_UNAVAILABLE",
       "Tenant ini sedang tidak aktif.",
     );
+}
+
+/**
+ * One `audit_logs` row for the email channel, on the caller's transaction so it
+ * commits with the state change it describes. Details carry only the channel,
+ * status and cause: never the address, the token or the link.
+ */
+async function auditEmailLogin(
+  tx: Transaction,
+  context: ScopedTenantContext,
+  input: {
+    action: LoginAuditAction;
+    challengeId: string | null;
+    actorUserId?: string | null;
+    details: Omit<LoginAuditDetails, "channel">;
+    now: Date;
+    ip: string | null;
+  },
+): Promise<void> {
+  await recordLoginAudit(tx, context, {
+    action: input.action,
+    challengeId: input.challengeId,
+    actorUserId: input.actorUserId ?? null,
+    details: { channel: "email_magic_link", ...input.details },
+    now: input.now,
+    ipHash: input.ip ? clientIpDigest(input.ip) : null,
+  });
 }
 
 function mailBody(link: string): { text: string; html: string } {
@@ -163,6 +197,32 @@ export async function requestEmailMagicLink(
   const id = randomUUID();
   const expiresAt = new Date(now.getTime() + MAGIC_LINK_TTL);
 
+  // Per-address limit. Over it: no challenge, no mail, and the same answer as a
+  // success, so the response never says whether the address is throttled or
+  // registered. The key is the keyed digest, never the address.
+  const slot = takeEmailLinkSlot(
+    `${tenant.tenantId}\u0000${await emailDigest(email)}`,
+    now.getTime(),
+  );
+  if (!slot.allowed) {
+    if (slot.firstRefusal)
+      await withTenant(db, context, (tx) =>
+        auditEmailLogin(tx, context, {
+          action: "login_challenge.rate_limited",
+          challengeId: null,
+          details: { cause: "email_throttled" },
+          now,
+          ip: request.ip,
+        }),
+      ).catch((error: unknown) =>
+        emailLoginLog.error(
+          { error: error instanceof Error ? error.name : "unknown" },
+          "magic link throttle could not be audited",
+        ),
+      );
+    return { sent: true, expiresAt: expiresAt.toISOString() };
+  }
+
   await withTenant(db, context, async (tx) => {
     await assertTenantActive(tx, tenant.tenantId);
     await tx.insert(loginChallenges).values({
@@ -178,6 +238,13 @@ export async function requestEmailMagicLink(
       ipHash: request.ip ? clientIpDigest(request.ip) : null,
       userAgent: request.userAgent?.slice(0, 255) ?? null,
       createdAt: now,
+    });
+    await auditEmailLogin(tx, context, {
+      action: "login_challenge.created",
+      challengeId: id,
+      details: { status: "pending", expiresAt: expiresAt.toISOString() },
+      now,
+      ip: request.ip,
     });
   });
 
@@ -201,11 +268,19 @@ export async function requestEmailMagicLink(
       },
       "magic link email could not be sent",
     );
-    await db
-      .update(loginChallenges)
-      .set({ status: "cancelled" })
-      .where(eq(loginChallenges.id, id))
-      .catch(() => undefined);
+    await withTenant(db, context, async (tx) => {
+      await tx
+        .update(loginChallenges)
+        .set({ status: "cancelled" })
+        .where(eq(loginChallenges.id, id));
+      await auditEmailLogin(tx, context, {
+        action: "login_challenge.cancelled",
+        challengeId: id,
+        details: { status: "cancelled", cause: "email_send_failed" },
+        now,
+        ip: request.ip,
+      });
+    }).catch(() => undefined);
   }
   return { sent: true, expiresAt: expiresAt.toISOString() };
 }
@@ -367,19 +442,36 @@ export async function verifyEmailMagicLink(
           .update(loginChallenges)
           .set({ status: "expired" })
           .where(eq(loginChallenges.id, row.id));
+        await auditEmailLogin(tx, context, {
+          action: "login_challenge.expired",
+          challengeId: row.id,
+          details: { status: "expired", cause: "ttl_elapsed" },
+          now,
+          ip: request.ip,
+        });
         return { kind: "expired" };
       }
 
-      const cancel = async (): Promise<VerifyOutcome> => {
+      const cancel = async (
+        cause: string,
+        action: LoginAuditAction = "login_challenge.cancelled",
+      ): Promise<VerifyOutcome> => {
         await tx
           .update(loginChallenges)
           .set({ status: "cancelled" })
           .where(eq(loginChallenges.id, row.id));
+        await auditEmailLogin(tx, context, {
+          action,
+          challengeId: row.id,
+          details: { status: "cancelled", cause },
+          now,
+          ip: request.ip,
+        });
         return { kind: "refused" };
       };
       // Valid now but not before the read above: cannot happen (a token only
       // gets less valid), so fail closed.
-      if (resolved === null) return cancel();
+      if (resolved === null) return cancel("resolution_missing");
       const { email, digest, account } = resolved;
 
       const [owner] = await tx
@@ -387,7 +479,7 @@ export async function verifyEmailMagicLink(
         .from(user)
         .where(eq(user.id, account.userId))
         .limit(1);
-      if (!owner || owner.banned) return cancel();
+      if (!owner || owner.banned) return cancel("account_refused");
 
       // Pre-registration takeover guard: an unverified user with a password
       // that signed itself up may be an attacker who pre-registered the
@@ -418,7 +510,7 @@ export async function verifyEmailMagicLink(
             sql`SELECT app.user_has_role_assignment(${account.userId}) AS has_role`,
           );
           if (roleCheck.rows[0]?.has_role !== true) {
-            await cancel();
+            await cancel("already_linked", "login_challenge.rejected");
             return { kind: "already_linked" };
           }
         }
@@ -454,7 +546,8 @@ export async function verifyEmailMagicLink(
             ),
           )
           .limit(1);
-        if (current?.userId !== account.userId) return cancel();
+        if (current?.userId !== account.userId)
+          return cancel("identity_conflict");
       }
 
       const bound =
@@ -469,6 +562,17 @@ export async function verifyEmailMagicLink(
           completedAt: now,
         })
         .where(eq(loginChallenges.id, row.id));
+      await auditEmailLogin(tx, context, {
+        action: "login_challenge.completed",
+        challengeId: row.id,
+        actorUserId: account.userId,
+        details: {
+          status: "completed",
+          matchedUserId: account.userId,
+        },
+        now,
+        ip: request.ip,
+      });
       return {
         kind: "consumed",
         userId: account.userId,
@@ -497,6 +601,20 @@ export async function verifyEmailMagicLink(
     });
   } catch (error) {
     // The token stays consumed on purpose: the user asks for a new link.
+    await withTenant(db, context, (tx) =>
+      auditEmailLogin(tx, context, {
+        action: "login_challenge.claim_failed",
+        challengeId: outcome.challengeId,
+        actorUserId: outcome.userId,
+        details: {
+          status: "completed",
+          matchedUserId: outcome.userId,
+          cause: "session_not_created",
+        },
+        now,
+        ip: request.ip,
+      }),
+    ).catch(() => undefined);
     emailLoginLog.error(
       {
         challengeId: outcome.challengeId,
@@ -512,6 +630,14 @@ export async function verifyEmailMagicLink(
         .update(loginChallenges)
         .set({ sessionId: session.id, sessionIssuedAt: now })
         .where(eq(loginChallenges.id, outcome.challengeId));
+      await auditEmailLogin(tx, context, {
+        action: "login_challenge.claimed",
+        challengeId: outcome.challengeId,
+        actorUserId: outcome.userId,
+        details: { status: "completed", matchedUserId: outcome.userId },
+        now,
+        ip: request.ip,
+      });
     });
   } catch (error) {
     // The session is live and valid; only the audit link is missing.

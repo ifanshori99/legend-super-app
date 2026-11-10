@@ -39,6 +39,8 @@ export const LOGIN_AUDIT_SAFE_FIELDS = [
   "matchedUserId",
   "senderMasked",
   "cause",
+  "survivorUserId",
+  "absorbedUserId",
 ] as const;
 
 /**
@@ -53,7 +55,7 @@ export function maskSenderForAudit(
 }
 
 export type LoginAuditDetails = {
-  readonly channel?: "whatsapp_inbound";
+  readonly channel?: "whatsapp_inbound" | "email_magic_link";
   readonly status?: string;
   readonly expiresAt?: string;
   readonly linking?: boolean;

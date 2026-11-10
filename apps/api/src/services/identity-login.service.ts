@@ -470,7 +470,16 @@ export async function pollWhatsAppChallenge(
   const row = await loadChallenge(challengeId);
   if (!row) throw new CoreError("NOT_FOUND", "Kode masuk tidak ditemukan.");
   assertBinding(row, request.bindingNonce);
-  if (row.linkUserId !== null) {
+  // legend-k2l: a link that merged with the signed-in account U as the
+  // ABSORBED one completes with the survivor as matched user, and U's sessions
+  // are gone. The bound browser (checked above) then claims one session for
+  // the survivor below, so the link-session check does not apply to it.
+  const absorbedIntoSurvivor =
+    row.linkUserId !== null &&
+    row.status === "completed" &&
+    row.matchedUserId !== null &&
+    row.matchedUserId !== row.linkUserId;
+  if (row.linkUserId !== null && !absorbedIntoSurvivor) {
     if (
       request.link?.userId !== row.linkUserId ||
       request.link?.sessionId !== row.linkSessionId
@@ -524,7 +533,7 @@ export async function pollWhatsAppChallenge(
     return { view: pendingView(expired), session: null };
   }
 
-  if (row.linkUserId !== null)
+  if (row.linkUserId !== null && !absorbedIntoSurvivor)
     return { view: pendingView(toChallenge(row)), session: null };
 
   if (row.status !== "completed" || row.matchedUserId === null)

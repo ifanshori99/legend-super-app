@@ -34,7 +34,7 @@
 // webhook pesan masuk tanpa isi pesan"); only the provider id, the keyed sender
 // digest and the outcome.
 
-import { and, eq, gt, ne, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, isNull, sql } from "drizzle-orm";
 import {
   assertLoginMessageRateLimit,
   LOGIN_MESSAGE_RATE_WINDOW_MINUTES,
@@ -42,8 +42,9 @@ import {
   MINUTE_MS,
   normalizeWhatsAppNumber,
   identityLinkedEvent,
+  planIdentityMerge,
 } from "@starter/shared/identity";
-import { CoreError, createUlid, z } from "@starter/shared/core";
+import { CoreError, createUlid, z, type UserId } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -56,6 +57,7 @@ import {
   waInboundMessages,
   userIdentities,
   session,
+  user,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import {
@@ -66,6 +68,7 @@ import {
 import { sealSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { onWhatsAppVerified } from "./member-profile.service.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
 import {
@@ -728,18 +731,46 @@ async function completeLink(
             eq(userIdentities.valueHash, digest),
           ),
         );
-      // legend-k2l: the number belongs to another account V. Fold V into the
-      // signed-in user when V is WhatsApp-only; otherwise refuse as before.
+      // legend-k2l: the number belongs to another account V. Fold the two when
+      // V is WhatsApp-only; otherwise refuse as before. The OLDER account
+      // survives (`planIdentityMerge`: createdAt, tie: smaller id), so the
+      // survivor is V as often as it is the signed-in user U.
       let merge: Extract<MergeOutcome, { kind: "merged" }> | null = null;
       if (existing && existing.userId !== userId) {
-        const outcome = await mergeAbsorbedIntoSurvivor(tx, {
-          survivorUserId: userId,
-          absorbedUserId: existing.userId,
-          whatsappIdentityId: existing.id,
-          trigger: "whatsapp_link",
-          actorUserId: userId,
-          now: input.now,
-        });
+        const ages = await tx
+          .select({ id: user.id, createdAt: user.createdAt })
+          .from(user)
+          .where(inArray(user.id, [userId, existing.userId]));
+        const signedInAge = ages.find((row) => row.id === userId);
+        const holderAge = ages.find((row) => row.id === existing.userId);
+        const plan =
+          signedInAge && holderAge
+            ? planIdentityMerge({
+                a: {
+                  id: userId as UserId,
+                  createdAt: signedInAge.createdAt.toISOString(),
+                },
+                b: {
+                  id: existing.userId as UserId,
+                  createdAt: holderAge.createdAt.toISOString(),
+                },
+                identities: [],
+              })
+            : null;
+        const outcome: MergeOutcome = plan
+          ? await mergeAbsorbedIntoSurvivor(tx, {
+              survivorUserId: plan.survivorId,
+              absorbedUserId: plan.mergedId,
+              whatsappIdentityId: existing.id,
+              trigger: "whatsapp_link",
+              actorUserId: userId,
+              now: input.now,
+            })
+          : {
+              kind: "refused",
+              code: "IDENTITY_MERGE_NEEDS_SUPPORT",
+              reason: "account_unavailable",
+            };
         if (outcome.kind === "refused") {
           // Preserve the actual match without exposing it to the polling
           // browser. A cancelled link with a different matched user is the
@@ -777,9 +808,18 @@ async function completeLink(
         }
         merge = outcome;
       }
-      // After a merge the identity row already belongs to the survivor.
+      // The account that keeps the number and everything else from here on.
+      const survivorUserId = merge ? merge.survivorUserId : userId;
+      // After a merge the identity row already belongs to the survivor: moved
+      // there (V absorbed, no longer primary) or kept (V is the survivor).
+      const identityMoved =
+        merge !== null && merge.absorbedUserId === existing?.userId;
       let identity = existing
-        ? { ...existing, userId, isPrimary: merge ? false : existing.isPrimary }
+        ? {
+            ...existing,
+            userId: survivorUserId,
+            isPrimary: identityMoved ? false : existing.isPrimary,
+          }
         : existing;
       if (merge || !identity || identity.verifiedAt === null) {
         if (identity && identity.verifiedAt === null) {
@@ -846,7 +886,7 @@ async function completeLink(
           aggregateId: identity.id,
           sequence: linkedSequence,
           occurredAt: input.now.toISOString(),
-          actor: { type: "user", id: userId },
+          actor: { type: "user", id: survivorUserId },
           deviceId: null,
           idempotencyKey: merge
             ? `identity.linked:${identity.id}:merge:${merge.mergeId}`
@@ -854,7 +894,7 @@ async function completeLink(
           payloadSchemaRef: def.payloadSchemaRef,
           payload: {
             identityId: identity.id,
-            userId,
+            userId: survivorUserId,
             type: "whatsapp",
             isPrimary: identity.isPrimary,
           },
@@ -871,7 +911,7 @@ async function completeLink(
           tenantId: input.tenantId,
           outletId: null,
           actorType: "user",
-          actorId: userId,
+          actorId: survivorUserId,
           deviceId: null,
           action: "identity.linked",
           objectType: "user_identity",
@@ -884,9 +924,9 @@ async function completeLink(
           createdAt: input.now.toISOString(),
         });
         if (merge) {
-          // The merge row is global; this is its tenant-visible trail. Only
-          // the trigger is kept: no e-mail, number or user id of the absorbed
-          // account.
+          // The merge row is global; this is its tenant-visible trail: the
+          // trigger and the two account ids (survivor and absorbed), never an
+          // e-mail or a number.
           await recordAudit(
             tx,
             context,
@@ -903,7 +943,12 @@ async function completeLink(
               reason: null,
               maskedChanges: {
                 before: null,
-                after: { cause: "whatsapp_link", status: "merged" },
+                after: {
+                  cause: "whatsapp_link",
+                  status: "merged",
+                  survivorUserId: merge.survivorUserId,
+                  absorbedUserId: merge.absorbedUserId,
+                },
               },
               ipHash: null,
               sensitiveAccess: false,
@@ -914,24 +959,24 @@ async function completeLink(
           );
         }
       }
-      // TODO(legend-111j/290a): await onWhatsAppVerified(tx, userId, digest)
+      await onWhatsAppVerified(tx, survivorUserId, digest);
       await tx
         .update(loginChallenges)
         .set({
           status: "completed",
-          matchedUserId: userId,
+          matchedUserId: survivorUserId,
           completedAt: input.now,
         })
         .where(eq(loginChallenges.id, input.id));
       await recordLoginAudit(tx, context, {
         action: "login_challenge.completed",
         challengeId: input.id,
-        actorUserId: userId,
+        actorUserId: survivorUserId,
         details: {
           channel: "whatsapp_inbound",
           status: "completed",
           linking: true,
-          matchedUserId: userId,
+          matchedUserId: survivorUserId,
           senderMasked: maskSenderForAudit(input.sender),
         },
         now: input.now,
