@@ -1000,3 +1000,6 @@ Langkah berikut CTO baru:
 - Codex: 3 P1 + 1 P2 di aruta (token kedaluwarsa web, race PIN-reset vs penerbitan token, adopsi reset edge tanpa cabut token, override lintas outlet). Kartu legend-5u03q, brief 373. aruta ditahan dari batch48.
 - Codex jalan: G188h refund recovery (akun #3), Duitku webhook (akun #2, brief 374). Antrean di docs/briefs/codex-queue.md.
 - Claude: akun #1 dan #3 5h 87%, #2 7d 91%; kartu Claude baru menunggu reset #3 jam 20:00 (cron 20:03).
+- 19:55 Codex 372 refund recovery: 1 P1 (refund abaikan evaluasi ulang promo) + 2 P2 (poin tidak kembali saat refund ditolak; pembulatan PBJT tidak kumulatif). Kartu legend-h1dyy, brief 375. 94q2l-impl ditahan dari merge sampai selesai.
+- Codex #3 7d 97%: berhenti dipakai sampai reset 15 Nov. Antrean Codex jalan satu per satu di #2.
+- legend-p649r: naikkan memori Postgres test 512->768 MiB (puncak 445 MiB).
