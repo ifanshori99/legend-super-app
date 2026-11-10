@@ -17,3 +17,4 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | antre (ws09 lama 110) |
 | w5by9 expiry FIFO loyalty (8f0b4630, d735d8b7) | Codex ulang area loyalty sebelum rilis | antre |
 | vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | antre |
+| profit share 33im6 fix (ws/8s992-profit-rules 54b76963, migrasi 0252) | Codex ulang area profit share sebelum rilis | antre |
