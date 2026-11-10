@@ -151,7 +151,11 @@ async function loadFacts(
     FROM order_items oi
     JOIN orders o ON o.tenant_id = oi.tenant_id AND o.id = oi.order_id
     JOIN menu_items mi ON mi.tenant_id = oi.tenant_id AND mi.id = oi.menu_item_id
-    WHERE ${scope} AND o.status = 'completed' AND oi.status <> 'voided'`);
+    WHERE ${scope} AND o.status = 'completed' AND oi.status <> 'voided'
+      AND NOT EXISTS (SELECT 1 FROM order_issues oi2
+        WHERE oi2.tenant_id = oi.tenant_id
+          AND oi2.replacement_order_item_id = oi.id
+          AND oi.line_total_idr = 0)`);
   const promos = await tx.execute(sql`
     SELECT d.order_id::text AS order_id, COALESCE(d.promo_code, d.source) AS promo,
       d.amount_idr AS amount

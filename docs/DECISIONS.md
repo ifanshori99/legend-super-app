@@ -1146,6 +1146,7 @@ Decided 10 Nov 2026 (architect, tier K money). Status: proposed. Needs the found
    - Accounting switched on after points already exist pushes 2105 into a debit balance on redeem and expire; finance must post an opening balance for 2105.
    - Multi-entity tenants are parked until the follow-up card (`legend-6m1w1`: `loyalty_programs.legal_entity_id` plus an unpark path; parking is non-retryable and closed outlets count today).
 10. **Release steps.** Existing tenants get 4105 and its mapping only through `pnpm db:backfill-defaults` (new tenants get it from the template). Until the backfill runs, points events park retryable `ACCOUNT_MAPPING_MISSING` and post on the next sweep. Journals are dated by the ledger `business_date` when the row has one (earn copies the order business date), else by the anchor outlet clock.
+
 ## 302 gateway registry (legend-l9rji, legend-pa21), 10 Nov 2026
 
 Architect design, tier K. Full text with reasons and slice split: `docs/briefs/sub-302-design.md`. Decisions D1-D27 copied below.

@@ -67,12 +67,12 @@ import {
  * session its credential names (TEN-03, legend-7csf). The outlet comes from
  * the verified session row, never from the client.
  */
-function guestContext(req: Request, credential: string) {
+export function guestContext(req: Request, credential: string) {
   return guestSessionContext(getTenantContext(req), credential);
 }
 
 /** `Authorization: Bearer <sessionToken>`; anything else is 401. */
-function sessionCredential(req: Request): string {
+export function sessionCredential(req: Request): string {
   const header = req.get("authorization") ?? "";
   const match = /^Bearer ([A-Za-z0-9_-]{20,256})$/.exec(header);
   if (!match)

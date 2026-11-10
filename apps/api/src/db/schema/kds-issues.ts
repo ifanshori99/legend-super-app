@@ -57,10 +57,16 @@ export const orderIssues = pgTable(
       .references(() => user.id),
     resolution: varchar("resolution", { length: 20 }),
     replacementItemId: uuid("replacement_item_id"),
+    /** Order line created by a swap; at most one issue points at a line. */
+    replacementOrderItemId: ulidInUuid("replacement_order_item_id"),
     voucherId: uuid("voucher_id"),
     /** Positive: the guest pays the difference; negative: credited. */
     priceDifferenceIdr: idrColumn("price_difference_idr"),
+    /** Replacement unit catalogue price at resolve time (swap only). */
+    replacementUnitPriceIdr: idrColumn("replacement_unit_price_idr"),
     approvedBy: text("approved_by").references(() => user.id),
+    /** Approval request that allowed a manual refund (ORD-09, legend-4qu). */
+    approvalRequestId: uuid("approval_request_id"),
     /** Ingredient cost, whole rupiah, server-computed (KDS-07). */
     costIdr: idrColumn("cost_idr").notNull(),
     /** Client retry key: a resend returns the stored row (unique per tenant). */
@@ -81,6 +87,17 @@ export const orderIssues = pgTable(
     uniqueIndex("order_issues_comp_once_idx")
       .on(table.tenantId, table.orderItemId)
       .where(sql`${table.type} = 'comp' AND ${table.status} <> 'cancelled'`),
+    // One settled unfulfillable report per order line (legend-4qu): two
+    // concurrent resolutions cannot both win.
+    uniqueIndex("order_issues_resolved_item_once_idx")
+      .on(table.tenantId, table.orderItemId)
+      .where(
+        sql`${table.type} = 'unfulfillable' AND ${table.resolution} IS NOT NULL AND ${table.status} <> 'cancelled'`,
+      ),
+    // One voucher settles at most one issue.
+    uniqueIndex("order_issues_voucher_once_idx")
+      .on(table.tenantId, table.voucherId)
+      .where(sql`${table.voucherId} IS NOT NULL`),
     foreignKey({
       name: "order_issues_order_fk",
       columns: [table.tenantId, table.orderId],
@@ -89,6 +106,15 @@ export const orderIssues = pgTable(
     foreignKey({
       name: "order_issues_order_item_fk",
       columns: [table.tenantId, table.orderItemId],
+      foreignColumns: [orderItems.tenantId, orderItems.id],
+    }),
+    // A replacement line is the result of exactly one swap.
+    uniqueIndex("order_issues_replacement_item_once_idx")
+      .on(table.tenantId, table.replacementOrderItemId)
+      .where(sql`${table.replacementOrderItemId} IS NOT NULL`),
+    foreignKey({
+      name: "order_issues_replacement_order_item_fk",
+      columns: [table.tenantId, table.replacementOrderItemId],
       foreignColumns: [orderItems.tenantId, orderItems.id],
     }),
     foreignKey({
@@ -140,6 +166,18 @@ export const orderIssues = pgTable(
     check(
       "order_issues_swap_check",
       sql`${table.resolution} IS DISTINCT FROM 'swap' OR ${table.replacementItemId} IS NOT NULL`,
+    ),
+    check(
+      "order_issues_swap_approval_check",
+      sql`${table.resolution} IS DISTINCT FROM 'swap' OR ${table.priceDifferenceIdr} IS NULL OR ${table.priceDifferenceIdr} <= 0 OR ${table.approvalRequestId} IS NOT NULL`,
+    ),
+    check(
+      "order_issues_replacement_order_item_check",
+      sql`${table.replacementOrderItemId} IS NULL OR ${table.resolution} = 'swap'`,
+    ),
+    check(
+      "order_issues_replacement_unit_price_check",
+      sql`${table.replacementUnitPriceIdr} IS NULL OR ${table.resolution} = 'swap'`,
     ),
     check(
       "order_issues_resolved_check",

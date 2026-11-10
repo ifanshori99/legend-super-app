@@ -229,15 +229,19 @@ async function seed(world: World, outletId: string): Promise<Seed> {
           cancelledAt,
         ],
       );
-    // [kind, businessDate]
-    const deductions: [string, string][] = [
+    // [kind, businessDate, idempotency key (random when omitted)]
+    // A swap replacement (legend-v51rh) is a `remake` row keyed
+    // `swap:issue:<id>`; it is not a kitchen remake, so remake_count skips it.
+    const deductions: [string, string, string?][] = [
       ["remake", DAY],
       ["remake", DAY],
       ["comp", DAY],
       ["sale", DAY],
       ["remake", NEXT_DAY],
+      ["remake", DAY, `swap:issue:${randomUUID()}`],
+      ["remake", NEXT_DAY, `swap:issue:${randomUUID()}`],
     ];
-    for (const [kind, businessDate] of deductions)
+    for (const [kind, businessDate, idemKey] of deductions)
       await client.query(
         `INSERT INTO recipe_deductions (tenant_id, outlet_id, kind, status, mode, source_type, source_id,
            business_date, idempotency_key, skip_reason, occurred_at)
@@ -248,7 +252,7 @@ async function seed(world: World, outletId: string): Promise<Seed> {
           kind,
           randomUUID(),
           businessDate,
-          randomUUID(),
+          idemKey ?? randomUUID(),
           `${businessDate}T05:00:00Z`,
         ],
       );
@@ -419,7 +423,8 @@ describe("traffic-operations daily rows", () => {
     expect(value(key("served_ticket_count", "hour", "12"))).toBe("2");
     expect(value(key("served_ticket_count", "hour", "13"))).toBe("1");
 
-    // remake and comp of the business date only; the sale row is not counted.
+    // remake and comp of the business date only; the sale row and the swap
+    // replacement remake (`swap:issue:...`) are not counted.
     expect(value(key("remake_count"))).toBe("2");
     expect(value(key("comp_count"))).toBe("1");
   });

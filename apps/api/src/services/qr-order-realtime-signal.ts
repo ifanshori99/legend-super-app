@@ -11,7 +11,8 @@
 //   qr-order.service.ts `publishCartChange` on every cart write and checkout.
 // - Order signal `{tenantId, sessionId, orderId, status}`: written by the
 //   payment consumers (qr-order-consumers.ts) when a verified payment fires
-//   an order or an unpaid order is voided.
+//   an order or an unpaid order is voided, and by order-recovery.service.ts
+//   (`item_failed`) when staff report a paid item as unfulfillable (ORD-08).
 
 import { sql } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
@@ -37,7 +38,11 @@ export {
 export async function notifyQrOrderChange(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { sessionId: string; orderId: string; status: "sent" | "voided" },
+  input: {
+    sessionId: string;
+    orderId: string;
+    status: "sent" | "voided" | "item_failed";
+  },
 ): Promise<void> {
   const signal = qrOrderSignalSchema.parse({
     tenantId: context.tenant.tenantId,

@@ -31,9 +31,29 @@
 // marked reversed. A reversal that arrives before `order.paid` leaves a
 // line-less `reversed` tombstone under the sale key, so the later paid event
 // draws nothing. Remake/comp/duty meal deductions are never reversed.
+//
+// Swap (legend-v51rh): an unfulfillable line swapped for another was never
+// cooked. The sale deduction therefore skips a swapped-away line (it is already
+// voided on an open order) and counts the replacement line like any other. When
+// the order was ALREADY paid, `applySwapStockAdjustment` returns the old line's
+// ingredients (original unit cost, key `recipe-swap-return:...`) and draws the
+// replacement as a `remake` deduction (key `swap:issue:<issueId>`). A later
+// final void then returns only what the swap did not already return.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  like,
+  lt,
+  lte,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   businessDateOf,
   CoreError,
@@ -71,10 +91,15 @@ import {
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { inventorySettings } from "../db/schema/inventory-setup.ts";
-import { stockBalances, stockLocations } from "../db/schema/inventory.ts";
+import {
+  stockBalances,
+  stockLedger,
+  stockLocations,
+} from "../db/schema/inventory.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
-import { orderItems } from "../db/schema/qr-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
 import {
   outletInventorySettings,
   recipeDeductionLines,
@@ -701,14 +726,20 @@ export async function reverseOrderSaleDeduction(
         tenantId,
         lines.map((line) => line.locationId),
       );
+      const swapReturned = await swapReturnedQuantities(tx, tenantId, row);
       for (const line of lines) {
         if (line.unitCostIdr === null) continue; // posted lines always carry it
+        // A swap on the paid order already returned part of this line.
+        const remaining =
+          parseDecimal4(line.quantity) -
+          (swapReturned.get(line.inventoryItemId) ?? 0n);
+        if (remaining <= 0n) continue;
         await recordStockMovementInTransaction(tx, context, {
           outletId: row.outletId,
           locationId: line.locationId,
           inventoryItemId: line.inventoryItemId,
           movementType: "return",
-          quantity: line.quantity,
+          quantity: formatDecimal4(remaining),
           unitCostIdr: formatDecimal4(parseDecimal4(line.unitCostIdr)),
           sourceType: "order",
           sourceId: row.sourceId,
@@ -734,6 +765,225 @@ export async function reverseOrderSaleDeduction(
         ),
       );
     return;
+  }
+}
+
+const SWAP_RETURN_KEY_PREFIX = "recipe-swap-return:";
+
+/** Base-unit quantities per item that swaps already returned for a sale row. */
+async function swapReturnedQuantities(
+  tx: Tx,
+  tenantId: TenantId,
+  sale: DeductionRow,
+): Promise<Map<string, bigint>> {
+  const rows = await tx
+    .select({
+      inventoryItemId: stockLedger.inventoryItemId,
+      quantity: stockLedger.quantity,
+    })
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, tenantId),
+        eq(stockLedger.sourceType, "order"),
+        eq(stockLedger.sourceId, ulidToUuid(sale.sourceId)),
+        eq(stockLedger.movementType, "return"),
+        like(
+          stockLedger.idempotencyKey,
+          `${SWAP_RETURN_KEY_PREFIX}${sale.id}:%`,
+        ),
+      ),
+    );
+  const returned = new Map<string, bigint>();
+  for (const row of rows)
+    returned.set(
+      row.inventoryItemId,
+      (returned.get(row.inventoryItemId) ?? 0n) + parseDecimal4(row.quantity),
+    );
+  return returned;
+}
+
+export type SwapStockAdjustmentInput = {
+  outletId: string;
+  orderId: string;
+  /** The swap issue: the once-only key of every row written here. */
+  issueId: string;
+  businessDate: string;
+  /** Order line id of the swapped-away line (it may itself be a replacement). */
+  oldLineId: string;
+  /** The unfulfillable line swapped away (never cooked). */
+  oldLine: DeductionMenuLine;
+  /** The replacement line (same quantity). */
+  replacement: DeductionMenuLine;
+  recordedBy: string | null;
+  occurredAt: string;
+};
+
+/**
+ * Stock side of a swap on an order that was ALREADY paid (legend-v51rh). With no
+ * sale deduction yet nothing is done: `order.paid` later skips the swapped-away
+ * line and counts the replacement. With one: the old line's ingredients return
+ * to stock (posted: `return` rows at the sale line's unit cost; pending: the
+ * sale lines shrink; reversed: nothing) and the replacement is drawn as a
+ * `remake` deduction. A chained swap (the old line was itself a replacement)
+ * returns from the earlier swap's `remake` deduction, which is what drew it.
+ * Idempotent on the issue id (the `remake` key is checked first). The caller
+ * holds the issue row lock. A stock rule refusing the return rolls that part
+ * back alone, so the event is not dead-lettered; that return is then lost (no
+ * retry, unlike a parked void reversal).
+ */
+export async function applySwapStockAdjustment(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: SwapStockAdjustmentInput,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  if (await isTrainingOrder(tx, tenantId, input.orderId)) return;
+  if (await findByKey(tx, tenantId, `swap:issue:${input.issueId}`)) return;
+  const [sale] = await tx
+    .select()
+    .from(recipeDeductions)
+    .where(
+      and(
+        eq(recipeDeductions.tenantId, tenantId),
+        eq(recipeDeductions.idempotencyKey, `sale:order:${input.orderId}`),
+      ),
+    )
+    .for("update");
+  if (!sale || sale.status === "reversed") return;
+
+  // What drew the old line: the sale, or the remake of the swap that created it.
+  let source = sale;
+  const [earlier] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        eq(orderIssues.tenantId, tenantId),
+        eq(orderIssues.replacementOrderItemId, input.oldLineId),
+      ),
+    );
+  if (earlier) {
+    const [earlierDrawn] = await tx
+      .select()
+      .from(recipeDeductions)
+      .where(
+        and(
+          eq(recipeDeductions.tenantId, tenantId),
+          eq(recipeDeductions.idempotencyKey, `swap:issue:${earlier.id}`),
+        ),
+      )
+      .for("update");
+    if (earlierDrawn) source = earlierDrawn;
+  }
+
+  if (source.status === "posted" || source.status === "pending") {
+    try {
+      await tx.transaction(async (savepoint) => {
+        await returnSwappedLine(savepoint, context, source, input);
+      });
+    } catch (error) {
+      if (!(
+        error instanceof HttpError ||
+        error instanceof InventoryError ||
+        error instanceof CoreError
+      ))
+        throw error;
+      logger.warn(
+        { err: error, orderId: input.orderId, issueId: input.issueId },
+        "Swapped line stock not returned",
+      );
+    }
+  }
+  await recordRecipeDeduction(tx, context, {
+    outletId: input.outletId,
+    kind: "remake",
+    sourceType: "order_issue",
+    sourceId: input.orderId,
+    businessDate: input.businessDate,
+    idempotencyKey: `swap:issue:${input.issueId}`,
+    lines: [input.replacement],
+    reason: "swap",
+    recordedBy: input.recordedBy,
+    occurredAt: input.occurredAt,
+  });
+}
+
+async function returnSwappedLine(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sale: DeductionRow,
+  input: SwapStockAdjustmentInput,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const alreadyReturned = await swapReturnedQuantities(tx, tenantId, sale);
+  const config = await loadDeductionConfig(tx, context, input.outletId);
+  const plan = await planDeduction(tx, context, config.saleLocationId, [
+    input.oldLine,
+  ]);
+  if (!plan.ok) return;
+  const saleLines = await tx
+    .select()
+    .from(recipeDeductionLines)
+    .where(
+      and(
+        eq(recipeDeductionLines.tenantId, tenantId),
+        eq(recipeDeductionLines.deductionId, sale.id),
+      ),
+    );
+  const byItem = new Map(saleLines.map((line) => [line.inventoryItemId, line]));
+  const items = [...plan.items.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  await lockLocations(
+    tx,
+    tenantId,
+    items.flatMap(([itemId]) => byItem.get(itemId)?.locationId ?? []),
+  );
+  for (const [itemId, planned] of items) {
+    const line = byItem.get(itemId);
+    if (!line) continue;
+    const available =
+      parseDecimal4(line.quantity) - (alreadyReturned.get(itemId) ?? 0n);
+    const back = planned < available ? planned : available;
+    if (back <= 0n) continue;
+    if (sale.status === "posted") {
+      if (line.unitCostIdr === null) continue; // posted lines always carry it
+      await recordStockMovementInTransaction(tx, context, {
+        outletId: sale.outletId,
+        locationId: line.locationId,
+        inventoryItemId: itemId,
+        movementType: "return",
+        quantity: formatDecimal4(back),
+        unitCostIdr: formatDecimal4(parseDecimal4(line.unitCostIdr)),
+        sourceType: "order",
+        sourceId: sale.sourceId,
+        occurredAt: input.occurredAt as never,
+        idempotencyKey: `${SWAP_RETURN_KEY_PREFIX}${sale.id}:${input.issueId}:${itemId}`,
+        actor: { type: "system" },
+      });
+    } else if (back === available) {
+      await tx
+        .delete(recipeDeductionLines)
+        .where(
+          and(
+            eq(recipeDeductionLines.tenantId, tenantId),
+            eq(recipeDeductionLines.deductionId, sale.id),
+            eq(recipeDeductionLines.inventoryItemId, itemId),
+          ),
+        );
+    } else {
+      await tx
+        .update(recipeDeductionLines)
+        .set({ quantity: formatDecimal4(available - back) })
+        .where(
+          and(
+            eq(recipeDeductionLines.tenantId, tenantId),
+            eq(recipeDeductionLines.deductionId, sale.id),
+            eq(recipeDeductionLines.inventoryItemId, itemId),
+          ),
+        );
+    }
   }
 }
 
@@ -857,6 +1107,20 @@ async function paidOrderLines(
         eq(orderItems.orderId, orderId),
         sql`${orderItems.status} <> 'voided'`,
         isNull(posOrderItems.voidedAt),
+        // legend-v51rh: a line swapped away was never cooked, even when a
+        // completed order keeps it frozen and non-voided.
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(orderIssues)
+            .where(
+              and(
+                eq(orderIssues.tenantId, orderItems.tenantId),
+                eq(orderIssues.orderItemId, orderItems.id),
+                sql`${orderIssues.replacementOrderItemId} IS NOT NULL`,
+              ),
+            ),
+        ),
       ),
     )
     .orderBy(orderItems.id);
@@ -899,6 +1163,18 @@ async function consumeInTransaction(
     // legend-13avp (founder Q63): a training order never deducts stock.
     if (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId))
       return;
+    // legend-v51rh: read the lines under a shared order lock, so a swap that
+    // runs at the same time (it locks the order FOR UPDATE) is seen whole.
+    await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, context.tenant.tenantId),
+          eq(orders.id, payload.orderId),
+        ),
+      )
+      .for("share");
     await recordRecipeDeduction(tx, context, {
       outletId: payload.outletId,
       kind: "sale",
