@@ -92,7 +92,10 @@ import {
 } from "../db/schema/hris-attendance.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import { env } from "../config/env.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { EDGE_SEALED_KEY_PREFIX } from "../edge/selfie-paths.ts";
+import { enqueueEdgeSelfieUpload } from "../edge/selfie-queue.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
@@ -873,7 +876,7 @@ export async function clockAttendance(
       created &&
       row.photoKey !== null &&
       row.photoKey === body.photoUploadRef
-    )
+    ) {
       await linkStorageObjectSource(tx, {
         tenantId,
         objectId: row.photoKey,
@@ -882,6 +885,27 @@ export async function clockAttendance(
         actorUserId,
         outletId: row.outletId,
       });
+      // An edge-sealed selfie lives on the edge disk: queue it for the cloud
+      // in the same transaction as the log.
+      const [stored] = await tx
+        .select({ objectKey: coreStorageObjects.objectKey })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, row.photoKey),
+          ),
+        )
+        .limit(1);
+      if (stored?.objectKey.startsWith(EDGE_SEALED_KEY_PREFIX))
+        await enqueueEdgeSelfieUpload(tx, {
+          tenantId,
+          outletId: row.outletId,
+          attendanceLogId: ulidToUuid(row.id),
+          objectKey: stored.objectKey,
+          dir: env.EDGE_SELFIE_DIR,
+        });
+    }
     return { log: await present(row), flagReasons: storedReasons(row) };
   });
 }

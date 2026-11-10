@@ -241,6 +241,14 @@ const schema = z
       .max(255)
       .regex(/^[\w.+-]+$/)
       .default("dev"),
+    // Edge selfie store: sealed LSS1 files wait here until the cloud takes
+    // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
+    EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),
+    EDGE_SELFIE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_147_483_648),
     // AI gateway (WS-12). All optional: with no key configured AI is OFF and
     // every AI call answers AI_PROVIDER_UNAVAILABLE (lib/ai/provider-factory.ts).
     AI_PROVIDER: z
