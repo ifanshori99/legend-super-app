@@ -140,6 +140,8 @@ async function createTenant(
     plan?: string;
     modules?: string[];
     limits?: Record<string, number>;
+    /** Keep the defaults every new tenant is provisioned with. */
+    keepDefaults?: boolean;
   } = {},
 ): Promise<string> {
   const created = await admin.client
@@ -162,7 +164,29 @@ async function createTenant(
       },
     });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
-  return created.body.data.id as string;
+  const tenantId = created.body.data.id as string;
+  if (!input.keepDefaults) await clearProvisionedDefaults(tenantId);
+  return tenantId;
+}
+
+/**
+ * Tenant creation now provisions default approval policies, tax settings, a
+ * PBJT rule and a service charge (legend-9obf, legend-2qz7). These tests build
+ * their own source configuration and count rows exactly, so they start from a
+ * tenant without those defaults; `keepDefaults` covers the real-world path.
+ */
+async function clearProvisionedDefaults(tenantId: string) {
+  await asTenant(tenantId, async (client) => {
+    for (const table of [
+      "service_charge_rules",
+      "tax_rules",
+      "tax_settings",
+      "approval_policies",
+    ])
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+        tenantId,
+      ]);
+  });
 }
 
 type Structure = {
@@ -646,12 +670,14 @@ async function newTarget(
     plan?: string;
     modules?: string[];
     limits?: Record<string, number>;
+    keepDefaults?: boolean;
   } = {},
 ) {
   const tenantId = await createTenant(admin, {
     plan: input.plan,
     modules: input.modules,
     limits: input.limits,
+    keepDefaults: input.keepDefaults,
   });
   const structure = await addStructure(tenantId, {
     outletCodes: input.outletCodes ?? [CODE_A, CODE_B],
@@ -911,6 +937,19 @@ describe("TEN-09 export, template and import", () => {
     expect(Object.keys(dataOf(fetched.body).payload.sections)).toEqual([
       "modules",
     ]);
+  });
+
+  it("TEN-09 importing into a freshly provisioned tenant keeps its defaults and still ends ready", async () => {
+    const target = await newTarget(admin, { keepDefaults: true });
+    const imported = await importOk(admin, target.tenantId, {
+      templateId: template.id,
+    });
+    expect(imported.status).toBe("applied");
+    // The default tax settings stay (one published row per scope), they are not
+    // duplicated or replaced by the template's.
+    expect((await counts(target.tenantId)).taxSettings).toBe(1);
+    const ready = await readiness(admin, target.tenantId);
+    expect(ready.ready, JSON.stringify(ready.checks)).toBe(true);
   });
 
   it("TEN-09 imports only the sections that were selected", async () => {
