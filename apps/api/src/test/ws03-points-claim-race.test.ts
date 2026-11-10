@@ -252,8 +252,10 @@ function as(guest: Guest, member?: MemberUser) {
         method: "qris",
         idempotencyKey: randomUUID(),
       }),
-    splitClaim: (splitId: string) =>
-      auth(client.get(`${base}/splits/${splitId}/claim`)),
+    splitClaim: (splitId: string, paymentId: string) =>
+      auth(
+        client.get(`${base}/splits/${splitId}/claim?paymentId=${paymentId}`),
+      ),
     claim: (claimToken?: string) =>
       auth(client.post(`${base}/points-claim`)).send({
         idempotencyKey: randomUUID(),
@@ -338,7 +340,7 @@ async function paidSplitOrder(guest: Guest) {
     expect(pay.status, JSON.stringify(pay.body)).toBe(201);
     const intentId = pay.body.data.id as string;
     await settle(intentId, part.amountIdr);
-    const claim = await as(guest).splitClaim(part.id);
+    const claim = await as(guest).splitClaim(part.id, intentId);
     expect(claim.status, JSON.stringify(claim.body)).toBe(200);
     if (part === parts[0]) {
       token = claim.body.data.claimToken as string;

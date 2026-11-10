@@ -439,6 +439,9 @@ export const getSplitClaim = defineEndpoint({
     sessionId: tableSessionIdSchema,
     splitId: billSplitIdSchema,
   }),
+  // Proof that the part is the guest's: the payment intent that pays it. The
+  // part ids are visible to the whole table, the intent id is not.
+  query: z.strictObject({ paymentId: guestPaymentIntentIdSchema }),
   response: dataResponseSchema(splitClaimSchema),
 });
 

@@ -281,6 +281,7 @@ qrOrderRouter.get(
   ...read,
   async (req, res) => {
     const { sessionId, splitId } = getSplitClaim.params.parse(req.params);
+    const query = getSplitClaim.query.parse(req.query);
     const credential = sessionCredential(req);
     res.json({
       data: await getSplitClaimService(
@@ -288,6 +289,7 @@ qrOrderRouter.get(
         credential,
         sessionId,
         splitId,
+        query.paymentId,
       ),
     });
   },

@@ -204,8 +204,10 @@ function as(guest: Guest) {
         parts,
         idempotencyKey: randomUUID(),
       }),
-    claim: (splitId: string) =>
-      auth(client.get(`${base}/splits/${splitId}/claim`)),
+    claim: (splitId: string, paymentId: string) =>
+      auth(
+        client.get(`${base}/splits/${splitId}/claim?paymentId=${paymentId}`),
+      ),
     paySplit: (billSplitId: string) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
@@ -460,8 +462,11 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
     const unpaid2 = await openCode(w.guest, p2);
 
     const tokens: string[] = [];
-    for (const part of [p0, p1]) {
-      const claim = await as(w.guest).claim(part.id);
+    for (const [part, intentId] of [
+      [p0, paid0],
+      [p1, paid1],
+    ] as const) {
+      const claim = await as(w.guest).claim(part.id, intentId);
       expect(claim.status, JSON.stringify(claim.body)).toBe(200);
       expect(claim.body.data.status).toBe("available");
       tokens.push(claim.body.data.claimToken as string);

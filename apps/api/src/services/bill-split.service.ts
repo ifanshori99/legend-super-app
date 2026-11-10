@@ -19,6 +19,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   inArray,
   isNotNull,
   isNull,
@@ -704,13 +705,16 @@ async function orderBlocksClaim(
 /**
  * GET .../splits/:splitId/claim. `unavailable` until the part is paid;
  * `available` shows the token for 24 hours; `claimed` once redeemed;
- * `expired` after the deadline.
+ * `expired` after the deadline. The part ids are public to the table, so the
+ * read also needs the payment intent of that very part (`paymentId`). A wrong
+ * part, an unknown part or a foreign intent answer the same NOT_FOUND.
  */
 export async function getSplitClaim(
   context: ScopedTenantContext,
   credential: string,
   sessionId: string,
   splitId: string,
+  paymentId: string,
   now = new Date(),
 ): Promise<SplitClaim> {
   const tenantId = context.tenant.tenantId;
@@ -731,6 +735,18 @@ export async function getSplitClaim(
           eq(billSplits.tenantId, tenantId),
           eq(billSplits.id, splitId),
           eq(billSplits.tableSessionId, session.id),
+          exists(
+            tx
+              .select({ id: paymentIntents.id })
+              .from(paymentIntents)
+              .where(
+                and(
+                  eq(paymentIntents.tenantId, tenantId),
+                  eq(paymentIntents.id, paymentId),
+                  eq(paymentIntents.billSplitId, billSplits.id),
+                ),
+              ),
+          ),
         ),
       );
     if (!part)

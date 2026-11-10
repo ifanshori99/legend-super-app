@@ -227,8 +227,10 @@ function as(guest: Guest, member?: MemberUser, host = tenant.hostname) {
         method: "qris",
         idempotencyKey: randomUUID(),
       }),
-    splitClaim: (splitId: string) =>
-      auth(client.get(`${base}/splits/${splitId}/claim`)),
+    splitClaim: (splitId: string, paymentId: string) =>
+      auth(
+        client.get(`${base}/splits/${splitId}/claim?paymentId=${paymentId}`),
+      ),
     pointClaim: (claimToken?: string) =>
       auth(
         client.get(
@@ -385,7 +387,10 @@ async function paidSplitOrder(guest: Guest, skew?: Skew) {
     const pay = await as(guest).paySplit(part.id);
     expect(pay.status, JSON.stringify(pay.body)).toBe(201);
     await settle(pay.body.data.id as string, part.amountIdr);
-    const claim = await as(guest).splitClaim(part.id);
+    const claim = await as(guest).splitClaim(
+      part.id,
+      pay.body.data.id as string,
+    );
     expect(claim.status, JSON.stringify(claim.body)).toBe(200);
     expect(claim.body.data.claimToken).toMatch(/^sc_/);
     tokens.push(claim.body.data.claimToken as string);
