@@ -149,7 +149,7 @@ let payrollAdmin: Client;
 /** A signed-in staff account with its own employee row in tenant B. */
 async function newStaff() {
   const staff = await signedInClient("Loan caps staff");
-  await grantRole(staff.userId, ["self.profile.view"]);
+  await grantRole(staff.userId, ["self.loan.request"]);
   const employeeId = await seedEmployee(staff.userId);
   return { client: staff.client, employeeId };
 }

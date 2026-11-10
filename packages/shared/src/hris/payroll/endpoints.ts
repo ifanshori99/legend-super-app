@@ -19,7 +19,7 @@
 //   reimbursement decide/pay                         hr.reimbursement.approve
 //   /me/payslips                                     self.payslip.view + payslip PIN
 //   /me/reimbursements                               self.reimbursement.request
-//   /me/loans                                        own record (HR-01); see report
+//   /me/loans                                        self.loan.request, own record (HR-01)
 
 import {
   z,

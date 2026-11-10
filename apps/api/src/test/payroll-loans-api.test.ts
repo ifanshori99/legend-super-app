@@ -133,12 +133,14 @@ let hrClient: Client; // hr.loan.approve + payroll.view + self
 let hrEmployee: string;
 let viewerClient: Client; // payroll.view only
 let strangerClient: Client; // no payroll rights, no self right
-let staffClient: Client; // self.profile.view, tenant scope
+let staffClient: Client; // self.loan.request, tenant scope
 let staffEmployee: string;
 let staff2Client: Client; // another employee
 let staff2Employee: string;
-let outletStaffClient: Client; // self.profile.view at outlet scope only
+let outletStaffClient: Client; // self.loan.request at outlet scope only
 let noEmployeeClient: Client; // self right but no employee row
+let profileOnlyEmployee: string;
+let profileOnlyClient: Client; // self.profile.view + employee row, no self.loan.request
 let isolated: IsolatedTenant;
 let isolatedHr: Client;
 let isolatedEmployee: string;
@@ -195,7 +197,7 @@ beforeAll(async () => {
   await grantRole(tenant.id, hr.userId, [
     "hr.loan.approve",
     "payroll.view",
-    "self.profile.view",
+    "self.loan.request",
   ]);
   hrClient = hr.client;
   hrEmployee = await seedEmployee(tenant.id, outletId, hr.userId);
@@ -212,25 +214,34 @@ beforeAll(async () => {
   );
 
   const staff = await signedInClient("Loan staff API");
-  await grantRole(tenant.id, staff.userId, ["self.profile.view"]);
+  await grantRole(tenant.id, staff.userId, ["self.loan.request"]);
   staffClient = staff.client;
   staffEmployee = await seedEmployee(tenant.id, outletId, staff.userId);
 
   const staff2 = await signedInClient("Loan staff2 API");
-  await grantRole(tenant.id, staff2.userId, ["self.profile.view"]);
+  await grantRole(tenant.id, staff2.userId, ["self.loan.request"]);
   staff2Client = staff2.client;
   staff2Employee = await seedEmployee(tenant.id, outletId, staff2.userId);
 
   const outletStaff = await signedInClient("Loan outlet staff API");
-  await grantRole(tenant.id, outletStaff.userId, ["self.profile.view"], {
+  await grantRole(tenant.id, outletStaff.userId, ["self.loan.request"], {
     type: "outlet",
     id: outletId,
   });
   outletStaffClient = outletStaff.client;
   await seedEmployee(tenant.id, outletId, outletStaff.userId);
 
+  const profileOnly = await signedInClient("Loan profile-only API");
+  await grantRole(tenant.id, profileOnly.userId, ["self.profile.view"]);
+  profileOnlyClient = profileOnly.client;
+  profileOnlyEmployee = await seedEmployee(
+    tenant.id,
+    outletId,
+    profileOnly.userId,
+  );
+
   const noEmployee = await signedInClient("Loan no employee API");
-  await grantRole(tenant.id, noEmployee.userId, ["self.profile.view"]);
+  await grantRole(tenant.id, noEmployee.userId, ["self.loan.request"]);
   noEmployeeClient = noEmployee.client;
 
   // Second tenant with its own approver and one pending loan.
@@ -239,7 +250,7 @@ beforeAll(async () => {
   await grantRole(isolated.tenantId, other.userId, [
     "hr.loan.approve",
     "payroll.view",
-    "self.profile.view",
+    "self.loan.request",
   ]);
   isolatedHr = other.client;
   isolatedEmployee = await seedEmployee(
@@ -354,6 +365,31 @@ describe("kasbon API: request (self-service)", () => {
     expect(denied.status).toBe(403);
     expect((await strangerClient.get(ME)).status).toBe(403);
     expect((await agent(app).get(ME)).status).toBe(401);
+  });
+
+  it("[legend-krvk7] self.profile.view alone is not enough: 403 on list and request, no row written", async () => {
+    const denied = await profileOnlyClient
+      .post(ME)
+      .set(originHeader)
+      .send(newLoan());
+    expect(denied.status).toBe(403);
+    expect((await profileOnlyClient.get(ME)).status).toBe(403);
+    const written = await asTenant((db) =>
+      db.query(
+        "SELECT count(*)::int AS n FROM employee_loans WHERE employee_id = $1",
+        [profileOnlyEmployee],
+      ),
+    );
+    expect(written.rows[0].n).toBe(0);
+    // the request-only staff account still works and sees only its own loans
+    const own = await request(staffClient);
+    const list = await staffClient.get(ME);
+    expect(list.status).toBe(200);
+    for (const row of list.body.data)
+      expect(row.employeeId).toBe(staffEmployee);
+    expect(list.body.data.some((r: { id: string }) => r.id === own.id)).toBe(
+      true,
+    );
   });
 
   it("[TEN-02] rejects tenantId, employeeId, unknown keys and bad amounts with 422", async () => {
@@ -664,7 +700,7 @@ describe("kasbon API: review fixes", () => {
   it("refuses a resigned or terminated employee a new loan with 422", async () => {
     for (const status of ["resigned", "terminated"]) {
       const leaver = await signedInClient(`Loan ${status} API`);
-      await grantRole(tenant.id, leaver.userId, ["self.profile.view"]);
+      await grantRole(tenant.id, leaver.userId, ["self.loan.request"]);
       const employeeId = await seedEmployee(tenant.id, outletId, leaver.userId);
       await asTenant((db) =>
         db.query("UPDATE employees SET status = $2 WHERE id = $1", [
