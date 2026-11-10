@@ -14,7 +14,7 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | HRIS attendance cloud | 17fd0206^..704ecc3d | hris-attendance*.service.ts, hris-attendance.ts, attendance-selfie-purge.job.ts, hris-attendance.routes.ts | selesai 414 (2 P1 + 4 P2 -> brief 416) |
 | HRIS edge + PIN proof | 62ef1e11..092643e6 + j6cyb + u7g9w | edge-hris.ts, hris-attendance-qr.ts, selfie-seal.ts | selesai 382 (1 P2, sp9vq) |
 | Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | selesai 382 |
-| Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | jalan 415 |
+| Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | selesai 415 (3 P1 + 1 P2 -> brief 417) |
 | w5by9 expiry FIFO loyalty (8f0b4630, d735d8b7) | Codex ulang area loyalty sebelum rilis | selesai 411 (2 P1 + 1 P2 -> brief 413) |
 | vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | antre |
 | profit share 33im6 fix (ws/8s992-profit-rules 54b76963, migrasi 0252) | Codex ulang area profit share sebelum rilis | antre |
