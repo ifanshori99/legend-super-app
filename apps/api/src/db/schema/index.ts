@@ -98,6 +98,8 @@ export * from "./pos-acting-staff";
 export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).
 export * from "./payroll";
+// WS-10 payslip PIN and its WhatsApp reset challenges (legend-2ap3).
+export * from "./payslip-pin";
 // EDC agent framework (legend-apt).
 export * from "./edc";
 // HRIS SOP library, training and announcements (legend-7df1).

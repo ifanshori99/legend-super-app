@@ -40,6 +40,8 @@ export const payrollErrorHttpStatus = {
   /** Wrong or locked payslip PIN (PRD §3 D.30 Slip Gaji: PIN-protected). */
   PAYSLIP_PIN_INVALID: 403,
   PAYSLIP_PIN_LOCKED: 423,
+  /** The employee has not set a payslip PIN yet; set one before opening. */
+  PAYSLIP_PIN_NOT_SET: 409,
 } as const satisfies Record<string, number>;
 
 export type PayrollErrorCode = keyof typeof payrollErrorHttpStatus;
@@ -81,6 +83,7 @@ const defaultMessages: Record<PayrollErrorCode, string> = {
   PAYSLIP_PIN_INVALID: "PIN slip gaji salah.",
   PAYSLIP_PIN_LOCKED:
     "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
+  PAYSLIP_PIN_NOT_SET: "PIN slip gaji belum dibuat. Buat PIN terlebih dahulu.",
 };
 
 export class PayrollError extends Error {

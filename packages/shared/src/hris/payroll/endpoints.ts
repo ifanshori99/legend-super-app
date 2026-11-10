@@ -18,6 +18,8 @@
 //   kasbon limits (loan-policy)                      payroll.view (read) / payroll.run (write)
 //   reimbursement decide/pay                         hr.reimbursement.approve
 //   /me/payslips                                     self.payslip.view + payslip PIN
+//   /me/payslip-pin (status, set, WhatsApp reset)    self.payslip.view
+//   /employees/:id/payslip-pin/reset                 payroll.run
 //   /me/reimbursements                               self.reimbursement.request
 //   /me/loans                                        self.loan.request, own record (HR-01)
 
@@ -66,7 +68,13 @@ import {
   payrollRunEmployeeResultSchema,
   payrollTaxExportKindSchema,
   payrollTaxExportSchema,
+  payslipPinResetOtpRequestedSchema,
+  payslipPinStatusSchema,
   payslipSchema,
+  requestPayslipPinResetOtpInputSchema,
+  resetPayslipPinInputSchema,
+  setMyPayslipPinInputSchema,
+  verifyPayslipPinResetOtpInputSchema,
   viewMyPayslipInputSchema,
 } from "./payslips.ts";
 import {
@@ -574,6 +582,44 @@ export const viewMyPayslip = defineEndpoint({
   params: z.strictObject({ payslipId: payslipIdSchema }),
   body: viewMyPayslipInputSchema,
   response: dataResponseSchema(payslipSchema),
+});
+
+export const getMyPayslipPinStatus = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/me/payslip-pin",
+  response: dataResponseSchema(payslipPinStatusSchema),
+});
+
+/** First set, or change with `currentPin` (a wrong one counts as an attempt). */
+export const setMyPayslipPin = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/me/payslip-pin",
+  body: setMyPayslipPinInputSchema,
+  response: dataResponseSchema(payslipPinStatusSchema),
+});
+
+/** WhatsApp code to the employee's own number; 503 when no sender is set up. */
+export const requestMyPayslipPinResetOtp = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/me/payslip-pin/reset-otp",
+  body: requestPayslipPinResetOtpInputSchema,
+  response: dataResponseSchema(payslipPinResetOtpRequestedSchema),
+});
+
+export const verifyMyPayslipPinResetOtp = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/me/payslip-pin/reset-otp/verify",
+  body: verifyPayslipPinResetOtpInputSchema,
+  response: dataResponseSchema(payslipPinStatusSchema),
+});
+
+/** HR (payroll.run): clears the PIN and its lock; the employee sets a new one. */
+export const resetEmployeePayslipPin = defineEndpoint({
+  method: "POST",
+  path: `/api/hris/employees/:employeeId/payslip-pin/reset`,
+  params: z.strictObject({ employeeId: employeeIdSchema }),
+  body: resetPayslipPinInputSchema,
+  response: dataResponseSchema(payslipPinStatusSchema),
 });
 
 export const listMyLoans = defineEndpoint({

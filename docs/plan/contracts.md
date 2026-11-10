@@ -352,4 +352,17 @@ Code: `packages/shared/src/hris/payroll`. Tests: `tests/payroll-contract.test.mj
 - **Payslip arithmetic.** Schemas refuse a payslip or run total that does not add up: gross = Σ earnings, deductions = Σ deductions, net = gross − deductions ≥ 0, deductions = BPJS employee + PPh 21 withheld + kasbon + other, net = bank transfer + cash. Each line's `kind` must follow its component category, so no earning can masquerade as a deduction (or a reimbursement as one). `assertBankFileMatchesRun` (PAYR-04) checks the file rows against the bank-paid payslips.
 - **Kasbon.** `planLoanDeductions` never deducts more than net pay or `maxDeductionOfNetPayBp` of it; the shortfall is carried. Deducted only at lock; reversal restores it.
 - **Privacy (HR-03).** Payslips, employee pay components and run totals are payroll-role data; the PWA list has no amounts until the 6-digit payslip PIN (POST body). `bankTransferRowSchema` holds the decrypted account number and lives only in the server-only subpath `@starter/shared/hris/payroll/server` (never the client-safe barrel, which refuses to export it). Events carry run totals (journal) but no per-employee salary.
+
+### Payslip PIN (bead `legend-2ap3`)
+
+Routes `routes/hris-payslip.routes.ts`, services `payslip-pin.service.ts` and `hris-payslip.service.ts`, migration `0257_payslip_pins`.
+
+- **One PIN per employee** (`payslip_pins`): 6 digits, scrypt over a tenant-pepper HMAC bound to the `payslip` domain + tenant + employee, so a staff device pin hash never verifies as a payslip PIN. Never stored, logged, audited or put in an idempotency response.
+- **Attempts.** Same rules as the staff pin: 5 misses lock for 15 minutes; the fifth miss already answers `PAYSLIP_PIN_LOCKED` (423); a locked PIN is refused without checking the guess; a correct PIN clears the counter. The counter commits before the error. `PAYSLIP_PIN_NOT_SET` (409) before a PIN exists; wrong PIN `PAYSLIP_PIN_INVALID` (403).
+- **View** (`POST /me/payslips/:id/view`): own employee only (another employee's, another tenant's and a missing payslip are all 404, no attempt counted). Sets `viewed_at` once and audits `payslip.viewed` (sensitive). The same idempotency key replays the outcome without a second attempt; the decrypted payslip is never stored.
+- **Set / change** (`PUT /me/payslip-pin`): first set needs no `currentPin`; a change needs it and a wrong one counts as an attempt.
+- **HR reset** (`POST /employees/:employeeId/payslip-pin/reset`, `payroll.run`, reason required): deletes the hash and lock and voids open codes; HR never sees or sets the PIN.
+- **WhatsApp reset** (`POST /me/payslip-pin/reset-otp`, `/verify`): 6-digit code, 5 min, 5 tries, single use, keyed hash only, sent through the port `PayslipPinOtpSender` to the employee's verified WhatsApp identity. No sender or no number: 503 `SERVICE_UNAVAILABLE`. Unknown, expired and used codes answer 403 like a wrong code.
+- **Audit:** `payslip_pin.set|changed|reset|locked|otp_requested|otp_reset`, `payslip.viewed`; ids, status and lock time only.
+
 - **Events.** `payroll.locked`, `payroll.paid`, `payroll.reversed`, `payslip.created`, `employee_loan.disbursed`, `reimbursement.paid`. The WS-07 posting rule still listens to the placeholder `payroll_run.completed`; switching it to `payroll.locked` (+ reversal) is a follow-up.

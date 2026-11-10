@@ -16,6 +16,7 @@ import { createAccountingTaxFileRouter } from "./accounting.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
 import { createHrisLeaveRouter } from "./hris-leave.routes";
+import { createHrisPayslipRouter } from "./hris-payslip.routes";
 import { createHrisRouter } from "./hris.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -136,6 +137,15 @@ export function createStorageApiRouter(options: {
   // and /hris/me/reimbursements live in apiRouter, mounted after this router.
   // They do not collide: their segments never overlap the ones below (`me` is
   // matched exactly).
+  // Employee payslips and the payslip PIN (legend-2ap3). The router guards
+  // only its own paths (/me/payslips, /me/payslip-pin,
+  // /employees/:id/payslip-pin), so other /hris requests pass straight on.
+  // No WhatsApp code sender is wired yet: the OTP reset answers 503.
+  router.use(
+    "/hris",
+    createHrisPayslipRouter({ fileSigner: runtime?.hrisDocumentSigner }),
+  );
+
   const hris = Router();
   hris.use(
     createHrisRouter({ fileSigner: runtime?.hrisDocumentSigner }),
