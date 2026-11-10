@@ -239,10 +239,7 @@ export const orderIssueCharges = pgTable(
       .defaultNow(),
   },
   (table) => [
-    unique("order_issue_charges_tenant_id_id_key").on(
-      table.tenantId,
-      table.id,
-    ),
+    unique("order_issue_charges_tenant_id_id_key").on(table.tenantId, table.id),
     // One charge per issue, even when the event is replayed or concurrent.
     uniqueIndex("order_issue_charges_issue_once_idx").on(
       table.tenantId,
