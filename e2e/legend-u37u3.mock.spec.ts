@@ -160,6 +160,19 @@ test("u37u3 detail: pesanan needs_action memuat catatan dan tiga langkah", async
   await expect(note.getByRole("button", { name: MARK_HANDLED })).toBeVisible();
 });
 
+test("u37u3 tombol sinkron: tinggi minimal 44 px di ponsel", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sheet = await openDetail(page, NEEDS_ACTION_ID);
+  for (const name of [RESEND, MARK_HANDLED]) {
+    const box = await sheet
+      .getByRole("button", { name, exact: true })
+      .boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+});
+
 test("u37u3 detail: pesanan retrying hanya memuat teks kirim ulang", async ({
   page,
 }) => {

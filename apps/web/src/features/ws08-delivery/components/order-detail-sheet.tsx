@@ -245,6 +245,7 @@ function PlatformSyncActions({
           </FormField>
           <div className="flex flex-wrap gap-2">
             <Button
+              className="min-h-11"
               type="button"
               variant="ghost"
               disabled={busy}
@@ -259,6 +260,7 @@ function PlatformSyncActions({
               {t("common.cancel")}
             </Button>
             <Button
+              className="min-h-11"
               type="button"
               variant="outline"
               loading={resolve.isPending}
@@ -292,6 +294,7 @@ function PlatformSyncActions({
       {!confirming && (
         <div className="grid gap-2 sm:grid-cols-2">
           <Button
+            className="min-h-11"
             type="button"
             variant="outline"
             loading={resend.isPending}
@@ -301,6 +304,7 @@ function PlatformSyncActions({
             {t("deliveryOps.platformSync.resend")}
           </Button>
           <Button
+            className="min-h-11"
             ref={resolveButton}
             type="button"
             variant="outline"
