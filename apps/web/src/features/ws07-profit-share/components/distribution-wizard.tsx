@@ -82,6 +82,7 @@ import {
   formatShareDateTime,
   formatSharePeriod,
   isClosedPeriod,
+  isCarryAbsorbedLine,
   isDistributionLocked,
   shortActorRef,
 } from "../lib";
@@ -664,6 +665,11 @@ function SimulationStep({
               <TableCell className="font-medium">
                 {byId.get(line.shareholderId)?.name ??
                   t("accounting.share.allocations.unknown")}
+                {isCarryAbsorbedLine(line) && (
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    {t("accounting.share.wizard.sim.zeroLine")}
+                  </span>
+                )}
               </TableCell>
               <TableCell numeric className="tabular">
                 {formatShareBp(line.shareBp)}
@@ -989,12 +995,20 @@ function PaymentStep({
             <TableRow key={line.id}>
               <TableCell className="font-medium">
                 {nameOf(line.shareholderId)}
+                {isCarryAbsorbedLine(line) && (
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    {t("accounting.share.wizard.payment.zeroLine")}
+                  </span>
+                )}
               </TableCell>
               <TableCell numeric>
                 <Money amount={line.netIdr} />
               </TableCell>
               <TableCell>
-                <PaymentStatusBadge status={line.paymentStatus} />
+                <PaymentStatusBadge
+                  status={line.paymentStatus}
+                  autoSettled={isCarryAbsorbedLine(line)}
+                />
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
                 {line.paymentRef ?? t("accounting.share.emptyValue")}
@@ -1009,6 +1023,7 @@ function PaymentStep({
               </TableCell>
               <TableCell className="text-right">
                 {line.paymentStatus === "pending" &&
+                  !isCarryAbsorbedLine(line) &&
                   canRecordPayments(run.status) && (
                     <Button
                       type="button"
@@ -1093,7 +1108,10 @@ function StatementStep({
   onAdjust: () => void;
 }) {
   const t = useT();
-  const paidLines = run.lines.filter((line) => line.paymentStatus === "paid");
+  // A zero line was settled by carry: no payment, so no statement.
+  const paidLines = run.lines.filter(
+    (line) => line.paymentStatus === "paid" && !isCarryAbsorbedLine(line),
+  );
   const [lineId, setLineId] = React.useState<string>("");
   const lineFieldId = React.useId();
   const selected =

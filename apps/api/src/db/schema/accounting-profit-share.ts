@@ -320,8 +320,8 @@ export const distributionRuns = pgTable(
     totalNetIdr: idrColumn("total_net_idr").notNull(),
     /** Claw-back rest no shareholder's paid gross could absorb (Q83). */
     unabsorbedIdr: idrColumn("unabsorbed_idr").notNull().default(idr(0)),
-    /** Regular run only: earlier claw-back shortfalls cut from this split (Q83);
-     * `distributable = total_gross + carry_deducted`. */
+    /** Regular run or positive adjustment: earlier claw-back shortfalls cut from
+     * this split (Q83); `distributable = total_gross + carry_deducted`. */
     carryDeductedIdr: idrColumn("carry_deducted_idr").notNull().default(idr(0)),
     /** Policy rate frozen with the run, so a later policy edit changes nothing. */
     taxWithholdingBp: integer("tax_withholding_bp").notNull(),
@@ -422,7 +422,7 @@ export const distributionRuns = pgTable(
     ),
     check(
       "distribution_runs_carry_check",
-      sql`${table.carryDeductedIdr} >= 0 AND (${table.carryDeductedIdr} = 0 OR ${table.type} = 'regular')`,
+      sql`${table.carryDeductedIdr} >= 0 AND (${table.carryDeductedIdr} = 0 OR ${table.type} = 'regular' OR (${table.type} = 'adjustment' AND ${table.distributableIdr} > 0))`,
     ),
     check(
       "distribution_runs_unabsorbed_check",
@@ -454,7 +454,7 @@ export const distributionRuns = pgTable(
     ),
     check(
       "distribution_runs_journal_check",
-      sql`(${table.status} <> 'paid' AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} > 0 AND ${table.journalEntryId} IS NOT NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} < 0 AND ${table.reversalJournalEntryId} IS NOT NULL AND ${table.journalEntryId} IS NULL)`,
+      sql`(${table.status} <> 'paid' AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} > 0 AND ${table.journalEntryId} IS NOT NULL AND ${table.reversalJournalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} < 0 AND ${table.reversalJournalEntryId} IS NOT NULL AND ${table.journalEntryId} IS NULL) OR (${table.status} = 'paid' AND ${table.totalGrossIdr} = 0 AND ${table.journalEntryId} IS NULL AND ${table.reversalJournalEntryId} IS NULL)`,
     ),
   ],
 );
@@ -473,7 +473,8 @@ export const distributionLines = pgTable(
     grossIdr: idrColumn("gross_idr").notNull(),
     taxWithheldIdr: idrColumn("tax_withheld_idr").notNull(),
     netIdr: idrColumn("net_idr").notNull(),
-    /** This shareholder's part of the run's carry deduction (Q83). */
+    /** This shareholder's part of the run's carry deduction (Q83). A line whose
+     * share the carry absorbs completely has gross 0 and this as its share. */
     carryDeductedIdr: idrColumn("carry_deducted_idr").notNull().default(idr(0)),
     paymentStatus: text("payment_status")
       .$type<"pending" | "paid">()
@@ -517,7 +518,7 @@ export const distributionLines = pgTable(
     ),
     check(
       "distribution_lines_amounts_check",
-      sql`${table.grossIdr} <> 0 AND ${table.grossIdr} - ${table.taxWithheldIdr} = ${table.netIdr} AND sign(${table.taxWithheldIdr}) * sign(${table.grossIdr}) >= 0 AND abs(${table.taxWithheldIdr}) <= abs(${table.grossIdr})`,
+      sql`(${table.grossIdr} <> 0 OR ${table.carryDeductedIdr} > 0) AND ${table.grossIdr} - ${table.taxWithheldIdr} = ${table.netIdr} AND sign(${table.taxWithheldIdr}) * sign(${table.grossIdr}) >= 0 AND abs(${table.taxWithheldIdr}) <= abs(${table.grossIdr})`,
     ),
     check(
       "distribution_lines_payment_status_check",
@@ -534,7 +535,7 @@ export const distributionLines = pgTable(
     check("distribution_lines_position_check", sql`${table.position} >= 0`),
     check(
       "distribution_lines_carry_check",
-      sql`${table.carryDeductedIdr} >= 0`,
+      sql`${table.carryDeductedIdr} >= 0 AND (${table.carryDeductedIdr} = 0 OR ${table.grossIdr} >= 0)`,
     ),
   ],
 );

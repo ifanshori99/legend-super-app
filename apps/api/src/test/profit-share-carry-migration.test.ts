@@ -346,8 +346,8 @@ describe("legend-lzvh0 migration 0224 profit share carry", () => {
     return id;
   }
 
-  /** An approved adjustment run that left `amount` unabsorbed on holder1. */
-  async function approvedShortfall(amount: number) {
+  /** An approved adjustment run that left `amount` unabsorbed on a shareholder (default holder1). */
+  async function approvedShortfall(amount: number, shareholderId = holder1) {
     const id = randomUUID();
     const shortfallId = randomUUID();
     await insertRun(
@@ -362,7 +362,7 @@ describe("legend-lzvh0 migration 0224 profit share carry", () => {
         unabsorbed: amount,
         adjustsRunId: regularRunId,
         idempotency: `run-${randomUUID()}`,
-        shortfalls: [{ id: shortfallId, shareholderId: holder1, amount }],
+        shortfalls: [{ id: shortfallId, shareholderId, amount }],
       },
       [{ shareholderId: holder1, bp: 6000, gross: -10, carry: 0 }],
     );
@@ -720,7 +720,7 @@ describe("legend-lzvh0 migration 0224 profit share carry", () => {
     expect(await constraintOf(draft({ gross: 901, carry: -1 }))).toBe(
       "23514:distribution_runs_carry_check",
     );
-    // Only a regular run carries a deduction.
+    // A negative adjustment carries no deduction (a positive one may).
     expect(
       await constraintOf(
         draft(
@@ -945,7 +945,8 @@ describe("legend-lzvh0 migration 0224 profit share carry", () => {
     );
     expect(onApproved.state).toBe("23514");
     expect(onApproved.message).toMatch(/SH-CARRY/);
-    // An adjustment run never deducts.
+    // A negative adjustment run never deducts (a positive one may: see the
+    // "zero line" test).
     const draftId = await draftAdjustment();
     const onAdjustment = await inRolledBack(() =>
       insertDeduction(room, holder1, 5, draftId),
@@ -1074,6 +1075,313 @@ describe("legend-lzvh0 migration 0224 profit share carry", () => {
         ]),
       ),
     ).toBe("ok");
+  });
+
+  /** Failing CHECK/trigger of a write that is committed, or "ok". */
+  const outcome = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+      return "ok";
+    } catch (error) {
+      const e = error as { code?: string; constraint?: string };
+      return `${e.code}:${e.constraint ?? ""}`;
+    }
+  };
+
+  it("zero line: a share fully absorbed by carry keeps a 0 gross line, only with a deduction", async () => {
+    const room = await approvedShortfall(540);
+    const regular = async (
+      lines: { gross: number; carry: number; bp?: number }[],
+      carry: number,
+      deductions: { shortfallId: string; amount: number }[],
+    ) =>
+      insertRun(
+        {
+          id: randomUUID(),
+          type: "regular",
+          ...(await freshPeriod()),
+          distributable: 900,
+          gross: 900 - carry,
+          carry,
+          idempotency: `run-${randomUUID()}`,
+          deductions: deductions.map((row) => ({
+            ...row,
+            shareholderId: holder1,
+          })),
+        },
+        [
+          {
+            shareholderId: holder1,
+            bp: lines[0]!.bp ?? 6000,
+            gross: lines[0]!.gross,
+            carry: lines[0]!.carry,
+          },
+          {
+            shareholderId: holder2,
+            bp: 4000,
+            gross: lines[1]!.gross,
+            carry: lines[1]!.carry,
+          },
+        ],
+      );
+    // Holder1's whole share (540) is absorbed: gross 0, carry 540.
+    expect(
+      await outcome(
+        regular(
+          [
+            { gross: 0, carry: 540 },
+            { gross: 360, carry: 0 },
+          ],
+          540,
+          [{ shortfallId: room, amount: 540 }],
+        ),
+      ),
+    ).toBe("ok");
+    // A zero line without a deduction on the line stays illegal.
+    expect(
+      await outcome(
+        regular(
+          [
+            { gross: 0, carry: 0 },
+            { gross: 540, carry: 0 },
+          ],
+          360,
+          [],
+        ),
+      ),
+    ).toBe("23514:distribution_lines_amounts_check");
+    // A deduction is only taken from a share that exists: no negative gross.
+    expect(
+      await outcome(
+        regular(
+          [
+            { gross: -5, carry: 5 },
+            { gross: 360, carry: 0 },
+          ],
+          5,
+          [],
+        ),
+      ),
+    ).toBe("23514:distribution_lines_carry_check");
+    // Every regular line is written now: a missing shareholder (bp < 10000) fails at commit.
+    const missing = await committed(async (client) => {
+      const runId = randomUUID();
+      const { periodId, period } = await freshPeriod();
+      await client.query(
+        `INSERT INTO distribution_runs
+           (tenant_id, id, profit_entity_id, fiscal_period_id, fiscal_period_version, period,
+            type, basis, status, share_version, period_net_profit_idr, reserve_idr,
+            distributable_idr, total_gross_idr, total_tax_withheld_idr, total_net_idr,
+            unabsorbed_idr, carry_deducted_idr, tax_withholding_bp, requested_by, idempotency_key)
+         VALUES ($1, $2, $3, $4, 1, $5, 'regular', 'closed_period_net_profit', 'draft', 1, 1000, 100,
+                 900, 360, 0, 360, 0, 540, 0, 'requester', $6)`,
+        [tenantA, runId, entityId, periodId, period, `run-${randomUUID()}`],
+      );
+      await client.query(
+        `INSERT INTO distribution_lines
+           (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr,
+            tax_withheld_idr, net_idr, carry_deducted_idr, position)
+         VALUES ($1, $2, $3, 4000, 360, 0, 360, 540, 0)`,
+        [tenantA, runId, holder2],
+      );
+      await client.query(
+        `INSERT INTO distribution_carry_deductions
+           (tenant_id, distribution_run_id, shortfall_id, profit_entity_id, shareholder_id, amount_idr)
+         VALUES ($1, $2, $3, $4, $5, 540)`,
+        [tenantA, runId, room, entityId, holder1],
+      );
+    });
+    expect(missing.state).toBe("23514");
+    expect(missing.message).toMatch(/SH-04/);
+  });
+
+  it("a positive adjustment may carry a deduction, a negative one may not", async () => {
+    const room = await approvedShortfall(50);
+    const topUp = (
+      lines: { gross: number; carry: number }[],
+      distributable: number,
+      carry: number,
+      deductions: { shortfallId: string; amount: number }[],
+    ) =>
+      insertRun(
+        {
+          id: randomUUID(),
+          type: "adjustment",
+          period: "2025-01",
+          periodId: periods["2025-01"]!,
+          distributable,
+          gross: distributable - carry,
+          carry,
+          adjustsRunId: regularRunId,
+          idempotency: `run-${randomUUID()}`,
+          deductions: deductions.map((row) => ({
+            ...row,
+            shareholderId: holder1,
+          })),
+        },
+        [
+          { shareholderId: holder1, bp: 6000, ...lines[0]! },
+          { shareholderId: holder2, bp: 4000, ...lines[1]! },
+        ],
+      );
+    // Top-up 100: holder1's 60 is cut by 50 of carry, holder2 gets 40.
+    expect(
+      await outcome(
+        topUp(
+          [
+            { gross: 10, carry: 50 },
+            { gross: 40, carry: 0 },
+          ],
+          100,
+          50,
+          [{ shortfallId: room, amount: 50 }],
+        ),
+      ),
+    ).toBe("ok");
+    // A negative adjustment still carries nothing.
+    expect(
+      await outcome(
+        topUp(
+          [
+            { gross: -60, carry: 0 },
+            { gross: -40, carry: 0 },
+          ],
+          -95,
+          5,
+          [],
+        ),
+      ),
+    ).toBe("23514:distribution_runs_carry_check");
+    // Its deductions come from a shortfall of an approved correction, and are
+    // drafted only: a draft top-up accepts one, a decided one is frozen.
+    const decided = randomUUID();
+    await insertRun(
+      {
+        id: decided,
+        type: "adjustment",
+        period: "2025-01",
+        periodId: periods["2025-01"]!,
+        distributable: 100,
+        gross: 100,
+        carry: 0,
+        adjustsRunId: regularRunId,
+        idempotency: `run-${randomUUID()}`,
+      },
+      [
+        { shareholderId: holder1, bp: 6000, gross: 60, carry: 0 },
+        { shareholderId: holder2, bp: 4000, gross: 40, carry: 0 },
+      ],
+    );
+    await approve(decided);
+    const frozen = await inRolledBack(() =>
+      insertDeduction(room, holder1, 5, decided),
+    );
+    expect(frozen.state).toBe("23514");
+    expect(frozen.message).toMatch(/SH-CARRY/);
+  });
+
+  it("a run whose every line is zero is paid on approval without a journal, a real gross still needs one", async () => {
+    const roomA = await approvedShortfall(540, holder1);
+    const roomB = await approvedShortfall(360, holder2);
+    const zeroRun = randomUUID();
+    await insertRun(
+      {
+        id: zeroRun,
+        type: "regular",
+        ...(await freshPeriod()),
+        distributable: 900,
+        gross: 0,
+        carry: 900,
+        idempotency: `run-${randomUUID()}`,
+        deductions: [
+          { shortfallId: roomA, shareholderId: holder1, amount: 540 },
+          { shortfallId: roomB, shareholderId: holder2, amount: 360 },
+        ],
+      },
+      [
+        { shareholderId: holder1, bp: 6000, gross: 0, carry: 540 },
+        { shareholderId: holder2, bp: 4000, gross: 0, carry: 360 },
+      ],
+    );
+    await approve(zeroRun);
+    await migrator.query(
+      `UPDATE distribution_lines
+          SET payment_status = 'paid', payment_ref = 'POTONG-KEKURANGAN',
+              paid_at = now(), paid_by = 'approver'
+        WHERE tenant_id = $1 AND distribution_run_id = $2`,
+      [tenantA, zeroRun],
+    );
+    await migrator.query(
+      `UPDATE distribution_runs SET status = 'paid', paid_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantA, zeroRun],
+    );
+    const stored = await migrator.query(
+      `SELECT status, journal_entry_id, reversal_journal_entry_id
+         FROM distribution_runs WHERE tenant_id = $1 AND id = $2`,
+      [tenantA, zeroRun],
+    );
+    expect(stored.rows[0]).toEqual({
+      status: "paid",
+      journal_entry_id: null,
+      reversal_journal_entry_id: null,
+    });
+
+    // A run with a real gross still needs its journal to be paid.
+    const real = randomUUID();
+    await carryDraft(0, [], real);
+    await approve(real);
+    const paidWithoutJournal = await inRolledBack(async (client) => {
+      await client.query(
+        `UPDATE distribution_lines
+            SET payment_status = 'paid', payment_ref = 'REF', paid_at = now(), paid_by = 'approver'
+          WHERE tenant_id = $1 AND distribution_run_id = $2`,
+        [tenantA, real],
+      );
+      await client.query(
+        `UPDATE distribution_runs SET status = 'paid', paid_at = now()
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantA, real],
+      );
+    });
+    expect(paidWithoutJournal.state).toBe("23514");
+    expect(paidWithoutJournal.message).toMatch(
+      /distribution_runs_journal_check/,
+    );
+  });
+
+  it("guard: a regular run's lines carry exactly its carry_deducted_idr", async () => {
+    const room = await approvedShortfall(100);
+    // Run carry 100 and 100 deducted, but the lines only carry 60.
+    const short = await committed(async (client) => {
+      const runId = randomUUID();
+      const { periodId, period } = await freshPeriod();
+      await client.query(
+        `INSERT INTO distribution_runs
+           (tenant_id, id, profit_entity_id, fiscal_period_id, fiscal_period_version, period,
+            type, basis, status, share_version, period_net_profit_idr, reserve_idr,
+            distributable_idr, total_gross_idr, total_tax_withheld_idr, total_net_idr,
+            unabsorbed_idr, carry_deducted_idr, tax_withholding_bp, requested_by, idempotency_key)
+         VALUES ($1, $2, $3, $4, 1, $5, 'regular', 'closed_period_net_profit', 'draft', 1, 1000, 100,
+                 900, 800, 0, 800, 0, 100, 0, 'requester', $6)`,
+        [tenantA, runId, entityId, periodId, period, `run-${randomUUID()}`],
+      );
+      await client.query(
+        `INSERT INTO distribution_lines
+           (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr,
+            tax_withheld_idr, net_idr, carry_deducted_idr, position)
+         VALUES ($1, $2, $3, 10000, 800, 0, 800, 60, 0)`,
+        [tenantA, runId, holder1],
+      );
+      await client.query(
+        `INSERT INTO distribution_carry_deductions
+           (tenant_id, distribution_run_id, shortfall_id, profit_entity_id, shareholder_id, amount_idr)
+         VALUES ($1, $2, $3, $4, $5, 100)`,
+        [tenantA, runId, room, entityId, holder1],
+      );
+    });
+    expect(short.state).toBe("23514");
+    expect(short.message).toMatch(/SH-04/);
   });
 
   it("keeps tenant isolation for the app login on both new tables", async () => {

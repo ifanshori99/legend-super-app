@@ -55926,7 +55926,7 @@
         },
         "distribution_lines_amounts_check": {
           "name": "distribution_lines_amounts_check",
-          "value": "\"distribution_lines\".\"gross_idr\" <> 0 AND \"distribution_lines\".\"gross_idr\" - \"distribution_lines\".\"tax_withheld_idr\" = \"distribution_lines\".\"net_idr\" AND sign(\"distribution_lines\".\"tax_withheld_idr\") * sign(\"distribution_lines\".\"gross_idr\") >= 0 AND abs(\"distribution_lines\".\"tax_withheld_idr\") <= abs(\"distribution_lines\".\"gross_idr\")"
+          "value": "(\"distribution_lines\".\"gross_idr\" <> 0 OR \"distribution_lines\".\"carry_deducted_idr\" > 0) AND \"distribution_lines\".\"gross_idr\" - \"distribution_lines\".\"tax_withheld_idr\" = \"distribution_lines\".\"net_idr\" AND sign(\"distribution_lines\".\"tax_withheld_idr\") * sign(\"distribution_lines\".\"gross_idr\") >= 0 AND abs(\"distribution_lines\".\"tax_withheld_idr\") <= abs(\"distribution_lines\".\"gross_idr\")"
         },
         "distribution_lines_payment_status_check": {
           "name": "distribution_lines_payment_status_check",
@@ -55946,7 +55946,7 @@
         },
         "distribution_lines_carry_check": {
           "name": "distribution_lines_carry_check",
-          "value": "\"distribution_lines\".\"carry_deducted_idr\" >= 0"
+          "value": "\"distribution_lines\".\"carry_deducted_idr\" >= 0 AND (\"distribution_lines\".\"carry_deducted_idr\" = 0 OR \"distribution_lines\".\"gross_idr\" >= 0)"
         }
       },
       "isRLSEnabled": false
@@ -56559,7 +56559,7 @@
         },
         "distribution_runs_carry_check": {
           "name": "distribution_runs_carry_check",
-          "value": "\"distribution_runs\".\"carry_deducted_idr\" >= 0 AND (\"distribution_runs\".\"carry_deducted_idr\" = 0 OR \"distribution_runs\".\"type\" = 'regular')"
+          "value": "\"distribution_runs\".\"carry_deducted_idr\" >= 0 AND (\"distribution_runs\".\"carry_deducted_idr\" = 0 OR \"distribution_runs\".\"type\" = 'regular' OR (\"distribution_runs\".\"type\" = 'adjustment' AND \"distribution_runs\".\"distributable_idr\" > 0))"
         },
         "distribution_runs_unabsorbed_check": {
           "name": "distribution_runs_unabsorbed_check",
@@ -56591,7 +56591,7 @@
         },
         "distribution_runs_journal_check": {
           "name": "distribution_runs_journal_check",
-          "value": "(\"distribution_runs\".\"status\" <> 'paid' AND \"distribution_runs\".\"journal_entry_id\" IS NULL AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NULL) OR (\"distribution_runs\".\"status\" = 'paid' AND \"distribution_runs\".\"total_gross_idr\" > 0 AND \"distribution_runs\".\"journal_entry_id\" IS NOT NULL AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NULL) OR (\"distribution_runs\".\"status\" = 'paid' AND \"distribution_runs\".\"total_gross_idr\" < 0 AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NOT NULL AND \"distribution_runs\".\"journal_entry_id\" IS NULL)"
+          "value": "(\"distribution_runs\".\"status\" <> 'paid' AND \"distribution_runs\".\"journal_entry_id\" IS NULL AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NULL) OR (\"distribution_runs\".\"status\" = 'paid' AND \"distribution_runs\".\"total_gross_idr\" > 0 AND \"distribution_runs\".\"journal_entry_id\" IS NOT NULL AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NULL) OR (\"distribution_runs\".\"status\" = 'paid' AND \"distribution_runs\".\"total_gross_idr\" < 0 AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NOT NULL AND \"distribution_runs\".\"journal_entry_id\" IS NULL) OR (\"distribution_runs\".\"status\" = 'paid' AND \"distribution_runs\".\"total_gross_idr\" = 0 AND \"distribution_runs\".\"journal_entry_id\" IS NULL AND \"distribution_runs\".\"reversal_journal_entry_id\" IS NULL)"
         }
       },
       "isRLSEnabled": false

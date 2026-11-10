@@ -54,6 +54,7 @@ import {
   buildMyProfitShare,
   calculateAdjustmentDistribution,
   calculateDistribution,
+  CARRY_ABSORBED_PAYMENT_REF,
   distributionApprovedEvent,
   distributionCompletedEvent,
   distributionPaidEvent,
@@ -613,16 +614,13 @@ function assertCarryConsistent(calc: CalculatedRun): void {
   const deducted = deductions.reduce((sum, row) => sum + row.amountIdr, 0);
   if (deducted !== (calc.carryDeductedIdr ?? 0))
     throw new Error("Carry deductions must add up to carryDeductedIdr");
-  // A shareholder whose whole share was absorbed has a deduction but no line.
-  const withLine = new Set(calc.lines.map((line) => line.shareholderId));
+  // Every shareholder has a line (a share absorbed to zero is a gross 0 line),
+  // so the line carry adds up to the run carry.
   const lineCarry = calc.lines.reduce(
     (sum, line) => sum + (line.carryDeductedIdr ?? 0),
     0,
   );
-  const absorbed = deductions
-    .filter((row) => !withLine.has(row.shareholderId))
-    .reduce((sum, row) => sum + row.amountIdr, 0);
-  if (lineCarry + absorbed !== deducted)
+  if (lineCarry !== deducted)
     throw new Error("Line carry must add up to the run carry");
 }
 
@@ -983,6 +981,17 @@ export async function createAdjustmentDistributionService(
         input.adjustmentIdr < 0
           ? await paidStillHeld(tx, tenantId, target)
           : undefined;
+      // Every line zero (all absorbed by the carry) and no top-up since: there
+      // is nothing paid to take back, which is not "more than was paid".
+      if (
+        held &&
+        target.lines.every((line) => line.grossIdr === 0) &&
+        [...held.values()].every((paid) => paid.grossIdr === 0)
+      )
+        throw new AccountingError(
+          "ADJUSTMENT_TARGET_INVALID",
+          "Run ini seluruhnya terserap kekurangan koreksi; tidak ada yang bisa ditarik kembali.",
+        );
       const calculation = calculateAdjustmentDistribution({
         profitEntityId: target.profitEntityId,
         fiscalPeriodId: input.fiscalPeriodId as never,
@@ -1000,6 +1009,11 @@ export async function createAdjustmentDistributionService(
           target.shareVersion,
         ),
         held,
+        // A top-up pays down the open carry of each shareholder first (Q83).
+        carry:
+          input.adjustmentIdr > 0
+            ? await loadOpenCarry(tx, tenantId, target.profitEntityId)
+            : undefined,
       });
       assertAdjustmentMatchesTarget(
         target,
@@ -1027,6 +1041,8 @@ export async function createAdjustmentDistributionService(
           distributableIdr: calculation.adjustmentIdr,
           unabsorbedIdr: calculation.unabsorbedIdr,
           shortfalls: calculation.unabsorbedByShareholder,
+          carryDeductedIdr: calculation.carryDeductedIdr,
+          carryDeductions: calculation.carryDeductions,
           totalGrossIdr: calculation.totalGrossIdr,
           totalTaxWithheldIdr: calculation.totalTaxWithheldIdr,
           totalNetIdr: calculation.totalNetIdr,
@@ -1377,6 +1393,42 @@ export async function decideDistributionRunService(
             eq(distributionRuns.status, "pending_approval"),
           ),
         );
+      // Lines the carry absorbed to zero have nothing to pay: settled now
+      // (no statement). All lines zero: the run is paid at once, no journal.
+      const settled = next.lines.filter(
+        (line) =>
+          line.grossIdr === 0 &&
+          run.lines.find((before) => before.id === line.id)?.paymentStatus ===
+            "pending",
+      );
+      for (const line of settled)
+        await tx
+          .update(distributionLines)
+          .set({
+            paymentStatus: "paid",
+            paymentRef: CARRY_ABSORBED_PAYMENT_REF,
+            paidAt: now,
+            paidBy: actorId,
+          })
+          .where(
+            and(
+              eq(distributionLines.tenantId, tenantId),
+              eq(distributionLines.id, line.id),
+              eq(distributionLines.distributionRunId, runId),
+              eq(distributionLines.paymentStatus, "pending"),
+            ),
+          );
+      if (next.status === "paid")
+        await tx
+          .update(distributionRuns)
+          .set({ status: "paid", paidAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(distributionRuns.tenantId, tenantId),
+              eq(distributionRuns.id, runId),
+              eq(distributionRuns.status, "approved"),
+            ),
+          );
       await appendDistributionEvent(tx, context, distributionApprovedEvent, {
         run,
         outletId: entityRow.outletId,
@@ -1398,6 +1450,28 @@ export async function decideDistributionRunService(
           approvedAt: now.toISOString(),
         },
       });
+      // Paid on approval (every line zero): completed with no journal.
+      if (next.status === "paid")
+        await appendDistributionEvent(tx, context, distributionCompletedEvent, {
+          run,
+          outletId: entityRow.outletId,
+          actorId,
+          now,
+          payload: {
+            distributionRunId: run.id,
+            profitEntityId: run.profitEntityId,
+            fiscalPeriodId: run.fiscalPeriodId,
+            period: run.period,
+            type: run.type,
+            distributedIdr: run.totalGrossIdr,
+            taxWithheldIdr: run.totalTaxWithheldIdr,
+            paidNetIdr: run.totalNetIdr,
+            carryDeductedIdr: run.carryDeductedIdr,
+            shareholderCount: run.lines.length,
+            journalEntryId: null,
+            completedAt: now.toISOString(),
+          },
+        });
       await auditRun(
         tx,
         context,
@@ -1702,6 +1776,14 @@ async function loadStatementParts(
   return { shareholder, entityRow };
 }
 
+/** A line the carry absorbed to zero (gross 0, carry > 0): settled, no payout. */
+function isCarrySettledLine(line: {
+  grossIdr: number;
+  carryDeductedIdr: number;
+}): boolean {
+  return line.grossIdr === 0 && line.carryDeductedIdr > 0;
+}
+
 /** GET statement: a manager, or the line's own shareholder once it is paid. */
 export async function getDistributionStatementService(
   context: ScopedTenantContext,
@@ -1714,7 +1796,8 @@ export async function getDistributionStatementService(
   return withTenant(db, context, async (tx) => {
     const { run } = await loadRun(tx, tenantId, runId);
     const line = run.lines.find((candidate) => candidate.id === lineId);
-    if (!line) throw notFound();
+    // A zero line settled by the carry is no payout: it has no statement.
+    if (!line || isCarrySettledLine(line)) throw notFound();
     const { shareholder, entityRow } = await loadStatementParts(
       tx,
       tenantId,
@@ -1858,6 +1941,8 @@ export async function getMyProfitShareService(
           eq(distributionLines.tenantId, tenantId),
           eq(distributionLines.shareholderId, me.id),
           eq(distributionLines.paymentStatus, "paid"),
+          // Zero lines settled by the carry have no statement.
+          sql`NOT (${distributionLines.grossIdr} = 0 AND ${distributionLines.carryDeductedIdr} > 0)`,
         ),
       )
       .orderBy(desc(distributionLines.paidAt), desc(distributionLines.id));
