@@ -2,6 +2,15 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-ms3 WS-03 split bill dan pembayaran per tamu (engineer Opus, cabang `ws/split-bill` dari m1 d2080951, 2026-11-10)
+
+- Satu migrasi `0202_bill_splits` (when 1794281000000, prevId 8948ed96 = id snapshot 0186): tabel `bill_splits` (satu baris per bagian, `split_set_id` per pembagian, FK komposit ke orders, table_sessions, outlets, session_participants; RLS tenant + outlet), FK `payment_intents.bill_split_id` (FORCE RLS dilepas dan dipulihkan di sekitar FK). db:generate kedua kosong.
+- Bagi per pesanan (pesanan `awaiting_payment` sesi itu), mode rata, per orang, per item; pembulatan largest-remainder `splitBill()` atas `orders.total_idr` (pajak, servis, pembulatan ikut). Bayar per bagian lewat `createSplitPartIntent` (satu link, supersede hanya kode bagian itu); bagian lunas di consumer pembayaran; pesanan lunas lewat aturan lama (link lunas). Re-split ditolak `SPLIT_LOCKED` begitu ada uang atau kode yang masih bisa dibayar. Satu kode hidup per bagian (`SPLIT_CODE_ACTIVE`). Token klaim per bagian 24 jam sekali pakai, belum ada route tukar (legend-90na8 menunggu legend-111j).
+- Route: `POST /api/table-sessions/:sessionId/splits`, `POST .../payments` target `split`, `GET .../splits/:splitId/claim`; `GET .../bill` kini mengisi `splits`. Kontrak `splitClaimSchema` + `getSplitClaim` di shared.
+- Keputusan: `docs/DECISIONS.md` 2026-11-10 "Split bill per order...". Brief: `docs/briefs/sub-split-bill*.md`; second-opinion Codex belum dijalankan: `docs/briefs/294b-second-opinion-split-bill.md`.
+- Review K (architect): 3 sedang + 1 rendah; 3 dibetulkan dengan test gagal-dulu, 1 (klaim sesudah meja tutup) jadi keputusan produk di legend-arp35. Review delta (reviewer): 2 temuan dibetulkan.
+- Kartu baru: legend-90na8 (tukar token ke poin, tergantung legend-111j), legend-arp35 (UI split-panel ke API).
+
 ## legend-pxcs + legend-dux2 kebijakan keuangan dan register aset tetap (engineer, cabang `ws/finance-policy-asset-register` dari m1 d8ea5e0b, 2026-11-10)
 
 - Satu migrasi `0174_finance_policy_asset_register` (when 1794253000000, prevId ba41bcc6 = id snapshot 0166), hanya menambah: tabel `finance_policies` (PK tenant), `asset_categories`, kolom `fixed_assets.code` (unik per tenant+entity, backfill `FA-nnnnn` urut created_at lalu id) dan `category_id` (FK komposit tenant). FORCE RLS di `fixed_assets` dilepas selama backfill dan validasi FK, dipulihkan di akhir (migrator non-BYPASSRLS, pola 0139).

@@ -118,3 +118,5 @@ export * from "./inventory-receiving";
 export * from "./metrics";
 // WS-11 sales targets (legend-ne81z).
 export * from "./sales-targets";
+// WS-03 per-order bill splits (legend-ms3).
+export * from "./bill-splits";

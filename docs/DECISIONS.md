@@ -3,6 +3,55 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-10: Split bill per order, per-part payment and claim tokens (legend-ms3)
+
+Context: PRD v1.7 §3 F10 Split Bill and "Klaim Poin per Orang", §6.D
+`bill_splits`, ORD-06. The shared contract (`splitBill`, `billSplitSchema`,
+`createSessionSplits`, pay target `split`) existed; the API side did not.
+
+1. Scope is one order: the session's single `awaiting_payment` order (pay-first).
+   No awaiting order answers 422 `NOTHING_TO_SPLIT`; more than one answers 409;
+   an order with an applied reservation deposit answers 422. Session-level
+   splits stay reserved in the contract (`orderId` nullable) until a
+   session-level payment flow exists.
+2. One table `bill_splits`, one row per part, grouped by `split_set_id`
+   (no header table; `qrOrderIdempotent` handles the request key). by_item
+   assignments are a `uuid[]` of order item ids, checked under the order lock.
+   A partial unique index on live parts stops two concurrent live sets.
+   `payment_intents.bill_split_id` gets a composite FK to it.
+3. Rounding reuses `splitBill()` (largest remainder) on `orders.total_idr`, which
+   already holds tax, service and rounding, so parts sum exactly to what the
+   payment link collects. A zero part is refused (an intent must be above 0).
+4. Each part pays through its own payment intent on the order's single payment
+   link (`createSplitPartIntent`): the amount is the part, bounded by the link's
+   outstanding balance, and only that part's pending code is superseded, so
+   several guests can pay at once. The order turns paid through the existing
+   rule (link paid >= link total); the part turns paid in the payment consumer
+   from `intent.bill_split_id`, replay-safe by a conditional update.
+5. Re-split is refused (409 `SPLIT_LOCKED`) once any part is paid, any money
+   reached the link, or any code on the link is still payable. Otherwise the
+   live parts are voided and a new set is written.
+6. Unpaid-order sweep counts payment attempts per part, so a 4-way split is not
+   voided for attempts; when an order with money on it is voided, each paid
+   intent goes through the existing late-payment refund request.
+7. Claim token per part: issued when the part is paid, valid 24 hours from
+   that moment, stored as a sha256 hash plus a sealed copy so the guest can
+   read it again; redeemed once by a conditional update. No public redeem
+   route and no points until the member point ledger (legend-111j) lands.
+   When the order is voided, its unpaid parts are voided and the paid parts'
+   claims end at once; redeeming needs a paid part on an order not voided.
+8. One payable code per part (architect review K). A superseded code stays
+   payable at the gateway until its own expiry, and a second payment on one
+   part would not show as an overpayment of the bill. So a part answers 409
+   `SPLIT_CODE_ACTIVE` to a different method while its code, or a superseded
+   code still inside its expiry plus the late-payment grace, can be paid; the
+   same method returns the same code. Re-split also waits for such codes.
+   Trade-off: a guest who switches from VA to QRIS waits for the VA code to
+   lapse (up to the VA lifetime).
+9. A guest reads the claim only while the table session credential is valid;
+   after the table closes, the receipt carries the token (legend-arp35,
+   legend-90na8).
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope
@@ -88,9 +137,9 @@ in parallel. Reviewed with an architect consult before implementation.
    value, finality or definition version changes, so a rerun leaves
    `updated_at` unchanged. Rows of that code whose dimension no longer exists
    are deleted. A changed `final` row is logged as `metrics_daily final row
-   changed` (late data) and still written. Dates older than the window are
+changed` (late data) and still written. Dates older than the window are
    recomputed only through `recomputeMetricsDaily(context, outletId, from,
-   to)`. A family card that bumps a definition version runs it over the
+to)`. A family card that bumps a definition version runs it over the
    history it changes. A family card that ships a new reader also runs it
    over the history its reports cover, before its reports leave the mock.
    Every reader writes a total row (no dimension) per outlet-day, zero when
@@ -110,7 +159,7 @@ in parallel. Reviewed with an architect consult before implementation.
    `METRIC_DIMENSION_NOT_SUPPORTED` for a split the metric does not declare
    (unchanged). A split the metric declares but no card has built yet is
    marked `unavailable` by the engine and by report runs; `GET
-   /api/metrics/query` keeps its m1 answer (400) for that case too, so the
+/api/metrics/query` keeps its m1 answer (400) for that case too, so the
    existing ledger regression tests stay unchanged. A split of a percent
    ledger metric is `dimension_not_supported` until a family card builds its
    numerator and denominator splits. Report run rows carry their bucket
@@ -272,7 +321,7 @@ terjual" dan NULL = tidak diketahui. Ditinjau architect sebelum implementasi
    ke log.
 8. **Bentuk.** Berkas baru `apps/api/src/services/order-cost-snapshot.service.ts`:
    `computeLineCostSnapshots(tx, context, outletId, lines) -> Promise<(number |
-   null)[]>` (urutan sama dengan `lines`; baris =
+null)[]>` (urutan sama dengan `lines`; baris =
    `{menuItemId, variantId, modifierIds, quantity}`). Nama tidak bentrok dengan
    `estimateDeductionCostIdr` (cabang KDS, yang mengembalikan 0, kontrak
    berbeda), dan tidak mengimpor dari `recipe-deduction.service.ts`. Satu

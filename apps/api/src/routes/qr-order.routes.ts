@@ -18,10 +18,12 @@ import { Router, type Request } from "express";
 import {
   addCartLine,
   createGuestPayment,
+  createSessionSplits,
   getGuestPayment,
   getGuestPaymentOptions,
   getMenuSuggestions,
   getSessionBill,
+  getSplitClaim,
   getTableSession,
   placeQrOrder,
   quoteTableSession,
@@ -45,6 +47,10 @@ import {
   updateCartLine as updateCartLineService,
 } from "../services/qr-order.service.ts";
 import { guestSessionContext } from "../services/guest-session-scope.ts";
+import {
+  createSessionSplits as createSessionSplitsService,
+  getSplitClaim as getSplitClaimService,
+} from "../services/bill-split.service.ts";
 import { getMenuSuggestions as getMenuSuggestionsService } from "../services/qr-guest-reads.service.ts";
 import {
   createGuestPayment as createGuestPaymentService,
@@ -202,6 +208,42 @@ qrOrderRouter.get("/:sessionId/bill", ...read, async (req, res) => {
     ),
   });
 });
+
+qrOrderRouter.post(
+  "/:sessionId/splits",
+  ...write,
+  jsonBody,
+  async (req, res) => {
+    const { sessionId } = createSessionSplits.params.parse(req.params);
+    const body = createSessionSplits.body.parse(req.body);
+    const credential = sessionCredential(req);
+    res.status(201).json({
+      data: await createSessionSplitsService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        body,
+      ),
+    });
+  },
+);
+
+qrOrderRouter.get(
+  "/:sessionId/splits/:splitId/claim",
+  ...read,
+  async (req, res) => {
+    const { sessionId, splitId } = getSplitClaim.params.parse(req.params);
+    const credential = sessionCredential(req);
+    res.json({
+      data: await getSplitClaimService(
+        await guestContext(req, credential),
+        credential,
+        sessionId,
+        splitId,
+      ),
+    });
+  },
+);
 
 qrOrderRouter.get("/:sessionId/payment-options", ...read, async (req, res) => {
   const { sessionId } = getGuestPaymentOptions.params.parse(req.params);

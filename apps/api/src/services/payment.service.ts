@@ -500,12 +500,14 @@ function assertIdempotencyFingerprint(
     readonly paymentLinkId: string;
     readonly method: CreatePaymentIntentInput["method"];
     readonly channelCode: string | null;
+    readonly billSplitId: string | null;
   },
 ): void {
   if (
     existing.paymentLinkId !== request.paymentLinkId ||
     existing.method !== request.method ||
-    existing.channelCode !== request.channelCode
+    existing.channelCode !== request.channelCode ||
+    (existing.billSplitId ?? null) !== request.billSplitId
   )
     throw new HttpError(
       409,
@@ -519,6 +521,7 @@ async function readIntentPlan(
   token: string,
   input: CreatePaymentIntentInput,
   now: Date,
+  part: SplitPartTarget | null,
 ): Promise<IntentPlan> {
   const link = await loadLink(context, token, now);
   return withTenant(db, context, async (tx) => {
@@ -536,11 +539,18 @@ async function readIntentPlan(
         paymentLinkId: link.id,
         method: input.method,
         channelCode: input.channelCode,
+        billSplitId: part?.billSplitId ?? null,
       });
       return { link, provider: existing.provider, existing };
     }
     if (outstandingIdr(link) <= 0)
       throw new HttpError(409, "CONFLICT", "This bill is already paid.");
+    if (part && !splitPartFits(part.amountIdr, link))
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "This part is larger than the remaining balance. Reload and try again.",
+      );
     const routing = await resolveRoutingRule(
       tx,
       context,
@@ -557,12 +567,24 @@ async function readIntentPlan(
   });
 }
 
-/** Supersedes the bill's pending codes; returns the ones a provider holds. */
+/** One split part a guest pays on its own (D4). */
+type SplitPartTarget = { billSplitId: string; amountIdr: number };
+
+/** A part is payable while `0 < amount <= outstanding`. */
+function splitPartFits(amountIdr: number, link: PaymentLinkRow): boolean {
+  return amountIdr > 0 && amountIdr <= outstandingIdr(link);
+}
+
+/**
+ * Supersedes the bill's pending codes; returns the ones a provider holds.
+ * With `billSplitId` only that part's pending code is superseded.
+ */
 async function supersedePending(
   tx: Tx,
   context: ScopedTenantContext,
   link: PaymentLinkRow,
   now: Date,
+  billSplitId?: string,
 ): Promise<GatewayCancelRequest[]> {
   const superseded: GatewayCancelRequest[] = [];
   // A gateway code already past its expiry is not live for the guest; it stays
@@ -580,6 +602,9 @@ async function supersedePending(
           isNull(paymentIntents.providerRef),
           gt(paymentIntents.expiresAt, now),
         ),
+        billSplitId === undefined
+          ? undefined
+          : eq(paymentIntents.billSplitId, billSplitId),
       ),
     );
   for (const row of pending) {
@@ -650,9 +675,35 @@ export async function createIntent(
   now = new Date(),
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  const plan = await readIntentPlan(context, token, parsed, now);
+  return createIntentCore(context, token, parsed, now, null);
+}
+
+/**
+ * Creates one payable intent for a single split part (D4). The amount is the
+ * part's, which must fit the link's outstanding balance; only that part's
+ * pending code is superseded, so parts hold live codes side by side.
+ */
+export async function createSplitPartIntent(
+  context: ScopedTenantContext,
+  token: string,
+  input: CreatePaymentIntentInput,
+  part: { billSplitId: string; amountIdr: number },
+  now = new Date(),
+): Promise<CustomerPaymentIntent> {
+  const parsed = createPaymentIntentInputSchema.parse(input);
+  return createIntentCore(context, token, parsed, now, part);
+}
+
+async function createIntentCore(
+  context: ScopedTenantContext,
+  token: string,
+  parsed: CreatePaymentIntentInput,
+  now: Date,
+  part: SplitPartTarget | null,
+): Promise<CustomerPaymentIntent> {
+  const plan = await readIntentPlan(context, token, parsed, now, part);
   if (plan.existing) return toCustomerIntent(plan.existing);
-  const amountIdr = outstandingIdr(plan.link);
+  const amountIdr = part ? part.amountIdr : outstandingIdr(plan.link);
   if (amountIdr <= 0)
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
 
@@ -725,6 +776,7 @@ export async function createIntent(
           paymentLinkId: plan.link.id,
           method: parsed.method,
           channelCode: parsed.channelCode,
+          billSplitId: part?.billSplitId ?? null,
         });
         return toCustomerIntent(existing);
       }
@@ -759,13 +811,23 @@ export async function createIntent(
           "NOT_FOUND",
           "This payment link is not available.",
         );
-      if (outstandingIdr(lockedLink) !== amountIdr)
+      if (
+        part
+          ? !splitPartFits(amountIdr, lockedLink)
+          : outstandingIdr(lockedLink) !== amountIdr
+      )
         throw new HttpError(
           409,
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
-      superseded = await supersedePending(tx, context, plan.link, now);
+      superseded = await supersedePending(
+        tx,
+        context,
+        plan.link,
+        now,
+        part?.billSplitId,
+      );
       const [row] = await tx
         .insert(paymentIntents)
         .values({
@@ -775,7 +837,8 @@ export async function createIntent(
           paymentLinkId: plan.link.id,
           method: parsed.method,
           provider: plan.provider,
-          amountIdr,
+          amountIdr: idr(amountIdr),
+          billSplitId: part?.billSplitId ?? null,
           idempotencyKey: parsed.idempotencyKey,
           providerRef: created.providerRef,
           gatewayIntegrationId: created.integrationId ?? null,
@@ -827,6 +890,7 @@ export async function createIntent(
       paymentLinkId: plan.link.id,
       method: parsed.method,
       channelCode: parsed.channelCode,
+      billSplitId: part?.billSplitId ?? null,
     });
     return toCustomerIntent(existing);
   }

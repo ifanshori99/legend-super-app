@@ -402,6 +402,46 @@ export const getGuestPayment = defineEndpoint({
   response: dataResponseSchema(guestPaymentSchema),
 });
 
+// ---- Split part claim (legend-ms3) -------------------------------------------
+
+/**
+ * The claim token of a paid split part: whoever holds it can attach the part to
+ * their account later (redeem route waits on legend-111j). 24 hours after the
+ * part is paid.
+ */
+export const splitClaimSchema = z
+  .strictObject({
+    billSplitId: billSplitIdSchema,
+    status: z.enum(["unavailable", "available", "claimed", "expired"]),
+    claimToken: z.string().min(1).nullable(),
+    claimableUntil: isoDateTimeSchema.nullable(),
+  })
+  .superRefine((claim, ctx) => {
+    if (claim.status === "available" && claim.claimToken === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["claimToken"],
+        message: "An available claim carries its token",
+      });
+    if (claim.status === "available" && claim.claimableUntil === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["claimableUntil"],
+        message: "An available claim has a deadline",
+      });
+  });
+export type SplitClaim = z.infer<typeof splitClaimSchema>;
+
+export const getSplitClaim = defineEndpoint({
+  method: "GET",
+  path: "/api/table-sessions/:sessionId/splits/:splitId/claim",
+  params: z.strictObject({
+    sessionId: tableSessionIdSchema,
+    splitId: billSplitIdSchema,
+  }),
+  response: dataResponseSchema(splitClaimSchema),
+});
+
 // ---- Order ETA (PRD "Status Pesanan ... dengan estimasi waktu") -----------------
 
 export const orderEtaSchema = z
