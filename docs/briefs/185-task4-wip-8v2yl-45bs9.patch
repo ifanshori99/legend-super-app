@@ -1,0 +1,727 @@
+diff --git a/apps/api/src/db/schema/pos-order.ts b/apps/api/src/db/schema/pos-order.ts
+index f93509bb..c61a50a8 100644
+--- a/apps/api/src/db/schema/pos-order.ts
++++ b/apps/api/src/db/schema/pos-order.ts
+@@ -66,11 +66,27 @@ const updatedAt = timestamp("updated_at", { withTimezone: true })
+   .notNull()
+   .defaultNow();
+ 
+-/** One refunded tender method (contract posRefundLineSchema). */
++/**
++ * legend-8v2yl, legend-45bs9: the part of one captured tender a refund line
++ * returned (`pos_order_tenders.id`, its payment intent, amount).
++ */
++export type PosRefundTenderPartRow = {
++  tenderId: string;
++  paymentIntentId: string | null;
++  amountIdr: number;
++};
++
++/**
++ * One refunded tender method (contract posRefundLineSchema). `tenders`
++ * (legend-8v2yl, legend-45bs9): how the line split over the method's
++ * tenders; absent on rows written before it (attributed by method only).
++ * Stored only: the contract DTO and the order.refunded payload leave it out.
++ */
+ export type PosRefundLineRow = {
+   method: string;
+   amountIdr: number;
+   reference: string | null;
++  tenders?: PosRefundTenderPartRow[];
+ };
+ 
+ /** One refunded order item (contract posRefundItemSchema). */
+diff --git a/apps/api/src/services/pos-intent-attribution.ts b/apps/api/src/services/pos-intent-attribution.ts
+index ccaa27e4..922b8f56 100644
+--- a/apps/api/src/services/pos-intent-attribution.ts
++++ b/apps/api/src/services/pos-intent-attribution.ts
+@@ -9,11 +9,15 @@
+ //   that method on the order;
+ // - returned: what POS refund lines (pos_order_refunds.lines) of that order
+ //   gave back for that method.
+-// A POS refund line names a method, not a tender. The intent gets back:
++// A POS refund line with tender parts (`lines[i].tenders`, legend-8v2yl,
++// legend-45bs9) gives the intent back the parts of its own tenders
++// (allocated). An older line names a method, not a tender; for those
++// (returned) the intent gets back:
+ // - its whole on_intent when the refunds returned the whole method;
+ // - least(returned, on_intent) when every tender of the method is the
+ //   intent's (on_intent = on_method);
+ // - else nothing (fail closed: the money stays attributed to the intent).
++// Both add up, never above on_intent.
+ 
+ import { sql, type SQL } from "drizzle-orm";
+ 
+@@ -73,7 +77,8 @@ export function netPosTendersOfIntentSql(
+     WITH used AS (
+       SELECT t.order_id, t.method,
+              sum(t.amount_idr) FILTER (WHERE ${ofIntent("t")}) AS on_intent,
+-             sum(t.amount_idr) AS on_method
++             sum(t.amount_idr) AS on_method,
++             array_agg(t.id::text) FILTER (WHERE ${ofIntent("t")}) AS intent_tenders
+         FROM pos_order_tenders t
+         JOIN orders ON orders.tenant_id = t.tenant_id AND orders.id = t.order_id
+        WHERE t.tenant_id = ${tenantId}
+@@ -82,25 +87,39 @@ export function netPosTendersOfIntentSql(
+            SELECT u.order_id FROM pos_order_tenders u
+             WHERE u.tenant_id = ${tenantId} AND ${ofIntent("u")})
+        GROUP BY t.order_id, t.method
+-    ), returned AS (
+-      SELECT pos_order_refunds.order_id, l.value->>'method' AS method,
+-             sum((l.value->>'amountIdr')::numeric) AS amount
++    ), refund_lines AS (
++      SELECT pos_order_refunds.order_id, l.value AS line
+         FROM pos_order_refunds
+        CROSS JOIN LATERAL jsonb_array_elements(pos_order_refunds.lines) AS l(value)
+        WHERE pos_order_refunds.tenant_id = ${tenantId}
+          AND pos_order_refunds.order_id IN (SELECT order_id FROM used)
+          AND ${posRefunds}
+-       GROUP BY pos_order_refunds.order_id, l.value->>'method'
++    ), returned AS (
++      SELECT r.order_id, r.line->>'method' AS method,
++             sum((r.line->>'amountIdr')::numeric) AS amount
++        FROM refund_lines r
++       WHERE r.line->'tenders' IS NULL
++       GROUP BY r.order_id, r.line->>'method'
++    ), allocated AS (
++      SELECT r.order_id, r.line->>'method' AS method,
++             sum((p.value->>'amountIdr')::numeric) AS amount
++        FROM refund_lines r
++       CROSS JOIN LATERAL jsonb_array_elements(r.line->'tenders') AS p(value)
++        JOIN used u
++          ON u.order_id = r.order_id AND u.method = r.line->>'method'
++       WHERE p.value->>'tenderId' = ANY(u.intent_tenders)
++       GROUP BY r.order_id, r.line->>'method'
+     )
+     SELECT coalesce(sum(
+-             u.on_intent - CASE
++             u.on_intent - least(u.on_intent, coalesce(a.amount, 0) + CASE
+                WHEN coalesce(f.amount, 0) >= u.on_method THEN u.on_intent
+                WHEN u.on_intent = u.on_method
+                  THEN least(coalesce(f.amount, 0), u.on_intent)
+                ELSE 0
+-             END), 0)::text AS amount
++             END)), 0)::text AS amount
+       FROM used u
+       LEFT JOIN returned f ON f.order_id = u.order_id AND f.method = u.method
++      LEFT JOIN allocated a ON a.order_id = u.order_id AND a.method = u.method
+      WHERE u.on_intent IS NOT NULL
+   `;
+ }
+@@ -109,9 +128,11 @@ export function netPosTendersOfIntentSql(
+  * legend-hxpd5 review: the POS refunds the ledger mode may attribute to the
+  * intent: refunds `posRefunds` keeps with a line whose method is that of a
+  * captured tender of the intent on the same order, the order kept by `sales`
+- * (same filters as the ledger mode). Rows: `id` (pos_order_refunds.id). The
+- * caller subtracts only those whose order.refunded journal posted (the credit
+- * back to customer_deposit is booked).
++ * (same filters as the ledger mode). A line with tender parts (legend-8v2yl,
++ * legend-45bs9) counts only when one of its parts is such a tender. Rows:
++ * `id` (pos_order_refunds.id). The caller subtracts only those whose
++ * order.refunded journal posted (the credit back to customer_deposit is
++ * booked).
+  */
+ export function posRefundsOfIntentSql(
+   tenantId: string,
+@@ -130,6 +151,11 @@ export function posRefundsOfIntentSql(
+           WHERE t.tenant_id = ${tenantId}
+             AND t.order_id = pos_order_refunds.order_id
+             AND t.method = l.value->>'method'
++            AND (l.value->'tenders' IS NULL
++                 OR EXISTS (
++                   SELECT 1
++                     FROM jsonb_array_elements(l.value->'tenders') AS p(value)
++                    WHERE p.value->>'tenderId' = t.id::text))
+             AND t.status = 'captured'
+             AND t.payment_intent_id = ${intentId}::uuid
+             AND ${filters.sales})
+diff --git a/apps/api/src/services/pos-order-corrections.ts b/apps/api/src/services/pos-order-corrections.ts
+index caaf69ce..9efc606a 100644
+--- a/apps/api/src/services/pos-order-corrections.ts
++++ b/apps/api/src/services/pos-order-corrections.ts
+@@ -38,7 +38,12 @@ import {
+ } from "@starter/shared/pos";
+ import { orderNetSubtotalIdr } from "@starter/shared/tax";
+ import { db } from "../db/index.ts";
+-import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
++import {
++  posOrderRefunds,
++  posOrderVoids,
++  type PosRefundLineRow,
++  type PosRefundTenderPartRow,
++} from "../db/schema/pos-order.ts";
+ import { withTenant } from "../db/tenant.ts";
+ import { HttpError } from "../lib/http-error.ts";
+ import type { Tx } from "./menu-internals.ts";
+@@ -99,7 +104,12 @@ function refundDto(row: RefundRow): PosRefund {
+     amountIdr: row.amountIdr,
+     reason: row.reason,
+     reasonNote: row.reasonNote,
+-    lines: row.lines,
++    // The stored tender parts (legend-8v2yl) are not part of the contract.
++    lines: row.lines.map(({ method, amountIdr, reference }) => ({
++      method,
++      amountIdr,
++      reference,
++    })),
+     items: row.items,
+     requestedBy: row.requestedBy,
+     approvedBy: row.approvedBy,
+@@ -443,6 +453,62 @@ export function stillRefundableByMethod(
+   }));
+ }
+ 
++/**
++ * legend-8v2yl, legend-45bs9: the part of each captured tender every line of
++ * a new refund returns, so a method paid by several payment intents (two QRIS
++ * scans) is attributed per intent (pos-intent-attribution.ts). Per method, in
++ * tender order (tendersOf: requested at, then id), each tender gives up to
++ * what earlier refunds left on it: their recorded parts first, then their
++ * method-only (older rows) amounts taken in that same tender order. A part is
++ * never negative nor above what is left on its tender. A line the tenders
++ * cannot fully cover (inconsistent older rows) records no parts and keeps the
++ * method-only attribution (fail closed).
++ */
++export function refundTenderParts(
++  tenders: readonly PosTender[],
++  refunds: readonly Pick<RefundRow, "lines">[],
++  lines: readonly { method: string; amountIdr: number }[],
++): (PosRefundTenderPartRow[] | null)[] {
++  const captured = tenders.filter((tender) => tender.status === "captured");
++  const left = new Map(
++    captured.map((tender) => [tender.id as string, Number(tender.amountIdr)]),
++  );
++  const methodOnly = new Map<string, number>();
++  for (const row of refunds)
++    for (const line of row.lines) {
++      let rest = Number(line.amountIdr);
++      for (const part of line.tenders ?? []) {
++        left.set(
++          part.tenderId,
++          Math.max(0, (left.get(part.tenderId) ?? 0) - part.amountIdr),
++        );
++        rest -= part.amountIdr;
++      }
++      if (rest > 0)
++        methodOnly.set(line.method, (methodOnly.get(line.method) ?? 0) + rest);
++    }
++  const take = (method: string, amountIdr: number) => {
++    const parts: PosRefundTenderPartRow[] = [];
++    let rest = amountIdr;
++    for (const tender of captured) {
++      if (rest <= 0) break;
++      if (tender.method !== method) continue;
++      const part = Math.min(rest, left.get(tender.id) ?? 0);
++      if (part <= 0) continue;
++      left.set(tender.id, (left.get(tender.id) ?? 0) - part);
++      rest -= part;
++      parts.push({
++        tenderId: tender.id,
++        paymentIntentId: tender.paymentIntentId,
++        amountIdr: part,
++      });
++    }
++    return rest === 0 ? parts : null;
++  };
++  for (const [method, amountIdr] of methodOnly) take(method, amountIdr);
++  return lines.map((line) => take(line.method, line.amountIdr));
++}
++
+ /** POST .../corrections/refund — linked refund against a paid sale (POS-04). */
+ export async function refundPosOrder(
+   context: ScopedTenantContext,
+@@ -625,11 +691,17 @@ export async function refundPosOrder(
+             stillRefundableByMethod(tenders, refunds),
+             idr(payout),
+           );
+-      const lines = allocation.map((line) => ({
++      const methodLines = allocation.map((line) => ({
+         method: line.method,
+         amountIdr: Number(line.amountIdr),
+         reference: null,
+       }));
++      // legend-8v2yl, legend-45bs9: stored per line, server-side.
++      const parts = refundTenderParts(tenders, refunds, methodLines);
++      const lines: PosRefundLineRow[] = methodLines.map((line, index) => {
++        const tenderParts = parts[index];
++        return tenderParts ? { ...line, tenders: tenderParts } : line;
++      });
+       await assertBusinessDayOpen(tx, context, {
+         outletId,
+         businessDates: [
+diff --git a/apps/api/src/test/pos-refund-tender-attribution.test.ts b/apps/api/src/test/pos-refund-tender-attribution.test.ts
+new file mode 100644
+index 00000000..cfcafddb
+--- /dev/null
++++ b/apps/api/src/test/pos-refund-tender-attribution.test.ts
+@@ -0,0 +1,470 @@
++// POS refund attribution per tender (beads legend-8v2yl, legend-45bs9, tier K
++// / money). A POS refund line names a method; when one method (qris) of an
++// order was paid by several payment intents, the old attribution gave
++// nothing back to any of them (fail closed): the intent refund stayed blocked
++// and the payout stayed parked. The refund writer now records, per line, the
++// part of each tender it returned (`lines[i].tenders`), and the attribution
++// (pos-intent-attribution.ts) gives each intent back its own tenders' parts.
++//
++// Real Express app, Better Auth, services and PostgreSQL. Same seeding and
++// request style as payment-refund-pos-tender-guard.test.ts (helpers copied).
++//
++// Assumptions where the brief is not exact:
++// - Within a method the refund fills the tenders in tender order (requested
++//   at, then id), each up to what earlier refunds left on it. Earlier
++//   method-only (legacy) lines consume the tenders in that same order.
++// - The POS refund is approved by a supervisor PIN override row inserted
++//   directly (approved, fresh, by a second real user).
++import { randomUUID } from "node:crypto";
++import type { PoolClient } from "pg";
++import { sql } from "drizzle-orm";
++import { afterAll, beforeAll, describe, expect, it } from "vitest";
++import {
++  outletIdSchema,
++  tenantIdSchema,
++  userIdSchema,
++  uuidToUlid,
++  type ScopedTenantContext,
++} from "@starter/shared/core";
++import {
++  establishScopedTenantContext,
++  establishTenantContext,
++} from "@starter/shared/core/server";
++import { createApp } from "../app";
++import { db } from "../db/index.ts";
++import { withTenant } from "../db/tenant.ts";
++import {
++  netPosTendersOfIntentSql,
++  posRefundsOfIntentSql,
++} from "../services/pos-intent-attribution.ts";
++import { refundPosOrder } from "../services/pos-order-corrections.ts";
++import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
++import {
++  owner,
++  seededOutletA,
++  seededTenantId,
++  staffWithRole,
++  type Staff,
++} from "./floor-test-helpers";
++
++const ADMIN = "/api/payments/admin";
++const GUARD_CODE = "REFUND_INTENT_IN_POS_SALE";
++
++async function asOwner<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
++  const client = await owner.connect();
++  try {
++    await client.query("BEGIN");
++    await client.query(
++      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
++      [seededTenantId],
++    );
++    const result = await run(client);
++    await client.query("COMMIT");
++    return result;
++  } catch (error) {
++    await client.query("ROLLBACK");
++    throw error;
++  } finally {
++    client.release();
++  }
++}
++
++const app = createApp();
++let staff: Staff;
++let approverId = "";
++const intentIds: string[] = [];
++const linkIds: string[] = [];
++const orderIds: string[] = [];
++const overrideIds: string[] = [];
++
++const key = (prefix = "attr") => `${prefix}-${randomUUID()}`;
++
++function scopedContext(): ScopedTenantContext {
++  return establishScopedTenantContext(
++    establishTenantContext({
++      tenantId: tenantIdSchema.parse(seededTenantId),
++      brandId: null,
++      source: "session",
++    }),
++    { kind: "tenant" },
++  );
++}
++
++/** A paid intent (with evidence) that belongs to no order or reservation. */
++async function paidIntent(amountIdr: number): Promise<string> {
++  const linkId = randomUUID();
++  const intentId = randomUUID();
++  await asOwner(async (client) => {
++    await client.query(
++      `INSERT INTO payment_links
++         (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
++       VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'tender-attr-test')`,
++      [
++        linkId,
++        seededTenantId,
++        seededOutletA,
++        randomUUID().replaceAll("-", "").padEnd(64, "0"),
++        `TA-${linkId.slice(0, 8)}`,
++        amountIdr,
++      ],
++    );
++    await client.query(
++      `INSERT INTO payment_intents
++         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr,
++          idempotency_key, status, instructions, expires_at, paid_at)
++       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid',
++               '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}', now() + interval '1 hour', now())`,
++      [
++        intentId,
++        seededTenantId,
++        seededOutletA,
++        linkId,
++        amountIdr,
++        `ta-pay-${intentId}`,
++      ],
++    );
++    await client.query(
++      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
++       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
++      [
++        seededTenantId,
++        seededOutletA,
++        intentId,
++        `evidence-${intentId}`,
++        amountIdr,
++      ],
++    );
++  });
++  linkIds.push(linkId);
++  intentIds.push(intentId);
++  return intentId;
++}
++
++/** A completed POS order of `totalIdr` (orders + pos_orders). */
++async function posOrder(totalIdr: number): Promise<string> {
++  const id = randomUUID();
++  orderIds.push(id);
++  await asOwner(async (client) => {
++    await client.query(
++      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
++         subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
++         status, business_date, placed_at)
++       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, 0, 0, 0, 0, $5,
++         'completed', '2026-11-09', now())`,
++      [
++        id,
++        seededTenantId,
++        seededOutletA,
++        `TA-${randomUUID().slice(0, 8)}`,
++        totalIdr,
++      ],
++    );
++    await client.query(
++      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at, completed_at)
++       VALUES ($1, $2, $3, 'pos', now(), now())`,
++      [id, seededTenantId, seededOutletA],
++    );
++  });
++  return id;
++}
++
++/**
++ * A captured QRIS tender of `amountIdr` on the order that uses `intentId`,
++ * requested `minutesAgo` minutes ago (fixes the tender order).
++ */
++async function qrisTender(
++  orderId: string,
++  intentId: string,
++  amountIdr: number,
++  minutesAgo: number,
++): Promise<string> {
++  const { rows } = await owner.query<{ id: string }>(
++    `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
++        payment_intent_id, amount_idr, status, requested_at, resolved_at)
++     VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, 'captured',
++             now() - make_interval(mins => $6::int), now())
++     RETURNING id`,
++    [seededTenantId, seededOutletA, orderId, intentId, amountIdr, minutesAgo],
++  );
++  return rows[0]!.id;
++}
++
++/** A legacy POS refund row: one method-only QRIS line, no tender parts. */
++async function legacyQrisRefund(orderId: string, amountIdr: number) {
++  await owner.query(
++    `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
++        lines, requested_by, approved_by, approval_request_id, refunded_at)
++     VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
++             'kasir-uji', 'supervisor-uji', $6, now())`,
++    [
++      seededTenantId,
++      seededOutletA,
++      orderId,
++      amountIdr,
++      JSON.stringify([{ method: "qris", amountIdr, reference: null }]),
++      randomUUID(),
++    ],
++  );
++}
++
++/** A fresh supervisor PIN approval of a refund of the order (pos_overrides). */
++async function refundApproval(orderId: string, valueIdr: number) {
++  const id = randomUUID();
++  overrideIds.push(id);
++  await asOwner((client) =>
++    client.query(
++      `INSERT INTO pos_overrides (id, tenant_id, outlet_id, action, method, status,
++          requested_by, approved_by, reason, value_idr, object_type, object_id,
++          request_fingerprint, created_at, resolved_at)
++       VALUES ($1, $2, $3, 'refund', 'supervisor_pin', 'approved', $4, $5,
++               'Persetujuan uji atribusi', $6, 'order', $7, 'attr-test', now(), now())`,
++      [
++        id,
++        seededTenantId,
++        seededOutletA,
++        staff.userId,
++        approverId,
++        valueIdr,
++        uuidToUlid(orderId),
++      ],
++    ),
++  );
++  return { approvedBy: approverId, overrideId: uuidToUlid(id) };
++}
++
++/** POS refund of `amountIdr` through the writer (pos-order-corrections). */
++async function posRefund(orderId: string, amountIdr: number) {
++  return refundPosOrder(
++    scopedContext(),
++    {
++      userId: userIdSchema.parse(staff.userId),
++      deviceId: null,
++      expectedVersion: null,
++    },
++    outletIdSchema.parse(seededOutletA),
++    uuidToUlid(orderId),
++    {
++      reason: "customer_cancelled",
++      reasonNote: "Uji atribusi tender",
++      amountIdr,
++      idempotencyKey: randomUUID(),
++      ...(await refundApproval(orderId, amountIdr)),
++    } as Parameters<typeof refundPosOrder>[4],
++  );
++}
++
++async function storedLines(refundId: string) {
++  const { rows } = await owner.query<{ lines: unknown }>(
++    "SELECT lines FROM pos_order_refunds WHERE tenant_id = $1 AND id = $2",
++    [seededTenantId, refundId],
++  );
++  return rows[0]!.lines;
++}
++
++const requestRefund = (intentId: string, amountIdr: number) =>
++  staff.client
++    .post(`${ADMIN}/refunds`)
++    .set(originHeader)
++    .send({
++      idempotencyKey: key("req"),
++      paymentIntentId: intentId,
++      amountIdr,
++      reason: "Pengembalian uji atribusi tender",
++    });
++
++async function expectRefused(intentId: string, amountIdr: number) {
++  const response = await requestRefund(intentId, amountIdr);
++  expect(response.status, JSON.stringify(response.body)).toBe(409);
++  expect(response.body.error.code).toBe(GUARD_CODE);
++}
++
++async function expectCreated(intentId: string, amountIdr: number) {
++  const response = await requestRefund(intentId, amountIdr);
++  expect(response.status, JSON.stringify(response.body)).toBe(201);
++}
++
++/** The ledger-mode net of the intent with every sale and POS refund kept. */
++async function ledgerNet(intentId: string): Promise<number> {
++  const result = await withTenant(db, scopedContext(), (tx) =>
++    tx.execute(
++      netPosTendersOfIntentSql(seededTenantId, intentId, {
++        kind: "ledger",
++        sales: sql`TRUE`,
++        posRefunds: sql`TRUE`,
++      }),
++    ),
++  );
++  return Number(result.rows[0]?.amount ?? "0");
++}
++
++async function ledgerCandidates(intentId: string): Promise<string[]> {
++  const result = await withTenant(db, scopedContext(), (tx) =>
++    tx.execute(
++      posRefundsOfIntentSql(seededTenantId, intentId, {
++        sales: sql`TRUE`,
++        posRefunds: sql`TRUE`,
++      }),
++    ),
++  );
++  return result.rows.map((row) => String(row.id));
++}
++
++beforeAll(async () => {
++  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
++    throw new Error("Requires the disposable test database");
++  staff = await staffWithRole(app, {
++    template: "owner",
++    label: "Tender Attribution Owner",
++  });
++  await verifySessionMfa(staff.email);
++  const approver = agent(app);
++  await signUp(approver, "Tender Attribution Supervisor");
++  const session = await approver.get("/api/auth/get-session");
++  approverId = session.body.user.id as string;
++});
++
++afterAll(async () => {
++  const { rows: refunds } = await owner.query<{ id: string }>(
++    "SELECT id FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
++    [intentIds],
++  );
++  await owner.query(
++    "DELETE FROM approval_requests WHERE object_type = 'payment_refund' AND object_id = ANY($1::text[])",
++    [refunds.map((r) => r.id)],
++  );
++  await owner.query(
++    "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
++    [intentIds],
++  );
++  await owner.query(
++    "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
++    [intentIds],
++  );
++  // POS refunds and final orders are immutable: skip user triggers in a
++  // dedicated transaction so the rest of the cleanup keeps FK checks.
++  await asOwner(async (client) => {
++    await client.query("SET LOCAL session_replication_role = replica");
++    for (const table of [
++      "pos_order_approval_uses",
++      "pos_order_refunds",
++      "pos_order_tenders",
++      "order_events",
++      "pos_orders",
++    ])
++      await client.query(
++        `DELETE FROM ${table} WHERE tenant_id = $1 AND order_id = ANY($2::uuid[])`,
++        [seededTenantId, orderIds],
++      );
++    await client.query("DELETE FROM orders WHERE id = ANY($1::uuid[])", [
++      orderIds,
++    ]);
++    await client.query(
++      "DELETE FROM pos_overrides WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
++      [seededTenantId, overrideIds],
++    );
++  });
++  await asOwner(async (client) => {
++    await client.query(
++      "DELETE FROM payment_intents WHERE tenant_id = $1 AND id = ANY($2)",
++      [seededTenantId, intentIds],
++    );
++    await client.query(
++      "DELETE FROM payment_links WHERE tenant_id = $1 AND id = ANY($2)",
++      [seededTenantId, linkIds],
++    );
++  });
++  await owner.end();
++});
++
++describe("legend-8v2yl legend-45bs9 a POS refund is attributed per tender when one method has several intents", () => {
++  it("a 30000 POS refund of a qris sale paid by intent A (60000) then B (40000) records its tender parts; A can refund 30000, not 30001; B nothing", async () => {
++    const intentA = await paidIntent(60_000);
++    const intentB = await paidIntent(40_000);
++    const orderId = await posOrder(100_000);
++    const tenderA = await qrisTender(orderId, intentA, 60_000, 2);
++    await qrisTender(orderId, intentB, 40_000, 1);
++
++    const refund = await posRefund(orderId, 30_000);
++
++    // The contract DTO keeps its shape; the row carries the tender parts.
++    expect(refund.lines).toEqual([
++      { method: "qris", amountIdr: 30_000, reference: null },
++    ]);
++    expect(await storedLines(refund.id)).toEqual([
++      {
++        method: "qris",
++        amountIdr: 30_000,
++        reference: null,
++        tenders: [
++          { tenderId: tenderA, paymentIntentId: intentA, amountIdr: 30_000 },
++        ],
++      },
++    ]);
++
++    await expectRefused(intentA, 30_001);
++    await expectRefused(intentB, 1);
++    expect(await ledgerNet(intentA)).toBe(30_000);
++    expect(await ledgerNet(intentB)).toBe(40_000);
++    expect(await ledgerCandidates(intentA)).toEqual([refund.id]);
++    expect(await ledgerCandidates(intentB)).toEqual([]);
++    await expectCreated(intentA, 30_000);
++  });
++
++  it("a later 50000 POS refund takes what is left on A (30000) then 20000 of B; A can refund nothing, B 20000 but not 20001", async () => {
++    const intentA = await paidIntent(60_000);
++    const intentB = await paidIntent(40_000);
++    const orderId = await posOrder(100_000);
++    const tenderA = await qrisTender(orderId, intentA, 60_000, 2);
++    const tenderB = await qrisTender(orderId, intentB, 40_000, 1);
++
++    await posRefund(orderId, 30_000);
++    const second = await posRefund(orderId, 50_000);
++
++    expect(await storedLines(second.id)).toEqual([
++      {
++        method: "qris",
++        amountIdr: 50_000,
++        reference: null,
++        tenders: [
++          { tenderId: tenderA, paymentIntentId: intentA, amountIdr: 30_000 },
++          { tenderId: tenderB, paymentIntentId: intentB, amountIdr: 20_000 },
++        ],
++      },
++    ]);
++
++    await expectRefused(intentA, 1);
++    await expectRefused(intentB, 20_001);
++    expect(await ledgerNet(intentA)).toBe(0);
++    expect(await ledgerNet(intentB)).toBe(20_000);
++    await expectCreated(intentB, 20_000);
++  });
++
++  it("a legacy method-only POS refund line keeps the old rule: neither intent gets anything back, and a later refund fills the tenders after it", async () => {
++    const intentA = await paidIntent(60_000);
++    const intentB = await paidIntent(40_000);
++    const orderId = await posOrder(100_000);
++    const tenderA = await qrisTender(orderId, intentA, 60_000, 2);
++    const tenderB = await qrisTender(orderId, intentB, 40_000, 1);
++    await legacyQrisRefund(orderId, 30_000);
++
++    await expectRefused(intentA, 1);
++    await expectRefused(intentB, 1);
++    expect(await ledgerNet(intentA)).toBe(60_000);
++    expect(await ledgerNet(intentB)).toBe(40_000);
++
++    // The legacy 30000 consumed A first: a 40000 refund takes A's last 30000
++    // and 10000 of B.
++    const later = await posRefund(orderId, 40_000);
++    expect(await storedLines(later.id)).toEqual([
++      {
++        method: "qris",
++        amountIdr: 40_000,
++        reference: null,
++        tenders: [
++          { tenderId: tenderA, paymentIntentId: intentA, amountIdr: 30_000 },
++          { tenderId: tenderB, paymentIntentId: intentB, amountIdr: 10_000 },
++        ],
++      },
++    ]);
++  });
++});

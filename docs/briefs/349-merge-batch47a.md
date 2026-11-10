@@ -20,7 +20,14 @@ Remote: origin GitHub privat. Push `ws/merge-batch47a` dan `milestone/m1` setela
 13. ws/eirhm-menu-print-cleanup 8463d89a
 14. ws/5tmye-whitelabel-flaky f4a782b7
 
-Tidak ikut: u37u3 (menunggu review founder), rantai HRIS edge (batch47b), i83ls/wumm8 (masih jalan).
+## Fase 2: rantai HRIS edge (gate penuh sekali di akhir, setelah fase 1 dan 2)
+15. ws/hris-edge-design 0148be9d
+16. cku1m 462b2cbb, ye4j1 35bf1300, hwn02 092643e6 (cek nama cabang dengan `git branch --points-at`)
+17. ws/tkycp-people-pull d244add8
+18. ws/hubzo-selfie-worker 68704269 (memuat we0yc dan 0wvoz 8fa3f787)
+19. Bila CTO mengirim tip baru (j6cyb, svy91, i83ls) sebelum gate mulai: ikutkan.
+
+Tidak ikut: u37u3 (menunggu review founder).
 
 ## Migrasi
 - Nomor sementara (0219-0229) dinomori ulang rapat mulai 0217, urut merge, `when` naik. Rename SQL, snapshot, tag jurnal; sambung ulang `prevId`; `db:generate` kosong sesudah tiap merge. Ganti rujukan nomor lama di kode/komentar/docs.
