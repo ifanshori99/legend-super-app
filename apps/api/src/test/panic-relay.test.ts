@@ -56,6 +56,7 @@ import {
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { respondFacilityIncident } from "../services/facility-incidents.service.ts";
 import { subscribe, publish } from "../services/panic-relay-hub.ts";
 import {
   acknowledgePanicAlert,
@@ -142,9 +143,9 @@ async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
   }
 }
 
-const todayJakarta = () =>
+const jakartaDateOf = (instantMs: number) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(
-    new Date(),
+    new Date(instantMs),
   );
 
 // ---- fixtures -------------------------------------------------------------
@@ -241,11 +242,16 @@ async function seedUnit(panicDeviceId: string) {
   return { facilityId, unitId };
 }
 
-/** Staff member of an outlet with an HRIS employee row; `shift` sets attendance. */
+/**
+ * Staff member of an outlet with an HRIS employee row; `shift` sets attendance.
+ * The clock-in is `inHoursAgo` hours old (a clock-out, when asked for, is 1 h
+ * ago); the business date is that of the log's own instant.
+ */
 async function seedStaff(
   label: string,
   outletId: string,
   shift: "clocked-in" | "clocked-out",
+  inHoursAgo = 3,
 ) {
   const user = await newUser(label);
   const employeeId = randomUUID();
@@ -278,11 +284,11 @@ async function seedStaff(
           employeeId,
           type,
           agoHours,
-          todayJakarta(),
+          jakartaDateOf(Date.now() - agoHours * 3_600_000),
           createUlid(),
         ],
       );
-    await log("in", 3);
+    await log("in", inHoursAgo);
     if (shift === "clocked-out") await log("out", 1);
   });
   return user;
@@ -394,10 +400,17 @@ const incidentCount = (unitId: string) =>
     return rows[0].n;
   });
 
-/** Subscribes to the panic hub of an outlet; resolves frames received so far. */
-function listen(outletId: string, tenantId: string = seededTenantId) {
+/**
+ * Subscribes to the panic hub of an outlet as `userId` (a staff socket); the
+ * on-duty fan-out only reaches the sockets of staff on duty.
+ */
+function listen(
+  outletId: string,
+  tenantId: string = seededTenantId,
+  userId: string | null = null,
+) {
   const send = vi.fn();
-  const unsubscribe = subscribe({ tenantId, outletId }, send);
+  const unsubscribe = subscribe({ tenantId, outletId }, send, userId);
   unsubscribes.push(unsubscribe);
   return { send, unsubscribe };
 }
@@ -529,7 +542,8 @@ describe("legend-bod POST /api/edge/panic/events", () => {
     actAsEdge();
     const { deviceId, token } = await registerDevice("panic_button");
     const { unitId } = await seedUnit(deviceId);
-    const outletListener = listen(seededOutletA);
+    const duty = await seedStaff("Panic Fanout", seededOutletA, "clocked-in");
+    const outletListener = listen(seededOutletA, seededTenantId, duty.userId);
     const otherOutletListener = listen(seededOutletB);
     const body = panicBody(deviceId);
 
@@ -573,34 +587,36 @@ describe("legend-bod POST /api/edge/panic/events", () => {
     expect(otherOutletListener.send).not.toHaveBeenCalled();
   });
 
-  it("a replay of the same eventId makes no second alert, no second incident and no second frame", async () => {
+  it("a replay of the same eventId makes no second alert and no second incident", async () => {
     actAsEdge();
     const { deviceId, token } = await registerDevice("panic_button");
     const { unitId } = await seedUnit(deviceId);
-    const listener = listen(seededOutletA);
+    const duty = await seedStaff("Panic Replay", seededOutletA, "clocked-in");
+    const listener = listen(seededOutletA, seededTenantId, duty.userId);
     const body = panicBody(deviceId);
 
     const first = await press(token, body);
     expect([200, 201]).toContain(first.status);
+    expect(listener.send).toHaveBeenCalledOnce();
     const replay = await press(token, body);
     expect([200, 201]).toContain(replay.status);
 
     const { rows } = await alertRows(deviceId, body.eventId);
     expect(rows).toHaveLength(1);
     expect(await incidentCount(unitId)).toBe(1);
-    expect(listener.send).toHaveBeenCalledOnce();
+    // The frame of a replay while unacknowledged is covered below ("replay").
 
     // A new eventId from the same device is a new press.
     const next = await press(token, panicBody(deviceId));
     expect([200, 201]).toContain(next.status);
     expect(await incidentCount(unitId)).toBe(2);
-    expect(listener.send).toHaveBeenCalledTimes(2);
   });
 
   it("a button that is not mapped to a unit still raises and fans out the alert, without an incident", async () => {
     actAsEdge();
     const { deviceId, token } = await registerDevice("panic_button");
-    const listener = listen(seededOutletA);
+    const duty = await seedStaff("Panic Unmapped", seededOutletA, "clocked-in");
+    const listener = listen(seededOutletA, seededTenantId, duty.userId);
     const body = panicBody(deviceId);
 
     const res = await press(token, body);
@@ -619,12 +635,22 @@ describe("legend-bod POST /api/edge/panic/events", () => {
   it("only staff on duty in the outlet are counted: clocked-out and other-outlet staff are not", async () => {
     actAsEdge();
     const { deviceId, token } = await registerDevice("panic_button");
-    await seedStaff("Panic On Duty 1", seededOutletA, "clocked-in");
-    await seedStaff("Panic On Duty 2", seededOutletA, "clocked-in");
-    await seedStaff("Panic Clocked Out", seededOutletA, "clocked-out");
-    await seedStaff("Panic Other Outlet", seededOutletB, "clocked-in");
-    const own = listen(seededOutletA);
-    const other = listen(seededOutletB);
+    const one = await seedStaff("Panic On Duty 1", seededOutletA, "clocked-in");
+    const two = await seedStaff("Panic On Duty 2", seededOutletA, "clocked-in");
+    const out = await seedStaff(
+      "Panic Clocked Out",
+      seededOutletA,
+      "clocked-out",
+    );
+    const away = await seedStaff(
+      "Panic Other Outlet",
+      seededOutletB,
+      "clocked-in",
+    );
+    const oneSocket = listen(seededOutletA, seededTenantId, one.userId);
+    const twoSocket = listen(seededOutletA, seededTenantId, two.userId);
+    const outSocket = listen(seededOutletA, seededTenantId, out.userId);
+    const awaySocket = listen(seededOutletB, seededTenantId, away.userId);
     const body = panicBody(deviceId);
 
     const res = await press(token, body);
@@ -632,8 +658,10 @@ describe("legend-bod POST /api/edge/panic/events", () => {
 
     const { rows } = await alertRows(deviceId, body.eventId);
     expect(rows[0].recipient_count).toBe(2);
-    expect(own.send).toHaveBeenCalledOnce();
-    expect(other.send).not.toHaveBeenCalled();
+    expect(oneSocket.send).toHaveBeenCalledOnce();
+    expect(twoSocket.send).toHaveBeenCalledOnce();
+    expect(outSocket.send).not.toHaveBeenCalled();
+    expect(awaySocket.send).not.toHaveBeenCalled();
   });
 
   it("refuses a device that is not a panic button and stores nothing", async () => {
@@ -874,10 +902,10 @@ describe("legend-bod tenant isolation", () => {
       c.query(select, [alertId]),
     );
     expect(asB.rowCount).toBe(0);
-    const noTenant = await asLegendApp(appPool, null, (c) =>
-      c.query(select, [alertId]),
-    );
-    expect(noTenant.rowCount).toBe(0);
+    // No tenant set: app.require_tenant_id() raises, so nothing is readable.
+    await expect(
+      asLegendApp(appPool, null, (c) => c.query(select, [alertId])),
+    ).rejects.toThrow(/tenant context is required/i);
     const updatedByB = await asLegendApp(appPool, tenantB.tenantId, (c) =>
       c.query(
         "UPDATE panic_alerts SET acknowledged_by = 'intruder' WHERE id = $1",
@@ -897,5 +925,176 @@ describe("legend-bod tenant isolation", () => {
 
     const stored = await alertRows(deviceId, body.eventId);
     expect(stored.rows[0].acknowledged_by).toBeNull();
+  });
+});
+
+// ---- architect review fixes (legend-bod) ----------------------------------
+
+describe("legend-bod fan-out reaches the sockets of staff on duty only", () => {
+  it("hub: publish with userIds delivers to those users' sockets and counts them", () => {
+    const key = { tenantId: seededTenantId, outletId: seededOutletA };
+    const alice = listen(seededOutletA, seededTenantId, "user-alice");
+    const aliceToo = listen(seededOutletA, seededTenantId, "user-alice");
+    const bob = listen(seededOutletA, seededTenantId, "user-bob");
+    const anonymous = listen(seededOutletA);
+    const frame = { type: "panic" };
+    expect(publish(key, frame, { userIds: ["user-alice"] })).toBe(2);
+    expect(alice.send).toHaveBeenCalledWith(frame);
+    expect(aliceToo.send).toHaveBeenCalledWith(frame);
+    expect(bob.send).not.toHaveBeenCalled();
+    expect(anonymous.send).not.toHaveBeenCalled();
+    expect(publish(key, frame, { userIds: [] })).toBe(0);
+  });
+
+  it("recipient_count is the number of sockets that got the frame, not the attendance list", async () => {
+    actAsEdge();
+    const { deviceId, token } = await registerDevice("panic_button");
+    const connected = await seedStaff(
+      "Panic Socket",
+      seededOutletA,
+      "clocked-in",
+    );
+    await seedStaff("Panic No Socket", seededOutletA, "clocked-in");
+    const out = await seedStaff(
+      "Panic Socket Out",
+      seededOutletA,
+      "clocked-out",
+    );
+    const onDuty = listen(seededOutletA, seededTenantId, connected.userId);
+    const clockedOut = listen(seededOutletA, seededTenantId, out.userId);
+    const body = panicBody(deviceId);
+
+    expect([200, 201]).toContain((await press(token, body)).status);
+
+    const { rows } = await alertRows(deviceId, body.eventId);
+    expect(rows[0].recipient_count).toBe(1);
+    expect(rows[0].fanned_out_ms).not.toBeNull();
+    expect(onDuty.send).toHaveBeenCalledOnce();
+    expect(clockedOut.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("legend-bod on duty is the latest log of the last 18 hours", () => {
+  it("a night shift that began before midnight still counts; an older clock-in does not", async () => {
+    actAsEdge();
+    const { deviceId, token } = await registerDevice("panic_button");
+    // Business date of the 17 h old clock-in is yesterday (or today).
+    const night = await seedStaff(
+      "Panic Night",
+      seededOutletA,
+      "clocked-in",
+      17,
+    );
+    const stale = await seedStaff(
+      "Panic Stale",
+      seededOutletA,
+      "clocked-in",
+      20,
+    );
+    const nightSocket = listen(seededOutletA, seededTenantId, night.userId);
+    const staleSocket = listen(seededOutletA, seededTenantId, stale.userId);
+    const body = panicBody(deviceId);
+
+    expect([200, 201]).toContain((await press(token, body)).status);
+
+    const { rows } = await alertRows(deviceId, body.eventId);
+    expect(rows[0].recipient_count).toBe(1);
+    expect(nightSocket.send).toHaveBeenCalledOnce();
+    expect(staleSocket.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("legend-bod an acknowledgement does not block the incident resolve", () => {
+  async function ackedAlert() {
+    actAsEdge();
+    const { deviceId, token } = await registerDevice("panic_button");
+    await seedUnit(deviceId);
+    const body = panicBody(deviceId);
+    expect([200, 201]).toContain((await press(token, body)).status);
+    const { rows } = await alertRows(deviceId, body.eventId);
+    const acker = await edgeOwner("Panic Acker");
+    const other = await edgeOwner("Panic Other Resolver");
+    const ack = await acker.client
+      .post(ackPath(rows[0].id))
+      .set(originHeader)
+      .send({});
+    expect(ack.status).toBe(200);
+    return { alert: rows[0], acker, other };
+  }
+
+  it("the staff member who acknowledged can resolve the incident once; someone else gets 409", async () => {
+    const { alert, acker, other } = await ackedAlert();
+    const incidentId = alert.facility_incident_id as string;
+    const context = scopedTo(seededOutletA);
+    const acked = (await incidentRow(incidentId)).rows[0];
+    expect(acked.responded_by).toBe(acker.userId);
+
+    await expect(
+      respondFacilityIncident(context, other.userId, incidentId, {
+        resolution: "Saya tangani",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const resolved = await respondFacilityIncident(
+      context,
+      acker.userId,
+      incidentId,
+      { resolution: "Tamu aman" },
+    );
+    expect(resolved).toMatchObject({
+      respondedBy: acker.userId,
+      resolution: "Tamu aman",
+    });
+    // The acknowledgement time is kept (it is the response time).
+    expect(new Date(resolved.respondedAt as string).getTime()).toBe(
+      acked.responded_at?.getTime(),
+    );
+
+    // Resolved: a different resolution is refused, the same one is idempotent.
+    await expect(
+      respondFacilityIncident(context, acker.userId, incidentId, {
+        resolution: "Lain lagi",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      respondFacilityIncident(context, acker.userId, incidentId, {
+        resolution: "Tamu aman",
+      }),
+    ).resolves.toMatchObject({ resolution: "Tamu aman" });
+  });
+});
+
+describe("legend-bod a replay of an unacknowledged press shows it again", () => {
+  it("re-publishes to the staff on duty and answers replayed; stops once it is acknowledged", async () => {
+    actAsEdge();
+    const { deviceId, token } = await registerDevice("panic_button");
+    const duty = await seedStaff("Panic Again", seededOutletA, "clocked-in");
+    const socket = listen(seededOutletA, seededTenantId, duty.userId);
+    const body = panicBody(deviceId);
+
+    const first = await press(token, body);
+    expect([200, 201]).toContain(first.status);
+    expect(first.body.data.replayed).toBe(false);
+    expect(socket.send).toHaveBeenCalledTimes(1);
+
+    const again = await press(token, body);
+    expect([200, 201]).toContain(again.status);
+    expect(again.body.data.replayed).toBe(true);
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(socket.send.mock.calls[1][0]).toEqual(socket.send.mock.calls[0][0]);
+    expect((await alertRows(deviceId, body.eventId)).rows).toHaveLength(1);
+
+    const { rows } = await alertRows(deviceId, body.eventId);
+    const staff = await edgeOwner("Panic Replay Acker");
+    const ack = await staff.client
+      .post(ackPath(rows[0].id))
+      .set(originHeader)
+      .send({});
+    expect(ack.status).toBe(200);
+
+    const late = await press(token, body);
+    expect([200, 201]).toContain(late.status);
+    expect(late.body.data.replayed).toBe(true);
+    expect(socket.send).toHaveBeenCalledTimes(2);
   });
 });

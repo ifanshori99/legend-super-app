@@ -16,9 +16,12 @@ CREATE TABLE "panic_alerts" (
 	CONSTRAINT "panic_alerts_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "panic_alerts_device_event_key" UNIQUE("tenant_id","device_id","event_id"),
 	CONSTRAINT "panic_alerts_recipient_count_check" CHECK ("panic_alerts"."recipient_count" >= 0),
+	CONSTRAINT "panic_alerts_ack_pair_check" CHECK (("panic_alerts"."acknowledged_by" IS NULL) = ("panic_alerts"."acknowledged_at" IS NULL)),
 	CONSTRAINT "panic_alerts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "panic_alerts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
-	CONSTRAINT "panic_alerts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action
+	CONSTRAINT "panic_alerts_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "panic_alerts_device_fk" FOREIGN KEY ("tenant_id","device_id") REFERENCES "public"."devices"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "panic_alerts_incident_fk" FOREIGN KEY ("tenant_id","facility_incident_id") REFERENCES "public"."facility_incidents"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE INDEX "panic_alerts_outlet_received_idx" ON "panic_alerts" USING btree ("tenant_id","outlet_id","received_at" DESC NULLS LAST);--> statement-breakpoint

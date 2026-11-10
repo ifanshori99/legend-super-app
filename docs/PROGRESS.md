@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-bod WS-02 tombol darurat di LAN outlet, irisan 1 (engineer Sonnet, cabang `ws/bod-emergency-relay` dari milestone/m1 29ddcbf7, brief 356, 2026-11-10 18:30-19:05)
+
+- Sudah di m1 (tidak ditulis ulang): tipe device `panic_button`, `facility_incidents` + `raiseFacilityIncident`/`respondFacilityIncident`, WS KDS sebagai pola.
+- Baru: tabel `panic_alerts` (migrasi sementara 0238, journal idx 217, `when` 1794343000000, FK inline, RLS tenant+outlet), `panic-relay.service.ts` (ingest idempoten per device+event, jaga = log absensi terakhir 18 jam bukan clock-out, ack pertama menang), `panic-relay-hub.ts` (pub/sub di proses, tanpa jaringan luar, jalan offline), `panic-relay-realtime.ts` (WS `/api/outlets/:outletId/panic/realtime`, ping 15 detik), `routes/edge-panic.routes.ts` (`POST /api/edge/panic/events`, `.../alerts/:id/ack`, `GET .../alerts`), skema zod di `packages/shared/src/facility/panic.ts`, `raisePanicIncident` di `facility-incidents.service.ts`. `recipient_count` = jumlah soket yang benar-benar menerima frame, dihitung setelah commit.
+- Bukti: tes gagal-dulu `panic-relay.test.ts` (commit merah a57a4d58, "Cannot find module panic-relay-hub"); kini hijau bersama `facility-incidents-api.test.ts`; tsc api (heavy) 0; prettier bersih; `db:generate` kosong.
+- Review architect (K): 2 tinggi, 3 sedang, 2 rendah. Dibetulkan: fan-out ke semua soket dan hitungan penerima palsu, tanggal bisnis jaga lewat tengah malam, ack memblokir resolve, ping soket mati, replay saat crash, FK device/insiden + CHECK ack. Tidak dibetulkan di sini: allowlist edge (`edge/mode.ts`, milik j6cyb) -> kartu `legend-m47qh` P1, wajib sebelum edge dipakai.
+- Catatan merge train: tambahkan `EDGE_PANIC_API_PREFIXES` ke `EDGE_API_PREFIXES` dan `EDGE_PANIC_UPGRADE_PATTERN` ke allowlist upgrade di `edge/mode.ts`; nomor migrasi 0238 sementara, snapshot `0217_snapshot.json` mengikuti idx journal.
+- Kartu sisa: `legend-m47qh` (allowlist), `legend-kmjax` (sync cloud lewat outbox + web push di luar LAN, tes ping dan WS), `legend-kpzmi` (UI banner staf, perlu mockup).
+- Biaya sesi (session-usage): total 3101k unit, 8 subagent, puncak konteks 156k, 0 compact. Waktu kerja ±35 menit. Tugas per vendor: Claude 8 subagent (1 Explore x3, test-writer, 2 implementer, architect, test-runner), Codex 0.
+
 ## legend-msqvi WS-08 jurnal poin loyalti PSAK 72 (engineer Opus, cabang `ws/msqvi-points-journal` dari milestone/m1 7d388b02, brief 304 C, 2026-11-10)
 
 - Tanpa migrasi (`db:generate` kosong). Role baru `loyalty_points_deferral` + akun `4105 Penangguhan Pendapatan Poin Loyalty` (kontra-pendapatan di bawah 4100). Tenant baru dari template; tenant lama lewat `pnpm db:backfill-defaults` (`addLoyaltyDeferralAccount`, lewati bila 4105 terpakai).

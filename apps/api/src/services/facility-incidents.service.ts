@@ -15,6 +15,7 @@ import {
   userIdSchema,
   uuidSchema,
   type CursorPage,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -38,6 +39,7 @@ import {
   loadFacility,
   notFound,
   OPERATE_PERMISSION,
+  type Tx,
 } from "./facility-shared.ts";
 import { storeFacilityIdempotentResult } from "./facility-config-guard.ts";
 import {
@@ -324,6 +326,88 @@ export async function raiseFacilityIncident(
 }
 
 /**
+ * FAC-08: the panic button of a unit fired (panic-relay.service.ts). Same row,
+ * audit entry and outbox events as `raiseFacilityIncident`, inside the
+ * caller's transaction, for a device instead of a staff member: the audit
+ * actor is the system and the event actor is the button. The caller has
+ * already resolved the unit and the device under the right outlet scope.
+ */
+export async function raisePanicIncident(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    unit: { id: string; facilityId: string; outletId: OutletId };
+    deviceId: string;
+    offline: boolean;
+  },
+  now: Date,
+): Promise<IncidentRow> {
+  const tenantId = context.tenant.tenantId;
+  const [row] = await tx
+    .insert(facilityIncidents)
+    .values({
+      tenantId,
+      outletId: input.unit.outletId,
+      facilityId: input.unit.facilityId,
+      unitId: input.unit.id,
+      accessTicketId: null,
+      type: "panic",
+      triggeredAt: now,
+      offline: input.offline,
+    })
+    .returning();
+  await auditFacility(tx, context, null, now, {
+    action: "facility_incident.raise",
+    objectType: "facility_incident",
+    objectId: row.id,
+    outletId: row.outletId,
+    before: null,
+    after: {
+      id: row.id,
+      facilityId: row.facilityId,
+      unitId: row.unitId,
+      type: row.type,
+    },
+  });
+  const event = facilityIncidentRaisedEvent.envelopeSchema.parse({
+    id: createUlid(now.getTime()),
+    tenantId,
+    outletId: row.outletId,
+    name: "facility_incident.raised",
+    version: 1,
+    aggregateType: "facility_incident",
+    aggregateId: row.id,
+    sequence: 1,
+    occurredAt: row.triggeredAt.toISOString(),
+    actor: { type: "device", id: input.deviceId },
+    deviceId: input.deviceId,
+    idempotencyKey: `facility_incident.raised:${row.id}`,
+    payloadSchemaRef: "facility_incident.raised.v1",
+    payload: {
+      incidentId: row.id,
+      facilityId: row.facilityId,
+      unitId: row.unitId,
+      type: row.type,
+      triggeredAt: row.triggeredAt.toISOString(),
+      offline: row.offline,
+    },
+  });
+  for (const destination of [
+    FACILITY_EVENT_DESTINATION,
+    FACILITY_NOTIFICATION_DESTINATION,
+  ]) {
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination,
+      direction: null,
+      peerId: null,
+    });
+  }
+  return row;
+}
+
+/**
  * FAC-08: staff answer an incident with a resolution. The row is locked, so
  * two responders cannot both win: the second gets 409. Repeating the same
  * answer by the same staff member returns the recorded incident unchanged.
@@ -357,7 +441,14 @@ export async function respondFacilityIncident(
       OPERATE_PERMISSION,
       locked.outletId,
     );
-    if (locked.respondedAt) {
+    // A panic acknowledgement (panic-relay.service.ts) marks the incident as
+    // responded without a resolution. The person who took it may still resolve
+    // it, once: that fills the resolution and keeps the acknowledgement time.
+    const acknowledgedByActor =
+      locked.respondedAt !== null &&
+      locked.respondedBy === actor &&
+      locked.resolution === null;
+    if (locked.respondedAt && !acknowledgedByActor) {
       if (
         locked.respondedBy === actor &&
         locked.resolution === input.resolution
@@ -373,7 +464,7 @@ export async function respondFacilityIncident(
       .update(facilityIncidents)
       .set({
         respondedBy: actor,
-        respondedAt: now,
+        respondedAt: acknowledgedByActor ? locked.respondedAt : now,
         resolution: input.resolution,
       })
       .where(
@@ -388,7 +479,10 @@ export async function respondFacilityIncident(
       objectType: "facility_incident",
       objectId: row.id,
       outletId: row.outletId,
-      before: { id: locked.id, status: "open" },
+      before: {
+        id: locked.id,
+        status: acknowledgedByActor ? "acknowledged" : "open",
+      },
       after: { id: row.id, status: "responded" },
     });
     return toFacilityIncident(row);

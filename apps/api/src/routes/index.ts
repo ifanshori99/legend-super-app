@@ -121,6 +121,7 @@ import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { edgeWifiRouter } from "./edge-wifi.routes.ts";
+import { edgePanicRouter } from "./edge-panic.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
@@ -389,6 +390,8 @@ apiRouter.use("/ai", aiInsightsRouter);
 apiRouter.use("/edge/devices", edgeDeviceRouter);
 // Wi-Fi agent grants + staff revoke + walled garden (legend-hsk), also before /edge.
 apiRouter.use("/edge/wifi", edgeWifiRouter);
+// Panic button ingest, ack and list (legend-bod), also before /edge.
+apiRouter.use("/edge/panic", edgePanicRouter);
 apiRouter.use("/edge", edgeRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential

@@ -70560,6 +70560,36 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "panic_alerts_device_fk": {
+          "name": "panic_alerts_device_fk",
+          "tableFrom": "panic_alerts",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "panic_alerts_incident_fk": {
+          "name": "panic_alerts_incident_fk",
+          "tableFrom": "panic_alerts",
+          "tableTo": "facility_incidents",
+          "columnsFrom": [
+            "tenant_id",
+            "facility_incident_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -70587,6 +70617,10 @@
         "panic_alerts_recipient_count_check": {
           "name": "panic_alerts_recipient_count_check",
           "value": "\"panic_alerts\".\"recipient_count\" >= 0"
+        },
+        "panic_alerts_ack_pair_check": {
+          "name": "panic_alerts_ack_pair_check",
+          "value": "(\"panic_alerts\".\"acknowledged_by\" IS NULL) = (\"panic_alerts\".\"acknowledged_at\" IS NULL)"
         }
       },
       "isRLSEnabled": false

@@ -23,6 +23,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
+import { devices } from "./device.ts";
+import { facilityIncidents } from "./facility.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
 export const panicAlerts = pgTable(
@@ -66,6 +68,21 @@ export const panicAlerts = pgTable(
       columns: [t.tenantId, t.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    foreignKey({
+      name: "panic_alerts_device_fk",
+      columns: [t.tenantId, t.deviceId],
+      foreignColumns: [devices.tenantId, devices.id],
+    }),
+    foreignKey({
+      name: "panic_alerts_incident_fk",
+      columns: [t.tenantId, t.facilityIncidentId],
+      foreignColumns: [facilityIncidents.tenantId, facilityIncidents.id],
+    }),
     check("panic_alerts_recipient_count_check", sql`${t.recipientCount} >= 0`),
+    // The first acknowledgement sets both columns together.
+    check(
+      "panic_alerts_ack_pair_check",
+      sql`(${t.acknowledgedBy} IS NULL) = (${t.acknowledgedAt} IS NULL)`,
+    ),
   ],
 );

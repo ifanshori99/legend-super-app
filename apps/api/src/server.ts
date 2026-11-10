@@ -25,6 +25,8 @@ import {
   listenKdsWakeups,
 } from "./services/kds-realtime.ts";
 import { resolveKdsStaffConnection } from "./services/kds-realtime-auth.ts";
+import { attachPanicRealtime } from "./services/panic-relay-realtime.ts";
+import { resolvePanicStaffConnection } from "./services/panic-relay-realtime-auth.ts";
 import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
 import { verifyEdgeNodeCredential } from "./services/edge-node.service.ts";
@@ -131,6 +133,13 @@ const stopKdsWakeups = listenKdsWakeups(pool, kdsRealtime.dispatch).catch(
   },
 );
 
+// Panic alert stream (legend-bod): staff session + facility.booth.operate on
+// the node's outlet; frames come from the in-process hub, not the database.
+const panicRealtime = attachPanicRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+  resolveConnection: resolvePanicStaffConnection,
+});
+
 // WS-02 edge mode (legend-2pi). The cloud accepts edge links on
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
@@ -189,6 +198,7 @@ async function shutdown(signal: string) {
   await (
     await stopQrWakeups
   )();
+  await panicRealtime.close();
   await kdsRealtime.close();
   await (
     await stopKdsWakeups
