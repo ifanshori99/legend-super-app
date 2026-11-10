@@ -80,6 +80,7 @@ import {
   failOverLinkSafely,
   syncGatewayHealthSafely,
 } from "./payment-failover.service";
+import { billClosedForLateSettlement } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
   paymentGatewayFor,
@@ -1107,7 +1108,10 @@ async function failIntent(
 export class PaymentConfirmationRejected extends HttpError {
   constructor(
     public decisionCode:
-      "UNTRUSTED_CONFIRMATION" | "AMOUNT_MISMATCH" | "INVALID_TRANSITION",
+      | "UNTRUSTED_CONFIRMATION"
+      | "AMOUNT_MISMATCH"
+      | "INVALID_TRANSITION"
+      | "BILL_CLOSED",
     message: string,
   ) {
     super(409, "CONFLICT", message);
@@ -1234,6 +1238,39 @@ type SyncResult = {
 };
 
 /**
+ * Gateways whose status answer settles only the exact bill, and whose late
+ * payment settles only an open bill (Codex legend-rgddb, CTO decision): any
+ * other paid answer is parked as unallocated funds for reconciliation.
+ */
+const STRICT_SETTLEMENT_PROVIDERS: ReadonlySet<string> = new Set(["duitku"]);
+
+/** Throws the same refusal the lifecycle uses, so the callers' parking path
+ * handles a strict provider's amount difference like an underpayment. */
+function assertStrictAmount(
+  intent: PaymentIntentRow,
+  paidAmountIdr: number,
+): void {
+  if (
+    STRICT_SETTLEMENT_PROVIDERS.has(intent.provider) &&
+    paidAmountIdr !== Number(intent.amountIdr)
+  )
+    throw new PaymentConfirmationRejected(
+      "AMOUNT_MISMATCH",
+      "The gateway amount differs from the bill.",
+    );
+}
+
+const strictOptions = (intent: PaymentIntentRow) => ({
+  closedIntentNeedsOpenBill: STRICT_SETTLEMENT_PROVIDERS.has(intent.provider),
+});
+
+/** Money that arrived but must not settle the intent: parked, not lost. */
+const parksFunds = (error: unknown): boolean =>
+  error instanceof PaymentConfirmationRejected &&
+  (error.decisionCode === "AMOUNT_MISMATCH" ||
+    error.decisionCode === "BILL_CLOSED");
+
+/**
  * Applies a provider status without inventing one (PAY-02). Past its expiry a
  * pending intent with a provider reference asks the gateway first: money may
  * have arrived after the code lapsed, and the lifecycle flags that as a late
@@ -1285,6 +1322,7 @@ async function syncPendingIntentDetailed(
       now,
     );
     try {
+      assertStrictAmount(intent, providerStatus.amountIdr);
       return {
         intent: await applyConfirmation(
           context,
@@ -1298,16 +1336,16 @@ async function syncPendingIntentDetailed(
           },
           { type: "system" },
           now,
+          strictOptions(intent),
         ),
         gatewayError: false,
       };
     } catch (error) {
-      // An underpayment is money that arrived: park it before the intent is
-      // expired or the error surfaces, so a lost webhook never loses funds.
-      if (
-        error instanceof PaymentConfirmationRejected &&
-        error.decisionCode === "AMOUNT_MISMATCH"
-      )
+      // An underpayment (or, for a strict provider, any amount difference or
+      // a late payment on a closed bill) is money that arrived: park it before
+      // the intent is expired or the error surfaces, so a lost webhook never
+      // loses funds.
+      if (parksFunds(error))
         await recordUnsettledGatewayFunds(
           context,
           intent,
@@ -1476,6 +1514,7 @@ export async function confirmPayment(
   confirmation: PaymentConfirmationInput,
   actor: PaymentActor = { type: "system" },
   now = new Date(),
+  options: { closedIntentNeedsOpenBill?: boolean } = {},
 ): Promise<PaymentIntent> {
   const parsed = paymentConfirmationSchema.parse(confirmation);
   const id = uuidSchema.parse(intentId);
@@ -1505,6 +1544,7 @@ export async function confirmPayment(
     },
     actor,
     now,
+    options,
   );
   return toPaymentIntent(updated);
 }
@@ -1597,6 +1637,7 @@ async function applyConfirmation(
   confirmation: PaymentConfirmation,
   actor: PaymentActor,
   now: Date,
+  options: { closedIntentNeedsOpenBill?: boolean } = {},
 ): Promise<PaymentIntentRow> {
   const auditActor = auditActorOf(actor);
   return withTenant(db, context, async (tx) => {
@@ -1634,6 +1675,19 @@ async function applyConfirmation(
     if (decision.kind === "duplicate") return current;
     if (decision.kind === "reject")
       throw new PaymentConfirmationRejected(decision.code, decision.message);
+    // Opt-in late settlement guard: a failed or expired intent may only settle
+    // a bill that is still open. Checked under the bill + intent locks above
+    // and before any write, so the caller can park the money as unallocated.
+    if (
+      options.closedIntentNeedsOpenBill &&
+      (current.status === "failed" || current.status === "expired") &&
+      decision.kind === "settle" &&
+      (await billClosedForLateSettlement(tx, context, freshLink, current))
+    )
+      throw new PaymentConfirmationRejected(
+        "BILL_CLOSED",
+        "The bill of this closed payment is already settled or cancelled.",
+      );
 
     if (decision.kind === "double_payment") {
       // PAY-04 retries: one provider transaction must produce one unallocated
@@ -1851,6 +1905,7 @@ async function applyConfirmation(
             unallocatedIdr: unallocatedNow,
             providerRef: confirmation.providerRef,
             source: confirmation.source,
+            late: decision.late,
           },
         },
         ipHash: null,
@@ -1866,6 +1921,7 @@ async function applyConfirmation(
         "unallocatedIdr",
         "providerRef",
         "source",
+        "late",
       ],
     );
     return row;
@@ -2089,6 +2145,7 @@ async function syncExpiredIntentPayment(
     return { intent, gatewayError: false };
   const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
+    assertStrictAmount(intent, providerStatus.amountIdr);
     const settled = await applyConfirmation(
       context,
       intent,
@@ -2101,14 +2158,12 @@ async function syncExpiredIntentPayment(
       },
       { type: "system" },
       now,
+      strictOptions(intent),
     );
     await markGatewayReconciled(context, intent, now);
     return { intent: settled, gatewayError: false };
   } catch (error) {
-    if (
-      error instanceof PaymentConfirmationRejected &&
-      error.decisionCode === "AMOUNT_MISMATCH"
-    ) {
+    if (parksFunds(error)) {
       await recordUnsettledGatewayFunds(
         context,
         intent,

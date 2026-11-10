@@ -213,6 +213,31 @@ afterAll(async () => {
       `DELETE FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantA, createdLinkIds],
     );
+    // Seeded orders are final (voided): the POS-04 immutability trigger
+    // refuses their delete, so it is skipped for this test cleanup only.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "DELETE FROM orders WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+        [tenantA, createdLinkIds],
+      );
+      await client.query(
+        "DELETE FROM reservations WHERE tenant_id = $1 AND deposit_payment_link_id = ANY($2::uuid[])",
+        [tenantA, createdLinkIds],
+      );
+      await client.query(
+        "DELETE FROM pos_order_tenders WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+        [tenantA, createdLinkIds],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     await owner.query(
       "DELETE FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
       [tenantA, createdLinkIds],
@@ -434,7 +459,9 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       status: "processed",
-      event_id: `${bill.intentId}:${bill.reference}:00`,
+      // Only signed fields key the event (resultCode and reference are not
+      // signed, Codex P1 legend-rgddb).
+      event_id: `${bill.intentId}:${BILL_TOTAL}`,
       signature_valid: true,
     });
     // Asked with the minting merchant code.
@@ -479,17 +506,22 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     expect(statusAsks).toHaveLength(0);
   });
 
-  it("a callback amount that differs is never paid on the callback amount", async () => {
+  it("a callback amount that differs from the bill never settles it, even when the status answer matches the bill", async () => {
     const bill = await openIntent();
-    // Signed for 1000, but the bill is 144375. Duitku's own answer decides:
-    // here it says paid with the real amount.
+    // Signed for 1000, but the bill is 144375 and transactionStatus reports
+    // 144375. Callback, status and bill disagree: parked for reconciliation
+    // (Codex P2 legend-rgddb), never paid.
     setAnswer(bill.intentId, paid(bill.reference));
     const response = await callback(bill.intentId, bill.reference, {
       amount: "1000",
     });
     expect(response.status).toBe(200);
-    // Settled for what transactionStatus reports, not for 1000.
-    await expectPaidOnce(bill);
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedCount(bill.intentId)).toBe(1);
+    expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+      "REJECTED_AMOUNT_MISMATCH",
+    );
   });
 
   it("an underpaid status answer is parked as unallocated funds, the bill stays unpaid", async () => {
@@ -562,15 +594,25 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     });
   });
 
-  it("a callback that names another reference than the intent's is ignored without a status call", async () => {
+  it("a callback's reference is unsigned and decides nothing: the status answer does", async () => {
     const bill = await openIntent();
-    setAnswer(bill.intentId, paid(bill.reference));
+    // Duitku still says pending: a forged reference neither pays nor closes
+    // the row, which stays `failed` for the worker (Codex legend-rgddb).
+    setAnswer(bill.intentId, {
+      statusCode: "01",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
     const response = await callback(bill.intentId, bill.reference, {
       reference: "FORGED-REF",
     });
     expect(response.status).toBe(200);
     await expectUntouched(bill);
-    expect(statusAsks).toHaveLength(0);
+    expect(statusAsks).toHaveLength(1);
+    expect((await rowsFor(bill.intentId))[0]).toMatchObject({
+      status: "failed",
+      last_error_code: "PENDING_AT_PROVIDER",
+    });
   });
 
   it("a duplicate callback settles once and the replay answers 200 without a second status call", async () => {
@@ -682,6 +724,9 @@ describe("D20 late payment goes through the provider-agnostic lifecycle", () => 
     ).toBe(200);
     expect((await intentRow(bill.intentId)).status).toBe("failed");
 
+    // Same signed fields: the paid callback is a repeat of the stored event,
+    // re-checked with Duitku once the repeat window passed.
+    await ageRows(bill.intentId);
     setAnswer(bill.intentId, paid(bill.reference));
     const response = await callback(bill.intentId, bill.reference, {
       resultCode: "00",
@@ -734,6 +779,481 @@ describe("D20 late payment goes through the provider-agnostic lifecycle", () => 
     expect((await intentRow(bill.intentId)).flags).toContain("late_payment");
     // The webhook for the same payment afterwards is a no-op on money.
     expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    await expectPaidOnce(bill);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex second opinion (legend-rgddb). Before D18: the blocks below rotate
+// the integration's key and merchant code.
+// ---------------------------------------------------------------------------
+
+async function setDuitkuInPlan(enabled: boolean) {
+  await owner.query(
+    enabled
+      ? `UPDATE tenants
+            SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}',
+                  (feature_flags->'integrationProviders') || '"duitku"'::jsonb)
+          WHERE id = $1
+            AND NOT (feature_flags->'integrationProviders') ? 'duitku'`
+      : `UPDATE tenants
+            SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}',
+                  (feature_flags->'integrationProviders') - 'duitku')
+          WHERE id = $1`,
+    [tenantA],
+  );
+}
+
+async function unallocatedIdr(intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    "SELECT coalesce(sum(amount_idr), 0)::text AS n FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [tenantA, intentId],
+  );
+  return Number(rows[0]?.n);
+}
+
+/** Moves the intent's stored events past the repeat re-check window. */
+async function ageRows(intentId: string, ms = 2 * 60_000) {
+  await owner.query(
+    `UPDATE gateway_webhook_events
+        SET updated_at = updated_at - make_interval(secs => $3::double precision / 1000)
+      WHERE tenant_id = $1 AND provider = 'duitku' AND payment_intent_id = $2`,
+    [tenantA, intentId, ms],
+  );
+}
+
+/** Inserts a row whose parents this suite does not build (reservation,
+ * POS order): foreign keys and triggers are skipped for that one statement,
+ * CHECK and NOT NULL constraints still hold. */
+async function insertWithoutParents(sqlText: string, params: unknown[]) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(sqlText, params);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** A reservation whose deposit is the bill's link, closed as `status`. */
+async function seedClosedReservation(
+  linkId: string,
+  status: "cancelled" | "no_show",
+): Promise<void> {
+  await insertWithoutParents(
+    `INSERT INTO reservations
+       (tenant_id, outlet_id, guest_name, reserved_for, duration_minutes, pax,
+        deposit_idr, policy_snapshot, status, source, closed_at,
+        deposit_payment_link_id)
+     VALUES ($1, $2, 'Tamu Uji', now() - interval '1 hour', 90, 2, $3,
+             '{}'::jsonb, $4, 'staff', now(), $5)`,
+    [tenantA, outletA, BILL_TOTAL, status, linkId],
+  );
+}
+
+/** A POS gateway tender on the bill's link, closed as `failed`. */
+async function seedFailedPosTender(
+  linkId: string,
+  intentId: string,
+): Promise<void> {
+  await insertWithoutParents(
+    `INSERT INTO pos_order_tenders
+       (tenant_id, outlet_id, order_id, method, provider, payment_link_id,
+        payment_link_token_sealed, payment_intent_id, amount_idr, status,
+        requested_at, resolved_at)
+     VALUES ($1, $2, $3, 'qris', 'duitku', $4, 'sealed-test', $5, $6,
+             'failed', now(), now())`,
+    [tenantA, outletA, randomUUID(), linkId, intentId, BILL_TOTAL],
+  );
+}
+
+/** Distinct domain events of `name` raised for one intent (the outbox keeps
+ * one row per destination). */
+async function eventCount(name: string, intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(DISTINCT event_id)::text AS n FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = $2
+        AND (aggregate_id = $3 OR event->'payload'->>'intentId' = $3::text)`,
+    [tenantA, name, intentId],
+  );
+  return Number(rows[0]?.n);
+}
+
+/** A QR order on the bill's link, as the order flow would leave it. */
+async function seedOrderOnLink(
+  linkId: string,
+  status: "voided" | "completed",
+): Promise<void> {
+  await owner.query(
+    `INSERT INTO orders
+       (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+        subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr,
+        total_idr, status, business_date, payment_link_id,
+        payment_link_token_sealed, placed_at, voided_at, void_reason)
+     VALUES ($1, $2, $3, $4, 'qr', 'dine_in', 'pay_first',
+             125000, 0, 6250, 13125, 0, $5, $6, current_date, $7,
+             'sealed-test', now(), $8, $9)`,
+    [
+      randomUUID(),
+      tenantA,
+      outletA,
+      `Q-${unique()}`,
+      BILL_TOTAL,
+      status,
+      linkId,
+      status === "voided" ? new Date() : null,
+      status === "voided" ? "test" : null,
+    ],
+  );
+}
+
+describe("Codex P1 a stored intent still reconciles after Duitku leaves the tenant's plan", () => {
+  it("a callback for an intent minted before the revoke still settles the bill", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, paid(bill.reference));
+    await setDuitkuInPlan(false);
+    try {
+      const response = await callback(bill.intentId, bill.reference);
+      expect(response.status).toBe(200);
+      await expectPaidOnce(bill);
+    } finally {
+      await setDuitkuInPlan(true);
+    }
+  });
+
+  it("the poller still settles an expired intent minted before the revoke, while a new intent cannot be minted", async () => {
+    const expiresAt = new Date(Date.now() - 5 * 60_000);
+    const bill = await openIntent({
+      status: "expired",
+      expiresAt,
+      createdAt: new Date(Date.now() - 20 * 60_000),
+      updatedAt: new Date(expiresAt.getTime() - 60_000),
+    });
+    setAnswer(bill.intentId, paid(bill.reference));
+    const gateway = createDuitkuGateway({
+      fetch: globalThis.fetch,
+      callbackBaseUrl: "https://api.example.test",
+      returnUrl: "https://app.example.test/paid",
+    });
+    registerPaymentGateway(gateway);
+    await setDuitkuInPlan(false);
+    try {
+      const ran = await runPaymentGatewayPollJob(
+        contextFor("webhook"),
+        new Date(),
+        { force: true },
+      );
+      expect(ran?.polled.settled).toBeGreaterThanOrEqual(1);
+      await expectPaidOnce(bill);
+      // Minting a new intent still needs the plan.
+      expect(await gateway.health(contextFor("session"), outletA)).toEqual({
+        status: "down",
+        reason: "unconfigured",
+      });
+    } finally {
+      await setDuitkuInPlan(true);
+    }
+  });
+});
+
+describe("Codex P1 duplicates are keyed by signed fields only", () => {
+  it("a replayed failure callback with resultCode changed 02->00 does not swallow the real paid callback", async () => {
+    const bill = await openIntent();
+    // The real failure callback, replayed with resultCode forged to 00
+    // (resultCode is not signed). Duitku says failed at that moment.
+    setAnswer(bill.intentId, {
+      statusCode: "02",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    expect(
+      (await callback(bill.intentId, bill.reference, { resultCode: "00" }))
+        .status,
+    ).toBe(200);
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
+
+    // The customer then pays; Duitku's genuine paid callback arrives at once.
+    // Same signed fields: inside the repeat window the event is handed back
+    // to the worker instead of being dropped as a duplicate.
+    setAnswer(bill.intentId, paid(bill.reference));
+    const response = await callback(bill.intentId, bill.reference, {
+      resultCode: "00",
+    });
+    expect(response.status).toBe(200);
+    expect(await rowsFor(bill.intentId)).toMatchObject([
+      { status: "failed", last_error_code: "RECHECK_QUEUED" },
+    ]);
+
+    // The worker asks Duitku and settles it, late.
+    await reprocessDuitkuWebhookEvents(
+      contextFor("webhook"),
+      new Date(Date.now() + 10 * 60_000),
+    );
+    await expectPaidOnce(bill);
+    expect((await intentRow(bill.intentId)).flags).toContain("late_payment");
+    expect(await rowsFor(bill.intentId)).toHaveLength(1);
+  });
+
+  it("the same replay after the repeat window is checked with Duitku directly", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, {
+      statusCode: "02",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    await callback(bill.intentId, bill.reference, { resultCode: "00" });
+    await ageRows(bill.intentId);
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    await expectPaidOnce(bill);
+    expect(statusAsks).toHaveLength(2);
+  });
+
+  it("a forged-reference replay does not take a pending event away from the worker", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, {
+      statusCode: "01",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    await callback(bill.intentId, bill.reference);
+    expect(
+      (
+        await callback(bill.intentId, bill.reference, {
+          reference: "FORGED-REF",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await rowsFor(bill.intentId))[0]?.status).toBe("failed");
+
+    setAnswer(bill.intentId, paid(bill.reference));
+    await reprocessDuitkuWebhookEvents(
+      contextFor("webhook"),
+      new Date(Date.now() + 10 * 60_000),
+    );
+    await expectPaidOnce(bill);
+  });
+
+  it("rapid signed replays on an unpaid intent ask Duitku once and never postpone the worker", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, {
+      statusCode: "01",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    for (let i = 0; i < 5; i += 1)
+      expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    expect(statusAsks).toHaveLength(1);
+    // Only the first delivery touched the row.
+    expect((await rowsFor(bill.intentId))[0]).toMatchObject({
+      status: "failed",
+      attempts: 1,
+    });
+  });
+});
+
+describe("Codex P2 only callback == status == bill settles", () => {
+  it("an overpaid status answer (bill + 1) is parked for reconciliation, the bill stays unpaid", async () => {
+    const bill = await openIntent();
+    const over = String(BILL_TOTAL + 1);
+    setAnswer(bill.intentId, paid(bill.reference, over));
+
+    const response = await callback(bill.intentId, bill.reference, {
+      amount: over,
+    });
+
+    expect(response.status).toBe(200);
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL + 1);
+    expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+      "REJECTED_AMOUNT_MISMATCH",
+    );
+  });
+
+  it("a callback for bill - 1 is not settled by a status answer for the full bill", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    const response = await callback(bill.intentId, bill.reference, {
+      amount: String(BILL_TOTAL - 1),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+  });
+});
+
+describe("Codex P2 a late payment settles only an open bill", () => {
+  it("an expired intent whose bill another payment already settled stays expired; the money is parked once", async () => {
+    const bill = await openIntent({
+      status: "expired",
+      expiresAt: new Date(Date.now() - 5 * 60_000),
+    });
+    // Paid meanwhile by another code / at the cashier.
+    await owner.query("UPDATE payment_links SET paid_idr = $2 WHERE id = $1", [
+      bill.linkId,
+      BILL_TOTAL,
+    ]);
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+      "REJECTED_BILL_CLOSED",
+    );
+    // A later repeat (and the worker) parks nothing twice.
+    await ageRows(bill.intentId);
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    expect((await intentRow(bill.intentId)).status).toBe("expired");
+    expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+  });
+
+  it("the poller applies the same rules: a closed bill or an amount off the bill parks the money", async () => {
+    const expiresAt = new Date(Date.now() - 5 * 60_000);
+    const closedBill = await openIntent({
+      status: "expired",
+      expiresAt,
+      createdAt: new Date(Date.now() - 20 * 60_000),
+      updatedAt: new Date(expiresAt.getTime() - 60_000),
+    });
+    await owner.query("UPDATE payment_links SET paid_idr = $2 WHERE id = $1", [
+      closedBill.linkId,
+      BILL_TOTAL,
+    ]);
+    setAnswer(closedBill.intentId, paid(closedBill.reference));
+    const overpaid = await openIntent({
+      status: "expired",
+      expiresAt,
+      createdAt: new Date(Date.now() - 20 * 60_000),
+      updatedAt: new Date(expiresAt.getTime() - 60_000),
+    });
+    setAnswer(
+      overpaid.intentId,
+      paid(overpaid.reference, String(BILL_TOTAL + 1)),
+    );
+    registerPaymentGateway(
+      createDuitkuGateway({
+        fetch: globalThis.fetch,
+        callbackBaseUrl: "https://api.example.test",
+        returnUrl: "https://app.example.test/paid",
+      }),
+    );
+
+    await runPaymentGatewayPollJob(contextFor("webhook"), new Date(), {
+      force: true,
+    });
+
+    expect((await intentRow(closedBill.intentId)).status).toBe("expired");
+    expect(await unallocatedIdr(closedBill.intentId)).toBe(BILL_TOTAL);
+    expect((await intentRow(overpaid.intentId)).status).toBe("expired");
+    expect(await linkPaidIdr(overpaid.linkId)).toBe(0);
+    expect(await unallocatedIdr(overpaid.intentId)).toBe(BILL_TOTAL + 1);
+  });
+
+  it("a failed intent whose order was voided stays failed; the money is parked for refund", async () => {
+    const bill = await openIntent({ status: "failed" });
+    await seedOrderOnLink(bill.linkId, "voided");
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+  });
+
+  it.each(["cancelled", "no_show"] as const)(
+    "an expired reservation deposit intent whose reservation is %s stays expired; the money is parked",
+    async (status) => {
+      const bill = await openIntent({
+        status: "expired",
+        expiresAt: new Date(Date.now() - 5 * 60_000),
+      });
+      await seedClosedReservation(bill.linkId, status);
+      setAnswer(bill.intentId, paid(bill.reference));
+
+      expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+      expect((await intentRow(bill.intentId)).status).toBe("expired");
+      expect(await linkPaidIdr(bill.linkId)).toBe(0);
+      expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+      expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+        "REJECTED_BILL_CLOSED",
+      );
+    },
+  );
+
+  it("a failed intent whose POS tender failed stays failed; the money is parked", async () => {
+    const bill = await openIntent({ status: "failed" });
+    await seedFailedPosTender(bill.linkId, bill.intentId);
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
+    expect((await rowsFor(bill.intentId))[0]?.last_error_code).toBe(
+      "REJECTED_BILL_CLOSED",
+    );
+  });
+
+  it("the poller and the webhook racing on the same transaction settle it once, with one payment.paid", async () => {
+    registerPaymentGateway(
+      createDuitkuGateway({
+        fetch: globalThis.fetch,
+        callbackBaseUrl: "https://api.example.test",
+        returnUrl: "https://app.example.test/paid",
+      }),
+    );
+    const expiresAt = new Date(Date.now() - 5 * 60_000);
+    // Several rounds: the interleaving differs from one to the next.
+    for (let round = 0; round < 3; round += 1) {
+      const bill = await openIntent({
+        status: "expired",
+        expiresAt,
+        createdAt: new Date(Date.now() - 20 * 60_000),
+        updatedAt: new Date(expiresAt.getTime() - 60_000),
+      });
+      setAnswer(bill.intentId, paid(bill.reference));
+
+      const [response] = await Promise.all([
+        callback(bill.intentId, bill.reference),
+        runPaymentGatewayPollJob(contextFor("webhook"), new Date(), {
+          force: true,
+        }),
+      ]);
+
+      expect(response.status).toBe(200);
+      await expectPaidOnce(bill);
+      expect(await unallocatedCount(bill.intentId)).toBe(0);
+      // One receipt event: the gateway receipt journal posts once.
+      expect(await eventCount("payment.paid", bill.intentId)).toBe(1);
+      expect(await eventCount("payment.funds_unallocated", bill.intentId)).toBe(
+        0,
+      );
+    }
+  });
+
+  it("a pending intent on a voided order is not touched by this rule (only closed intents are)", async () => {
+    const bill = await openIntent();
+    await seedOrderOnLink(bill.linkId, "voided");
+    setAnswer(bill.intentId, paid(bill.reference));
+
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    // Settles as today; the order flow refunds a voided order's payment.
     await expectPaidOnce(bill);
   });
 });
