@@ -63,6 +63,7 @@ import {
   userIdSchema,
 } from "../core/index.ts";
 import type { BusinessDate, Idr, IsoDateTime, UserId } from "../core/index.ts";
+import type { SelfApprovalBasis } from "../access/approval.ts";
 import { AccessError } from "../access/errors.ts";
 import { storageKeySchema } from "../adapters/safety.ts";
 import { maskedAccountNumberSchema } from "./banking.ts";
@@ -313,7 +314,13 @@ export const shareAllocationVersionSchema = z
         path: ["decisionNote"],
         message: "Only a decided version carries a decision note",
       });
-    if (version.decidedBy !== null && version.decidedBy === version.requestedBy)
+    // A sole Owner may approve its own version (legend-b8y6l); a rejection
+    // by the requester stays invalid.
+    if (
+      version.decidedBy !== null &&
+      version.decidedBy === version.requestedBy &&
+      version.status !== "approved"
+    )
       ctx.addIssue({
         code: "custom",
         path: ["decidedBy"],
@@ -455,6 +462,8 @@ export type ShareAllocationVersionAction =
       readonly type: "approve";
       readonly actorId: UserId;
       readonly now: IsoDateTime;
+      /** Sole Owner approving their own request (legend-b8y6l); skips the requester check. */
+      readonly selfApproval?: SelfApprovalBasis;
     }
   | {
       readonly type: "reject";
@@ -466,7 +475,8 @@ export type ShareAllocationVersionAction =
 
 /**
  * Share-register state machine (SH-03). Only the requester edits/submits or
- * cancels; approve/reject need a different person (AUTH-06). Submitting and
+ * cancels; approve/reject need a different person (AUTH-06), except a sole
+ * Owner approving (not rejecting) their own request. Submitting and
  * approving both re-check that the shares sum to exactly 100%.
  *
  *   draft ─submit→ pending_approval ─approve→ approved
@@ -502,7 +512,7 @@ export function transitionShareAllocationVersion<
       };
     case "approve":
       if (status !== "pending_approval") throw invalid();
-      if (action.actorId === version.requestedBy)
+      if (action.actorId === version.requestedBy && !action.selfApproval)
         throw new AccessError("APPROVER_IS_REQUESTER");
       assertUniqueShareholders(version.allocations);
       assertShareAllocationsSum(version.allocations);

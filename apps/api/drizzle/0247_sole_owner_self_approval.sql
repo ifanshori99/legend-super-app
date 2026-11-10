@@ -1,0 +1,6 @@
+ALTER TABLE "approval_requests" DROP CONSTRAINT "approval_requests_distinct_actor_check";--> statement-breakpoint
+ALTER TABLE "share_allocation_versions" DROP CONSTRAINT "share_allocation_versions_four_eyes_check";--> statement-breakpoint
+ALTER TABLE "shareholder_recipient_versions" DROP CONSTRAINT "shareholder_recipient_versions_four_eyes_check";--> statement-breakpoint
+ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_distinct_actor_check" CHECK ("approval_requests"."decided_by" IS NULL OR "approval_requests"."decided_by" <> "approval_requests"."requested_by" OR ("approval_requests"."action_type" = 'shareholder_version' AND "approval_requests"."status" = 'approved'));--> statement-breakpoint
+ALTER TABLE "share_allocation_versions" ADD CONSTRAINT "share_allocation_versions_four_eyes_check" CHECK ("share_allocation_versions"."decided_by" IS NULL OR "share_allocation_versions"."decided_by" <> "share_allocation_versions"."requested_by" OR "share_allocation_versions"."status" = 'approved');--> statement-breakpoint
+ALTER TABLE "shareholder_recipient_versions" ADD CONSTRAINT "shareholder_recipient_versions_four_eyes_check" CHECK ("shareholder_recipient_versions"."decided_by" IS NULL OR "shareholder_recipient_versions"."decided_by" <> "shareholder_recipient_versions"."requested_by" OR "shareholder_recipient_versions"."status" = 'approved');

@@ -11,7 +11,10 @@
 // - Inside a tier, `levels` is the 1-based step a row fills. Several rows at
 //   the same level are alternatives ("HR lalu Finance atau Owner" = level 1
 //   HR, level 2 Finance or Owner). Levels must be contiguous from 1.
-// - requires_distinct_actor is always true: the PRD allows no exception.
+// - requires_distinct_actor is true for every action. One exception (founder
+//   decision 2026-11-10, legend-b8y6l): the sole Owner of a tenant may approve
+//   (never reject) a shareholder_version request they submitted themselves;
+//   see SELF_APPROVABLE_ACTION_TYPES and `selfApproval` below.
 // - No policy for an action = approval required but nobody can approve
 //   (APPROVAL_POLICY_MISSING). Deny by default; seed policies per tenant.
 // The approval request/inbox DTOs belong to WS-01 identity & access contracts
@@ -182,7 +185,8 @@ export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
  * one level, from Rp0 (floor 0 rather than null, as for refunds). Applied only
  * to a tenant with no shareholder_version row and an Owner template role; a
  * tenant that configured its own matrix is never touched. The row requires a
- * distinct actor, so the Owner who submits a version cannot approve it.
+ * distinct actor, so the Owner who submits a version cannot approve it, except
+ * a sole Owner (the tenant's only Owner), who may approve their own request.
  */
 export const DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES: readonly {
   readonly thresholdIdr: number;
@@ -250,6 +254,22 @@ export function approvalRequirementFor(
   };
 }
 
+/**
+ * Why a requester may approve their own request. Only "sole_owner": the
+ * tenant has exactly one Owner and that Owner is the requester. The service
+ * computes this in SQL inside the deciding transaction, never from input.
+ */
+export type SelfApprovalBasis = "sole_owner";
+
+/**
+ * Action types whose requester may self-approve when a SelfApprovalBasis
+ * holds. Founder decision 2026-11-10 (legend-b8y6l). Reject by the requester
+ * is never allowed.
+ */
+export const SELF_APPROVABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  "shareholder_version",
+]);
+
 export type PriorDecision = {
   readonly level: number;
   readonly approverId: UserId | string;
@@ -258,7 +278,8 @@ export type PriorDecision = {
 /**
  * Throws AccessError unless `approver` may decide the next level of a request
  * (AUTH-06 and §3.7 distinct actor):
- * - approver ≠ requester (APPROVER_IS_REQUESTER);
+ * - approver ≠ requester (APPROVER_IS_REQUESTER), unless `selfApproval` is
+ *   set (sole Owner, legend-b8y6l); that skips only this check;
  * - approver has not decided an earlier level (APPROVER_ALREADY_DECIDED);
  * - `level` is the next open step (APPROVAL_LEVEL_OUT_OF_ORDER);
  * - approver holds an active assignment of one of that step's roles whose
@@ -280,9 +301,20 @@ export function assertApprovalDecisionAllowed(input: {
   readonly target: AccessTarget;
   readonly org: OrgIndex;
   readonly now: Date;
+  /** Set only when the service verified the sole-Owner basis; skips the requester check. */
+  readonly selfApproval?: SelfApprovalBasis | null;
+  /**
+   * The request is self-approvable (legend-b8y6l): an earlier level decided by
+   * the requester (a sole Owner's self-approval, checked under lock when it
+   * was made) does not block the next level. Skips only that requester check.
+   */
+  readonly priorSelfApprovalAllowed?: boolean;
 }): void {
   const approverId = input.approver.userId.toLowerCase();
-  if (approverId === input.requestedBy.toLowerCase())
+  if (
+    input.selfApproval == null &&
+    approverId === input.requestedBy.toLowerCase()
+  )
     throw new AccessError("APPROVER_IS_REQUESTER");
   if (
     input.priorDecisions.some(
@@ -298,7 +330,8 @@ export function assertApprovalDecisionAllowed(input: {
     const actor = decision.approverId.toLowerCase();
     if (
       steps[index]?.level !== decision.level ||
-      actor === input.requestedBy.toLowerCase() ||
+      (actor === input.requestedBy.toLowerCase() &&
+        input.priorSelfApprovalAllowed !== true) ||
       priorActors.has(actor)
     )
       throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");

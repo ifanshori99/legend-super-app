@@ -164,7 +164,9 @@ export const approvalRequests = pgTable(
     // AUTH-06 / §3 F7 "Penyetuju selalu berbeda dari pemohon".
     check(
       "approval_requests_distinct_actor_check",
-      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy}`,
+      // legend-b8y6l: the one exception is a sole Owner approving its own
+      // shareholder_version request (checked by the service under lock).
+      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy} OR (${table.actionType} = 'shareholder_version' AND ${table.status} = 'approved')`,
     ),
     check(
       "approval_requests_deadline_check",

@@ -35,6 +35,7 @@ import {
   APPROVAL_MAX_LEVELS,
   approvalActionTypeSchema,
   approvalSourceSchema,
+  SELF_APPROVABLE_ACTION_TYPES,
 } from "../access/index.ts";
 import {
   approvalRequestIdSchema,
@@ -542,6 +543,8 @@ export const approvalRequestSchema = z
     reason: z.string().trim().min(3).max(500).nullable(),
     deadlineAt: isoDateTimeSchema,
     createdAt: isoDateTimeSchema,
+    /** true when the caller may approve its own request (sole Owner, legend-b8y6l); absent = false */
+    selfApprovalAllowed: z.boolean().optional(),
   })
   .superRefine((request, ctx) => {
     const add = (path: string[], message: string, invalid: boolean) => {
@@ -577,7 +580,12 @@ export const approvalRequestSchema = z
       ["decidedBy"],
       "The approver is never the requester (AUTH-06, §3 F7)",
       request.decidedBy !== null &&
-        request.decidedBy.toLowerCase() === request.requestedBy.toLowerCase(),
+        request.decidedBy.toLowerCase() === request.requestedBy.toLowerCase() &&
+        // legend-b8y6l: a sole Owner may approve its own shareholder_version request.
+        !(
+          request.status === "approved" &&
+          SELF_APPROVABLE_ACTION_TYPES.has(request.actionType)
+        ),
     );
     add(
       ["decidedAt"],

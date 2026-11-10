@@ -2,6 +2,17 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-b8y6l Owner tunggal boleh menyetujui sendiri perubahan pemegang saham (engineer, cabang `ws/owner-self-approve` dari `milestone/m1` 46352cd5, 2026-11-10)
+
+- Sudah: keputusan founder 10 Nov. Tenant dengan tepat satu Owner boleh MENYETUJUI (bukan menolak) pengajuan `shareholder_version` miliknya sendiri, hanya chain `source_module = profit_share` (versi porsi saham dan ganti penerima laporan). Tenant 2+ Owner tetap `APPROVER_IS_REQUESTER` (403, pesan sama).
+- "Owner tunggal" dihitung di SQL dalam transaksi keputusan (`services/sole-owner-self-approval.ts`) di bawah kunci advisory `legend:role-assignment-end:<tenant>` (kunci yang sama dengan grant/end/offboarding/platform owner). Owner bertanggal mulai di masa depan ikut dihitung (fail closed). Urutan kunci: chain lalu advisory di semua jalur.
+- Settle (versi porsi saham dan penerima) cek ulang Owner tunggal bila level mana pun diputus pemohon; Owner kedua muncul sebelum settle: dibatalkan "not sole owner". Penolakan guard saat settle atas self-approval: `cancelled` tanpa decider.
+- Audit: `approval.decided` `after.selfApproval = "sole_owner"` (allow-list hanya field itu), `share_version.approved` / `shareholder.recipient_change_approved` alasan "self-approval: sole owner" + `after.selfApproval`.
+- Kontrak: `approvalRequestSchema.selfApprovalAllowed?: boolean` (list/get inbox, true hanya untuk baris pending milik Owner tunggal). UI inbox (`ws01-approvals/logic.ts` `decisionBlock`) masih memblok "own": perlu kartu UI terpisah.
+- Migrasi `0270_sole_owner_self_approval` (idx 242, when 1794440001000): CHECK four-eyes di `approval_requests` (hanya `shareholder_version` + `approved`), `share_allocation_versions` dan `shareholder_recipient_versions` (hanya `approved`). Self-reject tetap ditolak DB.
+- Perubahan perilaku: Owner tunggal memanggil decide langsung saat chain masih pending kini 409 `APPROVAL_PENDING` (dulu 403).
+- Bukti: tes baru 20 kasus (`profit-share-sole-owner-self-approval.test.ts`), di baseline m1 9/15 gagal, di cabang 20/20 lulus; 8 file terkait 109 lulus; typecheck heavy lulus; prettier bersih; db:generate kosong. Review architect xhigh: 4 temuan (refusal melanggar CHECK, deadlock decide langsung, chain 2 level macet, request inbox buatan tangan), semua dibetulkan, verifikasi ulang OK.
+
 ## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
 
 - Sudah: submit versi porsi saham membuka chain `shareholder_version` (source `profit_share`, object `share_allocation_version`, objectId = kolom baru `share_allocation_versions.id`). Decide approve saat chain terbuka 409 `APPROVAL_PENDING`; tanpa chain (versi lama) cek ulang matriks lalu buka chain dan 409. Reject menutup chain dulu; chain yang sudah approved tidak bisa di-reject (`INVALID_TRANSITION`); chain yang sudah berakhir rejected/expired dicatat sesuai hasilnya. Consumer `approval.resolved` menyelesaikan versi (approved oleh approver terakhir, rejected, atau cancelled saat chain expired/cancelled; tanggal berlaku mundur ditolak dengan catatan `approval refused: <kode>`). Kebijakan tidak ada: 409 `APPROVAL_POLICY_MISSING` (fail closed).

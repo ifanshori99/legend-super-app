@@ -46,6 +46,7 @@ import {
   assertApprovalDecisionAllowed,
   isAssignmentActive,
   outletReachOf,
+  SELF_APPROVABLE_ACTION_TYPES,
   type AccessTarget,
   type ApprovalActionType,
   type ApprovalPolicy,
@@ -54,6 +55,7 @@ import {
   type ApprovalStep,
   type OrgIndex,
   type RoleId,
+  type SelfApprovalBasis,
 } from "@starter/shared/access";
 import {
   CoreError,
@@ -104,6 +106,11 @@ import {
   type TenantAccessData,
   type Tx,
 } from "./permission-resolver";
+import { PROFIT_SHARE_APPROVAL_SOURCE_MODULE } from "./profit-share-approval";
+import {
+  lockAndCheckSoleOwnerSelfApproval,
+  soleOwnerSelfApprovalPreview,
+} from "./sole-owner-self-approval";
 
 type Row = typeof approvalRequests.$inferSelect;
 
@@ -912,6 +919,53 @@ export async function createApprovalRequestFromInbox(
 // -------------------------------------------------------- HTTP: list / get
 
 /**
+ * legend-b8y6l: a pending self-approvable row (shareholder_version) the caller
+ * submitted may show "selfApprovalAllowed" when the caller is the tenant's sole
+ * Owner. The preview query runs once per call and only if some row qualifies;
+ * decideApprovalRequest re-checks under the advisory lock.
+ */
+/** A chain a sole Owner may approve itself: profit share's shareholder_version only. */
+function isSelfApprovableRow(row: Row): boolean {
+  return (
+    row.sourceModule === PROFIT_SHARE_APPROVAL_SOURCE_MODULE &&
+    SELF_APPROVABLE_ACTION_TYPES.has(row.actionType)
+  );
+}
+
+async function selfApprovalAllowedFor(
+  tx: Tx,
+  tenantId: string,
+  actorUserId: string,
+  rows: readonly Row[],
+  now: Date,
+): Promise<boolean> {
+  const qualifies = rows.some(
+    (row) =>
+      row.status === "pending" &&
+      row.deadlineAt.getTime() > now.getTime() &&
+      isSelfApprovableRow(row) &&
+      row.requestedBy.toLowerCase() === actorUserId.toLowerCase(),
+  );
+  return qualifies
+    ? soleOwnerSelfApprovalPreview(tx, tenantId, actorUserId)
+    : false;
+}
+
+function withSelfApproval(
+  view: ApprovalRequest,
+  row: Row,
+  actorUserId: string,
+  selfApprovable: boolean,
+): ApprovalRequest {
+  return selfApprovable &&
+    view.status === "pending" &&
+    isSelfApprovableRow(row) &&
+    row.requestedBy.toLowerCase() === actorUserId.toLowerCase()
+    ? { ...view, selfApprovalAllowed: true }
+    : view;
+}
+
+/**
  * GET /api/approvals (F7 "Kotak Approval"). With `approval.inbox.view` the
  * caller sees every request inside its reach (RLS outlet scope; tenant-wide
  * requests only with tenant reach). Without it, only its own requests.
@@ -991,8 +1045,22 @@ export async function listApprovalRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const selfApprovable = await selfApprovalAllowedFor(
+      tx,
+      tenant.tenantId,
+      actorUserId,
+      page,
+      now,
+    );
     return {
-      data: page.map((row) => toView(row, now, actorUserId)),
+      data: page.map((row) =>
+        withSelfApproval(
+          toView(row, now, actorUserId),
+          row,
+          actorUserId,
+          selfApprovable,
+        ),
+      ),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -1035,9 +1103,25 @@ export async function getApprovalRequest(
             ownOnly ? eq(approvalRequests.requestedBy, actorUserId) : undefined,
           ),
         );
-      return found;
+      if (!found) return undefined;
+      return {
+        found,
+        selfApprovable: await selfApprovalAllowedFor(
+          tx,
+          tenant.tenantId,
+          actorUserId,
+          [found],
+          now,
+        ),
+      };
     });
-    if (row) return toView(row, now, actorUserId);
+    if (row)
+      return withSelfApproval(
+        toView(row.found, now, actorUserId),
+        row.found,
+        actorUserId,
+        row.selfApprovable,
+      );
   }
   throw notFound();
 }
@@ -1128,6 +1212,21 @@ export async function decideApprovalRequest(
       throw new IdentityError("APPROVAL_REQUEST_NOT_PENDING");
     }
 
+    // legend-b8y6l: a sole Owner may approve (never reject) their own
+    // shareholder_version request. Lock order: chain row first, then the
+    // role-assignment advisory lock (same as the settle paths; avoids deadlock).
+    let selfApproval: SelfApprovalBasis | null = null;
+    if (
+      input.decision === "approved" &&
+      isSelfApprovableRow(row) &&
+      row.requestedBy.toLowerCase() === approverId.toLowerCase()
+    )
+      selfApproval = await lockAndCheckSoleOwnerSelfApproval(
+        tx,
+        tenant.tenantId,
+        approverId,
+      );
+
     const prior = rows.filter((candidate) => candidate.level < row.level);
     if (
       prior.some(
@@ -1148,6 +1247,7 @@ export async function decideApprovalRequest(
       priorApproverIds,
       reason,
       now,
+      selfApproval,
     });
     // Matrix: role for this level, scope covers the outlet/tenant, MFA (MCP-04).
     const target = targetOf(row.outletId);
@@ -1165,11 +1265,13 @@ export async function decideApprovalRequest(
         assignments: caller.data.assignments,
       },
       approverRoles: caller.data.roles,
+      priorSelfApprovalAllowed: isSelfApprovableRow(row),
       approverMfaVerified: options.mfaVerified,
       surface: "dashboard",
       target,
       org: caller.data.org,
       now,
+      selfApproval,
     });
     if (!caller.snapshot.allows("approval.request.decide", target))
       throw new AccessError("PERMISSION_DENIED");
@@ -1276,6 +1378,7 @@ export async function decideApprovalRequest(
           level: row.level,
           requiredLevels: row.requiredLevels,
           actionType: row.actionType,
+          ...(selfApproval ? { selfApproval } : {}),
         },
         sensitiveAccess: false,
       },

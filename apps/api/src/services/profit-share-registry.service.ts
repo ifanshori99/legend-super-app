@@ -48,7 +48,7 @@ import {
   type Shareholder,
 } from "@starter/shared/accounting";
 import { AccountingError } from "@starter/shared/accounting";
-import { AccessError } from "@starter/shared/access";
+import { AccessError, type SelfApprovalBasis } from "@starter/shared/access";
 import {
   CoreError,
   assertTrustedScopedContext,
@@ -80,6 +80,10 @@ import {
   type TenantTransaction,
 } from "./accounting-shared";
 import { claimProfitShareCommand } from "./profit-share-idempotency";
+import {
+  lockAndCheckSoleOwnerSelfApproval,
+  soleOwnerSelfApprovalPreview,
+} from "./sole-owner-self-approval";
 import {
   PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
   SHARE_ALLOCATION_VERSION_OBJECT_TYPE,
@@ -676,7 +680,7 @@ export async function settleShareholderRecipientVersionForApproval(
     now,
   });
   if (outcome === "pending") return row;
-  const [last] = await tx
+  const levels = await tx
     .select({ decidedBy: approvalRequests.decidedBy })
     .from(approvalRequests)
     .where(
@@ -685,18 +689,37 @@ export async function settleShareholderRecipientVersionForApproval(
         eq(approvalRequests.chainId, chainId),
       ),
     )
-    .orderBy(desc(approvalRequests.level))
-    .limit(1);
+    .orderBy(desc(approvalRequests.level));
+  const [last] = levels;
   if (!last) throw notFound("Approval chain");
+  const requester = row.requestedBy.toLowerCase();
+  const decidedByRequester =
+    last.decidedBy !== null && last.decidedBy.toLowerCase() === requester;
+  // A sole Owner may have approved its own request at some level in the inbox
+  // (founder decision 2026-11-10, legend-b8y6l). Re-checked here under the
+  // Owner lock (taken after the chain head, the inbox order): a 2nd Owner
+  // added since then cancels the request (fail closed).
+  const requesterDecided = levels.some(
+    (level) =>
+      level.decidedBy !== null && level.decidedBy.toLowerCase() === requester,
+  );
+  const selfApproval: SelfApprovalBasis | null =
+    outcome === "approved" && requesterDecided
+      ? await lockAndCheckSoleOwnerSelfApproval(tx, tenantId, row.requestedBy)
+      : null;
+  const selfApprovalLost =
+    outcome === "approved" && requesterDecided && selfApproval === null;
   const decider =
     last.decidedBy !== null &&
-    last.decidedBy.toLowerCase() !== row.requestedBy.toLowerCase()
+    !selfApprovalLost &&
+    (!decidedByRequester || selfApproval !== null)
       ? userIdSchema.parse(last.decidedBy)
       : null;
   const close = async (
     status: RecipientVersionRow["status"],
     decidedBy: string | null,
     note: string,
+    approvedBy: SelfApprovalBasis | null = null,
   ) => {
     const [updated] = await tx
       .update(shareholderRecipientVersions)
@@ -722,23 +745,36 @@ export async function settleShareholderRecipientVersionForApproval(
       objectId: versionId,
       reason: note,
       before: { status: "pending_approval" },
-      after: { status },
+      after:
+        approvedBy === null ? { status } : { status, selfApproval: approvedBy },
     });
     return updated;
   };
   if (outcome === "cancelled" || outcome === "expired")
     return close("cancelled", null, `approval ${outcome}`);
   if (decider === null)
-    return close("cancelled", null, "approval approver invalid");
+    return close(
+      "cancelled",
+      null,
+      selfApprovalLost
+        ? "approval self-approval no longer allowed: not sole owner"
+        : "approval approver invalid",
+    );
   if (outcome === "rejected")
     return close("rejected", decider, "approval rejected");
   // approved
   if (holder.userId !== row.previousUserId)
-    return close(
-      "rejected",
-      decider,
-      "stale: the shareholder login changed since the request",
-    );
+    return decidedByRequester
+      ? close(
+          "cancelled",
+          null,
+          "stale: the shareholder login changed since the request",
+        )
+      : close(
+          "rejected",
+          decider,
+          "stale: the shareholder login changed since the request",
+        );
   try {
     // Savepoint: a unique-link conflict leaves nothing half applied.
     await tx.transaction((sp) =>
@@ -754,16 +790,26 @@ export async function settleShareholderRecipientVersionForApproval(
     );
   } catch (error) {
     if (!uniqueViolation(error)) throw error;
-    return close(
-      "rejected",
-      decider,
-      "the new login is already linked to another shareholder",
-    );
+    return decidedByRequester
+      ? close(
+          "cancelled",
+          null,
+          "the new login is already linked to another shareholder",
+        )
+      : close(
+          "rejected",
+          decider,
+          "the new login is already linked to another shareholder",
+        );
   }
-  return close("approved", decider, "approval approved");
+  return selfApproval === null
+    ? close("approved", decider, "approval approved")
+    : close("approved", decider, "self-approval: sole owner", selfApproval);
 }
 
 // ------------------------------------------------------- share versions
+
+const SELF_APPROVAL_REASON = "self-approval: sole owner";
 
 async function lockEntity(
   tx: TenantTransaction,
@@ -1303,7 +1349,7 @@ async function settleLoadedShareVersion(
     now,
   });
   if (outcome === "pending") return toVersion(row, allocations);
-  const [last] = await tx
+  const levels = await tx
     .select({ decidedBy: approvalRequests.decidedBy })
     .from(approvalRequests)
     .where(
@@ -1312,12 +1358,30 @@ async function settleLoadedShareVersion(
         eq(approvalRequests.chainId, chainId),
       ),
     )
-    .orderBy(desc(approvalRequests.level))
-    .limit(1);
+    .orderBy(desc(approvalRequests.level));
+  const [last] = levels;
   if (!last) throw notFound("Approval chain");
+  const requester = row.requestedBy.toLowerCase();
+  const decidedByRequester =
+    last.decidedBy !== null && last.decidedBy.toLowerCase() === requester;
+  // A sole Owner may have approved its own request at some level in the inbox
+  // (founder decision 2026-11-10, legend-b8y6l). Re-checked here under the
+  // Owner lock (taken after the chain head, the inbox order): a 2nd Owner
+  // added since then cancels the request (fail closed).
+  const requesterDecided = levels.some(
+    (level) =>
+      level.decidedBy !== null && level.decidedBy.toLowerCase() === requester,
+  );
+  const selfApproval: SelfApprovalBasis | null =
+    outcome === "approved" && requesterDecided
+      ? await lockAndCheckSoleOwnerSelfApproval(tx, tenantId, row.requestedBy)
+      : null;
+  const selfApprovalLost =
+    outcome === "approved" && requesterDecided && selfApproval === null;
   const decider =
     last.decidedBy !== null &&
-    last.decidedBy.toLowerCase() !== row.requestedBy.toLowerCase()
+    !selfApprovalLost &&
+    (!decidedByRequester || selfApproval !== null)
       ? userIdSchema.parse(last.decidedBy)
       : null;
   const nowIso = now.toISOString() as IsoDateTime;
@@ -1347,7 +1411,14 @@ async function settleLoadedShareVersion(
   if (outcome === "cancelled" || outcome === "expired")
     return close("cancelled", null, null, `approval ${outcome}`);
   if (decider === null)
-    return close("cancelled", null, null, "approval approver invalid");
+    return close(
+      "cancelled",
+      null,
+      null,
+      selfApprovalLost
+        ? "approval self-approval no longer allowed: not sole owner"
+        : "approval approver invalid",
+    );
   if (outcome === "rejected")
     return close("rejected", decider, "approval rejected", "approval rejected");
   // approved
@@ -1356,7 +1427,9 @@ async function settleLoadedShareVersion(
     const approved = await tx.transaction(async (sp) => {
       const result = transitionShareAllocationVersion(
         transitionState(row, allocations),
-        { type: "approve", actorId: decider, now: nowIso },
+        selfApproval === null
+          ? { type: "approve", actorId: decider, now: nowIso }
+          : { type: "approve", actorId: decider, now: nowIso, selfApproval },
       );
       assertEffectiveFromAdvances(
         await latestApprovedEffectiveFrom(
@@ -1374,19 +1447,24 @@ async function settleLoadedShareVersion(
       action: "share_version.approved",
       objectType: "share_allocation_version",
       objectId: row.profitEntityId,
-      reason: null,
+      reason: selfApproval === null ? null : SELF_APPROVAL_REASON,
       before: { status: "pending_approval" },
       after: {
         version: row.version,
         count: allocations.length,
         status: "approved",
+        ...(selfApproval === null ? {} : { selfApproval }),
       },
     });
     return approved;
   } catch (error) {
     if (!(error instanceof AccountingError)) throw error;
     const note = `approval refused: ${error.code}`;
-    return close("rejected", decider, note, note);
+    // A self-approved version cannot be recorded as rejected by its own
+    // requester (four-eyes CHECK): it is cancelled instead (legend-b8y6l).
+    return decidedByRequester
+      ? close("cancelled", null, null, note)
+      : close("rejected", decider, note, note);
   }
 }
 
@@ -1501,11 +1579,35 @@ export async function decideShareAllocationVersionService(
     const nowIso = now.toISOString() as IsoDateTime;
     const state = transitionState(row, allocations);
     const chainId = await shareVersionChainOf(tx, tenantId, row.id);
+    // Sole-Owner self-approval (founder decision 2026-11-10, legend-b8y6l).
+    // Without a chain this call decides: the Owner lock is taken here (no
+    // chain row is locked). With a chain this call only settles, and the
+    // settle re-checks under the lock after the chain head (the inbox order),
+    // so here an unlocked preview only decides whether the requester guard
+    // below still answers 403 (2+ Owners keep the old answer).
+    const selfRequested =
+      input.decision === "approve" &&
+      actorId.toLowerCase() === row.requestedBy.toLowerCase();
+    const selfApproval: SelfApprovalBasis | null =
+      selfRequested && chainId === null
+        ? await lockAndCheckSoleOwnerSelfApproval(tx, tenantId, actorId)
+        : null;
+    const settlesOwnChain =
+      selfRequested &&
+      chainId !== null &&
+      (await soleOwnerSelfApprovalPreview(tx, tenantId, actorId));
     // Same guards as the direct path: pending status and requester != caller.
     const result = transitionShareAllocationVersion(
       state,
       input.decision === "approve"
-        ? { type: "approve", actorId, now: nowIso }
+        ? selfApproval === null && !settlesOwnChain
+          ? { type: "approve", actorId, now: nowIso }
+          : {
+              type: "approve",
+              actorId,
+              now: nowIso,
+              selfApproval: selfApproval ?? "sole_owner",
+            }
         : { type: "reject", actorId, now: nowIso, reason: input.note ?? "" },
     );
     if (input.decision === "approve") {
@@ -1574,9 +1676,18 @@ export async function decideShareAllocationVersionService(
           : "share_version.rejected",
       objectType: "share_allocation_version",
       objectId: profitEntityId,
-      reason: input.decision === "reject" ? input.note : null,
+      reason:
+        input.decision === "reject"
+          ? input.note
+          : selfApproval === null
+            ? null
+            : SELF_APPROVAL_REASON,
       before: null,
-      after: { version, count: allocations.length },
+      after: {
+        version,
+        count: allocations.length,
+        ...(selfApproval === null ? {} : { selfApproval }),
+      },
     });
     return view;
   });

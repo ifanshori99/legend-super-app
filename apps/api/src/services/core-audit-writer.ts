@@ -170,6 +170,9 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "levels",
     "requiresDistinctActor",
   ],
+  // legend-b8y6l: only the self-approval marker ("sole_owner") is shown;
+  // the rest of the decision snapshot stays masked as before.
+  "approval.decided": ["selfApproval"],
 };
 
 export const coreAuditWriter: AuditWriter = {
