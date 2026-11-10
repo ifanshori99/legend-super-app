@@ -418,6 +418,22 @@ const schema = z
       });
   })
   .superRefine((values, ctx) => {
+    // An edge node seals selfies to the cloud's PUBLIC key, which arrives in
+    // the people snapshot. The private keys stay on the cloud: a stolen edge
+    // must not be able to open sealed selfies (design hris-edge-replication 7).
+    if (!values.EDGE_MODE) return;
+    for (const path of [
+      "ATTENDANCE_SELFIE_SEAL_KEYS",
+      "ATTENDANCE_SELFIE_SEAL_ACTIVE_KID",
+    ] as const)
+      if (values[path] !== undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: [path],
+          message: `An edge node must not hold ${path}: the seal private keys stay on the cloud.`,
+        });
+  })
+  .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed
     // credential), so a misconfigured edge node refuses to start here.
     const edge = parseEdgeRuntimeConfig({

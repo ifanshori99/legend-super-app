@@ -1,0 +1,28 @@
+# Example HTTPS front for an outlet edge host (legend-svy91).
+# Phone cameras need a secure context, so outlet devices must reach the edge
+# over HTTPS with a certificate their devices trust (issued by your internal CA
+# and installed on each device). Replace the placeholder names and paths.
+{
+	# No public ACME on a private network; the certificate is supplied below.
+	auto_https off
+	admin off
+}
+
+https://edge.outlet.example.invalid {
+	tls /etc/legend/edge/tls/edge.crt /etc/legend/edge/tls/edge.key
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# Never expose the cloud-only internal endpoints from the edge.
+	@internal path /api/internal/*
+	handle @internal {
+		respond 404
+	}
+	# The edge API listens on loopback only (default API port 4000).
+	reverse_proxy 127.0.0.1:4000
+}

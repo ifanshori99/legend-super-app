@@ -22,12 +22,14 @@ import { AccessError } from "@starter/shared/access";
 import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { env } from "../config/env.ts";
 import { checkDatabase } from "../db/index.ts";
 import {
   getDeviceRegistrySyncState,
   getEdgeRuntimeState,
 } from "../edge/runtime.ts";
 import { getEdgeSelfieHealth } from "../edge/selfie-health.ts";
+import { getSelfieVolumeHealth } from "../edge/selfie-volume-health.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
@@ -161,6 +163,11 @@ edgeRouter.get("/health", async (_req, res) => {
     deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
     // Informational: a full selfie disk never changes status or HTTP code.
     selfie: getEdgeSelfieHealth(),
+    // Informational too: the selfie volume check (legend-svy91), cached 30 s.
+    selfieVolume: await getSelfieVolumeHealth({
+      dir: env.EDGE_SELFIE_DIR,
+      maxBytes: env.EDGE_SELFIE_MAX_BYTES,
+    }).catch(() => null),
   });
 });
 
