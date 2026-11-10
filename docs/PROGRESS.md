@@ -1030,3 +1030,4 @@ Langkah berikut CTO baru:
 - 21:05 G1fjl powk0 selesai: bdfeb6a9 (XML Coretax saring 'Peringatan:'; 148 test; typecheck EXIT=0). r3i8w siap batch48. Mulai G1amj w5by9 (385 opus).
 - 21:10 G2lh5 sp9vq: f103f371 ws/jmsdx-pepper (PinNewlyLockedError hitung slot device; 115/115; EXIT=0). Lanjutan di thread sama: legend-vfj7z (slot device di override POS dan konversi open bill).
 - 21:20 G816d rgddb: 363b183a (kredensial intent tersimpan tanpa cek paket; dedup dari field bertanda tangan + cek ulang status; nominal wajib sama; pelunasan terlambat hanya bila tagihan terbuka, selain itu dana diparkir ke customer_deposit). 549/550 lalu 53/53; architect xhigh 2 putaran bersih. Lanjutan: 3 test celah (balapan poller/webhook, reservasi batal, tender POS), push. Codex ulang atas fix ini masuk antrean.
+- 21:25 G8go1 ec6fa: cc4e06f9 (P1#2 paymentId wajib, 84/84). Lanjutan: typecheck web queries.ts:81, architect atas cc4e06f9.
