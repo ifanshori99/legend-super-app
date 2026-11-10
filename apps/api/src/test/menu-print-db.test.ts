@@ -13,10 +13,14 @@ import { createApp } from "../app";
 import { NoopMalwareScanner } from "../services/core-image";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
+import { and, eq } from "drizzle-orm";
+import { coreStorageObjects } from "../db/schema/core-storage";
+import { printableMenuRenders } from "../db/schema/menu-import";
 import {
   collectPrintableMenu,
   getLatestMenuPrint,
   markMenuPrintDirty,
+  regenerateMenuPrint,
   runDueMenuPrints,
   type MenuPdfRenderer,
 } from "../services/menu-print.service";
@@ -300,5 +304,163 @@ describe("printable menu", () => {
         now,
       ),
     ).rejects.toBeDefined();
+  });
+});
+
+// legend-eirhm: a re-render must not leave the previous PDF behind.
+describe("printable menu: old PDF cleanup", () => {
+  const pdfLookup = (objectId: string) => ({
+    tenantId,
+    outletId: outletA,
+    reference: objectId,
+    visibility: "private" as const,
+    key: `${objectId}/original.pdf`,
+  });
+  const exists = (storage: FakeObjectStorage, objectId: string) =>
+    storage.get(ctx(), pdfLookup(objectId)).then(
+      () => true,
+      () => false,
+    );
+  const currentObjectId = async () =>
+    withTenant(db, ctx(), async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(printableMenuRenders)
+        .where(
+          and(
+            eq(printableMenuRenders.tenantId, tenantId),
+            eq(printableMenuRenders.outletId, outletA),
+          ),
+        );
+      return row.objectId as string;
+    });
+  const objectRowExists = (objectId: string) =>
+    withTenant(db, ctx(), async (tx) => {
+      const rows = await tx
+        .select({ id: coreStorageObjects.id })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, objectId),
+          ),
+        );
+      return rows.length > 0;
+    });
+  const setPrice = async (price: number) => {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query(
+        "UPDATE price_list_items SET price_idr = $3 WHERE tenant_id = $1 AND item_id = $2",
+        [tenantId, ids.ok, price],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  const cleanupAudits = (objectId: string) =>
+    owner.query(
+      "SELECT event FROM audit_logs WHERE tenant_id = $1 AND event->>'action' = 'menu.print.old_pdf_delete_failed' AND event->>'objectId' = $2",
+      [tenantId, objectId],
+    );
+
+  it("a successful re-render deletes the old PDF object and its row", async () => {
+    const storage = new FakeObjectStorage();
+    const d = { storage, renderer, scanner: deps.scanner };
+    await setPrice(31000);
+    const first = await regenerateMenuPrint(ctx(), outletA, d, now);
+    await setPrice(32000);
+    const second = await regenerateMenuPrint(ctx(), outletA, d, now);
+    expect(second.objectId).not.toBe(first.objectId);
+    expect(await exists(storage, first.objectId)).toBe(false);
+    expect(await objectRowExists(first.objectId)).toBe(false);
+    expect(await exists(storage, second.objectId)).toBe(true);
+    expect(await objectRowExists(second.objectId)).toBe(true);
+    expect(await currentObjectId()).toBe(second.objectId);
+  });
+
+  it("a failed render keeps the old PDF", async () => {
+    const storage = new FakeObjectStorage();
+    const d = { storage, renderer, scanner: deps.scanner };
+    await setPrice(33000);
+    const first = await regenerateMenuPrint(ctx(), outletA, d, now);
+    await setPrice(34000);
+    const failing = {
+      storage,
+      scanner: deps.scanner,
+      renderer: {
+        render: async () => {
+          throw new Error("renderer down");
+        },
+      },
+    };
+    await expect(
+      regenerateMenuPrint(ctx(), outletA, failing, now),
+    ).rejects.toThrow("renderer down");
+    expect(await exists(storage, first.objectId)).toBe(true);
+    expect(await objectRowExists(first.objectId)).toBe(true);
+    expect(await currentObjectId()).toBe(first.objectId);
+  });
+
+  it("an unchanged payload is reused and nothing is deleted", async () => {
+    const storage = new FakeObjectStorage();
+    const d = { storage, renderer, scanner: deps.scanner };
+    await setPrice(35000);
+    const first = await regenerateMenuPrint(ctx(), outletA, d, now);
+    const again = await regenerateMenuPrint(ctx(), outletA, d, now);
+    expect(again).toMatchObject({ reused: true, objectId: first.objectId });
+    expect(await exists(storage, first.objectId)).toBe(true);
+  });
+
+  it("concurrent renders leave exactly one PDF object (no orphan)", async () => {
+    const storage = new FakeObjectStorage();
+    const d = { storage, renderer, scanner: deps.scanner };
+    await setPrice(38000);
+    await regenerateMenuPrint(ctx(), outletA, d, now);
+    await setPrice(39000);
+    await Promise.all([
+      regenerateMenuPrint(ctx(), outletA, d, now),
+      regenerateMenuPrint(ctx(), outletA, d, now),
+    ]);
+    const rows = await withTenant(db, ctx(), (tx) =>
+      tx
+        .select({ id: coreStorageObjects.id })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.outletId, outletA),
+            eq(coreStorageObjects.purpose, "document"),
+          ),
+        ),
+    );
+    expect(rows.map((r) => r.id)).toEqual([await currentObjectId()]);
+  });
+
+  it("a failed delete does not fail the render and is written to the audit log", async () => {
+    const storage = new FakeObjectStorage();
+    const d = { storage, renderer, scanner: deps.scanner };
+    await setPrice(36000);
+    const first = await regenerateMenuPrint(ctx(), outletA, d, now);
+    await setPrice(37000);
+    storage.delete = async () => {
+      throw new Error("storage delete down");
+    };
+    const second = await regenerateMenuPrint(ctx(), outletA, d, now);
+    expect(second.reused).toBe(false);
+    expect(await currentObjectId()).toBe(second.objectId);
+    // Old object stays (row kept so it can be found) and the failure is logged.
+    expect(await objectRowExists(first.objectId)).toBe(true);
+    const audits = await cleanupAudits(first.objectId);
+    expect(audits.rows).toHaveLength(1);
   });
 });
