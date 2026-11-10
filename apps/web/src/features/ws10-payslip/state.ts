@@ -1,7 +1,7 @@
 // Pure display helpers for the employee payslip, kasbon and reimbursement
 // screens (bead legend-23nc; PRD v1.7 §3 F30, F31, HR-01). No React, no DOM:
-// status labels/tones, the kasbon approval timeline, input parsing and the PIN
-// error mapping live here so the components stay layout-only.
+// status labels/tones, the kasbon approval timeline and input parsing live
+// here so the components stay layout-only. The PIN logic is in pin-state.ts.
 //
 // The safety rules are not here: `assertLoanWithinPolicy`,
 // `assertReimbursementWithinLimit` and the PIN codes belong to
@@ -18,16 +18,6 @@ import { DEFAULT_TIME_ZONE, localDateOf } from "@starter/shared/core";
 import { storagePurposePolicy } from "@starter/shared/storage";
 
 export type StatusTone = "neutral" | "success" | "warning" | "danger" | "info";
-
-/** PRD §3 D.30: the employee's payslip PIN is 6 digits. */
-export const PAYSLIP_PIN_LENGTH = 6;
-
-/**
- * The mock locks the PIN after three wrong attempts in a row. The catalog text
- * ("Sisa {count} percobaan") is only shown in mock mode; the real API owns its
- * own rate limit (PAYSLIP_PIN_LOCKED) and the screen then shows the locked text.
- */
-export const PAYSLIP_PIN_MAX_ATTEMPTS = 3;
 
 /**
  * An opened payslip locks itself again after this long on screen (PRD silent;
@@ -201,17 +191,6 @@ const PAYMENT_METHOD_KEYS: Record<PayslipPaymentMethod, MessageKey> = {
 
 export function paymentMethodKey(method: PayslipPaymentMethod): MessageKey {
   return PAYMENT_METHOD_KEYS[method];
-}
-
-/** Payroll error code of a failed payslip view, as the screen renders it. */
-export function pinErrorKind(
-  code: string | undefined,
-): "invalid" | "locked" | "notFound" | null {
-  if (code === "PAYSLIP_PIN_INVALID") return "invalid";
-  if (code === "PAYSLIP_PIN_LOCKED") return "locked";
-  // HR-01: someone else's payslip id answers 404, never "wrong PIN".
-  if (code === "NOT_FOUND") return "notFound";
-  return null;
 }
 
 /**

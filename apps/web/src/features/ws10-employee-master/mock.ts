@@ -1,18 +1,21 @@
 // Mock mode for the employee master (docs/frontend.md "Typed endpoints and
 // mock mode"). Every read this screen needs is registered by the shared HRIS
 // read models in `lib/mock/handlers/hris-directory.ts` (one owner per
-// endpoint), so this file registers the one write the back office performs:
-// HR-03 `updateEmployeePii`.
+// endpoint), so this file registers the writes the back office performs:
+// HR-03 `updateEmployeePii` and the payslip PIN reset
+// `resetEmployeePayslipPin`.
 //
 // The handler keeps the contract's promise: the request carries raw values
 // only, the response carries masked values only, and the shared store is
 // updated so the profile's refetch shows the new masked form.
 import {
+  cafeLegendHrisFixtures,
   maskPiiValue,
   updateEmployeePii,
   type EmployeePii,
   type PiiMaskRule,
 } from "@starter/shared/hris";
+import { resetEmployeePayslipPin } from "@starter/shared/hris/payroll";
 import { ApiError } from "@/lib/api/errors";
 import {
   hrisMockPiiStore,
@@ -22,6 +25,7 @@ import {
 } from "@/lib/mock/handlers/hris-directory";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { resetMockPayslipPin } from "../ws10-payslip/mock";
 
 /** Mask rule per field, matching `HRIS_PII_FIELDS` in the PII contract. */
 const PII_MASK_RULE: Record<keyof EmployeePii, PiiMaskRule> = {
@@ -92,4 +96,42 @@ registerMock(updateEmployeePii, ({ params, body }) => {
   const result = setHrisMockPii(params.employeeId, patch);
   replays.set({ ...replays.get(), [idempotencyKey]: { fingerprint, result } });
   return { data: redactEmployeePii(viewer, params.employeeId, result) };
+});
+
+/** Idempotency key → request fingerprint, same rules as `replays` above. */
+const pinResetReplays = createMockStore<Record<string, string>>(() => ({}));
+
+const NOT_SET = { status: "not_set", lockedUntil: null } as const;
+
+registerMock(resetEmployeePayslipPin, ({ params, body }) => {
+  // Only HR with `payroll.run` resets a PIN; HR never sees or sets the new one.
+  const viewer = mockHrisViewer();
+  if (viewer === null || !viewer.permissions.includes("payroll.run"))
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "Peran Anda tidak boleh mereset PIN slip gaji.",
+    );
+  const { idempotencyKey, ...values } = body;
+  const fingerprint = `${params.employeeId}|${JSON.stringify(values)}`;
+  const previous = pinResetReplays.get()[idempotencyKey];
+  if (previous !== undefined && previous !== fingerprint)
+    throw new ApiError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempotensi sudah dipakai dengan isi yang berbeda.",
+    );
+  // A retry must not wipe a PIN the employee created after the first reset.
+  if (previous !== undefined) return { data: NOT_SET };
+  if (
+    !cafeLegendHrisFixtures.employees.some(
+      (employee) => employee.id === params.employeeId,
+    )
+  )
+    throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
+  pinResetReplays.set({
+    ...pinResetReplays.get(),
+    [idempotencyKey]: fingerprint,
+  });
+  return { data: resetMockPayslipPin(params.employeeId) };
 });

@@ -121,13 +121,28 @@ export async function apiFetch<T>(
     (T & Partial<ApiErrorBody>) | null;
   if (!response.ok) {
     onFailure(path, { status: response.status });
-    const error = payload?.error;
+    const error = payload?.error as
+      | (ApiErrorBody["error"] & {
+          remainingAttempts?: number;
+          lockedUntil?: string;
+        })
+      | undefined;
     if (error?.code) handleActingStaffRejection(error.code, method);
     throw new ApiError(
       response.status,
       error?.code ?? "HTTP_ERROR",
       error?.message ?? `Request failed with status ${response.status}.`,
       error?.details,
+      {
+        remainingAttempts:
+          typeof error?.remainingAttempts === "number"
+            ? error.remainingAttempts
+            : undefined,
+        lockedUntil:
+          typeof error?.lockedUntil === "string"
+            ? error.lockedUntil
+            : undefined,
+      },
     );
   }
   return payload as T;
