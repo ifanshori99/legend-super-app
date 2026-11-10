@@ -16,10 +16,24 @@
 // - A voided old kitchen item is a `kitchen_ticket_items` row with status
 //   `voided` (the status enum has no other cancel state).
 // - Audit row is found by the action name and the issue id in audit_logs.event.
+//
+// "Putaran 2" (A, B, C of the brief), assumptions:
+// - A: the snapshot is `order_issues.replacement_unit_price_idr`, filled at
+//   resolve time (before any delivery) with the catalog unit price then. A
+//   catalog price change after resolve is a row update on price_list_items.
+// - B: "order completed" = orders.status 'completed'. The cost snapshot of the
+//   replacement line (`order_items.cost_snapshot_idr`) is the whole line's cost
+//   (quantity x cost of one portion, brief of legend-u4js6), so teh gets a
+//   recipe of 10 g beans at Rp10/g = Rp100 a portion, wired only in that test.
+//   "Original line stays valued" = its price/total columns are unchanged.
+// - C: "twice" = delivered sequentially and also concurrently; one audit row
+//   per (action, issue) either way.
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  decimal4,
+  outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
@@ -31,6 +45,7 @@ import {
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { recordStockMovement } from "../services/inventory.service.ts";
 import { deliverSwapKitchenEvent } from "../services/order-recovery-swap-kitchen.ts";
 import { PRICES, createWorld, type World } from "./order-recovery-helpers.ts";
 import { createIsolatedTenant, owner } from "./floor-test-helpers.ts";
@@ -611,6 +626,434 @@ describe("legend-v32bv swap: batas harian, order final, dan penolakan tanpa dead
         [w.tenant.tenantId, w.ids.teh],
       );
     }
+  });
+});
+
+async function snapshotOf(issueId: string) {
+  const { rows } = await owner.query<{ p: number | null }>(
+    `SELECT replacement_unit_price_idr::int AS p FROM order_issues
+     WHERE tenant_id = $1 AND id = $2`,
+    [w.tenant.tenantId, issueId],
+  );
+  return rows[0]!.p;
+}
+
+/** Changes the catalog (price list) price of one menu item; returns the undo. */
+async function setCatalogPrice(menuItemId: string, price: number) {
+  const { rows } = await owner.query<{ price_idr: number }>(
+    `SELECT price_idr::int AS price_idr FROM price_list_items
+     WHERE tenant_id = $1 AND price_list_id = $2 AND item_id = $3`,
+    [w.tenant.tenantId, w.ids.priceList, menuItemId],
+  );
+  const before = rows[0]!.price_idr;
+  const write = (value: number) =>
+    owner.query(
+      `UPDATE price_list_items SET price_idr = $4
+       WHERE tenant_id = $1 AND price_list_id = $2 AND item_id = $3`,
+      [w.tenant.tenantId, w.ids.priceList, menuItemId, value],
+    );
+  await write(price);
+  return () => write(before);
+}
+
+async function costSnapshotOf(orderItemId: string) {
+  const { rows } = await owner.query<{ c: number | null }>(
+    `SELECT cost_snapshot_idr::int AS c FROM order_items
+     WHERE tenant_id = $1 AND id = $2`,
+    [w.tenant.tenantId, orderItemId],
+  );
+  return rows[0]!.c;
+}
+
+/** Gives teh a recipe worth Rp100 a portion at the outlet's sale location. */
+async function wireTehCost() {
+  const t = w.tenant.tenantId;
+  const tag = randomUUID().slice(0, 4);
+  const ids = {
+    uom: randomUUID(),
+    item: randomUUID(),
+    location: randomUUID(),
+    recipe: randomUUID(),
+  };
+  await owner.query(
+    "INSERT INTO uoms (id, tenant_id, code, name) VALUES ($1, $2, $3, $3)",
+    [ids.uom, t, `g${tag}`],
+  );
+  await owner.query(
+    `INSERT INTO inventory_items (id, tenant_id, name, category, type, base_uom_id, is_perishable)
+     VALUES ($1, $2, $3, 'Bahan Baku', 'raw_material', $4, true)`,
+    [ids.item, t, `Biji ${tag}`, ids.uom],
+  );
+  await owner.query(
+    "INSERT INTO stock_locations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, $4, 'bar')",
+    [ids.location, t, w.tenant.outletId, `Bar ${tag}`],
+  );
+  await owner.query(
+    `INSERT INTO outlet_inventory_settings (tenant_id, outlet_id, recipe_deduction_mode, sale_location_id)
+     VALUES ($1, $2, 'real_time', $3)
+     ON CONFLICT (tenant_id, outlet_id)
+     DO UPDATE SET recipe_deduction_mode = EXCLUDED.recipe_deduction_mode,
+                   sale_location_id = EXCLUDED.sale_location_id`,
+    [t, w.tenant.outletId, ids.location],
+  );
+  await recordStockMovement(contextOf(t), {
+    outletId: outletIdSchema.parse(w.tenant.outletId),
+    locationId: ids.location,
+    inventoryItemId: ids.item,
+    movementType: "receipt",
+    quantity: decimal4("1000"),
+    unitCostIdr: decimal4("10"),
+    batchId: null,
+    sourceType: "goods_receipt",
+    sourceId: randomUUID(),
+    actor: { type: "system" },
+  } as never);
+  await owner.query(
+    `INSERT INTO recipes (id, tenant_id, brand_id, name, output_item_id, yield_quantity, yield_uom_id, is_active, updated_by)
+     VALUES ($1, $2, $3, $4, NULL, 1, $5, true, $6)`,
+    [
+      ids.recipe,
+      t,
+      w.tenant.brandId,
+      `Resep teh ${tag}`,
+      ids.uom,
+      w.supervisor.userId,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO recipe_lines (tenant_id, recipe_id, sort_order, component_type, component_id, quantity, uom_id, waste_pct_bp)
+     VALUES ($1, $2, 0, 'item', $3, 10, $4, 0)`,
+    [t, ids.recipe, ids.item, ids.uom],
+  );
+  await owner.query(
+    "UPDATE menu_items SET recipe_id = $3 WHERE tenant_id = $1 AND id = $2",
+    [t, w.ids.teh, ids.recipe],
+  );
+  return async () => {
+    await owner.query(
+      "UPDATE menu_items SET recipe_id = NULL WHERE tenant_id = $1 AND id = $2",
+      [t, w.ids.teh],
+    );
+    await owner.query(
+      "DELETE FROM outlet_inventory_settings WHERE tenant_id = $1 AND outlet_id = $2",
+      [t, w.tenant.outletId],
+    );
+  };
+}
+
+describe("legend-zm1e6 putaran 2 A: harga snapshot saat resolve", () => {
+  it("swap staf: katalog naik setelah resolve, lini pengganti tetap memakai harga resolve", async () => {
+    const { order, issueId, event } = await staffSwap(w.ids.teh);
+    // Written by resolve itself, before any consumer ran.
+    expect(await snapshotOf(issueId)).toBe(PRICES.teh);
+    const undo = await setCatalogPrice(w.ids.teh, PRICES.teh + 9_000);
+    try {
+      await deliver(event);
+    } finally {
+      await undo();
+    }
+
+    const replacement = (await orderLines(order.id)).find(
+      (line) => line.menu_item_id === w.ids.teh,
+    )!;
+    expect(replacement).toMatchObject({
+      unit_price_idr: PRICES.teh,
+      modifiers_total_idr: 0,
+      line_total_idr: PRICES.teh * replacement.quantity,
+    });
+    // The snapshot itself is not rewritten by the consumer.
+    expect(await snapshotOf(issueId)).toBe(PRICES.teh);
+  });
+
+  it("swap staf: katalog turun setelah resolve, lini pengganti tetap memakai harga resolve", async () => {
+    const { order, event } = await staffSwap(w.ids.teh);
+    const undo = await setCatalogPrice(w.ids.teh, 1_000);
+    try {
+      await deliver(event);
+    } finally {
+      await undo();
+    }
+
+    const replacement = (await orderLines(order.id)).find(
+      (line) => line.menu_item_id === w.ids.teh,
+    )!;
+    expect(replacement.unit_price_idr).toBe(PRICES.teh);
+    expect(replacement.line_total_idr).toBe(PRICES.teh * replacement.quantity);
+  });
+
+  it("swap tamu: harga snapshot terisi saat pilih dan dipakai walau katalog berubah", async () => {
+    const { guest, order, roti } = await w.paidOrder();
+    const issueId = (await w.report(roti.id)).body.data.id as string;
+    const chosen = await w.as(guest).choose(issueId, {
+      choice: "swap",
+      replacementItemId: w.ids.teh,
+    });
+    expect(chosen.status).toBe(200);
+    expect(await snapshotOf(issueId)).toBe(PRICES.teh);
+    const event = await resolvedEvent(issueId);
+
+    const undo = await setCatalogPrice(w.ids.teh, PRICES.teh + 4_000);
+    try {
+      await deliver(event);
+    } finally {
+      await undo();
+    }
+
+    const replacement = (await orderLines(order.id)).find(
+      (line) => line.menu_item_id === w.ids.teh,
+    )!;
+    expect(replacement.unit_price_idr).toBe(PRICES.teh);
+  });
+
+  it("resolusi bukan swap: harga snapshot tetap kosong", async () => {
+    const paid = await w.paidOrder();
+    const issueId = (await w.report(paid.roti.id)).body.data.id as string;
+    const resolved = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${issueId}/resolve`,
+      { resolution: "voucher" },
+    );
+    // Whether a voucher needs more input is not this file's concern; only a
+    // successful non-swap resolve must leave the snapshot empty.
+    if (resolved.status === 200) expect(await snapshotOf(issueId)).toBeNull();
+  });
+});
+
+describe("legend-zm1e6 putaran 2 B: lini pengganti di order completed bernilai nol", () => {
+  it("order completed: pengganti unit/modifier/total 0, cost snapshot terisi, tiket terbit, lini asli tetap bernilai", async () => {
+    const undoCost = await wireTehCost();
+    try {
+      const { order, roti, issueId, event } = await staffSwap(w.ids.teh);
+      const oldBefore = (await orderLines(order.id)).find(
+        (line) => line.id === toUuid(roti.id),
+      )!;
+      await setOrderStatus(order.id, "completed");
+      const moneyBefore = await orderMoney(order.id);
+
+      await deliver(event);
+
+      const lines = await orderLines(order.id);
+      const replacement = lines.find(
+        (line) => line.menu_item_id === w.ids.teh,
+      )!;
+      expect(replacement).toMatchObject({
+        quantity: oldBefore.quantity,
+        unit_price_idr: 0,
+        modifiers_total_idr: 0,
+        line_total_idr: 0,
+        status: "queued",
+        fire_status: "fired",
+      });
+      expect(await replacementOf(issueId)).toBe(replacement.id);
+      // Theoretical cost of the whole line: quantity x Rp100.
+      expect(await costSnapshotOf(replacement.id)).toBe(
+        oldBefore.quantity * 100,
+      );
+      // Kitchen ticket still issued, once, on the bar.
+      expect(await ticketItems(replacement.id)).toEqual([
+        { item_status: "queued", station_id: stations.bar },
+      ]);
+      // The sale value stays on the original line: untouched, not voided.
+      expect(lines.find((line) => line.id === oldBefore.id)).toEqual(oldBefore);
+      expect(oldBefore.line_total_idr).toBeGreaterThan(0);
+      // Order totals do not move.
+      expect(await orderMoney(order.id)).toEqual(moneyBefore);
+    } finally {
+      await undoCost();
+    }
+  });
+
+  it("order completed: harga katalog yang berubah tidak membuat pengganti bernilai", async () => {
+    const { order, event } = await staffSwap(w.ids.teh);
+    await setOrderStatus(order.id, "completed");
+    const undo = await setCatalogPrice(w.ids.teh, PRICES.teh + 9_000);
+    try {
+      await deliver(event);
+    } finally {
+      await undo();
+    }
+
+    const replacement = (await orderLines(order.id)).find(
+      (line) => line.menu_item_id === w.ids.teh,
+    )!;
+    expect(replacement).toMatchObject({
+      unit_price_idr: 0,
+      modifiers_total_idr: 0,
+      line_total_idr: 0,
+    });
+  });
+
+  it("order bukan final: pengganti memakai harga snapshot dan lini lama di-void", async () => {
+    const { order, roti, issueId, event } = await staffSwap(w.ids.teh);
+    expect((await orderMoney(order.id)).status).not.toBe("completed");
+
+    await deliver(event);
+
+    const lines = await orderLines(order.id);
+    const replacement = lines.find((line) => line.menu_item_id === w.ids.teh)!;
+    expect(replacement).toMatchObject({
+      unit_price_idr: (await snapshotOf(issueId))!,
+      modifiers_total_idr: 0,
+      line_total_idr: PRICES.teh * replacement.quantity,
+    });
+    expect(replacement.unit_price_idr).toBeGreaterThan(0);
+    expect(lines.find((line) => line.id === toUuid(roti.id))!.status).toBe(
+      "voided",
+    );
+  });
+});
+
+describe("legend-zm1e6 putaran 3: snapshot kosong dan order selesai tepat sebelum event", () => {
+  it("snapshot harga NULL (issue lama): lini pengganti memakai harga katalog", async () => {
+    const { order, issueId, event } = await staffSwap(w.ids.teh);
+    await owner.query(
+      `UPDATE order_issues SET replacement_unit_price_idr = NULL
+       WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, issueId],
+    );
+    expect(await snapshotOf(issueId)).toBeNull();
+    const undo = await setCatalogPrice(w.ids.teh, PRICES.teh + 3_000);
+    try {
+      await deliver(event);
+    } finally {
+      await undo();
+    }
+
+    const replacement = (await orderLines(order.id)).find(
+      (line) => line.menu_item_id === w.ids.teh,
+    )!;
+    expect(replacement).toMatchObject({
+      unit_price_idr: PRICES.teh + 3_000,
+      modifiers_total_idr: 0,
+      line_total_idr: (PRICES.teh + 3_000) * replacement.quantity,
+    });
+  });
+
+  it("order jadi completed tepat sebelum event diantar: pengganti bernilai 0, lini lama tidak di-void", async () => {
+    const { order, roti, event } = await staffSwap(w.ids.teh);
+    expect((await orderMoney(order.id)).status).not.toBe("completed");
+    // The order row is locked by another writer; the consumer waits on it
+    // (order is read FOR UPDATE) and must see the status that writer commits.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT id FROM orders WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        [w.tenant.tenantId, toUuid(order.id)],
+      );
+      const delivery = deliver(event);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await client.query(
+        "UPDATE orders SET status = 'completed' WHERE tenant_id = $1 AND id = $2",
+        [w.tenant.tenantId, toUuid(order.id)],
+      );
+      await client.query("COMMIT");
+      await delivery;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const lines = await orderLines(order.id);
+    const replacement = lines.find((line) => line.menu_item_id === w.ids.teh)!;
+    expect(replacement).toMatchObject({
+      unit_price_idr: 0,
+      modifiers_total_idr: 0,
+      line_total_idr: 0,
+    });
+    expect(lines.find((line) => line.id === toUuid(roti.id))!.status).not.toBe(
+      "voided",
+    );
+  });
+});
+
+describe("legend-zm1e6 putaran 2 C: audit blocked/skipped sekali per issue", () => {
+  it("swap_kitchen_blocked: event diantar dua kali berurutan, satu baris audit", async () => {
+    const { order, issueId, event } = await staffSwap(w.ids.teh);
+    await owner.query(
+      `INSERT INTO item_availability (id, tenant_id, outlet_id, menu_item_id, schedule, daily_limit, status)
+       VALUES ($1, $2, $3, $4, '[]', NULL, 'sold_out')`,
+      [randomUUID(), w.tenant.tenantId, w.tenant.outletId, w.ids.teh],
+    );
+    try {
+      await deliver(event);
+      await deliver(event);
+
+      expect(
+        await auditCount(issueId, "order_issue.swap_kitchen_blocked"),
+      ).toBe(1);
+      expect(await replacementOf(issueId)).toBeNull();
+      expect(await orderLines(order.id)).toHaveLength(2);
+    } finally {
+      await owner.query(
+        "DELETE FROM item_availability WHERE tenant_id = $1 AND menu_item_id = $2",
+        [w.tenant.tenantId, w.ids.teh],
+      );
+    }
+  });
+
+  it("swap_kitchen_blocked: dua event serentak, satu baris audit", async () => {
+    const { issueId, event } = await staffSwap(w.ids.teh);
+    await owner.query(
+      `INSERT INTO item_availability (id, tenant_id, outlet_id, menu_item_id, schedule, daily_limit, status)
+       VALUES ($1, $2, $3, $4, '[]', NULL, 'sold_out')`,
+      [randomUUID(), w.tenant.tenantId, w.tenant.outletId, w.ids.teh],
+    );
+    try {
+      await Promise.all([deliver(event), deliver(event)]);
+
+      expect(
+        await auditCount(issueId, "order_issue.swap_kitchen_blocked"),
+      ).toBe(1);
+    } finally {
+      await owner.query(
+        "DELETE FROM item_availability WHERE tenant_id = $1 AND menu_item_id = $2",
+        [w.tenant.tenantId, w.ids.teh],
+      );
+    }
+  });
+
+  it("swap_kitchen_skipped: event diantar dua kali berurutan, satu baris audit", async () => {
+    const { order, issueId, event } = await staffSwap(w.ids.teh);
+    await setOrderStatus(order.id, "voided");
+
+    await deliver(event);
+    await deliver(event);
+
+    expect(await auditCount(issueId, "order_issue.swap_kitchen_skipped")).toBe(
+      1,
+    );
+    expect(await swapAuditCount(issueId)).toBe(0);
+  });
+
+  it("swap_kitchen_skipped: dua event serentak, satu baris audit", async () => {
+    const { order, issueId, event } = await staffSwap(w.ids.teh);
+    await setOrderStatus(order.id, "voided");
+
+    await Promise.all([deliver(event), deliver(event)]);
+
+    expect(await auditCount(issueId, "order_issue.swap_kitchen_skipped")).toBe(
+      1,
+    );
+  });
+
+  it("audit satu per issue: dua issue berbeda masing-masing tetap punya satu baris", async () => {
+    const first = await staffSwap(w.ids.teh);
+    const second = await staffSwap(w.ids.teh);
+    await setOrderStatus(first.order.id, "voided");
+    await setOrderStatus(second.order.id, "voided");
+
+    await deliver(first.event);
+    await deliver(second.event);
+    await deliver(first.event);
+    await deliver(second.event);
+
+    for (const issueId of [first.issueId, second.issueId])
+      expect(
+        await auditCount(issueId, "order_issue.swap_kitchen_skipped"),
+      ).toBe(1);
   });
 });
 

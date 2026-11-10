@@ -62,6 +62,8 @@ export const orderIssues = pgTable(
     voucherId: uuid("voucher_id"),
     /** Positive: the guest pays the difference; negative: credited. */
     priceDifferenceIdr: idrColumn("price_difference_idr"),
+    /** Replacement unit catalogue price at resolve time (swap only). */
+    replacementUnitPriceIdr: idrColumn("replacement_unit_price_idr"),
     approvedBy: text("approved_by").references(() => user.id),
     /** Approval request that allowed a manual refund (ORD-09, legend-4qu). */
     approvalRequestId: uuid("approval_request_id"),
@@ -172,6 +174,10 @@ export const orderIssues = pgTable(
     check(
       "order_issues_replacement_order_item_check",
       sql`${table.replacementOrderItemId} IS NULL OR ${table.resolution} = 'swap'`,
+    ),
+    check(
+      "order_issues_replacement_unit_price_check",
+      sql`${table.replacementUnitPriceIdr} IS NULL OR ${table.resolution} = 'swap'`,
     ),
     check(
       "order_issues_resolved_check",

@@ -83,6 +83,10 @@ ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_swap_approval_check" CHE
 --> statement-breakpoint
 ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_order_item_check" CHECK ("order_issues"."replacement_order_item_id" IS NULL OR "order_issues"."resolution" = 'swap');
 --> statement-breakpoint
+ALTER TABLE "order_issues" ADD COLUMN "replacement_unit_price_idr" bigint;
+--> statement-breakpoint
+ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_unit_price_check" CHECK ("order_issues"."replacement_unit_price_idr" IS NULL OR "order_issues"."resolution" = 'swap');
+--> statement-breakpoint
 -- ---------------------------------------------------------------------------
 -- legend-4qu hand SQL (copied from src/db/schema/apology-vouchers.custom.sql).
 -- ---------------------------------------------------------------------------

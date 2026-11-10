@@ -878,6 +878,8 @@ export async function getOrderIssueOptions(
 type Settlement = {
   resolution: "swap" | "voucher" | "manual_refund";
   replacementItemId: string | null;
+  /** Catalogue unit price at resolve time (swap only), the `difference` source. */
+  replacementUnitPriceIdr: number | null;
   voucherId: string | null;
   priceDifferenceIdr: number | null;
   approvedBy: string | null;
@@ -903,6 +905,10 @@ async function settleIssue(
     .set({
       resolution: settlement.resolution,
       replacementItemId: settlement.replacementItemId,
+      replacementUnitPriceIdr:
+        settlement.replacementUnitPriceIdr === null
+          ? null
+          : idr(settlement.replacementUnitPriceIdr),
       voucherId: settlement.voucherId,
       priceDifferenceIdr:
         settlement.priceDifferenceIdr === null
@@ -1145,6 +1151,7 @@ async function swapSettlement(
   return {
     resolution: "swap",
     replacementItemId,
+    replacementUnitPriceIdr: replacement.unitPriceIdr,
     voucherId,
     priceDifferenceIdr: difference,
     approvedBy: approval?.approvedBy ?? null,
@@ -1175,6 +1182,7 @@ async function systemVoucherSettlement(
   return {
     resolution: "voucher",
     replacementItemId: null,
+    replacementUnitPriceIdr: null,
     voucherId: minted.apologyVoucherId,
     priceDifferenceIdr: null,
     approvedBy: null,
@@ -1417,6 +1425,7 @@ export async function resolveOrderIssue(
         settlement = {
           resolution: "voucher",
           replacementItemId: null,
+          replacementUnitPriceIdr: null,
           voucherId: apology.id,
           priceDifferenceIdr: null,
           approvedBy: null,
@@ -1439,6 +1448,7 @@ export async function resolveOrderIssue(
         settlement = {
           resolution: "manual_refund",
           replacementItemId: null,
+          replacementUnitPriceIdr: null,
           voucherId: null,
           priceDifferenceIdr: null,
           approvedBy: approval.approvedBy,

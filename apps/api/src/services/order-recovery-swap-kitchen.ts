@@ -2,7 +2,7 @@
 // resolve step (order-recovery.service.ts) only settles the issue and appends
 // `order_issue.resolved`; this consumer, wired in worker-main.ts, turns a
 // `swap` resolution into order lines: a replacement line on the same order
-// (priced from today's catalogue, daily limit reserved, cost frozen), the old
+// (priced from the swap price frozen at resolve, daily limit reserved, cost frozen), the old
 // line voided, and the replacement routed to its KDS station.
 //
 // Idempotent: the issue row is locked and `replacement_order_item_id` is the
@@ -11,7 +11,7 @@
 // through the apology voucher; a dearer swap is only recorded, legend-i83ls).
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, gte, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -20,6 +20,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { auditLogs } from "../db/schema/core-audit.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -100,7 +101,10 @@ export async function deliverSwapKitchenEvent(
       businessDate: orders.businessDate,
     })
     .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, issue.orderId)));
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, issue.orderId)))
+    // Lock order after issue (always this sequence): the status read below
+    // cannot change to completed/voided between this read and the new line.
+    .for("update");
   if (!order || order.outletId !== issue.outletId) return;
   const [oldLine] = await tx
     .select()
@@ -143,9 +147,37 @@ export async function deliverSwapKitchenEvent(
       AUDIT_SAFE_FIELDS,
     );
 
+  // Blocked and skipped leave the once-only marker unset, so a replayed event
+  // reaches here again: the issue row lock held above makes this check safe.
+  // The audit row is written after the issue was resolved, so a one-day margin
+  // before resolvedAt bounds the scan to audit_logs_retention_idx
+  // (tenant_id, created_at); the object id narrows it to this order.
+  const auditSince = new Date(
+    (issue.resolvedAt ?? issue.createdAt).getTime() - 24 * 60 * 60 * 1000,
+  );
+  const auditSwapOnce = async (
+    action: string,
+    after: Record<string, string>,
+  ): Promise<void> => {
+    const [existing] = await tx
+      .select({ id: auditLogs.id })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, tenantId),
+          gte(auditLogs.createdAt, auditSince),
+          sql`${auditLogs.event}->>'objectId' = ${order.id}`,
+          sql`${auditLogs.event}->>'action' = ${action}`,
+          sql`${auditLogs.event}->'maskedChanges'->'after'->>'id' = ${issue.id}`,
+        ),
+      )
+      .limit(1);
+    if (!existing) await auditSwap(action, after);
+  };
+
   // A voided order takes no new line: nothing to cook or to reserve.
   if (order.status === "voided") {
-    await auditSwap(AUDIT_SKIPPED_ACTION, {
+    await auditSwapOnce(AUDIT_SKIPPED_ACTION, {
       id: issue.id,
       orderItemId: oldLine.id,
       replacementItemId: issue.replacementItemId,
@@ -166,7 +198,7 @@ export async function deliverSwapKitchenEvent(
   if (!priced) {
     // Sold out, out of schedule, limit full, price gone: the catalogue gives no
     // finer reason, and a retry cannot fix it.
-    await auditSwap(AUDIT_BLOCKED_ACTION, {
+    await auditSwapOnce(AUDIT_BLOCKED_ACTION, {
       id: issue.id,
       orderItemId: oldLine.id,
       replacementItemId: issue.replacementItemId,
@@ -182,7 +214,7 @@ export async function deliverSwapKitchenEvent(
     now,
   });
   if (!reservation.allowed) {
-    await auditSwap(AUDIT_BLOCKED_ACTION, {
+    await auditSwapOnce(AUDIT_BLOCKED_ACTION, {
       id: issue.id,
       orderItemId: oldLine.id,
       replacementItemId: priced.menuItemId,
@@ -204,6 +236,15 @@ export async function deliverSwapKitchenEvent(
     ],
   );
 
+  // A completed order keeps its sales value on the old line, so the
+  // replacement is recorded at zero and revenue is not counted twice. Any other
+  // order bills the price frozen at resolve time (the catalogue price only for
+  // an older issue without a snapshot).
+  const orderCompleted = order.status === "completed";
+  const unitPrice = orderCompleted
+    ? 0
+    : (issue.replacementUnitPriceIdr ?? priced.unitPriceIdr);
+
   const replacementId = createUlid(now.getTime());
   await tx.insert(orderItems).values({
     id: replacementId,
@@ -214,9 +255,9 @@ export async function deliverSwapKitchenEvent(
     variantId: null,
     name: priced.name,
     quantity: oldLine.quantity,
-    unitPriceIdr: idr(priced.unitPriceIdr),
+    unitPriceIdr: idr(unitPrice),
     modifiersTotalIdr: idr(0),
-    lineTotalIdr: idr(priced.unitPriceIdr * oldLine.quantity),
+    lineTotalIdr: idr(unitPrice * oldLine.quantity),
     costSnapshotIdr:
       costSnapshot === null || costSnapshot === undefined
         ? null
@@ -251,7 +292,7 @@ export async function deliverSwapKitchenEvent(
 
   // The trigger freezes the lines of a completed order: the old
   // line then stays as it is and the audit row says so.
-  const frozen = order.status === "completed";
+  const frozen = orderCompleted;
   let oldLineOutcome = frozen ? "kept_final_order" : "already_voided";
   if (!frozen) {
     const voided = await tx

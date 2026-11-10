@@ -45033,6 +45033,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "replacement_unit_price_idr": {
+          "name": "replacement_unit_price_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
         "approved_by": {
           "name": "approved_by",
           "type": "text",
@@ -45428,6 +45434,10 @@
         "order_issues_replacement_order_item_check": {
           "name": "order_issues_replacement_order_item_check",
           "value": "\"order_issues\".\"replacement_order_item_id\" IS NULL OR \"order_issues\".\"resolution\" = 'swap'"
+        },
+        "order_issues_replacement_unit_price_check": {
+          "name": "order_issues_replacement_unit_price_check",
+          "value": "\"order_issues\".\"replacement_unit_price_idr\" IS NULL OR \"order_issues\".\"resolution\" = 'swap'"
         },
         "order_issues_resolved_check": {
           "name": "order_issues_resolved_check",
