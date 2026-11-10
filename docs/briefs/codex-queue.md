@@ -9,9 +9,9 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | Refund recovery | b6a38096..b78f169c (ws/94q2l-impl) | order-recovery-refund.ts, order-recovery-refund-amount.ts, accounting-auto-journal-recovery-refund.ts, accounting-auto-journal-guards.ts, payment-refund.service.ts | selesai 372 (3 temuan, h1dyy) |
 | Profit share | 7d388b02..0033ea1d (ws/8s992-profit-rules) | profit-share-distribution.service.ts, profit-share-registry.service.ts, accounting-profit-share.ts, profit-share-registry.routes.ts, profit-share-statement.service.ts | selesai 377+379 (5 temuan, 33im6) |
 | Gateway Duitku | 83074382^..e77bf057 | payment-duitku-webhook.service.ts, payment-duitku.ts, platform-payment-gateway.service.ts, payment-gateway-select.ts, payment-routing.service.ts | selesai 374 (4 temuan, rgddb) |
-| WS-03 split bill/table move | c6916247^..c6916247, dcd99cbc, 1ead4c4d, e4efc823 | bill-split.service.ts, table-session-operations.service.ts | split jalan 380; pindah/gabung meja antre |
+| WS-03 split bill/table move | c6916247^..c6916247, dcd99cbc, 1ead4c4d, e4efc823 | bill-split.service.ts, table-session-operations.service.ts | split selesai 380 (3 temuan -> brief 366 ec6fa); pindah/gabung meja antre |
 | Identity/member WS-08 | b428e1bc^..e15950fe, c129293e..6fb77d06 | loyalty-earn-consumer.ts, point-ledger.service.ts, consent.service.ts, pos-order-customer.service.ts, crm-ledger.ts, loyalty-program.service.ts | antre |
 | HRIS attendance cloud | 17fd0206^..704ecc3d | hris-attendance*.service.ts, hris-attendance.ts, attendance-selfie-purge.job.ts, hris-attendance.routes.ts | antre |
-| HRIS edge + PIN proof | 62ef1e11..092643e6 + j6cyb + u7g9w | edge-hris.ts, hris-attendance-qr.ts, selfie-seal.ts | siap (u7g9w 2c7957bf) |
-| Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | siap (jmsdx 469673f2) |
+| HRIS edge + PIN proof | 62ef1e11..092643e6 + j6cyb + u7g9w | edge-hris.ts, hris-attendance-qr.ts, selfie-seal.ts | jalan 382 bersama pepper |
+| Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | jalan 382 |
 | Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | antre (ws09 lama 110) |
