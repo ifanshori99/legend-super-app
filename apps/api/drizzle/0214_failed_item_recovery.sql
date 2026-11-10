@@ -60,6 +60,16 @@ CREATE TABLE "apology_vouchers" (
 );
 --> statement-breakpoint
 ALTER TABLE "order_issues" ADD COLUMN "approval_request_id" uuid;--> statement-breakpoint
+-- legend-94q2l: the FKs below are added by ALTER (not inline), so PostgreSQL
+-- validates them with a query on the parent. Under FORCE RLS a non-superuser
+-- migrator raises 42501 (tenant context is required) there, so FORCE is lifted
+-- on every FORCE parent and child for the FK block and restored after it
+-- (docs/plan/contracts.md pattern 2).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.vouchers NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.order_issues NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.customer_profiles NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.order_items NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "apology_vouchers" ADD CONSTRAINT "apology_vouchers_issued_by_user_id_fk" FOREIGN KEY ("issued_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -76,6 +86,12 @@ CREATE UNIQUE INDEX "order_issues_voucher_once_idx" ON "order_issues" USING btre
 ALTER TABLE "order_issues" ADD COLUMN "replacement_order_item_id" uuid;
 --> statement-breakpoint
 ALTER TABLE "order_issues" ADD CONSTRAINT "order_issues_replacement_order_item_fk" FOREIGN KEY ("tenant_id","replacement_order_item_id") REFERENCES "public"."order_items"("tenant_id","id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE public.order_items FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.customer_profiles FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.order_issues FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.vouchers FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 CREATE UNIQUE INDEX "order_issues_replacement_item_once_idx" ON "order_issues" USING btree ("tenant_id","replacement_order_item_id") WHERE "order_issues"."replacement_order_item_id" IS NOT NULL;
 --> statement-breakpoint
