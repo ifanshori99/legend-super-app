@@ -31,6 +31,8 @@ import {
   activeConsentPolicies,
   recordMemberConsent,
 } from "../services/consent.service.ts";
+import { expiringSoonOf } from "../services/loyalty-expiry.service.ts";
+import { ensureReferralCode } from "../services/referral.service.ts";
 import { listLedgerForProfile } from "../services/point-ledger.service.ts";
 import {
   findProfileByUser,
@@ -58,9 +60,17 @@ memberRouter.get(
   requireMember({ allow: "pending" }),
   async (req, res) => {
     const scope = getMemberScope(req);
-    const profile = await withMemberScope(db, scope, (tx) =>
-      findProfileByUser(tx, scope.tenantId, scope.userId),
-    );
+    // legend-3zd1: a member from before referrals get their code on the first read.
+    const profile = await withMemberScope(db, scope, async (tx) => {
+      const found = await findProfileByUser(tx, scope.tenantId, scope.userId);
+      if (!found || found.referralCode) return found;
+      const referralCode = await ensureReferralCode(
+        tx,
+        scope.tenantId,
+        found.id,
+      );
+      return referralCode ? { ...found, referralCode } : found;
+    });
     if (!profile)
       throw new HttpError(
         404,
@@ -76,13 +86,27 @@ memberRouter.get(
 memberRouter.get("/points", ...base, requireMember(), async (req, res) => {
   const scope = getMemberScope(req);
   const query = listMemberPointsEndpoint.query.parse(req.query);
-  const { items, nextCursor } = await withMemberScope(db, scope, (tx) =>
-    listLedgerForProfile(tx, scope.tenantId, profileIdOf(scope), {
-      cursor: query.cursor,
-      limit: query.limit,
+  const profileId = profileIdOf(scope);
+  const { page, expiringSoon } = await withMemberScope(
+    db,
+    scope,
+    async (tx) => ({
+      page: await listLedgerForProfile(tx, scope.tenantId, profileId, {
+        cursor: query.cursor,
+        limit: query.limit,
+      }),
+      expiringSoon: await expiringSoonOf(
+        tx,
+        scope.tenantId,
+        profileId,
+        new Date(),
+      ),
     }),
   );
-  res.json({ data: items, meta: { limit: query.limit, nextCursor } });
+  res.json({
+    data: page.items,
+    meta: { limit: query.limit, nextCursor: page.nextCursor, expiringSoon },
+  });
 });
 
 memberRouter.post(

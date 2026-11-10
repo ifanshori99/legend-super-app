@@ -146,6 +146,12 @@ export const customerProfiles = pgTable(
     }),
     homeOutletId: outletIdColumn(() => outlets.id, "home_outlet_id"),
     mergedIntoProfileId: uuid("merged_into_profile_id"),
+    /**
+     * Current loyalty tier (legend-3zd1). Composite FK to `loyalty_tiers` is in
+     * crm-tiers.custom.sql, not here, to avoid a circular import.
+     */
+    tierId: uuid("tier_id"),
+    tierEvaluatedAt: timestamp("tier_evaluated_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },

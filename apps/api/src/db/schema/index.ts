@@ -137,3 +137,5 @@ export * from "./crm-member";
 export * from "./crm-ledger";
 // WS-08 rewards, redemptions, missions (legend-m4p5).
 export * from "./crm-rewards";
+// WS-08 loyalty tiers, tier history, referrals (legend-3zd1).
+export * from "./crm-tiers";

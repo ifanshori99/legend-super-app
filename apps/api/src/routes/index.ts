@@ -126,6 +126,7 @@ import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
 import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
+import { loyaltyTiersRouter } from "./loyalty-tiers.routes.ts"; // legend-3zd1
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
@@ -277,6 +278,7 @@ apiRouter.use("/member", memberRewardsRouter);
 // The next two keep full paths inside the router and guard each route.
 apiRouter.use(loyaltyProgramRouter);
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
+apiRouter.use(loyaltyTiersRouter); // legend-3zd1
 apiRouter.use(posOrderCustomerRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.

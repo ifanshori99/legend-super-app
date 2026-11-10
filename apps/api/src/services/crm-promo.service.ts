@@ -792,6 +792,14 @@ export async function issueVoucher(
   idempotencyKey: string | null = null,
 ): Promise<VoucherIssued> {
   const actor = userIdSchema.parse(actorUserId);
+  // legend-xzr10: only reward redemption and missions mint loyalty_reward
+  // vouchers (they insert directly); staff cannot forge one.
+  if (input.source === "loyalty_reward")
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Sumber voucher loyalty_reward hanya dibuat otomatis oleh sistem.",
+    );
   if (input.promotionId === null && (input.valueIdr ?? 0) <= 0)
     throw new HttpError(
       422,

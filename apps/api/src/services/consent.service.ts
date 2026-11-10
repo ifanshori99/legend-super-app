@@ -42,6 +42,11 @@ import {
 } from "@starter/shared/crm";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  applyReferralAtSignup,
+  ensureReferralCode,
+  findReferrerByCode,
+} from "./referral.service.ts";
 // legend-111j
 import {
   setMemberProfileGuc,
@@ -270,6 +275,8 @@ export type MemberConsentInput = {
   purpose: ConsentPurpose;
   granted: boolean;
   policyVersion: string;
+  /** Only read when this consent creates the profile (signup). */
+  referralCode?: string;
 };
 
 /** The active policy version per purpose: the latest `published_at <= now`. */
@@ -341,6 +348,7 @@ async function createMemberProfile(
   tx: MemberTx,
   scope: MemberScope,
   now: Date,
+  referralCode?: string,
 ) {
   // One signup at a time per (tenant, user): the unique index would otherwise
   // abort the second of two racing requests.
@@ -357,6 +365,11 @@ async function createMemberProfile(
     .limit(1);
   const name = account?.name.trim().slice(0, 120) || "Member";
   const id = randomUUID();
+  // Resolve the referrer first: once the GUC names the new row, the
+  // member_self policy hides every other profile from this lookup.
+  const referrerProfileId = referralCode
+    ? await findReferrerByCode(tx, scope.tenantId, referralCode)
+    : null;
   // The GUC must name the new row before it is inserted (member_self policy).
   await setMemberProfileGuc(tx, id);
   const [created] = await tx
@@ -375,7 +388,17 @@ async function createMemberProfile(
     })
     .returning();
   if (!created) throw new Error("Member profile was not created");
-  return created;
+  // legend-3zd1: own code (when the program has referrals on) and the referral
+  // the new member arrived with. Neither may fail the signup.
+  const code = await ensureReferralCode(tx, scope.tenantId, created.id);
+  if (referralCode)
+    await applyReferralAtSignup(tx, {
+      tenantId: scope.tenantId,
+      refereeProfileId: created.id,
+      code: referralCode,
+      referrerProfileId,
+    });
+  return code ? { ...created, referralCode: code } : created;
 }
 
 /**
@@ -400,7 +423,7 @@ export async function recordMemberConsentInTx(
         "CUSTOMER_NOT_FOUND",
         "Pelanggan tidak ditemukan.",
       );
-    profile = await createMemberProfile(tx, scope, now);
+    profile = await createMemberProfile(tx, scope, now, input.referralCode);
   } else {
     profile = await withProfileLock(tx, tenantId, scope.customerProfileId);
   }

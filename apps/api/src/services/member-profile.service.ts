@@ -129,7 +129,7 @@ export async function onWhatsAppVerified(
   }
 }
 
-/** Contract shape (`tierId` stays null until 290e). Routes strip the hash. */
+/** Contract shape. Routes strip the hash. */
 export function toCustomerProfileDto(row: CustomerProfileRow): CustomerProfile {
   return customerProfileSchema.parse({
     id: row.id,
@@ -138,7 +138,7 @@ export function toCustomerProfileDto(row: CustomerProfileRow): CustomerProfile {
     whatsappHash: row.whatsappHash,
     name: row.name,
     birthMonthDay: row.birthMonthDay,
-    tierId: null,
+    tierId: row.tierId,
     pointsBalance: row.pointsBalance,
     lifetimeSpendIdr: row.lifetimeSpendIdr,
     visitsCount: row.visitsCount,
