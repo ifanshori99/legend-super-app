@@ -34,3 +34,16 @@ Imports from P1/P2 use the names above exactly.
 
 ### P4 tests (test-writer, fail-first)
 New `apps/api/src/test/identity-mfa-recovery-api.test.ts`, style of `apps/api/src/test/identity-mfa-api.test.ts` (supertest + `createApp`, `signUp`, `agent`, `originHeader`, real TOTP enroll→verify via `totpCode` from `lib/totp.ts`). One `it` per criterion: generate (10 codes, pattern, requires MFA-verified session, 409 without factor, status shows remaining 10 and never codes, DB has no plaintext), single-use (code works once on a fresh session that is not MFA-verified, second use 401, session marked verified, remaining decrements, works with lowercase/no dash), regenerate (old codes 401, new work), rate limit (5 wrong → RATE_LIMITED 429 and even a valid code is refused while locked; counter persists), audit (rows with the four actions on the session tenant when session has tenant_id; no code/hash in `event` jsonb), last factor deleted → codes refused. Read the existing suite first for how sessions get a tenant (set `session.tenant_id` via pool if needed).
+
+## Review fixes (architect, round 1)
+
+### F-code (implementer)
+1. `deleteMfaFactor` (`apps/api/src/services/identity-mfa.service.ts`): take the same per-user advisory lock generate uses (`mfa-recovery:<userId>`) as the FIRST statement of its transaction, so generate-vs-delete and two parallel last-factor deletes serialize and the set is always revoked when no verified factor remains.
+2. `auditRecoveryEvent` (`identity-mfa-recovery.service.ts`): wrap the post-commit audit write in try/catch; on failure `logger.warn` with only `{ userId, action }` (pattern: `auditRateLimited` in `services/identity-login.service.ts`). Same for the deleteMfaFactor revoke audit. A failed audit must never turn a committed generate into a 500.
+3. Consume: the session update adds `isNull(session.revokedAt)` and `.returning({ id })`; no row → return an error from inside the tx so it rolls back (code NOT spent), answer 401 `UNAUTHENTICATED`-style HttpError (reuse whatever requireAuth answers for a dead session).
+4. Move `MAX_MFA_ATTEMPTS` + `MFA_LOCK_MINUTES` into new `apps/api/src/lib/mfa-policy.ts`; both services import from there; `identity-mfa.service.ts` re-exports them for existing importers. No more cross-import of constants.
+
+### F-test (test-writer) — append to `apps/api/src/test/identity-mfa-recovery-api.test.ts`
+- Same valid code sent twice in parallel (`Promise.all`) → exactly one 200, one 401; remaining drops by 1.
+- Six wrong codes in parallel → at least one 429, set row `failed_attempts >= 5` and `locked_until` set.
+- Two verified factors, delete both in parallel → recovery set gone afterwards.

@@ -42,6 +42,7 @@ import {
   magicLinkQuerySchema,
   mfaEnrollSchema,
   mfaFactorParamsSchema,
+  mfaRecoveryVerifySchema,
   mfaVerifySchema,
   replaceApprovalMatrixSchema,
   roleAssignmentParamsSchema,
@@ -61,6 +62,9 @@ import {
   magicLinkRequestedSchema,
   mfaEnrollmentSchema,
   mfaFactorSchema,
+  mfaRecoveryCodesSchema,
+  mfaRecoveryStatusSchema,
+  mfaRecoveryVerificationResultSchema,
   mfaVerificationResultSchema,
   sessionViewSchema,
   staffPinSwitchSchema,
@@ -160,6 +164,28 @@ export const deleteMfaFactor = defineEndpoint({
   method: "DELETE",
   path: "/api/auth/mfa/factors/:factorId",
   params: mfaFactorParamsSchema,
+});
+
+/** Remaining recovery codes; never the codes themselves. */
+export const getMfaRecoveryStatus = defineEndpoint({
+  method: "GET",
+  path: "/api/auth/mfa/recovery-codes",
+  response: dataResponseSchema(mfaRecoveryStatusSchema),
+});
+
+/** Needs an MFA-verified session. Replaces the whole set; plaintext shown once. */
+export const generateMfaRecoveryCodes = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/mfa/recovery-codes",
+  response: dataResponseSchema(mfaRecoveryCodesSchema),
+});
+
+/** Spends one recovery code and marks this session MFA-verified. */
+export const verifyMfaRecoveryCode = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/mfa/recovery",
+  body: mfaRecoveryVerifySchema,
+  response: dataResponseSchema(mfaRecoveryVerificationResultSchema),
 });
 
 // ---------------------------------------------------------------- sessions

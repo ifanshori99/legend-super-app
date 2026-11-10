@@ -6,6 +6,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -45,4 +46,38 @@ export const mfaFactors = pgTable(
       .notNull(),
   },
   (table) => [index("mfa_factors_user_id_idx").on(table.userId)],
+);
+
+// Recovery codes for staff MFA (global, no tenant RLS, like mfa_factors; user_id
+// has no foreign key for the same reason). One set per user: regenerating
+// replaces the set, and the cascade removes its codes. `failed_attempts` and
+// `locked_until` rate-limit guesses per user, not per code.
+export const mfaRecoveryCodeSets = pgTable("mfa_recovery_code_sets", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().unique(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+// `code_hash` is the keyed blind index (lib/secrets.ts blindIndex) of the
+// normalized code; the plaintext is never stored.
+export const mfaRecoveryCodes = pgTable(
+  "mfa_recovery_codes",
+  {
+    id: uuid("id").primaryKey(),
+    setId: uuid("set_id")
+      .notNull()
+      .references(() => mfaRecoveryCodeSets.id, { onDelete: "cascade" }),
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("mfa_recovery_codes_set_hash_key").on(table.setId, table.codeHash),
+  ],
 );

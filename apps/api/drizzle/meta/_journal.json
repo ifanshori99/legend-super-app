@@ -1422,6 +1422,13 @@
       "when": 1794297000000,
       "tag": "0216_wifi_quota_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1794320039000,
+      "tag": "0239_mfa_recovery_codes",
+      "breakpoints": true
     }
   ]
 }

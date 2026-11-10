@@ -91,6 +91,18 @@ export const mfaVerifySchema = clientInputSchema({
 });
 export type MfaVerifyInput = z.infer<typeof mfaVerifySchema>;
 
+/** Recovery code as typed by a person: `XXXXX-XXXXX`, dash optional, any case. */
+export const MFA_RECOVERY_CODE_INPUT_PATTERN =
+  /^[0-9A-Za-z]{5}-?[0-9A-Za-z]{5}$/;
+
+export const mfaRecoveryVerifySchema = clientInputSchema({
+  code: z
+    .string()
+    .trim()
+    .regex(MFA_RECOVERY_CODE_INPUT_PATTERN, "Expected a recovery code"),
+});
+export type MfaRecoveryVerifyInput = z.infer<typeof mfaRecoveryVerifySchema>;
+
 // ---------------------------------------------------------------- sessions
 
 export const sessionParamsSchema = z.strictObject({

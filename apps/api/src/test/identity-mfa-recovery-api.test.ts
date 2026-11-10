@@ -614,4 +614,84 @@ describe("Staff MFA recovery codes", () => {
     expect((await useCode(fresh, WRONG_CODES[0]!)).status).toBe(401);
     expect(await recoveryAudit(staff.userId)).toHaveLength(0);
   });
+
+  it("AUTH-05 recovery: the same valid code sent twice in parallel is accepted once", async () => {
+    const staff = await staffWithFactor("Kode Paralel");
+    const codes = await generateCodes(staff);
+    const fresh = await signInCookie(staff.email);
+
+    const results = await Promise.all([
+      useCode(fresh, codes[0]!),
+      useCode(fresh, codes[0]!),
+    ]);
+    const statuses = results.map((result) => result.status).sort();
+    expect(statuses).toEqual([200, 401]);
+    const rejected = results.find((result) => result.status === 401);
+    expect(rejected?.body.error.code).toBe("MFA_RECOVERY_CODE_INVALID");
+    expect((await status(staff.cookie)).body.data.remaining).toBe(9);
+  });
+
+  it("AUTH-05 recovery: six wrong codes in parallel still lock the set", async () => {
+    const staff = await staffWithFactor("Salah Paralel");
+    await generateCodes(staff);
+    const fresh = await signInCookie(staff.email);
+
+    const results = await Promise.all(
+      WRONG_CODES.map((code) => useCode(fresh, code)),
+    );
+    for (const result of results) expect([401, 429]).toContain(result.status);
+    expect(results.some((result) => result.status === 429)).toBe(true);
+
+    const locked = await owner.query<{
+      failed_attempts: number;
+      locked_until: Date | null;
+    }>(
+      "SELECT failed_attempts, locked_until FROM mfa_recovery_code_sets WHERE user_id = $1",
+      [staff.userId],
+    );
+    expect(locked.rows[0]?.failed_attempts).toBeGreaterThanOrEqual(5);
+    expect(locked.rows[0]?.locked_until).not.toBeNull();
+  });
+
+  it("AUTH-05 recovery: deleting both verified factors in parallel revokes the codes", async () => {
+    const staff = await staffWithFactor("Hapus Paralel");
+    // Assumption: a user may hold more than one verified factor, enrolled
+    // through the same endpoints.
+    const enroll = await request(app)
+      .post("/api/auth/mfa/factors")
+      .set(originHeader)
+      .set("Cookie", staff.cookie)
+      .send({ type: "totp" });
+    expect(enroll.status).toBe(201);
+    const second = enroll.body.data as {
+      factorId: string;
+      secretBase32: string;
+    };
+    const verified = await request(app)
+      .post("/api/auth/mfa/verify")
+      .set(originHeader)
+      .set("Cookie", staff.cookie)
+      .send({
+        factorId: second.factorId,
+        code: totpCode(second.secretBase32, totpStep(new Date())),
+      });
+    expect(verified.status).toBe(200);
+    await generateCodes(staff);
+
+    const removals = await Promise.all(
+      [staff.factorId, second.factorId].map((factorId) =>
+        request(app)
+          .delete(`/api/auth/mfa/factors/${factorId}`)
+          .set(originHeader)
+          .set("Cookie", staff.cookie),
+      ),
+    );
+    for (const removal of removals) expect(removal.status).toBe(204);
+
+    const sets = await owner.query(
+      "SELECT 1 FROM mfa_recovery_code_sets WHERE user_id = $1",
+      [staff.userId],
+    );
+    expect(sets.rowCount).toBe(0);
+  });
 });
