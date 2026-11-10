@@ -441,6 +441,9 @@ const accessBaseMessages = {
         approve: "Setujui purchase order",
       },
       invoice: { match: "Cocokkan invoice supplier" },
+      return: { create: "Buat retur pembelian" },
+      petty: { record: "Catat pembelian kas kecil" },
+      petty_policy: { manage: "Atur kebijakan pembelian kas kecil" },
     },
     accounting: {
       journal: { view: "Lihat jurnal", post: "Posting jurnal" },
