@@ -5,7 +5,7 @@ import express from "express";
 import request from "supertest";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   createBrandInputSchema,
@@ -122,7 +122,33 @@ function scopedContext(outletIds?: string[]): ScopedTenantContext {
       });
 }
 
+// legend-23tbw: many other files add outlets to the shared seeded tenant by
+// raw SQL (no quota check), and vitest's file order changes between runs. The
+// seeded plan allows 5 outlets, so TEN-06 Q39 got 409 QUOTA_EXCEEDED whenever
+// it ran after enough of them. Lift the cap for this file and restore it after.
+let originalMaxOutlets: string | null = null;
+
+beforeAll(async () => {
+  const current = await owner.query<{ max: string }>(
+    "SELECT limits->>'maxOutlets' AS max FROM tenants WHERE id = $1",
+    [seededTenantId],
+  );
+  originalMaxOutlets = current.rows[0]?.max ?? null;
+  await owner.query(
+    `UPDATE tenants SET limits = jsonb_set(limits, '{maxOutlets}', '1000'::jsonb)
+      WHERE id = $1`,
+    [seededTenantId],
+  );
+});
+
 afterAll(async () => {
+  if (originalMaxOutlets !== null) {
+    await owner.query(
+      `UPDATE tenants SET limits = jsonb_set(limits, '{maxOutlets}', to_jsonb($2::int))
+        WHERE id = $1`,
+      [seededTenantId, originalMaxOutlets],
+    );
+  }
   await owner.query("DELETE FROM support_access_grants WHERE tenant_id = $1", [
     seededTenantId,
   ]);
