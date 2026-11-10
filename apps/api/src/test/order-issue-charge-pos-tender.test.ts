@@ -1,32 +1,38 @@
 // legend-i83ls gap 1: an open bill is paid at the cashier by POS tenders while
 // a dearer-swap charge (`order_issue_charges`, status `open`) is still on the
-// session. Money taken at the till must not be taken a second time through the
-// guest's QR payment link for the same charge.
+// session. The POS must never decide that a swap charge was paid at the till.
 //
-// The fix is `closeChargesCoveredAtPos` (order-recovery-charge.ts), run in its
-// own transaction right after a POS tender is captured (addPosTender and the
-// QRIS capture of handlePosPaymentPaid). These tests call it directly:
-// - The POS refuses a tender above the order's balance (`remainingIdr`), so a
-//   real tender can never reach the charge by itself; the money that covers a
-//   charge (an earlier overpaying tender, a deposit) is seeded as rows. A full
-//   cashier fixture (device, shift, receipt port) is not needed for the rule.
-// - Tenders are captured rows on the session's orders, like ws03-open-bill.
-// - The guest never reads the settlement first: the charge must already be
-//   closed when the guest tries to pay it (409, no payment opened).
-// - A POS refund is its own row (the tender stays `captured`): it takes money
-//   back out of the bill's cover. Doubt means the charge stays open.
+// Why: `remainingIdr` caps every POS tender at the order's total minus what is
+// applied or captured, so a cashier tender never contains charge money. The
+// session settlement counts the whole reservation deposit credit as paid
+// (`depositCreditFor`), so leftover deposit credit plus tenders can reach
+// "bill incl. charge" without anyone paying the charge. Closing the charge
+// then (`expired` / `paid_at_pos`) booked no journal and lost revenue and
+// PBJT. The guest keeps paying the charge through the QR link, whose
+// payment path writes the journal.
+//
+// Real path: `addPosTender` (the service behind POST .../pos/orders/:orderId/
+// tenders), cash method, on a QR order the cashier took over. The HTTP route is
+// not used: it only adds device auth in front of the same call, so the caller
+// (user, device, open shift) is seeded here. The reservation deposit is not
+// seeded through the reservation flow; the deposit credit port
+// (`setQrOrderDepositCreditLookup`) stands in for it, like
+// pos-order-deposit-lock.test.ts.
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+  userIdSchema,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { db } from "../db/index.ts";
-import { withTenant } from "../db/tenant.ts";
-import { closeChargesCoveredAtPos } from "../services/order-recovery-charge.ts";
-import { loadSettlement } from "../services/table-session.service.ts";
+import { addPosTender } from "../services/pos-order-payment.ts";
+import { setQrOrderDepositCreditLookup } from "../services/qr-order-ports.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   asOwnerTenant,
@@ -37,12 +43,18 @@ import {
 import { owner } from "./floor-test-helpers.ts";
 
 let w: World;
+/** Reservation deposit credit per table session (stands in for the DP flow). */
+const depositCredit = new Map<string, number>();
 
 beforeAll(async () => {
   w = await createWorld();
+  setQrOrderDepositCreditLookup(
+    async (_tx, _tenantId, sessionId) => depositCredit.get(sessionId) ?? 0,
+  );
 }, 120_000);
 
 afterAll(async () => {
+  setQrOrderDepositCreditLookup(null);
   await w.teardown();
 });
 
@@ -133,12 +145,17 @@ async function sessionWithChargeAndSecondOrder() {
   };
 }
 
-/** The cashier takes the order over and records captured tenders on it. */
-async function ringAtCashier(orderId: string, amounts: number[]) {
+const DEVICE_ID = randomUUID();
+
+/**
+ * The cashier takes the order over (a POS extension row, status `sent`) and
+ * has an open shift on a device, so a cash tender can be recorded.
+ */
+async function takeOverAtCashier(orderId: string) {
   const id = ulidToUuid(orderId);
   await asOwnerTenant(w.tenant.tenantId, async (client) => {
     await client.query(
-      `UPDATE orders SET channel = 'captain' WHERE tenant_id = $1 AND id = $2`,
+      `UPDATE orders SET channel = 'captain', status = 'sent' WHERE tenant_id = $1 AND id = $2`,
       [w.tenant.tenantId, id],
     );
     await client.query(
@@ -146,20 +163,47 @@ async function ringAtCashier(orderId: string, amounts: number[]) {
        VALUES ($1, $2, $3, 'captain')`,
       [id, w.tenant.tenantId, w.tenant.outletId],
     );
-    for (const amountIdr of amounts)
-      await client.query(
-        `INSERT INTO pos_order_tenders
-           (tenant_id, outlet_id, order_id, method, provider, amount_idr, received_idr,
-            change_idr, status, requested_at, resolved_at)
-         VALUES ($1, $2, $3, 'cash', 'manual', $4, $4, 0, 'captured', now(), now())`,
-        [w.tenant.tenantId, w.tenant.outletId, id, amountIdr],
-      );
-    // The cashier completes the order, as the POS does once it is paid.
     await client.query(
-      `UPDATE orders SET status = 'completed' WHERE tenant_id = $1 AND id = $2`,
-      [w.tenant.tenantId, id],
+      `INSERT INTO pos_shifts
+         (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+          opened_at, opening_float_idr, open_key, open_fingerprint)
+       SELECT $1, $2, $3, $4, $5, o.business_date, 'open', now() - interval '1 hour', 0, $6, $7
+       FROM orders o WHERE o.tenant_id = $2 AND o.id = $8
+         AND NOT EXISTS (
+           SELECT 1 FROM pos_shifts s
+           WHERE s.tenant_id = $2 AND s.device_id = $4 AND s.status = 'open')`,
+      [
+        randomUUID(),
+        w.tenant.tenantId,
+        w.tenant.outletId,
+        DEVICE_ID,
+        w.supervisor.userId,
+        randomUUID(),
+        "a".repeat(64),
+        id,
+      ],
     );
   });
+}
+
+/** One cash tender through the POS service, as the cashier's payment panel does. */
+function cashTender(orderId: string, receivedIdr: number) {
+  return addPosTender(
+    scopedContext(),
+    {
+      userId: userIdSchema.parse(w.supervisor.userId),
+      deviceId: DEVICE_ID,
+      expectedVersion: null,
+    },
+    outletIdSchema.parse(w.tenant.outletId),
+    orderId,
+    {
+      method: "cash",
+      receivedIdr,
+      expectedStatus: "sent",
+      idempotencyKey: randomUUID(),
+    },
+  );
 }
 
 async function chargeRow(chargeId: string) {
@@ -188,95 +232,59 @@ function guestPaysCharge(guest: Guest, chargeId: string) {
     .send({ method: "qris", idempotencyKey: randomUUID() });
 }
 
-/** Runs the rule the way the POS hook does: its own transaction. */
-function closeCovered(sessionId: string, actorUserId: string | null) {
-  const context = scopedContext();
-  return withTenant(db, context, (tx) =>
-    closeChargesCoveredAtPos(
-      tx,
-      context,
-      sessionId,
-      new Date(),
-      actorUserId,
-      () => loadSettlement(tx, context, sessionId),
-    ),
+async function chargeAuditCount(issueId: string) {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2
+       AND event->>'action' = 'order_issue.charge_paid_at_pos'`,
+    [w.tenant.tenantId, issueId],
   );
-}
-
-/** A POS refund row on an order, as POS-04 leaves it (the tender stays). */
-async function refundAtCashier(orderId: string, amountIdr: number) {
-  await owner.query(
-    `INSERT INTO pos_order_refunds
-       (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note, lines,
-        requested_by, approved_by, approval_request_id, refunded_at)
-     VALUES ($1, $2, $3, $4, 'quality_complaint', 'Uji', $5::jsonb, 'kasir', 'penyelia', $6, now())`,
-    [
-      w.tenant.tenantId,
-      w.tenant.outletId,
-      ulidToUuid(orderId),
-      amountIdr,
-      JSON.stringify([{ method: "cash", amountIdr }]),
-      randomUUID(),
-    ],
-  );
+  return Number(rows[0]!.n);
 }
 
 describe("open bill paid by POS tender with a charge open", () => {
-  it("tenders covering only the order leave the charge owed and payable once", async () => {
-    const { guest, second, secondTotal, chargeId } =
-      await sessionWithChargeAndSecondOrder();
-    await ringAtCashier(second.id, [secondTotal]);
+  it("a cash tender is capped at the order's remaining and never carries charge money", async () => {
+    const { second, secondTotal } = await sessionWithChargeAndSecondOrder();
+    await takeOverAtCashier(second.id);
 
-    expect(await closeCovered(guest.sessionId, w.supervisor.userId)).toBe(0);
-    expect((await chargeRow(chargeId)).status).toBe("open");
+    // The customer hands over the order AND the swap difference in cash.
+    const result = await cashTender(second.id, secondTotal + AMOUNT);
+    expect(result.tender.amountIdr).toBe(secondTotal);
+    expect(result.tender.changeIdr).toBe(AMOUNT);
+    expect(result.remainingIdr).toBe(0);
 
-    const paying = await guestPaysCharge(guest, chargeId);
-    expect(paying.status, JSON.stringify(paying.body)).toBe(201);
+    // The order is paid in full: another tender has nothing to apply to.
+    await expect(cashTender(second.id, AMOUNT)).rejects.toMatchObject({
+      code: "ORDER_NOT_PAYABLE",
+    });
   });
 
-  it("tenders settling the whole bill, charge included, close the charge with a reason, an audit row and no payment link for the guest", async () => {
+  it("leftover deposit credit plus a tender for the whole order leave the charge open", async () => {
     const { guest, second, secondTotal, chargeId, issueId } =
       await sessionWithChargeAndSecondOrder();
-    // One tender for the order and one for the swap difference: the till
-    // took the whole outstanding bill in cash.
-    await ringAtCashier(second.id, [secondTotal, AMOUNT]);
+    // The session holds a reservation deposit credit that covers the charge.
+    depositCredit.set(guest.sessionId, AMOUNT * 2);
+    await takeOverAtCashier(second.id);
 
-    expect(await closeCovered(guest.sessionId, w.supervisor.userId)).toBe(1);
+    await cashTender(second.id, secondTotal);
 
     const row = await chargeRow(chargeId);
-    expect(row.status).toBe("expired");
-    expect(row.close_reason).toBe("paid_at_pos");
-    expect(row.closed_at).not.toBeNull();
+    expect(row.status).toBe("open");
+    expect(row.closed_at).toBeNull();
+    expect(row.close_reason).toBeNull();
     expect(row.paid_at).toBeNull();
-    expect(row.closed_by).toBe(w.supervisor.userId);
-
-    const { rows: audits } = await owner.query<{ actor_id: string | null }>(
-      `SELECT event->>'actorId' AS actor_id FROM audit_logs
-       WHERE tenant_id = $1 AND event->>'objectId' = $2
-         AND event->>'action' = 'order_issue.charge_paid_at_pos'`,
-      [w.tenant.tenantId, issueId],
-    );
-    expect(audits).toHaveLength(1);
-    expect(audits[0]!.actor_id).toBe(w.supervisor.userId);
-
-    // The guest never read the settlement: the charge is closed already.
-    const paying = await guestPaysCharge(guest, chargeId);
-    expect(paying.status, JSON.stringify(paying.body)).toBe(409);
-
-    // Replay changes nothing.
-    expect(await closeCovered(guest.sessionId, w.supervisor.userId)).toBe(0);
+    expect(await chargeAuditCount(issueId)).toBe(0);
   });
 
-  it("a POS refund of the tendered money keeps the charge open", async () => {
+  it("the guest still pays the charge through the QR link after the cashier tender", async () => {
     const { guest, second, secondTotal, chargeId } =
       await sessionWithChargeAndSecondOrder();
-    await ringAtCashier(second.id, [secondTotal, AMOUNT]);
-    await refundAtCashier(second.id, AMOUNT);
-
-    expect(await closeCovered(guest.sessionId, w.supervisor.userId)).toBe(0);
-    expect((await chargeRow(chargeId)).status).toBe("open");
+    depositCredit.set(guest.sessionId, AMOUNT * 2);
+    await takeOverAtCashier(second.id);
+    await cashTender(second.id, secondTotal);
 
     const paying = await guestPaysCharge(guest, chargeId);
     expect(paying.status, JSON.stringify(paying.body)).toBe(201);
+    expect((await chargeRow(chargeId)).status).toBe("open");
   });
 });

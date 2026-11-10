@@ -63,6 +63,10 @@ import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { setQrOrderDepositCreditLookup } from "./services/qr-order-ports.ts";
+import { qrOrderSettlementLookup } from "./services/qr-order.service.ts";
+import { setTableSessionSettlementLookup } from "./services/table-session.service.ts";
+import { depositCreditForSession } from "./services/reservation-lifecycle.ts";
 import {
   handleRefundApprovalResolved,
   sweepApprovedRefundPayouts,
@@ -142,6 +146,12 @@ const maintenanceUrl = resolveMaintenanceDatabaseUrl({
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// legend-i83ls: the same session money ports as app.ts. Without them the
+// worker reads a zero deposit credit and no table-session settlement, so any
+// session code it runs (open-bill inactivity sweep, unpaid QR sweep) would see
+// wrong numbers.
+setQrOrderDepositCreditLookup(depositCreditForSession);
+setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // INV-02 (legend-db6): recipe source for the stock deduction consumer.
 setInventoryRecipeSource(recipeBomSource);
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
