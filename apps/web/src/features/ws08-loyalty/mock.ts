@@ -147,6 +147,7 @@ registerMock(createReward, ({ body }) => {
   const state = store.get();
   const reward: Reward = {
     ...body,
+    perCustomerLimit: body.perCustomerLimit ?? null,
     id: newId(),
     tenantId: state.program.tenantId,
   };

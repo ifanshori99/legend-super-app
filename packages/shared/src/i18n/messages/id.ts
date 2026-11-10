@@ -1987,6 +1987,7 @@ export const id = {
         referral: "Referensi",
         campaign: "Kampanye",
         manual: "Diberikan staf",
+        loyalty_reward: "Hadiah poin",
       },
     },
     visits: {

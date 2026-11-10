@@ -336,6 +336,7 @@ export const promoMessages = {
       referral: "Referral",
       campaign: "Kampanye",
       manual: "Manual",
+      loyalty_reward: "Hadiah poin",
     },
     issueTitle: "Terbitkan voucher",
     issueDescription:
