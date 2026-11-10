@@ -6,7 +6,7 @@
 // final, an idempotent backfill, and the 12 ledger codes staying `gl`.
 // The sales_target cases need table `sales_targets` (migration 0181, same card).
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   establishScopedTenantContext,
@@ -33,6 +33,7 @@ import {
   metricSourceOf,
   metricSplitOf,
 } from "../services/metric-sources";
+import { querySalesSummary } from "../services/ai-metrics/sales";
 import { salesRows } from "../services/metric-sources/sales";
 import { recomputeMetricsDaily } from "../services/metrics-daily.service";
 import { GL_METRIC_SOURCES } from "../services/metrics-gl-sources";
@@ -815,5 +816,282 @@ describe("sales metric source: target (needs migration 0181)", () => {
       500_000,
     );
     expect(valueOf(await stored(world, world.outlet2), "sales_target")).toBe(0);
+  });
+});
+
+// legend-n6fek: refunds of the failed-item recovery (`payment_refunds` with an
+// `order_issue_id`, requested by `system:recovery`) count in refund_amount,
+// net sales and the AI sales summary, once per refund, only when completed.
+describe("sales metric source: recovery refunds (legend-n6fek)", () => {
+  /** A resolved ORD-09 issue of the order; returns its id. */
+  async function seedIssue(w: World, outlet: string, orderId: string) {
+    const issueId = randomUUID();
+    const {
+      rows: [item],
+    } = await owner.query<{ id: string }>(
+      `SELECT id FROM order_items WHERE order_id = $1 LIMIT 1`,
+      [orderId],
+    );
+    // The user FKs (reported_by, approved_by) are skipped: no real staff needed.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO order_issues (id, tenant_id, outlet_id, order_id, order_item_id, type, reason,
+           reason_note, reported_by, resolution, approved_by, cost_idr, status, idempotency_key, resolved_at)
+         VALUES ($1, $2, $3, $4, $5, 'complaint', 'complaint', 'Refund manual disetujui',
+           $6, 'manual_refund', $7, 0, 'resolved', $8, now())`,
+        [
+          issueId,
+          w.tenantId,
+          outlet,
+          orderId,
+          item!.id,
+          randomUUID(),
+          randomUUID(),
+          `n6fek-${randomUUID()}`,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return issueId;
+  }
+
+  /** A paid intent plus one recovery refund of the order in the given state. */
+  async function seedRecoveryRefund(
+    w: World,
+    outlet: string,
+    orderId: string,
+    refund: {
+      amount: number;
+      status: "pending" | "approved" | "completed" | "failed";
+      method?: string;
+      requestedBy?: string;
+      failureReason?: string;
+    },
+  ) {
+    const issueId = await seedIssue(w, outlet, orderId);
+    const linkId = randomUUID();
+    const intentId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, 100000, 100000, 100000, 'seed')`,
+      [
+        linkId,
+        w.tenantId,
+        outlet,
+        randomBytes(32).toString("hex"),
+        `N6-${linkId.slice(0, 8)}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+          status, paid_at, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'doit', 100000, $6, 'paid', now(),
+               '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+      [
+        intentId,
+        w.tenantId,
+        outlet,
+        linkId,
+        refund.method ?? "qris",
+        `n6-${intentId}`,
+      ],
+    );
+    const done = refund.status === "completed";
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (tenant_id, outlet_id, payment_intent_id, order_issue_id, amount_idr, reason, status,
+          requested_by, approved_by, decided_at, completed_at, failure_reason)
+       VALUES ($1, $2, $3, $4, $5, 'Item gagal dibuat', $6, $7, $8, $9, $10, $11)`,
+      [
+        w.tenantId,
+        outlet,
+        intentId,
+        issueId,
+        refund.amount,
+        refund.status,
+        refund.requestedBy ?? "system:recovery",
+        refund.status === "pending" ? null : "approver-1",
+        refund.status === "pending" ? null : new Date(`${D1}T07:00:00Z`),
+        done ? new Date(`${D1}T07:00:00Z`) : null,
+        refund.failureReason ?? null,
+      ],
+    );
+  }
+
+  async function recompute(w: World, outlet: string) {
+    await recomputeMetricsDaily(
+      context(w.tenantId),
+      outlet,
+      date(D1),
+      date(D1),
+      { readers: salesReaders(), now: NOW },
+    );
+  }
+
+  const items = (w: World, unit: number) => [
+    { menu: w.menuA, quantity: 1, unit },
+  ];
+
+  it("a completed recovery refund lowers net sales and shows by method, once", async () => {
+    const w = await makeWorld();
+    const qr = await seedOrder(w, w.outlet1, {
+      number: "Q1",
+      channel: "qr",
+      subtotal: 100_000,
+      items: items(w, 100_000),
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 20_000,
+      status: "completed",
+    });
+    // POS order: its own POS refund (5k cash) plus a recovery refund (10k qris).
+    const pos = await seedOrder(w, w.outlet1, {
+      number: "P1",
+      channel: "pos",
+      subtotal: 50_000,
+      cashier: "cashier-1",
+      refund: 5_000,
+      items: items(w, 50_000),
+    });
+    await seedRecoveryRefund(w, w.outlet1, pos, {
+      amount: 10_000,
+      status: "completed",
+    });
+    await recompute(w, w.outlet1);
+    const rows = await stored(w, w.outlet1);
+    expect(valueOf(rows, "refund_amount")).toBe(35_000);
+    expect(valueOf(rows, "refund_amount", "channel", "qr")).toBe(20_000);
+    expect(valueOf(rows, "refund_amount", "channel", "pos")).toBe(15_000);
+    expect(valueOf(rows, "refund_amount", "payment_method", "qris")).toBe(
+      30_000,
+    );
+    expect(valueOf(rows, "refund_amount", "payment_method", "cash")).toBe(
+      5_000,
+    );
+    expect(valueOf(rows, "net_sales", "channel", "qr")).toBe(80_000);
+    expect(valueOf(rows, "net_sales", "channel", "pos")).toBe(35_000);
+    // AI helper reads the same definition; the unknown outlet gets nothing.
+    const ctx = context(w.tenantId);
+    const summary = await querySalesSummary(ctx, {
+      outletIds: [w.outlet1],
+      from: D1,
+      to: D1,
+      groupBy: "channel",
+      rowLimit: 10,
+    });
+    expect(summary.totals.netSalesIdr).toBe(115_000);
+    const none = await querySalesSummary(ctx, {
+      outletIds: [w.outlet2],
+      from: D1,
+      to: D1,
+      groupBy: "channel",
+      rowLimit: 10,
+    });
+    expect(none.totals.netSalesIdr).toBe(0);
+    const otherDay = await querySalesSummary(ctx, {
+      outletIds: [w.outlet1],
+      from: D2,
+      to: D2,
+      groupBy: "channel",
+      rowLimit: 10,
+    });
+    expect(otherDay.totals.netSalesIdr).toBe(0);
+  });
+
+  it("pending, approved and rejected or failed recovery refunds change nothing", async () => {
+    const w = await makeWorld();
+    const qr = await seedOrder(w, w.outlet1, {
+      number: "Q2",
+      channel: "qr",
+      subtotal: 100_000,
+      items: items(w, 100_000),
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 7_000,
+      status: "pending",
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 3_000,
+      status: "approved",
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 9_000,
+      status: "failed",
+      failureReason: "rejected",
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 4_000,
+      status: "failed",
+      failureReason: "provider_declined",
+    });
+    await recompute(w, w.outlet1);
+    const rows = await stored(w, w.outlet1);
+    expect(valueOf(rows, "refund_amount")).toBe(0);
+    expect(valueOf(rows, "net_sales", "channel", "qr")).toBe(100_000);
+    const summary = await querySalesSummary(context(w.tenantId), {
+      outletIds: [w.outlet1],
+      from: D1,
+      to: D1,
+      groupBy: "day",
+      rowLimit: 10,
+    });
+    expect(summary.totals.netSalesIdr).toBe(100_000);
+  });
+
+  it("a refund that is not a recovery refund (no issue) is not read from payment_refunds", async () => {
+    const w = await makeWorld();
+    const qr = await seedOrder(w, w.outlet1, {
+      number: "Q3",
+      channel: "qr",
+      subtotal: 100_000,
+      items: items(w, 100_000),
+    });
+    await seedRecoveryRefund(w, w.outlet1, qr, {
+      amount: 6_000,
+      status: "completed",
+      requestedBy: "system:pos",
+    });
+    await recompute(w, w.outlet1);
+    expect(valueOf(await stored(w, w.outlet1), "refund_amount")).toBe(0);
+  });
+
+  it("never reads the recovery refund of another tenant", async () => {
+    const a = await makeWorld();
+    const b = await makeWorld();
+    const orderB = await seedOrder(b, b.outlet1, {
+      number: "Q4",
+      channel: "qr",
+      subtotal: 100_000,
+      items: items(b, 100_000),
+    });
+    await seedRecoveryRefund(b, b.outlet1, orderB, {
+      amount: 12_000,
+      status: "completed",
+    });
+    await seedOrder(a, a.outlet1, {
+      number: "Q5",
+      channel: "qr",
+      subtotal: 40_000,
+      items: items(a, 40_000),
+    });
+    await recompute(a, a.outlet1);
+    expect(valueOf(await stored(a, a.outlet1), "refund_amount")).toBe(0);
+    const summary = await querySalesSummary(context(a.tenantId), {
+      outletIds: [a.outlet1],
+      from: D1,
+      to: D1,
+      groupBy: "day",
+      rowLimit: 10,
+    });
+    expect(summary.totals.netSalesIdr).toBe(40_000);
   });
 });
