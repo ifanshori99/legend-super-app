@@ -23,9 +23,10 @@
 //   (T4 helper). The approval policy of the refund chain is inserted here.
 // - `payload.orderId` may be a ULID or its uuid (compared as uuid); `refundId` is
 //   the uuid of the rejected refund; `rejectedAt` is any ISO-8601 timestamp.
-// - Only `rejected` reverses. `approval_expired` re-files (revenue stays reversed
-//   for the new refund) and `provider_declined` may mean the money already left,
-//   so neither emits a reversal.
+// - `rejected` and every other final failure (`provider_declined`, `cap_exceeded`,
+//   `source_document`, `refile_limit`: legend-iu91r, see
+//   order-recovery-refund-final-failure.test.ts) reverse. `approval_expired`
+//   re-files (revenue stays reversed for the new refund) and emits no reversal.
 // - Running the failure path again for the same rejected refund appends no second
 //   reversal event ("append once per issue").
 // - The consumer parks a still-pending refund journal retryable under the key

@@ -326,10 +326,11 @@ export async function deliverOrderRecoveryRefundEvent(
   }
 
   // What other issues of this order already gave back: per issue the largest
-  // refund, whatever its status (a failed one may be retried by hand). An
-  // issue whose refund was rejected gave nothing back: rejection is final and
-  // its journal is reversed, so the sale holds that money again (same rule as
-  // qrSaleInUseOfIntent). A line can be reported again after a rejection
+  // refund, whatever its status. An issue gives money back only while it has
+  // a live refund (`status <> 'failed'`, same rule as qrSaleInUseOfIntent):
+  // once every refund of it is `failed` (`rejected` or any final failure) its
+  // journal is reversed and the sale holds that money again. A line can be
+  // reported again after such a final failure
   // (order_issues.refund_rejected_at, legend-wumm8); any other settled issue
   // of the line still blocks a second one (order_issues_resolved_item_once_idx).
   // The same issues give the line totals already refunded (`priorLinesIdr`,
@@ -349,9 +350,7 @@ export async function deliverOrderRecoveryRefundEvent(
          AND i.order_id = ${orderUuid}::uuid
          AND r.order_issue_id <> ${issue.id}::uuid
        GROUP BY r.order_issue_id
-      HAVING NOT coalesce(
-        bool_or(r.status = 'failed' AND r.failure_reason = 'rejected'),
-        false)) m
+      HAVING coalesce(bool_or(r.status <> 'failed'), false)) m
   `);
   const released = releasedResult.rows[0];
   let releasedIdr = Number(String(released?.released ?? "0"));
@@ -854,13 +853,16 @@ async function requestRecoveryRefundReversal(
  *   a QR pay-first refund (it has an `order.refunded`) also appends
  *   `order_issue.refund_reversal_requested` once, which reverses its journal,
  *   and the sale holds the money again (`qrSaleInUseOfIntent`);
- * - `provider_declined` (the money may already have left: a re-file would pay
- *   twice), `cap_exceeded` and `source_document` are final too: not re-filed,
- *   audited `order_issue.refund_refile_blocked` (`failure_needs_person`);
+ * - `provider_declined`, `cap_exceeded` and `source_document` are final too:
+ *   not re-filed, audited `order_issue.refund_refile_blocked`
+ *   (`failure_needs_person`). `provider_declined` is only the provider's
+ *   definitive decline (payment-refund.service.ts header): the money did not
+ *   leave; an unknown outcome stays `approved` and never lands here;
  * - an issue with 3 failed refunds is not re-filed again (`refile_limit`).
  * Every final failure (and the `no_first_filing` block) is treated like
  * `rejected` (legend-iu91r): the refund journal is reversed, the points come
- * back and the sale holds the money again, since a person cannot refund a
+ * back, the sale holds the money again and the line may be reported again
+ * (`refund_rejected_at`, legend-wumm8), since a person cannot refund a
  * source-document intent by hand and the money would be stuck.
  * No new `order.refunded`: the revenue was already reversed. Idempotent per
  * failed refund (key `order-recovery-refund:<issueId>:<failedRefundId>`); the
@@ -910,21 +912,11 @@ export async function refileRecoveryRefundAfterFailure(
       },
       AUDIT_SAFE_FIELDS,
     );
-  const failureReason = failedRefund.failureReason ?? "unknown";
-  if (failureReason === "rejected") {
-    await auditIssue(
-      AUDIT_REJECTED,
-      {
-        id: issueId,
-        refundId: failedRefund.id,
-        paymentIntentId: failedRefund.paymentIntentId,
-        amountIdr: failedRefund.amountIdr,
-        failureReason,
-      },
-      "Refund item gagal ditolak, tidak diajukan ulang",
-    );
-    // Final: the guest got nothing back, so the line may be reported again as
-    // a new issue (legend-wumm8). Idempotent: only the first call stamps it.
+  // A final failure (`rejected`, a person-needed failure, `refile_limit`,
+  // `no_first_filing`) gives the sale its money back (legend-iu91r): the line
+  // may be reported again (legend-wumm8, same idempotent stamp as `rejected`)
+  // and the refund journal and the points are reversed.
+  const settleFinalFailure = async () => {
     await tx
       .update(orderIssues)
       .set({ refundRejectedAt: now })
@@ -943,6 +935,21 @@ export async function refileRecoveryRefundAfterFailure(
       issueId,
       now,
     );
+  };
+  const failureReason = failedRefund.failureReason ?? "unknown";
+  if (failureReason === "rejected") {
+    await auditIssue(
+      AUDIT_REJECTED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        paymentIntentId: failedRefund.paymentIntentId,
+        amountIdr: failedRefund.amountIdr,
+        failureReason,
+      },
+      "Refund item gagal ditolak, tidak diajukan ulang",
+    );
+    await settleFinalFailure();
     // legend-h1dyy: the promo payout this refund recorded stays on the promo
     // ledger. The approver decided the money is not owed, so a later refund
     // of this order must not pay it (the item stays out of the kept lines).
@@ -962,13 +969,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: perlu keputusan orang",
     );
-    await requestRecoveryRefundReversal(
-      tx,
-      context,
-      failedRefund,
-      issueId,
-      now,
-    );
+    await settleFinalFailure();
     return;
   }
   const [live] = await tx
@@ -1005,13 +1006,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: sudah gagal 3 kali",
     );
-    await requestRecoveryRefundReversal(
-      tx,
-      context,
-      failedRefund,
-      issueId,
-      now,
-    );
+    await settleFinalFailure();
     return;
   }
   const [first] = await tx
@@ -1036,13 +1031,7 @@ export async function refileRecoveryRefundAfterFailure(
       },
       "Refund item gagal tidak diajukan ulang: pihak asli tidak terbaca",
     );
-    await requestRecoveryRefundReversal(
-      tx,
-      context,
-      failedRefund,
-      issueId,
-      now,
-    );
+    await settleFinalFailure();
     return;
   }
   await idempotentPaymentAdminWrite(

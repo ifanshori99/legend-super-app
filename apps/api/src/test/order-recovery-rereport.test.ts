@@ -336,15 +336,15 @@ describe("legend-wumm8 a rejected recovery refund can be reported again", () => 
     expect(await issuesOfItem(roti.id)).toEqual([issueId]);
   });
 
-  it("RR-3a3 a refund the provider declined (money may have left) is not a rejection: reporting again still replays the old issue", async () => {
+  it("RR-3a3 a refund the provider declined is final too (legend-iu91r): reporting again creates a new open issue, like a rejection", async () => {
     const { roti, issueId, first } = await deliveredRefund();
     await failOtherReason(first.id, "provider_declined");
 
     const again = await w.report(roti.id);
 
-    expect(isReplay(again.status)).toBe(true);
-    expect(again.body.data.id).toBe(issueId);
-    expect(await issuesOfItem(roti.id)).toEqual([issueId]);
+    expect(again.status).toBe(201);
+    expect(again.body.data.id).not.toBe(issueId);
+    expect(await issuesOfItem(roti.id)).toHaveLength(2);
   });
 
   /** Inserts a second, open issue for the line by SQL (the API would replay). */
@@ -401,16 +401,18 @@ describe("legend-wumm8 a rejected recovery refund can be reported again", () => 
     });
   });
 
-  it("RR-3b2 the old refund failed for another reason (provider_declined): a second issue on the same line cannot be resolved (409)", async () => {
+  it("RR-3b2 the old refund failed with a final reason (provider_declined): the new issue on the same line resolves (200), like after a rejection", async () => {
     const { order, roti, first } = await deliveredRefund();
     await failOtherReason(first.id, "provider_declined");
     const forcedId = await forceOpenIssue(order.id, roti.id);
 
     const resolved = await resolveRefund(forcedId, PRICES.roti);
 
-    expect(resolved.status).toBe(409);
-    expect(JSON.stringify(resolved.body)).toContain(ALREADY_RESOLVED);
-    expect(await issueRow(forcedId)).toMatchObject({ status: "open" });
+    expect(resolved.status).toBe(200);
+    expect(await issueRow(forcedId)).toMatchObject({
+      status: "resolved",
+      resolution: "manual_refund",
+    });
   });
 
   it("RR-3c reporting twice after a rejection makes only one new issue (the second report replays the open one)", async () => {

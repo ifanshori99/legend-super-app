@@ -194,6 +194,16 @@ async function orderRefundedEvents(orderId: string) {
   return w.outboxRows("order.refunded", orderId);
 }
 
+/** `order_issues.refund_rejected_at` (legend-wumm8): set when the refund ended finally. */
+async function rejectedAtOf(issueId: string): Promise<Date | null> {
+  const { rows } = await owner.query<{ refund_rejected_at: Date | null }>(
+    "SELECT refund_rejected_at FROM order_issues WHERE tenant_id = $1 AND id = $2",
+    [w.tenant.tenantId, issueId],
+  );
+  expect(rows, "issue row").toHaveLength(1);
+  return rows[0]!.refund_rejected_at;
+}
+
 /** Reversal requests about one issue (the event carries the issue id). */
 async function reversalEvents(issueId: string) {
   return w.outboxRows(REVERSAL_EVENT, issueId);
@@ -456,6 +466,43 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
     expect(await issueRefunds(issueId)).toHaveLength(3);
   });
 
+  /** After the final failure the line is reported again: a new issue, its own full refund. */
+  async function rereportsAndRefunds(
+    made: Awaited<ReturnType<typeof deliveredRefund>>,
+  ) {
+    expect(await rejectedAtOf(made.issueId), "stamped").not.toBeNull();
+    const again = await approvedRefund(made.roti.id, PRICES.roti);
+    expect(again.issueId).not.toBe(made.issueId);
+    await deliverRecovery(again.event);
+    const refunds = await issueRefunds(again.issueId);
+    expect(refunds, "a refund for the new issue").toHaveLength(1);
+    // The failed refund of the old issue released nothing: the full amount is due.
+    expect(refunds[0]).toMatchObject({
+      amount_idr: ROTI_WANTED,
+      status: "pending",
+    });
+  }
+
+  it.each(FINAL_REASONS)(
+    "FF-9 %s: the issue is stamped refund_rejected_at (like rejected) and the line can be reported again for the full amount",
+    async (reason) => {
+      const made = await deliveredRefund();
+      expect(await rejectedAtOf(made.issueId)).toBeNull();
+
+      await failAndRefile(made.first.id, reason);
+
+      await rereportsAndRefunds(made);
+    },
+  );
+
+  it("FF-10 refile_limit: the issue is stamped refund_rejected_at and the line can be reported again for the full amount", async () => {
+    const made = await deliveredRefund();
+
+    await failUntilLimit(made.issueId);
+
+    await rereportsAndRefunds(made);
+  });
+
   it("FF-6 approval_expired with re-file: no reversal request, the hold stays released", async () => {
     const { order, issueId, intentId, first } = await deliveredRefund();
 
@@ -467,6 +514,7 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
       0,
     );
     expect(await orderRefundedEvents(order.id)).toHaveLength(1);
+    expect(await rejectedAtOf(issueId)).toBeNull();
     expect(await holdOf(intentId)).toEqual({
       cap: ROTI_WANTED,
       reserved: ROTI_WANTED,
@@ -486,6 +534,8 @@ describe("legend-iu91r R2 final failure of a recovery refund: the reversal reque
     );
     expect(await reversalEvents(issueId)).toHaveLength(0);
     expect(await orderRefundedEvents(order.id)).toHaveLength(0);
+    // Stamped all the same, as `rejected` is (RJ-8): the guest got nothing.
+    expect(await rejectedAtOf(issueId)).not.toBeNull();
   });
 });
 
