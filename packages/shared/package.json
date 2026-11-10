@@ -19,6 +19,7 @@
     "./payment/admin": "./src/payment/admin.ts",
     "./edge": "./src/edge/index.ts",
     "./edge/master-sync": "./src/edge/master-sync.ts",
+    "./edge/people-snapshot": "./src/edge/people-snapshot.ts",
     "./edc": "./src/edc/index.ts",
     "./edc/events": "./src/edc/events.ts",
     "./adapters": "./src/adapters/index.ts",

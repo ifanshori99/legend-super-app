@@ -1,12 +1,17 @@
 import { Router } from "express";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { ObjectStorage } from "@starter/shared/adapters";
+import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
 import { requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { NoopMalwareScanner } from "../services/core-image";
 import { createCoreStorageRouterWithAccess } from "../services/core-storage-access";
+import { uploadEdgeSelfie } from "../services/edge-selfie.service";
 import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
+import { createEdgeSelfieReceiveRouter } from "./edge-selfie-receive.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -27,13 +32,15 @@ export function createStorageApiRouter(options: {
 
   // The core-storage router's own paths start with /storage and it requires a
   // session on every request it sees, so only hand it /storage/* requests.
-  const storage = runtime
-    ? createCoreStorageRouterWithAccess({
-        database,
-        storage: runtime.storage,
-        scanner: runtime.scanner,
-      })
-    : unavailableStorageRouter();
+  const storage = env.EDGE_MODE
+    ? edgeStorageRouter(database)
+    : runtime
+      ? createCoreStorageRouterWithAccess({
+          database,
+          storage: runtime.storage,
+          scanner: runtime.scanner,
+        })
+      : unavailableStorageRouter();
   router.use((req, res, next) =>
     req.path.startsWith("/storage/") ? storage(req, res, next) : next(),
   );
@@ -49,6 +56,16 @@ export function createStorageApiRouter(options: {
     }),
   );
 
+  // Edge selfie upload (legend-0wvoz): edge credential, no session. Only its
+  // own prefix enters the router, so its pre-auth limiter never counts other
+  // /api/edge-sync traffic. Needs the storage and the scanner (503 without).
+  const edgeSelfies = createEdgeSelfieReceiveRouter({
+    database,
+    storage: runtime?.storage ?? null,
+    scanner: runtime?.scanner ?? null,
+  });
+  router.use("/edge-sync/attendance-selfies", edgeSelfies);
+
   // Only attendance paths enter these routers: each runs the session and
   // tenant guards on every request it sees, which would double that work for
   // the other /hris routers that live in apiRouter.
@@ -61,6 +78,39 @@ export function createStorageApiRouter(options: {
     req.path.startsWith("/attendance/") ? attendance(req, res, next) : next(),
   );
   return router;
+}
+
+/**
+ * The edge has no object storage. Its only upload is the selfie, sealed to the
+ * cloud key and written to EDGE_SELFIE_DIR (legend-we0yc); every other purpose
+ * answers 503 and no signed URL exists, so the storage port refuses all calls.
+ */
+function edgeStorageRouter(database: NodePgDatabase<typeof schema>): Router {
+  const refuse = (): never => {
+    throw new HttpError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Penyimpanan berkas tidak tersedia di edge.",
+    );
+  };
+  return createCoreStorageRouterWithAccess({
+    database,
+    storage: {
+      put: refuse,
+      delete: refuse,
+      publicUrl: refuse,
+      signedGetUrl: refuse,
+    } as unknown as ObjectStorage,
+    scanner: new NoopMalwareScanner(),
+    upload: (db, context, metadata, bytes, deps) =>
+      uploadEdgeSelfie(db, context, metadata, bytes, {
+        authorize: deps.authorize,
+        actorUserId: deps.actorUserId as string,
+        scanner: deps.scanner,
+        dir: env.EDGE_SELFIE_DIR,
+        maxBytes: env.EDGE_SELFIE_MAX_BYTES,
+      }),
+  });
 }
 
 function unavailableStorageRouter(): Router {

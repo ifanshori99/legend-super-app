@@ -67,6 +67,39 @@ export async function processImage(
   maxBytes: number,
   scanner: MalwareScanner,
 ): Promise<ProcessedImage> {
+  return processImageVariants(input, maxBytes, scanner, true);
+}
+
+/** Same checks and re-encode as `processImage`, full size only. The edge seals
+ * selfies without a thumbnail (design hris-edge-replication 5), so it skips
+ * the second encode. */
+export async function processImageFull(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+): Promise<{ full: ImageVariant }> {
+  const { full } = await processImageVariants(input, maxBytes, scanner, false);
+  return { full };
+}
+
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: true,
+): Promise<ProcessedImage>;
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: boolean,
+): Promise<{ full: ImageVariant; thumbnail: ImageVariant | null }>;
+async function processImageVariants(
+  input: Uint8Array,
+  maxBytes: number,
+  scanner: MalwareScanner,
+  withThumbnail: boolean,
+): Promise<{ full: ImageVariant; thumbnail: ImageVariant | null }> {
   if (
     !Number.isSafeInteger(maxBytes) ||
     maxBytes <= 0 ||
@@ -111,7 +144,10 @@ export async function processImage(
         height: info.height,
       };
     };
-    const [full, thumbnail] = await Promise.all([variant(2560), variant(480)]);
+    const [full, thumbnail] = await Promise.all([
+      variant(2560),
+      withThumbnail ? variant(480) : Promise.resolve(null),
+    ]);
     return { full, thumbnail };
   } catch {
     throw new HttpError(422, "INVALID_IMAGE", "Image could not be decoded.");
