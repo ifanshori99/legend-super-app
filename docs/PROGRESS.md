@@ -1886,3 +1886,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Cabang `ws/pti5r-promo-refund` (dari `ws/refund-recovery-fix` 00caa599). Commit dbe08344 (give-back payout lewat `returnPartialRefundPayout`), 327e0135 (give-back juga subtotal, baris dianggap kept sampai lapor ulang, kunci `#promo-return`, SQL cek + runbook `docs/runbooks/recovery-refund-final-failure-backfill.md`).
 - Bukti: 122/122 test terarah, tsc api bersih (heavy), db:generate kosong, prettier bersih, fail-first terbukti untuk dua putaran.
 - Status: TAHAN. Review architect putaran 2 menemukan regresi: promo yang sudah ditarik tidak bisa dipulihkan, jadi item lain setelah give-back bisa dapat nothing_left. Rekomendasi: ganti desain ke "lapor ulang memutar ulang refund gagal" tanpa menyentuh ledger promo. Menunggu keputusan CTO.
+
+### legend-pti5r update (11 Nov 2026, 00:45)
+- Desain diganti atas keputusan CTO: ledger promo tidak disentuh; lapor ulang item gagal-final (bukan rejected) memutar ulang jumlah + split refund gagal, dibatasi room (f6f62af8). Open bill + rantai replay ke root (6b497992). Port give-back dan query 2-3 dibuang.
+- Review architect xhigh putaran 3 (2 temuan, dibetulkan) dan putaran 4 (tanpa bug uang; 1 bug test dibetulkan 0c24d644, celah test open-bill chain ditambah).
+- Tsc bersih, eslint bersih, prettier bersih, db:generate kosong.
+- BELUM: test DB putaran 3-4 belum dijalankan. Layanan direktori macOS rusak (`id -un` hanya memberi 501, `dscl` eServerError), sehingga colima/lima panic "unknown userid 501" dan Postgres test tidak bisa dijangkau. Perlu dipulihkan (restart Mac atau opendirectoryd), lalu jalankan test terarah + bukti gagal-dulu terhadap 00caa599/327e0135.
