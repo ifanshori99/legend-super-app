@@ -50,12 +50,13 @@
 // AUTH-03: nothing is sent back to the WhatsApp number. `mergedReplyText` is
 // the agreed wording for the day an outbound reply path exists.
 
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { maskEmail } from "@starter/shared/identity";
 import type { db } from "../db";
 import {
   account,
   consents,
+  loginChallenges,
   platformAdmins,
   session,
   user,
@@ -138,7 +139,7 @@ async function inTenant<T>(
   return result;
 }
 
-type ProfileRef = { tenantId: string; profileId: string };
+type ProfileRef = { tenantId: string; profileId: string; status: string };
 
 /** The user's member profiles of every tenant (design M3: SECURITY DEFINER lookup). */
 async function profilesOfUser(
@@ -146,11 +147,12 @@ async function profilesOfUser(
   userId: string,
 ): Promise<ProfileRef[]> {
   const result = await tx.execute(
-    sql`SELECT tenant_id, profile_id FROM app.member_profiles_of_user(${userId})`,
+    sql`SELECT tenant_id, profile_id, status FROM app.member_profiles_of_user(${userId})`,
   );
   return result.rows.map((row) => ({
     tenantId: String(row.tenant_id),
     profileId: String(row.profile_id),
+    status: String(row.status),
   }));
 }
 
@@ -312,13 +314,17 @@ export async function moveMemberProfiles(
   const survivorProfiles = new Map(
     (await profilesOfUser(tx, input.survivorUserId)).map((p) => [
       p.tenantId,
-      p.profileId,
+      p,
     ]),
   );
 
   const plan: (ProfileMove & { survivorProfileId: string | null })[] = [];
   for (const absorbed of absorbedProfiles) {
-    const survivorProfileId = survivorProfiles.get(absorbed.tenantId) ?? null;
+    const survivorProfile = survivorProfiles.get(absorbed.tenantId) ?? null;
+    // A closed survivor profile cannot take consent or history (review F2).
+    if (survivorProfile !== null && survivorProfile.status === "closed")
+      return { kind: "refused", reason: "profile_conflict" };
+    const survivorProfileId = survivorProfile?.profileId ?? null;
     if (survivorProfileId === null) {
       plan.push({
         tenantId: absorbed.tenantId,
@@ -593,6 +599,24 @@ export async function mergeAbsorbedIntoSurvivor(
   }
 
   await tx.delete(session).where(eq(session.userId, absorbedUserId));
+  if (!absorbedIsHolder) {
+    // Review F1: V survives with U's email, Google login, profiles and points.
+    // A session V held before (an earlier owner of a recycled number) must not
+    // read that data: only the session the poll hands out after the merge is
+    // valid. Completed but unclaimed WhatsApp challenges of V are cancelled for
+    // the same reason (this tenant's rows; the transaction runs in one tenant).
+    await tx.delete(session).where(eq(session.userId, survivorUserId));
+    await tx
+      .update(loginChallenges)
+      .set({ status: "cancelled" })
+      .where(
+        and(
+          eq(loginChallenges.matchedUserId, survivorUserId),
+          eq(loginChallenges.status, "completed"),
+          isNull(loginChallenges.sessionIssuedAt),
+        ),
+      );
+  }
   await tx
     .update(user)
     .set({ banned: true, banReason: "merged", banExpires: null })

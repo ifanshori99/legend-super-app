@@ -655,7 +655,6 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
         'UPDATE "user" SET email_verified = true WHERE id = $1',
         [u.userId],
       );
-      const vSessionsBefore = await sessionCount(v.userId);
       const claimedFor = async (userId: string) =>
         (await auditRows(TENANT_A, "login_challenge.claimed")).filter(
           (row) => row.masked_changes.after.matchedUserId === userId,
@@ -671,7 +670,7 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       expect((await u.client.get("/api/auth/get-session")).body.user.id).toBe(
         v.userId,
       );
-      expect(await sessionCount(v.userId)).toBe(vSessionsBefore + 1);
+      expect(await sessionCount(v.userId)).toBe(1);
 
       // Claimed once: the same browser polling again gets nothing more.
       const again = await u.client.get(
@@ -679,7 +678,11 @@ describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", 
       );
       expect(again.status).toBe(409);
       expect(again.body.error.code).toBe("CHALLENGE_NOT_PENDING");
-      expect(await sessionCount(v.userId)).toBe(vSessionsBefore + 1);
+      expect(await sessionCount(v.userId)).toBe(1);
+      // Review F1: V's own earlier browser (a previous owner of the number)
+      // must not read the merged account: its session is gone.
+      const oldV = await v.client.get("/api/auth/get-session");
+      expect(oldV.body?.user?.id).toBeUndefined();
 
       const rows = await merges();
       expect(rows).toHaveLength(1);
