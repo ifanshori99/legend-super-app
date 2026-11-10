@@ -995,3 +995,8 @@ Langkah berikut CTO baru:
 - 19:27 kxoyf+135b4 397928f1 G8173 resolved (detail POS + struk/kuitansi/invoice setelah swap, 262 api hijau), batch48 menggantikan pc51h. Antre 20:03 di #3: ec6fa (366), 44g8n (369), ptn11 (acting staff gel.2, brief nanti).
 - 19:27 Codex G6isx (pajak): P1 setoran PBJT ikut dihitung, P2 dasar bruto, P2 NO_CHANGE tergantung versi (keputusan CTO sebelumnya kurang tepat). Semua terlewat Claude -> checklist +2. Kartu legend-powk0 brief 370. r3i8w ditahan dari batch48. Codex run hari ini: 2, temuan 5 (P1 2), semua terlewat Claude.
 - 19:35 Founder pakai 1 kupon Full reset Codex (akun #2; ghostex accounts belum menyegarkan angka 7d). Second-opinion G6t53 (#2, 371 kasir aktif POS). Explore memetakan rentang diff 8 area antrean sisa.
+
+## 10 Nov 19:40 — second-opinion kasir aktif (371) selesai
+- Codex: 3 P1 + 1 P2 di aruta (token kedaluwarsa web, race PIN-reset vs penerbitan token, adopsi reset edge tanpa cabut token, override lintas outlet). Kartu legend-5u03q, brief 373. aruta ditahan dari batch48.
+- Codex jalan: G188h refund recovery (akun #3), Duitku webhook (akun #2, brief 374). Antrean di docs/briefs/codex-queue.md.
+- Claude: akun #1 dan #3 5h 87%, #2 7d 91%; kartu Claude baru menunggu reset #3 jam 20:00 (cron 20:03).
