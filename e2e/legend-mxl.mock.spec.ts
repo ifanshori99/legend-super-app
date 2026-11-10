@@ -66,6 +66,45 @@ test("AUTH-06 the requester cannot approve their own AI request", async ({
   await expect(dialog.getByRole("button", { name: "Tolak" })).toBeDisabled();
 });
 
+for (const width of [390, 1280]) {
+  test(`legend-mbhw1 the sole Owner can approve their own request, never reject it (${width})`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(INBOX, NAV);
+    await page
+      .locator(
+        '[data-testid="approval-card"]:visible, [data-testid="approval-row"]:visible',
+      )
+      .filter({ hasText: "Versi daftar pemegang saham" })
+      .getByRole("button", { name: /Tinjau/ })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByTestId("self-approval-note")).toContainText(
+      "satu-satunya Owner",
+    );
+    await expect(dialog.getByText("Anda pemohon permintaan ini.")).toHaveCount(
+      0,
+    );
+    await expect(dialog.getByRole("button", { name: "Tolak" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Setujui" })).toBeEnabled();
+    await captureScreenshot(
+      page,
+      `legend-mbhw1/self-approve-dialog-${width}.png`,
+      {
+        fullPage: false,
+      },
+    );
+    await dialog
+      .getByLabel("Alasan keputusan", { exact: false })
+      .fill("Porsi sudah dicek, disetujui sendiri.");
+    await dialog.getByRole("button", { name: "Setujui" }).click();
+    await dialog.getByLabel("Kode autentikator").fill("123456");
+    await dialog.getByRole("button", { name: "Verifikasi dan kirim" }).click();
+    await expect(page.getByText("Permintaan disetujui.").first()).toBeVisible();
+  });
+}
+
 test("MCP-04 reject needs a reason, then asks for the second factor", async ({
   page,
 }) => {

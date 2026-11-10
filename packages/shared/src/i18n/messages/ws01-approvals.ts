@@ -190,6 +190,10 @@ export const approvalsMessages = {
     reject: "Tolak",
   },
 
+  selfApproval: {
+    note: "Anda satu-satunya Owner, jadi Anda bisa menyetujui sendiri, tetapi tidak bisa menolaknya. Tercatat di riwayat.",
+  },
+
   blocked: {
     notPending: "Permintaan ini sudah diputuskan.",
     expired: "Batas waktu sudah lewat.",
@@ -223,6 +227,8 @@ export const approvalsMessages = {
     expired:
       "Batas waktu persetujuan sudah lewat. Ajukan ulang bila masih perlu.",
     approverIsRequester: "Penyetuju tidak boleh sama dengan pemohon.",
+    pending:
+      "Persetujuan ini masih menunggu keputusan di Kotak Approval. Muat ulang, lalu coba lagi.",
     alreadyDecided: "Anda sudah memberi keputusan pada tingkat sebelumnya.",
     roleMismatch: "Peran Anda tidak berwenang menyetujui tingkat ini.",
     mfaRequired: "Verifikasi faktor kedua diperlukan.",

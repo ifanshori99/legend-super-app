@@ -8,7 +8,9 @@
 // The signed-in mock user is the owner (ws01-auth mock). The AI price change
 // in the fixtures was requested by the owner, so it demonstrates the
 // "cannot decide your own request" state; one pending request is already past
-// its deadline to show the blocked/overdue state.
+// its deadline to show the blocked/overdue state. One more pending request is
+// the sole Owner's own and carries `selfApprovalAllowed` (legend-mbhw1): the
+// mock lets them approve it, never reject it.
 import { findDevicePinRequest } from "@/features/ws01-device-pin/mock";
 import {
   approvalRequestSchema,
@@ -64,8 +66,31 @@ function seed(): ApprovalRequest[] {
         payload: { ...late.payload, discountIdr: 410_000 },
       }),
     );
+  // The sole Owner's own shareholder-list change (legend-mbhw1): approvable
+  // by them alone. A user request, so the AI/MCP rows stay as they were.
+  const template = base[0];
+  if (template)
+    rebased.push(
+      approvalRequestSchema.parse({
+        ...template,
+        id: SELF_APPROVABLE_ID,
+        actionType: "shareholder_version",
+        objectType: "shareholder_version",
+        payload: { versionLabel: "Daftar pemegang saham Nov 2026" },
+        requestedBy: cafeLegendIdentityFixtures.usersByKey.owner.id,
+        source: "user",
+        amountIdr: null,
+        requestReason:
+          "Daftar pemegang saham diperbarui setelah penyesuaian porsi.",
+        createdAt: iso(-18 * MIN),
+        deadlineAt: iso(60 * MIN),
+        selfApprovalAllowed: true,
+      }),
+    );
   return rebased;
 }
+
+export const SELF_APPROVABLE_ID = "a9c00000-0000-4000-8000-0000000000f2";
 
 const requests = createMockStore<ApprovalRequest[]>(seed);
 /** Idempotency-Key → (request + body fingerprint, stored result). */
@@ -143,9 +168,24 @@ registerMock(decideApprovalRequest, ({ params, body, scenario, headers }) => {
         item.decidedBy !== null,
     )
     .map((item) => item.decidedBy as UserId);
+  const selfApproving =
+    row.selfApprovalAllowed === true && row.requestedBy === me.id;
+  if (selfApproving && body.decision === "rejected")
+    throw new ApiError(
+      403,
+      "APPROVER_IS_REQUESTER",
+      "Permintaan sendiri hanya bisa disetujui.",
+    );
   const decide = () =>
     recordApprovalDecision({
-      request: row,
+      // The service skips the distinct-actor rule for the sole Owner; the
+      // shared lifecycle has no such switch, so the mock hands it a stand-in.
+      request: selfApproving
+        ? {
+            ...row,
+            requestedBy: cafeLegendIdentityFixtures.usersByKey.cashier.id,
+          }
+        : row,
       decision: body.decision,
       decidedBy: me.id,
       priorApproverIds,
@@ -166,7 +206,10 @@ registerMock(decideApprovalRequest, ({ params, body, scenario, headers }) => {
       "MFA_REQUIRED",
       "Verifikasi faktor kedua diperlukan.",
     );
-  decided = approvalRequestSchema.parse(decided);
+  decided = approvalRequestSchema.parse({
+    ...decided,
+    requestedBy: row.requestedBy,
+  });
   requests.set(
     requests.get().map((item) => (item.id === row.id ? decided : item)),
   );

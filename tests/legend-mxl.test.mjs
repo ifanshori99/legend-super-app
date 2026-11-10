@@ -79,6 +79,83 @@ describe("MCP-04 approval inbox logic", () => {
     );
   });
 
+  test("legend-mbhw1 sole Owner own request: approve opens, reject stays shut, false keeps both blocked", () => {
+    const own = req().requestedBy;
+    const open = {
+      request: req({ selfApprovalAllowed: true }),
+      currentUserId: own.toUpperCase(),
+      canDecide: true,
+      now: NOW,
+    };
+    assert.equal(logic.isSelfApproval(open.request, own), true);
+    assert.equal(logic.decisionBlock(open), null);
+    assert.equal(logic.rejectBlock(open), "own");
+    const closed = { ...open, request: req({ selfApprovalAllowed: false }) };
+    assert.equal(logic.isSelfApproval(closed.request, own), false);
+    assert.equal(logic.decisionBlock(closed), "own");
+    assert.equal(logic.rejectBlock(closed), "own");
+    // flag absent (every other chain) behaves as false
+    assert.equal(logic.decisionBlock({ ...open, request: req() }), "own");
+    // someone else's request is unaffected by the flag
+    const other = {
+      ...open,
+      currentUserId: "22222222-2222-4222-8222-222222222222",
+    };
+    assert.equal(
+      logic.isSelfApproval(open.request, other.currentUserId),
+      false,
+    );
+    assert.equal(logic.decisionBlock(other), null);
+    assert.equal(logic.rejectBlock(other), null);
+  });
+
+  test("legend-mbhw1 self-approval never overrides the other blocks", () => {
+    const own = req().requestedBy;
+    const base = { currentUserId: own, canDecide: true, now: NOW };
+    const flagged = (over) => req({ selfApprovalAllowed: true, ...over });
+    assert.equal(
+      logic.decisionBlock({
+        ...base,
+        request: flagged({ status: "approved" }),
+      }),
+      "notPending",
+    );
+    assert.equal(
+      logic.decisionBlock({
+        ...base,
+        request: flagged({ deadlineAt: at(-1) }),
+      }),
+      "expired",
+    );
+    assert.equal(
+      logic.decisionBlock({ ...base, request: flagged(), canDecide: false }),
+      "permission",
+    );
+    assert.equal(
+      logic.decisionBlock({
+        ...base,
+        request: flagged(),
+        mfaEnrollmentRequired: true,
+      }),
+      "enrollment",
+    );
+    assert.equal(
+      logic.rejectBlock({
+        ...base,
+        request: flagged(),
+        mfaEnrollmentRequired: true,
+      }),
+      "enrollment",
+    );
+  });
+
+  test("legend-mbhw1 APPROVAL_PENDING maps to its own message", () => {
+    assert.equal(
+      logic.errorMessageKey("APPROVAL_PENDING"),
+      "approvals.errors.pending",
+    );
+  });
+
   test("MCP-04 decisions fail closed: unknown user, no permission, expired, decided", () => {
     const user = "22222222-2222-4222-8222-222222222222";
     assert.equal(
