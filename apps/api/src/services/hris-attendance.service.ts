@@ -782,6 +782,38 @@ async function storeAttendanceLog(
         })
       : null;
 
+  // legend-whiwv #2: a consecutive duplicate (in,in / out,out / break_start,
+  // break_start / break_end,break_end) answers the earlier log, no second row
+  // and no event. Only the immediate predecessor counts, so a legit re-entry
+  // (break_end then break_start, out then in) still stores. The per-employee
+  // shift lock serialises racing submissions: the second one waits, then sees
+  // the first. No `occurred_at <= now` bound: an online submission is stamped
+  // with its receipt time before it waits for the lock, so a racing twin can carry
+  // an earlier stamp than the log that won the lock. Edge replays (`offline`) are
+  // never merged away.
+  if (!input.offline && shift !== null && decision.validity !== "rejected") {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`attendance_shift:${tenantId}:${lower(input.employeeId)}:${lower(shift.id)}`}, 0))`,
+    );
+    const [predecessor] = await tx
+      .select()
+      .from(attendanceLogs)
+      .where(
+        and(
+          eq(attendanceLogs.tenantId, tenantId),
+          eq(attendanceLogs.employeeId, input.employeeId),
+          eq(attendanceLogs.shiftAssignmentId, shift.id),
+          sql`${attendanceLogs.validity} <> 'rejected'`,
+          sql`${attendanceLogs.correctionId} IS NULL`,
+          sql`${attendanceLogs.method} <> 'manual_correction'`,
+        ),
+      )
+      .orderBy(desc(attendanceLogs.occurredAt), desc(attendanceLogs.id))
+      .limit(1);
+    if (predecessor && predecessor.type === input.type)
+      return { row: predecessor, created: false };
+  }
+
   const [inserted] = await tx
     .insert(attendanceLogs)
     .values({
@@ -933,6 +965,19 @@ async function linkClockSelfie(
     });
 }
 
+/** A key belongs to one employee and one kind; anything else is a reuse. */
+function assertClockReplayOwner(
+  row: LogRow,
+  employeeId: string,
+  type: AttendanceType,
+) {
+  if (lower(row.employeeId) !== lower(employeeId) || row.type !== type)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "Idempotency key already used for a different request.",
+    );
+}
+
 /**
  * POST /api/hris/attendance/clock — the employee clocks themself. The log
  * outlet is the outlet of the shift they work now, else their home outlet.
@@ -975,6 +1020,18 @@ export async function clockAttendance(
     )
       throw forbidden();
     const tenantId = context.tenant.tenantId;
+    // A retry answers the original log before the outlet is picked again
+    // (legend-whiwv #5): the shift or home outlet may have changed since, and
+    // the key's owner is the employee who made it.
+    const original = await findLogByClientEvent(
+      tx,
+      tenantId,
+      body.idempotencyKey,
+    );
+    if (original) {
+      assertClockReplayOwner(original, own.id, body.type);
+      return { replayed: original };
+    }
     const [employee] = await tx
       .select({ status: employees.status })
       .from(employees)
@@ -992,31 +1049,55 @@ export async function clockAttendance(
       now,
       timeZone,
     );
-    return {
-      employeeId: own.id,
-      outletId: shift?.outletId ?? own.homeOutletId,
-    };
+    const outletId = shift?.outletId ?? own.homeOutletId;
+    // The clock permission must hold at the outlet the log lands in, not just
+    // somewhere (legend-whiwv #1).
+    if (
+      !access.snapshot.allows(HRIS_ATTENDANCE_CLOCK_CODE, {
+        type: "outlet",
+        id: outletId,
+      })
+    )
+      throw forbidden();
+    return { replayed: null, employeeId: own.id, outletId };
   });
+
+  if (target.replayed) {
+    const original = target.replayed;
+    const originalScope = outletScoped(context, original.outletId);
+    return withTenant(db, originalScope, async (tx) => ({
+      log: await presentLog(
+        tx,
+        originalScope,
+        actorUserId,
+        true,
+        true,
+        original,
+        signer,
+        now,
+      ),
+      flagReasons: storedReasons(original),
+    }));
+  }
 
   const scoped = outletScoped(context, target.outletId);
   const tenantId = scoped.tenant.tenantId;
   return withTenant(db, scoped, async (tx) => {
     const present = (row: LogRow) =>
       presentLog(tx, scoped, actorUserId, true, true, row, signer, now);
+    // Serialize identical retries per key (legend-whiwv #6): a twin that lost
+    // the race waits here, then finds the winner's log below instead of failing
+    // on the selfie the winner already consumed.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`attendance-clock:${tenantId}:${body.idempotencyKey}`}, 0))`,
+    );
     const replayed = await findLogByClientEvent(
       tx,
       tenantId,
       body.idempotencyKey,
     );
     if (replayed) {
-      if (
-        lower(replayed.employeeId) !== lower(target.employeeId) ||
-        replayed.type !== body.type
-      )
-        throw new CoreError(
-          "IDEMPOTENCY_KEY_REUSED",
-          "Idempotency key already used for a different request.",
-        );
+      assertClockReplayOwner(replayed, target.employeeId, body.type);
       return {
         log: await present(replayed),
         flagReasons: storedReasons(replayed),
