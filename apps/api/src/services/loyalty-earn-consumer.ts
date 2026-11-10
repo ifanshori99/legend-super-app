@@ -17,23 +17,27 @@
 // deadlock between two profile locks (referral step) is retried here, in a
 // fresh savepoint.
 
+import { createHash } from "node:crypto";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   businessDateSchema,
   idr,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { pointsForSpend, type LoyaltyProgram } from "@starter/shared/crm";
 import type { EventEnvelope } from "@starter/shared/events";
 import { withProfileLock } from "../db/member-scope.ts";
 import {
+  billSplits,
   customerProfiles,
   customerVisits,
   loyaltyAnomalies,
   loyaltyPrograms,
   orders,
   pointEarnRecords,
+  pointLedger,
   userIdentities,
 } from "../db/schema/index.ts";
 import { isTrainingOrder } from "./device-training.ts";
@@ -392,7 +396,24 @@ async function earnForPaidOrder(
             eq(pointEarnRecords.businessDate, paid.businessDate),
           ),
         );
-      booked = Math.min(points, Math.max(0, cap - Number(day?.total ?? 0)));
+      // legend-n1mp: points claimed at a table count against the same cap;
+      // those ledger rows have no earn record, so nothing is counted twice.
+      const [claimed] = await tx
+        .select({
+          total: sql<string>`COALESCE(SUM(${pointLedger.points}), 0)`,
+        })
+        .from(pointLedger)
+        .where(
+          and(
+            eq(pointLedger.tenantId, tenantId as never),
+            eq(pointLedger.customerProfileId, profile.id),
+            eq(pointLedger.type, "earn"),
+            eq(pointLedger.sourceType, "table_claim"),
+            eq(pointLedger.businessDate, paid.businessDate),
+          ),
+        );
+      const usedToday = Number(day?.total ?? 0) + Number(claimed?.total ?? 0);
+      booked = Math.min(points, Math.max(0, cap - usedToday));
     }
     const cut = points - booked;
     if (cut > 0)
@@ -481,6 +502,168 @@ type ReverseInput = {
   refundEligibleIdr: number | null;
 };
 
+/**
+ * The reverse row of one claim row needs its own dedupe key (one refund or
+ * void can reverse several claim rows) and the points event wants a UUID:
+ * a name-based (v5-shaped) UUID of both ids, stable across replays.
+ */
+function claimReverseSourceId(sourceId: string, claimSourceId: string): string {
+  const hex = createHash("sha256")
+    .update(`table_claim_reversal:${sourceId}:${claimSourceId}`)
+    .digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * legend-n1mp: takes back the points guests claimed at a table for this order
+ * (`table_claim` earn rows: source_id is the order id for a whole bill, a
+ * bill_splits id for a split part). Same shape as the normal earn reversal:
+ * a `reverse` row naming the earn, clamped to the balance, a shortfall
+ * anomaly for the rest. A void reverses all; a refund reverses the share of
+ * the order's eligible amount it refunds. Each claim row gets its own reverse
+ * source id (a hash of the refund or void id and the claim source id), so a replay is a no-op.
+ */
+async function reverseTableClaims(
+  tx: Tx,
+  scope: Scope,
+  input: ReverseInput,
+): Promise<void> {
+  const { tenantId, context, now } = scope;
+  const [order] = await tx
+    .select({
+      eligible: sql<string>`${orders.subtotalIdr} - ${orders.discountIdr}`,
+    })
+    .from(orders)
+    .where(
+      and(eq(orders.tenantId, tenantId as never), eq(orders.id, input.orderId)),
+    )
+    .limit(1);
+  if (!order) return;
+  const splits = await tx
+    .select({ id: billSplits.id })
+    .from(billSplits)
+    .where(
+      and(
+        eq(billSplits.tenantId, tenantId as never),
+        eq(billSplits.orderId, input.orderId),
+      ),
+    );
+  const sourceIds = [
+    input.orderId,
+    ulidToUuid(input.orderId),
+    ...splits.map((split) => split.id),
+  ];
+  const claims = await tx
+    .select()
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantId as never),
+        eq(pointLedger.type, "earn"),
+        eq(pointLedger.sourceType, "table_claim"),
+        inArray(pointLedger.sourceId, sourceIds),
+      ),
+    )
+    .orderBy(pointLedger.postingSeq);
+  const eligible = Number(order.eligible);
+  for (const claim of claims) {
+    if (claim.sourceId === null) continue;
+    const profile = await lockedProfile(tx, tenantId, claim.customerProfileId);
+    if (!profile) continue;
+    const reverseSourceId = claimReverseSourceId(
+      input.sourceId,
+      claim.sourceId,
+    );
+    const [done] = await tx
+      .select({ id: pointLedger.id })
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenantId as never),
+          eq(pointLedger.type, "reverse"),
+          eq(pointLedger.sourceType, input.sourceType),
+          eq(pointLedger.sourceId, reverseSourceId),
+        ),
+      )
+      .limit(1);
+    if (done) continue;
+    const [seen] = await tx
+      .select({ id: loyaltyAnomalies.id })
+      .from(loyaltyAnomalies)
+      .where(
+        and(
+          eq(loyaltyAnomalies.tenantId, tenantId as never),
+          eq(loyaltyAnomalies.kind, "refund_after_redeem"),
+          eq(loyaltyAnomalies.orderId, input.orderId),
+          sql`${loyaltyAnomalies.details}->>'sourceId' = ${reverseSourceId}`,
+        ),
+      )
+      .limit(1);
+    if (seen) continue;
+    const [taken] = await tx
+      .select({
+        total: sql<string>`COALESCE(-SUM(${pointLedger.points}), 0)`,
+      })
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenantId as never),
+          eq(pointLedger.type, "reverse"),
+          eq(pointLedger.reversesEntryId, claim.id),
+        ),
+      );
+    const remaining = Math.max(0, claim.points - Number(taken?.total ?? 0));
+    const share =
+      input.refundEligibleIdr === null || eligible <= 0
+        ? remaining
+        : Math.min(
+            remaining,
+            Number(
+              (BigInt(claim.points) * BigInt(input.refundEligibleIdr) +
+                BigInt(eligible) -
+                1n) /
+                BigInt(eligible),
+            ),
+          );
+    if (share <= 0) continue;
+    const posted = Math.min(share, profile.pointsBalance);
+    if (posted > 0)
+      await postLedgerEntry(
+        tx,
+        context,
+        {
+          tenantId,
+          customerProfileId: profile.id,
+          outletId: input.outletId,
+          type: "reverse",
+          points: -posted,
+          sourceType: input.sourceType,
+          sourceId: reverseSourceId,
+          reversesEntryId: claim.id,
+          businessDate: input.businessDate,
+        },
+        now,
+      );
+    if (share > posted)
+      await recordLoyaltyAnomaly(tx, {
+        tenantId,
+        kind: "refund_after_redeem",
+        outletId: input.outletId,
+        customerProfileId: profile.id,
+        orderId: input.orderId,
+        businessDate: input.businessDate,
+        details: {
+          sourceType: input.sourceType,
+          sourceId: reverseSourceId,
+          deltaPoints: share,
+          postedPoints: posted,
+          shortfallPoints: share - posted,
+        },
+      });
+  }
+}
+
 async function reverseForOrder(
   tx: Tx,
   scope: Scope,
@@ -488,6 +671,8 @@ async function reverseForOrder(
 ): Promise<void> {
   const { tenantId, context, now } = scope;
   if (await isTrainingOrder(tx, tenantId as never, input.orderId)) return;
+  // legend-n1mp: a table claim has ledger rows only, no earn record.
+  await reverseTableClaims(tx, scope, input);
   const recordWhere = and(
     eq(pointEarnRecords.tenantId, tenantId as never),
     eq(pointEarnRecords.orderId, input.orderId),

@@ -501,10 +501,18 @@ export const pointClaimSchema = z
   });
 export type PointClaim = z.infer<typeof pointClaimSchema>;
 
+/**
+ * Optional proof of one split part (`sc_...`, the token shown by
+ * `getSplitClaim`). Without it the claim covers the session's whole-bill
+ * (unsplit) paid orders; a split part is only claimed with its own token.
+ */
+export const pointClaimTokenSchema = z.string().regex(/^sc_[A-Za-z0-9_-]{43}$/);
+
 export const getPointClaim = defineEndpoint({
   method: "GET",
   path: "/api/table-sessions/:sessionId/points-claim",
   params: z.strictObject({ sessionId: tableSessionIdSchema }),
+  query: z.strictObject({ claimToken: pointClaimTokenSchema.optional() }),
   response: dataResponseSchema(pointClaimSchema),
 });
 
@@ -512,6 +520,9 @@ export const claimSessionPoints = defineEndpoint({
   method: "POST",
   path: "/api/table-sessions/:sessionId/points-claim",
   params: z.strictObject({ sessionId: tableSessionIdSchema }),
-  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  body: clientInputSchema({
+    idempotencyKey: idempotencyKeySchema,
+    claimToken: pointClaimTokenSchema.optional(),
+  }),
   response: dataResponseSchema(pointClaimSchema),
 });

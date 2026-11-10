@@ -77,6 +77,7 @@ import {
   voidUnpaidQrOrderTx,
   type QrOrderRow,
 } from "./qr-order.service.ts";
+import { issueWholeBillClaimTx } from "./table-claim.service.ts";
 
 /** PRD silent: three QRIS codes (about 30 minutes) per unpaid order. */
 export const MAX_QR_PAYMENT_ATTEMPTS = 3;
@@ -736,6 +737,9 @@ export async function handleQrOrderPaymentPaid(
       { orderId: order.id, intentId, voidedParts },
       "QR order: fired with split parts still pending; leftover parts voided",
     );
+  // Guest point claim: an order paid by one payer (no live split part) gets
+  // its own claim token; split parts carry theirs (markSplitPartPaidTx).
+  await issueWholeBillClaimTx(tx, context, order.id, at);
   // Outbox order across intents is not relied on: when this event's intent
   // also carries `double_payment` funds (another code covered the bill
   // first), they are returned here too; a replay files nothing new.
