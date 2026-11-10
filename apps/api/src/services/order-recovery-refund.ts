@@ -424,7 +424,9 @@ export async function deliverOrderRecoveryRefundEvent(
       // (nothing_left, rejected, ...): the item of every other manual_refund
       // issue this consumer already processed is out of the kept lines, this
       // one included. Processed = it has a refund row (any status) or a
-      // `refund_blocked` audit row (nothing_left, promo_state_mismatch). An
+      // `refund_blocked` audit row for nothing_left (its recompute ran). A
+      // promo_state_mismatch issue is not: its recompute never ran, so the
+      // promo still holds its line and a later refund must not pay it. An
       // issue whose event has not run yet keeps its item here: its own event
       // refunds it later (two items resolved before either event runs).
       const others = issues
@@ -460,7 +462,7 @@ export async function deliverOrderRecoveryRefundEvent(
                 others.map((id) => sql`${id}`),
                 sql`, `,
               )})`,
-              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' IN ('nothing_left', 'promo_state_mismatch')`,
+              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
             ),
           );
         for (const row of blockedIssues) processed.add(row.id);
