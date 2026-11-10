@@ -28,7 +28,7 @@ import {
 import { createApp } from "../app.ts";
 import { setEdgeRuntimeStateForTests } from "../edge/runtime.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
-import { agent, originHeader, signUp } from "./helpers.ts";
+import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -96,8 +96,15 @@ async function asOwnerTenant<T>(
 }
 
 async function member(roleId: string, label: string): Promise<Member> {
+  // Sign-up is cloud only (edgeRouteGuard); the edge app only signs in.
+  const email = await signUp(agent(createApp()), label);
   const client = agent(app);
-  await signUp(client, label);
+  const signIn = await client
+    .post("/api/auth/sign-in/email")
+    .set(originHeader)
+    .send({ email, password: "Test-password-123!" });
+  expect(signIn.status).toBe(200);
+  await verifySessionMfa(email);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   await owner.query(
