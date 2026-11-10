@@ -5,7 +5,7 @@
 // is linkable and the loader can prefetch it.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Lock } from "lucide-react";
+import { ArrowLeft, KeyRound, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ import {
   EmployeeStatusPill,
   EmploymentTypeBadge,
 } from "./employee-status";
+import { PayslipPinResetDialog } from "./payslip-pin-reset-dialog";
 import { EmployeePiiPanel } from "./pii-panel";
 import { EmployeeContracts } from "./profile-contracts";
 import { EmployeeDocuments } from "./profile-documents";
@@ -50,9 +51,12 @@ export function EmployeeProfilePage({
   tab,
   locked,
   canEditPii,
+  canResetPin = false,
 }: {
   employeeId: string;
   tab: ProfileTab;
+  /** Payslip PIN reset (bead legend-ilzrj): needs `payroll.run`. */
+  canResetPin?: boolean;
   /** HR-03: `hr.employee.manage` opens the write-only edit flow. */
   canEditPii: boolean;
   /**
@@ -64,7 +68,12 @@ export function EmployeeProfilePage({
 }) {
   if (locked) return <LockedProfile />;
   return (
-    <ProfileBody employeeId={employeeId} tab={tab} canEditPii={canEditPii} />
+    <ProfileBody
+      employeeId={employeeId}
+      tab={tab}
+      canEditPii={canEditPii}
+      canResetPin={canResetPin}
+    />
   );
 }
 
@@ -94,12 +103,15 @@ function ProfileBody({
   employeeId,
   tab,
   canEditPii,
+  canResetPin,
 }: {
   employeeId: string;
   tab: ProfileTab;
   canEditPii: boolean;
+  canResetPin: boolean;
 }) {
   const t = useT();
+  const [resetOpen, setResetOpen] = React.useState(false);
   const employeeQuery = useEmployee(employeeId);
   const employeesQuery = useEmployees();
   const positionsQuery = usePositions();
@@ -185,12 +197,24 @@ function ProfileBody({
             {t("employeeMaster.profile.subtitle")}
           </p>
         </div>
-        <Button asChild variant="ghost" size="sm">
-          <Link to="/kelola/karyawan">
-            <ArrowLeft aria-hidden="true" />
-            {t("employeeMaster.profile.backToDirectory")}
-          </Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canResetPin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setResetOpen(true)}
+            >
+              <KeyRound aria-hidden="true" />
+              {t("payslipPin.hrReset.trigger")}
+            </Button>
+          )}
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/kelola/karyawan">
+              <ArrowLeft aria-hidden="true" />
+              {t("employeeMaster.profile.backToDirectory")}
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <div className="grid min-w-0 gap-5 lg:grid-cols-2">
@@ -303,6 +327,14 @@ function ProfileBody({
         <EmployeeContracts employeeId={employeeId} timeZone={timeZone} />
       ) : (
         <EmployeeDocuments employeeId={employeeId} timeZone={timeZone} />
+      )}
+
+      {canResetPin && (
+        <PayslipPinResetDialog
+          employee={employee}
+          open={resetOpen}
+          onOpenChange={setResetOpen}
+        />
       )}
     </div>
   );

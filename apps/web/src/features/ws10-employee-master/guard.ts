@@ -37,3 +37,11 @@ export function canEditEmployeePii(access: AreaAccess): boolean {
 export function canViewEmployees(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_MASTER_PERMISSIONS);
 }
+
+/** Payslip PIN reset (bead legend-ilzrj): HR with payroll access only. */
+export const PAYSLIP_PIN_RESET_PERMISSIONS = ["payroll.run"] as const;
+
+/** True when the visitor may reset an employee's payslip PIN (presentation only). */
+export function canResetPayslipPin(access: AreaAccess): boolean {
+  return holdsAny(access, PAYSLIP_PIN_RESET_PERMISSIONS);
+}

@@ -1,0 +1,5 @@
+# Brief test-writer: tambah P5 ke qr-order-late-refund-after-failed.test.ts (legend-p61pe, temuan architect)
+
+Worktree /Users/ifanshori99/Projects/legend super app/legend/.worktrees/refund-qr-residuals. Hanya edit `apps/api/src/test/qr-order-late-refund-after-failed.test.ts` (tambah P5, jangan ubah P1-P4). Jangan commit. Jalankan HANYA berkas itu. Dilarang suite penuh dan pkill.
+Bug: isLatePaymentRefund (services/payment-refund.service.ts) hanya mengenali key `qr-late-payment-refund:<intent>` persis, bukan key pengganti `qr-late-payment-refund:<intent>:<failedRefundId>`. Akibatnya refund pengganti (LP2) saat approval menghitung refund lain yang masih pending dan gagal `cap_exceeded`.
+P5: intent paid, order QR voided `refund_committed` karena refund R 100% approved; ada refund staf parsial P berstatus `pending` pada intent yang sama; R gagal (provider_declined seperti P1) -> LP2 (system:qr) diajukan; approve LP2 SEBELUM P: LP2 harus lanjut (status approved/completed sesuai pola P3/P4 dengan gateway fake), BUKAN failed cap_exceeded. P tetap pending. Gagal-dulu sebelum perbaikan. Lapor lulus/gagal dan asumsi.

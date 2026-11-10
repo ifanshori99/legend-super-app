@@ -1,0 +1,31 @@
+Held patch for legend-9ppw (ws/edge-master-sync). apps/api/src/edge/runtime.ts is
+frozen during merge stage 3, so the periodic master sync loop is NOT wired yet.
+Apply after stage 3 merges (anchors are approximate; base d82041ee):
+
+--- a/apps/api/src/edge/runtime.ts
++++ b/apps/api/src/edge/runtime.ts
+@@ imports (next to line 55)
+ import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
++import { startEdgeMasterSyncLoop } from "./master-sync.ts";
++
++// legend-9ppw: re-pull stock locations, UOMs and the chart of accounts.
++const EDGE_MASTER_SYNC_INTERVAL_MS = 5 * 60_000;
+@@ after `puller.start();` (around line 438)
+   puller.start();
++  const masterSync = startEdgeMasterSyncLoop({
++    config,
++    intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
++    onError: (error) =>
++      logger.warn(safeError(error), "Edge master sync failed"),
++  });
+@@ stop()
+-      await Promise.all([puller.stop(), stopWakeups(), client.stop()]);
++      await Promise.all([
++        puller.stop(),
++        masterSync.stop(),
++        stopWakeups(),
++        client.stop(),
++      ]);
+
+Test to add with it: runtime stop() resolves while a master sync fetch hangs
+(abort signal reaches cloudGetJson).

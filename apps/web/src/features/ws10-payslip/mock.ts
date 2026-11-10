@@ -19,6 +19,7 @@ import type {
   EmployeeLoanStatus,
   PayrollErrorCode,
   Payslip,
+  PayslipPinStatus,
   Reimbursement,
 } from "@starter/shared/hris/payroll";
 import {
@@ -28,6 +29,7 @@ import {
   createMyLoan,
   createMyReimbursement,
   employeeLoanSchema,
+  getMyPayslipPinStatus,
   listMyLoans,
   listMyPayslips,
   listMyReimbursements,
@@ -35,9 +37,15 @@ import {
   loanInstallmentFor,
   PayrollError,
   payrollErrorHttpStatus,
+  PAYSLIP_PIN_LOCK_MINUTES,
+  PAYSLIP_PIN_OTP_MAX_ATTEMPTS,
+  PAYSLIP_PIN_OTP_TTL_MINUTES,
   payrollPeriodFor,
   reimbursementLimitFor,
   reimbursementSchema,
+  requestMyPayslipPinResetOtp,
+  setMyPayslipPin,
+  verifyMyPayslipPinResetOtp,
   viewMyPayslip,
 } from "@starter/shared/hris/payroll";
 import { ApiError } from "../../lib/api/errors.ts";
@@ -49,18 +57,68 @@ import {
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
-import { PAYSLIP_PIN_MAX_ATTEMPTS } from "./state.ts";
+import { PAYSLIP_PIN_MAX_ATTEMPTS } from "./pin-state.ts";
 
 /** The demo employee's payslip PIN (mock only; the API mints the real one). */
 export const DEMO_PAYSLIP_PIN = "123456";
+/** The WhatsApp code the mock accepts in the "otp-ok" scenario. */
+export const DEMO_PAYSLIP_OTP = "482916";
+
+const PIN_LOCK_MS = PAYSLIP_PIN_LOCK_MINUTES * 60_000;
+const OTP_TTL_MS = PAYSLIP_PIN_OTP_TTL_MINUTES * 60_000;
+const OTP_REQUESTS_PER_HOUR = 3;
+const HOUR_MS = 60 * 60_000;
+
+/**
+ * WhatsApp reset scenarios. The default is what production does before an
+ * adapter exists: the request answers 503 "belum tersedia". `?mock=otp-ok`
+ * sends and accepts `DEMO_PAYSLIP_OTP`; `?mock=otp-rate-limited` answers 429.
+ * Read here, not from the shared scenario list, so the feature owns them.
+ */
+export type PayslipOtpMockMode = "unavailable" | "ok" | "rate_limited";
+const OTP_MODE_PARAMS: Record<string, PayslipOtpMockMode> = {
+  "otp-ok": "ok",
+  "otp-rate-limited": "rate_limited",
+};
+let otpMode: PayslipOtpMockMode = "unavailable";
+
+export function setPayslipOtpMockMode(mode: PayslipOtpMockMode) {
+  otpMode = mode;
+}
+
+/** The `?mock=` value of the page URL, or null (also outside a browser). */
+function mockParam(): string | null {
+  const scope = globalThis as unknown as {
+    window?: { location?: { search?: string } };
+  };
+  return new URLSearchParams(scope.window?.location?.search ?? "").get("mock");
+}
+
+function currentOtpMode(): PayslipOtpMockMode {
+  const param = mockParam();
+  if (param !== null && param in OTP_MODE_PARAMS)
+    otpMode = OTP_MODE_PARAMS[param];
+  return otpMode;
+}
 
 type Replay<T> = { fingerprint: string; value: T };
-type PinOutcome = "viewed" | "invalid" | "locked";
+/** A failed PIN check, kept so a replay answers exactly like the first call. */
+type PinFailure = {
+  code: Extract<
+    PayrollErrorCode,
+    "PAYSLIP_PIN_INVALID" | "PAYSLIP_PIN_LOCKED" | "PAYSLIP_PIN_NOT_SET"
+  >;
+  remainingAttempts?: number;
+  lockedUntil?: string;
+};
 type PinReplay = {
   fingerprint: string;
-  outcome: PinOutcome;
-  payslipId: string;
+  failure: PinFailure | null;
+  /** Set for a payslip view; null for set / verify. */
+  payslipId: string | null;
+  status: PayslipPinStatus | null;
 };
+type OtpChallenge = { expiresAt: string; attempts: number };
 
 export type PayslipMockState = {
   payslips: Payslip[];
@@ -70,8 +128,15 @@ export type PayslipMockState = {
   reimbursementReplays: Record<string, Replay<Reimbursement>>;
   /** Idempotency key → the same answer, so a retry burns no second PIN try. */
   pinReplays: Record<string, PinReplay>;
+  /** The signed-in demo employee's PIN; null until they create one. */
+  pin: string | null;
   pinAttempts: number;
-  pinLocked: boolean;
+  pinLockedUntil: string | null;
+  otp: OtpChallenge | null;
+  /** The `?mock=pin-*` scenario already applied, so it seeds the PIN once. */
+  pinScenario: string | null;
+  /** ISO times of the WhatsApp codes asked for, for the 3-per-hour cap. */
+  otpRequests: string[];
 };
 
 function seed(): PayslipMockState {
@@ -82,8 +147,12 @@ function seed(): PayslipMockState {
     loanReplays: {},
     reimbursementReplays: {},
     pinReplays: {},
+    pin: DEMO_PAYSLIP_PIN,
     pinAttempts: 0,
-    pinLocked: false,
+    pinLockedUntil: null,
+    otp: null,
+    pinScenario: null,
+    otpRequests: [],
   };
 }
 
@@ -105,9 +174,25 @@ function idempotencyConflict(): ApiError {
 }
 
 /** The contract's error code + HTTP status + safe message, as the API sends it. */
-function payrollApiError(code: PayrollErrorCode): ApiError {
+function payrollApiError(
+  code: PayrollErrorCode,
+  extra?: { remainingAttempts?: number; lockedUntil?: string },
+): ApiError {
   const error = new PayrollError(code);
-  return new ApiError(payrollErrorHttpStatus[code], code, error.message);
+  return new ApiError(
+    payrollErrorHttpStatus[code],
+    code,
+    error.message,
+    undefined,
+    extra,
+  );
+}
+
+function failureError(failure: PinFailure): ApiError {
+  return payrollApiError(failure.code, {
+    remainingAttempts: failure.remainingAttempts,
+    lockedUntil: failure.lockedUntil,
+  });
 }
 
 const notFound = (message: string) => new ApiError(404, "NOT_FOUND", message);
@@ -194,20 +279,121 @@ registerMock(listReimbursementCategories, ({ query, scenario }) => {
   return paginateFixture(rows, query, (category) => category.id, scenario);
 });
 
-// ---- Payslip PIN gate -----------------------------------------------------
+// ---- Payslip PIN ----------------------------------------------------------
+
+/** The state with an ended lock cleared (the API clears it on the next call). */
+function withExpiredLockCleared(state: PayslipMockState): PayslipMockState {
+  if (
+    state.pinLockedUntil !== null &&
+    Date.parse(state.pinLockedUntil) <= Date.now()
+  )
+    return { ...state, pinLockedUntil: null, pinAttempts: 0 };
+  return state;
+}
+
+/**
+ * `?mock=pin-not-set` starts without a PIN (view answers 409 until a PUT sets
+ * one); `?mock=pin-locked` starts locked for 15 minutes (view answers 423).
+ * Applied once per scenario, so a later PUT or OTP reset is not undone.
+ */
+function applyPinScenario(): void {
+  const param = mockParam();
+  const state = payslipMockStore.get();
+  if (param === state.pinScenario) return;
+  if (param === "pin-not-set")
+    payslipMockStore.set({
+      ...state,
+      pinScenario: param,
+      pin: null,
+      pinAttempts: 0,
+      pinLockedUntil: null,
+    });
+  else if (param === "pin-locked")
+    payslipMockStore.set({
+      ...state,
+      pinScenario: param,
+      pin: state.pin ?? DEMO_PAYSLIP_PIN,
+      pinAttempts: PAYSLIP_PIN_MAX_ATTEMPTS,
+      pinLockedUntil: new Date(Date.now() + PIN_LOCK_MS).toISOString(),
+    });
+}
+
+function statusOf(state: PayslipMockState): PayslipPinStatus {
+  const live = withExpiredLockCleared(state);
+  if (live.pin === null) return { status: "not_set", lockedUntil: null };
+  if (live.pinLockedUntil !== null)
+    return { status: "locked", lockedUntil: live.pinLockedUntil };
+  return { status: "active", lockedUntil: null };
+}
+
+type PinAttempt = { next: PayslipMockState; failure: PinFailure | null };
+
+/** One PIN try: wrong ones count, the fifth locks for 15 minutes. */
+function attemptPin(current: PayslipMockState, pin: string): PinAttempt {
+  const state = withExpiredLockCleared(current);
+  if (state.pin === null)
+    return { next: state, failure: { code: "PAYSLIP_PIN_NOT_SET" } };
+  if (state.pinLockedUntil !== null)
+    return {
+      next: state,
+      failure: {
+        code: "PAYSLIP_PIN_LOCKED",
+        lockedUntil: state.pinLockedUntil,
+      },
+    };
+  if (pin === state.pin)
+    return { next: { ...state, pinAttempts: 0 }, failure: null };
+  const attempts = state.pinAttempts + 1;
+  if (attempts >= PAYSLIP_PIN_MAX_ATTEMPTS) {
+    const lockedUntil = new Date(Date.now() + PIN_LOCK_MS).toISOString();
+    return {
+      next: { ...state, pinAttempts: attempts, pinLockedUntil: lockedUntil },
+      failure: { code: "PAYSLIP_PIN_LOCKED", lockedUntil },
+    };
+  }
+  return {
+    next: { ...state, pinAttempts: attempts },
+    failure: {
+      code: "PAYSLIP_PIN_INVALID",
+      remainingAttempts: PAYSLIP_PIN_MAX_ATTEMPTS - attempts,
+    },
+  };
+}
+
+function rememberPin(
+  state: PayslipMockState,
+  key: string,
+  replay: PinReplay,
+): PayslipMockState {
+  return { ...state, pinReplays: { ...state.pinReplays, [key]: replay } };
+}
+
+/** The earlier answer for a key, or a conflict if the request changed. */
+function replayOf(
+  state: PayslipMockState,
+  key: string,
+  fingerprint: string,
+): PinReplay | null {
+  const replay = state.pinReplays[key];
+  if (!replay) return null;
+  if (replay.fingerprint !== fingerprint) throw idempotencyConflict();
+  return replay;
+}
+
+registerMock(getMyPayslipPinStatus, () => {
+  applyPinScenario();
+  return { data: statusOf(payslipMockStore.get()) };
+});
 
 registerMock(viewMyPayslip, ({ params, body }) => {
+  applyPinScenario();
   const state = payslipMockStore.get();
   // The payslip id is part of the request: a reused key on another slip is a
   // conflict, never a replay of the first slip's answer.
   const fingerprint = `${params.payslipId}|${fingerprintOf(body)}`;
-  const replay = state.pinReplays[body.idempotencyKey];
+  const replay = replayOf(state, body.idempotencyKey, fingerprint);
   if (replay) {
-    if (replay.fingerprint !== fingerprint) throw idempotencyConflict();
-    if (replay.outcome === "invalid")
-      throw payrollApiError("PAYSLIP_PIN_INVALID");
-    if (replay.outcome === "locked")
-      throw payrollApiError("PAYSLIP_PIN_LOCKED");
+    if (replay.failure) throw failureError(replay.failure);
     const replayed = state.payslips.find(
       (slip) => slip.id === replay.payslipId,
     );
@@ -222,62 +408,213 @@ registerMock(viewMyPayslip, ({ params, body }) => {
   );
   if (!slip) throw notFound("Slip gaji tidak ditemukan.");
 
-  if (state.pinLocked) {
-    payslipMockStore.set({
-      ...state,
-      pinReplays: {
-        ...state.pinReplays,
-        [body.idempotencyKey]: {
-          fingerprint,
-          outcome: "locked",
-          payslipId: slip.id,
-        },
-      },
-    });
-    throw payrollApiError("PAYSLIP_PIN_LOCKED");
-  }
-
-  if (body.pin !== DEMO_PAYSLIP_PIN) {
-    const attempts = state.pinAttempts + 1;
-    const locked = attempts >= PAYSLIP_PIN_MAX_ATTEMPTS;
-    payslipMockStore.set({
-      ...state,
-      pinAttempts: attempts,
-      pinLocked: locked,
-      pinReplays: {
-        ...state.pinReplays,
-        [body.idempotencyKey]: {
-          fingerprint,
-          outcome: locked ? "locked" : "invalid",
-          payslipId: slip.id,
-        },
-      },
-    });
-    throw payrollApiError(
-      locked ? "PAYSLIP_PIN_LOCKED" : "PAYSLIP_PIN_INVALID",
+  const { next, failure } = attemptPin(state, body.pin);
+  if (failure) {
+    payslipMockStore.set(
+      rememberPin(next, body.idempotencyKey, {
+        fingerprint,
+        failure,
+        payslipId: slip.id,
+        status: null,
+      }),
     );
+    throw failureError(failure);
   }
 
   const viewed: Payslip = { ...slip, viewedAt: new Date().toISOString() };
-  payslipMockStore.set({
-    ...state,
-    // A successful open clears the consecutive-failure counter.
-    pinAttempts: 0,
-    pinLocked: false,
-    payslips: state.payslips.map((candidate) =>
-      candidate.id === slip.id ? viewed : candidate,
-    ),
-    pinReplays: {
-      ...state.pinReplays,
-      [body.idempotencyKey]: {
-        fingerprint,
-        outcome: "viewed",
-        payslipId: slip.id,
+  payslipMockStore.set(
+    rememberPin(
+      {
+        ...next,
+        payslips: next.payslips.map((candidate) =>
+          candidate.id === slip.id ? viewed : candidate,
+        ),
       },
-    },
-  });
+      body.idempotencyKey,
+      { fingerprint, failure: null, payslipId: slip.id, status: null },
+    ),
+  );
   return { data: viewed };
 });
+
+registerMock(setMyPayslipPin, ({ body }) => {
+  applyPinScenario();
+  const state = payslipMockStore.get();
+  const fingerprint = fingerprintOf(body);
+  const replay = replayOf(state, body.idempotencyKey, fingerprint);
+  if (replay) {
+    if (replay.failure) throw failureError(replay.failure);
+    return { data: replay.status ?? statusOf(state) };
+  }
+
+  let working = withExpiredLockCleared(state);
+  if (working.pin !== null) {
+    // A change needs the current PIN, and a wrong one counts like at opening.
+    if (body.currentPin === undefined)
+      throw new ApiError(
+        422,
+        "VALIDATION_ERROR",
+        "PIN saat ini wajib diisi untuk mengganti PIN slip gaji.",
+      );
+    const { next, failure } = attemptPin(working, body.currentPin);
+    if (failure) {
+      payslipMockStore.set(
+        rememberPin(next, body.idempotencyKey, {
+          fingerprint,
+          failure,
+          payslipId: null,
+          status: null,
+        }),
+      );
+      throw failureError(failure);
+    }
+    working = next;
+  }
+
+  const updated: PayslipMockState = {
+    ...working,
+    pin: body.pin,
+    pinAttempts: 0,
+    pinLockedUntil: null,
+  };
+  const status = statusOf(updated);
+  payslipMockStore.set(
+    rememberPin(updated, body.idempotencyKey, {
+      fingerprint,
+      failure: null,
+      payslipId: null,
+      status,
+    }),
+  );
+  return { data: status };
+});
+
+registerMock(requestMyPayslipPinResetOtp, () => {
+  const mode = currentOtpMode();
+  // Default: no WhatsApp sender is set up yet.
+  if (mode === "unavailable")
+    throw new ApiError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Kode WhatsApp belum tersedia.",
+    );
+  const state = payslipMockStore.get();
+  const now = Date.now();
+  const recent = state.otpRequests.filter(
+    (at) => now - Date.parse(at) < HOUR_MS,
+  );
+  if (mode === "rate_limited" || recent.length >= OTP_REQUESTS_PER_HOUR)
+    throw new ApiError(
+      429,
+      "RATE_LIMITED",
+      "Terlalu banyak permintaan kode. Coba lagi dalam satu jam atau hubungi HR.",
+    );
+  const expiresAt = new Date(now + OTP_TTL_MS).toISOString();
+  payslipMockStore.set({
+    ...state,
+    otp: { expiresAt, attempts: 0 },
+    otpRequests: [...recent, new Date(now).toISOString()],
+  });
+  return { data: { expiresAt } };
+});
+
+registerMock(verifyMyPayslipPinResetOtp, ({ body }) => {
+  if (currentOtpMode() === "unavailable")
+    throw new ApiError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Kode WhatsApp belum tersedia.",
+    );
+  const state = payslipMockStore.get();
+  const fingerprint = fingerprintOf(body);
+  const replay = replayOf(state, body.idempotencyKey, fingerprint);
+  if (replay) {
+    if (replay.failure) throw failureError(replay.failure);
+    return { data: replay.status ?? statusOf(state) };
+  }
+
+  const challenge = state.otp;
+  const live =
+    challenge !== null && Date.parse(challenge.expiresAt) > Date.now();
+  if (!live || challenge === null) {
+    // Unknown, expired or used: answers like a wrong code, counts nothing.
+    const failure: PinFailure = { code: "PAYSLIP_PIN_INVALID" };
+    payslipMockStore.set(
+      rememberPin(state, body.idempotencyKey, {
+        fingerprint,
+        failure,
+        payslipId: null,
+        status: null,
+      }),
+    );
+    throw failureError(failure);
+  }
+
+  if (body.code !== DEMO_PAYSLIP_OTP) {
+    const attempts = challenge.attempts + 1;
+    let failure: PinFailure;
+    let next: PayslipMockState;
+    if (attempts >= PAYSLIP_PIN_OTP_MAX_ATTEMPTS) {
+      // The fifth wrong code burns the challenge (423, retry after it would
+      // have expired) like the API; the PIN's own lock is left alone.
+      failure = {
+        code: "PAYSLIP_PIN_LOCKED",
+        lockedUntil: challenge.expiresAt,
+      };
+      next = { ...state, otp: null };
+    } else {
+      failure = {
+        code: "PAYSLIP_PIN_INVALID",
+        remainingAttempts: PAYSLIP_PIN_OTP_MAX_ATTEMPTS - attempts,
+      };
+      next = { ...state, otp: { ...challenge, attempts } };
+    }
+    payslipMockStore.set(
+      rememberPin(next, body.idempotencyKey, {
+        fingerprint,
+        failure,
+        payslipId: null,
+        status: null,
+      }),
+    );
+    throw failureError(failure);
+  }
+
+  const updated: PayslipMockState = {
+    ...state,
+    pin: body.pin,
+    pinAttempts: 0,
+    pinLockedUntil: null,
+    otp: null,
+  };
+  const status = statusOf(updated);
+  payslipMockStore.set(
+    rememberPin(updated, body.idempotencyKey, {
+      fingerprint,
+      failure: null,
+      payslipId: null,
+      status,
+    }),
+  );
+  return { data: status };
+});
+
+/**
+ * HR reset (`resetEmployeePayslipPin`, registered by the employee master mock):
+ * clears the demo employee's PIN and lock so the next visit shows "buat PIN".
+ */
+export function resetMockPayslipPin(employeeId: string): PayslipPinStatus {
+  if (employeeId === me.id) {
+    payslipMockStore.set({
+      ...payslipMockStore.get(),
+      pin: null,
+      pinAttempts: 0,
+      pinLockedUntil: null,
+      otp: null,
+    });
+  }
+  return { status: "not_set", lockedUntil: null };
+}
 
 // ---- Kasbon request -------------------------------------------------------
 

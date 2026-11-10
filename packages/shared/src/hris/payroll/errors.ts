@@ -89,11 +89,22 @@ const defaultMessages: Record<PayrollErrorCode, string> = {
 export class PayrollError extends Error {
   readonly code: PayrollErrorCode;
   readonly status: number;
+  /** PAYSLIP_PIN_INVALID only: attempts left before the PIN locks. */
+  readonly remainingAttempts?: number;
+  /** PAYSLIP_PIN_LOCKED only: ISO datetime the lock ends. */
+  readonly lockedUntil?: string;
 
-  constructor(code: PayrollErrorCode, message: string = defaultMessages[code]) {
+  constructor(
+    code: PayrollErrorCode,
+    message: string = defaultMessages[code],
+    extra: { remainingAttempts?: number; lockedUntil?: string } = {},
+  ) {
     super(message);
     this.name = "PayrollError";
     this.code = code;
     this.status = payrollErrorHttpStatus[code];
+    if (extra.remainingAttempts !== undefined)
+      this.remainingAttempts = extra.remainingAttempts;
+    if (extra.lockedUntil !== undefined) this.lockedUntil = extra.lockedUntil;
   }
 }

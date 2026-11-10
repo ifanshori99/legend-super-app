@@ -43,10 +43,12 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     code: string,
     message: string,
     details?: ApiErrorDetail[],
+    extra: { remainingAttempts?: number; lockedUntil?: string } = {},
   ) =>
     res.status(status).json(
       apiErrorBody(code, message, {
         ...(details ? { details } : {}),
+        ...extra,
         ...(typeof req.id === "string" ? { requestId: req.id } : {}),
       }),
     );
@@ -61,6 +63,16 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       return send(error.status, error.code, error.message, details);
   }
 
+  if (error instanceof PayrollError)
+    return send(error.status, error.code, error.message, undefined, {
+      ...(error.remainingAttempts !== undefined
+        ? { remainingAttempts: error.remainingAttempts }
+        : {}),
+      ...(error.lockedUntil !== undefined
+        ? { lockedUntil: error.lockedUntil }
+        : {}),
+    });
+
   if (
     error instanceof HttpError ||
     error instanceof CoreError ||
@@ -71,7 +83,6 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof IdentityError ||
     error instanceof NotificationError ||
     error instanceof OperationsError ||
-    error instanceof PayrollError ||
     error instanceof PlatformError ||
     error instanceof PosError ||
     error instanceof TaxError
