@@ -99,6 +99,9 @@ import { hrisChecklistRouter } from "./hris-checklist.routes";
 import { hrisOffboardingRouter } from "./hris-offboarding.routes";
 import { hrisWorkCertificateRouter } from "./hris-work-certificate.routes";
 import { hrisKpiRouter } from "./hris-kpi.routes";
+import { hrisAttendanceRouter } from "./hris-attendance.routes";
+import { hrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
+import { hrisAttendanceCorrectionRouter } from "./hris-attendance-correction.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -330,6 +333,14 @@ apiRouter.use(
   hrisOffboardingRouter,
   hrisWorkCertificateRouter,
   hrisKpiRouter,
+);
+// WS-10 attendance: selfie/geofence/device/QR clock, corrections, sampling
+// review, policy, duty meal (legend-wh71).
+apiRouter.use(
+  "/hris",
+  hrisAttendanceRouter,
+  hrisAttendanceAdminRouter,
+  hrisAttendanceCorrectionRouter,
 );
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;

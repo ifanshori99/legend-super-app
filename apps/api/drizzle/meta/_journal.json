@@ -1366,6 +1366,13 @@
       "when": 1794287000000,
       "tag": "0208_supplier_return_petty",
       "breakpoints": true
+    },
+    {
+      "idx": 217,
+      "version": "7",
+      "when": 1794296000000,
+      "tag": "0217_hris_attendance",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,8 @@ import {
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   employeeIdSchema,
+  attendanceCorrectionIdSchema,
+  attendanceDeviceIdSchema,
   attendanceLogIdSchema,
   orgUnitIdSchema,
   positionIdSchema,
@@ -77,6 +79,16 @@ import {
 import {
   attendanceCorrectionSchema,
   attendanceCorrectionStatusSchema,
+  attendanceDeviceSchema,
+  attendanceDeviceStatusSchema,
+  attendanceDutyMealSchema,
+  attendancePolicySchema,
+  attendancePolicyViewSchema,
+  attendanceQrRotationSchema,
+  attendanceReviewActionSchema,
+  attendanceReviewItemSchema,
+  attendanceReviewStatusSchema,
+  attendanceSamplingConfigSchema,
   attendanceLogSchema,
   attendanceMethodSchema,
   attendanceQrTokenSchema,
@@ -465,6 +477,143 @@ export const listAttendanceCorrections = defineEndpoint({
     status: attendanceCorrectionStatusSchema.optional(),
   }),
   response: cursorPageSchema(attendanceCorrectionSchema),
+});
+
+// Device binding, policy, sampling review, duty meals (WS-10). Additive.
+
+const attendanceDeviceIdParams = z.strictObject({
+  deviceId: attendanceDeviceIdSchema,
+});
+const attendanceLogIdParams = z.strictObject({ logId: attendanceLogIdSchema });
+const attendanceCorrectionIdParams = z.strictObject({
+  correctionId: attendanceCorrectionIdSchema,
+});
+
+/** The employee binds their own phone; the employee comes from the session. */
+export const bindAttendanceDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/bind",
+  body: clientInputSchema({
+    deviceIdHash: z.string().regex(/^[0-9a-f]{64}$/),
+    label: z.string().min(1).max(100),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
+export const listAttendanceDevices = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/devices",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    status: attendanceDeviceStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceDeviceSchema),
+});
+
+/** HR reset (hr.attendance.manage); the employee can bind a new device after. */
+export const revokeAttendanceDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/:deviceId/revoke",
+  params: attendanceDeviceIdParams,
+  body: clientInputSchema({
+    reason: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
+/** Without `outletId`, the tenant default; with one, the outlet view. */
+export const getAttendancePolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/policy",
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(attendancePolicyViewSchema),
+});
+
+/** `outletId` null writes the tenant default; otherwise an outlet override. */
+export const updateAttendancePolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/attendance/policy",
+  body: clientInputSchema({
+    outletId: outletIdSchema.nullable(),
+    policy: attendancePolicySchema,
+    sampling: attendanceSamplingConfigSchema,
+  }),
+  response: dataResponseSchema(attendancePolicyViewSchema),
+});
+
+/** Flagged logs plus the deterministic random sample (F25 supervisor review). */
+export const listAttendanceReviewQueue = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/review-queue",
+  query: cursorPageQuerySchema.extend({
+    outletId: outletIdSchema.optional(),
+    businessDate: businessDateSchema.optional(),
+    reviewStatus: attendanceReviewStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceReviewItemSchema),
+});
+
+export const decideAttendanceReview = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/logs/:logId/review",
+  params: attendanceLogIdParams,
+  body: clientInputSchema({
+    action: attendanceReviewActionSchema,
+    note: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceReviewItemSchema),
+});
+
+/** hr.attendance_correction.approve; approving creates a manual_correction log. */
+export const decideAttendanceCorrection = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/corrections/:correctionId/decision",
+  params: attendanceCorrectionIdParams,
+  body: clientInputSchema({
+    action: z.enum(["approve", "reject"]),
+    note: z.string().min(1).max(500).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceCorrectionSchema),
+});
+
+export const recordAttendanceDutyMeal = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/duty-meals",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    employeeId: employeeIdSchema,
+    shiftAssignmentId: shiftAssignmentIdSchema.nullable(),
+    businessDate: businessDateSchema,
+    mealCount: z.number().int().min(1).max(10),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDutyMealSchema),
+});
+
+export const listAttendanceDutyMeals = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/attendance/duty-meals",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    outletId: outletIdSchema.optional(),
+    businessDate: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(attendanceDutyMealSchema),
+});
+
+/** Manual rotation of the outlet QR secret; invalidates the current display. */
+export const rotateAttendanceQrSecret = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/qr/rotate",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceQrRotationSchema),
 });
 
 // ---- Roster, shifts, swaps ---------------------------------------------

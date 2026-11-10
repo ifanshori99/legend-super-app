@@ -62,6 +62,7 @@ import {
   registerPosDeferredEdgeApplier,
 } from "./deferred-event-applier.ts";
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
+import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
@@ -862,6 +863,8 @@ export async function registerEdgeLink(
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
   // legend-s4r6: edge -> cloud appliers, before any edge can connect.
   registerStockMovedEdgeApplier();
+  // legend-wh71: offline attendance.logged (WS-10) recorded idempotently.
+  registerAttendanceLoggedEdgeApplier();
   // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
   registerPosDeferredEdgeApplier();
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
