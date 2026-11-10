@@ -1597,6 +1597,20 @@
       "when": 1794322000000,
       "tag": "0241_shareholder_version_approval_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1794323000000,
+      "tag": "0242_tenant_config_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1794324000000,
+      "tag": "0243_tenant_config_rls",
+      "breakpoints": true
     }
   ]
 }

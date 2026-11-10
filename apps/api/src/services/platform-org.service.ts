@@ -198,7 +198,7 @@ const EVENT_DESTINATION = "cloud-sync";
  * rows land in that tenant's audit_logs under RLS, where its admin sees them
  * (TEN-04: Super Admin actions are visible to the tenant).
  */
-function platformTenantScope(tenantId: string): ScopedTenantContext {
+export function platformTenantScope(tenantId: string): ScopedTenantContext {
   return establishScopedTenantContext(
     establishTenantContext({ tenantId, brandId: null, source: "session" }),
     { kind: "tenant" },

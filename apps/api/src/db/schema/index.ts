@@ -76,6 +76,8 @@ export * from "./edge-hris";
 export * from "./edge-sync-conflict";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// TEN-09 tenant config templates + import runs (legend-34c).
+export * from "./platform-config";
 export * from "./pos-receipt";
 export * from "./pos-receipt-writeoff";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).

@@ -876,6 +876,15 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Biaya sesi ui-engineer (transkrip fe7d1815, 07:57–09:41 UTC, 2 compact, 19 subagent): Opus utama 6128k, Sonnet 5723k, Opus subagent 257k, Haiku 114k; total 12223k unit biaya.
 - Kebutuhan kontrak (belum dikerjakan): metode bayar kasir / kode bayar eksplisit + POS terima pembayaran order tertahan; ubah pax sesi; foto cover outlet; patch opsi baris keranjang; kode promo/voucher ikut `placeOrder`; metode guest `va` dan `card` (nomor VA + channel + kedaluwarsa, URL halaman kartu penyedia di `guestPaymentSchema`).
 
+## legend-34c TEN-09 ekspor/impor konfigurasi tenant (engineer, cabang `ws/tenant-config-export`)
+
+- API platform admin (registry + MFA): `GET /api/platform/tenants/:id/config-export`, `POST .../config-templates` (dokumen versi-an per nama), `GET /api/platform/config-templates[/:id]`, `POST .../config-import` (template atau unggah), `GET .../config-readiness`. Permission katalog baru `platform.config_template.manage`.
+- Seksi: modules, text_overrides, theme, roles, approval_policies (+ diskon POS), chart_of_accounts, tax_rules (+ settings), service_charge_rules, zones, checklists, facilities (area/unit/produk/addon/entitlement/plan), wifi_policies. loyalty_policy & payroll_settings belum ada tabelnya: impor menolak item non-kosong.
+- Keputusan: item merujuk lewat `key`, bukan id; outlet dipetakan lewat kode outlet (tanpa outlet tujuan = dilewati + peringatan); impor satu transaksi, idempoten (lewati bila sudah ada, tidak pernah mengubah baris lama), run gagal dicatat di transaksi terpisah; CoA dari legal entity tertua diterapkan ke semua legal entity tujuan; pajak diimpor sebagai versi 1 terbit. Skema item ketat hanya di server (`strictItems`); pratinjau web tetap longgar.
+- Tabel baru `config_templates` (global, app hanya SELECT/INSERT) dan `config_imports` (RLS tenant). Migrasi 0259, 0260 (dibuat ulang setelah merge milestone/m1, 2026-11-10).
+- Test: `apps/api/src/test/tenant-config-api.test.ts` (26 kasus TEN-09).
+- Sisa risiko: kunci sufiks `-2` bisa beda antar tenant pada nama yang bentrok (jarang); aturan pajak produk tidak dicek outlet-nya; data pribadi di teks bebas (label checklist, text override) tidak terdeteksi otomatis.
+
 ## legend-b9i DOIT PaymentProvider (engineer, cabang `ws/doit-provider`)
 
 - Adapter DOIT di belakang `PaymentGatewayPort`: QRIS, VA, transfer bank kode unik, daftar metode dari endpoint DOIT (cache 60 dtk), Bearer + `Idempotency-Key` di tiap POST, kredensial per tenant/outlet dari `tenant_integrations` (terenkripsi), gagal tertutup bila tidak ada. Port diperluas `ewallet`/`card` + `methods()` opsional, jadi gateway lain bisa menambah tanpa ubah kontrak.

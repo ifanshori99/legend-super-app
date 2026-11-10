@@ -23,6 +23,8 @@ import { DERIVED_TOKENS } from "../theme/contrast.ts";
 import {
   configBundleSchema,
   configImportSchema,
+  configReadinessSchema,
+  configTemplateSchema,
   configTemplateSummarySchema,
   createConfigTemplateInputSchema,
   importConfigInputSchema,
@@ -30,6 +32,7 @@ import {
 import { brandContextSchema } from "./context.ts";
 import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
+  configTemplateIdSchema,
   legalEntityIdSchema,
   supportAccessGrantIdSchema,
   supportAccessRequestIdSchema,
@@ -277,12 +280,31 @@ export const platformEndpoints = {
     body: createConfigTemplateInputSchema,
     response: dataResponseSchema(configTemplateSummarySchema),
   }),
+  getConfigTemplate: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/config-templates/:templateId",
+    params: z.strictObject({ templateId: configTemplateIdSchema }),
+    response: dataResponseSchema(configTemplateSchema),
+  }),
   importConfig: defineEndpoint({
     method: "POST",
     path: "/api/platform/tenants/:tenantId/config-import",
     params: tenantParams,
     body: importConfigInputSchema,
     response: dataResponseSchema(configImportSchema),
+  }),
+  /** Bundle of the tenant's configuration; computed on request, not stored. */
+  exportConfig: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/config-export",
+    params: tenantParams,
+    response: dataResponseSchema(configBundleSchema),
+  }),
+  getConfigReadiness: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/config-readiness",
+    params: tenantParams,
+    response: dataResponseSchema(configReadinessSchema),
   }),
 } as const;
 

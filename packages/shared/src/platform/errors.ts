@@ -33,6 +33,8 @@ export const platformErrorHttpStatus = {
   INTEGRATION_PROVIDER_NOT_AVAILABLE: 422,
   /** Config bundle failed validation or still carries source-tenant identifiers (TEN-09). */
   CONFIG_BUNDLE_INVALID: 422,
+  /** A valid bundle failed while being applied; the import was rolled back (TEN-09). */
+  CONFIG_IMPORT_FAILED: 422,
   /** Status change not allowed from the current status. */
   INVALID_TRANSITION: 409,
   /** Restore asked for a tenant/outlet that is not archived/closed, or whose transition time was never recorded (legacy rows stay final). */
@@ -68,6 +70,8 @@ const defaultMessages: Record<PlatformErrorCode, string> = {
   INTEGRATION_PROVIDER_NOT_AVAILABLE:
     "Penyedia integrasi ini belum tersedia untuk tenant.",
   CONFIG_BUNDLE_INVALID: "Berkas konfigurasi tidak valid.",
+  CONFIG_IMPORT_FAILED:
+    "Konfigurasi gagal diterapkan; tidak ada perubahan yang disimpan.",
   INVALID_TRANSITION: "Perubahan status ini tidak diizinkan.",
   RESTORE_NOT_AVAILABLE:
     "Status ini tidak dapat dipulihkan karena waktu arsip atau tutup tidak tercatat.",
