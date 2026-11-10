@@ -733,6 +733,110 @@ describe("founder rule Q83: claw-back is capped per shareholder and leaves no ta
     assert.equal(totalTax, 0);
   });
 
+  // Codex P2: each partial claw-back used to round its own tax, so repeated
+  // steps could return more tax than was withheld. The tax line is now the
+  // cumulative target after the step minus the tax still held.
+  test("repeated partial claw-backs never return more tax than was withheld", () => {
+    const withheld = 100_000;
+    let held = { grossIdr: 1_000_000, taxWithheldIdr: withheld };
+    let returned = 0;
+    for (const amount of [-499_995, -499_995, -5]) {
+      const calc = accounting.calculateAdjustmentDistribution({
+        ...base,
+        adjustmentIdr: idr(amount),
+        allocations,
+        held: new Map([[holder, held]]),
+      });
+      const line = calc.lines[0];
+      assert.ok(line.taxWithheldIdr <= 0, `step ${amount}: tax sign`);
+      assert.ok(
+        Math.abs(line.taxWithheldIdr) <= Math.abs(line.grossIdr),
+        `step ${amount}: tax within gross`,
+      );
+      assert.ok(
+        line.grossIdr <= 0 && line.netIdr <= 0,
+        `step ${amount}: net sign`,
+      );
+      assert.equal(line.netIdr, line.grossIdr - line.taxWithheldIdr);
+      returned += -line.taxWithheldIdr;
+      assert.ok(returned <= withheld, `step ${amount}: returned ${returned}`);
+      held = {
+        grossIdr: held.grossIdr + line.grossIdr,
+        taxWithheldIdr: held.taxWithheldIdr + line.taxWithheldIdr,
+      };
+    }
+    // Rp5 gross is still held, so tax of half-up(0.5) = Rp1 stays with it.
+    assert.deepEqual(held, { grossIdr: 5, taxWithheldIdr: 1 });
+    // Exhausting the rest returns exactly the remaining tax: -100.000 in total.
+    const last = accounting.calculateAdjustmentDistribution({
+      ...base,
+      adjustmentIdr: idr(-5),
+      allocations,
+      held: new Map([[holder, held]]),
+    }).lines[0];
+    assert.equal(last.taxWithheldIdr, -1);
+    assert.equal(returned + -last.taxWithheldIdr, withheld);
+  });
+
+  test("partial claw-backs across several shareholders stay within each one's withheld tax", () => {
+    const second = "00000000-0000-4000-8000-0000000000a2";
+    const pair = [
+      { shareholderId: holder, shareBp: 5000 },
+      { shareholderId: second, shareBp: 5000 },
+    ];
+    const start = new Map([
+      [holder, { grossIdr: 500_000, taxWithheldIdr: 50_000 }],
+      [second, { grossIdr: 500_000, taxWithheldIdr: 50_000 }],
+    ]);
+    let held = start;
+    const returned = new Map([
+      [holder, 0],
+      [second, 0],
+    ]);
+    for (const amount of [-499_995, -499_995, -4]) {
+      const calc = accounting.calculateAdjustmentDistribution({
+        ...base,
+        adjustmentIdr: idr(amount),
+        allocations: pair,
+        held,
+      });
+      const next = new Map(held);
+      for (const line of calc.lines) {
+        assert.ok(line.taxWithheldIdr <= 0, "tax sign");
+        assert.ok(Math.abs(line.taxWithheldIdr) <= Math.abs(line.grossIdr));
+        returned.set(
+          line.shareholderId,
+          returned.get(line.shareholderId) - line.taxWithheldIdr,
+        );
+        const before = next.get(line.shareholderId);
+        next.set(line.shareholderId, {
+          grossIdr: before.grossIdr + line.grossIdr,
+          taxWithheldIdr: before.taxWithheldIdr + line.taxWithheldIdr,
+        });
+      }
+      held = next;
+    }
+    for (const id of [holder, second]) {
+      assert.ok(
+        returned.get(id) <= 50_000,
+        `${id} returned ${returned.get(id)}`,
+      );
+      assert.ok(held.get(id).taxWithheldIdr >= 0);
+    }
+    // Everything held is gone, so all of the tax is back too.
+    const rest = accounting.calculateAdjustmentDistribution({
+      ...base,
+      adjustmentIdr: idr(-6),
+      allocations: pair,
+      held,
+    });
+    for (const line of rest.lines)
+      assert.equal(
+        returned.get(line.shareholderId) - line.taxWithheldIdr,
+        50_000,
+      );
+  });
+
   test("a request above what is held is capped and the rest is unabsorbed, none moved to others", () => {
     const other = "00000000-0000-4000-8000-0000000000a2";
     const calc = accounting.calculateAdjustmentDistribution({

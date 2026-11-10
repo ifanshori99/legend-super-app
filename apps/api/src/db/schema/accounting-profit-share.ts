@@ -172,6 +172,92 @@ export const shareholders = pgTable(
   ],
 );
 
+/**
+ * `shareholder_recipient_versions` (T): a change of the login that receives a
+ * shareholder's statements (Codex 379, bead legend-33im6). Changing
+ * `shareholders.user_id` moves who can read future statements, so it is a
+ * versioned request decided through the approval matrix (`shareholder_version`)
+ * and applied only once the chain is approved. Past lines keep the recipient
+ * they were created for (`distribution_lines.recipient_user_id`).
+ */
+export const shareholderRecipientVersions = pgTable(
+  "shareholder_recipient_versions",
+  {
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid("id").notNull().defaultRandom(),
+    shareholderId: uuid("shareholder_id").notNull(),
+    version: integer("version").notNull(),
+    /** Login before the change (null: none). */
+    previousUserId: text("previous_user_id"),
+    /** Login after the change (null: unlink). */
+    userId: text("user_id"),
+    status: text("status")
+      .$type<"pending_approval" | "approved" | "rejected" | "cancelled">()
+      .notNull()
+      .default("pending_approval"),
+    /** Chain opened in the approval inbox; null when the matrix needs none. */
+    approvalChainId: uuid("approval_chain_id"),
+    requestedBy: text("requested_by").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    decidedBy: text("decided_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decisionNote: text("decision_note"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    foreignKey({
+      name: "shareholder_recipient_versions_shareholder_fk",
+      columns: [table.tenantId, table.shareholderId],
+      foreignColumns: [shareholders.tenantId, shareholders.id],
+    }),
+    unique("shareholder_recipient_versions_version_key").on(
+      table.tenantId,
+      table.shareholderId,
+      table.version,
+    ),
+    unique("shareholder_recipient_versions_idempotency_key").on(
+      table.tenantId,
+      table.idempotencyKey,
+    ),
+    // One open change per shareholder at a time.
+    uniqueIndex("shareholder_recipient_versions_pending_key")
+      .on(table.tenantId, table.shareholderId)
+      .where(sql`${table.status} = 'pending_approval'`),
+    index("shareholder_recipient_versions_chain_idx").on(
+      table.tenantId,
+      table.approvalChainId,
+    ),
+    check(
+      "shareholder_recipient_versions_version_check",
+      sql`${table.version} >= 1`,
+    ),
+    check(
+      "shareholder_recipient_versions_status_check",
+      sql`${table.status} IN ('pending_approval', 'approved', 'rejected', 'cancelled')`,
+    ),
+    check(
+      "shareholder_recipient_versions_change_check",
+      sql`${table.userId} IS DISTINCT FROM ${table.previousUserId}`,
+    ),
+    check(
+      "shareholder_recipient_versions_decided_check",
+      sql`(${table.status} IN ('approved', 'rejected')) = (${table.decidedBy} IS NOT NULL AND ${table.decidedAt} IS NOT NULL)`,
+    ),
+    check(
+      "shareholder_recipient_versions_four_eyes_check",
+      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.requestedBy}`,
+    ),
+  ],
+);
+
 /** `share_allocation_versions` (T): one approval unit of an entity's register. */
 export const shareAllocationVersions = pgTable(
   "share_allocation_versions",
@@ -474,6 +560,12 @@ export const distributionLines = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }),
     paidBy: text("paid_by"),
     statementFileKey: text("statement_file_key"),
+    /**
+     * Login that received this line when it was created (Codex 379). Statement
+     * access follows this snapshot, never today's `shareholders.user_id`, so a
+     * later recipient change cannot open another person's history.
+     */
+    recipientUserId: text("recipient_user_id"),
     /** Canonical allocation order (by shareholder id), as calculated. */
     position: integer("position").notNull(),
   },
@@ -501,6 +593,10 @@ export const distributionLines = pgTable(
     index("distribution_lines_shareholder_idx").on(
       table.tenantId,
       table.shareholderId,
+    ),
+    index("distribution_lines_recipient_idx").on(
+      table.tenantId,
+      table.recipientUserId,
     ),
     check(
       "distribution_lines_share_bp_check",

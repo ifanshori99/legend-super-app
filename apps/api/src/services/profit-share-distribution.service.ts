@@ -86,6 +86,8 @@ import {
   type BusinessDayClock,
   type CursorPage,
   type ScopedTenantContext,
+  type TenantId,
+  type UserId,
 } from "@starter/shared/core";
 import type { z } from "zod";
 import { db } from "../db";
@@ -99,6 +101,7 @@ import {
   shareAllocations,
   shareholders,
 } from "../db/schema";
+import { approvalRequests } from "../db/schema/platform-approval";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
@@ -108,6 +111,15 @@ import {
 } from "./accounting-shared";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service";
 import { appendOutbox } from "./core-outbox";
+import {
+  cancelApprovalRequest,
+  openApprovalRequest,
+  resolveApprovalChainOutcome,
+} from "./platform-approval.service";
+import {
+  DISTRIBUTION_RUN_OBJECT_TYPE,
+  PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+} from "./profit-share-approval";
 import { claimProfitShareCommand } from "./profit-share-idempotency";
 import { loadClosedPeriodNetProfit } from "./profit-share-net-profit";
 import { issueDistributionStatement } from "./profit-share-statement.service";
@@ -509,6 +521,22 @@ async function insertRun(
       idempotencyKey,
     })
     .returning();
+  // Each line keeps the login its shareholder has NOW (Codex 379): statement
+  // access follows this snapshot, so a later recipient change cannot hand the
+  // next login this line's history.
+  const recipients = await tx
+    .select({ id: shareholders.id, userId: shareholders.userId })
+    .from(shareholders)
+    .where(
+      and(
+        eq(shareholders.tenantId, tenantId),
+        inArray(
+          shareholders.id,
+          calc.lines.map((line) => line.shareholderId),
+        ),
+      ),
+    );
+  const recipientOf = new Map(recipients.map((r) => [r.id, r.userId]));
   const lineRows = await tx
     .insert(distributionLines)
     .values(
@@ -516,6 +544,7 @@ async function insertRun(
         tenantId,
         distributionRunId: row!.id,
         shareholderId: line.shareholderId,
+        recipientUserId: recipientOf.get(line.shareholderId) ?? null,
         shareBp: line.shareBp,
         grossIdr: idr(line.grossIdr),
         taxWithheldIdr: idr(line.taxWithheldIdr),
@@ -1090,6 +1119,22 @@ export async function submitDistributionRunService(
         ),
       );
     const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
+    // The tenant's approval matrix (`dividend_distribution`) decides who
+    // approves and in how many levels; the permission alone never does.
+    // APPROVAL_POLICY_MISSING propagates: nobody may approve, fail closed.
+    // `required: false` (amount below every tier) keeps the direct approve.
+    await openApprovalRequest(tx, context, {
+      sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+      actionType: "dividend_distribution",
+      objectType: DISTRIBUTION_RUN_OBJECT_TYPE,
+      objectId: runId,
+      amountIdr: idr(Math.abs(run.totalGrossIdr)),
+      outletId: entityRow.outletId,
+      requestedBy: actorId,
+      source: "user",
+      requestReason: `Distribusi bagi hasil ${run.period}`,
+      now: new Date(),
+    });
     await auditRun(
       tx,
       context,
@@ -1100,6 +1145,247 @@ export async function submitDistributionRunService(
     );
     return next;
   });
+}
+
+/**
+ * The latest approval chain opened for a run (level-1 row id), or null when the
+ * matrix needed none (amount below every tier). No column on the run: the chain
+ * is found by (tenant, source module, object type, object id).
+ */
+async function distributionChainOf(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: string,
+): Promise<string | null> {
+  const [head] = await tx
+    .select({ chainId: approvalRequests.chainId })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.sourceModule, PROFIT_SHARE_APPROVAL_SOURCE_MODULE),
+        eq(approvalRequests.objectType, DISTRIBUTION_RUN_OBJECT_TYPE),
+        eq(approvalRequests.objectId, runId),
+        eq(approvalRequests.level, 1),
+      ),
+    )
+    .orderBy(desc(approvalRequests.createdAt))
+    .limit(1);
+  return head?.chainId ?? null;
+}
+
+/**
+ * Freezes a pending run as approved by `approverId`: the period must still be
+ * closed at the version the numbers were calculated from, then the status
+ * change, the `distribution.approved` event and the audit row. Shared by the
+ * direct path (no chain) and the chain settle.
+ */
+async function applyDistributionApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    row: RunRow;
+    run: DistributionRun;
+    entityRow: EntityRow;
+    approverId: UserId;
+    now: Date;
+    note: string | null;
+  },
+): Promise<DistributionRun> {
+  const { row, run, entityRow, approverId, now } = input;
+  const tenantId = context.tenant.tenantId;
+  const next = transitionDistributionRun(run, {
+    type: "approve",
+    actorId: approverId,
+    now: isoDateTimeSchema.parse(now.toISOString()),
+  });
+  // The numbers were calculated from this closed period at this version;
+  // a reopen (or close again) since then makes them stale.
+  const period = await loadPeriod(
+    tx,
+    tenantId,
+    await legalEntityOf(tx, tenantId, entityRow),
+    run.fiscalPeriodId,
+    true,
+  );
+  if (period.status !== "closed" || period.version !== row.fiscalPeriodVersion)
+    throw new AccountingError("PERIOD_CHANGED");
+  await tx
+    .update(distributionRuns)
+    .set({
+      status: "approved",
+      approvedBy: approverId,
+      approvedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(distributionRuns.tenantId, tenantId),
+        eq(distributionRuns.id, run.id),
+        eq(distributionRuns.status, "pending_approval"),
+      ),
+    );
+  await appendDistributionEvent(tx, context, distributionApprovedEvent, {
+    run,
+    outletId: entityRow.outletId,
+    actorId: approverId,
+    now,
+    payload: {
+      distributionRunId: run.id,
+      profitEntityId: run.profitEntityId,
+      fiscalPeriodId: run.fiscalPeriodId,
+      period: run.period,
+      type: run.type,
+      shareVersion: run.shareVersion,
+      totalGrossIdr: run.totalGrossIdr,
+      totalTaxWithheldIdr: run.totalTaxWithheldIdr,
+      totalNetIdr: run.totalNetIdr,
+      shareholderCount: run.lines.length,
+      approvedBy: approverId,
+      approvedAt: now.toISOString(),
+    },
+  });
+  await auditRun(
+    tx,
+    context,
+    approverId,
+    "profit_share.distribution_approved",
+    run,
+    entityRow.outletId,
+    input.note,
+  );
+  return next;
+}
+
+/** Cancels a pending run (rejected or refused) and audits it. */
+async function cancelPendingRun(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    run: DistributionRun;
+    entityRow: EntityRow;
+    cancelledBy: UserId;
+    reason: string;
+    now: Date;
+  },
+): Promise<DistributionRun> {
+  const { run, entityRow, cancelledBy, now } = input;
+  const reason = input.reason.trim();
+  await tx
+    .update(distributionRuns)
+    .set({
+      status: "cancelled",
+      cancelledBy,
+      cancelledAt: now,
+      cancelReason: reason,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(distributionRuns.tenantId, context.tenant.tenantId),
+        eq(distributionRuns.id, run.id),
+        eq(distributionRuns.status, "pending_approval"),
+      ),
+    );
+  await auditRun(
+    tx,
+    context,
+    cancelledBy,
+    "profit_share.distribution_rejected",
+    run,
+    entityRow.outletId,
+    reason,
+  );
+  return { ...run, status: "cancelled" };
+}
+
+/**
+ * Applies the approval chain's outcome to a pending run, on the caller's
+ * transaction (row locked FOR UPDATE). Idempotent: a run that is no longer
+ * pending, has no chain, or whose chain is still open comes back unchanged.
+ * The final approver is the last level's decider (read after the chain lock),
+ * never the caller. A refusal while applying (period reopened, approver equal
+ * to the requester) cancels the run with a reason, inside a savepoint so no
+ * partial write survives; like the journal's `rejectSettled`.
+ */
+async function settleLoadedRun(
+  tx: Tx,
+  context: ScopedTenantContext,
+  loaded: { row: RunRow; run: DistributionRun; entityRow: EntityRow },
+  now: Date,
+): Promise<DistributionRun> {
+  const { row, run, entityRow } = loaded;
+  if (run.status !== "pending_approval") return run;
+  const tenantId = context.tenant.tenantId;
+  const chainId = await distributionChainOf(tx, tenantId, run.id);
+  if (chainId === null) return run;
+  const outcome = await resolveApprovalChainOutcome(tx, context, {
+    chainId,
+    sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+    now,
+  });
+  if (outcome === "pending") return run;
+  const [last] = await tx
+    .select({ decidedBy: approvalRequests.decidedBy })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, tenantId),
+        eq(approvalRequests.chainId, chainId),
+      ),
+    )
+    .orderBy(desc(approvalRequests.level))
+    .limit(1);
+  if (!last) throw notFound();
+  const decider =
+    last.decidedBy !== null &&
+    last.decidedBy.toLowerCase() !== run.requestedBy.toLowerCase()
+      ? userIdSchema.parse(last.decidedBy)
+      : null;
+  // `cancelled_by` is required by the table: the deciding user when there is
+  // one, else the requester (expiry or an invalid approver has no other actor).
+  const cancel = (reason: string) =>
+    cancelPendingRun(tx, context, {
+      run,
+      entityRow,
+      cancelledBy: decider ?? userIdSchema.parse(run.requestedBy),
+      reason,
+      now,
+    });
+  if (outcome !== "approved") return cancel(`approval ${outcome}`);
+  if (decider === null) return cancel("approval approver invalid");
+  try {
+    return await tx.transaction((sp) =>
+      applyDistributionApproval(sp, context, {
+        row,
+        run,
+        entityRow,
+        approverId: decider,
+        now,
+        note: null,
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof AccountingError)) throw error;
+    return cancel(`approval refused: ${error.code}`);
+  }
+}
+
+/**
+ * Settles a run from its approval chain (decide route and the
+ * `approval.resolved` consumer). Idempotent: a non-pending run, or one without
+ * a chain, is returned unchanged.
+ */
+export async function settleDistributionRunForApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  runId: string,
+  now: Date = new Date(),
+): Promise<DistributionRun> {
+  const tenantId = context.tenant.tenantId;
+  const { row, run } = await loadRun(tx, tenantId, runId, true);
+  const entityRow = await loadEntityRow(tx, tenantId, row.profitEntityId);
+  return settleLoadedRun(tx, context, { row, run, entityRow }, now);
 }
 
 /** POST decision: approve (freezes the run) or reject (cancels it). */
@@ -1125,104 +1411,64 @@ export async function decideDistributionRunService(
       request: { decision: input.decision, note: input.note },
     });
     if (claim === "replay") return run;
+    const chainId = await distributionChainOf(tx, tenantId, runId);
     if (input.decision === "approve") {
-      const next = transitionDistributionRun(run, {
+      // Same guards as the direct path: pending status and requester != caller.
+      transitionDistributionRun(run, {
         type: "approve",
         actorId,
         now: isoDateTimeSchema.parse(now.toISOString()),
       });
-      // The numbers were calculated from this closed period at this version;
-      // a reopen (or close again) since then makes them stale.
-      const period = await loadPeriod(
-        tx,
-        tenantId,
-        await legalEntityOf(tx, tenantId, entityRow),
-        run.fiscalPeriodId,
-        true,
-      );
-      if (
-        period.status !== "closed" ||
-        period.version !== row.fiscalPeriodVersion
-      )
-        throw new AccountingError("PERIOD_CHANGED");
-      await tx
-        .update(distributionRuns)
-        .set({
-          status: "approved",
-          approvedBy: actorId,
-          approvedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(distributionRuns.tenantId, tenantId),
-            eq(distributionRuns.id, runId),
-            eq(distributionRuns.status, "pending_approval"),
-          ),
-        );
-      await appendDistributionEvent(tx, context, distributionApprovedEvent, {
-        run,
-        outletId: entityRow.outletId,
-        actorId,
-        now,
-        payload: {
-          distributionRunId: run.id,
-          profitEntityId: run.profitEntityId,
-          fiscalPeriodId: run.fiscalPeriodId,
-          period: run.period,
-          type: run.type,
-          shareVersion: run.shareVersion,
-          totalGrossIdr: run.totalGrossIdr,
-          totalTaxWithheldIdr: run.totalTaxWithheldIdr,
-          totalNetIdr: run.totalNetIdr,
-          shareholderCount: run.lines.length,
-          approvedBy: actorId,
-          approvedAt: now.toISOString(),
-        },
-      });
-      await auditRun(
+      if (chainId === null)
+        return applyDistributionApproval(tx, context, {
+          row,
+          run,
+          entityRow,
+          approverId: actorId,
+          now,
+          note: input.note ?? null,
+        });
+      // A chain decides: this call only settles it (the approver is the last
+      // level's user), or answers 409 while levels are still open.
+      const settled = await settleLoadedRun(
         tx,
         context,
-        actorUserId,
-        "profit_share.distribution_approved",
-        run,
-        entityRow.outletId,
-        input.note,
+        { row, run, entityRow },
+        now,
       );
-      return next;
+      if (settled.status === "pending_approval")
+        throw new HttpError(
+          409,
+          "APPROVAL_PENDING",
+          "Persetujuan belum selesai di kotak masuk approval.",
+        );
+      return settled;
     }
     const note = input.note ?? "";
-    const next = transitionDistributionRun(run, {
+    transitionDistributionRun(run, {
       type: "reject",
       actorId,
       reason: note,
     });
-    await tx
-      .update(distributionRuns)
-      .set({
-        status: "cancelled",
-        cancelledBy: actorId,
-        cancelledAt: now,
-        cancelReason: note.trim(),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(distributionRuns.tenantId, tenantId),
-          eq(distributionRuns.id, runId),
-          eq(distributionRuns.status, "pending_approval"),
-        ),
-      );
-    await auditRun(
-      tx,
-      context,
-      actorUserId,
-      "profit_share.distribution_rejected",
+    // An open chain is cancelled first; one that already ended "approved"
+    // cannot be rejected any more: the decision exists, settle applies it.
+    if (chainId !== null) {
+      const outcome = await cancelApprovalRequest(tx, context, {
+        chainId,
+        sourceModule: PROFIT_SHARE_APPROVAL_SOURCE_MODULE,
+        actorUserId: actorId,
+        now,
+      });
+      if (outcome === "approved")
+        throw new AccountingError("INVALID_TRANSITION");
+    }
+    return cancelPendingRun(tx, context, {
       run,
-      entityRow.outletId,
-      note.trim(),
-    );
-    return next;
+      entityRow,
+      cancelledBy: actorId,
+      reason: note,
+      now,
+    });
   });
 }
 
@@ -1466,7 +1712,6 @@ async function loadStatementParts(
     .select({
       id: shareholders.id,
       name: shareholders.name,
-      userId: shareholders.userId,
     })
     .from(shareholders)
     .where(
@@ -1479,6 +1724,25 @@ async function loadStatementParts(
   if (!shareholder) throw notFound();
   const entityRow = await loadEntityRow(tx, tenantId, run.profitEntityId);
   return { shareholder, entityRow };
+}
+
+/** The login a line was created for; null when its shareholder had none. */
+async function lineRecipient(
+  tx: Tx,
+  tenantId: string,
+  lineId: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ recipientUserId: distributionLines.recipientUserId })
+    .from(distributionLines)
+    .where(
+      and(
+        eq(distributionLines.tenantId, tenantId),
+        eq(distributionLines.id, lineId),
+      ),
+    )
+    .limit(1);
+  return row?.recipientUserId ?? null;
 }
 
 /** GET statement: a manager, or the line's own shareholder once it is paid. */
@@ -1502,7 +1766,12 @@ export async function getDistributionStatementService(
     );
     if (viewer.kind === "shareholder") {
       // SH-01: own line only, and only once it is paid; else it does not exist.
-      if (shareholder.userId !== viewer.userId || line.paymentStatus !== "paid")
+      // "Own" is the login the line was created for (`recipient_user_id`), not
+      // the shareholder's login today (Codex 379).
+      if (
+        (await lineRecipient(tx, tenantId, line.id)) !== viewer.userId ||
+        line.paymentStatus !== "paid"
+      )
         throw notFound();
     }
     return buildDistributionStatement({
@@ -1635,12 +1904,29 @@ export async function getMyProfitShareService(
       .where(
         and(
           eq(distributionLines.tenantId, tenantId),
-          eq(distributionLines.shareholderId, me.id),
+          // Historical identity: lines issued to this login, wherever the
+          // shareholder row points today (Codex 379).
+          eq(distributionLines.recipientUserId, actorUserId),
           eq(distributionLines.paymentStatus, "paid"),
         ),
       )
       .orderBy(desc(distributionLines.paidAt), desc(distributionLines.id));
     const runIds = [...new Set(ownLines.map((line) => line.distributionRunId))];
+    // A line may belong to another shareholder row than today's (the login was
+    // moved between rows): each statement names its own shareholder.
+    const holderIds = [...new Set(ownLines.map((line) => line.shareholderId))];
+    const holderNames = new Map<string, string>();
+    if (holderIds.length > 0)
+      for (const holder of await tx
+        .select({ id: shareholders.id, name: shareholders.name })
+        .from(shareholders)
+        .where(
+          and(
+            eq(shareholders.tenantId, tenantId),
+            inArray(shareholders.id, holderIds),
+          ),
+        ))
+        holderNames.set(holder.id, holder.name);
     const runRows =
       runIds.length === 0
         ? []
@@ -1696,7 +1982,10 @@ export async function getMyProfitShareService(
         buildDistributionStatement({
           run,
           line,
-          shareholder: { id: me.id as never, name: me.name },
+          shareholder: {
+            id: ownLine.shareholderId as never,
+            name: holderNames.get(ownLine.shareholderId) ?? me.name,
+          },
           profitEntity: {
             id: run.profitEntityId,
             name: entityNames.get(run.profitEntityId) ?? "Entitas",

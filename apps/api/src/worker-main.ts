@@ -68,6 +68,7 @@ import { handleAiActionApprovalResolved } from "./services/ai-action-request.ser
 import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
+import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -251,6 +252,9 @@ const runtime = createWorkerRuntime({
           await handleHrisApprovalResolved(context, event);
           // Manual/recurring journals (legend-vmyg): settle from the chain.
           await handleJournalApprovalResolved(context, event);
+          // Profit share (legend-33im6): distribution runs and recipient
+          // changes settle from the chain outcome re-read under the row lock.
+          await handleProfitShareApprovalResolved(context, event);
           // WS-12 (legend-zw9r): approved AI/MCP action requests execute as the requester.
           await handleAiActionApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
