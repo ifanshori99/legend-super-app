@@ -4,10 +4,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 ## legend-w8dfz desain verifikasi WhatsApp masuk lewat Kirimdev (architect, cabang `ws/kirimdev-inbound-design` dari `origin/milestone/m1` 46352cd5, 2026-11-11)
 
-- Sudah: `docs/design/whatsapp-inbound-verification.md`. Login pelanggan lewat WhatsApp masuk ternyata sudah ada di m1 (WS-01). Reset PIN slip gaji memakai mesin yang sama: kolom `purpose` di `login_challenges` (D-WA1), kata perintah `RESET PIN <KODE>` (D-WA2), nomor pengirim harus identitas WhatsApp terverifikasi yang lebih tua dari PIN atau berumur 7 hari (D-WA3), satu nomor platform untuk semua tenant (D-WA4), polling 2 detik (D-WA5), kode tidak pernah disimpan atau diulang (D-WA6).
+- Sudah: `docs/design/whatsapp-inbound-verification.md` revisi 2. Login pelanggan lewat WhatsApp masuk ternyata sudah ada di m1 (WS-01). Reset PIN slip gaji memakai mesin yang sama: kolom `purpose` di `login_challenges` (D-WA1), kata perintah `RESET PIN <KODE>` (D-WA2), nomor pengirim harus identitas WhatsApp terverifikasi yang tertaut minimal 7 hari menurut kolom baru `user_identities.linked_at` + trigger (D-WA3), satu nomor per tenant sesuai indeks legend-mbd2 (D-WA4), polling 2 detik (D-WA5), kode tidak pernah disimpan atau diulang (D-WA6).
+- Review architect (konteks segar) revisi 1: 10 temuan, semua dimasukkan di revisi 2 (dokumen §11). Yang terpenting: nomor bersama antar tenant ditolak indeks unik; merge membawa `verified_at` lama; poll login tanpa filter `purpose` bisa menerbitkan sesi; cookie binding terkunci ke path login; `fix/codex-418-pin` sudah di-push, jadi tabel lama di-drop lewat migrasi terpisah.
 - Tidak ada pesan keluar dan tidak ada env key baru; aplikasi hanya butuh `KIRIM_WEBHOOK_SECRET` (sudah ada).
-- Kartu: A `legend-lgfru` (identitas, migrasi sementara 0270), B `legend-9h2oj` (API reset PIN, basis `fix/codex-418-pin` yang belum di-push), C `legend-ur82k` (layar), D `legend-s5rgo` (simulator + dokumen), E `legend-axmob` (ops produksi). Urutan A -> B -> C -> E; D bebas.
-- Berikut: keputusan founder di §10 dokumen (paket Kirimdev, nomor, aturan 7 hari, teks PRD AUTH-02, masa simpan).
+- Kartu: A `legend-lgfru` (identitas, migrasi sementara 0270), B `legend-9h2oj` (API reset PIN, basis `fix/codex-418-pin`, migrasi sementara 0271), C `legend-ur82k` (layar), D `legend-s5rgo` (simulator + dokumen), E `legend-axmob` (ops produksi). Urutan A -> B -> C -> E; D bebas; test-writer B boleh paralel dengan A.
+- Berikut: keputusan founder di dokumen §10 (paket Kirimdev, nomor per tenant, aturan 7 hari, teks PRD AUTH-02, masa simpan).
 
 ## legend-3sy9b versi porsi saham lewat matriks approval (engineer, cabang `ws/3sy9b-share-alloc-approval` dari `ws/8s992-profit-rules` 54b76963, 2026-11-10)
 
