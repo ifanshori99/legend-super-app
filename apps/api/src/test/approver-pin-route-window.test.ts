@@ -1,11 +1,10 @@
 // Approver-PIN window over HTTP (bead legend-vfj7z, round 3; PRD v1.7 §3 F6
 // "Override Supervisor", F43 "Kontrol Open Bill", AUTH-06). One signed-in
-// requester (a cashier session) guesses approver PINs. Only ONE window
-// applies per request: with a verified X-Device-Token only the device's 10
-// slots per 5 minutes (user_pin_throttle is not touched, so official POS
-// terminals may share one account without blocking each other); without the
-// token only the requester's 10 slots, so a client that drops the header still
-// hits a per-account limit. Every wrong guess, and every guess that newly
+// requester (a cashier session) guesses approver PINs. The requester's 10
+// slots per 5 minutes always apply, so a client that drops the header or
+// rotates devices still hits a per-account limit; with a verified
+// X-Device-Token the device's own 10 slots apply as well (legend-fjwxo:
+// per-user AND per-device). Every wrong guess, and every guess that newly
 // locks the approver, holds a slot. The 11th request is 429
 // PIN_DEVICE_THROTTLED with Retry-After (1..300 s) before the approver's
 // counter moves. Covers the HTTP layer of POST /api/pos-overrides and POST
@@ -215,16 +214,16 @@ type Attempt = (
 }>;
 
 /**
- * 10 locking guesses by one requester, then the 11th is throttled. Without a
- * device token the requester window counts them; with one, the device window
- * does and user_pin_throttle stays empty.
+ * 10 locking guesses by one requester, then the 11th is throttled. The
+ * requester window counts them with or without a device token; with one, the
+ * device window counts them too.
  */
 async function expectRequesterWindow(
   attempt: Attempt,
   deviceToken: string | null,
 ) {
   const requester = await newRequester();
-  const heldByRequester = deviceToken === null ? 10 : 0;
+  const heldByRequester = 10;
   await armApprovers();
   for (const approver of approvers.slice(0, 10)) {
     const response = await attempt(requester, approver, deviceToken);
@@ -325,7 +324,7 @@ describe("legend-vfj7z approver PIN window per requester over HTTP", () => {
   );
 
   it(
-    "POST /api/table-sessions/:id/open-bill with a registered device token: the 11th guess is 429 with Retry-After, device slots held, requester window untouched",
+    "POST /api/table-sessions/:id/open-bill with a registered device token: the 11th guess is 429 with Retry-After, device and requester slots held",
     async () => {
       const device = await newDevice();
       const requester = await expectRequesterWindow(
@@ -333,13 +332,13 @@ describe("legend-vfj7z approver PIN window per requester over HTTP", () => {
         device.token,
       );
       expect(await deviceFailures(device.id)).toBe(10);
-      expect(await requesterFailures(requester.userId)).toBe(0);
+      expect(await requesterFailures(requester.userId)).toBe(10);
     },
     SLOW,
   );
 
   it(
-    "POST /api/pos-overrides with a registered device token: user_pin_throttle gets no row for the requester",
+    "POST /api/pos-overrides with a registered device token: user_pin_throttle holds the requester's 10 slots too",
     async () => {
       const device = await newDevice();
       const requester = await expectRequesterWindow(
@@ -351,13 +350,13 @@ describe("legend-vfj7z approver PIN window per requester over HTTP", () => {
         "SELECT 1 FROM user_pin_throttle WHERE tenant_id = $1 AND user_id = $2",
         [seededTenantId, requester.userId],
       );
-      expect(rowCount).toBe(0);
+      expect(rowCount).toBe(1);
     },
     SLOW,
   );
 
   it(
-    "POST /api/pos-overrides: two registered devices, one requester session: 10 locking guesses at device A make the 11th at A 429, a request at device B is not",
+    "POST /api/pos-overrides: two registered devices, one requester session: 10 locking guesses at device A make the 11th at A 429, and a request at device B is 429 too (requester window full)",
     async () => {
       const deviceA = await newDevice();
       const deviceB = await newDevice();
@@ -366,18 +365,19 @@ describe("legend-vfj7z approver PIN window per requester over HTTP", () => {
         deviceA.token,
       );
       expect(await deviceFailures(deviceA.id)).toBe(10);
-      // Device B has its own window: the same requester gets a normal answer
-      // (the armed approver locks: 423), not a 429.
+      // Device B has its own free window, but the requester window is full:
+      // 429, nothing counted at B and the approver's counter did not move.
       const other = await requestOverride(
         requester,
         approvers[10]!,
         deviceB.token,
       );
-      expect(other.status, JSON.stringify(other.body)).not.toBe(429);
-      expect(other.body.error.code).toBe("PIN_LOCKED");
-      expect(await deviceFailures(deviceB.id)).toBe(1);
+      expect(other.status, JSON.stringify(other.body)).toBe(429);
+      expect(other.body.error.code).toBe("PIN_DEVICE_THROTTLED");
+      expect(await pinFailedAttempts(approvers[10]!)).toBe(4);
+      expect(await deviceFailures(deviceB.id)).toBe(0);
       expect(await deviceFailures(deviceA.id)).toBe(10);
-      expect(await requesterFailures(requester.userId)).toBe(0);
+      expect(await requesterFailures(requester.userId)).toBe(10);
     },
     SLOW,
   );

@@ -3133,3 +3133,10 @@ Langkah berikut CTO baru:
 - Langkah berikut: review merge train. Adapter Kirim outbound produksi: kartu terpisah legend-w8dfz.
 - Risiko: belum ada `MessagingProvider` produksi di repo (server.ts tidak mengirim provider), jadi produksi tetap 503 sampai adapter Kirim outbound dibuat (kartu terpisah bila diinginkan). `MessageRequest` hanya teks, tanpa tipe template.
 - Ukuran: 6 subagent (2 Explore, 3 test-writer, 1 architect), puncak 2 bersamaan.
+
+## legend-fjwxo: perbaikan Codex 418 area PIN (11 Nov 2026, cabang `fix/codex-418-pin`, dari `ws/merge-batch48c` + merge `ws/payslip-pin-ui` + `ws/qih2m-payslip-otp`)
+
+- Sudah: (1) replay idempotensi PIN slip tidak lagi membandingkan tebakan (oracle hilang; fresh key tetap menghitung percobaan di bawah lock). (2) `attemptApproverPin`: window per-user DAN per-device bersamaan (termasuk konversi open bill); slot dikembalikan di kedua window. (3) approval PIN override terikat device lewat `request_fingerprint` (tanpa migrasi), dicek saat replay dan konsumsi, juga di tutup shift kas (`verifyCloseApproval`, temuan architect P1); satu helper device untuk buat dan pakai (temuan architect P2, helper `optional-device-id.ts` dihapus). (4) pepper slip: setelah merge semua jalur memakai `payslipPinPepper`, sudah hijau; test regresi ditambah. (5) kedaluwarsa kode reset PIN dan masa kunci memakai waktu setelah lock.
+- Keputusan: id device masuk hash fingerprint (tabel `pos_overrides` tak punya kolom payload). Approval lama tanpa device tetap bisa dipakai seperti sebelumnya. Fixture test lama (raw SQL, fingerprint acak) diganti helper `pos-override-fixture.ts`; assertion tidak diubah.
+- Bukti: test gagal-dulu merah lalu hijau per temuan; 39 file / 470 test area hijau; tsc api (heap 6144) 0 error; eslint dan prettier bersih; review architect (xhigh) 2 P1/P2 dibetulkan, P3 dicatat.
+- Risiko / belum: P3 window per-user mengikuti kasir aktif (`actorOf`), bukan akun login. Terminal berbagi akun outlet kini ikut terblokir bersama bila 10 PIN salah dalam 5 menit (keputusan produk). Oracle serupa + `now` sebelum lock di `hris-payslip.service.ts` (~180-206, ~259) di luar scope; kartu baru disarankan.

@@ -67,6 +67,7 @@ import {
   recordCashMovement,
 } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -352,7 +353,16 @@ async function approvalFor(
         approver,
         overrides.objectType ?? "pos_shift_count",
         overrides.objectId ?? countId,
-        randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        pinOverrideFixtureFingerprint({
+          requestedBy: cashier.userId,
+          outletId: tenant.outletId,
+          action: overrides.action ?? "cash_shift_close",
+          valueIdr,
+          reason: "Hitung kas akhir shift",
+          objectType: overrides.objectType ?? "pos_shift_count",
+          objectId: overrides.objectId ?? countId,
+          approverUserId: approver,
+        }),
         valueIdr,
       ],
     ),

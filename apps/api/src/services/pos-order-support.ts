@@ -71,6 +71,7 @@ import {
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
+import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
@@ -703,6 +704,8 @@ export async function consumeApproval(
     approvedBy: string;
     overrideId: string;
     minValueIdr: number;
+    /** The verified device the caller acts from (null: no device). */
+    deviceId: string | null;
     now: Date;
   },
 ): Promise<typeof posOverrides.$inferSelect> {
@@ -738,6 +741,9 @@ export async function consumeApproval(
     override.valueIdr < input.minValueIdr
   )
     throw refuse();
+  // A PIN approval typed on a verified device is bound to it (legend-fjwxo).
+  // Refusal leaves it unspent.
+  if (!posOverrideUsableFromDevice(override, input.deviceId)) throw refuse();
   // Freshness is measured from the approval, against the caller's injected
   // clock, never Date.now(). A PIN override is approved when it is created, so
   // `resolvedAt` (the row has no `approvedAt`; `createdAt` if missing) is the

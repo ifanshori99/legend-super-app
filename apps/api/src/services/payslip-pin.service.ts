@@ -439,11 +439,16 @@ export async function setMyPayslipPin(
   context: ScopedTenantContext,
   actorUserId: string,
   input: SetMyPayslipPinInput,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, ...request } = input;
   const outcome = await withTenant(db, context, async (tx) => {
-    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const self = await loadPayslipSelf(
+      tx,
+      context,
+      actorUserId,
+      nowOverride ?? new Date(),
+    );
     return idempotentHrisWrite<SetOutcome>(
       tx,
       context,
@@ -460,6 +465,8 @@ export async function setMyPayslipPin(
           context.tenant.tenantId,
           self.employeeId,
         );
+        // Clock read AFTER the lock (lock expiry and counters judge this).
+        const now = nowOverride ?? new Date();
         if (row) {
           if (request.currentPin === undefined)
             return { kind: "current_required" };
@@ -753,11 +760,16 @@ export async function verifyPayslipPinResetOtp(
   context: ScopedTenantContext,
   actorUserId: string,
   input: VerifyPayslipPinResetOtpInput,
-  now: Date = new Date(),
+  nowOverride?: Date,
 ): Promise<PayslipPinStatus> {
   const { idempotencyKey, ...request } = input;
   const outcome = await withTenant(db, context, async (tx) => {
-    const self = await loadPayslipSelf(tx, context, actorUserId, now);
+    const self = await loadPayslipSelf(
+      tx,
+      context,
+      actorUserId,
+      nowOverride ?? new Date(),
+    );
     return idempotentHrisWrite<VerifyOutcome>(
       tx,
       context,
@@ -774,6 +786,9 @@ export async function verifyPayslipPinResetOtp(
           context.tenant.tenantId,
           self.employeeId,
         );
+        // Clock read AFTER the lock: a code that expired while this request
+        // waited for the lock must not be accepted with a stale `now`.
+        const now = nowOverride ?? new Date();
         const [challenge] = await tx
           .select()
           .from(payslipPinResetChallenges)

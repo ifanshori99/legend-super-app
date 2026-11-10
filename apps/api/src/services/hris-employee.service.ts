@@ -412,6 +412,28 @@ export async function getEmployeePii(
 
 // ----------------------------------------------------------------- writes
 
+/**
+ * Operations whose request carries a PIN or code that the caller GUESSES.
+ * Those fields stay out of the stored fingerprint: a replay compared on them
+ * would answer "stored outcome" for the right guess and 409 for any other, an
+ * oracle that costs no attempt (also while locked). A replay only returns the
+ * stored outcome; every fresh key runs `run`, which counts the attempt under
+ * the PIN row lock.
+ */
+const GUESS_FIELDS_BY_OPERATION: Readonly<Record<string, readonly string[]>> = {
+  "payslip_pin.set": ["pin", "currentPin"],
+  "payslip_pin.otp_verify": ["pin", "code"],
+};
+
+function withoutGuessFields(operation: string, request: unknown): unknown {
+  const fields = GUESS_FIELDS_BY_OPERATION[operation];
+  if (!fields || typeof request !== "object" || request === null)
+    return request;
+  const rest: Record<string, unknown> = { ...request };
+  for (const field of fields) delete rest[field];
+  return rest;
+}
+
 /** Idempotent HRIS write bound to an HMAC fingerprint of the request. */
 export async function idempotentHrisWrite<T>(
   tx: Tx,
@@ -424,7 +446,7 @@ export async function idempotentHrisWrite<T>(
   const parsedKey = idempotencyKeySchema.parse(key);
   const fingerprint = hrisRequestFingerprint(context.tenant.tenantId, {
     operation,
-    request,
+    request: withoutGuessFields(operation, request),
   });
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:idem:${context.tenant.tenantId}:${parsedKey}`}, 0))`,

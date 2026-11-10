@@ -1,10 +1,10 @@
 // Approver PIN windows (bead legend-vfj7z, round 3; PRD v1.7 §3 F6 "Override
-// Supervisor", AUTH-06). attemptApproverPin uses ONE window of 10 failures per
-// 5 minutes, taken before the approver's PIN is checked: with a verified
-// device id only the device's (device_pin_throttle; user_pin_throttle is not
-// touched, so official POS terminals may share one account without blocking
-// each other); without a device id only the requester's (user_pin_throttle),
-// so a client that drops X-Device-Token still hits a per-account limit. A
+// Supervisor", AUTH-06; per-user AND per-device since legend-fjwxo).
+// attemptApproverPin uses windows of 10 failures per 5 minutes, taken before
+// the approver's PIN is checked: the requester's (user_pin_throttle) always,
+// so a client that drops X-Device-Token or rotates devices still hits a
+// per-account limit, plus the device's (device_pin_throttle) when the request
+// has a verified device id. A
 // wrong guess and the guess that newly locks the PIN keep the slot (and raise
 // staff_pin.requester_throttled / device_throttled once per window); a correct
 // PIN, an already locked PIN, not_member, reset_required and an error thrown
@@ -356,8 +356,8 @@ describe("legend-vfj7z attemptApproverPin under the requester window (no device 
   });
 });
 
-describe("legend-vfj7z attemptApproverPin with a device id: only the device window", () => {
-  it("a wrong guess raises the device counter only; a correct PIN gives the device slot back", async () => {
+describe("legend-vfj7z attemptApproverPin with a device id: device window and requester window together", () => {
+  it("a wrong guess raises the device and requester counters; a correct PIN gives both slots back", async () => {
     const cashier = await createUser("cashier");
     const device = await newDevice();
     const approver = await newApprover();
@@ -366,16 +366,17 @@ describe("legend-vfj7z attemptApproverPin with a device id: only the device wind
       status: 401,
     });
     expect(await deviceFailures(device)).toBe(1);
-    // user_pin_throttle is not touched: no row at all for the requester.
-    expect(await requesterRowCount(cashier)).toBe(0);
+    // The requester window counts the same guess (legend-fjwxo).
+    expect(await requesterFailures(cashier)).toBe(1);
     expect(await attempt(cashier, approver, PIN, device)).toBeNull();
     expect(await deviceFailures(device)).toBe(1);
-    expect(await requesterRowCount(cashier)).toBe(0);
+    expect(await requesterFailures(cashier)).toBe(1);
+    expect(await requesterRowCount(cashier)).toBe(1);
     expect(requesterAudits(cashier)).toBe(0);
     expect(deviceAudits(device)).toBe(0);
   });
 
-  it("two devices, one requester: 10 locking guesses at device A make the 11th at A 429; device B is not blocked and the requester window stays empty", async () => {
+  it("two devices, one requester: 10 locking guesses at device A make the 11th at A 429; device B is blocked too because the requester window is full, and gets nothing counted", async () => {
     const cashier = await createUser("cashier");
     const deviceA = await newDevice();
     const deviceB = await newDevice();
@@ -396,16 +397,17 @@ describe("legend-vfj7z attemptApproverPin with a device id: only the device wind
     expect(blocked?.retryAfterSeconds).toBeLessThanOrEqual(300);
     expect((await pinRow(approvers[10]!))?.failed_attempts).toBe(4);
     expect(deviceAudits(deviceA)).toBe(1);
-    // Device B has its own window: a fresh approver gets the normal answer.
+    // Device B has a free window of its own, but the requester window is
+    // full: 429 before the approver counter moves, device B's slot given back.
     const atB = await attempt(cashier, approvers[11]!, WRONG, deviceB);
     expect(atB, "first call at B").toMatchObject({
-      code: "PIN_LOCKED",
-      status: 423,
+      code: "PIN_DEVICE_THROTTLED",
+      status: 429,
     });
-    expect(atB?.status).not.toBe(429);
-    expect(await deviceFailures(deviceB)).toBe(1);
+    expect((await pinRow(approvers[11]!))?.failed_attempts).toBe(4);
+    expect(await deviceFailures(deviceB)).toBe(0);
     expect(await deviceFailures(deviceA)).toBe(10);
-    expect(await requesterRowCount(cashier)).toBe(0);
-    expect(requesterAudits(cashier)).toBe(0);
+    expect(await requesterFailures(cashier)).toBe(10);
+    expect(requesterAudits(cashier)).toBe(1);
   });
 });

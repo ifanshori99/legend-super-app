@@ -50,7 +50,7 @@ import {
   createPosOverride,
   getPosOverride,
 } from "../services/staff-override.service";
-import { optionalDeviceIdOf } from "./optional-device-id";
+import { deviceIdOf as signedDeviceIdOf } from "./device-id.ts";
 
 function idempotencyKeyOf(req: Request): string | null {
   const raw = req.get("Idempotency-Key");
@@ -152,7 +152,7 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       input,
       {
         idempotencyKey: idempotencyKeyOf(req),
-        deviceId: optionalDeviceIdOf(req),
+        deviceId: signedDeviceIdOf(req),
       },
     );
   } catch (error) {

@@ -36,6 +36,7 @@ import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -244,7 +245,16 @@ async function approvalFor(
         supervisor.userId,
         valueIdr,
         countId,
-        randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        pinOverrideFixtureFingerprint({
+          requestedBy: cashier.userId,
+          outletId: tenant.outletId,
+          action: "cash_shift_close",
+          valueIdr,
+          reason: "Hitung kas akhir shift",
+          objectType: "pos_shift_count",
+          objectId: countId,
+          approverUserId: supervisor.userId,
+        }),
       ],
     ),
   );

@@ -33,6 +33,7 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { seedTenantRoleTemplates } from "../services/access.service";
 import { closePosShift } from "../services/pos-shift.service";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { createIsolatedTenant } from "./floor-test-helpers";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -381,7 +382,16 @@ describe("legend-ccpn the default matrix keeps who could approve a shift close",
         shift.cashier,
         approver,
         shift.countId,
-        randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        pinOverrideFixtureFingerprint({
+          requestedBy: shift.cashier,
+          outletId: tenant.outletId,
+          action: "cash_shift_close",
+          valueIdr: 30000,
+          reason: "Hitung kas akhir shift",
+          objectType: "pos_shift_count",
+          objectId: shift.countId,
+          approverUserId: approver,
+        }),
       ],
     );
     return closePosShift(

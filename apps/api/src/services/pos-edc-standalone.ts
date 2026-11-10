@@ -48,6 +48,7 @@ export type PosStandaloneEdcInput = {
   readonly approvalCode: string | null;
   readonly overrideId: string;
   readonly cashierId: UserId;
+  readonly deviceId: string | null;
   readonly at: Date;
 };
 
@@ -139,6 +140,7 @@ export async function settlePosEdcStandalone(
     approvedBy: stored.approvedBy,
     overrideId: overrideUlid.data,
     minValueIdr: input.amountIdr,
+    deviceId: input.deviceId,
     now: input.at,
   });
   // Exactly the remaining bill: a bigger approval is not a licence to book
