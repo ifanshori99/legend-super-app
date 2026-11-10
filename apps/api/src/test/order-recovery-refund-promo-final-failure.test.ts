@@ -370,9 +370,11 @@ async function runHook(refundId: string) {
   });
 }
 
+// "unknown" is how the hook reads a NULL failure_reason (`?? "unknown"`); the
+// column's check constraint does not accept the literal.
 async function setFailed(refundId: string, reason: string) {
   await owner.query(
-    `UPDATE payment_refunds SET status = 'failed', failure_reason = $3, decided_at = now()
+    `UPDATE payment_refunds SET status = 'failed', failure_reason = NULLIF($3, 'unknown'), decided_at = now()
       WHERE tenant_id = $1 AND id = $2`,
     [w.tenant.tenantId, refundId, reason],
   );
