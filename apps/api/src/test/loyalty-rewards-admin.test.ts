@@ -25,7 +25,11 @@ import {
   type Staff,
 } from "./floor-test-helpers";
 import { asTenant, memberHeaders, owner } from "./member-loyalty-helpers.ts";
-import { seedMenuItem } from "./member-rewards-helpers.ts";
+import {
+  cleanupSeededRewards,
+  seedMenuItem,
+  trackReward,
+} from "./member-rewards-helpers.ts";
 
 let app: Express;
 let boss: Staff;
@@ -48,6 +52,23 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Rewards and missions made over HTTP carry created_by of this file's two
+  // staff users; the shared fixture tenant is used by other files in parallel.
+  const staffIds = [boss.userId, cashier.userId];
+  const { rows } = await asTenant(seededTenantId, (client) =>
+    client.query<{ id: string }>(
+      "SELECT id FROM rewards WHERE tenant_id = $1 AND created_by = ANY($2::text[])",
+      [seededTenantId, staffIds],
+    ),
+  );
+  for (const row of rows) trackReward(seededTenantId, row.id);
+  await asTenant(seededTenantId, (client) =>
+    client.query(
+      "DELETE FROM missions WHERE tenant_id = $1 AND created_by = ANY($2::text[])",
+      [seededTenantId, staffIds],
+    ),
+  );
+  await cleanupSeededRewards();
   await owner.end();
 });
 

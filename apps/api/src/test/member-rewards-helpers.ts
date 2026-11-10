@@ -74,11 +74,77 @@ export async function brandOf(tenantId: string): Promise<string> {
   return rows[0]!.id;
 }
 
+/**
+ * Rows this file seeded into a tenant it does not own (the shared fixture
+ * tenant), so `cleanupSeededRewards` can remove exactly those. Module state is
+ * per test file. Callers that create rewards over HTTP use `trackReward`.
+ */
+const seededRows = new Map<
+  string,
+  { rewards: string[]; menuItems: string[]; categories: string[] }
+>();
+
+function seededOf(tenantId: string) {
+  let rows = seededRows.get(tenantId);
+  if (!rows) {
+    rows = { rewards: [], menuItems: [], categories: [] };
+    seededRows.set(tenantId, rows);
+  }
+  return rows;
+}
+
+/** Record a reward created outside `seedReward` (for example by an API call). */
+export function trackReward(tenantId: string, rewardId: string): void {
+  seededOf(tenantId).rewards.push(rewardId);
+}
+
+/**
+ * afterAll cleanup: deletes only the rewards, menu items and categories this
+ * file seeded, plus the redemptions and vouchers that hang off those rewards
+ * (FK order). Ledger rows are append-only and stay.
+ */
+export async function cleanupSeededRewards(): Promise<void> {
+  for (const [tenantId, rows] of seededRows) {
+    await asTenant(tenantId, async (client) => {
+      await client.query(
+        `CREATE TEMP TABLE seeded_vouchers ON COMMIT DROP AS
+           SELECT voucher_id AS id FROM reward_redemptions
+           WHERE tenant_id = $1 AND reward_id = ANY($2::uuid[]) AND voucher_id IS NOT NULL`,
+        [tenantId, rows.rewards],
+      );
+      await client.query(
+        "DELETE FROM reward_redemptions WHERE tenant_id = $1 AND reward_id = ANY($2::uuid[])",
+        [tenantId, rows.rewards],
+      );
+      await client.query(
+        "DELETE FROM vouchers WHERE tenant_id = $1 AND id IN (SELECT id FROM seeded_vouchers)",
+        [tenantId],
+      );
+      await client.query(
+        "DELETE FROM rewards WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, rows.rewards],
+      );
+      await client.query(
+        "DELETE FROM menu_items WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, rows.menuItems],
+      );
+      await client.query(
+        "DELETE FROM menu_categories WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, rows.categories],
+      );
+    });
+  }
+  seededRows.clear();
+}
+
 /** A menu item (and a category) for the tenant's first brand. */
 export async function seedMenuItem(tenantId: string): Promise<string> {
   const brandId = await brandOf(tenantId);
   const categoryId = randomUUID();
   const itemId = randomUUID();
+  const seeded = seededOf(tenantId);
+  seeded.categories.push(categoryId);
+  seeded.menuItems.push(itemId);
   await asTenant(tenantId, async (client) => {
     await client.query(
       "INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Hadiah')",
@@ -114,6 +180,7 @@ export async function seedReward(
   options: RewardOptions = {},
 ): Promise<string> {
   const id = randomUUID();
+  seededOf(tenantId).rewards.push(id);
   const type = options.type ?? "free_item";
   const isVoucher = type === "voucher";
   const menuItemId = isVoucher

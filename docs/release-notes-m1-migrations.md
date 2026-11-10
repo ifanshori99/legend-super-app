@@ -83,6 +83,23 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Test `accounting-bank-accounts`: cleanup `afterAll` kini hanya menghapus rekening bank miliknya. Tenant fixture dipakai bersama lima file test bank/kas yang jalan paralel, dan `cash_deposits` merujuk rekening itu.
 - Flaky `platform-org-api` TEN-06 Q39 (409 saat buat outlet) muncul sekali di run penuh pertama, lulus sendiri dan lulus di run penuh berikutnya. Kartu terpisah sudah ada.
 
+## Tambahan batch44
+
+- 0201 `0201_brand_logo_storage` (ws/brand-logo-upload 52f4242a, when 1794280000000).
+- 0202 `0202_bill_splits` (ws/split-bill c6916247, when 1794281000000): `bill_splits` dan FK dari `payment_intents`.
+- 0203 `0203_member_loyalty_ledger` (ws/ws08-111j e15950fe, when 1794282000000): buku besar poin, profil member, FK `orders_customer_profile_fk`. **Jalankan 0203 di jendela sepi: migrasi ini mengambil ACCESS EXCLUSIVE pada `orders`.**
+- 0204 `0204_hris_scheduling` (ws/hr-scheduling 88cc626e, when 1794283000000): **dinomori ulang dari 0199 ke 0204.** Alasannya: `when` lama (1794278000000) sudah di bawah 0200 yang terpasang, jadi Drizzle tidak akan menjalankannya. Selain itu `drizzle-kit generate` membandingkan dengan snapshot berkas bernomor tertinggi, sehingga berkas bernomor lebih rendah yang ditaruh sesudah 0205 diabaikan dan `db:generate` ingin membuat ulang tabelnya. Berkas SQL, snapshot dan tag jurnal sudah diganti nama.
+- 0205 `0205_purchase_return_posting` (ws/purchase-return-posting 58d79c20, when 1794284000000): akun 5104 Pembelian Langsung (Kas Kecil) dan mapping `petty_purchase_expense` untuk entitas yang sudah punya mapping. **Flag `PURCHASE_RETURN_POSTING_ENABLED` default mati; jangan dinyalakan.**
+- 0206 `0206_hris_lifecycle_kpi` (ws/hr-lifecycle-kpi 5f864932, when 1794285000000): `role_assignments_window_check` dilonggarkan dari `>` ke `>=`.
+- 0207 `0207_loyalty_rewards_missions` (ws/m4p5-rewards 911846ad, when 1794286000000).
+- 0208 `0208_supplier_return_petty` (ws/supplier-return-petty f2bd63f5, when 1794287000000): retur pembelian, kas kecil, tiga kode izin baru untuk peran template.
+- Nomor 0209 sampai 0212 dipesan untuk cabang yang belum selesai. Jangan dipakai.
+- Rantai: 0200 -> 0201 -> 0202 -> 0203 -> 0204 -> 0205 -> 0206 -> 0207 -> 0208. `prevId` disusun ulang untuk semuanya. `pnpm db:generate` kosong.
+- SQL diubah oleh merge train: semua FK dari tabel baru ke tabel yang sudah ada (mis. `outlets`, `employees`, `tenants`) di 0204, 0206, 0207, 0208 dipindah ke dalam `CREATE TABLE`. Migrator non-superuser dengan FORCE RLS gagal 42501 "tenant context is required" pada `ALTER TABLE ... ADD CONSTRAINT` yang membaca tabel ber-RLS (sama seperti 0200). DDL akhirnya setara; snapshot tidak berubah.
+- Registry impor: 0205 dan 0208 didaftarkan di `data-import-registry.test.ts`.
+- Tanpa migrasi: ws/tax-snapshot-facility 09a124b2.
+- Perbaikan isi di luar konflik: label `loyalty_reward` ("Hadiah poin") di i18n member dan promo, dan default mock web ws08 (`voucherCode`, `perCustomerLimit`, `redemptionValidDays`) mengikuti kontrak m4p5. Test `platform-access-db` mengikuti batas `>=` dari 0206; test `provisioning-race` kini mengharapkan 64 akun (5104).
+
 ## Gagal lama, bukan regresi
 
 - AIG-01 (kuota harian ai-gateway, sekitar 00:xx WIB, legend-0hyxn).

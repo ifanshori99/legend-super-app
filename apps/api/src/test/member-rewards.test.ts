@@ -55,6 +55,7 @@ import {
   type World,
 } from "./member-loyalty-helpers.ts";
 import {
+  cleanupSeededRewards,
   cancelAs,
   errorCodeOf,
   eventsOf,
@@ -81,6 +82,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await cleanupSeededRewards();
   await owner.end();
 });
 

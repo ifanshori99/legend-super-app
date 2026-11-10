@@ -320,7 +320,7 @@ export async function seedOrder(
         orderId,
         tenantId,
         seed.outletId,
-        `MB-${short()}`,
+        `MB-${short()}`.toUpperCase(),
         channel,
         gross,
         discount,
