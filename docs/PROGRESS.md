@@ -2003,3 +2003,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - 3 test baru di `table-session-merge-hardening.test.ts` (tender di order yang dipindah, order lain sesi asal, order sesi tujuan). Pada service lama: 3 gagal (move 200 tanpa menunggu lock); sesudah perbaikan: lulus. Gate: typecheck api, eslint, prettier hijau; 47 test area lulus.
 - Architect xhigh atas diff tambahan: disetujui. Catatan lama (bukan regresi, tidak dikerjakan): cek order void di `moveSessionItemsOperation` membaca baris sebelum lock, void POS yang commit di sela itu terlewat.
 - Subagent: 2 (test-writer, implementer) + 1 architect, puncak 2 bersamaan.
+
+### fix-419 tambahan: void di pindah item (legend-mgavf), 11 Nov 2026
+- `moveSessionItemsOperation`: setelah lock, order berstatus `voided` di set terkunci ditolak 409 dengan pesan yang sama ("Item yang sudah dibatalkan tidak dapat dipindah."). Cek lama membaca baris sebelum lock.
+- 2 test baru (pindah seluruh order dan sebagian) untuk void POS yang commit saat pindah item menunggu lock. Pada service lama: seluruh order 500 (trigger final-order POS-04 menggagalkan transaksi, data aman) dan sebagian 409 dengan pesan lain; sesudah perbaikan keduanya 409 "dibatalkan". Gate: typecheck api, eslint, prettier hijau; 49 test area lulus. Reviewer sonnet: tanpa temuan.
+- Tersisa (tidak dikerjakan): cek void tingkat item masih memakai baris sebelum lock; hanya relevan bila POS bisa membatalkan satu baris tanpa membatalkan order.

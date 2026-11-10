@@ -1022,6 +1022,11 @@ export async function moveSessionItemsOperation(
           "NOT_FOUND",
           "Item pesanan tidak ditemukan di sesi ini.",
         );
+      if (order.status === "voided")
+        throw new CoreError(
+          "CONFLICT",
+          "Item yang sudah dibatalkan tidak dapat dipindah.",
+        );
       lockedOrders.set(id, order);
     }
 

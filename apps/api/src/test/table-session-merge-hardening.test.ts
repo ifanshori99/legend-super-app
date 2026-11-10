@@ -50,6 +50,7 @@ const paidIdrBySession = new Map<string, number>();
 const zoneIds: string[] = [];
 const tableIds: string[] = [];
 const posOrderUuids: string[] = [];
+const voidedOrderUuids: string[] = [];
 
 // ---- fixtures -------------------------------------------------------------
 
@@ -111,6 +112,20 @@ async function seedOrder(sessionId: string, unit = 20000) {
     ],
   );
   return { uuid, itemUuid };
+}
+
+/** A second live line on an existing order. */
+async function seedSecondLine(orderUuid: string, unit = 9000) {
+  const today = new Date().toISOString().slice(0, 10);
+  await owner.query(
+    `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, variant_id, name,
+        quantity, unit_price_idr, modifiers_total_idr, line_total_idr, modifiers,
+        fire_status, status, reserved_business_date)
+     SELECT $1, tenant_id, outlet_id, id, $3, NULL, 'Item 2', 1, $4, 0, $4, '[]'::jsonb,
+        'fired', 'queued', $2
+     FROM orders WHERE id = $5`,
+    [ulidToUuid(createUlid()), today, menuItemId, unit, orderUuid],
+  );
 }
 
 /** A POS-channel order in the session that has no tender yet. */
@@ -278,6 +293,27 @@ beforeEach(() => {
 
 afterAll(async () => {
   setTableSessionSettlementLookup(null);
+  // A voided order and its lines are immutable (trigger); the void test's rows
+  // are removed with triggers off, in one throw-away transaction.
+  if (voidedOrderUuids.length > 0) {
+    const cleaner = await owner.connect();
+    try {
+      await cleaner.query("BEGIN");
+      await cleaner.query("SET LOCAL session_replication_role = replica");
+      await cleaner.query(
+        "DELETE FROM order_items WHERE tenant_id = $1 AND order_id = ANY($2::uuid[])",
+        [seededTenantId, voidedOrderUuids],
+      );
+      await cleaner.query(
+        "DELETE FROM orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [seededTenantId, voidedOrderUuids],
+      );
+      await cleaner.query("COMMIT");
+    } finally {
+      await cleaner.query("ROLLBACK").catch(() => undefined);
+      cleaner.release();
+    }
+  }
   const orderScope = `SELECT id FROM orders WHERE tenant_id = $1 AND table_session_id IN
       (SELECT id FROM table_sessions WHERE tenant_id = $1 AND table_id = ANY($2))`;
   await owner.query(
@@ -531,6 +567,71 @@ describe("item move versus a POS tender in flight (legend-mgavf item move)", () 
       expect(String(response!.body.error?.message)).toMatch(/dibayar sebagian/);
       expect(await orderSession(movedOrder.uuid)).toBe(source.sessionId);
       expect(await orderSession(posOrder.uuid)).toBe(posSession.sessionId);
+    },
+  );
+});
+
+// ===========================================================================
+// Item move versus a POS void committing between the early read and the lock
+// ===========================================================================
+//
+// Assumption (from the brief): an order voided by the POS while the move is
+// waiting for the order lock must not be moved. The move answers 409 with the
+// same message as the early "already voided" check ("...dibatalkan..."), and
+// the order stays in the source session.
+
+describe("item move versus a POS void in flight (legend-mgavf item move void)", () => {
+  // "whole": the only line of the order moves. "partial": one of two lines
+  // moves, so the order itself stays behind (split path).
+  it.each(["whole", "partial"] as const)(
+    "waits for a void committing on the moved order (%s move) and then refuses with 409",
+    async (kind) => {
+      const { target: destination, source } = await twoSessions();
+      const movedOrder = await seedOrder(source.sessionId, 18000);
+      if (kind === "partial") await seedSecondLine(movedOrder.uuid);
+      voidedOrderUuids.push(movedOrder.uuid);
+
+      // The "void": holds the order's row lock, marks the order voided, commits
+      // only after the move request is waiting (past its early, unlocked read).
+      const holder: PoolClient = await owner.connect();
+      let response: Awaited<ReturnType<typeof moveItems>> | undefined;
+      let blocked = false;
+      try {
+        await holder.query("BEGIN");
+        const pid = (
+          await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+        ).rows[0]!.pid;
+        await holder.query("SELECT id FROM orders WHERE id = $1 FOR UPDATE", [
+          movedOrder.uuid,
+        ]);
+
+        let done = false;
+        const pending = moveItems(source.sessionId, destination.sessionId, [
+          uuidToUlid(movedOrder.itemUuid),
+        ]).then((res) => {
+          done = true;
+          return res;
+        });
+        blocked = await mergeIsBlockedBy(pid, () => done);
+
+        await holder.query(
+          `UPDATE orders SET status = 'voided', voided_at = now(), void_reason = 'Batal di kasir'
+           WHERE id = $1`,
+          [movedOrder.uuid],
+        );
+        await holder.query("COMMIT");
+        response = await pending;
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+      }
+
+      // (a) the move did not run past the in-flight void's lock.
+      expect(blocked, "item move did not wait for the order lock").toBe(true);
+      // (b) once the void committed, the move saw it and refused.
+      expect(response!.status, JSON.stringify(response!.body)).toBe(409);
+      expect(String(response!.body.error?.message)).toMatch(/dibatalkan/);
+      expect(await orderSession(movedOrder.uuid)).toBe(source.sessionId);
     },
   );
 });
