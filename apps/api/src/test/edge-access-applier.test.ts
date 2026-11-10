@@ -74,7 +74,7 @@ import {
   verifyStaffPinHash,
 } from "../services/device-pin-hash.ts";
 import {
-  STAFF_PIN_PEPPER_VERSION,
+  currentStaffPinPepperVersion,
   staffPinPepper,
 } from "../services/device-pin-pepper.ts";
 import {
@@ -219,7 +219,7 @@ async function pinMaterial(
   const tenant = options.tenant ?? tenantId;
   const outlet = options.outlet ?? outletA;
   const hashed = await hashStaffPin({
-    pepper: staffPinPepper(tenant),
+    pepper: staffPinPepper(tenant, outlet),
     binding: { tenantId: tenant, outletId: outlet, userId },
     pin,
   });
@@ -228,7 +228,7 @@ async function pinMaterial(
     salt: hashed.salt,
     pinHash: hashed.pinHash,
     params: hashed.params as Material["params"],
-    pepperVersion: options.pepperVersion ?? STAFF_PIN_PEPPER_VERSION,
+    pepperVersion: options.pepperVersion ?? currentStaffPinPepperVersion(),
     setAt: new Date(setAtMs).toISOString(),
   };
 }
@@ -239,7 +239,7 @@ async function pinVerifies(
   stored: { pin_hash: string; pin_salt: string },
 ): Promise<boolean> {
   return verifyStaffPinHash({
-    pepper: staffPinPepper(tenantId),
+    pepper: staffPinPepper(tenantId, outletA),
     binding: { tenantId, outletId: outletA, userId },
     pin,
     stored: {
@@ -741,7 +741,7 @@ describe("legend-kyie staff_pin.set from an edge", () => {
     expect(row.id).toBe(event.payload.staffPinId);
     expect(row.pin_hash).toBe(material.pinHash);
     expect(row.pin_salt).toBe(material.salt);
-    expect(row.pepper_version).toBe(STAFF_PIN_PEPPER_VERSION);
+    expect(row.pepper_version).toBe(currentStaffPinPepperVersion());
     expect(row.failed_attempts).toBe(0);
     expect(row.locked_until).toBeNull();
     expect(row.pin_set_at.toISOString()).toBe(material.setAt);
@@ -879,7 +879,7 @@ describe("legend-kyie staff_pin.set from an edge", () => {
         "482916",
         Date.now() - HOUR,
         {
-          pepperVersion: STAFF_PIN_PEPPER_VERSION + 1,
+          pepperVersion: currentStaffPinPepperVersion() + 1,
         },
       ),
     });

@@ -37,7 +37,7 @@ import { setAuditWriter, type AuditEntry } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { hashStaffPin } from "../services/device-pin-hash.ts";
 import {
-  STAFF_PIN_PEPPER_VERSION,
+  currentStaffPinPepperVersion,
   staffPinPepper,
 } from "../services/device-pin-pepper.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
@@ -341,7 +341,7 @@ async function cloudAuditAfter(overrideId: string) {
 
 async function pinMaterial(userId: string, pin: string, setAtMs: number) {
   const hashed = await hashStaffPin({
-    pepper: staffPinPepper(tenantId),
+    pepper: staffPinPepper(tenantId, outletA),
     binding: { tenantId, outletId: outletA, userId },
     pin,
   });
@@ -350,7 +350,7 @@ async function pinMaterial(userId: string, pin: string, setAtMs: number) {
     salt: hashed.salt,
     pinHash: hashed.pinHash,
     params: hashed.params,
-    pepperVersion: STAFF_PIN_PEPPER_VERSION,
+    pepperVersion: currentStaffPinPepperVersion(),
     setAt: new Date(setAtMs).toISOString(),
   };
 }

@@ -328,12 +328,13 @@ export function createDeviceRecordsFetcher(
 export function createStaffPinRecordsFetcher(
   options: DeviceRecordsFetcherOptions & {
     /**
-     * legend-ideif: the highest staff pin pepper version this edge holds. When
-     * set, the page request asks the cloud for the tenant's derived peppers
-     * above it (`peppers=`). Sent only over https: a pepper never travels in
-     * clear text.
+     * legend-ideif, legend-jmsdx: the staff pin pepper versions this edge
+     * holds (empty = none). When set, the page request lists them
+     * (`peppers=2,3`, `peppers=none` = holds none) and the cloud answers with this
+     * outlet's peppers it lacks. Sent only over https: a pepper never travels
+     * in clear text.
      */
-    pepperHave?: () => number;
+    pepperHave?: () => readonly number[];
   },
 ): (since: string | null, signal: AbortSignal) => Promise<unknown> {
   const baseUrl = cloudHttpBaseUrl(options.cloudUrl);
@@ -342,14 +343,22 @@ export function createStaffPinRecordsFetcher(
   const pathFor = (
     since: string | null,
     withRevision: boolean,
-    pepperHave: number | null,
+    pepperHave: readonly number[] | null,
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     // legend-r11j7: `revision=1` opts in to the cloud attempt revision per
     // record (an older edge's strict parse would refuse it, so the cloud only
     // sends it on request).
     if (withRevision) query.set("revision", "1");
-    if (pepperHave !== null) query.set("peppers", String(pepperHave));
+    // `none`, not an empty value: a cloud from before legend-jmsdx reads an
+    // empty value as 0 held and answers its tenant-wide v1 pepper, which the
+    // edge refuses. It answers 400 to `none` instead, and the fallback below
+    // retries the page without the opt-in.
+    if (pepperHave !== null)
+      query.set(
+        "peppers",
+        pepperHave.length === 0 ? "none" : pepperHave.join(","),
+      );
     if (since !== null) query.set("since", since);
     return `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`;
   };
@@ -367,7 +376,10 @@ export function createStaffPinRecordsFetcher(
     // and the edge compares the counter by value. A failure of the last
     // variant is thrown as is, so the pull's HTTP_400 cursor recovery still
     // sees it. Any other error is not retried.
-    const variants: Array<{ revision: boolean; peppers: number | null }> = [
+    const variants: Array<{
+      revision: boolean;
+      peppers: readonly number[] | null;
+    }> = [
       { revision: true, peppers: pepperHave },
       ...(pepperHave !== null ? [{ revision: true, peppers: null }] : []),
       { revision: false, peppers: null },

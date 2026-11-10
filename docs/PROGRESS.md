@@ -109,6 +109,17 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review architect (K, xhigh): 3 harus-betul + 4 kecil, semua dibetulkan dengan tes gagal-dulu.
 - 0217 kini berisi FK komposit `profit_entity_id` di `shareholder_document_files` dan `shareholder_documents` (422 `PROFIT_ENTITY_NOT_FOUND` di servis). Semua `ADD CONSTRAINT` FK diapit `NO FORCE`/`FORCE ROW LEVEL SECURITY` (contracts.md pola 2) agar migrator non-superuser lolos, dan blok DO menolak migrasi bila kedua tabel dokumen sudah berisi baris.
 - Belum: storage + email adapter belum terpasang di app (statement 503 lalu dicatat, pembayaran tetap jalan; sama dengan dokumen pemegang saham); `estimates` di my-profit-share masih [] (event `distribution.approved|paid|completed` sudah lewat outbox).
+## legend-jmsdx pepper PIN per outlet v2, rehash cloud, runbook edge dicuri (engineer, cabang `ws/jmsdx-pepper` dari ws/ideif-edge-pepper 3150feeb + merge ws/u7g9w-pin-proof, 2026-11-10)
+
+- Tanpa migrasi. Merge u7g9w (fc1271db): konflik journal/runtime/staff-pin-pull/deployment/PROGRESS dibereskan; snapshot drizzle dirangkai linear 0217 -> 0225 -> 0227 -> 0233 -> 0241 (delta `edge_staff_pin_peppers` dibawa maju), `db:generate` kosong.
+- Pepper v2+ diturunkan per outlet (HKDF info `legend:staff-pin-pepper:v{n}:{tenant}:{outlet}`), v1 tetap per tenant dan hanya di cloud. `STAFF_PIN_PEPPER_CURRENT_VERSION` default 2, production wajib >= 2. Query sync `peppers` = daftar versi yang dipegang (`none` = kosong); cloud mengirim ({versi dipakai baris outlet} ∪ {current}) minus yang dipegang, tidak pernah v1 atau outlet lain. AAD segel edge `tenant:outlet:version`; baris segel v1 sisa dihapus saat load.
+- Verify cloud PIN benar pada versi lama: rehash di tx `FOR UPDATE` yang sama, kunci generasi tetap; edge menerapkan bahan hash baru tetapi mempertahankan hitungan salah dan kunci lokal (merge "same material"). PIN baru di edge tetap menang. Edge baris v1: 409 `STAFF_PIN_RESET_REQUIRED`, tanpa menambah percobaan.
+- Runbook `docs/runbooks/edge-node-stolen.md`; `docs/deployment.md` bagian pepper edge diperbarui.
+- Bukti: gagal-dulu `staff-pin-pepper-outlet.test.ts` 8/8 merah di fc1271db; test perbaikan review 6/6 merah di eb7e2069. Sesudah: 29 file 423/423 (semua test pepper/PIN/sync + paket u7g9w + guard migrasi); tsc shared + api bersih (heavy); eslint + prettier bersih.
+- Review architect (K): 0 tinggi; 2 sedang (rehash cloud mengosongkan lockout edge; body revoke di runbook tidak lengkap, node standby terlewat); 4 rendah (edge baru vs cloud ideif lama berhenti sync -> `peppers=none`; segel v1 tertinggal di disk; production boleh v1; penanda reset di runbook). Semua dibetulkan.
+- Sisa: link runbook ke `docs/DECISIONS.md` "Pepper PIN per outlet" baru hidup setelah `ws/arch-357-decisions` di-merge. Tidak ada endpoint reset PIN massal (runbook: per staf).
+- Pemakaian sesi (u7g9w + jmsdx, 18:47-19:55): subagent 26 di laporan (total spawn 37: implementer 17, Explore 10, test-runner 5, test-writer 3, doc-writer 2, architect 2), maks bersamaan 6, rata 0.89; biaya* 9349k (utama Opus 3267k, sonnet 4541k, opus sub 1118k, haiku 424k).
+
 ## legend-u7g9w bukti PIN sekali pakai untuk absen layar outlet (engineer, cabang `ws/u7g9w-pin-proof` dari ws/j6cyb-edge-attendance d0376c66, 2026-11-10)
 
 - Absen di layar outlet mencatat staf yang mengetik PIN, bukan pemilik sesi. `POST /api/staff-pins/verify` dengan `purpose: "attendance_clock"` memberi bukti `pp_…` (32 byte acak, hanya sha256 disimpan), umur 120 s, terikat tenant/outlet/device/user, satu bukti hidup per device (advisory lock). Rute baru `POST /api/hris/attendance/outlet-clock` (tanpa sesi, header `X-Device-Token` + `X-Pin-Proof`, edge saja) memakai bukti di transaksi yang sama dengan log; replay idempoten dengan `idempotencyKey`.
@@ -1753,10 +1764,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 
 
 ## 2026-11-10: edge tidak memegang root STAFF_PIN_PEPPER (legend-ideif)
+
 - Sudah: edge hanya menerima pepper turunan tenant-nya (HKDF per tenant dan versi) lewat sinkron PIN yang ada (`GET /api/edge-sync/staff-pin-records?peppers=<n>` -> `meta.peppers`, opt-in, https, no-store). Disimpan tersegel (AES-256-GCM, kunci dari rahasia kredensial node, AAD tenant:versi) di tabel baru `edge_staff_pin_peppers` (migrasi `0225`, nomor sementara, `when` 1794304000000, RLS tenant dan outlet) dan dimuat ke memori saat boot (`edge/staff-pin-pepper-registry.ts`, `edge/staff-pin-pepper-store.ts`). Edge menolak boot bila `STAFF_PIN_PEPPER` ada (env.ts dan `startEdgeRuntime`). Rotasi: `STAFF_PIN_PEPPER_CURRENT_VERSION` di cloud; PIN lama tetap terverifikasi (pepper per versi baris) sampai di-set ulang. Runbook: `docs/deployment.md` "Staff PIN pepper on edge nodes"; catatan rilis; `.env.example`.
 - Bukti: test baru (registry, store, sync export, pull, fetcher, boot, env, resend) lulus bersama test PIN lama; typecheck api, eslint, prettier bersih; `db:generate` kosong; review K (architect): 6 temuan, 5 dibetulkan (resend tanpa pepper, `have` kontigu, runbook cabut kredensial dan rotasi root), 1 untuk merge train (urutan `when` migrasi).
 - Belum: edge lama (tanpa `peppers`) terhadap cloud baru jalan terus tapi tidak mendapat pepper; edge baru terhadap cloud lama jatuh ke query lama tanpa pepper. Cloud dulu, lalu edge. Rilis dan merge menunggu gerbang founder.
 - Bukti merah (legend-ideif, 2026-11-10): refine env.ts dan guard `startEdgeRuntime` dilepas sementara: test env "edge menolak root" dan test boot `edge-boot-pepper` merah (2 gagal, 7 lulus); dikembalikan, kembali hijau (9 lulus). Temuan architect ke-6 (urutan `when` migrasi 0225 vs 0216–0222) sengaja tidak diubah di cabang: nomor dan `when` ditetapkan CTO (0225, 1794304000000), merge train menyusun ulang saat gabung.
+
+## 2026-11-10: WS-10 absensi karyawan (legend-wh71)
 
 ## 2026-11-10 16:30: cetak menu hapus PDF lama (legend-eirhm)
 

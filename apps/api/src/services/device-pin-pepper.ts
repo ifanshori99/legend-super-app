@@ -1,22 +1,28 @@
-// Tenant-bound pepper for staff device pins (bead legend-dxb; PRD v1.7 §3 F6,
-// §6 B staff_pins "(T, E)"). See device-pin-hash.ts for the construction.
+// Outlet-bound pepper for staff device pins (bead legend-dxb; PRD v1.7 §3 F6,
+// §6 B staff_pins "(T, E)"; legend-jmsdx). See device-pin-hash.ts for the
+// construction.
 //
 // HKDF-SHA-256 over its own deployment secret STAFF_PIN_PEPPER with a fixed
-// label, the pepper version and the tenant id. The root secret lives ONLY on
-// the cloud. An edge node (bead legend-ideif) never holds it: config/env.ts
-// refuses to boot an edge with STAFF_PIN_PEPPER set, and the edge receives the
-// peppers the cloud derived for its own tenant (one per version) over the
-// staff pin sync (services/staff-pin-sync.ts, edge/staff-pin-pepper-registry.ts).
-// A stolen edge box can verify its own tenant's pins and nothing else.
+// label, the pepper version and the ids. Version 1 is per tenant (the old
+// info string, cloud only, dev/staging data). Version 2 and up is per outlet:
+// info `legend:staff-pin-pepper:v{n}:{tenant}:{outlet}` (lowercase ids), so a
+// pepper stolen with one outlet's edge fits no other outlet's hashes. The root
+// secret lives ONLY on the cloud. An edge node (beads legend-ideif,
+// legend-jmsdx) never holds it: config/env.ts refuses to boot an edge with
+// STAFF_PIN_PEPPER set, and the edge receives only the peppers the cloud
+// derived for its own outlet (versions >= 2) over the staff pin sync
+// (services/staff-pin-sync.ts, edge/staff-pin-pepper-registry.ts). A stolen
+// edge box can verify its own outlet's pins and nothing else.
 //
 // The pepper deliberately does NOT derive from BETTER_AUTH_SECRET: rotating the
 // auth secret must never invalidate stored pins.
 //
 // Rotation (docs/deployment.md "Staff device pins"): raise
 // STAFF_PIN_PEPPER_CURRENT_VERSION on the cloud. Peppers of every version from
-// 1 up to the current one stay derivable, so a pin hashed under an older
-// version still verifies until its owner sets a new pin (which hashes under the
-// current version). Edges ask for the versions they lack on the next sync.
+// 1 up to the current one stay derivable on the cloud, so a pin hashed under an
+// older version still verifies (a cloud verify rehashes it to the current
+// version). An edge asks for the versions it lacks on the next sync and gets
+// the versions its outlet's rows use plus the current one.
 //
 // config/env.ts requires STAFF_PIN_PEPPER in production on the cloud.
 // Development and tests use a fixed, non-secret fallback so a fresh checkout
@@ -24,16 +30,20 @@
 // and never on an edge node.
 
 import { hkdfSync } from "node:crypto";
-import { tenantIdSchema } from "@starter/shared/core";
+import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import { env } from "../config/env";
 import {
+  EDGE_PEPPER_MIN_VERSION,
   edgeStaffPinPepper,
   edgeStaffPinPepperLatest,
   isEdgePepperRegistryActive,
 } from "../edge/staff-pin-pepper-registry";
 
-/** First pepper generation; the floor of the version range. */
+/** First pepper generation; the floor of the version range (cloud only, per tenant). */
 export const STAFF_PIN_PEPPER_VERSION = 1;
+
+/** First per-outlet generation; the only ones an edge ever holds. */
+export const STAFF_PIN_PEPPER_OUTLET_MIN_VERSION = EDGE_PEPPER_MIN_VERSION;
 
 /**
  * Development/test-only root secret. Not a credential: production refuses to
@@ -78,45 +88,53 @@ export function isStaffPinPepperVersionUsable(version: number): boolean {
 }
 
 /**
- * The pepper for one tenant. Server-only: never put it in a response (except
- * `staffPinPeppersForEdge` to the tenant's own edge), log or event.
- * Edge: only the node's own tenant and only versions the cloud delivered.
+ * The pepper for one outlet (version >= 2) or, for version 1, its tenant.
+ * Server-only: never put it in a response (except `staffPinPeppersForEdge` to
+ * the outlet's own edge), log or event.
+ * Edge: only the node's own outlet and only versions the cloud delivered
+ * (never version 1).
  */
 export function staffPinPepper(
   tenantId: string,
+  outletId: string,
   version: number = currentStaffPinPepperVersion(),
 ): Buffer {
   const tenant = tenantIdSchema.parse(tenantId);
+  const outlet = outletIdSchema.parse(outletId);
   if (isEdgePepperProcess()) {
-    const delivered = edgeStaffPinPepper(tenant, version);
+    const delivered = edgeStaffPinPepper(tenant, outlet, version);
     if (delivered === null)
       throw new RangeError("Staff pin pepper is not available on this edge");
     return delivered;
   }
   if (!isStaffPinPepperVersionUsable(version))
     throw new RangeError("Unknown staff pin pepper version");
-  return derive(tenant, version);
+  return derive(tenant, outlet, version);
 }
 
 /**
  * Like `staffPinPepper`, but null when this process has no such pepper (an edge
- * before its first sync, a version it was never sent). For verification, where
- * "cannot verify" must fail closed without throwing.
+ * before its first sync, a version it was never sent, another outlet, version
+ * 1). For verification, where "cannot verify" must fail closed without throwing.
  */
 export function staffPinPepperOrNull(
   tenantId: string,
+  outletId: string,
   version: number,
 ): Buffer | null {
   try {
-    return staffPinPepper(tenantId, version);
+    return staffPinPepper(tenantId, outletId, version);
   } catch (error) {
     if (error instanceof RangeError) return null;
     throw error;
   }
 }
 
-function derive(tenant: string, version: number): Buffer {
-  const key = `${version}:${tenant}`;
+function derive(tenant: string, outlet: string, version: number): Buffer {
+  const perOutlet = version >= STAFF_PIN_PEPPER_OUTLET_MIN_VERSION;
+  const key = perOutlet
+    ? `${version}:${tenant}:${outlet}`
+    : `${version}:${tenant}`;
   let pepper = cache.get(key);
   if (!pepper) {
     pepper = Buffer.from(
@@ -124,7 +142,9 @@ function derive(tenant: string, version: number): Buffer {
         "sha256",
         rootSecret(),
         SALT,
-        `legend:staff-pin-pepper:v${version}:${tenant}`,
+        perOutlet
+          ? `legend:staff-pin-pepper:v${version}:${tenant}:${outlet}`
+          : `legend:staff-pin-pepper:v${version}:${tenant}`,
         32,
       ),
     );
@@ -134,24 +154,37 @@ function derive(tenant: string, version: number): Buffer {
 }
 
 /**
- * Cloud only: the derived peppers of ONE tenant for every version above
- * `haveVersion`, for the staff pin sync response to that tenant's edge node.
- * The tenant comes from the verified edge credential, never from the caller.
+ * Cloud only: the derived peppers of ONE outlet the edge node of that outlet
+ * lacks, for the staff pin sync response. Versions to send =
+ * ({`usedVersions` >= 2} ∪ {current}) \ `have` \ {1}, ascending, never above
+ * the current version (the cloud could not verify such a row anyway).
+ * Tenant and outlet come from the verified edge credential, never from the
+ * caller's query.
  */
 export function staffPinPeppersForEdge(
   tenantId: string,
-  haveVersion: number,
+  outletId: string,
+  have: readonly number[],
+  usedVersions: readonly number[],
 ): Array<{ version: number; pepper: string }> {
   if (isEdgePepperProcess())
     throw new Error("An edge node cannot derive staff pin peppers.");
   const tenant = tenantIdSchema.parse(tenantId);
-  const out: Array<{ version: number; pepper: string }> = [];
+  const outlet = outletIdSchema.parse(outletId);
   const current = currentStaffPinPepperVersion();
-  for (
-    let version = Math.max(haveVersion + 1, STAFF_PIN_PEPPER_VERSION);
-    version <= current;
-    version += 1
-  )
-    out.push({ version, pepper: derive(tenant, version).toString("base64") });
-  return out;
+  const wanted = new Set<number>([current, ...usedVersions]);
+  const held = new Set<number>(have);
+  return [...wanted]
+    .filter(
+      (version) =>
+        Number.isInteger(version) &&
+        version >= STAFF_PIN_PEPPER_OUTLET_MIN_VERSION &&
+        version <= current &&
+        !held.has(version),
+    )
+    .sort((a, b) => a - b)
+    .map((version) => ({
+      version,
+      pepper: derive(tenant, outlet, version).toString("base64"),
+    }));
 }

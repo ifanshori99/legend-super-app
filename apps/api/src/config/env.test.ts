@@ -129,7 +129,7 @@ test("an edge node in production needs no root pepper (legend-ideif)", () => {
   assert.equal(run({ NODE_ENV: "production" }).status, 1);
 });
 
-test("STAFF_PIN_PEPPER_CURRENT_VERSION is a positive integer, default 1 (legend-ideif)", () => {
+test("STAFF_PIN_PEPPER_CURRENT_VERSION is a positive integer, default 2 (legend-ideif, legend-jmsdx)", () => {
   const show = "console.log(env.STAFF_PIN_PEPPER_CURRENT_VERSION)";
   assert.equal(run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "0" }).status, 1);
   assert.equal(run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "-1" }).status, 1);
@@ -139,7 +139,22 @@ test("STAFF_PIN_PEPPER_CURRENT_VERSION is a positive integer, default 1 (legend-
   assert.equal(two.stdout.trim(), "2");
   const unset = run({}, show);
   assert.equal(unset.status, 0);
-  assert.equal(unset.stdout.trim(), "1");
+  assert.equal(unset.stdout.trim(), "2");
+  // Version 1 stays valid for older dev data on the cloud.
+  const one = run({ STAFF_PIN_PEPPER_CURRENT_VERSION: "1" }, show);
+  assert.equal(one.status, 0);
+  assert.equal(one.stdout.trim(), "1");
+  // Production refuses version 1 (f2).
+  const prodOne = run(
+    {
+      NODE_ENV: "production",
+      STAFF_PIN_PEPPER: "p".repeat(32),
+      STAFF_PIN_PEPPER_CURRENT_VERSION: "1",
+    },
+    show,
+  );
+  assert.equal(prodOne.status, 1);
+  assert.match(prodOne.stderr, /STAFF_PIN_PEPPER_CURRENT_VERSION/);
 });
 
 test("rejects real or unclassified imports outside production", () => {

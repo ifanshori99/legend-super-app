@@ -246,16 +246,18 @@ const schema = z
       .string()
       .min(32, "Use at least 32 random characters.")
       .optional(),
-    // Pepper generation new staff pins are hashed under (cloud only). Raise it
-    // to rotate: older generations stay derivable so existing pins verify until
-    // their owner sets a new one, and every edge fetches the new tenant pepper
-    // on its next sync (docs/deployment.md "Staff device pins").
+    // Pepper generation new staff pins are hashed under (cloud only). Version
+    // 2 and up is per outlet (legend-jmsdx); 1 is the old per-tenant one, only
+    // for older dev data. Raise it to rotate: older generations stay derivable
+    // so existing pins verify (a cloud verify rehashes them), and every edge
+    // fetches its outlet's new pepper on its next sync (docs/deployment.md
+    // "Staff device pins").
     STAFF_PIN_PEPPER_CURRENT_VERSION: z.coerce
       .number()
       .int()
       .min(1)
       .max(1000)
-      .default(1),
+      .default(2),
     // Edge node settings (legend-2pi, edge/config.ts). Required only with
     // EDGE_MODE=true; the cloud ignores them. EDGE_NODE_CREDENTIAL is the
     // secret shown once at registration: never logged, never committed.
@@ -407,6 +409,19 @@ const schema = z
         });
   })
   .superRefine((values, ctx) => {
+    // Version 1 is the old tenant-wide pepper; only dev data may stay on it.
+    if (
+      values.NODE_ENV === "production" &&
+      values.STAFF_PIN_PEPPER_CURRENT_VERSION < 2
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["STAFF_PIN_PEPPER_CURRENT_VERSION"],
+        message:
+          "STAFF_PIN_PEPPER_CURRENT_VERSION must be 2 or higher in production.",
+      });
+  })
+  .superRefine((values, ctx) => {
     for (const problem of sealKeyConfigProblems(
       values.ATTENDANCE_SELFIE_SEAL_KEYS,
       values.ATTENDANCE_SELFIE_SEAL_ACTIVE_KID,
@@ -468,12 +483,12 @@ const schema = z
   .refine(
     (values) => !values.EDGE_MODE || values.STAFF_PIN_PEPPER === undefined,
     {
-      // legend-ideif: an edge node holds only the tenant-derived peppers the cloud
-      // sends it. The root secret on an edge box would let a stolen box derive
+      // legend-ideif: an edge node holds only the outlet-derived peppers the
+      // cloud sends it. The root secret on an edge box would let a stolen box derive
       // every tenant's pepper, so the node refuses to boot with it (fail closed).
       path: ["STAFF_PIN_PEPPER"],
       message:
-        "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the tenant pepper over the sync.",
+        "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the outlet pepper over the sync.",
     },
   )
   .refine(

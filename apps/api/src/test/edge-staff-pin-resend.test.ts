@@ -31,6 +31,7 @@ import {
 } from "../edge/staff-pin-pepper-registry.ts";
 import { resendMateriallessStaffPinSets } from "../edge/staff-pin-resend.ts";
 import type { EdgeApplyMeta } from "../edge/ports.ts";
+import { currentStaffPinPepperVersion } from "../services/device-pin-pepper.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -360,9 +361,11 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
   it("skips a row of another pepper version", async () => {
     const userId = await newUser();
     await setPinWithoutMaterial(userId, "579135", new Date());
+    // Above the current version (2 since legend-jmsdx): the job never re-sends
+    // a pin it cannot verify under the pepper it holds.
     await owner.query(
-      "UPDATE staff_pins SET pepper_version = 2 WHERE tenant_id = $1 AND user_id = $2",
-      [tenantId, userId],
+      "UPDATE staff_pins SET pepper_version = $3 WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, userId, currentStaffPinPepperVersion() + 1],
     );
 
     await resendMateriallessStaffPinSets(tenant, outletA);
@@ -375,7 +378,7 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
   it("re-sends while this edge holds no pepper yet", async () => {
     const userId = await newUser();
     await setPinWithoutMaterial(userId, "135792", new Date());
-    activateEdgePepperRegistry(tenantId);
+    activateEdgePepperRegistry(tenantId, outletA);
     try {
       await resendMateriallessStaffPinSets(tenant, outletA);
     } finally {

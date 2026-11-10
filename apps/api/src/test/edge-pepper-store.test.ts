@@ -1,6 +1,6 @@
 // Edge-side sealed storage of the derived staff pin peppers (bead legend-ideif;
-// PRD v1.7 §3 F5 Server Lokal, EDG-02, TEN-02). Seal: AES-256-GCM bound to the
-// tenant and key version; the key comes from the edge credential secret. Cloud
+// PRD v1.7 §3 F5 Server Lokal, EDG-02, TEN-02; legend-jmsdx). Seal: AES-256-GCM
+// bound to the tenant, outlet and key version (version >= 2); the key comes from the edge credential secret. Cloud
 // and edge share one test database, so the "edge node" is a registered node on
 // a private outlet (as edge-staff-pin-pull.test.ts does).
 import { randomBytes, randomUUID } from "node:crypto";
@@ -31,9 +31,9 @@ const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletId = randomUUID();
 const key = deriveEdgePepperSealKey("secret-of-the-node-credential");
 const otherKey = deriveEdgePepperSealKey("a-rotated-node-credential-secret");
-const binding = { tenantId, version: 1 };
+const binding = { tenantId, outletId, version: 2 };
 
-describe("legend-ideif sealing a pepper", () => {
+describe("legend-jmsdx sealing a pepper", () => {
   it("round trips, and two seals of one pepper differ (random IV)", () => {
     const pepper = randomBytes(32);
     const sealed = sealEdgePepper(key, binding, pepper);
@@ -50,13 +50,16 @@ describe("legend-ideif sealing a pepper", () => {
     expect(otherKey.equals(key)).toBe(false);
   });
 
-  it("opens to null under the wrong key, another tenant or another version", () => {
+  it("opens to null under the wrong key, another tenant, another outlet or another version", () => {
     const sealed = sealEdgePepper(key, binding, randomBytes(32));
     expect(openEdgePepper(otherKey, binding, sealed)).toBeNull();
     expect(
       openEdgePepper(key, { ...binding, tenantId: randomUUID() }, sealed),
     ).toBeNull();
-    expect(openEdgePepper(key, { ...binding, version: 2 }, sealed)).toBeNull();
+    expect(
+      openEdgePepper(key, { ...binding, outletId: randomUUID() }, sealed),
+    ).toBeNull();
+    expect(openEdgePepper(key, { ...binding, version: 3 }, sealed)).toBeNull();
   });
 
   it("opens to null, without throwing, for garbage, short or tampered input", () => {
@@ -78,7 +81,7 @@ describe("legend-ideif sealing a pepper", () => {
   });
 });
 
-describe("legend-ideif the sealed peppers in the edge database", () => {
+describe("legend-jmsdx the sealed peppers in the edge database", () => {
   const owner = new Pool({
     connectionString: process.env.STARTER_TEST_DATABASE_URL,
     max: 4,
@@ -142,18 +145,18 @@ describe("legend-ideif the sealed peppers in the edge database", () => {
   });
 
   it("save then load returns the same bytes, and the stored text hides the pepper", async () => {
-    const v1 = randomBytes(32);
     const v2 = randomBytes(32);
+    const v3 = randomBytes(32);
     await saveEdgePeppers(context, edgeNodeId, key, [
-      { version: 1, pepper: v1 },
       { version: 2, pepper: v2 },
+      { version: 3, pepper: v3 },
     ]);
     const loaded = await loadEdgePeppers(context, edgeNodeId, key);
-    expect([...loaded.keys()].sort()).toEqual([1, 2]);
-    expect(loaded.get(1)?.equals(v1)).toBe(true);
+    expect([...loaded.keys()].sort()).toEqual([2, 3]);
     expect(loaded.get(2)?.equals(v2)).toBe(true);
+    expect(loaded.get(3)?.equals(v3)).toBe(true);
     for (const row of await rows()) {
-      const pepper = row.version === 1 ? v1 : v2;
+      const pepper = row.version === 2 ? v2 : v3;
       expect(row.ciphertext).not.toContain(pepper.toString("base64"));
       expect(Buffer.from(row.ciphertext, "base64").includes(pepper)).toBe(
         false,
@@ -164,11 +167,11 @@ describe("legend-ideif the sealed peppers in the edge database", () => {
   it("a second save of a version replaces it (upsert) and keeps the others", async () => {
     const replaced = randomBytes(32);
     await saveEdgePeppers(context, edgeNodeId, key, [
-      { version: 1, pepper: replaced },
+      { version: 2, pepper: replaced },
     ]);
     const loaded = await loadEdgePeppers(context, edgeNodeId, key);
-    expect(loaded.get(1)?.equals(replaced)).toBe(true);
-    expect(loaded.has(2)).toBe(true);
+    expect(loaded.get(2)?.equals(replaced)).toBe(true);
+    expect(loaded.has(3)).toBe(true);
     expect(await rows()).toHaveLength(2);
   });
 
@@ -184,21 +187,61 @@ describe("legend-ideif the sealed peppers in the edge database", () => {
   it("a row moved to another version fails to open and the others still load", async () => {
     const [first, second] = await rows();
     await owner.query(
-      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 2",
+      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 3",
       [first!.ciphertext, edgeNodeId],
     );
     const loaded = await loadEdgePeppers(context, edgeNodeId, key);
-    expect([...loaded.keys()]).toEqual([1]);
+    expect([...loaded.keys()]).toEqual([2]);
     await owner.query(
-      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 2",
+      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 3",
       [second!.ciphertext, edgeNodeId],
     );
+  });
+
+  it("a row sealed for another outlet fails to open and the others still load", async () => {
+    const foreign = sealEdgePepper(
+      key,
+      { tenantId, outletId: randomUUID(), version: 3 },
+      randomBytes(32),
+    );
+    const [, second] = await rows();
+    await owner.query(
+      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 3",
+      [foreign, edgeNodeId],
+    );
+    const loaded = await loadEdgePeppers(context, edgeNodeId, key);
+    expect([...loaded.keys()]).toEqual([2]);
+    await owner.query(
+      "UPDATE edge_staff_pin_peppers SET ciphertext = $1 WHERE edge_node_id = $2 AND version = 3",
+      [second!.ciphertext, edgeNodeId],
+    );
+  });
+
+  it("(f2) a leftover version 1 row is deleted on load and version 2 stays", async () => {
+    const v1Pepper = randomBytes(32);
+    await owner.query(
+      `INSERT INTO edge_staff_pin_peppers (tenant_id, outlet_id, edge_node_id, version, ciphertext)
+       VALUES ($1, $2, $3, 1, $4)`,
+      [
+        tenantId,
+        outletId,
+        edgeNodeId,
+        sealEdgePepper(key, { tenantId, outletId, version: 1 }, v1Pepper),
+      ],
+    );
+    expect((await rows()).map((row) => row.version)).toContain(1);
+    const loaded = await loadEdgePeppers(context, edgeNodeId, key);
+    expect(loaded.has(1)).toBe(false);
+    expect(loaded.has(2)).toBe(true);
+    const left = (await rows()).map((row) => row.version);
+    expect(left).not.toContain(1);
+    expect(left).toContain(2);
   });
 
   it("saving for an unknown node is refused, without the pepper in the message", async () => {
     const pepper = randomBytes(32);
     const error = await saveEdgePeppers(context, randomUUID(), key, [
-      { version: 1, pepper },
+      { version: 2, pepper },
     ]).catch((caught: unknown) => caught as Error);
     expect(error).toBeInstanceOf(Error);
     expect(String((error as Error).message)).not.toContain(

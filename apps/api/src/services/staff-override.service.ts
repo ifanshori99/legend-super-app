@@ -61,7 +61,7 @@ import { SHIFT_COUNT_OBJECT_TYPE } from "./pos-shift-support";
 import { withTenant } from "../db/tenant";
 import { getEdgeRuntimeState } from "../edge/runtime";
 import { recordAudit } from "./audit-writer";
-import { assertPinAttemptOk, attemptStaffPin } from "./device-pin.service";
+import { attemptApproverPin } from "./staff-pin-proof.service";
 import {
   appendDevicePinEvent,
   isOutletMember,
@@ -617,15 +617,14 @@ export async function createPosOverride(
   if (replay) return { override: toView(replay, requestedBy), replayed: true };
 
   // 2. The approver's pin: counted and committed on its own (§3 F6 lock).
-  assertPinAttemptOk(
-    await attemptStaffPin(tenant, {
-      outletId,
-      userId: approverUserId,
-      pin: approval.pin,
-      deviceId,
-      now,
-    }),
-  );
+  await attemptApproverPin(tenant, {
+    outletId,
+    approverUserId,
+    requesterUserId: requestedBy,
+    pin: approval.pin,
+    deviceId,
+    now,
+  });
 
   // 3. Record it. A concurrent retry with the same key waits on the lock and
   //    then returns the row the first one wrote.

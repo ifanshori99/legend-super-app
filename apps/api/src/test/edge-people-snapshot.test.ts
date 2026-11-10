@@ -78,7 +78,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { hashStaffPin } from "../services/device-pin-hash.ts";
 import {
-  STAFF_PIN_PEPPER_VERSION,
+  currentStaffPinPepperVersion,
   staffPinPepper,
 } from "../services/device-pin-pepper.ts";
 import { buildEdgePeopleSnapshot } from "../services/edge-people-snapshot.ts";
@@ -210,7 +210,7 @@ async function seedPin(
   userId: string,
 ): Promise<void> {
   const hashed = await hashStaffPin({
-    pepper: staffPinPepper(forTenant),
+    pepper: staffPinPepper(forTenant, outletId),
     binding: { tenantId: forTenant, outletId, userId },
     pin: "482916",
   });
@@ -229,7 +229,7 @@ async function seedPin(
       hashed.params.N,
       hashed.params.r,
       hashed.params.p,
-      STAFF_PIN_PEPPER_VERSION,
+      currentStaffPinPepperVersion(),
       at,
     ],
     forTenant,

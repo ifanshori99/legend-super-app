@@ -33,6 +33,7 @@ import { db } from "../db";
 import {
   devicePinThrottle,
   staffPinProofs,
+  userPinThrottle,
 } from "../db/schema/staff-pin-proof";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
@@ -40,8 +41,12 @@ import { logger } from "../lib/logger";
 import { toLoggableError } from "../lib/safe-error";
 import { recordAudit } from "./audit-writer";
 import {
+  assertPinAttemptOk,
+  attemptStaffPin,
+  PinNewlyLockedError,
   resolveDeviceOutlet,
   verifyStaffPinOnDevice,
+  type PinAttemptOutcome,
 } from "./device-pin.service";
 import { outletContext } from "./device-pin-support";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
@@ -71,13 +76,27 @@ export type StaffPinProofRow = {
 
 /** 429 PIN_DEVICE_THROTTLED; the route sends `Retry-After: retryAfterSeconds`. */
 export class PinDeviceThrottledError extends HttpError {
-  constructor(readonly retryAfterSeconds: number) {
-    super(
-      429,
-      "PIN_DEVICE_THROTTLED",
-      "Terlalu banyak PIN salah dari perangkat ini. Coba lagi nanti.",
-    );
+  constructor(
+    readonly retryAfterSeconds: number,
+    message = "Terlalu banyak PIN salah dari perangkat ini. Coba lagi nanti.",
+  ) {
+    super(429, "PIN_DEVICE_THROTTLED", message);
     this.name = "PinDeviceThrottledError";
+  }
+}
+
+/**
+ * Same answer (429 PIN_DEVICE_THROTTLED, `Retry-After`) for the per-requester
+ * window of approver PINs (bead legend-vfj7z), so a route that handles the
+ * device error handles this one too.
+ */
+export class PinRequesterThrottledError extends PinDeviceThrottledError {
+  constructor(retryAfterSeconds: number) {
+    super(
+      retryAfterSeconds,
+      "Terlalu banyak PIN penyetuju yang salah dari akun ini. Coba lagi nanti.",
+    );
+    this.name = "PinRequesterThrottledError";
   }
 }
 
@@ -207,7 +226,8 @@ async function issuePinProof(
 // Atomic slot reservation (legend-u7g9w): a request takes one of the window's
 // 10 slots BEFORE its PIN is checked, in its own committed transaction, so
 // parallel guesses cannot all pass a stale count. A correct PIN or any error
-// other than `PIN_INVALID` gives the slot back; `PIN_INVALID` keeps it.
+// other than `PIN_INVALID` gives the slot back; `PIN_INVALID` and the guess
+// that newly locks a staff PIN (`PinNewlyLockedError`) keep it.
 
 /**
  * Takes one slot (upsert: an ended window restarts at 1, otherwise +1). Over
@@ -293,7 +313,8 @@ async function releaseDeviceSlot(
  * After a confirmed wrong PIN: the first miss to see the window at 10 or more
  * claims the window's alert (`alerted_window_started_at`) and writes one audit
  * row and one supervisor alert, in its own transaction. A failure here is
- * logged and never changes the client's answer (still 401 PIN_INVALID).
+ * logged and never changes the client's answer (still 401 PIN_INVALID, or
+ * 423 PIN_LOCKED for the guess that locked the staff PIN).
  */
 async function alertDeviceThrottled(
   context: ScopedTenantContext,
@@ -381,8 +402,9 @@ export type VerifyWithProofInput = {
  * 1. reserve one of the device's window slots (429 before anything else, staff
  *    counters untouched);
  * 2. with a purpose: the staff member may clock (403 before the PIN is checked);
- * 3. the existing verify; a wrong PIN (`PIN_INVALID`) keeps the slot, a correct
- *    PIN or any other error gives it back;
+ * 3. the existing verify; a wrong PIN (`PIN_INVALID`) and the guess that newly
+ *    locks the staff PIN (`PinNewlyLockedError`) keep the slot, a correct PIN
+ *    or any other error (including an already locked PIN) gives it back;
  * 4. with a purpose and a correct PIN: a new proof in the answer.
  * Without a purpose the answer is exactly the old one.
  */
@@ -410,7 +432,13 @@ export async function verifyStaffPinWithProof(
       );
     result = await verifyStaffPinOnDevice(tenant, verifyInput);
   } catch (error) {
-    if (error instanceof IdentityError && error.code === "PIN_INVALID")
+    // A guess that itself locked the staff PIN is still a wrong guess: keep
+    // its slot and alert (legend-sp9vq). A pin locked before never looked at
+    // the guess, so that one gives the slot back.
+    if (
+      (error instanceof IdentityError && error.code === "PIN_INVALID") ||
+      error instanceof PinNewlyLockedError
+    )
       await alertDeviceThrottled(
         context,
         outletId,
@@ -436,4 +464,239 @@ export async function verifyStaffPinWithProof(
     ...result,
     proof: { token: proof.token, expiresAt: proof.expiresAt.toISOString() },
   };
+}
+
+// ------------------------------------------------- approver PIN (legend-vfj7z)
+// The approver PIN checks of the supervisor override and open bill run under
+// one fixed window (10 wrong PINs / 5 minutes), taken before the PIN is
+// checked: per verified device when the request has one, otherwise per
+// authenticated requester (a client cannot drop that key).
+
+/** Takes one of the requester's window slots; over the limit: 429 and returned. */
+async function reserveRequesterSlot(
+  context: ScopedTenantContext,
+  requesterUserId: string,
+  now: Date,
+): Promise<Date> {
+  const stamp = sql`${now.toISOString()}::timestamptz`;
+  const expired = sql`${userPinThrottle.windowStartedAt} + ${WINDOW_INTERVAL} <= ${stamp}`;
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .insert(userPinThrottle)
+      .values({
+        tenantId: context.tenant.tenantId,
+        userId: requesterUserId,
+        windowStartedAt: now,
+        failures: 1,
+      })
+      .onConflictDoUpdate({
+        target: [userPinThrottle.tenantId, userPinThrottle.userId],
+        set: {
+          failures: sql`CASE WHEN ${expired} THEN 1 ELSE ${userPinThrottle.failures} + 1 END`,
+          windowStartedAt: sql`CASE WHEN ${expired} THEN ${stamp} ELSE ${userPinThrottle.windowStartedAt} END`,
+        },
+      })
+      .returning({
+        failures: userPinThrottle.failures,
+        windowStartedAt: userPinThrottle.windowStartedAt,
+      });
+    if (!row) throw new Error("requester pin throttle reservation failed");
+    if (row.failures > PIN_DEVICE_MAX_FAILURES) {
+      await releaseRequesterSlotInTx(
+        tx,
+        context,
+        requesterUserId,
+        row.windowStartedAt,
+      );
+      const windowEnds = row.windowStartedAt.getTime() + PIN_DEVICE_WINDOW_MS;
+      throw new PinRequesterThrottledError(
+        Math.max(1, Math.ceil((windowEnds - now.getTime()) / 1000)),
+      );
+    }
+    return row.windowStartedAt;
+  });
+}
+
+async function releaseRequesterSlotInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  requesterUserId: string,
+  windowStartedAt: Date,
+): Promise<void> {
+  await tx
+    .update(userPinThrottle)
+    .set({ failures: sql`GREATEST(${userPinThrottle.failures} - 1, 0)` })
+    .where(
+      and(
+        eq(userPinThrottle.tenantId, context.tenant.tenantId),
+        eq(userPinThrottle.userId, requesterUserId),
+        eq(userPinThrottle.windowStartedAt, windowStartedAt),
+      ),
+    );
+}
+
+/** Gives a requester slot back (own transaction); a failure is logged and swallowed. */
+async function releaseRequesterSlot(
+  context: ScopedTenantContext,
+  requesterUserId: string,
+  windowStartedAt: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      releaseRequesterSlotInTx(tx, context, requesterUserId, windowStartedAt),
+    );
+  } catch (error) {
+    logger.error(
+      { err: toLoggableError(error), requesterUserId },
+      "staff pin requester slot release failed",
+    );
+  }
+}
+
+/**
+ * After a counted miss: the first one to see the requester's window at 10 or
+ * more claims the window's alert and writes one audit row and one supervisor
+ * alert. A failure is logged and never changes the answer.
+ */
+async function alertRequesterThrottled(
+  context: ScopedTenantContext,
+  outletId: string,
+  requesterUserId: string,
+  windowStartedAt: Date,
+  now: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, async (tx) => {
+      const [claimed] = await tx
+        .update(userPinThrottle)
+        .set({ alertedWindowStartedAt: windowStartedAt })
+        .where(
+          and(
+            eq(userPinThrottle.tenantId, context.tenant.tenantId),
+            eq(userPinThrottle.userId, requesterUserId),
+            eq(userPinThrottle.windowStartedAt, windowStartedAt),
+            gte(userPinThrottle.failures, PIN_DEVICE_MAX_FAILURES),
+            sql`${userPinThrottle.alertedWindowStartedAt} IS DISTINCT FROM ${userPinThrottle.windowStartedAt}`,
+          ),
+        )
+        .returning({ userId: userPinThrottle.userId });
+      if (!claimed) return;
+      await recordAudit(
+        {
+          tenantId: context.tenant.tenantId,
+          outletId,
+          actorType: "user",
+          actorId: requesterUserId,
+          deviceId: null,
+          action: "staff_pin.requester_throttled",
+          objectType: "user",
+          objectId: requesterUserId,
+          reason: null,
+          before: null,
+          after: {
+            failures: PIN_DEVICE_MAX_FAILURES,
+            windowSeconds: PIN_DEVICE_WINDOW_MS / 1000,
+          },
+          sensitiveAccess: false,
+        },
+        { tx, context },
+      );
+      const id = createUlid(now.getTime());
+      await notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId: context.tenant.tenantId,
+          outletId: outletIdSchema.parse(outletId),
+          id,
+          eventName: "staff_pin.requester_throttled",
+          aggregateType: "staff_pin",
+          aggregateId: id,
+          payload: { userId: requesterUserId },
+          title: "Akun staf dibatasi karena PIN penyetuju salah",
+          body: "Satu akun staf memasukkan PIN penyetuju yang salah 10 kali dalam 5 menit dan dibatasi sementara. Periksa akun itu.",
+        },
+        now,
+      );
+    });
+  } catch (error) {
+    logger.error(
+      { err: toLoggableError(error), requesterUserId },
+      "staff pin requester throttle alert failed",
+    );
+  }
+}
+
+/**
+ * An approver's PIN on the supervisor override and open-bill paths, under ONE
+ * fixed window, chosen by what the request can prove:
+ * - a verified device id: the per-device window (terminals that share one
+ *   account, e.g. an outlet account with the cashier active by PIN, never
+ *   block each other);
+ * - no verified device: the per-requester window of the authenticated account,
+ *   so a client that drops X-Device-Token still meets a limit.
+ * The slot is taken before the PIN is checked. A wrong guess and the guess that
+ * newly locks the approver's PIN keep it (and can raise the window alert); a
+ * correct PIN, an already locked PIN and any other answer give it back. Over the
+ * limit the answer is 429 before the approver's counter moves. Throws what
+ * `assertPinAttemptOk` throws.
+ */
+export async function attemptApproverPin(
+  tenant: TenantContext,
+  input: {
+    readonly outletId: string;
+    readonly approverUserId: string;
+    readonly requesterUserId: string;
+    readonly pin: string;
+    readonly deviceId: string | null;
+    readonly now: Date;
+  },
+): Promise<void> {
+  const outletId = outletIdSchema.parse(input.outletId);
+  const context = outletContext(tenant, outletId);
+  const { deviceId, now } = input;
+  // One key per account, whatever the caller's case (a window split in two
+  // would double the limit).
+  const requesterUserId = input.requesterUserId.toLowerCase();
+  const window =
+    deviceId !== null
+      ? {
+          start: await reserveDeviceSlot(context, deviceId, now),
+          release: (start: Date) => releaseDeviceSlot(context, deviceId, start),
+          alert: (start: Date) =>
+            alertDeviceThrottled(context, outletId, deviceId, start, now),
+        }
+      : {
+          start: await reserveRequesterSlot(context, requesterUserId, now),
+          release: (start: Date) =>
+            releaseRequesterSlot(context, requesterUserId, start),
+          alert: (start: Date) =>
+            alertRequesterThrottled(
+              context,
+              outletId,
+              requesterUserId,
+              start,
+              now,
+            ),
+        };
+  let outcome: PinAttemptOutcome;
+  try {
+    outcome = await attemptStaffPin(tenant, {
+      outletId,
+      userId: input.approverUserId,
+      pin: input.pin,
+      deviceId,
+      now,
+    });
+  } catch (error) {
+    await window.release(window.start);
+    throw error;
+  }
+  if (
+    outcome.kind === "invalid" ||
+    (outcome.kind === "locked" && outcome.fresh === true)
+  )
+    await window.alert(window.start);
+  else await window.release(window.start);
+  assertPinAttemptOk(outcome);
 }

@@ -62,19 +62,23 @@
 // - Each record carries `pinGenerationAt`, the exact microsecond order key of
 //   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
-// Pepper provisioning (legend-ideif). The edge verifies offline with
-// `record + pepper`, but it never holds the root STAFF_PIN_PEPPER (the edge
-// refuses to boot with it, config/env.ts). When the edge asks with
-// `peppers=<highest version it holds>` the cloud answers `meta.peppers`: the
-// peppers it derived for THE CREDENTIAL'S TENANT, for every version above that
-// one (`staffPinPeppersForEdge`, device-pin-pepper.ts), base64, over TLS and
-// `Cache-Control: private, no-store`. The edge seals them in its own database
+// Pepper provisioning (legend-ideif, legend-jmsdx). The edge verifies offline
+// with `record + pepper`, but it never holds the root STAFF_PIN_PEPPER (the
+// edge refuses to boot with it, config/env.ts). When the edge asks with
+// `peppers=<versions it holds>` (`peppers=2,3`; `peppers=none` or an empty value =
+// holds none; no parameter = does not ask) the cloud answers `meta.peppers`: the peppers it
+// derived for THE CREDENTIAL'S OUTLET (version >= 2, never version 1), for the
+// versions the staff_pins rows of that outlet use plus the current version,
+// minus the ones the edge already holds (`staffPinPeppersForEdge`,
+// device-pin-pepper.ts), base64, over TLS and `Cache-Control: private,
+// no-store`. The edge seals them in its own database
 // (edge/staff-pin-pepper-store.ts). A stolen edge box thus yields one
-// tenant's peppers, never the root and never another tenant's. The values are
-// never logged, audited, put in an event or in any other response. Rotation
-// (raise STAFF_PIN_PEPPER_CURRENT_VERSION on the cloud, docs/deployment.md
-// "Staff device pins"): the next pull delivers the new version; pins hashed
-// under an older version keep verifying until their owner sets a new pin.
+// outlet's peppers, never the root and never another outlet's or tenant's. The
+// values are never logged, audited, put in an event or in any other response.
+// Rotation (raise STAFF_PIN_PEPPER_CURRENT_VERSION on the cloud,
+// docs/deployment.md "Staff device pins"): the next pull delivers the new
+// version; pins hashed under an older version keep verifying, on the cloud and
+// the edge, until a cloud verify rehashes them or their owner sets a new pin.
 //
 // Apply (edge, `applyStaffPinRecords`): idempotent, cloud wins. Runs on the
 // edge's own database, on the outlet-scoped context of the edge node. One
@@ -225,10 +229,22 @@ export const staffPinSyncQuerySchema = z.strictObject({
   // so the cloud only sends it to an edge that asks. A new edge always asks,
   // so it needs a cloud that knows this flag (cloud first, as documented).
   revision: z.literal("1").optional(),
-  // legend-ideif: opt-in as well (an older edge parses `meta` strictly). The
-  // highest pepper version the edge holds (0 = none); the cloud answers with
-  // the tenant's derived peppers above it.
-  peppers: z.coerce.number().int().min(0).max(1000).optional(),
+  // legend-ideif, legend-jmsdx: opt-in as well (an older edge parses `meta`
+  // strictly). The pepper versions the edge holds, `2,3` ("none" or "" = none); the
+  // cloud answers with the outlet's derived peppers it lacks. Parsed twice
+  // (route, then service), so an already parsed array passes through.
+  peppers: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" &&
+        (value === "none" || /^(\d{1,4}(,\d{1,4})*)?$/.test(value))
+          ? value === "" || value === "none"
+            ? []
+            : value.split(",").map(Number)
+          : value,
+      z.array(z.number().int().min(1).max(1000)).max(100),
+    )
+    .optional(),
 });
 export type StaffPinSyncQuery = z.infer<typeof staffPinSyncQuerySchema>;
 
@@ -240,11 +256,11 @@ export const staffPinSyncPageSchema = z.strictObject({
     nextCursor: cursorSchema.nullable(),
     /** Store after applying the page; null = nothing replicated yet. */
     watermark: cursorSchema.nullable(),
-    /** Only when asked (`peppers=`): the tenant's derived peppers, base64 of 32 bytes. */
+    /** Only when asked (`peppers=`): the outlet's derived peppers (version >= 2), base64 of 32 bytes. */
     peppers: z
       .array(
         z.strictObject({
-          version: z.number().int().min(1).max(1000),
+          version: z.number().int().min(2).max(1000),
           pepper: z.string().length(44),
         }),
       )
@@ -406,6 +422,24 @@ export async function listStaffPinRecordsSince(
     return { rows: found, epoch: current.epoch, since };
   });
 
+  // The pepper versions the outlet's rows use, only for an edge that asked.
+  const usedPepperVersions =
+    peppers === undefined
+      ? []
+      : (
+          await withTenant(db, context, (tx) =>
+            tx
+              .selectDistinct({ version: staffPins.pepperVersion })
+              .from(staffPins)
+              .where(
+                and(
+                  eq(staffPins.tenantId, verified.tenantId),
+                  eq(staffPins.outletId, verified.outletId),
+                ),
+              ),
+          )
+        ).map((row) => row.version);
+
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark = last
@@ -439,9 +473,16 @@ export async function listStaffPinRecordsSince(
       // A legacy, foreign-epoch or future cursor is not carried over: the
       // edge restarts from the beginning.
       watermark: lastMark ?? (since === null ? null : encodeWatermark(since)),
-      // The tenant is the verified credential's, never the query's.
+      // The tenant and outlet are the verified credential's, never the query's.
       ...(peppers !== undefined
-        ? { peppers: staffPinPeppersForEdge(verified.tenantId, peppers) }
+        ? {
+            peppers: staffPinPeppersForEdge(
+              verified.tenantId,
+              verified.outletId,
+              peppers,
+              usedPepperVersions,
+            ),
+          }
         : {}),
     },
   });
@@ -616,7 +657,14 @@ export async function applyStaffPinRecords(
         applied += 1;
         continue;
       }
-      if (!sameMaterial(local, record)) {
+      // legend-jmsdx: the cloud re-hashes an old-version pin under the same
+      // generation key (device-pin.service.ts), so a tie with other material
+      // is the same PIN in new hash material. Only the hash columns are taken
+      // and the lock state goes through the merge below: copying the cloud's
+      // counter and lock here would clear what the edge counted (a rehash
+      // must never weaken the edge's lockout).
+      const rehashed = found!.keyOrder === 0 && !sameMaterial(local, record);
+      if (!rehashed && !sameMaterial(local, record)) {
         // A pin set or reset on the cloud: a tie or a later key wins. An
         // earlier key is an older generation replayed late.
         if (found!.keyOrder < 0) continue;
@@ -701,6 +749,7 @@ export async function applyStaffPinRecords(
         (local.cloudLockedUntil?.getTime() ?? null) !==
           (recordLock?.getTime() ?? null);
       const changed =
+        rehashed ||
         found!.keyOrder > 0 ||
         found!.cloudKeyLater ||
         counterRaised ||
@@ -709,6 +758,17 @@ export async function applyStaffPinRecords(
       await tx
         .update(staffPins)
         .set({
+          ...(rehashed
+            ? {
+                pinHash: material.pinHash,
+                pinSalt: material.pinSalt,
+                kdfN: material.kdfN,
+                kdfR: material.kdfR,
+                kdfP: material.kdfP,
+                pepperVersion: material.pepperVersion,
+                updatedAt: version,
+              }
+            : {}),
           ...(counterRaised ? { failedAttempts: record.failedAttempts } : {}),
           ...(lockRaised ? { lockedUntil: recordLock } : {}),
           cloudFailedAttempts: record.failedAttempts,

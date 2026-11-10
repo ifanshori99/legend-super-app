@@ -21,7 +21,7 @@ import type { Express } from "express";
 import { createApp } from "../app.ts";
 import { hashStaffPin } from "../services/device-pin-hash.ts";
 import {
-  STAFF_PIN_PEPPER_VERSION,
+  currentStaffPinPepperVersion,
   staffPinPepper,
 } from "../services/device-pin-pepper.ts";
 import { agent, originHeader } from "./helpers.ts";
@@ -65,7 +65,7 @@ async function seedPin(
   pin = PIN,
 ) {
   const hashed = await hashStaffPin({
-    pepper: staffPinPepper(tenantId),
+    pepper: staffPinPepper(tenantId, outlet),
     binding: { tenantId, outletId: outlet, userId },
     pin,
   });
@@ -84,7 +84,7 @@ async function seedPin(
       hashed.params.N,
       hashed.params.r,
       hashed.params.p,
-      STAFF_PIN_PEPPER_VERSION,
+      currentStaffPinPepperVersion(),
       setAt,
     ],
   );

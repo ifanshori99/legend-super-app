@@ -8,6 +8,11 @@
 // - device_pin_throttle: per-device fixed window counter of wrong PINs across
 //   all staff (guess-spraying guard). Tenant owned (staff-pin-proof.custom.sql).
 //
+// - user_pin_throttle: per-requester fixed window counter of wrong approver
+//   PINs (bead legend-vfj7z). Keyed by the authenticated requester's user id, so
+//   a client that drops X-Device-Token still meets a limit. Tenant owned
+//   (staff-pin-proof.custom.sql).
+//
 // core_storage_objects.pin_proof_id (core-storage.ts) links a selfie upload to
 // the proof that authorised it.
 import { sql } from "drizzle-orm";
@@ -101,5 +106,27 @@ export const devicePinThrottle = pgTable(
       foreignColumns: [devices.tenantId, devices.id],
     }).onDelete("cascade"),
     check("device_pin_throttle_failures_check", sql`${table.failures} >= 0`),
+  ],
+);
+
+export const userPinThrottle = pgTable(
+  "user_pin_throttle",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    failures: integer("failures").notNull().default(0),
+    /** Window for which the audit + alert already fired (once per window). */
+    alertedWindowStartedAt: timestamp("alerted_window_started_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.userId] }),
+    check("user_pin_throttle_failures_check", sql`${table.failures} >= 0`),
   ],
 );

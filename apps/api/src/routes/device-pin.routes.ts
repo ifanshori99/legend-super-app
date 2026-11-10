@@ -50,6 +50,7 @@ import {
   createPosOverride,
   getPosOverride,
 } from "../services/staff-override.service";
+import { optionalDeviceIdOf } from "./optional-device-id";
 
 function idempotencyKeyOf(req: Request): string | null {
   const raw = req.get("Idempotency-Key");
@@ -143,12 +144,24 @@ posOverrideRouter.post("/", jsonBody, async (req, res) => {
       ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
       "Kasir aktif bukan untuk outlet ini.",
     );
-  const { override, replayed } = await createPosOverride(
-    getTenantContext(req),
-    actorOf(req),
-    input,
-    { idempotencyKey: idempotencyKeyOf(req) },
-  );
+  let result: Awaited<ReturnType<typeof createPosOverride>>;
+  try {
+    result = await createPosOverride(
+      getTenantContext(req),
+      actorOf(req),
+      input,
+      {
+        idempotencyKey: idempotencyKeyOf(req),
+        deviceId: optionalDeviceIdOf(req),
+      },
+    );
+  } catch (error) {
+    // 429 tells the device when its PIN window ends (bead legend-vfj7z).
+    if (error instanceof PinDeviceThrottledError)
+      res.setHeader("Retry-After", String(error.retryAfterSeconds));
+    throw error;
+  }
+  const { override, replayed } = result;
   res.setHeader("Cache-Control", "private, no-store");
   res.status(replayed ? 200 : 201).json({ data: override });
 });

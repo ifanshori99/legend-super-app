@@ -9,3 +9,6 @@ SELECT app.enforce_tenant_rls('public.device_pin_throttle'::regclass);
 SELECT app.enforce_tenant_rls('public.staff_pin_proofs'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.staff_pin_proofs'::regclass);
+--> statement-breakpoint
+-- user_pin_throttle (bead legend-vfj7z): tenant owned only, like device_pin_throttle.
+SELECT app.enforce_tenant_rls('public.user_pin_throttle'::regclass);
