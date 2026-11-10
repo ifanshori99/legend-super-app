@@ -770,3 +770,91 @@ describe("payslip PIN reset code: expiry is judged after the lock is obtained", 
     expect((await view(staff.client, staff.payslipId, GOOD)).status).toBe(200);
   });
 });
+
+// ------------------------------------------------------------ legend-hbaml
+// Timestamps taken after the PIN lock (same clock pattern as finding 5):
+// HR reset (`POST /employees/:id/payslip-pin/reset`) and opening a payslip
+// (`viewedAt`) must stamp the time the lock was obtained, not the time the
+// request started waiting for it. The request-OTP path is out of scope here.
+
+/** Sends `request` while the employee's PIN lock is held, jumps the clock, releases. */
+async function whileLocked<T extends { status: number }>(
+  employeeId: string,
+  request: () => Promise<T>,
+  jumpMs: number,
+): Promise<{ response: T; movedTo: number }> {
+  const lock = await holdPinLock(employeeId);
+  let pending: Promise<T> | undefined;
+  const movedTo = Date.now() + jumpMs;
+  try {
+    pending = request().then((r) => r);
+    await waitForLockWaiter(employeeId);
+    vi.useFakeTimers({ toFake: ["Date"], now: movedTo });
+  } finally {
+    await lock.release();
+  }
+  try {
+    return { response: await pending!, movedTo };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+describe("legend-hbaml: PIN lock timestamps are read after the lock is obtained", () => {
+  it("opening a payslip stamps viewedAt with the time the lock was obtained", async () => {
+    const staff = await makeStaff();
+    expect(ok((await setPin(staff.client, { pin: GOOD })).status)).toBe(true);
+
+    const { response, movedTo } = await whileLocked(
+      staff.employeeId,
+      () => view(staff.client, staff.payslipId, GOOD),
+      30 * 60_000,
+    );
+    expect(response.status).toBe(200);
+
+    const rows = await sql<{ viewed_at: Date | null }>(
+      "SELECT viewed_at FROM payslips WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, staff.payslipId],
+    );
+    expect(rows[0]!.viewed_at).not.toBeNull();
+    // Stale clock: about 30 minutes earlier than the moment the lock was won.
+    expect(rows[0]!.viewed_at!.getTime()).toBeGreaterThanOrEqual(movedTo);
+  });
+
+  it("an HR reset stamps its audit event and its effects with the time the lock was obtained", async () => {
+    const staff = await makeStaff();
+    expect(ok((await setPin(staff.client, { pin: GOOD })).status)).toBe(true);
+    // A pending reset code is voided by the HR reset.
+    expect(ok((await requestOtp(staff.client)).status)).toBe(true);
+
+    const { response, movedTo } = await whileLocked(
+      staff.employeeId,
+      () => hrReset(staff.employeeId),
+      30 * 60_000,
+    );
+    expect(ok(response.status)).toBe(true);
+
+    const events = await sql<{ created_at: string }>(
+      `SELECT event->>'createdAt' AS created_at FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'payslip_pin.reset'
+          AND event->'maskedChanges'->'after'->>'employeeId' = $2`,
+      [tenant.id, staff.employeeId],
+    );
+    expect(events).toHaveLength(1);
+    // Stale clock: about 30 minutes earlier than the moment the lock was won.
+    expect
+      .soft(new Date(events[0]!.created_at).getTime())
+      .toBeGreaterThanOrEqual(movedTo);
+
+    const challenges = await sql<{ consumed_at: Date | null }>(
+      `SELECT consumed_at FROM payslip_pin_reset_challenges
+        WHERE tenant_id = $1 AND employee_id = $2`,
+      [tenant.id, staff.employeeId],
+    );
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]!.consumed_at).not.toBeNull();
+    expect
+      .soft(challenges[0]!.consumed_at!.getTime())
+      .toBeGreaterThanOrEqual(movedTo);
+  });
+});
