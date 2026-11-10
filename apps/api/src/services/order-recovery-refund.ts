@@ -35,8 +35,10 @@
 //   amount and `order.refunded` split again, without a promo recompute and
 //   without a second payout, cut to the room the intent still has
 //   (`replayOfIssueId` on its idempotency response and audit row). A rejected
-//   earlier issue, a live or paid refund, or an earlier refund without an
-//   `order.refunded` split takes the normal path.
+//   earlier issue or a live or paid refund takes the normal path; so does a
+//   pay-first earlier refund without an `order.refunded` split. An open bill
+//   files no split: it replays the failed amount whole. A chain of replays
+//   follows `replayOfIssueId` back to the root issue.
 // Events of another tenant or outlet, and every other event, are ignored.
 
 import { and, desc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -450,6 +452,7 @@ export async function deliverOrderRecoveryRefundEvent(
         issue,
         issues,
         toOriginal,
+        payFirst,
       );
       if (replay === null) {
         // A failed item was never delivered, whatever happened to its refund
@@ -726,8 +729,14 @@ type RecoveryRefundReplaySource = {
  * when its refund ended in a final failure that is not `rejected`
  * (`refund_rejected_at` set, latest refund `failed`) and its `order.refunded`
  * (`payload.refundId` = its id) holds a split that adds up to the failed
- * refund's amount. A rejected, live or paid refund, or no split (open bill):
- * null. The caller holds the intent lock, which serializes this read with the
+ * refund's amount. A rejected, live or paid refund, or (pay-first) no split:
+ * null. An open bill files no split nor `order.refunded`: its replay is the
+ * failed amount as gross sales, with no discount, service charge or tax.
+ * A chain (A -> B replayed and cut by room -> B final-fails -> C) follows the
+ * `replayOfIssueId` of each filing's idempotency response back to the root
+ * issue (at most 10 hops) and takes the root's amount and split, so a cut is
+ * recovered; the caller caps it by the room again. The source reports the
+ * root. The caller holds the intent lock, which serializes this read with the
  * failure hook that stamps `refund_rejected_at`.
  */
 async function findRecoveryRefundReplay(
@@ -744,6 +753,7 @@ async function findRecoveryRefundReplay(
     refundRejectedAt: Date | null;
   }[],
   toOriginal: (itemId: string) => string,
+  payFirst: boolean,
 ): Promise<RecoveryRefundReplaySource | null> {
   const original = toOriginal(issue.orderItemId);
   const earlier = issues
@@ -796,6 +806,52 @@ async function findRecoveryRefundReplay(
     (failedRefund.failureReason ?? "unknown") === "rejected"
   )
     return null;
+  // Follow the replay chain to the root issue.
+  let rootId = previous.id;
+  for (let hop = 0; hop < 10; hop++) {
+    const [filing] = await tx
+      .select({ response: paymentAdminIdempotency.response })
+      .from(paymentAdminIdempotency)
+      .where(
+        and(
+          eq(paymentAdminIdempotency.tenantId, tenantId),
+          eq(paymentAdminIdempotency.key, orderRecoveryRefundKey(rootId)),
+        ),
+      );
+    const next = (
+      filing?.response as { replayOfIssueId?: unknown } | null | undefined
+    )?.replayOfIssueId;
+    if (typeof next !== "string" || next === rootId) break;
+    rootId = next;
+  }
+  const isRoot = rootId === previous.id;
+  if (!payFirst) {
+    // Open bill: no split to read; the root's filed amount is what to replay.
+    let amountIdr = failedRefund.amountIdr;
+    if (!isRoot) {
+      const [rootRefund] = await tx
+        .select({ amountIdr: paymentRefunds.amountIdr })
+        .from(paymentRefunds)
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, tenantId),
+            eq(paymentRefunds.orderIssueId, rootId),
+          ),
+        )
+        .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id))
+        .limit(1);
+      if (rootRefund === undefined) return null;
+      amountIdr = rootRefund.amountIdr;
+    }
+    return {
+      issueId: rootId,
+      amountIdr,
+      grossSalesIdr: amountIdr,
+      discountIdr: 0,
+      serviceChargeIdr: 0,
+      pbjtIdr: 0,
+    };
+  }
   const [refunded] = await tx
     .select({ payload: sql<unknown>`${domainEventOutbox.event}->'payload'` })
     .from(domainEventOutbox)
@@ -804,7 +860,7 @@ async function findRecoveryRefundReplay(
         eq(domainEventOutbox.tenantId, tenantId),
         eq(domainEventOutbox.aggregateType, "order"),
         sql`${domainEventOutbox.event}->>'name' = 'order.refunded'`,
-        sql`${domainEventOutbox.event}->'payload'->>'refundId' = ${previous.id}`,
+        sql`${domainEventOutbox.event}->'payload'->>'refundId' = ${rootId}`,
         sql`${domainEventOutbox.event}->'payload'->>'orderId' = ${orderId}`,
       ),
     )
@@ -819,22 +875,23 @@ async function findRecoveryRefundReplay(
       ? value
       : null;
   };
+  const amountIdr = isRoot ? failedRefund.amountIdr : part("amountIdr");
   const grossSalesIdr = part("grossSalesIdr");
   const discountIdr = part("discountIdr");
   const serviceChargeIdr = part("serviceChargeIdr");
   const pbjtIdr = part("pbjtIdr");
   if (
+    amountIdr === null ||
     grossSalesIdr === null ||
     discountIdr === null ||
     serviceChargeIdr === null ||
     pbjtIdr === null ||
-    grossSalesIdr - discountIdr + serviceChargeIdr + pbjtIdr !==
-      failedRefund.amountIdr
+    grossSalesIdr - discountIdr + serviceChargeIdr + pbjtIdr !== amountIdr
   )
     return null;
   return {
-    issueId: previous.id,
-    amountIdr: failedRefund.amountIdr,
+    issueId: rootId,
+    amountIdr,
     grossSalesIdr,
     discountIdr,
     serviceChargeIdr,

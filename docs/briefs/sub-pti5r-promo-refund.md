@@ -66,3 +66,13 @@ Section G (tests, test-writer): rewrite `apps/api/src/test/order-recovery-refund
 - Do not rely on `returnPartialRefundPayout` or `#promo-return`.
 
 Section H (SQL/runbook, implementer 2): drop queries 2 and 3 from `apps/api/scripts/recovery-refund-final-failure-check.sql` and its test `recovery-refund-final-failure-check-db.test.ts`; runbook: no promo backfill needed (ledger untouched by design; re-report replays), keep query 1 plan (stamp + reversal), mention the replay rule. Run its test.
+
+## Round 4 (architect review of f6f62af8)
+
+Test DB is DOWN (macOS directory service broken -> colima/lima panic "unknown userid 501"). Do not try to fix Docker/Colima. Write code/tests, run `heavy pnpm --filter @starter/api typecheck` once at the end; DB tests cannot run now.
+
+Section I (src, implementer; file `apps/api/src/services/order-recovery-refund.ts` only):
+
+- (1, high) Open-bill promo orders: `findRecoveryRefundReplay` returns null when there is no `order.refunded` payload, so the re-report falls to the normal path and ends `nothing_left`. Pass `payFirst` into it; when the order is not pay-first, skip the outbox lookup and replay `{ amountIdr: failed.amountIdr, grossSalesIdr: amountIdr, discountIdr: 0, serviceChargeIdr: 0, pbjtIdr: 0 }` (open bill files no split/`order.refunded`); room cap still applies. Pay-first with a missing payload: keep falling back (log/audit not needed).
+- (2, low) Replay chain A -> B (replay, cut by room) -> B final-fails -> C: if the earlier issue's filing idempotency response has `replayOfIssueId`, follow it to the root issue and take the root's amount + split (bounded loop, e.g. <= 10 hops), so a lost cut is recovered; cap by room again (shortfall audit as usual). `replayOfIssueId` stored should be the root.
+  Section J (tests, test-writer; file `apps/api/src/test/order-recovery-refund-promo-final-failure.test.ts` only): add failing-first tests: open-bill promo order kopi final-fail -> re-report refunds the failed amount (not nothing_left); chain A -> B cut by room -> B final-fail -> C asks the root's full amount (capped by current room); `unknown` failure reason in the final-reason list; `refile_limit` if the fixture allows (else note why). Make them compile; you cannot run them now.
