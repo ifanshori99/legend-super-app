@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import {
+  idempotencyKeySchema,
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
@@ -61,6 +62,17 @@ export const taxReportSchema = z
     finalizedBy: userIdSchema.nullable(),
     finalizedAt: isoDateTimeSchema.nullable(),
     exportedAt: isoDateTimeSchema.nullable(),
+    /** NULL while draft; 0 for the original filing, n for correction n (Coretax pembetulan ke-n). */
+    revisionNo: z.number().int().min(0).max(32767).nullable(),
+    supersedesId: taxReportIdSchema.nullable(),
+    supersededById: taxReportIdSchema.nullable(),
+    supersededAt: isoDateTimeSchema.nullable(),
+    /** Written reason, required from revision 1 on. */
+    correctionReason: z.string().max(500).nullable(),
+    /** `fiscal_periods.version` the lines were generated against (stale check at finalize). */
+    fiscalPeriodVersion: z.number().int().min(1),
+    /** The filing in force for its period: finalised and not replaced. */
+    isCurrent: z.boolean(),
   })
   .superRefine((report, ctx) => {
     const issue = (path: string, message: string) =>
@@ -81,6 +93,27 @@ export const taxReportSchema = z
       (report.finalizedBy !== null && report.finalizedAt !== null)
     )
       issue("finalizedBy", "finalized fields are set once final");
+    // Mirrors the tax_reports revision CHECKs (migration 0242).
+    const draft = report.status === "draft";
+    if (draft !== (report.revisionNo === null))
+      issue("revisionNo", "revision number is set exactly once final");
+    if (report.revisionNo !== null) {
+      if ((report.revisionNo === 0) !== (report.supersedesId === null))
+        issue("supersedesId", "only a correction supersedes an earlier report");
+      if (report.revisionNo >= 1 !== (report.correctionReason !== null))
+        issue("correctionReason", "a reason is set exactly for corrections");
+    }
+    if (
+      report.correctionReason !== null &&
+      report.correctionReason.trim() === ""
+    )
+      issue("correctionReason", "correction reason must not be blank");
+    if ((report.supersededAt === null) !== (report.supersededById === null))
+      issue("supersededAt", "superseded fields are set together");
+    if (report.supersededById !== null && report.supersededById === report.id)
+      issue("supersededById", "a report cannot supersede itself");
+    if (report.isCurrent !== (!draft && report.supersededAt === null))
+      issue("isCurrent", "current = finalised and not superseded");
   });
 export type TaxReport = z.infer<typeof taxReportSchema>;
 
@@ -96,10 +129,12 @@ export function assertTaxTypeApplicable(
 /**
  *   draft ─regenerate→ draft ─finalize→ final ─export→ exported (export may repeat)
  * Finalising needs the fiscal period closed, so the filed numbers cannot move
- * afterwards (a reopen would need a new draft).
+ * afterwards. After a reopen the correction is a new draft that, once
+ * finalised, supersedes the current report (revision chain); a superseded
+ * report can no longer be exported (only downloaded for audit).
  */
 export function transitionTaxReport(
-  current: Pick<TaxReport, "status">,
+  current: Pick<TaxReport, "status" | "supersededAt">,
   action: "regenerate" | "finalize" | "export",
   period: Pick<FiscalPeriod, "status">,
 ): TaxReportStatus {
@@ -117,6 +152,8 @@ export function transitionTaxReport(
     case "export":
       if (current.status === "draft")
         throw new AccountingError("INVALID_TRANSITION");
+      if (current.supersededAt !== null && current.supersededAt !== undefined)
+        throw new AccountingError("TAX_REPORT_SUPERSEDED");
       return "exported";
   }
 }
@@ -127,13 +164,22 @@ export const generateTaxReportInputSchema = z.strictObject({
   period: periodKeySchema,
 });
 
-/** Coretax export name `coretax-<type>-<period>.xml`: only `[a-z0-9-]` plus the
- * extension, so it is safe in a Content-Disposition header. Throws on invalid input. */
+/** Body of finalize: the correction reason is required from revision 1 on
+ * (the server decides the revision number; revision 0 ignores a reason). */
+export const finalizeTaxReportBodySchema = z.strictObject({
+  idempotencyKey: idempotencyKeySchema,
+  correctionReason: z.string().trim().min(1).max(500).optional(),
+});
+
+/** Coretax export name `coretax-<type>-<period>-r<revisionNo>.xml`: only `[a-z0-9-]`
+ * plus the extension, so it is safe in a Content-Disposition header. Throws on invalid input. */
 export function coretaxExportFileName(
   type: TaxReportType,
   period: string,
+  revisionNo: number,
 ): string {
-  return `coretax-${taxReportTypeSchema.parse(type)}-${periodKeySchema.parse(period)}.xml`;
+  const revision = z.number().int().min(0).max(32767).parse(revisionNo);
+  return `coretax-${taxReportTypeSchema.parse(type)}-${periodKeySchema.parse(period)}-r${revision}.xml`;
 }
 
 export const taxReportExportSchema = z.strictObject({
@@ -143,4 +189,10 @@ export const taxReportExportSchema = z.strictObject({
   /** Short-lived signed download URL from the storage adapter. */
   downloadUrl: z.url(),
   expiresAt: isoDateTimeSchema,
+});
+
+/** Audit download of a stored file; works for superseded reports too. */
+export const taxReportDownloadSchema = taxReportExportSchema.extend({
+  revisionNo: z.number().int().min(0).max(32767).nullable(),
+  supersededById: taxReportIdSchema.nullable(),
 });

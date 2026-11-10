@@ -51,6 +51,16 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       }),
     );
 
+  // Machine-readable context of an accounting error (e.g. `supersededById` on
+  // TAX_REPORT_SUPERSEDED) travels as `{ field, message }` details.
+  if (error instanceof AccountingError && error.details) {
+    const details: ApiErrorDetail[] = Object.entries(error.details)
+      .filter(([, value]) => typeof value === "string")
+      .map(([field, value]) => ({ field, message: value as string }));
+    if (details.length > 0)
+      return send(error.status, error.code, error.message, details);
+  }
+
   if (
     error instanceof HttpError ||
     error instanceof CoreError ||

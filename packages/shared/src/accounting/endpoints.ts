@@ -111,7 +111,9 @@ import {
   trialBalanceSchema,
 } from "./statements.ts";
 import {
+  finalizeTaxReportBodySchema,
   generateTaxReportInputSchema,
+  taxReportDownloadSchema,
   taxReportExportSchema,
   taxReportSchema,
   taxReportStatusSchema,
@@ -743,6 +745,8 @@ export const listTaxReports = defineEndpoint({
     legalEntityId: legalEntityIdSchema,
     type: taxReportTypeSchema.optional(),
     status: taxReportStatusSchema.optional(),
+    /** Superseded revisions are hidden unless asked for (audit history). */
+    includeSuperseded: z.stringbool().optional(),
   }),
   response: list(taxReportSchema),
 });
@@ -756,7 +760,7 @@ export const finalizeTaxReport = defineEndpoint({
   method: "POST",
   path: `${BASE}/tax-reports/:taxReportId/finalize`,
   params: taxParams,
-  body: commandBody,
+  body: finalizeTaxReportBodySchema,
   response: dataResponseSchema(taxReportSchema),
 });
 export const exportTaxReport = defineEndpoint({
@@ -765,6 +769,12 @@ export const exportTaxReport = defineEndpoint({
   params: taxParams,
   body: commandBody,
   response: dataResponseSchema(taxReportExportSchema),
+});
+export const downloadTaxReport = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/tax-reports/:taxReportId/download`,
+  params: taxParams,
+  response: dataResponseSchema(taxReportDownloadSchema),
 });
 
 /** Every accounting endpoint, for registries and route-coverage tests. */
@@ -840,4 +850,5 @@ export const accountingEndpoints = Object.freeze({
   generateTaxReport,
   finalizeTaxReport,
   exportTaxReport,
+  downloadTaxReport,
 });

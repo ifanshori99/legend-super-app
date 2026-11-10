@@ -7,6 +7,7 @@ import { requireTrustedOrigin } from "../middleware/origin";
 import { createCoreStorageRouterWithAccess } from "../services/core-storage-access";
 import type { StorageRuntime } from "../services/core-storage-runtime";
 import type * as schema from "../db/schema";
+import { createAccountingTaxFileRouter } from "./accounting.routes";
 import { createHrisAttendanceAdminRouter } from "./hris-attendance-admin.routes";
 import { createHrisAttendanceRouter } from "./hris-attendance.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -59,6 +60,16 @@ export function createStorageApiRouter(options: {
   );
   router.use("/hris", (req, res, next) =>
     req.path.startsWith("/attendance/") ? attendance(req, res, next) : next(),
+  );
+
+  // Tax report export and download (legend-5nhkp) mint or read stored files.
+  // Only those two paths enter this router; the rest of /accounting stays in
+  // apiRouter.
+  const taxFiles = createAccountingTaxFileRouter({ runtime });
+  router.use("/accounting", (req, res, next) =>
+    /^\/tax-reports\/[^/]+\/(export|download)$/.test(req.path)
+      ? taxFiles(req, res, next)
+      : next(),
   );
   return router;
 }

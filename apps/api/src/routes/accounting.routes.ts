@@ -9,6 +9,10 @@ import {
   approvePeriodReopen,
   closeFiscalPeriod,
   createAccount,
+  downloadTaxReport,
+  exportTaxReport,
+  finalizeTaxReport,
+  generateTaxReport,
   getJournal,
   getPeriodSnapshot,
   listAccountMappings,
@@ -16,6 +20,7 @@ import {
   listFiscalPeriods,
   listJournals,
   listPeriodReopenRequests,
+  listTaxReports,
   rejectPeriodReopen,
   replaceAccountMappings,
   requestPeriodReopen,
@@ -23,6 +28,7 @@ import {
   updateAccount,
 } from "@starter/shared/accounting";
 import { userIdSchema } from "@starter/shared/core";
+import { HttpError } from "../lib/http-error";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -52,6 +58,14 @@ import {
   requestPeriodReopen as requestPeriodReopenService,
 } from "../services/accounting-period-close.service";
 import { listFiscalPeriods as listFiscalPeriodsService } from "../services/accounting-period.service";
+import {
+  downloadTaxReport as downloadTaxReportService,
+  exportTaxReport as exportTaxReportService,
+  finalizeTaxReport as finalizeTaxReportService,
+  generateTaxReport as generateTaxReportService,
+  listTaxReports as listTaxReportsService,
+} from "../services/accounting-tax-reports.service";
+import type { StorageRuntime } from "../services/core-storage-runtime";
 
 export const accountingRouter = Router();
 
@@ -67,6 +81,9 @@ const closePeriod = requireTenantPermission("accounting.period.close");
 const approveReopen = requireTenantPermission(
   "accounting.period_reopen.approve",
 );
+// Tax reports: reading uses the accounting view code; generate, finalize and
+// export are the tax report manager's (PRD §3.19 Pajak).
+const manageTaxReport = requireTenantPermission("accounting.tax_report.manage");
 
 const BASE = "/api/accounting";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -283,3 +300,95 @@ accountingRouter.post(
     });
   },
 );
+
+accountingRouter.get(route(listTaxReports.path), view, async (req, res) => {
+  const query = listTaxReports.query.parse(req.query);
+  res.json(await listTaxReportsService(getScopedTenantContext(req), query));
+});
+
+accountingRouter.post(
+  route(generateTaxReport.path),
+  manageTaxReport,
+  jsonBody,
+  async (req, res) => {
+    const input = generateTaxReport.body.parse(req.body);
+    const report = await generateTaxReportService(
+      getScopedTenantContext(req),
+      actorId(req),
+      input,
+    );
+    res
+      .status(201)
+      .location(`${BASE}/tax-reports/${report.id}`)
+      .json({ data: report });
+  },
+);
+
+accountingRouter.post(
+  route(finalizeTaxReport.path),
+  manageTaxReport,
+  jsonBody,
+  async (req, res) => {
+    const { taxReportId } = finalizeTaxReport.params.parse(req.params);
+    const body = finalizeTaxReport.body.parse(req.body);
+    res.json({
+      data: await finalizeTaxReportService(
+        getScopedTenantContext(req),
+        actorId(req),
+        taxReportId,
+        body,
+      ),
+    });
+  },
+);
+
+/**
+ * Tax report files (export and download) need the object storage, which only
+ * createApp knows. Mounted at `/api/accounting` by createStorageApiRouter, next
+ * to the attendance routers; without a runtime both answer 503.
+ */
+export function createAccountingTaxFileRouter(options: {
+  runtime: StorageRuntime | null;
+}): Router {
+  const router = Router();
+  router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+  const runtime = () => {
+    if (!options.runtime)
+      throw new HttpError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Penyimpanan berkas belum tersedia.",
+      );
+    return options.runtime;
+  };
+
+  router.post(
+    route(exportTaxReport.path),
+    manageTaxReport,
+    jsonBody,
+    async (req, res) => {
+      const { taxReportId } = exportTaxReport.params.parse(req.params);
+      exportTaxReport.body.parse(req.body);
+      res.json({
+        data: await exportTaxReportService(
+          getScopedTenantContext(req),
+          actorId(req),
+          taxReportId,
+          runtime(),
+        ),
+      });
+    },
+  );
+
+  router.get(route(downloadTaxReport.path), view, async (req, res) => {
+    const { taxReportId } = downloadTaxReport.params.parse(req.params);
+    res.json({
+      data: await downloadTaxReportService(
+        getScopedTenantContext(req),
+        taxReportId,
+        runtime(),
+      ),
+    });
+  });
+  return router;
+}

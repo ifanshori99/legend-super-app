@@ -15,6 +15,7 @@ import {
   AccountingError,
   assertTaxTypeApplicable,
   cafeLegendAccountingFixtures,
+  coretaxExportFileName,
   exportTaxReport,
   finalizeTaxReport,
   generateTaxReport,
@@ -176,6 +177,13 @@ register(generateTaxReport, ({ body }) => {
     finalizedBy: null,
     finalizedAt: null,
     exportedAt: null,
+    revisionNo: null,
+    supersedesId: null,
+    supersededById: null,
+    supersededAt: null,
+    correctionReason: null,
+    fiscalPeriodVersion: 1,
+    isCurrent: false,
   });
   current.reports.push(report);
   return { data: report };
@@ -205,6 +213,9 @@ register(finalizeTaxReport, ({ params, body }) => {
     status,
     finalizedBy: finance,
     finalizedAt: nowIso(),
+    // The mock keeps one filing per period: revision 0, never superseded.
+    revisionNo: 0,
+    isCurrent: true,
   });
   current.reports[index] = next;
   current.created.set(replayKey, next.id);
@@ -257,7 +268,11 @@ register(exportTaxReport, ({ params, body }) => {
   const artifact = taxReportExportSchema.parse({
     taxReportId: report.id,
     fileKey,
-    fileName: `coretax-${report.type}-${report.period}.xml`,
+    fileName: coretaxExportFileName(
+      report.type,
+      report.period,
+      report.revisionNo ?? 0,
+    ),
     // The mock has no storage adapter, so the "signed URL" is a data: URL of
     // the file the server would store. The screen downloads whatever URL the
     // endpoint returns and never builds the file itself.
