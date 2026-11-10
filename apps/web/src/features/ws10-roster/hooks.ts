@@ -9,6 +9,7 @@ import {
   type RosterPublication,
   type ShiftAssignment,
 } from "@starter/shared/hris";
+import type { OutletId } from "@starter/shared/core";
 import * as api from "./api";
 import {
   clearDrafts,
@@ -29,16 +30,25 @@ import {
 
 // ---- Queries -------------------------------------------------------------
 
-export function useRosterEmployees() {
-  return useQuery(employeesQuery());
+export function useRosterEmployees(outletId: OutletId | undefined) {
+  return useQuery({
+    ...employeesQuery(outletId ?? ("" as OutletId)),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useRosterPositions() {
   return useQuery(positionsQuery());
 }
 
-export function useRosterWeek(weekStart: string) {
-  return useQuery(weekShiftsQuery(weekStart));
+export function useRosterWeek(
+  outletId: OutletId | undefined,
+  weekStart: string,
+) {
+  return useQuery({
+    ...weekShiftsQuery(outletId ?? ("" as OutletId), weekStart),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useRosterHolidays(weekStart: string) {

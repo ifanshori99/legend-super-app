@@ -6,6 +6,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { PackageCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,7 +57,6 @@ import {
   useUoms,
 } from "../hooks.ts";
 import { ReceivingOfflineNote } from "./receiving-offline-note.tsx";
-import { INVENTORY_OUTLET_ID } from "../../ws06-inventory/outlet.ts";
 
 function PoStatusPill({ value }: { value: PurchaseOrderStatus }) {
   const t = useT();
@@ -75,10 +75,11 @@ function ReceiptDetailDialog({
   onClose: () => void;
 }) {
   const t = useT();
+  const { outlet } = useTenantContext();
   const detail = useGoodsReceipt(receiptId);
   const items = useInventoryItems();
   const uoms = useUoms();
-  const locations = useStockLocations(INVENTORY_OUTLET_ID);
+  const locations = useStockLocations(outlet?.id ?? "");
   const body = detail.data?.data;
   const value = body ? goodsReceiptValueIdr(body.lines, "half_up") : 0;
   return (
@@ -211,10 +212,24 @@ function ReceiptDetailDialog({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh list, so a
+ * selected receipt or search of the previous outlet cannot leak.
+ */
 export function ReceivingListPage({ canReceive }: { canReceive: boolean }) {
+  const { outlet } = useTenantContext();
+  return (
+    <ReceivingListContent key={outlet?.id ?? "none"} canReceive={canReceive} />
+  );
+}
+
+function ReceivingListContent({ canReceive }: { canReceive: boolean }) {
   const t = useT();
-  const receipts = useGoodsReceipts(INVENTORY_OUTLET_ID);
-  const orders = usePurchaseOrders(INVENTORY_OUTLET_ID);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
+  const receipts = useGoodsReceipts(outletId);
+  const orders = usePurchaseOrders(outletId);
   const suppliers = useSuppliers();
   const [selected, setSelected] = React.useState("");
   const [search, setSearch] = React.useState("");
@@ -242,7 +257,9 @@ export function ReceivingListPage({ canReceive }: { canReceive: boolean }) {
     [receipts.data, orderById, search, suppliers.data],
   );
 
-  const loading = receipts.isPending || orders.isPending || suppliers.isPending;
+  const loading =
+    Boolean(outletId) &&
+    (receipts.isPending || orders.isPending || suppliers.isPending);
   const failed = receipts.isError || orders.isError || suppliers.isError;
   const state: DataState = loading
     ? "loading"

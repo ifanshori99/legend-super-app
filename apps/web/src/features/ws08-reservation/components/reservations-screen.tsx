@@ -3,11 +3,10 @@
 // packages, one screen for the host stand. The ops area already supplies the
 // shell, density and guard; this component owns the tabs and the detail sheet.
 import { useT } from "@/components/i18n";
-import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/feedback-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useTenantContext } from "@/lib/tenant-context";
 import type { ReservationStatus } from "@starter/shared/reservation";
-import { useOutlets } from "../hooks";
 import { PackagesTab } from "./packages-tab";
 import { ReservationDetailDialog } from "./reservation-detail";
 import { ScheduleTab } from "./schedule-tab";
@@ -34,17 +33,7 @@ function ScreenHeader({ outletName }: { outletName?: string }) {
   );
 }
 
-export function ReservationsScreen({
-  tab,
-  date,
-  status,
-  reservationId,
-  onTabChange,
-  onDateChange,
-  onStatusChange,
-  onOpenReservation,
-  onCloseReservation,
-}: {
+type ReservationsScreenProps = {
   tab: ReservationTab;
   date: string | undefined;
   status: ReservationStatus | undefined;
@@ -54,36 +43,31 @@ export function ReservationsScreen({
   onStatusChange: (status: ReservationStatus | undefined) => void;
   onOpenReservation: (reservationId: string) => void;
   onCloseReservation: () => void;
-}) {
+};
+
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh desk, so a tab
+ * state or open reservation of the previous outlet cannot leak into this one.
+ */
+export function ReservationsScreen(props: ReservationsScreenProps) {
+  const { outlet } = useTenantContext();
+  return <ReservationsContent key={outlet?.id ?? "none"} {...props} />;
+}
+
+function ReservationsContent({
+  tab,
+  date,
+  status,
+  reservationId,
+  onTabChange,
+  onDateChange,
+  onStatusChange,
+  onOpenReservation,
+  onCloseReservation,
+}: ReservationsScreenProps) {
   const t = useT();
-  const outlets = useOutlets();
-  const outlet =
-    outlets.data?.data.find((row) => row.status === "active") ??
-    outlets.data?.data[0];
-
-  if (outlets.isPending)
-    return (
-      <div aria-busy="true" className="grid gap-4">
-        <span className="sr-only" role="status">
-          {t("common.loading")}
-        </span>
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-10 w-96 max-w-full" />
-        <Skeleton className="h-24 w-full rounded-container" />
-      </div>
-    );
-
-  if (outlets.error)
-    return (
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-        <ScreenHeader />
-        <ErrorState
-          title={t("reservation.list.errorTitle")}
-          description={t("reservation.list.errorHint")}
-          onRetry={() => void outlets.refetch()}
-        />
-      </div>
-    );
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
 
   if (!outlet)
     return (

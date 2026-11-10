@@ -6,13 +6,12 @@
 import { WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
-import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/feedback-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { useDeliveryWrites } from "../access";
-import { useOutlets } from "../hooks";
 import { ChannelsTab } from "./channels-tab";
 import { OrdersTab } from "./orders-tab";
 import { ReconciliationTab } from "./reconciliation-tab";
@@ -62,25 +61,19 @@ function OfflineNotice() {
   );
 }
 
-function ScreenSkeleton() {
-  const t = useT();
-  return (
-    <div aria-busy="true" className="grid gap-5">
-      <span className="sr-only" role="status">
-        {t("common.loading")}
-      </span>
-      <Skeleton className="h-5 w-96 max-w-full" />
-      <Skeleton className="h-10 w-72 max-w-full rounded-control" />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {Array.from({ length: 3 }, (_, index) => (
-          <Skeleton key={index} className="h-80 w-full rounded-shell" />
-        ))}
-      </div>
-    </div>
-  );
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so the
+ * tab state of the previous outlet cannot leak into this one.
+ */
+export function DeliveryScreen(props: {
+  tab: DeliveryTab;
+  onTabChange: (tab: DeliveryTab) => void;
+}) {
+  const { outlet } = useTenantContext();
+  return <DeliveryContent key={outlet?.id ?? "none"} {...props} />;
 }
 
-export function DeliveryScreen({
+function DeliveryContent({
   tab,
   onTabChange,
 }: {
@@ -89,25 +82,9 @@ export function DeliveryScreen({
 }) {
   const t = useT();
   const online = useOnline();
-  const outlets = useOutlets();
   const { canManageChannels, canHandleOrders } = useDeliveryWrites();
-  const outlet =
-    outlets.data?.data.find((row) => row.status === "active") ??
-    outlets.data?.data[0];
-
-  if (outlets.isPending) return <ScreenSkeleton />;
-
-  if (outlets.isError)
-    return (
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
-        <ScreenHeader />
-        <ErrorState
-          title={t("deliveryOps.screenErrorTitle")}
-          description={t("deliveryOps.screenErrorHint")}
-          onRetry={() => void outlets.refetch()}
-        />
-      </div>
-    );
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
 
   if (!outlet)
     return (

@@ -24,12 +24,12 @@ import { NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useToast } from "@/components/ui/toast";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { ActionRow, ActionStrip } from "./action-strip.tsx";
 import { HandoverFormDialog } from "./handover-form-dialog.tsx";
 import { HandoverStatusPill } from "./pills.tsx";
-import { useAcknowledgeHandover, useHandovers, useOutlets } from "../hooks.ts";
-import { EQUIPMENT_FALLBACK_OUTLET } from "../outlet.ts";
+import { useAcknowledgeHandover, useHandovers } from "../hooks.ts";
 import {
   HANDOVER_NOTE_KEYS,
   HANDOVER_NOTE_LABEL_KEYS,
@@ -185,19 +185,22 @@ function HandoverCard({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh handover
+ * list, so a handover marked closed for the previous outlet cannot carry over.
+ */
 export function HandoverScreen() {
+  const { outlet } = useTenantContext();
+  return <HandoverContent key={outlet?.id ?? "none"} />;
+}
+
+function HandoverContent() {
   const t = useT();
   const toast = useToast();
   const online = useOnline();
-  const outlets = useOutlets();
-  // An outlet-less fixture run (mock-empty) must still show the honest empty
-  // handover list: the query reads the documented fixture outlet instead of
-  // failing the whole page.
-  const outlet =
-    outlets.data?.data.find((row) => row.status === "active") ??
-    outlets.data?.data[0] ??
-    EQUIPMENT_FALLBACK_OUTLET;
-  const handovers = useHandovers(outlet.id);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const handovers = useHandovers(outlet?.id);
   const [closedIds, setClosedIds] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -214,9 +217,8 @@ export function HandoverScreen() {
   const shiftName = (id: string) =>
     shifts?.find((shift) => shift.id === id)?.name ?? id;
 
-  const loading =
-    outlets.isPending || (outlet !== undefined && handovers.isPending);
-  const failed = outlets.isError || handovers.isError;
+  const loading = outlet !== null && handovers.isPending;
+  const failed = handovers.isError;
 
   const rows = (handovers.data?.data ?? [])
     .slice()
@@ -241,6 +243,17 @@ export function HandoverScreen() {
     </header>
   );
 
+  if (!outlet)
+    return (
+      <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)] gap-4">
+        {heading}
+        <EmptyState
+          title={t("state.emptyTitle")}
+          description={t("state.emptyHint")}
+        />
+      </div>
+    );
+
   if (loading)
     return (
       <div
@@ -263,10 +276,10 @@ export function HandoverScreen() {
       <div className="mx-auto grid w-full max-w-5xl grid-cols-[minmax(0,1fr)] gap-4">
         {heading}
         <ErrorState
+          error={handovers.error}
           title={t("state.errorTitle")}
           description={t("state.errorHint")}
           onRetry={() => {
-            void outlets.refetch();
             void handovers.refetch();
           }}
         />

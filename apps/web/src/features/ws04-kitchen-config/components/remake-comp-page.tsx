@@ -10,6 +10,7 @@ import {
   type OrderIssueType,
 } from "@starter/shared/kitchen";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -75,7 +76,8 @@ const RESOLUTION_LABEL: Record<
 
 export function RemakeCompPage() {
   const t = useT();
-  const stations = useMenuStations();
+  const outletId = useTenantContext().outlet?.id ?? null;
+  const stations = useMenuStations(outletId);
   const [type, setType] = React.useState<OrderIssueType | typeof ALL>(ALL);
   const [station, setStation] = React.useState<string>(ALL);
   // Cursor stack: index 0 is the first page; the last entry is the open page.
@@ -90,7 +92,7 @@ export function RemakeCompPage() {
     ...(type === ALL ? {} : { type }),
     ...(station === ALL ? {} : { stationId: stationIdSchema.parse(station) }),
   };
-  const issues = useOrderIssues(query);
+  const issues = useOrderIssues(outletId, query);
   const rows = issues.data?.data ?? [];
   const nextCursor = issues.data?.meta.nextCursor ?? null;
   const filtered = type !== ALL || station !== ALL;
@@ -215,6 +217,7 @@ export function RemakeCompPage() {
         <ErrorState
           title={t("kitchenConfig.remake.errorTitle")}
           description={t("kitchenConfig.remake.errorHint")}
+          error={issues.error}
           onRetry={() => void issues.refetch()}
         />
       ) : (
@@ -224,6 +227,7 @@ export function RemakeCompPage() {
           state={
             issues.isPending ? "loading" : rows.length === 0 ? "empty" : "ready"
           }
+          error={issues.error}
           onRetry={() => void issues.refetch()}
           empty={
             filtered

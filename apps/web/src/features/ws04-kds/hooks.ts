@@ -17,13 +17,18 @@ import {
   stationsQuery,
 } from "./queries.ts";
 
-export const useStations = () => useQuery(stationsQuery());
-export const useStationLabels = () => useQuery(stationLabelsQuery());
-export const useBoard = (id: StationConfig["stationId"]) =>
-  useQuery(boardQuery(id));
-export function useKdsActions() {
+export const useStations = (outletId: string | undefined) =>
+  useQuery(stationsQuery(outletId));
+export const useStationLabels = (outletId: string | undefined) =>
+  useQuery(stationLabelsQuery(outletId));
+export const useBoard = (
+  outletId: string | undefined,
+  id: StationConfig["stationId"],
+) => useQuery(boardQuery(outletId, id));
+export function useKdsActions(outletId: string) {
   const client = useQueryClient();
-  const refresh = () => client.invalidateQueries({ queryKey: kdsKeys.all });
+  const refresh = () =>
+    client.invalidateQueries({ queryKey: kdsKeys.outlet(outletId) });
   return useMutation({
     mutationFn: async (
       action:
@@ -43,13 +48,18 @@ export function useKdsActions() {
     ) => {
       switch (action.kind) {
         case "ticket":
-          return ticketAction(action.id, action.action, action.reason);
+          return ticketAction(
+            outletId,
+            action.id,
+            action.action,
+            action.reason,
+          );
         case "priority":
-          return setPriority(action.id, action.priority);
+          return setPriority(outletId, action.id, action.priority);
         case "item":
-          return updateItem(action.id, action.action);
+          return updateItem(outletId, action.id, action.action);
         case "soldOut":
-          return markUnavailable(action.id);
+          return markUnavailable(outletId, action.id);
       }
     },
     onSuccess: refresh,

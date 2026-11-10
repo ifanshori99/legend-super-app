@@ -17,7 +17,6 @@ import {
   updateStockLocation as updateLocationEndpoint,
 } from "@starter/shared/inventory";
 import * as api from "./api";
-import { INVENTORY_OUTLET_ID } from "./outlet";
 import {
   alternatesQuery,
   balancesQuery,
@@ -80,14 +79,18 @@ export function useConversions(itemId: string | undefined) {
   });
 }
 
-export function useStockLocations() {
-  return useQuery(
-    locationsQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }),
-  );
+export function useStockLocations(outletId: string | undefined) {
+  return useQuery({
+    ...locationsQuery({ outletId: outletId ?? "", limit: 100 }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useStockBalances() {
-  return useQuery(balancesQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }));
+export function useStockBalances(outletId: string | undefined) {
+  return useQuery({
+    ...balancesQuery({ outletId: outletId ?? "", limit: 100 }),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useItemAlternates(itemId: string | undefined) {
@@ -97,8 +100,11 @@ export function useItemAlternates(itemId: string | undefined) {
   });
 }
 
-export function useStockTransfers() {
-  return useQuery(transfersQuery({ outletId: INVENTORY_OUTLET_ID, limit: 50 }));
+export function useStockTransfers(outletId: string | undefined) {
+  return useQuery({
+    ...transfersQuery({ outletId: outletId ?? "", limit: 50 }),
+    enabled: Boolean(outletId),
+  });
 }
 
 // ---- Mutations -----------------------------------------------------------

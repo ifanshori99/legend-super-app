@@ -10,6 +10,7 @@
 import * as React from "react";
 import { Wallet } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -47,7 +48,6 @@ import {
   WASTE_PHOTO_MAX_BYTES,
   WASTE_PHOTO_TYPES,
 } from "../../ws06-inventory/components/photo-field.tsx";
-import { INVENTORY_OUTLET_ID } from "../../ws06-inventory/outlet.ts";
 import {
   useAttemptKey,
   useCreatePettyPurchase,
@@ -81,6 +81,7 @@ function PettyFormDialog({
   const t = useT();
   const toast = useToast();
   const attempt = useAttemptKey();
+  const { outlet } = useTenantContext();
   const createPurchase = useCreatePettyPurchase();
   const [vendor, setVendor] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -121,6 +122,7 @@ function PettyFormDialog({
   }
 
   function submit() {
+    if (!outlet) return;
     let invalid = false;
     setVendorError(undefined);
     setDescriptionError(undefined);
@@ -162,7 +164,7 @@ function PettyFormDialog({
     // idempotency key instead of booking the spend twice.
     paidAtRef.current ??= new Date().toISOString();
     const payload = {
-      outletId: INVENTORY_OUTLET_ID,
+      outletId: outlet.id,
       vendorName: vendor.trim(),
       description: description.trim(),
       amountIdr: parsedAmount,
@@ -327,10 +329,22 @@ function PettyFormDialog({
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh page, so an
+ * open form or search of the previous outlet cannot leak.
+ */
 export function PettyPage({ canCreate }: { canCreate: boolean }) {
+  const { outlet } = useTenantContext();
+  return <PettyContent key={outlet?.id ?? "none"} canCreate={canCreate} />;
+}
+
+function PettyContent({ canCreate }: { canCreate: boolean }) {
   const t = useT();
-  const purchases = usePettyPurchases(INVENTORY_OUTLET_ID);
-  const policy = usePettyPurchasePolicy(INVENTORY_OUTLET_ID);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
+  const purchases = usePettyPurchases(outletId);
+  const policy = usePettyPurchasePolicy(outletId);
   const [formOpen, setFormOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [today] = React.useState<BusinessDate>(() => todayBusinessDate());
@@ -355,7 +369,8 @@ export function PettyPage({ canCreate }: { canCreate: boolean }) {
     [purchases.data, search],
   );
 
-  const loading = purchases.isPending || policy.isPending;
+  const loading =
+    Boolean(outletId) && (purchases.isPending || policy.isPending);
   const failed = purchases.isError || policyFailed;
   const state: DataState = loading
     ? "loading"
@@ -419,6 +434,7 @@ export function PettyPage({ canCreate }: { canCreate: boolean }) {
         title={t("inventoryReceiving.petty.listTitle")}
         description={t("inventoryReceiving.petty.listDescription")}
         state={state}
+        error={purchases.error ?? policy.error}
         onRetry={() => {
           void purchases.refetch();
           void policy.refetch();

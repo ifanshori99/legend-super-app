@@ -14,7 +14,6 @@ import {
   type StockCountType,
 } from "@starter/shared/inventory";
 import * as api from "./opname-api";
-import { INVENTORY_OUTLET_ID } from "./outlet";
 import {
   countQuery,
   countsQuery,
@@ -29,17 +28,21 @@ export function useMenuItems() {
 
 // ---- Stock counts --------------------------------------------------------
 
-export function useStockCounts(filter?: {
-  status?: StockCountStatus;
-  type?: StockCountType;
-}) {
-  return useQuery(
-    countsQuery({
-      outletId: INVENTORY_OUTLET_ID,
+export function useStockCounts(
+  outletId: string | undefined,
+  filter?: {
+    status?: StockCountStatus;
+    type?: StockCountType;
+  },
+) {
+  return useQuery({
+    ...countsQuery({
+      outletId: outletId ?? "",
       limit: STOCK_LIST_LIMIT,
       ...filter,
     }),
-  );
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useStockCount(stockCountId: string) {
@@ -118,10 +121,11 @@ export function useCountTransition() {
 
 // ---- Waste ---------------------------------------------------------------
 
-export function useWasteLogs() {
-  return useQuery(
-    wasteQuery({ outletId: INVENTORY_OUTLET_ID, limit: STOCK_LIST_LIMIT }),
-  );
+export function useWasteLogs(outletId: string | undefined) {
+  return useQuery({
+    ...wasteQuery({ outletId: outletId ?? "", limit: STOCK_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useCreateWasteLog() {

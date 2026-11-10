@@ -5,6 +5,7 @@
 import * as React from "react";
 import { Undo2 } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,7 +50,6 @@ import {
   type PurchaseReturnReason,
 } from "@starter/shared/inventory";
 import { quantityFromInput } from "../../ws06-inventory/lib.ts";
-import { INVENTORY_OUTLET_ID } from "../../ws06-inventory/outlet.ts";
 import {
   useAttemptKey,
   useCreatePurchaseReturn,
@@ -77,7 +77,8 @@ function ReturnFormDialog({ onClose }: { onClose: () => void }) {
   const t = useT();
   const toast = useToast();
   const attempt = useAttemptKey();
-  const receipts = useGoodsReceipts(INVENTORY_OUTLET_ID);
+  const { outlet } = useTenantContext();
+  const receipts = useGoodsReceipts(outlet?.id ?? "");
   const createReturn = useCreatePurchaseReturn();
   const suppliers = useSuppliers();
   const items = useInventoryItems();
@@ -109,6 +110,7 @@ function ReturnFormDialog({ onClose }: { onClose: () => void }) {
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!outlet) return;
     if (!receipt || !detail.data) {
       setFormError(t("inventoryReceiving.returns.errorReceipt"));
       return;
@@ -152,7 +154,7 @@ function ReturnFormDialog({ onClose }: { onClose: () => void }) {
     setLineError(undefined);
     setFormError(undefined);
     const payload = {
-      outletId: INVENTORY_OUTLET_ID,
+      outletId: outlet.id,
       supplierId: receipt.supplierId,
       purchaseOrderId: receipt.purchaseOrderId,
       goodsReceiptId: receipt.id,
@@ -185,11 +187,12 @@ function ReturnFormDialog({ onClose }: { onClose: () => void }) {
   }
 
   const loading =
-    receipts.isPending ||
-    suppliers.isPending ||
-    items.isPending ||
-    uoms.isPending ||
-    (receiptId !== "" && detail.isPending);
+    Boolean(outlet) &&
+    (receipts.isPending ||
+      suppliers.isPending ||
+      items.isPending ||
+      uoms.isPending ||
+      (receiptId !== "" && detail.isPending));
   const failed =
     receipts.isError ||
     suppliers.isError ||
@@ -427,10 +430,22 @@ function ReturnFormDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh list, so an
+ * open form or search of the previous outlet cannot leak.
+ */
 export function ReturnListPage() {
+  const { outlet } = useTenantContext();
+  return <ReturnListContent key={outlet?.id ?? "none"} />;
+}
+
+function ReturnListContent() {
   const t = useT();
-  const returns = usePurchaseReturns(INVENTORY_OUTLET_ID);
-  const receipts = useGoodsReceipts(INVENTORY_OUTLET_ID);
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
+  const returns = usePurchaseReturns(outletId);
+  const receipts = useGoodsReceipts(outletId);
   const suppliers = useSuppliers();
   const [formOpen, setFormOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
@@ -459,7 +474,8 @@ export function ReturnListPage() {
   );
 
   const loading =
-    returns.isPending || receipts.isPending || suppliers.isPending;
+    Boolean(outletId) &&
+    (returns.isPending || receipts.isPending || suppliers.isPending);
   const failed = returns.isError || receipts.isError || suppliers.isError;
   const state: DataState = loading
     ? "loading"
@@ -476,6 +492,7 @@ export function ReturnListPage() {
         title={t("inventoryReceiving.returns.listTitle")}
         description={t("inventoryReceiving.returns.listDescription")}
         state={state}
+        error={returns.error ?? receipts.error ?? suppliers.error}
         onRetry={() => {
           void returns.refetch();
           void receipts.refetch();

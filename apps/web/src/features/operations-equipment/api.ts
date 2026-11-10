@@ -4,7 +4,6 @@
 // never call these directly: they use the hooks in ./hooks.ts, which own cache
 // keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
-import { listExampleOutlets } from "@starter/shared/api";
 import { listSuppliers } from "@starter/shared/inventory";
 import { listItems as listMenuItemsEndpoint } from "@starter/shared/menu";
 import {
@@ -49,11 +48,6 @@ export const operationsEndpoints = {
   createShiftHandover: createShiftHandoverEndpoint,
   postShiftHandoverAcknowledgement: postShiftHandoverAcknowledgementEndpoint,
 } as const;
-
-export const listOutlets = (
-  query: Query<typeof listExampleOutlets>,
-  options?: CallOptions,
-) => callEndpoint(listExampleOutlets, { query }, options);
 
 export const listEquipment = async (
   query: Query<typeof listEquipmentEndpoint>,

@@ -28,7 +28,6 @@ import {
   channelsQuery,
   menuItemsQuery,
   orderQuery,
-  outletsQuery,
   priceListItemsQuery,
   priceListsQuery,
   reconciliationQuery,
@@ -52,11 +51,6 @@ function useInvalidate(endpoints: readonly AnyEndpoint[]) {
 /** Channel writes change the board only; order writes touch both lists. */
 const CHANNEL_WRITES = [listDeliveryChannels] as const;
 const ORDER_WRITES = [listDeliveryOrders, getDeliveryOrder] as const;
-
-/** Accessible outlets until the outlet-context bead supplies the assignment. */
-export function useOutlets() {
-  return useQuery(outletsQuery());
-}
 
 export function useChannels(outletId: string | undefined) {
   return useQuery({

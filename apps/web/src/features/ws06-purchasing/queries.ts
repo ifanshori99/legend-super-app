@@ -1,4 +1,3 @@
-import { listExampleOutlets } from "@starter/shared/api";
 import {
   getPurchaseOrder,
   getPurchaseRequest,
@@ -14,8 +13,6 @@ import {
 } from "@starter/shared/inventory";
 import { endpointQueryOptions } from "@/lib/api/endpoint";
 
-export const outletsQuery = () =>
-  endpointQueryOptions(listExampleOutlets, { query: { limit: 100 } });
 export const purchaseRequestsQuery = (outletId: string) =>
   endpointQueryOptions(listPurchaseRequests, {
     query: { outletId, limit: 100 },

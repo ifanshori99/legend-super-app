@@ -20,18 +20,30 @@ import {
   isAttendanceQrValid,
   type AttendanceQrToken,
 } from "@starter/shared/hris";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { formatOutletTime } from "../format.ts";
 import { useAttendanceQr, useNow } from "../hooks.ts";
-import { ATTENDANCE_OUTLET_NAME, ATTENDANCE_TIME_ZONE } from "../outlet.ts";
+import { ATTENDANCE_TIME_ZONE } from "../outlet.ts";
 import { qrRemainingMs } from "../queries.ts";
 
 const ROTATION_MS = ATTENDANCE_QR_ROTATION_SECONDS * 1_000;
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh display, so a
+ * token of the previous outlet is never shown under this one's name.
+ */
 export function QrDisplayPage() {
+  const { outlet } = useTenantContext();
+  return <QrDisplayContent key={outlet?.id ?? "none"} />;
+}
+
+function QrDisplayContent() {
   const t = useT();
   const online = useOnline();
-  const query = useAttendanceQr();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const query = useAttendanceQr(outlet?.id);
   const now = useNow(1_000);
   const reading = query.data;
   const qr = reading?.qr;
@@ -50,10 +62,10 @@ export function QrDisplayPage() {
   const progress =
     remainingMs === null ? 0 : Math.min(100, (remainingMs / ROTATION_MS) * 100);
 
-  if (query.isPending) return <QrSkeleton />;
+  if (outlet && query.isPending) return <QrSkeleton />;
   // A failed background poll keeps the last reading on screen; the expiry
   // logic above hides it once its window closes.
-  if (!qr)
+  if (!outlet || !qr)
     return (
       <ErrorState
         title={
@@ -75,7 +87,7 @@ export function QrDisplayPage() {
       <div className="grid gap-1">
         <h2 className="type-title">
           {t("attendanceQr.display.outletHeading", {
-            outlet: ATTENDANCE_OUTLET_NAME,
+            outlet: outlet.name,
           })}
         </h2>
         <p className="text-sm leading-5 text-muted-foreground">
@@ -97,7 +109,7 @@ export function QrDisplayPage() {
 
             {active ? (
               <>
-                <QrCard qr={qr} />
+                <QrCard qr={qr} outletName={outlet.name} />
                 <div className="grid max-w-full gap-1">
                   <p className="type-eyebrow text-muted-foreground">
                     {t("attendanceQr.display.tokenLabel")}
@@ -220,13 +232,19 @@ export function QrDisplayPage() {
   );
 }
 
-function QrCard({ qr }: { qr: AttendanceQrToken }) {
+function QrCard({
+  qr,
+  outletName,
+}: {
+  qr: AttendanceQrToken;
+  outletName: string;
+}) {
   const t = useT();
   return (
     <QrCode
       value={qr.token}
       label={t("attendanceQr.display.qrLabel", {
-        outlet: ATTENDANCE_OUTLET_NAME,
+        outlet: outletName,
       })}
       size={320}
       margin={2}

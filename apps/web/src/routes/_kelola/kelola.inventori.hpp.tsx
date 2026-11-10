@@ -2,17 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { InventoryPage } from "@/features/ws06-inventory/components/inventory-shell";
 import { HppPage } from "@/features/ws06-inventory/components/hpp-page";
 import { inventoryGuard } from "@/features/ws06-inventory/guard";
-import {
-  HPP_LIST_LIMIT,
-  defaultPeriod,
-} from "@/features/ws06-inventory/hpp-lib";
-import {
-  coverageQuery,
-  engineeringQuery,
-  foodCostQuery,
-  menuCostsQuery,
-} from "@/features/ws06-inventory/hpp-queries";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
+import { HPP_LIST_LIMIT } from "@/features/ws06-inventory/hpp-lib";
+import { coverageQuery } from "@/features/ws06-inventory/hpp-queries";
 import { isMockScenarioRequest } from "@/features/ws06-inventory/stock-lib";
 
 // /kelola/inventori/hpp — HPP per menu, actual vs theoretical food cost, menu
@@ -27,32 +18,12 @@ export const Route = createFileRoute("/_kelola/kelola/inventori/hpp")({
       await import("@/features/ws06-inventory/hpp-mock.ts");
     inventoryGuard(["inventory.stock.view"])(args);
   },
+  // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
   loader: ({ context, location }) => {
     // The mock scenario lives in the browser, so a server prefetch would hide
     // the empty/error state the URL asks for (stock-lib helper).
     if (isMockScenarioRequest(location.searchStr)) return undefined;
-    const period = defaultPeriod();
     return Promise.all([
-      context.queryClient.ensureQueryData(
-        menuCostsQuery({
-          outletId: INVENTORY_OUTLET_ID,
-          limit: HPP_LIST_LIMIT,
-        }),
-      ),
-      context.queryClient.ensureQueryData(
-        foodCostQuery({
-          outletId: INVENTORY_OUTLET_ID,
-          ...period,
-          limit: HPP_LIST_LIMIT,
-        }),
-      ),
-      context.queryClient.ensureQueryData(
-        engineeringQuery({
-          outletId: INVENTORY_OUTLET_ID,
-          ...period,
-          limit: HPP_LIST_LIMIT,
-        }),
-      ),
       context.queryClient.ensureQueryData(
         coverageQuery({ limit: HPP_LIST_LIMIT }),
       ),

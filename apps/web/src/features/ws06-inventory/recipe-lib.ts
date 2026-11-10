@@ -35,9 +35,8 @@ import { decimalFromInput, formatQuantity, quantityFromInput } from "./lib.ts";
  * The brand the inventory back office belongs to.
  *
  * The brand context (session, TEN-02) has not landed yet, so the app runs one
- * brand: the one the shared fixtures describe. Mirrors `INVENTORY_OUTLET_ID`
- * in ./outlet.ts; the constant is the only thing that changes when the brand
- * context bead lands.
+ * brand: the one the shared fixtures describe. The constant is the only thing that
+ * changes when the brand context bead lands.
  */
 export const RECIPE_BRAND_ID = brandIdSchema.parse(
   "3c9e5a71-2b84-4f6d-8e10-5a7b9c2d4e61",

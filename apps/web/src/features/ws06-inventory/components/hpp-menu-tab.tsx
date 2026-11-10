@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useMenuCosts } from "../hpp-hooks";
 import {
   costIdrOf,
@@ -35,7 +36,8 @@ import {
 
 export function HppMenuTab() {
   const t = useT();
-  const query = useMenuCosts();
+  const { outlet } = useTenantContext();
+  const query = useMenuCosts(outlet?.id);
   const [search, setSearch] = React.useState("");
   const [page, setPage] = React.useState(1);
 
@@ -64,6 +66,7 @@ export function HppMenuTab() {
       title={t("inventoryHpp.menuCost.title")}
       description={t("inventoryHpp.menuCost.description")}
       state={state}
+      error={query.error}
       onRetry={() => void query.refetch()}
       search={{
         value: search,

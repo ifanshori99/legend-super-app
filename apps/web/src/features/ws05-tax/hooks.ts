@@ -65,13 +65,19 @@ export function useTaxSettings() {
 }
 
 /** PBJT recap of one month; the period comes from the report URL. */
-export function usePbjtRecap(period: string) {
-  return useQuery(defaultRecapQuery(period));
+export function usePbjtRecap(outletId: string | undefined, period: string) {
+  return useQuery({
+    ...defaultRecapQuery(outletId ?? "", period),
+    enabled: Boolean(outletId),
+  });
 }
 
 /** Floor zones for the service-charge scope picker (best effort). */
-export function useFloorZones() {
-  return useQuery(floorZonesQuery());
+export function useFloorZones(outletId: string | undefined) {
+  return useQuery({
+    ...floorZonesQuery(outletId ?? ""),
+    enabled: Boolean(outletId),
+  });
 }
 
 // ---- Writes ----------------------------------------------------------------

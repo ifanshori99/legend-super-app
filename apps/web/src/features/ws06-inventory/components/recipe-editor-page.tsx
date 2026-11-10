@@ -32,6 +32,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { useInventoryItems, useStockBalances, useUnits } from "../hooks";
 import { formatQuantity, LIST_LIMIT, uomCode } from "../lib";
@@ -1015,22 +1016,34 @@ function RecipeEditorForm({
 
 // ---- Page -----------------------------------------------------------------
 
-export function RecipeEditorPage({
-  recipeId,
-  canManage,
-  canViewCost,
-}: {
+type RecipeEditorPageProps = {
   recipeId: string;
   canManage: boolean;
   canViewCost: boolean;
-}) {
+};
+
+/**
+ * Keyed by outlet: switching outlet in the shell reloads the stock balances
+ * and drops the unsaved form of the previous outlet.
+ */
+export function RecipeEditorPage(props: RecipeEditorPageProps) {
+  const { outlet } = useTenantContext();
+  return <RecipeEditorContent key={outlet?.id ?? "none"} {...props} />;
+}
+
+function RecipeEditorContent({
+  recipeId,
+  canManage,
+  canViewCost,
+}: RecipeEditorPageProps) {
   const t = useT();
   const online = useOnline();
+  const { outlet } = useTenantContext();
   const detailQuery = useRecipe(recipeId);
   const recipesQuery = useRecipes();
   const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
   const unitsQuery = useUnits({ limit: LIST_LIMIT });
-  const balancesQuery = useStockBalances();
+  const balancesQuery = useStockBalances(outlet?.id);
 
   const pending =
     detailQuery.isPending ||

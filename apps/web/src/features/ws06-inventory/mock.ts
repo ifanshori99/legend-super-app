@@ -431,7 +431,7 @@ registerMock(listStockTransfers, ({ query, scenario }) => {
 
 registerMock(createStockTransfer, ({ body }) => {
   const transfer = once(`transfer:${body.idempotencyKey}`, () => {
-    if (body.outletId !== fixtureOutletId)
+    if (!knownOutlets.has(body.outletId))
       invalid("outletId", "Outlet tidak dikenal.");
     const from = state().locations.find(
       (row) => row.id === body.fromLocationId,
@@ -956,7 +956,7 @@ registerMock(getStockCount, ({ params, scenario }) => {
 
 registerMock(createStockCount, ({ body }) => {
   const detail = once(`stock-count:${body.idempotencyKey}`, () => {
-    if (body.outletId !== fixtureOutletId)
+    if (!knownOutlets.has(body.outletId))
       invalid("outletId", "Outlet tidak dikenal.");
     if (!state().locations.some((row) => row.id === body.locationId))
       invalid("locationId", "Lokasi stok tidak dikenal di outlet ini.");
@@ -973,7 +973,7 @@ registerMock(createStockCount, ({ body }) => {
     const count = stockCountSchema.parse({
       id,
       tenantId,
-      outletId: fixtureOutletId,
+      outletId: body.outletId,
       locationId: body.locationId,
       type: body.type,
       status: "draft",
@@ -1087,7 +1087,7 @@ registerMock(listWasteLogs, ({ query, scenario }) => {
 
 registerMock(createWasteLog, ({ body }) => {
   const log = once(`waste-log:${body.idempotencyKey}`, () => {
-    if (body.outletId !== fixtureOutletId)
+    if (!knownOutlets.has(body.outletId))
       invalid("outletId", "Outlet tidak dikenal.");
     if (!state().locations.some((row) => row.id === body.locationId))
       invalid("locationId", "Lokasi stok tidak dikenal di outlet ini.");
@@ -1114,7 +1114,7 @@ registerMock(createWasteLog, ({ body }) => {
     const created = wasteLogSchema.parse({
       id: newIdempotencyKey(),
       tenantId,
-      outletId: fixtureOutletId,
+      outletId: body.outletId,
       locationId: body.locationId,
       targetType: body.targetType,
       targetId: body.targetId,
@@ -1136,7 +1136,7 @@ registerMock(createWasteLog, ({ body }) => {
         // Ledger ids are canonical ULIDs (D-CORE-1).
         id: createUlid(),
         tenantId,
-        outletId: fixtureOutletId,
+        outletId: body.outletId,
         locationId: body.locationId,
         inventoryItemId: ledgerItemId,
         movementType: "waste",

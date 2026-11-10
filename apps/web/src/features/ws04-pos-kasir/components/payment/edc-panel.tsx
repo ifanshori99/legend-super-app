@@ -41,6 +41,7 @@ export function EdcPanel({
     if (session.error)
       return (
         <ErrorState
+          error={session.error}
           title={t("posKasirEdc.loadError")}
           description={
             isContractPending(session.error)

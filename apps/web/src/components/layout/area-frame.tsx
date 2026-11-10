@@ -26,6 +26,7 @@ import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
 import {
+  kelolaUsesOutletContext,
   noOutletNext,
   outletChoice,
   outletPickPending,
@@ -206,21 +207,34 @@ function AreaFrameBody({
     access.authenticated &&
     outletChoice(outlets) === "none";
   // 2+ outlets: the operations shell offers the picker; one outlet needs no
-  // control. The kelola shell has its own picker (legend-sp41n).
-  const outletPicker =
-    definition.shell === "operations" &&
-    outletChoice(outlets) === "multiple" ? (
-      <OutletPicker
-        outlets={outlets}
-        value={selectedOutletId}
-        onChange={(outletId) => {
-          onSelectOutlet(outletId);
-          const name = outlets.find((row) => row.id === outletId)?.name;
-          if (name) setAnnouncement(t("area.outletChanged", { name }));
-        }}
-        className="max-sm:w-full"
-      />
-    ) : null;
+  // control. The management shell offers it only on Kelola screens that work
+  // in the selected outlet (legend-sp41n), never as a control that does nothing.
+  const showOutletPicker =
+    outletChoice(outlets) === "multiple" &&
+    (definition.shell === "operations" ||
+      (area === "kelola" && kelolaUsesOutletContext(pathname)));
+  const outletPicker = showOutletPicker ? (
+    <OutletPicker
+      outlets={outlets}
+      value={selectedOutletId}
+      onChange={(outletId) => {
+        onSelectOutlet(outletId);
+        const name = outlets.find((row) => row.id === outletId)?.name;
+        if (name) setAnnouncement(t("area.outletChanged", { name }));
+      }}
+      className={
+        definition.shell === "operations" ? "max-sm:w-full" : undefined
+      }
+    />
+  ) : null;
+  // A Kelola screen that works in the selected outlet has nothing to load for
+  // an account with no outlet (a new tenant): point to where the first outlet
+  // is created instead of leaving a skeleton that never resolves.
+  const kelolaNeedsOutlet =
+    area === "kelola" &&
+    access.authenticated &&
+    outletChoice(outlets) === "none" &&
+    kelolaUsesOutletContext(pathname);
   // Customer and public screens never depend on the staff outlet pick.
   const holdScreen = pickPending && definition.shell !== "customer";
   const noOutletAction =
@@ -256,6 +270,18 @@ function AreaFrameBody({
           description={t("area.noOutletHint")}
           action={noOutletAction}
         />
+      ) : kelolaNeedsOutlet ? (
+        <EmptyState
+          title={t("area.noOutletTitle")}
+          description={t("area.noOutletAddHint")}
+          action={
+            <Button asChild>
+              <Link to="/kelola/pengaturan/outlet">
+                {t("area.noOutletAdd")}
+              </Link>
+            </Button>
+          }
+        />
       ) : holdScreen ? (
         <div aria-busy="true" className="grid gap-3">
           <span className="sr-only">{t("common.loading")}</span>
@@ -284,6 +310,7 @@ function AreaFrameBody({
         }
         actions={
           <>
+            {outletPicker}
             <ApprovalInboxBadge
               enabled={
                 area === "kelola" && holdsAny(access, ["approval.inbox.view"])

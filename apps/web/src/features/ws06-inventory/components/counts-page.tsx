@@ -26,18 +26,27 @@ import {
   typeLabelKey,
   type CountFilter,
 } from "../opname-lib";
+import { useTenantContext } from "@/lib/tenant-context";
 import { formatBusinessDate } from "../stock-lib";
 import { CountStatusBadge } from "./count-status";
 import { CountFormDialog } from "./count-form-dialog";
 
+/** Keyed by outlet so search, filter and the open dialog reset on outlet switch. */
 export function CountsPage({ canCount }: { canCount: boolean }) {
+  const { outlet } = useTenantContext();
+  return <CountsContent key={outlet?.id ?? "none"} canCount={canCount} />;
+}
+
+function CountsContent({ canCount }: { canCount: boolean }) {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState<CountFilter>("all");
   const [formOpen, setFormOpen] = React.useState(false);
 
-  const countsQuery = useStockCounts();
-  const locationsQuery = useStockLocations();
+  const countsQuery = useStockCounts(outletId);
+  const locationsQuery = useStockLocations(outletId);
 
   const locationName = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -86,6 +95,7 @@ export function CountsPage({ canCount }: { canCount: boolean }) {
       title={t("opname.list.title")}
       description={t("opname.list.description")}
       state={state}
+      error={countsQuery.error ?? locationsQuery.error}
       onRetry={() => {
         void countsQuery.refetch();
         void locationsQuery.refetch();

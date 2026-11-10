@@ -7,6 +7,7 @@
 import * as React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Info } from "lucide-react";
+import type { OutletId } from "@starter/shared/core";
 import {
   addBusinessDays,
   type Employee,
@@ -30,7 +31,8 @@ import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { ROSTER_TEMPLATES, stationName } from "../fixtures";
+import { useTenantContext } from "@/lib/tenant-context";
+import { rosterTemplatesFor, stationName } from "../fixtures";
 import {
   useLocalRosterWeek,
   usePublishRoster,
@@ -55,7 +57,6 @@ import {
   weekStatusOf,
   type RosterSuggestion,
 } from "../lib";
-import { ROSTER_OUTLET_ID } from "../outlet";
 import { PublishDialog } from "./publish-dialog";
 import { SuggestionPanel } from "./suggestion-panel";
 import { TemplatePalette } from "./template-palette";
@@ -67,22 +68,51 @@ function rowKey(row: ShiftAssignment): string {
   return `${row.employeeId}|${row.businessDate}|${row.shiftTemplateId ?? ""}`;
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh roster, so
+ * filters and the publish dialog of the previous outlet cannot carry over.
+ */
 export function RosterPage({ weekStart }: { weekStart: string }) {
+  const t = useT();
+  const { outlet } = useTenantContext();
+  if (!outlet)
+    return (
+      <EmptyState
+        title={t("area.noOutletTitle")}
+        description={t("area.noOutletHint")}
+      />
+    );
+  return (
+    <RosterContent key={outlet.id} outletId={outlet.id} weekStart={weekStart} />
+  );
+}
+
+function RosterContent({
+  outletId,
+  weekStart,
+}: {
+  outletId: OutletId;
+  weekStart: string;
+}) {
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
 
-  const employeesQ = useRosterEmployees();
+  const employeesQ = useRosterEmployees(outletId);
   const positionsQ = useRosterPositions();
-  const weekQ = useRosterWeek(weekStart);
-  const previousWeekQ = useRosterWeek(addBusinessDays(weekStart, -7));
+  const weekQ = useRosterWeek(outletId, weekStart);
+  const previousWeekQ = useRosterWeek(outletId, addBusinessDays(weekStart, -7));
   const holidaysQ = useRosterHolidays(weekStart);
-  const local = useLocalRosterWeek(ROSTER_OUTLET_ID, weekStart);
+  const local = useLocalRosterWeek(outletId, weekStart);
   // Last week as this device sees it: a week published or drafted locally
   // must count for copy-previous-week and for Sunday→Monday rest.
   const previousLocal = useLocalRosterWeek(
-    ROSTER_OUTLET_ID,
+    outletId,
     addBusinessDays(weekStart, -7),
+  );
+  const templates = React.useMemo(
+    () => rosterTemplatesFor(outletId),
+    [outletId],
   );
   const publish = usePublishRoster();
 
@@ -146,25 +176,23 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
   );
   // Only active templates can become a shift: a drop carries arbitrary
   // dataTransfer text, so an inactive or unknown id is ignored here.
-  const templatesById = React.useMemo<
-    Map<string, (typeof ROSTER_TEMPLATES)[number]>
-  >(
+  const templatesById = React.useMemo<Map<string, (typeof templates)[number]>>(
     () =>
       new Map(
-        ROSTER_TEMPLATES.filter((template) => template.isActive).map(
-          (template) => [template.id, template],
-        ),
+        templates
+          .filter((template) => template.isActive)
+          .map((template) => [template.id, template]),
       ),
-    [],
+    [templates],
   );
 
   const stationOptions = React.useMemo(() => {
     const ids = new Set<string>();
     for (const row of rows) if (row.stationId !== null) ids.add(row.stationId);
-    for (const template of ROSTER_TEMPLATES)
+    for (const template of templates)
       if (template.stationId !== null) ids.add(template.stationId);
     return [...ids].sort();
-  }, [rows]);
+  }, [rows, templates]);
 
   const visibleEmployees = React.useMemo(
     () =>
@@ -200,10 +228,10 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
         weekStart,
         assignments: rows,
         employees,
-        templates: ROSTER_TEMPLATES,
+        templates,
         previousAssignments: previousRows,
       }),
-    [weekStart, rows, employees, previousRows],
+    [weekStart, rows, employees, templates, previousRows],
   );
 
   const loading =
@@ -298,7 +326,7 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     publishKey.current = idempotencyKey;
     publish.mutate(
       {
-        outletId: ROSTER_OUTLET_ID,
+        outletId,
         weekStart,
         idempotencyKey,
       },
@@ -431,6 +459,12 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
         <CardShell>
           <CardShellBody>
             <ErrorState
+              error={
+                weekQ.error ??
+                employeesQ.error ??
+                positionsQ.error ??
+                holidaysQ.error
+              }
               title={t("roster.errors.load")}
               description={
                 offline
@@ -489,7 +523,7 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
             />
           </StatStrip>
 
-          <TemplatePalette templates={ROSTER_TEMPLATES} />
+          <TemplatePalette templates={templates} />
 
           <p className="flex items-start gap-2 rounded-container border-(length:--border-w) bg-shell p-3 text-sm leading-5 text-muted-foreground shadow-hairline">
             <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -524,7 +558,7 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
               rows={rows}
               positions={positionsById}
               holidays={holidays}
-              templates={ROSTER_TEMPLATES}
+              templates={templates}
               compliance={compliance}
               today={today}
               onAssign={assign}

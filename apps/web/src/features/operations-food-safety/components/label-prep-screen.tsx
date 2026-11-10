@@ -56,7 +56,7 @@ import {
   suggestUseBy,
   toDateTimeLocalValue,
 } from "../logic.ts";
-import { FOOD_SAFETY_LIST_LIMIT, FOOD_SAFETY_OUTLET_ID } from "../outlet.ts";
+import { FOOD_SAFETY_LIST_LIMIT } from "../outlet.ts";
 import { useMinuteClock } from "../use-minute-clock.ts";
 
 // Hide every shell part when printing; the physical label is 90 × 60 mm on
@@ -80,7 +80,7 @@ const LABEL_PRINT_STYLE = `@page { size: A4; margin: 10mm; }
   .print-controls { display: none !important; }
 }`;
 
-export function PrepLabelsScreen({
+function PrepLabelsScreenContent({
   responsibleName,
 }: {
   /** The signed-in staff member the label is printed for. */
@@ -92,13 +92,11 @@ export function PrepLabelsScreen({
   const { outlet, brandName } = useTenantContext();
   const now = useMinuteClock();
 
-  const labelsResult = usePrepLabels({
-    outletId: FOOD_SAFETY_OUTLET_ID,
+  const labelsResult = usePrepLabels(outlet?.id, {
     limit: FOOD_SAFETY_LIST_LIMIT,
   });
   const itemsResult = useInventoryItems({ limit: FOOD_SAFETY_LIST_LIMIT });
-  const batchesResult = useStockBatches({
-    outletId: FOOD_SAFETY_OUTLET_ID,
+  const batchesResult = useStockBatches(outlet?.id, {
     limit: FOOD_SAFETY_LIST_LIMIT,
   });
   const createLabel = useCreatePrepLabel();
@@ -219,12 +217,17 @@ export function PrepLabelsScreen({
     setErrors(nextErrors);
     setFormError(undefined);
     if (Object.values(nextErrors).some(Boolean)) return;
-    if (producedIso === null || useByIso === null || selectedBatch === null)
+    if (
+      outlet === null ||
+      producedIso === null ||
+      useByIso === null ||
+      selectedBatch === null
+    )
       return;
 
     createLabel.mutate(
       {
-        outletId: FOOD_SAFETY_OUTLET_ID,
+        outletId: outlet.id,
         inventoryItemId: inventoryItemIdSchema.parse(itemId),
         batchId: selectedBatch.id,
         producedAt: producedIso,
@@ -291,7 +294,10 @@ export function PrepLabelsScreen({
     : null;
 
   const pending =
-    labelsResult.isPending || itemsResult.isPending || batchesResult.isPending;
+    outlet !== null &&
+    (labelsResult.isPending ||
+      itemsResult.isPending ||
+      batchesResult.isPending);
   const failed =
     labelsResult.isError || itemsResult.isError || batchesResult.isError;
   const firstError =
@@ -332,6 +338,7 @@ export function PrepLabelsScreen({
       {!pending && failed && (
         <Card>
           <ErrorState
+            error={firstError}
             title={t("opsFoodSafety.prepLabels.errorTitle")}
             description={
               offline
@@ -848,4 +855,13 @@ export function PrepLabelsScreen({
       )}
     </div>
   );
+}
+
+/**
+ * Keyed by outlet: switching outlet in the shell resets the form and
+ * selections, so nothing typed for the previous outlet carries over.
+ */
+export function PrepLabelsScreen(props: { responsibleName: string }) {
+  const { outlet } = useTenantContext();
+  return <PrepLabelsScreenContent key={outlet?.id ?? "none"} {...props} />;
 }

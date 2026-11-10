@@ -88,6 +88,7 @@ function FloorBoardContent({ canManage }: { canManage: boolean }) {
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
         <PageHeading />
         <ErrorState
+          error={board.error}
           title={t("floor.error.title")}
           description={t("floor.error.hint")}
           onRetry={() => {

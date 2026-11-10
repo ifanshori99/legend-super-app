@@ -9,8 +9,10 @@ import { cn } from "cn";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/feedback-state";
 import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useTenantContext } from "@/lib/tenant-context";
 
 const TABS: readonly {
   key: KitchenConfigSection;
@@ -81,13 +83,26 @@ export function KitchenConfigPage({
   children: ReactNode;
 }) {
   const t = useT();
+  const { outlet } = useTenantContext();
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
       <div className="flex flex-wrap items-center gap-2">
         <KitchenConfigTabs active={active} />
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
       </div>
-      <div className="grid min-w-0 gap-5">{children}</div>
+      {/* Keyed by outlet: switching outlet in the shell starts the section
+          fresh, so filters, pages and open dialogs of the previous outlet
+          cannot leak into this one. */}
+      {outlet ? (
+        <div key={outlet.id} className="grid min-w-0 gap-5">
+          {children}
+        </div>
+      ) : (
+        <EmptyState
+          title={t("area.noOutletTitle")}
+          description={t("area.noOutletHint")}
+        />
+      )}
     </div>
   );
 }

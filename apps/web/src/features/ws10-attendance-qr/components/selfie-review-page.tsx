@@ -29,6 +29,7 @@ import type {
   AttendanceValidity,
   Employee,
 } from "@starter/shared/hris";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { formatBusinessDate, formatOutletTime } from "../format.ts";
 import {
@@ -89,14 +90,26 @@ function buildRows(
     );
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh review, so a
+ * search or open sample of the previous outlet cannot carry over.
+ */
 export function SelfieReviewPage() {
+  const { outlet } = useTenantContext();
+  return <SelfieReviewContent key={outlet?.id ?? "none"} />;
+}
+
+function SelfieReviewContent() {
   const t = useT();
   const toast = useToast();
   const online = useOnline();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const businessDate = useBusinessDate();
-  const logsQuery = useAttendanceDay(businessDate);
+  const logsQuery = useAttendanceDay(outletId, businessDate);
   const employeesQuery = useReviewEmployees();
-  const decisions = useReviewDecisions(businessDate);
+  const decisions = useReviewDecisions(outletId, businessDate);
   const canDecide = useCanReviewAttendance();
   const [search, setSearch] = React.useState("");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -127,7 +140,9 @@ export function SelfieReviewPage() {
     [rows, term],
   );
 
-  const pending = logsQuery.isPending || employeesQuery.isPending;
+  // With no outlet the logs query is disabled and stays pending: show empty.
+  const pending =
+    outletId !== undefined && (logsQuery.isPending || employeesQuery.isPending);
   const failed = logsQuery.isError || employeesQuery.isError;
   const state: DataState = pending
     ? "loading"
@@ -167,8 +182,9 @@ export function SelfieReviewPage() {
   };
 
   const decide = (kind: AttendanceReviewKind) => {
-    if (!canDecide || !selected || businessDate === null) return;
+    if (!canDecide || !selected || !outletId || businessDate === null) return;
     const decision = decideAttendanceSample({
+      outletId,
       businessDate,
       log: selected.log,
       kind,

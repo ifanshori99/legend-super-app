@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors.ts";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useCustomerDisplay } from "../hooks.ts";
 import { totalQuantity } from "../lib.ts";
 import { BillLines } from "./bill-lines.tsx";
@@ -38,9 +39,11 @@ function OrderingHint() {
   );
 }
 
-export function CustomerDisplayScreen() {
+function CustomerDisplayContent() {
   const t = useT();
-  const display = useCustomerDisplay();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const display = useCustomerDisplay(outlet?.id);
   const state = display.data ?? null;
   const header = (
     <DisplayHeader
@@ -50,7 +53,7 @@ export function CustomerDisplayScreen() {
     />
   );
 
-  if (display.isPending)
+  if (outlet !== null && display.isPending)
     return (
       <div className="flex h-full flex-col gap-4">
         {header}
@@ -73,6 +76,7 @@ export function CustomerDisplayScreen() {
       <div className="flex h-full flex-col gap-4">
         {header}
         <ErrorState
+          error={display.error}
           title={t(
             offline ? "posDisplay.offlineTitle" : "posDisplay.errorTitle",
           )}
@@ -148,4 +152,13 @@ export function CustomerDisplayScreen() {
       </div>
     </div>
   );
+}
+
+/**
+ * Keyed by outlet: switching outlet in the shell drops the previous outlet's
+ * bill so it cannot stay on the customer's screen.
+ */
+export function CustomerDisplayScreen() {
+  const { outlet } = useTenantContext();
+  return <CustomerDisplayContent key={outlet?.id ?? "none"} />;
 }

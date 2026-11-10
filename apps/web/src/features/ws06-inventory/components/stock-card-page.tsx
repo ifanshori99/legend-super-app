@@ -9,6 +9,7 @@ import type {
   StockSourceType,
 } from "@starter/shared/inventory";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,7 +95,15 @@ const MOVEMENT_TYPES: readonly StockMovementType[] = [
   "return",
 ];
 
+/** Keyed by outlet so the ledger filters reset when the shell switches outlet. */
 export function StockCardPage() {
+  const { outlet } = useTenantContext();
+  return <StockCardContent key={outlet?.id ?? "none"} />;
+}
+
+function StockCardContent() {
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const t = useT();
   const [search, setSearch] = React.useState("");
   const [locationId, setLocationId] = React.useState(ALL);
@@ -110,7 +119,7 @@ export function StockCardPage() {
   const fromFilterId = React.useId();
   const toFilterId = React.useId();
 
-  const ledgerQuery = useStockLedger({
+  const ledgerQuery = useStockLedger(outletId, {
     locationId: locationId === ALL ? undefined : locationId,
     inventoryItemId: itemId === ALL ? undefined : itemId,
     movementType:
@@ -119,8 +128,8 @@ export function StockCardPage() {
     toDate: toDate || undefined,
   });
   const itemsQuery = useInventoryItems({ limit: STOCK_LIST_LIMIT });
-  const locationsQuery = useStockLocations();
-  const batchesQuery = useStockBatches();
+  const locationsQuery = useStockLocations(outletId);
+  const batchesQuery = useStockBatches(outletId);
   const unitsQuery = useUnits({ limit: STOCK_LIST_LIMIT });
 
   const items = React.useMemo(
@@ -353,6 +362,13 @@ export function StockCardPage() {
         title={t("inventoryStock.stock.title")}
         description={t("inventoryStock.stock.description")}
         state={state}
+        error={
+          ledgerQuery.error ??
+          itemsQuery.error ??
+          locationsQuery.error ??
+          batchesQuery.error ??
+          unitsQuery.error
+        }
         onRetry={() => {
           void ledgerQuery.refetch();
           void itemsQuery.refetch();

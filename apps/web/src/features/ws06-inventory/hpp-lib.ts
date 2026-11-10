@@ -8,7 +8,6 @@
 // catalog's names.
 
 import {
-  cafeLegendFixtures,
   divideRounded,
   parseDecimal4,
   type BusinessDate,
@@ -24,7 +23,6 @@ import type {
   RecipeCoverageRow,
   RecipeCoverageStatus,
 } from "@starter/shared/inventory";
-import { INVENTORY_OUTLET_ID } from "./outlet.ts";
 import {
   addDays,
   businessDateToday,
@@ -61,15 +59,6 @@ export function periodLabel(period: HppPeriod): string {
     period.toDate,
   )}`;
 }
-
-/**
- * The outlet this back office runs (the outlet context bead has not landed).
- * The name is display-only; the id in `outlet.ts` is what the endpoints get.
- */
-const demoOutlet = cafeLegendFixtures.outlets.find(
-  (outlet) => outlet.id === INVENTORY_OUTLET_ID,
-);
-export const HPP_OUTLET_NAME = demoOutlet?.name ?? shortId(INVENTORY_OUTLET_ID);
 
 // ---- Numbers -------------------------------------------------------------
 

@@ -199,6 +199,7 @@ export function ReconciliationTab({
               <ErrorState
                 title={t("deliveryOps.rekonsiliasi.errorTitle")}
                 description={t("deliveryOps.rekonsiliasi.errorHint")}
+                error={recon.error}
                 onRetry={() => void recon.refetch()}
               />
             </CardShellBody>
@@ -210,6 +211,7 @@ export function ReconciliationTab({
             })}
             description={t("deliveryOps.rekonsiliasi.tableDescription")}
             state={tableState}
+            error={recon.error}
             onRetry={() => void recon.refetch()}
             empty={{
               title: t("deliveryOps.rekonsiliasi.emptyTitle", {

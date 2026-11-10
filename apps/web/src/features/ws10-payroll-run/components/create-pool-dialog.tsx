@@ -39,11 +39,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
+import { useTenantContext } from "@/lib/tenant-context";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 import { payrollErrorMessage } from "../errors";
 import { useCreatePool } from "../hooks";
 import { POOL_METHOD_LABEL } from "../lib";
-import { PAYROLL_OUTLET_ID, PAYROLL_TIME_ZONE } from "../outlet";
+import { PAYROLL_TIME_ZONE } from "../outlet";
 
 const EMPLOYMENT_TYPES: readonly EmploymentType[] = [
   "pkwtt",
@@ -76,6 +77,7 @@ export function CreatePoolDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
   const createPool = useCreatePool();
   const [start, setStart] = React.useState(() => {
     const today = businessDateOf(new Date(), {
@@ -124,6 +126,7 @@ export function CreatePoolDialog({
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!outlet) return;
     setError(null);
     const amountIdr = rupiahFromInput(amount);
     const days = Number(minDays);
@@ -151,7 +154,7 @@ export function CreatePoolDialog({
     }
     createPool.mutate(
       {
-        outletId: PAYROLL_OUTLET_ID,
+        outletId: outlet.id,
         periodStart: periodStart.data,
         periodEnd: periodEnd.data,
         amountIdr,
@@ -282,7 +285,11 @@ export function CreatePoolDialog({
             >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={createPool.isPending}>
+            <Button
+              type="submit"
+              loading={createPool.isPending}
+              disabled={!outlet}
+            >
               <HandCoins aria-hidden="true" />
               {t("payrollRun.pool.createSubmit")}
             </Button>

@@ -113,6 +113,7 @@ export function ItemsPage({ initialCategory }: { initialCategory?: string }) {
       title={t("inventory.list.title")}
       description={t("inventory.list.description")}
       state={state}
+      error={itemsQuery.error ?? unitsQuery.error}
       onRetry={() => {
         void itemsQuery.refetch();
         void unitsQuery.refetch();

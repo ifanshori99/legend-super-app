@@ -122,6 +122,7 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
     const pending = isContractPending(session.error);
     return (
       <ErrorState
+        error={session.error}
         title={t(
           pending
             ? "posKasirPayment.screen.pendingTitle"

@@ -154,6 +154,7 @@ export function ChecklistBoardPage() {
           </p>
         </header>
         <ErrorState
+          error={runsQuery.error ?? templatesQuery.error}
           title={t("opsChecklist.runs.errorTitle")}
           description={t("opsChecklist.runs.errorHint")}
           onRetry={() => {

@@ -13,7 +13,6 @@ import {
   listTaxSettings,
 } from "@starter/shared/tax";
 import { endpointQueryOptions } from "@/lib/api/endpoint";
-import { TAX_OUTLET_ID } from "./outlet.ts";
 
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
@@ -49,14 +48,14 @@ export const serviceChargeRulesDefaultQuery = () =>
   serviceChargeRulesQuery(defaultListQuery);
 export const taxRuleConflictsDefaultQuery = () => taxRuleConflictsQuery({});
 export const taxSettingsDefaultQuery = () => taxSettingsQuery(defaultListQuery);
-export const defaultRecapQuery = (period: string) =>
-  pbjtRecapQuery({ outletId: TAX_OUTLET_ID, period });
+export const defaultRecapQuery = (outletId: string, period: string) =>
+  pbjtRecapQuery({ outletId, period });
 
 /**
  * Zones of the current outlet, for the service-charge scope picker. Read from
  * the floor contract; failures do not block the tax screens (see api.ts).
  */
-export function floorZonesQuery(outletId: string = TAX_OUTLET_ID) {
+export function floorZonesQuery(outletId: string) {
   return {
     ...endpointQueryOptions(getFloorBoard, { params: { outletId } }),
     staleTime: 5 * 60_000,

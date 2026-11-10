@@ -35,6 +35,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api/errors.ts";
+import { useTenantContext } from "@/lib/tenant-context";
 import type { AreaAccess } from "@/lib/areas/access";
 import {
   useBoard,
@@ -77,13 +78,26 @@ const TIMER_BAND = {
   { tone: StatusBandTone; icon: LucideIcon; labelKey: MessageKey }
 >;
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh board, so a
+ * selected station of the previous outlet cannot carry over.
+ */
 export function KdsPage() {
+  const { outlet } = useTenantContext();
+  return <KdsContent key={outlet?.id ?? "none"} />;
+}
+
+function KdsContent() {
   const t = useT();
+  // The outlet the shell selected; null when the session has none, in which
+  // case the queries stay off and the empty state shows.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const { access } = useRouteContext({ strict: false }) as {
     access: AreaAccess;
   };
-  const stations = useStations();
-  const names = useStationLabels();
+  const stations = useStations(outletId);
+  const names = useStationLabels(outletId);
   const [selected, setSelected] = useState<StationId | null>(null);
   // Station authorization (legend-fsb7): a station-scoped account only polls
   // and shows the stations in its reach. The API denies the rest with 403, so
@@ -105,7 +119,7 @@ export function KdsPage() {
   // endpoint is follow-up work.
   const stationBoards = useQueries({
     queries: active.map((item) => ({
-      ...boardQuery(item.stationId),
+      ...boardQuery(outletId, item.stationId),
       refetchInterval: item.stationId === stationId ? (false as const) : 30_000,
       select: (board: StationBoard) =>
         board.tickets.filter(
@@ -136,13 +150,14 @@ export function KdsPage() {
           </p>
         )}
       </header>
-      {stations.isPending || names.isPending ? (
+      {outletId && (stations.isPending || names.isPending) ? (
         <div aria-busy="true">
           <span className="sr-only">{t("kds.loading")}</span>
           <Skeleton className="h-28 w-full" />
         </div>
       ) : failure ? (
         <ErrorState
+          error={failure}
           title={t(offline ? "kds.offlineTitle" : "kds.errorTitle")}
           description={t(offline ? "kds.offlineHint" : "kds.errorHint")}
           onRetry={() => {
@@ -152,7 +167,7 @@ export function KdsPage() {
         />
       ) : (
         <>
-          {stationId ? (
+          {stationId && outletId ? (
             <>
               {/* Stations are a neutral segmented control: selecting one is a
                   filter, not the screen's one accent action (DESIGN.md §2). */}
@@ -168,6 +183,7 @@ export function KdsPage() {
               />
               <StationBoard
                 key={stationId}
+                outletId={outletId}
                 stationId={stationId}
                 targetSeconds={station?.targetSeconds ?? null}
               />
@@ -185,15 +201,17 @@ export function KdsPage() {
 }
 
 function StationBoard({
+  outletId,
   stationId,
   targetSeconds,
 }: {
+  outletId: string;
   stationId: StationId;
   targetSeconds: number | null;
 }) {
   const t = useT();
-  const board = useBoard(stationId);
-  const action = useKdsActions();
+  const board = useBoard(outletId, stationId);
+  const action = useKdsActions(outletId);
   const toast = useToast();
   const [recall, setRecall] = useState<KitchenTicketDetail | null>(null);
   const [reason, setReason] = useState("");
@@ -215,6 +233,7 @@ function StationBoard({
   if (board.isError)
     return (
       <ErrorState
+        error={board.error}
         title={t(offline ? "kds.offlineTitle" : "kds.errorTitle")}
         description={t(offline ? "kds.offlineHint" : "kds.errorHint")}
         onRetry={() => void board.refetch()}

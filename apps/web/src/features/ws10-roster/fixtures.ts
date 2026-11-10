@@ -7,14 +7,15 @@
 // contract endpoints in `api.ts`, never through these fixtures.
 import { cafeLegendHrisFixtures } from "@starter/shared/hris";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
-import { ROSTER_OUTLET_ID } from "./outlet.ts";
 
 export const ROSTER_TENANT_ID = cafeLegendHrisFixtures.tenant.id;
 
-/** Templates of this outlet, active and inactive, in fixture order. */
-export const ROSTER_TEMPLATES = cafeLegendHrisFixtures.shiftTemplates.filter(
-  (template) => template.outletId === ROSTER_OUTLET_ID,
-);
+/** Templates of one outlet, active and inactive, in fixture order. */
+export function rosterTemplatesFor(outletId: string | undefined) {
+  return cafeLegendHrisFixtures.shiftTemplates.filter(
+    (template) => template.outletId === outletId,
+  );
+}
 
 /** Tenant-wide working-time limits (PRD F26 "Kepatuhan", HR-05). */
 export const ROSTER_COMPLIANCE_POLICY =

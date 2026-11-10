@@ -32,7 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import {
   useInventoryItems,
   useParLevels,
@@ -60,8 +60,16 @@ import { ParStatusPill } from "./stock-status";
 
 const ALL = "all";
 
+/** Keyed by outlet so filters and page reset when the shell switches outlet. */
 export function BalancesPage() {
+  const { outlet } = useTenantContext();
+  return <BalancesContent key={outlet?.id ?? "none"} />;
+}
+
+function BalancesContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   // Business dates follow the outlet clock (D-CORE-7), never the device clock;
   // with no outlet the hook returns the documented Jakarta 04:00 default.
   const { clock } = useOutletClock();
@@ -69,12 +77,12 @@ export function BalancesPage() {
   const [locationId, setLocationId] = React.useState(ALL);
   const [page, setPage] = React.useState(1);
 
-  const balancesQuery = useStockBalances();
-  const parLevelsQuery = useParLevels();
+  const balancesQuery = useStockBalances(outletId);
+  const parLevelsQuery = useParLevels(outletId);
   const itemsQuery = useInventoryItems({ limit: STOCK_LIST_LIMIT });
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outletId);
   const unitsQuery = useUnits({ limit: STOCK_LIST_LIMIT });
-  const batchesQuery = useStockBatches();
+  const batchesQuery = useStockBatches(outletId);
 
   const balances = React.useMemo(
     () => balancesQuery.data?.data ?? [],

@@ -165,6 +165,7 @@ export function BoardScreen({ facilityId }: { facilityId?: string }) {
           titleKey="facilityStaff.board.error.title"
           hintKey="facilityStaff.board.error.hint"
           onRetry={retry}
+          error={facilities.error ?? config.error ?? board.error}
         />
       )}
 

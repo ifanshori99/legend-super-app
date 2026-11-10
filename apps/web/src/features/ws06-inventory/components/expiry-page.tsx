@@ -33,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import {
   useInventoryItems,
   useStockBatches,
@@ -58,8 +58,16 @@ const ALL = "all";
 
 type ExpiryFilter = "all" | "expired" | "expiring" | "no_expiry";
 
+/** Keyed by outlet so filters and page reset when the shell switches outlet. */
 export function ExpiryPage() {
+  const { outlet } = useTenantContext();
+  return <ExpiryContent key={outlet?.id ?? "none"} />;
+}
+
+function ExpiryContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   // Expiry "days left" is relative to the outlet's business date (D-CORE-7);
   // with no outlet the hook returns the documented Jakarta 04:00 default.
   const { clock } = useOutletClock();
@@ -68,9 +76,9 @@ export function ExpiryPage() {
   const [status, setStatus] = React.useState<ExpiryFilter>("all");
   const [page, setPage] = React.useState(1);
 
-  const batchesQuery = useStockBatches();
+  const batchesQuery = useStockBatches(outletId);
   const itemsQuery = useInventoryItems({ limit: STOCK_LIST_LIMIT });
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outletId);
   const unitsQuery = useUnits({ limit: STOCK_LIST_LIMIT });
 
   const batches = React.useMemo(
@@ -266,6 +274,12 @@ export function ExpiryPage() {
         title={t("inventoryStock.expiry.title")}
         description={t("inventoryStock.expiry.description")}
         state={state}
+        error={
+          batchesQuery.error ??
+          itemsQuery.error ??
+          locationsQuery.error ??
+          unitsQuery.error
+        }
         onRetry={() => {
           void batchesQuery.refetch();
           void itemsQuery.refetch();

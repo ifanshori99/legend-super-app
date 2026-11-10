@@ -21,7 +21,6 @@ import {
   handoverQuery,
   handoversQuery,
   menuItemsQuery,
-  outletsQuery,
   schedulesQuery,
   serviceVendorsQuery,
   ticketsQuery,
@@ -58,11 +57,6 @@ function useHandoverMutation<TVariables, TResult>(
 ) {
   const refresh = useInvalidate(HANDOVER_READS);
   return useMutation({ mutationFn, onSuccess: () => refresh() });
-}
-
-/** Accessible outlets until the outlet-context bead supplies the assignment. */
-export function useOutlets() {
-  return useQuery(outletsQuery());
 }
 
 export function useEquipmentList(outletId: string | undefined) {

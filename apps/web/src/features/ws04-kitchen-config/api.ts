@@ -10,9 +10,9 @@ import {
   listOrderIssues,
   updateCapacityRules,
 } from "@starter/shared/kitchen";
+import type { OutletId } from "@starter/shared/core";
 import { listStations } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import { KITCHEN_OUTLET_ID } from "./outlet.ts";
 
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
@@ -24,10 +24,13 @@ export type CapacityRulesBody = Body<typeof updateCapacityRules>;
 export type CapacityRulesParams = Params<typeof updateCapacityRules>;
 
 /** The KDS tabs/config of this outlet (F12 "KDS per Stasiun"). */
-export async function fetchKitchenStations(signal?: AbortSignal) {
+export async function fetchKitchenStations(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
   const { data } = await callEndpoint(
     listKitchenStations,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
@@ -37,41 +40,48 @@ export async function fetchKitchenStations(signal?: AbortSignal) {
  * Station names and target times live in the menu contract (PRD §6
  * `stations`); kitchen config reads them, the menu back office owns them.
  */
-export async function fetchMenuStations(signal?: AbortSignal) {
+export async function fetchMenuStations(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
   const page = await callEndpoint(
     listStations,
-    { query: { outletId: KITCHEN_OUTLET_ID, limit: 100 } },
+    { query: { outletId, limit: 100 } },
     { signal },
   );
   return page.data;
 }
 
 /** Every capacity window of the outlet, before replacing one station's list. */
-export async function fetchCapacityRules(signal?: AbortSignal) {
+export async function fetchCapacityRules(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
   const { data } = await callEndpoint(
     listCapacityRules,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
 }
 
 /** Current pacing per station: used points against the active window. */
-export async function fetchPacing(signal?: AbortSignal) {
+export async function fetchPacing(outletId: OutletId, signal?: AbortSignal) {
   const { data } = await callEndpoint(
     getPacing,
-    { params: { outletId: KITCHEN_OUTLET_ID } },
+    { params: { outletId } },
     { signal },
   );
   return data;
 }
 
 export async function saveCapacityRules(
+  outletId: OutletId,
   stationId: string,
   rules: CapacityRulesBody["rules"],
 ) {
   const { data } = await callEndpoint(updateCapacityRules, {
-    params: { outletId: KITCHEN_OUTLET_ID, stationId },
+    params: { outletId, stationId },
     body: { rules },
   });
   return data;
@@ -79,12 +89,13 @@ export async function saveCapacityRules(
 
 /** Serving-time analytics by station, hour, employee or item (F12). */
 export async function fetchServingTimeSummary(
+  outletId: OutletId,
   query: ServingSummaryQuery,
   signal?: AbortSignal,
 ) {
   const { data } = await callEndpoint(
     getServingTimeSummary,
-    { params: { outletId: KITCHEN_OUTLET_ID }, query },
+    { params: { outletId }, query },
     { signal },
   );
   return data;
@@ -92,12 +103,13 @@ export async function fetchServingTimeSummary(
 
 /** Remake/comp log, newest first, cursor-paginated (KDS-07). */
 export async function fetchOrderIssues(
+  outletId: OutletId,
   query: OrderIssueQuery,
   signal?: AbortSignal,
 ) {
   return callEndpoint(
     listOrderIssues,
-    { params: { outletId: KITCHEN_OUTLET_ID }, query },
+    { params: { outletId }, query },
     { signal },
   );
 }

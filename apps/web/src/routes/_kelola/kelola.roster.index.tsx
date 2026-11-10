@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
-import { addBusinessDays } from "@starter/shared/hris";
 import { RosterPage } from "@/features/ws10-roster/components/roster-page";
 import { RosterShell } from "@/features/ws10-roster/components/roster-shell";
 import { rosterGuard } from "@/features/ws10-roster/guard";
@@ -8,12 +7,7 @@ import {
   isMockScenarioRequest,
   normalizeWeekStart,
 } from "@/features/ws10-roster/lib";
-import {
-  employeesQuery,
-  holidaysQuery,
-  positionsQuery,
-  weekShiftsQuery,
-} from "@/features/ws10-roster/queries";
+import { holidaysQuery, positionsQuery } from "@/features/ws10-roster/queries";
 
 // /kelola/roster — weekly roster calendar (PRD v1.7 §3 Kelompok D 28, F26,
 // HR-05). `?week=YYYY-MM-DD` picks the ISO week (any day normalizes to its
@@ -31,12 +25,9 @@ export const Route = createFileRoute("/_kelola/kelola/roster/")({
     if (isMockScenarioRequest(location.searchStr)) return undefined;
     const weekStart = deps.weekStart;
     return Promise.all([
-      context.queryClient.ensureQueryData(employeesQuery()),
+      // Employees and shifts depend on the outlet the shell selects, which
+      // the loader cannot see: the screen fetches them once it knows it.
       context.queryClient.ensureQueryData(positionsQuery()),
-      context.queryClient.ensureQueryData(weekShiftsQuery(weekStart)),
-      context.queryClient.ensureQueryData(
-        weekShiftsQuery(addBusinessDays(weekStart, -7)),
-      ),
       context.queryClient.ensureQueryData(holidaysQuery(weekStart)),
     ]);
   },

@@ -99,7 +99,11 @@ export function useReceiptLinesForOrder(
 
 export const useSupplierInvoices = (
   query: EndpointInput<typeof listSupplierInvoices>["query"],
-) => useQuery(queries.supplierInvoicesQuery(query));
+) =>
+  useQuery({
+    ...queries.supplierInvoicesQuery(query),
+    enabled: Boolean(query?.outletId),
+  });
 
 export const useSupplierInvoice = (id: string) =>
   useQuery({ ...queries.supplierInvoiceQuery(id), enabled: Boolean(id) });

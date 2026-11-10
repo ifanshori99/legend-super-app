@@ -369,6 +369,7 @@ function ReviewForm({
     return (
       <PosPanel title={t("posKasirSupervisor.review.title")}>
         <ErrorState
+          error={supervisors.error}
           title={t("posKasirSupervisor.state.supervisorsErrorTitle")}
           description={t("posKasirSupervisor.state.supervisorsErrorHint")}
           onRetry={() => void supervisors.refetch()}
@@ -599,6 +600,7 @@ function ReviewProblem({
   }
   return (
     <ErrorState
+      error={error}
       title={t("posKasirSupervisor.state.errorTitle")}
       description={t("posKasirSupervisor.state.errorHint")}
       onRetry={onRetry}

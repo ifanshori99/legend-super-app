@@ -60,6 +60,7 @@ export function CategoriesPage() {
       title={t("inventory.categories.title")}
       description={t("inventory.categories.description")}
       state={state}
+      error={itemsQuery.error ?? unitsQuery.error}
       onRetry={() => {
         void itemsQuery.refetch();
         void unitsQuery.refetch();

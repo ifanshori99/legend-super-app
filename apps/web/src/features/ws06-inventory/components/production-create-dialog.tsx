@@ -23,8 +23,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { quantityFromInput, uomCode } from "../lib";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import {
   useAttemptKey,
   useCreateProductionOrder,
@@ -41,6 +41,7 @@ export function ProductionCreateDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  const { outlet } = useTenantContext();
   const recipesQuery = useRecipes();
   const unitsQuery = useUnits({ limit: 100 });
   const createOrder = useCreateProductionOrder();
@@ -87,10 +88,11 @@ export function ProductionCreateDialog({
         "inventoryRecipe.production.create.errorQuantity",
       );
     setErrors(nextErrors);
+    if (!outlet) return;
     if (Object.values(nextErrors).some(Boolean) || planned === null) return;
     setFormError(undefined);
     const payload = {
-      outletId: INVENTORY_OUTLET_ID,
+      outletId: outlet.id,
       recipeId: effectiveRecipeId,
       plannedQty: planned,
     };
@@ -197,7 +199,7 @@ export function ProductionCreateDialog({
             <Button
               type="submit"
               loading={createOrder.isPending}
-              disabled={pending || recipes.length === 0}
+              disabled={pending || recipes.length === 0 || !outlet}
             >
               {t("inventoryRecipe.production.create.submit")}
             </Button>

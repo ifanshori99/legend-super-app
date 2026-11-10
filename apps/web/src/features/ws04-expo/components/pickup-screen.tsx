@@ -11,6 +11,7 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBand } from "@/components/ui/status-band";
 import { useToast } from "@/components/ui/toast";
+import { useTenantContext } from "@/lib/tenant-context";
 import { formatOutletTime } from "../format.ts";
 import { useCallPickup, usePickupDisplay } from "../hooks.ts";
 import {
@@ -31,11 +32,23 @@ import { KitchenScreenHeader } from "./screen-header.tsx";
 /** How many already-picked-up numbers stay on the board. */
 const PICKED_UP_SHOWN = 6;
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh screen, so the
+ * announced-number memory of the previous outlet cannot leak into this one.
+ */
 export function PickupScreen() {
+  const { outlet } = useTenantContext();
+  return <PickupContent key={outlet?.id ?? "none"} />;
+}
+
+function PickupContent() {
   const t = useT();
   const toast = useToast();
-  const display = usePickupDisplay();
-  const call = useCallPickup();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
+  const display = usePickupDisplay(outletId);
+  const call = useCallPickup(outletId);
   const soundOn = useSyncExternalStore(
     subscribePickupSound,
     getPickupSoundSnapshot,
@@ -134,7 +147,7 @@ export function PickupScreen() {
     />
   );
 
-  if (display.isPending) {
+  if (outletId && display.isPending) {
     return (
       <div className="flex w-full flex-col gap-5">
         {header}
@@ -156,6 +169,7 @@ export function PickupScreen() {
       <div className="flex w-full flex-col gap-5">
         {header}
         <ErrorState
+          error={display.error}
           title={t("pickup.errorTitle")}
           description={t("pickup.errorHint")}
           onRetry={() => void display.refetch()}

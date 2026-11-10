@@ -280,6 +280,9 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
           titleKey="facilityStaff.emergency.error.title"
           hintKey="facilityStaff.emergency.error.hint"
           onRetry={retry}
+          error={
+            facilities.error ?? config.error ?? board.error ?? incidents.error
+          }
         />
       )}
 

@@ -2,12 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { PettyPage } from "@/features/ws06-purchasing/components/petty-page";
 import { PurchasingFrame } from "@/features/ws06-purchasing/components/purchasing-shell";
 import { purchasingGuard } from "@/features/ws06-purchasing/guard";
-import {
-  pettyPurchasePolicyQuery,
-  pettyPurchasesQuery,
-} from "@/features/ws06-purchasing/receiving-queries";
-import { isMockScenarioRequest } from "@/features/ws06-inventory/lib";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import { holdsAny } from "@/lib/areas/guard";
 
 // /kelola/pengadaan/kecil — petty cash purchases with a mandatory photo and
@@ -17,18 +11,7 @@ export const Route = createFileRoute("/_kelola/kelola/pengadaan_/kecil")({
     "accounting.expense.request",
     "accounting.supplier_payment.process",
   ]),
-  loader: ({ context, location }) =>
-    isMockScenarioRequest(location.searchStr)
-      ? undefined
-      : Promise.all([
-          context.queryClient.ensureQueryData(
-            pettyPurchasesQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }),
-          ),
-          // prefetch, not ensure: a missing policy (404) is a page state.
-          context.queryClient.prefetchQuery(
-            pettyPurchasePolicyQuery({ outletId: INVENTORY_OUTLET_ID }),
-          ),
-        ]),
+  // Outlet-scoped data loads in the screen, once the shell has chosen the outlet.
   component: PettyScreen,
 });
 

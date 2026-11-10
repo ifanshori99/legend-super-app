@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import type { OutletId } from "@starter/shared/core";
 import { fetchExpoBoard, fetchExpoRunners, fetchPickupDisplay } from "./api.ts";
 
 // Both boards are live views of the kitchen: the expo tablet and the wall
@@ -11,35 +12,42 @@ const RUNNERS_STALE_MS = 60_000;
 
 export const expoKeys = {
   all: ["kitchen", "expo"] as const,
-  board: () => [...expoKeys.all, "board"] as const,
-  runners: () => [...expoKeys.all, "runners"] as const,
+  board: (outletId: OutletId | undefined) =>
+    [...expoKeys.all, outletId, "board"] as const,
+  runners: (outletId: OutletId | undefined) =>
+    [...expoKeys.all, outletId, "runners"] as const,
 };
 
 export const pickupKeys = {
   all: ["kitchen", "pickup"] as const,
-  display: () => [...pickupKeys.all, "display"] as const,
+  display: (outletId: OutletId | undefined) =>
+    [...pickupKeys.all, outletId, "display"] as const,
 };
 
-export function expoBoardQuery() {
+/** No outlet selected (null): the query stays off. */
+export function expoBoardQuery(outletId: OutletId | undefined) {
   return queryOptions({
-    queryKey: expoKeys.board(),
-    queryFn: ({ signal }) => fetchExpoBoard(signal),
+    queryKey: expoKeys.board(outletId),
+    queryFn: ({ signal }) => fetchExpoBoard(outletId!, signal),
+    enabled: outletId !== undefined,
     refetchInterval: EXPO_REFRESH_MS,
   });
 }
 
-export function expoRunnersQuery() {
+export function expoRunnersQuery(outletId: OutletId | undefined) {
   return queryOptions({
-    queryKey: expoKeys.runners(),
-    queryFn: ({ signal }) => fetchExpoRunners(signal),
+    queryKey: expoKeys.runners(outletId),
+    queryFn: ({ signal }) => fetchExpoRunners(outletId!, signal),
+    enabled: outletId !== undefined,
     staleTime: RUNNERS_STALE_MS,
   });
 }
 
-export function pickupDisplayQuery() {
+export function pickupDisplayQuery(outletId: OutletId | undefined) {
   return queryOptions({
-    queryKey: pickupKeys.display(),
-    queryFn: ({ signal }) => fetchPickupDisplay(signal),
+    queryKey: pickupKeys.display(outletId),
+    queryFn: ({ signal }) => fetchPickupDisplay(outletId!, signal),
+    enabled: outletId !== undefined,
     refetchInterval: PICKUP_REFRESH_MS,
   });
 }

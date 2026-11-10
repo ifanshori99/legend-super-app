@@ -5,6 +5,7 @@ import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Button } from "@/components/ui/button";
 import {
   DataTableShell,
@@ -26,10 +27,18 @@ import {
 } from "../hooks";
 import { formatTransferTime, LIST_LIMIT, transferQuantity } from "../lib";
 
+/** Keyed by outlet so the list state resets when the shell switches outlet. */
 export function TransfersPage() {
+  const { outlet } = useTenantContext();
+  return <TransfersContent key={outlet?.id ?? "none"} />;
+}
+
+function TransfersContent() {
   const t = useT();
-  const transfersQuery = useStockTransfers();
-  const locationsQuery = useStockLocations();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
+  const transfersQuery = useStockTransfers(outletId);
+  const locationsQuery = useStockLocations(outletId);
   const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
   const unitsQuery = useUnits({ limit: LIST_LIMIT });
 
@@ -73,6 +82,12 @@ export function TransfersPage() {
       title={t("inventory.transfers.title")}
       description={t("inventory.transfers.description")}
       state={state}
+      error={
+        transfersQuery.error ??
+        locationsQuery.error ??
+        itemsQuery.error ??
+        unitsQuery.error
+      }
       onRetry={() => {
         void transfersQuery.refetch();
         void locationsQuery.refetch();

@@ -30,6 +30,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import {
   useCreateStockTransfer,
   useInventoryItems,
@@ -43,18 +44,25 @@ import {
   LIST_LIMIT,
   quantityFromInput,
 } from "../lib";
-import { INVENTORY_OUTLET_ID } from "../outlet";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Line = { key: string; inventoryItemId: string; quantity: string };
 
+/** Keyed by outlet so a half-filled draft never posts to another outlet. */
 export function TransferFormPage() {
+  const { outlet } = useTenantContext();
+  return <TransferFormContent key={outlet?.id ?? "none"} />;
+}
+
+function TransferFormContent() {
   const t = useT();
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id;
   const toast = useToast();
   const navigate = useNavigate();
-  const locationsQuery = useStockLocations();
+  const locationsQuery = useStockLocations(outletId);
   const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
-  const balancesQuery = useStockBalances();
+  const balancesQuery = useStockBalances(outletId);
   const unitsQuery = useUnits({ limit: LIST_LIMIT });
   const createTransfer = useCreateStockTransfer();
 
@@ -178,11 +186,12 @@ export function TransferFormPage() {
       setFormError(t("form.errorSummary", { count: 1 }));
       return;
     }
+    if (!outletId) return;
     setFormError(undefined);
     draftKey.current ??= newIdempotencyKey();
     createTransfer.mutate(
       {
-        outletId: INVENTORY_OUTLET_ID,
+        outletId,
         fromLocationId: fromValue,
         toLocationId: toValue,
         lines: lines.map((line) => ({
@@ -447,7 +456,7 @@ export function TransferFormPage() {
             <Button
               type="submit"
               loading={createTransfer.isPending}
-              disabled={lines.length === 0}
+              disabled={!outletId || lines.length === 0}
             >
               {t("inventory.transfers.form.submit")}
             </Button>

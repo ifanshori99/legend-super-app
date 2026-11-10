@@ -8,15 +8,23 @@ import { displayRefetchMs } from "./lib.ts";
 // the poll later; the screen already treats every read as a full snapshot.
 export const customerDisplayKeys = {
   all: ["pos", "customer-display"] as const,
-  state: (terminalDeviceId?: string) =>
-    [...customerDisplayKeys.all, "state", terminalDeviceId ?? null] as const,
+  state: (outletId: string, terminalDeviceId?: string) =>
+    [
+      ...customerDisplayKeys.all,
+      "state",
+      outletId,
+      terminalDeviceId ?? null,
+    ] as const,
 };
 
-export function customerDisplayQuery(terminalDeviceId?: string) {
+export function customerDisplayQuery(
+  outletId: string,
+  terminalDeviceId?: string,
+) {
   return queryOptions({
-    queryKey: customerDisplayKeys.state(terminalDeviceId),
+    queryKey: customerDisplayKeys.state(outletId, terminalDeviceId),
     queryFn: ({ signal }) =>
-      fetchCustomerDisplayState(terminalDeviceId, signal),
+      fetchCustomerDisplayState(outletId, terminalDeviceId, signal),
     refetchInterval: (query) =>
       displayRefetchMs(query.state.data ?? null, Date.now()),
     refetchIntervalInBackground: true,

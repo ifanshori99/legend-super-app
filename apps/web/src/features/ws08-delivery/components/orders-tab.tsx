@@ -89,6 +89,7 @@ export function OrdersTab({
             <ErrorState
               title={t("deliveryOps.pesanan.errorTitle")}
               description={t("deliveryOps.pesanan.errorHint")}
+              error={orders.error}
               onRetry={() => void orders.refetch()}
             />
           </CardShellBody>
@@ -98,6 +99,7 @@ export function OrdersTab({
           title={t("deliveryOps.pesanan.tableTitle")}
           description={t("deliveryOps.pesanan.tableDescription")}
           state={state}
+          error={orders.error}
           onRetry={() => void orders.refetch()}
           empty={{
             title: t("deliveryOps.pesanan.emptyTitle"),

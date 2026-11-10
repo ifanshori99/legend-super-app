@@ -84,6 +84,7 @@ export function KoneksiScreen({
       {status.isError && (
         <Card>
           <ErrorState
+            error={status.error}
             title={t("state.errorTitle")}
             description={t("state.errorHint")}
             onRetry={() => void status.refetch()}

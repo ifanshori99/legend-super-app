@@ -188,6 +188,7 @@ export function TaxSettingsPage() {
             {t("tax.settings.newVersion")}
           </Button>
         }
+        error={settingsQuery.error}
         onRetry={() => void settingsQuery.refetch()}
         empty={{
           title: t("tax.settings.emptyTitle"),

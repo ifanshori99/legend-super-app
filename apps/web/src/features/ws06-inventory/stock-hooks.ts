@@ -18,7 +18,6 @@ import {
   parLevelsQuery,
   unitsQuery,
 } from "./stock-queries";
-import { INVENTORY_OUTLET_ID } from "./outlet";
 import { STOCK_LIST_LIMIT } from "./stock-lib";
 
 type QueryOf<E extends AnyEndpoint> = EndpointInput<E>["query"];
@@ -33,28 +32,32 @@ export function useUnits(query: QueryOf<typeof listUoms>) {
   return useQuery(unitsQuery(query));
 }
 
-export function useStockLocations() {
-  return useQuery(
-    locationsQuery({ outletId: INVENTORY_OUTLET_ID, limit: STOCK_LIST_LIMIT }),
-  );
+export function useStockLocations(outletId: string | undefined) {
+  return useQuery({
+    ...locationsQuery({ outletId: outletId ?? "", limit: STOCK_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useStockBalances() {
-  return useQuery(
-    balancesQuery({ outletId: INVENTORY_OUTLET_ID, limit: STOCK_LIST_LIMIT }),
-  );
+export function useStockBalances(outletId: string | undefined) {
+  return useQuery({
+    ...balancesQuery({ outletId: outletId ?? "", limit: STOCK_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useParLevels() {
-  return useQuery(
-    parLevelsQuery({ outletId: INVENTORY_OUTLET_ID, limit: STOCK_LIST_LIMIT }),
-  );
+export function useParLevels(outletId: string | undefined) {
+  return useQuery({
+    ...parLevelsQuery({ outletId: outletId ?? "", limit: STOCK_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
-export function useStockBatches() {
-  return useQuery(
-    batchesQuery({ outletId: INVENTORY_OUTLET_ID, limit: STOCK_LIST_LIMIT }),
-  );
+export function useStockBatches(outletId: string | undefined) {
+  return useQuery({
+    ...batchesQuery({ outletId: outletId ?? "", limit: STOCK_LIST_LIMIT }),
+    enabled: Boolean(outletId),
+  });
 }
 
 export type StockLedgerFilters = {
@@ -66,10 +69,13 @@ export type StockLedgerFilters = {
 };
 
 /** Stock card rows; the filters are server query params (PRD §16 ledger). */
-export function useStockLedger(filters: StockLedgerFilters = {}) {
-  return useQuery(
-    ledgerQuery({
-      outletId: INVENTORY_OUTLET_ID,
+export function useStockLedger(
+  outletId: string | undefined,
+  filters: StockLedgerFilters = {},
+) {
+  return useQuery({
+    ...ledgerQuery({
+      outletId: outletId ?? "",
       limit: STOCK_LIST_LIMIT,
       ...(filters.locationId ? { locationId: filters.locationId } : {}),
       ...(filters.inventoryItemId
@@ -79,7 +85,8 @@ export function useStockLedger(filters: StockLedgerFilters = {}) {
       ...(filters.fromDate ? { fromDate: filters.fromDate } : {}),
       ...(filters.toDate ? { toDate: filters.toDate } : {}),
     }),
-  );
+    enabled: Boolean(outletId),
+  });
 }
 
 // ---- Writes --------------------------------------------------------------

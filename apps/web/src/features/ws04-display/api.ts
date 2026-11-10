@@ -2,7 +2,6 @@
 // Components never call these: they use the hooks in ./hooks.ts.
 import { getCustomerDisplayState } from "@starter/shared/pos";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import { POS_OUTLET_ID } from "./outlet.ts";
 
 /**
  * What the paired second screen shows right now (items, total, QRIS) —
@@ -10,13 +9,14 @@ import { POS_OUTLET_ID } from "./outlet.ts";
  * the display is paired to is resolved from the device context server-side.
  */
 export async function fetchCustomerDisplayState(
+  outletId: string,
   terminalDeviceId?: string,
   signal?: AbortSignal,
 ) {
   const { data } = await callEndpoint(
     getCustomerDisplayState,
     {
-      params: { outletId: POS_OUTLET_ID },
+      params: { outletId },
       query: terminalDeviceId ? { terminalDeviceId } : {},
     },
     { signal },

@@ -11,6 +11,7 @@ import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, PackageCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -42,7 +43,6 @@ import {
   WASTE_PHOTO_TYPES,
 } from "../../ws06-inventory/components/photo-field.tsx";
 import { quantityFromInput } from "../../ws06-inventory/lib.ts";
-import { INVENTORY_OUTLET_ID } from "../../ws06-inventory/outlet.ts";
 import {
   useAttemptKey,
   useCreateGoodsReceipt,
@@ -93,17 +93,29 @@ function emptyDraft(locationId: string): LineDraft {
   };
 }
 
+/**
+ * Keyed by outlet: switching outlet in the shell starts a fresh form, so a
+ * chosen order or line draft of the previous outlet cannot leak.
+ */
 export function ReceivingFormPage() {
+  const { outlet } = useTenantContext();
+  return <ReceivingFormContent key={outlet?.id ?? "none"} />;
+}
+
+function ReceivingFormContent() {
   const t = useT();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
+  const outletId = outlet?.id ?? "";
   const toast = useToast();
   const navigate = useNavigate();
   const attempt = useAttemptKey();
   const createReceipt = useCreateGoodsReceipt();
 
-  const orders = usePurchaseOrders(INVENTORY_OUTLET_ID);
+  const orders = usePurchaseOrders(outletId);
   const suppliers = useSuppliers();
   const items = useInventoryItems();
-  const locations = useStockLocations(INVENTORY_OUTLET_ID);
+  const locations = useStockLocations(outletId);
   const uoms = useUoms();
 
   const eligibleOrders = React.useMemo(
@@ -118,7 +130,7 @@ export function ReceivingFormPage() {
   const [orderChoice, setOrderChoice] = React.useState("");
   const orderId = orderChoice || eligibleOrders[0]?.id || "";
   const order = usePurchaseOrder(orderId);
-  const prior = useReceiptLinesForOrder(INVENTORY_OUTLET_ID, orderId);
+  const prior = useReceiptLinesForOrder(outletId, orderId);
 
   const activeLocations = React.useMemo(
     () => (locations.data?.data ?? []).filter((location) => location.isActive),
@@ -217,6 +229,7 @@ export function ReceivingFormPage() {
   }, [drafts, orderLines]);
 
   function submit() {
+    if (!outletId) return;
     const errors: Record<string, string> = {};
     const parsedLines: {
       line: PurchaseOrderLine;
@@ -322,7 +335,7 @@ export function ReceivingFormPage() {
     }
     setFormError(undefined);
     const payload = {
-      outletId: INVENTORY_OUTLET_ID,
+      outletId,
       purchaseOrderId: orderId,
       receivedOn: receivedOn === "" ? undefined : receivedOn,
       qcNotes: composedQcNotes === "" ? null : composedQcNotes,
@@ -362,12 +375,13 @@ export function ReceivingFormPage() {
   }
 
   const loading =
-    orders.isPending ||
-    suppliers.isPending ||
-    items.isPending ||
-    locations.isPending ||
-    uoms.isPending ||
-    (orderId !== "" && (order.isPending || prior.isPending));
+    Boolean(outletId) &&
+    (orders.isPending ||
+      suppliers.isPending ||
+      items.isPending ||
+      locations.isPending ||
+      uoms.isPending ||
+      (orderId !== "" && (order.isPending || prior.isPending)));
   const failed =
     orders.isError ||
     suppliers.isError ||

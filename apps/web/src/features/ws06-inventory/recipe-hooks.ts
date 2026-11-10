@@ -26,7 +26,6 @@ import {
   recipeQuery,
   recipesQuery,
 } from "./recipe-queries";
-import { INVENTORY_OUTLET_ID } from "./outlet";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 // ---- Reads ---------------------------------------------------------------
@@ -44,13 +43,14 @@ export function useRecipe(recipeId: string) {
   });
 }
 
-export function useProductionOrders() {
-  return useQuery(
-    productionOrdersQuery({
-      outletId: INVENTORY_OUTLET_ID,
+export function useProductionOrders(outletId: string | undefined) {
+  return useQuery({
+    ...productionOrdersQuery({
+      outletId: outletId ?? "",
       limit: RECIPE_LIST_LIMIT,
     }),
-  );
+    enabled: Boolean(outletId),
+  });
 }
 
 export function useProductionOutlets() {

@@ -19,6 +19,44 @@ export function outletChoice(outlets: readonly MyOutlet[]): OutletChoice {
 }
 
 /**
+ * Kelola screens that work in the selected outlet (they read
+ * `useTenantContext().outlet`). The management shell shows the picker only on
+ * these paths: elsewhere it would be a control that changes nothing, or a
+ * second picker next to a screen's own (legend-sp41n). Add a path here when a
+ * Kelola screen starts reading the context outlet.
+ */
+export const KELOLA_OUTLET_SCOPED_PREFIXES: readonly string[] = [
+  "/kelola/inventori/stok",
+  "/kelola/inventori/saldo",
+  "/kelola/inventori/lokasi",
+  "/kelola/inventori/transfer",
+  "/kelola/inventori/opname",
+  "/kelola/inventori/waste",
+  "/kelola/inventori/kedaluwarsa",
+  "/kelola/inventori/produksi",
+  "/kelola/inventori/saran",
+  "/kelola/inventori/hpp",
+  "/kelola/inventori/resep",
+  "/kelola/pengadaan",
+  "/kelola/dapur",
+  "/kelola/pajak/laporan",
+  "/kelola/pajak/service-charge",
+  "/kelola/payroll/service-charge",
+  "/kelola/delivery",
+  "/kelola/roster",
+  "/kelola/pengaturan/open-bill",
+  "/kelola/absensi/qr",
+  "/kelola/absensi/selfie",
+];
+
+/** True when a Kelola screen at `pathname` works in the selected outlet. */
+export function kelolaUsesOutletContext(pathname: string): boolean {
+  return KELOLA_OUTLET_SCOPED_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
+/**
  * The outlet to work in: the saved one when it is still in the assigned list,
  * otherwise the first assigned outlet (the API sorts by name). A stale or
  * tampered saved id never selects an outlet outside the list. Null when the

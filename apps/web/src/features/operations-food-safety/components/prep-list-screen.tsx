@@ -47,7 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { useOutletClock } from "@/lib/tenant-context";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import {
   useCreatePrepList,
   useInventoryItems,
@@ -63,7 +63,7 @@ import {
   normalizeReadingInput,
   shortId,
 } from "../logic.ts";
-import { FOOD_SAFETY_LIST_LIMIT, FOOD_SAFETY_OUTLET_ID } from "../outlet.ts";
+import { FOOD_SAFETY_LIST_LIMIT } from "../outlet.ts";
 import { useMinuteClock } from "../use-minute-clock.ts";
 
 type LineDraft = { key: string; itemId: string; quantity: string };
@@ -89,14 +89,15 @@ const STATUS: Record<
   },
 };
 
-export function PrepListScreen() {
+function PrepListScreenContent() {
   const t = useT();
   const toast = useToast();
   const { clock } = useOutletClock();
+  // The outlet the shell selected from the session's assigned outlets.
+  const { outlet } = useTenantContext();
   const now = useMinuteClock();
 
-  const listsResult = usePrepLists({
-    outletId: FOOD_SAFETY_OUTLET_ID,
+  const listsResult = usePrepLists(outlet?.id, {
     limit: FOOD_SAFETY_LIST_LIMIT,
   });
   const itemsResult = useInventoryItems({ limit: FOOD_SAFETY_LIST_LIMIT });
@@ -198,11 +199,11 @@ export function PrepListScreen() {
     setErrors(nextErrors);
     setFormError(undefined);
     if (Object.values(nextErrors).some(Boolean) || !parsedDate.success) return;
-    if (payload.length !== lines.length) return;
+    if (payload.length !== lines.length || outlet === null) return;
 
     createList.mutate(
       {
-        outletId: FOOD_SAFETY_OUTLET_ID,
+        outletId: outlet.id,
         prepDate: parsedDate.data,
         lines: payload,
         idempotencyKey: newIdempotencyKey(),
@@ -268,7 +269,8 @@ export function PrepListScreen() {
   }
 
   const pending =
-    listsResult.isPending || itemsResult.isPending || unitsResult.isPending;
+    outlet !== null &&
+    (listsResult.isPending || itemsResult.isPending || unitsResult.isPending);
   const failed =
     listsResult.isError || itemsResult.isError || unitsResult.isError;
   const firstError =
@@ -310,6 +312,7 @@ export function PrepListScreen() {
       {!pending && failed && (
         <Card>
           <ErrorState
+            error={firstError}
             title={t("opsFoodSafety.prepList.errorTitle")}
             description={
               offline
@@ -596,4 +599,13 @@ export function PrepListScreen() {
       </Dialog>
     </div>
   );
+}
+
+/**
+ * Keyed by outlet: switching outlet in the shell resets the form and
+ * selections, so nothing typed for the previous outlet carries over.
+ */
+export function PrepListScreen() {
+  const { outlet } = useTenantContext();
+  return <PrepListScreenContent key={outlet?.id ?? "none"} />;
 }
