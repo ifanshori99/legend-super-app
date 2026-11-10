@@ -1152,3 +1152,4 @@ Langkah berikut CTO baru:
 - Cron dibuat ulang: retro 3 jam `43 1,4,7,10,13,16,19,22` (f8d7e89d), push `17 * * * *` (b5db75d9).
 - Brief 426 (A lgfru + D s5rgo + test B 9h2oj, satu thread engineer Opus, migrasi sementara A 0272 karena 0270 dipakai owner-self-approve). Belum mulai: Claude 8/8. Founder ditanya: ambil alih thread lama + tutup CTO lama G3wqn untuk slot.
 - G9vme 416 dan G4bs0 417 sudah resolve oleh CTO lama (kandidat batch48d).
+- 05:43 G2i7n 423 refund selesai: ws/pti5r-promo-refund b36d5d3c (5 temuan + bug swap tanpa promo dari architect), 140/140 -> pti5r lepas ke batch48d. Keputusan uang terbuka: order promo, item ditukar lebih murah setelah refund gagal final -> refund berikut bayar harga lama + voucher selisih (lebih bayar). Rekomendasi: batasi ke nilai item pengganti (kartu baru). Diteruskan ke CTO G07r3 untuk ditanya ke founder (Q17).
