@@ -97,15 +97,15 @@ export const EDGE_API_PREFIXES = [
  * rotation, device binding, signed downloads), and writes there never sync to
  * the cloud (design docs/design/hris-edge-replication.md §9 T8).
  *
- * - `POST /api/hris/attendance/clock`: the outlet attendance screen (method
- *   `outlet_device`, staff PIN session, selfie).
+ * - `POST /api/hris/attendance/outlet-clock`: the outlet attendance screen
+ *   (method `outlet_device`, one-time staff PIN proof, selfie; no session).
  * - `GET /api/hris/attendance/qr`: the outlet screen shows the rotating QR
  *   from the day keys the cloud sent (never the seed).
  * - `POST /api/storage/uploads`: the selfie upload. The `purpose` is in the
  *   body; the edge upload handler rejects every purpose except `selfie`.
  */
 export const EDGE_API_EXACT_ROUTES = [
-  { method: "POST", path: "/api/hris/attendance/clock" },
+  { method: "POST", path: "/api/hris/attendance/outlet-clock" },
   { method: "GET", path: "/api/hris/attendance/qr" },
   { method: "POST", path: "/api/storage/uploads" },
 ] as const;

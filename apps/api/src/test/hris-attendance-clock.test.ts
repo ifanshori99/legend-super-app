@@ -1052,10 +1052,11 @@ describe("manual correction method", () => {
 });
 
 describe("outlet_device method (legend-hwn02)", () => {
-  it("[F25] the clock endpoint refuses method outlet_device 422 until the edge path exists and stores no log", async () => {
+  it("[F25] the clock endpoint refuses method outlet_device 400 ATTENDANCE_METHOD_USE_OUTLET_CLOCK and stores no log", async () => {
     const staff = await newStaff(ownOutlet, "Staf Layar Outlet Palsu");
     const response = await clock(staff.client, { method: "outlet_device" });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_USE_OUTLET_CLOCK");
     expect(await storedLogs(staff.employeeId)).toHaveLength(0);
   });
 });

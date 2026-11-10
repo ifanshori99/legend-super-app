@@ -1387,6 +1387,13 @@
       "when": 1794320000000,
       "tag": "0233_edge_selfie_rejected_at",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1794330000000,
+      "tag": "0241_staff_pin_proofs",
+      "breakpoints": true
     }
   ]
 }

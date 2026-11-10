@@ -435,6 +435,44 @@ export const clockAttendance = defineEndpoint({
   response: dataResponseSchema(attendanceLogSchema),
 });
 
+/**
+ * Error codes of the outlet screen clock (legend-u7g9w), with their HTTP
+ * status. The PIN proof codes (PIN_PROOF_INVALID 401, PIN_PROOF_USED 409,
+ * PIN_DEVICE_THROTTLED 429) live with the identity errors.
+ */
+export const OUTLET_CLOCK_ERROR_CODES = {
+  ATTENDANCE_NOT_ALLOWED: "ATTENDANCE_NOT_ALLOWED",
+  SELFIE_NOT_FROM_PROOF: "SELFIE_NOT_FROM_PROOF",
+  ATTENDANCE_METHOD_USE_OUTLET_CLOCK: "ATTENDANCE_METHOD_USE_OUTLET_CLOCK",
+} as const;
+export type OutletClockErrorCode = keyof typeof OUTLET_CLOCK_ERROR_CODES;
+
+export const OUTLET_CLOCK_ERROR_STATUS = {
+  ATTENDANCE_NOT_ALLOWED: 403,
+  SELFIE_NOT_FROM_PROOF: 400,
+  ATTENDANCE_METHOD_USE_OUTLET_CLOCK: 400,
+} as const satisfies Record<OutletClockErrorCode, number>;
+
+/**
+ * The outlet attendance screen clocks a staff member who just proved their PIN.
+ * No session: `X-Device-Token` names the registered device and `X-Pin-Proof`
+ * the one-time proof from `POST /api/staff-pins/verify` (purpose
+ * `attendance_clock`). The employee comes from the proof, never the body.
+ * 201 for a new log, 200 when the idempotency key replays the proof holder's log.
+ */
+export const outletClockAttendance = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/outlet-clock",
+  body: clientInputSchema({
+    type: attendanceTypeSchema,
+    occurredAt: isoDateTimeSchema,
+    /** Selfie uploaded with the same proof (private bucket). */
+    photoUploadRef: z.string().min(1).max(200).nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceLogSchema),
+});
+
 export const listAttendanceLogs = defineEndpoint({
   method: "GET",
   path: "/api/hris/attendance/logs",

@@ -12,6 +12,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { outlets } from "./platform-org";
+import { staffPinProofs } from "./staff-pin-proof";
 
 export const coreStorageObjects = pgTable(
   "core_storage_objects",
@@ -36,6 +37,11 @@ export const coreStorageObjects = pgTable(
     ownerUserId: text("owner_user_id"),
     sourceKind: varchar("source_kind", { length: 32 }),
     sourceId: uuid("source_id"),
+    // The PIN proof that authorised an outlet-device selfie upload (bead
+    // legend-u7g9w). Set by the server only; ON DELETE SET NULL.
+    pinProofId: uuid("pin_proof_id").references(() => staffPinProofs.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

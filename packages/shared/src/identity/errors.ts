@@ -23,6 +23,12 @@ export const identityErrorHttpStatus = {
   PIN_INVALID: 401,
   /** Too many wrong pins; a supervisor override or the lock window releases it. */
   PIN_LOCKED: 423,
+  /** The attendance PIN proof is unknown, expired, superseded, used on upload, or from another device (bead legend-u7g9w). */
+  PIN_PROOF_INVALID: 401,
+  /** The attendance PIN proof was already consumed by a clock request. */
+  PIN_PROOF_USED: 409,
+  /** Too many wrong pins from this device across staff; `Retry-After` says when. */
+  PIN_DEVICE_THROTTLED: 429,
   /** The chosen pin is trivial (all one digit, or a straight run). */
   WEAK_STAFF_PIN: 422,
   /** An MFA-guarded role has no second factor enrolled yet; enrollment comes first. */
@@ -52,6 +58,10 @@ const defaultMessages: Record<IdentityErrorCode, string> = {
     "Verifikasi nomor WhatsApp diperlukan sebelum mengumpulkan atau menukar poin.",
   PIN_INVALID: "PIN salah.",
   PIN_LOCKED: "PIN terkunci. Minta supervisor membuka atau coba lagi nanti.",
+  PIN_PROOF_INVALID: "Bukti PIN tidak berlaku. Masukkan PIN lagi.",
+  PIN_PROOF_USED: "Bukti PIN ini sudah dipakai. Masukkan PIN lagi.",
+  PIN_DEVICE_THROTTLED:
+    "Terlalu banyak PIN salah dari perangkat ini. Coba lagi nanti.",
   WEAK_STAFF_PIN: "PIN terlalu mudah ditebak. Pilih 6 angka lain.",
   MFA_ENROLLMENT_REQUIRED:
     "Role Anda mewajibkan faktor kedua. Daftarkan aplikasi autentikator atau passkey.",

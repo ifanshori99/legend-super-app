@@ -38,10 +38,12 @@ import {
   getAttendanceQr as getAttendanceQrEndpoint,
   listAttendanceDevices as listAttendanceDevicesEndpoint,
   listAttendanceLogs as listAttendanceLogsEndpoint,
+  outletClockAttendance as outletClockAttendanceEndpoint,
   revokeAttendanceDevice as revokeAttendanceDeviceEndpoint,
   rotateAttendanceQrSecret as rotateAttendanceQrSecretEndpoint,
 } from "@starter/shared/hris";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { PIN_PROOF_HEADER } from "../services/staff-pin-proof.service.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -173,6 +175,30 @@ function requireAnySurface(): RequestHandler {
   };
 }
 
+/**
+ * A rejected attempt is stored for HR but is not a clock event: 422 with the
+ * reasons, never a log the employee could mistake for a valid one. The edge
+ * stores nothing without its selfie but answers with the same body.
+ */
+function sendClockResult(
+  res: Response,
+  result: attendanceService.ClockResult,
+  status: 200 | 201,
+): void {
+  if (result.log.validity === "rejected") {
+    res.status(422).json(
+      apiErrorBody("ATTENDANCE_REJECTED", "Absensi ditolak.", {
+        details: result.flagReasons.map((reason) => ({
+          field: "reasons",
+          message: reason,
+        })),
+      }),
+    );
+    return;
+  }
+  res.status(status).json({ data: result.log });
+}
+
 const CLOCK: PermissionCode[] = ["self.attendance.clock"];
 const MANAGE: PermissionCode[] = ["hr.attendance.manage"];
 const READ_OR_SELF: PermissionCode[] = [...MANAGE, ...CLOCK];
@@ -187,32 +213,33 @@ export function createHrisAttendanceRouter(
 ): Router {
   const signer = deps.fileSigner ?? noHrisFileSigner;
   const router = Router();
-  router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
-  const backOffice = requireBackOfficeSurface();
-  const anySurface = requireAnySurface();
-  const actor = (req: Request) => getAuth(req).user.id;
-
+  // The outlet attendance screen (legend-u7g9w): no session and no trusted
+  // origin (no cookie is read, so there is no CSRF). The tenant comes from the
+  // signed device token, the staff member from the one-time PIN proof; the
+  // service checks both, the device registry and the clock permission. Declared
+  // before the session guard below on purpose.
   router.post(
-    "/attendance/clock",
-    anySurface,
+    "/attendance/outlet-clock",
+    requireTenantContext,
     jsonBody,
-    requireHris(CLOCK),
     async (req, res) => {
-      const body = clockAttendanceEndpoint.body.parse(req.body);
-      let result: attendanceService.ClockResult;
+      const body = outletClockAttendanceEndpoint.body.parse(req.body);
+      const tenant = getTenantContext(req);
+      res.setHeader("Cache-Control", "private, no-store");
+      let result: attendanceService.OutletClockResult;
       try {
-        result = await attendanceService.clockAttendance(
-          hrisContext(req),
-          actor(req),
-          body,
-          new Date(),
-          signer,
+        result = await attendanceService.outletClockAttendance(
+          establishScopedTenantContext(tenant, { kind: "tenant" }),
           // Only a token that names this tenant counts (deviceIdOf); the
-          // service checks the registry (edge outlet_device only).
+          // service checks the registry.
           deviceIdOf(req) === null
             ? null
             : verifyDeviceToken(req.get(DEVICE_TOKEN_HEADER) ?? ""),
+          req.get(PIN_PROOF_HEADER) ?? "",
+          body,
+          new Date(),
+          signer,
         );
       } catch (error) {
         // The edge stores nothing without its selfie but answers with the same
@@ -226,20 +253,31 @@ export function createHrisAttendanceRouter(
         );
         return;
       }
-      // A rejected attempt is stored for HR but is not a clock event: 422 with
-      // the reasons, never a log the employee could mistake for a valid one.
-      if (result.log.validity === "rejected") {
-        res.status(422).json(
-          apiErrorBody("ATTENDANCE_REJECTED", "Absensi ditolak.", {
-            details: result.flagReasons.map((reason) => ({
-              field: "reasons",
-              message: reason,
-            })),
-          }),
-        );
-        return;
-      }
-      res.status(201).json({ data: result.log });
+      sendClockResult(res, result, result.replayed ? 200 : 201);
+    },
+  );
+
+  router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+
+  const backOffice = requireBackOfficeSurface();
+  const anySurface = requireAnySurface();
+  const actor = (req: Request) => getAuth(req).user.id;
+
+  router.post(
+    "/attendance/clock",
+    anySurface,
+    jsonBody,
+    requireHris(CLOCK),
+    async (req, res) => {
+      const body = clockAttendanceEndpoint.body.parse(req.body);
+      const result = await attendanceService.clockAttendance(
+        hrisContext(req),
+        actor(req),
+        body,
+        new Date(),
+        signer,
+      );
+      sendClockResult(res, result, 201);
     },
   );
 

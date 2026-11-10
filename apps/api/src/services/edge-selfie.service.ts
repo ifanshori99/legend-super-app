@@ -12,11 +12,14 @@ import {
   assertOutletInScope,
   assertTrustedScopedContext,
   CoreError,
+  outletIdSchema,
   type OutletId,
   type ScopedTenantContext,
+  type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { EDGE_SELFIE_ERROR_CODES } from "@starter/shared/edge";
+import type { DeviceTokenPayload } from "@starter/shared/platform";
 import {
   storageDefaultSourceKind,
   storagePurposePolicy,
@@ -31,6 +34,7 @@ import {
   recordSelfieStorageFull,
   recordSelfieStored,
 } from "../edge/selfie-health";
+import { getEdgeRuntimeState } from "../edge/runtime";
 import { edgeSealedFilePath, edgeSealedObjectKey } from "../edge/selfie-paths";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
@@ -41,6 +45,8 @@ import {
 } from "../lib/selfie-seal";
 import { processImageFull, type MalwareScanner } from "./core-image";
 import type { StorageAuthorization } from "./core-storage";
+import { findActiveDeviceForToken } from "./device-registry-check";
+import { assertLivePinProof } from "./staff-pin-proof.service";
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -49,6 +55,9 @@ export interface EdgeSelfieDeps {
   /** Verified session user id; becomes the object owner and `meta.ownerUserId`. */
   actorUserId: string;
   scanner: MalwareScanner;
+  /** Set on the PIN proof path (legend-u7g9w): `staff_pin_proofs.id` the
+   * selfie was uploaded under; the outlet clock checks it matches. */
+  pinProofId?: string | null;
   /** EDGE_SELFIE_DIR. */
   dir: string;
   /** EDGE_SELFIE_MAX_BYTES: budget for sealed files waiting on this disk. */
@@ -181,6 +190,85 @@ async function writeSealedFileOr507(
   }
 }
 
+/** Device types that may clock on the edge (the outlet attendance screen). */
+const PROOF_UPLOAD_DEVICE_TYPES: readonly string[] = ["pos", "display"];
+
+const proofInvalid = () =>
+  new HttpError(
+    401,
+    "PIN_PROOF_INVALID",
+    "Bukti PIN tidak berlaku. Masukkan PIN lagi.",
+  );
+
+export interface PinProofUpload {
+  /** Outlet-scoped to the device's outlet. */
+  context: ScopedTenantContext;
+  outletId: OutletId;
+  /** The staff member who typed the PIN; becomes the object owner. */
+  userId: string;
+  proofId: string;
+  /** Allows exactly one thing: a selfie upload at the device's outlet. */
+  authorize: StorageAuthorization;
+}
+
+/**
+ * Sessionless selfie upload (legend-u7g9w): the credentials are the signed
+ * device token and a live `X-Pin-Proof`. The device must be active in the
+ * local registry (at this node's outlet), a pos/display device and not in
+ * training mode; the proof must be live for that device. The proof is only
+ * read here, never consumed (the outlet clock consumes it). Every failure is
+ * the same 401, so nothing tells a caller which part was wrong.
+ */
+export async function authorizePinProofUpload(
+  database: Database,
+  tenant: TenantContext,
+  deviceToken: DeviceTokenPayload | null,
+  proofToken: string,
+  now: Date,
+): Promise<PinProofUpload> {
+  if (
+    deviceToken === null ||
+    deviceToken.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase() ||
+    proofToken === ""
+  )
+    throw proofInvalid();
+  const nodeOutletId = getEdgeRuntimeState().identity?.scope.outletId;
+  const device = await findActiveDeviceForToken(
+    deviceToken,
+    nodeOutletId === undefined ? {} : { outletId: nodeOutletId },
+  );
+  if (
+    device === null ||
+    !PROOF_UPLOAD_DEVICE_TYPES.includes(device.type) ||
+    device.trainingMode
+  )
+    throw proofInvalid();
+  const outletId = outletIdSchema.parse(device.outletId);
+  const context = establishScopedTenantContext(tenant, {
+    kind: "outlets",
+    outletIds: [outletId],
+  });
+  const proof = await withTenant(database, context, (tx) =>
+    assertLivePinProof(tx, {
+      tenantId: tenant.tenantId,
+      deviceId: device.id,
+      token: proofToken,
+      now,
+    }),
+  );
+  return {
+    context,
+    outletId,
+    userId: proof.userId,
+    proofId: proof.id,
+    authorize: async (action, purpose, outlet, target) =>
+      action === "upload" &&
+      purpose === "selfie" &&
+      outlet?.toLowerCase() === outletId.toLowerCase() &&
+      (target?.sourceKind ?? null) === "attendance",
+  };
+}
+
 export async function uploadEdgeSelfie(
   database: Database,
   context: ScopedTenantContext,
@@ -265,6 +353,7 @@ export async function uploadEdgeSelfie(
         width: full.width,
         height: full.height,
         ownerUserId: deps.actorUserId,
+        pinProofId: deps.pinProofId ?? null,
         sourceKind,
         sourceId: null,
       }),

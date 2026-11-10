@@ -422,6 +422,13 @@ export const staffPinSwitchSchema = z.strictObject({
   user: userSchema,
   outletId: outletIdSchema,
   verifiedAt: isoDateTimeSchema,
+  /** Only when the verify asked for `purpose: "attendance_clock"` (legend-u7g9w). */
+  proof: z
+    .strictObject({
+      token: z.string().min(1).max(100),
+      expiresAt: isoDateTimeSchema,
+    })
+    .optional(),
 });
 export type StaffPinSwitch = z.infer<typeof staffPinSwitchSchema>;
 

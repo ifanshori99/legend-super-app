@@ -102,6 +102,8 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// Outlet-device attendance PIN proofs + per-device PIN throttle (legend-u7g9w).
+export * from "./staff-pin-proof";
 // WS-12 Tanya AI, MCP server and AI governance (legend-zfi4, xq8y, zw9r, xkbt).
 export * from "./ai";
 // WS-12 AI insights: forecasts, anomaly alerts, daily summaries (legend-hkd4, legend-lely).

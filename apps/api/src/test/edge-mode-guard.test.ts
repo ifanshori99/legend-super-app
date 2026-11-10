@@ -167,11 +167,11 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
   });
 
   describe("legend-j6cyb edge allowlist for HRIS attendance (method + exact path)", () => {
-    it("serves only the attendance clock, the QR read and the selfie upload on the edge", () => {
+    it("serves only the outlet attendance clock, the QR read and the selfie upload on the edge", () => {
       for (const [method, path] of [
-        ["POST", "/api/hris/attendance/clock"],
-        ["post", "/API/HRIS/attendance/clock"],
-        ["POST", "/api/hris//attendance/clock"],
+        ["POST", "/api/hris/attendance/outlet-clock"],
+        ["post", "/API/HRIS/attendance/outlet-clock"],
+        ["POST", "/api/hris//attendance/outlet-clock"],
         ["GET", "/api/hris/attendance/qr"],
         ["POST", "/api/storage/uploads"],
       ] as const)
@@ -182,8 +182,13 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
 
     it("keeps every other /api/hris and /api/storage route cloud only, also with the wrong method", () => {
       for (const [method, path] of [
+        ["POST", "/api/hris/attendance/clock"],
         ["GET", "/api/hris/attendance/clock"],
         ["PUT", "/api/hris/attendance/clock"],
+        ["GET", "/api/hris/attendance/outlet-clock"],
+        ["PUT", "/api/hris/attendance/outlet-clock"],
+        ["POST", "/api/hris/attendance/outlet-clock/x"],
+        ["POST", "/api/hris/attendance/outlet-clockx"],
         ["POST", "/api/hris/attendance/qr"],
         ["POST", "/api/hris/attendance/qr/rotate"],
         ["GET", "/api/hris/attendance/qr/rotate"],
@@ -212,15 +217,20 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
     });
 
     it("treats an exact route without a method as cloud only", () => {
-      expect(classifyApiPath("/api/hris/attendance/clock")).toBe("cloud_only");
+      expect(classifyApiPath("/api/hris/attendance/outlet-clock")).toBe(
+        "cloud_only",
+      );
       expect(classifyApiPath("/api/storage/uploads")).toBe("cloud_only");
     });
 
     it("applies the method at the HTTP guard and at edgeRouteRefusal", async () => {
       const edge = app(true);
       expect(
-        (await request(edge).post("/api/hris/attendance/clock")).status,
+        (await request(edge).post("/api/hris/attendance/outlet-clock")).status,
       ).toBe(200);
+      expect(
+        (await request(edge).post("/api/hris/attendance/clock")).status,
+      ).toBe(404);
       expect((await request(edge).get("/api/hris/attendance/qr")).status).toBe(
         200,
       );
@@ -228,7 +238,7 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
         200,
       );
       for (const [method, path] of [
-        ["get", "/api/hris/attendance/clock"],
+        ["get", "/api/hris/attendance/outlet-clock"],
         ["post", "/api/hris/attendance/qr"],
         ["post", "/api/hris/attendance/qr/rotate"],
         ["get", "/api/storage/uploads"],
@@ -238,13 +248,21 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
         expect(res.body.code).toBe("CLOUD_ONLY_ROUTE");
       }
       expect(
-        edgeRouteRefusal("/api/hris/attendance/clock", {
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock", {
           edgeMode: true,
           method: "POST",
         }),
       ).toBeNull();
       expect(
-        edgeRouteRefusal("/api/hris/attendance/clock?x=1", { edgeMode: true }),
+        edgeRouteRefusal("/api/hris/attendance/clock", {
+          edgeMode: true,
+          method: "POST",
+        }),
+      ).toEqual(expect.objectContaining({ code: "CLOUD_ONLY_ROUTE" }));
+      expect(
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock?x=1", {
+          edgeMode: true,
+        }),
       ).toEqual(expect.objectContaining({ code: "CLOUD_ONLY_ROUTE" }));
       // The cloud serves everything (the split only denies on the edge).
       expect(
@@ -257,7 +275,7 @@ describe("legend-zinn edge allowlist for /api/auth and /api/outlets", () => {
 
     it("does not open the upgrade path for an exact POST route", async () => {
       expect(
-        edgeRouteRefusal("/api/hris/attendance/clock", {
+        edgeRouteRefusal("/api/hris/attendance/outlet-clock", {
           edgeMode: true,
           method: "GET",
         }),

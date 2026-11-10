@@ -2,6 +2,18 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-u7g9w bukti PIN sekali pakai untuk absen layar outlet (engineer, cabang `ws/u7g9w-pin-proof` dari ws/j6cyb-edge-attendance d0376c66, 2026-11-10)
+
+- Absen di layar outlet mencatat staf yang mengetik PIN, bukan pemilik sesi. `POST /api/staff-pins/verify` dengan `purpose: "attendance_clock"` memberi bukti `pp_…` (32 byte acak, hanya sha256 disimpan), umur 120 s, terikat tenant/outlet/device/user, satu bukti hidup per device (advisory lock). Rute baru `POST /api/hris/attendance/outlet-clock` (tanpa sesi, header `X-Device-Token` + `X-Pin-Proof`, edge saja) memakai bukti di transaksi yang sama dengan log; replay idempoten dengan `idempotencyKey`.
+- `/clock` dengan `outlet_device` kini 400 `ATTENDANCE_METHOD_USE_OUTLET_CLOCK`; di edge `/clock` dicabut dari allowlist (404 `CLOUD_ONLY_ROUTE`). Unggah selfie dengan `X-Pin-Proof`: pemilik = staf bukti, `core_storage_objects.pin_proof_id` dicatat; outlet-clock menolak selfie dari bukti lain (400 `SELFIE_NOT_FROM_PROOF`).
+- Kelayakan sebelum PIN dicek: karyawan aktif/onboarding dan izin `self.attendance.clock` di outlet device, selain itu 403 `ATTENDANCE_NOT_ALLOWED`.
+- Throttle per device: reservasi slot atomik, jendela tetap 5 menit, ke-11 = 429 `PIN_DEVICE_THROTTLED` + `Retry-After`, tidak menyentuh `failed_attempts` staf. Audit `staff_pin.device_throttled` + alert manajer sekali per jendela, di transaksi sendiri (gagal alert tidak mengubah jawaban).
+- Migrasi `0241_staff_pin_proofs` (idx 241, when 1794330000000): `staff_pin_proofs`, `device_pin_throttle`, kolom `core_storage_objects.pin_proof_id`; FK divalidasi sebelum FORCE RLS (migrator non-superuser). CORS: `X-Device-Token`, `X-Pin-Proof`.
+- Bukti: gagal-dulu di basis d0376c66 32 merah dari 33 (yang lulus: CORS origin asing ditolak). Sesudah: 12 file 232/232 (edge-pin-proof, pin-proof-cors, edge-attendance-clock, edge-storage-upload-http, edge-mode-guard, hris-attendance-clock, migration-force-rls-guard, edge-received-events-migration, dll.); tsc shared + api bersih (heavy); eslint + prettier bersih.
+- Review architect (K): 1 tinggi (urutan FK vs FORCE RLS), 2 sedang (throttle bisa ditembus paralel, alert gagal me-rollback penghitung), 3 rendah (dua bukti hidup, retry in-flight 409, tanpa pembersihan bukti); semua dibetulkan kecuali pembersihan (kartu `legend-8e0a3`). Alert edge mungkin tidak sampai manajer: kartu `legend-62jtd`.
+- Sisa risiko: replay tidak mengecek device (device hanya di payload outbox); device `display` tidak PIN-capable jadi tidak bisa absen (pertanyaan ke CTO); web `ws10-hris-employee` masih memanggil `/clock` (urusan `legend-tvkuz`).
+- Subagent: 28 (implementer 11, Explore 10, test-runner 4, test-writer 2, architect 1).
+
 ## legend-shrlc desain replikasi master HRIS ke edge + selfie offline (architect, cabang `ws/hris-edge-design` dari ws/storage-wire 62ef1e11, 2026-11-10)
 
 - Dokumen: `docs/design/hris-edge-replication.md`. Hanya desain, tanpa kode produk.

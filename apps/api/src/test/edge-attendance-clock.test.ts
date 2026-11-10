@@ -1,7 +1,10 @@
 // Edge clock with the local copy (bead legend-j6cyb, T4 + T8; design
 // docs/design/hris-edge-replication.md 3.4, 6.2, 9 T4 and T8, founder Q86/Q87).
-// An edge process (EDGE_MODE) accepts method `outlet_device`: a staff-PIN
-// session on a registered outlet device plus a sealed selfie. Runs the real
+// An edge process (EDGE_MODE) accepts method `outlet_device` only through
+// POST /api/hris/attendance/outlet-clock (legend-u7g9w): a registered outlet
+// device (X-Device-Token), a one-time staff PIN proof (X-Pin-Proof, issued by
+// POST /api/staff-pins/verify with purpose attendance_clock) and a sealed
+// selfie uploaded under that proof. No session. Runs the real
 // Express app, Better Auth, RBAC and PostgreSQL against the seeded Cafe Legend
 // tenant. Written from the design, not from the implementation.
 //
@@ -11,13 +14,15 @@
 //   test database, so the devices table is also "the device registry replica".
 // - The outlet device is a registered device of type `pos` (design names no
 //   type). Its signed token travels in X-Device-Token (DEVICE_TOKEN_HEADER).
-// - The clock body for outlet_device carries `location: null`, `deviceIdHash:
-//   null`, `qrToken: null`: the edge ignores all three (design 3.4 step 5).
+// - The outlet-clock body is strict { type, occurredAt, photoUploadRef,
+//   idempotencyKey }: no location, device hash, QR or user id.
 // - The log outlet O is the outlet of the registered device; the employee's
 //   home outlet is also O. A device of another outlet gives 403 (EDG-03 "at
 //   outlet O").
 // - Employee not onboarding/active (here: suspended) and a role without
-//   self.attendance.clock both answer 403 "as on the cloud".
+//   self.attendance.clock both answer 403 ATTENDANCE_NOT_ALLOWED. The proof is
+//   issued while the staff member is eligible, then the eligibility is removed
+//   (issuing refuses an ineligible user up front).
 // - selfie_geo and rotating_qr on the edge answer 400, checked with a valid
 //   device token so only the method decides.
 // - edgeDeviceId in the payload is the registered device id (string).
@@ -28,9 +33,12 @@
 //   employee (any destination). A rejected clock queues none.
 // - The shared-transaction guarantee (log, event and upload row commit
 //   together) is not tested here: it needs a fault injected inside the service.
-// - Item 9 (staff-PIN session and mfa_required roles) is a documentation
-//   finding, not a test here.
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
@@ -71,8 +79,14 @@ import {
   revokeDevice,
   setDeviceTrainingMode,
 } from "../services/device.service.ts";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
+import {
+  setDeviceOutletResolver,
+  setStaffPin,
+} from "../services/device-pin.service.ts";
 import { uploadEdgeSelfie } from "../services/edge-selfie.service.ts";
 import { rotateAttendanceQrSecret } from "../services/hris-attendance.service.ts";
+import { PIN_PROOF_HEADER } from "../services/staff-pin-proof.service.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
@@ -179,7 +193,6 @@ async function grantRole(
 // Outlet centre; the policy below REJECTS outside 100 m and unbound devices,
 // so a pass proves the edge ignores geofence and device binding.
 const CENTER = { latitude: -6.2, longitude: 106.8 };
-const FAR = { ...CENTER, latitude: CENTER.latitude + 0.01 };
 
 async function seedOutlet(label: string) {
   const id = randomUUID();
@@ -234,11 +247,34 @@ async function newStaff(
       ],
     );
   });
+  await setStaffPin(
+    tenantContext,
+    userId,
+    { outletId, userId },
+    { pin: STAFF_PIN },
+  );
   return { client, userId, employeeId };
 }
 
+const STAFF_PIN = "582914";
+
+/** The one-time proof of a PIN just typed on a device (POST /api/staff-pins/verify). */
+async function issueProof(userId: string, token: string = deviceToken) {
+  const response = await agent(app)
+    .post("/api/staff-pins/verify")
+    .set(DEVICE_TOKEN_HEADER, token)
+    .send({ userId, pin: STAFF_PIN, purpose: "attendance_clock" });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  const proofToken = response.body.data.proof.token as string;
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM staff_pin_proofs WHERE tenant_id = $1 AND token_hash = $2",
+    [tenant.id, createHash("sha256").update(proofToken).digest()],
+  );
+  return { token: proofToken, id: rows[0]!.id };
+}
+
 /** An edge-sealed selfie object, made by the real edge upload service. */
-async function sealedSelfie(userId: string) {
+async function sealedSelfie(userId: string, pinProofId: string) {
   const jpeg = await sharp({
     create: { width: 64, height: 48, channels: 3, background: "teal" },
   })
@@ -255,6 +291,7 @@ async function sealedSelfie(userId: string) {
     {
       authorize: async () => true,
       actorUserId: userId,
+      pinProofId,
       scanner: new NoopMalwareScanner(),
       dir: edgeDir,
       maxBytes: 1024 * 1024 * 1024,
@@ -263,7 +300,17 @@ async function sealedSelfie(userId: string) {
   return stored.id;
 }
 
+/** Body of POST /api/hris/attendance/outlet-clock. */
 const clockBody = (overrides: Record<string, unknown> = {}) => ({
+  type: "in",
+  occurredAt: new Date().toISOString(),
+  photoUploadRef: null,
+  idempotencyKey: `att-edge-clock-${randomUUID()}`,
+  ...overrides,
+});
+
+/** Body of the session route POST /api/hris/attendance/clock. */
+const sessionClockBody = (overrides: Record<string, unknown> = {}) => ({
   type: "in",
   method: "outlet_device",
   occurredAt: new Date().toISOString(),
@@ -275,8 +322,29 @@ const clockBody = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-/** The clock request as an edge process answers it (EDGE_MODE on). */
-const clockOnEdge = (
+/** The outlet clock as an edge process answers it (EDGE_MODE on): no session. */
+const outletClockOnEdge = (
+  body: unknown,
+  proofToken: string | null,
+  token: string | null = deviceToken,
+) =>
+  withEdgeModeEnv(async () => {
+    let req = agent(app).post("/api/hris/attendance/outlet-clock");
+    if (token !== null) req = req.set(DEVICE_TOKEN_HEADER, token);
+    if (proofToken !== null) req = req.set(PIN_PROOF_HEADER, proofToken);
+    return await req.send(body as object);
+  });
+
+/** The same request on the cloud (EDGE_MODE off). */
+const outletClockOnCloud = (body: unknown, proofToken: string) =>
+  agent(app)
+    .post("/api/hris/attendance/outlet-clock")
+    .set(DEVICE_TOKEN_HEADER, deviceToken)
+    .set(PIN_PROOF_HEADER, proofToken)
+    .send(body as object);
+
+/** The session clock route as an edge process answers it. */
+const sessionClockOnEdge = (
   client: Client,
   body: unknown,
   token: string | null = deviceToken,
@@ -287,13 +355,36 @@ const clockOnEdge = (
     return await req.send(body as object);
   });
 
-/** The same request on the cloud (EDGE_MODE off). */
-const clockOnCloud = (client: Client, body: unknown, token = deviceToken) =>
+/** The session clock route on the cloud (EDGE_MODE off). */
+const sessionClockOnCloud = (client: Client, body: unknown) =>
   client
     .post("/api/hris/attendance/clock")
     .set(originHeader)
-    .set(DEVICE_TOKEN_HEADER, token)
+    .set(DEVICE_TOKEN_HEADER, deviceToken)
     .send(body as object);
+
+/**
+ * An eligible staff member who typed their PIN (proof issued on `deviceToken`
+ * unless told otherwise) and uploaded a selfie under that proof.
+ */
+async function readyToClock(
+  name: string,
+  options: { status?: string; permissions?: string[]; proofVia?: string } = {},
+) {
+  const { proofVia, ...staffOptions } = options;
+  const staff = await newStaff(name, staffOptions);
+  const proof = await issueProof(staff.userId, proofVia);
+  const objectId = await sealedSelfie(staff.userId, proof.id);
+  return { staff, proof, objectId };
+}
+
+const proofRow = async (proofId: string) =>
+  (
+    await owner.query<{ consumed_at: Date | null }>(
+      "SELECT consumed_at FROM staff_pin_proofs WHERE id = $1",
+      [proofId],
+    )
+  ).rows[0]!;
 
 type LogRow = {
   id: string;
@@ -426,6 +517,7 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
+  setDeviceOutletResolver(createDeviceOutletResolver());
   outletId = await seedOutlet("Outlet layar edge");
   otherOutletId = await seedOutlet("Outlet lain layar edge");
 
@@ -483,6 +575,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setAuditWriter(null);
+  setDeviceOutletResolver(null);
   await asTenant(async (client) => {
     await client.query(
       "DELETE FROM edge_selfie_uploads WHERE tenant_id = $1 AND outlet_id = $2",
@@ -495,6 +588,14 @@ afterAll(async () => {
     await client.query(
       "DELETE FROM edge_people_sync_state WHERE tenant_id = $1 AND outlet_id = $2",
       [tenant.id, outletId],
+    );
+    await client.query(
+      "DELETE FROM staff_pin_proofs WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])",
+      [tenant.id, createdOutlets],
+    );
+    await client.query(
+      "DELETE FROM staff_pins WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
+      [tenant.id, createdUsers],
     );
     for (const table of ["attendance_logs", "shift_assignments"])
       await client.query(
@@ -531,11 +632,10 @@ afterAll(async () => {
 
 describe("T4.1 outlet device token (EDG-03)", () => {
   it("a registered, active device at O clocks in: 201 and an outlet_device log at O", async () => {
-    const staff = await newStaff("Staf Layar Satu");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const { staff, proof, objectId } = await readyToClock("Staf Layar Satu");
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(response.body.data.method).toBe("outlet_device");
@@ -546,23 +646,36 @@ describe("T4.1 outlet device token (EDG-03)", () => {
       method: "outlet_device",
       outlet_id: outletId,
     });
+    expect((await proofRow(proof.id)).consumed_at).not.toBeNull();
   });
 
-  it("no device token: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Tanpa Token");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+  it("no X-Pin-Proof header: 401 PIN_PROOF_INVALID and nothing stored", async () => {
+    const { staff, objectId } = await readyToClock("Staf Tanpa Bukti");
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
       null,
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.status, JSON.stringify(response.body)).toBe(401);
+    expect(response.body.error.code).toBe("PIN_PROOF_INVALID");
     await nothingStored(staff.employeeId);
   });
 
-  it("a validly signed token of an unknown device: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Perangkat Asing");
-    const objectId = await sealedSelfie(staff.userId);
+  it("no device token: 404 TENANT_NOT_FOUND and nothing stored", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Tanpa Token");
+    const response = await outletClockOnEdge(
+      clockBody({ photoUploadRef: objectId }),
+      proof.token,
+      null,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error.code).toBe("TENANT_NOT_FOUND");
+    await nothingStored(staff.employeeId);
+  });
+
+  it("a validly signed token of an unknown device: 404 TENANT_NOT_FOUND and nothing stored", async () => {
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Perangkat Asing",
+    );
     const unknown = signDeviceToken({
       version: 1,
       issuedAt: Math.floor(Date.now() / 1000),
@@ -570,18 +683,20 @@ describe("T4.1 outlet device token (EDG-03)", () => {
       brandId: null,
       deviceId: randomUUID(),
     });
-    const response = await clockOnEdge(
-      staff.client,
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
       unknown,
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error.code).toBe("TENANT_NOT_FOUND");
     await nothingStored(staff.employeeId);
   });
 
-  it("a revoked device: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Perangkat Dicabut");
-    const objectId = await sealedSelfie(staff.userId);
+  it("a revoked device: 404 TENANT_NOT_FOUND and nothing stored", async () => {
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Perangkat Dicabut",
+    );
     const revoked = await enrollDevice(outletScope(outletId), actor, {
       outletId,
       type: "pos",
@@ -593,21 +708,23 @@ describe("T4.1 outlet device token (EDG-03)", () => {
       deviceId: revoked.device.id,
       reason: "Dicabut untuk uji",
     });
-    const response = await clockOnEdge(
-      staff.client,
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
       revoked.token,
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(response.body.error.code).toBe("TENANT_NOT_FOUND");
     await nothingStored(staff.employeeId);
   });
 
   it("an active device registered at another outlet: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Perangkat Outlet Lain");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Perangkat Outlet Lain",
+    );
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
       otherOutletDeviceToken,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(403);
@@ -615,13 +732,11 @@ describe("T4.1 outlet device token (EDG-03)", () => {
   });
 });
 
-describe("T4.1b only pos and display devices may clock", () => {
-  const enrollAndClock = async (
+describe("T4.1b only a pos device may clock", () => {
+  const enroll = async (
     type: "pos" | "display" | "kds" | "printer" | "waiter_phone",
     training: boolean,
   ) => {
-    const staff = await newStaff(`Staf Perangkat ${type}`);
-    const objectId = await sealedSelfie(staff.userId);
     const enrolled = await enrollDevice(outletScope(outletId), actor, {
       outletId,
       type,
@@ -634,30 +749,92 @@ describe("T4.1b only pos and display devices may clock", () => {
         deviceId: enrolled.device.id,
         trainingMode: true,
       });
-    const response = await clockOnEdge(
-      staff.client,
-      clockBody({ photoUploadRef: objectId }),
-      enrolled.token,
-    );
-    return { staff, response };
+    return enrolled;
   };
 
-  it("a display device clocks in", async () => {
-    const { response } = await enrollAndClock("display", false);
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
+  /** A proof row put straight into the table, for a device that cannot type a PIN. */
+  const seedProofFor = async (deviceIdOf: string, userId: string) => {
+    const token = `pp_${randomBytes(32).toString("base64url")}`;
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO staff_pin_proofs
+         (id, tenant_id, outlet_id, device_id, user_id, purpose, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'attendance_clock', $6, now() + interval '2 minutes')`,
+      [
+        id,
+        tenant.id,
+        outletId,
+        deviceIdOf,
+        userId,
+        createHash("sha256").update(token).digest(),
+      ],
+    );
+    return { id, token };
+  };
+
+  it("a display device cannot verify a PIN (403), so no proof and no log", async () => {
+    const enrolled = await enroll("display", false);
+    const staff = await newStaff("Staf Perangkat display");
+    const response = await agent(app)
+      .post("/api/staff-pins/verify")
+      .set(DEVICE_TOKEN_HEADER, enrolled.token)
+      .send({
+        userId: staff.userId,
+        pin: STAFF_PIN,
+        purpose: "attendance_clock",
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM staff_pin_proofs WHERE tenant_id = $1 AND user_id = $2",
+      [tenant.id, staff.userId],
+    );
+    expect(rows).toHaveLength(0);
+    await nothingStored(staff.employeeId);
   });
 
-  it.each(["kds", "printer", "waiter_phone"] as const)(
+  it.each(["kds", "waiter_phone"] as const)(
     "a %s device: 403 and nothing stored",
     async (type) => {
-      const { staff, response } = await enrollAndClock(type, false);
+      const enrolled = await enroll(type, false);
+      const { staff, proof, objectId } = await readyToClock(
+        `Staf Perangkat ${type}`,
+        { proofVia: enrolled.token },
+      );
+      const response = await outletClockOnEdge(
+        clockBody({ photoUploadRef: objectId }),
+        proof.token,
+        enrolled.token,
+      );
       expect(response.status, JSON.stringify(response.body)).toBe(403);
       await nothingStored(staff.employeeId);
     },
   );
 
+  it("a printer device (proof inserted directly): 403 and nothing stored", async () => {
+    const enrolled = await enroll("printer", false);
+    const staff = await newStaff("Staf Perangkat printer");
+    const proof = await seedProofFor(enrolled.device.id, staff.userId);
+    const objectId = await sealedSelfie(staff.userId, proof.id);
+    const response = await outletClockOnEdge(
+      clockBody({ photoUploadRef: objectId }),
+      proof.token,
+      enrolled.token,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    await nothingStored(staff.employeeId);
+  });
+
   it("a pos device in training mode: 403 and nothing stored", async () => {
-    const { staff, response } = await enrollAndClock("pos", true);
+    const enrolled = await enroll("pos", true);
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Perangkat pos latihan",
+      { proofVia: enrolled.token },
+    );
+    const response = await outletClockOnEdge(
+      clockBody({ photoUploadRef: objectId }),
+      proof.token,
+      enrolled.token,
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(403);
     await nothingStored(staff.employeeId);
   });
@@ -665,46 +842,56 @@ describe("T4.1b only pos and display devices may clock", () => {
 
 describe("T4.2 employee and permission", () => {
   it("an onboarding employee may clock", async () => {
-    const staff = await newStaff("Staf Onboarding", { status: "onboarding" });
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const { proof, objectId } = await readyToClock("Staf Onboarding", {
+      status: "onboarding",
+    });
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
   });
 
-  it("a suspended employee: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Ditangguhkan", { status: "suspended" });
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+  it("an employee suspended after the PIN: 403 ATTENDANCE_NOT_ALLOWED and nothing stored", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Ditangguhkan");
+    await owner.query(
+      "UPDATE employees SET status = 'suspended' WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, staff.employeeId],
+    );
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error.code).toBe("ATTENDANCE_NOT_ALLOWED");
     await nothingStored(staff.employeeId);
+    expect((await proofRow(proof.id)).consumed_at).toBeNull();
   });
 
-  it("a role without self.attendance.clock: 403 and nothing stored", async () => {
-    const staff = await newStaff("Staf Tanpa Izin", {
-      permissions: ["self.profile.view"],
-    });
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+  it("a role that lost self.attendance.clock after the PIN: 403 ATTENDANCE_NOT_ALLOWED and nothing stored", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Tanpa Izin");
+    await asTenant((client) =>
+      client.query(
+        "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+        [tenant.id, staff.userId],
+      ),
+    );
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error.code).toBe("ATTENDANCE_NOT_ALLOWED");
     await nothingStored(staff.employeeId);
   });
 });
 
 describe("T4.3 selfie is required", () => {
-  it("no selfie: 422 selfie_missing, no log, nothing queued", async () => {
-    const staff = await newStaff("Staf Tanpa Selfie");
-    const response = await clockOnEdge(
-      staff.client,
+  it("no selfie: 422 selfie_missing, no log, nothing queued, proof not consumed", async () => {
+    const { staff, proof } = await readyToClock("Staf Tanpa Selfie");
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: null }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     // Same body as the cloud rejection (hris-attendance.routes.ts).
@@ -713,20 +900,16 @@ describe("T4.3 selfie is required", () => {
       { field: "reasons", message: "selfie_missing" },
     ]);
     await nothingStored(staff.employeeId);
+    expect((await proofRow(proof.id)).consumed_at).toBeNull();
   });
 });
 
 describe("T4.4 no geofence, device binding or QR on the edge", () => {
-  it("outlet_device with no location and no device hash passes a policy that rejects both", async () => {
-    const staff = await newStaff("Staf Tanpa Lokasi");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
-      clockBody({
-        photoUploadRef: objectId,
-        location: null,
-        deviceIdHash: null,
-      }),
+  it("outlet_device passes a policy that rejects an outside-geofence and an unbound-device clock", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Tanpa Lokasi");
+    const response = await outletClockOnEdge(
+      clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     const logs = await logsOf(staff.employeeId);
@@ -735,30 +918,40 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
     expect(logs[0]!.flag_reasons).toEqual(["offline_unverified"]);
   });
 
-  it("outlet_device far from the outlet is accepted too", async () => {
-    const staff = await newStaff("Staf Jauh");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
-      clockBody({
-        photoUploadRef: objectId,
-        location: { ...FAR, accuracyM: 5 },
-      }),
-    );
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect((await logsOf(staff.employeeId))[0]!.flag_reasons).toEqual([
-      "offline_unverified",
-    ]);
+  it("the outlet-clock body takes no user id, method or location", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Badan Ketat");
+    for (const extra of [
+      { userId: randomUUID() },
+      { method: "outlet_device" },
+      { location: { latitude: -6.2, longitude: 106.8, accuracyM: 5 } },
+    ]) {
+      const response = await outletClockOnEdge(
+        clockBody({ photoUploadRef: objectId, ...extra }),
+        proof.token,
+      );
+      expect(
+        response.status,
+        JSON.stringify(response.body),
+      ).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBeLessThan(500);
+    }
+    await nothingStored(staff.employeeId);
+  });
+
+  it("outlet_device on the session route: 400 ATTENDANCE_METHOD_USE_OUTLET_CLOCK and nothing stored", async () => {
+    const staff = await newStaff("Staf Rute Sesi Layar");
+    const response = await sessionClockOnEdge(staff.client, sessionClockBody());
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_USE_OUTLET_CLOCK");
+    await nothingStored(staff.employeeId);
   });
 
   it("selfie_geo on the edge: 400 and nothing stored", async () => {
     const staff = await newStaff("Staf Selfie Geo di Edge");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
+    const response = await sessionClockOnEdge(
       staff.client,
-      clockBody({
+      sessionClockBody({
         method: "selfie_geo",
-        photoUploadRef: objectId,
         location: { ...CENTER, accuracyM: 5 },
       }),
     );
@@ -769,12 +962,10 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
 
   it("rotating_qr on the edge: 400 and nothing stored", async () => {
     const staff = await newStaff("Staf QR di Edge");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
+    const response = await sessionClockOnEdge(
       staff.client,
-      clockBody({
+      sessionClockBody({
         method: "rotating_qr",
-        photoUploadRef: objectId,
         qrToken: "q".repeat(32),
       }),
     );
@@ -785,12 +976,10 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
 
   it("selfie_geo without any device token on the edge: 400 too", async () => {
     const staff = await newStaff("Staf Selfie Geo Tanpa Token");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
+    const response = await sessionClockOnEdge(
       staff.client,
-      clockBody({
+      sessionClockBody({
         method: "selfie_geo",
-        photoUploadRef: objectId,
         location: { ...CENTER, accuracyM: 5 },
       }),
       null,
@@ -803,12 +992,13 @@ describe("T4.4 no geofence, device binding or QR on the edge", () => {
 
 describe("T4.5 shift and outlet", () => {
   it("a shift of another outlet is not matched; the log is at O", async () => {
-    const staff = await newStaff("Staf Shift Outlet Lain");
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Shift Outlet Lain",
+    );
     await seedShift(staff.employeeId, otherOutletId);
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     const logs = await logsOf(staff.employeeId);
@@ -817,12 +1007,13 @@ describe("T4.5 shift and outlet", () => {
   });
 
   it("a shift of O is matched", async () => {
-    const staff = await newStaff("Staf Shift Outlet Ini");
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Shift Outlet Ini",
+    );
     const shiftId = await seedShift(staff.employeeId, outletId);
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     const logs = await logsOf(staff.employeeId);
@@ -834,11 +1025,10 @@ describe("T4.5 shift and outlet", () => {
 describe("T4.6 validity and flag reasons (Q87)", () => {
   it("fresh roster: flagged, reasons exactly offline_unverified, supervisor review pending", async () => {
     await setRosterAgeHours(0);
-    const staff = await newStaff("Staf Roster Segar");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const { staff, proof, objectId } = await readyToClock("Staf Roster Segar");
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(response.body.data.validity).toBe("flagged");
@@ -850,11 +1040,10 @@ describe("T4.6 validity and flag reasons (Q87)", () => {
 
   it("roster checked 23 hours ago is still fresh", async () => {
     await setRosterAgeHours(23);
-    const staff = await newStaff("Staf Roster 23 Jam");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnEdge(
-      staff.client,
+    const { staff, proof, objectId } = await readyToClock("Staf Roster 23 Jam");
+    const response = await outletClockOnEdge(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect((await logsOf(staff.employeeId))[0]!.flag_reasons).toEqual([
@@ -865,11 +1054,10 @@ describe("T4.6 validity and flag reasons (Q87)", () => {
   it("roster checked 25 hours ago adds edge_roster_stale", async () => {
     await setRosterAgeHours(25);
     try {
-      const staff = await newStaff("Staf Roster Basi");
-      const objectId = await sealedSelfie(staff.userId);
-      const response = await clockOnEdge(
-        staff.client,
+      const { staff, proof, objectId } = await readyToClock("Staf Roster Basi");
+      const response = await outletClockOnEdge(
         clockBody({ photoUploadRef: objectId }),
+        proof.token,
       );
       expect(response.status, JSON.stringify(response.body)).toBe(201);
       const [log] = await logsOf(staff.employeeId);
@@ -888,12 +1076,11 @@ describe("T4.7 event v2 and selfie upload row in the same clock", () => {
   it("queues one attendance.logged v2 and one pending edge_selfie_uploads row", async () => {
     await setRosterAgeHours(25);
     try {
-      const staff = await newStaff("Staf Event V2");
+      const { staff, proof, objectId } = await readyToClock("Staf Event V2");
       const shiftId = await seedShift(staff.employeeId, outletId);
-      const objectId = await sealedSelfie(staff.userId);
-      const response = await clockOnEdge(
-        staff.client,
+      const response = await outletClockOnEdge(
         clockBody({ photoUploadRef: objectId }),
+        proof.token,
       );
       expect(response.status, JSON.stringify(response.body)).toBe(201);
       const logId = response.body.data.id as string;
@@ -934,30 +1121,57 @@ describe("T4.7 event v2 and selfie upload row in the same clock", () => {
     }
   });
 
-  it("replaying the same idempotency key adds no second log, event or upload row", async () => {
-    const staff = await newStaff("Staf Ulang");
-    const objectId = await sealedSelfie(staff.userId);
+  it("replaying the same idempotency key (proof already used) answers 200 with the old log and adds no second log, event or upload row", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Ulang");
     const body = clockBody({ photoUploadRef: objectId });
-    const first = await clockOnEdge(staff.client, body);
+    const first = await outletClockOnEdge(body, proof.token);
     expect(first.status, JSON.stringify(first.body)).toBe(201);
-    const replay = await clockOnEdge(staff.client, body);
-    expect(replay.status, JSON.stringify(replay.body)).toBeLessThan(300);
+    const replay = await outletClockOnEdge(body, proof.token);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
     expect(replay.body.data.id).toBe(first.body.data.id);
     expect(await logsOf(staff.employeeId)).toHaveLength(1);
     expect(await queuedEvents(staff.employeeId)).toHaveLength(1);
     expect(await uploadRows(first.body.data.id as string)).toHaveLength(1);
   });
+
+  it("a used proof with a new idempotency key: 409 PIN_PROOF_USED", async () => {
+    const { staff, proof, objectId } = await readyToClock(
+      "Staf Bukti Terpakai",
+    );
+    const first = await outletClockOnEdge(
+      clockBody({ photoUploadRef: objectId }),
+      proof.token,
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const second = await outletClockOnEdge(
+      clockBody({ type: "out", photoUploadRef: objectId }),
+      proof.token,
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(second.body.error.code).toBe("PIN_PROOF_USED");
+    expect(await logsOf(staff.employeeId)).toHaveLength(1);
+  });
 });
 
 describe("T4.8 outlet_device on the cloud stays refused", () => {
-  it("a cloud process answers 422 even with a valid device token, and stores nothing", async () => {
-    const staff = await newStaff("Staf Cloud Layar");
-    const objectId = await sealedSelfie(staff.userId);
-    const response = await clockOnCloud(
-      staff.client,
+  it("a cloud process answers 400 on outlet-clock even with a valid device token and proof, and stores nothing", async () => {
+    const { staff, proof, objectId } = await readyToClock("Staf Cloud Layar");
+    const response = await outletClockOnCloud(
       clockBody({ photoUploadRef: objectId }),
+      proof.token,
     );
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    await nothingStored(staff.employeeId);
+  });
+
+  it("outlet_device on the session route of the cloud: 400 ATTENDANCE_METHOD_USE_OUTLET_CLOCK", async () => {
+    const staff = await newStaff("Staf Cloud Rute Sesi");
+    const response = await sessionClockOnCloud(
+      staff.client,
+      sessionClockBody(),
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error.code).toBe("ATTENDANCE_METHOD_USE_OUTLET_CLOCK");
     await nothingStored(staff.employeeId);
   });
 });

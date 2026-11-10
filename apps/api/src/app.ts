@@ -246,6 +246,10 @@ export function createApp({
         "Idempotency-Key",
         "X-Reservation-Link-Token",
         "X-Request-Id",
+        // The outlet screen sends no cookie: the registered device and the
+        // one-time staff PIN proof travel in headers (legend-u7g9w).
+        "X-Device-Token",
+        "X-Pin-Proof",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],
       maxAge: 600,
