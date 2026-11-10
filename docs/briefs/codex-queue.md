@@ -16,7 +16,7 @@ Urutan: uang/pajak -> auth/akses -> migrasi -> data pribadi/offline. Satu run pe
 | Pepper | d07b6cf8..3150feeb + jmsdx | staff-pin-pepper-*.ts, device-pin-pepper.ts, edge/runtime.ts | selesai 382 |
 | Wi-Fi edge | e79e86a0^1..e79e86a0^2 + 8b57852f..52c7c7ef | wifi-*.ts, edge/wifi-quota-applier.ts | selesai 415 (3 P1 + 1 P2 -> brief 417) |
 | w5by9 expiry FIFO loyalty (8f0b4630, d735d8b7) | Codex ulang area loyalty sebelum rilis | selesai 411 (2 P1 + 1 P2 -> brief 413) |
-| vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | jalan 418 (+ PIN slip gaji) |
+| vfj7z slot device + window per user (ws/jmsdx-pepper) | Codex area PIN | selesai 418 (4 P1 + 2 P2 -> brief 421) |
 | profit share 33im6 fix (ws/8s992-profit-rules 54b76963, migrasi 0252) | Codex ulang area profit share sebelum rilis | tercakup 405 (-> 9t04v) |
 | 3sy9b approval versi porsi saham (ws/3sy9b-share-alloc-approval 360491fa, migrasi 0256) | gabung area profit share | tercakup 405 (-> 9t04v) |
 | owner tunggal self-approve (ws/owner-self-approve be5163bc, migrasi 0270) | gabung area profit share + approval | tercakup 405 (-> 9t04v) |
