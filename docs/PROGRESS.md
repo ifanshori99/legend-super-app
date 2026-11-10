@@ -1889,3 +1889,13 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Architect (K) atas diff migrasi: lima pemeriksaan lolos, satu temuan kosmetik (komentar idx 235 di test revisi pajak) sudah dibetulkan. Risiko dicatat: DB dev lokal yang pernah menjalankan 0229 lama harus dibuat ulang (`when` berubah); m1 belum pernah diterapkan ke DB bersama.
 - legend-p649r: `compose.test.yaml` batas memori Postgres test 512m menjadi 768m (commit sendiri).
 - Ukuran: sesi ini 2,48 juta unit biaya (utama Sonnet 2,21 juta, 1 subagent architect Opus 0,27 juta), 1 subagent, puncak 1 bersamaan; kerja merge berurutan dan tidak bisa dipecah.
+
+## legend-qih2m: adapter WhatsApp kode reset PIN slip gaji (11 Nov 2026, cabang `ws/qih2m-payslip-otp`, dari `ws/hris-pii-pin` 8305fdc3)
+
+- Sudah: `payslip-pin-whatsapp-sender.ts` menyambungkan port `PayslipPinOtpSender` ke `MessagingProvider.send` (teks OTP berbahasa Indonesia, referensi `payslip-pin-otp:<challengeId>`, nomor hanya angka, tanpa log, error provider dibuang). `createApp({ messagingProvider })` mengalir ke `createStorageApiRouter({ messaging })` dan `createHrisPayslipRouter({ otpSender })`; tanpa provider reset-otp tetap 503. Port bertambah `outletId` dan `challengeId`.
+- Keputusan architect (K, xhigh): satu temuan nyata. Pesan dikirim di bawah `auditOutletFor(context, homeOutletId)`, bukan langsung outlet asal, supaya pegawai yang perannya ada di outlet lain tidak selalu dapat 503. Test gagal-dulu terbukti (503, seharusnya 200).
+- Bukti: 48 dari 48 test terarah hijau SEBELUM perbaikan architect; typecheck api bersih sesudahnya; `db:generate` kosong; prettier bersih.
+- Belum: test DB belum dijalankan ulang sesudah perbaikan architect (termasuk test baru "outlet peran beda dari outlet asal"): Postgres test tak terjangkau, layanan akun macOS mati. Cabang belum ter-push (ssh: "No user exists for uid 501").
+- Langkah berikut setelah Mac restart: `LEGEND_TEST_FILES="src/test/payslip-pin-db.test.ts src/test/payslip-pin-whatsapp-sender.test.ts src/test/payslip-pin-wire.test.ts" pnpm test` dari root worktree; betulkan bila ada merah; lalu `git push -u origin ws/qih2m-payslip-otp`.
+- Risiko: belum ada `MessagingProvider` produksi di repo (server.ts tidak mengirim provider), jadi produksi tetap 503 sampai adapter Kirim outbound dibuat (kartu terpisah bila diinginkan). `MessageRequest` hanya teks, tanpa tipe template.
+- Ukuran: 6 subagent (2 Explore, 3 test-writer, 1 architect), puncak 2 bersamaan.
