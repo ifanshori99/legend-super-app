@@ -276,12 +276,15 @@ qrOrderRouter.post(
   },
 );
 
-qrOrderRouter.get(
+// POST (not GET) so the payer secret travels in the body, never in a URL log.
+// It changes nothing; no Idempotency-Key.
+qrOrderRouter.post(
   "/:sessionId/splits/:splitId/claim",
-  ...read,
+  ...write,
+  jsonBody,
   async (req, res) => {
     const { sessionId, splitId } = getSplitClaim.params.parse(req.params);
-    const query = getSplitClaim.query.parse(req.query);
+    const body = getSplitClaim.body.parse(req.body);
     const credential = sessionCredential(req);
     res.json({
       data: await getSplitClaimService(
@@ -289,7 +292,7 @@ qrOrderRouter.get(
         credential,
         sessionId,
         splitId,
-        query.paymentId,
+        body.payerSecret,
       ),
     });
   },

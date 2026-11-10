@@ -19,7 +19,6 @@ import {
   asc,
   desc,
   eq,
-  exists,
   inArray,
   isNotNull,
   isNull,
@@ -707,17 +706,17 @@ async function orderBlocksClaim(
  * code (no token, or its order is voided, refunded, a member's or practice);
  * `available` shows the token for 24 hours; `claimed` once redeemed;
  * `expired` after the deadline. The part ids are public to the table, so the
- * read also needs the paid intent that settled that very part (`paymentId` =
- * `bill_splits.payment_intent_id`, status paid). A wrong part, an unknown
- * part, a foreign, old or replaced intent, or a part not yet paid answer the
- * same NOT_FOUND (legend-ec6fa).
+ * read also needs the payer secret given when the part was paid
+ * (legend-r77pq): compared as a SHA-256 in the same query, so a wrong secret,
+ * a foreign part, an unknown part and a part nobody started paying answer the
+ * same NOT_FOUND. The token itself shows only while the part is `paid`.
  */
 export async function getSplitClaim(
   context: ScopedTenantContext,
   credential: string,
   sessionId: string,
   splitId: string,
-  paymentId: string,
+  payerSecret: string,
   now = new Date(),
 ): Promise<SplitClaim> {
   const tenantId = context.tenant.tenantId;
@@ -738,19 +737,7 @@ export async function getSplitClaim(
           eq(billSplits.tenantId, tenantId),
           eq(billSplits.id, splitId),
           eq(billSplits.tableSessionId, session.id),
-          exists(
-            tx
-              .select({ id: paymentIntents.id })
-              .from(paymentIntents)
-              .where(
-                and(
-                  eq(paymentIntents.tenantId, tenantId),
-                  eq(paymentIntents.id, paymentId),
-                  eq(paymentIntents.id, billSplits.paymentIntentId),
-                  eq(paymentIntents.status, "paid"),
-                ),
-              ),
-          ),
+          eq(billSplits.payerSecretHash, sha256(payerSecret)),
         ),
       );
     if (!part)

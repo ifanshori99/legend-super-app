@@ -70,6 +70,11 @@ export const billSplits = pgTable(
     claimTokenHash: varchar("claim_token_hash", { length: 64 }),
     /** The raw token sealed with `sealSecret` so the payer can see it again. */
     claimTokenSealed: text("claim_token_sealed"),
+    /**
+     * SHA-256 hex of the payer's client-held secret (`ps_...`); only the hash
+     * is stored. Set when the first intent is minted for the part.
+     */
+    payerSecretHash: varchar("payer_secret_hash", { length: 64 }),
     claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
     claimRedeemedAt: timestamp("claim_redeemed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

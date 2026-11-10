@@ -22,7 +22,7 @@
 //   Nothing else can fire a pay-first order, so no item reaches the KDS
 //   before a verified payment (ORD-02).
 
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
   CoreError,
@@ -315,6 +315,18 @@ export async function getGuestPaymentOptions(
   return guestPaymentOptionsSchema.parse({ methods });
 }
 
+function payerSecretHash(secret: string | undefined): string {
+  if (secret === undefined)
+    throw new Error("Split payment has no payer secret");
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+function sameHash(stored: string, candidate: string): boolean {
+  const a = Buffer.from(stored);
+  const b = Buffer.from(candidate);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
  * pay-first `order` and the split `split` targets are live, with QRIS or VA:
@@ -389,6 +401,41 @@ export async function createGuestPayment(
         if (part !== null && part.status === "voided")
           throw new CoreError("CONFLICT", "Bagian tagihan ini sudah diganti.");
         const token = linkToken(context, order);
+        // legend-r77pq: only the payer (the secret that opened the part) gets
+        // its intent. Anyone else never receives an intent or its id.
+        const secretHash =
+          part === null ? null : payerSecretHash(parsed.payerSecret);
+        let payer = true;
+        if (part !== null && secretHash !== null) {
+          payer =
+            part.payerSecretHash !== null
+              ? sameHash(part.payerSecretHash, secretHash)
+              : part.paymentIntentId === null;
+          if (!payer) {
+            const current =
+              part.paymentIntentId === null
+                ? null
+                : await getIntentView(
+                    context,
+                    token,
+                    part.paymentIntentId,
+                    now,
+                  );
+            if (part.status === "paid" || current?.status === "paid")
+              throw new HttpError(
+                409,
+                "SPLIT_PART_PAID",
+                "Bagian tagihan ini sudah dibayar oleh tamu lain.",
+              );
+            if ((await partLiveCodeTx(tx, context, part.id, now)) !== null)
+              throw new HttpError(
+                409,
+                "SPLIT_CODE_ACTIVE",
+                "Bagian tagihan ini sedang dibayar tamu lain; tunggu sampai kodenya berakhir.",
+              );
+            // The old code is dead: this guest takes the part over below.
+          }
+        }
         if (part !== null && part.status === "paid") {
           if (part.paymentIntentId === null)
             throw new Error("Paid split part has no payment intent");
@@ -407,7 +454,7 @@ export async function createGuestPayment(
           // pending intent; another choice waits until the old code is dead
           // (expired and past the late-payment grace), so two codes of one
           // part can never both be paid.
-          if (part.paymentIntentId !== null) {
+          if (payer && part.paymentIntentId !== null) {
             const current = await getIntentView(
               context,
               token,
@@ -424,7 +471,9 @@ export async function createGuestPayment(
                 billSplitId: part.id,
               });
           }
-          const live = await partLiveCodeTx(tx, context, part.id, now);
+          const live = payer
+            ? await partLiveCodeTx(tx, context, part.id, now)
+            : null;
           if (live !== null) {
             if (
               live.status === "pending" &&
@@ -462,7 +511,13 @@ export async function createGuestPayment(
           // Never `orders.paymentIntentId`: that is the whole-order code.
           await tx
             .update(billSplits)
-            .set({ paymentIntentId: intent.id, updatedAt: now })
+            .set({
+              paymentIntentId: intent.id,
+              // First intent makes this guest the payer; a takeover of a dead
+              // code replaces the old payer's hash.
+              payerSecretHash: secretHash,
+              updatedAt: now,
+            })
             .where(
               and(
                 eq(billSplits.tenantId, context.tenant.tenantId),

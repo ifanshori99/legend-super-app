@@ -12,6 +12,11 @@ import {
   writeGuestSession,
   type StoredGuestSession,
 } from "./lib/guest-session.ts";
+import {
+  newPayerSecret,
+  payerSecretFor,
+  readPayerSecret,
+} from "./lib/payer-secret.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const listeners = new Set<() => void>();
@@ -102,5 +107,42 @@ export function currentDeviceHash(): string {
     return deviceHash(store, random);
   } catch {
     return random().replace(/-/g, "").slice(0, 32).toLowerCase();
+  }
+}
+
+function fillRandom(bytes: Uint8Array): Uint8Array {
+  return crypto.getRandomValues(bytes);
+}
+
+/**
+ * The payer secret for one split part: read, or made and kept. If storage is
+ * blocked (private mode) the secret lives for this payment only.
+ */
+export function payerSecretForSplit(
+  sessionId: string,
+  splitId: string,
+): string {
+  const store = storage();
+  if (store) {
+    try {
+      return payerSecretFor(store, sessionId, splitId, fillRandom);
+    } catch {
+      // Storage full or blocked: fall through to a one-off secret.
+    }
+  }
+  return newPayerSecret(fillRandom);
+}
+
+/** The kept payer secret of a split part, or null (other device, cleared). */
+export function storedPayerSecret(
+  sessionId: string,
+  splitId: string,
+): string | null {
+  const store = storage();
+  if (!store) return null;
+  try {
+    return readPayerSecret(store, sessionId, splitId);
+  } catch {
+    return null;
   }
 }

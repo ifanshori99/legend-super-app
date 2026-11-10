@@ -53,6 +53,7 @@ import {
 import { confirmPayment } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { newPayerSecret, secretFor } from "./payer-secret-helpers.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -199,13 +200,12 @@ function as(guest: Guest) {
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: "qris",
+        payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
-    claim: (splitId: string, paymentId?: string) =>
-      auth(
-        client.get(
-          `${base}/splits/${splitId}/claim${paymentId ? `?paymentId=${paymentId}` : ""}`,
-        ),
+    claim: (splitId: string, payerSecret?: string) =>
+      auth(client.post(`${base}/splits/${splitId}/claim`)).send(
+        payerSecret === undefined ? {} : { payerSecret },
       ),
   };
 }
@@ -253,7 +253,7 @@ async function payPart(guest: Guest, part: SplitDto): Promise<EventEnvelope> {
   return event;
 }
 
-/** The payment intent of a part: the guest's proof that the part is theirs. */
+/** The payment intent of a part (the id is no proof of anything). */
 async function intentOf(splitId: string): Promise<string> {
   const { rows } = await owner.query<{ id: string }>(
     `SELECT id FROM payment_intents
@@ -264,9 +264,9 @@ async function intentOf(splitId: string): Promise<string> {
   return rows[0]!.id;
 }
 
-/** HTTP claim read with the part's own payment intent as proof. */
+/** HTTP claim read with the secret the part's payer used to pay it. */
 async function claimFor(guest: Guest, splitId: string) {
-  return as(guest).claim(splitId, await intentOf(splitId));
+  return as(guest).claim(splitId, secretFor(splitId));
 }
 
 async function readClaim(guest: Guest, splitId: string, now = new Date()) {
@@ -275,7 +275,7 @@ async function readClaim(guest: Guest, splitId: string, now = new Date()) {
     guest.token,
     guest.sessionId,
     splitId,
-    await intentOf(splitId),
+    secretFor(splitId),
     now,
   ) as Promise<Claim>;
 }
@@ -397,17 +397,19 @@ afterAll(async () => {
 });
 
 describe("split part claim token (legend-ms3)", () => {
-  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token: its pending intent is no proof yet (404)", async () => {
+  it("SPLIT-CLAIM-UNAVAILABLE an unpaid part has no token: the payer sees it unavailable", async () => {
     const part = orderParts[0]!;
-    // The guest opened a code for the part but has not paid it yet. Only the
-    // paid intent that settled the part is proof, so the read is NOT_FOUND.
+    // The guest opened a code for the part but has not paid it yet. The part
+    // is theirs (their secret) but the token only exists once it is paid.
     const pay = await as(guest).paySplit(part.id);
     expect(pay.status, JSON.stringify(pay.body)).toBe(201);
-    const response = await as(guest).claim(part.id, pay.body.data.id);
-    expect(response.status, JSON.stringify(response.body)).toBe(404);
-    expect(response.body.error?.message).toBe(
-      "Bagian tagihan tidak ditemukan.",
-    );
+    const response = await as(guest).claim(part.id, secretFor(part.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toMatchObject({
+      status: "unavailable",
+      claimToken: null,
+      claimableUntil: null,
+    });
     expect(JSON.stringify(response.body)).not.toContain("sc_");
     const row = await claimRow(part.id);
     expect(row.status).toBe("pending");
@@ -501,19 +503,19 @@ describe("split part claim token (legend-ms3)", () => {
     expect(response.body.data?.claimToken).toBeUndefined();
   });
 
-  // Codex 380 P1#2: the part ids are public to the whole table (`/bill`), so
-  // the claim read needs the payment intent of that very part as proof.
-  it("SPLIT-CLAIM-PROOF a guest cannot read another part's token with their own payment id (404)", async () => {
+  // Codex 380 P1#2 / legend-r77pq: the part ids and intent ids are public to
+  // the whole table, so the claim read needs the payer secret of that part.
+  it("SPLIT-CLAIM-PROOF a guest cannot read another part's token with their own secret (404)", async () => {
     const mine = orderParts[1]!;
     const theirs = orderParts[3]!;
-    const response = await as(guest).claim(theirs.id, await intentOf(mine.id));
+    const response = await as(guest).claim(theirs.id, secretFor(mine.id));
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.error?.message).toBe(
       "Bagian tagihan tidak ditemukan.",
     );
     expect(JSON.stringify(response.body)).not.toContain("sc_");
 
-    const own = await as(guest).claim(theirs.id, await intentOf(theirs.id));
+    const own = await as(guest).claim(theirs.id, secretFor(theirs.id));
     expect(own.status, JSON.stringify(own.body)).toBe(200);
     expect(own.body.data.claimToken).toMatch(/^sc_/);
   });
@@ -521,7 +523,7 @@ describe("split part claim token (legend-ms3)", () => {
   it("SPLIT-CLAIM-PROOF an unknown part answers the same 404 message", async () => {
     const response = await as(guest).claim(
       randomUUID(),
-      await intentOf(orderParts[1]!.id),
+      secretFor(orderParts[1]!.id),
     );
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.error?.message).toBe(
@@ -529,53 +531,40 @@ describe("split part claim token (legend-ms3)", () => {
     );
   });
 
-  it("SPLIT-CLAIM-PROOF a random payment id answers the same 404", async () => {
-    const response = await as(guest).claim(orderParts[1]!.id, randomUUID());
+  it("SPLIT-CLAIM-PROOF a random secret answers the same 404", async () => {
+    const response = await as(guest).claim(orderParts[1]!.id, newPayerSecret());
     expect(response.status, JSON.stringify(response.body)).toBe(404);
     expect(response.body.error?.message).toBe(
       "Bagian tagihan tidak ditemukan.",
     );
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
   });
 
-  // legend-ec6fa: only the intent that settled the part (bill_splits.payment_intent_id,
-  // status paid) is proof. An older intent of the same part (expired or replaced)
-  // is not, even though its bill_split_id matches.
-  it("SPLIT-CLAIM-PROOF an old or replaced intent of the same part is no proof (404)", async () => {
+  // legend-r77pq: an intent id (even the part's own, even one that settled it)
+  // is not a payer secret. It is not even the right shape.
+  it("SPLIT-CLAIM-PROOF the part's payment intent id is no proof (422, no token)", async () => {
     const part = orderParts[4]!;
-    const current = await intentOf(part.id);
-    const copyOld = async (status: "expired" | "paid") => {
-      const id = randomUUID();
-      await owner.query(
-        `INSERT INTO payment_intents
-           (id, tenant_id, outlet_id, payment_link_id, order_id, bill_split_id, method, provider,
-            amount_idr, fee_idr, idempotency_key, provider_ref, status, flags, instructions,
-            paid_at, expires_at)
-         SELECT $3::uuid, tenant_id, outlet_id, payment_link_id, order_id, bill_split_id, method,
-                provider, amount_idr, fee_idr, $4, NULL, $5::varchar, flags, instructions,
-                CASE WHEN $5::varchar = 'paid' THEN now() ELSE NULL END, expires_at
-           FROM payment_intents WHERE tenant_id = $1 AND id = $2::uuid`,
-        [tenant.tenantId, current, id, `old-${id}`, status],
-      );
-      return id;
-    };
-    const expired = await copyOld("expired");
-    const replacedPaid = await copyOld("paid");
+    const response = await as(guest).claim(part.id, await intentOf(part.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
 
-    for (const old of [expired, replacedPaid]) {
-      const response = await as(guest).claim(part.id, old);
-      expect(response.status, JSON.stringify(response.body)).toBe(404);
-      expect(response.body.error?.message).toBe(
-        "Bagian tagihan tidak ditemukan.",
-      );
-      expect(JSON.stringify(response.body)).not.toContain("sc_");
-    }
-
-    const own = await as(guest).claim(part.id, current);
+    const own = await as(guest).claim(part.id, secretFor(part.id));
     expect(own.status, JSON.stringify(own.body)).toBe(200);
     expect(own.body.data.claimToken).toMatch(/^sc_/);
   });
 
-  it("SPLIT-CLAIM-PROOF a read without the payment id is a validation error (422)", async () => {
+  it("SPLIT-CLAIM-PROOF a part without a payer secret hash (older part) answers 404", async () => {
+    const part = orderParts[4]!;
+    await owner.query(
+      "UPDATE bill_splits SET payer_secret_hash = NULL WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, part.id],
+    );
+    const response = await as(guest).claim(part.id, secretFor(part.id));
+    expect(response.status, JSON.stringify(response.body)).toBe(404);
+    expect(JSON.stringify(response.body)).not.toContain("sc_");
+  });
+
+  it("SPLIT-CLAIM-PROOF a read without the payer secret is a validation error (422)", async () => {
     const response = await as(guest).claim(orderParts[1]!.id);
     expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(JSON.stringify(response.body)).not.toContain("sc_");

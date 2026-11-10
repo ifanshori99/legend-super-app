@@ -57,6 +57,7 @@ import { confirmPayment } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader } from "./helpers.ts";
+import { secretFor } from "./payer-secret-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -250,12 +251,13 @@ function as(guest: Guest, member?: MemberUser) {
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: "qris",
+        payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
-    splitClaim: (splitId: string, paymentId: string) =>
-      auth(
-        client.get(`${base}/splits/${splitId}/claim?paymentId=${paymentId}`),
-      ),
+    splitClaim: (splitId: string, payerSecret: string) =>
+      auth(client.post(`${base}/splits/${splitId}/claim`)).send({
+        payerSecret,
+      }),
     claim: (claimToken?: string) =>
       auth(client.post(`${base}/points-claim`)).send({
         idempotencyKey: randomUUID(),
@@ -340,7 +342,7 @@ async function paidSplitOrder(guest: Guest) {
     expect(pay.status, JSON.stringify(pay.body)).toBe(201);
     const intentId = pay.body.data.id as string;
     await settle(intentId, part.amountIdr);
-    const claim = await as(guest).splitClaim(part.id, intentId);
+    const claim = await as(guest).splitClaim(part.id, secretFor(part.id));
     expect(claim.status, JSON.stringify(claim.body)).toBe(200);
     if (part === parts[0]) {
       token = claim.body.data.claimToken as string;

@@ -55,6 +55,7 @@ import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { getSplitClaimByToken } from "../services/bill-split.service.ts";
 import { agent, originHeader } from "./helpers.ts";
+import { secretFor } from "./payer-secret-helpers.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -204,14 +205,15 @@ function as(guest: Guest) {
         parts,
         idempotencyKey: randomUUID(),
       }),
-    claim: (splitId: string, paymentId: string) =>
-      auth(
-        client.get(`${base}/splits/${splitId}/claim?paymentId=${paymentId}`),
-      ),
+    claim: (splitId: string, payerSecret: string) =>
+      auth(client.post(`${base}/splits/${splitId}/claim`)).send({
+        payerSecret,
+      }),
     paySplit: (billSplitId: string) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
         method: "qris",
+        payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -462,11 +464,8 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
     const unpaid2 = await openCode(w.guest, p2);
 
     const tokens: string[] = [];
-    for (const [part, intentId] of [
-      [p0, paid0],
-      [p1, paid1],
-    ] as const) {
-      const claim = await as(w.guest).claim(part.id, intentId);
+    for (const part of [p0, p1]) {
+      const claim = await as(w.guest).claim(part.id, secretFor(part.id));
       expect(claim.status, JSON.stringify(claim.body)).toBe(200);
       expect(claim.body.data.status).toBe("available");
       tokens.push(claim.body.data.claimToken as string);

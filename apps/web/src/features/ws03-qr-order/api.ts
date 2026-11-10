@@ -16,6 +16,7 @@ import {
   getQrMenu,
   getReviewEligibility,
   getSessionBill,
+  getSplitClaim,
   getTableSession,
   listSessionOrderIssues,
   openOrJoinTableSession,
@@ -32,7 +33,9 @@ import type {
   GuestPaymentTarget,
   ServiceRequestReason,
 } from "@starter/shared/qr-order";
+import { ApiError } from "@/lib/api/errors";
 import { idempotencyKey } from "./lib/ids.ts";
+import { payerSecretForSplit, storedPayerSecret } from "./session-store.ts";
 
 export const menuEndpoint = getQrMenu;
 export const sessionEndpoint = getTableSession;
@@ -154,7 +157,35 @@ export const startPayment = (
     bankCode?: string;
     idempotencyKey: string;
   },
-) => callEndpoint(createGuestPayment, { params: { sessionId }, body: input });
+) =>
+  callEndpoint(createGuestPayment, {
+    params: { sessionId },
+    // A split part is paid with the payer's own secret (legend-r77pq).
+    body:
+      input.target.kind === "split"
+        ? {
+            ...input,
+            payerSecret: payerSecretForSplit(
+              sessionId,
+              input.target.billSplitId,
+            ),
+          }
+        : input,
+  });
+
+/** Claim token of a split part the guest paid; needs the secret kept at pay time. */
+export const fetchSplitClaim = (sessionId: string, splitId: string) => {
+  const payerSecret = storedPayerSecret(sessionId, splitId);
+  // No kept secret (other device, cleared storage): same answer as a wrong one.
+  if (payerSecret === null)
+    return Promise.reject(
+      new ApiError(404, "NOT_FOUND", "Bagian ini tidak ditemukan."),
+    );
+  return callEndpoint(getSplitClaim, {
+    params: { sessionId, splitId },
+    body: { payerSecret },
+  });
+};
 
 export const claimPoints = (sessionId: string) =>
   callEndpoint(claimSessionPoints, {

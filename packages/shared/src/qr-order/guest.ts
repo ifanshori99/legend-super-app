@@ -286,13 +286,29 @@ export const guestPaymentTargetSchema = z.discriminatedUnion("kind", [
 ]);
 export type GuestPaymentTarget = z.infer<typeof guestPaymentTargetSchema>;
 
+/**
+ * legend-r77pq: the payer's own proof for one split part. The paying client
+ * makes it (32 random bytes, `ps_` + base64url), keeps it, and sends it on
+ * `createGuestPayment` and `getSplitClaim`; the server stores only its SHA-256.
+ * The part ids and intent ids are visible to the whole table, this is not.
+ */
+export const payerSecretSchema = z.string().regex(/^ps_[A-Za-z0-9_-]{43}$/);
+
 export const createGuestPaymentInputSchema = clientInputSchema({
   target: guestPaymentTargetSchema,
   method: guestPaymentMethodSchema,
   /** Required for `va` (validated against the provider list); none for QRIS. */
   bankCode: guestPaymentBankCodeSchema.nullable().optional(),
+  /** Required for a `split` target; ignored by `order`. */
+  payerSecret: payerSecretSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 }).superRefine((input, ctx) => {
+  if (input.target.kind === "split" && input.payerSecret === undefined)
+    ctx.addIssue({
+      code: "custom",
+      path: ["payerSecret"],
+      message: "A split part is paid with the payer's secret",
+    });
   const hasBank = input.bankCode !== undefined && input.bankCode !== null;
   if ((input.method === "va") !== hasBank)
     ctx.addIssue({
@@ -433,15 +449,16 @@ export const splitClaimSchema = z
 export type SplitClaim = z.infer<typeof splitClaimSchema>;
 
 export const getSplitClaim = defineEndpoint({
-  method: "GET",
+  method: "POST",
   path: "/api/table-sessions/:sessionId/splits/:splitId/claim",
   params: z.strictObject({
     sessionId: tableSessionIdSchema,
     splitId: billSplitIdSchema,
   }),
-  // Proof that the part is the guest's: the payment intent that pays it. The
-  // part ids are visible to the whole table, the intent id is not.
-  query: z.strictObject({ paymentId: guestPaymentIntentIdSchema }),
+  // Proof that the part is the guest's: the payer secret given when paying it
+  // (legend-r77pq). A body, not a query, so it never lands in a URL log. Wrong,
+  // unknown or not-the-payer's: the same 404.
+  body: z.strictObject({ payerSecret: payerSecretSchema }),
   response: dataResponseSchema(splitClaimSchema),
 });
 
